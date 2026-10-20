@@ -42,6 +42,7 @@ class PolicyEvaluation:
     source: str = "permission_engine"
     path_result: SendFilePathGuardResult | None = None
     external_paths: tuple[str, ...] = ()
+    manual_approval_required: bool = False
 
 
 class OpenJiuwenPolicyEvaluator:
@@ -62,8 +63,13 @@ class OpenJiuwenPolicyEvaluator:
             path_guard_evaluator or SendFilePathGuardEvaluator()
         )
 
-    async def evaluate(self, invocation: Any) -> PolicyEvaluation:
-        """Return the policy-only decision for one tool invocation."""
+    async def evaluate(
+        self,
+        invocation: Any,
+        *,
+        scene_approval_is_final: bool = False,
+    ) -> PolicyEvaluation:
+        """Evaluate without approval UI; manual rails can make scene approval final."""
         normalized_tool_name = self._normalize_tool_name(invocation.tool_name)
         tool_args = self._parse_tool_args(invocation.tool_call, invocation.tool_args)
         engine = getattr(self._base_rail, "_engine", None)
@@ -82,7 +88,9 @@ class OpenJiuwenPolicyEvaluator:
             tool_args=tool_args,
             engine=engine,
         )
-        if scene_decision is not None and scene_decision.level == DENY_LEVEL:
+        if scene_decision is not None and (
+            scene_decision.level == DENY_LEVEL or scene_approval_is_final
+        ):
             return scene_decision
 
         if engine is None:
@@ -285,6 +293,7 @@ def _evaluation_from_permission_result(result: Any) -> PolicyEvaluation:
         reason=reason,
         matched_rule=matched_rule,
         external_paths=external_paths or (),
+        manual_approval_required=getattr(result, "manual_approval_required", False) is True,
     )
 
 
@@ -349,4 +358,5 @@ def _strictest_evaluation(
         source=strictest.source,
         path_result=path_result,
         external_paths=tuple(external_paths),
+        manual_approval_required=any(item.manual_approval_required for item in candidates),
     )

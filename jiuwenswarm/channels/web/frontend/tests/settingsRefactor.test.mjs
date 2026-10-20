@@ -1508,11 +1508,13 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
     'chrome_path',
     'headless',
     'decision_mode',
-    'decision_provider',
   ]);
-  assert.match(browserDefinition, /\{ value: 'openrouter', labelKey: 'settingsPanel\.browser\.providerOpenrouter' \}/);
-  assert.match(browserDefinition, /\{ value: 'typesafe', labelKey: 'settingsPanel\.browser\.providerTypesafe' \}/);
-  // The Jev key is write-only: the page shows configured/not configured and never reads the key back.
+  // Provider, model and credential are edited together with existing values prefilled.
+  const jevSettings = source('src/features/settings/modules/browser/JevKeySettings.tsx');
+  assert.match(jevSettings, /useSettingsConfig\(\)/);
+  assert.match(jevSettings, /config=\{config\}/);
+  assert.match(jevSettings, /FormDialog/);
+  assert.match(jevSettings, /values\.provider === 'custom'/);
   assert.match(browserDefinition, /component: 'custom', render: JevKeySettings/);
   assert.match(sourceProvider, /jev_key_configured: value\?\.jev_key_configured === true/);
   for (const mode of ['llm', 'shadow', 'hybrid']) {
@@ -1523,7 +1525,7 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
   assert.match(browserDefinition, /\{ value: true, labelKey: 'settingsPanel\.browser\.headless' \}/);
   assert.doesNotMatch(browserDefinition, /browser_type|browserType/);
   assert.match(sourceProvider, /request<Record<string, unknown>>\('path\.get'\)/);
-  assert.match(sourceProvider, /request<Record<string, unknown>>\('path\.set', next/);
+  assert.match(sourceProvider, /request<Record<string, unknown>>\('path\.set', \{/);
   assert.doesNotMatch(sourceProvider, /enabled|onlyEnabled/);
   assert.doesNotMatch(sourceContract, /\['enabled', 'switch'\]/);
   assert.doesNotMatch(settingsContract, /react\.subagents\.browser_agent\.enabled/);
@@ -1984,30 +1986,33 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
   assert.equal(existsSync(new URL('src/features/settings/modules/models/OpenAIAccountField.tsx', root)), true);
 });
 
-test('Jev browser settings preserve mode, provider and write-only key contracts', () => {
+test('Jev browser settings preserve mode, independent provider credentials and readback', () => {
   const definition = source('src/features/settings/modules/browser/definition.ts');
   const provider = source('src/features/settings/services/SettingsSourceProvider.tsx');
   const keySettings = source('src/features/settings/modules/browser/JevKeySettings.tsx');
   assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/browser/definition.ts')), [
-    'chrome_path', 'headless', 'decision_mode', 'decision_provider',
+    'chrome_path', 'headless', 'decision_mode',
   ]);
   for (const mode of ['llm', 'shadow', 'hybrid']) {
     assert.ok(definition.includes(`value: '${mode}'`));
   }
-  for (const name of ['openrouter', 'typesafe']) {
-    assert.ok(definition.includes(`value: '${name}'`));
+  const presets = source('src/features/settings/modules/browser/jevSettings.ts');
+  for (const name of ['openrouter', 'typesafe', 'custom']) {
+    assert.ok(presets.includes(`${name}:`));
     const field = `jev_${name}_api_key`;
     assert.deepEqual(buildConfigSavePayload({ [field]: 'synthetic-test-key' }), {
       config: { [field]: 'synthetic-test-key' },
     });
     assert.deepEqual(buildConfigSavePayload({ [field]: '' }), { config: { [field]: '' } });
-    assert.ok(keySettings.includes(field));
+    assert.ok(presets.includes(field));
   }
   assert.match(definition, /component: 'custom', render: JevKeySettings/);
   assert.match(provider, /jev_key_configured: value\?\.jev_key_configured === true/);
-  assert.match(keySettings, /config=\{\{\}\}/);
+  assert.match(keySettings, /config=\{config\}/);
   assert.match(keySettings, /decision_mode: 'llm'/);
-  assert.match(keySettings, /request\('config\.save_all', buildConfigSavePayload\(updates\)/);
+  assert.match(keySettings, /await saveConfigFields\([\s\S]*await save\(/);
+  assert.doesNotMatch(keySettings, /name: '(?:protocol|context_window_tokens|alias)'/);
+  assert.match(keySettings, /patchLocal\(await request<Record<string, unknown>>\('path\.get'\)\)/);
 });
 
 test('legacy page translations and Harness package state are removed without deleting shared Settings keys', () => {

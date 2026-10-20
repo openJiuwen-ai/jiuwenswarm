@@ -729,7 +729,11 @@
       "decisionShadow": "Jev shadow (observe only)",
       "decisionHybrid": "Jev hybrid",
       "providerOpenrouter": "OpenRouter",
-      "providerTypesafe": "TypeSafe"
+      "providerTypesafe": "TypeSafe",
+      "providerCustom": "Custom",
+      "jevConfig": "Jev Model Configuration",
+      "jevBaseInvalid": "Enter an HTTPS API base URL without credentials, query parameters or fragments",
+      "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
     "experimental": {
       "taskAsr": "Speech transcription",
@@ -809,7 +813,7 @@
       },
       "decision_provider": {
         "title": "Jev provider",
-        "description": "Where Jev is called: through OpenRouter, or TypeSafe directly."
+        "description": "Call Jev through OpenRouter or TypeSafe directly. Configure each provider's credentials separately."
       },
       "jev_api_key": {
         "title": "Jev API key"
@@ -819,6 +823,9 @@
       },
       "jev_typesafe_api_key": {
         "title": "TypeSafe API key"
+      },
+      "jev_custom_api_key": {
+        "title": "Custom Jev API key"
       },
       "model_name": { "title": "Model name", "placeholder": "e.g. glm-4.7" },
       "alias": { "title": "Custom alias", "placeholder": "e.g. GLM-4.7 Production" },
@@ -1076,6 +1083,36 @@
     "groupChat": "Group Chat",
     "allMembers": "all",
     "noGroupMessages": "No group messages",
+    "groupChatTimeline": {
+      "scheduler": "Scheduler",
+      "taskFallback": "Task {{id}}",
+      "handoff": {
+        "task_start": "Start",
+        "task_start_plan": "Start (plan first)",
+        "review_request": "Review requested",
+        "review_renudge": "Review reminder",
+        "rework": "Rework",
+        "rework_with_limit": "Rework (up to {{max}} rounds)",
+        "rework_summary": "Rework summary requested",
+        "task_assigned": "Task assigned",
+        "other": "Scheduler message"
+      },
+      "taskEvents": {
+        "created": "created a task",
+        "createdMany": "created {{count}} tasks",
+        "claimed": "claimed the task",
+        "claimedPassive": "Task claimed",
+        "submitted_for_review": "submitted the task for review",
+        "submitted_for_reviewPassive": "Task submitted for review",
+        "verified": "Task passed review",
+        "revision_requested": "Review failed, task sent back for rework",
+        "completed": "completed the task",
+        "completedPassive": "Task completed",
+        "cancelled": "Task cancelled",
+        "released": "Task released, waiting to be claimed again",
+        "revoked": "Task revoked"
+      }
+    },
     "memberTasksTitle": "Tasks executed by {{member}}",
     "memberTasks": "Their tasks",
     "noProcessData": "No execution process data for this member",
@@ -1988,6 +2025,7 @@
       "builtinPathPlaceholder": "Built-in CLI (managed)",
       "installNow": "Install",
       "notInstalledHint": "No SDK detected yet. Click",
+      "removePath": "Remove this path from history",
       "savedHint": "Saved",
       "detectSucceeded": "Detection passed",
       "editPath": "Edit",
@@ -2681,11 +2719,6 @@
       "added": "Added Skills",
       "builtin": "Built-in Skills",
       "skillPack": "Skill Packs"
-    },
-    "publishFilter": {
-      "all": "All",
-      "published": "Published",
-      "unpublished": "Unpublished"
     },
     "skillTypes": {
       "skill": "Skill Pack",

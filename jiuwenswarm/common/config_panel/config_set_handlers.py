@@ -130,8 +130,6 @@ class ConfigPanelInternalError(RuntimeError):
 # 热更新 scope 常量与变更集（自 app_web_handlers 迁出）
 # --------------------------------------------------------------------------- #
 WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
-# Saved through config.save_all but never sent back to clients.
-WRITE_ONLY_CONFIG_KEYS = frozenset({"jev_openrouter_api_key", "jev_typesafe_api_key"})
 SEARCH_RELOAD_ENV_KEYS = {
     "BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY",
 }
@@ -337,6 +335,7 @@ CONFIG_SET_ENV_MAP = {
     "perplexity_api_key": "PERPLEXITY_API_KEY",
     "jev_openrouter_api_key": "OPENROUTER_API_KEY",
     "jev_typesafe_api_key": "TYPESAFE_API_KEY",
+    "jev_custom_api_key": "JEV_CUSTOM_API_KEY",
     "github_token": "GITHUB_TOKEN",
     "teamskills_market_url": "TEAM_SKILLS_HUB_BASE_URL",
     "teamskills_user_token": "TEAM_SKILLS_HUB_USER_TOKEN",
@@ -1607,7 +1606,7 @@ async def config_get_handler(
 ) -> None:
     """返回 CONFIG_SET_ENV_MAP 里所有键对应的环境变量当前值（Web 契约）。"""
     payload = {
-        param_key: "" if param_key in WRITE_ONLY_CONFIG_KEYS else (os.getenv(env_key) or "")
+        param_key: os.getenv(env_key) or ""
         for param_key, env_key in CONFIG_SET_ENV_MAP.items()
     }
     payload["app_version"] = get_runtime_version()

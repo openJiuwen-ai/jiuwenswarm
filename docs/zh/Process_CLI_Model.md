@@ -117,7 +117,17 @@ echo %ERRORLEVEL%
 模型密钥按 Codex 的 `env_key` 思路从环境变量读取；`--api-key-env` 的值是变量名称。
 CMD 的 `set` 行包含用户自行输入的密钥，应在本机填写，不应放入共享测试资料。
 
-## 4. 对照 Codex
+## 4. 文件访问授权
+
+启用 `permissions.enabled` 和 `permissions.file_guard.enabled` 时，进程式 CLI 对不能确定文件访问范围的
+Shell 命令要求本次人工授权，包括变量命令链、重定向、解释器和未识别的程序。此类命令不会由智能审批
+自动放行，也不会生成会话或永久授权。已识别的字面量路径继续使用现有路径权限规则。
+普通单次命令无法接收授权输入时退出码为 `4`，工具尚未执行。机器协议继续使用既有授权响应机制。
+
+`--cwd` 指定工作目录，`--trusted-dir` 增加信任目录；它们不是操作系统沙箱。
+显式关闭权限或文件防护时沿用原有完全访问行为。此策略仅用于 `process_cli`，其他 channel 不变。
+
+## 5. 对照 Codex
 
 Codex 的 `exec` 支持 `-m/--model` 和 `-c/--config key=value`；
 提供方配置使用 `model_providers.<id>.base_url`、`env_key` 等字段。

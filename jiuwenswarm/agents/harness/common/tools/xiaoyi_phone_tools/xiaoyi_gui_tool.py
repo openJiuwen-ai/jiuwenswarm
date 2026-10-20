@@ -12,7 +12,7 @@ from typing import Any, Dict
 from openjiuwen.core.foundation.tool import tool
 
 from jiuwenswarm.common.utils import logger
-from jiuwenswarm.runtime.host_services import get_runtime_xiaoyi_channel
+from jiuwenswarm.common.host_services import get_runtime_xiaoyi_channel
 
 from .utils import ToolInputError, format_success_response
 

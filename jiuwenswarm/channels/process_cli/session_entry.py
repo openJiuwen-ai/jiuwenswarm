@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from jiuwenswarm.channels.process_cli.diagnostics import capture_diagnostics
+from jiuwenswarm.channels.process_cli.ui import _display_width
 
 if TYPE_CHECKING:
     from jiuwenswarm.runtime.session_catalog import SessionListResult
@@ -62,19 +63,28 @@ def _display_time(value: float) -> str:
 
 
 def _render_sessions(result: SessionListResult) -> str:
-    lines = ["会话 ID\t最近消息时间\t模式\t标题\t项目目录"]
-    for item in result.sessions:
-        lines.append(
-            "\t".join(
-                (
-                    item.session_id,
-                    _display_time(item.last_message_at),
-                    item.mode,
-                    _display_text(item.title),
-                    _display_text(item.project_dir),
-                )
-            )
+    rows = [("会话ID", "最近消息时间", "模式", "标题", "项目目录")]
+    rows.extend(
+        (
+            item.session_id,
+            _display_time(item.last_message_at),
+            item.mode,
+            _display_text(item.title),
+            _display_text(item.project_dir),
         )
+        for item in result.sessions
+    )
+    column_widths = [
+        max(_display_width(row[column]) for row in rows)
+        for column in range(len(rows[0]) - 1)
+    ]
+    lines = []
+    for row in rows:
+        cells = [
+            value + " " * (column_widths[column] - _display_width(value))
+            for column, value in enumerate(row[:-1])
+        ]
+        lines.append("  ".join((*cells, row[-1])))
     lines.append(
         f"本页 {len(result.sessions)} 条；匹配共 {result.total} 条；offset={result.offset}；limit={result.limit}"
     )

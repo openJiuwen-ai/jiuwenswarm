@@ -492,6 +492,9 @@ class AutoPermissionBeforeToolMixin:
                 ),
                 decision_source="policy_evaluator",
             )
+        if policy_evaluation.manual_approval_required:
+            base_result = await self._call_base_rail(args, kwargs, invocation)
+            return runtime_result(base_result, decision_source="manual_approval")
         if policy_evaluation.source == "fail_closed":
             return runtime_result(
                 build_manual_approval_required_response(policy_evaluation.reason),

@@ -46,6 +46,8 @@ PKG = "jiuwenswarm"
 
 logger = logging.getLogger(__name__)
 
+_ALL_LOCAL_PKGS = None  # 延迟初始化（collect_py_files 依赖 git）
+
 # ---------------------------------------------------------------------------
 # 已知存量（燃尽清单）——随 B1'/A4 消化，消除后此表同步缩减
 # 基线：upstream/develop fbd8d6f41 + browser_config 下沉（2026-10-13 实测）
@@ -71,6 +73,8 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
     },
     # 过渡桥接（B1'）：gateway 与 AgentServer 同机部署期间的直连实现，
     # gateway 独立成仓时整体删除并由 A-API HTTP 实现替代。
+    # cron_store_factory → runtime.cron.factory：B2.5 后 gateway 侧注册
+    # gateway/runtime 副本的 factory（原位 re-export common.cron_settings）。
     "jiuwenswarm.gateway.server_store_bridge": {
         "jiuwenswarm.server.runtime.mcp.state_store",
         "jiuwenswarm.server.runtime.mcp.registry",
@@ -79,6 +83,7 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
         "jiuwenswarm.server.runtime.team_binding_store",
         "jiuwenswarm.server.runtime.team_entity_store",
         "jiuwenswarm.server.runtime.session.session_metadata",
+        "jiuwenswarm.runtime.cron.factory",
     },
 }
 KNOWN_R4_EMBEDDED_FOREIGN: dict[str, set[str]] = {}
@@ -87,31 +92,46 @@ KNOWN_R4_EMBEDDED_FOREIGN: dict[str, set[str]] = {}
 BASELINE = {
     # hard 闭包 = 从 gateway 出发仅沿模块级 import 可达的外部（非 gateway/common）模块数。
     # 根包单文件（dotenv_early、llm_provider_compat_patch）计入其所属顶级名。
+    # B2.5 后（rebase 1372eda94 实测，含 B2 合入后的 extensions 状态）：
+    # 四大包（agents/server/runtime/symphony）hard 闭包全部归零。
+    # extensions 30 = B2 吸收后的框架件 + AgentOS 客户端 + 上游回流。
     "closure_hard": {
-        "agents": 101, "server": 56, "runtime": 32, "extensions": 19,
-        "observability": 10, "symphony": 8,
-        "dotenv_early": 1, "llm_provider_compat_patch": 1,
+        "extensions": 30, "observability": 10,
+        "dotenv_early": 1, "llm_provider_compat_patch": 0,
     },
     # lazy 闭包 = 含函数内延迟 import 的可达模块数
     "closure_lazy": {
-        "agents": 333, "server": 162, "extensions": 52, "runtime": 36,
-        "symphony": 11, "observability": 11, "instance_manager": 6, "channels": 4,
-        "dotenv_early": 1, "llm_provider_compat_patch": 1,
+        # 2026-10-19 rebase 8e0f173b4：上游新功能 lazy 扩散 +104（非解耦退化）
+        "agents": 344, "server": 240, "extensions": 54, "runtime": 43,
+        "symphony": 11, "observability": 11, "instance_manager": 6, "channels": 6,
+        "dotenv_early": 1, "llm_provider_compat_patch": 0,
     },
     # common 反向引用（R1 存量）：B1' 已全部消除（注入化 + 纯模块下沉）
     "common_backref_modules": 0,
     "common_backref_imports": 0,
     # gateway/embedded/ 下 AgentServer 拷贝的规模（A1–A3/A5 迁移对象）
     "embedded_files": 27,
-    "embedded_loc": 8540,
+    "embedded_loc": 8702,
     # gateway 直接 import 的外部（非 gateway/common）模块数
-    "gateway_direct_foreign": 38,
+    "gateway_direct_foreign": 23,
 }
 
 
 # ---------------------------------------------------------------------------
 # import 图构建
 # ---------------------------------------------------------------------------
+
+def _all_local_top_modules() -> tuple[str, ...]:
+    """本仓全部顶级模块名（含根包单文件），供 R1 白名单式检查。"""
+    tops: set[str] = set()
+    for rel in collect_py_files():
+        parts = rel.split("/")
+        if len(parts) >= 2 and parts[0] == PKG:
+            tops.add(parts[1][:-3] if parts[1].endswith(".py") else parts[1])
+    tops.discard("")
+    tops.discard("common")  # R1 语义：common 只能 import common
+    return tuple(sorted(tops))
+
 
 def _git(*args: str) -> str:
     git_path = shutil.which("git") or "git"
@@ -291,10 +311,13 @@ def _check_rule(
 
 
 def run_rules(graph: ImportGraph) -> int:
+    global _ALL_LOCAL_PKGS
+    if _ALL_LOCAL_PKGS is None:
+        _ALL_LOCAL_PKGS = _all_local_top_modules()
     exit_code = 0
     exit_code |= _check_rule(
-        graph, "R1 common 禁止 import server/agents/channels/gateway/extensions/symphony",
-        (f"{PKG}.common.",), ("server", "agents", "channels", "gateway", "extensions", "symphony"),
+        graph, "R1 common 禁止 import 任何非 common 的本仓模块（零本仓引用不变量）",
+        (f"{PKG}.common.",), _ALL_LOCAL_PKGS,
         KNOWN_R1_COMMON_BACKREFS,
     )
     exit_code |= _check_rule(
@@ -303,8 +326,8 @@ def run_rules(graph: ImportGraph) -> int:
         KNOWN_R2_SERVER_TO_GATEWAY,
     )
     exit_code |= _check_rule(
-        graph, "R3 gateway 禁止 import server/agents/channels",
-        (f"{PKG}.gateway.",), ("server", "agents", "channels"),
+        graph, "R3 gateway 禁止 import server/agents/channels/runtime/symphony",
+        (f"{PKG}.gateway.",), ("server", "agents", "channels", "runtime", "symphony"),
         KNOWN_R3_GATEWAY_FOREIGN,
     )
     exit_code |= _check_rule(
@@ -432,6 +455,8 @@ def main() -> int:
     # 结果走 stdout、无日志前缀：保持 CLI 输出与 UT 断言（读 stdout）不变
     logging.basicConfig(stream=sys.stdout, format="%(message)s", level=logging.INFO)
 
+    global _ALL_LOCAL_PKGS
+    _ALL_LOCAL_PKGS = _all_local_top_modules()
     graph = ImportGraph()
     if args.baseline:
         run_baseline(graph)

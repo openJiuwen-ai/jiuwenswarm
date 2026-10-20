@@ -39,6 +39,7 @@ from jiuwenswarm.agents.harness.common.a4p.file_scope import (
 )
 from jiuwenswarm.agents.harness.common.a4p.token_expiry import token_expired
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.permission_mode import is_auto_permission_mode
 from jiuwenswarm.common.utils import get_config_dir, logger
 
 
@@ -70,6 +71,18 @@ def get_a4p_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
 
 def is_a4p_enabled(config: dict[str, Any] | None = None) -> bool:
     return bool(get_a4p_config(config).get("enabled", False))
+
+
+def is_a4p_preauthorization_active(config: dict[str, Any] | None = None) -> bool:
+    """Enable preauthorization only for the default permission profile."""
+    cfg = config if isinstance(config, dict) else get_config()
+    permissions = cfg.get("permissions")
+    permissions = permissions if isinstance(permissions, dict) else {}
+    return (
+        is_a4p_enabled(cfg)
+        and permissions.get("enabled") is not False
+        and not is_auto_permission_mode(permissions)
+    )
 
 
 def resolve_a4p_identity(
@@ -501,6 +514,7 @@ __all__ = [
     "get_a4p_config",
     "get_a4p_runtime",
     "is_a4p_enabled",
+    "is_a4p_preauthorization_active",
     "disable_a4p_runtime",
     "reconfigure_a4p_runtime",
     "reset_a4p_runtime_for_tests",

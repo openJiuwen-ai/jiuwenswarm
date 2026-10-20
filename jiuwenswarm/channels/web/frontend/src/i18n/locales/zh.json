@@ -722,7 +722,11 @@
       "decisionShadow": "Jev 影子模式（仅观察）",
       "decisionHybrid": "Jev 混合模式",
       "providerOpenrouter": "OpenRouter",
-      "providerTypesafe": "TypeSafe"
+      "providerTypesafe": "TypeSafe",
+      "providerCustom": "自定义",
+      "jevConfig": "Jev 模型配置",
+      "jevBaseInvalid": "请填写 HTTPS API 基础地址，不含账号、查询参数或片段",
+      "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
     "experimental": {
       "taskAsr": "语音转写",
@@ -802,7 +806,7 @@
       },
       "decision_provider": {
         "title": "Jev 服务提供方",
-        "description": "通过 OpenRouter 调用 Jev，或直接调用 TypeSafe。"
+        "description": "通过 OpenRouter 调用 Jev，或直接调用 TypeSafe。各提供方的凭据独立配置。"
       },
       "jev_api_key": {
         "title": "Jev API 密钥"
@@ -812,6 +816,9 @@
       },
       "jev_typesafe_api_key": {
         "title": "TypeSafe API 密钥"
+      },
+      "jev_custom_api_key": {
+        "title": "自定义 Jev API 密钥"
       },
       "model_name": { "title": "模型名称", "placeholder": "例如：glm-4.7" },
       "alias": { "title": "自定义别名", "placeholder": "例如：GLM-4.7 生产环境" },
@@ -1060,6 +1067,36 @@
     "groupChat": "群聊",
     "allMembers": "所有人",
     "noGroupMessages": "暂无群聊消息",
+    "groupChatTimeline": {
+      "scheduler": "调度",
+      "taskFallback": "任务 {{id}}",
+      "handoff": {
+        "task_start": "开工",
+        "task_start_plan": "开工（先提交执行计划）",
+        "review_request": "请验收",
+        "review_renudge": "催办验收",
+        "rework": "返工",
+        "rework_with_limit": "返工（最多 {{max}} 轮）",
+        "rework_summary": "请提交返工总结",
+        "task_assigned": "派发任务",
+        "other": "调度消息"
+      },
+      "taskEvents": {
+        "created": "创建了任务",
+        "createdMany": "创建了 {{count}} 个任务",
+        "claimed": "认领了任务",
+        "claimedPassive": "任务已被认领",
+        "submitted_for_review": "提交了任务，等待验收",
+        "submitted_for_reviewPassive": "任务已提交，等待验收",
+        "verified": "任务验收通过",
+        "revision_requested": "验收未通过，任务退回返工",
+        "completed": "完成了任务",
+        "completedPassive": "任务已完成",
+        "cancelled": "任务已取消",
+        "released": "任务已释放，等待重新认领",
+        "revoked": "任务已被收回"
+      }
+    },
     "memberTasksTitle": "{{member}} 执行的任务",
     "memberTasks": "Ta的任务",
     "noProcessData": "暂无该成员的执行过程数据",
@@ -1972,6 +2009,7 @@
       "builtinPathPlaceholder": "内置 CLI（自动管理）",
       "installNow": "一键安装",
       "notInstalledHint": "暂未检测到SDK，请点击",
+      "removePath": "从历史记录中删除该路径",
       "savedHint": "已保存",
       "detectSucceeded": "检测成功",
       "editPath": "编辑",
@@ -2665,11 +2703,6 @@
       "added": "已添加技能",
       "builtin": "内置技能",
       "skillPack": "技能包"
-    },
-    "publishFilter": {
-      "all": "全部",
-      "published": "已发布",
-      "unpublished": "未发布"
     },
     "skillTypes": {
       "skill": "技能包",

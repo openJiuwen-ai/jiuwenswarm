@@ -343,7 +343,8 @@ class ConfigAdapter(GatewayAdapter):
             headless = True
         # Older clients omit the decision fields; the saved values then stay untouched.
         decision_updates, error = browser_decision_updates(
-            params.get("decision_mode"), params.get("decision_provider"), config
+            params.get("decision_mode"), params.get("decision_provider"), config,
+            model=params.get("decision_model"), api_base=params.get("decision_api_base"),
         )
         if error:
             return build_error_response(request, error, code="BAD_REQUEST")

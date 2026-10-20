@@ -1553,6 +1553,17 @@ def is_comfyui_node(node: Any) -> bool:
     return isinstance(node, dict) and bool(node_config(node).get(CONFIG_KEY_IS_COMFYUI))
 
 
+def _merge_node_patch(existing: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """Preserve omitted object fields; explicit scalars and lists replace them."""
+    merged = dict(existing)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_node_patch(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def apply_graph_patch(graph: DesignerExecutionGraph, patch: Any) -> DesignerExecutionGraph:
     """Merge upserts/removals into a domain graph, then re-normalize."""
     if patch is None:
@@ -1573,6 +1584,14 @@ def apply_graph_patch(graph: DesignerExecutionGraph, patch: Any) -> DesignerExec
     if not isinstance(upsert_nodes, list):
         raise DesignerGraphValidationError("patch.upsert_nodes must be an array")
     for item in upsert_nodes:
+        if isinstance(item, dict):
+            existing = nodes_by_id.get(str(item.get("id") or "").strip())
+            if existing is not None:
+                merged = {**existing, **item}
+                for field in ("config", "layout"):
+                    if isinstance(existing.get(field), dict) and isinstance(item.get(field), dict):
+                        merged[field] = _merge_node_patch(existing[field], item[field])
+                item = merged
         node = normalize_node(item)
         nodes_by_id[node["id"]] = node
     remove_node_ids = patch.get("remove_node_ids") or []

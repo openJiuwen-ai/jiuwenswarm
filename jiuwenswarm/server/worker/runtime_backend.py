@@ -133,7 +133,7 @@ def _apply_runtime_entry_patches() -> None:
     from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
         install_shell_tool_safety_hooks,
     )
-    from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
+    from jiuwenswarm.common.llm_provider_compat_patch import apply_provider_compat_patches
     from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
 
     install_shell_tool_safety_hooks()

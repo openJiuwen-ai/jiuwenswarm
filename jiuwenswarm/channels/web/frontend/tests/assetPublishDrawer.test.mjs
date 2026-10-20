@@ -178,7 +178,7 @@ test('all four kinds open the shared review, retain moderation result, and never
     assert.equal(submits.at(-1)[3], false);
     await act(async () => find('asset-publish-commit').click());
     await tick();
-    assert.equal(find('asset-publish-result').dataset.variant, 'pending_moderation');
+    assert.equal(find('asset-publish-result').dataset.variant, 'submitted');
     assert.ok(find('asset-publish-result-header'));
     assert.ok(find('asset-publish-result-metadata'));
     assert.match(find('asset-publish-result-metadata').textContent, /hub-asset/);
@@ -259,7 +259,7 @@ test('unresolved submission cannot be replaced by old history or lose its retry 
   });
   await act(async () => find('asset-publish-refresh').click());
   await tick();
-  assert.equal(find('asset-publish-result').dataset.variant, 'pending_moderation');
+  assert.equal(find('asset-publish-result').dataset.variant, 'submitted');
   assert.ok(find('asset-publish-new-version'));
   await act(async () => find('asset-publish-close').click());
 });
@@ -327,7 +327,53 @@ test('polling completion updates the matching history row', async () => {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 2100));
   });
-  assert.match(find('asset-publish-record').textContent, /pending moderation/i);
+  const polledRow = find('asset-publish-record').textContent;
+  assert.match(polledRow, /submitted/i);
+  assert.doesNotMatch(polledRow, /pending moderation/i);
+  await act(async () => find('asset-publish-close').click());
+});
+test('completed records use the same local text, variants, and icon regardless of Hub result', async () => {
+  for (const publishResult of ['pending_moderation', 'published', 'unrecognized']) {
+    const record = {
+      operation_id: `local-${publishResult}`,
+      execution_status: 'completed',
+      result: { publish_result: publishResult, version: '1.0.0' },
+      error: null,
+    };
+    assetPublishApi.describe = async () => ({ ...description, records: [record] });
+    assetPublishApi.records = async () => ({ records: [record] });
+    await act(async () => openAssetPublish({ kind: 'plugin', local_id: record.operation_id }));
+    await tick();
+
+    assert.equal(find('asset-publish-result').dataset.variant, 'submitted');
+    assert.equal(find('asset-publish-result-status').textContent, 'Submitted');
+    assert.ok(find('asset-publish-result-icon').querySelector('svg.lucide-circle-check'));
+    const historyRow = find('asset-publish-record');
+    assert.equal(historyRow.dataset.variant, record.operation_id);
+    const status = find('asset-publish-record-status');
+    assert.equal(status.textContent, 'Submitted');
+    assert.equal(status.dataset.variant, 'submitted');
+    await act(async () => find('asset-publish-close').click());
+  }
+});
+test('unconfirmed submissions keep their local variant and waiting icon', async () => {
+  const record = {
+    operation_id: 'local-unconfirmed',
+    execution_status: 'unknown',
+    result: null,
+    error: null,
+  };
+  assetPublishApi.describe = async () => ({ ...description, records: [record] });
+  assetPublishApi.records = async () => ({ records: [record] });
+  await act(async () => openAssetPublish({ kind: 'plugin', local_id: record.operation_id }));
+  await tick();
+
+  assert.equal(find('asset-publish-result').dataset.variant, 'unconfirmed');
+  assert.equal(find('asset-publish-result-status').textContent, 'Submission result unconfirmed');
+  assert.ok(find('asset-publish-result-icon').querySelector('svg.lucide-clock-3'));
+  const status = find('asset-publish-record-status');
+  assert.equal(status.textContent, 'Submission result unconfirmed');
+  assert.equal(status.dataset.variant, 'unconfirmed');
   await act(async () => find('asset-publish-close').click());
 });
 test('OAuth restore contains metadata and does not auto prepare or commit', async () => {

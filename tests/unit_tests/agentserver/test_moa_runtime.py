@@ -64,6 +64,45 @@ def test_group_parameters_and_member_overrides_survive_compilation(moa_config):
     assert moa_config == saved
 
 
+@pytest.mark.parametrize("jev_enabled", [False, True])
+def test_single_enabled_member_uses_its_model_without_moa(moa_config, jev_enabled, monkeypatch):
+    from openjiuwen.core.single_agent import AgentCard
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    group = moa_config["models"]["groups"][0]
+    group["routes"][0]["enabled"] = False
+    group["routes"][2]["enabled"] = False
+    moa_config["experimental"]["multi_model_collaboration"]["jev_enabled"] = jev_enabled
+    if jev_enabled:
+        moa_config["experimental"]["multi_model_collaboration"]["jev"] = {"api_key": "encrypted-jev-key"}
+        monkeypatch.setattr(
+            "jiuwenswarm.common.config.get_crypto_provider",
+            lambda: SimpleNamespace(decrypt=lambda _: "test-jev-key"),
+        )
+
+    runtime = build_moa_runtime(moa_config, SELECTION)
+    assert runtime.model_name == "model-b"
+    assert runtime.aggregator.model_config.temperature == 0.7
+    assert runtime.config is None
+    assert moa_status(moa_config, SELECTION)["configured"] is True
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter.mark_as_session_scoped("single-member-group")
+    adapter._moa_runtime = runtime
+    adapter._session_instance_mode = "agent.work.normal"
+    config = adapter._make_deep_agent_config(
+        model=runtime.aggregator, config={}, config_base=moa_config,
+        agent_card=AgentCard(id="single-member-group", name="main"), tool_cards=[], rails=[],
+    )
+    assert config.moa is None
+    assert adapter._create_model({"models": {}}) is runtime.aggregator
+    assert adapter._resolve_model_for_request(AgentRequest(
+        request_id="single-member", session_id="single-member-group",
+        params={"model_selection": SELECTION},
+    )) is runtime.aggregator
+
+
 def test_status_is_safe_and_archival_roles_never_control_verification(moa_config):
     assert moa_status(moa_config, SELECTION) == {
         "configured": True, "aggregator_model_name": "model-a", "aggregator_alias": "Alias a",

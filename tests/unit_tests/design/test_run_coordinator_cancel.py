@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""RunCoordinator.cancel on a run record no live trigger owns."""
+"""RunCoordinator terminal-state handling on a run record no live trigger owns."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import asyncio
 from copy import deepcopy
 from typing import Any
 
+from jiuwenswarm.common.schema.designer_graph import normalize_execution_graph
 from jiuwenswarm.server.runtime.design.run_coordinator import RunCoordinator
 
 
@@ -60,3 +61,59 @@ async def test_cancel_leaves_a_live_trigger_to_the_abort_signal():
 
     assert result["status"] == "running"
     assert store.runs["run_z"]["status"] == "running"
+
+
+def _refused_graph():
+    return normalize_execution_graph({
+        "schema_version": "designer-execution-graph.v1",
+        "graph_id": "g_refused",
+        "project_id": "ut",
+        "metadata": {"team_design_run_id": "run_refused"},
+        "nodes": [
+            {"id": "n_up", "type": "text", "label": "up",
+             "config": {"prompt": "u", "pipeline": "brief"}},
+            {"id": "n_down", "type": "text", "label": "down",
+             "config": {"prompt": "d", "pipeline": "brief"}},
+        ],
+        "edges": [{"id": "e1", "source": "n_up", "target": "n_down"}],
+    })
+
+
+def _failed_run() -> dict[str, Any]:
+    return {
+        "run_id": "run_refused",
+        "graph_id": "g_refused",
+        "status": "failed",
+        "current_node_ids": [],
+        "node_states": {
+            "n_up": {"status": "failed", "error": "boom"},
+            "n_down": {"status": "failed", "error": "upstream node failed: n_up"},
+        },
+    }
+
+
+async def test_refused_rerun_writes_failed_instead_of_staying_running():
+    """A compile refusal must land on the run record, not escape the trigger.
+
+    Regression: the coordinator seeded status='running' BEFORE compiling, so
+    a single-node rerun refused by the fail-fast ('upstream not ready')
+    crashed the background trigger and left the record 'running' forever —
+    the frontend polled a trigger nobody owned and every further click
+    re-seeded the same zombie.
+    """
+    store = _Store(_failed_run())
+    coordinator = RunCoordinator(store, "g_refused", spawner=None)
+    updates: list[dict[str, Any]] = []
+
+    result = await coordinator.start(
+        _refused_graph(), node_ids=["n_down"], on_update=updates.append
+    )
+
+    assert result["status"] == "failed"
+    assert "upstream not ready: n_up" in str(result.get("error"))
+    saved = store.runs["run_refused"]
+    assert saved["status"] == "failed"
+    assert saved["current_node_ids"] == []
+    assert "upstream not ready: n_up" in str(saved.get("error"))
+    assert any(u.get("status") == "failed" for u in updates)
+

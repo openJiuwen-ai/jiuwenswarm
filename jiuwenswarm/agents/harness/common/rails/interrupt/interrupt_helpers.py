@@ -188,6 +188,7 @@ def build_permission_rail(
     permissions_changed_notifier: Callable[[], None] | None = None,
     browser_runtime_security_profile: Any = None,
     trusted_search_urls: Any = None,
+    channel_id: str = "",
 ) -> Any | None:
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
 
@@ -235,6 +236,10 @@ def build_permission_rail(
     from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
     from jiuwenswarm.common.utils import get_config_file
 
+    from jiuwenswarm.agents.harness.common.a4p.preflight import unregister_preflight_rail
+
+    if session_id:
+        unregister_preflight_rail(str(session_id).strip())
     inline_permissions = config.get("permissions", {})
     if not isinstance(inline_permissions, dict):
         inline_permissions = {}
@@ -451,12 +456,15 @@ def build_permission_rail(
                 try:
                     from jiuwenswarm.agents.harness.common.a4p.runtime import (
                         get_a4p_runtime,
-                        is_a4p_enabled,
+                        is_a4p_preauthorization_active,
                         resolve_a4p_identity,
                     )
 
-                    config = get_config()
-                    if is_a4p_enabled(config):
+                    config = {
+                        **get_config(),
+                        "permissions": _get_installed_permissions(session_id),
+                    }
+                    if is_a4p_preauthorization_active(config):
                         agent_name = (
                             execution_context.agent_id
                             if execution_context is not None
@@ -823,7 +831,11 @@ def build_permission_rail(
             permission_scene_hook=_permission_scene_hook,
         )
 
-        permission_rail = JiuwenSwarmPermissionInterruptRail(
+        permission_rail_class = JiuwenSwarmPermissionInterruptRail
+        if channel_id == "process_cli":
+            from jiuwenswarm.channels.process_cli.permissions import ProcessCliPermissionInterruptRail
+            permission_rail_class = ProcessCliPermissionInterruptRail
+        permission_rail = permission_rail_class(
             config=permission_config,
             tool_names=tool_names,
             llm=llm,
@@ -891,6 +903,10 @@ def build_permission_rail(
             permission_rail.set_trusted_dirs(None)
 
         installed_permission_rail = permission_rail
+        if not enable_auto_permission and bound_session_id:
+            from jiuwenswarm.agents.harness.common.a4p.preflight import register_preflight_rail
+
+            register_preflight_rail(bound_session_id, permission_rail)
         logger.info(
             "[InterruptHelpers] %s created successfully with tool_names=%s",
             type(permission_rail).__name__,
@@ -1545,6 +1561,8 @@ def _question_options_from_ui_options(
     tool_name: str,
     message: str,
 ) -> list[dict[str, Any]]:
+    if _extract_interrupt_metadata(value_obj).get("process_cli_allow_once_only") is True:
+        return [option for option in _default_interrupt_options() if option["value"] in {ALLOW_ONCE, REJECT}]
     options = []
     for option in _extract_ui_options(value_obj):
         normalized = _normalize_question_option(option)

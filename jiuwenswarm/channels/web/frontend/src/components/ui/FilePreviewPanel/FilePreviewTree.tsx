@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import ArrowRightIcon from '../../../assets/work-mode/arrow-right.svg?react';
+import CollapseIcon from '../../../assets/work-mode/collapse.svg?react';
 import FolderAssetIcon from '../../../assets/work-mode/folder.svg?react';
 import FolderFoldAssetIcon from '../../../assets/work-mode/folder-fold.svg?react';
 import { FilePreviewIcon } from './FilePreviewIcon';
@@ -138,7 +139,7 @@ function TreeEntry({
         </span>
         <span className="file-preview-tree__entry-label">{entry.label}</span>
         <span className="file-preview-tree__entry-chevron" aria-hidden="true">
-          {isDirectory ? isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : null}
+          {isDirectory ? isExpanded ? <CollapseIcon width={16} height={16} /> : <ArrowRightIcon width={16} height={16} /> : null}
         </span>
         {unsupported && notPreviewableLabel ? (
           <span className="file-preview-tree__entry-badge" data-testid={`${itemTestId}-unsupported`}>

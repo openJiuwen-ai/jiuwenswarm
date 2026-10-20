@@ -373,7 +373,10 @@ async def test_reference_check_fails_closed_on_store_error(catalog_state, monkey
     from jiuwenswarm.common.config_panel.model_resource_handlers import find_resource_references
 
     store = SimpleNamespace(list_jobs=AsyncMock(side_effect=RuntimeError("etcd unavailable")), aclose=AsyncMock())
-    monkeypatch.setattr("jiuwenswarm.runtime.cron.factory.create_gateway_cron_store", AsyncMock(return_value=store))
+    from types import SimpleNamespace as _NS
+
+    from jiuwenswarm.common.external_providers import register
+    register("cron_store_factory", _NS(create_gateway_cron_store=AsyncMock(return_value=store)))
     with pytest.raises(RuntimeError, match="etcd unavailable"):
         await find_resource_references(ModelCatalog(catalog_state), ModelSelection(type="model", id="mdl_a"))
     store.aclose.assert_awaited_once()

@@ -20,6 +20,7 @@ export function useOrganizationEvents(): void {
       'chat.final',
       'chat.error',
       'chat.processing_status',
+      'org.turn_completed',
       'chat.tool_call',
       'chat.tool_result',
       'team.task',
@@ -44,6 +45,19 @@ export function useOrganizationEvents(): void {
         const streamKey = `${key}:${member}:${payload.request_id ?? payload.rid ?? ''}`;
         let id = streams.get(streamKey);
         const content = String(payload.content ?? '');
+        if (event === 'org.turn_completed' || event === 'chat.error') {
+          const roundId = String(payload.request_id ?? payload.rid ?? '');
+          for (const [pendingKey, messageId] of streams) {
+            if (pendingKey.startsWith(`${key}:`) && pendingKey.endsWith(`:${roundId}`)) {
+              chat.updateMessage(key, messageId, { isStreaming: false });
+              streams.delete(pendingKey);
+            }
+          }
+          chat.closeReasoning(key);
+          chat.setThinking(key, false);
+          chat.setProcessing(key, false);
+          if (event === 'org.turn_completed') return;
+        }
         if ((event === 'chat.delta' || event === 'chat.final') && content) {
           chat.closeReasoning(key);
           if (!id) {
@@ -79,8 +93,6 @@ export function useOrganizationEvents(): void {
             timestamp: new Date().toISOString(),
             teamId,
           });
-          chat.setProcessing(key, false);
-          chat.setThinking(key, false);
         }
       }),
     );

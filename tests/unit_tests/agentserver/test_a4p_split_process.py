@@ -65,7 +65,7 @@ def _gateway_process(connection, directory):
 async def test_remote_query_does_not_read_agent_store(tmp_path, monkeypatch):
     from jiuwenswarm.agents.harness.common.tools.cron import cron_tools
     from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import query_authoritative_cron_job
-    from jiuwenswarm.runtime.host_services import install_runtime_push_handler, restore_runtime_push_handler
+    from jiuwenswarm.common.host_services import install_runtime_push_handler, restore_runtime_push_handler
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.common.e2a.models import E2AEnvelope

@@ -16,7 +16,7 @@ from jiuwenswarm.common.security.ws_origin import (
     is_origin_check_enabled,
 )
 from jiuwenswarm.gateway.channel_manager.web.ws_connection_adapter import StarletteWsAdapter
-from jiuwenswarm.extensions.application_host import (
+from jiuwenswarm.gateway.extensions.application_host import (
     iter_websocket_routes,
     mount_application_plugin_http_routes,
 )

@@ -129,6 +129,26 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
     def installed_permission_config(self) -> dict[str, Any]:
         return deepcopy(self._static_config)
 
+    def get_permission_snapshot(self, session_id: str | None = None) -> dict[str, Any]:
+        """Return the session snapshot through the execution rail's permission hook.
+
+        Args:
+            session_id: Session whose effective permissions should be resolved.
+
+        Returns:
+            Effective permissions, including invocation permission overlays.
+
+        Raises:
+            ValueError: The host cannot provide a permission snapshot.
+        """
+        snapshot = self._invoke_permissions_hook(
+            self._host.get_permissions_snapshot,
+            session_id=session_id,
+        )
+        if not isinstance(snapshot, dict):
+            raise ValueError("Installed permission snapshot unavailable")
+        return snapshot
+
     def _invoke_permissions_hook(
         self, hook: Any, *args: Any, session_id: str | None = None,
     ) -> Any:

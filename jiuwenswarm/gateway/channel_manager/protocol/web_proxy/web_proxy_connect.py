@@ -29,7 +29,7 @@ import aiohttp
 from fastapi import Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
-from jiuwenswarm.extensions.agentos.auth.common import (
+from jiuwenswarm.gateway.extensions.auth.common import (
     extract_token_from_path_and_headers,
     headers_to_dict,
 )

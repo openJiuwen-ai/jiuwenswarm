@@ -49,6 +49,7 @@ import {
 } from '../components/teamArea/workflowTypes';
 import { requestAgentDetail, requestPhaseAgents } from '../services/webClient';
 import type { TeamBootstrapMode, TeamDispatchMode } from '../features/teamDispatch/featureConfig';
+import { mergeTaskTimeline, type TeamTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
 import {
   normalizeTeamLeaderIdentity,
   type TeamLeaderIdentity,
@@ -607,6 +608,8 @@ export interface SessionRuntime {
   persistSession: boolean;
   contextUsageSnapshot: ContextUsageSnapshot | null;
   teamTaskEvents: TeamTaskEvent[];
+  /** 子话题时间线用的任务流转事件（逐条追加，不按 task 合并）。 */
+  teamTaskTimeline: TeamTaskTimelineEntry[];
   teamTasks: TeamTask[];
   teamTaskProgressBaseline: TaskProgressBaseline;
   teamMembers: TeamMember[];
@@ -683,6 +686,7 @@ function createEmptyRuntime(
     persistSession: false,
     contextUsageSnapshot: null,
     teamTaskEvents: [],
+    teamTaskTimeline: [],
     teamTasks: [],
     teamTaskProgressBaseline: createTaskProgressBaseline(),
     teamMembers: [],
@@ -757,6 +761,8 @@ interface SessionState {
   setPersistSession: (sessionId: string, enabled: boolean) => void;
   setTeamTaskEvents: (sessionId: string, events: TeamTaskEvent[]) => void;
   addTeamTaskEvent: (sessionId: string, event: TeamTaskEvent) => void;
+  setTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
+  appendTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
   setTeamTasks: (sessionId: string, tasks: TeamTask[]) => void;
   registerConfirmedTeamTaskCreation: (sessionId: string, taskId: string) => void;
   mergeTeamTaskProgressBaseline: (sessionId: string, baseline: TaskProgressBaseline) => void;
@@ -1200,6 +1206,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, teamTaskEvents: [event, ...runtime.teamTaskEvents] },
+        },
+      };
+    });
+  },
+
+  setTeamTaskTimeline: (sessionId, entries) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamTaskTimeline: entries },
+        },
+      };
+    });
+  },
+
+  appendTeamTaskTimeline: (sessionId, entries) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || entries.length === 0) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamTaskTimeline: mergeTaskTimeline(runtime.teamTaskTimeline, entries) },
         },
       };
     });

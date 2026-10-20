@@ -1933,7 +1933,7 @@ async def _run(
 
     cron_store = await create_gateway_cron_store()
     from jiuwenswarm.common.model_migration import migrate_legacy_cron_selections
-    from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+    from jiuwenswarm.gateway.runtime.cron.factory import load_cron_store_settings
 
     # Shared etcd jobs need the target user's catalog; that migration runs on
     # the per-user resource/reference boundary, never using Gateway's catalog.
@@ -1972,7 +1972,7 @@ async def _run(
     from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
     if is_agentos_routing_client(client):
         from jiuwenswarm.extensions.agentos.config_updater.service import ConfigUpdaterService
-        from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+        from jiuwenswarm.gateway.runtime.cron.factory import load_cron_store_settings
 
         config_updater = ConfigUpdaterService(
             etcd_endpoints=list(load_cron_store_settings(full_cfg).endpoints),
@@ -3158,7 +3158,7 @@ async def _run(
                         SshChannel,
                         SshChannelConfig,
                     )
-                    from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import KeyRegistry
+                    from jiuwenswarm.gateway.extensions.auth.ssh_key_registry import KeyRegistry
 
                     ssh_config = SshChannelConfig.from_dict({**ssh_conf, "enabled": True})
                     ssh_channel = SshChannel(

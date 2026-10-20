@@ -17,12 +17,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, Literal
 
-from jiuwenswarm.runtime.host_services import (
+from jiuwenswarm.common.host_services import (
     install_runtime_wake_handler,
     restore_runtime_wake_handler,
 )
-from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
-from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
+from jiuwenswarm.common.schema.message import TEAM_ATTACH_ONLY_PARAM
+from jiuwenswarm.gateway.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
 from jiuwenswarm.gateway.im_pipeline.im_session_input import (
     prepare_im_session_input,
@@ -55,8 +55,8 @@ from jiuwenswarm.gateway.message_handler.prompts.security_review_prompt import (
     GitPreExecError,
     build_security_review_prompt,
 )
-from jiuwenswarm.extensions.hook_event import GatewayHookEvents
-from jiuwenswarm.extensions.hooks_context import GatewayChatHookContext
+from jiuwenswarm.common.hook_event import GatewayHookEvents
+from jiuwenswarm.common.hooks_context import GatewayChatHookContext
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.mode_matrix import (
     DEPRECATION_MAP,
