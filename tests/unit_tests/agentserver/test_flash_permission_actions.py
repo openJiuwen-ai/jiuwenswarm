@@ -468,9 +468,6 @@ async def test_explicit_provider_deny_is_preserved(permission_adapter, provider)
 @pytest.mark.asyncio
 async def test_scene_allow_does_not_bypass_aggregate_action_ask():
     from openjiuwen.harness.rails.interrupt.interrupt_base import InterruptResult
-    from openjiuwen.harness.rails.security.tool_security_rail import (
-        PermissionInterruptRail,
-    )
     from openjiuwen.harness.security.host import ToolPermissionHost
 
     from jiuwenswarm.agents.harness.flash.permissions.flash_permission_rail import (
@@ -478,7 +475,7 @@ async def test_scene_allow_does_not_bypass_aggregate_action_ask():
     )
 
     hook = AsyncMock(return_value=("approve",))
-    stock = PermissionInterruptRail(
+    rail = FlashPermissionRail.create(
         config={
             "enabled": True,
             "schema": "tiered_policy",
@@ -487,7 +484,6 @@ async def test_scene_allow_does_not_bypass_aggregate_action_ask():
         },
         host=ToolPermissionHost(permission_scene_hook=hook),
     )
-    rail = FlashPermissionRail.from_stock(stock)
     ctx = tool_context("web_flash", {"fetch": {"url": ["https://example.invalid/a"]}})
     assert isinstance(
         await rail.resolve_interrupt(ctx, ctx.inputs.tool_call, None), InterruptResult

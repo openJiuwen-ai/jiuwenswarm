@@ -125,11 +125,10 @@ def project_operations(name: str, args: dict, config: dict) -> list[Operation]:
 
     if name == "read_file" and "file_paths" in args:
         paths = args["file_paths"]
-        if (
-            args.get("file_path")
-            or not isinstance(paths, list)
-            or not 1 <= len(paths) <= 10
-            or not all(isinstance(path, str) and path.strip() for path in paths)
+        if args.get("file_path") or not isinstance(paths, list):
+            raise ValueError("read_file requires 1–10 unambiguous file_paths")
+        if not 1 <= len(paths) <= 10 or not all(
+            isinstance(path, str) and path.strip() for path in paths
         ):
             raise ValueError("read_file requires 1–10 unambiguous file_paths")
         return [Operation("read_file", {"file_path": path}) for path in paths]

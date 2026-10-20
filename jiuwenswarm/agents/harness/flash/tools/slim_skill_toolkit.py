@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 
 def find_install_candidate(items):
     """Use the same candidate for permission review and installation."""
-    return next((item for item in items if not item.get("installed")
-                 and str(item.get("identifier") or "").strip()), None)
+    for item in items:
+        if not item.get("installed") and str(item.get("identifier") or "").strip():
+            return item
+    return None
 
 
 class SlimSkillToolkit(SkillToolkit):
@@ -44,7 +46,7 @@ class SlimSkillToolkit(SkillToolkit):
         try:
             result = await super().search_skill(query, source=source, limit=limit)
             if install and result.get("items"):
-                result["install"] = await self._auto_install_best_match(
+                result["install"] = await self.auto_install_best_match(
                     result["items"]
                 )
             elif install:
@@ -57,7 +59,7 @@ class SlimSkillToolkit(SkillToolkit):
             logger.exception("SlimSkillToolkit.search_skill failed")
             return {"success": False, "source": str(source), "items": [], "detail": str(exc)}
 
-    async def _auto_install_best_match(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def auto_install_best_match(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Auto-install the first not-yet-installed item with a non-empty identifier."""
         top = find_install_candidate(items)
         if top is None:

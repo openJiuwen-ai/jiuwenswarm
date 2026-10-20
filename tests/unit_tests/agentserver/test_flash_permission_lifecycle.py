@@ -157,18 +157,23 @@ async def test_cold_warm_hot_update_keeps_actual_permission_instance(
 def test_disabled_to_enabled_creates_flash_rail(permission_adapter):
     adapter, _ = permission_adapter({"web_search": "deny"})
     adapter._permission_rail = None
+    skill_rail = adapter._build_skill_authorization_rail()
+    adapter._skill_authorization_rail = skill_rail
+    assert skill_rail._engine is None
     adapter._update_permission_rail({}, session_id="a")
     assert isinstance(adapter._permission_rail, FlashPermissionRail)
+    assert adapter._skill_authorization_rail is skill_rail
+    assert skill_rail._engine is adapter._permission_rail._engine
 
 
 @pytest.mark.parametrize("reload", [False, True])
 def test_enabled_permission_build_failure_stops_flash(
     permission_adapter, monkeypatch, reload
 ):
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.agents.harness.common.rails.interrupt import interrupt_helpers
 
     adapter, _ = permission_adapter({"write_file": "deny"})
-    monkeypatch.setattr(interface_deep, "build_permission_rail", lambda **_: None)
+    monkeypatch.setattr(interrupt_helpers, "build_permission_rail", lambda **_: None)
     adapter._permission_rail = None
     with pytest.raises(RuntimeError, match="Flash permission rail"):
         if reload:
@@ -418,7 +423,8 @@ async def test_todo_native_dispatch_keeps_each_session(permission_adapter, tmp_p
         assert "task-b" in (tmp_path / "b.json").read_text()
 
 
-def test_shared_deep_and_code_builder_is_unchanged(permission_adapter):
+@pytest.mark.parametrize("reload", [False, True])
+def test_shared_deep_and_code_builder_is_unchanged(permission_adapter, reload):
     from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
         JiuwenSwarmCodeAdapter,
     )
@@ -427,10 +433,16 @@ def test_shared_deep_and_code_builder_is_unchanged(permission_adapter):
     )
 
     adapter, _ = permission_adapter({"write_file": "deny"})
-    deep = JiuWenSwarmDeepAdapter()
-    deep._agent_permissions_body = adapter._agent_permissions_body
-    rail = deep._build_permission_rail_for_agent(config={})
-    assert not isinstance(rail, FlashPermissionRail)
+    for adapter_type in (JiuWenSwarmDeepAdapter, JiuwenSwarmCodeAdapter):
+        deep = adapter_type()
+        deep._agent_permissions_body = adapter._agent_permissions_body
+        if reload:
+            deep._update_permission_rail({})
+            rail = deep._permission_rail
+        else:
+            rail = deep._build_permission_rail_for_agent(config={})
+        assert rail is not None
+        assert not isinstance(rail, FlashPermissionRail)
     assert (
         JiuwenSwarmCodeAdapter._build_permission_rail_for_agent
         is JiuWenSwarmDeepAdapter._build_permission_rail_for_agent

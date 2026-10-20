@@ -10661,20 +10661,15 @@ class JiuWenSwarmDeepAdapter:
             self._permission_rail.update_config(permission_config)
             logger.info("[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated")
         elif permission_config.get("enabled", False):
-            self._permission_rail = build_permission_rail(
+            self._permission_rail = self._build_permission_rail_for_agent(
                 config=config_base or {},
-                options=PermissionRailBuildOptions(
-                    llm=self._model,
-                    model_name=config_base.get("models", {})
-                    .get("default", {})
-                    .get("model_client_config", {})
-                    .get("model_name", "gpt-4")
-                    if isinstance(config_base, dict)
-                    else "gpt-4",
-                    permission_config=self._agent_permissions_body,
-                    resolve_workspace_dir=self._permission_workspace_dir,
-                    persist_target_agent_id_provider=self._permissions_persist_target,
-                ),
+                llm=self._model,
+                model_name=config_base.get("models", {})
+                .get("default", {})
+                .get("model_client_config", {})
+                .get("model_name", "gpt-4")
+                if isinstance(config_base, dict)
+                else "gpt-4",
             )
             if self._permission_rail is not None:
                 logger.info("[JiuWenSwarmDeepAdapter] _permission_rail newly created on hot-reload")

@@ -1,11 +1,14 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """One SDK permission rail, extended with Flash operation/resource projections."""
 
+import asyncio
 import hashlib
 import json
+import logging
 from copy import deepcopy
 from dataclasses import replace
 
+from openjiuwen.core.runner import Runner
 from openjiuwen.harness.rails.interrupt.interrupt_base import (
     ApproveResult,
     InterruptResult,
@@ -13,6 +16,7 @@ from openjiuwen.harness.rails.interrupt.interrupt_base import (
 )
 from openjiuwen.harness.rails.security.tool_security_rail import compute_batch_allow_key
 from openjiuwen.harness.security.core import PermissionEngine
+from openjiuwen.harness.security.host import ToolPermissionHost
 from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
 from openjiuwen.harness.security.patterns import (
     merge_file_guard_access_allows,
@@ -24,10 +28,12 @@ from jiuwenswarm.server.runtime.skill_turbo.rails.permission_rail import (
     SkillTurboPermissionRail,
 )
 
+from .skill_install import FlashSkillSearchTool, save_state, state_for
 from .tool_policy_projection import is_projected, project_operations
 
 _PENDING = "__flash_permission_pending__"
 _RANK = {PermissionLevel.ALLOW: 0, PermissionLevel.ASK: 1, PermissionLevel.DENY: 2}
+logger = logging.getLogger(__name__)
 
 
 class FlashPermissionEngine(PermissionEngine):
@@ -50,14 +56,15 @@ class FlashPermissionEngine(PermissionEngine):
         results = [outer]
         for operation in operations:
             result = await super().check_permission(operation.name, operation.args)
+            default_rule = (
+                not result.matched_rule
+                or "defaults." in result.matched_rule
+                or "fallback" in result.matched_rule
+            )
             if (
                 operation.explicit
                 and result.permission == PermissionLevel.ALLOW
-                and (
-                    not result.matched_rule
-                    or "defaults." in result.matched_rule
-                    or "fallback" in result.matched_rule
-                )
+                and default_rule
             ):
                 result = PermissionResult(
                     PermissionLevel.ASK,
@@ -81,43 +88,39 @@ class FlashPermissionRail(SkillTurboPermissionRail):
     """Keep stock Skill/Turbo/hosted approval behavior with action-scoped checks."""
 
     @classmethod
-    def from_stock(cls, rail):
-        if rail is None or isinstance(rail, cls):
-            return rail
-        engine = rail._engine
-        projected = FlashPermissionEngine(
-            config=engine.config,
-            llm=engine._llm,
-            model_name=engine._model_name,
-            workspace_root=engine._workspace_root,
-            trusted_dirs=list(engine.trusted_dirs),
+    def create(cls, config=None, **kwargs):
+        """Build the projected engine from the host's public constructor inputs."""
+        host = kwargs.pop("host", None) or ToolPermissionHost()
+        workspace_root = None
+        if host.resolve_workspace_dir is not None:
+            try:
+                workspace_root = host.resolve_workspace_dir()
+            except Exception:
+                logger.debug("Flash permission workspace resolution failed", exc_info=True)
+        engine = FlashPermissionEngine(
+            config=config,
+            llm=kwargs.get("llm"),
+            model_name=kwargs.get("model_name"),
+            workspace_root=workspace_root,
         )
-        projected.set_permission_checks_active(engine._permission_checks_active)
-        scene_hook = rail._host.permission_scene_hook
+        scene_hook = host.permission_scene_hook
 
         async def guarded_scene(request):
             result = await scene_hook(request) if scene_hook else None
-            if (
-                result
-                and result[0] == "approve"
-                and (
-                    request.normalized_tool_name in {"search_skill", "install_skill"}
-                    or is_projected(request.normalized_tool_name, request.tool_args)
-                )
+            if not result or result[0] != "approve":
+                return result
+            if request.normalized_tool_name in {"search_skill", "install_skill"} or (
+                is_projected(request.normalized_tool_name, request.tool_args)
             ):
                 return None
             return result
 
-        result = cls(
-            config=rail._static_config,
-            engine=projected,
-            tool_names=rail._tool_names,
-            host=replace(rail._host, permission_scene_hook=guarded_scene),
+        return cls(
+            config=config,
+            engine=engine,
+            host=replace(host, permission_scene_hook=guarded_scene),
+            **kwargs,
         )
-        resolver = getattr(rail, "_skill_scope_resolver", None)
-        if resolver is not None:
-            result.set_skill_scope_resolver(resolver)
-        return result
 
     def _get_auto_confirm_key(self, tool_call):
         if tool_call and (
@@ -137,16 +140,9 @@ class FlashPermissionRail(SkillTurboPermissionRail):
         self, ctx, tool_call, user_input, auto_confirm_config=None
     ):
         if tool_call and tool_call.name == "search_skill":
-            from .skill_install import authorize_install
-
             try:
-                return await authorize_install(
-                    self,
-                    ctx,
-                    tool_call,
-                    user_input,
-                    auto_confirm_config,
-                    super().resolve_interrupt,
+                return await self._authorize_install(
+                    ctx, tool_call, user_input, auto_confirm_config
                 )
             except Exception:  # noqa: BLE001 — deny when host policy cannot be read.
                 return self.reject(
@@ -227,6 +223,136 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                     tool_result="[PERMISSION_DENIED] Policy changed during approval; retry"
                 )
         return decision
+
+    async def _authorize_install(self, ctx, call, user_input, auto_confirm_config):
+        """Run both stages through this rail; only search runs before install ASK."""
+        from jiuwenswarm.agents.harness.flash.tools.slim_skill_toolkit import (
+            find_install_candidate,
+        )
+
+        resolve = super().resolve_interrupt
+        args = self.parse_tool_args(call)
+        self._refresh_permissions_for_tool_call(ctx)
+        if not args.get("install", True) or not self._engine.enabled:
+            return await resolve(ctx, call, user_input, auto_confirm_config)
+        if self._resolve_session_id(ctx) in (None, "", "default"):
+            return self.reject(
+                tool_result="[PERMISSION_DENIED] Installation requires a session"
+            )
+        signature = compute_batch_allow_key(call)
+        policy = self._policy_fingerprint()
+        state = state_for(ctx.session, call.id)
+        if state is not None and (
+            state.get("signature") != signature or state.get("policy") != policy
+        ):
+            save_state(ctx.session, call.id, None)
+            return self.reject(
+                tool_result="[PERMISSION_DENIED] Search or policy changed; repeat the request"
+            )
+        if (
+            user_input is not None
+            and self.parse_confirm_payload(user_input) is not None
+            and state is None
+        ):
+            return self.reject(
+                tool_result="[PERMISSION_DENIED] No matching installation approval"
+            )
+        outer = await self._engine.check_permission("search_skill", args)
+        if outer.permission == PermissionLevel.DENY:
+            save_state(ctx.session, call.id, None)
+            return self.reject(tool_result="[PERMISSION_DENIED] Skill search is denied")
+        state = state or {
+            "signature": signature,
+            "policy": policy,
+            "args": args,
+            "phase": "search",
+        }
+        if state["phase"] == "installing":
+            return self.reject(
+                tool_result="[PERMISSION_DENIED] This installation is already running"
+            )
+        try:
+            if state["phase"] == "search":
+                decision = await resolve(ctx, call, user_input, auto_confirm_config)
+                if not isinstance(decision, ApproveResult):
+                    save_state(
+                        ctx.session,
+                        call.id,
+                        state if isinstance(decision, InterruptResult) else None,
+                    )
+                    return decision
+                card = ctx.agent.ability_manager.get("search_skill")
+                tool = Runner.resource_mgr.get_tool(tool_id=card.id, session=ctx.session)
+                if not isinstance(tool, FlashSkillSearchTool):
+                    return self.reject(
+                        tool_result="[PERMISSION_DENIED] Flash skill search tool is unavailable"
+                    )
+                state["result"] = deepcopy(await tool.prepare(args))
+                state["phase"] = "install"
+                # An outer search approval is not an installation approval.
+                user_input = None
+                self._refresh_permissions_for_tool_call(ctx)
+                state["policy"] = self._policy_fingerprint()
+            if state["phase"] == "finished":
+                return self.approve()
+            candidate = find_install_candidate(state["result"].get("items", []))
+            if candidate is None:
+                state.update(
+                    phase="ready",
+                    install_approved=False,
+                    detail="no uninstalled search result to install",
+                )
+                save_state(ctx.session, call.id, state)
+                return self.approve()
+            inner = call.model_copy(
+                update={
+                    "name": "install_skill",
+                    "arguments": json.dumps(
+                        {
+                            "identifier": str(candidate["identifier"]),
+                            "source": str(candidate["source"]),
+                            "timeout_sec": 60,
+                        }
+                    ),
+                }
+            )
+            check = await self._engine.check_permission(
+                "install_skill", self.parse_tool_args(inner)
+            )
+            if check.permission == PermissionLevel.DENY:
+                decision = self.reject(
+                    tool_result="[PERMISSION_DENIED] Skill installation is denied"
+                )
+            else:
+                decision = await resolve(ctx, inner, user_input, auto_confirm_config)
+            if isinstance(decision, InterruptResult):
+                state["phase"] = "install"
+                save_state(ctx.session, call.id, state)
+                return decision
+            self._refresh_permissions_for_tool_call(ctx)
+            check = await self._engine.check_permission(
+                "install_skill", self.parse_tool_args(inner)
+            )
+            approved = (
+                isinstance(decision, ApproveResult)
+                and check.permission != PermissionLevel.DENY
+            )
+            state.update(
+                phase="ready",
+                install_approved=approved,
+                policy=self._policy_fingerprint(),
+                detail="[PERMISSION_DENIED] Installation was denied or not approved",
+            )
+            save_state(ctx.session, call.id, state)
+            return self.approve()
+        except asyncio.CancelledError:
+            save_state(ctx.session, call.id, None)
+            raise
+        except Exception:  # noqa: BLE001 — never install after an incomplete preflight.
+            save_state(ctx.session, call.id, None)
+            return self.reject(
+                tool_result="[PERMISSION_DENIED] Skill installation preflight failed"
+            )
 
     def _policy_fingerprint(self):
         return hashlib.sha256(
