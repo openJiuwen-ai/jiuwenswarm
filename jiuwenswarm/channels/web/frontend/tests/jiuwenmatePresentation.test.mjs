@@ -40,6 +40,11 @@ test('templates follow the eight designed roles with their category art', () => 
   assert.ok(JIUWENMATE_TEMPLATES.every((item) => item.coreAbilities.length === 3));
 });
 
+test('template skills are discovered from installed skills and the plaza instead of placeholder IDs', () => {
+  assert.ok(JIUWENMATE_TEMPLATES.every((item) => item.capabilities.skills.length === 0));
+  assert.ok(JIUWENMATE_TEMPLATES.every((item) => (item.skillSearchTerms?.length ?? 0) >= 3));
+});
+
 test('a custom colleague takes a different avatar hue from the default colleague', () => {
   const markup = (colleague) => renderToStaticMarkup(React.createElement(ColleagueAvatar, { colleague }));
   const hueOf = (html) => html.match(/data-hue="(\d+)"/)?.[1];

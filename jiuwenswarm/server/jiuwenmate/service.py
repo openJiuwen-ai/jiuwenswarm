@@ -391,8 +391,19 @@ class PersistentAgentService:
                 raise PersistentAgentError("no model is configured", code="MODEL_NOT_CONFIGURED")
             settings = replace(settings, capabilities=replace(settings.capabilities, model=default_model))
         self._check_model(settings, "probe")
-        definition, _ = self._insert(namespace_id, settings, source_template_id=template_id, is_default=False)
-        self.publish(namespace_id, definition.agent_id)
+        definition, inserted = self._insert(namespace_id, settings, source_template_id=template_id, is_default=False)
+        try:
+            self.publish(namespace_id, definition.agent_id)
+        except Exception:
+            if inserted:
+                try:
+                    self.delete_colleague(namespace_id, definition.agent_id)
+                except Exception:
+                    logger.exception(
+                        "[JiuwenMate] failed to roll back colleague creation: agent=%s",
+                        definition.agent_id,
+                    )
+            raise
         return self.get_colleague(namespace_id, definition.agent_id)
 
     def refresh_published(self, namespace_id: str) -> None:

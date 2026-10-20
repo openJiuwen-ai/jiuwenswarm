@@ -19,13 +19,6 @@ export const JIUWENMATE_WORK_DOMAINS: readonly string[] = [
   '法律咨询',
 ];
 
-export const JIUWENMATE_CAPABILITY_CATALOG = {
-  skills: ['context-analyst', 'report-writer', 'faq-builder', 'ticket-router', 'sentiment-review', 'meeting-minutes'],
-  connectors: ['腾讯问卷', '飞书多维表格', '飞书文档', '企业知识库'],
-  plugins: ['腾讯问卷', '网页搜索', '图表生成', '文件解析'],
-  knowledge: ['产品手册', '售后政策', '常见问题库'],
-} as const;
-
 export const JIUWENMATE_GENERATED_CAPABILITIES: Omit<JiuwenMateCapabilities, 'model' | 'starterPrompts'> = {
   skills: ['context-analyst', 'report-writer', 'faq-builder'],
   connectors: ['腾讯问卷'],
@@ -39,10 +32,10 @@ export function emptyCapabilities(): JiuwenMateCapabilities {
 
 const DESIGN_TAGS = ['效率提升', '内容创作'];
 
-function templateCapabilities(skills: string[], starterPrompts: string[]): JiuwenMateCapabilities {
+function templateCapabilities(starterPrompts: string[]): JiuwenMateCapabilities {
   return {
     model: '',
-    skills,
+    skills: [],
     connectors: ['腾讯问卷', '飞书文档'],
     plugins: ['网页搜索', '文件解析'],
     knowledge: [],
@@ -57,15 +50,25 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
     description: '基于真实写作或口语样本定位高影响问题，提供解释、自然改写与可以复测的针对性练习。',
     tags: DESIGN_TAGS,
     category: 'education',
+    skillSearchTerms: [
+      '英文润色',
+      '语法检查',
+      '英语写作',
+      '口语练习',
+      'english writing',
+      'grammar correction',
+      'language learning',
+    ],
     coreAbilities: [
       { title: '问题定位', description: '从写作或口语样本中找出影响表达效果的关键问题。' },
       { title: '自然改写', description: '给出符合语境的改写，并说明改写理由。' },
       { title: '针对练习', description: '生成可复测的练习，跟踪薄弱点的改善情况。' },
     ],
-    capabilities: templateCapabilities(
-      ['context-analyst', 'report-writer', 'faq-builder', 'meeting-minutes'],
-      ['帮我润色这段英文邮件。', '指出这段口语稿中的语法问题。', '为我生成三道针对性练习。'],
-    ),
+    capabilities: templateCapabilities([
+      '帮我润色这段英文邮件。',
+      '指出这段口语稿中的语法问题。',
+      '为我生成三道针对性练习。',
+    ]),
   },
   {
     id: 'system-architect',
@@ -73,15 +76,25 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
     description: '精通后端系统架构设计与演进规划，梳理模块依赖关系，开展方案评审与风险识别，输出可落地技术改造思路。',
     tags: DESIGN_TAGS,
     category: 'development',
+    skillSearchTerms: [
+      '系统架构',
+      '依赖分析',
+      '技术方案评审',
+      '代码审查',
+      'backend architecture',
+      'software design',
+      'code review',
+    ],
     coreAbilities: [
       { title: '依赖梳理', description: '梳理模块之间的调用与数据依赖，识别耦合点。' },
       { title: '方案评审', description: '对技术方案进行评审，指出风险与替代方案。' },
       { title: '演进规划', description: '输出分阶段、可落地的架构改造路线。' },
     ],
-    capabilities: templateCapabilities(
-      ['context-analyst', 'report-writer', 'ticket-router', 'meeting-minutes'],
-      ['评审这份服务拆分方案。', '梳理订单模块的依赖关系。', '输出缓存层的改造思路。'],
-    ),
+    capabilities: templateCapabilities([
+      '评审这份服务拆分方案。',
+      '梳理订单模块的依赖关系。',
+      '输出缓存层的改造思路。',
+    ]),
   },
   {
     id: 'fundamental-researcher',
@@ -89,15 +102,25 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
     description: '区分已知事实、分析假设与待核验数据，通过业务质量、情景、风险和催化因素形成研究框架。',
     tags: DESIGN_TAGS,
     category: 'data',
+    skillSearchTerms: [
+      '基本面分析',
+      '行业研究',
+      '公司研究',
+      '财务分析',
+      '风险评估',
+      'equity research',
+      'financial analysis',
+    ],
     coreAbilities: [
       { title: '事实分层', description: '区分已知事实、分析假设与待核验数据。' },
       { title: '情景分析', description: '构建多情景假设，评估关键变量的影响。' },
       { title: '研究框架', description: '围绕业务质量、风险与催化因素形成结论。' },
     ],
-    capabilities: templateCapabilities(
-      ['context-analyst', 'report-writer', 'sentiment-review', 'faq-builder'],
-      ['整理这家公司的业务质量要点。', '列出需要核验的关键数据。', '给出三种情景下的判断。'],
-    ),
+    capabilities: templateCapabilities([
+      '整理这家公司的业务质量要点。',
+      '列出需要核验的关键数据。',
+      '给出三种情景下的判断。',
+    ]),
   },
   {
     id: 'serial-story-planner',
@@ -105,15 +128,25 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
     description: '用原创故事圣经、人物弧线、章节节拍和连续性检查，统筹可持续推进的长篇连载创作。',
     tags: DESIGN_TAGS,
     category: 'document',
+    skillSearchTerms: [
+      '小说创作',
+      '故事大纲',
+      '角色设定',
+      '情节规划',
+      'fiction writing',
+      'story planning',
+      'character development',
+    ],
     coreAbilities: [
       { title: '故事圣经', description: '沉淀世界观、人物设定与关键事件。' },
       { title: '章节节拍', description: '规划每章的冲突、转折与情绪节奏。' },
       { title: '连续性检查', description: '检查人物与情节前后是否一致。' },
     ],
-    capabilities: templateCapabilities(
-      ['context-analyst', 'report-writer', 'faq-builder', 'meeting-minutes'],
-      ['为下一章设计三个节拍。', '检查主角动机是否前后一致。', '整理当前的人物关系。'],
-    ),
+    capabilities: templateCapabilities([
+      '为下一章设计三个节拍。',
+      '检查主角动机是否前后一致。',
+      '整理当前的人物关系。',
+    ]),
   },
   {
     id: 'personal-finance-expert',
@@ -121,15 +154,25 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
     description: '开展行业调研、竞品分析、趋势研判，输出市场洞察与决策参考，辅助业务战略判断。',
     tags: DESIGN_TAGS,
     category: 'finance',
+    skillSearchTerms: [
+      '个人理财',
+      '预算分析',
+      '支出分析',
+      '投资规划',
+      'personal finance',
+      'budgeting',
+      'investment planning',
+    ],
     coreAbilities: [
       { title: '行业调研', description: '收集行业信息并提炼关键趋势。' },
       { title: '竞品分析', description: '对比主要竞品的定位与表现。' },
       { title: '决策参考', description: '输出有依据的市场洞察与建议。' },
     ],
-    capabilities: templateCapabilities(
-      ['context-analyst', 'report-writer', 'sentiment-review', 'faq-builder'],
-      ['分析本月的支出结构。', '对比两种定投方案。', '整理近期行业动态。'],
-    ),
+    capabilities: templateCapabilities([
+      '分析本月的支出结构。',
+      '对比两种定投方案。',
+      '整理近期行业动态。',
+    ]),
   },
   {
     id: 'case-organizer',
@@ -137,15 +180,25 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
     description: '开展行业调研、竞品分析、趋势研判，输出市场洞察与决策参考，辅助业务战略判断。',
     tags: DESIGN_TAGS,
     category: 'legal',
+    skillSearchTerms: [
+      '案件分析',
+      '法律文书',
+      '证据整理',
+      '时间线整理',
+      'legal case analysis',
+      'legal document',
+      'evidence organization',
+    ],
     coreAbilities: [
       { title: '材料归档', description: '按时间线与争议焦点整理案件材料。' },
       { title: '要点提炼', description: '提炼事实、证据与法律关系。' },
       { title: '文书初稿', description: '生成结构清晰的案件摘要初稿。' },
     ],
-    capabilities: templateCapabilities(
-      ['context-analyst', 'report-writer', 'faq-builder', 'meeting-minutes'],
-      ['按时间线整理这些材料。', '提炼本案的争议焦点。', '生成案件摘要初稿。'],
-    ),
+    capabilities: templateCapabilities([
+      '按时间线整理这些材料。',
+      '提炼本案的争议焦点。',
+      '生成案件摘要初稿。',
+    ]),
   },
   {
     id: 'video-storyboard',
@@ -153,15 +206,25 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
     description: '将沟通目标转成带时长、镜头、画面、声音与制作约束的可执行分镜，并检查素材权利风险。',
     tags: DESIGN_TAGS,
     category: 'commerce',
+    skillSearchTerms: [
+      '视频分镜',
+      '故事板',
+      '镜头规划',
+      '素材版权',
+      'video storyboard',
+      'script breakdown',
+      'visual storytelling',
+    ],
     coreAbilities: [
       { title: '分镜拆解', description: '把沟通目标拆成镜头、时长与画面描述。' },
       { title: '制作约束', description: '标注声音、场景与制作资源要求。' },
       { title: '权利检查', description: '检查素材使用是否存在权利风险。' },
     ],
-    capabilities: templateCapabilities(
-      ['context-analyst', 'report-writer', 'ticket-router', 'meeting-minutes'],
-      ['把这段脚本拆成分镜。', '估算每个镜头的时长。', '检查素材的授权风险。'],
-    ),
+    capabilities: templateCapabilities([
+      '把这段脚本拆成分镜。',
+      '估算每个镜头的时长。',
+      '检查素材的授权风险。',
+    ]),
   },
   {
     id: 'research-writing-advisor',
@@ -169,15 +232,25 @@ export const JIUWENMATE_TEMPLATES: readonly JiuwenMateTemplate[] = [
     description: '围绕研究问题、方法匹配、证据链与论证边界，帮助形成结构清晰且可核验的研究文本。',
     tags: DESIGN_TAGS,
     category: 'content',
+    skillSearchTerms: [
+      '学术写作',
+      '论文分析',
+      '研究方法',
+      '证据链',
+      'academic writing',
+      'research methodology',
+      'literature review',
+    ],
     coreAbilities: [
       { title: '问题聚焦', description: '帮助明确研究问题与边界。' },
       { title: '方法匹配', description: '为研究问题选择合适的方法。' },
       { title: '证据链检查', description: '检查论证是否有充分的证据支撑。' },
     ],
-    capabilities: templateCapabilities(
-      ['context-analyst', 'report-writer', 'faq-builder', 'sentiment-review'],
-      ['帮我梳理这篇论文的论证结构。', '检查这一节的证据是否充分。', '为研究问题推荐方法。'],
-    ),
+    capabilities: templateCapabilities([
+      '帮我梳理这篇论文的论证结构。',
+      '检查这一节的证据是否充分。',
+      '为研究问题推荐方法。',
+    ]),
   },
 ];
 

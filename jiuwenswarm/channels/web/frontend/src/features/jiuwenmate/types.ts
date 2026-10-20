@@ -69,6 +69,8 @@ export interface JiuwenMateCoreAbility {
 export interface JiuwenMateTemplate extends JiuwenMateColleagueDraft {
   id: string;
   coreAbilities: JiuwenMateCoreAbility[];
+  /** Curated vocabulary for matching local skills and querying Skills Plaza. */
+  skillSearchTerms?: string[];
 }
 
 export interface JiuwenMateChannel {

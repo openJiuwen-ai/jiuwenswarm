@@ -6,12 +6,19 @@ import { ActionMenu } from '../components/ActionMenu';
 import { CapabilitySection, CollapsibleSection, type CapabilityKind } from '../components/CapabilitySection';
 import { ColleagueCard } from '../components/ColleagueCard';
 import { CustomCreateDialog } from '../components/CustomCreateDialog';
+import { JiuwenMateDialog } from '../components/JiuwenMateDialog';
 import { TemplateDetailDrawer } from '../components/TemplateDetailDrawer';
 import { colleaguePortrait, customAvatarHue } from '../colleaguePortraits';
-import type { ColleagueResourceOption, JiuwenMateModelCatalog } from '../jiuwenmateApi';
+import type { JiuwenMateModelCatalog } from '../jiuwenmateApi';
+import {
+  selectGeneratedColleagueCapabilities,
+  type ColleagueCapabilityCatalog,
+  type MutableColleagueCapabilitySelections,
+  type SkillInstallCandidate,
+  type TemplateSkillRecommendations,
+} from '../colleagueCapabilities';
 import { ModelLabel } from '../components/ModelLabel';
 import {
-  JIUWENMATE_CAPABILITY_CATALOG,
   JIUWENMATE_GENERATED_CAPABILITIES,
   JIUWENMATE_TEMPLATES,
   JIUWENMATE_WORK_DOMAINS,
@@ -37,8 +44,12 @@ export interface ColleagueCreatePageProps {
   usedAvatarHues?: readonly number[];
   draft: JiuwenMateColleagueDraft | null;
   modelCatalog: JiuwenMateModelCatalog;
-  knowledgeCatalog?: readonly ColleagueResourceOption[] | null;
-  knowledgeCatalogReady?: boolean;
+  resourceCatalog: ColleagueCapabilityCatalog;
+  resourceCatalogReady: boolean;
+  missingTemplateCapabilities: MutableColleagueCapabilitySelections;
+  skillRecommendations: TemplateSkillRecommendations;
+  onDismissSkillRecommendationError: () => void;
+  onInstallSkill: (skill: SkillInstallCandidate) => Promise<string>;
   submitting: boolean;
   onOpenTemplateDetail: (id: string) => void;
   onCloseTemplateDetail: () => void;
@@ -63,8 +74,12 @@ export function ColleagueCreatePage(props: ColleagueCreatePageProps) {
         source={source}
         draft={draft}
         modelCatalog={props.modelCatalog}
-        knowledgeCatalog={props.knowledgeCatalog}
-        knowledgeCatalogReady={props.knowledgeCatalogReady}
+        resourceCatalog={props.resourceCatalog}
+        resourceCatalogReady={props.resourceCatalogReady}
+        missingTemplateCapabilities={props.missingTemplateCapabilities}
+        skillRecommendations={props.skillRecommendations}
+        onDismissSkillRecommendationError={props.onDismissSkillRecommendationError}
+        onInstallSkill={props.onInstallSkill}
         submitting={props.submitting}
         onDraftChange={props.onDraftChange}
         onCancel={props.onCancel}
@@ -123,8 +138,12 @@ interface ColleagueRefineFormProps {
   source: JiuwenMateCreationSource;
   draft: JiuwenMateColleagueDraft;
   modelCatalog: JiuwenMateModelCatalog;
-  knowledgeCatalog?: readonly ColleagueResourceOption[] | null;
-  knowledgeCatalogReady?: boolean;
+  resourceCatalog: ColleagueCapabilityCatalog;
+  resourceCatalogReady: boolean;
+  missingTemplateCapabilities: MutableColleagueCapabilitySelections;
+  skillRecommendations: TemplateSkillRecommendations;
+  onDismissSkillRecommendationError: () => void;
+  onInstallSkill: (skill: SkillInstallCandidate) => Promise<string>;
   submitting: boolean;
   onDraftChange: (patch: Partial<JiuwenMateColleagueDraft>) => void;
   onCancel: () => void;
@@ -135,8 +154,12 @@ function ColleagueRefineForm({
   source,
   draft,
   modelCatalog,
-  knowledgeCatalog,
-  knowledgeCatalogReady = false,
+  resourceCatalog,
+  resourceCatalogReady,
+  missingTemplateCapabilities,
+  skillRecommendations,
+  onDismissSkillRecommendationError,
+  onInstallSkill,
   submitting,
   onDraftChange,
   onCancel,
@@ -145,6 +168,8 @@ function ColleagueRefineForm({
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [avatarError, setAvatarError] = useState<string | null>(null);
+  const [installingSkill, setInstallingSkill] = useState<string | null>(null);
+  const [skillInstallError, setSkillInstallError] = useState<string | null>(null);
   const canSubmit = !submitting && draft.name.trim().length > 0 && draft.description.trim().length > 0;
   const hue = customAvatarHue(draft);
   const updateCapabilities = (patch: Partial<JiuwenMateCapabilities>) =>
@@ -168,12 +193,45 @@ function ColleagueRefineForm({
 
   const generateCapabilities = () => {
     const merge = (current: readonly string[], extra: readonly string[]) => [...new Set([...current, ...extra])];
+    const generated = selectGeneratedColleagueCapabilities(JIUWENMATE_GENERATED_CAPABILITIES, resourceCatalog);
     updateCapabilities({
-      skills: merge(draft.capabilities.skills, JIUWENMATE_GENERATED_CAPABILITIES.skills),
-      connectors: merge(draft.capabilities.connectors, JIUWENMATE_GENERATED_CAPABILITIES.connectors),
-      plugins: merge(draft.capabilities.plugins, JIUWENMATE_GENERATED_CAPABILITIES.plugins),
-      knowledge: merge(draft.capabilities.knowledge, JIUWENMATE_GENERATED_CAPABILITIES.knowledge),
+      skills: merge(draft.capabilities.skills, generated.skills),
+      connectors: merge(draft.capabilities.connectors, generated.connectors),
+      plugins: merge(draft.capabilities.plugins, generated.plugins),
+      knowledge: merge(draft.capabilities.knowledge, generated.knowledge),
     });
+  };
+
+  const installRecommendedSkill = async (skill: SkillInstallCandidate) => {
+    setInstallingSkill(skill.identifier);
+    setSkillInstallError(null);
+    try {
+      const installedName = await onInstallSkill(skill);
+      updateCapabilities({ skills: [...new Set([...draft.capabilities.skills, installedName])] });
+    } catch (error) {
+      setSkillInstallError(error instanceof Error ? error.message : t('jiuwenmate.create.skillInstallFailed'));
+    } finally {
+      setInstallingSkill(null);
+    }
+  };
+
+  const addInstalledSkill = (name: string) => {
+    if (draft.capabilities.skills.includes(name)) return;
+    updateCapabilities({ skills: [...draft.capabilities.skills, name] });
+  };
+
+  const closeSkillError = () => {
+    setSkillInstallError(null);
+    if (!skillInstallError && skillRecommendations.error) onDismissSkillRecommendationError();
+  };
+
+  const skillDialogError = skillInstallError ?? skillRecommendations.error;
+
+  const skillSourceLabel = (sourceName: string) => {
+    if (sourceName === 'teamskillshub') return 'SwarmSkillHub';
+    if (sourceName === 'clawhub') return 'ClawHub';
+    if (sourceName === 'skillnet') return 'SkillNet';
+    return sourceName;
   };
 
   const cycleModel = () => {
@@ -285,6 +343,107 @@ function ColleagueRefineForm({
                 {t('jiuwenmate.create.generate')}
               </button>
             </header>
+            {source === 'template' && CAPABILITY_KINDS.some((kind) => missingTemplateCapabilities[kind].length > 0) ? (
+              <section className="jiuwenmate-create__unavailable" data-testid="jiuwenmate-template-missing-capabilities">
+                <strong>{t('jiuwenmate.create.unavailableCapabilitiesTitle')}</strong>
+                <p>{t('jiuwenmate.create.unavailableCapabilitiesHint')}</p>
+                {CAPABILITY_KINDS.map((kind) =>
+                  missingTemplateCapabilities[kind].length > 0 ? (
+                    <div key={kind}>
+                      <span>{t(`jiuwenmate.create.sections.${kind}`)}:</span>
+                      {missingTemplateCapabilities[kind].map((name) => {
+                        return (
+                          <span key={`${kind}:${name}`} className="jiuwenmate-create__unavailable-item">
+                            <span className="jiuwenmate-create__unavailable-name">{name}</span>
+                            <small>{t('jiuwenmate.create.capabilityNotLoaded')}</small>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  ) : null,
+                )}
+              </section>
+            ) : null}
+            {source === 'template' ? (
+              <section
+                className="jiuwenmate-create__skill-recommendations"
+                data-testid="jiuwenmate-template-skill-recommendations"
+              >
+                <div>
+                  <strong>{t('jiuwenmate.create.skillRecommendationsTitle')}</strong>
+                  <p>{t('jiuwenmate.create.skillRecommendationsHint')}</p>
+                </div>
+                {skillRecommendations.status === 'loading' ? (
+                  <p className="jiuwenmate-create__skill-recommendations-status">
+                    {t('jiuwenmate.create.skillRecommendationsLoading')}
+                  </p>
+                ) : null}
+                {skillRecommendations.local.length > 0 ? (
+                  <div className="jiuwenmate-create__skill-group" data-testid="jiuwenmate-template-local-skill-recommendations">
+                    <h3>{t('jiuwenmate.create.localSkillRecommendations')}</h3>
+                    {skillRecommendations.local.map((skill, index) => {
+                      const added = draft.capabilities.skills.includes(skill.name);
+                      return (
+                        <article
+                          key={skill.name}
+                          className="jiuwenmate-create__skill-recommendation-item"
+                          data-testid={`jiuwenmate-template-local-skill-${index}`}
+                        >
+                          <div>
+                            <strong className="jiuwenmate-create__skill-name">{skill.label}</strong>
+                            {skill.description ? <p>{skill.description}</p> : null}
+                          </div>
+                          <button
+                            type="button"
+                            className="jiuwenmate-outline-button jiuwenmate-create__skill-action"
+                            disabled={added}
+                            onClick={() => addInstalledSkill(skill.name)}
+                            data-testid={`jiuwenmate-add-recommended-local-skill-${index}`}
+                          >
+                            {added ? t('jiuwenmate.create.skillAdded') : t('jiuwenmate.create.addRecommendedSkill')}
+                          </button>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {skillRecommendations.plaza.length > 0 ? (
+                  <div className="jiuwenmate-create__skill-group" data-testid="jiuwenmate-template-plaza-skill-recommendations">
+                    <h3>{t('jiuwenmate.create.plazaSkillRecommendations')}</h3>
+                    {skillRecommendations.plaza.map((skill, index) => {
+                      const added = draft.capabilities.skills.includes(skill.name);
+                      const isInstalling = installingSkill === skill.identifier;
+                      return (
+                        <article
+                          key={`${skill.source}:${skill.identifier}`}
+                          className="jiuwenmate-create__skill-recommendation-item"
+                          data-testid={`jiuwenmate-template-plaza-skill-${index}`}
+                        >
+                          <div>
+                            <strong className="jiuwenmate-create__skill-name">{skill.display_name}</strong>
+                            <small>{skillSourceLabel(skill.source)}</small>
+                            {skill.description ? <p>{skill.description}</p> : null}
+                          </div>
+                          <button
+                            type="button"
+                            className="jiuwenmate-outline-button jiuwenmate-create__skill-action jiuwenmate-create__install-button"
+                            disabled={installingSkill !== null || added}
+                            onClick={() => void installRecommendedSkill(skill)}
+                            data-testid={`jiuwenmate-install-recommended-plaza-skill-${index}`}
+                          >
+                            {added
+                              ? t('jiuwenmate.create.skillAdded')
+                              : isInstalling
+                                ? t('jiuwenmate.create.installingRecommendedSkill')
+                                : t('jiuwenmate.create.installRecommendedSkill')}
+                          </button>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
             <CollapsibleSection title={t('jiuwenmate.create.sections.model')} testId="jiuwenmate-capability-section">
               <div className="jiuwenmate-model-card">
                 <ModelLabel catalog={modelCatalog} modelId={draft.capabilities.model} />
@@ -307,21 +466,15 @@ function ColleagueRefineForm({
                 removeLabel={t('jiuwenmate.create.remove')}
                 emptyLabel={t(`jiuwenmate.create.empty.${kind}`)}
                 items={draft.capabilities[kind]}
-                catalog={
-                  kind === 'knowledge'
-                    ? (knowledgeCatalog ?? []).map((page) => page.name)
-                    : JIUWENMATE_CAPABILITY_CATALOG[kind]
-                }
+                catalog={(resourceCatalog[kind] ?? []).map((option) => option.name)}
                 emptyMenuLabel={
-                  kind !== 'knowledge' || (knowledgeCatalogReady && (knowledgeCatalog?.length ?? 0) > 0)
-                    ? undefined
-                    : t(
-                        !knowledgeCatalogReady
-                          ? 'jiuwenmate.profile.catalogLoading'
-                          : knowledgeCatalog === null
-                            ? 'jiuwenmate.profile.catalogFailed'
-                            : 'jiuwenmate.profile.catalogEmptyKnowledge',
-                      )
+                  !resourceCatalogReady
+                    ? t('jiuwenmate.profile.catalogLoading')
+                    : resourceCatalog[kind] === null
+                      ? t('jiuwenmate.profile.catalogFailed')
+                      : resourceCatalog[kind]?.length === 0
+                        ? t(`jiuwenmate.profile.catalogEmpty${kind[0].toUpperCase()}${kind.slice(1)}`)
+                        : undefined
                 }
                 onChange={(items) => updateCapabilities({ [kind]: items })}
               />
@@ -389,6 +542,29 @@ function ColleagueRefineForm({
           {t('jiuwenmate.common.create')}
         </button>
       </footer>
+      {skillDialogError ? (
+        <JiuwenMateDialog
+          title={t('jiuwenmate.create.skillInstallErrorTitle')}
+          onClose={closeSkillError}
+          testId={
+            skillInstallError
+              ? 'jiuwenmate-install-skill-error-dialog'
+              : 'jiuwenmate-template-skill-error-dialog'
+          }
+          footer={
+            <button
+              type="button"
+              className="jiuwenmate-dark-button"
+              onClick={closeSkillError}
+              data-testid="jiuwenmate-install-skill-error-confirm"
+            >
+              {t('jiuwenmate.common.confirm')}
+            </button>
+          }
+        >
+          <p className="jiuwenmate-dialog__message">{skillDialogError}</p>
+        </JiuwenMateDialog>
+      ) : null}
     </section>
   );
 }
