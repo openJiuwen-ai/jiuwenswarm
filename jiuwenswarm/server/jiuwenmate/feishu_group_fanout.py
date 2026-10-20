@@ -44,6 +44,7 @@ class FeishuInboundEvent:
     received_at: datetime | None
     text: str | None
     mention_ids: tuple[str, ...] = ()
+    receiver_bot_mentioned: bool = False
     reply_to: str | None = None
     attachment_refs: tuple[str, ...] = ()
     event_kind: str = "message"
@@ -66,6 +67,7 @@ class FeishuInboundEvent:
             "received_at": self.received_at.isoformat() if isinstance(self.received_at, datetime) else None,
             "text": self.text,
             "mention_ids": list(self.mention_ids),
+            "receiver_bot_mentioned": self.receiver_bot_mentioned,
             "reply_to": self.reply_to,
             "attachment_refs": list(self.attachment_refs),
             "event_kind": self.event_kind,
@@ -111,6 +113,7 @@ class FeishuInboundEvent:
             received_at=received_at,
             text=payload.get("text"),
             mention_ids=mention_ids,
+            receiver_bot_mentioned=payload.get("receiver_bot_mentioned", False),
             reply_to=payload.get("reply_to"),
             attachment_refs=attachment_refs,
             event_kind=payload.get("event_kind", "message"), event_id=payload.get("event_id"),
@@ -284,7 +287,7 @@ def create_default_persistent_group_fanout(
         async def refresh(access, group, messages):
             facts = await verify_membership(access.app_id, group.platform_chat_id,
                                            tuple(item.message_id for item in messages))
-            if facts.get("status") != "active" or not isinstance(facts.get("messages"), dict):
+            if facts.get("status") != "ok" or not isinstance(facts.get("messages"), dict):
                 raise ValueError("current group message state unavailable")
             updated = []
             for message in messages:
@@ -461,6 +464,17 @@ class PersistentGroupFanout:
                 request_input = request_input.model_copy(update={"source": current,
                     "text": current.text or ("[附件消息]" if current.attachment_refs else "[群消息正文为空]"),
                     "attachment_refs": current.attachment_refs})
+                if event.receiver_bot_mentioned:
+                    # Keep the shared archive's Feishu open_id intact. PA-07 consumes the
+                    # receiving Agent's internal ID only on this request-specific copy.
+                    request_source = request_input.source.model_copy(
+                        update={
+                            "mention_ids": tuple(
+                                dict.fromkeys((*request_input.source.mention_ids, binding.agent_id))
+                            )
+                        }
+                    )
+                    request_input = request_input.model_copy(update={"source": request_source})
                 if event.group_name:
                     await asyncio.to_thread(self._groups.set_name, binding.namespace_id, group.group_chat_id, event.group_name)
             else:
@@ -556,6 +570,7 @@ class PersistentGroupFanout:
             or not isinstance(event.text, (str, type(None)))
             or not isinstance(event.mention_ids, tuple)
             or any(not _present(item) for item in event.mention_ids)
+            or not isinstance(event.receiver_bot_mentioned, bool)
             or not isinstance(event.attachment_refs, tuple)
             or any(not _present(item) for item in event.attachment_refs)
             or (event.reply_to is not None and not _present(event.reply_to))

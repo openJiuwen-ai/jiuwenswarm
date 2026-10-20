@@ -70,6 +70,7 @@ class FakeCore:
         self.ended: list[str] = []
         self.aborts: list[tuple[str, str]] = []
         self.contexts: dict[str, core.PersistentBuildContext] = {}
+        self.inputs: dict[str, core.RequestInput] = {}
         self.abort_gate: asyncio.Event | None = None
         self.live = 0
         self.peak = 0
@@ -99,6 +100,7 @@ class FakeCore:
         text, execution = inputs.text, context.execution
         self._rid[text] = execution.request_id
         self.contexts[text] = context
+        self.inputs[text] = inputs
         self.started.append(text)
         self.live += 1
         self.peak = max(self.peak, self.live)
@@ -435,6 +437,48 @@ async def test_group_message_keeps_current_trigger_preflight_and_search_port(hos
     assert port._search is not None and port._cursors is not None
     assert trigger_calls == ["group-trigger"]
     assert host.status(state) == ("ended", "completed")
+
+
+async def test_group_execution_preserves_verified_bot_mention_after_trigger_refresh(host):
+    group = host.manager.group_chats.resolve(NS, "feishu", "oc_group", now=NOW)
+    archived_trigger = core.GroupMessage(
+        message_id="mentioned-trigger",
+        sender_id="user-1",
+        sender_name="用户",
+        sender_kind="human",
+        received_at=NOW,
+        text="请处理这个问题",
+        mention_ids=("ou_feishu_bot",),
+    )
+    host.manager.group_chats.observe_access(
+        NS, "mate_dev", group.group_chat_id, "app-mate-dev", observed_at=NOW, source_ref="joined:group"
+    )
+    host.manager.group_archive.append(
+        NS, group.group_chat_id, archived_trigger, source_ref="event:mentioned-trigger"
+    )
+
+    async def active(access, current_group):
+        return "active"
+
+    host.manager.verify_group_membership = active
+    session = host.sessions.resolve_session(NS, "mate_dev", ConversationRef.group(group.group_chat_id), now=NOW)
+    request_source = archived_trigger.model_copy(update={"mention_ids": ("ou_feishu_bot", "mate_dev")})
+    state, _ = await host.scheduler.accept(
+        session,
+        snapshot=host.service.snapshot(NS, "mate_dev", "v1"),
+        source_ref="feishu:mentioned-trigger",
+        access=ACCESS,
+        request_input=core.RequestInput(
+            kind="group_message", text="请处理这个问题", source=request_source, reply_target="oc_group",
+        ),
+        received_at=NOW,
+    )
+    host.core.release("请处理这个问题")
+    await settle(lambda: "请处理这个问题" in host.core.ended)
+    await host.scheduler.drain()
+
+    assert host.status(state) == ("ended", "completed")
+    assert host.core.inputs["请处理这个问题"].source.mention_ids == ("ou_feishu_bot", "mate_dev")
 
 
 # JM-07-V-04 lifecycle, outcomes and cleanup
