@@ -45,6 +45,8 @@ def test_exact_persist_notifies_only_after_success(monkeypatch, tmp_path, persis
     persist.assert_called_once_with(
         "bash", {"command": "git status"}, (),
         session_id="persist-session", workspace_root=tmp_path,
+        session_only=False, auto_mode=True, validate_only=False, raise_on_invalid=True,
+        expected_global_permissions=config["permissions"],
     )
     assert notify.call_count == (1 if persisted is True else 0)
 

@@ -5,9 +5,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -19,15 +22,14 @@ from openjiuwen.harness.rails.security.tool_security_rail import PermissionInter
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
     mark_permission_interrupt_request,
     root_nonpermission_resume_from_context,
+    root_permission_resume_from_context,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import (
     NativePathGuardProjection, current_native_path_access,
 )
 from jiuwenswarm.common.utils import logger
 
-ExactPermissionPersistCallback = Callable[
-    [str, dict[str, Any], tuple[tuple[str, str], ...]], bool
-]
+ExactPermissionPersistCallback = Callable[..., bool]
 
 
 _PLAN_HARD_REJECT = object()
@@ -44,11 +46,19 @@ def plan_hard_rejected(ctx: Any) -> bool:
 @dataclass
 class _ExactPersistAttempt:
     attempted: bool = False
+    approved: bool = False
+    session_only: bool = False
+    persisted: bool = False
+    invalidated: bool = False
+    accesses: tuple[tuple[str, str], ...] = ()
 
 
 _EXACT_PERSIST_ATTEMPT: ContextVar[_ExactPersistAttempt | None] = ContextVar(
     "jiuwenswarm_exact_permission_persist_attempt",
     default=None,
+)
+_PERMISSION_SNAPSHOT: ContextVar[tuple[Any, Any] | None] = ContextVar(
+    "jiuwenswarm_permission_check_snapshot", default=None,
 )
 
 
@@ -64,6 +74,17 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         super().__init__(*args, **kwargs)
         self._exact_persist_callback = exact_persist_callback
         self._project_native_path_guard()
+        scene_hook = self._host.permission_scene_hook
+        if exact_persist_callback is not None and scene_hook is not None:
+            async def preserve_confirmation(scene_input: Any) -> Any:
+                outcome = await scene_hook(scene_input)
+                attempt = _EXACT_PERSIST_ATTEMPT.get()
+                if attempt is None or not attempt.approved:
+                    return outcome
+                if outcome and outcome[0] == "approve":
+                    return None
+                return outcome
+            self._host.permission_scene_hook = preserve_confirmation
 
     def _project_native_path_guard(self) -> None:
         if getattr(self, "_exact_persist_callback", None) is None:
@@ -119,6 +140,19 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
     def _collect_file_guard_persist_accesses(
         self, normalized_name: str, tool_args: dict, permissions_cfg: Any,
     ) -> list[tuple[str, str]]:
+        if self._exact_persist_callback is not None and normalized_name == "send_file_to_user":
+            from jiuwenswarm.agents.harness.common.rails.permissions.send_file_path_guard import (
+                SendFilePathGuardEvaluator,
+            )
+            result = SendFilePathGuardEvaluator().evaluate(
+                permissions=permissions_cfg, workspace_root=(
+                    self._host.resolve_workspace_dir() if self._host.resolve_workspace_dir else None
+                ),
+                trusted_dirs=(), raw_paths=tool_args.get("abs_file_path_list"),
+            )
+            if result.status == "unevaluable" or result.level == "deny":
+                raise ValueError(result.reason)
+            return list(result.ask_accesses)
         access = current_native_path_access(normalized_name, tool_args)
         if self._exact_persist_callback is not None and access is not None:
             return super()._collect_file_guard_persist_accesses(
@@ -149,27 +183,71 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
             raise ValueError("Installed permission snapshot unavailable")
         return snapshot
 
+    @contextmanager
+    def permission_check_context(self, session_id: str | None = None):
+        """Share one provider read across this invocation's existing checks."""
+        current = _PERMISSION_SNAPSHOT.get()
+        if current is not None and current[0] is self:
+            yield
+            return
+        hook = self._host.get_permissions_snapshot
+        snapshot = self._invoke_permissions_hook(hook, session_id=session_id) if hook else None
+        token = _PERMISSION_SNAPSHOT.set((self, snapshot))
+        try:
+            yield
+        finally:
+            _PERMISSION_SNAPSHOT.reset(token)
+
+    def _get_user_input(self, ctx: Any, subject_id: str) -> Any:
+        resume = root_permission_resume_from_context(ctx)
+        if resume is not None and resume.card.key.tool_call_id == subject_id:
+            return resume.user_input
+        return super()._get_user_input(ctx, subject_id)
+
+    @staticmethod
+    def _approval_arguments_digest(args: dict) -> str:
+        return hashlib.sha256(json.dumps(
+            args, sort_keys=True, ensure_ascii=True, allow_nan=False,
+        ).encode()).hexdigest()
+
+    def bind_approval_request(self, request: Any, tool_call: Any) -> None:
+        """Freeze approval scope on the existing pending request, not a store."""
+        if self._exact_persist_callback is None or tool_call is None:
+            return
+        name, args = self._normalize_tool_name(tool_call.name), self.parse_tool_args(tool_call)
+        hook = self._host.get_permissions_snapshot
+        permissions = self._invoke_permissions_hook(hook) if hook else self._engine.config
+        if not isinstance(permissions, dict):
+            raise ValueError("permission_snapshot_unavailable")
+        request.metadata = {
+            **(request.metadata or {}),
+            "permission_arguments_sha256": self._approval_arguments_digest(args),
+            "permission_ask_accesses": self._collect_file_guard_persist_accesses(
+                name, args, permissions,
+            ),
+        }
+        request.auto_confirm_key = ""
+
     def _invoke_permissions_hook(
         self, hook: Any, *args: Any, session_id: str | None = None,
     ) -> Any:
         if hook is not self._host.get_permissions_snapshot:
             return super()._invoke_permissions_hook(hook, *args, session_id=session_id)
+        current = _PERMISSION_SNAPSHOT.get()
+        if current is not None and current[0] is self:
+            return deepcopy(current[1])
         if self._exact_persist_callback is None:
             snapshot = super()._invoke_permissions_hook(hook, *args, session_id=session_id)
             if isinstance(snapshot, dict):
                 from jiuwenswarm.runtime.run_permissions import overlay_run_permissions
                 return overlay_run_permissions(snapshot)
             return snapshot
-        # Preserve the SDK's installed-config fallback, but return it through
-        # the rail update path so a rebuild cannot discard native extraction.
         try:
             snapshot = super()._invoke_permissions_hook(hook, *args, session_id=session_id)
         except Exception:
             snapshot = None
         from jiuwenswarm.runtime.run_permissions import overlay_run_permissions
-        return overlay_run_permissions(
-            snapshot if isinstance(snapshot, dict) else self.installed_permission_config()
-        )
+        return overlay_run_permissions(snapshot) if isinstance(snapshot, dict) else None
 
     async def resolve_interrupt(
         self,
@@ -182,7 +260,9 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
             RUN_PERMISSIONS, overlay_run_permissions,
         )
 
-        levels = RUN_PERMISSIONS.get() or getattr(self, "run_permission_levels", None)
+        levels = RUN_PERMISSIONS.get()
+        if levels is None:
+            levels = getattr(self, "run_permission_levels", None)
         run_token = RUN_PERMISSIONS.set(levels)
         normalized_name = self._normalize_tool_name(tool_call.name) if tool_call else ""
         level = levels.get(normalized_name) if levels else None
@@ -217,6 +297,9 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
             return await super().resolve_interrupt(
                 ctx, tool_call, user_input, auto_confirm_config
             )
+        snapshot_hook = self._host.get_permissions_snapshot
+        if snapshot_hook is not None and not isinstance(self._invoke_permissions_hook(snapshot_hook), dict):
+            return self.reject(tool_result="[PERMISSION_DENIED] permission_snapshot_unavailable")
         if (
             self._host.get_permissions_snapshot is None
             and tool_call is not None
@@ -224,20 +307,46 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         ):
             return self.reject(tool_result="[PERMISSION_DENIED] native_path_snapshot_unavailable")
         payload = self.parse_confirm_payload(user_input)
-        permanent = bool(
-            payload is not None
-            and payload.approved
-            and payload.auto_confirm
-            and payload.persist_allow
-        )
         attempt = _ExactPersistAttempt()
         token = _EXACT_PERSIST_ATTEMPT.set(attempt)
         try:
-            return await super().resolve_interrupt(
+            if payload is not None and payload.approved:
+                from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
+                if payload.auto_confirm and RUN_PERMISSIONS.get() is not None:
+                    return self.reject(tool_result="[PERMISSION_DENIED] run_policy_remember_unsupported")
+                resume = root_permission_resume_from_context(ctx)
+                request = (
+                    resume.card.request if resume is not None
+                    else getattr(ctx.extra.get("_interrupt_decision"), "request", None)
+                )
+                metadata = getattr(request, "metadata", {}) or {}
+                args = self.parse_tool_args(tool_call)
+                if metadata.get("permission_arguments_sha256") != self._approval_arguments_digest(args):
+                    self._remove_exact_auto_confirm(ctx, tool_call)
+                    return self.reject(tool_result="[PERMISSION_DENIED] approval_context_changed")
+                attempt.accesses = tuple(tuple(item) for item in metadata.get("permission_ask_accesses", ()))
+                attempt.approved = True
+                attempt.session_only = payload.wants_session_persist()
+                try:
+                    if not self._exact_persist_callback(
+                        self._normalize_tool_name(tool_call.name), args, attempt.accesses,
+                        attempt.session_only, True,
+                    ):
+                        raise ValueError("approval_validation_failed")
+                except Exception:
+                    self._remove_exact_auto_confirm(ctx, tool_call)
+                    return self.reject(tool_result="[PERMISSION_DENIED] approval_invalidated")
+            decision = await super().resolve_interrupt(
                 ctx, tool_call, user_input, auto_confirm_config
             )
+            if attempt.invalidated:
+                self._remove_exact_auto_confirm(ctx, tool_call)
+                return self.reject(tool_result="[PERMISSION_DENIED] approval_invalidated")
+            if payload is not None and payload.wants_permanent_persist() and attempt.persisted:
+                self._remove_exact_auto_confirm(ctx, tool_call)
+            return decision
         except BaseException:
-            if permanent or attempt.attempted:
+            if (payload is not None and payload.wants_permanent_persist()) or attempt.attempted:
                 self._remove_exact_auto_confirm(ctx, tool_call)
             raise
         finally:
@@ -256,15 +365,21 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         if attempt is None:
             return False
         attempt.attempted = True
-        accesses = tuple(
-            self._collect_file_guard_persist_accesses(
-                normalized_name, tool_args, self._engine.config
-            )
-        )
         try:
-            return bool(callback(normalized_name, dict(tool_args), accesses))
+            attempt.persisted = bool(callback(
+                normalized_name, dict(tool_args), attempt.accesses, attempt.session_only,
+            ))
+            return attempt.persisted
         except Exception:
+            attempt.invalidated = True
             return False
+
+    def _persist_session_allow(
+        self, normalized_name: str, tool_args: dict, *, session_id: str | None = None,
+    ) -> bool:
+        if self._exact_persist_callback is None:
+            return super()._persist_session_allow(normalized_name, tool_args, session_id=session_id)
+        return self._persist_allow_always(normalized_name, tool_args, session_id=session_id)
 
     def _persist_merged_allow(self, *args: Any, **kwargs: Any) -> bool:
         from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
@@ -294,6 +409,7 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
             cause = getattr(exc, "cause", None)
             request = getattr(cause, "request", None)
             if request is not None:
+                self.bind_approval_request(request, ctx.inputs.tool_call)
                 mark_permission_interrupt_request(ctx, request)
             raise
 

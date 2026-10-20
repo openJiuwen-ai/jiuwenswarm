@@ -314,6 +314,8 @@ function getProjectSessionListsAfterPin(
 
 /** 工作区全量刷新代数：新刷新开始时递增，过期请求在写回前丢弃，避免归档/撤销竞态导致列表闪烁。 */
 let workspaceRefreshEpoch = 0;
+let projectListRequestId = 0;
+let appliedProjectListRequestId = 0;
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workMode: readStoredWorkMode(),
@@ -329,6 +331,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   setWorkMode: async (workMode) => {
     if (get().workMode === workMode) return;
+    // Invalidate pending lists even when switching back to a previously used mode.
+    appliedProjectListRequestId = ++projectListRequestId;
     persistWorkMode(workMode);
     set({
       workMode,
@@ -345,18 +349,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   loadProjects: async (refreshEpoch?: number) => {
+    const requestId = ++projectListRequestId;
     const requestedWorkMode = get().workMode;
     set({ isLoadingProjects: true, error: null });
     try {
       const payload = await projectRegistryClient.list('all', requestedWorkMode);
       if (get().workMode !== requestedWorkMode) return true;
       if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return true;
+      // Apply results in request order, without making createProject wait for later pending lists.
+      if (requestId < appliedProjectListRequestId) return true;
       const projects = (payload.projects || []).map((project) => (
         normalizeProject(project, requestedWorkMode)
       ));
       if (requestedWorkMode === 'design' && !projects.some(isDefaultProject)) {
         projects.push(designDefaultProject());
       }
+      appliedProjectListRequestId = requestId;
       set((state) => {
         // 项目会话需要经过 Gateway → AgentServer，并且后端每次查询都会扫描
         // 当前用户的会话元数据。首屏若把所有历史项目默认展开，会同时触发 N 次
@@ -373,12 +381,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           selectedProject: state.selectedProject
             ? findProject(projects, state.selectedProject.project_id)
             : null,
-          isLoadingProjects: false,
+          isLoadingProjects: requestId === projectListRequestId ? false : state.isLoadingProjects,
         };
       });
       await get().loadPinnedSessions(refreshEpoch);
       return true;
     } catch (error) {
+      if (requestId !== projectListRequestId) return true;
+      if (get().workMode !== requestedWorkMode) return true;
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return true;
       set({ isLoadingProjects: false, error: error instanceof Error ? error.message : String(error) });
       return false;
     }
