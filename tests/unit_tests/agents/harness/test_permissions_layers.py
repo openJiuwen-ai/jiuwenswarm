@@ -86,6 +86,25 @@ def test_compose_default_auto(isolated_data_dir: Path) -> None:
     assert eff["defaults"]["*"] == "allow"
 
 
+def test_compose_reloads_after_external_yaml_write(isolated_data_dir: Path) -> None:
+    # E2E round-024 S4 回归：网关进程 mode.set 落盘后，引擎进程的
+    # config_loader 缓存必须经 mtime 失步探测重读，否则引擎始终以
+    # 启动时模式决策，且其 runtime persist 会反向 clobber 对侧切换。
+    _write_global(isolated_data_dir, {"enabled": True, "mode": "auto"})
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        compose_host_effective_permissions,
+    )
+
+    assert compose_host_effective_permissions()["mode"] == "auto"
+
+    # 模拟另一进程直写 yaml（不经本进程任何 persist 入口）
+    _write_global(isolated_data_dir, {"enabled": True, "mode": "strict"})
+
+    eff = compose_host_effective_permissions()
+    assert eff["mode"] == "strict"
+    assert eff["defaults"]["*"] == "ask"
+
+
 def test_migrate_global_tool_levels_to_user(isolated_data_dir: Path) -> None:
     _write_global(
         isolated_data_dir,
