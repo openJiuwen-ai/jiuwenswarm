@@ -732,6 +732,8 @@ async def test_enterprise_metric_labels_llm_success_are_exact_and_provider_wins(
 ) -> None:
     telemetry_env.parent.set_attribute("jiuwenclaw.channel.id", "web")
     telemetry_env.parent.set_attribute("jiuwenclaw.agent.name", "main-agent")
+    telemetry_env.parent.set_attribute("jiuwenclaw.mode", "agent")
+    telemetry_env.parent.set_attribute("jiuwenclaw.adapter.mode", "flash")
     telemetry_env.parent.set_attribute("gen_ai.provider.name", "span-provider")
 
     await telemetry_env.framework.trigger(
@@ -769,11 +771,15 @@ async def test_enterprise_metric_labels_llm_success_are_exact_and_provider_wins(
         "gen_ai.request.model": "mock-model",
         "gen_ai.system": "openai",
         "jiuwenclaw.channel.id": "web",
+        "jiuwenclaw.mode": "agent",
+        "jiuwenclaw.adapter.mode": "flash",
     }
     assert dict(count_points[0].attributes) == {
         "gen_ai.request.model": "mock-model",
         "status": "success",
         "jiuwenclaw.channel.id": "web",
+        "jiuwenclaw.mode": "agent",
+        "jiuwenclaw.adapter.mode": "flash",
     }
     assert {
         point.attributes["gen_ai.token.type"]: dict(point.attributes)
@@ -783,12 +789,16 @@ async def test_enterprise_metric_labels_llm_success_are_exact_and_provider_wins(
             "gen_ai.request.model": "mock-model",
             "gen_ai.system": "openai",
             "jiuwenclaw.channel.id": "web",
+            "jiuwenclaw.mode": "agent",
+            "jiuwenclaw.adapter.mode": "flash",
             "gen_ai.token.type": "input",
         },
         "output": {
             "gen_ai.request.model": "mock-model",
             "gen_ai.system": "openai",
             "jiuwenclaw.channel.id": "web",
+            "jiuwenclaw.mode": "agent",
+            "jiuwenclaw.adapter.mode": "flash",
             "gen_ai.token.type": "output",
         },
     }
@@ -837,6 +847,8 @@ async def test_enterprise_metric_labels_tool_error_are_exact_without_call_id(
     telemetry_env: SimpleNamespace,
 ) -> None:
     telemetry_env.parent.set_attribute("jiuwenclaw.channel.id", "web")
+    telemetry_env.parent.set_attribute("jiuwenclaw.mode", "agent")
+    telemetry_env.parent.set_attribute("jiuwenclaw.adapter.mode", "flash")
 
     await telemetry_env.framework.trigger(
         ToolCallEvents.TOOL_CALL_STARTED,
@@ -855,6 +867,8 @@ async def test_enterprise_metric_labels_tool_error_are_exact_without_call_id(
     expected = {
         "gen_ai.tool.name": "weather",
         "jiuwenclaw.channel.id": "web",
+        "jiuwenclaw.mode": "agent",
+        "jiuwenclaw.adapter.mode": "flash",
     }
     for metric_name in (
         "gen_ai.tool.duration",

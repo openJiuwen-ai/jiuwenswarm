@@ -73,6 +73,7 @@ from jiuwenswarm.telemetry.attributes import (
     GEN_AI_SKILL_NAME,
     GEN_AI_SKILL_VERSION,
     ERROR_TYPE,
+    JIUWENCLAW_ADAPTER_MODE,
     JIUWENCLAW_AGENT_NAME,
     JIUWENCLAW_CANCELED,
     JIUWENCLAW_AGENT_PARENT,
@@ -81,6 +82,7 @@ from jiuwenswarm.telemetry.attributes import (
     JIUWENCLAW_CLAW_ID,
     JIUWENCLAW_DOMAIN_ID,
     JIUWENCLAW_ITERATION,
+    JIUWENCLAW_MODE,
     JIUWENCLAW_REQUEST_ID,
     JIUWENCLAW_SESSION_ID,
     JIUWENCLAW_USER_ID,
@@ -129,6 +131,8 @@ class _CallState:
     span_key: tuple[int, int] | None = None
     trace_id: int = 0
     session_id: str = ""
+    mode: str = ""
+    adapter_mode: str = ""
 
 
 @dataclass(frozen=True)
@@ -835,6 +839,8 @@ class RichTelemetryCallbacks:
                 GEN_AI_REQUEST_MODEL: state.model,
                 GEN_AI_SYSTEM: state.provider,
                 JIUWENCLAW_CHANNEL_ID: state.channel_id,
+                JIUWENCLAW_MODE: state.mode,
+                JIUWENCLAW_ADAPTER_MODE: state.adapter_mode,
             }
         )
         count_attributes = self._filtered_metric_attributes(
@@ -842,6 +848,8 @@ class RichTelemetryCallbacks:
                 GEN_AI_REQUEST_MODEL: state.model,
                 "status": "error" if error else "success",
                 JIUWENCLAW_CHANNEL_ID: state.channel_id,
+                JIUWENCLAW_MODE: state.mode,
+                JIUWENCLAW_ADAPTER_MODE: state.adapter_mode,
             }
         )
         self._metric_record(
@@ -952,6 +960,11 @@ class RichTelemetryCallbacks:
             state.channel_id = (
                 self._state_span_value(span, JIUWENCLAW_CHANNEL_ID)
                 or state.channel_id
+            )
+            state.mode = self._state_span_value(span, JIUWENCLAW_MODE)
+            state.adapter_mode = self._state_span_value(
+                span,
+                JIUWENCLAW_ADAPTER_MODE,
             )
             state.agent_name = self._state_agent_name(span) or state.agent_name
             if span is None:
@@ -1190,6 +1203,11 @@ class RichTelemetryCallbacks:
                 self._state_span_value(span, JIUWENCLAW_CHANNEL_ID)
                 or state.channel_id
             )
+            state.mode = self._state_span_value(span, JIUWENCLAW_MODE)
+            state.adapter_mode = self._state_span_value(
+                span,
+                JIUWENCLAW_ADAPTER_MODE,
+            )
             state.agent_name = self._state_agent_name(span) or state.agent_name
             if session_id not in (None, ""):
                 self._best_effort(
@@ -1290,6 +1308,8 @@ class RichTelemetryCallbacks:
                     {
                         JIUWENCLAW_AGENT_NAME: state.agent_name,
                         JIUWENCLAW_CHANNEL_ID: state.channel_id,
+                        JIUWENCLAW_MODE: state.mode,
+                        JIUWENCLAW_ADAPTER_MODE: state.adapter_mode,
                     }
                 ),
             )
@@ -1314,6 +1334,8 @@ class RichTelemetryCallbacks:
             channel_id=self._state_span_value(span, JIUWENCLAW_CHANNEL_ID)
             or self._request_metric_channel(),
             agent_name=self._state_agent_name(span),
+            mode=self._state_span_value(span, JIUWENCLAW_MODE),
+            adapter_mode=self._state_span_value(span, JIUWENCLAW_ADAPTER_MODE),
         )
         identity = self._call_identity(kwargs)
         self._metric_state.start("llm", identity, state)
@@ -1341,6 +1363,8 @@ class RichTelemetryCallbacks:
                                     GEN_AI_TOOL_NAME: tool_name,
                                     GEN_AI_REQUEST_MODEL: state.model,
                                     JIUWENCLAW_CHANNEL_ID: state.channel_id,
+                                    JIUWENCLAW_MODE: state.mode,
+                                    JIUWENCLAW_ADAPTER_MODE: state.adapter_mode,
                                 }
                             ),
                         )
@@ -1354,6 +1378,8 @@ class RichTelemetryCallbacks:
                                     GEN_AI_SKILL_NAME: skill_name,
                                     GEN_AI_REQUEST_MODEL: state.model,
                                     JIUWENCLAW_CHANNEL_ID: state.channel_id,
+                                    JIUWENCLAW_MODE: state.mode,
+                                    JIUWENCLAW_ADAPTER_MODE: state.adapter_mode,
                                 }
                             ),
                         )
@@ -1842,6 +1868,8 @@ class RichTelemetryCallbacks:
             {
                 GEN_AI_TOOL_NAME: state.tool_name,
                 JIUWENCLAW_CHANNEL_ID: state.channel_id,
+                JIUWENCLAW_MODE: state.mode,
+                JIUWENCLAW_ADAPTER_MODE: state.adapter_mode,
             }
         )
         duration = max(time.monotonic() - state.started_at, 0.0)
@@ -1861,6 +1889,8 @@ class RichTelemetryCallbacks:
                 skill.name,
                 version=skill.version,
                 channel_id=state.channel_id,
+                mode=state.mode,
+                adapter_mode=state.adapter_mode,
             )
             self._metric_add("gen_ai.skill.call.count", 1, skill_attributes)
             if error:
@@ -1892,6 +1922,8 @@ class RichTelemetryCallbacks:
             channel_id=(
                 activation.channel_id if activation is not None else state.channel_id
             ),
+            mode=state.mode,
+            adapter_mode=state.adapter_mode,
         )
         if error:
             self._metric_add("gen_ai.skill.error.count", 1, skill_attributes)
@@ -1915,6 +1947,8 @@ class RichTelemetryCallbacks:
         *,
         version: str,
         channel_id: str,
+        mode: str = "",
+        adapter_mode: str = "",
     ) -> dict[str, Any]:
         return self._filtered_metric_attributes(
             {
@@ -1922,6 +1956,8 @@ class RichTelemetryCallbacks:
                 GEN_AI_SKILL_VERSION: version,
                 GEN_AI_SYSTEM: "jiuwenclaw",
                 JIUWENCLAW_CHANNEL_ID: channel_id,
+                JIUWENCLAW_MODE: mode,
+                JIUWENCLAW_ADAPTER_MODE: adapter_mode,
             }
         )
 
