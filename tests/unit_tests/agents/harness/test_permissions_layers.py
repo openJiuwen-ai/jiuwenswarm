@@ -12,7 +12,11 @@ import yaml
 
 
 @pytest.fixture()
-def isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def isolated_data_dir(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
     root = tmp_path / "jiuwenswarm"
     cfg_dir = root / "config"
     cfg_dir.mkdir(parents=True)
@@ -38,6 +42,14 @@ def isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         return data if isinstance(data, dict) else {}
 
     monkeypatch.setattr(cfg_mod, "get_config", _read_tmp_config)
+
+    # 合成全局层走 config_loader 生效段（round-023 D1），其
+    # _cached_global 与 CONFIG_YAML_PATH 重定向无失效联动：进用例
+    # 先清缓存，退出再清，防 tmp 配置与其他用例缓存互相污染。
+    from jiuwenswarm.agents.harness.common.rails.permissions import config_loader
+
+    config_loader.clear_permissions_config_cache()
+    request.addfinalizer(config_loader.clear_permissions_config_cache)
     return root
 
 
