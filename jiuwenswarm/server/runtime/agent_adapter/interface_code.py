@@ -2295,6 +2295,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             code_graph_profile=resolve_code_graph_flags(config_base).root_prompt_profile,
         )
 
+    @staticmethod
     def _build_implement_completeness_rail() -> ImplementCompletenessRail | None:
         """Track real mutations and language-appropriate verification."""
         try:
@@ -2339,6 +2340,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         text = str(value).strip() if value is not None else ""
         return text or str(previous or "")
 
+    @staticmethod
     def _build_code_task_planning_rail() -> CodeTaskPlanningRail | None:
         """Register todo tools without openjiuwen todo system prompt injection."""
         try:
