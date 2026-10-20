@@ -832,8 +832,6 @@ async def _modelark_submit_video(target: GenerationTarget, request: VideoRequest
                 except _TRANSIENT_HTTP_ERRORS as exc:
                     logger.warning("[generate_video] polling ModelArk job %s failed, retrying: %r", task_id, exc)
                     continue
-                if status == "auth_failed":
-                    return _modelark_auth_failure_message(api_base, query_error or "")
                 if query_error:
                     return query_error
             if status in _PENDING_STATUSES:
