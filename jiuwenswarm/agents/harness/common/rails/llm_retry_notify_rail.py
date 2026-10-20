@@ -26,6 +26,9 @@ _TRANSIENT_MESSAGE_MARKERS = (
     "read timeout",
     "connect timeout",
 )
+# Observed wrapper: agent-core OpenAIModelClient.stream() exception text.
+# Require all markers to avoid broadening retries to bare or unrelated 404s.
+# Wrapper wording drift disables this extra 404 rule; generic retry rules remain.
 _MEMBER_NETWORK_404_MARKERS = (
     "async stream error",
     "notfounderror",

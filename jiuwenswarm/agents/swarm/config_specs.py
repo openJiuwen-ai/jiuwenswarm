@@ -410,8 +410,6 @@ def _llm_retry_params(config: dict[str, Any]) -> dict[str, Any]:
         "notify_user_on_retry": retry.get("notify_user_on_retry", True),
         "notify_user_on_exhausted": retry.get("notify_user_on_exhausted", True),
     }
-    if "backoff_seconds" in retry:
-        params["backoff_seconds"] = retry["backoff_seconds"]
     return params
 
 

@@ -78,7 +78,7 @@ def test_retry_provider_requires_existing_guard_switch(config: dict[str, Any]) -
 async def test_only_observed_stream_404_and_transient_errors_request_retry(
     message: str, expected: bool
 ) -> None:
-    rail = _build_rail({"backoff_seconds": [0.0], "notify_user_on_retry": False})
+    rail = _build_rail({"notify_user_on_retry": False})
     ctx = _ctx(message)
 
     await rail.on_model_exception(ctx)
@@ -90,11 +90,11 @@ async def test_only_observed_stream_404_and_transient_errors_request_retry(
 
 
 @pytest.mark.asyncio
-async def test_configured_retry_budget_backoff_and_detection_settings_are_preserved() -> None:
+async def test_configured_retry_budget_and_detection_settings_are_preserved(monkeypatch) -> None:
+    monkeypatch.setattr(llm_retry_notify_rail.random, "uniform", lambda *_: 1.0)
     rail = _build_rail(
         {
             "max_retries": 3,
-            "backoff_seconds": [0.0, 0.25],
             "repeat_min_pattern_chars": 3,
             "repeat_max_pattern_chars": 32,
             "repeat_min_count": 4,
@@ -114,7 +114,7 @@ async def test_configured_retry_budget_backoff_and_detection_settings_are_preser
         if request is not None:
             delays.append(request.delay_seconds)
 
-    assert delays == [0.0, 0.25, 0.25]
+    assert delays == [5.0, 10.0, 20.0]
     assert rail.repeat_min_pattern_chars == 3
     assert rail.repeat_max_pattern_chars == 32
     assert rail.repeat_min_count == 4
@@ -139,7 +139,6 @@ async def test_retry_and_exhaustion_notifications_respect_config(notify: bool) -
     rail = _build_rail(
         {
             "max_retries": 1,
-            "backoff_seconds": [0.0],
             "notify_user_on_retry": notify,
             "notify_user_on_exhausted": notify,
         }
@@ -167,7 +166,7 @@ async def test_retry_and_exhaustion_notifications_respect_config(notify: bool) -
 @pytest.mark.asyncio
 async def test_team_retry_keeps_per_context_budgets() -> None:
     rail = _build_rail(
-        {"max_retries": 1, "backoff_seconds": [0.0], "notify_user_on_exhausted": False}
+        {"max_retries": 1, "notify_user_on_exhausted": False}
     )
     first, second = _ctx(), _ctx()
     await rail.before_invoke(first)
@@ -181,10 +180,11 @@ async def test_team_retry_keeps_per_context_budgets() -> None:
     assert second.consume_retry_request() is not None
 
 
+@pytest.mark.parametrize("settings", [{}, {"backoff_seconds": [0.0, 0.25]}])
 @pytest.mark.asyncio
-async def test_team_retry_keeps_current_default_exponential_backoff(monkeypatch) -> None:
+async def test_team_retry_keeps_current_default_exponential_backoff(settings, monkeypatch) -> None:
     monkeypatch.setattr(llm_retry_notify_rail.random, "uniform", lambda *_: 1.0)
-    rail = _build_rail({})
+    rail = _build_rail(settings)
     ctx = _ctx()
     delays = []
 
@@ -198,8 +198,9 @@ async def test_team_retry_keeps_current_default_exponential_backoff(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_swarmflow_worker_keeps_retry_settings_after_serialization() -> None:
-    base = DeepAgentSpec(rails=[_retry_spec({"max_retries": 1, "backoff_seconds": [0.25]})])
+async def test_swarmflow_worker_keeps_retry_settings_after_serialization(monkeypatch) -> None:
+    monkeypatch.setattr(llm_retry_notify_rail.random, "uniform", lambda *_: 1.0)
+    base = DeepAgentSpec(rails=[_retry_spec({"max_retries": 1})])
     worker = derive_member_spec(
         base, team_name="team", member_name="worker-1", system_prompt="worker", model=None
     )
@@ -211,6 +212,6 @@ async def test_swarmflow_worker_keeps_retry_settings_after_serialization() -> No
     await rail.on_model_exception(ctx)
     request = ctx.consume_retry_request()
     assert request is not None
-    assert request.delay_seconds == 0.25
+    assert request.delay_seconds == 5.0
     await rail.on_model_exception(ctx)
     assert ctx.consume_retry_request() is None
