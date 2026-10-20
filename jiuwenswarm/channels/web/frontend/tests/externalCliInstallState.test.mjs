@@ -252,7 +252,7 @@ test('re-detecting keeps the card layout stable instead of unmounting the path b
   // usable while the agent's own install runs — only the install button
   // freezes then (a re-click would fire a duplicate force install).
   assert.doesNotMatch(sectionSource, /\{!detectingNow \? \(/);
-  assert.match(sectionSource, /disabled=\{disabled \|\| !onDetect\}/);
+  assert.match(sectionSource, /disabled=\{disabled \|\| !onDetect \|\| editing\[cliAgent\]\}/);
   assert.doesNotMatch(sectionSource, /!onDetect \|\| agentInstalling/);
   // Symmetrically, a running detect must not freeze the install entries:
   // the two actions are independent read-only/probe vs. commit operations.
@@ -267,19 +267,17 @@ test('installed cards keep the detect+install pair and not-installed ones show t
 
   // One-click install lives in two mutually exclusive places: the path-row
   // button pair (installed card) and the not-installed hint banner. The
-  // banner is suppressed after a manual Detect click so re-detecting never
-  // pops it up.
+  // banner hides only while a detect is in flight with a result on screen,
+  // so a manual re-detect never flashes it — once the detect finishes the
+  // banner follows the real result.
   const installBtnMatches = sectionSource.match(/settings-panel-external-cli-agent-install-btn/g) ?? [];
   assert.equal(installBtnMatches.length, 2);
   assert.match(sectionSource, /installNow\(cliAgent\)/);
-  assert.match(sectionSource, /!manualDetectAgents\.has\(cliAgent\)/);
-  // The suppression is not sticky: when the config signature changes (path or
-  // built-in/custom switch) auto-detect takes over and the banner returns, so
-  // the effect must remove the agent from manualDetectAgents.
-  assert.match(
-    sectionSource,
-    /observedCliPathsRef\.current\[cliAgent\] = cliPath;[\s\S]{0,240}?setManualDetectAgents\(\(prev\) => \{[\s\S]{0,200}?next\.delete\(cliAgent\);/,
-  );
+  // A force install on an already-installed agent finishes silently backend-side,
+  // so installNow must always toast the outcome to stay responsive.
+  assert.match(sectionSource, /showHint\(t\('config\.externalCli\.installSucceeded'\)\)/);
+  assert.match(sectionSource, /!installed && \(!result \|\| !detectingNow\)/);
+  assert.doesNotMatch(sectionSource, /manualDetectAgents/);
   // Built-in mode shows the actual built-in CLI path from detection instead of
   // the generic placeholder text.
   assert.match(sectionSource, /useBuiltin && detectedPath \? \(/);
@@ -348,11 +346,8 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(section, /title=\{t\('config\.externalCli\.redetectHint'\)\}/);
   assert.match(section, /disabled=\{disabled \|\| !onDetect \|\| editing\[cliAgent\]\}/);
   assert.match(section, /!onCommitAgent \|\| agentInstalling \|\| editing\[cliAgent\]/);
-  // The enable switch is disabled only when the CLI is not installed AND the
-  // agent is already disabled — so a page reload (installed=false until the
-  // auto-detect runs) does not lock the user out of an enabled agent, and a
-  // disabled agent cannot be turned on before installing the CLI.
-  assert.match(section, /disabled=\{disabled \|\| \(!installed && !enabled\) \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  assert.match(section, /!installed \|\| agentInstalling \|\| editing\[cliAgent\]/);
+  assert.match(section, /committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]/);
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {
