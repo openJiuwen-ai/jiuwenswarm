@@ -11,6 +11,8 @@ echo "[build] 项目根目录: $PROJECT_ROOT"
 
 # 版本 PR 只修改根 pyproject.toml；构建入口自动同步 TUI 与 Python 运行时元数据。
 uv run --no-project --python 3.11 python "$PROJECT_ROOT/scripts/build_config.py" --sync
+uv run --no-project --python 3.11 python "$PROJECT_ROOT/scripts/generate_build_info.py"
+export JIUWENSWARM_BUILD_INFO_READY=1
 uv sync --all-extras \
   --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
   --extra-index-url https://repo.huaweicloud.com/repository/pypi/simple

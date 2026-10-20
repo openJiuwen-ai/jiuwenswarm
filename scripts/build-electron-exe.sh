@@ -226,6 +226,7 @@ fi
 if [ "$FRONTEND_ONLY" = false ]; then
     echo ""
     echo "[4/6] Running PyInstaller (backend)..."
+    uv run --no-project --python 3.11 python "$PROJECT_ROOT/scripts/generate_build_info.py" --require-agent-core-branch
     uv run pyinstaller scripts/jiuwenswarm.spec --noconfirm
 
     BACKEND_DIST="$DIST_DIR/$BUILD_DIST_DIR_NAME"
