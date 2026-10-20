@@ -12,7 +12,8 @@ const outfile = resolve('node_modules/.cache/voice-task-panel/panel.mjs');
 await build({
   stdin: {
     contents: `export { VideoLivePanel } from ${JSON.stringify(`${panelRoot}/index.tsx`)};
-      export { RealtimeDuplexSession } from ${JSON.stringify(`${panelRoot}/qwenOmniSession.ts`)};`,
+      export { RealtimeDuplexSession } from ${JSON.stringify(`${panelRoot}/qwenOmniSession.ts`)};
+      export { toastStore } from ${JSON.stringify(resolve('src/components/ui/Toast/toastStore.ts'))};`,
     resolveDir: process.cwd(),
     loader: 'tsx',
   },
@@ -40,7 +41,7 @@ await build({
     },
   ],
 });
-const { VideoLivePanel, RealtimeDuplexSession } = await import(pathToFileURL(outfile));
+const { VideoLivePanel, RealtimeDuplexSession, toastStore } = await import(pathToFileURL(outfile));
 let dom, root, panel, session, requests, sent, pending, listeners;
 const globals = new Map();
 const originalStart = RealtimeDuplexSession.prototype.start;
@@ -239,4 +240,111 @@ test('late RPC receipt after media restart cannot speak into the new session', a
   assert.notEqual(session, previous);
   await receipt('old', { search_job: { id: 'old-task', status: 'queued', question: 'old task' } });
   assert.equal(outputs().length, 0);
+});
+
+test('provider idle timeout renews repeatedly with fresh context and mute settings without an idle UI state', async () => {
+  const states = [];
+  await act(async () => root.render(createElement(VideoLivePanel, { ref: panel, onRuntimeState: state => states.push(state) })));
+  await act(async () => {
+    panel.current.stop();
+    await panel.current.startScreenDuplex('task-duplex:conversation-a', false);
+    panel.current.setMicrophoneMuted(true);
+    panel.current.setSpeakerMuted(true);
+  });
+  const request = globalThis.__panel.request;
+  let restores = 0;
+  globalThis.__panel.request = async (method, args) => {
+    const config = await request(method, args);
+    return method === 'video.realtime.config'
+      ? { ...config, context_restore: { token: 'restore', instructions: `history-${++restores}` } }
+      : config;
+  };
+  states.length = 0;
+  for (let round = 1; round <= 3; round += 1) {
+    const previous = session;
+    await act(async () => previous.handleEvent({ type: 'error', error: {
+      code: 'response_idle_timeout', message: 'Your session was closed because no response was generated for 300 seconds.',
+    } }));
+    assert.notEqual(session, previous);
+    assert.equal(previous.socket, null);
+    assert.equal(session.config.restoreInstructions, `history-${round}`);
+    assert.equal(session.microphoneMuted, true);
+    assert.equal(session.speakerMuted, true);
+  }
+  assert.equal(states.includes('idle'), false);
+  assert.equal(requests.filter(r => r.method === 'video.realtime.config').at(-1).args.search_session_id, 'task-duplex:conversation-a');
+  assert.equal(sent.some(event => event.type === 'response.create'), false, 'renewal generates no answer or acceptance');
+});
+
+test('a task accepted before idle renewal is notified once without replaying its old call ID', async () => {
+  const args = await call('jiuwen_delegate', { task: 'Calculate the sum' }, 'old-create');
+  await receipt('old-create', { search_job: { id: 'old-task', status: 'running', question: 'Calculate the sum' } });
+  await finishResponse();
+  await act(async () => session.handleEvent({ type: 'error', error: { code: 'response_idle_timeout', message: 'idle' } }));
+  const result = {
+    job_id: 'old-task', search_session_id: args.search_session_id, tool_call_id: 'old-create',
+    question: 'Calculate the sum', status: 'completed', result: '55',
+    realtime_brief: { status: 'completed', summary: '55' },
+  };
+  await act(async () => {
+    panel.current.deliverToolResult(result);
+    panel.current.deliverToolResult(result);
+  });
+  assert.equal(outputs().length, 1, 'old acceptance is never replayed on the new connection');
+  assert.equal(sent.filter(event => event.item?.content?.[0]?.text?.includes('Jiuwen result delivery notice')).length, 1);
+});
+
+test('user cancellation wins over a queued idle-timeout renewal', async () => {
+  const count = requests.filter(r => r.method === 'video.realtime.config').length;
+  const previous = session;
+  await act(async () => {
+    previous.handleEvent({ type: 'error', error: { code: 'response_idle_timeout', message: 'idle' } });
+    panel.current.stop();
+  });
+  assert.equal(requests.filter(r => r.method === 'video.realtime.config').length, count);
+  assert.equal(previous.socket, null);
+});
+
+test('quota and ordinary provider errors do not trigger automatic renewal', async () => {
+  const count = requests.filter(r => r.method === 'video.realtime.config').length;
+  const previous = session;
+  await act(async () => previous.handleEvent({ type: 'error', error: { code: 'quota_exhausted', message: 'quota exhausted' } }));
+  assert.equal(session, previous);
+  assert.equal(requests.filter(r => r.method === 'video.realtime.config').length, count);
+});
+
+async function shareScreenWith(error) {
+  await act(async () => panel.current.stop());
+  session = undefined;
+  toastStore.closeAll();
+  navigator.mediaDevices.getDisplayMedia = async () => { throw error; };
+  let started;
+  await act(async () => { started = await panel.current.startScreenDuplex('sid', true, 'screen'); });
+  return started;
+}
+
+test('screen sharing unsupported by the runtime falls back to voice-only duplex with a notice (#5283)', async () => {
+  const started = await shareScreenWith(new DOMException('Not supported', 'NotSupportedError'));
+  assert.equal(started, true);
+  assert.ok(session, 'voice session started');
+  assert.ok(toastStore.getSnapshot().some((notice) => notice.content === '当前环境不支持屏幕共享，已仅开启语音' && !notice.closing));
+});
+
+test('a plain "Not supported" error and a missing getDisplayMedia also fall back to voice', async () => {
+  assert.equal(await shareScreenWith(new Error('Not supported')), true);
+  assert.ok(session);
+  await act(async () => panel.current.stop());
+  session = undefined;
+  delete navigator.mediaDevices.getDisplayMedia;
+  let started;
+  await act(async () => { started = await panel.current.startScreenDuplex('sid', true, 'screen'); });
+  assert.equal(started, true);
+  assert.ok(session);
+});
+
+test('cancelling the screen picker still starts no voice session', async () => {
+  const started = await shareScreenWith(new DOMException('cancelled', 'NotAllowedError'));
+  assert.equal(started, false);
+  assert.equal(session, undefined);
+  assert.ok(!toastStore.getSnapshot().some((notice) => notice.content === '当前环境不支持屏幕共享，已仅开启语音' && !notice.closing));
 });

@@ -126,6 +126,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const pollingSearchJobsRef = useRef<Set<string>>(new Set());
   const pendingScreenAutostartRef = useRef(false);
   const wasDuplexRunningRef = useRef(false);
+  const restartRealtimeRef = useRef<() => Promise<void>>(async () => {});
+  const microphoneMutedRef = useRef(false);
+  const speakerMutedRef = useRef(false);
 
   const [source, setSource] = useState<VideoSource>(null);
   const [sourceName, setSourceName] = useState('');
@@ -165,15 +168,19 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     setSearchProgressJobs((jobs) => mergeSearchProgressJob(jobs, payload));
   };
 
-  const stopModelTransport = () => {
+  const stopModelTransport = (renewing = false) => {
     mediaGenerationRef.current += 1;
     startingRealtimeRef.current = null;
     mediaToolCallIdsRef.current.clear();
-    mediaTaskIdsRef.current.clear();
+    if (!renewing) mediaTaskIdsRef.current.clear();
     duplexRef.current?.stop();
     duplexRef.current = null;
     joyaiProviderRef.current?.stop();
     joyaiProviderRef.current = null;
+    if (!renewing) {
+      microphoneMutedRef.current = false;
+      speakerMutedRef.current = false;
+    }
   };
 
   const resetVisualContext = () => {
@@ -351,7 +358,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         ...(turnId ? { turnId } : {}),
         question,
         brief: realtimeBrief,
-        ...(callId ? { callId } : {}),
+        ...(callId && mediaToolCallIdsRef.current.has(callId) ? { callId } : {}),
       }) ||
       false;
     searchJobsRef.current.set(payload.job_id, {
@@ -398,7 +405,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           response_mode: 'acknowledge',
           source: 'fallback',
         },
-        callId,
+        ...(mediaToolCallIdsRef.current.has(callId) ? { callId } : {}),
       });
     }
     searchJobsRef.current.set(payload.job_id, {
@@ -828,7 +835,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       setRealtimeStatus('正在读取视频模型配置…');
       reportRealtimeEvent('realtime_config_requested');
       try {
-        searchSessionRef.current = conversationSearchSessionRef.current || crypto.randomUUID();
+        searchSessionRef.current = conversationSearchSessionRef.current || searchSessionRef.current || crypto.randomUUID();
         const config = await webRequest<VideoSessionConfig>('video.realtime.config', {
           search_session_id: searchSessionRef.current,
         });
@@ -928,6 +935,22 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               if (state === 'listening') setIsRealtimeStarting(false);
             },
             onError: setError,
+            onIdleTimeout: () => {
+              if (duplexRef.current !== session) return;
+              // Keep the conversation, shared video and controller alive while
+              // replacing Qwen's expired connection. Config reload restores
+              // current history; old socket call IDs must not cross sessions.
+              duplexRef.current = null;
+              stopModelTransport(true);
+              session.stop();
+              setIsRecording(false);
+              setIsRealtimeStarting(true);
+              const generation = mediaGenerationRef.current;
+              void Promise.resolve().then(() => {
+                // Cancel/replacement during renewal must never reopen the mic.
+                if (generation === mediaGenerationRef.current) return restartRealtimeRef.current();
+              });
+            },
             onToolResultDispatched: () => {
               setSearchStatus('');
             },
@@ -1005,7 +1028,13 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           () => reportRealtimeEvent('realtime_start_unsupported_browser'),
         );
         duplexRef.current = session;
+        session.setMicrophoneMuted(microphoneMutedRef.current);
+        session.setSpeakerMuted(speakerMutedRef.current);
         await session.start();
+        if (duplexRef.current === session) {
+          session.setMicrophoneMuted(microphoneMutedRef.current);
+          session.setSpeakerMuted(speakerMutedRef.current);
+        }
       } catch (realtimeError) {
         if (mediaGeneration !== mediaGenerationRef.current) return;
         stopModelTransport();
@@ -1024,6 +1053,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       if (startingRealtimeRef.current === start) startingRealtimeRef.current = null;
     }
   };
+  restartRealtimeRef.current = startRealtime;
 
   const stopRealtime = () => {
     stopModelTransport();
@@ -1086,10 +1116,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       resetSource();
     },
     setMicrophoneMuted: (muted) => {
+      microphoneMutedRef.current = muted;
       duplexRef.current?.setMicrophoneMuted(muted);
       joyaiProviderRef.current?.setMicrophoneMuted(muted);
     },
     setSpeakerMuted: (muted) => {
+      speakerMutedRef.current = muted;
       duplexRef.current?.setSpeakerMuted(muted);
       joyaiProviderRef.current?.setSpeakerMuted(muted);
     },

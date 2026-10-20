@@ -33,7 +33,8 @@ async def test_live_context_imports_speech_once_and_skips_task_ui_duplicates(mon
 
     context.add_messages = AsyncMock(side_effect=add)
     agent = SimpleNamespace(react_agent=SimpleNamespace(
-        context_engine=SimpleNamespace(get_context=lambda **_: context)))
+        context_engine=SimpleNamespace(get_context=lambda **_: context, save_contexts=AsyncMock())),
+        _interaction_session=SimpleNamespace(get_session_id=lambda: "web-chat"))
     records = [
         dict(id="voice-user", channel_id="video_duplex", role="user", content="我叫小明"),
         dict(id="voice-answer", channel_id="video_duplex", role="assistant", event_type="chat.final", content="你好，小明"),
@@ -57,3 +58,34 @@ async def test_live_context_imports_speech_once_and_skips_task_ui_duplicates(mon
     agent.react_agent.context_engine.get_context = get_restored_context
     await sync.sync_conversation_context(agent, "web-chat")
     assert restored.add_messages.await_count == 1
+
+
+async def test_imported_speech_survives_next_react_context_initialization(monkeypatch):
+    from copy import deepcopy
+    from openjiuwen.core.context_engine import ContextEngine, ContextEngineConfig
+    from openjiuwen.core.context_engine.token.string_length_counter import StringLengthCounter
+
+    state = {}
+    session = SimpleNamespace(
+        get_session_id=lambda: "web-chat",
+        get_state=lambda key: deepcopy(state.get(key)),
+        update_state=lambda values: state.update(deepcopy(values)),
+    )
+    engine = ContextEngine(ContextEngineConfig(enable_openrouter_model_context_window_tokens=False))
+    context = await engine.create_context(session=session, token_counter=StringLengthCounter())
+    await context.add_messages(UserMessage(content="Earlier typed question"))
+    await engine.save_contexts(session)
+    agent = SimpleNamespace(react_agent=SimpleNamespace(context_engine=engine), _interaction_session=session)
+    monkeypatch.setattr(sync, "flush_pending_writes", lambda **_: True)
+    monkeypatch.setattr(sync, "load_history_records", lambda _: [
+        dict(id="voice-name", channel_id="video_duplex", role="user", content="My project is Cedar"),
+        dict(id="voice-reply", channel_id="video_duplex", role="assistant", event_type="chat.final", content="Cedar noted"),
+    ])
+    await sync.sync_conversation_context(agent, "web-chat")
+    # ReAct calls create_context again before it reads the next typed query.
+    restored = await engine.create_context(session=session)
+    assert [m.content for m in restored.get_messages()] == [
+        "Earlier typed question", "My project is Cedar", "Cedar noted",
+    ]
+    await sync.sync_conversation_context(agent, "web-chat")
+    assert len(restored.get_messages()) == 3

@@ -36,6 +36,7 @@ export interface RealtimeDuplexCallbacks {
   onUserText: (text: string, final: boolean) => void;
   onState: (state: 'connecting' | 'listening' | 'speaking' | 'closed') => void;
   onError: (message: string) => void;
+  onIdleTimeout?: () => void;
   onDiagnostic?: (event: Record<string, unknown>) => void;
   onToolResultDispatched?: (jobId: string) => void;
   onFunctionCall?: (call: QwenOmniFunctionCall) => void;
@@ -900,6 +901,14 @@ export class RealtimeDuplexSession {
         image_append_sequence: media.imageAppendSequence,
         has_deferred_image: media.hasDeferredImage,
       });
+      // Qwen closes a connection after 300s without a generated response.
+      // This is a provider limit, not a local idle timer that can be disabled.
+      // The owner renews the transport with restored history; never fabricate
+      // a response or replay historical tool calls merely to keep it alive.
+      if (errorRecord.code === 'response_idle_timeout' && this.sessionReady && this.callbacks.onIdleTimeout) {
+        this.callbacks.onIdleTimeout();
+        return;
+      }
       this.callbacks.onError(readableError(error || event));
     }
   }
