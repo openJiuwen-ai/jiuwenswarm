@@ -132,6 +132,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const mediaGenerationRef = useRef(0);
   const mediaToolCallIdsRef = useRef(new Set<string>());
   const mediaTaskIdsRef = useRef(new Set<string>());
+  const renewingRealtimeRef = useRef(false);
+  const renewalResultsRef = useRef(new Map<string, SearchJobPayload>());
   const latestUserInstructionRef = useRef({ text: '', turnId: '' });
   const searchJobsRef = useRef<Map<string, SearchJobState>>(new Map());
   const pollingSearchJobsRef = useRef<Set<string>>(new Set());
@@ -180,6 +182,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   };
 
   const stopModelTransport = (renewing = false) => {
+    renewingRealtimeRef.current = renewing;
+    if (!renewing) renewalResultsRef.current.clear();
     mediaGenerationRef.current += 1;
     startingRealtimeRef.current = null;
     mediaToolCallIdsRef.current.clear();
@@ -937,6 +941,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               if (duplexRef.current !== session) return;
               setDuplexVoicePhase(state);
               if (state === 'closed') {
+                renewingRealtimeRef.current = false;
+                renewalResultsRef.current.clear();
                 duplexRef.current = null;
                 mediaGenerationRef.current += 1;
                 mediaToolCallIdsRef.current.clear();
@@ -954,7 +960,16 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                       ? t('videoLive.status.speaking')
                       : '',
               );
-              if (state === 'listening') setIsRealtimeStarting(false);
+              if (state === 'listening') {
+                setIsRealtimeStarting(false);
+                renewingRealtimeRef.current = false;
+                const pending = [...renewalResultsRef.current.values()];
+                renewalResultsRef.current.clear();
+                for (const payload of pending) {
+                  if (payload.status === 'failed') acceptFailedSearch(payload);
+                  else acceptCompletedSearch(payload);
+                }
+              }
             },
             onError: setError,
             onIdleTimeout: () => {
@@ -1165,6 +1180,20 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     },
     deliverToolResult: (payload) => {
       if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;
+      // The runtime delivers terminal events once. Hold them while replacing
+      // Qwen's transport, including the interval spent fetching fresh config.
+      if (renewingRealtimeRef.current) {
+        const jobId = payload.job_id || '';
+        if (!mediaTaskIdsRef.current.has(jobId)) return;
+        if (payload.status === 'cancelled') {
+          renewalResultsRef.current.delete(jobId);
+          mediaTaskIdsRef.current.delete(jobId);
+          searchJobsRef.current.delete(jobId);
+        } else {
+          renewalResultsRef.current.set(jobId, payload);
+        }
+        return;
+      }
       // A function_call_output is valid only on the Qwen connection that created its call ID.
       // JoyAI jobs likewise need to belong to this media run; old results stay visible without replay.
       if (duplexRef.current) {

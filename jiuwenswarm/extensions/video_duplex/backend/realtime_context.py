@@ -35,6 +35,10 @@ def render_context(package):
     return RESTORE_INSTRUCTIONS + "\n" + json.dumps(package, ensure_ascii=False) if package else ""
 
 
+class ContextRestoreExpired(ValueError):
+    """The caller may prepare fresh context before retrying an unexecuted request."""
+
+
 class RealtimeContextRestorer:
     """Shared authenticated restore flow; providers only choose delivery timing."""
 
@@ -63,7 +67,9 @@ class RealtimeContextRestorer:
             raise ValueError("Invalid context restore token")
         owner, scope = await self.task_manager.authorized_scope(ws, scope)
         saved = self._prepared.get(token)
-        if not saved or saved[:2] != (owner, scope):
+        if not saved:
+            raise ContextRestoreExpired("Context restore token expired; prepare fresh context")
+        if saved[:2] != (owner, scope):
             raise ValueError("Restored context is unavailable for this conversation; restart Full-duplex")
         package = refresh_context(saved[2], self.task_manager.snapshot(owner, scope))
         return render_context(package)
@@ -81,10 +87,11 @@ def transcript(records):
         if role == "assistant" and event != "chat.final":
             continue
         identity = f"{record.get('id') or record.get('request_id') or 'turn'}:{index}"
-        fingerprint = (role, text.strip())
-        if fingerprint in seen:
+        record_id = record.get("id")
+        if record_id and record_id in seen:
             continue
-        seen.add(fingerprint)
+        if record_id:
+            seen.add(record_id)
         turns.append({
             "source_id": identity, "role": role,
             "origin": "core_report" if record.get("presentation") == "tool_result" else "conversation",

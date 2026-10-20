@@ -6,6 +6,7 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { toast } from '../ui/Toast/toastStore';
 import {
   Activity,
   ArrowRight,
@@ -1583,11 +1584,16 @@ export const ChatPanel = React.memo(function ChatPanel({
   // 包装发送消息函数，添加滚动逻辑
   const handleSendMessage = useCallback(
     async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
-      if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
+      try {
+        if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
+      } catch (error) {
+        toast.open({ content: error instanceof Error ? error.message : t('network.requestFailed'), variant: 'error' });
+        return;
+      }
       setIsSending(true);
       onSendMessage(content, mediaItems, options);
     },
-    [activeSessionId, onSendMessage],
+    [activeSessionId, onSendMessage, t],
   );
 
   // 当发送消息时强制滚动到底部

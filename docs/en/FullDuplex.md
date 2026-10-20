@@ -36,5 +36,15 @@ Qwen may close a connection with `response_idle_timeout` after 300 seconds witho
 generated response. Full-duplex automatically renews that connection, restores context,
 and retains sharing and mute settings. Renewal does not generate a keepalive answer or
 replay an old tool call. A running task's later result can be announced once on the new
-connection. Exit or a replacement session cancels pending renewal. Authentication,
+connection, including results received while replacement configuration is loading.
+Exit or a replacement session cancels pending renewal and its queued notifications. Authentication,
 quota and ordinary network errors still use the normal error path.
+
+If saving voice history fails, a restart or typed turn reports the error and stops before
+sending the new request. Failed events stay in memory in their original order and use
+the same event IDs on retry. Retry after storage recovers; pending writes do not survive
+a page reload. Distinct turns with identical text remain separate in restored history.
+
+JoyAI refreshes an expired context token in the same authorized chat and retries the
+unexecuted user request once. Cancellation or session replacement stops that retry.
+Authorization failures and errors after inference begins are not replayed.

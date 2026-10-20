@@ -207,7 +207,7 @@ def register_video_live_handler(
         log_asr=lambda event: _append_asr_log(event),
     )
 
-    from .realtime_context import RealtimeContextRestorer
+    from .realtime_context import ContextRestoreExpired, RealtimeContextRestorer
 
     context_restorer = RealtimeContextRestorer(search_manager)
 
@@ -347,6 +347,9 @@ def register_video_live_handler(
                 if request_kind != "user":
                     raise ValueError("Restored context is allowed only for user requests")
                 restore_instructions = await context_restorer.instructions(ws, search_session_id, restore_token)
+            except ContextRestoreExpired as exc:
+                await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_EXPIRED")
+                return
             except Exception as exc:
                 await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
                 return

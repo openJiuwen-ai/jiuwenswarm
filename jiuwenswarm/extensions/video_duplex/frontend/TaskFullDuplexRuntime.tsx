@@ -38,11 +38,36 @@ type PersistedTimelineEvent = Record<string, unknown> & {
   timestamp: number;
 };
 
-const historyQueues = new Map<string, Promise<void>>();
+type HistoryQueue = {
+  events: Record<string, unknown>[];
+  writing?: Promise<void>;
+};
+const historyQueues = new Map<string, HistoryQueue>();
+
+function writeHistory(sessionId: string, queue: HistoryQueue): Promise<void> {
+  if (queue.writing) return queue.writing;
+  const writing = (async () => {
+    // Retain the failed event and its ID so retries remain ordered and idempotent.
+    while (queue.events.length) {
+      await webRequest("video.conversation.append", queue.events[0]);
+      queue.events.shift();
+    }
+  })();
+  queue.writing = writing;
+  void writing.then(() => {
+    queue.writing = undefined;
+    if (queue.events.length) void writeHistory(sessionId, queue);
+    else if (historyQueues.get(sessionId) === queue) historyQueues.delete(sessionId);
+  }, (error) => {
+    queue.writing = undefined;
+    console.warn("Failed to persist Full-duplex timeline event:", error);
+  });
+  return writing;
+}
 
 export async function flushConversationHistory(sessionId: string): Promise<void> {
   while (historyQueues.has(sessionId)) {
-    await historyQueues.get(sessionId);
+    await writeHistory(sessionId, historyQueues.get(sessionId)!);
   }
 }
 
@@ -67,23 +92,10 @@ function persistTimelineEvent(
   event: PersistedTimelineEvent,
 ): void {
   if (!sessionId || sessionId === "new") return;
-  const previous = historyQueues.get(sessionId) ?? Promise.resolve();
-  const next = previous
-    .catch(() => undefined)
-    .then(async () => {
-      await webRequest("video.conversation.append", {
-        session_id: sessionId,
-        event_id: timelineEventId(),
-        ...event,
-      });
-    })
-    .catch((error) => {
-      console.warn("Failed to persist Full-duplex timeline event:", error);
-    });
-  historyQueues.set(sessionId, next);
-  void next.finally(() => {
-    if (historyQueues.get(sessionId) === next) historyQueues.delete(sessionId);
-  });
+  const queue = historyQueues.get(sessionId) ?? { events: [] };
+  queue.events.push({ ...event, session_id: sessionId, event_id: timelineEventId() });
+  historyQueues.set(sessionId, queue);
+  void writeHistory(sessionId, queue);
 }
 
 export function TaskFullDuplexRuntime({

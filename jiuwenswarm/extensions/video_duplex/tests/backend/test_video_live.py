@@ -757,11 +757,15 @@ async def test_joyai_restores_history_on_user_turns_with_fresh_task_state(monkey
         manager.authorized_scope.return_value = (owner, scope)
         await channel.handlers["video.joyai.frame"](ws, "wrong-scope", request, "transport")
         assert channel.responses[-1][1]["ok"] is False
+        assert channel.responses[-1][1]["code"] == "CONTEXT_RESTORE_FAILED"
         assert provider.await_count == calls
     manager.authorized_scope.return_value = ("alice", "task-duplex:chat-a")
     await channel.handlers["video.joyai.frame"](ws, "frame-with-token", {**request, "instruction": "", "request_kind": "frame"}, "transport")
     assert channel.responses[-1][1]["ok"] is False
     assert provider.await_count == calls
+    await channel.handlers["video.joyai.frame"](ws, "expired-token", {**request, "restore_token": "expired"}, "transport")
+    assert channel.responses[-1][1]["code"] == "CONTEXT_RESTORE_EXPIRED"
+    assert provider.await_count == calls, "expired restore must fail before provider side effects"
     await channel.handlers["video.joyai.frame"](ws, "normal-frame", {
         "frame_data_url": request["frame_data_url"], "request_kind": "frame", "joyai_session_id": "media-a",
     }, "transport")

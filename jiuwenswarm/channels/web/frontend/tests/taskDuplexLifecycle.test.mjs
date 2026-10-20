@@ -14,9 +14,10 @@ const outfile = resolve('node_modules/.cache/task-duplex-lifecycle/runtime.mjs')
 await build({
   stdin: {
     contents: `export { TaskFullDuplexAction } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexAction.tsx`)};
-      export { TaskFullDuplexRuntime } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
+      export { TaskFullDuplexRuntime, flushConversationHistory } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
       export { JoyAIProvider } from ${JSON.stringify(`${pluginRoot}/VideoLivePanel/joyaiProvider.ts`)};
       export { useChatStore } from './src/stores/chatStore.ts';
+      export { toastStore } from './src/components/ui/Toast/toastStore.ts';
       export { buildArtifacts } from './src/components/ArtifactsPanel/artifactCollection.ts';
       export { parseHistoryJsonFileToPreviewMessages } from './src/features/historyRestore.ts';
       export { artifactDownloadUrl, artifactTextPreviewUrl } from './src/components/ArtifactsPanel/filePreviewModel.ts';
@@ -90,6 +91,8 @@ await build({
 });
 const {
   TaskFullDuplexRuntime,
+  flushConversationHistory,
+  toastStore,
   TaskFullDuplexAction,
   startTaskFullDuplex,
   stopTaskFullDuplex,
@@ -363,6 +366,33 @@ test('unregistered plugin sessions cannot inject results into the visible task',
   await event('completed', job('standalone-plugin-session', { status: 'completed', result: 'unrelated' }));
   assert.equal(harness.messages.length, 0);
   assert.deepEqual(harness.tasks.sessions, {});
+});
+
+test('failed history writes block restart and retry the original events in order with stable IDs', async () => {
+  await start();
+  const request = harness.request.bind(harness);
+  const writes = [];
+  let fail = true;
+  harness.request = async (method, params) => {
+    if (method !== 'video.conversation.append') return request(method, params);
+    writes.push({ ...params });
+    if (fail) throw new Error('History storage unavailable');
+    return { persisted: true };
+  };
+  await act(async () => harness.panelProps.onConversationItem('user', 'Remember Cedar'));
+  await act(async () => harness.panelProps.onConversationItem('assistant', 'I will remember it'));
+  await assert.rejects(flushConversationHistory('conversation-a'), /History storage unavailable/);
+  await start('conversation-a');
+  assert.equal(harness.starts.length, 1, 'do not start with incomplete history');
+  assert.ok(toastStore.getSnapshot().some(notice => notice.content.includes('History storage unavailable')), 'surface the saving failure');
+  fail = false;
+  await start('conversation-a');
+  assert.equal(harness.starts.length, 2);
+  const firstId = writes[0].event_id;
+  assert.ok(firstId);
+  assert.ok(writes.slice(0, -1).every(event => event.event_id === firstId));
+  assert.notEqual(writes.at(-1).event_id, firstId);
+  assert.equal(writes.at(-1).content, 'I will remember it');
 });
 
 test('a late job acknowledgement after stop is still tracked and recovered', async () => {

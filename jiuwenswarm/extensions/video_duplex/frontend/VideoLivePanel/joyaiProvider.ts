@@ -10,6 +10,7 @@ import {
   SearchJobPayload,
   SearchJobState,
   TtsStreamPayload,
+  VideoSessionConfig,
 } from './types';
 import { JoyAIFrameClock, JoyAIPromptLifecycle } from './joyaiPromptLifecycle';
 import {
@@ -376,7 +377,7 @@ export class JoyAIProvider {
       const frameTimeRange = this.frameClock.nextRange();
       let result: JoyAIFrameResult;
       try {
-        result = await webRequest<JoyAIFrameResult>(
+        const send = () => webRequest<JoyAIFrameResult>(
           'video.joyai.frame',
           {
             frame_data_url: frameDataUrl,
@@ -393,6 +394,18 @@ export class JoyAIProvider {
           },
           { timeoutMs: 60_000 },
         );
+        try {
+          result = await send();
+        } catch (error) {
+          if ((error as { code?: string } | null)?.code !== 'CONTEXT_RESTORE_EXPIRED' || requestKind !== 'user') throw error;
+          if (!this.active || this.sessionId !== activeSessionId || this.callbacks.getSearchSessionId() !== searchSessionId) return null;
+          // This error is returned before inference or task creation. Refresh
+          // once and retry the same command; other failures must not replay it.
+          const config = await webRequest<VideoSessionConfig>('video.realtime.config', { search_session_id: searchSessionId });
+          if (!this.active || this.sessionId !== activeSessionId || this.callbacks.getSearchSessionId() !== searchSessionId) return null;
+          this.restoreToken = config.context_restore?.token || '';
+          result = await send();
+        }
         if (toolContext.jobIds.length > 0) {
           this.pendingToolContext = removeSentJoyAIToolContext(this.pendingToolContext, toolContext.jobIds);
           this.callbacks.report('joyai_tool_context_attached', {
