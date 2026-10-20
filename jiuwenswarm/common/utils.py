@@ -931,8 +931,9 @@ def ensure_config_migrated_from_template(
     if is_agentos_runtime():
         return False
 
-    from jiuwenswarm.common.config import migrate_config_from_template
-    from jiuwenswarm.common.version import get_runtime_version_label
+    from jiuwenswarm.common.config import migrate_config_from_template, load_yaml_round_trip
+    from jiuwenswarm.common._build_config import VERSION
+    from jiuwenswarm.common.build_info import sync_build_info_to_config
 
     root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
     config_path = root / "config" / "config.yaml"
@@ -943,16 +944,30 @@ def ensure_config_migrated_from_template(
         logger.warning(f"跳过配置迁移: {e}")
         return False
 
-    # The migration skips a missing config file and writes only on change.
-    try:
+    # 版本号短路：已同步则跳过（不跑 _deep_merge、不读模板内容）
+    # config 不存在时交由 migrate_config_from_template 内部 exists() 优雅处理，不在此抛 FileNotFoundError
+    if not config_path.exists():
         migrated = migrate_config_from_template(template_path, config_path)
-    except (TimeoutError, portalocker.exceptions.LockException) as exc:
-        logger.warning("跳过配置迁移，获取配置写锁失败: %s", exc)
-        return False
-    if not migrated:
-        return False
+        return sync_build_info_to_config(config_path) or migrated
 
-    logger.info(f"已同步配置模板: {config_path} (config_version = {get_runtime_version_label()})")
+    user_data = load_yaml_round_trip(config_path)
+    if isinstance(user_data, dict) and user_data.get("config_version") == VERSION:
+        logger.debug(f"config 版本 {VERSION} 一致，跳过迁移: {config_path}")
+        return sync_build_info_to_config(config_path)
+
+    if isinstance(user_data, dict) and user_data.get("config_version"):
+        logger.info(
+            f"config 版本 {user_data.get('config_version')} != 程序 {VERSION}，开始迁移"
+        )
+    else:
+        logger.info(f"config 无版本号(未迁移)，开始迁移到 {VERSION}")
+
+    migrated = migrate_config_from_template(template_path, config_path)
+    build_info_updated = sync_build_info_to_config(config_path)
+    if not migrated:
+        return build_info_updated
+
+    logger.info(f"已从模板合并新增配置项: {config_path} (config_version -> {VERSION})")
     return True
 
 
@@ -1287,9 +1302,11 @@ def prepare_workspace(
     (agent_group_root / "local").mkdir(parents=True, exist_ok=True)
 
     from jiuwenswarm.common.config import migrate_config_from_template, set_preferred_language_in_config_file
+    from jiuwenswarm.common.build_info import sync_build_info_to_config
 
-    if migrate_config:
-        migrate_config_from_template(config_yaml_src, config_yaml_dest)
+    migrate_config_from_template(config_yaml_src, config_yaml_dest)
+    if not is_agentos_runtime():
+        sync_build_info_to_config(config_yaml_dest)
     # Runtime MCP repairs must leave an existing AgentOS deployment config intact.
     # Fresh initialization and an explicit language choice can still set the language.
     if config_initialized or preferred_language is not None or not is_agentos_runtime():

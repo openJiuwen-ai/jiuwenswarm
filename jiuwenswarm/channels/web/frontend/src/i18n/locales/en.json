@@ -4655,7 +4655,6 @@
     "pipRestart": "Restart now",
     "restoreDefaults": "Restore Default Source",
     "currentVersion": "Current version",
-    "builtOn": "Built on",
     "buildSource": "Current build source",
     "branch": "Branch",
     "packageVersion": "Package version",

@@ -201,6 +201,10 @@ def main() -> None:
         ensure_js_dependencies(args.install_js_deps)
 
     if not args.skip_root:
+        if os.getenv("JIUWENSWARM_BUILD_INFO_READY") != "1":
+            run([sys.executable, "scripts/generate_build_info.py"], ROOT)
+        elif not (ROOT / "jiuwenswarm" / "resources" / "build-info.json").is_file():
+            raise SystemExit("JIUWENSWARM_BUILD_INFO_READY is set but build-info.json is missing")
         build_root_wheel()
 
     if not args.skip_sidecar:

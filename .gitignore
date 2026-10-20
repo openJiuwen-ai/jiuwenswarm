@@ -116,6 +116,4 @@ report/index.html
 /context/
 /.plans/
 /todo/
-
-# Local testing handoff documents are not versioned.
-/.agents/agent-docs/designs/testing/
+/jiuwenswarm/resources/build-info.json

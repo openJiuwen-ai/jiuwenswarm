@@ -4592,7 +4592,6 @@
     "pipRestart": "立即重启",
     "restoreDefaults": "恢复默认更新源",
     "currentVersion": "当前版本",
-    "builtOn": "构建于",
     "buildSource": "当前构建来源",
     "branch": "分支",
     "packageVersion": "包版本",

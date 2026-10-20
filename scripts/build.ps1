@@ -6,6 +6,8 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 
 Write-Host "[build] 项目根目录: $ProjectRoot" -ForegroundColor Cyan
+python (Join-Path $ProjectRoot "scripts\generate_build_info.py")
+if ($LASTEXITCODE -ne 0) { throw "构建来源生成失败" }
 
 # 1. 编译前端
 $WebDir = Join-Path (Join-Path $ProjectRoot "jiuwenswarm\channels\web\frontend") ""

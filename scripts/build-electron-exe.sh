@@ -226,11 +226,8 @@ fi
 if [ "$FRONTEND_ONLY" = false ]; then
     echo ""
     echo "[4/6] Running PyInstaller (backend)..."
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        uv run --with-requirements scripts/computer-use-requirements.txt pyinstaller scripts/jiuwenswarm.spec --noconfirm
-    else
-        uv run pyinstaller scripts/jiuwenswarm.spec --noconfirm
-    fi
+    uv run --no-project --python 3.11 python "$PROJECT_ROOT/scripts/generate_build_info.py" --require-agent-core-branch
+    uv run pyinstaller scripts/jiuwenswarm.spec --noconfirm
 
     BACKEND_DIST="$DIST_DIR/$BUILD_DIST_DIR_NAME"
     if [ ! -f "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" ]; then
