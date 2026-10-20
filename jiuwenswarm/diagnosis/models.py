@@ -165,7 +165,7 @@ class StepRef(_Model):
 def is_valid_node_id(node_id: str, subject_id: str) -> bool:
     """Return whether ``node_id`` has the form ``<subject_id>:<sequence>``."""
     prefix = f"{subject_id}:"
-    return node_id.startswith(prefix) and node_id[len(prefix) :].isdecimal()
+    return node_id.startswith(prefix) and node_id.removeprefix(prefix).isdecimal()
 
 
 class SelectionRange(_Model):

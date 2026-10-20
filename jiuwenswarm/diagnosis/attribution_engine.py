@@ -33,6 +33,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,7 @@ from openjiuwen.agent_evolving.attribution import (
     run_task_parse,
     slice_nodes_by_range,
 )
+from openjiuwen.agent_evolving.attribution.snapshot import SlicedNodes
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 
 from jiuwenswarm.diagnosis.engine import EmitFn, EngineError, EngineEvent, EngineInputs, EngineResult
@@ -63,7 +65,6 @@ from jiuwenswarm.diagnosis.models import (
     StepRef,
 )
 from jiuwenswarm.diagnosis.node_anchor import anchor_assistant_nodes
-from openjiuwen.agent_evolving.attribution.snapshot import SlicedNodes
 from jiuwenswarm.diagnosis.snapshot import TrajectorySnapshot
 
 logger = logging.getLogger(__name__)
@@ -579,6 +580,21 @@ def _translate_attribution(
     return root_causes, suggestions, dropped
 
 
+@dataclass
+class _StageContext:
+    """Per-run state shared by the three attribution stages."""
+
+    inputs: EngineInputs
+    text: dict[str, str]
+    queue: asyncio.Queue[EngineEvent | None]
+    model: Any
+    model_name: str
+    counter: list[int]
+    sink: _QueueStatusSink
+    nodes: dict[str, list[Any]]
+    workspace: str
+
+
 class AttributionCoreEngine:
     """Diagnosis engine running the agent-core three-stage attribution pipeline.
 
@@ -664,32 +680,21 @@ class AttributionCoreEngine:
         if not any(sliced.values()):
             raise EngineError("EMPTY_SCOPE", text["empty_scope"])
 
-        task_parse = await self._stage_task_parse(inputs, text, queue, model, model_name, counter, sink, sliced, workspace)
-        diagnosis = await self._stage_diagnose(
-            inputs,
-            text,
-            queue,
-            model,
-            model_name,
-            counter,
-            sink,
-            sliced,
-            task_parse,
-            workspace,
+        context = _StageContext(
+            inputs=inputs,
+            text=text,
+            queue=queue,
+            model=model,
+            model_name=model_name,
+            counter=counter,
+            sink=sink,
+            nodes=sliced,
+            workspace=workspace,
         )
+        task_parse = await self._stage_task_parse(context)
+        diagnosis = await self._stage_diagnose(context, task_parse)
         if diagnosis.signals:
-            result = await self._stage_attribute(
-                inputs,
-                text,
-                queue,
-                model,
-                model_name,
-                counter,
-                sink,
-                sliced,
-                task_parse,
-                diagnosis,
-            )
+            result = await self._stage_attribute(context, task_parse, diagnosis)
         else:
             # Nothing to attribute is a normal outcome, not a failure.
             result = self._result_without_signals(text, queue, task_parse, diagnosis)
@@ -732,28 +737,20 @@ class AttributionCoreEngine:
         if cause is not None:
             result.root_causes.append(cause)
 
-    async def _stage_task_parse(
-        self,
-        inputs: EngineInputs,
-        text: dict[str, str],
-        queue: asyncio.Queue[EngineEvent | None],
-        model: Any,
-        model_name: str,
-        counter: list[int],
-        sink: _QueueStatusSink,
-        nodes: dict[str, list[Any]],
-        workspace: str,
-    ) -> Any:
+    async def _stage_task_parse(self, context: _StageContext) -> Any:
+        inputs = context.inputs
+        text = context.text
+        queue = context.queue
         queue.put_nowait(EngineEvent("task_parse", "stage_started", title=text["stage_task_parse"]))
         try:
             parsed = await run_task_parse(
-                nodes,
+                context.nodes,
                 inputs.locale,
-                _TaskParseAdapter(model),
-                workspace=workspace,
-                status_sink=sink,
-                model_name=model_name,
-                status_counter=counter,
+                _TaskParseAdapter(context.model),
+                workspace=context.workspace,
+                status_sink=context.sink,
+                model_name=context.model_name,
+                status_counter=context.counter,
             )
         except TaskParseError as exc:
             if exc.error_type == "multiple_unrelated_tasks":
@@ -809,37 +806,28 @@ class AttributionCoreEngine:
         queue.put_nowait(EngineEvent("task_parse", "stage_finished", status="completed", summary=summary))
         return parsed
 
-    async def _stage_diagnose(
-        self,
-        inputs: EngineInputs,
-        text: dict[str, str],
-        queue: asyncio.Queue[EngineEvent | None],
-        model: Any,
-        model_name: str,
-        counter: list[int],
-        sink: _QueueStatusSink,
-        nodes: dict[str, list[Any]],
-        task_parse: Any,
-        workspace: str,
-    ) -> Any:
+    async def _stage_diagnose(self, context: _StageContext, task_parse: Any) -> Any:
+        inputs = context.inputs
+        text = context.text
+        queue = context.queue
         queue.put_nowait(EngineEvent("diagnose", "stage_started", title=text["stage_diagnose"]))
         diagnosis = await run_diagnosis(
             run_id=f"diag-{time.time_ns()}",
             language=inputs.locale,
-            nodes_by_subagent=nodes,
+            nodes_by_subagent=context.nodes,
             user_attribution=inputs.user_note or "",
             task_parse=task_parse,
-            workspace=workspace,
+            workspace=context.workspace,
             keyword_mode="rule",
-            model=model,
+            model=context.model,
             reward_card=AgentCard(
                 id=_REWARD_CARD_ID,
                 name="AttributionRewardAgent",
                 description="Task execution reward evaluator / 任务执行 Reward 评价 Agent",
             ),
-            status_sink=sink,
-            model_name=model_name,
-            status_counter=counter,
+            status_sink=context.sink,
+            model_name=context.model_name,
+            status_counter=context.counter,
         )
         for signal in diagnosis.signals:
             queue.put_nowait(
@@ -918,25 +906,17 @@ class AttributionCoreEngine:
             task_description=task_parse.task_description,
         )
 
-    async def _stage_attribute(
-        self,
-        inputs: EngineInputs,
-        text: dict[str, str],
-        queue: asyncio.Queue[EngineEvent | None],
-        model: Any,
-        model_name: str,
-        counter: list[int],
-        sink: _QueueStatusSink,
-        nodes: dict[str, list[Any]],
-        task_parse: Any,
-        diagnosis: Any,
-    ) -> EngineResult:
+    async def _stage_attribute(self, context: _StageContext, task_parse: Any, diagnosis: Any) -> EngineResult:
+        inputs = context.inputs
+        text = context.text
+        queue = context.queue
+        nodes = context.nodes
         queue.put_nowait(EngineEvent("attribute", "stage_started", title=text["stage_attribute"]))
         language = inputs.locale
         # Entries are logged as the agent submits them, not after the run.
         runtime = _StreamingRuntime(nodes, language, queue, text, diagnosis.signals)
         outcome = await run_attribution(
-            model=model,
+            model=context.model,
             nodes_by_subagent=nodes,
             signals=diagnosis.signals,
             task_description=task_parse.task_description,
@@ -944,9 +924,9 @@ class AttributionCoreEngine:
             language=language,
             swarm_mode=inputs.mode_profile is ModeProfile.TEAM,
             runtime=runtime,
-            status_sink=sink,
-            model_name=model_name,
-            status_counter=counter,
+            status_sink=context.sink,
+            model_name=context.model_name,
+            status_counter=context.counter,
         )
         if outcome.skipped_signal_ids:
             queue.put_nowait(

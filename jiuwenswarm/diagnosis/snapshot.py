@@ -150,18 +150,21 @@ def rebuild_attributes(
         for scope in (resource.get("scopeSpans") or []) if isinstance(resource, dict) else []:
             for span in (scope.get("spans") or []) if isinstance(scope, dict) else []:
                 for attribute in (span.get("attributes") or []) if isinstance(span, dict) else []:
-                    if not isinstance(attribute, dict):
-                        continue
-                    key = attribute.get("key")
-                    value = attribute.get("value")
-                    if (
-                        key in rebuilt
-                        and isinstance(value, dict)
-                        and isinstance(value.get("stringValue"), str)
-                        and value["stringValue"].startswith(_SEQUENCE_PREFIX)
-                    ):
-                        value["stringValue"] = rebuilt[key]
+                    _replace_sequence_attribute(attribute, rebuilt)
     return copied
+
+
+def _replace_sequence_attribute(attribute: Any, rebuilt: Mapping[str, str]) -> None:
+    """Swap one ``@oj-seq`` placeholder attribute for its rebuilt content, in place."""
+    if not isinstance(attribute, dict):
+        return
+    key = attribute.get("key")
+    value = attribute.get("value")
+    if key not in rebuilt or not isinstance(value, dict):
+        return
+    content = value.get("stringValue")
+    if isinstance(content, str) and content.startswith(_SEQUENCE_PREFIX):
+        value["stringValue"] = rebuilt[key]
 
 
 def _split_records(
@@ -215,6 +218,16 @@ def _split_records(
     return records
 
 
+def _sequence_heads(records: list[Mapping[str, Any]]) -> list[str]:
+    """Return the sorted, distinct chain heads referenced by the ``sequences`` of ``records``."""
+    heads: set[str] = set()
+    for row in records:
+        for reference in (row.get("sequences") or {}).values():
+            if isinstance(reference, Mapping) and reference.get("hash"):
+                heads.add(str(reference.get("hash")))
+    return sorted(heads)
+
+
 async def load_trajectory_snapshot(
     reader: SubjectReader,
     session_id: str,
@@ -252,14 +265,7 @@ async def load_trajectory_snapshot(
             if page is None:
                 break
             records = [row for row in page.get("records") or [] if isinstance(row, Mapping)]
-            heads = sorted(
-                {
-                    str(reference.get("hash"))
-                    for row in records
-                    for reference in (row.get("sequences") or {}).values()
-                    if isinstance(reference, Mapping) and reference.get("hash")
-                },
-            )
+            heads = _sequence_heads(records)
             missing = [head for head in heads if head not in chains]
             if missing:
                 resolved = await reader.resolve_sequences(session_id, missing)

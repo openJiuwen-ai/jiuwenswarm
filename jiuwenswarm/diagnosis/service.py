@@ -705,8 +705,7 @@ class DiagnosisService:
             pending = [
                 item
                 for item in unique_ids
-                if item not in record.ttse_trigger
-                or record.ttse_trigger[item].result is TtseTriggerOutcome.FAILED
+                if _needs_ttse_trigger(record.ttse_trigger.get(item))
             ]
             if pending:
                 results = await self._trigger(session_id, record.input, [known[item] for item in pending])
@@ -795,6 +794,11 @@ class DiagnosisService:
             task.cancel()
         if tasks:
             await asyncio.wait(tasks, timeout=_CANCEL_WAIT_SECONDS)
+
+
+def _needs_ttse_trigger(previous: TtseTriggerResult | None) -> bool:
+    """Return whether a root cause still needs a TTSE trigger (never triggered, or failed)."""
+    return previous is None or previous.result is TtseTriggerOutcome.FAILED
 
 
 def _fix_ranges(

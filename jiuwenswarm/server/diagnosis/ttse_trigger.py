@@ -132,11 +132,16 @@ def explicit_score(outcome: str, score: float, threshold: float) -> float:
 
 
 async def _run_induction(rail: Any, jobs: Sequence[Mapping[str, Any]]) -> None:
+    # agent-core exposes no public entry for running induction on a supplied
+    # conversation, so the rail's induction coroutine is looked up by name.
+    # ``asyncio.CancelledError`` is a ``BaseException`` and is not caught below.
+    run_induction = getattr(rail, "_run_ttse_induction", None)
+    if not callable(run_induction):
+        logger.warning("[diagnosis] TTSE rail has no induction entry; %d job(s) skipped", len(jobs))
+        return
     for job in jobs:
         try:
-            await rail._run_ttse_induction(None, ctx=None, snapshot=dict(job["snapshot"]))
-        except asyncio.CancelledError:
-            raise
+            await run_induction(None, ctx=None, snapshot=dict(job["snapshot"]))
         except Exception:  # noqa: BLE001
             logger.warning("[diagnosis] TTSE induction failed: id=%s", job.get("id"), exc_info=True)
 

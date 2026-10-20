@@ -70,7 +70,11 @@ class DiagnosisStore:
             self._sessions_dir = sessions_dir
         else:
             fixed = Path(sessions_dir)
-            self._sessions_dir = lambda: fixed
+
+            def fixed_sessions_dir() -> Path:
+                return fixed
+
+            self._sessions_dir = fixed_sessions_dir
         self._lock = threading.Lock()
 
     def _directory(self, session_id: str) -> Path:
