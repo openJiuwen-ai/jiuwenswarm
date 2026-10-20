@@ -17,7 +17,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+ssh://git@gitcode.com/openJiuwen/agent-core.git@618a5fb0f28265c4cdaca3d3e3cb86f667c651b8",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@br_0.1.16.post2.hotfix.security",
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
     "websockets>=12.0",
@@ -69,7 +69,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+ssh://git@gitcode.com/openJiuwen/agent-core.git@618a5fb0f28265c4cdaca3d3e3cb86f667c651b8",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@br_0.1.16.post2.hotfix.security",
     "pgvector>=0.4.2",
     "aiosqlite>=0.22.1",
     "croniter>=2.0.0",
@@ -107,7 +107,7 @@ distribute = ["openjiuwen[postgres,zmq]"]
 # External Claude/Codex CLI team members. Not in the default install or [dev]/[desktop]
 # so Xiaoyi pack (`uv sync --extra dev`) does not pull claude-agent-sdk / openai-codex-cli-bin.
 cli-agents = [
-    "openjiuwen[claude,codex] @ git+ssh://git@gitcode.com/openJiuwen/agent-core.git@618a5fb0f28265c4cdaca3d3e3cb86f667c651b8",
+    "openjiuwen[claude,codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@br_0.1.16.post2.hotfix.security",
 ]
 shell-ast = []
 # Same packages as [dependency-groups] test (pip install -e ".[test]")

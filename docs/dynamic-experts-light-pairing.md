@@ -1,29 +1,37 @@
 # beta3 cloud 动态专家轻量配对
 
 本改动以 JiuwenSwarm `xiaoyi_0.2.4.beta3_cloud` 为合入目标，当前上游基线为
-`42340468e00147417f7dfa580d059a18fec08002`，配对基于
-`br_0.1.16.post2.hotfix` 的 Core。Core 只增加 `ExpertCandidate`、
+`e6db64fc97704bccfd7fdc840cd5542834b05ac2`，沿用该上游的
+`br_0.1.16.post2.hotfix.security` Core 分支。动态专家的 Core 增量只增加 `ExpertCandidate`、
 `OrchestrationPlan`、`plan_experts` 及其内部规划辅助逻辑。Swarm 保留 beta3
 原技能 Symphony 的 score 配置、构建、规划、RPC、工具和 Rail 实现。
 
-原发布分支 `feat/beta3-symphony-merge-ready` 保持不变，通过合并 cloud
-基线调整合入目标。以 cloud 为基线核对后，产品源码与原动态专家增量一致；
-cloud 的安全、云连接和定时任务改动完整保留。此前 `xiaoyi_0.2.4.beta3`
-版本的提交仍保留在历史中，后续 PR 应以 cloud 的最终差异为准。
+继续使用原发布分支 `feat/beta3-symphony-merge-ready` 和 PR #8437，
+将本 PR 的功能提交重放到上述 cloud 基线。cloud 的安全、云连接、
+定时任务和技能禁用状态改动完整保留；旧 beta3 上游提交不再作为本 PR
+的新增提交。重放前的提交保留在本地备份分支，PR 以 cloud 的最终差异为准。
 
 ## 依赖与合入顺序
 
-当前 `pyproject.toml` 三处直接依赖与 `uv.lock` 锁定：
+`pyproject.toml` 三处直接依赖沿用 cloud 上游的 HTTPS 地址和 hotfix 安全分支：
 
 ```text
-git+ssh://git@gitcode.com/openJiuwen/agent-core.git@618a5fb0f28265c4cdaca3d3e3cb86f667c651b8
+git+https://gitcode.com/openJiuwen/agent-core.git@br_0.1.16.post2.hotfix.security
 ```
 
+`uv.lock` 记录上述分支，并将本次解析结果固定为
+`25a298d465a50e93cee1b1995b36926d419bc499`；使用 `uv sync --frozen`
+时安装该提交，后续升级 Core 时需同步刷新锁文件。
+
 Core [PR #3298](https://gitcode.com/openJiuwen/agent-core/pull/3298) 已于
-2026-10-20 合入官方 `br_0.1.16.post2.hotfix`，合并提交为上述 SHA。
-该合并保留原提交历史，专家规划源码与此前 fork 的 `aaa582eaf` 一致；
-上游另外包含日志日内大小上限调整。依赖声明与锁文件已切换到官方仓库，
-其余包源与依赖版本保持不变。
+2026-10-20 合入官方 `br_0.1.16.post2.hotfix`（`618a5fb0f`），随后通过
+[PR #3310](https://gitcode.com/openJiuwen/agent-core/pull/3310) 合入安全分支，
+合并提交为本次锁定的 `25a298d4`。两者的 `openjiuwen/symphony/` 源码一致。
+cloud 原锁定的 `5951559a` 缺少专家规划接口，因此本次同步更新解析提交；
+继续保留上游安全版本及其依赖约束。安装依赖无需配置 GitCode SSH 密钥；
+默认、HarmonyOS 和 CLI agents 依赖使用同一分支和锁定结果。
+同时移除锁文件中已不在 `pyproject.toml` 声明的 `h11>=0.16` 元数据，
+`h11` 仍锁定为 `0.16.0`；除 Core 的解析提交外，所有包的版本及下载源均保持不变。
 
 下一步将 `lin-xiaoyu/jiuwenswarm:feat/beta3-symphony-merge-ready` 合入
 `openJiuwen/jiuwenswarm:xiaoyi_0.2.4.beta3_cloud`。本分支以追加提交撤回了早期
@@ -61,5 +69,6 @@ symphony:
 输出流提前关闭时，先中止所属 Core 执行任务，再清理动态专家，避免等待仍在
 规划中的任务；输出流关闭失败或被取消时仍执行专家清理，HITL 挂起继续保留轮次。
 
-定向验证使用脚本化模型输出和真实 Core 的工具、回调、中断及资源生命周期；
-不代表真实模型触发、桌面联调或 Windows 安装包已验收。
+此前的定向验证使用脚本化模型输出和真实 Core 的工具、回调、中断及资源生命周期；
+本次 rebase 核对最终源码差异及依赖配对，未重新运行功能测试，
+不代表当前 cloud 基线上的真实模型触发、桌面联调或 Windows 安装包已验收。
