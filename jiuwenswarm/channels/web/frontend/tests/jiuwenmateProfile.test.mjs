@@ -57,7 +57,7 @@ function renderProfile(extra) {
   );
 }
 
-test('a bound channel stays editable from the employee profile', () => {
+test('the overview hides quick IM setup after the channel is configured', () => {
   const channels = renderProfile({
     initialSection: 'channels',
     colleague: { ...colleague, imConfigured: true },
@@ -68,8 +68,12 @@ test('a bound channel stays editable from the employee profile', () => {
   assert.match(channels, />修改</);
 
   const overview = renderProfile({ colleague: { ...colleague, imConfigured: true } });
+  assert.doesNotMatch(overview, /data-testid="jiuwenmate-profile-quick-im"/);
+});
+
+test('the overview shows quick IM setup when no channel is configured', () => {
+  const overview = renderProfile({ colleague: { ...colleague, imConfigured: false } });
   assert.match(overview, /data-testid="jiuwenmate-profile-quick-im"/);
-  assert.match(overview, /data-testid="jiuwenmate-profile-im-modify"/);
 });
 
 test('skills can be changed on the skills page without the pencil', () => {
