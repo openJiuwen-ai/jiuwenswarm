@@ -858,6 +858,18 @@ class RichTelemetryCallbacks:
             duration_attributes,
         )
         self._metric_add("gen_ai.client.operation.count", 1, count_attributes)
+        cache_total = (
+            usage.cache_read_input_tokens
+            + usage.cache_creation_input_tokens
+            + usage.uncached_input_tokens
+        )
+        if usage.cache_read_input_tokens or usage.cache_creation_input_tokens:
+            if cache_total > 0:
+                self._metric_record(
+                    "jiuwenclaw.llm.cache_hit_rate",
+                    usage.cache_read_input_tokens / cache_total,
+                    duration_attributes,
+                )
         for token_type, value in (
             ("input", usage.input_tokens),
             ("output", usage.output_tokens),

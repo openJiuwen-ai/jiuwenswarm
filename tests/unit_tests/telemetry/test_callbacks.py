@@ -1248,6 +1248,46 @@ async def test_unsampled_llm_still_records_metrics_without_a_span() -> None:
         assert len(_metric_points(reader, "gen_ai.client.operation.count")) == 1
         assert len(_metric_points(reader, "gen_ai.client.operation.duration")) == 1
         assert len(_metric_points(reader, "gen_ai.client.token.usage")) == 2
+        assert not _metric_points(reader, "jiuwenclaw.llm.cache_hit_rate")
+    finally:
+        await callbacks.unregister(framework)
+        meter_provider.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_llm_usage_with_cache_information_records_cache_hit_rate() -> None:
+    reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[reader])
+    callbacks = RichTelemetryCallbacks(
+        span_registry=SpanRegistryProcessor(max_spans=8, ttl_seconds=60),
+        metrics=TelemetryMetrics(meter_provider),
+        config=TelemetryConfig(enabled=True),
+    )
+    framework = AsyncCallbackFramework()
+    await callbacks.register(framework)
+    try:
+        await framework.trigger(
+            LLMCallEvents.LLM_INVOKE_INPUT,
+            messages=[{"role": "user", "content": "cached"}],
+            model="cached-model",
+        )
+        await framework.trigger(
+            LLMCallEvents.LLM_INVOKE_OUTPUT,
+            result=SimpleNamespace(
+                content="ok",
+                tool_calls=[],
+                usage_metadata=SimpleNamespace(
+                    input_tokens=10,
+                    output_tokens=2,
+                    prompt_tokens_details=SimpleNamespace(cached_tokens=6),
+                    cache_creation_input_tokens=2,
+                ),
+            ),
+        )
+
+        points = _metric_points(reader, "jiuwenclaw.llm.cache_hit_rate")
+        assert len(points) == 1
+        assert points[0].sum == pytest.approx(0.5)
     finally:
         await callbacks.unregister(framework)
         meter_provider.shutdown()

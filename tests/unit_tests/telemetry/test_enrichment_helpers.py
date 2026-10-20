@@ -544,6 +544,7 @@ def test_usage_extracts_nested_sdk_and_provider_specific_fields() -> None:
         cache_read_input_tokens=5,
         cache_creation_input_tokens=3,
         reasoning_output_tokens=2,
+        uncached_input_tokens=7,
     )
 
 
@@ -563,6 +564,7 @@ def test_usage_supports_flat_dict_aliases_and_never_raises_for_invalid_values() 
         cache_read_input_tokens=3,
         cache_creation_input_tokens=0,
         reasoning_output_tokens=0,
+        uncached_input_tokens=8,
     )
     assert extract_usage(None) == UsageBreakdown()
     assert extract_usage({"usage_metadata": {"input_tokens": True}}) == UsageBreakdown()
@@ -579,7 +581,23 @@ def test_usage_degrades_broken_top_level_and_nested_mapping_reads() -> None:
     assert extract_usage({"usage_metadata": partly_broken_usage}) == UsageBreakdown(
         output_tokens=4,
         total_tokens=4,
+        uncached_input_tokens=0,
     )
+
+
+def test_usage_computes_uncached_input_by_provider_style() -> None:
+    openai_style = {
+        "prompt_tokens": 10,
+        "prompt_tokens_details": {"cached_tokens": 4},
+    }
+    anthropic_style = {
+        "input_tokens": 6,
+        "cache_read_input_tokens": 4,
+    }
+
+    assert extract_usage(openai_style).uncached_input_tokens == 6
+    assert extract_usage(anthropic_style).uncached_input_tokens == 6
+    assert extract_usage({"prompt_tokens": 5}).uncached_input_tokens == 5
 
 
 def test_context_tokens_classify_all_components_and_each_skill(

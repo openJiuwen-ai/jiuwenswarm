@@ -51,6 +51,7 @@ class UsageBreakdown:
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
     reasoning_output_tokens: int = 0
+    uncached_input_tokens: int = 0
 
 
 _TOKEN_COUNTER_UNSET = object()
@@ -345,6 +346,13 @@ def extract_usage(result: Any) -> UsageBreakdown:
     output_tokens = _first_count(usage, "output_tokens", "completion_tokens")
     prompt_details = _get_value(usage, "prompt_tokens_details")
     cache_read = _first_count(prompt_details, "cached_tokens")
+    # OpenAI-style usage includes cached tokens in input_tokens; Anthropic-style
+    # usage reports cache reads separately and excludes them from input_tokens.
+    uncached_input = (
+        max(input_tokens - cache_read, 0)
+        if prompt_details is not None
+        else input_tokens
+    )
     if not cache_read:
         cache_read = _first_count(
             usage,
@@ -365,6 +373,7 @@ def extract_usage(result: Any) -> UsageBreakdown:
         cache_read_input_tokens=cache_read,
         cache_creation_input_tokens=cache_creation,
         reasoning_output_tokens=reasoning,
+        uncached_input_tokens=uncached_input,
     )
 
 

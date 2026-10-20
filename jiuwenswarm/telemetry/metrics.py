@@ -74,6 +74,9 @@ METRIC_SPECS: dict[str, MetricSpec] = {
     "gen_ai.client.token.first_token_duration": MetricSpec(
         "histogram", "s", "Time to first token"
     ),
+    "jiuwenclaw.llm.cache_hit_rate": MetricSpec(
+        "histogram", "1", "LLM KV-cache hit rate"
+    ),
 }
 
 
