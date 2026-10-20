@@ -1,5 +1,5 @@
 import { Eye, EyeOff } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import feishuIcon from '../../../assets/jiuwenmate/icons/feishu.svg';
 import successIcon from '../../../assets/jiuwenmate/icons/success.svg';
@@ -8,16 +8,25 @@ import { JiuwenMateDialog } from './JiuwenMateDialog';
 interface ImAuthorizeDialogProps {
   onSkip: () => void;
   onConfirm: (credentials: { appId: string; appSecret: string }) => Promise<void>;
+  /** True only while introducing a channel for a newly created employee. */
+  created?: boolean;
+  /** The app id already bound to this employee, when one exists. */
+  initialAppId?: string;
 }
 
-export function ImAuthorizeDialog({ onSkip, onConfirm }: ImAuthorizeDialogProps) {
+export function ImAuthorizeDialog({ onSkip, onConfirm, created = true, initialAppId = '' }: ImAuthorizeDialogProps) {
   const { t } = useTranslation();
-  const [appId, setAppId] = useState('');
+  const [appId, setAppId] = useState(initialAppId);
   const [secret, setSecret] = useState('');
   const [secretVisible, setSecretVisible] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const canConfirm = appId.trim().length > 0 && secret.trim().length > 0;
+
+  useEffect(() => {
+    if (!initialAppId) return;
+    setAppId((current) => current || initialAppId);
+  }, [initialAppId]);
 
   const confirm = async () => {
     if (!canConfirm || saving) return;
@@ -40,7 +49,7 @@ export function ImAuthorizeDialog({ onSkip, onConfirm }: ImAuthorizeDialogProps)
       footer={
         <>
           <button type="button" className="jiuwenmate-outline-button" onClick={onSkip} disabled={saving}>
-            {t('jiuwenmate.common.skip')}
+            {created ? t('jiuwenmate.common.skip') : t('common.cancel')}
           </button>
           <button type="button" className="jiuwenmate-dark-button" disabled={!canConfirm || saving} onClick={() => void confirm()}>
             {t('jiuwenmate.common.confirm')}
@@ -48,13 +57,15 @@ export function ImAuthorizeDialog({ onSkip, onConfirm }: ImAuthorizeDialogProps)
         </>
       }
     >
-      <div className="jiuwenmate-im-dialog__hero">
-        <img src={successIcon} alt="" aria-hidden />
-        <strong>{t('jiuwenmate.im.success')}</strong>
-      </div>
+      {created ? (
+        <div className="jiuwenmate-im-dialog__hero">
+          <img src={successIcon} alt="" aria-hidden />
+          <strong>{t('jiuwenmate.im.success')}</strong>
+        </div>
+      ) : null}
       <div className="jiuwenmate-im-dialog__panel">
         <strong>{t('jiuwenmate.im.title')}</strong>
-        <small>{t('jiuwenmate.im.hint')}</small>
+        <small>{created ? t('jiuwenmate.im.hint') : t('jiuwenmate.im.updateHint')}</small>
         <span className="jiuwenmate-im-dialog__platform">
           <img src={feishuIcon} alt="" aria-hidden />
           {t('jiuwenmate.im.feishu')}

@@ -1866,6 +1866,11 @@ class FeishuChannel(BaseChannel):
         body = f"{' '.join(tags)} {text}" if tags else text
         return json.dumps({"text": body}, ensure_ascii=False)
 
+    def _persistent_markdown_content(self, text: str, mention_ids: Any) -> str:
+        """Build a native Feishu card so JiuwenMate Markdown is rendered as rich text."""
+        body = json.loads(self._persistent_text_content(text, mention_ids))["text"]
+        return self._build_card_content(body)
+
     async def send_persistent_result(
         self,
         *,
@@ -1895,8 +1900,8 @@ class FeishuChannel(BaseChannel):
         if file_path is None:
             return await self._send_persistent_message(
                 chat_id,
-                "text",
-                self._persistent_text_content(text or "", mention_ids),
+                "interactive",
+                self._persistent_markdown_content(text or "", mention_ids),
                 source_message_id,
                 idempotency_key,
             )
@@ -1905,8 +1910,8 @@ class FeishuChannel(BaseChannel):
             caption_key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{idempotency_key}:caption"))
             caption = await self._send_persistent_message(
                 chat_id,
-                "text",
-                self._persistent_text_content(text or "", mention_ids),
+                "interactive",
+                self._persistent_markdown_content(text or "", mention_ids),
                 source_message_id,
                 caption_key,
             )

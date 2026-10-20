@@ -213,6 +213,7 @@
       "success": "AI 员工创建成功，派它去 IM 渠道工作吧！",
       "title": "配置 IM 渠道",
       "hint": "将员工接入渠道，通过 @ 分派任务",
+      "updateHint": "可以更换已绑定的 API ID 和 Secret。Secret 不会回显，保存前需要重新填写。",
       "feishu": "飞书",
       "appId": "API ID",
       "appIdPlaceholder": "请输入API ID",

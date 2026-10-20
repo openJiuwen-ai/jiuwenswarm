@@ -329,6 +329,30 @@ function channelLabel(t: (key: string) => string, channel: string): string {
   return label === key ? channel : label;
 }
 
+function ImBindingAction({ configured, onConfigure }: { configured: boolean; onConfigure: () => void }) {
+  const { t } = useTranslation();
+  if (!configured) {
+    return (
+      <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={onConfigure}>
+        {t('jiuwenmate.profile.authorize')}
+      </button>
+    );
+  }
+  return (
+    <div className="jiuwenmate-profile__im-actions">
+      <em className="jiuwenmate-badge" data-tone="success">{t('jiuwenmate.profile.authorized')}</em>
+      <button
+        type="button"
+        className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+        onClick={onConfigure}
+        data-testid="jiuwenmate-profile-im-modify"
+      >
+        {t('common.modify')}
+      </button>
+    </div>
+  );
+}
+
 function historyStatusLabel(t: (key: string) => string, status: string): string {
   if (!status) return '—';
   const key = `jiuwenmate.profile.historyStatus.${status}`;
@@ -399,27 +423,23 @@ function ProfileOverview({
       <p className="jiuwenmate-profile__joined">
         {t('jiuwenmate.profile.joinedAt', { time: formatJoinedAt(colleague.joinedAt) })}
       </p>
-      {!colleague.imConfigured ? (
-        <section className="jiuwenmate-profile__im" data-testid="jiuwenmate-profile-quick-im">
-          <header>
-            <strong>{t('jiuwenmate.profile.quickIm')}</strong>
-            <button type="button" className="jiuwenmate-link-button" onClick={onConfigureIm}>
-              <SquareArrowOutUpRight aria-hidden />
-              {t('jiuwenmate.profile.goConfigure')}
-            </button>
-          </header>
-          <div className="jiuwenmate-profile__im-row">
-            <img src={feishuIcon} alt="" aria-hidden />
-            <span>
-              <strong>{t('jiuwenmate.im.feishu')}</strong>
-              <small>{t('jiuwenmate.profile.feishuHint')}</small>
-            </span>
-            <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={onConfigureIm}>
-              {t('jiuwenmate.profile.authorize')}
-            </button>
-          </div>
-        </section>
-      ) : null}
+      <section className="jiuwenmate-profile__im" data-testid="jiuwenmate-profile-quick-im">
+        <header>
+          <strong>{t('jiuwenmate.profile.quickIm')}</strong>
+          <button type="button" className="jiuwenmate-link-button" onClick={onConfigureIm}>
+            <SquareArrowOutUpRight aria-hidden />
+            {colleague.imConfigured ? t('common.modify') : t('jiuwenmate.profile.goConfigure')}
+          </button>
+        </header>
+        <div className="jiuwenmate-profile__im-row">
+          <img src={feishuIcon} alt="" aria-hidden />
+          <span>
+            <strong>{t('jiuwenmate.im.feishu')}</strong>
+            <small>{t('jiuwenmate.profile.feishuHint')}</small>
+          </span>
+          <ImBindingAction configured={colleague.imConfigured} onConfigure={onConfigureIm} />
+        </div>
+      </section>
 
       <section className="jiuwenmate-profile__block">
         <header>
@@ -817,13 +837,7 @@ function ProfileSectionDetail({
             <strong>{t('jiuwenmate.im.feishu')}</strong>
             <small>{t('jiuwenmate.profile.feishuHint')}</small>
           </span>
-          {colleague.imConfigured ? (
-            <em className="jiuwenmate-badge" data-tone="success">{t('jiuwenmate.profile.authorized')}</em>
-          ) : (
-            <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={onConfigureIm}>
-              {t('jiuwenmate.profile.authorize')}
-            </button>
-          )}
+          <ImBindingAction configured={colleague.imConfigured} onConfigure={onConfigureIm} />
         </div>
       </section>
     );

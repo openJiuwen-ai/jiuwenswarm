@@ -213,6 +213,7 @@
       "success": "Your AI employee is ready. Send it to work in an IM channel!",
       "title": "Configure IM channel",
       "hint": "Connect the employee to a channel and assign tasks with @",
+      "updateHint": "Replace the bound API ID and Secret. The Secret is not shown again and must be entered before saving.",
       "feishu": "Feishu",
       "appId": "API ID",
       "appIdPlaceholder": "Enter API ID",

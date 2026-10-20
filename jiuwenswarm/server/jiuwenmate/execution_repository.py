@@ -740,8 +740,11 @@ class ExecutionRepository(SQLiteStore):
                     "channel": row["channel"],
                     "target_id": route.target_id,
                     "app_id": route.app_id,
-                    "source_message_id": route.source_message_id,
+                    "source_message_id": (
+                        None if record.request_input.kind == "direct_message" else route.source_message_id
+                    ),
                     "source_reply_to": route.source_reply_to,
+                    "is_direct_message": record.request_input.kind == "direct_message",
                     "text": text,
                     "mention_ids": delivery_mention_ids(record.request_input.source),
                     "idempotency_key": row["idempotency_key"],

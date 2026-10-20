@@ -4230,6 +4230,33 @@ async def test_channel_feishu_bind_agent_persists_one_to_one_persistent_agent_id
 
 
 @pytest.mark.asyncio
+async def test_channel_feishu_get_bindings_returns_ids_without_credentials():
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["feishu"] = {
+        "apps": [
+            {
+                "app_id": "cli_bound",
+                "app_secret": "must-not-leak",
+                "persistent_agent_id": "mate_bound",
+                "enabled": True,
+            },
+            {
+                "app_id": "cli_unbound",
+                "app_secret": "must-not-leak-either",
+                "enabled": True,
+            },
+        ]
+    }
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods["channel.feishu.get_bindings"](object(), "req-bindings", {}, "sess-1")
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == {"agent_ids": ["mate_bound"]}
+
+
+@pytest.mark.asyncio
 async def test_channel_xiaoyi_set_conf_apps_mode(monkeypatch):
     """xiaoyi.set_conf 带 apps → 写 channels.xiaoyi.apps，返回归一化配置。"""
     channel = FakeWebChannel()
