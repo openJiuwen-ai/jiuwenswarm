@@ -15,10 +15,11 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import { Users } from 'lucide-react';
-import { useTeamSelectorStore, type RuntimeTeamInfo } from '../../stores';
+import { conversationKey, useSessionStore, useTeamSelectorStore, type RuntimeTeamInfo } from '../../stores';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import { webClient } from '../../services/webClient';
-import type { AgentGroupCatalogItem } from '../../features/agentManagement/types';
+import type { AgentGroupCatalogItem, AgentGroupIdentity } from '../../features/agentManagement/types';
+import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
@@ -46,9 +47,8 @@ function stateTone(state: string): 'running' | 'idle' | 'unknown' {
 }
 
 /** 下拉显示专家团目录中的名称；未绑定模板的 Team 保留运行时名称。 */
-function teamLabel(team: RuntimeTeamInfo, groups: AgentGroupCatalogItem[], fallback: string): string {
-  const identity = resolveOrganizationTeamIdentity(team, groups);
-  if (identity) return identity.displayName;
+function teamLabel(team: RuntimeTeamInfo, identity: AgentGroupIdentity | null, language: string, fallback: string): string {
+  if (identity) return resolveTeamGroupDisplayName(identity, language);
   const agentGroupName = team.agent_group_name?.trim();
   if (agentGroupName) return agentGroupName;
   const id = (team.team_id || team.team_name || '').trim();
@@ -63,7 +63,7 @@ export interface TeamSelectorProps {
 }
 
 export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: TeamSelectorProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const organizationUiEnabled = useTeamOrganizationUiEnabled();
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
@@ -72,6 +72,14 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
   const portalRef = useRef<HTMLDivElement>(null);
 
   const runtime = useTeamSelectorStore((s) => (sessionId ? s.runtimes[sessionId] : undefined));
+  const sessionRuntimes = useSessionStore((s) => s.runtimes);
+  const resolveIdentity = (team: RuntimeTeamInfo | null) => resolveOrganizationTeamIdentity(
+    team,
+    groups,
+    team && sessionId
+      ? sessionRuntimes[conversationKey(sessionId, team.is_owner ? null : team.team_id)]?.teamGroupIdentity
+      : null,
+  );
   const teamCount = runtime?.teams.length ?? 0;
   const fetchTeams = useTeamSelectorStore((s) => s.fetchTeams);
   const selectTeam = useTeamSelectorStore((s) => s.selectTeam);
@@ -206,9 +214,9 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
   // 没拉到 team 时整体不渲染：集群模式的老会话/未启用 team 的场景不该多出一个空下拉。
   if (!organizationUiEnabled || (!loading && teams.length === 0)) return null;
 
-  const identity = resolveOrganizationTeamIdentity(selected, groups);
+  const identity = resolveIdentity(selected);
   const label = selected
-    ? teamLabel(selected, groups, t('chat.teamSelect.fallbackLabel'))
+    ? teamLabel(selected, identity, i18n.language, t('chat.teamSelect.fallbackLabel'))
     : t('chat.teamSelect.loadingLabel');
 
   return (
@@ -285,7 +293,7 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
           >
             {teams.map((team) => {
               const isActive = selected?.team_id === team.team_id;
-              const teamIdentity = resolveOrganizationTeamIdentity(team, groups);
+              const teamIdentity = resolveIdentity(team);
               return (
                 <button
                   type="button"
@@ -324,7 +332,7 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
                       data-testid="chat-panel-team-select-option-label"
                       data-variant={team.team_id}
                     >
-                      {teamLabel(team, groups, team.team_id)}
+                      {teamLabel(team, teamIdentity, i18n.language, team.team_id)}
                     </span>
                   </span>
                   {isActive && (

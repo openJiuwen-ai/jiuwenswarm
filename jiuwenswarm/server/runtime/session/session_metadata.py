@@ -631,6 +631,12 @@ def _write_metadata_unfenced(
                 session_id, len(recovered), sorted(recovered),
             )
 
+        # The display snapshot is frozen at first binding. Queued metadata
+        # captured before uninstall must not remove the persisted identity.
+        if current is not None and isinstance(current.get("team_group_identity"), dict):
+            to_write = to_write.copy()
+            to_write["team_group_identity"] = copy.deepcopy(current["team_group_identity"])
+
         # External Harness runtime selection is a first-binding field. Preserve
         # the authoritative on-disk value against stale queued snapshots and
         # later attempts to switch the session to another runtime.
@@ -1469,6 +1475,33 @@ def sync_session_request_metadata(
 
     _enqueue_write(session_id, metadata, preserve_pin_fields=True)
     return effective_project_dir
+
+
+def preserve_agent_group_display_identity(
+    agent_group_name: str, identity: dict[str, Any]
+) -> None:
+    """Persist missing legacy snapshots before uninstall removes their source."""
+    sessions_dir = get_agent_sessions_dir()
+    if not sessions_dir.is_dir():
+        return
+    for session_dir in sessions_dir.iterdir():
+        if not session_dir.is_dir():
+            continue
+        session_id = session_dir.name
+        metadata = _read_metadata_file_in(session_dir)
+        if (
+            metadata.get("agent_group_name") != agent_group_name
+            or "team_group_identity" in metadata
+        ):
+            continue
+        metadata["team_group_identity"] = copy.deepcopy(identity)
+        options = _MetadataWriteOptions(
+            merge_fields=frozenset({"team_group_identity"}),
+            expected_fields={"team_group_identity": (False, None)},
+        )
+        written = _write_metadata_sync(session_id, metadata, options)
+        with _CACHE_LOCK:
+            _METADATA_CACHE[session_id] = written.copy()
 
 
 def get_session_metadata(
