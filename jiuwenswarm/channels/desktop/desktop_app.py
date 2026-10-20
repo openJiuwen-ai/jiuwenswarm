@@ -1973,6 +1973,21 @@ class DesktopRuntime:
             self.window.minimize()
         return False
 
+    @staticmethod
+    def _bytes_from_download_data_url(url: str) -> bytes:
+        """Decode a FileReader-style data URL used by file-preview text downloads."""
+        if not isinstance(url, str) or not url.startswith("data:"):
+            raise ValueError("not_data_url")
+        _header, separator, payload = url.partition(",")
+        if not separator:
+            raise ValueError("invalid_data_url")
+        metadata = _header[5:].split(";")
+        if metadata and metadata[-1].lower() == "base64":
+            return base64.b64decode(payload, validate=True)
+        from urllib.parse import unquote_to_bytes
+
+        return unquote_to_bytes(payload)
+
     def download_file(self, url: str, filename: str) -> DesktopSaveResult:
         """选择保存位置并在实际写入完成后返回结果。"""
         try:
@@ -1996,7 +2011,11 @@ class DesktopRuntime:
             )
             os.close(temp_fd)
             temp_path = Path(temp_name)
-            urllib.request.urlretrieve(url, temp_path)
+            # File-preview text downloads (e.g. manifest.json) pass a data: URL.
+            if isinstance(url, str) and url.startswith("data:"):
+                temp_path.write_bytes(self._bytes_from_download_data_url(url))
+            else:
+                urllib.request.urlretrieve(url, temp_path)
             os.replace(temp_path, target_path)
             temp_path = None
             logger.info("[desktop] file downloaded to: %s", target_path)
