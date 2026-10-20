@@ -60,7 +60,8 @@ WORKSPACE_PROMPT = (
     "你可以用 list_files 和 read_file 查看办公目录中的文件，用 write_file 和 edit_file 创建或修改文件。"
     "路径一律写成相对于办公目录的路径，例如 `.` 或 `资料/周报.md`，不要使用绝对路径。"
     "修改已有文件前先读取它；如果提示版本冲突，说明文件已被改动，重新读取后再修改。"
-    "`sessions/` 存放各对话的私有草稿，不要读写其中的内容；其余位置的文件由所有对话共享。"
+    "`sessions/` 存放各对话的私有草稿，不要读写其中的内容；获准访问的其他位置由各对话共享。"
+    "具体可访问范围由本次请求授权决定；遇到拒绝时不要猜测文件内容或声称已经读取。"
     "需要把已完成的文件交给对方时，用 share_file 登记；回答结束后由系统发送。"
 )
 
@@ -495,7 +496,12 @@ class PersistentAgentService:
                 if publish_spec(agent_id, current.config_version, fields).fingerprint == current.fingerprint:
                     self._repository.mark_published(namespace_id, agent_id, revision=definition.revision)
                     return self._version_view(namespace_id, agent_id, current.config_version)
-            snapshot = publish_spec(agent_id, self._repository.next_version(namespace_id, agent_id), fields)
+            snapshot = publish_spec(
+                agent_id,
+                self._repository.next_version(namespace_id, agent_id),
+                fields,
+                knowledge_root=assembled.knowledge_root,
+            )
         except PersistentContractError as exc:
             raise PersistentAgentError(f"configuration cannot be published: {exc}", code="INVALID_CONFIG") from exc
         self._repository.save_version(namespace_id, snapshot, revision=definition.revision, published_at=self._clock())

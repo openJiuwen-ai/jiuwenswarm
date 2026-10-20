@@ -134,7 +134,12 @@ class ExecutionDriver:
             snapshot = await asyncio.to_thread(
                 self._snapshots, record.namespace_id, record.agent_id, record.config_version
             )
-            workspace = HostWorkspaceAccess(self._workspaces, record.namespace_id, record.agent_id)
+            workspace = HostWorkspaceAccess(
+                self._workspaces,
+                record.namespace_id,
+                record.agent_id,
+                knowledge_root=snapshot.knowledge_root,
+            )
             group_chat_port = None
             if (record.request_input.kind in ("direct_message", "group_message") and self._groups is not None and
                     self._group_archive is not None and self._group_search is not None and

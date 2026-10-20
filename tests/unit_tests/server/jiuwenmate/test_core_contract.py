@@ -246,6 +246,60 @@ def test_capability_snapshot_mismatch_is_refused_by_core(snapshot, host_ports):
         build.validate(spec)
 
 
+def test_legacy_feishu_direct_message_gets_only_the_knowledge_scope(snapshot):
+    request = request_for(
+        snapshot,
+        access=AccessSnapshot(
+            principal_ref="feishu:user:ou_alice",
+            startup_scope=frozenset({"chat"}),
+            source_scope=frozenset({"chat"}),
+            policy_revision="jm08-feishu-v1",
+        ),
+    )
+
+    context = build_execution_context(
+        request,
+        ExecutionRecord(request_id=request.request_id, execution_id="e-1"),
+        capability_snapshot=snapshot.enabled_features,
+    )
+
+    assert context.startup_scope == frozenset({"chat", "workspace_knowledge_read"})
+    assert context.source_scope == frozenset({"chat", "workspace_knowledge_read"})
+
+
+def test_legacy_feishu_group_message_does_not_get_knowledge_scope(snapshot):
+    request = request_for(
+        snapshot,
+        access=AccessSnapshot(
+            principal_ref="feishu:user:ou_alice",
+            startup_scope=frozenset({"chat"}),
+            source_scope=frozenset({"chat"}),
+            policy_revision="jm08-feishu-v1",
+        ),
+        request_input=core.RequestInput(
+            kind="group_message",
+            text="hello",
+            source=core.GroupMessage(
+                message_id="msg-group-1",
+                sender_id="user-1",
+                sender_name="张三",
+                sender_kind="human",
+                received_at=datetime(2026, 10, 12, 9, 0, tzinfo=timezone.utc),
+            ),
+            reply_target="group-1",
+        ),
+    )
+
+    context = build_execution_context(
+        request,
+        ExecutionRecord(request_id=request.request_id, execution_id="e-1"),
+        capability_snapshot=snapshot.enabled_features,
+    )
+
+    assert context.startup_scope == frozenset({"chat"})
+    assert context.source_scope == frozenset({"chat"})
+
+
 @pytest.mark.parametrize(
     "changes",
     [
