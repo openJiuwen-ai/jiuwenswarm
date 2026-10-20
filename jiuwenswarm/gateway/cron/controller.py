@@ -346,7 +346,7 @@ class CronController:
         timeout_seconds = params.get("timeout_seconds")
         # work_mode 解析(严格校验:非法值由 resolve_request_work_mode 返回 BAD_REQUEST);
         # 默认值按 controller 目标通道推断(tui→code,web/未设置→work)
-        from jiuwenswarm.gateway.embedded.runtime.session.work_mode import (
+        from jiuwenswarm.gateway.runtime.work_mode import (
             resolve_request_work_mode,
         )
 

@@ -1543,7 +1543,7 @@ async def test_session_rebind_project_does_not_read_gateway_state_for_remote_cli
         CliHandlersBindParams(channel=server, agent_client=RemoteAgentClient(), path="/tui")
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
         lambda *args, **kwargs: pytest.fail("remote fallback must not read Gateway session state"),
     )
 

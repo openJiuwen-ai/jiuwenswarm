@@ -858,7 +858,7 @@ class GitDiffWatcherRegistry:
             except Exception as exc:  # noqa: BLE001
                 # 结构性错误(NOT_GIT_REPOSITORY / PROJECT_DIR_MISSING):暂停 watcher,
                 # 保留 watches 等待 mark_dirty 唤醒(如 project.git.init 后重试)
-                from jiuwenswarm.gateway.embedded.runtime.session.project_git import GitOperationError
+                from jiuwenswarm.gateway.channel_manager.web.project_git import GitOperationError
                 if isinstance(exc, GitOperationError):
                     err_code = getattr(exc.git_error, "code", "")
                     if err_code in _STRUCTURAL_ERROR_CODES:
@@ -901,7 +901,7 @@ class GitDiffWatcherRegistry:
         if self._diff_status_fetcher is not None:
             await self._compute_and_push_remote(project_id, watches)
             return
-        from jiuwenswarm.gateway.embedded.runtime.session.project_git import (
+        from jiuwenswarm.gateway.channel_manager.web.project_git import (
             GitError,
             GitOperationError,
         )
@@ -982,7 +982,7 @@ class GitDiffWatcherRegistry:
             # failures: structural errors pause the poll loop until a later
             # mark_dirty (for example after git init), while transient errors
             # retain the normal backoff path.
-            from jiuwenswarm.gateway.embedded.runtime.session.project_git import (
+            from jiuwenswarm.gateway.channel_manager.web.project_git import (
                 GitError,
                 GitOperationError,
             )
@@ -1080,7 +1080,7 @@ class GitDiffWatcherRegistry:
         委托给 ``git_diff_status.extract_files_from_status`` 统一实现,
         与 handler 共用同一 schema 访问逻辑。
         """
-        from jiuwenswarm.gateway.embedded.runtime.session.git_diff_status import (
+        from jiuwenswarm.gateway.channel_manager.web.git_diff_status import (
             extract_files_from_status,
         )
         return extract_files_from_status(status_dict, source)
@@ -1140,7 +1140,7 @@ class GitDiffWatcherRegistry:
         调用方已通过 ``if current else None`` 过滤 None,此处 current 必非 None;
         helper 内部也做了 None 兜底以保持健壮性。
         """
-        from jiuwenswarm.gateway.embedded.runtime.session.git_diff_status import (
+        from jiuwenswarm.gateway.channel_manager.web.git_diff_status import (
             build_summary_entry,
         )
         return build_summary_entry(current) or {}
@@ -1153,7 +1153,7 @@ class GitDiffWatcherRegistry:
         调用方已通过 ``if last_turn else None`` 过滤 None,此处 last_turn 必非 None;
         helper 内部也做了 None 兜底以保持健壮性。
         """
-        from jiuwenswarm.gateway.embedded.runtime.session.git_diff_status import (
+        from jiuwenswarm.gateway.channel_manager.web.git_diff_status import (
             build_turn_summary_entry,
         )
         return build_turn_summary_entry(last_turn)
@@ -1169,7 +1169,7 @@ class GitDiffWatcherRegistry:
         """推送 ``project.git.diff_files_changed`` 事件(设计文档 §3.6)。"""
         if self._channel is None:
             return
-        from jiuwenswarm.gateway.embedded.runtime.session.git_diff_status import (
+        from jiuwenswarm.gateway.channel_manager.web.git_diff_status import (
             file_map_to_dict_no_hunks,
         )
         files_no_hunks = file_map_to_dict_no_hunks(files_dict)

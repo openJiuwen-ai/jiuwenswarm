@@ -35,7 +35,7 @@ from jiuwenswarm.common.work_mode import (
     is_default_project_id,
     normalize_work_mode,
 )
-from jiuwenswarm.gateway.embedded.runtime.session.work_mode import (
+from jiuwenswarm.gateway.runtime.work_mode import (
     infer_legacy_project_work_mode,
 )
 
@@ -641,7 +641,7 @@ def resolve_cron_job_patch(
     Raises:
         ValueError: work_mode 非法、单独 patch work_mode、或 project 绑定失败。
     """
-    from jiuwenswarm.gateway.embedded.runtime.session.work_mode import resolve_request_work_mode
+    from jiuwenswarm.gateway.runtime.work_mode import resolve_request_work_mode
 
     if resolve_work_mode_fn is None:
         resolve_work_mode_fn = resolve_request_work_mode

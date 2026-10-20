@@ -6,8 +6,8 @@ import queue
 
 import pytest
 
-from jiuwenswarm.gateway.embedded.runtime.session import lifecycle
-from jiuwenswarm.gateway.embedded.runtime.session import session_metadata as sm
+from jiuwenswarm.server.runtime.session import lifecycle
+from jiuwenswarm.server.runtime.session import session_metadata as sm
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +95,7 @@ def test_stale_write_preserves_concurrent_moa_selection_pins_and_rebind(
         session_id,
         {**original, "title": "late title"},
         sync_write=mode == "sync",
-        options=sm._MetadataWriteOptions(preserve_pin_fields=True),
+        preserve_pin_fields=True,
     )
     if mode == "queued":
         assert lifecycle.raw_metadata(session_id)["title"] == "before"
@@ -149,7 +149,7 @@ def test_partial_write_keeps_unowned_fields(mode: str) -> None:
         session_id,
         {**original, "title": "migrated", "message_count": 1, "moa_enabled": False},
         sync_write=mode == "sync",
-        options=sm._MetadataWriteOptions(merge_fields=frozenset({"title"})),
+        merge_fields=frozenset({"title"}),
     )
     if mode == "queued":
         _drain_write()
