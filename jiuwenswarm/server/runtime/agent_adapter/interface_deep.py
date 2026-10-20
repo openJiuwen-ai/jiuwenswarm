@@ -456,6 +456,7 @@ from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import (
 )
 from jiuwenswarm.server.utils.stream_utils import (
     build_tool_result_payload,
+    normalize_context_usage_payload,
     parse_ask_user_question_payload,
 )
 from jiuwenswarm.edition import is_enterprise
@@ -23078,17 +23079,8 @@ class JiuWenSwarmDeepAdapter:
                     return parsed
 
                 if chunk_type == "context.usage":
-                    if isinstance(payload, dict):
-                        usage_payload = {
-                            "event_type": "context.usage",
-                            "rate": payload.get("rate", 0),
-                            "context_max": payload.get("context_max") or 0,
-                            "tokens_used": payload.get("tokens_used") or 0,
-                        }
-                        for key in ("role", "member_name"):
-                            value = payload.get(key)
-                            if value is not None:
-                                usage_payload[key] = value
+                    usage_payload = normalize_context_usage_payload(payload)
+                    if usage_payload is not None:
                         return usage_payload
                     return {"event_type": "context.usage", "rate": 0}
 
