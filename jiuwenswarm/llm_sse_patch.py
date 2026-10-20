@@ -19,6 +19,12 @@
 4. 华为 MaaS x-span-id 注入：调用华为云 ModelArts MaaS 时，在 HTTP 请求头注入
    ``x-span-id``（uuid4 hex），便于 MaaS 侧做链路追踪与本地日志对齐。仅当
    ``api_base`` 识别为 MaaS 端点时触发，非 MaaS 调用零开销透传。
+
+5. before_model_http 扩展埋点：模型 HTTP 出口的公共事件点。按清单包装各模型
+   客户端的 ``invoke`` / ``stream`` / ``generate_image``，在真正发出 HTTP 之前
+   触发 ``agent_server:before_model_http``，扩展往 context 的 ``headers`` /
+   ``extra_body`` 口袋写值，核心在 trigger返回后按保留键白名单合并进本次请求。
+   无人登记或扩展框架未初始化时零副作用，请求与现状完全一致。
 """
 
 from __future__ import annotations
@@ -101,7 +107,45 @@ _AUTH_HEADER_PATCH_APPLIED = False
 _RESPONSE_ASSEMBLY_PATCH_APPLIED = False
 _GLM_XML_SANITIZE_PATCH_APPLIED = False
 _MAAS_SPAN_ID_PATCH_APPLIED = False
+_MODEL_HTTP_HOOK_PATCH_APPLIED = False
 _HUAWEI_MAAS_PLACEHOLDER_API_KEY = "huawei-maas-session"
+
+# before_model_http 埋点：扩展口袋的保留键，防止扩展弄坏鉴权与 thinking。
+# 请求头按大小写不敏感匹配（HTTP header 名本身大小写不敏感）。
+_RESERVED_HOOK_HEADERS = frozenset({"authorization", "x-span-id"})
+_RESERVED_HOOK_EXTRA_BODY_KEYS = frozenset(
+    {"thinking", "enable_thinking", "reasoning_effort"}
+)
+
+# before_model_http 出口包装清单：方法集合按各客户端实际支持的 custom_headers
+# 通道确定（方法内 pop custom_headers 并经 merge_request_headers 合并进
+# extra_headers）。Anthropic / OpenAIAccount 的 generate_image 等多媒体出口
+# 直接抛 NotImplementedError、无 HTTP 出口，不包；OpenAIAccount 为独立实现
+# 但 invoke/stream 通道完整，已列入。
+# 无法通过追加清单覆盖的客户端（2026-10 逐文件核实）：SiliconFlow /
+# IntelliRouter / AscendAffinity / InferenceAffinity 的出口方法不支持
+# custom_headers 通道（口袋合并后进不了请求头）；DashScope 重写的
+# generate_image 走自有 Wanx HTTP、DeepSeek 的 generate_image/speech/video
+# 均为 pass 桩——需上游先支持通道后才可追加。子类重写的同名方法会遮蔽父类
+# 包装，要覆盖需将子类追加进本清单（包装器只包类自身定义的方法，继承方法
+# 由父类包装覆盖，不会双包）。
+_MODEL_HTTP_HOOK_CLIENT_SPECS: tuple = (
+    (
+        "openjiuwen.core.foundation.llm.model_clients."
+        "openai_model_client.OpenAIModelClient",
+        ("invoke", "stream", "generate_image"),
+    ),
+    (
+        "openjiuwen.core.foundation.llm.model_clients."
+        "anthropic_model_client.AnthropicModelClient",
+        ("invoke", "stream"),
+    ),
+    (
+        "openjiuwen.core.foundation.llm.model_clients."
+        "openai_account_model_client.OpenAIAccountModelClient",
+        ("invoke", "stream"),
+    ),
+)
 
 
 def _extract_authorization_header(
@@ -605,6 +649,212 @@ def apply_huawei_maas_span_id_patch() -> None:
     client_cls._maas_span_id_patch_applied = True  # pylint: disable=protected-access
     _MAAS_SPAN_ID_PATCH_APPLIED = True
     logger.info("[llm_sse_patch] OpenAIModelClient 华为 MaaS x-span-id 注入补丁已应用")
+
+
+def _merge_model_http_hook_ctx(ctx: Any, kwargs: dict) -> None:
+    """把扩展写入的 ``headers`` / ``extra_body`` 口袋合并进本次调用 kwargs。
+
+    - ``headers`` 逐键 setdefault 进 ``kwargs["custom_headers"]``（调用方显式
+      传入的值优先），经 ``_build_request_headers`` 进入最终请求头；
+    - ``extra_body`` 逐键 setdefault 进 ``kwargs["extra_body"]``，经
+      ``_build_request_params`` 进入 ``params["extra_body"]``，最终由 SDK
+      摊开进请求 JSON 正文；
+    - 保留键（``Authorization`` / ``x-span-id`` / thinking 族）扩展写了也丢弃；
+    - 含 CR/LF 的头值、非 latin-1 头值（httpx 发送时仅接受 latin-1，中文等
+      需扩展侧先行 URL 编码）、无法 JSON 序列化的正文字段一律跳过，防扩展
+      写出非法值弄坏本次请求；
+    - 未写的口袋保持原样；``extra_body`` 为空则正文零变化。
+    """
+    headers = getattr(ctx, "headers", None)
+    if headers:
+        merged = dict(kwargs.get("custom_headers") or {})
+        for key, value in headers.items():
+            name = str(key or "").strip()
+            if not name or name.lower() in _RESERVED_HOOK_HEADERS:
+                continue
+            if value is None:
+                continue
+            text = str(value)
+            if "\r" in text or "\n" in text:
+                continue
+            try:
+                # httpx 头值仅接受 latin-1 可编码字符；中文等需扩展侧先编码
+                text.encode("latin-1")
+            except UnicodeEncodeError:
+                continue
+            merged.setdefault(name, text)
+        kwargs["custom_headers"] = merged
+    extra_body = getattr(ctx, "extra_body", None)
+    if extra_body:
+        merged_body = dict(kwargs.get("extra_body") or {})
+        for key, value in extra_body.items():
+            name = str(key or "")
+            if not name or name in _RESERVED_HOOK_EXTRA_BODY_KEYS:
+                continue
+            if value is None:
+                continue
+            try:
+                json.dumps(value)
+            except (TypeError, ValueError):
+                continue
+            merged_body.setdefault(name, value)
+        kwargs["extra_body"] = merged_body
+
+
+async def _trigger_before_model_http(client: Any, kwargs: dict) -> None:
+    """触发 ``before_model_http`` 埋点并把扩展口袋合并进本次调用。
+
+    - 扩展框架不可导入或 registry 未初始化（``trigger_if_initialized``
+      返回 False）：零副作用跳过；
+    - handler 异常只记日志，本次请求不带扩展字段照常发出——积分参数失败
+      不能变成用户可见的对话失败；
+    - 无人登记该事件时 callback 框架空转，请求与现状完全一致。
+    """
+    # 惰性导入：llm_sse_patch 在进程启动极早期被加载，此时扩展框架尚未
+    # 初始化；且 extensions.registry 会拉起 gateway 一大片依赖，避免循环导入。
+    try:
+        from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
+        from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
+        from jiuwenswarm.extensions.registry import ExtensionRegistry
+    except Exception:  # pragma: no cover - jiuwenswarm 扩展框架不可用
+        logger.debug("[before_model_http] extension framework unavailable, skip")
+        return
+
+    mcc = getattr(client, "model_client_config", None)
+    mc = getattr(client, "model_config", None)
+    ctx = ModelHttpHookContext(
+        # api_base 来自 ModelClientConfig（与 x-span-id 补丁同源）；
+        # model_name 来自 ModelRequestConfig（base 客户端组参同源）
+        api_base=str(getattr(mcc, "api_base", "") or ""),
+        model_name=str(getattr(mc, "model_name", "") or ""),
+    )
+    try:
+        triggered = await ExtensionRegistry.trigger_if_initialized(
+            AgentServerHookEvents.BEFORE_MODEL_HTTP, ctx
+        )
+    except Exception:
+        logger.warning(
+            "[before_model_http] handler failed; send request without hook attrs",
+            exc_info=True,
+        )
+        return
+    if not triggered:
+        return
+    try:
+        _merge_model_http_hook_ctx(ctx, kwargs)
+    except Exception:
+        logger.warning(
+            "[before_model_http] merge hook attrs failed; send without them",
+            exc_info=True,
+        )
+
+
+def _import_model_client_class(dotted: str) -> Any:
+    """按 ``module.Class`` 点名导入模型客户端类；失败返回 None。"""
+    module_name, _, class_name = dotted.rpartition(".")
+    try:
+        module = importlib.import_module(module_name)
+        return getattr(module, class_name, None)
+    except Exception:
+        return None
+
+
+def _wrap_model_http_hook_on_class(
+    client_cls: Any, method_names: tuple
+) -> list:
+    """对单个模型客户端类安装 before_model_http 出口包装（幂等）。
+
+    返回实际包装的方法名列表。只包装类自身定义的方法（``vars`` 直查）：
+    从父类继承的方法已由父类上的包装覆盖，再包一层会导致每次调用双触发
+    埋点。注意继承遮蔽：子类若重写了清单中的同名方法（如 DashScope 重写
+    generate_image），父类上的包装对子类实例无效，需把子类追加进
+    ``_MODEL_HTTP_HOOK_CLIENT_SPECS`` 才能覆盖。
+    """
+    if getattr(client_cls, "_model_http_hook_patch_applied", False):
+        return []
+
+    wrapped: list = []
+    for name in method_names:
+        if name not in vars(client_cls):
+            continue
+        orig = getattr(client_cls, name, None)
+        if orig is None:
+            continue
+        if name == "stream":
+
+            async def _stream_with_model_http_hook(
+                self: Any, *args, _orig=orig, **kwargs
+            ):
+                # 与 invoke 同口：先触发埋点（原地改 kwargs），再转发原生成器。
+                await _trigger_before_model_http(self, kwargs)
+                async for chunk in _orig(self, *args, **kwargs):
+                    yield chunk
+
+            setattr(client_cls, name, _stream_with_model_http_hook)
+        else:
+
+            async def _call_with_model_http_hook(
+                self: Any, *args, _orig=orig, **kwargs
+            ):
+                await _trigger_before_model_http(self, kwargs)
+                return await _orig(self, *args, **kwargs)
+
+            setattr(client_cls, name, _call_with_model_http_hook)
+        wrapped.append(name)
+
+    if wrapped:
+        setattr(client_cls, "_model_http_hook_patch_applied", True)
+    return wrapped
+
+
+def apply_before_model_http_hook_patch() -> None:
+    """Patch 5: ``before_model_http`` 扩展埋点 —— 模型 HTTP 出口的公共事件点。
+
+    按 ``_MODEL_HTTP_HOOK_CLIENT_SPECS`` 包装各模型客户端的 ``invoke`` /
+    ``stream`` / ``generate_image``，在真正发出 HTTP 之前触发
+    ``agent_server:before_model_http``：扩展往 context 的 ``headers`` /
+    ``extra_body`` 口袋写值，核心在 trigger
+    返回后按保留键白名单合并进本次请求。工具循环、重试、换模型、图像生成都经过该出口。
+
+    客户端覆盖范围（见清单）：OpenAI 兼容族（未重写出口方法的子类含
+    HuaweiMaas / OpenRouter 经继承自动覆盖）、Anthropic 与 OpenAIAccount。
+    SiliconFlow / IntelliRouter / Ascend & InferenceAffinity 及 DashScope /
+    DeepSeek 重写的多媒体出口因上游不支持 custom_headers 通道而无法经本
+    清单覆盖（包装了口袋也进不了请求头）；generate_speech / generate_video
+    出口 openjiuwen 尚不支持 custom_headers 通道，均不在本埋点覆盖内。
+
+    与渠道无关，无条件应用；扩展框架未初始化或无人登记时零副作用，请求与
+    现状完全一致。幂等：使用独立的 ``_MODEL_HTTP_HOOK_PATCH_APPLIED`` 标志，
+    不受其他补丁影响；仅当至少包装了一个客户端时才置位——全部客户端导入
+    失败时保持未应用，下次调用可重试（与 Patch 1/2 的可重试语义一致）。
+    """
+    global _MODEL_HTTP_HOOK_PATCH_APPLIED
+    if _MODEL_HTTP_HOOK_PATCH_APPLIED:
+        return
+
+    wrapped_classes: list = []
+    for dotted, method_names in _MODEL_HTTP_HOOK_CLIENT_SPECS:
+        client_cls = _import_model_client_class(dotted)
+        if client_cls is None:
+            logger.warning(
+                "[llm_sse_patch] before_model_http: 客户端 %s 不可用，跳过", dotted
+            )
+            continue
+        methods = _wrap_model_http_hook_on_class(client_cls, method_names)
+        if methods:
+            wrapped_classes.append(f"{client_cls.__name__}({','.join(methods)})")
+
+    if wrapped_classes:
+        _MODEL_HTTP_HOOK_PATCH_APPLIED = True
+        logger.info(
+            "[llm_sse_patch] before_model_http 扩展埋点补丁已应用: %s",
+            ", ".join(wrapped_classes),
+        )
+    else:
+        logger.warning(
+            "[llm_sse_patch] before_model_http 扩展埋点补丁未包装任何客户端，"
+            "保持未应用状态以便后续重试"
+        )
 
 
 def apply_openai_sse_invoke_patch() -> None:
