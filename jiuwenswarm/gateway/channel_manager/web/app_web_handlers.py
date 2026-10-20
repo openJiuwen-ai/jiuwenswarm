@@ -4763,11 +4763,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         try:
-            from jiuwenswarm.gateway.routing.e2a_proxy import (
-                is_agentos_routing_client,
-                is_legacy_shared_directory_client,
-            )
-
             if session_id:
                 params["session_id"] = session_id
             # 注入创建者 user_id（web 连接携带），执行时透传给 faas 的 X-Session-Context，
@@ -4778,7 +4773,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 登录免费模型绑定华为账号凭据句柄（与路由 user_id 是两套独立用户
             # 体系），用后即弃、不落任务数据。
             params["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
-            is_agentos = is_agentos_routing_client(_resolve(agent_client))
             # 仅共享目录单用户可由 Gateway 从 session metadata 补 project_dir。
             # AgentOS 下 metadata 在目标 AgentServer 用户目录，Gateway 读部署目录会
             # 误把任务归到默认项目；缺省时让目标 AgentServer / 显式 project_id 决定。
@@ -4798,41 +4792,43 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                             params["project_dir"] = pd.strip()
                 except Exception:  # noqa: BLE001
                     pass
-            if is_agentos:
-                from jiuwenswarm.gateway.routing.e2a_proxy import (
-                    resolve_agent_cron_project_binding,
-                )
+            # A3g：项目绑定统一经目标 AgentServer 解析（legacy 单用户的本地
+            # AgentServer 同样服务 PROJECT_CRON_RESOLVE_BINDING，注入目录=共享
+            # 目录），controller 不再保留 gateway 本地 project_store 反查。
+            from jiuwenswarm.gateway.routing.e2a_proxy import (
+                resolve_agent_cron_project_binding,
+            )
 
-                bound, binding = await resolve_agent_cron_project_binding(
-                    agent_client=_resolve(agent_client), params=params,
-                    user_id=user_id, channel_id="web", session_id=session_id,
+            bound, binding = await resolve_agent_cron_project_binding(
+                agent_client=_resolve(agent_client), params=params,
+                user_id=user_id, channel_id="web", session_id=session_id,
+            )
+            if not bound:
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error=str(binding.get("error") or "cron project binding failed"),
+                    code=str(binding.get("code") or "SERVICE_UNAVAILABLE"),
                 )
-                if not bound:
-                    await channel.send_response(
-                        ws, req_id, ok=False,
-                        error=str(binding.get("error") or "cron project binding failed"),
-                        code=str(binding.get("code") or "SERVICE_UNAVAILABLE"),
-                    )
-                    return
-                resolved_project_id = binding.get("project_id")
-                resolved_work_mode = binding.get("work_mode")
-                if (
-                    not isinstance(resolved_project_id, str)
-                    or not isinstance(resolved_work_mode, str)
-                    or not resolved_work_mode.strip()
-                ):
-                    await channel.send_response(
-                        ws, req_id, ok=False,
-                        error="invalid cron project binding",
-                        code="BAD_REQUEST",
-                    )
-                    return
-                params.update({
-                    "project_id": resolved_project_id,
-                    "work_mode": resolved_work_mode,
-                })
-                params.pop("project_dir", None)
-                params["_agentos_project_binding_verified"] = True
+                return
+            resolved_project_id = binding.get("project_id")
+            resolved_work_mode = binding.get("work_mode")
+            if (
+                not isinstance(resolved_project_id, str)
+                or not isinstance(resolved_work_mode, str)
+                or not resolved_work_mode.strip()
+            ):
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error="invalid cron project binding",
+                    code="BAD_REQUEST",
+                )
+                return
+            params.update({
+                "project_id": resolved_project_id,
+                "work_mode": resolved_work_mode,
+            })
+            params.pop("project_dir", None)
+            params["_agentos_project_binding_verified"] = True
             job = await cc.create_job(params)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except Exception as e:  # noqa: BLE001
@@ -4855,19 +4851,16 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="patch must be object", code="BAD_REQUEST")
             return
         try:
-            from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-
             if await _get_owned_cron_job(cc, job_id, user_id) is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
             patch = dict(patch)
             # 仅当 patch 涉及 project 字段时才解析项目绑定（避免非项目字段的
-            # update 因用户侧项目解析失败而被整体拒绝；单用户不 resolve）。
+            # update 因用户侧项目解析失败而被整体拒绝）。A3g：解析统一经目标
+            # AgentServer（PROJECT_CRON_RESOLVE_BINDING），不再区分 AgentOS/
+            # legacy 单用户。
             has_project_fields = "project_id" in patch or "project_dir" in patch
-            if (
-                is_agentos_routing_client(_resolve(agent_client))
-                and has_project_fields
-            ):
+            if has_project_fields:
                 from jiuwenswarm.gateway.routing.e2a_proxy import (
                     resolve_agent_cron_project_binding,
                 )
