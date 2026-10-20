@@ -63,6 +63,7 @@ from jiuwenswarm.diagnosis.models import (
     StepRef,
 )
 from jiuwenswarm.diagnosis.node_anchor import anchor_assistant_nodes
+from openjiuwen.agent_evolving.attribution.snapshot import SlicedNodes
 from jiuwenswarm.diagnosis.snapshot import TrajectorySnapshot
 
 logger = logging.getLogger(__name__)
@@ -240,7 +241,11 @@ def _prepare_nodes(inputs: EngineInputs) -> dict[str, list[Any]]:
     sliced = slice_nodes_by_range(assigned, ranges)
     # Root causes and the experience verdict highlight these nodes' spans, so an assistant
     # message must point at the model call that wrote it, not at a later context commit.
-    return anchor_assistant_nodes(sliced, snapshot)
+    anchored = SlicedNodes(anchor_assistant_nodes(sliced, snapshot))
+    # Task parsing reads the whole session and the user's own messages from these two attributes.
+    anchored.user_requests = sliced.user_requests
+    anchored.whole = sliced.whole
+    return anchored
 
 
 def _render_llm_line(event: Any, text: dict[str, str]) -> str:
