@@ -37,10 +37,6 @@ from openjiuwen.harness.schema.deep_agent_spec import (
     register_tool_provider,
 )
 
-from jiuwenswarm.agents.harness.code.lean_profile import (
-    filter_names,
-    resolve_code_profile,
-)
 from jiuwenswarm.common.config import (
     get_progressive_tool_enabled,
     get_skill_evolution_enabled,
@@ -266,13 +262,6 @@ def convert_code_config_to_deep_agent_spec(
     configured_subagents = (
         deepcopy(configured_subagents) if isinstance(configured_subagents, dict) else {}
     )
-    # Lean coding profile (modes.code.profile: lean): keep only allow-listed
-    # configured tools and dynamic rails, and build no sub-agents, sub-agent
-    # runtime or progressive tool disclosure. Default profile: unchanged.
-    lean = resolve_code_profile(config_snapshot)
-    if lean.enabled:
-        configured_tools = filter_names(configured_tools, lean.tools_allow)
-        configured_rails = filter_names(configured_rails, lean.rails_allow)
     max_iterations = _optional_max_iterations(react_snapshot.get("max_iterations"))
     subagent_factory_kwargs: dict[str, Any] = {"subagents": configured_subagents}
     if max_iterations is not None:
@@ -303,30 +292,22 @@ def convert_code_config_to_deep_agent_spec(
                 params={"configured_tools": configured_tools},
             )
         ],
-        subagents=(
-            []
-            if lean.enabled and lean.disable_subagents
-            else [
-                SubAgentSpec(
-                    agent_card=AgentCard(
-                        id=f"{card.id}.code-subagents",
-                        name="code-subagents",
-                    ),
-                    system_prompt="",
-                    factory_name=CODE_SUBAGENT_BUNDLE,
-                    factory_kwargs=subagent_factory_kwargs,
-                )
-            ]
-        ),
+        subagents=[
+            SubAgentSpec(
+                agent_card=AgentCard(
+                    id=f"{card.id}.code-subagents",
+                    name="code-subagents",
+                ),
+                system_prompt="",
+                factory_name=CODE_SUBAGENT_BUNDLE,
+                factory_kwargs=subagent_factory_kwargs,
+            )
+        ],
         enable_task_loop=(
             bool(react_snapshot.get("enable_task_loop", True))
             or get_skill_evolution_enabled(config_snapshot)
         ),
-        enable_subagent_runtime=(
-            False
-            if lean.enabled and lean.disable_subagents
-            else is_subagent_runtime_enabled(config_snapshot)
-        ),
+        enable_subagent_runtime=is_subagent_runtime_enabled(config_snapshot),
         **({"max_iterations": max_iterations} if max_iterations is not None else {}),
         workspace=WorkspaceSpec(root_path=workspace_root or "./", language=language),
         sys_operation=_sys_operation_spec(sys_operation, sys_operation_card),
@@ -339,11 +320,7 @@ def convert_code_config_to_deep_agent_spec(
         auto_create_workspace=False,
         completion_timeout=completion_timeout,
         progressive_tool=ProgressiveToolSpec(
-            enabled=(
-                False
-                if lean.enabled and lean.disable_progressive_tool
-                else get_progressive_tool_enabled(config_snapshot)
-            )
+            enabled=get_progressive_tool_enabled(config_snapshot)
         ),
     )
     return spec, context

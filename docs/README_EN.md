@@ -164,11 +164,6 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">Code-mode <code>run_tests</code>: runs the tests for changed files, returns a compact result, and counts as gate verification.</td>
     </tr>
     <tr>
-      <td width="22%"><strong>Lean coding profile</strong></td>
-      <td width="28%"><a href="en/LeanCodingProfile.md">Lean coding profile</a></td>
-      <td width="50%">Code profile for headless coding, benchmarks and CI: only coding tools are shown; ~56% less fixed prompt per call.</td>
-    </tr>
-    <tr>
       <td width="22%"><strong>Skill Self-Evolution</strong></td>
       <td width="28%"><a href="en/SkillSelfEvolution.md">Skill Self-Evolution</a></td>
       <td width="50%">Skill iteration, self-optimization, and capability accumulation mechanisms.</td>

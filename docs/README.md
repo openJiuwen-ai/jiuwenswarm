@@ -174,16 +174,6 @@
       <td width="50%">Code 模式 <code>run_tests</code>：按修改文件运行相关测试、精简结果、计入完成度门控的验证证据。</td>
     </tr>
     <tr>
-      <td width="22%"><strong>精简编码模式</strong></td>
-      <td width="28%"><a href="zh/精简编码模式.md">精简编码模式</a></td>
-      <td width="50%">面向无头编码/评测/CI 的 Code 配置档：只展示编码工具，每次调用固定提示减少约 56%。</td>
-    </tr>
-    <tr>
-      <td width="22%"><strong>上下文瘦身（Code 模式）</strong></td>
-      <td width="28%"><a href="zh/上下文瘦身.md">上下文瘦身</a></td>
-      <td width="50%">工具结果入库裁剪、轮中压缩窗口与提示去重；配置 <code>modes.code.context_diet</code>。</td>
-    </tr>
-    <tr>
       <td width="22%"><strong>单机多实例运行</strong></td>
       <td width="28%"><a href="zh/单机多实例运行.md">单机多实例运行</a></td>
       <td width="50%">在同一台机器上运行多个 JiuwenSwarm 实例的部署场景与配置。</td>
@@ -207,11 +197,6 @@
       <td width="22%"><strong>工具权限与安全</strong></td>
       <td width="28%"><a href="zh/工具权限与安全防护.md">工具权限与安全防护</a></td>
       <td width="50%">系统命令、文件操作、工具调用中的安全拦截与权限管控。</td>
-    </tr>
-    <tr>
-      <td width="22%"><strong>Shell 权限策略</strong></td>
-      <td width="28%"><a href="zh/Shell权限策略.md">Shell权限策略</a></td>
-      <td width="50%">Shell 网络访问策略、无头运行默认禁网，以及只能拒绝、由 Code 模式守卫 Rail 执行的项目策略文件。</td>
     </tr>
     <tr>
       <td width="22%"><strong>E2A</strong></td>

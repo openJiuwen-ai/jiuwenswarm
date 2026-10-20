@@ -616,7 +616,7 @@ _CODE_SECTION_GENERATORS = [
 
 # Lean coding profile (modes.code.profile: lean): same sections, minus the parts
 # that describe sub-agents, todo tools, list_files and ask_user, which that
-# profile does not expose. See jiuwenswarm/agents/harness/code/lean_profile.py.
+# profile does not expose.
 _CODE_SECTION_GENERATORS_LEAN = [
     _code_intro_prompt,
     _code_system_prompt,
@@ -666,7 +666,7 @@ def build_code_system_prompt(
     builder = SystemPromptBuilder(language="en")
 
     generators = (
-        _CODE_SECTION_GENERATORS_LEAN if profile == "lean" else _CODE_SECTION_GENERATORS
+        _CODE_SECTION_GENERATORS
     )
     for generator in generators:
         builder.add_section(generator())

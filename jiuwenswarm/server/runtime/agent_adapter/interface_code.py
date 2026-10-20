@@ -103,27 +103,12 @@ from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     code_policy_flags,
 )
 from jiuwenswarm.agents.harness.code import spec as code_agent_spec
-from jiuwenswarm.agents.harness.code.context_diet import (
-    ContextDietConfig,
-    load_context_diet_config,
-)
-from jiuwenswarm.agents.harness.code.lean_profile import (
-    PROFILE_DEFAULT,
-    PROFILE_LEAN,
-    LeanProfileConfig,
-    LeanToolFilterRail,
-    filter_names,
-    resolve_code_profile,
-)
 from jiuwenswarm.agents.harness.code.rails import (
     CodeCompletionGateRail,
     CodeTaskPlanningRail,
-    ContextDietTrimRail,
-    FailClosedShellPolicyGuardRail,
     ImplementCompletenessRail,
     PlanApprovalInterruptRail,
     ReadRestoreRail,
-    ShellPolicyGuardRail,
 )
 from jiuwenswarm.agents.harness.code.repo_tools import (
     CodeSearchTool,
@@ -614,15 +599,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         "SessionMessagingRouteRail",
         "ImplementCompletenessRail",
         "CodeCompletionGateRail",
-        "ShellPolicyGuardRail",
         "ModelAnomalyDetectionRail",
         # Repo map prompt section, gated by modes.code.repo_map.enabled.
         "RepoMapRail",
-        # Context diet (modes.code.context_diet.trim.enabled, default on)
-        "ContextDietTrimRail",
         "ReadRestoreRail",
-        # Lean profile filter (modes.code.profile: lean); mounted last when enabled.
-        "LeanToolFilterRail",
     })
 
     def __init__(self) -> None:
@@ -2016,12 +1996,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 "_code_completion_gate_rail",
                 self._build_code_completion_gate_rail,
             ),
-            _RailBuildInfo("_shell_policy_guard_rail", self._build_shell_policy_guard_rail),
             _RailBuildInfo("_repo_map_rail", self._build_repo_map_rail),
-            _RailBuildInfo(
-                "_context_diet_trim_rail",
-                self._build_context_diet_trim_rail,
-            ),
             _RailBuildInfo("_read_restore_rail", self._build_read_restore_rail),
             _RailBuildInfo("_code_task_planning_rail", self._build_code_task_planning_rail),
             _RailBuildInfo("_code_agent_rail", self._build_code_agent_rail),
@@ -2034,37 +2009,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             ),
         ]
 
-        # Lean coding profile: skip fixed rails that only add interactive, team
-        # or delegation features, and mount LeanToolFilterRail last so the model
-        # sees only the allow-listed coding tools. Default profile: unchanged.
-        lean = resolve_code_profile(config_base)
-        if lean.enabled:
-            skip = set(lean.skip_rails)
-            skipped = [info.attr_name for info in rail_infos if info.attr_name in skip]
-            rail_infos = [info for info in rail_infos if info.attr_name not in skip]
-            # Other adapter code reads these attributes directly; a skipped rail
-            # must read as "not built" (None), exactly like a failed build.
-            for attr_name in skipped:
-                setattr(self, attr_name, None)
-            rail_infos.append(
-                _RailBuildInfo(
-                    "_lean_tool_filter_rail",
-                    self._build_lean_tool_filter_rail,
-                    {"lean": lean},
-                )
-            )
-            logger.info(
-                "[JiuwenSwarmCodeAdapter] lean coding profile: skipped rails=%s",
-                skipped,
-            )
 
         # 动态 Rails — 从 config.yaml::modes.code.rails 读取
         # 跳过已在固定列表中的 rail，避免重复注册
         mode_config = config_base.get("modes", {}).get("code", {})
         configured_rails = mode_config.get("rails") or []
-        if lean.enabled:
-            configured_rails = filter_names(configured_rails, lean.rails_allow)
-
         for rail_name in configured_rails:
             if rail_name in self._FIXED_RAIL_NAMES:
                 logger.info(
@@ -2329,7 +2278,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     @staticmethod
     def _build_code_system_prompt(config_base: Any) -> str:
-        """Code system prompt with lean profile, tools, and ``modes.code.policy``."""
+        """Code system prompt with tools and ``modes.code.policy``."""
         enabled, headless = code_policy_flags(config_base)
         logger.info(
             "[JiuwenSwarmCodeAdapter] coding policy: enabled=%s headless=%s",
@@ -2337,11 +2286,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             headless,
         )
         return build_code_system_prompt(
-            profile=(
-                PROFILE_LEAN
-                if resolve_code_profile(config_base).enabled
-                else PROFILE_DEFAULT
-            ),
+            profile="default",
             tool_names=(
                 (config_base.get("modes", {}).get("code", {}) or {}).get("tools") or []
             ),
@@ -2350,19 +2295,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             code_graph_profile=resolve_code_graph_flags(config_base).root_prompt_profile,
         )
 
-    @staticmethod
-    def _build_lean_tool_filter_rail(lean: LeanProfileConfig) -> LeanToolFilterRail | None:
-        """Mount the lean-profile tool/prompt filter (modes.code.profile: lean)."""
-        try:
-            return LeanToolFilterRail(lean)
-        except Exception as exc:  # noqa: BLE001 - same contract as the sibling rail builders
-            logger.warning(
-                "[JiuwenSwarmCodeAdapter] LeanToolFilterRail create failed: %s",
-                exc,
-            )
-            return None
-
-    @staticmethod
     def _build_implement_completeness_rail() -> ImplementCompletenessRail | None:
         """Track real mutations and language-appropriate verification."""
         try:
@@ -2407,41 +2339,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         text = str(value).strip() if value is not None else ""
         return text or str(previous or "")
 
-    def _build_shell_policy_guard_rail(
-        self,
-    ) -> ShellPolicyGuardRail | FailClosedShellPolicyGuardRail:
-        """Guard for the deny-only project policy and the shell network policy.
-
-        Enforces ``<project>/.jiuwenswarm/permissions.yaml`` (never merged into the
-        permission engine) and ``permissions.shell_network``. Headless (process
-        CLI) runs get ``permissions.headless.shell_network`` (default ``deny``);
-        interactive defaults are unchanged (``allow``). If the guard cannot be
-        built, an ERROR is logged and a fail-closed guard is mounted instead,
-        refusing shell and file tools with an actionable message (the protection
-        is never silently dropped, and the session stays usable otherwise).
-        """
-        try:
-            config_base = getattr(self, "_config_base_cache", None) or {}
-            permissions = config_base.get("permissions") if isinstance(config_base, dict) else {}
-            permissions = permissions if isinstance(permissions, dict) else {}
-            headless = str(getattr(self, "_channel_id", "") or "") == "process_cli"
-            rail = ShellPolicyGuardRail(permissions=permissions, headless=headless)
-            logger.info(
-                "[JiuwenSwarmCodeAdapter] ShellPolicyGuardRail create success "
-                "(headless=%s engine=%s shell_network=%s)",
-                headless,
-                bool(permissions.get("enabled")),
-                permissions.get("shell_network", "allow"),
-            )
-            return rail
-        except Exception as exc:  # fail closed instead of dropping the guard
-            logger.exception(
-                "[JiuwenSwarmCodeAdapter] ShellPolicyGuardRail create failed; shell and file "
-                "tools are refused this session",
-            )
-            return FailClosedShellPolicyGuardRail(reason=f"{type(exc).__name__}: {exc}")
-
-    @staticmethod
     def _build_code_task_planning_rail() -> CodeTaskPlanningRail | None:
         """Register todo tools without openjiuwen todo system prompt injection."""
         try:
@@ -2747,67 +2644,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         return ContextAssembleRail()
 
     def _build_context_processor_rail(self) -> Any:
-        """构建 ContextProcessorRail — 复用父类逻辑，并按配置追加 context-diet 压缩窗口.
+        """Build ContextProcessorRail without context-diet compaction."""
+        return super()._build_context_processor_rail()
 
-        ``modes.code.context_diet.compaction`` 开启时（默认开），在父类构建的
-        Rail 上追加 :mod:`jiuwenswarm.agents.harness.code.context_diet.processors`
-        中的滑动窗口处理器；关闭或窗口为 0 时不做任何改动，预置处理器链保持原样。
-        """
-        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _build_context_processor_rail
-        rail = _build_context_processor_rail(self._config_cache)
-        if rail is None:
-            return None
-        try:
-            from jiuwenswarm.agents.harness.code.context_diet.processors import (
-                build_compaction_processors,
-            )
-
-            pairs = build_compaction_processors(self._context_diet_config().compaction)
-            if pairs:
-                rail.add_processors(pairs)
-                logger.info(
-                    "[JiuwenSwarmCodeAdapter] context-diet compaction processors added: %s",
-                    ", ".join(f"{name}(keep_last_k={cfg.keep_last_k}, tools={cfg.tool_names})" for name, cfg in pairs),
-                )
-            else:
-                logger.info("[JiuwenSwarmCodeAdapter] context-diet compaction disabled by modes.code.context_diet.compaction")
-        except Exception as exc:  # noqa: BLE001 - never lose the base rail over an optional add-on
-            logger.warning("[JiuwenSwarmCodeAdapter] context-diet compaction setup failed: %s", exc)
-        return rail
-
-    def _context_diet_config(self) -> ContextDietConfig:
-        """Read ``modes.code.context_diet`` from the active Code config (missing = defaults)."""
-        return load_context_diet_config(self._active_code_config())
-
-    def _build_context_diet_trim_rail(self) -> ContextDietTrimRail | None:
-        """构建 ContextDietTrimRail — 工具结果入库裁剪.
-
-        受 ``modes.code.context_diet.trim.enabled`` 控制（默认开）。关闭时返回 None，
-        工具结果原样进入上下文，行为与未引入本 Rail 时完全一致。
-        """
-        try:
-            trim_cfg = self._context_diet_config().trim
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[JiuwenSwarmCodeAdapter] context-diet config unreadable, trim rail skipped: %s", exc)
-            return None
-        if not trim_cfg.enabled:
-            logger.info("[JiuwenSwarmCodeAdapter] ContextDietTrimRail disabled by modes.code.context_diet.trim.enabled")
-            return None
-        try:
-            rail = ContextDietTrimRail(trim_cfg)
-            logger.info(
-                "[JiuwenSwarmCodeAdapter] ContextDietTrimRail create success "
-                "(preset=%s bash_max_lines=%s bash_max_chars=%s grep_max_lines=%s read_file_max_lines=%s)",
-                self._context_diet_config().preset,
-                trim_cfg.bash_max_lines,
-                trim_cfg.bash_max_chars,
-                trim_cfg.grep_max_lines,
-                trim_cfg.read_file_max_lines,
-            )
-            return rail
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[JiuwenSwarmCodeAdapter] ContextDietTrimRail create failed: %s", exc)
-            return None
 
     def _build_skill_evolution_rail_via_config(self) -> Any:
         """构建 SkillEvolutionRail."""

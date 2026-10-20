@@ -1177,19 +1177,6 @@ permissions:
   # sensitive_paths + net_urls). Default true; User/Session cannot override.
   package_builtin_rules: true
   # 缺省两项为 true。产品关闭结构地板与解释器汇点；危险命令仍走 builtin / rules。
-  # Shell 网络策略（allow | ask | deny）：agent-core 的 net_guard 只覆盖抓取类工具，
-  # 这里约束 shell 中的 curl / wget / pip install / git clone|fetch|push / npm install 等。
-  # deny 在 Code 模式下始终由 ShellPolicyGuardRail 拒绝；启用 permissions 时 deny 也作为引擎规则，
-  # ask 仅在不会放宽用户 shell 基线时交给引擎询问。交互默认 allow（行为不变）。
-  # 详见 docs/zh/Shell权限策略.md。
-  shell_network: allow
-  # 无头运行（process CLI / implement 驱动器）的默认值，取与 shell_network 更严格者。
-  headless:
-    shell_network: deny
-  # 项目级策略 <项目根>/.jiuwenswarm/permissions.yaml：只能拒绝（deny_paths、deny_commands、
-  # shell_network: deny、writable_roots），不进入权限引擎，只在 Code 模式由守卫 Rail 执行。
-  project_policy:
-    enabled: true
   shell_guard:
     unknown_structure: false
     interpreter_sink: false
@@ -1588,24 +1575,6 @@ modes:
     rails:
     tools:
   code:
-    # 编码 profile — default（默认，行为不变）| lean（精简编码模式，面向无头/评测/CI）
-    # lean：只向模型暴露编码工具、不挂子 Agent / todo / 技能 / 计划审批等交互功能，
-    # 并移除描述这些功能的提示段，显著减少每次模型调用的固定 token。
-    # 详见 docs/zh/精简编码模式.md、docs/en/LeanCodingProfile.md
-    profile: default
-    lean:
-      # 模型可见的工具（名字不存在则忽略；run_tests 来自验证闭环 MR）。全部拼错时保留完整工具列表并告警
-      tools_allow: [read_file, write_file, edit_file, bash, grep, glob, run_tests, code_search, find_symbol, symbol_outline]
-      # 保留的动态 Rails（modes.code.rails 中的名字）；默认不保留 SkillUseRail / WorktreeRail
-      rails_allow: []
-      # 不挂载的固定 Rails（_RailBuildInfo 属性名）；省略则用代码默认列表
-      # skip_rails: [_skill_retrieval_prompt_rail, _symphony_orchestration_rail, ...]
-      # 每次模型调用前移除的提示段（PromptSection 名）；省略则用代码默认列表
-      # drop_prompt_sections: [skills, todo, task_tool, subagent_tools, ...]
-      disable_subagents: true          # 不构建 explore/plan 等子 Agent，关闭子 Agent 运行时
-      disable_progressive_tool: true   # 关闭 tool_search 渐进式工具披露
-      log_sections: true               # 首次模型调用时记录保留/移除的工具与提示段
-
     # 编码遥测 — CodeTelemetryRail（见 docs/zh/编码遥测.md、docs/en/CodeTelemetry.md）
     # 每次模型调用 / 工具调用写一条紧凑记录到 <logs>/code_telemetry.jsonl（按大小轮转）
     # stream_events: auto = 仅 process CLI（--run-jsonl）通道发送 telemetry.* 事件；true/false 强制
@@ -1631,39 +1600,6 @@ modes:
     # 空失败诊断（移植自 iCode）：工具调用失败且没有任何错误文本/输出时，把
     # agent-core 的占位文案「Tool failed without an error message.」改写为
     # 带工具名和下一步建议的可操作提示。只影响原本为空的失败；默认开启
-
-    # 上下文瘦身（Context diet）— 控制进入模型窗口的工具输出体积；详见 docs/zh/上下文瘦身.md
-    # trim：工具结果入库时裁剪（bash/grep 默认开，完整输出落盘到用户数据目录并在消息中给出路径）
-    # compaction：滑动窗口，超出 keep_last_k 的旧结果替换为一行摘要 + 可重载句柄（edit/write 结果不受影响）
-    # read_file 的裁剪与窗口默认关闭（0）：刚读的文件通常就是接下来要改的文件；无头评测建议开启
-    context_diet:
-      # preset: default | aggressive —— 未显式写出的键取预设值；显式写出的键优先。
-      #   default    交互默认：裁剪最大的约 1/3 bash/grep 输出，不裁 read_file
-      #   aggressive 实验性、需手动开启：更低阈值并裁剪/窗口化 read_file；复测：重复读取约翻倍，单次调用输入降为 0.78 倍，净 token 未增加（见 docs 上下文瘦身 §3.1）
-      # 预设取值与依据见 docs/zh/上下文瘦身.md §3.1
-      preset: default
-      trim:
-        enabled: true
-        # bash_max_lines: 45         # 超过该行数的 shell 输出被裁剪（default 预设）
-        # bash_max_chars: 2500       # 或超过该字符数
-        # bash_head_lines: 20        # 保留开头行数
-        # bash_tail_lines: 15        # 保留结尾行数（含 Exit Code）
-        keep_signal_lines: true      # 中间段优先保留 error/fail/traceback 等强信号行
-        # max_signal_lines: 25
-        # grep_max_lines: 40         # grep/glob 结果超过该行数只保留前 grep_head_lines 行
-        # grep_head_lines: 30
-        # read_file_max_lines: 0     # 0=不裁剪（default）；aggressive 预设为 250
-        # exempt_source_prints: true  # 打印文件内容/差异的 shell 命令（sed -n、cat、git diff、inspect.getsource 等）按 read_file 对待，不裁剪；false=旧行为
-        # source_print_max_lines: 2000 # 上述输出的安全上限：超过则保留前 N 行并落盘；0=从不裁剪
-        spill_dir: ""                # 完整输出落盘目录，空=<数据目录>/agent/workspace/context_diet/<session>（沙箱内、项目外）
-        spill_max_bytes: 52428800    # 每会话落盘上限（50 MB），超出删最旧文件；0=不限
-      compaction:
-        enabled: true
-        # shell_keep_last_k: 4       # bash/grep/glob 结果保留最近 N 条原文；0=关闭
-        # read_keep_last_k: 0        # read_file 窗口；0=关闭（default）；aggressive 为 6
-        # exempt_source_prints: true  # 上述 shell 源码/差异输出不进入 shell 窗口（与 read_file 一致）
-        # min_offload_chars: 800     # 小于该字符数的旧结果直接摘要，不落盘
-        summary_chars: 240           # 摘要占位行最大长度
 
     # 读取状态恢复（ReadRestoreRail）：agent-core 要求同一进程内先 read_file 才能 edit_file/write_file。
     # 会话在新进程中继续（无头驱动的每轮续跑、AgentServer/桌面端重启后恢复会话）时，

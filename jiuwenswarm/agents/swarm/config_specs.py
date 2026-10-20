@@ -1238,17 +1238,10 @@ def build_member_deep_agent_spec(
             code_policy_flags,
         )
 
-        from jiuwenswarm.agents.harness.code.lean_profile import (
-            PROFILE_DEFAULT,
-            PROFILE_LEAN,
-            resolve_code_profile,
-        )
-
         code_cfg = ((config or {}).get("modes") or {}).get("code") or {}
         policy_enabled, policy_headless = code_policy_flags(config)
-        lean = resolve_code_profile(config)
         update["system_prompt"] = build_code_system_prompt(
-            profile=PROFILE_LEAN if lean.enabled else PROFILE_DEFAULT,
+            profile="default",
             tool_names=code_cfg.get("tools") if isinstance(code_cfg, dict) else None,
             policy_enabled=policy_enabled,
             policy_headless=policy_headless,
