@@ -2998,19 +2998,22 @@ class AgentRuntime:
     def _defer_stale_ask_user_to_chat(self, request: AgentRequest) -> bool:
         """Route a post-restart ask_user answer to a normal chat round.
 
-        No live execution is waiting for this control input (e.g. after a
-        service restart), so the answer re-enters through the regular chat
-        path: the adapter cold-starts, the checkpoint restores the pending
-        interrupt, and the InteractiveInput resumes it. Only ask_user answers
-        take this path; other interrupt answers still require a live
-        execution.
+        Defer only when the Runtime holds no record of the session at all
+        (e.g. after a service restart): a wrong or already-completed answer
+        on a live session must keep failing control delivery, while the cold
+        session re-enters through the regular chat path — the adapter
+        cold-starts, the checkpoint restores the pending interrupt, and the
+        InteractiveInput resumes it. Only ask_user answers take this path.
         """
         if not self._is_stale_ask_user_answer(request.params):
             return False
-        return not self._session_coordinator.has_control_target(
-            request.session_id or "default",
+        session_id = request.session_id or "default"
+        if self._session_coordinator.has_control_target(
+            session_id,
             self._control_request_id(request),
-        )
+        ):
+            return False
+        return self._session_coordinator.snapshot_session(session_id) is None
 
     @staticmethod
     def _event_confirms_user_turn(event: RuntimeEvent) -> bool:
