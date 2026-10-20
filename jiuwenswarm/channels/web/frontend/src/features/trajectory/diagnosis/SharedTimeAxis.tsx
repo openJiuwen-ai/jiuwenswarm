@@ -1,6 +1,6 @@
 /** Shared time axis ruler. When selectable, dragging picks one window; idle gaps are already removed from this axis. */
 
-import { useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TrajectoryTimeRange } from '../trajectory/timeline';
 import { formatElapsed, type WallClockDomain } from './diagnosisTimeSelection';
