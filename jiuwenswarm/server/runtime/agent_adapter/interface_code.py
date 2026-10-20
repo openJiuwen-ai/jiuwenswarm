@@ -2644,8 +2644,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         return ContextAssembleRail()
 
     def _build_context_processor_rail(self) -> Any:
-        """Build ContextProcessorRail without context-diet compaction."""
-        return super()._build_context_processor_rail()
+        """Build ContextProcessorRail via the shared Deep helper (no Code-only extras)."""
+        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+            _build_context_processor_rail,
+        )
+
+        return _build_context_processor_rail(self._config_cache)
 
 
     def _build_skill_evolution_rail_via_config(self) -> Any:
