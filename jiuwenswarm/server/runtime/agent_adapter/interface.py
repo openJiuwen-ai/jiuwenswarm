@@ -1317,7 +1317,8 @@ class JiuWenSwarm:
 
     def _ensure_adapter(self, *, mode: str | None = None) -> AgentAdapter:
         """确保 adapter 已初始化，如果未初始化则根据环境变量和 mode 创建."""
-        selected_mode = mode or self._adapter_mode or "agent"
+        current_adapter_mode = getattr(self, "_adapter_mode", None)
+        selected_mode = mode or current_adapter_mode or "agent"
         if self._adapter is None:
             self._sdk_name = resolve_sdk_choice()
             self._adapter = create_adapter(
@@ -1350,12 +1351,13 @@ class JiuWenSwarm:
         # explicitly asks for a different implementation must not silently use
         # the existing Deep/Flash adapter; the manager is responsible for
         # selecting a separate facade.
-        if self._adapter_mode is None:
+        if current_adapter_mode is None:
             self._adapter_mode = selected_mode
-        if mode is not None and selected_mode != self._adapter_mode:
+            current_adapter_mode = selected_mode
+        if mode is not None and selected_mode != current_adapter_mode:
             raise RuntimeError(
                 "JiuWenSwarm adapter mode mismatch: "
-                f"current={self._adapter_mode!r}, requested={selected_mode!r}"
+                f"current={current_adapter_mode!r}, requested={selected_mode!r}"
             )
         return self._adapter
 
