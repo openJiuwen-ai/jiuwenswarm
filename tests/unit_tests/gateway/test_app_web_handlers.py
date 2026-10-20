@@ -2612,6 +2612,49 @@ async def test_config_set_rejects_unavailable_external_cli_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_config_save_all_nested_shape_triggers_install_gate(monkeypatch):
+    """A4g review P1 回归：save_all 嵌套键形状（前端真实链路）必须触发安装门控。
+
+    前端外部 CLI 卡片的唯一保存通道是 config.save_all 且键嵌套在
+    params.config 下；门控若只扫顶层键则对真实流量永不触发（安装不启动、
+    agent 以启用态直接落盘）。
+    """
+    channel = FakeWebChannel()
+
+    monkeypatch.setenv("WEB_PORT", "19000")
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client())
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+        lambda: {"preferred_language": "zh", "modes": {"team": {"jiuwen_team": {}}}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        lambda: {"status": "running", "error": "", "started_at": 1.0, "finished_at": 0.0},
+    )
+
+    await channel.methods["config.save_all"](
+        object(),
+        "req-save-all-nested-install",
+        {
+            "config": {
+                "external_cli_agent_codex_enabled": "true",
+                "external_cli_agent_codex_use_builtin": "true",
+            }
+        },
+        "sess-save-all-nested",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    installs = channel.responses[-1]["payload"]["external_cli_dependency_installs"]
+    assert installs["codex"]["status"] == "running"
+    # 安装启动即短路：嵌套键未被落盘（updated 为空）
+    assert channel.responses[-1]["payload"]["updated"] == []
+
+
+@pytest.mark.asyncio
 async def test_config_set_starts_codex_dependency_install_without_saving_codex(monkeypatch):
     channel = FakeWebChannel()
     updates: list[tuple[list[str], str | None]] = []

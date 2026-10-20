@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from jiuwenswarm.common.config import resolve_env_vars
+from jiuwenswarm.common.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
@@ -257,7 +258,14 @@ class ConfigAdapter(GatewayAdapter):
                 register_tui_config_handlers,
             )
 
-            register_tui_config_handlers(channel)
+            # A4g review P2：TUI 通道同样接 server 侧 in-process reload（B1'
+            # 既有缺口——原先只给 web 通道传回调；统一 E2A 后 legacy TUI 的
+            # config.set 也走此路径，热重载语义必须补齐）。
+            register_tui_config_handlers(
+                channel,
+                on_config_saved=self._on_config_saved,
+                agent_client=None,
+            )
         else:
             from jiuwenswarm.common.config_panel.config_set_handlers import (
                 register_config_set_handlers,
@@ -285,8 +293,6 @@ class ConfigAdapter(GatewayAdapter):
         # e2a.constants.E2A_AUTH_SESSION_PARAM_KEY）；本地构造 ws 上下文还原，
         # models.list 据此合并登录送的免费模型（common handler 读 ws 属性）。
         handler_params = dict(request.params or {})
-        from jiuwenswarm.common.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
-
         auth_session = str(handler_params.pop(E2A_AUTH_SESSION_PARAM_KEY, "") or "").strip()
         handler_ws = SimpleNamespace(_jiuwen_auth_session=auth_session)
         await handler(handler_ws, request.request_id, handler_params, request.session_id)

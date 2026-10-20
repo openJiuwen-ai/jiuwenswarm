@@ -5015,14 +5015,24 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             team_payload_requests_codex,
         )
 
+        # 键形状与 config_save_all_handler 的展平规则一致：config.set 键在顶层；
+        # config.save_all 键嵌套在 params.config（前端外部 CLI 卡片的唯一保存
+        # 链路即 save_all 嵌套形状），agents/team 两处皆可出现。
+        raw_config = params.get("config")
+        keys_view: dict[str, Any] = {
+            k: v for k, v in params.items() if k != "config"
+        }
+        if isinstance(raw_config, dict):
+            keys_view.update(raw_config)
+
         codex_touched = any(
-            key.startswith("external_cli_agent_codex_") for key in params
+            key.startswith("external_cli_agent_codex_") for key in keys_view
         ) or (
-            ("agents" in params or "team" in params)
-            and team_payload_requests_codex(params)
+            ("agents" in keys_view or "team" in keys_view)
+            and team_payload_requests_codex(keys_view)
         )
         claude_touched = any(
-            key.startswith("external_cli_agent_claude_") for key in params
+            key.startswith("external_cli_agent_claude_") for key in keys_view
         )
         installs: dict[str, Any] = {}
         if codex_touched:
