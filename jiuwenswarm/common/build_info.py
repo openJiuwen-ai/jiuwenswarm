@@ -145,6 +145,7 @@ def sync_build_info_to_config(config_path: Path) -> bool:
     import portalocker
     from ruamel.yaml import YAML
     from ruamel.yaml.error import YAMLError
+    from ruamel.yaml.util import load_yaml_guess_indent
 
     lock_path = config_path.with_name(f"{config_path.stem}.lock")
     try:
@@ -152,7 +153,7 @@ def sync_build_info_to_config(config_path: Path) -> bool:
             yaml = YAML()
             yaml.preserve_quotes = True
             with config_path.open("r", encoding="utf-8") as handle:
-                data = yaml.load(handle)
+                data, _, _ = load_yaml_guess_indent(handle, yaml=yaml)
             if not isinstance(data, dict) or data.get("build_info") == info:
                 return False
             if "build_info" not in data and hasattr(data, "insert"):
