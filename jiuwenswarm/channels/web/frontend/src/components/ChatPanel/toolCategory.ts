@@ -127,7 +127,7 @@ register(['skill_tool'], { category: 'other', actionKey: 'chatUi.toolAction.skil
 // 创建成员（各 spawn_* 变体都是创建成员）
 register([
   'spawn_teammate', 'spawn_human_agent', 'spawn_passive_human',
-  'spawn_bridge_agent', 'spawn_external_cli', 'spawn_sub_agent',
+  'spawn_bridge_agent', 'spawn_external_cli', 'spawn_sub_agent', 'spawn_expert',
 ], { category: 'other', actionKey: 'chatUi.toolAction.spawnMember', iconKey: 'spawnMember' });
 register(['send_message', 'group_send_message', 'session_send_message'], { category: 'other', actionKey: 'chatUi.toolAction.sendMessage', iconKey: 'sendMessage' });
 register(['build_team'], { category: 'other', actionKey: 'chatUi.toolAction.buildTeam', iconKey: 'buildTeam' });
