@@ -41,6 +41,7 @@ export interface JiuwenMateCapabilities {
 export interface JiuwenMateColleagueDraft {
   name: string;
   description: string;
+  persona?: string;
   tags: string[];
   category: JiuwenMateCategory;
   avatarUrl?: string;
