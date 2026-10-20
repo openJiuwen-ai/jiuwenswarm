@@ -301,32 +301,6 @@ async def test_real_task_uses_own_and_public_skills_without_disabled_siblings(tm
 
 
 @pytest.mark.asyncio
-async def test_real_task_reads_cached_skill_relative_asset(tmp_path):
-    expert = _package(tmp_path / "experts_cache", "cached")
-    directory = expert.package_dir / "skills" / "private"
-    (directory / "references").mkdir()
-    (directory / "references" / "guide.txt").write_text("缓存包相对资源正文", encoding="utf-8")
-    _skill(tmp_path / "public", "shared", "公共快照正文")
-    parent_rail = SkillUseRail(skills_dir=str(tmp_path / "public"))
-    parent = await _parent(tmp_path, public_rail=parent_rail)
-    model = ScriptedModel(
-        _call("skill_tool", skill_name="private", relative_file_path="references/guide.txt"),
-        _call("skill_tool", skill_name="shared"),
-        AssistantMessage(content="完成"),
-    )
-    spec, rail = _production_spec(parent, expert, model)
-    assert "你是测试专家" in spec.system_prompt
-    result = await _invoke(await _bind(parent, spec), name=spec.agent_card.name)
-
-    assert result.success
-    assert "缓存包相对资源正文" in "\n".join(_tool_messages(model))
-    assert "公共快照正文" in "\n".join(_tool_messages(model))
-    assert str(directory) in "\n".join(_tool_messages(model))
-    assert "你是测试专家" in str(model.calls[0]["messages"])
-    _assert_clean(rail)
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("public", [False, True])
 async def test_expert_without_own_skills_can_run_with_empty_or_public_view(tmp_path, public):
     parent_rail = None
@@ -558,42 +532,6 @@ async def test_real_task_interrupt_resume_keeps_one_mount_and_child(tmp_path, mo
 
 
 @pytest.mark.asyncio
-async def test_round_close_drains_real_interrupted_expert_and_prevents_remount(tmp_path, monkeypatch):
-    expert = _package(tmp_path / "cache", "selected")
-    model = ScriptedModel(_call("skill_tool", skill_name="private"))
-    parent = await _parent(tmp_path)
-
-    async def scan():
-        return {expert.id: expert}
-
-    async def plan(*_args):
-        return {"status": "ready", "graph": {
-            "nodes": {expert.id: {"label": expert.name, "task": "完成节点"}}, "edges": [],
-        }}
-
-    monkeypatch.setattr(expert_team, "scan_local_experts", scan)
-    monkeypatch.setattr(expert_team, "plan_experts", plan)
-    round_state = expert_team.DynamicExpertRound(parent, "组织专家", model)
-    assert (await round_state.compose("组织专家"))["success"]
-    spec = parent.deep_config.subagents[0]
-    spec.rails.append(InterruptSkillOnce())
-    spec.factory_kwargs.update({"enable_llm_retry_rail": False, "enable_read_image_multimodal": False})
-    rail = next(rail for rail in spec.rails if isinstance(rail, DynamicExpertSkillRail))
-    tool = Runner.resource_mgr.get_tool(parent.ability_manager.get("task_tool").id)
-    assert (await _invoke(tool, name=spec.agent_card.name))["result_type"] == "interrupt"
-    assert rail.load_record is not None and tool._pending_subagents
-
-    await round_state.close()
-    await round_state.close()
-
-    _assert_clean(rail)
-    assert tool._pending_subagents == {}
-    assert not parent.deep_config.subagents
-    with pytest.raises(RuntimeError, match="ended"):
-        await rail.prepare()
-
-
-@pytest.mark.asyncio
 async def test_cleanup_restores_config_when_skill_file_disappears_after_mount(tmp_path):
     directory = _skill(tmp_path / "expert", "required")
 
@@ -623,7 +561,8 @@ async def test_production_sandbox_can_read_selected_skills_without_widening_regu
         )},
     )
     own = expert.package_dir / "skills" / "private"
-    (own / "guide.txt").write_text("获准的相对技能资源", encoding="utf-8")
+    (own / "references").mkdir()
+    (own / "references" / "guide.txt").write_text("获准的相对技能资源", encoding="utf-8")
     forbidden = tmp_path / "outside-workspace.txt"
     forbidden.write_text("不得读取的包外秘密", encoding="utf-8")
     (own / "escape.txt").symlink_to(forbidden)
@@ -638,7 +577,7 @@ async def test_production_sandbox_can_read_selected_skills_without_widening_regu
     requests = [
         _call("skill_tool", skill_name="private"),
         _call("skill_tool", skill_name="shared"),
-        _call("skill_tool", skill_name="private", relative_file_path="guide.txt"),
+        _call("skill_tool", skill_name="private", relative_file_path="references/guide.txt"),
         _call("read_file", file_path=str(forbidden)),
         _call("read_file", file_path=str(own / "SKILL.md")),
         _call("skill_tool", skill_name="private", relative_file_path="escape.txt"),
@@ -659,9 +598,12 @@ async def test_production_sandbox_can_read_selected_skills_without_widening_regu
     model = ScriptedModel(inspect_operations, *requests[1:], AssistantMessage(content="沙箱任务完成"))
     spec, rail = _production_spec(parent, expert, model)
     assert spec.restrict_to_work_dir is True
+    assert "你是测试专家" in spec.system_prompt
     result = await _invoke(await _bind(parent, spec), name=spec.agent_card.name)
 
     assert result.success and result.data["output"] == "沙箱任务完成"
+    assert "你是测试专家" in str(model.calls[0]["messages"])
+    assert str(own) in "\n".join(_tool_messages(model))
     outputs = {
         message.tool_call_id: str(message.content)
         for message in model.calls[-1]["messages"] if getattr(message, "role", None) == "tool"
@@ -681,89 +623,6 @@ async def test_production_sandbox_can_read_selected_skills_without_widening_regu
     with pytest.raises(PermissionError):
         rail.sys_operation.fs()
     await rail.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("interrupted", [False, True])
-async def test_round_close_releases_child_operations_and_template_tools_but_keeps_parent_references(
-    tmp_path, monkeypatch, interrupted,
-):
-    expert = _package(
-        tmp_path / "cache", "resource-owner",
-        tools=[{"file": "tools/owned.py", "class": "OwnedTestTool"}],
-        files={"tools/owned.py": (
-            "from openjiuwen.core.foundation.tool import Tool, ToolCard\n\n" + inspect.getsource(OwnedTestTool)
-        )},
-    )
-    parent_tool = OwnedTestTool("parent_owned")
-    parent = await _parent(tmp_path, tools=[parent_tool])
-    parent_tool_id = parent_tool.card.id
-    parent_operation = parent.deep_config.sys_operation
-    model = ScriptedModel(
-        _call("template_owned"), _call("parent_owned"), _call("skill_tool", skill_name="private"),
-        AssistantMessage(content="资源任务完成"),
-    )
-
-    async def scan():
-        return {expert.id: expert}
-
-    async def plan(*_args):
-        return {"status": "ready", "graph": {
-            "nodes": {expert.id: {"label": expert.name, "task": "执行资源节点"}}, "edges": [],
-        }}
-
-    monkeypatch.setattr(expert_team, "scan_local_experts", scan)
-    monkeypatch.setattr(expert_team, "plan_experts", plan)
-    round_state = expert_team.DynamicExpertRound(parent, "组织专家", model)
-    assert (await round_state.compose("组织专家"))["success"]
-    spec = parent.deep_config.subagents[0]
-    template_tools = [item for item in spec.tools if isinstance(item, Tool)]
-    spec.factory_kwargs.update({
-        "enable_read_image_multimodal": False, "enable_security_rail": False,
-        "enable_llm_retry_rail": False, "enable_tool_resilience_rail": False,
-        "auto_create_workspace": False,
-    })
-    if interrupted:
-        spec.rails.append(InterruptSkillOnce())
-    rail = next(rail for rail in spec.rails if isinstance(rail, DynamicExpertSkillRail))
-    task_tool = Runner.resource_mgr.get_tool(parent.ability_manager.get("task_tool").id)
-
-    result = await _invoke(task_tool, name=spec.agent_card.name)
-
-    if interrupted:
-        assert result["result_type"] == "interrupt" and rail.load_record is not None
-        assert task_tool._pending_subagents
-    else:
-        assert result.success and result.data["output"] == "资源任务完成"
-        _assert_clean(rail)
-    assert len(template_tools) == 1
-    child = rail._agent
-    child_operation = child.deep_config.sys_operation
-    child_tool = template_tools[0]
-    assert child.card.id == child.deep_config.tool_owner_id
-    assert child_tool.card.id == f"template_owned_{child.card.id}"
-    assert Runner.resource_mgr.get_tool(child_tool.card.id) is child_tool
-    assert Runner.resource_mgr.get_sys_operation(child_operation.id) is child_operation
-    operation_tools = Runner.resource_mgr.get_sys_op_tool_cards(child_operation.id)
-    assert operation_tools
-    assert all(Runner.resource_mgr.get_tool(card.id) is not None for card in operation_tools)
-    assert child.ability_manager.get("parent_owned").id == parent_tool_id
-    assert "template_owned 实际执行" in "\n".join(_tool_messages(model))
-    assert "parent_owned 实际执行" in "\n".join(_tool_messages(model))
-
-    await round_state.close()
-    await round_state.close()
-
-    _assert_clean(rail)
-    assert not task_tool._pending_subagents
-    assert Runner.resource_mgr.get_tool(child_tool.card.id) is None
-    assert Runner.resource_mgr.get_sys_operation(child_operation.id) is None
-    assert all(Runner.resource_mgr.get_tool(card.id) is None for card in operation_tools)
-    assert parent_tool.card.id == parent_tool_id
-    assert Runner.resource_mgr.get_tool(parent_tool_id) is parent_tool
-    assert Runner.resource_mgr.get_sys_operation(parent_operation.id) is parent_operation
-    assert parent.ability_manager.get("parent_owned").id == parent_tool_id
-    assert await parent_tool.invoke({}) == "parent_owned 实际执行"
 
 
 @pytest.mark.asyncio
@@ -806,11 +665,33 @@ async def test_plain_skill_expert_keeps_real_read_file_and_bash_on_ordinary_oper
 
 
 @pytest.mark.asyncio
-async def test_round_close_reclaims_factory_resources_when_template_init_fails_before_skill_init(tmp_path, monkeypatch):
+@pytest.mark.parametrize("phase", ["completed", "interrupted", "init_failed"])
+async def test_round_close_reclaims_child_resources_and_preserves_parent(tmp_path, monkeypatch, phase):
+    """三种退出路径共用真实子代理，检查技能、工具、文件操作和 MCP 的归属。"""
+    clients = {}
+
+    def create_client(config):
+        assert config.server_id not in clients
+        client = clients[config.server_id] = OfflineMcpClient(config)
+        return client
+
+    monkeypatch.setattr(ToolMgr, "_create_client", staticmethod(create_client))
+    shared_id, exclusive_id = f"shared_{uuid4().hex}", f"exclusive_{uuid4().hex}"
+    shared_config = McpServerConfig(
+        server_id=shared_id, server_name="shared", server_path="unused-test-mcp", client_type="stdio",
+    )
+    parent_tool = OwnedTestTool("parent_owned")
+    parent = await _parent(tmp_path, tools=[parent_tool], mcps=[shared_config])
+    parent_tool_id = parent_tool.card.id
+    parent_operation = parent.deep_config.sys_operation
     expert = _package(
-        tmp_path / "cache", "init-failure",
+        tmp_path / "cache", "resource-owner",
         tools=[{"file": "tools/owned.py", "class": "OwnedTestTool"}],
-        rails=[{"file": "rails/failing.py", "class": "FailBeforeSkillInit"}],
+        rails=[{"file": "rails/failing.py", "class": "FailBeforeSkillInit"}] if phase == "init_failed" else [],
+        mcps=[{
+            "server_id": exclusive_id, "server_name": "exclusive",
+            "type": "stdio", "command": "unused-test-mcp",
+        }],
         files={
             "tools/owned.py": (
                 "from openjiuwen.core.foundation.tool import Tool, ToolCard\n\n" + inspect.getsource(OwnedTestTool)
@@ -824,89 +705,10 @@ async def test_round_close_reclaims_factory_resources_when_template_init_fails_b
             ),
         },
     )
-    parent_tool = OwnedTestTool("parent_owned")
-    parent = await _parent(tmp_path, tools=[parent_tool])
-    parent_tool_id = parent_tool.card.id
-    parent_operation = parent.deep_config.sys_operation
-    model = ScriptedModel()
-
-    async def scan():
-        return {expert.id: expert}
-
-    async def plan(*_args):
-        return {"status": "ready", "graph": {
-            "nodes": {expert.id: {"label": expert.name, "task": "初始化失败节点"}}, "edges": [],
-        }}
-
-    monkeypatch.setattr(expert_team, "scan_local_experts", scan)
-    monkeypatch.setattr(expert_team, "plan_experts", plan)
-    round_state = expert_team.DynamicExpertRound(parent, "组织专家", model)
-    assert (await round_state.compose("组织专家"))["success"]
-    spec = parent.deep_config.subagents[0]
-    spec.factory_kwargs.update({"enable_read_image_multimodal": False, "auto_create_workspace": False})
-    rail = next(item for item in spec.rails if isinstance(item, DynamicExpertSkillRail))
-    child_tool = next(item for item in spec.tools if isinstance(item, Tool))
-    task_tool = Runner.resource_mgr.get_tool(parent.ability_manager.get("task_tool").id)
-
-    with pytest.raises(Exception, match="template init exploded"):
-        await _invoke(task_tool, name=spec.agent_card.name)
-
-    assert model.calls == [] and rail._agent is None
-    assert child_tool.card.id == f"template_owned_{spec.agent_card.id}"
-    assert Runner.resource_mgr.get_tool(child_tool.card.id) is child_tool
-    operation_id = f"{spec.agent_card.name}_{spec.agent_card.id}"
-    assert Runner.resource_mgr.get_sys_operation(operation_id) is not None
-    operation_tools = Runner.resource_mgr.get_sys_op_tool_cards(operation_id)
-    assert operation_tools
-
-    await round_state.close()
-    await round_state.close()
-
-    assert Runner.resource_mgr.get_tool(child_tool.card.id) is None
-    assert Runner.resource_mgr.get_sys_operation(operation_id) is None
-    assert all(Runner.resource_mgr.get_tool(card.id) is None for card in operation_tools)
-    assert not parent.deep_config.subagents
-    assert parent_tool.card.id == parent_tool_id
-    assert Runner.resource_mgr.get_tool(parent_tool_id) is parent_tool
-    assert Runner.resource_mgr.get_sys_operation(parent_operation.id) is parent_operation
-    assert await parent_tool.invoke({}) == "parent_owned 实际执行"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("phase", ["completed", "interrupted", "init_failed"])
-async def test_round_close_releases_only_child_mcp_references_and_disconnects_last_owner(tmp_path, monkeypatch, phase):
-    clients = {}
-
-    def create_client(config):
-        assert config.server_id not in clients
-        client = clients[config.server_id] = OfflineMcpClient(config)
-        return client
-
-    monkeypatch.setattr(ToolMgr, "_create_client", staticmethod(create_client))
-    shared_id, exclusive_id = f"shared_{uuid4().hex}", f"exclusive_{uuid4().hex}"
-    shared_config = McpServerConfig(
-        server_id=shared_id, server_name="shared", server_path="unused-test-mcp", client_type="stdio",
-    )
-    parent = await _parent(tmp_path, mcps=[shared_config])
-    parent_operation = parent.deep_config.sys_operation
-    failing_rails = [{"file": "rails/failing.py", "class": "FailBeforeSkillInit"}] if phase == "init_failed" else []
-    expert = _package(
-        tmp_path / "cache", "mcp-owner", rails=failing_rails,
-        mcps=[{
-            "server_id": exclusive_id, "server_name": "exclusive",
-            "type": "stdio", "command": "unused-test-mcp",
-        }],
-        files={"rails/failing.py": (
-            "from openjiuwen.core.single_agent.rail.base import AgentRail\n"
-            "class FailBeforeSkillInit(AgentRail):\n"
-            "    priority = 100000\n"
-            "    def init(self, agent):\n"
-            "        raise RuntimeError('MCP owner init failed')\n"
-        )},
-    )
     model = ScriptedModel(
+        _call("template_owned"), _call("parent_owned"),
         _call("mcp_shared_echo"), _call("mcp_exclusive_echo"),
-        _call("skill_tool", skill_name="private"), AssistantMessage(content="MCP任务完成"),
+        _call("skill_tool", skill_name="private"), AssistantMessage(content="资源任务完成"),
     )
 
     async def scan():
@@ -914,7 +716,7 @@ async def test_round_close_releases_only_child_mcp_references_and_disconnects_la
 
     async def plan(*_args):
         return {"status": "ready", "graph": {
-            "nodes": {expert.id: {"label": expert.name, "task": "执行MCP节点"}}, "edges": [],
+            "nodes": {expert.id: {"label": expert.name, "task": "执行资源节点"}}, "edges": [],
         }}
 
     monkeypatch.setattr(expert_team, "scan_local_experts", scan)
@@ -930,23 +732,40 @@ async def test_round_close_releases_only_child_mcp_references_and_disconnects_la
     if phase == "interrupted":
         spec.rails.append(InterruptSkillOnce())
     rail = next(item for item in spec.rails if isinstance(item, DynamicExpertSkillRail))
-    task_tool = Runner.resource_mgr.get_tool(parent.ability_manager.get("task_tool").id)
+    template_tools = [item for item in spec.tools if isinstance(item, Tool)]
+    assert len(template_tools) == 1
+    child_tool = template_tools[0]
+    manager = Runner.resource_mgr
+    task_tool = manager.get_tool(parent.ability_manager.get("task_tool").id)
     owner_id = spec.agent_card.id
 
     if phase == "init_failed":
-        with pytest.raises(Exception, match="MCP owner init failed"):
+        with pytest.raises(Exception, match="template init exploded"):
             await _invoke(task_tool, name=spec.agent_card.name)
         assert model.calls == [] and rail._agent is None
+        operation_id = f"{spec.agent_card.name}_{owner_id}"
     else:
         result = await _invoke(task_tool, name=spec.agent_card.name)
         if phase == "interrupted":
-            assert result["result_type"] == "interrupt" and task_tool._pending_subagents
+            assert result["result_type"] == "interrupt" and rail.load_record is not None
+            assert task_tool._pending_subagents
         else:
-            assert result.success
-        assert clients[shared_id].calls == [("echo", {})]
-        assert clients[exclusive_id].calls == [("echo", {})]
+            assert result.success and result.data["output"] == "资源任务完成"
+            _assert_clean(rail)
+        child = rail._agent
+        assert child.card.id == child.deep_config.tool_owner_id == owner_id
+        assert child.ability_manager.get("parent_owned").id == parent_tool_id
+        operation_id = child.deep_config.sys_operation.id
+        assert manager.get_sys_operation(operation_id) is child.deep_config.sys_operation
+        for name in ("template_owned", "parent_owned"):
+            assert f"{name} 实际执行" in "\n".join(_tool_messages(model))
+        assert clients[shared_id].calls == clients[exclusive_id].calls == [("echo", {})]
 
-    manager = Runner.resource_mgr
+    assert child_tool.card.id == f"template_owned_{owner_id}"
+    assert manager.get_tool(child_tool.card.id) is child_tool
+    assert manager.get_sys_operation(operation_id) is not None
+    operation_tools = manager.get_sys_op_tool_cards(operation_id)
+    assert operation_tools and all(manager.get_tool(card.id) is not None for card in operation_tools)
     shared_tools = manager.get_mcp_tool_ids(shared_id)
     exclusive_tools = manager.get_mcp_tool_ids(exclusive_id)
     assert len(shared_tools) == len(exclusive_tools) == 1
@@ -963,10 +782,17 @@ async def test_round_close_releases_only_child_mcp_references_and_disconnects_la
         return await original_remove(server_id, **kwargs)
 
     monkeypatch.setattr(manager, "remove_mcp_server", observe_remove)
-
     await round_state.close()
     await round_state.close()
 
+    if phase != "init_failed":
+        _assert_clean(rail)
+        with pytest.raises(RuntimeError, match="ended"):
+            await rail.prepare()
+    assert not task_tool._pending_subagents and not parent.deep_config.subagents
+    assert manager.get_tool(child_tool.card.id) is None
+    assert manager.get_sys_operation(operation_id) is None
+    assert all(manager.get_tool(card.id) is None for card in operation_tools)
     assert removed == [exclusive_id]
     assert clients[exclusive_id].disconnections == 1 and clients[shared_id].disconnections == 0
     assert manager.get_mcp_server_config(exclusive_id) is None
@@ -976,7 +802,8 @@ async def test_round_close_releases_only_child_mcp_references_and_disconnects_la
     assert manager.get_mcp_server_config(shared_id) == shared_config
     for resource_id in [shared_id, *shared_tools]:
         assert set(manager.get_resource_tag(resource_id)) == {parent.card.id}
-    shared_tool = manager.get_tool(shared_tools[0])
-    assert (await shared_tool.invoke({}))["result"] == "shared MCP 实际执行"
+    assert (await manager.get_tool(shared_tools[0]).invoke({}))["result"] == "shared MCP 实际执行"
     assert manager.get_sys_operation(parent_operation.id) is parent_operation
-    assert not task_tool._pending_subagents and not parent.deep_config.subagents
+    assert parent_tool.card.id == parent.ability_manager.get("parent_owned").id == parent_tool_id
+    assert manager.get_tool(parent_tool_id) is parent_tool
+    assert await parent_tool.invoke({}) == "parent_owned 实际执行"

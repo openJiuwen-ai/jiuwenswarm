@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from jiuwenswarm.common.config import is_dynamic_experts_enabled
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+
+def test_packaged_dynamic_default_is_independent_from_skill_symphony():
+    config_path = Path(__file__).resolve().parents[3] / "jiuwenswarm/resources/config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["symphony"]["enabled"] is False
+    assert config["symphony"]["dynamic_experts"]["enabled"] is None
+    assert is_dynamic_experts_enabled(config) is True
 
 
 @pytest.mark.parametrize(
