@@ -56,15 +56,18 @@ export function getModelSelectionLabel(
   if (!selection) return null;
   if (selection.type === 'model_group') {
     const group = groups.find((item) => item.model_group_id === selection.id);
-    const groupLabel = group ? getModelGroupDisplayName(group) : selection.id;
-    if (!selection.route_id || !group) return groupLabel;
+    // Missing groups must never surface model_group_id in the picker (#5424).
+    if (!group) return null;
+    const groupLabel = getModelGroupDisplayName(group);
+    if (!selection.route_id) return groupLabel || null;
     const route = group.routes.find((item) => item.route_id === selection.route_id);
-    if (!route) return `${groupLabel} / ${selection.route_id}`;
+    if (!route) return groupLabel || null;
     const model = models.find((item) => item.model_id === route.model_id);
-    return `${groupLabel} / ${model?.alias?.trim() || model?.model_name || route.model_id}`;
+    const routeLabel = model?.alias?.trim() || model?.model_name || route.model_id;
+    return groupLabel ? `${groupLabel} / ${routeLabel}` : routeLabel;
   }
   const model = models.find((item) => item.model_id === selection.id);
-  return model?.alias?.trim() || model?.model_name || selection.id;
+  return model?.alias?.trim() || model?.model_name || null;
 }
 
 export function extractModelSelectionReferences(error: unknown): ModelSelectionReference[] {
