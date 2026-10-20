@@ -374,13 +374,12 @@ class CronController:
             if isinstance(project_dir_raw, str) and project_dir_raw.strip()
             else ""
         )
-        if not allow_unresolved_project_id and (
-            project_dir_val
-            or (
-                raw_project_id
-                and raw_project_id not in (DEFAULT_PROJECT_ID_WORK, DEFAULT_PROJECT_ID_CODE)
-            )
-        ):
+        # 默认项目 ID（default/default_code）直接映射 work_mode，无需查表放行
+        is_default_project = raw_project_id in (DEFAULT_PROJECT_ID_WORK, DEFAULT_PROJECT_ID_CODE)
+        needs_agentos_resolution = bool(project_dir_val) or (
+            bool(raw_project_id) and not is_default_project
+        )
+        if needs_agentos_resolution and not allow_unresolved_project_id:
             raise ValueError(
                 "cron project binding must be resolved by the target AgentServer"
             )
@@ -479,10 +478,10 @@ class CronController:
         from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
 
         caller_work_mode = str(patch.get("work_mode") or "").strip()
-        if not allow_unresolved_project_id and (
-            "project_id" in patch or "project_dir" in patch or "work_mode" in patch
-        ):
-            if "project_id" in patch or "project_dir" in patch:
+        has_project_fields = "project_id" in patch or "project_dir" in patch
+        patch_touches_binding = has_project_fields or "work_mode" in patch
+        if patch_touches_binding and not allow_unresolved_project_id:
+            if has_project_fields:
                 raise ValueError(
                     "cron project binding must be resolved by the target AgentServer"
                 )
