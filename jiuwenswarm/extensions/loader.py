@@ -3,14 +3,15 @@ from __future__ import annotations
 import importlib
 import importlib.util
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from jiuwenswarm.common.utils import logger
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.extensions.sdk.application_plugin import (
     ApplicationPluginExtension,
     ManifestApplicationPlugin,
 )
-from jiuwenswarm.common.utils import logger
+from jiuwenswarm.extensions.sdk.contributions import ExtensionEntrypoint
 
 MANIFEST_FILENAME = "extension.yaml"
 ENTRY_FILENAME = "extension.py"
@@ -83,7 +84,8 @@ class ExtensionLoader:
         module = self._import_module(root)
 
         if hasattr(module, "register_extensions"):
-            registered = await module.register_extensions(self.registry)
+            register = cast(ExtensionEntrypoint, module.register_extensions)
+            registered = await register(self.registry)
         else:
             registered = None
 

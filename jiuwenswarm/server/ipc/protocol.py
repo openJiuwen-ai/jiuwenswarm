@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRef, AgentRequest, PermissionContext
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import ReqMethod, parse_req_method
 
 PROTOCOL_VERSION = 2
 HEADER = struct.Struct("!I")
@@ -92,7 +92,7 @@ def dump_agent_request(request: AgentRequest) -> dict[str, Any]:
 def load_agent_request(payload: dict[str, Any]) -> AgentRequest:
     """Rebuild an ``AgentRequest`` inside the Worker process."""
     raw_method = payload.get("req_method")
-    method = ReqMethod(raw_method) if raw_method else None
+    method = parse_req_method(raw_method) if raw_method else None
     permission = None
     raw_permission = payload.get("permission_context")
     if isinstance(raw_permission, dict):

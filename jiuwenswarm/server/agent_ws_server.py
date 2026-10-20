@@ -170,7 +170,7 @@ from jiuwenswarm.common.security.ws_origin import (
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
 )
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import ContributedReqMethod, ReqMethod, parse_req_method
 from jiuwenswarm.server.personal_context import PersonalContextHostAPI
 from jiuwenswarm.server.personal_context.ws_handler import (
     PERSONAL_CONTEXT_REQUEST_METHODS as _PERSONAL_CONTEXT_REQ_METHODS,
@@ -249,6 +249,9 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _build_workflow_detail_paginated,
     _build_phase_detail_paginated,
     _build_agent_detail,
+)
+from jiuwenswarm.server.runtime.gateway_adapter.contributed import (
+    mount_contributed_adapters,
 )
 
 logger = logging.getLogger(__name__)
@@ -912,7 +915,7 @@ def _payload_to_request(data: dict[str, Any]) -> AgentRequest:
     """将 Gateway 发送的 JSON 载荷解析为 AgentRequest."""
     req_method = data.get("req_method")
     if req_method is not None and isinstance(req_method, str):
-        req_method = ReqMethod(req_method)
+        req_method = parse_req_method(req_method)
     metadata = data.get("metadata")
     if isinstance(metadata, dict):
         metadata = {
@@ -1193,6 +1196,7 @@ class AgentWebSocketServer:
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
         ):
             self._adapter_registry.register(adapter)
+        mount_contributed_adapters(self._adapter_registry)
         # AgentServer-side tokenizer cache/download service. The Gateway only
         # persists model profiles and notifies this process to refresh them.
         self._tokenizer_service = TokenizerService()
@@ -2167,6 +2171,7 @@ class AgentWebSocketServer:
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
                 ):
                     self._adapter_registry.register(adapter)
+                mount_contributed_adapters(self._adapter_registry)
 
         try:
             from jiuwenswarm.symphony.service import get_swarm_symphony_service
@@ -2652,6 +2657,8 @@ class AgentWebSocketServer:
 
             if await self._dispatch_gateway_adapter_request(ws, request, send_lock):
                 return
+            if isinstance(request.req_method, ContributedReqMethod):
+                raise ValueError(f"unsupported method: {request.req_method.value}")
 
             if request.req_method in {
                 ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME, ReqMethod.CHAT_ANSWER,

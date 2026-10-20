@@ -1,16 +1,30 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 
 from jiuwenswarm.common.security import base_crypto
 from jiuwenswarm.common.security.base_crypto import CryptoProvider
 from jiuwenswarm.extensions.callback_compat import unregister_callback_sync
+from jiuwenswarm.extensions.sdk.contribution_callbacks import (
+    AgentInputTransform,
+    AgentPluginMount,
+    FinalFilter,
+    SkillInventoryContext,
+    TurnEnvelopeFields,
+    VisibleSkillNames,
+)
+from jiuwenswarm.extensions.sdk.cron_hooks import CronHooks
 from jiuwenswarm.extensions.sdk.crypto_utility import CryptoUtility
 from jiuwenswarm.extensions.types import ExtensionConfig
 
 if TYPE_CHECKING:
+    from jiuwenswarm.common.client.agent_client import AgentServerClient
+    from jiuwenswarm.common.client.third_agent import ThirdAgent
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.extensions.channel_contributions import ChannelSpec
     from jiuwenswarm.extensions.sdk.agent_server_client import (
         AgentServerClientExtension,
     )
@@ -18,13 +32,15 @@ if TYPE_CHECKING:
         ApplicationPluginExtension,
     )
     from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
-    from jiuwenswarm.common.client.agent_client import AgentServerClient
-    from jiuwenswarm.common.client.third_agent import ThirdAgent
+    from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter
 else:
     # Keep runtime type-hint introspection valid without importing Gateway and
     # transport adapters into a Runtime-direct process.
+    AgentRequest = Any
     AgentServerClientExtension = Any
     ApplicationPluginExtension = Any
+    ChannelSpec = Any
+    GatewayAdapter = Any
     ThirdAgentExtension = Any
     AgentServerClient = Any
     ThirdAgent = Any
@@ -95,6 +111,12 @@ class ExtensionRegistry:
         self._crypto_tool: CryptoUtility | None = None
         self._third_agent: ThirdAgentExtension | None = None
         self._application_plugins: dict[str, ApplicationPluginExtension] = {}
+        self._cron_hooks: dict[str, CronHooks] = {}
+        self._agent_plugins: list[AgentPluginMount] = []
+        self._turn_fields: list[TurnEnvelopeFields] = []
+        self._final_filters: list[FinalFilter] = []
+        self._agent_input_transforms: list[AgentInputTransform] = []
+        self._skill_inventory: tuple[SkillInventoryContext, VisibleSkillNames] | None = None
         self.callback_framework = callback_framework
         self._config = ExtensionConfig(config=config, logger=logger)
 
@@ -103,6 +125,81 @@ class ExtensionRegistry:
         if cls._instance is None:
             raise RuntimeError("ExtensionRegistry 尚未初始化，请先调用 create_instance()")
         return cls._instance
+
+    @classmethod
+    def current_instance(cls) -> "ExtensionRegistry | None":
+        return cls._instance
+
+    def register_cron_hooks(self, channel: str, hooks: CronHooks) -> None:
+        if channel in self._cron_hooks:
+            raise ValueError(f"Cron hooks already registered for {channel}")
+        self._cron_hooks[channel] = hooks
+
+    @classmethod
+    def cron_hooks(cls) -> dict[str, CronHooks]:
+        return cls._instance._cron_hooks if cls._instance is not None else {}
+
+    def register_channel_spec(self, spec: "ChannelSpec") -> None:
+        from jiuwenswarm.extensions.channel_contributions import register_channel_spec
+
+        register_channel_spec(spec)
+
+    def register_gateway_adapter(self, adapter: "GatewayAdapter") -> None:
+        from jiuwenswarm.server.runtime.gateway_adapter.contributed import (
+            register_gateway_adapter,
+        )
+
+        register_gateway_adapter(adapter)
+
+    def register_agent_plugin(self, mount: AgentPluginMount) -> None:
+        self._agent_plugins.append(mount)
+
+    def get_agent_plugins(self) -> tuple[AgentPluginMount, ...]:
+        return tuple(self._agent_plugins)
+
+    def register_turn_envelope_fields(self, provider: TurnEnvelopeFields) -> None:
+        self._turn_fields.append(provider)
+
+    def turn_envelope_fields(
+        self, channel: str, metadata: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        fields = {}
+        for provider in self._turn_fields:
+            added = provider(channel, metadata)
+            if fields.keys() & added.keys():
+                raise ValueError("turn envelope field contributed more than once")
+            fields.update(added)
+        return fields
+
+    def register_final_filter(self, predicate: FinalFilter) -> None:
+        self._final_filters.append(predicate)
+
+    def suppress_final(self, request: AgentRequest, content: str) -> bool:
+        return any(predicate(request, content) for predicate in self._final_filters)
+
+    def register_agent_input_transform(self, transform: AgentInputTransform) -> None:
+        self._agent_input_transforms.append(transform)
+
+    def prepare_agent_inputs(
+        self, agent: Any, params: dict[str, Any], inputs: dict[str, Any]
+    ) -> dict[str, Any]:
+        for transform in self._agent_input_transforms:
+            inputs = transform(agent, params, inputs)
+        return inputs
+
+    def register_skill_inventory(
+        self,
+        context_factory: SkillInventoryContext,
+        visible_names: VisibleSkillNames,
+    ) -> None:
+        if self._skill_inventory is not None:
+            raise ValueError("Skill inventory provider already registered")
+        self._skill_inventory = context_factory, visible_names
+
+    def get_skill_inventory(
+        self,
+    ) -> tuple[SkillInventoryContext, VisibleSkillNames] | None:
+        return self._skill_inventory
 
     @classmethod
     def create_instance(

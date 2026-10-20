@@ -47,7 +47,10 @@ def is_shared_im_channel(channel_id: object) -> bool:
         return True
     if channel.startswith("feishu:") or channel.startswith("feishu_enterprise:"):
         return True
-    return False
+    from jiuwenswarm.extensions.channel_contributions import contributed_spec_for
+
+    spec = contributed_spec_for(channel.split(":", 1)[0])
+    return bool(spec and spec.shared_im_input)
 
 
 def prepare_im_session_input(msg: Message) -> bool:
