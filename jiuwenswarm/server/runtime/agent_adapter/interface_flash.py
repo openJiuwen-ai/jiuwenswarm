@@ -393,6 +393,31 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """Use the Flash profile's merged cron card for lifecycle checks."""
         return frozenset({"cron_flash"})
 
+    def _build_permission_rail_for_agent(self, config=None, llm=None, model_name=None):
+        from jiuwenswarm.agents.harness.flash.permissions.flash_permission_rail import (
+            FlashPermissionRail,
+        )
+
+        rail = super()._build_permission_rail_for_agent(config, llm, model_name)
+        if rail is None and self._resolve_permission_config_for_agent().get("enabled", False):
+            raise RuntimeError("Flash permission rail could not be built while permissions are enabled")
+        return FlashPermissionRail.from_stock(rail)
+
+    def _update_permission_rail(self, config_base, *, session_id=None):
+        from jiuwenswarm.agents.harness.flash.permissions.flash_permission_rail import (
+            FlashPermissionRail,
+        )
+
+        super()._update_permission_rail(config_base, session_id=session_id)
+        if self._permission_rail is None and self._resolve_permission_config_for_agent(
+            session_id=session_id
+        ).get("enabled", False):
+            raise RuntimeError("Flash permission rail could not be enabled during reload")
+        self._permission_rail = FlashPermissionRail.from_stock(self._permission_rail)
+        if self._permission_rail is not None and self._skill_authorization_rail is not None:
+            self._skill_authorization_rail._engine = self._permission_rail._engine
+            self._bind_skill_permission_scope_resolver(self._permission_rail, self._skill_authorization_rail)
+
     async def _get_tool_cards(self, agent_id: str):
         """Build flash tool cards.
 
