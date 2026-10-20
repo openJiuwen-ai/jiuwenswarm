@@ -325,7 +325,7 @@ def build_swarm_cua_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext
         cua_repl_enabled=inp.repl_enabled,
         cua_repl_python=inp.repl_python,
     )
-    # The generic DeepAgent factory materializes the forkable tool rails.
+    # Preserve the original CUA factory options alongside the workspace policy.
     spec.factory_kwargs = {**(spec.factory_kwargs or {}), "auto_create_workspace": False}
     return spec
 

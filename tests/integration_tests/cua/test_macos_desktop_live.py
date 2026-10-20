@@ -1,4 +1,4 @@
-"""Opt-in real desktop acceptance of the 17 existing tools on an owned fixture."""
+"""Opt-in desktop acceptance of original CUA tools and REPL on an owned fixture."""
 
 import asyncio
 import base64
@@ -7,16 +7,20 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import subprocess
 import sys
 import time
 from unittest.mock import MagicMock
 
 from PIL import Image
+from openjiuwen.core.runner import Runner
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+from openjiuwen.harness.subagents.cua_agent import create_cua_agent
 import psutil
 import pytest
 
-from jiuwenswarm.agents.harness.computer_use.rail import ComputerUseRail
+from jiuwenswarm.agents.harness.computer_use.rail import CuaExtensionRail
 from jiuwenswarm.agents.harness.computer_use.macos_backend import MacOSBackend
 
 pytestmark = pytest.mark.skipif(
@@ -36,8 +40,14 @@ async def test_existing_tools_drive_two_native_windows(tmp_path, monkeypatch):
         plistlib.dump({"CFBundleIdentifier": "local.jiuwenswarm.cua-fixture", "CFBundleExecutable": "MacCuaFixture",
                       "CFBundleName": "Mac CUA Fixture", "CFBundlePackageType": "APPL", "CFBundleVersion": "1"}, handle)
     state_file = tmp_path / "state.json"
-    rail = ComputerUseRail(repl_enabled=False)
-    rail.init(MagicMock())
+    monkeypatch.setattr("openjiuwen.harness.deep_agent.schedule_image_support_probe", MagicMock())
+    await Runner.start()
+    rail = CuaExtensionRail()
+    agent = create_cua_agent(
+        MagicMock(), rails=[rail], auto_create_workspace=False,
+        enable_sys_operation=False, enable_skill_discovery=False, enable_read_image_multimodal=True,
+    )
+    await agent._ensure_initialized()
     tools = {tool.card.name: tool for tool in rail.tools}
     pid = None
     caffeinate = None
@@ -61,6 +71,7 @@ async def test_existing_tools_drive_two_native_windows(tmp_path, monkeypatch):
                 "y": info[fixture_point][1] * row["bounds"]["height"] / info["height"]}
 
     try:
+        await rail.native_rail.before_invoke(AgentCallbackContext(agent=agent))
         launched = await invoke("launch_app", path=str(bundle), additional_arguments=[str(state_file)])
         await until(state_file.exists)
         pid = state()["pid"]
@@ -129,6 +140,30 @@ async def test_existing_tools_drive_two_native_windows(tmp_path, monkeypatch):
         assert time.monotonic() - started < 2
         await invoke("click", **target, **point(first, "box"))
         await until(lambda: not state()["windows"][0]["checked"])
+
+        directory = await invoke("cua_repl", code=(
+            "app = computer.app('local.jiuwenswarm.cua-fixture')\n"
+            "print((await app.read({'full': True})).text)"))
+        text = directory.data["content"]
+        selected = re.search(r'(\S+) "CUA Fixture 1"', text)
+        assert selected, text
+        observed = await invoke("cua_repl", code=(
+            f"first = app.window({selected.group(1)!r})\n"
+            "view = await first.read({'full': True})\nprint(view.text)\n"
+            "printImage(view.screenshot)"))
+        assert "Fixture input 1" in observed.data["content"]
+        assert observed.data["multimodal"][0]["data_url"].startswith("data:image/png;base64,")
+        await invoke("cua_repl", code=(
+            "field = first.find(['Fixture input 1'])\n"
+            "print(await field.typeText('REPL 接入成功', {'replace': True}))\n"
+            "print((await first.read({'full': True})).text)"))
+        await until(lambda: state()["windows"][0]["text"] == "REPL 接入成功")
+        assert state()["windows"][1]["text"] == "second window"
+        # Native keyboard tools use the current responder, not an AX reference.
+        await invoke("click", **target, **point(first, "field"))
+        await invoke("hotkey", **target, keys=["cmd", "a"])
+        await invoke("type_text", **target, text="原工具继续执行")
+        await until(lambda: state()["windows"][0]["text"] == "原工具继续执行")
         monkeypatch.setenv("COMPUTER_USE_DESKTOP", "shared")
         shared = MacOSBackend()
         try:
@@ -148,3 +183,4 @@ async def test_existing_tools_drive_two_native_windows(tmp_path, monkeypatch):
         if caffeinate is not None:
             caffeinate.terminate()
             caffeinate.wait(timeout=3)
+        await Runner.stop()

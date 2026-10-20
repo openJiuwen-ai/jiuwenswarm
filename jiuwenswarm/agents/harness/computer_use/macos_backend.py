@@ -215,23 +215,11 @@ def normalize_key(key, modifiers):
     return "+".join([*normalized, value])
 
 
-class MacOSDesktop(CuaDesktop):
-    """Own backend lifetime without changing Core's process-wide factory."""
-
-    def __init__(self, python=None):
-        super().__init__(backend_factory=lambda: MacOSBackend(python))
-
-    def reset(self):
-        self._backend = None
-        self.zoom_origins.clear()
-
-    def close(self):
-        if self._backend is not None:
-            self._backend.close()
-
-    def cancel_current(self):
-        if self._backend is not None:
-            self._backend.cancel_current()
+def install_macos_backend(desktop: CuaDesktop, python=None):
+    """Bridge the pinned core's missing desktop-factory hook, per agent only."""
+    if desktop._backend is not None:
+        raise RuntimeError("Install the macOS desktop adapter before core CUA preflight.")
+    desktop._backend_factory = lambda: MacOSBackend(python)
 
 
 class MacOSLaunchTool(Tool):

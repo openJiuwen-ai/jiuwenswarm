@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 import io
 import json
 import os
+import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -21,6 +22,11 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.agent import Session
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
 from openjiuwen.harness import create_deep_agent
+from openjiuwen.harness.subagents.cua_agent import CUA_AGENT_FACTORY_NAME, create_cua_agent
+from openjiuwen.harness.rails.multimodal_context_summarizer_rail import MultimodalContextSummarizerRail
+from openjiuwen.harness.tools.cua.rails import (
+    CuaProgressRail, CuaRepeatFailureRail, CuaRuntimeRail, CuaScreenshotDownscaleRail,
+)
 from openjiuwen.harness.tools.cua.cua_capabilities import (
     APP_LIFECYCLE_CUA_TOOL_NAMES, CORE_CUA_TOOL_NAMES, INPUT_CUA_TOOL_NAMES,
 )
@@ -31,7 +37,7 @@ from PIL import Image
 from jiuwenswarm.agents.harness.computer_use.config import build_cua_agent_config
 from jiuwenswarm.agents.harness.common.cua_defaults import build_cua_agent_card, resolve_cua_factory_options
 from jiuwenswarm.agents.harness.computer_use.prompt import build_system_prompt, engine_root
-from jiuwenswarm.agents.harness.computer_use.rail import ComputerUseRail
+from jiuwenswarm.agents.harness.computer_use.rail import CuaExtensionRail
 from jiuwenswarm.agents.harness.computer_use.runtime import ReplRuntime, desktop_lane
 from jiuwenswarm.agents.harness.computer_use.tools import CuaReplTool, NativeTool, convert_result
 from jiuwenswarm.agents.harness.computer_use.worker import prepare_bundle
@@ -50,46 +56,85 @@ def _runtime():
     return ReplRuntime(parameters=params, startup_timeout=20, call_timeout=20)
 
 
-def test_default_child_keeps_all_native_tools_and_adds_one_repl():
+@pytest.fixture
+async def materialize(monkeypatch):
+    monkeypatch.setattr("openjiuwen.harness.deep_agent.schedule_image_support_probe", MagicMock())
+    await Runner.start()
+    owned = []
+
+    async def make(rail=None, keep=3, card=None):
+        rail = rail or CuaExtensionRail()
+        agent = create_cua_agent(
+            MagicMock(), card=card, rails=[rail], auto_create_workspace=False,
+            enable_sys_operation=False, enable_skill_discovery=False,
+            enable_read_image_multimodal=True, cua_snapshot_keep_last_k=keep,
+        )
+        owned.append(rail)
+        await agent._ensure_initialized()
+        return agent, rail
+
+    yield make
+    for rail in owned:
+        await rail.close()
+    await Runner.stop()
+
+
+async def test_default_child_keeps_all_native_tools_and_adds_one_repl(materialize):
     spec = build_cua_agent_config(MagicMock(), card=build_cua_agent_card())
-    rail = spec.rails[0].fork_for_agent()
-    rail.init(MagicMock())
+    agent, rail = await materialize(spec.rails[0].fork_for_agent())
     names = {tool.card.name for tool in rail.tools}
     expected = set(CORE_CUA_TOOL_NAMES + INPUT_CUA_TOOL_NAMES + APP_LIFECYCLE_CUA_TOOL_NAMES)
     assert names == expected | {"cua_repl"}
     assert "computer_use_reset" not in names
     assert spec.parallel_tool_calls is False
-    assert spec.factory_name is None
+    assert spec.factory_name == CUA_AGENT_FACTORY_NAME
+    for rail_type in (CuaRuntimeRail, CuaProgressRail, CuaRepeatFailureRail, CuaScreenshotDownscaleRail):
+        assert len(agent.find_rails_by_type((rail_type,))) == 1
+    for tool in rail.tools:
+        assert Runner.resource_mgr.get_tool(tool_id=tool.card.id) is tool
+    assert all(tool.original._desktop is rail.desktop for tool in rail.tools if isinstance(tool, NativeTool))
 
 
-def test_materialized_children_do_not_share_tools_or_runtime():
-    template = ComputerUseRail()
-    first, second = template.fork_for_agent(), template.fork_for_agent()
-    first.init(MagicMock())
-    second.init(MagicMock())
+async def test_materialized_children_do_not_share_tools_or_runtime(materialize):
+    template = CuaExtensionRail()
+    card = build_cua_agent_card()
+    (_, first), (_, second) = await asyncio.gather(
+        materialize(template.fork_for_agent(), card=card),
+        materialize(template.fork_for_agent(), card=card),
+    )
     assert first.runtime is not second.runtime
     assert first.desktop is not second.desktop
     assert {t.card.id for t in first.tools}.isdisjoint(t.card.id for t in second.tools)
+    for rail in (first, second):
+        assert all(tool.original._desktop is rail.desktop for tool in rail.tools if isinstance(tool, NativeTool))
+        assert all(Runner.resource_mgr.get_tool(tool_id=tool.card.id) is tool for tool in rail.tools)
 
 
-def test_native_backend_is_not_preflighted_during_construction(monkeypatch):
-    rail = ComputerUseRail()
-    backend = MagicMock(side_effect=AssertionError("Native backend accessed too early"))
+async def test_native_backend_is_not_preflighted_during_construction(materialize):
+    _, rail = await materialize()
+    assert rail.desktop._backend is None
+    backend = MagicMock()
     rail.desktop._backend_factory = backend
-    rail.init(MagicMock())
-    assert not backend.called
+    ctx = AgentCallbackContext(agent=MagicMock())
+    await rail.native_rail.before_invoke(ctx)
+    backend.assert_called_once_with()
+    backend.return_value.screen_size.assert_called_once_with()
 
 
-def test_capture_retention_is_forked_per_child():
+async def test_capture_retention_is_forked_per_child(materialize):
     spec = build_cua_agent_config(MagicMock(), card=build_cua_agent_card(), cua_snapshot_keep_last_k=1)
     for rail in spec.rails:
         assert rail.fork_for_agent() is not rail
-    assert spec.rails[1].keep == spec.rails[2].keep == 1
+    assert spec.factory_kwargs["cua_snapshot_keep_last_k"] == 1
+    first, _ = await materialize(spec.rails[0].fork_for_agent(), keep=1)
+    second, _ = await materialize(spec.rails[0].fork_for_agent(), keep=1)
+    a, = first.find_rails_by_type((MultimodalContextSummarizerRail,))
+    b, = second.find_rails_by_type((MultimodalContextSummarizerRail,))
+    assert a is not b and a._screenshots_to_keep == b._screenshots_to_keep == 1
 
 
-def test_disabled_repl_keeps_original_tools():
-    rail = ComputerUseRail(repl_enabled=False)
-    rail.init(MagicMock())
+async def test_disabled_repl_keeps_original_tools(materialize):
+    _, rail = await materialize(CuaExtensionRail(repl_enabled=False))
     assert len(rail.tools) == 17
     assert "cua_repl" not in build_system_prompt("en", repl_enabled=False)
 
@@ -136,6 +181,13 @@ def test_result_conversion_preserves_images_text_errors_and_metadata():
     assert result.data["multimodal"][0]["data_url"].endswith(png)
     assert result.data["mcp_meta"] == {"executionId": 9}
     assert result.data["structured_content"] == {"effect": "possible"}
+
+
+def test_text_only_mcp_failure_keeps_the_error_for_core_progress():
+    result = convert_result(types.CallToolResult(
+        content=[types.TextContent(type="text", text="stale_target; effect none")], isError=True))
+    assert not result.success
+    assert result.error == "stale_target; effect none"
 
 
 @pytest.mark.parametrize("arguments", [{}, {"code": " "}, {"code": "print(1)", "session": "other"},
@@ -266,22 +318,21 @@ async def test_old_and_new_tools_share_a_desktop_lane_and_native_cancel_waits():
     assert desktop_lane().blocker is None
 
 
-async def test_repl_error_reaches_delegation_progress():
-    rail = ComputerUseRail()
-    agent = MagicMock()
+async def test_repl_error_reaches_delegation_progress(materialize):
+    agent, rail = await materialize()
     ctx = AgentCallbackContext(agent=agent)
+    await rail.progress.before_invoke(ctx)
     await rail.before_invoke(ctx)
     ctx.inputs = ToolCallInputs(tool_name="cua_repl", tool_result=ToolOutput(success=False, error="execution_unknown"))
     await rail.after_tool_call(ctx)
     ctx.inputs = SimpleNamespace(result={})
-    await rail.after_invoke(ctx)
+    await rail.progress.after_invoke(ctx)
     assert ctx.inputs.result["cua_result"]["status"] == "partial"
-    assert "execution_unknown" in ctx.inputs.result["cua_result"]["blockers"]
+    assert any("execution_unknown" in item for item in ctx.inputs.result["cua_result"]["blockers"])
 
 
-async def test_session_binding_uses_the_public_session_contract():
-    rail = ComputerUseRail()
-    rail.init(MagicMock())
+async def test_session_binding_uses_the_public_session_contract(materialize):
+    _, rail = await materialize()
     first = rail.runtime
     ctx = AgentCallbackContext(agent=MagicMock(), session=Session(session_id="first"))
     await rail.before_invoke(ctx)
@@ -336,17 +387,16 @@ async def test_task_tool_delegates_two_repl_calls_and_cleans_up(monkeypatch, tmp
         AssistantMessage(content="Child verified 42"),
     ])
     monkeypatch.setattr("openjiuwen.harness.deep_agent.schedule_image_support_probe", MagicMock())
+    monkeypatch.setattr(CuaRuntimeRail, "before_invoke", AsyncMock())
     monkeypatch.setattr("jiuwenswarm.agents.harness.computer_use.rail.ReplRuntime", lambda python=None: _runtime())
     children = []
-    original_init = ComputerUseRail.init
+    original_init = CuaExtensionRail.init
 
     def record_child(rail, agent):
         original_init(rail, agent)
-        # This chain exercises Python arithmetic, not a platform driver.
-        next(tool for tool in rail.tools if tool.card.name == "cua_repl").failure = None
         children.append(rail)
 
-    monkeypatch.setattr(ComputerUseRail, "init", record_child)
+    monkeypatch.setattr(CuaExtensionRail, "init", record_child)
     spec = build_cua_agent_config(child_model, card=build_cua_agent_card(), max_iterations=5)
     spec.factory_kwargs.update(auto_create_workspace=False, enable_sys_operation=False, enable_skill_discovery=False)
     await Runner.start()
@@ -386,3 +436,11 @@ def test_bundle_changes_with_sources_and_ignores_build_outputs(tmp_path):
     (source / "src/computer_use/main.py").write_text("updated", encoding="utf-8")
     assert prepare_bundle(source, cache) != first
     assert (first / "src/computer_use/main.py").read_text() == "initial"
+
+
+def test_worker_import_keeps_protocol_stdout_clean():
+    result = subprocess.run(
+        [sys.executable, "-c", "import jiuwenswarm.agents.harness.computer_use.worker\nprint('protocol-ready')"],
+        capture_output=True, text=True, timeout=15, check=True,
+    )
+    assert result.stdout == "protocol-ready\n"

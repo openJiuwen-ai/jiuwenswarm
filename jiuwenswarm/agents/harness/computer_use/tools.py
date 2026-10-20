@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from openjiuwen.core.foundation.tool import Tool, ToolCard
 from openjiuwen.core.foundation.tool.mcp.base import McpToolResult, extract_mcp_tool_result_content
 from openjiuwen.core.foundation.tool.schema import ToolOutput
+from openjiuwen.harness.tools.cua.user_activity import build_default_user_activity_probe
 
 from .runtime import desktop_lane
 
@@ -33,12 +35,12 @@ def convert_result(result) -> ToolOutput:
     if result.structuredContent is not None:
         data["structured_content"] = result.structuredContent
     # Preserve SDK error/effect text, without replaying or replacing its output.
-    error = data.get("content") if result.isError else None
+    error = "\n".join(part.text for part in result.content if part.type == "text") if result.isError else None
     return ToolOutput(success=not bool(result.isError), data=data, error=error)
 
 
 class CuaReplTool(Tool):
-    def __init__(self, runtime, owner: str, guard=None):
+    def __init__(self, runtime, owner: str, *, pause_on_user_input=False):
         super().__init__(ToolCard(
             id=owner + ".cua_repl", name="cua_repl", description=REPL_DESCRIPTION,
             input_params={"type": "object", "properties": {
@@ -47,8 +49,9 @@ class CuaReplTool(Tool):
             }, "required": ["code"], "additionalProperties": False},
             parallel_safe=False, stateless=False, idempotent=False,
         ))
-        self.runtime, self.guard = runtime, guard
-        self.failure = None
+        self.runtime = runtime
+        self.probe = build_default_user_activity_probe() if pause_on_user_input else None
+        self.last_input = (0, 0)
         self.last_failed_code, self.same_failures = None, 0
 
     async def invoke(self, inputs: Any, **kwargs):
@@ -58,15 +61,16 @@ class CuaReplTool(Tool):
         if (not isinstance(code, str) or not code.strip() or len(code) > 65536
                 or not isinstance(title, str) or len(title) > 200):
             return self._error("Invalid code or title. No code was executed.")
-        if self.failure:
-            return self._error(self.failure + " No code was executed.")
         if code == self.last_failed_code and self.same_failures >= 3:
             return self._error("This exact code failed three times. Observe and correct the request; no code was replayed.")
         try:
             async with desktop_lane().acquire():
-                if self.guard is not None:
-                    await self.guard()
-                result = convert_result(await self.runtime.execute(code, title))
+                await self.wait_for_idle()
+                started = time.monotonic()
+                try:
+                    result = convert_result(await self.runtime.execute(code, title))
+                finally:
+                    self.last_input = (started - 1.5, time.monotonic() + 1.5)
         except asyncio.CancelledError:
             await asyncio.shield(self.runtime.close())
             raise
@@ -79,6 +83,19 @@ class CuaReplTool(Tool):
             self.same_failures, self.last_failed_code = 0, None
         return result
 
+    async def wait_for_idle(self):
+        if self.probe is None:
+            return
+        deadline, threshold = time.monotonic() + 60, 3
+        while True:
+            idle = self.probe.seconds_since_last_input()
+            if idle is None or idle >= threshold or self.last_input[0] <= time.monotonic() - idle <= self.last_input[1]:
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError("User is still using the desktop. No REPL code was dispatched.")
+            threshold = 5
+            await asyncio.sleep(0.5)
+
     @staticmethod
     def _error(detail):
         return ToolOutput(success=False, data={"content": detail}, error=detail)
@@ -90,14 +107,12 @@ class CuaReplTool(Tool):
 class NativeTool(Tool):
     """Reuse the original operation; serialize and preflight only when used."""
 
-    def __init__(self, original, owner, preflight, guard=None):
+    def __init__(self, original, owner, preflight):
         super().__init__(original.card.model_copy(update={"id": owner + "." + original.card.name}))
-        self.original, self.preflight, self.guard = original, preflight, guard
+        self.original, self.preflight = original, preflight
 
     async def invoke(self, inputs, **kwargs):
         async with desktop_lane().acquire():
-            if self.guard is not None:
-                await self.guard()
             try:
                 await self.preflight()
             except Exception as error:
@@ -106,16 +121,18 @@ class NativeTool(Tool):
             try:
                 result = await asyncio.shield(task)
                 if self.card.name == "get_screen_size" and getattr(result, "success", False):
-                    from .macos_backend import MacOSDesktop
-                    if isinstance(getattr(self.original, "_desktop", None), MacOSDesktop):
+                    from .macos_backend import MacOSBackend
+                    desktop = getattr(self.original, "_desktop", None)
+                    if isinstance(getattr(desktop, "_backend", None), MacOSBackend):
                         result.data["content"] = result.data["content"].replace(
                             "Main display", "Desktop screenshot canvas").replace("physical pixels", "PNG pixels (Retina-normalized)")
                 return result
             except asyncio.CancelledError:
-                from .macos_backend import MacOSDesktop
+                from .macos_backend import MacOSBackend
                 desktop = getattr(self.original, "_desktop", None)
-                if isinstance(desktop, MacOSDesktop):
-                    desktop.cancel_current()
+                backend = getattr(desktop, "_backend", None)
+                if isinstance(backend, MacOSBackend):
+                    backend.cancel_current()
                 # Native tools use to_thread. Cancelling the coroutine cannot
                 # stop the OS call; keep the lane until it actually finishes.
                 try:

@@ -15,7 +15,7 @@ import portalocker
 
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
-from .prompt import engine_root
+from . import engine_root
 
 
 def prepare_bundle(source: Path, cache: Path) -> Path:

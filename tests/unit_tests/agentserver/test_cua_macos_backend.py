@@ -5,9 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from openjiuwen.harness.tools.cua.desktop_tools import CuaDesktop
 
-from jiuwenswarm.agents.harness.computer_use.macos_backend import MacOSBackend, MacOSDesktop, normalize_key
-from jiuwenswarm.agents.harness.computer_use.rail import ComputerUseRail
+from jiuwenswarm.agents.harness.computer_use.macos_backend import MacOSBackend, install_macos_backend, normalize_key
 
 
 @pytest.mark.parametrize("key, modifiers, expected", [
@@ -86,13 +86,13 @@ def test_native_error_keeps_effect_and_does_not_retry():
     assert json.loads(backend.process.stdin.write.call_args.args[0])["session"] == "session"
 
 
-def test_macos_backend_is_per_child_and_works_when_repl_is_disabled():
-    template = ComputerUseRail(repl_enabled=False)
-    first, second = template.fork_for_agent(), template.fork_for_agent()
-    first.init(MagicMock()); second.init(MagicMock())
-    if isinstance(first.desktop, MacOSDesktop):
-        assert first.desktop is not second.desktop
-        assert first.desktop._backend is None and second.desktop._backend is None
-        launch = next(tool for tool in first.tools if tool.card.name == "launch_app")
-        assert "macOS" in launch.card.description
-    assert len(first.tools) == 17
+def test_macos_backend_adapts_only_one_unstarted_core_desktop():
+    first, second = CuaDesktop(), CuaDesktop()
+    original_factory = second._backend_factory
+    install_macos_backend(first)
+    assert first._backend is None and second._backend is None
+    assert second._backend_factory is original_factory
+    assert isinstance(first.backend, MacOSBackend)
+    with pytest.raises(RuntimeError, match="before core CUA preflight"):
+        install_macos_backend(first)
+    first.backend.close()
