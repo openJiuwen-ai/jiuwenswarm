@@ -14,8 +14,8 @@ if not defined BUILD_DISPLAY_NAME exit /b 1
 echo Build identity: %BUILD_DISPLAY_NAME% %BUILD_VERSION%
 echo.
 
-echo [1/3] Installing Python deps (uv sync --extra dev --extra cua)...
-call uv sync --extra dev --extra cua
+echo [1/3] Installing Python 3.12 dependencies (including Computer Use)...
+call uv sync --extra dev --extra cua --python 3.12
 if errorlevel 1 exit /b 1
 
 echo.
@@ -46,6 +46,11 @@ if errorlevel 1 exit /b 1
 echo.
 echo Verifying frozen RSI Harness baseline bundle...
 start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%" "%cd%\scripts\verify_rsi_bundle.py"
+if errorlevel 1 exit /b 1
+
+echo.
+echo Verifying frozen Computer Use runtime without build tools...
+start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%" "%cd%\scripts\verify_computer_use_bundle.py"
 if errorlevel 1 exit /b 1
 
 echo.

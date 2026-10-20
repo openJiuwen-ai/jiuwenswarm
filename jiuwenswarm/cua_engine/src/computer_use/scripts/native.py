@@ -22,15 +22,15 @@ def run(command, args, cwd=None, capture=False):
     return result.stdout.strip() if capture else result
 
 
-def build_mac_os(root=None):
+def build_mac_os(root=None, *, configuration="debug"):
     if sys.platform != "darwin":
         raise RuntimeError("Only the macOS backend is implemented.")
     from .pointer import generate_pointer_assets
     root = Path(root) if root else repository_root()
     generate_pointer_assets(root=root)
     native = root / "backends/macos"
-    run("swift", ["build", "-c", "debug"], native)
-    bin_path = Path(run("swift", ["build", "-c", "debug", "--show-bin-path"], native, True))
+    run("swift", ["build", "-c", configuration], native)
+    bin_path = Path(run("swift", ["build", "-c", configuration, "--show-bin-path"], native, True))
     bundle = native / ".build/ComputerUseDriver.app"
     executable = bundle / "Contents/MacOS/computer-use-driver"
     executable.parent.mkdir(parents=True, exist_ok=True)
@@ -54,9 +54,9 @@ def build_mac_os(root=None):
     return executable
 
 
-def build_native(root=None):
+def build_native(root=None, *, configuration="debug"):
     if sys.platform == "darwin":
-        return build_mac_os(root)
+        return build_mac_os(root, configuration=configuration)
     if sys.platform == "win32":
         return build_windows(root)
     raise RuntimeError(f"platform {sys.platform} is not implemented")

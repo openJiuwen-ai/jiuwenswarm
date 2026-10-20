@@ -340,8 +340,8 @@ $BuildSetupFilename = [string]$BuildConfig.setup_filename
 Write-Host "Build identity: $BuildDisplayName $BuildVersion" -ForegroundColor Gray
 
 # 1. Install dependencies
-Write-Host "[1/4] Installing Python dependencies (uv sync --extra dev --extra cua)..." -ForegroundColor Yellow
-uv sync --extra dev --extra cua
+Write-Host "[1/4] Installing Python 3.12 dependencies (including Computer Use)..." -ForegroundColor Yellow
+uv sync --extra dev --extra cua --python 3.12
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # 2. Build frontend
@@ -388,6 +388,17 @@ $RsiVerifyProcess = Start-Process `
     -NoNewWindow
 if ($RsiVerifyProcess.ExitCode -ne 0) {
     throw "Frozen RSI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+}
+
+$CuaVerifier = Join-Path $ProjectRoot "scripts\verify_computer_use_bundle.py"
+$CuaVerifyProcess = Start-Process `
+    -FilePath $FrozenExe `
+    -ArgumentList @("`"$CuaVerifier`"") `
+    -Wait `
+    -PassThru `
+    -NoNewWindow
+if ($CuaVerifyProcess.ExitCode -ne 0) {
+    throw "Frozen Computer Use bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
 }
 
 $GitCodeVerifier = Join-Path $ProjectRoot "scripts\verify_gitcode_cli_bundle.py"

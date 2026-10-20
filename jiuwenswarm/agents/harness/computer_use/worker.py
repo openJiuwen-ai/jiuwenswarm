@@ -1,4 +1,4 @@
-"""Launch the bundled MCP on a user-owned, versioned native build tree."""
+"""Use the installed native driver, or build a user-owned source checkout."""
 
 from __future__ import annotations
 
@@ -49,23 +49,25 @@ def prepare_bundle(source: Path, cache: Path) -> Path:
     return target
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--prepare-native", action="store_true")
-    args = parser.parse_args()
-    if not args.prepare_native and sys.version_info < (3, 12):
-        raise RuntimeError("cua_repl requires Python 3.12+. Set react.subagents.cua_agent.repl_python.")
-    root = prepare_bundle(engine_root(), Path(get_user_workspace_dir()) / "computer_use/runtime")
-    # Only this owned process sees the bundled top-level SDK package.
-    sys.path.insert(0, str(root / "src"))
-    os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(root / "src"), os.environ.get("PYTHONPATH")]))
+def prepare_native() -> Path:
+    """Resolve an immutable installed driver; only source runs may compile."""
+    frozen = getattr(sys, "frozen", False)
+    root = engine_root()
+    if not frozen:
+        root = prepare_bundle(root, Path(get_user_workspace_dir()) / "computer_use/runtime")
+        # Only this owned process sees the bundled top-level SDK package.
+        sys.path.insert(0, str(root / "src"))
+        os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(root / "src"), os.environ.get("PYTHONPATH")]))
     from computer_use.paths import native_driver
-    from computer_use.scripts.native import build_cli
 
     executable = Path(native_driver(root=root)["command"])
     if not executable.is_file():
+        if frozen:
+            raise RuntimeError("The installed Computer Use driver is missing; reinstall the application.")
         with portalocker.Lock(str(root) + ".build.lock", timeout=180):
             if not executable.is_file():
+                from computer_use.scripts.native import build_cli
+
                 # stdout is exclusively MCP JSON-RPC, including during builds.
                 descriptor = os.dup(1)
                 try:
@@ -76,6 +78,16 @@ def main() -> None:
                     sys.stdout.flush()
                     os.dup2(descriptor, 1)
                     os.close(descriptor)
+    return executable
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prepare-native", action="store_true")
+    args = parser.parse_args()
+    if not args.prepare_native and sys.version_info < (3, 12):
+        raise RuntimeError("cua_repl requires Python 3.12+. Set react.subagents.cua_agent.repl_python.")
+    executable = prepare_native()
     if args.prepare_native:
         print(json.dumps({"executable": str(executable)}))
         return

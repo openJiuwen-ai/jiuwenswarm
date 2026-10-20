@@ -7,7 +7,7 @@
 #   Frontend:   bash scripts/build-electron-exe.sh --test --frontend-only
 #
 # Build flow:
-# 1. Install Python dependencies (uv sync --extra dev) [skip: --frontend-only]
+# 1. Install Python 3.12 dependencies including cua [skip: --frontend-only]
 # 2. Build frontend (vite build with ELECTRON=true)
 # 3. Install Electron desktop dependencies and resolve Electron.app
 # 4. PyInstaller backend (jiuwenswarm.spec)                   [skip: --frontend-only]
@@ -136,8 +136,8 @@ echo ""
 
 # ── 1. Install Python dependencies ───────────────────────────────────────────
 if [ "$FRONTEND_ONLY" = false ]; then
-    echo "[1/6] Installing locked Python dependencies (uv sync --locked --extra dev)..."
-    uv sync --locked --extra dev
+    echo "[1/6] Installing locked Python 3.12 dependencies (including Computer Use)..."
+    uv sync --locked --extra dev --extra cua --python 3.12
 else
     echo "[1/6] Skipping Python dependencies (FrontendOnly)"
 fi
@@ -241,6 +241,8 @@ if [ "$FRONTEND_ONLY" = false ]; then
 
     # Same RSI Harness baseline self-check as build-macos.sh.
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_rsi_bundle.py"
+
+    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_computer_use_bundle.py"
 
     # Exercise lazy adapter exports before shipping a backend that only binds
     # its Front port but cannot initialize the actual runtime.

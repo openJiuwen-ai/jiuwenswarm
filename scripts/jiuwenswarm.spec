@@ -3,7 +3,7 @@
 r"""JiuwenSwarm PyInstaller 打包配置。
 
 构建前请先：
-1. 安装依赖: uv sync --extra dev
+1. 安装依赖: uv sync --extra dev --extra cua --python 3.12
 2. 构建前端: cd jiuwenswarm/channels/web/frontend && npm run build
 3. 执行平台 wrapper: .\scripts\build-exe.ps1 或 bash scripts/build-macos.sh
 """
@@ -106,6 +106,17 @@ def collect_tree_python_modules(source_dir, package_roots):
             modules.append(module_name)
     return sorted(set(modules))
 
+
+# One shared build step for Windows/macOS, pywebview and Electron installers.
+# Native compiler inputs stay on the build machine; the installed app never builds.
+computer_use_source = os.path.join(project_root, "jiuwenswarm", "cua_engine", "src")
+computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))
+computer_use_data = computer_use_build["bundle_data"](Path(project_root))
+computer_use_submodules = (
+    collect_tree_python_modules(computer_use_source, ("computer_use",))
+    + collect_submodules("jiuwenswarm.agents.harness.computer_use")
+) if computer_use_data else []
+
 try:
     webview_datas = collect_data_files("webview")
 except Exception as exc:
@@ -149,6 +160,7 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
+datas += computer_use_data
 # A controlled package embeds its immutable Runtime build identity. Computing
 # it belongs to the build, so frozen Front/Worker startup only reads this small
 # payload. Source execution still validates dirty code and dependency locks.
@@ -314,7 +326,7 @@ hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_s
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + team_kv_cache_hiddenimports + dispatch_submodules
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + team_kv_cache_hiddenimports + dispatch_submodules + computer_use_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
@@ -490,7 +502,7 @@ _bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
 
 a = Analysis(
     [entry_script],
-    pathex=[project_root, symphony_root],
+    pathex=[project_root, symphony_root, computer_use_source],
     binaries=_bundled_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -506,7 +518,7 @@ a = Analysis(
 
 mcp_a = Analysis(
     [mcp_entry_script],
-    pathex=[project_root, symphony_root],
+    pathex=[project_root, symphony_root, computer_use_source],
     binaries=[],
     datas=[],
     hiddenimports=hiddenimports,
@@ -606,4 +618,7 @@ if sys.platform == "darwin":
             "CFBundleVersion": build_config.version,
             "NSHighResolutionCapable": "True",
         },
+    )
+    computer_use_build["finalize_macos_bundle"](
+        Path(project_root), Path(coll.name) / exe.contents_directory, Path(app.name)
     )

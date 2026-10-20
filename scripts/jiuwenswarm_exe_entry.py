@@ -484,7 +484,7 @@ def _forward_to_ruff_binary(ruff_args: list[str]) -> int:
 
 
 def _ensure_stdio() -> None:
-    """Rebind sys.stdout/stderr to real OS handles.
+    """Rebind standard streams to real OS handles.
 
     The exe is built with console=False (windowed). When launched from a
     console (cmd) or captured via PIPE (auto-harness check_ruff), Python's
@@ -493,17 +493,19 @@ def _ensure_stdio() -> None:
     them to the OS-level fds; for direct cmd use, also try attaching the
     parent console.
     """
-    def _rebind(fd: int, stream):
+    def _rebind(fd: int, stream, mode: str = "w"):
         if stream is not None and not getattr(stream, "closed", False):
             return stream
         try:
-            return open(fd, "w", encoding="utf-8", errors="replace", buffering=1)
+            return open(fd, mode, encoding="utf-8", errors="replace", buffering=1)
         except Exception:
             pass
         try:
-            return open(os.devnull, "w", encoding="utf-8", errors="replace")
+            return open(os.devnull, mode, encoding="utf-8", errors="replace")
         except Exception:
             return stream
+    # Windowed Windows builds also need stdin restored for stdio MCP workers.
+    sys.stdin = _rebind(0, sys.stdin, "r")
     sys.stdout = _rebind(1, sys.stdout)
     sys.stderr = _rebind(2, sys.stderr)
     if os.name == "nt" and (

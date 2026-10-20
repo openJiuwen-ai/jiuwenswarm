@@ -412,7 +412,7 @@ Write-Host "Test: $Test  FrontendOnly: $FrontendOnly`n" -ForegroundColor Gray
 # ── 1. Install Python dependencies ────────────────────────────────────────────
 if (-not $FrontendOnly) {
     Write-Host "`n[1/6] Installing Python dependencies for Windows x64..." -ForegroundColor Yellow
-    uv sync --locked --extra dev --extra cua --python-platform x86_64-pc-windows-msvc
+    uv sync --locked --extra dev --extra cua --python-platform x86_64-pc-windows-msvc --python 3.12
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
     Write-Host "`n[1/6] Skipping Python dependencies (FrontendOnly)" -ForegroundColor Gray
@@ -526,6 +526,17 @@ if (-not $FrontendOnly) {
         -NoNewWindow
     if ($RsiVerifyProcess.ExitCode -ne 0) {
         throw "Frozen RSI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+    }
+
+    $CuaVerifier = Join-Path $ProjectRoot "scripts\verify_computer_use_bundle.py"
+    $CuaVerifyProcess = Start-Process `
+        -FilePath $FrozenExe `
+        -ArgumentList @("`"$CuaVerifier`"") `
+        -Wait `
+        -PassThru `
+        -NoNewWindow
+    if ($CuaVerifyProcess.ExitCode -ne 0) {
+        throw "Frozen Computer Use bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
     }
 
     # The PyInstaller spec intentionally allows platforms for which gitcode-cli

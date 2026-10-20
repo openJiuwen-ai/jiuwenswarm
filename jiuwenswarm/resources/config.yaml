@@ -664,7 +664,8 @@ react:
       # max_iterations: 100
     # cua_agent: 桌面自动化子代理，保留单步工具，增加 Python cua_repl 支持无障碍树与多步工作流。
     # 需安装 cua 可选依赖（pip install "workswarm[cua]" 或 uv sync --extra cua），并使用支持图片输入的模型。
-    # cua_repl 需要 Python 3.12+；首次使用自动构建本机驱动（macOS 需 Swift，Windows 需 .NET Framework 4.8）。
+    # 安装包内置 Python 3.12+ 与已编译驱动，无需用户安装编译工具。
+    # 源码运行时首次使用自动构建本机驱动（macOS 需 Swift，Windows 需 .NET Framework 4.8）。
     # 需提供目标系统的桌面权限。操作可能影响真实鼠标、键盘和前台，执行期间请勿操作电脑。
     cua_agent:
       enabled: false
