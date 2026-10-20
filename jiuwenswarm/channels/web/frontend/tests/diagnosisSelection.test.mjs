@@ -9,6 +9,9 @@ import {
   laneRangeOf,
   selectOnAxis,
   selectOnLane,
+  DIAGNOSIS_NODE_LIMIT,
+  selectedNodeCount,
+  selectionCoversInterval,
   selectionRanges,
   toggleAgent,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisSelection.mjs';
@@ -134,6 +137,48 @@ test('a pick becomes one request range per agent in Unix nanoseconds', () => {
   assert.equal(scope.ranges[0].start_unix_nano, '1000000000');
   // The end widens to the whole last millisecond.
   assert.equal(scope.ranges[0].end_unix_nano, '2000999999');
+});
+
+test('a pick covers the main agent interval only while that agent is included', () => {
+  const lastTurn = { startMs: 1_500, endMs: 1_800 };
+  const axis = selectOnAxis(EMPTY_DIAGNOSIS_SELECTION, window1);
+  assert.equal(selectionCoversInterval(axis, 'main', lastTurn, false), true);
+  assert.equal(selectionCoversInterval(toggleAgent(axis, 'main'), 'main', lastTurn, false), false);
+  assert.equal(selectionCoversInterval(axis, 'main', { startMs: 2_500, endMs: 2_600 }, false), false);
+  assert.equal(selectionCoversInterval(axis, 'main', { startMs: 100, endMs: 1_500 }, false), false);
+  assert.equal(selectionCoversInterval(axis, 'main', { startMs: 1_500, endMs: 2_500 }, false), false);
+  assert.equal(selectionCoversInterval(axis, 'main', { startMs: 1_000, endMs: 1_000 }, false), true);
+  const lanes = selectOnLane(EMPTY_DIAGNOSIS_SELECTION, 'a', window1);
+  assert.equal(selectionCoversInterval(lanes, 'main', lastTurn, false), false);
+  assert.equal(selectionCoversInterval(EMPTY_DIAGNOSIS_SELECTION, 'main', lastTurn, true), true);
+  assert.equal(selectionCoversInterval(axis, 'main', { startMs: 5, endMs: 1 }, false), false);
+});
+
+test('a pick counts a node only when it contains the node whole', () => {
+  const lanes = [
+    {
+      subjectId: 'main',
+      intervals: [
+        { startMs: 1_100, endMs: 1_200 },
+        { startMs: 1_500, endMs: 2_500 },
+        { startMs: 100, endMs: 1_500 },
+        { startMs: 5, endMs: 1 },
+      ],
+    },
+    { subjectId: 'a', intervals: [{ startMs: 1_100, endMs: 1_200 }] },
+  ];
+  const axis = selectOnAxis(EMPTY_DIAGNOSIS_SELECTION, window1);
+  assert.equal(selectedNodeCount(EMPTY_DIAGNOSIS_SELECTION, lanes, false), 0);
+  assert.equal(selectedNodeCount(axis, lanes, false), 2);
+  assert.equal(selectedNodeCount(toggleAgent(axis, 'a'), lanes, false), 1);
+  assert.equal(selectedNodeCount(EMPTY_DIAGNOSIS_SELECTION, lanes, true), 4);
+  const many = [{ subjectId: 'main', intervals: Array.from({ length: DIAGNOSIS_NODE_LIMIT + 1 }, () => ({
+    startMs: 1_100,
+    endMs: 1_200,
+  })) }];
+  assert.equal(selectedNodeCount(axis, many, false) > DIAGNOSIS_NODE_LIMIT, true);
+  const exactly = [{ subjectId: 'main', intervals: many[0].intervals.slice(0, DIAGNOSIS_NODE_LIMIT) }];
+  assert.equal(selectedNodeCount(axis, exactly, false) > DIAGNOSIS_NODE_LIMIT, false);
 });
 
 test('without a pick no scope is built unless the whole trajectory is chosen', () => {

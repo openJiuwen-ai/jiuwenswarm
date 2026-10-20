@@ -15,6 +15,14 @@ export interface DiagnosisSelectionBarProps {
   onNoteChange: (value: string) => void;
   /** Agents in the pick; `0` when nothing is picked. */
   pickedAgents: number;
+  /** Nodes contained whole by the pick. */
+  pickedNodes: number;
+  /** Shown when the pick contains the main agent's last turn. */
+  lastTurnNotice: string | null;
+  /** Shown when the pick contains more nodes than a diagnosis may cover. */
+  nodeLimitNotice: string | null;
+  /** Shown after Start when the pick contains no complete node. */
+  emptyNodesNotice: string | null;
   canStart: boolean;
   submitting: boolean;
   /** Why the last start failed. Stays until the next attempt. */
@@ -30,6 +38,10 @@ export const DiagnosisSelectionBar = memo(function DiagnosisSelectionBar({
   note,
   onNoteChange,
   pickedAgents,
+  pickedNodes,
+  lastTurnNotice,
+  nodeLimitNotice,
+  emptyNodesNotice,
   canStart,
   submitting,
   error,
@@ -40,7 +52,7 @@ export const DiagnosisSelectionBar = memo(function DiagnosisSelectionBar({
   let status: string;
   if (fullScope) status = fullScopeBlocked ? t('trajectory.diagnosis.fullScopeBusy') : '';
   else if (pickedAgents === 0) status = t('trajectory.diagnosis.selectionHint');
-  else status = t('trajectory.analysis.selection.summary', { count: pickedAgents });
+  else status = t('trajectory.analysis.selection.summary', { count: pickedAgents, nodes: pickedNodes });
   const statusIsError = fullScope && fullScopeBlocked;
   return (
     <div className={css.bar} data-testid="trajectory-analysis-selection-bar">
@@ -68,6 +80,21 @@ export const DiagnosisSelectionBar = memo(function DiagnosisSelectionBar({
           data-testid="trajectory-analysis-note"
         />
       </div>
+      {lastTurnNotice === null ? null : (
+        <p className={css.notice} role="status" data-testid="trajectory-analysis-selection-last-turn">
+          {lastTurnNotice}
+        </p>
+      )}
+      {nodeLimitNotice === null ? null : (
+        <p className={css.warning} role="alert" data-testid="trajectory-analysis-selection-node-limit">
+          {nodeLimitNotice}
+        </p>
+      )}
+      {emptyNodesNotice === null ? null : (
+        <p className={css.warning} role="alert" data-testid="trajectory-analysis-selection-empty-nodes">
+          {emptyNodesNotice}
+        </p>
+      )}
       <div className={css.actions}>
         <span
           className={`${css.status} ${statusIsError ? css.statusError : ''}`}

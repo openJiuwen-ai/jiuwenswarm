@@ -67,10 +67,17 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.match(appSource, /showNavigation=\{sessionId !== NEW_CONVERSATION_ID\}/);
   assert.doesNotMatch(panelSource, /window\.setInterval/);
   assert.doesNotMatch(panelSource, /data-testid="trajectory-refresh"/);
+  const analysisToolbarSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryAnalysisToolbar.tsx', import.meta.url),
+    'utf8',
+  );
   assert.match(panelSource, /data-testid="trajectory-archive-import"/);
   assert.match(panelSource, /data-testid="trajectory-archive-export"/);
+  assert.match(analysisToolbarSource, /data-testid="trajectory-archive-import"/);
+  assert.match(analysisToolbarSource, /data-testid="trajectory-archive-export"/);
   assert.doesNotMatch(panelSource, /preferBrowserFilePicker/);
   assert.match(panelSource, /data-testid="trajectory-archive-exit"/);
+  assert.match(analysisToolbarSource, /data-testid="trajectory-archive-exit"/);
   assert.doesNotMatch(panelSource, /if \(!active \|\| sessionId === 'new'/);
   assert.match(panelSource, /'harness\.session_finished'/);
   assert.match(panelSource, /subjectGroups\.groups\.map/);

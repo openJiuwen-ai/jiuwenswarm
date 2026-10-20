@@ -94,6 +94,28 @@ export function toggleAgent(state: DiagnosisSelectionState, subjectId: string): 
   return { ...state, excluded };
 }
 
+/**
+ * Whether the pick contains a whole node of one agent.
+ *
+ * The whole trajectory contains every node. Otherwise both the start and the
+ * end have to lie inside the agent's own window (the shared window, unless
+ * that agent is unchecked). Covering only one of the two moments is not enough.
+ */
+export function selectionCoversInterval(
+  state: DiagnosisSelectionState,
+  subjectId: string,
+  interval: WallRange,
+  fullScope: boolean,
+): boolean {
+  if (!Number.isFinite(interval.startMs) || !Number.isFinite(interval.endMs) || interval.endMs < interval.startMs) {
+    return false;
+  }
+  if (fullScope) return true;
+  const range = laneRangeOf(state, subjectId);
+  if (range === null) return false;
+  return interval.startMs >= range.startMs && interval.endMs <= range.endMs;
+}
+
 /** The window to draw on one agent's lane, or `null` for none. */
 export function laneRangeOf(state: DiagnosisSelectionState, subjectId: string): WallRange | null {
   if (state.mode === 'lanes') return state.laneRanges.get(subjectId) ?? null;
@@ -126,6 +148,29 @@ export function selectionRanges(
     });
   }
   return ranges;
+}
+
+/** A diagnosis may cover at most this many nodes. One more and it cannot start. */
+export const DIAGNOSIS_NODE_LIMIT = 1_500;
+
+/**
+ * How many nodes the pick contains.
+ *
+ * A node counts only when the pick contains it whole (see
+ * `selectionCoversInterval`). The whole trajectory contains every node.
+ */
+export function selectedNodeCount(
+  state: DiagnosisSelectionState,
+  lanes: readonly { subjectId: string; intervals: readonly WallRange[] }[],
+  fullScope: boolean,
+): number {
+  let count = 0;
+  for (const lane of lanes) {
+    for (const interval of lane.intervals) {
+      if (selectionCoversInterval(state, lane.subjectId, interval, fullScope)) count += 1;
+    }
+  }
+  return count;
 }
 
 /** Whether anything would be diagnosed. */

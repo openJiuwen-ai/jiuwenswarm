@@ -219,8 +219,10 @@ export function canSubmitDiagnosis(options: {
   running: boolean;
   fullScope: boolean;
   hasSelection: boolean;
+  /** The pick contains more nodes than a diagnosis may cover. */
+  nodeLimitExceeded?: boolean;
 }): boolean {
-  if (options.submitting || options.running) return false;
+  if (options.submitting || options.running || options.nodeLimitExceeded === true) return false;
   if (options.fullScope) return !options.busy;
   return options.hasSelection;
 }

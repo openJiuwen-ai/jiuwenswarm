@@ -26,6 +26,9 @@ import {
 import css from './TrajectoryTimeline.module.css'
 
 const MINIMUM_DRAG_PX = 3
+// A real click often jitters a few pixels. On the analysis page that still
+// names a ledger row; a longer drag keeps painting a brush.
+const CLICK_SELECT_PX = 8
 const MINIMUM_ZOOM_OPERATIONS = 4
 const MINIMUM_ZOOM_TOKENS = 256
 const MINIMUM_ZOOM_MILLIS = 20
@@ -245,6 +248,12 @@ export interface TrajectoryTimelineProps {
   lockViewport?: boolean
   /** A locked lane still selects the range of a clicked Input block. Off by default. */
   spanSelectsRange?: boolean
+  /**
+   * A short press selects that block's ledger row and clears any local brush,
+   * including an Input block and a press that misses the block by a few pixels.
+   * Diagnosis lanes leave this off so the press still paints the shared brush.
+   */
+  clickSelectsRecord?: boolean
   /** Shared visible window, in the same coordinates as `sharedDomain`. */
   sharedViewport?: TrajectoryTimeRange | null
   /** Reports a wheel zoom or pan of the shared window. Enables the wheel while locked. */
@@ -392,6 +401,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   mapTime,
   lockViewport = false,
   spanSelectsRange = false,
+  clickSelectsRecord = false,
   sharedViewport = null,
   onViewportChange,
   sharedViewportRef,
@@ -623,6 +633,26 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
       ?.dataset.timelineSpanKey ?? null
   }
 
+  // Diagnosis keeps the shared brush. Everywhere else a short press names a row.
+  const clickSelectsOwnRecord = clickSelectsRecord && !spanSelectsRange
+  const clickSlop = clickSelectsOwnRecord ? CLICK_SELECT_PX : MINIMUM_DRAG_PX
+
+  const nearestSpanAt = (time: number) => {
+    const first = model.spans[0]
+    if (first === undefined) return undefined
+    const distance = (span: typeof first) => (
+      time < span.start ? span.start - time : time > span.end ? time - span.end : 0
+    )
+    return model.spans.reduce((candidate, span) => (
+      distance(span) < distance(candidate) ? span : candidate
+    ), first)
+  }
+
+  const selectOwnRecord = (index: number) => {
+    onRangeChange(null)
+    onRecordSelect?.(index)
+  }
+
   const commit = (nextRange: TrajectoryTimeRange) => {
     onRangeChange(nextRange)
   }
@@ -684,7 +714,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     const rect = event.currentTarget.getBoundingClientRect()
     const pan = panRef.current
     if (pan !== null && pan.pointerId === event.pointerId) {
-      if (Math.abs(event.clientX - pan.anchorClientX) >= MINIMUM_DRAG_PX) {
+      if (Math.abs(event.clientX - pan.anchorClientX) >= clickSlop) {
         pan.moved = true
       }
       if (!pan.pannable || !pan.moved) return
@@ -741,7 +771,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     const pan = panRef.current
     if (pan !== null && pan.pointerId === event.pointerId) {
       const moved = pan.moved
-        || Math.abs(event.clientX - pan.anchorClientX) >= MINIMUM_DRAG_PX
+        || Math.abs(event.clientX - pan.anchorClientX) >= clickSlop
       panRef.current = null
       setPanning(false)
       if (moved && pan.pannable) {
@@ -764,6 +794,10 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
         ? undefined
         : model.spans.find(span => spanKey(span) === pan.spanKey)
       if (clickedSpan !== undefined) {
+        if (clickSelectsOwnRecord) {
+          selectOwnRecord(clickedSpan.index)
+          return
+        }
         if (clickedSpan.segment === 'input') {
           onRangeChange({ start: clickedSpan.start, end: clickedSpan.end })
           onRecordFocus?.(clickedSpan.coveredIndexes?.[0] ?? clickedSpan.index)
@@ -771,6 +805,11 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
         }
         onRangeChange(null)
         onRecordSelect?.(clickedSpan.index)
+        return
+      }
+      if (clickSelectsOwnRecord) {
+        const nearest = nearestSpanAt(pan.anchorTime)
+        if (nearest !== undefined) selectOwnRecord(nearest.index)
         return
       }
       const clickRange = centeredRange(
@@ -800,10 +839,14 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     setHover({ fraction: pointFraction, recordIndex: recordIndexAt(event) })
     dragRef.current = null
     setDraft(null)
-    const click = Math.abs(event.clientX - drag.anchorClientX) < MINIMUM_DRAG_PX
+    const click = Math.abs(event.clientX - drag.anchorClientX) < clickSlop
     const clickedSpan = click && drag.spanKey !== null
       ? model.spans.find(span => spanKey(span) === drag.spanKey)
       : undefined
+    if (click && clickSelectsOwnRecord && clickedSpan !== undefined) {
+      selectOwnRecord(clickedSpan.index)
+      return
+    }
     if (clickedSpan !== undefined) {
       // An Input block stands for the records its request consumed, so clicking it
       // focuses that whole stretch of the ledger instead of the request row itself.
@@ -830,6 +873,11 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
         model.end,
       )
       : selected
+    if (click && clickSelectsOwnRecord) {
+      const nearest = nearestSpanAt(selected.start)
+      if (nearest !== undefined) selectOwnRecord(nearest.index)
+      return
+    }
     commit(committedRange)
     if (click) {
       const timelinePoint = selected.start

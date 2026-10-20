@@ -27,6 +27,7 @@ import {
   diagnosisSelectionRanges,
   clampSharedViewport,
   formatElapsed,
+  mainAgentLastNode,
   sharedWallClockDomain,
   visibleAxisTicks,
   wallToCompressed,
@@ -272,6 +273,22 @@ test('a zero-width domain stays selectable', () => {
   );
 });
 
+test('mainAgentLastNode is the last timed node of the main agent', () => {
+  const turns = [
+    { groups: [{ cells: [{ startedAt: 1_000, timeSeconds: 1 }, { requestOnly: true, startedAt: 9_000 }] }] },
+    { groups: [{ cells: [{ startedAt: 4_000, timeSeconds: 2 }, { startedAt: 500 }] }] },
+  ];
+  assert.deepEqual(mainAgentLastNode([
+    { subjectId: 'member', kind: 'team_member', turns },
+    { subjectId: 'main', kind: 'main_agent', turns: [{ groups: [{ cells: [{ startedAt: null }] }] }] },
+    { subjectId: 'leader', kind: 'team_leader', turns },
+  ]), null);
+  assert.deepEqual(mainAgentLastNode([
+    { subjectId: 'leader', kind: 'team_leader', turns },
+    { subjectId: 'member', kind: 'team_member', turns: [{ groups: [{ cells: [{ startedAt: 8_000 }] }] }] },
+  ]), { subjectId: 'leader', startMs: 4_000, endMs: 6_000 });
+});
+
 test('collectWallClockSamples keeps every cell in order', () => {
   const samples = collectWallClockSamples([
     { groups: [{ cells: [{ startedAt: 1 }] }, { cells: [{ startedAt: 2 }] }] },
@@ -340,4 +357,6 @@ test('canSubmitDiagnosis follows scope, busy and running state', () => {
   assert.equal(canSubmitDiagnosis({ ...base, hasSelection: true, busy: true }), true);
   assert.equal(canSubmitDiagnosis({ ...base, hasSelection: true, running: true }), false);
   assert.equal(canSubmitDiagnosis({ ...base, hasSelection: true, submitting: true }), false);
+  assert.equal(canSubmitDiagnosis({ ...base, hasSelection: true, nodeLimitExceeded: true }), false);
+  assert.equal(canSubmitDiagnosis({ ...base, fullScope: true, nodeLimitExceeded: true }), false);
 });

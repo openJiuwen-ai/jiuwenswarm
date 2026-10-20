@@ -68,6 +68,70 @@ const AXIS_STEP_MS = [
   7_200_000,
 ];
 
+/**
+ * Start and end of one timed node.
+ *
+ * `requestOnly` rows are not nodes on the lane. A node without a duration is
+ * the single instant it started.
+ */
+export function timedNodeInterval(cell: WallClockSample): { startMs: number; endMs: number } | null {
+  if (cell.requestOnly === true) return null;
+  const started = cell.startedAt;
+  if (started === null || started === undefined || !Number.isFinite(started) || started < 0) return null;
+  const seconds = cell.timeSeconds;
+  const end = seconds !== null && seconds !== undefined && Number.isFinite(seconds)
+    ? started + Math.max(0, seconds) * 1_000
+    : started;
+  return { startMs: started, endMs: Math.max(started, end) };
+}
+
+/** Every timed node on a lane, in snapshot order. */
+export function timedNodeIntervals(
+  turns: readonly { groups: readonly { cells: readonly WallClockSample[] }[] }[],
+): { startMs: number; endMs: number }[] {
+  const intervals: { startMs: number; endMs: number }[] = [];
+  for (const turn of turns) {
+    for (const group of turn.groups) {
+      for (const cell of group.cells) {
+        const interval = timedNodeInterval(cell);
+        if (interval !== null) intervals.push(interval);
+      }
+    }
+  }
+  return intervals;
+}
+
+/**
+ * Start and end of the timed node that began last.
+ *
+ * Order in the snapshot does not matter: the latest start is the last node.
+ */
+export function lastTimedNodeInterval(
+  turns: readonly { groups: readonly { cells: readonly WallClockSample[] }[] }[],
+): { startMs: number; endMs: number } | null {
+  let found: { startMs: number; endMs: number } | null = null;
+  for (const interval of timedNodeIntervals(turns)) {
+    if (found !== null && interval.startMs < found.startMs) continue;
+    found = interval;
+  }
+  return found;
+}
+
+/** The main agent's last node, or the team leader's when the session has no main agent. */
+export function mainAgentLastNode(
+  lanes: readonly {
+    subjectId: string;
+    kind: string;
+    turns: readonly { groups: readonly { cells: readonly WallClockSample[] }[] }[];
+  }[],
+): { subjectId: string; startMs: number; endMs: number } | null {
+  const lane = lanes.find(item => item.kind === 'main_agent')
+    ?? lanes.find(item => item.kind === 'team_leader');
+  if (lane === undefined) return null;
+  const interval = lastTimedNodeInterval(lane.turns);
+  return interval === null ? null : { subjectId: lane.subjectId, ...interval };
+}
+
 /** Flatten turn groups into the samples the shared axis measures. */
 export function collectWallClockSamples(
   turns: readonly { groups: readonly { cells: readonly WallClockSample[] }[] }[],

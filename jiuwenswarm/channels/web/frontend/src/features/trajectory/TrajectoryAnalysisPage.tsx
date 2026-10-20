@@ -1,13 +1,16 @@
 /** Trajectory analysis page: the trajectory and its diagnosis as two sub-pages of one session view. */
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/chatStore';
 import {
   buildDiagnosisScope,
+  DIAGNOSIS_NODE_LIMIT,
   EMPTY_DIAGNOSIS_SELECTION,
   hasSelection,
+  selectedNodeCount,
+  selectionCoversInterval,
   selectionRanges,
   type DiagnosisSelectionState,
 } from './diagnosis/diagnosisSelection';
@@ -20,7 +23,10 @@ import { useDiagnosisSession } from './diagnosis/useDiagnosisSession';
 import { TrajectoryAnalysisToolbar } from './TrajectoryAnalysisToolbar';
 import {
   TrajectoryPanel,
+  type TrajectoryArchiveActions,
   type TrajectoryLaneScale,
+  type TrajectoryDiagnosisLaneNodes,
+  type TrajectoryMainAgentLastNode,
   type TrajectoryPanelSubject,
   type TrajectoryPanelSummary,
 } from './TrajectoryPanel';
@@ -51,6 +57,8 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
   const { t } = useTranslation();
   const [subpage, setSubpage] = useState<TrajectoryAnalysisSubpage>('trajectory');
   const [subjects, setSubjects] = useState<ReadonlyArray<TrajectoryPanelSubject>>([]);
+  const [mainAgentLastNode, setMainAgentLastNode] = useState<TrajectoryMainAgentLastNode | null>(null);
+  const [diagnosisLanes, setDiagnosisLanes] = useState<ReadonlyArray<TrajectoryDiagnosisLaneNodes>>([]);
   const [timelineAvailable, setTimelineAvailable] = useState(false);
   const [focused, setFocused] = useState<FocusedCause | null>(null);
   // Selection mode: the trajectory turns into a picker and a bar asks how to run.
@@ -58,21 +66,24 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
   const [selectionState, setSelectionState] = useState<DiagnosisSelectionState>(EMPTY_DIAGNOSIS_SELECTION);
   const [fullScope, setFullScope] = useState(false);
   const [note, setNote] = useState('');
-  const [scale, setScale] = useState<TrajectoryLaneScale>('duration');
+  const [emptyNodesHint, setEmptyNodesHint] = useState(false);
+  const [scale, setScale] = useState<TrajectoryLaneScale>('time');
   const [turnsCollapsed, setTurnsCollapsed] = useState(false);
   const [callsCollapsed, setCallsCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [summary, setSummary] = useState<TrajectoryPanelSummary | null>(null);
-  const exportTrajectoryRef = useRef<(() => void) | null>(null);
+  const [archiveActions, setArchiveActions] = useState<TrajectoryArchiveActions | null>(null);
   const [pageSessionId, setPageSessionId] = useState(sessionId);
   if (pageSessionId !== sessionId) {
     setPageSessionId(sessionId);
     setSubpage('trajectory');
     setFocused(null);
     setSelecting(false);
-    setScale('duration');
+    setScale('time');
     setSearchQuery('');
     setSummary(null);
+    setMainAgentLastNode(null);
+    setDiagnosisLanes([]);
   }
   const session = useDiagnosisSession(sessionId);
   const { record, start, dismissNotice } = session;
@@ -102,6 +113,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
     setSelectionState(EMPTY_DIAGNOSIS_SELECTION);
     setFullScope(false);
     setNote('');
+    setEmptyNodesHint(false);
   }, []);
   // A hidden page is not a place to keep an unsent pick.
   useEffect(() => {
@@ -126,26 +138,44 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
     setSelectionState(EMPTY_DIAGNOSIS_SELECTION);
     setFullScope(false);
     setNote('');
-    setScale('duration');
+    setScale('time');
     setSubpage('trajectory');
     setSelecting(true);
   }, [dismissNotice]);
-  const registerExport = useCallback((exportArchive: () => void) => {
-    exportTrajectoryRef.current = exportArchive;
+  const registerArchiveActions = useCallback((actions: TrajectoryArchiveActions) => {
+    setArchiveActions(actions);
   }, []);
 
   const pickedAgents = useMemo(
     () => selectionRanges(selectionState, subjectChoices).length,
     [selectionState, subjectChoices],
   );
+  const coversMainLastTurn = mainAgentLastNode !== null && selectionCoversInterval(
+    selectionState,
+    mainAgentLastNode.subjectId,
+    mainAgentLastNode,
+    fullScope,
+  );
+  const selectedNodes = useMemo(
+    () => selectedNodeCount(selectionState, diagnosisLanes, fullScope),
+    [diagnosisLanes, fullScope, selectionState],
+  );
+  const nodeLimitExceeded = selectedNodes > DIAGNOSIS_NODE_LIMIT;
+  if (emptyNodesHint && (selectedNodes > 0 || fullScope)) setEmptyNodesHint(false);
   const canStart = canSubmitDiagnosis({
     busy,
     submitting: session.submitting,
     running: session.running,
     fullScope,
     hasSelection: hasSelection(selectionState, subjectChoices),
+    nodeLimitExceeded,
   });
   const startDiagnosis = useCallback(() => {
+    if (nodeLimitExceeded) return;
+    if (!fullScope && selectedNodes === 0) {
+      setEmptyNodesHint(true);
+      return;
+    }
     const scope = buildDiagnosisScope(selectionState, subjectChoices, fullScope);
     if (scope === null) return;
     void start(scope, note).then((started) => {
@@ -153,7 +183,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
       exitSelection();
       setSubpage('diagnosis');
     });
-  }, [exitSelection, fullScope, note, selectionState, start, subjectChoices]);
+  }, [exitSelection, fullScope, nodeLimitExceeded, note, selectedNodes, selectionState, start, subjectChoices]);
 
   const focusCause = useCallback((cause: RootCause | null) => {
     if (cause === null) {
@@ -244,7 +274,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
             onToggleCalls={() => setCallsCollapsed(value => !value)}
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
-            onDownload={() => { exportTrajectoryRef.current?.(); }}
+            archiveActions={archiveActions}
           />
         ) : (
           <div className={css.tabBarEnd}>
@@ -273,8 +303,10 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
           callsCollapsed={callsCollapsed}
           searchQuery={searchQuery}
           onSummaryChange={setSummary}
-          onExportReady={registerExport}
+          onArchiveActionsReady={registerArchiveActions}
           onSubjectsChange={setSubjects}
+          onMainAgentLastNodeChange={setMainAgentLastNode}
+          onDiagnosisNodesChange={setDiagnosisLanes}
           onTimelineAvailableChange={setTimelineAvailable}
           {...(focused === null ? {} : { highlightStepKeys: focused.keys })}
           {...(selecting ? { selection: { state: selectionState, onChange: setSelectionState } } : {})}
@@ -309,6 +341,12 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
           note={note}
           onNoteChange={setNote}
           pickedAgents={pickedAgents}
+          pickedNodes={selectedNodes}
+          lastTurnNotice={coversMainLastTurn ? t('trajectory.analysis.selection.lastTurn') : null}
+          nodeLimitNotice={nodeLimitExceeded
+            ? t('trajectory.analysis.selection.nodeLimit', { count: selectedNodes, limit: DIAGNOSIS_NODE_LIMIT })
+            : null}
+          emptyNodesNotice={emptyNodesHint ? t('trajectory.analysis.selection.emptyNodes') : null}
           canStart={canStart}
           submitting={session.submitting}
           error={errorNotice}

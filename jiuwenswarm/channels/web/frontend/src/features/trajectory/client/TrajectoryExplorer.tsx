@@ -110,6 +110,11 @@ export interface TrajectoryExplorerProps {
   lockTimelineViewport?: boolean
   /** With a locked viewport, clicking an Input block still selects its range. */
   spanSelectsRange?: boolean
+  /**
+   * A short press on the overview selects that block's ledger row. Diagnosis
+   * leaves this off so the press still paints the shared brush.
+   */
+  clickSelectsRecord?: boolean
   /** Visible window shared with the diagnosis axis and the other lanes. */
   sharedViewport?: TrajectoryTimeRange | null
   onSharedViewportChange?: (viewport: TrajectoryTimeRange | null) => void
@@ -232,6 +237,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   mapSharedTime,
   lockTimelineViewport = false,
   spanSelectsRange = false,
+  clickSelectsRecord = false,
   sharedViewport = null,
   onSharedViewportChange,
   sharedViewportRef,
@@ -532,6 +538,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             {...(mapSharedTime === undefined ? {} : { mapTime: mapSharedTime })}
             lockViewport={lockTimelineViewport}
             spanSelectsRange={spanSelectsRange}
+            clickSelectsRecord={clickSelectsRecord}
             sharedViewport={sharedViewport}
             {...(onSharedViewportChange === undefined ? {} : { onViewportChange: onSharedViewportChange })}
             {...(sharedViewportRef === undefined ? {} : { sharedViewportRef })}
