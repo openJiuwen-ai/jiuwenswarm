@@ -36,6 +36,7 @@ from jiuwenswarm.common.mode_matrix import (
     resolve_request_mode,
 )
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+from jiuwenswarm.telemetry.request_context import refresh_incoming_mode_binding
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +336,22 @@ def _apply_resolved_mode_to_request(
     request.resolved_adapter_source = resolved.adapter_source
     if isinstance(request.params, dict):
         request.params["mode"] = resolved.canonical_mode
+    original_mode = getattr(request, "_original_mode", None)
+    if (
+        resolved.canonical_mode != original_mode
+        or resolved.adapter_mode != original_mode
+    ):
+        try:
+            refresh_incoming_mode_binding(
+                resolved.canonical_mode,
+                resolved.adapter_mode,
+            )
+        except Exception as error:
+            logger.warning(
+                "[_apply_resolved_mode_to_request] refresh mode binding failed: %s",
+                error,
+                exc_info=True,
+            )
     return resolved.manager_mode, resolved.sub_mode
 
 

@@ -20,12 +20,14 @@ from jiuwenswarm.telemetry.attributes import (
     APP_ID,
     DOMAIN_ID,
     GEN_AI_CONVERSATION_ID,
+    JIUWENCLAW_ADAPTER_MODE,
     JIUWENCLAW_APP_ID,
     JIUWENCLAW_CHANNEL_ID,
     JIUWENCLAW_DOMAIN_ID,
     JIUWENCLAW_REQUEST_ID,
     JIUWENCLAW_SESSION_ID,
     JIUWENCLAW_USER_ID,
+    JIUWENCLAW_MODE,
     USER_ID,
 )
 from jiuwenswarm.telemetry.metrics import metrics_channel_id, metrics_session_id
@@ -272,6 +274,38 @@ def _bind_current_request_id(request: object) -> None:
         return
 
 
+def refresh_incoming_mode_binding(
+    mode: str,
+    adapter_mode: str | None = None,
+) -> None:
+    """Update business mode and implementation-mode trace bindings."""
+    text = str(mode or "").strip()
+    adapter_text = str(adapter_mode or "").strip()
+    if not text and not adapter_text:
+        return
+    try:
+        span_context = trace.get_current_span().get_span_context()
+        if not span_context.is_valid:
+            return
+        from jiuwenswarm.telemetry import get_telemetry_runtime
+
+        runtime = get_telemetry_runtime()
+        if not runtime.is_unified_active():
+            return
+        span_registry = runtime.span_registry
+        if span_registry is None:
+            return
+        attributes: dict[str, Any] = {}
+        if text:
+            attributes[JIUWENCLAW_MODE] = text
+        if adapter_text:
+            attributes[JIUWENCLAW_ADAPTER_MODE] = adapter_text
+        if attributes:
+            span_registry.bind_trace_attributes(span_context.trace_id, attributes)
+    except Exception as error:
+        logger.debug("refresh incoming mode binding failed: %s", error)
+
+
 def _bind_incoming_trace_attributes(
     request: object,
     identity: IdentityInfo,
@@ -383,5 +417,6 @@ __all__ = [
     "TraceBindingHandle",
     "TraceBindingRegistry",
     "bind_incoming_request",
+    "refresh_incoming_mode_binding",
     "reset_incoming_request",
 ]
