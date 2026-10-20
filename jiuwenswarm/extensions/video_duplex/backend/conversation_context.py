@@ -40,6 +40,7 @@ async def sync_conversation_context(agent, session_id):
     if not await asyncio.to_thread(flush_pending_writes, timeout=5):
         raise RuntimeError("语音对话历史尚未保存，请稍后重试。")
     records = await asyncio.to_thread(load_history_records, session_id)
+    imported = False
     # Retain consumed IDs even if Core compacts its message window.
     seen = getattr(context, "duplex_history_ids", None)
     if seen is None:
@@ -64,3 +65,13 @@ async def sync_conversation_context(agent, session_id):
             })
         await context.add_messages(message_type(content=content, metadata=metadata))
         seen.add(identity)
+        imported = True
+    if imported:
+        from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
+
+        session = resolve_live_agent_session(agent, session_id)
+        if session is None:
+            raise RuntimeError("The conversation session is unavailable; retry the message.")
+        # ReAct.create_context reloads this snapshot before reading the next query.
+        # Updating only the pooled context silently loses imported voice messages.
+        await react.context_engine.save_contexts(session)

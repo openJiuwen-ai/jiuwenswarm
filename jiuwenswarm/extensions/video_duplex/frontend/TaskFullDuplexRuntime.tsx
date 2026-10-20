@@ -15,6 +15,7 @@ import type {
   SearchJobPayload,
   SearchProgressEntry,
 } from "./VideoLivePanel/types";
+import { TaskFullDuplexControls } from "./TaskFullDuplexAction";
 import { TaskDuplexJobs } from "./taskDuplexJobs";
 import { describeDuplexError } from "./duplexErrorMessage";
 import {
@@ -98,7 +99,6 @@ export function TaskFullDuplexRuntime({
   const enabled = useTaskFullDuplexEnabled();
   const panelRef = useRef<VideoLivePanelHandle | null>(null);
   const runtimeSessionIdRef = useRef<string | null>(null);
-  const previousSessionIdRef = useRef(sessionId);
   const processedCoreProgressRef = useRef<Map<string, Set<number>>>(new Map());
   const conversationJobsRef = useRef(new TaskDuplexJobs());
   const pollingJobsRef = useRef(new Set<string>());
@@ -525,8 +525,9 @@ export function TaskFullDuplexRuntime({
 
   const setPanelRef = useCallback((panel: VideoLivePanelHandle | null) => {
     panelRef.current = panel;
-    registerTaskFullDuplexController(panel, (targetSessionId) => {
+    registerTaskFullDuplexController(panel, async (targetSessionId) => {
       runtimeSessionIdRef.current = targetSessionId;
+      await flushConversationHistory(targetSessionId);
       return conversationJobsRef.current.bind(targetSessionId);
     });
   }, []);
@@ -546,20 +547,9 @@ export function TaskFullDuplexRuntime({
     }
   }, [enabled]);
 
-  useEffect(() => {
-    if (previousSessionIdRef.current === sessionId) return;
-    if (
-      runtimeSessionIdRef.current &&
-      runtimeSessionIdRef.current !== sessionId
-    ) {
-      closeReasoning(runtimeSessionIdRef.current);
-      stopTaskFullDuplex();
-      runtimeSessionIdRef.current = null;
-    }
-    previousSessionIdRef.current = sessionId;
-  }, [closeReasoning, sessionId]);
-
   return (
+    <>
+    <TaskFullDuplexControls />
     <VideoLivePanel
       ref={setPanelRef}
       headless
@@ -606,5 +596,6 @@ export function TaskFullDuplexRuntime({
       onError={setTaskFullDuplexRuntimeError}
       onCoreAgentProgress={handleCoreAgentProgress}
     />
+    </>
   );
 }

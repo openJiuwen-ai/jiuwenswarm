@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import {
   Camera,
   Monitor,
@@ -31,11 +32,8 @@ import {
   stopTaskDuplexScreenSharing,
   clearTaskFullDuplexError,
 } from './taskFullDuplexRuntimeStore';
-import { DuplexOrb } from './DuplexOrb';
 import './TaskFullDuplexAction.css';
-
-// 来源：TaskFullDuplexAction.css 的 task-full-duplex-orb-leave 动画为 180ms，留 20ms 余量让它放完再卸载。
-const ORB_LEAVE_MS = 200;
+import { DuplexOrb } from './DuplexOrb';
 
 function parseEnabled(value: unknown): boolean {
   return value === true || String(value).trim().toLowerCase() === 'true';
@@ -50,14 +48,11 @@ export function TaskFullDuplexAction({
   hasTextDraft = false,
 }: ApplicationPluginTaskInputActionProps) {
   const { t } = useTranslation();
-  const [orbHost, setOrbHost] = useState<Element | null>(null);
   const [shareDialog, setShareDialog] = useState(false);
   const [shareSource, setShareSource] = useState<'screen' | 'camera'>('screen');
-  const bindAnchor = useCallback((node: HTMLSpanElement | null) => {
-    setOrbHost(node?.closest('.chat-input-frame') || null);
-  }, []);
   const enabled = useTaskFullDuplexEnabled();
-  const { state, error, microphoneMuted, speakerMuted, screenSharing } = useTaskFullDuplexRuntime();
+  const { state: runtimeState, sessionId: runtimeSessionId, error } = useTaskFullDuplexRuntime();
+  const state = runtimeSessionId === sessionId ? runtimeState : 'idle';
 
   useEffect(() => {
     let cancelled = false;
@@ -81,7 +76,6 @@ export function TaskFullDuplexAction({
     };
   }, []);
 
-  // A failure belongs to the conversation it happened in (#5288).
   useEffect(() => {
     clearTaskFullDuplexError();
   }, [sessionId]);
@@ -108,21 +102,6 @@ export function TaskFullDuplexAction({
   }, [beginSession, state]);
 
   const showAction = enabled && eligible;
-  const running = enabled && state !== 'idle';
-  // Keep the orb mounted briefly after stop/failure so it fades out instead
-  // of vanishing mid-frame.
-  const [orbMounted, setOrbMounted] = useState(running);
-  // Last non-idle state, so the fading orb keeps its look.
-  const [orbVariant, setOrbVariant] = useState<'starting' | 'active'>('starting');
-  if (state !== 'idle' && state !== orbVariant) setOrbVariant(state);
-  useEffect(() => {
-    if (running) {
-      setOrbMounted(true);
-      return undefined;
-    }
-    const timer = window.setTimeout(() => setOrbMounted(false), ORB_LEAVE_MS);
-    return () => window.clearTimeout(timer);
-  }, [running]);
   const title = error || (state === 'starting' ? labels.starting : state === 'active' ? labels.stop : labels.start);
 
   return (
@@ -160,35 +139,128 @@ export function TaskFullDuplexAction({
           </div>
         </FormDialog>
       ) : null}
-      {running && screenSharing
-        ? createPortal(
-            <div className="task-full-duplex-sharing" role="status" data-testid="chat-panel-duplex-sharing-indicator">
-              <span className="task-full-duplex-sharing__dot" aria-hidden="true" />
-              <span>{t('chat.duplexControls.sharingVideo')}</span>
-              <button type="button" onClick={stopTaskDuplexScreenSharing} data-testid="chat-panel-duplex-close-sharing">
-                {t('common.close')}
-              </button>
-            </div>,
-            document.body,
-          )
-        : null}
-      <span
-        ref={bindAnchor}
-        className="task-full-duplex-anchor"
-        aria-hidden="true"
-        data-testid="chat-panel-duplex-anchor"
-      />
-      {(running || orbMounted) && orbHost
+      {showAction && !hasTextDraft ? (
+        <button
+          type="button"
+          onClick={() => void handleClick()}
+          disabled={!sessionId}
+          className={`chat-input-btn chat-input-btn--send task-full-duplex-action is-${state}`}
+          title={title}
+          aria-label={title}
+          aria-pressed={state === 'active'}
+          data-testid="chat-panel-input-full-duplex"
+        >
+          {state === 'starting' ? (
+            <LoaderCircle className="chat-input-btn-icon task-full-duplex-action__spinner" aria-hidden />
+          ) : state === 'active' ? (
+            <X className="chat-input-btn-icon" aria-hidden />
+          ) : (
+            <svg className="chat-input-btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path
+                d="M10 2.5v15M13.75 6.25v7.5M6.25 6.25v7.5M17.5 8.75v2.5M2.5 8.75v2.5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          )}
+        </button>
+      ) : (
+        fallback
+      )}
+    </>
+  );
+}
+
+// Mounted with the app runtime, independently of any conversation composer.
+export function TaskFullDuplexControls() {
+  const { t } = useTranslation();
+  const { state, microphoneMuted, speakerMuted, screenSharing } = useTaskFullDuplexRuntime();
+  const running = state !== 'idle';
+  const [orbMounted, setOrbMounted] = useState(running);
+  const [orbVariant, setOrbVariant] = useState<'starting' | 'active'>('starting');
+  useEffect(() => {
+    if (running) {
+      setOrbMounted(true);
+      setOrbVariant(state);
+      return;
+    }
+    const timer = window.setTimeout(() => setOrbMounted(false), 200);
+    return () => window.clearTimeout(timer);
+  }, [running, state]);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ id: number; x: number; y: number; left: number; top: number } | null>(null);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const constrainPosition = useCallback((left: number, top: number) => {
+    const bounds = controlsRef.current?.getBoundingClientRect();
+    return {
+      left: Math.max(8, Math.min(left, window.innerWidth - (bounds?.width ?? 80) - 8)),
+      top: Math.max(8, Math.min(top, window.innerHeight - (bounds?.height ?? 116) - 8)),
+    };
+  }, []);
+
+  useEffect(() => {
+    const keepVisible = () => setPosition((current) => current
+      ? constrainPosition(current.left, current.top) : current);
+    keepVisible();
+    window.addEventListener('resize', keepVisible);
+    return () => window.removeEventListener('resize', keepVisible);
+  }, [running, screenSharing, constrainPosition]);
+
+  const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    const bounds = controlsRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY, left: bounds.left, top: bounds.top };
+    setPosition(constrainPosition(bounds.left, bounds.top));
+    setDragging(true);
+  };
+
+  const moveDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.id !== event.pointerId) return;
+    setPosition(constrainPosition(drag.left + event.clientX - drag.x, drag.top + event.clientY - drag.y));
+  };
+
+  const endDrag = () => {
+    dragRef.current = null;
+    setDragging(false);
+  };
+
+  return (
+    <>
+      {running || orbMounted
         ? createPortal(
             <div
-              className={`task-full-duplex-orb${running ? '' : ' is-leaving'}`}
+              ref={controlsRef}
+              className={`task-full-duplex-orb${dragging ? ' is-dragging' : ''}${running ? '' : ' is-leaving'}`}
+              style={position ? { ...position, bottom: 'auto', transform: 'none' } : undefined}
               data-testid="chat-panel-duplex-controls"
-              data-variant={orbVariant}
+              data-variant={state}
             >
+              {screenSharing ? (
+                <div className="task-full-duplex-sharing" role="status" data-testid="chat-panel-duplex-sharing-indicator">
+                  <span className="task-full-duplex-sharing__dot" aria-hidden="true" />
+                  <span>{t('chat.duplexControls.sharingVideo')}</span>
+                  <button type="button" onClick={stopTaskDuplexScreenSharing} data-testid="chat-panel-duplex-close-sharing">
+                    {t('common.close')}
+                  </button>
+                </div>
+              ) : null}
               <div
+                className="task-full-duplex-orb__handle"
+                onPointerDown={startDrag}
+                onPointerMove={moveDrag}
+                onPointerUp={endDrag}
+                onPointerCancel={endDrag}
+                onLostPointerCapture={endDrag}
                 role="status"
                 aria-label={t(
-                  orbVariant === 'starting' ? 'chat.duplexControls.connecting' : 'chat.duplexControls.listening',
+                  state === 'starting' ? 'chat.duplexControls.connecting' : 'chat.duplexControls.listening',
                 )}
                 data-testid="chat-panel-duplex-orb"
               >
@@ -239,38 +311,9 @@ export function TaskFullDuplexAction({
                 ) : null}
               </div>
             </div>,
-            orbHost,
+            document.body,
           )
         : null}
-      {showAction && !hasTextDraft ? (
-        <button
-          type="button"
-          onClick={() => void handleClick()}
-          disabled={!sessionId}
-          className={`chat-input-btn chat-input-btn--send task-full-duplex-action is-${state}`}
-          title={title}
-          aria-label={title}
-          aria-pressed={state === 'active'}
-          data-testid="chat-panel-input-full-duplex"
-        >
-          {state === 'starting' ? (
-            <LoaderCircle className="chat-input-btn-icon task-full-duplex-action__spinner" aria-hidden />
-          ) : state === 'active' ? (
-            <X className="chat-input-btn-icon" aria-hidden />
-          ) : (
-            <svg className="chat-input-btn-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-              <path
-                d="M10 2.5v15M13.75 6.25v7.5M6.25 6.25v7.5M17.5 8.75v2.5M2.5 8.75v2.5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-            </svg>
-          )}
-        </button>
-      ) : (
-        fallback
-      )}
     </>
   );
 }

@@ -676,6 +676,99 @@ async def test_video_config_selects_qwen_gateway_without_reference_audio(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["qwen_omni", "joyai"])
+async def test_realtime_context_restore_requires_conversation_ownership(monkeypatch, provider):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.extensions.video_duplex.backend import realtime_context
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
+
+    monkeypatch.setenv("VIDEO_LIVE_MODE", "joyai" if provider == "joyai" else "realtime")
+    monkeypatch.setenv("JOYAI_API_BASE", "https://example.test/v1")
+    monkeypatch.setenv("JOYAI_MODEL_NAME", "joyai-test")
+    monkeypatch.setenv("QWEN_OMNI_REALTIME_URL", "wss://example.test/realtime")
+    monkeypatch.setenv("QWEN_OMNI_API_KEY", "test-secret")
+    monkeypatch.setenv("QWEN_OMNI_MODEL_NAME", "qwen-test")
+    prepare = AsyncMock(return_value={"session_id": "chat-a", "memory": []})
+    monkeypatch.setattr(realtime_context, "prepare_context", prepare)
+    authorize = AsyncMock(side_effect=ValueError("Conversation is unavailable to this user"))
+    monkeypatch.setattr(VideoSearchManager, "authorized_scope", authorize)
+    channel = _video_channel()
+    ws = object()
+    await channel.handlers["video.realtime.config"](
+        ws, "config-denied", {"search_session_id": "task-duplex:chat-a"}, "transport",
+    )
+    assert channel.responses[-1][1]["ok"] is False
+    prepare.assert_not_awaited()
+    authorize.side_effect = None
+    authorize.return_value = ("alice", "task-duplex:chat-a")
+    await channel.handlers["video.realtime.config"](
+        ws, "config-allowed", {"search_session_id": "task-duplex:chat-a"}, "transport",
+    )
+    envelope = channel.responses[-1][1]["payload"]["context_restore"]
+    assert json.loads(envelope["instructions"].rsplit("\n", 1)[1])["session_id"] == "chat-a"
+    assert envelope["token"]
+    assert "Do not acknowledge this background" in envelope["instructions"]
+    assert prepare.await_args.args[:2] == ("chat-a", "alice")
+
+
+@pytest.mark.asyncio
+async def test_joyai_restores_history_on_user_turns_with_fresh_task_state(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+    from jiuwenswarm.extensions.video_duplex.backend import realtime_context
+
+    monkeypatch.setenv("VIDEO_LIVE_MODE", "joyai")
+    monkeypatch.setenv("JOYAI_API_BASE", "https://example.test/v1")
+    monkeypatch.setenv("JOYAI_MODEL_NAME", "joyai-test")
+    prepared = {"session_id": "chat-a", "schema_version": 1,
+                "memory": [{"role": "user", "text": "My project codename is Cedar"}],
+                "recent_turns": [], "tasks": {"jobs": [{"job_id": "stale-snapshot"}]}}
+    prepare = AsyncMock(return_value=prepared)
+    monkeypatch.setattr(realtime_context, "prepare_context", prepare)
+    provider = AsyncMock(return_value=_joyai_result("silence", raw_content="</silence>"))
+    monkeypatch.setattr(joyai_provider, "request_frame", provider)
+    monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
+    channel = _video_channel()
+    manager = channel.manager
+    manager.authorized_scope = AsyncMock(return_value=("alice", "task-duplex:chat-a"))
+    manager.snapshot = Mock(return_value={"queue_version": 1, "jobs": [{"job_id": "current-job", "status": "running"}]})
+    ws = object()
+    await channel.handlers["video.realtime.config"](
+        ws, "restore-config", {"search_session_id": "task-duplex:chat-a"}, "transport",
+    )
+    token = channel.responses[-1][1]["payload"]["context_restore"]["token"]
+    provider.assert_not_called()
+    request = {"frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "What is my project codename?",
+               "question": "What is my project codename?", "request_kind": "user",
+               "search_session_id": "task-duplex:chat-a", "joyai_session_id": "media-a", "restore_token": token}
+    await channel.handlers["video.joyai.frame"](ws, "question-1", request, "transport")
+    assert channel.responses[-1][1]["ok"] is True
+    prompt = provider.await_args.args[1]
+    assert "My project codename is Cedar" in prompt
+    assert "Do not acknowledge this background" in prompt
+    assert '"status": "running"' in prompt and "stale-snapshot" not in prompt
+    manager.snapshot.return_value = {"queue_version": 2, "jobs": [{"job_id": "current-job", "status": "completed"}]}
+    await channel.handlers["video.joyai.frame"](ws, "question-2", request, "transport")
+    assert '"status": "completed"' in provider.await_args.args[1]
+    assert prepare.await_count == 1
+    assert prepared["tasks"]["jobs"][0]["job_id"] == "stale-snapshot", "per-turn refresh must not mutate cached history"
+    assert channel.events == [], "restoring context must not delegate a historical task"
+    calls = provider.await_count
+    for owner, scope in [("alice", "task-duplex:other"), ("bob", "task-duplex:chat-a")]:
+        manager.authorized_scope.return_value = (owner, scope)
+        await channel.handlers["video.joyai.frame"](ws, "wrong-scope", request, "transport")
+        assert channel.responses[-1][1]["ok"] is False
+        assert provider.await_count == calls
+    manager.authorized_scope.return_value = ("alice", "task-duplex:chat-a")
+    await channel.handlers["video.joyai.frame"](ws, "frame-with-token", {**request, "instruction": "", "request_kind": "frame"}, "transport")
+    assert channel.responses[-1][1]["ok"] is False
+    assert provider.await_count == calls
+    await channel.handlers["video.joyai.frame"](ws, "normal-frame", {
+        "frame_data_url": request["frame_data_url"], "request_kind": "frame", "joyai_session_id": "media-a",
+    }, "transport")
+    assert provider.await_args.args[1] == ""
+
+
+@pytest.mark.asyncio
 async def test_qwen_tool_rpc_delegates_original_instruction_to_core_agent(
     monkeypatch,
 ) -> None:

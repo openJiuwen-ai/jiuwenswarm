@@ -1,3 +1,4 @@
+import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import {
   applyMultiModelCollaborationSnapshot,
@@ -4126,6 +4127,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       data-testid="app-shell"
       data-session-id={sessionId}
     >
+      <ApplicationConversationRuntimes sessionId={sessionId} />
       {/* Navigation Sidebar */}
       <SessionSidebar
         activeNav={activeNav}

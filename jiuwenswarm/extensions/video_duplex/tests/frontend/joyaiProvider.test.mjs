@@ -46,6 +46,34 @@ test('long user instructions and their final constraints reach the RPC intact', 
   assert.equal(calls[0][1].question, instruction);
 });
 
+test('JoyAI attaches restored context only to actual user turns and clears it on stop', async (t) => {
+  const calls = [];
+  globalThis.joyaiTestRequest = async (method, params) => {
+    calls.push({ method, params });
+    return { response: '', search_job: null };
+  };
+  t.after(() => { delete globalThis.joyaiTestRequest; });
+  const provider = new JoyAIProvider({
+    getSearchSessionId: () => 'task-duplex:chat-a', rememberSearchJob() {}, report() {},
+  });
+  provider.sessionId = 'media-a';
+  provider.restoreToken = 'restore-a';
+  assert.deepEqual(calls, [], 'restoring memory must not synthesize a user request');
+  await provider.requestFrame('', '', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[0].params.request_kind, 'frame');
+  assert.equal(calls[0].params.restore_token, undefined);
+  await provider.requestFrame('What is my project codename?', 'What is my project codename?', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[1].params.restore_token, 'restore-a');
+  assert.equal(calls[1].params.search_session_id, 'task-duplex:chat-a');
+  await provider.requestFrame('What about its task?', 'What about its task?', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[2].params.restore_token, 'restore-a', 'each user turn receives fresh task state from the backend');
+  provider.stop();
+  assert.equal(provider.restoreToken, '');
+  provider.sessionId = 'media-b';
+  await provider.requestFrame('Hello', 'Hello', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[3].params.restore_token, undefined, 'a new media session must not reuse the old restore token');
+});
+
 function setup() {
   const speech = [];
   const provider = new JoyAIProvider({
