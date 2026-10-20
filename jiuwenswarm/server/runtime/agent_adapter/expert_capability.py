@@ -122,7 +122,6 @@ class ExpertCapabilityMixin:
                 await self._purge_expert_skill_mounts(expert_skill_dirs)
                 self._expert_load_record = None
                 self._current_expert_id = None
-                setattr(self._instance, "_jiuwen_active_expert", False)
             warnings: list[str] = []
             if expert_id is not None:  # 2) 再装
                 try:
@@ -132,7 +131,6 @@ class ExpertCapabilityMixin:
                     record = await self._instance.load_agent_template(str(package_dir))
                     self._expert_load_record = record
                     self._current_expert_id = expert_id
-                    setattr(self._instance, "_jiuwen_active_expert", True)
                 except Exception as exc:
                     # 装载失败 = 回滚为无专家；提示同步更正，避免残留「当前专家：旧专家」
                     logger.warning(
@@ -142,11 +140,8 @@ class ExpertCapabilityMixin:
                     )
                     if notify:
                         self._refresh_expert_switch_notice(previous_expert_id, None)
-                    setattr(self._instance, "_jiuwen_active_expert", False)
                     await self._sync_expert_identity_attachment()
                     raise
-            else:
-                setattr(self._instance, "_jiuwen_active_expert", False)
             if notify:
                 self._refresh_expert_switch_notice(previous_expert_id, self._current_expert_id)
             await self._sync_expert_identity_attachment()
