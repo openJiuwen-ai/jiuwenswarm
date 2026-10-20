@@ -1100,16 +1100,22 @@ export const ChatPanel = React.memo(function ChatPanel({
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
-  const [pickedGroupIdentity, setTeamGroupIdentity] = useState<AgentGroupIdentity | null>(null);
+  const storedTeamGroupIdentity = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.teamGroupIdentity ?? null,
+  );
+  const setTeamGroupIdentity = useSessionStore((s) => s.setTeamGroupIdentity);
+  const handleTeamGroupIdentityChange = useCallback(
+    (identity: AgentGroupIdentity | null) => {
+      if (activeSessionId) setTeamGroupIdentity(activeSessionId, identity);
+    },
+    [activeSessionId, setTeamGroupIdentity],
+  );
   // 输入框的专家团列表是异步的，切会话后到达前 Leader 头像会退成首字母；已绑定的会话
   // 直接用缓存的专家团身份兜底，列表到了再以它为准。
   const boundGroupId = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.agentGroupBinding ?? null);
   const boundGroupIdentity = useAgentGroupVisualIdentity(boundGroupId)?.identity ?? null;
-  const teamGroupIdentity = pickedGroupIdentity ?? boundGroupIdentity;
+  const teamGroupIdentity = storedTeamGroupIdentity ?? boundGroupIdentity;
   const [agentGroupDeletedNoticeOpen, setAgentGroupDeletedNoticeOpen] = useState(false);
-  useEffect(() => {
-    setTeamGroupIdentity(null);
-  }, [activeSessionId]);
   useEffect(() => {
     setAgentGroupDeletedNoticeOpen(agentGroupUnavailable);
   }, [agentGroupUnavailable, activeSessionId]);
@@ -2093,7 +2099,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   autoFocusKey={autoFocusKey}
                   onNavigateToSkills={onNavigateToSkills}
                   onNavigateToAgents={onNavigateToAgents}
-                  onAgentGroupIdentityChange={setTeamGroupIdentity}
+                  onAgentGroupIdentityChange={handleTeamGroupIdentityChange}
                   permissionProfile={permissionProfile}
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
@@ -2168,7 +2174,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             autoFocusKey={autoFocusKey}
             onNavigateToSkills={onNavigateToSkills}
             onNavigateToAgents={onNavigateToAgents}
-            onAgentGroupIdentityChange={setTeamGroupIdentity}
+            onAgentGroupIdentityChange={handleTeamGroupIdentityChange}
             permissionProfile={permissionProfile}
             onSavePermission={onSavePermission}
             onSetGoal={onSetGoal}

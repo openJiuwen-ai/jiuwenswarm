@@ -142,6 +142,7 @@ import {
 } from '../features/agentManagement/port';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
 import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
 
@@ -1468,6 +1469,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           sessionId,
           Object.prototype.hasOwnProperty.call(session, 'team_leader_identity')
             ? normalizeTeamLeaderIdentity(session.team_leader_identity)
+            : null,
+        );
+        useSessionStore.getState().setTeamGroupIdentity(
+          sessionId,
+          Object.prototype.hasOwnProperty.call(session, 'team_group_identity')
+            ? normalizeTeamGroupIdentity(session.team_group_identity)
             : null,
         );
         useSessionStore.getState().setAgentGroupBinding(sessionId, groupId);

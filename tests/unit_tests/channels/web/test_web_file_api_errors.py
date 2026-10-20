@@ -264,3 +264,96 @@ def test_harness_does_not_shadow_base_response_table() -> None:
     assert isinstance(handler.responses, dict)
     assert handler.responses is _SpaStaticHandler.responses
     assert handler.sent_responses == []
+
+
+def test_file_api_post_cross_site_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sec-Fetch-Site: cross-site must not reach mutating /file-api handlers."""
+    monkeypatch.setattr(app_web, "_uses_agentos_routing", lambda: False)
+    called = {"create": False}
+
+    def _boom(self) -> None:  # noqa: ANN001
+        called["create"] = True
+        raise AssertionError("create-from-knowledge must not run for cross-site")
+
+    monkeypatch.setattr(
+        _SpaStaticHandler,
+        "_handle_skills_create_from_knowledge",
+        _boom,
+    )
+    handler = _make_handler(
+        tmp_path,
+        "/file-api/skills/create-from-knowledge",
+        command="POST",
+        headers={"Sec-Fetch-Site": "cross-site", "Content-Length": "2"},
+        body=b"{}",
+    )
+    from urllib.parse import urlparse
+
+    handler._handle_file_api_post(urlparse(handler.path))
+    status, payload = _last(handler)
+    assert status == 403
+    assert payload == {"error": "forbidden_origin"}
+    assert called["create"] is False
+
+
+def test_file_api_post_same_origin_not_blocked_by_fetch_site(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """same-origin Sec-Fetch-Site must still reach the route handler."""
+    monkeypatch.setattr(app_web, "_uses_agentos_routing", lambda: False)
+    called = {"n": 0}
+
+    def _ok(self) -> None:  # noqa: ANN001
+        called["n"] += 1
+        self._write_json(200, {"ok": True})
+
+    monkeypatch.setattr(
+        _SpaStaticHandler,
+        "_handle_skills_create_from_knowledge",
+        _ok,
+    )
+    handler = _make_handler(
+        tmp_path,
+        "/file-api/skills/create-from-knowledge",
+        command="POST",
+        headers={"Sec-Fetch-Site": "same-origin", "Content-Length": "2"},
+        body=b"{}",
+    )
+    from urllib.parse import urlparse
+
+    handler._handle_file_api_post(urlparse(handler.path))
+    status, payload = _last(handler)
+    assert status == 200
+    assert payload == {"ok": True}
+    assert called["n"] == 1
+
+
+def test_file_api_post_missing_fetch_site_still_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-browser clients omit Sec-Fetch-Site; keep existing behavior."""
+    monkeypatch.setattr(app_web, "_uses_agentos_routing", lambda: False)
+    called = {"n": 0}
+
+    def _ok(self) -> None:  # noqa: ANN001
+        called["n"] += 1
+        self._write_json(200, {"ok": True})
+
+    monkeypatch.setattr(
+        _SpaStaticHandler,
+        "_handle_skills_create_from_knowledge",
+        _ok,
+    )
+    handler = _make_handler(
+        tmp_path,
+        "/file-api/skills/create-from-knowledge",
+        command="POST",
+        headers={"Content-Length": "2"},
+        body=b"{}",
+    )
+    from urllib.parse import urlparse
+
+    handler._handle_file_api_post(urlparse(handler.path))
+    status, payload = _last(handler)
+    assert status == 200
+    assert called["n"] == 1

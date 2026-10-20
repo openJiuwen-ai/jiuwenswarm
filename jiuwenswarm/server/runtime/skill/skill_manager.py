@@ -434,6 +434,28 @@ def _get_state_file() -> "Path":
     return get_state_file()
 
 
+def _knowledge_skill_language() -> str:
+    """Return ``"en"`` or ``"zh"`` for Knowledge-to-Skill prompts and errors.
+
+    Follows the top-level ``preferred_language`` in config.yaml; anything that
+    is not English (or an unreadable config) keeps the historical Chinese text.
+    """
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        config = get_config() or {}
+    except Exception:  # noqa: BLE001 - language lookup must never break the flow
+        return "zh"
+    raw = config.get("preferred_language") if isinstance(config, dict) else None
+    return "en" if str(raw or "").strip().lower().startswith("en") else "zh"
+
+
+_KNOWLEDGE_SKILL_MISSING_SKILL_MD = {
+    "zh": "未在输出目录找到有效 Skill（缺少 SKILL.md）",
+    "en": "No valid Skill was found in the output directory (SKILL.md is missing)",
+}
+
+
 from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
     get_registered_skill_names,
     get_skill_enabled,
@@ -5083,6 +5105,15 @@ class SkillManager:
             prompt_parts.append(f"知识来源链接: {link}")
         else:
             prompt_parts.append(f"知识来源本地文档绝对路径: {file_path}")
+        if _knowledge_skill_language() == "en":
+            prompt_parts = self._knowledge_skill_prompt_parts_en(
+                output_dir=output_dir,
+                occupied=occupied,
+                preferred_name=preferred_name,
+                skill_description=skill_description,
+                link=link if has_link else "",
+                file_path=file_path if has_file else "",
+            )
 
         return {
             "success": True,
@@ -5097,6 +5128,58 @@ class SkillManager:
             "trusted_dirs": [str(output_dir)]
             + ([str(Path(file_path).parent)] if has_file else []),
         }
+
+    @staticmethod
+    def _knowledge_skill_prompt_parts_en(
+        *,
+        output_dir: Path,
+        occupied: set[str],
+        preferred_name: str,
+        skill_description: str,
+        link: str,
+        file_path: str,
+    ) -> list[str]:
+        """English counterpart of the Knowledge-to-Skill follow-up prompt."""
+        parts = [
+            "Generate a complete, installable Skill from the knowledge source below "
+            "and write it into the specified output directory.",
+            "Output directory (the Skill root containing SKILL.md must be created "
+            f"inside this directory): {output_dir}",
+            "Requirements:",
+            "1. SKILL.md must contain valid YAML front matter whose name and "
+            "description are both non-empty strings;",
+            "2. Do not create a root-level .archive/;",
+            "3. Do not call send_file_to_user; do not package or deliver anything to the user;",
+            "4. The final Skill root may only be written inside the output directory above; "
+            "never write to workspace/skills/<name> (the system installs it afterwards);",
+            "5. skill-omni-creation may only use scripts/work/<slug>/ as an intermediate "
+            "cache and must not copy the result into workspace/skills afterwards;",
+            "6. If the source is a document/example page that needs no executable scripts, "
+            "skip code-writer/code-verifier and write SKILL.md directly (references are "
+            "allowed) to save time;",
+            "7. After generation, make sure the Skill root can be located unambiguously "
+            "inside the output directory.",
+            "8. The Skill name must not duplicate an installed name; on conflict, pick an "
+            "unused name automatically (a suffix is fine).",
+        ]
+        if occupied:
+            preview = ", ".join(sorted(occupied)[:80])
+            more = "…" if len(occupied) > 80 else ""
+            parts.append(f"Installed Skill names (do not reuse): {preview}{more}")
+        if preferred_name:
+            parts.append(
+                f"Skill name requested by the user (must be used if not taken): {preferred_name}"
+            )
+        if skill_description:
+            parts.append(
+                "Additional user constraints for the target Skill (do not use them "
+                f"directly as the Skill name): {skill_description}"
+            )
+        if link:
+            parts.append(f"Knowledge source link: {link}")
+        else:
+            parts.append(f"Absolute path of the local knowledge document: {file_path}")
+        return parts
 
     @property
     def skills_dir(self) -> Path:
@@ -5212,7 +5295,7 @@ class SkillManager:
         if skill_dir is None:
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_PACKAGE,
-                "未在输出目录找到有效 Skill（缺少 SKILL.md）",
+                _KNOWLEDGE_SKILL_MISSING_SKILL_MD[_knowledge_skill_language()],
             )
 
         meta = self._assert_skill_package_safe(skill_dir)

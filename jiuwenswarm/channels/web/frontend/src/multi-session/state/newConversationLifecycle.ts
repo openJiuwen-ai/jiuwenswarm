@@ -74,6 +74,7 @@ export function resetNewConversationRuntime(settings: ConversationRuntimeSetting
     previousRuntime?.agentSelectionIntent.kind === 'select' ? previousRuntime.agentSelectionIntent : null;
   const preservedAgentGroupSelection =
     previousRuntime?.agentGroupSelectionIntent.kind === 'select' ? previousRuntime.agentGroupSelectionIntent : null;
+  const preservedTeamGroupIdentity = previousRuntime?.teamGroupIdentity ?? null;
   useChatStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   useTodoStore.getState().removeRuntime(NEW_CONVERSATION_ID);
@@ -86,6 +87,9 @@ export function resetNewConversationRuntime(settings: ConversationRuntimeSetting
   }
   if (preservedAgentGroupSelection) {
     useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, preservedAgentGroupSelection);
+  }
+  if (preservedTeamGroupIdentity) {
+    useSessionStore.getState().setTeamGroupIdentity(NEW_CONVERSATION_ID, preservedTeamGroupIdentity);
   }
   if (preservedDraft) {
     useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, preservedDraft);

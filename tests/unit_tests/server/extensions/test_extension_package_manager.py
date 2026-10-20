@@ -29,6 +29,30 @@ from tests.unit_tests.server.extensions.conftest import (
 _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
 
 
+def test_normalize_agent_group_display_identity_preserves_binding_and_asset_id():
+    identity = catalog.normalize_agent_group_display_identity(
+        {
+            "id": "hub-asset-123",
+            "name": "group-a",
+            "display_name": {"zh": "中文专家团", "en": "Expert Team"},
+            "avatar": "https://example.test/group.png",
+        },
+        binding_name="group-a",
+    )
+
+    assert identity == {
+        "id": "hub-asset-123",
+        "name": "group-a",
+        "display_name": "中文专家团",
+        "display_name_i18n": {"zh": "中文专家团", "en": "Expert Team"},
+        "avatar": "https://example.test/group.png",
+    }
+    assert catalog.normalize_agent_group_display_identity(
+        {"id": "hub-asset-123", "name": "other", "display_name": "Other"},
+        binding_name="group-a",
+    ) is None
+
+
 def test_packaged_agent_group_resources_exclude_sample_group():
     resources = catalog.get_equipment_resources_agent_groups_dir()
 
