@@ -48,7 +48,9 @@ def _legacy_for_capability(capability: str, group_id: str) -> str:
         "personal-styling",
     }:
         return "seedream-image-gen-win"
-    return MAPPING["capability_replacements"][capability]["legacy_skill_ids"][0]
+    spec = MAPPING["capability_replacements"][capability]
+    legacy_skill_ids = spec.get("legacy_skill_ids", [])
+    return legacy_skill_ids[0] if legacy_skill_ids else spec["portable_skill_id"]
 
 
 def _write_converted_fixture(parent: Path, group_id: str) -> Path:
@@ -207,33 +209,43 @@ def test_all_ten_group_fixtures_adapt_and_are_idempotent(
     assert second["changed"] is False
     assert _tree_digest(root) == first_digest
     assert adapter.check_package(root, validate_runtime=False)["status"] == "ok"
-
-
-def test_platform_specific_commands_and_paths_are_normalized(tmp_path: Path) -> None:
-    root = _write_converted_fixture(tmp_path, "healthy-habit-companion")
-    skill = root / "agents" / "leader" / "skills" / "autonomous-tasks" / "SKILL.md"
-    _write_skill(
-        skill.parent,
-        "autonomous-tasks",
-        'openclaw cron add --name "autonomous-tasks" '
-        '--message "run autonomous tasks" --every 1h\n'
-        "/home/sirius/.openclaw/skills/natural-language-planner\n"
-        "不得继承小艺侧模型路由\n"
-        "Call mcp_free_search, then mcp_fetch_webpage.",
+    root_manifest = json.loads(
+        (root / "manifest.json").read_text(encoding="utf-8")
     )
+    assert root_manifest["team_mode"] == "predefined"
+    member_instruction = root_manifest["member_instruction"]
+    assert member_instruction.count(adapter.MEMBER_INSTRUCTION_MARKER) == 1
+    assert member_instruction.count(adapter.MEMBER_INSTRUCTION_END_MARKER) == 1
+    assert adapter.MEMBER_INSTRUCTION_BODY in member_instruction
+
+
+def test_claw_only_health_skills_are_replaced_not_text_patched(tmp_path: Path) -> None:
+    root = _write_converted_fixture(tmp_path, "healthy-habit-companion")
 
     adapter.adapt_package(root, validate_runtime=False)
 
-    text = skill.read_text(encoding="utf-8")
-    assert "openclaw cron add" not in text
-    assert "/.openclaw/skills/" not in text
-    assert "cron_create_job" in text
-    assert "<SKILL_INSTALL_DIR>/natural-language-planner" in text
-    assert "小艺侧模型路由" not in text
-    assert "原平台侧模型路由" in text
-    assert "mcp_free_search" not in text
-    assert "mcp_fetch_webpage" not in text
-    assert "Call free_search, then fetch_webpage." in text
+    habit_manifest = json.loads(
+        (root / "agents" / "habit-coach" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    habit_skills = {adapter._skill_name(item) for item in habit_manifest["skills"]}
+    assert "habit-checkin-page" in habit_skills
+    assert "workswarm-single-html-delivery" in habit_skills
+    assert "habit-flow-skill" not in habit_skills
+    assert "autonomous-tasks" not in habit_skills
+    assert not (root / "agents" / "habit-coach" / "skills" / "autonomous-tasks").exists()
+
+    lifestyle_manifest = json.loads(
+        (root / "agents" / "lifestyle-guide" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    lifestyle_skills = {
+        adapter._skill_name(item) for item in lifestyle_manifest["skills"]
+    }
+    assert "workday-health-plan" in lifestyle_skills
+    assert "fasting-tracker" not in lifestyle_skills
 
 
 @pytest.mark.parametrize(
@@ -268,6 +280,182 @@ def test_direct_member_bindings_use_portable_skills(
         assert (
             root / "agents" / member_id / "skills" / skill_id / "SKILL.md"
         ).is_file()
+
+    persona_text = (
+        root / "agents" / member_id / "persona" / "ROLE.md"
+    ).read_text(encoding="utf-8")
+    member_spec = next(
+        member
+        for member in MAPPING["inventory"]["direct_skill_binding_members"]
+        if member["group_id"] == group_id and member["member_id"] == member_id
+    )
+    for capability in member_spec["capabilities"]:
+        spec = MAPPING["capability_replacements"][capability]
+        skill_id = spec["portable_skill_id"]
+        assert f'skill_tool(skill_name="{skill_id}")' in persona_text
+        assert "`blocked` 或 `partial`" in persona_text
+        assert "禁止绕过 Skill 直接生成最终内容" in persona_text
+        for tool_name in spec["native_tools"]:
+            assert f"`{tool_name}`" in persona_text
+
+
+def test_check_rejects_member_without_mandatory_skill_execution_contract(
+    tmp_path: Path,
+) -> None:
+    root = _write_converted_fixture(tmp_path, "home-storage-makeover")
+    adapter.adapt_package(root, validate_runtime=False)
+    persona_path = (
+        root
+        / "agents"
+        / "storage-visual-page-designer"
+        / "persona"
+        / "ROLE.md"
+    )
+    persona = persona_path.read_text(encoding="utf-8")
+    marker = "<!-- workswarm-adapter:skill-execution:workswarm-image-generation -->"
+    start = persona.index(marker)
+    next_marker = persona.find("<!-- workswarm-adapter:", start + len(marker))
+    persona_path.write_text(
+        persona[:start] + (persona[next_marker:] if next_marker >= 0 else ""),
+        encoding="utf-8",
+    )
+
+    result = adapter.check_package(root, validate_runtime=False)
+
+    assert result["status"] == "needs_adaptation"
+    assert any(
+        "missing execution contract for workswarm-image-generation" in issue
+        for issue in result["issues"]
+    )
+
+
+def test_every_declared_member_skill_gets_relevance_gated_execution_contract(
+    tmp_path: Path,
+) -> None:
+    root = _write_converted_fixture(tmp_path, "rental-move-decision")
+    member_root = root / "agents" / "budget-analyst"
+    _write_json(
+        member_root / "manifest.json",
+        {
+            "version": "1.0.0",
+            "package_type": "agent_template",
+            "name": "budget-analyst",
+            "description": "budget fixture",
+            "display_name": {"zh": "预算分析师", "en": "Budget analyst"},
+            "display_description": {"zh": "fixture", "en": "fixture"},
+            "persona": {"dir": "persona"},
+            "skills": [
+                {"dir": "skills/excel-analysis", "mode": "all"},
+                {"dir": "skills/natural-language-planner", "mode": "all"},
+            ],
+        },
+    )
+    persona_path = member_root / "persona" / "ROLE.md"
+    persona_path.parent.mkdir(parents=True, exist_ok=True)
+    persona_path.write_text("# Budget analyst\n", encoding="utf-8")
+    for skill_name in ("excel-analysis", "natural-language-planner"):
+        _write_skill(member_root / "skills" / skill_name, skill_name)
+
+    adapter.adapt_package(root, validate_runtime=False)
+
+    persona = persona_path.read_text(encoding="utf-8")
+    assert "<!-- workswarm-adapter:declared-skill-execution -->" in persona
+    assert 'skill_tool(skill_name="excel-analysis")' in persona
+    assert 'skill_tool(skill_name="natural-language-planner")' in persona
+    assert "与当前任务无关的 Skill 不强制调用" in persona
+    assert "不得为了增加调用数量而调用" in persona
+    assert adapter.check_package(root, validate_runtime=False)["status"] == "ok"
+
+
+def test_root_shared_skills_are_in_every_member_execution_contract(
+    tmp_path: Path,
+) -> None:
+    root = _write_converted_fixture(tmp_path, "travel")
+
+    adapter.adapt_package(root, validate_runtime=False)
+
+    for member_id in json.loads(
+        (root / "manifest.json").read_text(encoding="utf-8")
+    )["agents"]:
+        member_manifest = json.loads(
+            (root / "agents" / member_id / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        persona_dir = member_manifest.get("persona", {}).get("dir", "persona")
+        persona_files = sorted((root / "agents" / member_id / persona_dir).glob("*.md"))
+        assert persona_files
+        persona = persona_files[0].read_text(encoding="utf-8")
+        assert 'skill_tool(skill_name="workswarm-web-research")' in persona
+        assert 'skill_tool(skill_name="flyai-travel")' in persona
+        assert 'skill_tool(skill_name="wendao-skill")' in persona
+
+    assert adapter.check_package(root, validate_runtime=False)["status"] == "ok"
+
+
+def test_declared_skill_execution_managed_block_upserts_new_skills(
+    tmp_path: Path,
+) -> None:
+    root = _write_converted_fixture(tmp_path, "family-weekend-trip")
+    adapter.adapt_package(root, validate_runtime=False)
+
+    member_root = root / "agents" / "trip-planner"
+    manifest_path = member_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["skills"].append(
+        {"dir": "skills/newly-added-skill", "mode": "all"}
+    )
+    _write_json(manifest_path, manifest)
+    _write_skill(member_root / "skills" / "newly-added-skill", "newly-added-skill")
+
+    persona_path = member_root / "persona" / "ROLE.md"
+    legacy_persona = persona_path.read_text(encoding="utf-8").replace(
+        adapter.DECLARED_SKILL_EXECUTION_END_MARKER,
+        "",
+    )
+    persona_path.write_text(legacy_persona, encoding="utf-8")
+
+    second = adapter.adapt_package(root, validate_runtime=False)
+    persona = persona_path.read_text(encoding="utf-8")
+    third = adapter.adapt_package(root, validate_runtime=False)
+
+    assert second["changed"] is True
+    assert persona.count(adapter.DECLARED_SKILL_EXECUTION_MARKER) == 1
+    assert persona.count(adapter.DECLARED_SKILL_EXECUTION_END_MARKER) == 1
+    assert 'skill_tool(skill_name="workswarm-single-html-delivery")' in persona
+    assert 'skill_tool(skill_name="newly-added-skill")' in persona
+    assert third["changed"] is False
+    assert adapter.check_package(root, validate_runtime=False)["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "field,value,expected_issue",
+    [
+        ("team_mode", "dynamic", "team_mode must be 'predefined'"),
+        (
+            "member_instruction",
+            "",
+            "member_instruction is missing the managed shared member boundaries",
+        ),
+    ],
+)
+def test_check_rejects_missing_group_runtime_contract(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    expected_issue: str,
+) -> None:
+    root = _write_converted_fixture(tmp_path, "home-storage-makeover")
+    adapter.adapt_package(root, validate_runtime=False)
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[field] = value
+    _write_json(manifest_path, manifest)
+
+    result = adapter.check_package(root, validate_runtime=False)
+
+    assert result["status"] == "needs_adaptation"
+    assert any(expected_issue in issue for issue in result["issues"])
 
 
 def test_dry_run_and_check_do_not_mutate_source(tmp_path: Path) -> None:
@@ -376,4 +564,17 @@ def test_unknown_group_is_rejected(tmp_path: Path) -> None:
     )
 
     with pytest.raises(adapter.AdaptationError, match="not covered by mapping"):
+        adapter.adapt_package(root, validate_runtime=False)
+
+
+def test_mapping_member_typo_or_source_drift_is_not_silently_skipped(
+    tmp_path: Path,
+) -> None:
+    root = _write_converted_fixture(tmp_path, "family-weekend-trip")
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["agents"].remove("visual-generator")
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(adapter.AdaptationError, match="visual-generator"):
         adapter.adapt_package(root, validate_runtime=False)

@@ -17,4 +17,14 @@ Use this Skill only when current external facts can materially change the answer
    replace missing evidence with model memory or invent current prices, policies,
    availability, schedules, weather, or safety facts.
 
+## Search budget and stopping rules
+
+- For each research question, retain at most 3 effective authoritative sources.
+- Stop once 2 independent authoritative sources corroborate the conclusion; do not
+  keep fetching equivalent evidence.
+- After 3 consecutive `fetch_webpage` failures, stop fetching for that question and
+  mark the unsupported item as `待核实` in the result.
+- Do not expand the search beyond these limits unless the user explicitly asks for
+  deep or exhaustive research.
+
 Do not start a browser sub-agent or invoke a platform-specific search script.

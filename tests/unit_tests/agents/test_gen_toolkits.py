@@ -87,6 +87,19 @@ def _ark_error(code: str, message: str = "msg", status: int = 404) -> httpx.Resp
     return httpx.Response(status, json={"error": {"code": code, "message": message}})
 
 
+def test_image_success_result_uses_one_saved_line_per_path():
+    paths = ["/tmp/output, with comma/one.png", "/tmp/output, with comma/two.webp"]
+
+    result = gt._image_success_result(paths)
+
+    assert result.splitlines() == [
+        "Image generated successfully!",
+        f"Saved to: {paths[0]}",
+        f"Saved to: {paths[1]}",
+        f"Saved paths JSON: {json.dumps(paths)}",
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Backend detection and dispatch
 # --------------------------------------------------------------------------- #

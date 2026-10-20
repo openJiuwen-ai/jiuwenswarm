@@ -43,19 +43,12 @@ PLATFORM_TEXT_REPLACEMENTS = {
         "确认、任务轮询或文件交付正文。"
     ): (
         "`workswarm-image-generation` 与 `workswarm-video-generation` 是本次迁移"
-        "生成的 portable Skills，分别绑定 WorkSwarm 的 `generate_image` 与 "
+        "生成的 portable Skills，分别绑定 WorkSwarm 的 `generate_visual` 与 "
         "`generate_video` / `check_video_status` 原生工具。不得继承原平台侧模型路由、"
         "积分或凭据约定；确认、轮询和文件交付遵循当前 WorkSwarm 契约。"
     ),
 }
 PORTABILITY_TEXT_REPLACEMENTS = {
-    (
-        'openclaw cron add --name "autonomous-tasks" '
-        '--message "run autonomous tasks" --every 1h'
-    ): (
-        "在 WorkSwarm 中通过内置定时任务能力创建提醒；调用运行时提供的 "
-        "`cron_create_job`（或等价 `cron` add 操作），参数以当前工具 schema 为准"
-    ),
     "/home/sirius/.openclaw/skills/natural-language-planner": (
         "<SKILL_INSTALL_DIR>/natural-language-planner"
     ),
@@ -80,6 +73,29 @@ LEADER_HTML_DELIVERY = (
     "主理人必须先使用 `write_file` 将完整、自包含的 HTML 写入真实 .html "
     "文件并确认文件存在，再以该文件的绝对路径调用 `send_file_to_user`；"
     "不得把内存字符串或临时测试文件当作最终交付。"
+)
+PREDEFINED_TEAM_MODE = "predefined"
+DECLARED_SKILL_EXECUTION_MARKER = (
+    "<!-- workswarm-adapter:declared-skill-execution -->"
+)
+DECLARED_SKILL_EXECUTION_END_MARKER = (
+    "<!-- /workswarm-adapter:declared-skill-execution -->"
+)
+MEMBER_INSTRUCTION_MARKER = "<!-- workswarm-adapter:member-instruction -->"
+MEMBER_INSTRUCTION_END_MARKER = (
+    "<!-- /workswarm-adapter:member-instruction -->"
+)
+MEMBER_INSTRUCTION_BODY = (
+    "所有成员共享以下执行边界：\n"
+    "1. 只把用户输入、用户提供的文件和工具真实返回作为事实依据；"
+    "不得虚构实时数据、引用、价格、路线、图片或工具调用。\n"
+    "2. 所需 Skill、工具或证据不可用时，明确返回 `blocked`、`partial` 或"
+    "「待核实」；不得用模型记忆、手写 SVG 或网页截图冒充应由工具查询或生成的"
+    "真实结果。\n"
+    "3. 只访问当前任务所需的数据和文件，不得读取、泄露或复用其他会话、用户或"
+    "专家团的私有内容。\n"
+    "4. 非主理人成员只向主理人提交内部结果和产物路径；由主理人核验事实、"
+    "约束与最终文件后统一交付用户。"
 )
 
 
@@ -270,8 +286,24 @@ def _member_capabilities(
     inventory = mapping.get("inventory", {})
     for member in inventory.get("direct_skill_binding_members", []):
         if member.get("group_id") == group_id:
-            assignments[str(member["member_id"])] = list(member["capabilities"])
+            member_id = str(member["member_id"])
+            existing = assignments.setdefault(member_id, [])
+            for capability in member["capabilities"]:
+                if capability not in existing:
+                    existing.append(capability)
     return assignments
+
+
+def _declared_agent_names(manifest: dict[str, Any]) -> set[str]:
+    """Return the canonical member roster declared by an AgentGroup manifest."""
+
+    raw_agents = manifest.get("agents", [])
+    if not isinstance(raw_agents, list) or not all(
+        isinstance(agent_name, str) and agent_name.strip()
+        for agent_name in raw_agents
+    ):
+        raise AdaptationError("AgentGroup agents must be a list of non-empty strings")
+    return {agent_name.strip() for agent_name in raw_agents}
 
 
 def _root_capabilities(mapping: dict[str, Any], group_id: str) -> list[str]:
@@ -292,6 +324,27 @@ def _root_capabilities(mapping: dict[str, Any], group_id: str) -> list[str]:
     return capabilities
 
 
+def _member_persona_document(
+    member_root: Path,
+    manifest: dict[str, Any],
+    *,
+    label: str,
+) -> Path:
+    persona = manifest.get("persona")
+    if not isinstance(persona, dict) or not isinstance(persona.get("dir"), str):
+        raise AdaptationError(f"member persona directory is missing: {label}")
+    persona_root = _safe_path(member_root, persona["dir"])
+    preferred = persona_root / "ROLE.md"
+    if preferred.is_file():
+        return preferred
+    candidates = sorted(path for path in persona_root.glob("*.md") if path.is_file())
+    if len(candidates) != 1:
+        raise AdaptationError(
+            f"member persona document is ambiguous or missing: {label}"
+        )
+    return candidates[0]
+
+
 def _ensure_member_skills(
     root: Path,
     tracker: ChangeTracker,
@@ -300,7 +353,19 @@ def _ensure_member_skills(
     replacements: dict[str, str],
 ) -> None:
     specs = _capability_specs(mapping)
-    for member_id, capabilities in _member_capabilities(mapping, group_id).items():
+    group_manifest = _read_json(
+        root / "manifest.json",
+        label=f"AgentGroup manifest {group_id}",
+    )
+    declared_agents = _declared_agent_names(group_manifest)
+    member_capabilities = _member_capabilities(mapping, group_id)
+    missing_members = sorted(set(member_capabilities) - declared_agents)
+    if missing_members:
+        raise AdaptationError(
+            f"mapped members are missing from AgentGroup {group_id}: "
+            f"{', '.join(missing_members)}"
+        )
+    for member_id, capabilities in member_capabilities.items():
         manifest_path = root / "agents" / member_id / "manifest.json"
         manifest = _read_json(
             manifest_path,
@@ -322,6 +387,19 @@ def _ensure_member_skills(
             tracker.copy_skill(
                 skill_id,
                 root / "agents" / member_id / "skills" / skill_id,
+            )
+        persona_path = _member_persona_document(
+            root / "agents" / member_id,
+            manifest,
+            label=f"{group_id}/{member_id}",
+        )
+        for capability in capabilities:
+            _patch_capability_document(
+                persona_path,
+                tracker,
+                capability,
+                mapping,
+                replacements,
             )
         manifest["skills"] = skills
         tracker.write_json(manifest_path, manifest)
@@ -361,6 +439,7 @@ def _capability_markdown_block(
 ) -> str:
     marker = f"<!-- workswarm-adapter:capability:{capability} -->"
     tools = ", ".join(f"`{tool}`" for tool in spec["native_tools"])
+    tools = tools or "none (portable workflow)"
     return (
         f"{marker}\n"
         f"## WorkSwarm capability: {capability}\n\n"
@@ -369,10 +448,191 @@ def _capability_markdown_block(
     )
 
 
+def _skill_execution_contract(spec: dict[str, Any]) -> str:
+    """Return the mandatory member-side Skill/tool execution contract."""
+
+    skill_id = spec["portable_skill_id"]
+    tools = [str(tool) for tool in spec.get("native_tools", [])]
+    contract = (
+        "当该能力与当前子任务相关时，成员 MUST 首先调用 "
+        f"`skill_tool(skill_name=\"{skill_id}\")` 加载 Skill，并遵循其中的流程。"
+        "Skill 加载失败时，MUST 向主理人报告 `blocked` 或 `partial` 及失败原因；"
+        "禁止绕过 Skill 直接生成最终内容。"
+    )
+    if tools:
+        tool_list = "、".join(f"`{tool}`" for tool in tools)
+        contract += (
+            f"加载后还 MUST 成功执行该 Skill 要求的原生/MCP 工具（候选：{tool_list}），"
+            "并核验工具返回的证据或产物后才能宣称完成；工具调用失败时保持 "
+            "`blocked`/`partial`。"
+        )
+    return contract
+
+
+def _skill_execution_markdown_block(spec: dict[str, Any]) -> tuple[str, str]:
+    skill_id = spec["portable_skill_id"]
+    marker = f"<!-- workswarm-adapter:skill-execution:{skill_id} -->"
+    return (
+        marker,
+        f"{marker}\n## Mandatory Skill execution contract\n\n"
+        f"{_skill_execution_contract(spec)}\n",
+    )
+
+
+def _declared_skill_execution_contract(skill_names: list[str]) -> str:
+    """Return one relevance-gated contract for every Skill on a member."""
+
+    calls = "\n".join(
+        f'- `{skill_name}`: `skill_tool(skill_name="{skill_name}")`'
+        for skill_name in skill_names
+    )
+    return (
+        "接到子任务后，先把任务与下列已声明 Skills 做相关性匹配。"
+        "对当前子任务直接相关的每个 Skill，MUST 先调用对应的 `skill_tool`，"
+        "完整读取并遵循其流程后，才能产出该部分结论或成品；"
+        "不得仅因为模型可以直接写答案而跳过。与当前任务无关的 Skill 不强制调用，"
+        "也不得为了增加调用数量而调用。若相关 Skill 或其底层工具失败，向主理人报告 "
+        "`blocked` 或 `partial` 及原因，禁止用模型记忆或伪造工具结果冒充完成。\n\n"
+        f"{calls}"
+    )
+
+
+def _ensure_all_member_skill_contracts(
+    root: Path,
+    tracker: ChangeTracker,
+) -> None:
+    """Mount a generic execution contract for every runtime-visible Skill.
+
+    WorkSwarm mounts AgentGroup root Skills on every member at load time.  The
+    generated contract must therefore cover the union of root-shared and
+    member-local Skills, otherwise a shared Skill is visible to the model but
+    may still be skipped without the package checker noticing.
+    """
+
+    agents_root = root / "agents"
+    if not agents_root.is_dir():
+        return
+    shared_skill_names = _manifest_skill_names(root / "manifest.json")
+    for member_root in sorted(
+        (path for path in agents_root.iterdir() if path.is_dir()),
+        key=lambda path: path.name,
+    ):
+        manifest_path = member_root / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        manifest = _read_json(
+            manifest_path,
+            label=f"member manifest {root.name}/{member_root.name}",
+        )
+        raw_skills = manifest.get("skills", [])
+        if not isinstance(raw_skills, list):
+            raise AdaptationError(
+                f"member skills must be a list: {root.name}/{member_root.name}"
+            )
+        skill_names = sorted(shared_skill_names | {
+            skill_name
+            for item in _deduplicate_skills(raw_skills)
+            if (skill_name := _skill_name(item))
+        })
+        if not skill_names:
+            continue
+        persona_path = _member_persona_document(
+            member_root,
+            manifest,
+            label=f"{root.name}/{member_root.name}",
+        )
+        block = (
+            f"{DECLARED_SKILL_EXECUTION_MARKER}\n"
+            "## Declared Skill execution contract\n\n"
+            f"{_declared_skill_execution_contract(skill_names)}\n"
+            f"{DECLARED_SKILL_EXECUTION_END_MARKER}\n"
+        )
+        text = _upsert_managed_markdown_block(
+            persona_path.read_text(encoding="utf-8"),
+            DECLARED_SKILL_EXECUTION_MARKER,
+            DECLARED_SKILL_EXECUTION_END_MARKER,
+            block,
+        )
+        tracker.write_text(persona_path, text)
+
+
+def _upsert_managed_markdown_block(
+    text: str,
+    marker: str,
+    end_marker: str,
+    block: str,
+) -> str:
+    """Insert or replace one adapter-owned Markdown block.
+
+    Older adapted packages only have a start marker.  In that case the legacy
+    block runs until the next WorkSwarm adapter marker, or to end-of-file.  The
+    replacement adds an explicit end marker so later adaptations can update the
+    declared Skill list without duplicating or preserving stale calls.
+    """
+
+    replacement = block.rstrip()
+    start = text.find(marker)
+    if start < 0:
+        prefix = text.rstrip()
+        return (prefix + "\n\n" if prefix else "") + replacement + "\n"
+
+    managed_end = text.find(end_marker, start + len(marker))
+    if managed_end >= 0:
+        end = managed_end + len(end_marker)
+    else:
+        next_marker = text.find(
+            "<!-- workswarm-adapter:",
+            start + len(marker),
+        )
+        end = next_marker if next_marker >= 0 else len(text)
+
+    prefix = text[:start].rstrip()
+    suffix = text[end:].lstrip()
+    result = replacement
+    if prefix:
+        result = prefix + "\n\n" + result
+    if suffix:
+        result += "\n\n" + suffix.rstrip()
+    return result.rstrip() + "\n"
+
+
 def _append_markdown_block(text: str, marker: str, block: str) -> str:
     if marker in text:
         return text
     return text.rstrip() + "\n\n" + block.rstrip() + "\n"
+
+
+def _member_instruction_markdown_block() -> str:
+    return (
+        f"{MEMBER_INSTRUCTION_MARKER}\n"
+        "## WorkSwarm shared member boundaries\n\n"
+        f"{MEMBER_INSTRUCTION_BODY}\n"
+        f"{MEMBER_INSTRUCTION_END_MARKER}\n"
+    )
+
+
+def _ensure_group_runtime_contract(
+    root: Path,
+    tracker: ChangeTracker,
+) -> None:
+    """Keep imported expert teams fixed-roster and share narrow safety rails."""
+
+    manifest_path = root / "manifest.json"
+    manifest = _read_json(manifest_path, label="AgentGroup manifest")
+    _declared_agent_names(manifest)
+    manifest["team_mode"] = PREDEFINED_TEAM_MODE
+    existing_instruction = manifest.get("member_instruction", "")
+    if existing_instruction is None:
+        existing_instruction = ""
+    if not isinstance(existing_instruction, str):
+        raise AdaptationError("AgentGroup member_instruction must be a string")
+    manifest["member_instruction"] = _upsert_managed_markdown_block(
+        existing_instruction,
+        MEMBER_INSTRUCTION_MARKER,
+        MEMBER_INSTRUCTION_END_MARKER,
+        _member_instruction_markdown_block(),
+    )
+    tracker.write_json(manifest_path, manifest)
 
 
 def _patch_capability_document(
@@ -393,9 +653,11 @@ def _patch_capability_document(
         instruction = payload.get("instruction", "")
         if not isinstance(instruction, str):
             raise AdaptationError(f"instruction must be a string: {path}")
-        addition = spec["persona_instruction"].strip()
-        if addition not in instruction:
-            payload["instruction"] = instruction.rstrip() + "\n\n" + addition
+        additions = [spec["persona_instruction"].strip(), _skill_execution_contract(spec)]
+        for addition in additions:
+            if addition not in instruction:
+                instruction = instruction.rstrip() + "\n\n" + addition
+        payload["instruction"] = instruction
         tracker.write_json(path, payload)
         return
     text = _replace_legacy_text(path.read_text(encoding="utf-8"), replacements)
@@ -404,6 +666,12 @@ def _patch_capability_document(
         text,
         marker,
         _capability_markdown_block(capability, spec),
+    )
+    execution_marker, execution_block = _skill_execution_markdown_block(spec)
+    text = _append_markdown_block(
+        text,
+        execution_marker,
+        execution_block,
     )
     tracker.write_text(path, text)
 
@@ -520,7 +788,19 @@ def _apply_file_changes(
     mapping: dict[str, Any],
     replacements: dict[str, str],
 ) -> None:
+    group_manifest = _read_json(
+        root / "manifest.json",
+        label=f"AgentGroup manifest {root.name}",
+    )
+    declared_agents = _declared_agent_names(group_manifest)
     for change in group.get("file_changes", []):
+        relative_path = Path(change["path"])
+        if (
+            len(relative_path.parts) >= 2
+            and relative_path.parts[0] == "agents"
+            and relative_path.parts[1] not in declared_agents
+        ):
+            continue
         path = _safe_path(root, change["path"])
         operation = change["op"]
         if operation == "remove_skill_reference":
@@ -652,15 +932,62 @@ def check_package(
     issues = [*_scan_forbidden(root, mapping), *_scan_portability_leaks(root)]
     specs = _capability_specs(mapping)
 
+    if manifest.get("team_mode") != PREDEFINED_TEAM_MODE:
+        issues.append(
+            f"AgentGroup team_mode must be {PREDEFINED_TEAM_MODE!r}"
+        )
+    member_instruction = manifest.get("member_instruction")
+    if not isinstance(member_instruction, str):
+        issues.append("AgentGroup member_instruction must be a string")
+    else:
+        expected_member_block = _member_instruction_markdown_block().rstrip()
+        if (
+            member_instruction.count(MEMBER_INSTRUCTION_MARKER) != 1
+            or member_instruction.count(MEMBER_INSTRUCTION_END_MARKER) != 1
+            or expected_member_block not in member_instruction
+        ):
+            issues.append(
+                "AgentGroup member_instruction is missing the managed shared "
+                "member boundaries"
+            )
+
     if group.get("status") == "affected":
-        for member_id, capabilities in _member_capabilities(mapping, group_id).items():
+        declared_agents = _declared_agent_names(manifest)
+        member_capabilities = _member_capabilities(mapping, group_id)
+        missing_members = sorted(set(member_capabilities) - declared_agents)
+        if missing_members:
+            issues.append(
+                f"mapped members are missing from AgentGroup {group_id}: "
+                f"{', '.join(missing_members)}"
+            )
+        for member_id, capabilities in member_capabilities.items():
+            if member_id not in declared_agents:
+                continue
             manifest_path = root / "agents" / member_id / "manifest.json"
             if not manifest_path.is_file():
                 issues.append(
                     f"member manifest missing: agents/{member_id}/manifest.json"
                 )
                 continue
+            member_manifest = _read_json(
+                manifest_path,
+                label=f"member manifest {group_id}/{member_id}",
+            )
             skill_names = _manifest_skill_names(manifest_path)
+            persona_path: Path | None = None
+            try:
+                persona_path = _member_persona_document(
+                    root / "agents" / member_id,
+                    member_manifest,
+                    label=f"{group_id}/{member_id}",
+                )
+            except AdaptationError as exc:
+                issues.append(str(exc))
+            persona_text = (
+                persona_path.read_text(encoding="utf-8")
+                if persona_path is not None and persona_path.is_file()
+                else ""
+            )
             for capability in capabilities:
                 skill_id = specs[capability]["portable_skill_id"]
                 if skill_id not in skill_names:
@@ -669,6 +996,11 @@ def check_package(
                     root / "agents" / member_id / "skills" / skill_id / "SKILL.md"
                 ).is_file():
                     issues.append(f"member {member_id} missing Skill file {skill_id}")
+                execution_contract = _skill_execution_contract(specs[capability])
+                if execution_contract not in persona_text:
+                    issues.append(
+                        f"member {member_id} missing execution contract for {skill_id}"
+                    )
         root_skills = _manifest_skill_names(root / "manifest.json")
         for capability in _root_capabilities(mapping, group_id):
             skill_id = specs[capability]["portable_skill_id"]
@@ -684,6 +1016,48 @@ def check_package(
     for change in group.get("file_changes", []):
         if change["op"] == "delete_tree" and _safe_path(root, change["path"]).exists():
             issues.append(f"obsolete Skill tree remains: {change['path']}")
+
+    agents_root = root / "agents"
+    if agents_root.is_dir():
+        for member_root in sorted(
+            (path for path in agents_root.iterdir() if path.is_dir()),
+            key=lambda path: path.name,
+        ):
+            manifest_path = member_root / "manifest.json"
+            if not manifest_path.is_file():
+                continue
+            member_manifest = _read_json(
+                manifest_path,
+                label=f"member manifest {group_id}/{member_root.name}",
+            )
+            skill_names = sorted(
+                _manifest_skill_names(root / "manifest.json")
+                | _manifest_skill_names(manifest_path)
+            )
+            if not skill_names:
+                continue
+            try:
+                persona_path = _member_persona_document(
+                    member_root,
+                    member_manifest,
+                    label=f"{group_id}/{member_root.name}",
+                )
+            except AdaptationError as exc:
+                issues.append(str(exc))
+                continue
+            persona_text = persona_path.read_text(encoding="utf-8")
+            expected_block = (
+                f"{DECLARED_SKILL_EXECUTION_MARKER}\n"
+                "## Declared Skill execution contract\n\n"
+                f"{_declared_skill_execution_contract(skill_names)}\n"
+                f"{DECLARED_SKILL_EXECUTION_END_MARKER}"
+            )
+            if expected_block not in persona_text:
+                issues.append(
+                    f"member {member_root.name} declared Skill execution contract "
+                    "is missing or stale"
+                )
+                continue
 
     if group_id == "travel":
         for retained in ("flyai-travel", "wendao-skill"):
@@ -742,6 +1116,8 @@ def _adapt_in_place(
         _ensure_member_skills(root, tracker, mapping, group_id, replacements)
         _apply_file_changes(root, tracker, group, mapping, replacements)
     _patch_remaining_text(root, tracker, replacements)
+    _ensure_all_member_skill_contracts(root, tracker)
+    _ensure_group_runtime_contract(root, tracker)
 
     check = check_package(
         root,

@@ -2,6 +2,7 @@
 
 """Contract tests for the XiaoYi-to-WorkSwarm Skill migration mapping."""
 
+import ast
 import json
 from pathlib import Path
 
@@ -19,7 +20,7 @@ def _mapping() -> dict:
     return json.loads(MAPPING_PATH.read_text(encoding="utf-8"))
 
 
-def test_mapping_covers_all_ten_groups_and_the_seven_affected_groups() -> None:
+def test_mapping_covers_all_ten_groups_and_marks_each_for_adaptation() -> None:
     mapping = _mapping()
     inventory = mapping["inventory"]
     groups = mapping["groups"]
@@ -32,12 +33,11 @@ def test_mapping_covers_all_ten_groups_and_the_seven_affected_groups() -> None:
         "home-cook",
         "personal-styling",
         "home-design",
-    }
-    expected_unaffected = {
         "healthy-habit-companion",
         "rental-move-decision",
         "family-learning-companion",
     }
+    expected_unaffected: set[str] = set()
 
     assert inventory["total_groups"] == 10
     assert set(groups) == expected_affected | expected_unaffected
@@ -52,7 +52,7 @@ def test_mapping_covers_all_ten_groups_and_the_seven_affected_groups() -> None:
     assert all(not groups[group_id]["file_changes"] for group_id in expected_unaffected)
 
 
-def test_mapping_uses_only_the_four_verified_native_capabilities() -> None:
+def test_mapping_covers_native_mcp_and_portable_workflow_capabilities() -> None:
     mapping = _mapping()
     replacements = mapping["capability_replacements"]
 
@@ -61,6 +61,10 @@ def test_mapping_uses_only_the_four_verified_native_capabilities() -> None:
         "image_understanding",
         "image_generation",
         "video_generation",
+        "commute_comparison",
+        "workday_health_plan",
+        "habit_checkin_page",
+        "single_html_delivery",
     }
     assert replacements["web_research"]["native_tools"] == [
         "free_search",
@@ -69,12 +73,16 @@ def test_mapping_uses_only_the_four_verified_native_capabilities() -> None:
     assert replacements["image_understanding"]["native_tools"] == [
         "visual_question_answering"
     ]
-    assert replacements["image_generation"]["native_tools"] == ["generate_image"]
+    assert replacements["image_generation"]["native_tools"] == ["generate_visual"]
     assert replacements["video_generation"]["native_tools"] == [
         "generate_video",
         "check_video_status",
     ]
-    assert {spec["strategy"] for spec in replacements.values()} == {"native_tools"}
+    assert replacements["commute_comparison"]["strategy"] == "mcp_tools"
+    assert replacements["commute_comparison"]["native_tools"] == ["tool_search"]
+    assert replacements["workday_health_plan"]["strategy"] == "portable_workflow"
+    assert replacements["habit_checkin_page"]["strategy"] == "portable_workflow"
+    assert replacements["single_html_delivery"]["strategy"] == "portable_workflow"
 
 
 def test_legacy_ids_members_and_shared_skills_are_complete() -> None:
@@ -87,6 +95,11 @@ def test_legacy_ids_members_and_shared_skills_are_complete() -> None:
         "seedream-image-gen",
         "seedream-image-gen-win",
         "seedance-video-gen-win",
+        "amap-jsapi-skill",
+        "fitness-coach",
+        "fasting-tracker",
+        "habit-flow-skill",
+        "autonomous-tasks",
     }
     assert set(inventory["legacy_concept_aliases"]) == {
         "xiaoyi-image-gen",
@@ -100,12 +113,12 @@ def test_legacy_ids_members_and_shared_skills_are_complete() -> None:
 
     direct = inventory["direct_skill_binding_members"]
     indirect = inventory["indirect_native_search_reference_members"]
-    assert len(direct) == 8
+    assert len(direct) == 17
     assert len(indirect) == 7
     identities = {
         (member["group_id"], member["member_id"]) for member in direct + indirect
     }
-    assert len(identities) == 15
+    assert len(identities) == 24
 
 
 def test_old_skill_directories_and_manifest_bindings_are_explicit() -> None:
@@ -121,6 +134,42 @@ def test_old_skill_directories_and_manifest_bindings_are_explicit() -> None:
         (
             "family-weekend-trip",
             "agents/visual-generator/skills/seedream-image_gen",
+        ),
+        (
+            "healthy-habit-companion",
+            "agents/fitness-planner/skills/fitness-coach",
+        ),
+        (
+            "healthy-habit-companion",
+            "agents/fitness-planner/skills/habit-flow-skill",
+        ),
+        (
+            "healthy-habit-companion",
+            "agents/habit-coach/skills/habit-flow-skill",
+        ),
+        (
+            "healthy-habit-companion",
+            "agents/habit-coach/skills/autonomous-tasks",
+        ),
+        (
+            "healthy-habit-companion",
+            "agents/lifestyle-guide/skills/fasting-tracker",
+        ),
+        (
+            "rental-move-decision",
+            "agents/area-researcher/skills/amap-jsapi-skill",
+        ),
+        (
+            "family-learning-companion",
+            "agents/study-plan-designer/skills/habit-flow-skill",
+        ),
+        (
+            "family-learning-companion",
+            "agents/progress-coach/skills/habit-flow-skill",
+        ),
+        (
+            "family-learning-companion",
+            "agents/progress-coach/skills/autonomous-tasks",
         ),
         (
             "family-party-planner",
@@ -219,8 +268,9 @@ def test_native_tool_names_exist_in_current_develop_sources() -> None:
         "visual_question_answering": (
             REPO_ROOT / "jiuwenswarm/agents/harness/common/tools/image_tools.py"
         ),
-        "generate_image": (
-            REPO_ROOT / "jiuwenswarm/agents/harness/common/tools/image_tools.py"
+        "generate_visual": (
+            REPO_ROOT
+            / "jiuwenswarm/agents/harness/common/tools/visual_gen_tools.py"
         ),
         "generate_video": (
             REPO_ROOT / "jiuwenswarm/agents/harness/common/tools/video_gen_tools.py"
@@ -239,9 +289,22 @@ def test_native_tool_names_exist_in_current_develop_sources() -> None:
 
 
 def test_web_research_tools_match_team_runtime_whitelist() -> None:
-    from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
-        TOOL_WHITELIST,
+    source = (
+        REPO_ROOT
+        / "jiuwenswarm/agents/harness/team/team_runtime_inheritance.py"
+    ).read_text(encoding="utf-8")
+    module = ast.parse(source)
+    whitelist_node = next(
+        node.value
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "TOOL_WHITELIST"
+            for target in node.targets
+        )
     )
+    assert isinstance(whitelist_node, ast.Call)
+    TOOL_WHITELIST = frozenset(ast.literal_eval(whitelist_node.args[0]))
 
     web_tools = set(
         _mapping()["capability_replacements"]["web_research"]["native_tools"]
@@ -250,6 +313,47 @@ def test_web_research_tools_match_team_runtime_whitelist() -> None:
     assert web_tools == {"free_search", "fetch_webpage"}
     assert web_tools <= TOOL_WHITELIST
     assert {"mcp_free_search", "mcp_fetch_webpage"}.isdisjoint(web_tools)
+    assert "generate_visual" in TOOL_WHITELIST
+
+
+def test_every_mapped_portable_skill_has_valid_local_template() -> None:
+    portable_root = (
+        REPO_ROOT / "scripts/expert_team_migration/portable_skills"
+    )
+
+    for spec in _mapping()["capability_replacements"].values():
+        skill_id = spec["portable_skill_id"]
+        skill_file = portable_root / skill_id / "SKILL.md"
+        text = skill_file.read_text(encoding="utf-8")
+        assert text.startswith("---\n")
+        assert f"name: {skill_id}\n" in text
+        assert "description:" in text
+
+    image_skill = (
+        portable_root / "workswarm-image-generation" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "generate_visual(" in image_skill
+    assert "reference_image_paths" in image_skill
+    assert "Remote URLs" in image_skill
+    assert "inside the current task workspace" in image_skill
+    assert "MiniMax image generation does not support reference images" in image_skill
+    assert "generate_image(" not in image_skill
+    assert "Do not draw an SVG" in image_skill
+
+    image_mapping = _mapping()["capability_replacements"]["image_generation"]
+    assert "reference_image_paths" in image_mapping["persona_instruction"]
+    assert "ModelArk/Seedream" in image_mapping["known_gaps"][0]
+    assert "MiniMax rejects" in image_mapping["known_gaps"][0]
+
+    web_skill = (
+        portable_root / "workswarm-web-research" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "at most 3 effective authoritative sources" in web_skill
+    assert "2 independent authoritative sources corroborate" in web_skill
+    assert "3 consecutive `fetch_webpage` failures" in web_skill
+    assert "mark the unsupported item as `待核实`" in web_skill
+    assert "unless the user explicitly asks for" in web_skill
+    assert "deep or exhaustive research" in web_skill
 
 
 def test_shared_external_skills_are_retained_with_explicit_smoke_requirements() -> None:

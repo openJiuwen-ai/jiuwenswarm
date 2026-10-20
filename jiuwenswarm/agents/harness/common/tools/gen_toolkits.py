@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import re
@@ -223,8 +224,8 @@ class ImageOptions:
 
     ``size`` ("W*H" / "WxH" / "1K"/"2K") overrides the aspect-ratio default; every native
     backend sends an explicit WxH as the output dimensions. ``reference_image_uris``
-    (http(s) URLs or data: URIs) are honoured by ModelArk, DashScope and vLLM-Omni and
-    ignored by MiniMax.
+    (http(s) URLs or data: URIs) are honoured by ModelArk, DashScope and vLLM-Omni.
+    MiniMax image generation does not support them and returns an explicit error.
     ``extra`` holds vLLM-Omni request fields.
     """
 
@@ -267,8 +268,11 @@ async def generate_image(
     opts = options or ImageOptions()
     if target.backend == MINIMAX:
         if opts.reference_image_uris:
-            logger.warning("[generate_visual] MiniMax image-01 ignores %d reference image(s)",
-                           len(opts.reference_image_uris))
+            return (
+                "[ERROR]: the configured MiniMax image backend does not support reference images. "
+                "Switch Visual processing to ModelArk/Seedream, DashScope/Qwen-Image, or vLLM-Omni, "
+                "or retry without reference_image_paths."
+            )
         return await _minimax_generate_image(target, prompt, aspect_ratio, save_dir, opts)
     if target.backend == MODELARK:
         return await _modelark_generate_image(target, prompt, aspect_ratio, save_dir, opts)
@@ -329,6 +333,24 @@ def _image_extension(data: bytes) -> str:
 
 def _image_filename(index: int, data: bytes) -> str:
     return f"image_{int(time.time())}_{index}_{secrets.token_hex(4)}.{_image_extension(data)}"
+
+
+def _image_success_result(paths: list[str] | tuple[str, ...]) -> str:
+    """Backward-compatible success text plus unambiguous machine-readable paths.
+
+    Keep the long-standing ``Saved to:`` prefix for existing consumers, but
+    emit one line per image so a directory name containing ``, `` is never
+    ambiguous. New consumers should prefer ``Saved paths JSON:``.
+    """
+    values = [str(path) for path in paths]
+    saved_lines = "\n".join(f"Saved to: {path}" for path in values)
+    return "\n".join(
+        (
+            "Image generated successfully!",
+            saved_lines,
+            f"Saved paths JSON: {json.dumps(values, ensure_ascii=False)}",
+        )
+    )
 
 
 def parse_size(size: str | None) -> tuple[int, int] | None:
@@ -526,7 +548,7 @@ async def _minimax_generate_image(
         except (OSError, ValueError) as exc:
             return f"[ERROR]: failed to save MiniMax image: {exc!r}"
         saved.append(str(dest))
-    return "Image generated successfully!\nSaved to: " + ", ".join(saved)
+    return _image_success_result(saved)
 
 
 def _minimax_video_resolution(resolution: str) -> str:
@@ -802,7 +824,7 @@ async def _modelark_generate_image(
         return f"[ERROR]: failed to save ModelArk image: {exc!r}"
     if not saved:
         return f"[ERROR]: ModelArk returned no images. Response: {str(payload)[:300]}"
-    return "Image generated successfully!\nSaved to: " + ", ".join(saved)
+    return _image_success_result(saved)
 
 
 async def _modelark_submit_video(target: GenerationTarget, request: VideoRequest, save_dir: str | None) -> str:
@@ -1050,7 +1072,7 @@ async def _dashscope_generate_image(
         return f"[ERROR]: failed to save DashScope image: {exc!r}"
     if not saved:
         return f"[ERROR]: DashScope returned no images. Response: {str(payload)[:300]}"
-    return "Image generated successfully!\nSaved to: " + ", ".join(saved)
+    return _image_success_result(saved)
 
 
 def _is_wan3(model: str) -> bool:
@@ -1294,7 +1316,7 @@ async def _vllm_omni_generate_image(
         )
     except (requests.RequestException, ValueError, OSError) as exc:
         return f"[ERROR]: vLLM-Omni image generation failed: {exc}"
-    return "Image generated successfully!\nSaved to: " + str(result["image_path"])
+    return _image_success_result([str(result["image_path"])])
 
 
 async def _vllm_omni_submit_video(target: GenerationTarget, request: VideoRequest, save_dir: str | None) -> str:

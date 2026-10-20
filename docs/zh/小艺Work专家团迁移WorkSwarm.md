@@ -59,22 +59,37 @@
 - manifest 引用的团队和成员头像均为最长边不超过 `256px` 的 WebP；原始素材如需保留，不参与运行时引用。
 - 归档排序和时间戳固定，使相同输入能产生稳定的 ZIP。
 
+### 2.4 固定成员与共享边界
+
+Skill 适配阶段会对 10 个团的根 `manifest.json` 统一写入：
+
+- `team_mode: "predefined"`：运行时只使用包内预定义成员，不让主理人在当前任务中临时创建不携带预置 Skill 的动态成员。
+- `member_instruction`：向所有成员共享最小事实、工具失败、数据隔离和交付边界。不能获得真实工具结果时必须返回 `blocked`、`partial` 或「待核实」，不得用模型记忆、手写 SVG 或截图冒充真实查询/生成产物。
+
+`member_instruction` 和成员 persona 中的 declared-Skill 执行契约都由带起止标记的 managed block 维护。因此再次运行适配器时会更新旧块而不是重复追加；若成员后续新增 Skill，第二次适配会自动将新 Skill 的 `skill_tool` 调用补入同一契约块。
+
 ## 3. 小艺专属 Skill 替换
 
-10 个团中有 7 个需要替换小艺专属能力：
-
-`family-weekend-trip`、`family-party-planner`、`home-storage-makeover`、`travel`、`home-cook`、`personal-styling`、`home-design`。
-
-另外 3 个团 `healthy-habit-companion`、`rental-move-decision`、`family-learning-companion` 不需要替换这 4 类能力，但仍会执行通用可移植性检查。
+10 个团都会执行 Skill 适配。除小艺专属的搜索、图像理解和媒体生成能力外，
+三个生活场景团还会替换不适合 WorkSwarm 的 Clawdbot/OpenClaw 持久化、自治唤醒、
+断食默认和地图开发指南，并为明确承诺单 HTML 的成员补全交付契约。
 
 | 能力 | 小艺侧 Skill / 别名 | WorkSwarm portable Skill | WorkSwarm 原生工具 | 直接或间接受影响的专家团 |
 | --- | --- | --- | --- | --- |
-| 网页研究 | `xiaoyi-web-search-win` | `workswarm-web-research` | `mcp_free_search`、`mcp_fetch_webpage` | `home-cook`、`home-design`、`personal-styling`、`travel` |
+| 网页研究 | `xiaoyi-web-search-win` | `workswarm-web-research` | `free_search`、`fetch_webpage` | `home-cook`、`home-design`、`personal-styling`、`travel` |
 | 图像理解 | `xiaoyi-image-understanding` | `workswarm-image-understanding` | `visual_question_answering` | `home-storage-makeover` |
-| 图像生成 | `seedream-image_gen`、`seedream-image-gen`、`seedream-image-gen-win`、`xiaoyi-image-gen` | `workswarm-image-generation` | `generate_image` | `family-weekend-trip`、`family-party-planner`、`home-storage-makeover`、`home-cook`、`home-design`、`personal-styling` |
+| 图像生成 | `seedream-image_gen`、`seedream-image-gen`、`seedream-image-gen-win`、`xiaoyi-image-gen` | `workswarm-image-generation` | `generate_visual` | `family-weekend-trip`、`family-party-planner`、`home-storage-makeover`、`home-cook`、`home-design`、`personal-styling` |
 | 视频生成 | `seedance-video-gen-win`、`xiaoyi-video-gen` | `workswarm-video-generation` | `generate_video`、`check_video_status` | `home-cook`、`home-design`、`personal-styling` |
+| 通勤比较 | `amap-jsapi-skill` | `amap-commute-comparison` | 通过 `tool_search` 发现已连接的 AMap MCP 工具 | `rental-move-decision` |
+| 上班族生活方式 | `fitness-coach`、`fasting-tracker` | `workday-health-plan` | 无额外工具 | `healthy-habit-companion` |
+| 打卡页面 | `habit-flow-skill`、`autonomous-tasks` | `habit-checkin-page` | `write_file` | `healthy-habit-companion`、`family-learning-companion` |
+| 单 HTML 交付 | 新增契约 | `workswarm-single-html-delivery` | `write_file` | 六个小艺生活场景团的指定页面成员 |
 
 适配器不只替换 Skill ID，还会同步：
+
+- 为每个成员的全部声明 Skill 写入“相关才调用、相关则必须先加载”的统一执行契约；
+  无关 Skill 不为凑调用数强制执行，相关 Skill 失败则必须返回 `blocked` 或 `partial`，
+  不得改为模型直接生成并冒充 Skill 结果。
 
 - 复制 portable Skill 文档到对应的团队或成员目录。
 - 移除已被替代的旧 Skill 目录和 NOTICE 条目。
@@ -84,15 +99,14 @@
 
 `flyai-travel` 和 `wendao-skill` 不被盲目删除。它们在保留时会执行明确的来源语义和 URL 格式修正。
 
-## 4. 额外 OpenClaw 文本兼容
+## 4. OpenClaw 能力边界
 
-这部分不是新增的第 5 类 Skill 替换，而是保留 Skill 中的运行时文本可移植性修正：
+`autonomous-tasks` 不再通过文本改写伪装成 WorkSwarm 定时任务，而是在有限期打卡场景中直接替换为
+`habit-checkin-page`。新 Skill 只承诺静态优先页面和可选浏览器本地状态，不冒充后台唤醒、
+WhatsApp 提醒或长期记忆。如用户明确要求定时提醒，应单独检查当前运行时能力。
 
-- 将 `openclaw cron add ...` 替换为 WorkSwarm 内置定时任务能力说明，要求按当前运行时工具 schema 调用 `cron_create_job` 或等价 `cron` add 操作。
-- 将 `/home/sirius/.openclaw/skills/natural-language-planner` 这类硬编码安装路径改为 `<SKILL_INSTALL_DIR>/natural-language-planner`。
-- 将剩余的“小艺 Work”产品文案改为 WorkSwarm，不改变专家团的用户需求和成员责任。
-
-适配后的静态扫描会把旧 Skill ID、`send_html_card`、OpenClaw cron 命令和 `.openclaw/skills` 硬编码路径视为残留问题。
+`amap-commute-comparison` 也不携带 Key；它要求运行环境预先安装并连接 AMap MCP。
+静态扫描会把旧 Skill ID、`send_html_card`、OpenClaw cron 命令和 `.openclaw/skills` 硬编码路径视为残留问题。
 
 ## 5. 执行方式
 

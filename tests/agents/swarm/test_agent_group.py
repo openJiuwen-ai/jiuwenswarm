@@ -82,7 +82,87 @@ def test_load_agent_group_bundle_reuses_manifest_and_templates(tmp_path: Path) -
     assert package.manifest["name"] == "group"
     assert set(package.templates) == {"leader", "member1"}
     assert package.instruction == "analyze carefully"
+    assert package.member_instruction == ""
+    assert package.team_mode == "hybrid"
     assert package.capabilities == ("analysis", "risk")
+
+
+def test_legacy_manifest_keeps_instruction_on_every_member(tmp_path: Path) -> None:
+    group = _minimal_group(tmp_path)
+    manifest_path = group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["instruction"] = "Keep the shared safety and delivery contract"
+    _write_json(manifest_path, manifest)
+
+    templates = load_agent_group_package(group)
+
+    for name in ("leader", "member1"):
+        sections = {section.name: section for section in templates[name].prompt_sections}
+        assert sections["agent_group_instruction"].content["cn"] == (
+            "Keep the shared safety and delivery contract"
+        )
+
+
+def test_manifest_separates_leader_and_shared_member_instructions(
+    tmp_path: Path,
+) -> None:
+    group = _minimal_group(tmp_path)
+    manifest_path = group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["instruction"] = "Only the leader dispatches members"
+    manifest["member_instruction"] = "Never expose private user data"
+    manifest["team_mode"] = "predefined"
+    _write_json(manifest_path, manifest)
+
+    package = load_agent_group_package_bundle(group)
+    templates = package.templates
+
+    leader_sections = {
+        section.name: section for section in templates["leader"].prompt_sections
+    }
+    member_sections = {
+        section.name: section for section in templates["member1"].prompt_sections
+    }
+    assert leader_sections["agent_group_instruction"].content["cn"] == (
+        "Only the leader dispatches members"
+    )
+    assert leader_sections["agent_group_member_instruction"].content["cn"] == (
+        "Never expose private user data"
+    )
+    assert "agent_group_instruction" not in member_sections
+    assert member_sections["agent_group_member_instruction"].content["cn"] == (
+        "Never expose private user data"
+    )
+    assert package.member_instruction == "Never expose private user data"
+    assert package.team_mode == "predefined"
+
+
+@pytest.mark.parametrize("team_mode", ["dynamic", "", None, 1])
+def test_load_agent_group_rejects_invalid_team_mode(
+    tmp_path: Path,
+    team_mode,
+) -> None:
+    group = _minimal_group(tmp_path)
+    manifest_path = group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["team_mode"] = team_mode
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(ValueError, match="team_mode must be one of"):
+        load_agent_group_package_bundle(group)
+
+
+def test_load_agent_group_rejects_non_string_member_instruction(
+    tmp_path: Path,
+) -> None:
+    group = _minimal_group(tmp_path)
+    manifest_path = group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["member_instruction"] = ["not", "text"]
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(ValueError, match="member_instruction must be a string"):
+        load_agent_group_package_bundle(group)
 
 
 def test_load_agent_group_rejects_member_agent_md(tmp_path: Path) -> None:

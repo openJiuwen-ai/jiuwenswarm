@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "purpose": "Deterministic Skill and tool-call migration plan for the ten XiaoYi Work Expert Team source packages.",
   "source_archives": [
     {
@@ -31,6 +31,9 @@
     "total_groups": 10,
     "affected_group_ids": [
       "family-weekend-trip",
+      "healthy-habit-companion",
+      "rental-move-decision",
+      "family-learning-companion",
       "family-party-planner",
       "home-storage-makeover",
       "travel",
@@ -38,18 +41,19 @@
       "personal-styling",
       "home-design"
     ],
-    "unaffected_group_ids": [
-      "healthy-habit-companion",
-      "rental-move-decision",
-      "family-learning-companion"
-    ],
+    "unaffected_group_ids": [],
     "legacy_skill_ids": [
       "xiaoyi-web-search-win",
       "xiaoyi-image-understanding",
       "seedream-image_gen",
       "seedream-image-gen",
       "seedream-image-gen-win",
-      "seedance-video-gen-win"
+      "seedance-video-gen-win",
+      "amap-jsapi-skill",
+      "fitness-coach",
+      "fasting-tracker",
+      "habit-flow-skill",
+      "autonomous-tasks"
     ],
     "legacy_concept_aliases": [
       "xiaoyi-image-gen",
@@ -63,10 +67,66 @@
     "direct_skill_binding_members": [
       {
         "group_id": "family-weekend-trip",
+        "member_id": "trip-planner",
+        "display_name": "程悠然",
+        "profession": "亲子路线规划师",
+        "capabilities": ["single_html_delivery"]
+      },
+      {
+        "group_id": "family-weekend-trip",
         "member_id": "visual-generator",
         "display_name": "景映川",
         "profession": "旅途视觉素材师",
         "capabilities": ["image_generation"]
+      },
+      {
+        "group_id": "healthy-habit-companion",
+        "member_id": "fitness-planner",
+        "display_name": "练嘉衡",
+        "profession": "轻运动计划师",
+        "capabilities": ["workday_health_plan", "habit_checkin_page"]
+      },
+      {
+        "group_id": "healthy-habit-companion",
+        "member_id": "habit-coach",
+        "display_name": "习安然",
+        "profession": "习惯陪跑教练",
+        "capabilities": ["habit_checkin_page", "single_html_delivery"]
+      },
+      {
+        "group_id": "healthy-habit-companion",
+        "member_id": "lifestyle-guide",
+        "display_name": "林知常",
+        "profession": "生活方式建议师",
+        "capabilities": ["workday_health_plan"]
+      },
+      {
+        "group_id": "rental-move-decision",
+        "member_id": "area-researcher",
+        "display_name": "路明达",
+        "profession": "区域通勤研究员",
+        "capabilities": ["commute_comparison"]
+      },
+      {
+        "group_id": "rental-move-decision",
+        "member_id": "decision-page-integrator",
+        "display_name": "叶成章",
+        "profession": "决策页面整合设计师",
+        "capabilities": ["single_html_delivery"]
+      },
+      {
+        "group_id": "family-learning-companion",
+        "member_id": "study-plan-designer",
+        "display_name": "程有序",
+        "profession": "学习计划设计师",
+        "capabilities": ["habit_checkin_page", "single_html_delivery"]
+      },
+      {
+        "group_id": "family-learning-companion",
+        "member_id": "progress-coach",
+        "display_name": "励日新",
+        "profession": "学习进度陪跑教练",
+        "capabilities": ["habit_checkin_page", "single_html_delivery"]
       },
       {
         "group_id": "family-party-planner",
@@ -74,6 +134,13 @@
         "display_name": "姚映真",
         "profession": "聚会邀请视觉师",
         "capabilities": ["image_generation"]
+      },
+      {
+        "group_id": "family-party-planner",
+        "member_id": "party-page-integrator",
+        "display_name": "陈成章",
+        "profession": "聚会执行页面整合师",
+        "capabilities": ["single_html_delivery"]
       },
       {
         "group_id": "home-storage-makeover",
@@ -87,7 +154,7 @@
         "member_id": "storage-visual-page-designer",
         "display_name": "林映居",
         "profession": "收纳效果图与页面设计师",
-        "capabilities": ["image_generation"]
+        "capabilities": ["image_generation", "single_html_delivery"]
       },
       {
         "group_id": "home-cook",
@@ -212,22 +279,89 @@
       ],
       "legacy_aliases": ["xiaoyi-image-gen"],
       "strategy": "native_tools",
-      "native_tools": ["generate_image"],
+      "native_tools": ["generate_visual"],
       "runtime_prerequisites": [
-        "Configure IMAGE_GEN_API_KEY, IMAGE_GEN_API_BASE and IMAGE_GEN_MODEL_NAME, or their models.image_gen equivalents.",
-        "Use a writable save_dir inside the task workspace and pass the returned path to the team leader as an internal artifact."
+        "Enable Visual processing and configure VISUAL_GEN_API_KEY, VISUAL_GEN_API_BASE and VISUAL_GEN_MODEL_NAME; a keyless vLLM-Omni backend only requires its API URL.",
+        "Use a writable save_dir inside the task workspace, require a real raster output, and pass the validated local path to the team leader as an internal artifact.",
+        "For photo-guided generation, configure ModelArk/Seedream, DashScope/Qwen-Image, vLLM-Omni, or an OpenRouter-compatible multimodal image model. MiniMax image generation rejects reference images."
       ],
       "call_rewrites": [
         {
           "legacy": "Run generate_seedream.py using ~/.openclaw/.xiaoyienv, or call Huawei invoke with Seedream functionName and bundleName.",
-          "replacement": "Call generate_image(prompt, size, quality, save_dir) and consume the returned local image path."
+          "replacement": "Call generate_visual(prompt, aspect_ratio, resolution, save_dir, reference_image_paths). Pass the actual uploaded paths for photo-guided work, reject error or remote-only results, and consume only a validated local raster path."
         }
       ],
-      "persona_instruction": "Compile a concrete visual brief first, then call generate_image with the final prompt and a task-workspace save_dir. Treat the returned local file as an internal team artifact; the leader decides whether it is embedded in the final HTML or sent as a final deliverable.",
+      "persona_instruction": "Compile a concrete visual brief first, then call generate_visual with the final prompt and a task-workspace save_dir. For room/storage, renovation, styling, product or portrait tasks with uploaded images, you MUST pass their actual paths in reference_image_paths; never silently downgrade to text-to-image. A requested generated image is complete only when a readable PNG/JPEG/WebP/GIF exists locally; never substitute a hand-written SVG, HTML drawing, PIL illustration or browser screenshot and claim image generation succeeded.",
       "known_gaps": [
-        "The current native generate_image signature is text-to-image only and does not accept reference images. Photo-guided editing from the XiaoYi Seedream Skills is not equivalent; use visual_question_answering to derive a text brief and label the result as a concept image until a verified reference-image generator exists.",
+        "Reference-image support depends on the configured provider/model. ModelArk/Seedream, DashScope/Qwen-Image and vLLM-Omni receive explicit reference_image_uris; OpenRouter-compatible providers receive multimodal message content; MiniMax rejects the request instead of silently running text-to-image.",
         "Seedream-specific Lite/Pro routing, max_images and XiaoYi point accounting must not be copied into the converted persona."
       ]
+    },
+    "commute_comparison": {
+      "portable_skill_id": "amap-commute-comparison",
+      "legacy_skill_ids": ["amap-jsapi-skill"],
+      "strategy": "mcp_tools",
+      "native_tools": ["tool_search"],
+      "runtime_prerequisites": [
+        "Install and connect an AMap MCP server that exposes geocoding and public-transit or driving route tools.",
+        "Keep the AMap Web Service credential in the MCP connection rather than in the AgentGroup package.",
+        "Verify one geocode and one route lookup before treating commute duration as real data."
+      ],
+      "call_rewrites": [
+        {
+          "legacy": "Use amap-jsapi-skill as if JavaScript API development documentation could query a real commute.",
+          "replacement": "Use tool_search to discover the connected AMap MCP geocoding and direction tools, then compare structured route results under identical assumptions."
+        }
+      ],
+      "persona_instruction": "For commute claims, use the connected AMap MCP geocoding and route tools discovered through tool_search. Preserve resolved locations, transport mode and query time. If the MCP or route result is unavailable, mark the value pending verification instead of estimating it from model memory or web snippets.",
+      "known_gaps": [
+        "The portable Skill does not bundle an AMap credential or MCP server; package validation can prove the workflow is present but runtime validation still requires a configured connection."
+      ]
+    },
+    "workday_health_plan": {
+      "portable_skill_id": "workday-health-plan",
+      "legacy_skill_ids": ["fitness-coach", "fasting-tracker"],
+      "strategy": "portable_workflow",
+      "native_tools": [],
+      "runtime_prerequisites": [],
+      "call_rewrites": [
+        {
+          "legacy": "Persist a generic gym plan to an unspecified memory store or introduce fasting by default.",
+          "replacement": "Produce a conservative office-worker exercise, hydration, sleep and meal-rhythm plan without hidden persistence, autonomous jobs or unsolicited fasting."
+        }
+      ],
+      "persona_instruction": "Use workday-health-plan for ordinary adult exercise, hydration, sleep and meal-rhythm requests. State assumptions, keep targets low-friction, include stop signals and avoid diagnosis, hidden memory writes, extreme dieting and unsolicited fasting.",
+      "known_gaps": []
+    },
+    "habit_checkin_page": {
+      "portable_skill_id": "habit-checkin-page",
+      "legacy_skill_ids": ["habit-flow-skill", "autonomous-tasks"],
+      "strategy": "portable_workflow",
+      "native_tools": ["write_file"],
+      "runtime_prerequisites": [],
+      "call_rewrites": [
+        {
+          "legacy": "Use Clawdbot-local storage, WhatsApp reminders or autonomous wakeups to implement a finite tracker page.",
+          "replacement": "Build a static-first finite tracker; use browser-local state only as progressive enhancement and report reminders as a separate capability."
+        }
+      ],
+      "persona_instruction": "Use habit-checkin-page for finite health or learning trackers. Put the complete schedule and review prompts in the initial HTML, keep localStorage optional, and do not invoke Clawdbot storage, WhatsApp, cron, autonomous workers or hidden memory.",
+      "known_gaps": [
+        "This replacement intentionally does not provide background reminders. A user request for scheduled reminders needs a separately configured runtime capability."
+      ]
+    },
+    "single_html_delivery": {
+      "portable_skill_id": "workswarm-single-html-delivery",
+      "legacy_skill_ids": [],
+      "strategy": "portable_workflow",
+      "native_tools": ["write_file"],
+      "runtime_prerequisites": [
+        "The designated member can write inside the shared task workspace.",
+        "Only the leader sends the final file to the user."
+      ],
+      "call_rewrites": [],
+      "persona_instruction": "Use workswarm-single-html-delivery to write and validate the exact promised self-contained HTML filename. Keep core content static, embed validated raster assets, exclude local paths and temporary files, and return the internal path to the leader without sending it directly.",
+      "known_gaps": []
     },
     "video_generation": {
       "portable_skill_id": "workswarm-video-generation",
@@ -307,8 +441,13 @@
     "family-weekend-trip": {
       "source_archive": "xiaoyi-six",
       "status": "affected",
-      "affected_members": ["visual-generator"],
+      "affected_members": ["trip-planner", "visual-generator"],
       "file_changes": [
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/trip-planner/persona/ROLE.md",
+          "capability": "single_html_delivery"
+        },
         {
           "op": "remove_skill_reference",
           "path": "manifest.json",
@@ -333,27 +472,126 @@
     },
     "healthy-habit-companion": {
       "source_archive": "xiaoyi-six",
-      "status": "unchanged",
-      "affected_members": [],
-      "file_changes": []
+      "status": "affected",
+      "affected_members": ["fitness-planner", "habit-coach", "lifestyle-guide"],
+      "file_changes": [
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/fitness-planner/persona/ROLE.md",
+          "capability": "workday_health_plan"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/fitness-planner/persona/ROLE.md",
+          "capability": "habit_checkin_page"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/fitness-planner/skills/fitness-coach"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/fitness-planner/skills/habit-flow-skill"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/habit-coach/persona/ROLE.md",
+          "capability": "habit_checkin_page"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/habit-coach/persona/ROLE.md",
+          "capability": "single_html_delivery"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/habit-coach/skills/habit-flow-skill"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/habit-coach/skills/autonomous-tasks"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/lifestyle-guide/persona/ROLE.md",
+          "capability": "workday_health_plan"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/lifestyle-guide/skills/fasting-tracker"
+        }
+      ]
     },
     "rental-move-decision": {
       "source_archive": "xiaoyi-six",
-      "status": "unchanged",
-      "affected_members": [],
-      "file_changes": []
+      "status": "affected",
+      "affected_members": ["area-researcher", "decision-page-integrator"],
+      "file_changes": [
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/area-researcher/persona/ROLE.md",
+          "capability": "commute_comparison"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/area-researcher/skills/amap-jsapi-skill"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/decision-page-integrator/persona/ROLE.md",
+          "capability": "single_html_delivery"
+        }
+      ]
     },
     "family-learning-companion": {
       "source_archive": "xiaoyi-six",
-      "status": "unchanged",
-      "affected_members": [],
-      "file_changes": []
+      "status": "affected",
+      "affected_members": ["study-plan-designer", "progress-coach"],
+      "file_changes": [
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/study-plan-designer/persona/ROLE.md",
+          "capability": "habit_checkin_page"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/study-plan-designer/persona/ROLE.md",
+          "capability": "single_html_delivery"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/study-plan-designer/skills/habit-flow-skill"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/progress-coach/persona/ROLE.md",
+          "capability": "habit_checkin_page"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/progress-coach/persona/ROLE.md",
+          "capability": "single_html_delivery"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/progress-coach/skills/habit-flow-skill"
+        },
+        {
+          "op": "delete_tree",
+          "path": "agents/progress-coach/skills/autonomous-tasks"
+        }
+      ]
     },
     "family-party-planner": {
       "source_archive": "xiaoyi-six",
       "status": "affected",
-      "affected_members": ["invitation-visual-designer"],
+      "affected_members": ["invitation-visual-designer", "party-page-integrator"],
       "file_changes": [
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/party-page-integrator/persona/ROLE.md",
+          "capability": "single_html_delivery"
+        },
         {
           "op": "remove_skill_reference",
           "path": "manifest.json",
@@ -416,6 +654,11 @@
           "op": "ensure_native_tool_instruction",
           "path": "agents/storage-visual-page-designer/persona/ROLE.md",
           "capability": "image_generation"
+        },
+        {
+          "op": "ensure_native_tool_instruction",
+          "path": "agents/storage-visual-page-designer/persona/ROLE.md",
+          "capability": "single_html_delivery"
         },
         {
           "op": "delete_tree",

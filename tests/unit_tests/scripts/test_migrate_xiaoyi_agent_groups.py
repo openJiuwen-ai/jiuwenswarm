@@ -18,6 +18,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _source_group(tmp_path: Path) -> Path:
     root = tmp_path / "family-learning-companion"
+    members = ["leader", "study-plan-designer", "progress-coach"]
     _write_json(
         root / "manifest.json",
         {
@@ -25,24 +26,25 @@ def _source_group(tmp_path: Path) -> Path:
             "package_type": "agent_group",
             "name": "family-learning-companion",
             "description": "小艺 Work 学习陪伴",
-            "agents": ["leader"],
+            "agents": members,
             "skills": [],
         },
     )
-    _write_json(
-        root / "agents" / "leader" / "manifest.json",
-        {
-            "schemaVersion": "0.0.1",
-            "packageType": "agent_template",
-            "name": "leader",
-            "description": "主理人",
-            "persona": {"dir": "persona"},
-            "skills": [],
-        },
-    )
-    persona = root / "agents" / "leader" / "persona" / "ROLE.md"
-    persona.parent.mkdir(parents=True)
-    persona.write_text("# 主理人\n", encoding="utf-8")
+    for member in members:
+        _write_json(
+            root / "agents" / member / "manifest.json",
+            {
+                "schemaVersion": "0.0.1",
+                "packageType": "agent_template",
+                "name": member,
+                "description": f"{member} fixture",
+                "persona": {"dir": "persona"},
+                "skills": [],
+            },
+        )
+        persona = root / "agents" / member / "persona" / "ROLE.md"
+        persona.parent.mkdir(parents=True)
+        persona.write_text(f"# {member}\n", encoding="utf-8")
     (root / "README.md").write_text("# 原始详情\n\n保留这段说明。\n", encoding="utf-8")
     return root
 
@@ -74,6 +76,11 @@ def test_complete_pipeline_emits_importable_single_root_zip(tmp_path: Path) -> N
         assert roots == {"family-learning-companion"}
         manifest = json.loads(package.read("family-learning-companion/manifest.json"))
         assert manifest["package_type"] == "agent_group"
+        assert manifest["team_mode"] == "predefined"
+        assert (
+            "<!-- workswarm-adapter:member-instruction -->"
+            in manifest["member_instruction"]
+        )
         readme = package.read("family-learning-companion/README.md").decode()
         assert "保留这段说明" in readme
         assert "小艺 Work" not in readme
