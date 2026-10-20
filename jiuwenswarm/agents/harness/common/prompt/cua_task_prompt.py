@@ -21,7 +21,8 @@ _CUA_TASK_PROMPT = {
         "执行前取得用户最终确认。\n"
         "- 不要通过 Bash、PowerShell、代码执行、子进程、AppleScript、AutoHotkey、pyautogui "
         "等方式驱动应用窗口；桌面自动化只走 cua_agent。无需图形界面的普通文件/命令行工作"
-        "仍由你自己的工具完成。\n"
+        "仍由你自己的工具完成。cua_agent 内的 cua_repl 是受支持的程序化桌面入口，"
+        "由子代理根据任务复杂度选择使用。\n"
         "- `task_tool` 或 `cua_agent` 不可用时，明确说明不可用，不要改用命令行脚本操作图形界面。"
     ),
     "en": (
@@ -42,7 +43,8 @@ _CUA_TASK_PROMPT = {
         "user's final confirmation before the desktop task performs them.\n"
         "- Do not use Bash, PowerShell, code execution, subprocesses, AppleScript, AutoHotkey, "
         "pyautogui, or similar to drive application windows; desktop automation goes through "
-        "cua_agent only. Plain file and shell work that needs no GUI stays with your own tools.\n"
+        "cua_agent only. Its cua_repl is the supported programmatic desktop entry point; let the "
+        "subagent choose it for multi-step workflows. Plain file and shell work that needs no GUI stays with your own tools.\n"
         "- If `task_tool` or `cua_agent` is unavailable, state that clearly; do not fall back to "
         "scripting the GUI from the command line."
     ),
@@ -73,15 +75,15 @@ _CUA_UNAVAILABLE_PROMPT = {
     "cn": (
         "## 桌面能力不可用\n\n"
         "- 桌面子代理 cua_agent 已在配置中启用，但当前模型无法理解图片输入，而 cua_agent "
-        "只能通过截图观察屏幕，因此本会话未挂载它。\n"
+        "需要截图理解能力，因此本会话未挂载它。\n"
         "- 当用户要求操作本机应用或桌面时，直接说明这一点，并建议用户切换到支持图片输入的模型"
         "后重试。不要改用 Bash、PowerShell、代码执行、pyautogui 等方式驱动图形界面。"
     ),
     "en": (
         "## Desktop Capability Unavailable\n\n"
         "- The desktop subagent cua_agent is enabled in the configuration, but the current "
-        "model cannot read image input and cua_agent sees the screen only through "
-        "screenshots, so it is not mounted in this session.\n"
+        "model cannot read image input required for desktop visual observation, "
+        "so cua_agent is not mounted in this session.\n"
         "- When the user asks to operate a local application or the host desktop, say so "
         "directly and suggest switching to a model that supports image input, then retrying. "
         "Do not drive the GUI through Bash, PowerShell, code execution, pyautogui, or similar."

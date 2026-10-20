@@ -125,7 +125,7 @@ tui = ["workswarm-tui==0.2.5.beta1"]  # build-config: tui-dependency
 distribute = ["openjiuwen[postgres,zmq]"]
 claude = ["openjiuwen[claude]"]
 codex = ["openjiuwen[codex]"]
-cua = ["openjiuwen[cua]"]
+cua = ["openjiuwen[cua]", "mcp>=1.30,<2", "regex>=2024.11.6", "jsonschema>=4.25,<5", "pillow>=12.3,<13"]
 shell-ast = []
 # Same packages as [dependency-groups] test (pip install -e ".[test]")
 test = [

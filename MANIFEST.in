@@ -13,3 +13,12 @@ recursive-include jiuwenswarm/agents/harness/code/rails/sdd/design_rail/skills *
 # 排除 node_modules，避免打包进 wheel
 prune jiuwenswarm/channels/web/frontend/node_modules
 global-exclude node_modules
+
+# Runtime inputs used by the task-owned cua_repl subprocess.
+include jiuwenswarm/cua_engine/pyproject.toml
+include jiuwenswarm/cua_engine/backends/macos/Package.swift
+recursive-include jiuwenswarm/cua_engine/src *.py *.pyi
+recursive-include jiuwenswarm/cua_engine/backends/macos/Sources *.swift
+recursive-include jiuwenswarm/cua_engine/backends/windows *.cs *.json
+recursive-include jiuwenswarm/cua_engine/assets *.svg *.json
+recursive-include jiuwenswarm/cua_engine/skills *.md

@@ -24,7 +24,6 @@ from openjiuwen.harness.image_modality_probe import (
 )
 from openjiuwen.harness.schema.deep_agent_spec import SubAgentConfig
 from openjiuwen.harness.subagents.cua_agent import (
-    CUA_AGENT_FACTORY_NAME,
     DEFAULT_CUA_AGENT_DESCRIPTION,
     create_cua_agent,
 )
@@ -35,6 +34,7 @@ from jiuwenswarm.agents.harness.common.cua_defaults import (
     DEFAULT_CUA_SNAPSHOT_KEEP_LAST_K,
     resolve_cua_factory_options,
 )
+from jiuwenswarm.agents.harness.computer_use.rail import ComputerUseRail
 from jiuwenswarm.agents.harness.common.prompt.cua_task_prompt import (
     build_cua_task_prompt,
 )
@@ -65,6 +65,10 @@ def _cua_spec(subagents):
     return next(spec for spec in subagents if spec.agent_card.name == "cua_agent")
 
 
+def _cua_rail(spec):
+    return next(rail for rail in spec.rails if isinstance(rail, ComputerUseRail))
+
+
 # ── single-agent (agent mode) path ───────────────────────────────────────
 
 
@@ -88,7 +92,8 @@ def test_single_agent_mounts_cua_agent_only_when_explicitly_enabled(
     )
 
     spec = _cua_spec(subagents)
-    assert spec.factory_name == CUA_AGENT_FACTORY_NAME
+    assert spec.factory_name is None
+    assert _cua_rail(spec).repl_enabled
     assert spec.max_iterations == 7
     # Shares the parent's filesystem boundary like every other built-in spec.
     assert spec.sys_operation is adapter._sys_operation
@@ -142,7 +147,8 @@ def test_code_mode_mounts_cua_agent_when_enabled(monkeypatch, tmp_path):
     )
 
     spec = _cua_spec(subagents)
-    assert spec.factory_name == CUA_AGENT_FACTORY_NAME
+    assert spec.factory_name is None
+    assert _cua_rail(spec).repl_enabled
     assert spec.sys_operation is adapter._sys_operation
     # Code mode never lets sub-agents create their own workspace.
     assert spec.factory_kwargs["auto_create_workspace"] is False
@@ -214,12 +220,14 @@ def test_swarm_cua_provider_builds_cua_factory_spec():
     spec = build_swarm_cua_agent({"max_iterations": 11}, ctx)
 
     assert spec is not None
-    assert spec.factory_name == CUA_AGENT_FACTORY_NAME
+    assert spec.factory_name is None
+    assert _cua_rail(spec).repl_enabled
     assert spec.agent_card.name == "cua_agent"
     assert spec.max_iterations == 11
-    # agent-core's cua_* kwargs survive; the swarm only adds the workspace flag.
+    # The generic factory receives ordinary options; backend settings live on
+    # the forkable rail, not unsupported DeepAgent keyword arguments.
     assert spec.factory_kwargs["auto_create_workspace"] is False
-    assert "cua_capabilities" in spec.factory_kwargs
+    assert "cua_capabilities" not in spec.factory_kwargs
 
 
 # ── snapshot retention / pause knobs ─────────────────────────────
@@ -264,7 +272,7 @@ def test_team_specs_carry_pause_on_user_input_to_the_provider():
     )
     ctx.extras["_parent_model"] = MagicMock()
     spec = build_swarm_cua_agent(dict(cua.factory_kwargs), ctx)
-    assert spec.factory_kwargs["cua_pause_on_user_input"] is False
+    assert _cua_rail(spec).pause_on_user_input is False
 
 
 def test_team_path_pause_default_matches_the_single_agent_path():
@@ -288,7 +296,7 @@ def test_team_path_pause_default_matches_the_single_agent_path():
     agent_core_default = (
         inspect.signature(create_cua_agent).parameters["cua_pause_on_user_input"].default
     )
-    assert spec.factory_kwargs["cua_pause_on_user_input"] is agent_core_default is False
+    assert _cua_rail(spec).pause_on_user_input is agent_core_default is False
 
 
 def test_invalid_cua_knobs_are_dropped_instead_of_aborting_the_build():
@@ -321,8 +329,9 @@ def test_single_agent_passes_cua_knobs_to_the_factory(monkeypatch, tmp_path):
         {},
     )
 
-    kwargs = _cua_spec(subagents).factory_kwargs
-    assert kwargs["cua_snapshot_keep_last_k"] == 1
+    spec = _cua_spec(subagents)
+    kwargs = spec.factory_kwargs
+    assert spec.rails[1].keep == 1
     assert "cua_delivery_mode" not in kwargs
 
 
@@ -333,8 +342,7 @@ def test_single_agent_cua_knob_defaults(monkeypatch, tmp_path):
         MagicMock(), {"subagents": {"cua_agent": {"enabled": True}}}, {}
     )
 
-    kwargs = _cua_spec(subagents).factory_kwargs
-    assert kwargs["cua_snapshot_keep_last_k"] == DEFAULT_CUA_SNAPSHOT_KEEP_LAST_K
+    assert _cua_spec(subagents).rails[1].keep == DEFAULT_CUA_SNAPSHOT_KEEP_LAST_K
 
 
 def test_team_specs_carry_cua_knobs_to_the_provider():
@@ -363,7 +371,7 @@ def test_team_specs_carry_cua_knobs_to_the_provider():
     )
     ctx.extras["_parent_model"] = MagicMock()
     spec = build_swarm_cua_agent(dict(cua.factory_kwargs), ctx)
-    assert spec.factory_kwargs["cua_snapshot_keep_last_k"] == 1
+    assert spec.rails[1].keep == 1
     assert "cua_delivery_mode" not in spec.factory_kwargs
 
 

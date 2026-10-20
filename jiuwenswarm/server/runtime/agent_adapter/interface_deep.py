@@ -109,7 +109,7 @@ except ImportError:
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
-from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config
+from jiuwenswarm.agents.harness.computer_use.config import build_cua_agent_config
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
 from openjiuwen.harness.subagent_runtime import (
     SUBAGENT_ACTIVITY_EVENT_TYPE,
@@ -5240,7 +5240,7 @@ class JiuWenSwarmDeepAdapter:
         if self._is_subagent_enabled(cua_agent_cfg) and cua_model_rejects_images(model):
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] cua_agent skipped: the model rejects image input "
-                "and cua_agent sees the screen only through screenshots"
+                "and desktop visual observation requires image input"
             )
         elif self._is_subagent_enabled(cua_agent_cfg):
             subagents.append(

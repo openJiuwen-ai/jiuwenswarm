@@ -23,14 +23,16 @@ DEFAULT_CUA_SNAPSHOT_KEEP_LAST_K = 3
 # subagent descriptions", so the card has to name the kinds of tasks it takes.
 CUA_AGENT_CARD_DESCRIPTION = {
     "cn": (
-        "专用桌面子代理，通过截图和真实的鼠标键盘输入操作本机应用窗口：启动应用、"
+        "专用桌面子代理，通过截图、无障碍树和鼠标键盘操作本机应用窗口；"
+        "简单观察可用单步工具，多步工作流优先通过 Python cua_repl 连续执行。支持启动应用、"
         "在原生窗口（Office、IDE、聊天客户端、系统对话框等）内点击/输入/按快捷键/滚动、"
         "读取窗口当前内容、查看已打开的应用与窗口。凡是要在本机图形界面上执行的操作，"
         "都应交给它，而不是自行用脚本驱动界面。"
     ),
     "en": (
         "Dedicated desktop subagent that controls host application windows through "
-        "screenshots and real mouse and keyboard input: launching apps, clicking / typing / pressing hotkeys / "
+        "screenshots, accessibility and mouse/keyboard input. Use individual tools for simple "
+        "observations; prefer Python cua_repl for multi-step workflows. Supports launching apps, clicking / typing / pressing hotkeys / "
         "scrolling inside native windows (Office, IDEs, chat clients, system dialogs), "
         "reading what a window currently shows, and listing open apps and windows. "
         "Use it for any action on this machine's GUI instead of scripting the UI yourself."
@@ -52,7 +54,7 @@ def build_cua_agent_card(language: str = "cn") -> AgentCard:
 def cua_model_rejects_images(model: Any) -> bool:
     """Return True only when ``model`` is known to reject image input.
 
-    cua_agent perceives the desktop through screenshots alone, so on such a
+    cua_agent needs screenshot perception alongside accessibility, so on such a
     model every call after the first capture fails and the run burns its whole
     iteration budget. The verdict comes from the image-modality probe cache
     (warmed for every ``models.defaults`` entry at server start, or declared via
@@ -70,6 +72,17 @@ def resolve_cua_factory_options(sub_cfg: Any) -> dict[str, Any]:
     """
     cfg = sub_cfg if isinstance(sub_cfg, dict) else {}
     options: dict[str, Any] = {}
+
+    raw_repl = cfg.get("repl_enabled")
+    if type(raw_repl) is bool:
+        options["cua_repl_enabled"] = raw_repl
+    elif raw_repl is not None:
+        logger.warning("[cua_agent] ignoring repl_enabled=%r (need true/false)", raw_repl)
+    raw_python = cfg.get("repl_python")
+    if isinstance(raw_python, str) and raw_python.strip():
+        options["cua_repl_python"] = raw_python.strip()
+    elif raw_python is not None:
+        logger.warning("[cua_agent] ignoring repl_python (need a Python executable)")
 
     raw_k = cfg.get("snapshot_keep_last_k")
     if raw_k is not None:
