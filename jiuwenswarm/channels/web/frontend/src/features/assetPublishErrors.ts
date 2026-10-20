@@ -6,6 +6,8 @@ const SAFE_FAILURE_KEYS = {
   RESOURCE_NOT_FOUND: 'resourceNotFound',
   VERSION_CONFLICT: 'versionConflict',
   HUB_REQUEST_FAILED: 'hubRequestFailed',
+  UNDEFINED_PLACEHOLDER: 'undefinedPlaceholder',
+  INVALID_AGENT_MCP: 'invalidAgentMcp',
 } as const;
 
 export type PublishFailureKey = (typeof SAFE_FAILURE_KEYS)[keyof typeof SAFE_FAILURE_KEYS] | 'requestFailed';
