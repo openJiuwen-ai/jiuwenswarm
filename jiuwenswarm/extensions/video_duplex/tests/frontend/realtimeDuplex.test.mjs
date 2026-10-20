@@ -288,6 +288,87 @@ test('a tool listed only in response.done still suppresses the buffered answer',
   assert.ok(posted.every(item => item.type !== 'audio'));
 });
 
+test('message item audio streams before response.done while text remains buffered', async () => {
+  const { session, assistantTexts, posted } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'stream' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'stream', item: { id: 'message', type: 'message' } });
+  session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'stream', delta: 'Hello.' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'stream', item_id: 'message', delta: btoa('aa') });
+  await session.playbackOperation;
+  assert.deepEqual(posted.map(item => item.type), ['audio']);
+  assert.deepEqual(assistantTexts, []);
+  session.handleEvent({ type: 'response.audio.done', response_id: 'stream', item_id: 'message' });
+  await session.playbackOperation;
+  assert.deepEqual(posted.map(item => item.type), ['audio', 'drain']);
+  session.handleEvent({ type: 'response.done', response: { id: 'stream', status: 'completed' } });
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1, 'completion does not replay streamed audio');
+  assert.equal(assistantTexts[0].text, 'Hello.');
+});
+
+test('early function_call item suppresses audio before complete tool arguments arrive', async () => {
+  const { session, assistantTexts, posted, functionCalls } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'tool' } });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'tool', delta: btoa('aa') });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'tool', item: { type: 'function_call', call_id: 'call' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'tool', item: { type: 'message' } });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'tool', delta: btoa('bb') });
+  session.handleEvent({ type: 'response.text.done', response_id: 'tool', text: 'Unverified answer' });
+  session.handleEvent({ type: 'response.done', response: { id: 'tool', status: 'completed' } });
+  await session.playbackOperation;
+  assert.deepEqual(posted.filter(item => item.type === 'audio'), []);
+  assert.deepEqual(assistantTexts, []);
+  assert.deepEqual(functionCalls, [], 'an item announcement must not execute incomplete arguments');
+});
+
+test('audio waits for matching item type and a delayed message item releases it only once', async () => {
+  const { session, posted } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'delayed' } });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'delayed', item_id: 'a', delta: btoa('aa') });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'delayed', item_id: 'b', delta: btoa('bb') });
+  await session.playbackOperation;
+  assert.equal(posted.length, 0);
+  const added = { type: 'response.output_item.added', response_id: 'delayed', item: { id: 'a', type: 'message' } };
+  session.handleEvent(added);
+  session.handleEvent(added);
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  session.handleEvent({ ...added, item: { id: 'b', type: 'message' } });
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 2);
+});
+
+test('late tool item stops future audio but cannot retract streamed message audio', async () => {
+  const { session, posted } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'mixed' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'mixed', item: { type: 'message' } });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'mixed', delta: btoa('aa') });
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'mixed', item: { type: 'function_call' } });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'mixed', delta: btoa('bb') });
+  session.handleEvent({ type: 'response.done', response: { id: 'mixed', status: 'completed' } });
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  assert.equal(session.messageAudioItems.size, 0);
+});
+
+test('user interruption clears streaming audio and late item events cannot reopen playback', async () => {
+  const { session, posted } = createSession();
+  const added = { type: 'response.output_item.added', response_id: 'interrupted-stream', item: { type: 'message' } };
+  session.handleEvent({ type: 'response.created', response: { id: 'interrupted-stream' } });
+  session.handleEvent(added);
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'interrupted-stream', delta: btoa('aa') });
+  await session.playbackOperation;
+  session.interruptQwenResponse('new-turn', 200, 100, 80);
+  assert.equal(session.messageAudioItems.size, 0);
+  assert.ok(posted.some(item => item.type === 'clear'));
+  session.handleEvent(added);
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'interrupted-stream', delta: btoa('bb') });
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+});
+
 function createSession(videoFrame = null, callbackOverrides = {}) {
   const states = [];
   const posted = [];
