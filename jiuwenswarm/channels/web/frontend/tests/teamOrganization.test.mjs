@@ -392,6 +392,7 @@ test('organization identity uses the selected Team package, preserving the sessi
   for (const [index, team] of organizationTeams.teams.entries()) {
     assert.deepEqual(resolveOrganizationTeamIdentity(team, groupIdentities), {
       id: groupIdentities[index].id,
+      name: groupIdentities[index].name,
       displayName: groupIdentities[index].displayName,
       avatarUrl: groupIdentities[index].avatarUrl,
     });
@@ -426,6 +427,36 @@ test('Team selector shows all group logos and names, switches identity, and hide
       const count = calls.length;
       await act(async () => root.render(React.createElement(TeamSelector, { sessionId: 'another', groups: groupIdentities })));
       assert.equal(calls.length, count);
+    },
+  );
+});
+
+test('uninstalled Team labels reuse only their own matching conversation snapshots', async () => {
+  await withOrganizationPanel(
+    (method, params) => method === 'team.list' ? organizationTeams
+      : method === 'org.snapshot' ? boundSnapshot
+      : { team_id: params.team_id, members: [], tasks: [] },
+    async ({ root }) => {
+      for (const [index, team] of organizationTeams.teams.entries()) {
+        useSessionStore.getState().setTeamGroupIdentity(
+          team.is_owner ? 'session' : `session::${team.team_id}`,
+          groupIdentities[index],
+        );
+      }
+      await act(async () => root.render(React.createElement(TeamSelector, { sessionId: 'session', groups: [] })));
+      for (const [index, team] of organizationTeams.teams.entries()) {
+        await act(async () => document.querySelector('[data-testid="chat-panel-team-select-trigger"]').click());
+        const option = document.querySelector(`[data-team-id="${team.team_id}"]`);
+        assert.match(option.textContent, new RegExp(groupIdentities[index].displayName));
+        await act(async () => option.click());
+        assert.match(document.querySelector('[data-testid="chat-panel-team-select-value"]').textContent,
+          new RegExp(groupIdentities[index].displayName));
+      }
+      assert.equal(resolveOrganizationTeamIdentity(organizationTeams.teams[1], [], groupIdentities[0]), null);
+      assert.equal(resolveOrganizationTeamIdentity({ team_id: 'summary' }, [], groupIdentities[0]), null);
+      for (const team of organizationTeams.teams) {
+        useSessionStore.getState().setTeamGroupIdentity(team.is_owner ? 'session' : `session::${team.team_id}`, null);
+      }
     },
   );
 });

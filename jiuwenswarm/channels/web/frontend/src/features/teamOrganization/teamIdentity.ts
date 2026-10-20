@@ -9,13 +9,14 @@ import type { RuntimeTeamInfo } from '../../stores/teamSelectorStore';
 export function resolveOrganizationTeamIdentity(
   team: RuntimeTeamInfo | undefined | null,
   groups: AgentGroupCatalogItem[],
+  snapshot?: AgentGroupIdentity | null,
 ): AgentGroupIdentity | null {
   const groupName = team?.agent_group_name?.trim();
   if (!groupName) return null;
   const group = groups.find((item) => item.name === groupName || item.id === groupName);
   return group
     ? { id: group.id, name: group.name, displayName: group.displayName, avatarUrl: group.avatarUrl }
-    : null;
+    : snapshot && (snapshot.name === groupName || snapshot.id === groupName) ? snapshot : null;
 }
 
 /** The organization panel loads the installed directory only while it is displaying an organization. */
