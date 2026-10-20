@@ -3160,7 +3160,7 @@ class JiuWenSwarm:
         # empty clears selection when neither side contributes names.
         params = request.params if isinstance(request.params, dict) else {}
         try:
-            runtime_binding = self._resolve_runtime_binding_for_request(
+            runtime_binding = await self._resolve_runtime_binding_for_request(
                 adapter,
                 request,
                 session_id,
@@ -3784,7 +3784,7 @@ class JiuWenSwarm:
         # empty clears selection when neither side contributes names.
         params = request.params if isinstance(request.params, dict) else {}
         try:
-            runtime_binding = self._resolve_runtime_binding_for_request(
+            runtime_binding = await self._resolve_runtime_binding_for_request(
                 adapter,
                 request,
                 session_id,
@@ -5256,7 +5256,7 @@ class JiuWenSwarm:
         await reconcile(session_id, needed, **supported_kwargs)
 
     @staticmethod
-    def _resolve_runtime_binding_for_request(
+    async def _resolve_runtime_binding_for_request(
         adapter: AgentAdapter,
         request: AgentRequest,
         session_id: str,
@@ -5269,6 +5269,8 @@ class JiuWenSwarm:
             return None
         params = request.params if isinstance(request.params, dict) else {}
         runtime_binding = resolver(session_id, params)
+        if inspect.isawaitable(runtime_binding):
+            runtime_binding = await runtime_binding
         request.trusted_runtime_binding = runtime_binding
         return runtime_binding
 

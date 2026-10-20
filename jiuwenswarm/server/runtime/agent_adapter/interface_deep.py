@@ -190,6 +190,16 @@ _TTSE_DREAM_TTL_DAYS = 90
 _TTSE_CONSULT_TOOL_NAME = "ttse_consult"
 
 
+async def _agent_template_version(pkg_dir: Path) -> str:
+    """Installed expert version from openjiuwen's card; empty when the manifest cannot be read."""
+    from openjiuwen.harness.resources import read_agent_template_card
+
+    try:
+        return (await read_agent_template_card(pkg_dir / "manifest.json")).version
+    except ValueError:
+        return ""
+
+
 def _merge_ttse_config(runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Yaml ``react.ttse`` plus runtime overlay (runtime keys win).
 
@@ -2805,7 +2815,7 @@ class JiuWenSwarmDeepAdapter:
         if current is None:
             return
         if v != "" and v == current[0]:
-            desired_version = equipment.read_manifest_version(
+            desired_version = await _agent_template_version(
                 equipment.resolve_agent_template_dir(v)
             )
             if desired_version == current[2]:
@@ -2868,7 +2878,7 @@ class JiuWenSwarmDeepAdapter:
         if v == "":
             return
         pkg_dir = equipment.resolve_agent_template_dir(v)
-        desired_version = equipment.read_manifest_version(pkg_dir)
+        desired_version = await _agent_template_version(pkg_dir)
         current = self._loaded_agent_template
         if (
             current is not None
@@ -3613,7 +3623,7 @@ class JiuWenSwarmDeepAdapter:
         async with lock:
             existing = self._session_adapters.get(sid)
             if external_harness_binding is None and existing is None:
-                external_harness_binding = load_persisted_external_harness_binding(sid)
+                external_harness_binding = await load_persisted_external_harness_binding(sid)
 
             if existing is not None and external_harness_binding is not None:
                 requested_kind = external_harness_binding.get("kind")
@@ -5653,13 +5663,13 @@ class JiuWenSwarmDeepAdapter:
             logger.debug("[JiuWenSwarmDeepAdapter] unregister_mcp_by_name: '%s' not registered", name)
         return removed_any
 
-    def resolve_runtime_binding(
+    async def resolve_runtime_binding(
         self,
         session_id: str,
         params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """Resolve the root request's runtime before MCP session reconciliation."""
-        return resolve_external_harness_binding(
+        return await resolve_external_harness_binding(
             self._session_adapter_key(session_id),
             params,
         )
@@ -16882,7 +16892,7 @@ class JiuWenSwarmDeepAdapter:
             if request.req_method is ReqMethod.CHAT_SEND:
                 try:
                     if runtime_binding is None:
-                        runtime_binding = self.resolve_runtime_binding(
+                        runtime_binding = await self.resolve_runtime_binding(
                             session_id,
                             request.params,
                         )
@@ -17591,7 +17601,7 @@ class JiuWenSwarmDeepAdapter:
             if request.req_method is ReqMethod.CHAT_SEND:
                 try:
                     if runtime_binding is None:
-                        runtime_binding = self.resolve_runtime_binding(
+                        runtime_binding = await self.resolve_runtime_binding(
                             session_id,
                             request.params,
                         )

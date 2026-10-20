@@ -744,7 +744,7 @@ class JiuwenExpertTeamLauncher:
             raise ValueError("session_id is required")
         self.ensure_turn_runner_installed()
 
-        from jiuwenswarm.agents.swarm.agent_group import (
+        from openjiuwen.agent_teams.experts import (
             load_agent_group_package_bundle,
         )
         from jiuwenswarm.server.runtime.extension_package_manager import (

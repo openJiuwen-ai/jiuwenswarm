@@ -84,8 +84,7 @@ def _design_member_roster(team_spec: Any) -> list[Any]:
     skipped by the join anyway, but excluding them here keeps the roster
     exactly the worker cast).
     """
-    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
-    from jiuwenswarm.agents.swarm.assembly import _template_team_prompt
+    from openjiuwen.agent_teams.experts import load_agent_group_package, render_template_persona
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_dir,
         resolve_agent_group_member_display_name,
@@ -106,7 +105,11 @@ def _design_member_roster(team_spec: Any) -> list[Any]:
         if member_name in ("leader", "teammate"):
             continue
         member_prompt = (
-            _template_team_prompt(template, teammate_base)
+            render_template_persona(
+                template,
+                language=teammate_base.language,
+                workspace=teammate_base.workspace.root_path if teammate_base.workspace is not None else None,
+            )
             if teammate_base is not None
             else ""
         )

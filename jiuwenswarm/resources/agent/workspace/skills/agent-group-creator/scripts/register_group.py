@@ -15,7 +15,7 @@ def main() -> int:
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args()
     try:
-        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+        from openjiuwen.agent_teams.experts import load_agent_group_package
         from jiuwenswarm.common.utils import get_user_workspace_dir
         from jiuwenswarm.server.runtime.extension_package_manager import (
             import_agent_group,
