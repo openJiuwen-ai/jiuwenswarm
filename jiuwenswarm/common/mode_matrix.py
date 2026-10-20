@@ -196,6 +196,10 @@ class ResolvedMode:
         profile: 本次请求使用的 profile（``normal`` / ``code``）。
         normal_mode: 退出 plan 后应回到的 canonical 模式。
         from_web_composition: 是否由 Web 的 mode + work_mode 组合而来。
+        adapter_mode: 实现层 adapter 选择（``agent`` / ``code`` / ``flash``）。
+            它与业务 canonical 分离，避免把普通办公请求的 canonical 改写成
+            ``flash`` 后破坏轨迹、UI 与 Plan 状态判据。
+        adapter_source: adapter 选择的来源，主要用于观测和测试。
     """
 
     manager_mode: str
@@ -208,6 +212,22 @@ class ResolvedMode:
     profile: str
     normal_mode: str
     from_web_composition: bool
+    adapter_mode: str = "agent"
+    adapter_source: str = "default"
+
+
+def resolve_adapter_mode(manager_mode: str) -> str:
+    """把 AgentManager 一级模式映射为底层 adapter 实现选择。
+
+    ``manager_mode`` 描述 AgentManager/factory 使用哪套 facade；``adapter_mode``
+    只描述该 facade 内部应创建的 adapter。普通 team 仍复用 DeepAdapter，因此
+    映射为 ``agent``；code 保持 CodeAdapter；flash 保持 FlashAdapter。
+    """
+    if manager_mode == "code":
+        return "code"
+    if manager_mode == "flash":
+        return "flash"
+    return "agent"
 
 
 def normalize_mode_text(raw_mode: Any) -> str:
@@ -423,6 +443,7 @@ def resolve_request_mode(
                 profile="code" if work_mode == "code" else "normal",
                 normal_mode=base_mode_without_plan(canonical_mode),
                 from_web_composition=True,
+                adapter_mode=resolve_adapter_mode(manager_mode),
             )
 
     new_canonical = resolve_new_canonical_mode(mode_text)
@@ -440,6 +461,7 @@ def resolve_request_mode(
             profile="code" if canonical_work_mode == "code" else "normal",
             normal_mode=base_mode_without_plan(canonical_mode),
             from_web_composition=False,
+            adapter_mode=resolve_adapter_mode(manager_mode),
         )
 
     manager_mode, sub_mode, canonical_mode = legacy_resolver(
@@ -464,6 +486,7 @@ def resolve_request_mode(
         profile="code" if manager_mode == "code" else "normal",
         normal_mode=base_mode_without_plan(canonical_mode),
         from_web_composition=False,
+        adapter_mode=resolve_adapter_mode(manager_mode),
     )
 
 
@@ -493,5 +516,6 @@ __all__ = [
     "normalize_work_mode",
     "read_request_work_mode",
     "resolve_new_canonical_mode",
+    "resolve_adapter_mode",
     "resolve_request_mode",
 ]

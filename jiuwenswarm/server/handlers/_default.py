@@ -23,7 +23,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
     is_interrupt_resume_payload,
 )
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
-from jiuwenswarm.common.mode_matrix import is_plan_mode
+from jiuwenswarm.common.mode_matrix import NEW_AGENT_WORK_NORMAL, is_plan_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.ws_diagnostics import describe_ws_exception, format_ws_diagnostics
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -439,6 +439,36 @@ async def _open_plan_state_session(
     return deep_agent, session, False
 
 
+def _is_normal_work_agent_mode(
+    mode: str,
+    sub_mode: str | None,
+    runtime_work_mode: str | None,
+    canonical_mode: str | None,
+) -> bool:
+    """Whether this request is the normal-office single-agent business mode."""
+    if mode != "agent" or sub_mode is not None:
+        return False
+    if runtime_work_mode != "work":
+        return False
+    return canonical_mode in {"agent", NEW_AGENT_WORK_NORMAL}
+
+
+def _can_persist_work_agent_adapter_mode(
+    mode: str,
+    sub_mode: str | None,
+    runtime_work_mode: str | None,
+    canonical_mode: str | None,
+) -> bool:
+    """Whether adapter implementation is durable metadata for this request."""
+    if sub_mode is not None or runtime_work_mode != "work":
+        return False
+    return mode in {"agent", "flash"} and canonical_mode in {
+        "agent",
+        NEW_AGENT_WORK_NORMAL,
+        "flash",
+    }
+
+
 async def _prepare_code_mode_chat_turn(
     ctx,
     request: AgentRequest,
@@ -488,6 +518,8 @@ async def _prepare_code_mode_chat_turn(
     sid = str(request.session_id or "").strip()
     sessions_root = _sessions_dir_for_request(request)
     session_metadata: dict[str, Any] = {}
+    stored_adapter_mode = ""
+    stored_business_mode = ""
     if sid:
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,
@@ -500,6 +532,10 @@ async def _prepare_code_mode_chat_turn(
         )
         if isinstance(loaded_metadata, dict):
             session_metadata = loaded_metadata
+        stored_adapter_mode = str(
+            session_metadata.get("adapter_mode") or ""
+        ).strip().lower()
+        stored_business_mode = str(session_metadata.get("mode") or "").strip().lower()
 
         # Control continuations normally contain only answers + the interrupted
         # tool_call id.  Restore the original canonical mode before applying
@@ -574,19 +610,50 @@ async def _prepare_code_mode_chat_turn(
     finally:
         if overridden_work_mode is not None:
             params["work_mode"] = overridden_work_mode
+
+    canonical_mode = (
+        request.params.get("mode") if isinstance(request.params, dict) else None
+    )
+    # A normal-office session is implementation-sticky.  If it has already run
+    # on Flash, disabling the global switch must not silently rewrite that
+    # live conversation to Deep; new sessions follow the current switch.  This
+    # is deliberately narrower than canonical mode: code, team and plan requests
+    # keep their original routing rules, and F07 will decide Flash/Plan support.
+    is_normal_work_agent = _is_normal_work_agent_mode(
+        mode, sub_mode, runtime_work_mode, canonical_mode,
+    )
+    has_flash_session_affinity = (
+        stored_adapter_mode == "flash"
+        # Compatibility with sessions written by the pre-F01 routing.
+        or stored_business_mode == "flash"
+    )
+    if is_normal_work_agent and has_flash_session_affinity:
+        mode = "flash"
+        request.resolved_adapter_mode = "flash"
+        request.resolved_adapter_source = "session_sticky"
+        logger.info(
+            "[_prepare_code_mode_chat_turn] Flash session affinity restored: "
+            "session_id=%s canonical_mode=%s",
+            sid,
+            canonical_mode,
+        )
+
     agent_mode = "agent" if mode == "auto_harness" else mode
     requested_project_dir = resolve_request_project_dir(request)
     # [改动] 写盘用 canonical mode（request.params["mode"]，已被规范化为
     # "agent.plan"/"team" 等），而非一级 mode（"agent"），使磁盘出现你期望的两类值。
-    canonical_mode = (
-        request.params.get("mode") if isinstance(request.params, dict) else None
-    )
+    metadata_adapter_mode = None
+    if _can_persist_work_agent_adapter_mode(
+        mode, sub_mode, runtime_work_mode, canonical_mode,
+    ):
+        metadata_adapter_mode = request.resolved_adapter_mode
     if sync_metadata:
         project_dir = _sync_chat_request_metadata(
             request,
             requested_project_dir,
             canonical_mode if canonical_mode else mode,
             explicit_mode_provided=explicit_mode_provided,
+            adapter_mode=metadata_adapter_mode,
         )
     else:
         # Read-only path (e.g. command.goal get): never create/update
@@ -672,6 +739,10 @@ async def _prepare_tenant_code_mode_chat_turn(
         return None
     if _is_readonly_goal_get_request(request):
         return None
+    # The background prewarm owns the first get_agent/prepare_session for this
+    # session.  Join it before manager selection so an immediately arriving
+    # first chat reuses that facade instead of creating a second adapter.
+    await ctx.services.tenant_pool().wait_for_session_prewarm(request.session_id)
     manager = await _get_tenant_agent_manager(ctx, request)
     mode, sub_mode, agent = await _prepare_code_mode_chat_turn(
         ctx,

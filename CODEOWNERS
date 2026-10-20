@@ -1,7 +1,7 @@
 # 指定文件/目录的Code Owner
-/jiuwenswarm/*.py @lixiaofeng6
-/jiuwenswarm/common/ @lixiaofeng6
-/jiuwenswarm/instance_manager/ @lixiaofeng6
+/jiuwenswarm/*.py @lixiaofeng6 @lixiaofeng3
+/jiuwenswarm/common/ @lixiaofeng6 @lixiaofeng3
+/jiuwenswarm/instance_manager/ @lixiaofeng6 @lixiaofeng3
 /jiuwenswarm/resources/ @KevinLLLove
 /jiuwenswarm/extensions/ @renquanjia
 /jiuwenswarm/perf/ @renquanjia
@@ -11,11 +11,11 @@
 /jiuwenswarm/agents/harness/ @renquanjia
 /jiuwenswarm/server/runtime/ @KevinLLLove
 /jiuwenswarm/server/hooks/ @renquanjia
-/jiuwenswarm/server/handlers/ @lixiaofeng6
-/jiuwenswarm/server/gateway_push/ @lixiaofeng6
-/jiuwenswarm/server/utils/ @lixiaofeng6
-/jiuwenswarm/server/transports/ @lixiaofeng6
-/jiuwenswarm/server/*.py @lixiaofeng6
+/jiuwenswarm/server/handlers/ @lixiaofeng6 @lixiaofeng3
+/jiuwenswarm/server/gateway_push/ @lixiaofeng6 @lixiaofeng3
+/jiuwenswarm/server/utils/ @lixiaofeng6 @lixiaofeng3
+/jiuwenswarm/server/transports/ @lixiaofeng6 @lixiaofeng3
+/jiuwenswarm/server/*.py @lixiaofeng6 @lixiaofeng3
 
 
 /jiuwenswarm/server/runtime/session/ @KevinLLLove

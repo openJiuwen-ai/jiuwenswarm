@@ -157,6 +157,12 @@ function isCronConversation(session: Pick<Session, 'cron_id'>): boolean {
   return Boolean(session.cron_id);
 }
 
+/** 与 project.get_sessions 一致：cron 执行会话不进普通对话；长程会话即使带 cron_id 也留在对话列表。 */
+function belongsInConversationList(session: Pick<Session, 'session_id' | 'cron_id'>): boolean {
+  if (!session.cron_id) return true;
+  return session.session_id.startsWith('longhorizon_');
+}
+
 async function refreshCronListsAfterDelete(
   deletedSessionIds: ReadonlySet<string>,
   fallbackProjectId?: string,
@@ -1503,7 +1509,9 @@ function AppContent() {
       }
       void (async () => {
         const session = await loadSessionMetadata(sessionId);
-        if (session) {
+        // 只把普通对话（含长程）刷进侧栏。cron 执行会话已由 chat.final 的
+        // loadCronSessions 进定时任务组，再 upsert 会在「对话」下多出一条。
+        if (session && belongsInConversationList(session)) {
           useWorkspaceStore.getState().upsertSession(session);
         }
       })();

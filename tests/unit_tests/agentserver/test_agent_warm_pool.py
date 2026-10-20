@@ -14,12 +14,14 @@ class _FakeRootAgent:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.prepared: list[str] = []
+        self.prepare_calls: list[dict] = []
         self.cleaned: list[str] = []
 
     async def prepare_session(self, *, session_id: str, **_kwargs) -> None:
         await asyncio.sleep(0)
         if self.fail:
             raise RuntimeError("prepare failed")
+        self.prepare_calls.append(_kwargs)
         self.prepared.append(session_id)
 
     async def cleanup_session_runtime(self, session_id: str) -> bool:
@@ -217,6 +219,79 @@ async def test_code_prewarm_uses_same_manager_cache_identity_as_code_chat(
 
 
 @pytest.mark.asyncio
+async def test_flash_work_prewarm_uses_flash_adapter_and_business_mode(
+    isolated_pool,
+) -> None:
+    agent = _FakeRootAgent()
+    pool = isolated_pool(agent)
+    await pool.sync(["web"], config={"flash": {"enabled": True}})
+    await _wait_until(lambda: len(pool._slots) == 1)
+
+    flash_key = pool.make_key(
+        channel_id="web",
+        project_id="default",
+        project_dir="",
+        work_mode="work",
+        adapter_mode="flash",
+    )
+    assert flash_key in pool._slots
+    assert pool._manager.get_agent_calls == [
+        {
+            "channel_id": "web",
+            "mode": "flash",
+            "project_dir": None,
+            "sub_mode": None,
+        }
+    ]
+    assert agent.prepare_calls == [
+        {
+            "channel_id": "web",
+            "mode": "agent",
+            "adapter_mode": "flash",
+            "project_dir": None,
+        }
+    ]
+    await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_flash_reload_replaces_unclaimed_prewarm_slot_without_history_loss(
+    isolated_pool,
+) -> None:
+    agent = _FakeRootAgent()
+    pool = isolated_pool(agent)
+    await pool.sync(["web"], config={"flash": {"enabled": True}})
+    await _wait_until(lambda: len(pool._slots) == 1)
+    flash_slot_ids = {slot.session_id for slot in pool._slots.values()}
+
+    await pool.sync(["web"], config={"flash": {"enabled": False}})
+    agent_key = pool.make_key(
+        channel_id="web",
+        project_id="default",
+        project_dir="",
+        work_mode="work",
+        adapter_mode="agent",
+    )
+    await _wait_until(
+        lambda: agent_key in pool._slots
+        and not flash_slot_ids.intersection(
+            slot.session_id for slot in pool._slots.values()
+        )
+    )
+
+    assert [call["mode"] for call in pool._manager.get_agent_calls] == [
+        "flash",
+        "agent",
+    ]
+    assert [call["adapter_mode"] for call in agent.prepare_calls] == [
+        "flash",
+        "agent",
+    ]
+    assert flash_slot_ids.issubset(set(agent.cleaned))
+    await pool.close()
+
+
+@pytest.mark.asyncio
 async def test_pool_keeps_one_ready_slot_total_and_claim_is_atomic(isolated_pool) -> None:
     agent = _FakeRootAgent()
     pool = isolated_pool(agent)
@@ -359,7 +434,7 @@ async def test_slow_older_sync_cannot_overwrite_newer_revision(
     call_count = 0
     call_lock = threading.Lock()
 
-    def _controlled_desired_keys(channels):
+    def _controlled_desired_keys(channels, config=None):
         nonlocal call_count
         with call_lock:
             call_count += 1
@@ -367,7 +442,7 @@ async def test_slow_older_sync_cannot_overwrite_newer_revision(
         if call_number == 1:
             first_started.set()
             assert release_first.wait(timeout=5)
-        return original_desired_keys(channels)
+        return original_desired_keys(channels, config=config)
 
     monkeypatch.setattr(pool, "_desired_keys", _controlled_desired_keys)
     older = asyncio.create_task(pool.sync(["web"], config={"model": "old"}))

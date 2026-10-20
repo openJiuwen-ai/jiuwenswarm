@@ -432,11 +432,20 @@ def fill_template_defaults(
 
 
 def load_yaml_dict(path: Path) -> dict[str, Any]:
-    """用 yaml.safe_load 读取 YAML 文件为 dict；不存在或无效时返回空 dict。"""
+    """安全读取 YAML 字典；缺失或非映射返回空字典，解析错误仍抛出。"""
+    # 直接使用安全 C 解析器，避免通用反序列化入口；无 C 扩展时回退安全接口。
+    loader_class = getattr(yaml, "CSafeLoader", None)
     if not path.exists():
         return {}
     with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+        if loader_class is None:
+            data = yaml.safe_load(f)
+        else:
+            loader = loader_class(f)
+            try:
+                data = loader.get_single_data()
+            finally:
+                loader.dispose()
     return data if isinstance(data, dict) else {}
 
 

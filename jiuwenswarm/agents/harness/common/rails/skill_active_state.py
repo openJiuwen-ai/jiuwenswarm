@@ -31,6 +31,7 @@ _SESSION_ID_EXTRA_KEY = "__jiuwenswarm_session_id__"
 # 由 interface._build_inputs 写入 run_context.extra，before_invoke 读取，
 # 用于 CR-3a：HITL 恢复轮不计入过期计数。
 _CHAT_SEND_SOURCE_EXTRA_KEY = "__jiuwenswarm_chat_send_source__"
+_SKILL_REVIVE_PENDING_KEY = "__jiuwenswarm_skill_revive_pending__"
 
 _current_session_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "skill_active_session_id",
@@ -70,7 +71,10 @@ def _shared_store(session_id: str):
 
 
 def _update_state(
-    session_id: str, update: Callable[[_SkillSessionState], None]
+    session_id: str,
+    update: Callable[[_SkillSessionState], None],
+    *,
+    revive_main: bool = False,
 ) -> None:
     store = _shared_store(session_id)
     if store is None:
@@ -90,7 +94,7 @@ def _update_state(
         if not store.session_directory(session_id).is_dir():
             logger.debug("[SkillActiveStateRail] session unavailable: %s", session_id)
             return
-        store.update_active_skill_state(session_id, mutate)
+        store.update_active_skill_state(session_id, mutate, revive_main=revive_main)
     except (
         OSError, ValueError, TypeError, RuntimeError,
         portalocker.exceptions.LockException,
@@ -421,6 +425,55 @@ class SkillActiveStateRail(DeepAgentRail):
             return session_id
         return self._owner_hint_for_default(ctx) or session_id
 
+    async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
+        """Mark a fresh skill_tool call for deferred atomic revival (SF-1/SF-2).
+
+        Task-termination paths (interrupt cancel/abort) invalidate the main
+        scope so late callbacks from the cancelled round cannot reopen the
+        credential window. A brand-new explicit skill_tool call is fresh
+        user intent and may drop that stale breaker - but the drop is
+        DEFERRED into the same transaction that persists this call's
+        activation (after_tool_call), never performed here: reviving up
+        front would let a late callback from the cancelled round slip past
+        the pop guard, and listing-only / rejected calls would drop the
+        breaker without any activation. Here we only probe (read-only) and
+        stamp the marker with the current tool_call_id so after_tool_call
+        can match it against the very same call.
+        """
+        inputs = getattr(ctx, "inputs", None)
+        if inputs is None:
+            return
+        tool_name = getattr(inputs, "tool_name", "") or ""
+        if tool_name != "skill_tool":
+            return
+        session_id = self._prefer_real_session_id(ctx, self._resolve_session_id(ctx))
+        if not session_id or session_id == _DEFAULT_SESSION_ID:
+            return
+        self._bind_session_id(ctx, session_id)
+        tool_call = getattr(inputs, "tool_call", None)
+        tool_call_id = str(getattr(tool_call, "id", "") or "")
+        if not tool_call_id:
+            return
+        store = _shared_store(session_id)
+        if store is None:
+            return
+        try:
+            invalidated = store.is_scope_invalidated(session_id, "main")
+        except (
+            OSError, ValueError, TypeError, RuntimeError,
+            portalocker.exceptions.LockException,
+        ) as exc:
+            logger.warning(
+                "[SkillActiveStateRail] breaker probe failed session=%s: %s",
+                session_id,
+                exc,
+            )
+            return
+        if invalidated:
+            extra = getattr(ctx, "extra", None)
+            if isinstance(extra, dict):
+                extra[_SKILL_REVIVE_PENDING_KEY] = tool_call_id
+
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         inputs = getattr(ctx, "inputs", None)
         if inputs is None:
@@ -435,36 +488,8 @@ class SkillActiveStateRail(DeepAgentRail):
         if tool_name not in {"skill_tool", "skill_complete"}:
             return
 
-        def apply(state: _SkillSessionState) -> None:
-
-            if tool_name == "skill_complete":
-                skill_name = (_get_arg(tool_call, "skill_name", "") or "").strip()
-                if skill_name and state.active_skill == skill_name:
-                    logger.info(
-                        "[SkillActiveStateRail] skill_complete(%s) session=%s -> idle",
-                        skill_name,
-                        session_id,
-                    )
-                    state.reset()
-                elif (
-                    skill_name
-                    and state.active_skill
-                    and state.active_skill != skill_name
-                ):
-                    # 激活名 ≠ 完成名：不清空（保持当前激活态），但留痕，
-                    # 防"状态挂死且无从排查"。
-                    logger.warning(
-                        "[SkillActiveStateRail] skill_complete(%s) ignored: active is "
-                        "'%s' session=%s (complete only clears on name match)",
-                        skill_name,
-                        state.active_skill,
-                        session_id,
-                    )
-                return
-
-            if tool_name != "skill_tool":
-                return
-
+        skill_name = ""
+        if tool_name == "skill_tool":
             meta = getattr(tool_msg, "metadata", None) or {}
             if meta.get("is_directory_listing"):
                 return
@@ -473,6 +498,57 @@ class SkillActiveStateRail(DeepAgentRail):
             ).strip()
             if not skill_name:
                 return
+
+        # 复活标记匹配：仅当本次调用是真正的 skill_tool 激活，且它的
+        # before_tool_call 探测到 main 熔断并打上了同一 tool_call_id 的
+        # 标记（框架保证同一工具调用的 before/after 共享 ctx）。匹配则
+        # 把解熔断与激活持久化合并进同一事务（SF-1：迟到回调无标记，
+        # 仍被 operate 的 pop 拦截）。值绑定 tool_call_id 防止 Agent 循环
+        # 复用 ctx.extra 时残留标记误伤后续调用。
+        #
+        # 已知残留：若本调用成功完成后、after 派发前的微窗口内发生第二次 cancel（revoke 重写熔断），标记匹配仍会持久化本技能。
+        revive_main = False
+        if tool_name == "skill_tool":
+            extra = getattr(ctx, "extra", None)
+            if isinstance(extra, dict):
+                tool_call_id = str(getattr(tool_call, "id", "") or "")
+                if (
+                    tool_call_id
+                    and extra.get(_SKILL_REVIVE_PENDING_KEY) == tool_call_id
+                ):
+                    revive_main = True
+                    extra.pop(_SKILL_REVIVE_PENDING_KEY, None)
+
+        def apply(state: _SkillSessionState) -> None:
+
+            if tool_name == "skill_complete":
+                complete_name = (_get_arg(tool_call, "skill_name", "") or "").strip()
+                if complete_name and state.active_skill == complete_name:
+                    logger.info(
+                        "[SkillActiveStateRail] skill_complete(%s) session=%s -> idle",
+                        complete_name,
+                        session_id,
+                    )
+                    state.reset()
+                elif (
+                    complete_name
+                    and state.active_skill
+                    and state.active_skill != complete_name
+                ):
+                    # 激活名 ≠ 完成名：不清空（保持当前激活态），但留痕，
+                    # 防"状态挂死且无从排查"。
+                    logger.warning(
+                        "[SkillActiveStateRail] skill_complete(%s) ignored: active is "
+                        "'%s' session=%s (complete only clears on name match)",
+                        complete_name,
+                        state.active_skill,
+                        session_id,
+                    )
+                return
+
+            if tool_name != "skill_tool":
+                return
+
             prior_skill = state.active_skill
             if prior_skill and prior_skill != skill_name:
                 # 切换到另一个 skill：旧 active_skill 在此清空（被新技能替换）。
@@ -497,7 +573,7 @@ class SkillActiveStateRail(DeepAgentRail):
                 state.source_session or "-",
             )
 
-        _update_state(session_id, apply)
+        _update_state(session_id, apply, revive_main=revive_main)
 
 
 __all__ = [

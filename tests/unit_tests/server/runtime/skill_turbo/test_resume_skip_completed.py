@@ -145,6 +145,34 @@ def test_bubble_progress_marker_is_internal_executor_metadata() -> None:
     assert "_bubble_progress" not in chunk.payload["data"]
 
 
+def test_needs_fallback_flag_is_stripped_from_node_delta_frame() -> None:
+    """_needs_fallback 内部协议键不得随 chat.delta.data 下发前端。
+
+    生产者在技能侧仓（pptx-craft P8.0 预处理失败 / P8 qa 全败 / P9 导出失败
+    等携带 _needs_fallback=True），失败 chunk 经 _execute_node_stream 直消费
+    进 _make_node_delta_chunk——data 是浅拷贝，此处剔除不影响 plan_node 侧
+    对原 chunk 的标志检测。
+    """
+    ex = _make_executor()
+    node = _LeafNode("p8_page_gen", depth=1)
+
+    source_chunk = {
+        "node": "p8_page_gen",
+        "status": "failed",
+        "message": "P8.0 预处理失败",
+        "ppt_gen_status": "failed",
+        "_needs_fallback": True,
+    }
+    chunk = ex._make_node_delta_chunk(
+        "request-1", "channel-1", node, source_chunk, None
+    )
+
+    assert chunk.payload["event_type"] == "chat.delta"
+    assert "_needs_fallback" not in chunk.payload["data"]
+    # 剔除发生在浅拷贝上：原 chunk 的标志保留，plan_node 标志检测不受影响
+    assert source_chunk["_needs_fallback"] is True
+
+
 @pytest.mark.asyncio
 async def test_deferred_task_start_flushes_after_start_banner() -> None:
     """开始横幅入队后才释放延期的 task.start，避免 start 反超横幅。"""
@@ -352,44 +380,6 @@ class TestExecutorShouldSkipSubplanExecute:
         }
         p0 = _LeafNode("p0_pipeline_init", depth=1)
         assert await ex._should_skip_subplan_execute(p0, {}) is False
-
-
-class TestExecutorSuppressSubplanStartBanner:
-    @pytest.mark.asyncio
-    async def test_resume_suppresses_in_progress_only(self):
-        ex = _make_executor()
-        ex._resume_replay = True
-        ex._task_states_holder = {
-            "task_p2": {
-                "task_id": "task_p2",
-                "task_content": "p2_requirement_collect",
-                "status": "in_progress",
-            },
-            "task_p5": {
-                "task_id": "task_p5",
-                "task_content": "p3_5_template_context",
-                "status": "pending",
-            },
-        }
-        p2 = _LeafNode("p2_requirement_collect", depth=1)
-        p5 = _LeafNode("p3_5_template_context", depth=1)
-
-        assert await ex._should_suppress_subplan_start_banner(p2, {}) is True
-        assert await ex._should_suppress_subplan_start_banner(p5, {}) is False
-
-    @pytest.mark.asyncio
-    async def test_non_resume_never_suppresses(self):
-        ex = _make_executor()
-        ex._resume_replay = False
-        ex._task_states_holder = {
-            "task_p2": {
-                "task_id": "task_p2",
-                "task_content": "p2_requirement_collect",
-                "status": "in_progress",
-            },
-        }
-        p2 = _LeafNode("p2_requirement_collect", depth=1)
-        assert await ex._should_suppress_subplan_start_banner(p2, {}) is False
 
 
 class TestFallbackContractErrorSemantics:

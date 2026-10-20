@@ -40,15 +40,24 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     remember_turn_user_query,
     snapshot_includes_persistent_todos,
 )
-from jiuwenswarm.common.tool_display import build_tool_display_name
+from jiuwenswarm.common.todo_generation import todo_item_generation_token
 from jiuwenswarm.common.todo_snapshot import overlay_serial_todo_statuses
+from jiuwenswarm.common.tool_display import build_tool_display_name
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.server.runtime.agent_adapter.todo_close_text_hold import (
+    TODO_CLOSE_DROP_STREAM_TYPE,
+    TODO_CLOSE_HOLD_STREAM_TYPE,
+    TODO_CLOSE_RELEASE_STREAM_TYPE,
+)
 
 _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
     "active_task_id", default=None
 )
 SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY = (
     "_jiuwenswarm_skill_turbo_outer_todo_active"
+)
+SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY = (
+    "_jiuwenswarm_skill_turbo_outer_todo_pending"
 )
 # 纯文本收尾前插入的一次调用。名字用已注册的 todo_modify，避免下一轮
 # 请求里出现未注册工具名被模型接口拒绝。id 前缀把它和真改状态分开：
@@ -1372,6 +1381,10 @@ class TaskExecutionRail(DeepAgentRail):
         # 同一次 invoke 只拦一次纯文本收尾。模型仍不改状态就放行，
         # 不伪造 completed，也不把未完成项全部 cancelled。
         self._todo_close_nudge_used: bool = False
+        # 本轮模型调用已经通知适配器挂起外层正文。after 必须 drop 或 release。
+        self._todo_close_hold_pending: bool = False
+        # 上一帧 drop/release 没写进流。下一次 before_model_call 先重试这一帧。
+        self._todo_close_undelivered: str | None = None
 
     def set_skill_turbo_request_metadata(self, metadata: dict | None) -> None:
         """注入当前请求 metadata 副本，供 before_tool_call 解析请求级工作区。"""
@@ -1458,6 +1471,8 @@ class TaskExecutionRail(DeepAgentRail):
         self._todo_complete_deferred = set()
         self._todo_start_deferred = set()
         self._todo_close_nudge_used = False
+        self._todo_close_hold_pending = False
+        self._todo_close_undelivered = None
         self._tool_start_times = {}
         _ACTIVE_TASK_ID.set(None)
         if isinstance(ctx.inputs, InvokeInputs):
@@ -1479,6 +1494,7 @@ class TaskExecutionRail(DeepAgentRail):
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         """Bind task_id before LLM calls."""
         self._bind_context_to_in_progress_task()
+        await self._arm_todo_close_text_hold(ctx)
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
         """Hold a text-only ending while a started todo is still in_progress.
@@ -1490,6 +1506,11 @@ class TaskExecutionRail(DeepAgentRail):
         is replaced with an instruction to call todo_modify. A second
         text-only response in the same invoke is left alone.
 
+        ``llm_output`` is already on the session stream by the time this
+        hook runs. ``before_model_call`` asks the adapter to hold that text
+        when a started todo is open; attaching the nudge drops it, and every
+        other ending releases it.
+
         Not applied when the model output was truncated (``finish_reason``
         ``length``): the truncation retry persists this assistant message
         without a matching tool result. Not applied on the last ReAct
@@ -1497,22 +1518,30 @@ class TaskExecutionRail(DeepAgentRail):
         paths (deepresearch direct display and similar) never reach this
         hook and stay on their existing end behavior.
         """
+        dropped = False
+        try:
+            dropped = self._attach_todo_close_nudge(ctx)
+        finally:
+            await self._finish_todo_close_text_hold(ctx, dropped=dropped)
+
+    def _attach_todo_close_nudge(self, ctx: AgentCallbackContext) -> bool:
+        """Replace one text-only ending with the internal todo_modify call."""
         if self._todo_close_nudge_used or ctx.session is None:
-            return
+            return False
         response = getattr(ctx.inputs, "response", None)
         if response is None or getattr(response, "tool_calls", None):
-            return
+            return False
         if str(getattr(response, "finish_reason", "") or "") == "length":
-            return
+            return False
         if self._is_last_react_iteration(ctx):
-            return
+            return False
         content = str(getattr(response, "content", None) or "").strip()
         if not content:
-            return
+            return False
         open_tasks = self._started_in_progress_tasks()
         if not open_tasks:
-            return
-        # 流式正文已经推给前端。历史里留下这段字会让下一轮当成已经送达。
+            return False
+        # 历史里留下这段字会让下一轮当成已经送达。适配器还没下发挂起的流式块。
         response.content = ""
         response.tool_calls = [
             ToolCall(
@@ -1527,6 +1556,111 @@ class TaskExecutionRail(DeepAgentRail):
             "[TaskExecutionRail] todo close nudge: open=%s",
             [raw_id for raw_id, _task in open_tasks],
         )
+        return True
+
+    async def _arm_todo_close_text_hold(self, ctx: AgentCallbackContext) -> None:
+        """Ask the adapter to buffer this call's outer text until we decide.
+
+        Only arm while this call can still be discarded. After the nudge has
+        been used, or on the last ReAct iteration, the text will be kept, so
+        it should stream token by token. ``finish_reason=length`` is not
+        known until the call returns, so a truncated turn is still held and
+        released afterwards.
+        """
+        await self._retry_undelivered_todo_close(ctx)
+        if self._todo_close_undelivered or ctx.session is None:
+            return
+        if self._todo_close_hold_pending:
+            return
+        if self._todo_close_nudge_used:
+            return
+        if self._is_last_react_iteration(ctx):
+            return
+        if not self._started_in_progress_tasks():
+            return
+        wrote = await self._write_todo_close_control(
+            ctx.session, TODO_CLOSE_HOLD_STREAM_TYPE,
+        )
+        if wrote:
+            self._todo_close_hold_pending = True
+
+    async def _finish_todo_close_text_hold(
+        self,
+        ctx: AgentCallbackContext,
+        *,
+        dropped: bool,
+    ) -> None:
+        """Drop the held text, or release it.
+
+        A failed write is remembered as ``drop`` or ``release``. The next
+        ``before_model_call`` retries that frame before arming again. Drop is
+        never rewritten as release: that would show the discarded draft.
+        """
+        if ctx.session is None:
+            self._todo_close_hold_pending = False
+            self._todo_close_undelivered = None
+            return
+        want_drop = dropped or self._todo_close_undelivered == "drop"
+        if want_drop:
+            if not self._todo_close_hold_pending and self._todo_close_undelivered != "drop":
+                return
+            wrote = await self._write_todo_close_control(
+                ctx.session, TODO_CLOSE_DROP_STREAM_TYPE,
+            )
+            self._mark_todo_close_delivered("drop", wrote)
+            return
+        if not self._todo_close_hold_pending and self._todo_close_undelivered != "release":
+            return
+        wrote = await self._write_todo_close_control(
+            ctx.session, TODO_CLOSE_RELEASE_STREAM_TYPE,
+        )
+        self._mark_todo_close_delivered("release", wrote)
+
+    async def _retry_undelivered_todo_close(self, ctx: AgentCallbackContext) -> None:
+        """Resend a drop or release the adapter never received."""
+        if ctx.session is None:
+            return
+        kind = self._todo_close_undelivered
+        if kind is None and self._todo_close_hold_pending:
+            kind = "release"
+        if kind not in ("drop", "release"):
+            return
+        stream_type = (
+            TODO_CLOSE_DROP_STREAM_TYPE
+            if kind == "drop"
+            else TODO_CLOSE_RELEASE_STREAM_TYPE
+        )
+        wrote = await self._write_todo_close_control(ctx.session, stream_type)
+        if wrote:
+            self._todo_close_undelivered = None
+            self._todo_close_hold_pending = False
+            return
+        self._todo_close_undelivered = kind
+
+    def _mark_todo_close_delivered(self, kind: str, wrote: bool) -> None:
+        if wrote:
+            self._todo_close_hold_pending = False
+            self._todo_close_undelivered = None
+            return
+        self._todo_close_undelivered = kind
+
+    async def _write_todo_close_control(self, session: Any, stream_type: str) -> bool:
+        try:
+            await session.write_stream(
+                OutputSchema(
+                    type=stream_type,
+                    index=0,
+                    payload={"result_type": "control"},
+                )
+            )
+        except Exception:
+            logger.warning(
+                "[TaskExecutionRail] todo close control %s failed",
+                stream_type,
+                exc_info=True,
+            )
+            return False
+        return True
 
     def _is_last_react_iteration(self, ctx: AgentCallbackContext) -> bool:
         """True when this model call is the final ReAct iteration."""
@@ -1548,7 +1682,9 @@ class TaskExecutionRail(DeepAgentRail):
         resume clears ``_todo_started`` / ``_active_tasks`` in
         ``before_invoke``, while ``todo.json`` and the already-open frontend
         segment remain. Fall back to in-progress rows on disk so a text-only
-        resume still gets the nudge.
+        resume still gets the nudge. Unstamped legacy rows
+        (``generation_token`` missing) are not this turn's work and are
+        skipped.
         """
         found: list[tuple[str, dict[str, Any]]] = []
         seen: set[str] = set()
@@ -1569,6 +1705,8 @@ class TaskExecutionRail(DeepAgentRail):
             if raw_id in seen:
                 continue
             if str(task.get("status", "")).lower() != "in_progress":
+                continue
+            if todo_item_generation_token(task) is None:
                 continue
             found.append((raw_id, task))
         return found
@@ -1648,6 +1786,9 @@ class TaskExecutionRail(DeepAgentRail):
             # registration, selection, or execution.
             ctx.extra[SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY] = (
                 _ACTIVE_TASK_ID.get() is not None
+            )
+            ctx.extra[SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY] = (
+                self._pending_items_after(_ACTIVE_TASK_ID.get())
             )
 
     def _reject_todo_close_nudge(self, ctx: AgentCallbackContext) -> None:
@@ -2058,6 +2199,43 @@ class TaskExecutionRail(DeepAgentRail):
             if str(task.get("status", "")).lower() not in self._TODO_DONE_STATUSES:
                 return True
         return False
+
+    def _pending_items_after(self, task_id: str | None) -> dict[str, Any] | None:
+        """当前绑定项之后的未完成项快照；无外层 todo 或无后续项返回 None。
+
+        供停止提示条件化（_wrap_skill_turbo_result）：有后续未完成项时
+        引导模型先标记当前项完成再继续，而非一刀切终止本轮。
+        """
+        if not task_id:
+            return None
+        raw_id = task_id[5:] if task_id.startswith("todo:") else task_id
+        todo_map = self._todo_map
+        if not todo_map:
+            return None
+        current = todo_map.get(raw_id)
+        if not current:
+            return None
+        try:
+            current_index = int(current.get("index", 0))
+        except (TypeError, ValueError):
+            return None
+        pending: list[dict[str, Any]] = []
+        for other_id, task in self._iter_todos_by_index(todo_map):
+            try:
+                other_index = int(task.get("index", 0))
+            except (TypeError, ValueError):
+                continue
+            if (other_index, other_id) <= (current_index, raw_id):
+                continue
+            if str(task.get("status", "")).lower() in self._TODO_DONE_STATUSES:
+                continue
+            pending.append({"id": other_id, "content": task.get("content", ""), "index": other_index})
+        if not pending:
+            return None
+        return {
+            "count": len(pending),
+            "next_summary": pending[0].get("content", "") if pending else "",
+        }
 
     def _overlay_serial_todo_statuses(
         self,

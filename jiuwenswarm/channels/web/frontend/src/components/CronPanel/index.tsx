@@ -300,6 +300,10 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
 
   const [confirmState, setConfirmState] = useState<{ type: 'delete' | 'stop' | 'runNow'; job: CronTaskUI } | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  // confirmBusy 的同步镜像：React state 的置位要等重渲染提交后才对后续事件可见，而两次 click
+  // 若落在同一个 JS 任务里（自动化工具一次调用连发两次 DOM click），中间没有任何让出点，
+  // state 版 guard 和按钮 disabled 都来不及生效。ref 赋值即时生效，专门兜住这类合成连点。
+  const confirmBusyRef = useRef(false);
 
   const channelLabel = useCallback(
     (targets: string) => (KNOWN_TARGET_KEYS.includes(targets) ? t(`cron.targets.${targets}`) : targets),
@@ -535,10 +539,13 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const expiredCount = useMemo(() => jobs.filter((j) => jobStatusKey(j) === 'expired').length, [jobs]);
 
   async function handleCreateSubmit(value: CronTaskFormValue) {
+    if (confirmBusyRef.current) return; // 防重入：请求在途时忽略再次提交（连点确定会各发一个 cron.job.create），与下方三个确认弹窗同一模式；用 ref 做同步闸，见 confirmBusyRef 注释
     if (value.enabled && runningCount >= maxEnabledJobs) {
       setError(t('cron.errors.enabledQuotaReached', { max: maxEnabledJobs }));
       return;
     }
+    confirmBusyRef.current = true;
+    setConfirmBusy(true);
     try {
       const isOnce = cronExprToSchedule(value.cronExpr.trim())?.kind === 'once';
       await webRequest<{ job: CronJobDTO }>('cron.job.create', {
@@ -585,16 +592,23 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       const reason = createError instanceof Error ? createError.message.trim() : '';
       const message = reason ? t('cron.errors.createFailedWithReason', { reason }) : t('cron.errors.createFailed');
       setError(message);
+    } finally {
+      // 失败时抽屉保持打开（catch 已 setError），这里复位 busy 让确定按钮恢复可点、可正常重试
+      confirmBusyRef.current = false;
+      setConfirmBusy(false);
     }
   }
 
   async function handleEditSubmit(jobId: string, value: CronTaskFormValue) {
+    if (confirmBusyRef.current) return; // 防重入：同 handleCreateSubmit，编辑保存（cron.job.update）连点同样只发一次；ref 同步闸见 confirmBusyRef 注释
     const existing = jobs.find((job) => job.id === jobId);
     const wasRunning = existing ? jobStatusKey(existing) === 'running' : false;
     if (!wasRunning && value.enabled && runningCount >= maxEnabledJobs) {
       setError(t('cron.errors.enabledQuotaReached', { max: maxEnabledJobs }));
       return;
     }
+    confirmBusyRef.current = true;
+    setConfirmBusy(true);
     try {
       const isProactive = jobId === PROACTIVE_AUTO_JOB_ID;
       const isOnce = cronExprToSchedule(value.cronExpr.trim())?.kind === 'once';
@@ -633,6 +647,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       const reason = updateError instanceof Error ? updateError.message.trim() : '';
       const message = reason ? t('cron.errors.updateFailedWithReason', { reason }) : t('cron.errors.updateFailed');
       setError(message);
+    } finally {
+      confirmBusyRef.current = false;
+      setConfirmBusy(false); // 同 handleCreateSubmit：失败后复位，按钮恢复可点
     }
   }
 
@@ -1316,6 +1333,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             enabledQuotaFull={enabledQuotaFull}
             maxEnabledJobs={maxEnabledJobs}
             editingCurrentlyRunning={editingCurrentlyRunning}
+            submitting={confirmBusy}
             onClose={() => setDrawer(null)}
             onSwitchToManual={drawer.mode === 'template' ? () => setDrawer({ mode: 'create', initial: drawer.initial }) : undefined}
             onSwitchToTemplate={drawer.mode === 'create' ? () => { setDrawer(null); setActiveTab('template'); } : undefined}

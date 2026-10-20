@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 from email.message import EmailMessage
+from functools import partial
+from http.client import HTTPConnection
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 
 import pytest
 
 from jiuwenswarm.channels.web.app_web import (
-    _SpaStaticHandler,
     _inject_user_web_runtime_config,
     _parse_login_auth_simulate,
+    _parse_web_request_timeout_seconds,
+    _SpaStaticHandler,
 )
 
 
@@ -88,6 +93,49 @@ def test_login_auth_simulate_config_is_strict_and_defaults_to_true() -> None:
     assert _parse_login_auth_simulate("false") is False
     with pytest.raises(ValueError, match="期望 true 或 false"):
         _parse_login_auth_simulate("yes")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, 15), ("", 15), ("  ", 15), ("60", 60), (" 30 ", 30),
+     ("0", 15), ("-1", 15), ("1.5", 15), ("NaN", 15), ("Infinity", 15),
+     ("2147483", 2147483), ("2147484", 15), ("9" * 100, 15),
+     ("';alert(1)//", 15)],
+)
+def test_request_timeout_validation_and_html_injection(raw, expected) -> None:
+    timeout = _parse_web_request_timeout_seconds(raw)
+    assert timeout == expected
+    document = "window.__JIUWEN_WEB_REQUEST_TIMEOUT_SECONDS__ = '__JIUWEN_WEB_REQUEST_TIMEOUT_SECONDS_VALUE__';"
+    assert _inject_user_web_runtime_config(
+        document, request_timeout_seconds=timeout,
+    ) == f"window.__JIUWEN_WEB_REQUEST_TIMEOUT_SECONDS__ = '{expected}';"
+
+
+@pytest.mark.parametrize("path", ["/", "/index.html", "/chat/session-1"])
+@pytest.mark.parametrize("accept", ["", "text/html"])
+def test_all_document_paths_inject_configured_timeout(tmp_path, path, accept):
+    (tmp_path / "index.html").write_text(
+        "window.__JIUWEN_WEB_REQUEST_TIMEOUT_SECONDS__ = '__JIUWEN_WEB_REQUEST_TIMEOUT_SECONDS_VALUE__';"
+    )
+
+    class Handler(_SpaStaticHandler):
+        request_timeout_seconds = 60
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(tmp_path)))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = HTTPConnection(*server.server_address, timeout=5)
+    try:
+        connection.request("GET", path, headers={"Accept": accept} if accept else {})
+        response = connection.getresponse()
+        assert response.status == 200
+        assert "window.__JIUWEN_WEB_REQUEST_TIMEOUT_SECONDS__ = '60'" in response.read().decode()
+        assert "no-cache" in response.getheader("Cache-Control")
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 def test_document_request_for_root_and_index(tmp_path: Path) -> None:
     assert _document_handler("/", "text/html", tmp_path)._is_document_request()

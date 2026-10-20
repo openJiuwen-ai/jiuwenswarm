@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / event-stream-protocol |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`：executor.py（事件构造 / 缓冲 / task 管线）、markdown_stream.py、skill_turbo_tools.py（tool 层转发）、rails/artifact_rail.py、rails/delivery_summary_rail.py；外层 interface_deep.py（HITL 三件套 / invocation_paused） |
-| 最近一次修订日期 | 2026-10-13 |
-| 关联 feature | 暂无（首批 specs） |
+| 最近一次修订日期 | 2026-10-16 |
+| 关联 feature | [[F_02]]（失败横幅换行五状态 / resume 横幅不再抑制 / 二次中断发卡同源） |
 
 ## 范围 / 边界
 
@@ -185,7 +185,7 @@ call_llm / stream_llm
 | `plan.started` | plan_name="root", content | `_make_plan_started_chunk`（流开头） | 必须最先 | **skip** |
 | `plan.finished` | plan_name, final=True, status?, error? | `_make_plan_finished_chunk` | 流末 / 降级收口；后接 complete | **skip**（降级路径唯一终态事件） |
 | `node.started` / `node.finished` | plan_name(显示名), content?, task_id? | `_make_node_started/finished_chunk`（produce 协程） | task.start 先于同 stage chat 事件 | **skip** |
-| `chat.delta` | content, plan_name, task_id?, data?, `_bubble_progress`? | `_make_node_delta_chunk`（节点流输出；显示名替换、progress/ok 消息补换行） | 缓冲桶合并；横幅绕缓冲 | 映射 `llm_output`；横幅 → `content_chunk`（剥 task_id） |
+| `chat.delta` | content, plan_name, task_id?, data?, `_bubble_progress`? | `_make_node_delta_chunk`（节点流输出；显示名替换、progress/ok/failed/error/warning 五类状态消息 `rstrip("\n") + "\n"` 补恰好一个换行——防失败/降级横幅与后续 delta 粘连成一行） | 缓冲桶合并；横幅绕缓冲 | 映射 `llm_output`；横幅 → `content_chunk`（剥 task_id） |
 | `chat.reasoning` | content… | 节点流 / 通道 B 归一 | 可缓冲 | 映射 `llm_reasoning` |
 | `chat.error` | error, plan_name?, task_id? | `_make_error_chunk` / `_make_node_error_chunk` | 先 drain task 事件再发 | 映射 `error`（gateway：is_complete+chat.error → E2A final FAILED） |
 | `task.start` | task_id, task_content(显示名), task_index, status="in_progress", source="skill_turbo", timestamp | `_build_task_start_event` + `_before_subplan_execute`（仅 depth=1） | 延期至开始横幅之后 | 外层无活跃 todo 转发；有 → skip + 剥 task_id |
@@ -290,7 +290,7 @@ execute_plan_stream 消费循环对 chat.delta / chat.reasoning 按 (source_id, 
 
 1. **预置任务列表**：`_initialize_pending_tasks` 为每个 depth=1 subplan 分配 `task_{uuid8}`（pending）并立即发全量快照（首个 node 输出前让前端看到全量待办）；resume 时 `_restore_task_states_from_snapshot` 按 task_content / task_index 双键对齐**复用原 task_id**（防前端叠第二套 Stage）。
 2. **FIFO + deferred**：task 事件入 `_task_events_queue_var`，`_drain_task_event_chunks` 排空；`_deferred_task_lifecycle_events` 把 task.start / task.update 先暂存，等阶段开始横幅入队后再 `_flush_deferred_task_lifecycle_events`（横幅先行约束）。
-3. **resume 重放抑制**：completed stage 跳过 start / complete；in_progress stage 跳过重复 start + 横幅抑制；`_park_later_in_progress_tasks` 保证同时只有一个 running。
+3. **resume 重放抑制**：completed stage 跳过 start / complete；in_progress stage 跳过重复 start（判定内联于 `_before_subplan_execute`，技能侧"开始执行"横幅 resume 重入时正常重发，[[F_02]] D7）；`_park_later_in_progress_tasks` 保证同时只有一个 running。
 4. **task.update OOB**：唯一允许绕过 FIFO 的 task 事件（幂等全量快照经 `send_push` 旁路直达，防 delta 淹没致任务列表滞后）。
 5. **外层 todo 抑制**：见接口契约 tool 层第 2 步。
 
@@ -330,7 +330,7 @@ PlanNode 回调(rails/session stream)
 
 ### P7 HITL 暂停时序
 
-executor AbortError 分支零终态帧直接 raise → adapter `_emit_skill_turbo_hitl_chunks` 发三件套（chat.tool_call(pending_approval) → chat.tool_update → chat.ask_user_question）→ `chat.invocation_paused` 终结帧 → gateway 转 is_final=False in_progress 帧，前端流保持开启等待作答。HITL 检测到 ask_user 后 adapter 跳过后续所有 chunk（chat.final / chat.delta / chat.reasoning）。
+executor AbortError 分支零终态帧直接 raise → 工具体返回 HITL 标记 dict → `StreamEventRail.after_tool_call` 重写 TIE → harness `commit_interrupt` 写 `__interaction__` → DeepAdapter 转换发三件套（chat.tool_call(pending_approval) → chat.tool_update → chat.ask_user_question）→ `chat.invocation_paused` 终结帧 → gateway 转 is_final=False in_progress 帧，前端流保持开启等待作答。HITL 检测到 ask_user 后 adapter 跳过后续所有 chunk（chat.final / chat.delta / chat.reasoning）。
 
 ### P8 交付总结时序
 
@@ -338,12 +338,12 @@ executor AbortError 分支零终态帧直接 raise → adapter `_emit_skill_turb
 
 ### P9 resume 重放事件行为
 
-task_states 快照恢复（复用 task_id）→ 恢复首段发 task.update 快照 → completed stage 静默跳过（无 start / complete / 横幅）→ in_progress stage 完整重入但抑制重复 start → 恢复首段不广播"全流程开始"（防假进度）。对照表：
+task_states 快照恢复（复用 task_id）→ 恢复首段发 task.update 快照 → completed stage 静默跳过（无 start / complete / 横幅）→ in_progress stage 完整重入但跳过重复 start（开始横幅正常重发）→ 恢复首段不广播"全流程开始"（防假进度）。对照表：
 
 | stage 快照状态 | task.start | task.complete | 开始横幅 |
 |---|---|---|---|
 | completed | 跳过 | 跳过 | 跳过 |
-| in_progress | 跳过（防重复） | 正常发 | 抑制 |
+| in_progress | 跳过（防重复） | 正常发 | 正常发 |
 | pending | 正常发 | 正常发 | 正常发 |
 
 ### 六条关键顺序约束

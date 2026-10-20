@@ -121,11 +121,12 @@ DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS = (
 )
 STATUSLINE_SETUP_AGENT = _code_subagents.STATUSLINE_SETUP_AGENT
 
-# Swarm-owned no-parameter class rails declared in ``builtin_rails``.
+# Swarm-owned rails declared in ``builtin_rails``.
 RESPONSE_PROMPT = _builtin_rails.RESPONSE_PROMPT
 STREAM_EVENT = _builtin_rails.STREAM_EVENT
 AVATAR_PROMPT = _builtin_rails.AVATAR_PROMPT
 WORKSPACE_QUOTA = _builtin_rails.WORKSPACE_QUOTA
+TEAM_MEMBER_LLM_RETRY = _builtin_rails.TEAM_MEMBER_LLM_RETRY
 
 # Generic rails provided + registered by openjiuwen (referenced by bare name).
 SYS_OPERATION = _OJ_SYS_OPERATION
@@ -218,6 +219,7 @@ __all__ = [
     "SECURITY",
     "HEARTBEAT",
     "AVATAR_PROMPT",
+    "TEAM_MEMBER_LLM_RETRY",
     "CODE_EXTRA_TOOLS",
     "CODE_RUNTIME_PROMPT",
     "CODE_LSP",
