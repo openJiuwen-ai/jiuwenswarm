@@ -714,6 +714,10 @@ async def _prepare_tenant_code_mode_chat_turn(
         return None
     if _is_readonly_goal_get_request(request):
         return None
+    # The background prewarm owns the first get_agent/prepare_session for this
+    # session.  Join it before manager selection so an immediately arriving
+    # first chat reuses that facade instead of creating a second adapter.
+    await ctx.services.tenant_pool().wait_for_session_prewarm(request.session_id)
     manager = await _get_tenant_agent_manager(ctx, request)
     mode, sub_mode, agent = await _prepare_code_mode_chat_turn(
         ctx,

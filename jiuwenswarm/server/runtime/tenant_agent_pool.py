@@ -1189,6 +1189,7 @@ class TenantAgentPool:
                 )
                 return await owned.process_message(request)
         agent_id, service_id, workspace_key = self.extract_ids(request)
+        await self.wait_for_session_prewarm(request.session_id)
         agent_id, service_id = self.resolve_control_rpc_tenant(request, agent_id, service_id)
         cache_key = self._build_cache_key(agent_id, service_id, workspace_key)
         agent_manager = await self._ensure_agent_manager(agent_id, service_id, workspace_key)
@@ -1197,7 +1198,26 @@ class TenantAgentPool:
         finally:
             await self._refresh_agent_manager_cache(cache_key, agent_manager)
 
-    _session_prewarm_tasks: ClassVar[set] = set()
+    _session_prewarm_tasks: ClassVar[dict[str, asyncio.Task[None]]] = {}
+
+    async def wait_for_session_prewarm(self, session_id: str | None) -> None:
+        """Wait for a session.create background prewarm before chat routing.
+
+        The prewarm task owns the first ``get_agent``/``prepare_session`` for
+        this session.  A chat that arrives while it is still running must join
+        that task instead of racing another adapter creation.  Failures are
+        already contained inside the prewarm task; chat then proceeds through
+        the normal get_agent path.
+        """
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        task = self._session_prewarm_tasks.get(sid)
+        if task is None or task.done():
+            return
+        # ``asyncio.wait`` joins without propagating the prewarm task's
+        # exception.  Cancellation of the waiting chat request still propagates.
+        await asyncio.wait({task})
 
     async def prewarm_session_in_background(
         self,
@@ -1227,6 +1247,15 @@ class TenantAgentPool:
         ).strip().lower() in {"0", "false", "no", "off"}:
             return
         if not session_id:
+            return
+
+        sid = str(session_id)
+        existing_task = self._session_prewarm_tasks.get(sid)
+        if existing_task is not None and not existing_task.done():
+            logger.debug(
+                "[PERF] session prewarm already running: session_id=%s",
+                sid,
+            )
             return
 
         async def _run() -> None:
@@ -1272,9 +1301,16 @@ class TenantAgentPool:
                 )
 
         try:
-            task = asyncio.create_task(_run(), name=f"session-prewarm-{session_id}")
-            self._session_prewarm_tasks.add(task)
-            task.add_done_callback(self._session_prewarm_tasks.discard)
+            task = asyncio.create_task(_run(), name=f"session-prewarm-{sid}")
+            self._session_prewarm_tasks[sid] = task
+
+            def _discard_session_prewarm(
+                completed: asyncio.Task[None], *, key: str = sid,
+            ) -> None:
+                if self._session_prewarm_tasks.get(key) is completed:
+                    self._session_prewarm_tasks.pop(key, None)
+
+            task.add_done_callback(_discard_session_prewarm)
         except RuntimeError:  # 无运行 loop(理论不可达)静默放弃
             pass
 
@@ -1339,6 +1375,7 @@ class TenantAgentPool:
                     request.session_id,
                 )
         agent_id, service_id, workspace_key = self.extract_ids(request)
+        await self.wait_for_session_prewarm(request.session_id)
         agent_id, service_id = self.resolve_control_rpc_tenant(request, agent_id, service_id)
         cache_key = self._build_cache_key(agent_id, service_id, workspace_key)
         agent_manager = await self._ensure_agent_manager(agent_id, service_id, workspace_key)

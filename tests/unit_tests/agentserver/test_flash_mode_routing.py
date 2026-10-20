@@ -4,6 +4,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import asyncio
+
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import create_adapter
@@ -504,7 +506,7 @@ async def test_session_create_prewarm_uses_flash_factory_and_business_mode():
         adapter_mode="flash",
         project_dir=None,
     )
-    task = next(iter(pool._session_prewarm_tasks))
+    task = pool._session_prewarm_tasks["flash-prewarm-session"]
     await task
 
     manager.get_agent.assert_awaited_once_with(
@@ -521,3 +523,136 @@ async def test_session_create_prewarm_uses_flash_factory_and_business_mode():
         adapter_mode="flash",
         project_dir=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_prewarm_is_deduplicated_by_session():
+    session_id = "flash-prewarm-concurrent"
+    pool = object.__new__(TenantAgentPool)
+    first_entered = asyncio.Event()
+    release = asyncio.Event()
+    factory_calls = 0
+    agent = SimpleNamespace(prepare_session=AsyncMock())
+
+    async def get_agent(**_kwargs):
+        nonlocal factory_calls
+        factory_calls += 1
+        if factory_calls == 1:
+            first_entered.set()
+            await release.wait()
+        return agent
+
+    manager = SimpleNamespace(get_agent=get_agent)
+    pool.get_agent_manager = AsyncMock(return_value=manager)
+    request = make_request({"mode": "agent", "work_mode": "work"})
+
+    await pool.prewarm_session_in_background(
+        request=request,
+        session_id=session_id,
+        channel_id="web",
+        mode="agent",
+        adapter_mode="flash",
+        project_dir=None,
+    )
+    first_task = pool._session_prewarm_tasks[session_id]
+    await first_entered.wait()
+
+    # A duplicate session.create joins the same in-flight prewarm instead of
+    # scheduling another adapter factory creation.
+    await pool.prewarm_session_in_background(
+        request=request,
+        session_id=session_id,
+        channel_id="web",
+        mode="agent",
+        adapter_mode="flash",
+        project_dir=None,
+    )
+    assert pool._session_prewarm_tasks[session_id] is first_task
+    assert factory_calls == 1
+
+    waiter = asyncio.create_task(pool.wait_for_session_prewarm(session_id))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+
+    release.set()
+    await first_task
+    await waiter
+    assert factory_calls == 1
+    assert agent.prepare_session.await_count == 1
+    assert session_id not in pool._session_prewarm_tasks
+
+
+@pytest.mark.asyncio
+async def test_first_tenant_chat_waits_for_session_prewarm(
+    flash_config, monkeypatch, tmp_path,
+):
+    session_id = "flash-prewarm-chat-race"
+    pool = object.__new__(TenantAgentPool)
+    first_entered = asyncio.Event()
+    release = asyncio.Event()
+    factory_calls = 0
+    get_agent_calls = 0
+    agent = SimpleNamespace(prepare_session=AsyncMock())
+
+    async def get_agent(**_kwargs):
+        nonlocal factory_calls, get_agent_calls
+        get_agent_calls += 1
+        if factory_calls == 0:
+            first_entered.set()
+            await release.wait()
+            factory_calls += 1
+        return agent
+
+    manager = SimpleNamespace(
+        get_agent=get_agent,
+        wait_for_session_prewarm=AsyncMock(),
+    )
+    pool.get_agent_manager = AsyncMock(return_value=manager)
+    request = make_request(
+        {"mode": "agent", "work_mode": "work", "query": "hello"},
+        request_id="flash-prewarm-chat-race",
+    )
+    request.session_id = session_id
+
+    await pool.prewarm_session_in_background(
+        request=request,
+        session_id=session_id,
+        channel_id="web",
+        mode="agent",
+        adapter_mode="flash",
+        project_dir=None,
+    )
+    prewarm_task = pool._session_prewarm_tasks[session_id]
+    await first_entered.wait()
+
+    monkeypatch.setattr(_default, "_sessions_dir_for_request", lambda _: tmp_path)
+    monkeypatch.setattr(_shared, "_sessions_dir_for_request", lambda _: tmp_path)
+    monkeypatch.setattr(
+        _default,
+        "_get_tenant_agent_manager",
+        AsyncMock(return_value=manager),
+    )
+    ctx = SimpleNamespace(
+        services=SimpleNamespace(
+            tenant_pool=Mock(return_value=pool),
+            agent_manager=manager,
+        )
+    )
+
+    chat = asyncio.create_task(
+        _default._prepare_tenant_code_mode_chat_turn(ctx, request, "web")
+    )
+    await asyncio.sleep(0)
+    assert not chat.done()
+    assert factory_calls == 0
+
+    release.set()
+    mode, sub_mode, selected = await chat
+    await prewarm_task
+
+    assert (mode, sub_mode, selected) == ("flash", None, agent)
+    assert factory_calls == 1
+    assert get_agent_calls == 2
+    assert request.params["mode"] == "agent"
+    assert request._resolved_adapter_mode == "flash"
+    assert agent.prepare_session.await_count == 1
