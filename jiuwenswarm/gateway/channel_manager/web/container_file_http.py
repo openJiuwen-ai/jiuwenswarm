@@ -698,9 +698,9 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         if token_payload.get("kind") == _VERIFIED_ASSET_TOKEN_KIND:
             from jiuwenswarm.common.schema.message import ReqMethod
             from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
-            from jiuwenswarm.gateway.embedded.runtime.file_download import (
-                _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES,
-            )
+            # 与 AgentServer ``workspace_file_adapter._VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES``
+            # 对齐的分块上限（跨进程协议常量，原 embedded/runtime/file_download.py）。
+            _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES = 512 * 1024
 
             session_id_value = token_payload.get("sid")
             if not isinstance(session_id_value, str):
