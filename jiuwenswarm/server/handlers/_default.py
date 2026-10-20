@@ -439,6 +439,36 @@ async def _open_plan_state_session(
     return deep_agent, session, False
 
 
+def _is_normal_work_agent_mode(
+    mode: str,
+    sub_mode: str | None,
+    runtime_work_mode: str | None,
+    canonical_mode: str | None,
+) -> bool:
+    """Whether this request is the normal-office single-agent business mode."""
+    if mode != "agent" or sub_mode is not None:
+        return False
+    if runtime_work_mode != "work":
+        return False
+    return canonical_mode in {"agent", NEW_AGENT_WORK_NORMAL}
+
+
+def _can_persist_work_agent_adapter_mode(
+    mode: str,
+    sub_mode: str | None,
+    runtime_work_mode: str | None,
+    canonical_mode: str | None,
+) -> bool:
+    """Whether adapter implementation is durable metadata for this request."""
+    if sub_mode is not None or runtime_work_mode != "work":
+        return False
+    return mode in {"agent", "flash"} and canonical_mode in {
+        "agent",
+        NEW_AGENT_WORK_NORMAL,
+        "flash",
+    }
+
+
 async def _prepare_code_mode_chat_turn(
     ctx,
     request: AgentRequest,
@@ -589,20 +619,18 @@ async def _prepare_code_mode_chat_turn(
     # live conversation to Deep; new sessions follow the current switch.  This
     # is deliberately narrower than canonical mode: code, team and plan requests
     # keep their original routing rules, and F07 will decide Flash/Plan support.
-    if (
-        mode == "agent"
-        and sub_mode is None
-        and runtime_work_mode == "work"
-        and canonical_mode in {"agent", NEW_AGENT_WORK_NORMAL}
-        and (
-            stored_adapter_mode == "flash"
-            # Compatibility with sessions written by the pre-F01 routing.
-            or stored_business_mode == "flash"
-        )
-    ):
+    is_normal_work_agent = _is_normal_work_agent_mode(
+        mode, sub_mode, runtime_work_mode, canonical_mode,
+    )
+    has_flash_session_affinity = (
+        stored_adapter_mode == "flash"
+        # Compatibility with sessions written by the pre-F01 routing.
+        or stored_business_mode == "flash"
+    )
+    if is_normal_work_agent and has_flash_session_affinity:
         mode = "flash"
-        request._resolved_adapter_mode = "flash"
-        request._resolved_adapter_source = "session_sticky"
+        request.resolved_adapter_mode = "flash"
+        request.resolved_adapter_source = "session_sticky"
         logger.info(
             "[_prepare_code_mode_chat_turn] Flash session affinity restored: "
             "session_id=%s canonical_mode=%s",
@@ -615,13 +643,10 @@ async def _prepare_code_mode_chat_turn(
     # [改动] 写盘用 canonical mode（request.params["mode"]，已被规范化为
     # "agent.plan"/"team" 等），而非一级 mode（"agent"），使磁盘出现你期望的两类值。
     metadata_adapter_mode = None
-    if (
-        mode in {"agent", "flash"}
-        and sub_mode is None
-        and runtime_work_mode == "work"
-        and canonical_mode in {"agent", NEW_AGENT_WORK_NORMAL, "flash"}
+    if _can_persist_work_agent_adapter_mode(
+        mode, sub_mode, runtime_work_mode, canonical_mode,
     ):
-        metadata_adapter_mode = getattr(request, "_resolved_adapter_mode", None)
+        metadata_adapter_mode = request.resolved_adapter_mode
     if sync_metadata:
         project_dir = _sync_chat_request_metadata(
             request,

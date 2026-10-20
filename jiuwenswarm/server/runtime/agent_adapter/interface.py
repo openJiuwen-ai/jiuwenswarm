@@ -1552,7 +1552,7 @@ class JiuWenSwarm:
         ``code`` 走 CodeAdapter，``work`` 走 DeepAdapter。TUI 等历史客户端不带
         ``work_mode``，继续按完整 mode 串判定，行为不变。
         """
-        resolved_adapter_mode = getattr(request, "_resolved_adapter_mode", None)
+        resolved_adapter_mode = getattr(request, "resolved_adapter_mode", None)
         if resolved_adapter_mode in {"agent", "code", "flash"}:
             return resolved_adapter_mode
         params = request.params if isinstance(request.params, dict) else {}

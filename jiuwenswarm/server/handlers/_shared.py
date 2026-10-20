@@ -331,8 +331,8 @@ def _apply_resolved_mode_to_request(
         if isinstance(raw_mode, str) and raw_mode.strip():
             setattr(request, "_original_mode", canonicalize_mode_text(raw_mode))
     resolved = resolve_request_runtime_mode(request, work_mode=work_mode)
-    request._resolved_adapter_mode = resolved.adapter_mode
-    request._resolved_adapter_source = resolved.adapter_source
+    request.resolved_adapter_mode = resolved.adapter_mode
+    request.resolved_adapter_source = resolved.adapter_source
     if isinstance(request.params, dict):
         request.params["mode"] = resolved.canonical_mode
     return resolved.manager_mode, resolved.sub_mode

@@ -1996,7 +1996,7 @@ class AgentManager:
         resolved = resolve_request_runtime_mode(request)
         mode, sub_mode = resolved.manager_mode, resolved.sub_mode
         agent_mode = "agent" if mode == "auto_harness" else mode
-        request._resolved_adapter_mode = resolved.adapter_mode
+        request.resolved_adapter_mode = resolved.adapter_mode
         project_dir = (
             params.get("project_dir")
             or params.get("workspace_dir")

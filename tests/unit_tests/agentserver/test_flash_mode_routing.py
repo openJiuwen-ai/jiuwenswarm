@@ -189,7 +189,7 @@ def test_agent_manager_preserves_code_work_mode_when_flash_enabled(flash_config)
     )
 
     assert manager._agent_lookup_from_request(request) == ("code", "normal", None)
-    assert request._resolved_adapter_mode == "code"
+    assert request.resolved_adapter_mode == "code"
 
 
 @pytest.mark.asyncio
@@ -216,7 +216,7 @@ async def test_officeace_request_reaches_flash_factory_and_reuses_facade(
     facade = await manager._get_agent_for_request(request)
 
     assert isinstance(facade, JiuWenSwarm)
-    assert request._resolved_adapter_mode == "flash"
+    assert request.resolved_adapter_mode == "flash"
     assert facade._jiuwenswarm_agent_mode == "flash"
     assert create_instance.await_args.kwargs["mode"] == "flash"
 
@@ -287,7 +287,7 @@ async def test_flash_enabled_interrupt_answer_returns_to_existing_deep_owner(
     selected = await manager._get_agent_for_request(request)
 
     assert selected is deep_owner
-    assert request._resolved_adapter_mode == "flash"
+    assert request.resolved_adapter_mode == "flash"
     manager.get_agent.assert_not_awaited()
 
 
@@ -352,7 +352,7 @@ async def test_first_and_continuation_select_configured_adapter(
 
         assert (mode, sub_mode, selected) == (expected_manager_mode, None, agent)
         assert request.params["mode"] == expected_canonical_mode
-        assert request._resolved_adapter_mode == expected_adapter_mode
+        assert request.resolved_adapter_mode == expected_adapter_mode
         assert JiuWenSwarm._adapter_mode_for_request(request) == expected_adapter_mode
         manager.get_agent.assert_awaited_with(
             channel_id="web", mode=expected_manager_mode, project_dir=None, sub_mode=None,
@@ -399,7 +399,7 @@ async def test_existing_office_session_keeps_flash_affinity_after_switch_off(
 
     assert (mode, sub_mode, selected) == ("flash", None, agent)
     assert request.params["mode"] == "agent"
-    assert request._resolved_adapter_mode == "flash"
+    assert request.resolved_adapter_mode == "flash"
     manager.get_agent.assert_awaited_with(
         channel_id="web", mode="flash", project_dir=None, sub_mode=None,
     )
@@ -426,8 +426,8 @@ async def test_existing_office_session_keeps_flash_affinity_after_switch_off(
 
     assert (mode, sub_mode, selected) == ("flash", None, agent)
     assert continuation.params["mode"] == "agent"
-    assert continuation._resolved_adapter_mode == "flash"
-    assert continuation._resolved_adapter_source == "session_sticky"
+    assert continuation.resolved_adapter_mode == "flash"
+    assert continuation.resolved_adapter_source == "session_sticky"
     assert manager.get_agent.await_count == 2
     assert manager.get_agent.await_args.kwargs["mode"] == "flash"
     persisted = session_metadata.get_session_metadata(
@@ -654,5 +654,5 @@ async def test_first_tenant_chat_waits_for_session_prewarm(
     assert factory_calls == 1
     assert get_agent_calls == 2
     assert request.params["mode"] == "agent"
-    assert request._resolved_adapter_mode == "flash"
+    assert request.resolved_adapter_mode == "flash"
     assert agent.prepare_session.await_count == 1

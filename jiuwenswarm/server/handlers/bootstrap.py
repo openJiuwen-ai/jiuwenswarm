@@ -213,8 +213,8 @@ async def handle_session_create(ctx: RequestContext) -> None:
             mode = resolved_mode.manager_mode
             canonical_mode = resolved_mode.canonical_mode
             adapter_mode = resolved_mode.adapter_mode
-            request._resolved_adapter_mode = adapter_mode
-            request._resolved_adapter_source = resolved_mode.adapter_source
+            request.resolved_adapter_mode = adapter_mode
+            request.resolved_adapter_source = resolved_mode.adapter_source
 
             is_swarm = bool(params.get("is_swarm")) or canonical_mode in {
                 "team",
