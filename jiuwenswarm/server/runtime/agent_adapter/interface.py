@@ -56,6 +56,7 @@ from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
 from jiuwenswarm.common.mode_matrix import (
     is_web_composable_mode,
     read_request_work_mode,
+    resolve_adapter_mode,
 )
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
@@ -1354,7 +1355,11 @@ class JiuWenSwarm:
         if current_adapter_mode is None:
             self._adapter_mode = selected_mode
             current_adapter_mode = selected_mode
-        if mode is not None and selected_mode != current_adapter_mode:
+        # Compare implementations, while retaining the original business mode
+        # for parameterless rebuilds (team and agent both use DeepAdapter).
+        current_implementation = resolve_adapter_mode(current_adapter_mode)
+        requested_implementation = resolve_adapter_mode(selected_mode)
+        if mode is not None and requested_implementation != current_implementation:
             raise RuntimeError(
                 "JiuWenSwarm adapter mode mismatch: "
                 f"current={current_adapter_mode!r}, requested={selected_mode!r}"
@@ -2489,7 +2494,12 @@ class JiuWenSwarm:
                 session_id=session_id,
             )
 
-        adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
+        # Control requests belong to the already selected session owner. Legacy
+        # clients may send agent.plan or omit mode even for a Flash session.
+        if self._adapter is not None:
+            adapter = self._ensure_adapter()
+        else:
+            adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
 
         if intent == "pause":
             # 暂停：不取消任务，只暂停 ReAct 循环
