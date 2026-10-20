@@ -664,7 +664,7 @@ async def test_remote_show_reads_package_capabilities_from_zip(
         assert card["details"] == "包内 README\n"
     assert downloader.calls == 1
     assert hub.artifact_calls == 1
-    assert catalog.list_agent_templates() == []
+    assert await catalog.list_agent_templates() == []
     assert not (
         extension_workspace / "plugins" / collection / "hub_preview"
     ).exists()
@@ -691,7 +691,7 @@ async def test_remote_show_keeps_empty_avatar_when_hub_icon_missing(
     assert card is not None
     assert card["avatar"] == ""
     assert downloader.calls == 1
-    assert catalog.list_agent_templates() == []
+    assert await catalog.list_agent_templates() == []
 
 
 @pytest.mark.asyncio
@@ -715,7 +715,7 @@ async def test_hub_list_keeps_empty_avatar_when_icon_missing(
 
     assert card["avatar"] == ""
     assert downloader.calls == 0
-    assert catalog.list_agent_templates() == []
+    assert await catalog.list_agent_templates() == []
 
 
 @pytest.mark.asyncio
@@ -1028,7 +1028,7 @@ async def test_remote_hub_expert_files_preview_without_installing(
     assert preview["path"] == "manifest.json"
     assert downloader.calls == 1
     assert hub.artifact_calls == 1
-    assert catalog.list_agent_templates() == []
+    assert await catalog.list_agent_templates() == []
     local = extension_workspace / "plugins" / "agent_templates" / "local"
     assert not local.exists() or not any(local.iterdir())
     hub_preview = extension_workspace / "plugins" / "agent_templates" / "hub_preview"

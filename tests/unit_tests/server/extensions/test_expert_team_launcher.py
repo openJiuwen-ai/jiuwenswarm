@@ -231,7 +231,7 @@ def agent_group_loader(monkeypatch: pytest.MonkeyPatch, tmp_path):
         _resolve,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.swarm.agent_group.load_agent_group_package_bundle",
+        "openjiuwen.agent_teams.experts.load_agent_group_package_bundle",
         _load,
     )
     return calls
