@@ -47,7 +47,12 @@ const [
   { webClient },
   { buildConversationModelPayload, isConversationModelGroupBlocked },
   { registerCreatedConversation, resetNewConversationRuntime, forgetCreatedConversation },
-  { buildModelGroupUpsertPayload },
+  {
+    buildModelGroupUpsertPayload,
+    findModelGroupReferencesForModel,
+    formatModelSelectionReferenceScopes,
+    extractModelSelectionReferences,
+  },
   { setMultiModelCollaborationEnabled, isMultiModelCollaborationEnabled },
 ] = modules;
 
@@ -704,6 +709,30 @@ test('single-agent collaboration displays the group default while retaining a le
       model_selection: { type: 'model_group', id: 'mgp-stable', route_id: 'rte-b' },
     });
   });
+});
+
+test('model delete reference warnings prefer display names over mgp_/mdl_ ids', () => {
+  const groups = [
+    {
+      model_group_id: 'mgp_hidden',
+      display_name: '编码模型池',
+      routes: [{ route_id: 'rte_a', model_id: 'mdl_a' }],
+    },
+  ];
+  const models = [{ model_id: 'mdl_a', alias: '主模型', model_name: 'gpt-test' }];
+  const refs = findModelGroupReferencesForModel('mdl_a', groups);
+  assert.deepEqual(refs, [{ scope: 'model_group', scope_id: 'mgp_hidden', label: '编码模型池' }]);
+  assert.equal(formatModelSelectionReferenceScopes(refs, models, groups), '编码模型池');
+  assert.equal(
+    formatModelSelectionReferenceScopes(
+      extractModelSelectionReferences({
+        payload: { references: [{ scope: 'model_group', scope_id: 'mgp_hidden', label: '编码模型池' }] },
+      }),
+      models,
+      groups,
+    ),
+    '编码模型池',
+  );
 });
 
 test('deleted model groups fall back to a default model instead of showing model_group_id', async (t) => {
