@@ -857,7 +857,9 @@ def external_cli_managed_cli_path(cli_agent: str) -> str:
 
 
 def resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str, str]:
-    requested = cli_path.strip()
+    from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+    requested = resolve_preserved_cli_path(cli_path.strip())
     if requested:
         resolved = shutil.which(requested)
         if resolved:

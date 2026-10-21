@@ -108,13 +108,13 @@ function Copy-Tree([string]$Source, [string]$Target) {
         else { [IO.File]::Copy($entry,(Long-Path $destination),$false) }
     }
 }
-function Assert-PrefixIdle([string]$Source) {
+function Assert-PrefixIdle([string]$Source, [switch]$ExecutableOnly) {
     foreach ($process in @(Get-CimInstance -ClassName Win32_Process)) {
         if ($process.ProcessId -eq $PID) { continue }
         $executable=[string]$process.ExecutablePath
         $command=([string]$process.CommandLine).Replace('/','\')
         if (($executable -and (Inside $executable $Source)) -or
-            $command.IndexOf($Source,[StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            (-not $ExecutableOnly -and $command.IndexOf($Source,[StringComparison]::OrdinalIgnoreCase) -ge 0)) {
             throw "Close the CLI process using $Source before upgrading (PID $($process.ProcessId))."
         }
     }
@@ -330,7 +330,10 @@ try {
             catch [IO.DirectoryNotFoundException] { continue }
             if (-not ($sdkAttributes -band [IO.FileAttributes]::Directory)) { throw "Expected an SDK directory: $sdkSource" }
             Check-Parents $sdkSource
-            Assert-PrefixIdle $InstallDir
+            # Setup's /DIR argument names the application too. At this level
+            # only an executable inside the app proves that it is in use;
+            # individual SDK/Node checks still inspect command-line references.
+            Assert-PrefixIdle $InstallDir -ExecutableOnly
             foreach ($agentDirectory in [IO.Directory]::GetDirectories((Long-Path $sdkSource))) {
                 Check-Parents (Normal-Path $agentDirectory)
                 $name=[IO.Path]::GetFileName($agentDirectory)
@@ -397,7 +400,7 @@ try {
             if ((Text-Hash (Inventory $mapping.source)) -ne $mapping.digest) { throw "Source changed before cleanup: $($mapping.source)" }
             Assert-PrefixIdle $mapping.source
         }
-        if ($sdkMappings.Count) { Assert-PrefixIdle $InstallDir }
+        if ($sdkMappings.Count) { Assert-PrefixIdle $InstallDir -ExecutableOnly }
         Add-UserPaths $mappings $paths
         Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=$mappings; sdk_mappings=$sdkMappings; npm_root=$npmRoot}
     } finally { $lock.Dispose() }

@@ -314,6 +314,87 @@ def test_sdk_cli_path_mapping_requires_a_compatible_managed_target(windows_envir
     assert paths.resolve_preserved_cli_path(old) == old
 
 
+@pytest.mark.parametrize("kind", ["npm", "sdk"])
+def test_settings_detect_and_enable_a_migrated_explicit_cli(windows_environment, tmp_path, monkeypatch, kind):
+    from copy import deepcopy
+    from jiuwenswarm.common import custom_agent_runtime, external_cli_runtime
+    from jiuwenswarm.common.config_panel import config_set_handlers as handlers
+
+    npm, _ = windows_environment
+    monkeypatch.setattr(custom_agent_runtime, "custom_agents_root", lambda: tmp_path / "custom-agents")
+    if kind == "sdk":
+        source = tmp_path / "old/runtime/external-cli/claude/site-packages"
+        target = npm.parent / "external-cli/claude/site-packages"
+        record = npm.parent / "external-cli-preserved/snapshot/mapping.json"
+        monkeypatch.setattr(external_cli_runtime, "get_external_cli_runtime_status", lambda _name: {"runtime_state": "current"})
+    else:
+        source = tmp_path / "old/runtime/node-runtime"
+        target = npm / "installed/snapshot/prefix"
+        record = npm / "preserved/snapshot/mapping.json"
+    executable = target / "claude.exe"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps({"schema": 1, "source": str(source), "target": str(target)}))
+    requested = str(source / "claude.exe")
+    raw = {"modes": {"team": {"jiuwen_team": {"external_cli_agents": [{"cli_agent": "claude", "cli_path": requested}]}}}}
+    original = deepcopy(raw)
+    probes = []
+
+    def version(_agent, executable_path):
+        probes.append(executable_path)
+        return "2.1.999", ""
+
+    monkeypatch.setattr(handlers, "run_external_cli_version_command", version)
+    flat = handlers.flatten_external_cli_agents_for_config_panel(raw)
+    assert flat["external_cli_agent_claude_cli_path"] == requested
+    detected = handlers.detect_external_cli_agent("claude", requested)
+    assert detected["status"] == "ok"
+    assert detected["path"] == str(executable)
+    enabled = handlers.external_cli_agents_from_switches(raw, {"external_cli_agent_claude_enabled": "true"})
+    assert enabled == [{"cli_agent": "claude", "cli_path": str(executable)}]
+    assert probes == [str(executable), str(executable)]
+    assert raw == original
+
+
+@pytest.mark.parametrize("layout", ["runtime/external-cli", "resources/backend/runtime/external-cli"])
+@pytest.mark.parametrize("process_kind", ["setup", "app", "sdk-installer"])
+def test_sdk_busy_check_distinguishes_setup_target_from_runtime_use(tmp_path, preservation_runner, monkeypatch, layout, process_kind):
+    app = tmp_path / "old app"
+    packages = app / layout / "claude/site-packages"
+    packages.mkdir(parents=True)
+    (packages / "sdk.py").write_text("fixture")
+    monkeypatch.setenv("TEST_APP_DIRECTORY", str(app))
+    monkeypatch.setenv("TEST_SDK_PACKAGES", str(packages))
+    monkeypatch.setenv("TEST_PROCESS_KIND", process_kind)
+    process_fixture = r'''
+function Get-CimInstance {
+    param([string]$ClassName)
+    $executable='C:\Downloads\setup.exe'
+    $command='/VERYSILENT /DIR="'+$env:TEST_APP_DIRECTORY+'"'
+    if ($env:TEST_PROCESS_KIND -eq 'app') {
+        $executable=Join-Path $env:TEST_APP_DIRECTORY 'workswarm.exe'
+        $command='--desktop-run-agent'
+    } elseif ($env:TEST_PROCESS_KIND -eq 'sdk-installer') {
+        $executable='C:\Python\python.exe'
+        $command='pip install --target "'+$env:TEST_SDK_PACKAGES+'"'
+    }
+    [pscustomobject]@{ProcessId=($PID+10000); ExecutablePath=$executable; CommandLine=$command}
+}
+'''
+    script = preservation_runner.script
+    original = script.read_text(encoding="utf-8")
+    script.write_text(original.replace("$safeRoot=$false", "$safeRoot=$false\n" + process_fixture), encoding="utf-8")
+    result, report, _, _ = preservation_runner(app)
+    if process_kind == "setup":
+        assert result.returncode == 0, report.read_text(encoding="utf-8")
+        assert len(json.loads(report.read_text(encoding="utf-8"))["sdk_mappings"]) == 1
+    else:
+        assert result.returncode != 0
+        assert "Close the CLI process" in report.read_text(encoding="utf-8")
+        assert (packages / "sdk.py").is_file()
+
+
 def test_late_source_install_blocks_cleanup_after_working_copy(tmp_path, preservation_runner):
     app = tmp_path / "app"
     source = _prefix(app)

@@ -227,7 +227,7 @@ def test_optional_runtime_unavailable_on_platform_does_not_block_startup(monkeyp
     assert runtime.sys.path == original_path
 
 
-@pytest.mark.parametrize("state", ["current", "update_required", "invalid"])
+@pytest.mark.parametrize("state", ["current", "update_required", "invalid", "invalid_encoding"])
 def test_windows_activation_validates_preserved_sdk_before_import(monkeypatch, tmp_path, state):
     target = tmp_path / "site-packages"
     module = target / "example_sdk"
@@ -242,14 +242,27 @@ def test_windows_activation_validates_preserved_sdk_before_import(monkeypatch, t
     if state == "invalid":
         executable.unlink()
     (target / runtime._INSTALL_METADATA_FILE).write_text(json.dumps(metadata))
+    if state == "invalid_encoding":
+        (target / runtime._INSTALL_METADATA_FILE).write_bytes(b"\xff\xfe\x80")
     monkeypatch.setattr(runtime, "_load_manifest", lambda: {"agents": {"claude": entry}})
     monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
     monkeypatch.setattr(runtime, "_runtime_platform_key", lambda: "windows-x86_64")
     monkeypatch.setattr(runtime, "_runtime_site_packages", lambda _agent: target)
     monkeypatch.setattr(runtime.sys, "path", list(runtime.sys.path))
-    assert runtime.get_external_cli_runtime_status("claude")["runtime_state"] == state
+    expected_state = "invalid" if state == "invalid_encoding" else state
+    assert runtime.get_external_cli_runtime_status("claude")["runtime_state"] == expected_state
     runtime.activate_external_cli_runtime_paths()
     assert (str(target) in runtime.sys.path) == (state == "current")
+    if state == "invalid_encoding":
+        # An invalid optional runtime must remain repairable by the normal
+        # staged install path, without importing its previous contents.
+        staging = tmp_path / "staged"
+        (staging / "example_sdk").mkdir(parents=True)
+        (staging / "example_sdk/cli.exe").write_bytes(b"replacement")
+        runtime._complete_staged_runtime_install("claude", "windows-x86_64", artifacts, target, staging)
+        runtime.activate_external_cli_runtime_paths()
+        assert runtime.get_external_cli_runtime_status("claude")["runtime_state"] == "current"
+        assert str(target) in runtime.sys.path
 
 
 def test_elevated_installer_timeout_terminates_started_process() -> None:
