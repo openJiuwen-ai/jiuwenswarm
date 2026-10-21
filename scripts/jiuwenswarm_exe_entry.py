@@ -103,6 +103,10 @@ if getattr(sys, "frozen", False):
                 else str(_uv_runtime)
             )
 
+        from jiuwenswarm.common.windows_cli_paths import configure_windows_npm_environment
+
+        configure_windows_npm_environment()
+
     # Windows: 防止 subprocess 弹出控制台窗口（console=False 编译时 git 等命令会弹出黑框）
     # Monkey-patch asyncio.create_subprocess_exec 和 subprocess.Popen，
     # 自动添加 CREATE_NO_WINDOW 标志
