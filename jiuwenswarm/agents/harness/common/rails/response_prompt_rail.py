@@ -33,10 +33,10 @@ _RESPONSE_SECTION_NAMES = (
 )
 
 
-def _a2ui_recency_boost_prompt() -> PromptSection:
-    """a2ui 路径优先提示，紧邻业务人设(soul, priority 110)之后注入(priority 115)，
-    靠 recency 引导浏览器自动化任务走 a2ui-json 表单而非 ask_user 澄清。仅约束执行前的
-    任务细节收集/预确认，不冲突 FINAL_VISIBLE_REPLY(120，管工具执行后的最终纯文本轮)。"""
+def _a2ui_boost_prompt() -> PromptSection:
+    """a2ui 强化提示：priority 117（THINKING_DISCIPLINE 115 之后、FINAL_VISIBLE_REPLY 120 之前），
+    强化 a2ui 触发倾向、抵消 soul 结构化输出对 a2ui 的稀释——交互场景必须输出 a2ui-json、
+    禁止 markdown 模拟表单。仅约束执行前的任务细节收集/预确认，不冲突 FINAL_VISIBLE_REPLY(120，管工具执行后的最终纯文本轮)。"""
     cn = (
         "# A2UI 是交互场景的唯一正确输出格式\n"
         "当用户的请求需要交互式收集信息，比如选择、输入、确认等操作，而非只回复一句话时，"
@@ -51,9 +51,9 @@ def _a2ui_recency_boost_prompt() -> PromptSection:
         "`<a2ui-json>` block. Markdown mock forms are forbidden."
     )
     return PromptSection(
-        name=LocalSectionName.A2UI_RECENCY,
+        name=LocalSectionName.A2UI_BOOST,
         content={"cn": cn, "en": en},
-        priority=PromptPriority.A2UI_RECENCY,
+        priority=PromptPriority.A2UI_BOOST,
     )
 
 
@@ -75,7 +75,7 @@ class ResponsePromptRail(DeepAgentRail):
             for name in _RESPONSE_SECTION_NAMES:
                 self.system_prompt_builder.remove_section(name)
             self.system_prompt_builder.remove_section(LocalSectionName.A2UI)
-            self.system_prompt_builder.remove_section(LocalSectionName.A2UI_RECENCY)
+            self.system_prompt_builder.remove_section(LocalSectionName.A2UI_BOOST)
         self.system_prompt_builder = None
         self._runtime_channel = None
 
@@ -206,7 +206,7 @@ class ResponsePromptRail(DeepAgentRail):
 
             if not injected:
                 self.system_prompt_builder.remove_section(LocalSectionName.A2UI)
-                self.system_prompt_builder.remove_section(LocalSectionName.A2UI_RECENCY)
+                self.system_prompt_builder.remove_section(LocalSectionName.A2UI_BOOST)
             else:
                 self.system_prompt_builder.add_section(
                     PromptSection(
@@ -224,27 +224,27 @@ class ResponsePromptRail(DeepAgentRail):
                         priority=PromptPriority.A2UI,
                     )
                 )
-                # recency boost：仅 officeclaw 注入（web 无 request_system_prompt/soul(110)
-                # 压顶，a2ui 本就突出不需对冲）。boost priority 115 紧跟 soul(110) 之后、
-                # FINAL_VISIBLE_REPLY(120) 之前，靠 recency 对冲 soul 的「结构化输出」引导，
-                # 引导浏览器自动化任务走 a2ui-json 而非 ask_user。
+                # a2ui 强化(boost)：仅 officeclaw 注入（web 无 request_system_prompt/soul(110)
+                # 压顶，a2ui 本就突出不需对冲）。priority 117（THINKING_DISCIPLINE 115 之后、
+                # FINAL_VISIBLE_REPLY 120 之前），强化 a2ui 触发倾向、抵消 soul 的「结构化输出」
+                # 引导，引导交互场景走 a2ui-json 而非 ask_user/markdown 模拟。
                 is_officeclaw = str(channel or "").strip().lower() == "officeclaw"
                 if is_officeclaw:
                     self.system_prompt_builder.add_section(
-                        _a2ui_recency_boost_prompt()
+                        _a2ui_boost_prompt()
                     )
-                    # 诊断日志：直接证据 boost 已注入（priority 115 紧跟 soul 110 之后）
+                    # 诊断日志：直接证据 boost 已注入（priority 117，THINKING_DISCIPLINE 后）
                     logger.info(
-                        "[A2UI-BOOST] recency boost injected: request_id=%s "
+                        "[A2UI-BOOST] a2ui boost injected: request_id=%s "
                         "conversation_id=%s channel=%s priority=%s",
                         request_id or "-",
                         conversation_id or "-",
                         channel or "-",
-                        PromptPriority.A2UI_RECENCY,
+                        PromptPriority.A2UI_BOOST,
                     )
                 else:
                     self.system_prompt_builder.remove_section(
-                        LocalSectionName.A2UI_RECENCY
+                        LocalSectionName.A2UI_BOOST
                     )
 
             logger.info(
