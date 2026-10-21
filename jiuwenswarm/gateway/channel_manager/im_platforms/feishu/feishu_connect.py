@@ -456,8 +456,12 @@ class FeishuChannel(BaseChannel):
         if message_type == "text":
             text = content.get("text")
             if isinstance(text, str):
-                return text or None
-            return raw if isinstance(raw, str) and not content else None
+                resolved = text or None
+            else:
+                resolved = raw if isinstance(raw, str) and not content else None
+            if isinstance(resolved, str):
+                resolved = FeishuChannel._replace_persistent_mention_placeholders(resolved, message)
+            return resolved
 
         parts: list[str] = []
 
@@ -475,7 +479,34 @@ class FeishuChannel(BaseChannel):
 
         collect(content)
         body = "".join(parts)
-        return body or None
+        text = body or None
+        if isinstance(text, str):
+            text = FeishuChannel._replace_persistent_mention_placeholders(text, message)
+        return text
+
+    @staticmethod
+    def _replace_persistent_mention_placeholders(text: str, message: Any) -> str:
+        """Show who was @ mentioned. Feishu stores only @_user_N in the body."""
+        mentions = FeishuChannel._persistent_event_value(message, "mentions", None) or ()
+        replacements: list[tuple[str, str]] = []
+        for mention in mentions:
+            key = FeishuChannel._persistent_event_value(mention, "key")
+            if not isinstance(key, str) or not key.strip():
+                continue
+            token = key.strip()
+            if not token.startswith("@"):
+                token = f"@{token}"
+            if token == "@_all":
+                replacements.append((token, "@all"))
+                continue
+            name = FeishuChannel._persistent_event_value(mention, "name")
+            if isinstance(name, str) and name.strip():
+                replacements.append((token, f"@{name.strip()}"))
+        for token, label in sorted(set(replacements), key=lambda item: len(item[0]), reverse=True):
+            text = text.replace(token, label)
+        # Push events often omit the @_all mention object. Refresh reads it back.
+        # Both paths must store the same body, or the archive rejects the message.
+        return text.replace("@_all", "@all")
 
     @staticmethod
     def _persistent_attachment_refs(message_id: str | None, content: dict[str, Any]) -> tuple[str, ...]:
