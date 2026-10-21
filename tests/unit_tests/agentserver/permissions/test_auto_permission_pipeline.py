@@ -66,9 +66,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
     reset_root_permission_request,
 )
 from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import RootPermissionDispatch
-from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
-    SessionDenyStore,
-)
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import (
     build_tool_decision_facts,
 )
@@ -82,8 +79,6 @@ from tests.unit_tests.agentserver.permissions.auto_permission_test_support impor
 def _rail(
     tmp_path,
     evaluation: PolicyEvaluation,
-    *,
-    session_denies: SessionDenyStore | None = None,
 ) -> tuple[
     AutoPermissionInterruptRail,
     StaticPolicyEvaluator,
@@ -99,7 +94,6 @@ def _rail(
         workspace_root=tmp_path,
         policy_evaluator=policy,
         auto_reviewer=AutoReviewer(client=reviewer),
-        session_deny_store=session_denies,
     )
     return rail, policy, reviewer, base
 
@@ -123,7 +117,7 @@ async def test_task_tool_ask_is_control_silent_after_engine(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("case", [
-    "allow", "reject", "deny", "session_deny", "fail_closed", "forged",
+    "allow", "reject", "deny", "fail_closed", "forged",
     "changed_args", "undiscovered", "bad_mapping",
 ])
 @pytest.mark.parametrize("target_name", ["probe_target", "cron_list_jobs"])
@@ -228,11 +222,6 @@ async def test_real_core_nested_permission_resume(tmp_path, case, target_name):
         ctx.extra["run_context"] = DeepAgent._normalize_inputs(None, deepcopy(prepared)).run_context
         if case == "deny":
             policy.result = PolicyEvaluation(level="deny", reason="explicit_deny")
-        elif case == "session_deny":
-            auto.session_deny_store.record_denial(
-                session_id="session-a", tool_name="tool_call",
-                tool_args=json.loads(calls[0].arguments), reason="user_rejected",
-            )
         elif case == "fail_closed":
             policy.result = PolicyEvaluation(level="ask", reason="unevaluable", source="fail_closed")
         elif case == "forged":
@@ -565,6 +554,8 @@ async def test_admitted_manual_rejection_skips_policy_re_evaluation(
         tool_name="mcp_free_search",
         tool_args={"query": "blocked"},
         session_id="session-a",
+        tool_call_id="rejected-call",
+        request_id="original-request",
         user_input={
             "approved": False,
             "auto_confirm": False,
@@ -577,28 +568,16 @@ async def test_admitted_manual_rejection_skips_policy_re_evaluation(
     assert reviewer.requests == []
     assert base.calls == []
 
-
-async def test_exact_session_deny_precedes_engine_allow_and_reviewer(tmp_path) -> None:
-    denies = SessionDenyStore()
-    denies.record_denial(
+    monkeypatch.setattr(before_tool_module, "root_permission_resume_from_context", lambda _ctx: None)
+    policy.result = PolicyEvaluation(level="allow", reason="current_engine_allow")
+    next_result = await rail.before_tool_call(
+        tool_name="mcp_free_search",
+        tool_args={"query": "blocked"},
         session_id="session-a",
-        tool_name="write_file",
-        tool_args={"path": "report.md", "content": "draft"},
-        reason="user_rejected",
+        tool_call_id="next-call",
+        request_id="next-request",
     )
-    rail, policy, reviewer, base = _rail(
-        tmp_path,
-        PolicyEvaluation(level="allow", reason="engine_allow"),
-        session_denies=denies,
-    )
-
-    result = await rail.before_tool_call(
-        tool_name="write_file",
-        tool_args={"path": "report.md", "content": "draft"},
-        session_id="session-a",
-    )
-
-    assert classify_permission_result(result) == "denied"
+    assert classify_permission_result(next_result) == "allow"
     assert len(policy.calls) == 1
     assert reviewer.requests == []
     assert base.calls == []
@@ -757,7 +736,7 @@ def _readonly_resource(name, tmp_path, monkeypatch, session_id="session-a", *, n
 
 
 @pytest.mark.parametrize(("name", "args"), _READONLY_CASES)
-@pytest.mark.parametrize("variant", ["valid", "shadow", "callable", "cross_session", "deny", "session_deny", "fail_closed"])
+@pytest.mark.parametrize("variant", ["valid", "shadow", "callable", "cross_session", "deny", "fail_closed"])
 async def test_readonly_real_binding_fast_path(tmp_path, monkeypatch, name, args, variant):
     from openjiuwen.core.runner.resources_manager.resource_manager import ResourceMgr
 
@@ -774,20 +753,17 @@ async def test_readonly_real_binding_fast_path(tmp_path, monkeypatch, name, args
     manager = AbilityManager(owner_id="readonly-permission")
     manager.add_ability(tool.card, tool)
     assert tool_binding_module.Runner.resource_mgr.get_tool(tool.card.id, session=None) is tool
-    denies = SessionDenyStore()
-    if variant == "session_deny":
-        denies.record_denial(session_id="session-a", tool_name=name, tool_args=args, reason="user_rejected")
     try:
         for level in ("ask", "allow"):
             policy_result = PolicyEvaluation(
                 level="deny" if variant == "deny" else level,
                 reason="configured", source="fail_closed" if variant == "fail_closed" else "engine",
             )
-            rail, policy, reviewer, _base = _rail(tmp_path, policy_result, session_denies=denies)
+            rail, policy, reviewer, _base = _rail(tmp_path, policy_result)
             ctx = _runtime_ctx(_Session(), tool_name=name, tool_args=args)
             ctx.agent.ability_manager = manager
             expected = "allow" if variant == "valid" or (variant == "cross_session" and name.startswith("convert_")) else "interrupt"
-            if variant in {"deny", "session_deny"}:
+            if variant == "deny":
                 expected = "denied"
             try:
                 result = await rail.before_tool_call(ctx)
