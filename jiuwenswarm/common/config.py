@@ -1071,6 +1071,15 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_trajectory_diagnosis_in_config(enabled: bool) -> None:
+    """Update the trajectory diagnosis feature switch and persist config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "trajectory_ui" not in data or data["trajectory_ui"] is None:
+        data["trajectory_ui"] = {}
+    data["trajectory_ui"]["diagnosis_enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_team_organization_ui_in_config(enabled: bool) -> None:
     """Persist the experimental Organization UI switch without changing runtime capabilities."""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)

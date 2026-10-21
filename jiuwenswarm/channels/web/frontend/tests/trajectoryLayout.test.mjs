@@ -49,6 +49,10 @@ test('Agent and Team trajectories reserve space for a visible collapsed floating
     false,
   );
   assert.equal(
+    shouldInsetTrajectoryForFloatingTasks('agent', 'diagnosis', true, false, false),
+    true,
+  );
+  assert.equal(
     shouldInsetTrajectoryForFloatingTasks('team', 'trajectory', true, false, false),
     true,
   );

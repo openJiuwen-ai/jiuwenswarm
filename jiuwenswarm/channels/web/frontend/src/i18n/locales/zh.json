@@ -912,6 +912,10 @@
         "title": "启用轨迹界面",
         "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
       },
+      "trajectory_ui_diagnosis_enabled": {
+        "title": "启用轨迹诊断",
+        "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据，无需同时启用轨迹界面；仅能诊断开启之后产生的记录。"
+      },
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization",
         "description": "启用组织视图及后端组织工具。修改后请完整重启后端并新建会话；不会立即停止已有组织任务。"
@@ -1020,6 +1024,181 @@
     "team": {
       "memberLanes": "成员轨迹泳道",
       "members": "成员"
+    },
+    "analysis": {
+      "back": "返回对话",
+      "diagnose": "诊断轨迹",
+      "selection": {
+        "fullScope": "全部轨迹",
+        "notePlaceholder": "请输入用户反馈（可选）",
+        "cancel": "取消",
+        "start": "开始执行",
+        "starting": "启动中…",
+        "summary": "已选择 {{count}} 个 Agent，{{nodes}} 个节点",
+        "emptyNodes": "选中范围内没有完整可诊断的步骤（未完整覆盖的步骤已被剔除）",
+        "lastTurn": "选中轨迹包含主agent最后一轮，将尝试进行产物评估和过程异常诊断归因",
+        "nodeLimit": "选中轨迹超过 {{limit}} 个节点（当前 {{count}} 个），请缩小选择范围",
+        "running": "已有诊断正在进行",
+        "noData": "当前没有可诊断的轨迹"
+      },
+      "summary": "{{traces}} 条轨迹 · {{spans}} 个 OTel Span",
+      "toolbar": {
+        "scale": "轨迹比例",
+        "time": "时间",
+        "equal": "等宽",
+        "tokens": "Tokens",
+        "duration": "时长",
+        "turns": "轮次",
+        "tools": "工具",
+        "folds": "轮次/工具",
+        "expandTurns": "展开所有轮次",
+        "collapseTurns": "折叠所有轮次",
+        "expandTools": "展开所有工具调用",
+        "collapseTools": "折叠所有工具调用",
+        "import": "导入",
+        "export": "导出",
+        "attribution": "开源声明",
+        "search": "搜索轨迹",
+        "searchPlaceholder": "请输入关键字搜索"
+      },
+      "tabs": {
+        "aria": "轨迹分析子页面",
+        "trajectory": "轨迹",
+        "diagnosis": "诊断"
+      }
+    },
+    "diagnosis": {
+      "entry": "轨迹分析",
+      "noteLabel": "补充说明（可选）",
+      "fullScopeBusy": "会话运行中，无法诊断完整轨迹",
+      "cancel": "取消诊断",
+      "selectionHint": "在时间轴或任一泳道上拖选一段时间，并勾选要诊断的成员。",
+      "includeAgent": "诊断 {{name}}",
+      "timeAxis": "时间轴",
+      "records": "诊断记录",
+      "noRecords": "还没有诊断记录",
+      "delete": "删除",
+      "deleteConfirm": "确定删除该诊断记录吗？",
+      "scopeKind": {
+        "full": "完整轨迹",
+        "selection": "选中范围"
+      },
+      "status": {
+        "running": "进行中",
+        "completed": "已完成",
+        "failed": "失败",
+        "cancelled": "已取消",
+        "interrupted": "已中断"
+      },
+      "outletsPending": "诊断完成后在这里给出优化建议",
+      "stageStatus": {
+        "pending": "等待中",
+        "running": "进行中",
+        "completed": "完成",
+        "failed": "失败",
+        "skipped": "已跳过"
+      },
+      "rootCauses": "诊断发现",
+      "category": {
+        "skill_defect": "Skill 缺陷",
+        "ttse_success": "经验（任务成功）",
+        "ttse_partial": "经验（部分完成）",
+        "ttse_fail": "经验（任务失败）",
+        "tool_or_env": "工具或环境",
+        "model_capability": "模型能力",
+        "requirement_unclear": "需求不明确",
+        "other": "其他"
+      },
+      "confidence": "置信度 {{value}}%",
+      "highlight": "在轨迹中高亮",
+      "suggestions": "诊断建议",
+      "noSuggestions": "本次诊断没有可执行的优化建议",
+      "details": "诊断详情",
+      "dismiss": "关闭提示",
+      "note": "诊断说明",
+      "object": "诊断对象",
+      "objectAgents": "Agent",
+      "objectFull": "全部轨迹",
+      "objectTime": "时间",
+      "emptyHint": "还没有诊断记录。点击右上角的“诊断轨迹”开始。",
+      "loadingRecord": "正在加载诊断记录…",
+      "plannedStage": {
+        "task_parse": "任务解析",
+        "diagnose": "诊断分析",
+        "attribute": "归因分析"
+      },
+      "recordSelect": {
+        "aria": "诊断记录",
+        "history": "历史诊断列表",
+        "placeholder": "选择诊断记录",
+        "search": "搜索时间或关键词",
+        "noMatch": "没有匹配的诊断记录",
+        "confirmDelete": "确认删除",
+        "cancelDelete": "取消",
+        "deleteRunning": "诊断进行中，无法删除"
+      },
+      "rewardDimensions": "共 {{count}} 项评分维度，其中 {{perfect}} 项无需优化；点击类别查看各维度评分，需优化的在诊断发现中展开",
+      "rewardTotal": "总分 {{score}}",
+      "artifactFix": "产物修复建议",
+      "skills": "Skill 进化建议",
+      "ttse": "经验沉淀",
+      "fillInput": "填入输入框",
+      "filled": "已填入输入框",
+      "expandAll": "展开全文",
+      "collapse": "收起",
+      "signalTier": {
+        "perfect": "已达标",
+        "fair": "有待改进",
+        "weak": "未达标"
+      },
+      "signalSource": {
+        "keyword_tool": "工具输出命中",
+        "keyword_user": "用户消息命中",
+        "reward": "Reward 评分"
+      },
+      "signalScore": "得分 {{score}}",
+      "signalSurfacedAt": "问题露出于 {{nodes}}",
+      "causeAt": "位于 {{nodes}}",
+      "evidence": "依据",
+      "findingsIssuesOnly": "{{issues}} 处问题",
+      "findingsIssuesAndExperience": "{{issues}} 处问题，另有 {{experience}} 条经验判定",
+      "findingsExperienceOnly": "{{experience}} 条经验判定",
+      "requestCount": "模型请求 {{count}} 次",
+      "objectSteps": "步骤",
+      "objectStepsCount": "{{count}} 个轨迹步骤",
+      "objectExcludedRunning": "诊断时有 {{count}} 个步骤仍在运行，未纳入诊断",
+      "objectTask": "任务描述",
+      "suggestionsUnfinished": "诊断未完成，没有建议",
+      "process": "诊断过程",
+      "processSteps": "{{count}} 步",
+      "triggerTtse": "触发经验生成",
+      "triggeringTtse": "触发中…",
+      "ttseOutcome": {
+        "success": "任务完成",
+        "fail": "任务未完成",
+        "partial": "任务部分完成"
+      },
+      "ttseHint": "从这次轨迹中提取可复用的经验，由 TTSE 在后台生成并保存",
+      "ttseReady": "可生成经验",
+      "skillFillPrefix": "根据以下优化建议对相应skill进行演进：",
+      "ttseResult": {
+        "triggered": "已触发，TTSE 正在后台生成并保存经验",
+        "failed": "触发失败"
+      },
+      "blocked": "暂不可用：{{reason}}",
+      "errors": {
+        "FEATURE_DISABLED": "轨迹诊断未开启",
+        "UNSUPPORTED_SESSION_MODE": "当前会话模式不支持诊断",
+        "SESSION_NOT_FOUND": "会话不存在",
+        "DIAGNOSIS_ALREADY_RUNNING": "已有诊断正在进行",
+        "FULL_SCOPE_WHILE_BUSY": "会话运行中，无法诊断完整轨迹",
+        "EMPTY_SCOPE": "所选范围内没有可诊断的步骤",
+        "MODEL_UNAVAILABLE": "诊断模型不可用，请先配置模型",
+        "AGENT_UNAVAILABLE": "Agent 暂不可用",
+        "TTSE_NOT_SUPPORTED": "当前会话不支持 TTSE 经验生成",
+        "TTSE_UNAVAILABLE": "当前会话未启用 TTSE",
+        "default": "操作失败"
+      }
     },
     "composer": {
       "collapse": "收起输入框",

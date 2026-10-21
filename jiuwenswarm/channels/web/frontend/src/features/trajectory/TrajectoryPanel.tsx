@@ -15,13 +15,14 @@ import {
 import { useTranslation } from 'react-i18next';
 import { webClient } from '../../services/webClient';
 import { saveBlobWithResult } from '../../utils/desktopSave';
-import { TrajectoryExplorer } from './client/TrajectoryExplorer';
+import { TrajectoryExplorer, type TrajectoryViewState } from './client/TrajectoryExplorer';
 import { IconQuestionOutline14 } from './primitives/icons';
 import { JsonTree } from './primitives/JsonTree';
 import { projectOtelTrajectory } from './projector/otel-trajectory-projector';
 import { createTrajectoryV2Reducer } from './projector/trajectory-v2-reducer';
 import type { OtlpExportTraceServiceRequest } from './shared/otlp';
 import type { TrajectoryDiagnostic, TrajectoryUsage } from './trajectory/model';
+import type { TrajectoryTimeRange } from './trajectory/timeline';
 import {
   EMPTY_TRAJECTORY_CHECKPOINTS,
   resolveTrajectoryCheckpoints,
@@ -99,6 +100,18 @@ import {
   type TrajectoryTurnRange,
 } from './trajectoryTurnGaps';
 import { TeamTrajectoryWorkspace } from './TeamTrajectoryWorkspace';
+import { SharedTimeAxis } from './diagnosis/SharedTimeAxis';
+import {
+  isAgentIncluded,
+  laneRangeOf,
+  selectOnAxis,
+  selectOnLane,
+  toggleAgent,
+  type DiagnosisSelectionState,
+  type WallRange,
+} from './diagnosis/diagnosisSelection';
+import { mainAgentLastNode, timedNodeIntervals } from './diagnosis/diagnosisTimeSelection';
+import { useSharedTimeAxis } from './diagnosis/useSharedTimeAxis';
 import css from './TrajectoryPanel.module.css';
 import './client/theme.css';
 
@@ -135,7 +148,103 @@ export interface TrajectoryPanelProps {
   active: boolean;
   mode?: string;
   sessionId: string;
+  /**
+   * Draw every agent as a swimlane (Team or single-Agent) against one shared,
+   * idle-compressed time axis under the toolbar. Off by default, which keeps
+   * the single-Agent tab view and the Team lanes of the conversation page.
+   */
+  sharedTimeAxis?: boolean;
+  /**
+   * Turn the lanes and the axis into a picker for what to diagnose. Needs
+   * `sharedTimeAxis`; without it the lanes only show.
+   */
+  selection?: TrajectoryPanelSelection;
+  /** Reports whether any lane has timing, i.e. whether there is something to pick from. */
+  onTimelineAvailableChange?: (available: boolean) => void;
+  /** Reports the session's agent lanes (id and display name) whenever they change. */
+  onSubjectsChange?: (subjects: ReadonlyArray<TrajectoryPanelSubject>) => void;
+  /**
+   * The main agent's last timed node, or the team leader's when there is no
+   * main agent. `null` when that lane has no timed node.
+   */
+  onMainAgentLastNodeChange?: (node: TrajectoryMainAgentLastNode | null) => void;
+  /** Timed nodes on each lane, used to tell when a pick is too large to run. */
+  onDiagnosisNodesChange?: (lanes: ReadonlyArray<TrajectoryDiagnosisLaneNodes>) => void;
+  /** Steps to emphasise on every lane, as `stepRefKey` values. */
+  highlightStepKeys?: ReadonlySet<string>;
+  /**
+   * Analysis-page scale. `time` shares one wall clock and shows the axis.
+   * `duration` sizes each lane by recorded length with idle gaps removed, the
+   * same projection as the conversation page's duration control.
+   * `tokens` and `equal` size each lane on its own and hide the axis.
+   */
+  laneScale?: TrajectoryLaneScale;
+  /** Fold every turn in an expanded lane. Analysis page only. */
+  turnsCollapsed?: boolean;
+  /** Fold every tool call in an expanded lane. Analysis page only. */
+  callsCollapsed?: boolean;
+  /** One query applied to every analysis-page lane. */
+  searchQuery?: string;
+  /** Trace and span totals for the analysis-page header. */
+  onSummaryChange?: (summary: TrajectoryPanelSummary) => void;
+  /**
+   * Analysis-page stand-in for the conversation trajectory header: import,
+   * export, replay exit, and the attribution toggle. The panel keeps the
+   * archive and still draws progress, errors, and the attribution footer.
+   */
+  onArchiveActionsReady?: (actions: TrajectoryArchiveActions) => void;
 }
+
+/** Controls the analysis toolbar uses in place of the conversation header. */
+export interface TrajectoryArchiveActions {
+  importing: boolean;
+  exporting: boolean;
+  exportDisabled: boolean;
+  attributionOpen: boolean;
+  replayActive: boolean;
+  importLabel: string;
+  exportLabel: string;
+  attributionLabel: string;
+  exitReplayLabel: string;
+  requestImport: () => void;
+  requestExport: () => void;
+  toggleAttribution: () => void;
+  exitReplay: () => void;
+}
+
+export interface TrajectoryPanelSelection {
+  state: DiagnosisSelectionState;
+  /** Applies a change on top of the latest state, so quick successive picks do not overwrite each other. */
+  onChange: (update: (current: DiagnosisSelectionState) => DiagnosisSelectionState) => void;
+}
+
+export interface TrajectoryPanelSubject {
+  id: string;
+  label: string;
+}
+
+/** Wall-clock span of the primary agent's last timed node. */
+export interface TrajectoryMainAgentLastNode {
+  subjectId: string;
+  startMs: number;
+  endMs: number;
+}
+
+/** Timed nodes of one lane, in snapshot order. */
+export interface TrajectoryDiagnosisLaneNodes {
+  subjectId: string;
+  intervals: readonly { startMs: number; endMs: number }[];
+}
+
+/** How analysis-page lanes size their blocks. Time is the shared wall clock. */
+export type TrajectoryLaneScale = 'time' | 'equal' | 'tokens' | 'duration';
+
+export interface TrajectoryPanelSummary {
+  traces: number;
+  spans: number;
+}
+
+function ignoreTimelineRange(): void {}
 
 interface InitialLoadProgress {
   loaded: number;
@@ -212,6 +321,19 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   active,
   mode = 'agent',
   sessionId,
+  sharedTimeAxis = false,
+  onSubjectsChange,
+  onMainAgentLastNodeChange,
+  onDiagnosisNodesChange,
+  highlightStepKeys,
+  selection,
+  onTimelineAvailableChange,
+  laneScale = 'time',
+  turnsCollapsed = false,
+  callsCollapsed = false,
+  searchQuery = '',
+  onSummaryChange,
+  onArchiveActionsReady,
 }: TrajectoryPanelProps) {
   const { i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
@@ -266,6 +388,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const [selectedSubjectId, setSelectedSubjectId] = useState<string | null>(
     sessionTeamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID,
   );
+  // Expanded lane of a non-Team session on the analysis page.
+  const [laneExpandedId, setLaneExpandedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [initialLoadProgress, setInitialLoadProgress] = useState<InitialLoadProgress | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -537,6 +661,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     initialLoadProgressRef.current = null;
     setInitialLoadProgress(null);
     setSelectedSubjectId(sessionTeamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+    setLaneExpandedId(null);
     setInvalidRecordSeen(false);
     setError(null);
     setRawSelection('');
@@ -1054,6 +1179,69 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const displayedRawRecords = selectedSubjectGroup?.rawRecords ?? [];
   const displayedTraceCount = selectedSubjectGroup?.traceCount ?? 0;
   const subjectSnapshots = subjectView.snapshots;
+  const timeAxis = useSharedTimeAxis(sharedTimeAxis, sessionId, subjectSnapshots);
+  const shareClock = sharedTimeAxis && laneScale === 'time';
+  const analysisViewState = useMemo<TrajectoryViewState | undefined>(() => (
+    sharedTimeAxis
+      ? {
+        actualDuration: laneScale === 'time' || laneScale === 'duration',
+        actualTime: laneScale === 'time',
+        tokenView: laneScale === 'tokens',
+        turnsCollapsed,
+        callsCollapsed,
+      }
+      : undefined
+  ), [callsCollapsed, laneScale, sharedTimeAxis, turnsCollapsed]);
+  const onSubjectsChangeRef = useRef(onSubjectsChange);
+  onSubjectsChangeRef.current = onSubjectsChange;
+  const subjectsSignature = JSON.stringify(subjectGroups.groups.map(group => [group.subject.id, group.label]));
+  useEffect(() => {
+    const entries = JSON.parse(subjectsSignature) as Array<[string, string]>;
+    onSubjectsChangeRef.current?.(entries.map(([id, label]) => ({ id, label })));
+  }, [subjectsSignature]);
+  const onMainAgentLastNodeChangeRef = useRef(onMainAgentLastNodeChange);
+  onMainAgentLastNodeChangeRef.current = onMainAgentLastNodeChange;
+  const mainAgentLastNodeKey = JSON.stringify(mainAgentLastNode(
+    subjectGroups.groups.map(group => ({
+      subjectId: group.subject.id,
+      kind: group.subject.kind,
+      turns: subjectSnapshots.get(group.subject.id)?.turns ?? [],
+    })),
+  ));
+  useEffect(() => {
+    onMainAgentLastNodeChangeRef.current?.(
+      JSON.parse(mainAgentLastNodeKey) as TrajectoryMainAgentLastNode | null,
+    );
+  }, [mainAgentLastNodeKey]);
+  const onDiagnosisNodesChangeRef = useRef(onDiagnosisNodesChange);
+  onDiagnosisNodesChangeRef.current = onDiagnosisNodesChange;
+  const diagnosisNodesKey = JSON.stringify(subjectGroups.groups.map(group => ({
+    subjectId: group.subject.id,
+    intervals: timedNodeIntervals(subjectSnapshots.get(group.subject.id)?.turns ?? []),
+  })));
+  useEffect(() => {
+    onDiagnosisNodesChangeRef.current?.(
+      JSON.parse(diagnosisNodesKey) as TrajectoryDiagnosisLaneNodes[],
+    );
+  }, [diagnosisNodesKey]);
+  const onTimelineAvailableChangeRef = useRef(onTimelineAvailableChange);
+  onTimelineAvailableChangeRef.current = onTimelineAvailableChange;
+  const timelineAvailable = timeAxis.domain !== null;
+  useEffect(() => {
+    onTimelineAvailableChangeRef.current?.(timelineAvailable);
+  }, [timelineAvailable]);
+  const summaryTraces = subjectGroups.groups.reduce((sum, group) => sum + group.traceCount, 0);
+  const summarySpans = allDisplayedRawRecords.length || allDisplayedRecords.length;
+  const onSummaryChangeRef = useRef(onSummaryChange);
+  onSummaryChangeRef.current = onSummaryChange;
+  useEffect(() => {
+    if (!sharedTimeAxis) return;
+    onSummaryChangeRef.current?.({ traces: summaryTraces, spans: summarySpans });
+  }, [sharedTimeAxis, summarySpans, summaryTraces]);
+  const exportArchiveRef = useRef<() => void>(() => {});
+  const exitReplayRef = useRef<() => void>(() => {});
+  const onArchiveActionsReadyRef = useRef(onArchiveActionsReady);
+  onArchiveActionsReadyRef.current = onArchiveActionsReady;
   const selectedSubjectSnapshot = selectedSubjectGroup === undefined
     ? undefined
     : subjectSnapshots.get(selectedSubjectGroup.subject.id);
@@ -1105,6 +1293,47 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     ))?.subject.id ?? null;
     selectSubject(fallback);
   }, [selectSubject, selectedSubjectId, subjectGroups, teamMode]);
+
+  // The analysis page draws every session, Team or not, as swimlanes on the
+  // shared axis. A single-Agent session keeps its raw view pinned to the main
+  // Agent, so lane expansion is tracked apart from `selectedSubjectId`.
+  const laneLayout = teamMode || sharedTimeAxis;
+  const laneSelectedId = teamMode ? selectedSubjectId : laneExpandedId;
+  const selectLane = useCallback((subjectId: string | null) => {
+    if (teamMode) {
+      selectSubject(subjectId);
+      return;
+    }
+    setLaneExpandedId(subjectId);
+    if (subjectId !== null) selectSubject(subjectId);
+  }, [selectSubject, teamMode]);
+  const selecting = sharedTimeAxis && selection !== undefined;
+  const toAxisRange = (range: WallRange | null): TrajectoryTimeRange | null => {
+    if (range === null || timeAxis.mapSharedTime === undefined) return null;
+    return { start: timeAxis.mapSharedTime(range.startMs), end: timeAxis.mapSharedTime(range.endMs) };
+  };
+  const toWallRange = (range: TrajectoryTimeRange | null): WallRange | null => {
+    if (range === null || timeAxis.toWall === undefined) return null;
+    const startMs = timeAxis.toWall(range.start);
+    const endMs = timeAxis.toWall(range.end);
+    return endMs < startMs ? null : { startMs, endMs };
+  };
+  const axisVisualRange = selecting && selection.state.mode === 'axis'
+    ? toAxisRange(selection.state.axisRange)
+    : null;
+  const selectOnAxisRange = (range: TrajectoryTimeRange | null) => {
+    if (selection === undefined) return;
+    const wall = toWallRange(range);
+    selection.onChange(current => selectOnAxis(current, wall));
+  };
+  const laneVisualRange = (subjectId: string): TrajectoryTimeRange | null => (
+    selection === undefined ? null : toAxisRange(laneRangeOf(selection.state, subjectId))
+  );
+  const selectOnLaneRange = (subjectId: string, range: TrajectoryTimeRange | null) => {
+    if (selection === undefined) return;
+    const wall = toWallRange(range);
+    selection.onChange(current => selectOnLane(current, subjectId, wall));
+  };
 
   useEffect(() => {
     if (selectedSubjectId === null) {
@@ -1217,6 +1446,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       setExporting(false);
     }
   }, [chinese, copy, exporting, replayArchive, sessionId]);
+  exportArchiveRef.current = exportArchive;
 
   const importArchive = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
@@ -1269,6 +1499,41 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setRawSelection('');
     if (transition.catchUpLiveRevision) void refreshLatest();
   }, [refreshLatest, replayArchive]);
+  exitReplayRef.current = exitReplay;
+  const importingArchive = importProgress !== null;
+  const exportDisabled = exporting || (replayArchive === null && sessionId === 'new');
+  const replayActive = replayArchive !== null;
+  const importLabel = importingArchive ? copy.importingArchive : copy.importArchive;
+  const exportLabel = exporting ? copy.exportingArchive : copy.exportArchive;
+  useEffect(() => {
+    if (!sharedTimeAxis) return;
+    onArchiveActionsReadyRef.current?.({
+      importing: importingArchive,
+      exporting,
+      exportDisabled,
+      attributionOpen,
+      replayActive,
+      importLabel,
+      exportLabel,
+      attributionLabel: copy.attributionLabel,
+      exitReplayLabel: copy.exitReplay,
+      requestImport: () => { archiveInputRef.current?.click(); },
+      requestExport: () => { void exportArchiveRef.current(); },
+      toggleAttribution: () => { setAttributionOpen(open => !open); },
+      exitReplay: () => { exitReplayRef.current(); },
+    });
+  }, [
+    attributionOpen,
+    copy.attributionLabel,
+    copy.exitReplay,
+    exportDisabled,
+    exportLabel,
+    exporting,
+    importLabel,
+    importingArchive,
+    replayActive,
+    sharedTimeAxis,
+  ]);
 
   const rawContainerHeight = useCallback(() => (
     bodyRef.current?.getBoundingClientRect().height ?? 600
@@ -1439,10 +1704,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     sessionId: replayArchive?.header.session_id ?? sessionId,
     loading: replayArchive === null ? loading : false,
     error: replayArchive === null ? error : null,
-    projectedCount: teamMode ? allDisplayedRecords.length : displayedRecords.length,
-    rawCount: teamMode ? allDisplayedRawRecords.length : displayedRawRecords.length,
+    projectedCount: laneLayout ? allDisplayedRecords.length : displayedRecords.length,
+    rawCount: laneLayout ? allDisplayedRawRecords.length : displayedRawRecords.length,
   });
-  const teamContent = teamMode && contentMode !== 'new'
+  const teamContent = laneLayout && contentMode !== 'new'
     && contentMode !== 'loading' && contentMode !== 'blocking-error'
     && contentMode !== 'empty'
     ? (
@@ -1450,14 +1715,44 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         active={active}
         groups={subjectGroups}
         messages={copy.toolbar}
-        selectedSubjectId={selectedSubjectId}
-        onSelectSubject={selectSubject}
+        selectedSubjectId={laneSelectedId}
+        onSelectSubject={selectLane}
+        hideToolbar={sharedTimeAxis}
+        {...(analysisViewState === undefined ? {} : { externalViewState: analysisViewState })}
+        {...(sharedTimeAxis
+          ? {
+            showScaleControls: false,
+            ...(shareClock
+              ? {
+                toolbarTrailing: (
+                  <SharedTimeAxis
+                    domain={timeAxis.domain}
+                    viewport={timeAxis.viewport}
+                    range={axisVisualRange}
+                    onRangeChange={selectOnAxisRange}
+                    selectable={selecting}
+                  />
+                ),
+              }
+              : {}),
+            ...(selection === undefined
+              ? {}
+              : {
+                agentSelection: {
+                  isIncluded: (subjectId: string) => isAgentIncluded(selection.state, subjectId),
+                  onToggle: (subjectId: string) => selection.onChange(current => toggleAgent(current, subjectId)),
+                  isHighlighted: (subjectId: string) => laneRangeOf(selection.state, subjectId) !== null,
+                },
+              }),
+          }
+          : {})}
         memberView={(subjectId, {
           expanded,
-          viewState,
+          viewState: memberViewState,
           toolbarAddon,
           onOverviewActivate,
         }) => {
+          const viewState = memberViewState;
           const group = subjectGroups.byId.get(subjectId);
           const groupSnapshot = group === undefined
             ? undefined
@@ -1489,10 +1784,30 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                 colorMode="light"
                 displayMode={expanded ? 'full' : 'overview'}
                 showToolbarViewControls={false}
+                showSearch={!sharedTimeAxis}
+                {...(sharedTimeAxis ? { searchQuery } : {})}
                 toolbarAddon={toolbarAddon}
                 viewState={viewState}
                 onOverviewActivate={onOverviewActivate}
+                {...(highlightStepKeys === undefined ? {} : { highlightStepKeys })}
+                {...(sharedTimeAxis && !selecting ? { clickSelectsRecord: true } : {})}
                 className={expanded ? css.explorer : undefined}
+                {...(shareClock
+                  ? {
+                    sharedTimeDomain: timeAxis.sharedTimeDomain,
+                    ...(timeAxis.mapSharedTime === undefined ? {} : { mapSharedTime: timeAxis.mapSharedTime }),
+                    timelineRange: selecting ? laneVisualRange(subjectId) : null,
+                    timelineRangeAppearance: 'region',
+                    onTimelineRangeChange: selecting
+                      ? (range: TrajectoryTimeRange | null) => selectOnLaneRange(subjectId, range)
+                      : ignoreTimelineRange,
+                    spanSelectsRange: selecting,
+                    lockTimelineViewport: true,
+                    sharedViewport: timeAxis.viewport,
+                    onSharedViewportChange: timeAxis.updateViewport,
+                    sharedViewportRef: timeAxis.viewportRef,
+                  }
+                  : {})}
               />
               {expanded && rawRecords.length > 0 ? rawInspector : null}
             </>
@@ -1579,6 +1894,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                   error={selected && replayArchive === null ? error : null}
                   messages={copy.toolbar}
                   colorMode="light"
+                  {...(highlightStepKeys === undefined ? {} : { highlightStepKeys })}
                   className={css.explorer}
                 />
               </div>
@@ -1596,7 +1912,15 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       aria-label={chinese ? '轨迹' : 'Trajectory'}
       data-active={active ? 'true' : 'false'}
     >
-      <header className={css.header}>
+      <input
+        ref={archiveInputRef}
+        className={css.archiveInput}
+        type="file"
+        accept=".zip,.jsonl,application/zip"
+        onChange={(event) => { void importArchive(event); }}
+        data-testid="trajectory-archive-input"
+      />
+      {sharedTimeAxis ? null : <header className={css.header}>
         <div className={css.summary}>
           {replayArchive === null
             ? copy.summary(displayedTraceCount, displayedRawRecords.length || displayedRecords.length)
@@ -1604,14 +1928,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
           {displayedInvalidRecordSeen ? <span className={css.warning}> {copy.invalid}</span> : null}
         </div>
         <div className={css.archiveActions}>
-          <input
-            ref={archiveInputRef}
-            className={css.archiveInput}
-            type="file"
-            accept=".zip,.jsonl,application/zip"
-            onChange={(event) => { void importArchive(event); }}
-            data-testid="trajectory-archive-input"
-          />
           <button
             type="button"
             className={css.archiveAction}
@@ -1652,7 +1968,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
             <IconQuestionOutline14 />
           </button>
         </div>
-      </header>
+      </header>}
       {archiveError === null ? null : (
         <p className={`${css.archiveError} ${css.errorText}`} role="alert">{archiveError}</p>
       )}
@@ -1710,7 +2026,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
           </div>
         </div>
       ) : null}
-      {!teamMode && subjectGroups.groups.length > 1 ? (
+      {teamContent === null && !teamMode && subjectGroups.groups.length > 1 ? (
         <div className={css.subjectBar}>
           <div className={css.subjectTabs} role="tablist" aria-label={copy.subjectTabs}>
             {subjectGroups.groups.map(group => (
