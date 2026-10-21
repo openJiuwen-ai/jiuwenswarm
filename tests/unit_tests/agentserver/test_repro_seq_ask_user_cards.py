@@ -15,6 +15,9 @@ from __future__ import annotations
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
+from jiuwenswarm.server.runtime.skill_turbo.hitl_dedup import (
+    OuterCallIDDeduplicator,
+)
 
 _Q_P1 = [{"question": "演示主题是什么？", "header": "主题", "options": []}]
 _Q_P2 = [{"question": "需要多少页？", "header": "页数", "options": []}]
@@ -31,6 +34,7 @@ def _card(request_id: str, questions: list) -> dict:
 
 def _adapter() -> JiuWenSwarmDeepAdapter:
     adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._outer_call_dedup = OuterCallIDDeduplicator()
     adapter._ask_user_card_seq = {}
     return adapter
 

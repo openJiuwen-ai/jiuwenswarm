@@ -292,13 +292,13 @@ def test_resolve_mode_disabled_keeps_agent(monkeypatch):
 
 
 def test_resolve_mode_enabled_injects_agent_to_flash(monkeypatch):
-    """flash.enabled=true → agent/plan/fast requests rewritten to flash."""
+    """flash.enabled=true selects Flash while preserving agent canonical mode."""
     from jiuwenswarm.server.handlers._shared import resolve_agent_request_mode
 
     _set_flash_enabled(monkeypatch, True)
-    assert resolve_agent_request_mode("agent") == ("flash", None, "flash")
-    assert resolve_agent_request_mode("plan") == ("flash", None, "flash")
-    assert resolve_agent_request_mode("agent.fast") == ("flash", None, "flash")
+    assert resolve_agent_request_mode("agent") == ("flash", None, "agent")
+    assert resolve_agent_request_mode("plan") == ("flash", None, "agent")
+    assert resolve_agent_request_mode("agent.fast") == ("flash", None, "agent")
 
 
 def test_resolve_mode_enabled_does_not_touch_code_or_team(monkeypatch):
@@ -331,10 +331,10 @@ def test_resolve_mode_guard_covers_agent_family_not_enumerated(monkeypatch):
 
     _set_flash_enabled(monkeypatch, True)
     # agent.* family all inject
-    assert resolve_agent_request_mode("agent.team") == ("flash", None, "flash")
-    assert resolve_agent_request_mode("agent.custom") == ("flash", None, "flash")
+    assert resolve_agent_request_mode("agent.team") == ("flash", None, "agent")
+    assert resolve_agent_request_mode("agent.custom") == ("flash", None, "agent")
     # bare plan/fast inject (legacy cron job data)
-    assert resolve_agent_request_mode("fast") == ("flash", None, "flash")
+    assert resolve_agent_request_mode("fast") == ("flash", None, "agent")
 
 
 def test_resolve_mode_explicit_flash_dispatches_directly(monkeypatch):

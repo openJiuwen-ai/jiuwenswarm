@@ -4,12 +4,11 @@ import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
-from openjiuwen.core.context_engine import TiktokenCounter
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.common.utils import logger
 from .capability import ModelCapability
-from .classifier import CONTINUATION_CATEGORY, validate_score
+from .classifier import CONTINUATION_CATEGORY, estimate_tokens, validate_score
 from .compressor_sync import sync_agent_compressor_models
 from .types import (
     PriorModelCall, TaskAnalysis, RoutingDecision,
@@ -93,7 +92,6 @@ class ModelRoutingRail(DeepAgentRail):
         # 模型的 client config 克隆，凭证（api_base / api_key / 鉴权头）已在其中。
         self._model_builder: Optional[Callable[[dict, dict], Any]] = model_builder
         self._call_history: list[PriorModelCall] = []
-        self._token_counter = TiktokenCounter()
         self._apply_routing: bool = apply_routing
         self._trace_id: str = _new_trace_id()
 
@@ -509,12 +507,20 @@ class ModelRoutingRail(DeepAgentRail):
         if isinstance(ctx.extra, dict):
             ctx.extra["model_routing_decision"] = asdict(decision)
 
-    def _count_text_tokens(self, text: str) -> int:
-        """独立计算文本 token（tiktoken），不依赖模型上报。"""
-        try:
-            return int(self._token_counter.count(text))
-        except Exception:
-            return max(0, len(text) // 4)
+    @staticmethod
+    def _count_text_tokens(text: str) -> int:
+        """粗估文本 token 数（CJK 加权），不依赖模型上报。
+
+        原先走 ``TiktokenCounter``（openjiuwen 内核），但它**在构造函数里**急切调用
+        ``tiktoken.get_encoding()``：缓存未命中（默认缓存目录是 ``%TEMP%/data-gym-cache``，
+        不随包分发）时会同步联网下载 BPE 词表，且 ``requests.get`` 未设超时。而该构造发生在
+        agent 构建路径上（``async create_instance`` 同步调 ``_build_agent_rails``），
+        冷缓存 + 无外网时会阻塞整个事件循环。
+
+        这个值只进决策留痕 ``predicted_input_tokens``（不参与路由判定），近似即可，
+        故直接用 :func:`classifier.estimate_tokens`，不再引入该依赖。
+        """
+        return estimate_tokens(text)
 
 
 # ---- Helpers ---- #

@@ -107,7 +107,12 @@ def cleanup_orphan_file_ops() -> dict[str, int]:
             if not f.is_file():
                 continue
             name = f.name
-            if not name.startswith(f"file_ops_{AGENT_ID}_") or not name.endswith(".json"):
+            # flash edit_file 的追加账本：file_ops_flash_{AGENT_ID}_* 前缀 +
+            # .jsonl 后缀（注意不能只查 file_ops_{AGENT_ID}_ 前缀——flash
+            # 账本多一段 flash_，前缀不匹配会导致孤儿 .jsonl 永不清理）。
+            if not name.startswith(
+                (f"file_ops_{AGENT_ID}_", f"file_ops_flash_{AGENT_ID}_")
+            ) or not name.endswith((".json", ".jsonl")):
                 continue
             # 检查文件名中是否包含某个现存 session 的 id
             orphaned = True

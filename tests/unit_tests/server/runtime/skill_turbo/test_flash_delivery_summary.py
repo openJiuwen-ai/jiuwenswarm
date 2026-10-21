@@ -46,8 +46,6 @@ from openjiuwen.harness import create_deep_agent
 
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.agents.harness.flash.rails.flash_delivery_summary_rail import FlashDeliverySummaryRail
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep, interface_flash
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import JiuwenSwarmFlashAdapter
 from jiuwenswarm.server.runtime.skill_turbo import skill_turbo_tools as turbo_tools
@@ -260,83 +258,16 @@ async def test_flash_pause_then_native_resume_emits_one_summary(assemble_flash, 
         assert not ctx.has_force_finish_request
 
 
-@pytest.mark.asyncio
-async def test_flash_adapter_resume_keeps_existing_summary_single(monkeypatch, assemble_flash):
-    adapter, rails = assemble_flash()
-    assert adapter._skill_turbo_delivery_summary_rail is not None
-    session = _Session()
-
-    # 审批暂停先清残留，再进入绕过外层工具循环的 adapter resume 入口。
-    async with _tool_context(rails, session) as ctx:
-        turbo_tools.set_pending_ppt_delivery_summary(_SUMMARY)
-        ctx.exception = ToolInterruptException(request=InterruptRequest(message="请确认"))
-        await ctx.fire(AgentCallbackEvent.AFTER_TOOL_CALL)
-        assert session.events == []
-
-    class _Turbo:
-        def __init__(self, _config):
-            self.artifact_holder = _holder()
-
-        async def resume_stream(self, **_kwargs):
-            if False:
-                yield None
-
-    monkeypatch.setattr("jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo", _Turbo)
-    monkeypatch.setattr(adapter, "_clear_pending_skill_turbo_hitl", AsyncMock(return_value=False))
-    monkeypatch.setattr(adapter, "_clear_skill_turbo_resume_ctx_via_isolated_session", AsyncMock())
-    monkeypatch.setattr(interface_deep, "_skill_turbo_clear_resume_in_flight", AsyncMock())
-    monkeypatch.setattr(adapter, "build_skill_turbo_config", lambda: {})
-    monkeypatch.setattr(adapter, "_log_and_make_usage_summary_chunk", lambda **_: None)
-    monkeypatch.setattr(adapter, "_complete_skill_turbo_outer_todo", AsyncMock(return_value=[]))
-    request = AgentRequest(
-        request_id="flash-resume", session_id="flash-session", channel_id="web",
-        req_method=ReqMethod.CHAT_SEND,
-        params={"source": "ask_user_interrupt", "answers": [{"question": "风格"}]},
-    )
-    stream = adapter._make_skill_turbo_resume_stream(
-        request=request, inputs={}, session=session,
-        resume_ctx={"plan_code": "test", "pending_tool_call_id": "outer-ppt", "inputs": {}},
-        answers=[{"question": "风格", "selected_options": ["商务"]}],
-    )
-    chunks = [chunk async for chunk in stream]
-    payloads = [chunk.payload for chunk in chunks if isinstance(chunk.payload, dict)]
-    assert [p["content"] for p in payloads if p.get("event_type") == "chat.delta"] == [_SUMMARY]
-    assert [p["content"] for p in payloads if p.get("event_type") == "chat.final"] == [""]
-    assert chunks[-1].is_complete is True
-    assert turbo_tools.take_pending_ppt_delivery_summary() == ""
-    # resume 已输出终稿，之后即使收到外层收尾回调也不能再补一份。
-    async with _tool_context(rails, session) as ctx:
-        ctx.inputs.tool_result = {"success": True}
-        await ctx.fire(AgentCallbackEvent.AFTER_TOOL_CALL)
-    assert [event.type for event in session.events] == ["tool_result"]
-    assert not ctx.has_force_finish_request
-
-
-@pytest.mark.asyncio
-async def test_flash_duplicate_resume_answer_does_not_start_another_delivery(monkeypatch, assemble_flash):
-    adapter, _ = assemble_flash()
-    adapter._instance = SimpleNamespace(card=object(), _loop_session=None)
-    resume = Mock(side_effect=AssertionError("重复作答不得重新执行交付"))
-    monkeypatch.setattr(adapter, "_make_skill_turbo_resume_stream", resume)
-    session = SimpleNamespace(post_run=AsyncMock(), update_state=Mock())
-    monkeypatch.setattr("openjiuwen.core.session.agent.create_agent_session", lambda **_: session)
-    monkeypatch.setattr(interface_deep, "_skill_turbo_set_agent_id", lambda *_a, **_k: None)
-    monkeypatch.setattr(interface_deep, "_skill_turbo_load_resume_ctx", AsyncMock(return_value={
-        "pending_tool_call_id": "skill_turbo-tc-ask_user-1",
-        "plan_code": "test", "resume_in_flight": True,
-    }))
-    request = AgentRequest(
-        request_id="flash-duplicate", channel_id="web", session_id="flash-session",
-        req_method=ReqMethod.CHAT_SEND, params={
-            "source": "ask_user_interrupt", "request_id": "skill_turbo-tc-ask_user-1",
-            "answers": [{"question": "风格", "selected_options": ["商务"]}],
-        },
-    )
-    stream = await adapter._try_skill_turbo_resume(request, {})
-    assert stream is not None
-    chunks = [chunk async for chunk in stream]
-    assert len(chunks) == 1 and chunks[0].is_complete and chunks[0].payload is None
-    resume.assert_not_called()
+# 以下两个 Path A 用例（adapter._make_skill_turbo_resume_stream 直连 resume 流 /
+# adapter._try_skill_turbo_resume 判重早退）随 skill_turbo 阶段 2 删除 Path A 一并
+# 移除：resume 已统一走 harness handle_resume 重放 skill_acceleration_exec 工具体
+# （[[S_06]] P3 统一 resume 路径），flash 适配器不再持有 resume 专属入口。守护
+# 保证迁移至 Path B 等价用例：
+# - 暂停→恢复→交付摘要单次输出且不补发：test_flash_pause_then_native_resume_
+#   emits_one_summary（本文件，经真实 after_tool_call 回调链）；
+# - 重复作答不重复执行交付：tests/unit_tests/agentserver/test_skill_turbo_tools.py
+#   的 test_duplicate_resume_answer_returns_clean_placeholder_without_stop_hint
+#   （工具体 resume_in_flight 判重早退：不 mark / 不误清 / 不启动 resume_stream）。
 
 
 @pytest.mark.asyncio

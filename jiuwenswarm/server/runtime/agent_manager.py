@@ -44,6 +44,8 @@ from jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail imp
     coalesce_config_skill_envs,
 )
 
+from jiuwenswarm.server.runtime.session_owner_routing import bind_request_to_session_owner
+
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 
@@ -948,6 +950,7 @@ class AgentManager:
         project_dir: str | None,
         work_mode: str,
         is_swarm: bool,
+        adapter_mode: str = "agent",
         prewarm_eligible: bool = True,
         create_token: str | None = None,
     ):
@@ -958,6 +961,7 @@ class AgentManager:
             project_dir=project_dir,
             work_mode=work_mode,
             is_swarm=is_swarm,
+            adapter_mode=adapter_mode,
         )
         create_signature = (key, bool(prewarm_eligible))
         token_key = (key.channel_id, token)
@@ -1283,6 +1287,7 @@ class AgentManager:
             # session runtime、但没有这条暂停命令，不能拿来续跑。
             owned = self.find_agent_for_interrupt_resume_nowait(session_id)
             if owned is not None:
+                bind_request_to_session_owner(request, owned)
                 logger.info(
                     "[AgentManager] interrupt resume reuse session owner: "
                     "session_id=%s channel_id=%s source=%s",
@@ -1984,12 +1989,30 @@ class AgentManager:
         Must match ``AgentWebSocketServer._prepare_code_mode_chat_turn`` so the
         tenant-pool path reuses the same cached instance after plan-mode sync.
         """
-        from jiuwenswarm.server.handlers._shared import resolve_agent_request_mode
+        from jiuwenswarm.server.handlers._shared import resolve_request_runtime_mode
 
         params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
-        mode_full = self._resolve_request_mode(request, params)
-        mode, sub_mode, _canonical = resolve_agent_request_mode(mode_full)
+        # This helper restores the durable mode for interrupt continuations.
+        # It may write ``params["mode"]`` from session metadata before the
+        # runtime resolver below picks the matching manager/facade.
+        self._resolve_request_mode(request, params)
+        resolved = resolve_request_runtime_mode(request)
+        mode, sub_mode = resolved.manager_mode, resolved.sub_mode
         agent_mode = "agent" if mode == "auto_harness" else mode
+        adapter_mode = resolved.adapter_mode
+        adapter_source = resolved.adapter_source
+        # Handler preparation may have restored a durable Flash binding, or
+        # selected the implementation before a config reload. Reuse that
+        # decision for normal single-agent work, including its cache key.
+        # Code, Team and Plan continue to use their own routing rules.
+        if mode in {"agent", "flash"} and sub_mode is None:
+            prepared_mode = getattr(request, "resolved_adapter_mode", None)
+            if prepared_mode in {"agent", "flash"}:
+                agent_mode = prepared_mode
+                adapter_mode = prepared_mode
+                adapter_source = getattr(request, "resolved_adapter_source", None)
+        request.resolved_adapter_mode = adapter_mode
+        request.resolved_adapter_source = adapter_source
         project_dir = (
             params.get("project_dir")
             or params.get("workspace_dir")

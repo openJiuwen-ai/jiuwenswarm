@@ -31,41 +31,41 @@ from jiuwenswarm.symphony.evolution.store import (
 )
 
 
-def load_dynamic_overlay(score_dir: str | Path) -> dict[str, Any] | None:
+def load_dynamic_overlay(graph_dir: str | Path) -> dict[str, Any] | None:
     """Load the current dynamic overlay if it exists."""
 
-    return read_overlay(score_dir)
+    return read_overlay(graph_dir)
 
 
 def rebuild_dynamic_overlay(
-    score_dir: str | Path,
+    graph_dir: str | Path,
     *,
-    base_score_version: str | None = None,
+    base_graph_version: str | None = None,
 ) -> dict[str, Any]:
     """Rebuild and persist the dynamic overlay from event logs."""
 
     with evolution_store_transaction():
-        events = read_events(score_dir)
+        events = read_events(graph_dir)
         overlay = build_overlay_from_events(
             events,
-            base_score_version=base_score_version,
+            base_graph_version=base_graph_version,
         )
-        write_overlay(score_dir, overlay)
+        write_overlay(graph_dir, overlay)
     return overlay
 
 
-def evolution_status(score_dir: str | Path) -> dict[str, Any]:
+def evolution_status(graph_dir: str | Path) -> dict[str, Any]:
     """Return a compact runtime-evolution status payload."""
 
-    events = read_events(score_dir)
-    overlay = read_overlay(score_dir)
-    overlay_mtime = overlay_file_mtime(score_dir)
+    events = read_events(graph_dir)
+    overlay = read_overlay(graph_dir)
+    overlay_mtime = overlay_file_mtime(graph_dir)
     stats = overlay.get("stats") if isinstance(overlay, dict) else {}
     payload = {
         "success": True,
-        "score_dir": str(score_dir),
-        "event_log": str(events_path(score_dir)),
-        "overlay_path": str(overlay_path(score_dir)),
+        "graph_dir": str(graph_dir),
+        "event_log": str(events_path(graph_dir)),
+        "overlay_path": str(overlay_path(graph_dir)),
         "event_count": len(events),
         "last_event_at": _last_event_ts(events),
         "overlay_exists": overlay is not None,
@@ -82,7 +82,7 @@ def evolution_status(score_dir: str | Path) -> dict[str, Any]:
             session_feedback_status,
         )
 
-        payload["session_feedback"] = session_feedback_status(score_dir)
+        payload["session_feedback"] = session_feedback_status(graph_dir)
     except Exception:  # noqa: BLE001
         payload["session_feedback"] = {
             "source": "session_history",
@@ -92,7 +92,7 @@ def evolution_status(score_dir: str | Path) -> dict[str, Any]:
 
 
 def record_plan_outcome(
-    score_dir: str | Path,
+    graph_dir: str | Path,
     *,
     plan_id: str,
     outcome: str,
@@ -155,16 +155,16 @@ def record_plan_outcome(
             existing = next(
                 (
                     item
-                    for item in read_events(score_dir)
+                    for item in read_events(graph_dir)
                     if str(item.get("evidence_id") or "") == clean_evidence_id
                 ),
                 None,
             )
             if existing is not None:
                 return {**existing, "deduplicated": True}
-        append_event(score_dir, event)
+        append_event(graph_dir, event)
         if rebuild_overlay:
-            rebuild_dynamic_overlay(score_dir)
+            rebuild_dynamic_overlay(graph_dir)
     return event
 
 

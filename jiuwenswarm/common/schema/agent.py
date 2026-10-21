@@ -90,6 +90,10 @@ class AgentRequest:
     permission_context: PermissionContext | None = None
     # V2: AgentRef(mode, id)，全链路透传供响应侧回带（设计 §6.3/§5.2）。
     agent_ref: Any = None
+    # 服务端运行期解析出的 adapter 实现，不来自客户端 params，也不参与 E2A 入站反序列化。
+    # 业务 mode 仍保存在 params["mode"] / canonical mode 中，二者必须保持分离。
+    resolved_adapter_mode: str | None = None
+    resolved_adapter_source: str | None = None
 
 
 @dataclass
