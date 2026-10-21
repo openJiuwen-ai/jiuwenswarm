@@ -189,6 +189,53 @@ async def test_web_cursor_stream_emits_exact_snapshot_metadata(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_web_cursor_stream_omits_unrecorded_session_usage(monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_token_usage
+
+    server = agent_ws_server_module.AgentWebSocketServer.__new__(
+        agent_ws_server_module.AgentWebSocketServer
+    )
+    monkeypatch.setattr(
+        server,
+        "get_conversation_history_cursor",
+        lambda session_id, cursor, **_kwargs: {
+            "messages": [],
+            "next_cursor": None,
+            "has_more": False,
+            "snapshot_id": "snapshot-empty",
+            "snapshot_end": 0,
+        },
+    )
+    monkeypatch.setattr(
+        session_token_usage,
+        "get_session_token_usage",
+        lambda session_id: {
+            "schema_version": 1,
+            "revision": 0,
+            "session_id": session_id,
+            "main": {},
+            "others": {},
+        },
+    )
+    ws = FakeWebSocket()
+    request = AgentRequest(
+        request_id="req-web-empty-usage",
+        channel_id="web",
+        req_method=ReqMethod.HISTORY_GET,
+        params={"session_id": "sess-web-empty", "cursor": None, "limit": 50},
+    )
+
+    await server._handle_history_get_stream(ws, request, asyncio.Lock())
+
+    done = next(
+        frame["payload"] for frame in ws.sent
+        if frame["payload"].get("event_type") == "history.message"
+        and frame["payload"].get("status") == "done"
+    )
+    assert "session_usage" not in done
+
+
+@pytest.mark.asyncio
 async def test_web_cursor_read_does_not_block_event_loop(monkeypatch):
     server = agent_ws_server_module.AgentWebSocketServer.__new__(
         agent_ws_server_module.AgentWebSocketServer

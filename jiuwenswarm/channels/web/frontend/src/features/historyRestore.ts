@@ -1051,6 +1051,18 @@ function parseHistoryTimelineEntry(
   return entry;
 }
 
+function sessionTokenUsageSnapshotForHistory(
+  value: unknown,
+  sessionId: string,
+  subagentId?: string,
+): SessionTokenUsageSnapshot | null {
+  const snapshot = parseSessionTokenUsageSnapshot(value);
+  if (subagentId || snapshot?.session_id !== sessionId || snapshot.revision <= 0) {
+    return null;
+  }
+  return snapshot;
+}
+
 function parseSessionHistoryTimelineEntry(
   record: Record<string, unknown>,
   sessionId: string,
@@ -1355,7 +1367,7 @@ function parseSessionHistoryTimelineEntry(
         kind: 'usage_summary',
         at,
         usage,
-        tokenUsageSnapshot: parseSessionTokenUsageSnapshot(payload.session_usage),
+        tokenUsageSnapshot: sessionTokenUsageSnapshotForHistory(payload.session_usage, sessionId, subagentId),
       };
     }
     return null;
@@ -2337,8 +2349,12 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     }
 
     if (isHistoryRestoreDonePayload(payload)) {
-      const usage = parseSessionTokenUsageSnapshot(payload.session_usage);
-      if (!options.subagentId && usage?.session_id === options.sessionId) {
+      const usage = sessionTokenUsageSnapshotForHistory(
+        payload.session_usage,
+        options.sessionId,
+        options.subagentId,
+      );
+      if (usage) {
         completionTokenUsage = usage;
       }
       finalize();
@@ -2565,8 +2581,12 @@ export function fetchHistoryCursorBatch(
       return;
     }
     if (isHistoryRestoreDonePayload(payload)) {
-      const usage = parseSessionTokenUsageSnapshot(payload.session_usage);
-      if (!options.subagentId && usage?.session_id === options.sessionId) {
+      const usage = sessionTokenUsageSnapshotForHistory(
+        payload.session_usage,
+        options.sessionId,
+        options.subagentId,
+      );
+      if (usage) {
         completionTokenUsage = usage;
       }
       finalize();
