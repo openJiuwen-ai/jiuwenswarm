@@ -353,8 +353,6 @@ test('record errors show the Hub guidance instead of the generic fallback', asyn
   assetPublishApi.records = async () => ({ records: [record] });
   await act(async () => openAssetPublish({ kind: 'skill', local_id: 'hub-guidance' }));
   await tick();
-  // The result card is opened from the history list instead of covering the form on open.
-  await act(async () => find('asset-publish-record').click());
   const message = document.querySelector('.asset-publish-result-error').textContent;
   assert.equal(message, '发布新版本时不能修改 Skill 可见性，请沿用现有设置');
   assert.doesNotMatch(message, /Retry or sign in again/);
@@ -371,8 +369,6 @@ test('curated local text keeps priority for known codes', async () => {
   assetPublishApi.records = async () => ({ records: [record] });
   await act(async () => openAssetPublish({ kind: 'skill', local_id: 'version-clash' }));
   await tick();
-  // The result card is opened from the history list instead of covering the form on open.
-  await act(async () => find('asset-publish-record').click());
   const message = document.querySelector('.asset-publish-result-error').textContent;
   assert.match(message, /This version exists/);
   assert.doesNotMatch(message, /hub-only wording/);
