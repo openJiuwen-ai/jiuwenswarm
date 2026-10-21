@@ -9,10 +9,15 @@ import json
 
 import pytest
 
+from jiuwenswarm.agents.harness.common.rails.permissions import root_permission_queue_rail
+from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+    TOOL_PERMISSION_CHANNEL_ID, TOOL_PERMISSION_REQUEST_ID,
+)
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS, overlay_run_permissions
-from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT
+from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT, RunContext
+from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -87,6 +92,60 @@ def test_process_cli_binds_and_restores_permission_approval_capability(params, e
     with adapter._bind_permission_request_context(request):
         assert CURRENT_RUN_CONTEXT.get().supports_permission_approval is expected
     assert CURRENT_RUN_CONTEXT.get() is None
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("failure_point", ["root", "command", "body"])
+def test_permission_context_failure_restores_session_state(
+    monkeypatch: pytest.MonkeyPatch, wrapped: bool, failure_point: str,
+) -> None:
+    previous_levels = {"read_file": "ask"}
+    approval_rail = SimpleNamespace(supports_permission_approval=True)
+    rail = SimpleNamespace(base_rail=approval_rail) if wrapped else approval_rail
+    rail.run_permission_levels = previous_levels
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._permission_rail = rail
+    adapter._is_session_scoped_adapter = True
+    adapter._enable_auto_permission = False
+    adapter._root_permission_queue = None
+    adapter._sys_operation = object() if failure_point == "command" else None
+    adapter._sys_operation_card = SimpleNamespace(mode=None)
+    adapter._resolve_interrupt_session_id = lambda session_id: session_id
+    request = AgentRequest(
+        request_id="request", session_id="session", channel_id="process_cli",
+        params={"supports_permission_approval": False,
+                "run_permissions": {"tools": {"write_file": "deny"}}},
+    )
+
+    def fail_binding(*_args, **_kwargs):
+        raise RuntimeError("permission context failed")
+
+    if failure_point != "body":
+        target = "bind_root_permission_request" if failure_point == "root" else "bind_command_execution"
+        monkeypatch.setattr(interface_deep, target, fail_binding)
+
+    def exercise():
+        previous_context = RunContext(supports_permission_approval=True)
+        CURRENT_RUN_CONTEXT.set(previous_context)
+        RUN_PERMISSIONS.set(previous_levels)
+        TOOL_PERMISSION_CHANNEL_ID.set("previous-channel")
+        TOOL_PERMISSION_REQUEST_ID.set("previous-request")
+        with pytest.raises(RuntimeError, match="permission context failed"):
+            with adapter._bind_permission_request_context(request):
+                assert failure_point == "body"
+                assert approval_rail.supports_permission_approval is False
+                fail_binding()
+        assert approval_rail.supports_permission_approval is True
+        assert rail.run_permission_levels is previous_levels
+        assert RUN_PERMISSIONS.get() is previous_levels
+        assert CURRENT_RUN_CONTEXT.get() is previous_context
+        assert TOOL_PERMISSION_CHANNEL_ID.get() == "previous-channel"
+        assert TOOL_PERMISSION_REQUEST_ID.get() == "previous-request"
+        with pytest.raises(root_permission_queue_rail.RootPermissionQueueError, match="unbound"):
+            root_permission_queue_rail.current_root_permission_queue()
+
+    # A failed setup must not contaminate the context used by following tests.
+    Context().run(exercise)
 
 
 @pytest.mark.parametrize("wrapped", [False, True])
