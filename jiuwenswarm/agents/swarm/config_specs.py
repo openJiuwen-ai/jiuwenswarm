@@ -312,7 +312,7 @@ def _build_design_capability_specs(
         # the execution graph (analyze → brief → review → storyboard →
         # review → graph → validate).
         rails_specs.append(RailSpec(type=registry.DESIGNER_AUTHORING))
-        # Leader execution rail: the designer_run_graph tool (canvas
+        # Leader execution rail: the swarmflow tool (canvas
         # compilation/trigger from the conversation, single-node rerun,
         # cascade rerun) + its prompt section. Graph editing
         # (designer_graph_tools) and execution stay two tools on two rails.

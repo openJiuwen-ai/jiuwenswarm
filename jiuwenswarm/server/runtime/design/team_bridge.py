@@ -198,7 +198,7 @@ def _push_run_update(
 ) -> None:
     """Push designer.run.updated while a leader-triggered run executes.
 
-    The ``designer_run_graph`` tool call awaits the whole trigger, so the
+    The ``swarmflow`` tool call awaits the whole trigger, so the
     canvas needs the run event stream (not just the final reply) to show
     live progress — same payloads as the canvas run button path.
     """
