@@ -33,14 +33,11 @@
 
 ### 主要设计文件
 
-已建立的设计文档如下，当前为目标设计草案：
+已建立的设计文档如下，当前为设计基线：
 
 - [设计概览](docs/designs/extensions-v2-overview.md)：整体定位、适用范围、宿主装配、业务与 WebUI 流程、职责边界及落地条件。
 - [详细架构](docs/designs/extensions-v2-architecture.md)：公共抽象、依赖方向、装配与生命周期、状态隔离、故障责任及待确认事项。
-
-以下为尚未建立的建议路径，按实际需要建档后补充链接，不为填满目录创建空文档：
-
-- `docs/designs/extensions-v2-development-plan.md`：多阶段开发的任务拆分、依赖、进度及验收证据。
+- [特性开发计划](docs/designs/extensions-v2-development-plan.md)：本期特性的拆分、开工条件、依赖、验收要求与进度台账。
 
 已确认契约在主责 spec 中唯一维护，概览与架构引用该位置；具体方案与历史决策在 feature 中维护。
 区分目标方案、已确认待实现契约、已实现行为和待验证前提，设计中的示意代码不代表最终接口或已实现能力。
