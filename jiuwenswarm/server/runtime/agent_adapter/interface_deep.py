@@ -16602,6 +16602,7 @@ class JiuWenSwarmDeepAdapter:
         """Bind Host request identity for streaming and non-streaming execution."""
         request_params = request.params if isinstance(request.params, dict) else {}
         from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
+        from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT, RunContext
         run_permissions = (
             request_params.get("run_permissions")
             if request.channel_id == "process_cli" else None
@@ -16610,13 +16611,29 @@ class JiuWenSwarmDeepAdapter:
         if (tool_levels is not None and self._permission_rail is None
                 and self._is_session_scoped_adapter):
             raise ValueError("run permissions require an enabled Runtime permission rail")
+        context = RunContext(
+            supports_permission_approval=(
+                request_params.get("supports_permission_approval",
+                                   request_params.get("supports_user_interaction", True)) is True
+            ),
+        )
         permission_rail = self._permission_rail
+        approval_rail = (
+            getattr(permission_rail, "base_rail", permission_rail)
+            if request.channel_id == "process_cli" else None
+        )
+        previous_approval_support = getattr(approval_rail, "supports_permission_approval", None)
+        if approval_rail is not None:
+            # SDK tool callbacks can run in tasks created before this request's
+            # ContextVars. Bind this restriction to the session's rail as well.
+            approval_rail.supports_permission_approval = context.supports_permission_approval
         previous_rail_levels = (
             getattr(permission_rail, "run_permission_levels", None)
             if permission_rail is not None else None
         )
         if permission_rail is not None:
             permission_rail.run_permission_levels = tool_levels
+        context_token = CURRENT_RUN_CONTEXT.set(context)
         run_permissions_token = RUN_PERMISSIONS.set(tool_levels)
         runtime_mode = str(request_params.get("mode") or "agent").strip().lower()
         root_invocation_token = bind_root_permission_request(
@@ -16644,6 +16661,9 @@ class JiuWenSwarmDeepAdapter:
         try:
             yield
         finally:
+            CURRENT_RUN_CONTEXT.reset(context_token)
+            if approval_rail is not None:
+                approval_rail.supports_permission_approval = previous_approval_support
             if permission_rail is not None:
                 permission_rail.run_permission_levels = previous_rail_levels
             RUN_PERMISSIONS.reset(run_permissions_token)
