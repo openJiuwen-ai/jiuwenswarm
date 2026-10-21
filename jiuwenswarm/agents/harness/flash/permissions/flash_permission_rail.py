@@ -23,6 +23,7 @@ from openjiuwen.harness.security.patterns import (
     merge_permission_allow_rule_into_permissions,
     write_permissions_section_to_agent_config_yaml,
 )
+from openjiuwen.harness.security.tiered_policy import evaluate_tiered_policy
 
 from jiuwenswarm.common.tool_display import extract_call_goal
 from jiuwenswarm.server.runtime.skill_turbo.rails.permission_rail import (
@@ -35,6 +36,13 @@ from .tool_policy_projection import is_projected, project_operations
 _PENDING = "__flash_permission_pending__"
 _RANK = {PermissionLevel.ALLOW: 0, PermissionLevel.ASK: 1, PermissionLevel.DENY: 2}
 logger = logging.getLogger(__name__)
+
+
+def _requires_explicit_approval(operation, permission, matched_rule):
+    default_rule = (
+        not matched_rule or "defaults." in matched_rule or "fallback" in matched_rule
+    )
+    return operation.explicit and permission == PermissionLevel.ALLOW and default_rule
 
 
 class FlashPermissionEngine(PermissionEngine):
@@ -57,15 +65,8 @@ class FlashPermissionEngine(PermissionEngine):
         results = [outer]
         for operation in operations:
             result = await super().check_permission(operation.name, operation.args)
-            default_rule = (
-                not result.matched_rule
-                or "defaults." in result.matched_rule
-                or "fallback" in result.matched_rule
-            )
-            if (
-                operation.explicit
-                and result.permission == PermissionLevel.ALLOW
-                and default_rule
+            if _requires_explicit_approval(
+                operation, result.permission, result.matched_rule
             ):
                 result = PermissionResult(
                     PermissionLevel.ASK,
@@ -385,9 +386,20 @@ class FlashPermissionRail(SkillTurboPermissionRail):
             accesses = self._collect_file_guard_persist_accesses(
                 operation.name, operation.args, config
             )
-            config, updated = merge_permission_allow_rule_into_permissions(
+            permission, matched_rule = evaluate_tiered_policy(
                 config, operation.name, operation.args
             )
+            if _requires_explicit_approval(operation, permission, matched_rule):
+                # SDK persistence skips default ALLOW, which Flash promotes to ASK.
+                tools = config.get("tools")
+                if not isinstance(tools, dict):
+                    tools = {}
+                config["tools"] = {**tools, operation.name: "allow"}
+                updated = True
+            else:
+                config, updated = merge_permission_allow_rule_into_permissions(
+                    config, operation.name, operation.args
+                )
             changed |= updated
             if accesses:
                 config, updated = merge_file_guard_access_allows(config, accesses)
