@@ -408,20 +408,14 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   sharedViewportRef,
   rangeAppearance = 'focus',
 }: TrajectoryTimelineProps) {
-  // Always slide late prep before the model reply so Input/CONTEXT never paint
-  // over ASSISTANT — including diagnosis selection. Brush and Input-click both
-  // use these display coordinates; toWall maps them back for the diagnosis scope.
-  const model = useMemo(() => {
-    const projected = withSharedWallClockDomain(
+  const model = useMemo(
+    () => withSharedWallClockDomain(
       deriveTrajectoryTimeline(turns, mode, nowMilliseconds),
       sharedDomain,
       mapTime,
-    )
-    if (projected === null || mode === 'duration' || mode === 'tokens' || mode === 'sequence') {
-      return projected
-    }
-    return alignPrepSpansBeforeModel(projected, turns)
-  }, [mapTime, mode, nowMilliseconds, sharedDomain, turns])
+    ),
+    [mapTime, mode, nowMilliseconds, sharedDomain, turns],
+  )
   const detailByIndex = useMemo(
     () => new Map(turns.flatMap(turn =>
       turn.groups.flatMap(group =>

@@ -17,14 +17,13 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from agent_gateway.common.mode_matrix import (
+from jiuwenswarm.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
     is_single_agent_mode,
     is_team_mode,
 )
-from agent_gateway.common.protocol_ids import is_valid_session_id
-from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled, get_ttse_enabled
+from jiuwenswarm.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.diagnosis.engine import (
     DiagnosisEngine,
     EngineError,
@@ -34,8 +33,13 @@ from jiuwenswarm.diagnosis.engine import (
 )
 from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel, resolve_diagnosis_model
 from jiuwenswarm.diagnosis.models import (
+    ALLOWED_ROOT_CAUSE_CATEGORIES,
     ERROR_STATUS_BY_CODE,
+    TTSE_OUTCOME_BY_CATEGORY,
+    TTSE_ROOT_CAUSE_CATEGORIES,
+    ArtifactEval,
     DiagnosisError,
+    DiagnosisEvidence,
     DiagnosisHostError,
     DiagnosisInput,
     DiagnosisProgressEvent,
@@ -44,10 +48,11 @@ from jiuwenswarm.diagnosis.models import (
     DiagnosisStage,
     DiagnosisStatus,
     DiagnosisStatusEvent,
+    DiagnosisSuggestions,
     DiagnosisSummary,
-    EvolutionJudge,
     ModeProfile,
-    RewardFailureCause,
+    RootCause,
+    RootCauseCategory,
     SelectionRange,
     StageStatus,
     StepRef,
@@ -88,13 +93,10 @@ ModelResolver = Callable[..., ResolvedDiagnosisModel]
 #: TTSE failure codes the Worker may report that are shown to the user as they are.
 _TTSE_PASSTHROUGH_CODES = frozenset({"TTSE_NOT_SUPPORTED", "TTSE_UNAVAILABLE"})
 TtseTriggerFn = Callable[[str, list[dict[str, Any]]], Awaitable[tuple[bool, dict[str, Any]]]]
+SkillLookupFn = Callable[[str], Awaitable[set[str] | None]]
 EnabledFn = Callable[[], bool]
 
-_ALLOWED_EVOLUTION_CATEGORIES: dict[ModeProfile, frozenset[str]] = {
-    ModeProfile.AGENT_WORK: frozenset({"skill", "experience"}),
-    ModeProfile.AGENT_CODE: frozenset(),
-    ModeProfile.TEAM: frozenset({"skill"}),
-}
+_ALLOWED_CATEGORIES = ALLOWED_ROOT_CAUSE_CATEGORIES
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,109 +156,45 @@ def derive_mode_profile(metadata: Mapping[str, Any]) -> SessionContext:
     )
 
 
-def _scoped_refs(refs: list[StepRef], index: ScopeIndex) -> list[StepRef]:
-    """Keep references inside the diagnosed scope, de-duplicated by identity."""
-    seen: set[tuple[str, str, str | None]] = set()
-    kept: list[StepRef] = []
-    for ref in refs:
-        identity = (ref.subject_id, ref.key, ref.node_id)
-        if index.admits(ref) and identity not in seen:
-            seen.add(identity)
-            kept.append(ref)
-    return kept
-
-
-def _crosses_subjects(refs: list[StepRef]) -> bool:
-    return len({ref.subject_id for ref in refs}) > 1
-
-
-def _dominant_subject_id(refs: list[StepRef]) -> str:
-    """Subject cited most often. Ties keep the subject that appears first."""
-    counts: dict[str, int] = {}
-    order: list[str] = []
-    for ref in refs:
-        subject_id = ref.subject_id
-        if subject_id == "":
-            continue
-        if subject_id not in counts:
-            counts[subject_id] = 0
-            order.append(subject_id)
-        counts[subject_id] += 1
-    chosen = ""
-    best = 0
-    for subject_id in order:
-        count = counts[subject_id]
-        if count > best:
-            best = count
-            chosen = subject_id
-    return chosen
-
-
-def filter_reward_failure_causes(
-    causes: list[RewardFailureCause],
-    *,
-    index: ScopeIndex,
-    reward: dict[str, Any] | None,
-) -> list[RewardFailureCause]:
-    """Apply interface section 5.3 to one list of failure causes."""
-    requirements: set[str] | None = None
-    if isinstance(reward, Mapping):
-        requirements = set()
-        for dimension in reward.get("dimensions") or ():
-            if isinstance(dimension, Mapping) and dimension.get("requirement"):
-                requirements.add(str(dimension["requirement"]))
-    kept: list[RewardFailureCause] = []
-    for cause in causes:
-        # While a run is still in progress the host may not hold the reward yet;
-        # the final filter (with the reward present) checks the dimension again.
-        if requirements is not None and cause.dimension not in requirements:
-            continue
-        refs = _scoped_refs(cause.evidence, index)
-        if not refs or _crosses_subjects(refs):
-            continue
-        suggestion = [item for item in cause.suggestion if item.strip()]
-        if not suggestion:
-            continue
-        kept.append(cause.model_copy(update={"evidence": refs, "suggestion": suggestion}))
-    return kept
-
-
-def filter_evolution_judge(
-    judges: list[EvolutionJudge],
+def filter_root_causes(
+    causes: list[RootCause],
     *,
     index: ScopeIndex,
     profile: ModeProfile,
-) -> list[EvolutionJudge]:
-    """Apply interface section 5.4 to one list of evolution items.
+) -> list[RootCause]:
+    """Keep the root causes that the diagnosed scope and the mode profile admit.
 
-    Skill evidence may cite several subjects. Experience stays on one subject,
-    because TTSE replays a single subject's window. An item with no in-scope
-    reference is dropped. Reward failure causes keep the single-subject rule
-    separately.
+    Step references outside the scope are dropped, and a root cause left
+    without any reference, or of a category the profile does not support, is
+    discarded.
+
+    Args:
+        causes: Raw root causes of an engine.
+        index: Lookup over the records and ranges the diagnosis was fixed to.
+        profile: Mode profile of the session.
+
+    Returns:
+        Filtered copies that are safe to persist and push.
     """
-    allowed = _ALLOWED_EVOLUTION_CATEGORIES[profile]
-    kept: list[EvolutionJudge] = []
-    experience_seen = False
-    for judge in judges:
-        if judge.category not in allowed:
+
+    def scoped(refs: list[StepRef]) -> list[StepRef]:
+        seen: set[tuple[str, str, str | None]] = set()
+        kept: list[StepRef] = []
+        for ref in refs:
+            identity = (ref.subject_id, ref.key, ref.node_id)
+            if index.admits(ref) and identity not in seen:
+                seen.add(identity)
+                kept.append(ref)
+        return kept
+
+    allowed = _ALLOWED_CATEGORIES[profile]
+    kept_causes: list[RootCause] = []
+    for cause in causes:
+        refs = scoped(cause.refs)
+        if cause.category not in allowed or not refs:
             continue
-        refs = _scoped_refs(judge.evidence, index)
-        if not refs or (judge.category != "skill" and _crosses_subjects(refs)):
-            continue
-        suggestion = [item for item in judge.suggestion if item.strip()]
-        if not suggestion and judge.category != "experience":
-            continue
-        if judge.category == "skill":
-            if not judge.target or not 0.0 <= judge.score <= 1.0:
-                continue
-        else:
-            if judge.outcome is None:
-                continue
-            if experience_seen:
-                continue
-            experience_seen = True
-        kept.append(judge.model_copy(update={"evidence": refs, "suggestion": suggestion}))
-    return kept
+        kept_causes.append(cause.model_copy(update={"refs": refs, "subject_id": refs[0].subject_id}))
+    return kept_causes
 
 
 def filter_engine_result(
@@ -265,25 +203,43 @@ def filter_engine_result(
     index: ScopeIndex,
     profile: ModeProfile,
 ) -> EngineResult:
-    """Enforce the host invariants on raw engine output (interface section 5).
+    """Enforce the host invariants on raw engine output.
 
     Step references outside the diagnosed scope (or without a valid node id)
-    are dropped; causes left without an in-scope, single-subject reference are
-    discarded; categories and outlets the mode profile does not support are
-    removed.  ``reward`` is kept as it is; without one every failure cause is
-    meaningless and the list is emptied.
+    are dropped, root causes left without any reference are discarded,
+    categories and suggestion outlets that the mode profile does not support
+    are removed.
+
+    Args:
+        result: Raw engine output.
+        index: Lookup over the records and ranges the diagnosis was fixed to.
+        profile: Mode profile of the session.
+
+    Returns:
+        A filtered copy that is safe to persist.
     """
-    causes: list[RewardFailureCause] = []
-    if result.reward is not None:
-        causes = filter_reward_failure_causes(result.reward_failure_causes, index=index, reward=result.reward)
-    judges = filter_evolution_judge(result.evolution_judge, index=index, profile=profile)
+    root_causes = filter_root_causes(result.root_causes, index=index, profile=profile)
+    surviving = {cause.id for cause in root_causes}
+
+    source = result.suggestions
+    suggestions = DiagnosisSuggestions()
+    if source.artifact_fix is not None and source.artifact_fix.instruction.strip():
+        ids = [item for item in source.artifact_fix.root_cause_ids if item in surviving]
+        suggestions.artifact_fix = source.artifact_fix.model_copy(update={"root_cause_ids": ids})
+    if profile in {ModeProfile.AGENT_WORK, ModeProfile.TEAM}:
+        for skill in source.skills:
+            ids = [item for item in skill.root_cause_ids if item in surviving]
+            if ids:
+                suggestions.skills.append(skill.model_copy(update={"root_cause_ids": ids}))
+
     return EngineResult(
-        trajectory_summary=result.trajectory_summary,
-        reward_failure_causes=causes,
-        evolution_judge=judges,
-        artifact_improvement=result.artifact_improvement,
+        headline=result.headline,
+        artifact_eval=result.artifact_eval,
+        root_causes=root_causes,
+        suggestions=suggestions,
         error=result.error,
         reward=result.reward,
+        task_description=result.task_description,
     )
 
 
@@ -301,6 +257,7 @@ class DiagnosisService:
         engine: DiagnosisEngine,
         model_resolver: ModelResolver = resolve_diagnosis_model,
         ttse_trigger: TtseTriggerFn | None = None,
+        skill_lookup: SkillLookupFn | None = None,
         is_enabled: EnabledFn | None = None,
     ) -> None:
         self._store = store
@@ -311,6 +268,7 @@ class DiagnosisService:
         self._engine = engine
         self._model_resolver = model_resolver
         self._ttse_trigger = ttse_trigger
+        self._skill_lookup = skill_lookup
         self._is_enabled = is_enabled or _default_enabled
         self._running: dict[str, _RunState] = {}
         self._starting: set[str] = set()
@@ -462,6 +420,7 @@ class DiagnosisService:
                 ],
                 excluded_running=excluded_running,
             ),
+            evidence=DiagnosisEvidence(),
         )
         await asyncio.to_thread(self._store.save, record)
         return _RunState(
@@ -477,9 +436,6 @@ class DiagnosisService:
         record = state.record
         final_status = DiagnosisStatus.COMPLETED
         try:
-            # Host switches are read per run so a settings change takes effect on
-            # the next diagnosis; get_config() re-reads config.yaml on mtime change.
-            config = get_config()
             inputs = EngineInputs(
                 session_id=session_id,
                 mode_profile=state.context.mode_profile,
@@ -488,15 +444,6 @@ class DiagnosisService:
                 snapshot=state.snapshot,
                 ranges=state.ranges,
                 model=state.model,
-                # Mode gating is decided here and handed to the engine, so a mode
-                # without the outlet never mounts its tools or prompt blocks.
-                skill_evolution=(
-                    get_skill_evolution_enabled(config)
-                    and state.context.mode_profile in {ModeProfile.AGENT_WORK, ModeProfile.TEAM}
-                ),
-                ttse_advice=(
-                    get_ttse_enabled(config) and state.context.mode_profile is ModeProfile.AGENT_WORK
-                ),
             )
 
             async def emit(event: EngineEvent) -> None:
@@ -505,6 +452,7 @@ class DiagnosisService:
             raw = await self._engine.run(inputs, emit)
             filtered = filter_engine_result(raw, index=state.index, profile=state.context.mode_profile)
             self._apply_result(record, filtered)
+            await self._mark_selectable(record, state.context)
         except asyncio.CancelledError:
             final_status = DiagnosisStatus.INTERRUPTED if self._shutting_down else DiagnosisStatus.CANCELLED
         except EngineError as exc:
@@ -540,14 +488,8 @@ class DiagnosisService:
 
     async def _on_engine_event(self, session_id: str, state: _RunState, event: EngineEvent) -> None:
         record = state.record
-        if event.kind == "reward":
-            await self._on_reward(session_id, state, event)
-            return
-        if event.kind == "reward_failure_causes":
-            await self._on_reward_failure_causes(session_id, state, event)
-            return
-        if event.kind == "evolution_judge":
-            await self._on_evolution_judge(session_id, state, event)
+        if event.kind == "root_causes":
+            await self._on_root_causes(session_id, state, event)
             return
         stage = next((item for item in record.stages if item.stage_id == event.stage_id), None)
         elapsed_ms: int | None = None
@@ -596,61 +538,24 @@ class DiagnosisService:
             except Exception:  # noqa: BLE001
                 logger.warning("[diagnosis] stage persist failed: session_id=%s", session_id, exc_info=True)
 
-    async def _on_reward(self, session_id: str, state: _RunState, event: EngineEvent) -> None:
-        """Publish the artifact evaluation as soon as diagnosis has scored it."""
-        payload = event.reward
-        if not isinstance(payload, Mapping):
-            return
-        record = state.record
-        record.reward = dict(payload)
-        record.seq += 1
-        progress = DiagnosisProgressEvent(
-            session_id=session_id,
-            diagnosis_id=record.diagnosis_id,
-            seq=record.seq,
-            stage_id=event.stage_id,
-            kind="reward",
-            reward=record.reward,
-        )
-        await self._safe_push(session_id, PROGRESS_EVENT, progress.model_dump(mode="json", exclude_none=True))
-        try:
-            await self._persist(session_id, record)
-        except Exception:  # noqa: BLE001
-            logger.warning("[diagnosis] reward persist failed: session_id=%s", session_id, exc_info=True)
+    async def _on_root_causes(self, session_id: str, state: _RunState, event: EngineEvent) -> None:
+        """Keep the root causes an engine reports while it still runs.
 
-    async def _on_reward_failure_causes(
-        self, session_id: str, state: _RunState, event: EngineEvent
-    ) -> None:
-        """Replace the failure-cause table with the one an engine just reported."""
+        The causes pass the same scope filter as the final result and replace
+        those already held for the signal; the final result still has the last
+        word when the engine returns.
+        """
         record = state.record
-        admitted = filter_reward_failure_causes(
-            event.reward_failure_causes or [],
-            index=state.index,
-            reward=record.reward,
-        )
-        record.reward_failure_causes = admitted
-        record.seq += 1
-        payload = DiagnosisProgressEvent(
-            session_id=session_id,
-            diagnosis_id=record.diagnosis_id,
-            seq=record.seq,
-            stage_id=event.stage_id,
-            kind=event.kind,
-            reward_failure_causes=admitted,
-        )
-        await self._safe_push(session_id, PROGRESS_EVENT, payload.model_dump(mode="json", exclude_none=True))
-
-    async def _on_evolution_judge(
-        self, session_id: str, state: _RunState, event: EngineEvent
-    ) -> None:
-        """Replace the evolution table with the one an engine just reported."""
-        record = state.record
-        admitted = filter_evolution_judge(
-            event.evolution_judge or [],
+        admitted = filter_root_causes(
+            event.root_causes or [],
             index=state.index,
             profile=state.context.mode_profile,
         )
-        record.evolution_judge = admitted
+        kept = [
+            cause for cause in record.root_causes
+            if cause.signal is None or cause.signal.id != event.signal_id
+        ]
+        record.root_causes = [*kept, *admitted]
         record.seq += 1
         payload = DiagnosisProgressEvent(
             session_id=session_id,
@@ -658,7 +563,8 @@ class DiagnosisService:
             seq=record.seq,
             stage_id=event.stage_id,
             kind=event.kind,
-            evolution_judge=admitted,
+            signal_id=event.signal_id,
+            root_causes=admitted,
         )
         await self._safe_push(session_id, PROGRESS_EVENT, payload.model_dump(mode="json", exclude_none=True))
 
@@ -684,14 +590,32 @@ class DiagnosisService:
 
     @staticmethod
     def _apply_result(record: DiagnosisRecord, result: EngineResult) -> None:
-        record.trajectory_summary = result.trajectory_summary
-        record.reward_failure_causes = result.reward_failure_causes
-        record.evolution_judge = result.evolution_judge
-        record.artifact_improvement = result.artifact_improvement
+        record.headline = result.headline
+        record.root_causes = result.root_causes
+        record.suggestions = result.suggestions
+        evaluation = result.artifact_eval or ArtifactEval(applied=False, skipped_reason="not_produced")
+        record.evidence.artifact_eval = evaluation
+        record.artifact_eval_applied = bool(evaluation.applied)
         # An engine may report a terminal attribution failure while keeping
         # its partial results; the record stays completed but carries the error.
         record.error = result.error
         record.reward = result.reward
+        record.task_description = result.task_description
+
+    async def _mark_selectable(self, record: DiagnosisRecord, context: SessionContext) -> None:
+        if context.mode_profile is not ModeProfile.TEAM or self._skill_lookup is None:
+            return
+        try:
+            installed = await self._skill_lookup(record.session_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("[diagnosis] leader skill lookup failed", exc_info=True)
+            return
+        if installed is None:
+            return
+        for skill in record.suggestions.skills:
+            if skill.skill_name not in installed:
+                skill.selectable = False
+                skill.blocked_reason = "skill_not_installed_for_leader"
 
     async def _send_status(self, session_id: str, record: DiagnosisRecord) -> None:
         payload = DiagnosisStatusEvent(
@@ -744,26 +668,26 @@ class DiagnosisService:
         self,
         session_id: str,
         diagnosis_id: str,
-        evolution_judge_id: str,
+        root_cause_ids: list[str],
     ) -> dict[str, TtseTriggerResult]:
-        """Hand the experience evolution item to TTSE and record the outcome.
+        """Hand experience root causes to TTSE and record the outcome.
 
         The diagnosis only reports how the stretch went; TTSE generates and
-        saves the experience itself. An item that was triggered successfully is
-        not triggered again, a failed one may be retried.
+        saves the experience itself. Root causes that were triggered
+        successfully are not triggered again, failed ones may be retried.
 
         Args:
             session_id: Diagnosed session.
             diagnosis_id: Completed diagnosis of the session.
-            evolution_judge_id: Id of the experience item (``category=experience``).
+            root_cause_ids: Ids of root causes whose category is ``ttse_*``.
 
         Returns:
-            The trigger result of the item.
+            The trigger result of every requested root cause.
 
         Raises:
             DiagnosisHostError: The session does not support TTSE, the
-                diagnosis has not completed, the id is not an experience
-                evolution item, or TTSE is unavailable.
+                diagnosis has not completed, an id is not an experience root
+                cause, or TTSE is unavailable.
         """
         self.check_access(session_id)
         lock = self._ttse_locks.setdefault(f"{session_id}/{diagnosis_id}", asyncio.Lock())
@@ -773,31 +697,27 @@ class DiagnosisService:
                 raise DiagnosisHostError("TTSE_NOT_SUPPORTED", "this session mode does not support TTSE", 409)
             if record.status is not DiagnosisStatus.COMPLETED:
                 raise DiagnosisHostError("DIAGNOSIS_NOT_COMPLETED", "the diagnosis has not completed", 409)
-            judge = next(
-                (
-                    item
-                    for item in record.evolution_judge
-                    if item.id == evolution_judge_id and item.category == "experience"
-                ),
-                None,
-            )
-            if judge is None:
-                raise DiagnosisHostError(
-                    "BAD_REQUEST",
-                    f"unknown experience evolution judge id: {evolution_judge_id}",
-                    400,
-                )
-            if _needs_ttse_trigger(record.ttse_trigger.get(evolution_judge_id)):
-                results = await self._trigger(session_id, record.input, [judge])
+            known = {cause.id: cause for cause in record.root_causes if cause.category in TTSE_ROOT_CAUSE_CATEGORIES}
+            unique_ids = list(dict.fromkeys(root_cause_ids))
+            unknown = [item for item in unique_ids if item not in known]
+            if unknown:
+                raise DiagnosisHostError("BAD_REQUEST", f"unknown experience root cause ids: {unknown}", 400)
+            pending = [
+                item
+                for item in unique_ids
+                if _needs_ttse_trigger(record.ttse_trigger.get(item))
+            ]
+            if pending:
+                results = await self._trigger(session_id, record.input, [known[item] for item in pending])
                 record.ttse_trigger.update(results)
                 await asyncio.to_thread(self._store.save, record)
-            return {evolution_judge_id: record.ttse_trigger[evolution_judge_id]}
+            return {item: record.ttse_trigger[item] for item in unique_ids}
 
     async def _trigger(
         self,
         session_id: str,
         diagnosed: DiagnosisInput,
-        judges: list[EvolutionJudge],
+        causes: list[RootCause],
     ) -> dict[str, TtseTriggerResult]:
         if self._ttse_trigger is None:
             raise DiagnosisHostError("AGENT_UNAVAILABLE", "TTSE trigger is not configured", 502)
@@ -809,26 +729,26 @@ class DiagnosisService:
         now = utc_now_iso()
         results: dict[str, TtseTriggerResult] = {}
         payloads: list[dict[str, Any]] = []
-        for judge in judges:
-            subject_id = _dominant_subject_id(judge.evidence)
-            window = await asyncio.to_thread(_diagnosed_window, snapshot, diagnosed, subject_id)
+        for cause in causes:
+            window = await asyncio.to_thread(_diagnosed_window, snapshot, diagnosed, cause.subject_id)
             task_query, messages = (
-                await asyncio.to_thread(build_ttse_conversation, snapshot, subject_id, window[0], window[1])
+                await asyncio.to_thread(build_ttse_conversation, snapshot, cause.subject_id, window[0], window[1])
                 if window is not None
                 else ("", [])
             )
-            if not messages or judge.outcome is None:
-                results[judge.id] = TtseTriggerResult(
+            if not messages:
+                results[cause.id] = TtseTriggerResult(
                     result=TtseTriggerOutcome.FAILED,
-                    message="no trajectory evidence left for this evolution item",
+                    message="no trajectory evidence left for this root cause",
                     triggered_at=now,
                 )
                 continue
+            outcome, score = TTSE_OUTCOME_BY_CATEGORY[cause.category]
             payloads.append(
                 {
-                    "id": judge.id,
-                    "outcome": judge.outcome,
-                    "score": judge.score,
+                    "id": cause.id,
+                    "outcome": outcome,
+                    "score": score,
                     "task_query": task_query,
                     "messages": messages,
                 },
@@ -930,6 +850,5 @@ __all__ = [
     "SessionContext",
     "derive_mode_profile",
     "filter_engine_result",
-    "filter_evolution_judge",
-    "filter_reward_failure_causes",
+    "filter_root_causes",
 ]

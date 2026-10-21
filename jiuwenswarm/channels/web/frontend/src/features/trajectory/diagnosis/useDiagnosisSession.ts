@@ -50,14 +50,14 @@ export interface DiagnosisSession {
   running: boolean;
   /** A start request is in flight. */
   submitting: boolean;
-  /** Evolution items whose TTSE trigger request is in flight. */
+  /** Root causes whose TTSE trigger request is in flight. */
   triggeringTtse: ReadonlySet<string>;
   /** Start a diagnosis. Resolves to whether it started. */
   start: (scope: DiagnosisScope, note: string) => Promise<boolean>;
   cancel: () => Promise<void>;
   open: (diagnosisId: string) => Promise<void>;
   remove: (diagnosisId: string) => Promise<void>;
-  triggerTtse: (evolutionJudgeId: string) => Promise<void>;
+  triggerTtse: (rootCauseId: string) => Promise<void>;
   /** Put text into the chat composer of the session, replacing what is there. */
   fillComposer: (text: string) => void;
   dismissNotice: () => void;
@@ -245,22 +245,20 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
     window.dispatchEvent(new CustomEvent('chat-input-sync', { detail: { sessionId: sid, value: text } }));
   }, []);
 
-  const triggerTtse = useCallback(async (evolutionJudgeId: string) => {
+  const triggerTtse = useCallback(async (causeId: string) => {
     const current = recordRef.current;
     if (current === null) return;
-    setTriggeringTtse(keys => new Set(keys).add(evolutionJudgeId));
+    setTriggeringTtse(keys => new Set(keys).add(causeId));
     try {
-      const results = await triggerDiagnosisTtse(sessionRef.current, current.diagnosis_id, evolutionJudgeId);
+      const results = await triggerDiagnosisTtse(sessionRef.current, current.diagnosis_id, [causeId]);
       setRecord(latest => (latest !== null && latest.diagnosis_id === current.diagnosis_id
         ? mergeTtseResults(latest, results)
         : latest));
-      const result = results[evolutionJudgeId];
+      const result = results[causeId];
       if (result !== undefined) {
         setNotice({
           kind: result.result === 'failed' ? 'error' : 'info',
-          text: result.result === 'failed'
-            ? t('trajectory.diagnosis.ttseResult.failed')
-            : t('trajectory.diagnosis.ttseTriggeredNotice'),
+          text: t(`trajectory.diagnosis.ttseResult.${result.result}`),
         });
       }
     } catch (error) {
@@ -268,7 +266,7 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
     } finally {
       setTriggeringTtse((keys) => {
         const next = new Set(keys);
-        next.delete(evolutionJudgeId);
+        next.delete(causeId);
         return next;
       });
     }

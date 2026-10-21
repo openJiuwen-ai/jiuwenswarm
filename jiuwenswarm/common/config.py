@@ -1103,19 +1103,11 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
 
 
 def update_trajectory_diagnosis_in_config(enabled: bool) -> None:
-    """Update the trajectory diagnosis feature switch and persist config.yaml.
-
-    The standalone trajectory UI switch and chat/trajectory tabs were removed;
-    the diagnosis switch drives the diagnosis entry and the data-plane
-    ``enabled`` flag so recording stays aligned with the single user-facing
-    control.
-    """
+    """Update the trajectory diagnosis feature switch and persist config.yaml."""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "trajectory_ui" not in data or data["trajectory_ui"] is None:
         data["trajectory_ui"] = {}
-    flag = bool(enabled)
-    data["trajectory_ui"]["diagnosis_enabled"] = flag
-    data["trajectory_ui"]["enabled"] = flag
+    data["trajectory_ui"]["diagnosis_enabled"] = bool(enabled)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 

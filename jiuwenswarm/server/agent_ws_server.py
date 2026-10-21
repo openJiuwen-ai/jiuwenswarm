@@ -462,21 +462,6 @@ def _log_background_session_kvc_failure(task: asyncio.Task) -> None:
             exc_info=exc,
         )
 
-_TRAJECTORY_REQ_METHODS = frozenset(
-    {
-        ReqMethod.TRAJECTORY_SUBJECTS_LIST,
-        ReqMethod.TRAJECTORY_STREAM_FRAMES_GET,
-        ReqMethod.TRAJECTORY_SEQUENCES_GET,
-        ReqMethod.TRAJECTORY_CHECKPOINTS_GET,
-        ReqMethod.TRAJECTORY_USAGE_GET,
-        ReqMethod.TRAJECTORY_SUBJECT_GET,
-        ReqMethod.TRAJECTORY_RAW_GET,
-        ReqMethod.TRAJECTORY_ARCHIVE_OPEN,
-        ReqMethod.TRAJECTORY_BLOB_READ,
-        ReqMethod.TRAJECTORY_BLOB_CLOSE,
-    },
-)
-
 _DIAGNOSIS_REQ_METHODS = frozenset(
     {
         ReqMethod.DIAGNOSIS_RUN,
@@ -1324,10 +1309,6 @@ class AgentWebSocketServer:
         self._rsi_handlers = None
         # Trajectory diagnosis host (lazy, see _get_diagnosis_host)
         self._diagnosis_host: Any = None
-        # Trajectory read host (lazy, see _get_trajectory_host)
-        self._trajectory_host: Any = None
-        # Topic recommendation host (lazy, see _recommendation_host_instance)
-        self._recommendation_host: Any = None
         # Optional production Provider injection point.  The concrete class is
         # supplied by the composition root once it is available.
         self._rsi_harness_provider: Any = None
@@ -2207,37 +2188,6 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
-        # Runtime startup owns the preparation registry and heartbeat services.
-        # Join it before releasing those resources, including a completed task
-        # whose exception still needs to be retrieved.
-        warmup = self._checkpointer_warmup_task
-        self._checkpointer_warmup_task = None
-        if warmup is not None:
-            if not warmup.done():
-                warmup.cancel()
-            try:
-                await warmup
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[AgentWebSocketServer] checkpointer warmup stop failed: %s", exc)
-        close_client_attachments()
-        await self._stop_recommendation_host()
-        preparation = getattr(self, "_preparation_registry", None)
-        if preparation is not None:
-            await preparation.close()
-            self._preparation_registry = None
-        proactive = getattr(self, "_proactive_engine", None)
-        if proactive is not None:
-            close = getattr(proactive, "close", None)
-            if callable(close):
-                await close()
-            self._proactive_engine = None
-        sandbox_start = getattr(self, "_sandbox_start_task", None)
-        self._sandbox_start_task = None
-        if sandbox_start is not None:
-            sandbox_start.cancel()
-            await asyncio.gather(sandbox_start, return_exceptions=True)
         diagnosis_host = getattr(self, "_diagnosis_host", None)
         if diagnosis_host is not None:
             # A restart builds a fresh host so the shutdown flag does not linger.
@@ -3177,9 +3127,6 @@ class AgentWebSocketServer:
             # Trajectory diagnosis: run, query and TTSE writes proxied by the Gateway.
             if request.req_method in _DIAGNOSIS_REQ_METHODS:
                 await self._handle_diagnosis_request(ws, request, send_lock)
-                return
-            if request.req_method in _TRAJECTORY_REQ_METHODS:
-                await self._handle_trajectory_request(ws, request, send_lock)
                 return
             # RSI 优化平台：16 个 rsi.* web method 统一分发（B2）
             if (
@@ -14060,37 +14007,6 @@ class AgentWebSocketServer:
                 channel_id=request.channel_id,
                 ok=False,
                 payload={"error": str(exc), "code": "INTERNAL_ERROR"},
-            )
-
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
-    def _get_trajectory_host(self) -> Any:
-        """Lazily build the trajectory read host once."""
-        if getattr(self, "_trajectory_host", None) is None:
-            from jiuwenswarm.server.trajectory.host import TrajectoryHost
-
-            self._trajectory_host = TrajectoryHost()
-        return self._trajectory_host
-
-    async def _handle_trajectory_request(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
-    ) -> None:
-        """Answer one ``trajectory.*`` read proxied by the Gateway."""
-        try:
-            resp = await self._get_trajectory_host().handle(request)
-        except Exception as exc:
-            logger.exception("[AgentServer] trajectory request failed: %s", exc)
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={
-                    "error": "trajectory query failed",
-                    "code": "TRAJECTORY_QUERY_FAILED",
-                    "status": 500,
-                },
             )
 
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)

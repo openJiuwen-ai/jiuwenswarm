@@ -15,13 +15,13 @@ export interface DiagnosisSelectionBarProps {
   onNoteChange: (value: string) => void;
   /** Agents in the pick; `0` when nothing is picked. */
   pickedAgents: number;
-  /** OTel spans contained whole by the pick (start and end both covered). */
+  /** Nodes contained whole by the pick. */
   pickedNodes: number;
   /** Shown when the pick contains the main agent's last turn. */
   lastTurnNotice: string | null;
-  /** Shown when the pick contains more OTel spans than a diagnosis may cover. */
+  /** Shown when the pick contains more nodes than a diagnosis may cover. */
   nodeLimitNotice: string | null;
-  /** Shown after Start when the pick contains no complete OTel span. */
+  /** Shown after Start when the pick contains no complete node. */
   emptyNodesNotice: string | null;
   canStart: boolean;
   submitting: boolean;
@@ -50,12 +50,9 @@ export const DiagnosisSelectionBar = memo(function DiagnosisSelectionBar({
 }: DiagnosisSelectionBarProps) {
   const { t } = useTranslation();
   let status: string;
-  if (fullScope && fullScopeBlocked) status = t('trajectory.diagnosis.fullScopeBusy');
-  else if (fullScope || pickedAgents > 0) {
-    status = t('trajectory.analysis.selection.summary', { count: pickedAgents, spans: pickedNodes });
-  } else {
-    status = t('trajectory.diagnosis.selectionHint');
-  }
+  if (fullScope) status = fullScopeBlocked ? t('trajectory.diagnosis.fullScopeBusy') : '';
+  else if (pickedAgents === 0) status = t('trajectory.diagnosis.selectionHint');
+  else status = t('trajectory.analysis.selection.summary', { count: pickedAgents, nodes: pickedNodes });
   const statusIsError = fullScope && fullScopeBlocked;
   return (
     <div className={css.bar} data-testid="trajectory-analysis-selection-bar">
@@ -83,6 +80,11 @@ export const DiagnosisSelectionBar = memo(function DiagnosisSelectionBar({
           data-testid="trajectory-analysis-note"
         />
       </div>
+      {lastTurnNotice === null ? null : (
+        <p className={css.notice} role="status" data-testid="trajectory-analysis-selection-last-turn">
+          {lastTurnNotice}
+        </p>
+      )}
       {nodeLimitNotice === null ? null : (
         <p className={css.warning} role="alert" data-testid="trajectory-analysis-selection-node-limit">
           {nodeLimitNotice}
@@ -100,14 +102,6 @@ export const DiagnosisSelectionBar = memo(function DiagnosisSelectionBar({
           data-testid="trajectory-analysis-selection-status"
         >
           {status}
-          {lastTurnNotice === null || statusIsError ? null : (
-            <>
-              {status === '' ? null : ' · '}
-              <span className={css.lastTurnInline} data-testid="trajectory-analysis-selection-last-turn">
-                {lastTurnNotice}
-              </span>
-            </>
-          )}
         </span>
         {error === null ? null : (
           <span className={`${css.status} ${css.statusError}`} role="alert" data-testid="trajectory-analysis-selection-error">

@@ -6110,3 +6110,5 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         channel.container_file_client = real_agent_client
     else:
         channel.container_file_client = None
+    # The diagnosis HTTP proxy reaches the AgentServer service through this client.
+    channel.diagnosis_agent_client = real_agent_client

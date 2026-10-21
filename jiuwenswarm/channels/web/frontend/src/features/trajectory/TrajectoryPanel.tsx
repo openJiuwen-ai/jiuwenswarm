@@ -15,8 +15,6 @@ import {
 import { useTranslation } from 'react-i18next';
 import { webClient } from '../../services/webClient';
 import { saveBlobWithResult } from '../../utils/desktopSave';
-import { useChatStore } from '../../stores/chatStore';
-import { useSessionStore } from '../../stores/sessionStore';
 import { TrajectoryExplorer, type TrajectoryViewState } from './client/TrajectoryExplorer';
 import { IconQuestionOutline14 } from './primitives/icons';
 import { JsonTree } from './primitives/JsonTree';
@@ -110,20 +108,15 @@ import {
 import { TeamTrajectoryWorkspace } from './TeamTrajectoryWorkspace';
 import { SharedTimeAxis } from './diagnosis/SharedTimeAxis';
 import {
-  EMPTY_DIAGNOSIS_SELECTION,
-  isAgentFullySelected,
   isAgentIncluded,
   laneRangeOf,
   selectOnAxis,
   selectOnLane,
-  shouldShowIncludeToggle,
   toggleAgent,
-  toggleSelectAllOnLane,
-  unionWallRange,
   type DiagnosisSelectionState,
   type WallRange,
 } from './diagnosis/diagnosisSelection';
-import { mainAgentLastNode, rawOtelSpanIntervals } from './diagnosis/diagnosisTimeSelection';
+import { mainAgentLastNode, timedNodeIntervals } from './diagnosis/diagnosisTimeSelection';
 import { useSharedTimeAxis } from './diagnosis/useSharedTimeAxis';
 import css from './TrajectoryPanel.module.css';
 import './client/theme.css';
@@ -172,12 +165,6 @@ export interface TrajectoryPanelProps {
    * `sharedTimeAxis`; without it the lanes only show.
    */
   selection?: TrajectoryPanelSelection;
-  /**
-   * Whole-trajectory pick: paint every lane and the axis as fully selected.
-   * Drawing or toggling a lane leaves this mode via `onFullScopeChange(false)`.
-   */
-  fullScopeSelection?: boolean;
-  onFullScopeChange?: (value: boolean) => void;
   /** Reports whether any lane has timing, i.e. whether there is something to pick from. */
   onTimelineAvailableChange?: (available: boolean) => void;
   /** Reports the session's agent lanes (id and display name) whenever they change. */
@@ -221,8 +208,6 @@ export interface TrajectoryArchiveActions {
   exportDisabled: boolean;
   attributionOpen: boolean;
   replayActive: boolean;
-  /** Shown while an imported archive is open; null when live. */
-  replayLabel: string | null;
   importLabel: string;
   exportLabel: string;
   attributionLabel: string;
@@ -261,22 +246,8 @@ export interface TrajectoryDiagnosisLaneNodes {
 export type TrajectoryLaneScale = 'time' | 'equal' | 'tokens' | 'duration';
 
 export interface TrajectoryPanelSummary {
-  /** Subject lanes on the page (same set diagnosis can pick from). */
-  agents: number;
-  /**
-   * Selectable OTel spans on the swimlanes (`rawOtelSpanIntervals`).
-   * Matches `selectedNodeCount(..., fullScope: true)` so the header and the
-   * "select all" summary stay in sync.
-   */
+  traces: number;
   spans: number;
-  /** Scheduled Team control facts, when `main` contains task events. */
-  team?: {
-    members: number;
-    tasks: number;
-    completedTasks: number;
-    reviewRuns: number;
-    controlEvents: number;
-  };
 }
 
 function ignoreTimelineRange(): void {}
@@ -380,8 +351,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   onDiagnosisNodesChange,
   highlightStepKeys,
   selection,
-  fullScopeSelection = false,
-  onFullScopeChange,
   onTimelineAvailableChange,
   laneScale = 'time',
   turnsCollapsed = false,
@@ -1321,7 +1290,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   onDiagnosisNodesChangeRef.current = onDiagnosisNodesChange;
   const diagnosisNodesKey = JSON.stringify(subjectGroups.groups.map(group => ({
     subjectId: group.subject.id,
-    intervals: rawOtelSpanIntervals(group.rawRecords),
+    intervals: timedNodeIntervals(subjectSnapshots.get(group.subject.id)?.turns ?? []),
   })));
   useEffect(() => {
     onDiagnosisNodesChangeRef.current?.(
@@ -1334,34 +1303,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   useEffect(() => {
     onTimelineAvailableChangeRef.current?.(timelineAvailable);
   }, [timelineAvailable]);
+  const summaryTraces = subjectGroups.groups.reduce((sum, group) => sum + group.traceCount, 0);
+  const summarySpans = allDisplayedRawRecords.length || allDisplayedRecords.length;
   const onSummaryChangeRef = useRef(onSummaryChange);
   onSummaryChangeRef.current = onSummaryChange;
   useEffect(() => {
     if (!sharedTimeAxis) return;
-    const lanes = JSON.parse(diagnosisNodesKey) as TrajectoryDiagnosisLaneNodes[];
-    onSummaryChangeRef.current?.({
-      agents: lanes.length,
-      spans: lanes.reduce((sum, lane) => sum + lane.intervals.length, 0),
-      ...(scheduledTeamMode && scheduledTeamControlModel !== null
-        ? {
-          team: {
-            members: teamMemberCount,
-            tasks: scheduledTeamControlModel.tasks.length,
-            completedTasks: scheduledTeamControlModel.completedTaskCount,
-            reviewRuns: reviewRunCount,
-            controlEvents: scheduledTeamControlModel.controlRecordCount,
-          },
-        }
-        : {}),
-    });
-  }, [
-    diagnosisNodesKey,
-    reviewRunCount,
-    scheduledTeamControlModel,
-    scheduledTeamMode,
-    sharedTimeAxis,
-    teamMemberCount,
-  ]);
+    onSummaryChangeRef.current?.({ traces: summaryTraces, spans: summarySpans });
+  }, [sharedTimeAxis, summarySpans, summaryTraces]);
   const exportArchiveRef = useRef<() => void>(() => {});
   const exitReplayRef = useRef<() => void>(() => {});
   const onArchiveActionsReadyRef = useRef(onArchiveActionsReady);
@@ -1442,34 +1391,19 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     const endMs = timeAxis.toWall(range.end);
     return endMs < startMs ? null : { startMs, endMs };
   };
-  const fullWallRange = (): WallRange | null => {
-    if (timeAxis.domain === null || timeAxis.toWall === undefined) return null;
-    return toWallRange({ start: timeAxis.domain.startMs, end: timeAxis.domain.endMs });
-  };
-  const leaveFullScope = () => {
-    if (fullScopeSelection) onFullScopeChange?.(false);
-  };
-  const axisVisualRange = !selecting
-    ? null
-    : fullScopeSelection
-      ? timeAxis.sharedTimeDomain
-      : selection.state.mode === 'axis'
-        ? toAxisRange(selection.state.axisRange)
-        : null;
+  const axisVisualRange = selecting && selection.state.mode === 'axis'
+    ? toAxisRange(selection.state.axisRange)
+    : null;
   const selectOnAxisRange = (range: TrajectoryTimeRange | null) => {
     if (selection === undefined) return;
-    leaveFullScope();
     const wall = toWallRange(range);
     selection.onChange(current => selectOnAxis(current, wall));
   };
-  const laneVisualRange = (subjectId: string): TrajectoryTimeRange | null => {
-    if (selection === undefined) return null;
-    if (fullScopeSelection) return timeAxis.sharedTimeDomain;
-    return toAxisRange(laneRangeOf(selection.state, subjectId));
-  };
+  const laneVisualRange = (subjectId: string): TrajectoryTimeRange | null => (
+    selection === undefined ? null : toAxisRange(laneRangeOf(selection.state, subjectId))
+  );
   const selectOnLaneRange = (subjectId: string, range: TrajectoryTimeRange | null) => {
     if (selection === undefined) return;
-    leaveFullScope();
     const wall = toWallRange(range);
     selection.onChange(current => selectOnLane(current, subjectId, wall));
   };
@@ -1648,9 +1582,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const importingArchive = importProgress !== null;
   const exportDisabled = exporting || (replayArchive === null && sessionId === 'new');
   const replayActive = replayArchive !== null;
-  const replayLabel = replayArchive === null
-    ? null
-    : copy.replay(replayArchive.header.session_id);
   const importLabel = importingArchive ? copy.importingArchive : copy.importArchive;
   const exportLabel = exporting ? copy.exportingArchive : copy.exportArchive;
   useEffect(() => {
@@ -1661,7 +1592,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       exportDisabled,
       attributionOpen,
       replayActive,
-      replayLabel,
       importLabel,
       exportLabel,
       attributionLabel: copy.attributionLabel,
@@ -1681,7 +1611,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     importLabel,
     importingArchive,
     replayActive,
-    replayLabel,
     sharedTimeAxis,
   ]);
 
@@ -1865,23 +1794,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         active={active}
         groups={subjectGroups}
         messages={copy.toolbar}
-        workflowRuns={workflowRuns}
         selectedSubjectId={laneSelectedId}
         onSelectSubject={selectLane}
         hideToolbar={sharedTimeAxis}
-        {...(sharedTimeAxis && scheduledTeamMode && scheduledTeamControlModel !== null
-          ? {
-            controlTimeline: {
-              model: scheduledTeamControlModel,
-              domain: timeAxis.domain,
-              viewport: timeAxis.viewport,
-              ...(timeAxis.mapSharedTime === undefined
-                ? {}
-                : { mapTime: timeAxis.mapSharedTime }),
-              live: active && replayArchive === null && sessionIsProcessing,
-            },
-          }
-          : {})}
         {...(analysisViewState === undefined ? {} : { externalViewState: analysisViewState })}
         {...(sharedTimeAxis
           ? {
@@ -1892,7 +1807,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                   <SharedTimeAxis
                     domain={timeAxis.domain}
                     viewport={timeAxis.viewport}
-                    toWall={timeAxis.toWall}
                     range={axisVisualRange}
                     onRangeChange={selectOnAxisRange}
                     selectable={selecting}
@@ -1904,60 +1818,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
               ? {}
               : {
                 agentSelection: {
-                  isIncluded: (subjectId: string) => (
-                    fullScopeSelection || isAgentIncluded(selection.state, subjectId)
-                  ),
-                  // Show while a shared brush is active, or this lane already
-                  // has a window (uncheck clears it). Hidden for full-trajectory
-                  // picks and when nothing is selected.
-                  showIncludeToggle: (subjectId) => (
-                    shouldShowIncludeToggle(selection.state, fullScopeSelection, subjectId)
-                  ),
-                  onToggle: (subjectId: string) => {
-                    if (fullScopeSelection) {
-                      leaveFullScope();
-                      const full = fullWallRange();
-                      if (full === null) {
-                        selection.onChange(() => EMPTY_DIAGNOSIS_SELECTION);
-                        return;
-                      }
-                      selection.onChange(() => toggleAgent(selectOnAxis(EMPTY_DIAGNOSIS_SELECTION, full), subjectId));
-                      return;
-                    }
-                    selection.onChange(current => toggleAgent(current, subjectId));
-                  },
-                  canSelectAll: (subjectId: string) => (
-                    unionWallRange(rawOtelSpanIntervals(
-                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
-                    )) !== null
-                  ),
-                  isSelectAllActive: (subjectId: string) => {
-                    // Full-trajectory pick does not flip lane "select all" to
-                    // "clear" — those buttons stay available to narrow the pick
-                    // to one agent's whole span.
-                    if (fullScopeSelection) return false;
-                    const intervals = rawOtelSpanIntervals(
-                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
-                    );
-                    return isAgentFullySelected(selection.state, subjectId, intervals);
-                  },
-                  onSelectAll: (subjectId: string) => {
-                    const intervals = rawOtelSpanIntervals(
-                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
-                    );
-                    if (fullScopeSelection) {
-                      leaveFullScope();
-                      // Replace the whole-trajectory pick with this lane only.
-                      selection.onChange(() => (
-                        toggleSelectAllOnLane(EMPTY_DIAGNOSIS_SELECTION, subjectId, intervals)
-                      ));
-                      return;
-                    }
-                    selection.onChange(current => toggleSelectAllOnLane(current, subjectId, intervals));
-                  },
-                  isHighlighted: (subjectId: string) => (
-                    fullScopeSelection || laneRangeOf(selection.state, subjectId) !== null
-                  ),
+                  isIncluded: (subjectId: string) => isAgentIncluded(selection.state, subjectId),
+                  onToggle: (subjectId: string) => selection.onChange(current => toggleAgent(current, subjectId)),
+                  isHighlighted: (subjectId: string) => laneRangeOf(selection.state, subjectId) !== null,
                 },
               }),
           }
@@ -2018,9 +1881,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                       ? (range: TrajectoryTimeRange | null) => selectOnLaneRange(subjectId, range)
                       : ignoreTimelineRange,
                     spanSelectsRange: selecting,
-                    // Pan with a grab cursor after zoom, like the duration overview.
-                    // Selection mode locks the viewport so a left-drag paints the brush.
-                    lockTimelineViewport: selecting,
+                    lockTimelineViewport: true,
                     sharedViewport: timeAxis.viewport,
                     onSharedViewportChange: timeAxis.updateViewport,
                     sharedViewportRef: timeAxis.viewportRef,

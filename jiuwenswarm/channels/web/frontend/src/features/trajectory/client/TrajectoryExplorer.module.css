@@ -21,8 +21,8 @@
 }
 
 .root[data-display-mode='full'] {
-  /* Clip so the ledger scrolls under a fixed toolbar + swimlane overview. */
-  overflow: hidden;
+  /* The member toolbar sticks to the lane list; clipping here would trap it. */
+  overflow: visible;
 }
 
 .ledger {

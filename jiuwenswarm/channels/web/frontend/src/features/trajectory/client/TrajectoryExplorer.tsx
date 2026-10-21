@@ -106,10 +106,7 @@ export interface TrajectoryExplorerProps {
   sharedTimeDomain?: TrajectoryTimeRange | null
   /** Maps this lane's span times onto `sharedTimeDomain`. */
   mapSharedTime?: (time: number) => number
-  /**
-   * When true, left-drag paints a brush instead of panning. Wheel zoom still
-   * works if `onSharedViewportChange` controls the shared window.
-   */
+  /** Left-drag selects. The wheel still zooms when a shared viewport is controlled. */
   lockTimelineViewport?: boolean
   /** With a locked viewport, clicking an Input block still selects its range. */
   spanSelectsRange?: boolean

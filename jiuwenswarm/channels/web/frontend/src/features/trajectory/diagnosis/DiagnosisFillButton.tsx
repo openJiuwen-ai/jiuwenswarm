@@ -11,12 +11,9 @@ export interface FillButtonProps {
   text: string;
   onFill: (text: string) => void;
   testId: string;
-  /** Visible label. Defaults to the single-suggestion "fill input" wording. */
-  label?: string;
-  disabled?: boolean;
 }
 
-export function FillButton({ text, onFill, testId, label, disabled = false }: FillButtonProps) {
+export function FillButton({ text, onFill, testId }: FillButtonProps) {
   const { t } = useTranslation();
   const [filled, setFilled] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -40,8 +37,8 @@ export function FillButton({ text, onFill, testId, label, disabled = false }: Fi
           {t('trajectory.diagnosis.filled')}
         </span>
       ) : null}
-      <button type="button" className={css.actionButton} onClick={fill} disabled={disabled} data-testid={testId}>
-        {label ?? t('trajectory.diagnosis.fillInput')}
+      <button type="button" className={css.actionButton} onClick={fill} data-testid={testId}>
+        {t('trajectory.diagnosis.fillInput')}
       </button>
     </span>
   );

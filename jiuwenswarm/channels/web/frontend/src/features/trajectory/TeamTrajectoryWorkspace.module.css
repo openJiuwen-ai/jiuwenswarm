@@ -357,115 +357,22 @@
   height: 100%;
   min-height: 0;
   flex: 0 0 100%;
-  /*
-   * Keep this agent's swimlane (toolbar + timeline) fixed while the ledger /
-   * raw inspector scroll inside the row. Overflow must stay clipped so the
-   * outer lanes scroller does not drag the overview away with the detail.
-   */
-  overflow: hidden;
+  /* Let the member name stick to the lanes scroller; the ledger scrolls inside. */
+  overflow: visible;
 }
 
-.root[data-scheduled-control='true'] .laneRowExpanded {
-  height: clamp(360px, 52vh, 420px);
-  flex: 0 0 clamp(360px, 52vh, 420px);
-}
-
-.laneSection:has(.laneRowExpanded) {
-  position: relative;
-  z-index: 1;
-  min-height: 0;
-  flex: 0 0 auto;
-}
-
-.roundSection:has(.laneRowExpanded) {
-  min-height: 0;
-  flex: 0 0 auto;
-}
-
-.roundSection:has(> .laneRowExpanded) > .laneRowExpanded {
-  flex: 0 0 clamp(360px, 52vh, 420px);
-}
-
-.laneRowExpanded :global([data-display-mode='full']) {
-  overflow: hidden;
-  min-height: 0;
-  flex: 1 1 0;
-}
-
-.workflowGroup {
-  display: flex;
-  min-width: 0;
-  flex: 0 0 auto;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.workflowGroupSelected {
-  height: 100%;
-  min-height: 0;
-  flex: 0 0 100%;
-}
-
-.workflowGroupSelected .workflowGroupLanes {
-  min-height: 0;
-  flex: 1 1 0;
-}
-
-.workflowGroupHeader {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  height: 24px;
-  flex: none;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  border-radius: 4px;
-  padding: 0 6px;
-  box-shadow: 0 0 0 1px var(--dsw-alias-border-l2);
+.laneRowExpanded :global([role='toolbar']) {
+  position: sticky;
+  top: 0;
+  z-index: 8;
   background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-  cursor: pointer;
-  font: var(--dsw-font-xxs-12);
-  text-align: left;
 }
 
-.workflowGroupHeader:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+.laneRow[data-highlighted='true'] :global([role='toolbar']),
+.laneRowExpanded[data-highlighted='true'] :global([role='toolbar']) {
+  background: #ddecff;
 }
 
-.workflowGroupHeader:focus-visible {
-  outline: 1px solid var(--dsw-alias-state-business-primary);
-  outline-offset: 1px;
-}
-
-.workflowGroupName {
-  min-width: 0;
-  overflow: hidden;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workflowGroupShortId {
-  flex: none;
-  color: var(--dsw-alias-label-caption);
-}
-
-.workflowGroupCount {
-  flex: none;
-  margin-left: auto;
-  color: var(--dsw-alias-label-secondary);
-  white-space: nowrap;
-}
-
-.workflowGroupLanes {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 16px;
-  padding-left: 12px;
-}
 .memberCluster {
   display: inline-flex;
   min-width: 0;

@@ -191,17 +191,17 @@ class DiagnosisHost:
 
         Returns:
             A successful response whose payload mirrors the HTTP body, or an
-            error response whose payload is ``{"error", "code", "status"}``.
+            error response whose payload is ``{"error", "code"}``.
         """
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "")
         try:
             payload = await self._dispatch(request.req_method, session_id, params)
         except DiagnosisHostError as exc:
-            return self._error(request, exc.message, exc.code, exc.status)
+            return self._error(request, exc.message, exc.code)
         except Exception as exc:  # noqa: BLE001
             logger.exception("[diagnosis] request failed: method=%s session_id=%s", request.req_method, session_id)
-            return self._error(request, str(exc) or "diagnosis request failed", "INTERNAL_ERROR", 500)
+            return self._error(request, str(exc) or "diagnosis request failed", "INTERNAL_ERROR")
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -210,12 +210,12 @@ class DiagnosisHost:
         )
 
     @staticmethod
-    def _error(request: AgentRequest, message: str, code: str, status: int) -> AgentResponse:
+    def _error(request: AgentRequest, message: str, code: str) -> AgentResponse:
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=False,
-            payload={"error": message, "code": code, "status": status},
+            payload={"error": message, "code": code},
         )
 
     async def _dispatch(
@@ -230,7 +230,7 @@ class DiagnosisHost:
         if method is ReqMethod.DIAGNOSIS_RUN:
             # Access errors (flag, session) take precedence over body errors.
             service.check_access(session_id)
-            record = await service.start(session_id, _validate(DiagnosisRunRequest, _fill_default_locale(body)))
+            record = await service.start(session_id, _validate(DiagnosisRunRequest, body))
             return record.model_dump(mode="json", exclude_none=True)
         if method is ReqMethod.DIAGNOSIS_LIST:
             items = service.list_summaries(session_id)
@@ -246,7 +246,7 @@ class DiagnosisHost:
         if method is ReqMethod.DIAGNOSIS_TTSE_TRIGGER:
             service.check_access(session_id)
             trigger_request = _validate(TtseTriggerRequest, body)
-            results = await service.trigger_ttse(session_id, diagnosis_id, trigger_request.evolution_judge_id)
+            results = await service.trigger_ttse(session_id, diagnosis_id, trigger_request.root_cause_ids)
             return {
                 "results": {key: value.model_dump(mode="json", exclude_none=True) for key, value in results.items()},
             }
@@ -256,19 +256,6 @@ class DiagnosisHost:
         """Cancel running diagnoses; a never-used host has nothing to stop."""
         if self._service is not None:
             await self._service.shutdown()
-
-
-def _fill_default_locale(body: Any) -> Any:
-    """Backfill the request locale from the saved UI language when the body omits it."""
-    if not isinstance(body, Mapping):
-        return body
-    payload = dict(body)
-    if not str(payload.get("locale") or "").strip():
-        from jiuwenswarm.common.config import get_config
-
-        lang = str(get_config().get("preferred_language") or "zh").strip().lower()
-        payload["locale"] = lang if lang in ("zh", "en") else "zh"
-    return payload
 
 
 def _validate(model: type[Any], body: Any) -> Any:

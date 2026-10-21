@@ -7,6 +7,7 @@ import { Button, Switch } from '../../../../components/ui';
 import { Form, FormDialog, useForm } from '../../../../components/form';
 import { setA2UIFeatureEnabled } from '../../../../features/a2ui/featureConfig';
 import { normalizeRSIEnabled, setRSIFeatureEnabled } from '../../../../features/rsi/featureConfig';
+import { setTrajectoryUiEnabled } from '../../../../features/trajectory/featureConfig';
 import { setTrajectoryDiagnosisEnabled } from '../../../../features/trajectory/diagnosis/diagnosisFeatureConfig';
 import { setTaskFullDuplexEnabled } from '../../../../features/taskFullDuplex/featureFlag';
 import { setTaskAsrEnabled } from '../../../../features/taskAsr/featureFlag';
@@ -182,6 +183,33 @@ export function A2UISetting({ disabled }: SettingsCustomItemProps) {
         disabled={disabled || !isConnected || source.savingKeys.has('a2ui_enabled')}
         onChange={(next) => void updateA2UI(next).catch(() => undefined)}
         data-testid="settings-a2ui-switch"
+      />
+    </SettingRow>
+  );
+}
+
+export function TrajectoryDiagnosisSetting({ disabled }: SettingsCustomItemProps) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const source = useSettingsSource();
+  const enabled = parseConfigBoolean(source.values.trajectory_ui_diagnosis_enabled);
+
+  async function updateDiagnosis(next: boolean): Promise<void> {
+    await source.save({ trajectory_ui_diagnosis_enabled: next }, 'trajectory-diagnosis-enabled');
+    setTrajectoryDiagnosisEnabled(next);
+  }
+
+  return (
+    <SettingRow
+      title={t('settingsPanel.fields.trajectory_ui_diagnosis_enabled.title')}
+      description={t('settingsPanel.fields.trajectory_ui_diagnosis_enabled.description')}
+    >
+      <Switch
+        aria-label={t('settingsPanel.fields.trajectory_ui_diagnosis_enabled.title')}
+        checked={enabled}
+        disabled={disabled || !isConnected || source.savingKeys.has('trajectory_ui_diagnosis_enabled')}
+        onChange={(next) => void updateDiagnosis(next).catch(() => undefined)}
+        data-testid="settings-trajectory-diagnosis-switch"
       />
     </SettingRow>
   );

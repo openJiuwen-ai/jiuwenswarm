@@ -214,6 +214,9 @@ class WebChannel(BaseWsChannel):
         self.git_watcher_registry: Any = None
         # AgentOSRouterClient for same-port HTTP container file APIs (set by handlers).
         self.container_file_client: Any = None
+        # Agent client the diagnosis HTTP proxy uses to reach the AgentServer
+        # service; bound by the web handler registration.
+        self.diagnosis_agent_client: Any = None
         self._trajectory_pending_updates: dict[tuple[str, str], Any] = {}
         self._trajectory_send_task: asyncio.Task[None] | None = None
 
@@ -800,13 +803,6 @@ class WebChannel(BaseWsChannel):
             session_id = str(getattr(update, "session_id", "") or "").strip()
             if not session_id:
                 continue
-            clients: set[Any] = set()
-            for routing_key, ws_list in self._clients_by_key.items():
-                if routing_key.session_id != session_id:
-                    continue
-                for ws in ws_list:
-                    if not getattr(ws, "closed", False):
-                        clients.add(ws)
             payload = {
                 "session_id": session_id,
                 "trace_id": str(getattr(update, "trace_id", "") or ""),
@@ -815,8 +811,35 @@ class WebChannel(BaseWsChannel):
                 "store_epoch": getattr(update, "store_epoch", None),
                 "lifecycle": str(getattr(update, "lifecycle", "final") or "final"),
             }
-            for ws in clients:
-                await self.send_event(ws, "trace.updated", payload)
+            await self.send_session_event(session_id, "trace.updated", payload)
+
+    def _clients_for_session(self, session_id: str) -> set[Any]:
+        """Return open connections registered for ``session_id``."""
+        clients: set[Any] = set()
+        for routing_key, ws_list in self._clients_by_key.items():
+            if routing_key.session_id != session_id:
+                continue
+            for ws in ws_list:
+                if not getattr(ws, "closed", False):
+                    clients.add(ws)
+        return clients
+
+    async def send_session_event(
+        self,
+        session_id: str,
+        event: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Send one event only to the connections registered for a session.
+
+        Args:
+            session_id: Target session; connections of other sessions never
+                receive the event.
+            event: Event name, for example ``trace.updated``.
+            payload: JSON-serializable event payload.
+        """
+        for ws in self._clients_for_session(session_id):
+            await self.send_event(ws, event, payload)
 
     async def connect(self) -> None:
         """兼容方法：调用 start."""
