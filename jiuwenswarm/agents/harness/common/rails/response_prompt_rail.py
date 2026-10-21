@@ -18,6 +18,9 @@ from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
     _response_prompt,
     _thinking_discipline_prompt,
 )
+from jiuwenswarm.server.runtime.a2ui.prompt_instructions import (
+    is_a2ui_browser_workflow_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +177,10 @@ class ResponsePromptRail(DeepAgentRail):
         extra = getattr(ctx, "extra", None)
         if isinstance(extra, dict) and A2UI_BROWSER_WORKFLOW_CONTEXT_KEY in extra:
             return extra[A2UI_BROWSER_WORKFLOW_CONTEXT_KEY] is True
-        return False
+
+        inputs = getattr(ctx, "inputs", None)
+        query = inputs.get("query") if isinstance(inputs, dict) else getattr(inputs, "query", None)
+        return is_a2ui_browser_workflow_request(query)
 
     def _sync_a2ui_prompt_section(
         self,

@@ -4,6 +4,185 @@
 
 from __future__ import annotations
 
+import json
+import re
+from typing import Any
+
+
+_BROWSER_WORKFLOW_ACTION_MARKERS = (
+    "browser_preflight_submit",
+    "run_browser_agent",
+    "hotel_option_select",
+    "continue_hotel_booking",
+    "hotel_payment_confirm",
+    "hotel_payment_cancel",
+    "gmail_email_select",
+    "continue_gmail_email_review",
+    "gmail_reply_draft_select",
+    "continue_gmail_reply_draft",
+    "gmail_send_confirm",
+    "gmail_send_cancel",
+    "gmail_cleanup_select",
+    "review_gmail_cleanup",
+    "gmail_cleanup_confirm",
+    "gmail_cleanup_cancel",
+    "social_post_draft_select",
+    "continue_social_post_draft",
+    "social_post_confirm",
+    "social_post_cancel",
+)
+_BROWSER_WORKFLOW_INTENT_RE = re.compile(
+    r"(?:"
+    r"(?:book|reserve|buy|purchase|checkout|fill|submit|search|summari[sz]e|"
+    r"reply|clean|archive|delete|post|publish|comment|like|follow|open|click)"
+    r".{0,80}"
+    r"(?:browser|web(?:site)?|gmail|e-?mail|mailbox|hotel|ticket|form|"
+    r"social(?:\s+media)?|facebook|instagram|linkedin|x\.com|twitter)"
+    r"|"
+    r"(?:browser|web(?:site)?|gmail|e-?mail|mailbox|hotel|ticket|form|"
+    r"social(?:\s+media)?|facebook|instagram|linkedin|x\.com|twitter)"
+    r".{0,80}"
+    r"(?:book|reserve|buy|purchase|checkout|fill|submit|search|summari[sz]e|"
+    r"reply|clean|archive|delete|post|publish|comment|like|follow|open|click)"
+    r"|"
+    r"(?:预订|预约|购买|下单|填写|提交|搜索|查找|总结|回复|清理|归档|删除|"
+    r"发布|发帖|评论|点赞|关注|打开|点击)"
+    r".{0,40}"
+    r"(?:浏览器|网页|网站|邮箱|邮件|收件箱|酒店|宾馆|机票|车票|表单|"
+    r"社交媒体|微博|小红书)"
+    r"|"
+    r"(?:浏览器|网页|网站|邮箱|邮件|收件箱|酒店|宾馆|机票|车票|表单|"
+    r"社交媒体|微博|小红书)"
+    r".{0,40}"
+    r"(?:预订|预约|购买|下单|填写|提交|搜索|查找|总结|回复|清理|归档|删除|"
+    r"发布|发帖|评论|点赞|关注|打开|点击)"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def is_a2ui_browser_workflow_request(value: Any) -> bool:
+    """Return whether the current request needs browser-specific A2UI rules."""
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, (dict, list, tuple)):
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(value)
+    else:
+        text = str(value or "")
+
+    normalized = text.lower()
+    if any(marker in normalized for marker in _BROWSER_WORKFLOW_ACTION_MARKERS):
+        return True
+    return bool(_BROWSER_WORKFLOW_INTENT_RE.search(text))
+
+
+def build_a2ui_browser_workflow_instruction() -> str:
+    """Return browser-workflow rules for requests that actually need them."""
+    browser_preflight_rule_en = (
+        " Browser task preflight: when the user asks you to perform a browser "
+        "automation task such as booking tickets, reserving hotels, buying "
+        "products, filling forms, handling webmail, posting to social media, or "
+        "comparing purchasable options, first check "
+        "whether the task has enough user-confirmed details before calling any "
+        "browser tool or browser subagent. If required details are missing and "
+        "the Web A2UI channel is available, do not start browser automation yet. "
+        "Instead, render an A2UI information-collection or confirmation form. "
+        "Do not ask for those missing browser-task details through plain natural "
+        "language, Markdown, or the ask_user tool when A2UI is available. "
+        "The submit Button action name MUST be 'browser_preflight_submit'. Its "
+        "action.context MUST include original_query, task_type, next_action with "
+        "the value 'run_browser_agent', must_confirm_before_payment with true, "
+        "and all form values using path references. After this action is "
+        "submitted, combine the original request and submitted values, then use "
+        "spawn_sub_agent with subagent_type 'browser_agent'. Never buy, book, "
+        "pay, or place an order without a final explicit user confirmation."
+    )
+    mandatory_account_action_rule_en = (
+        " Mandatory A2UI account-action gate: on the Web channel, Gmail, email, "
+        "mailbox cleanup, social-media posting, comments, or any externally "
+        "visible account action MUST use A2UI when A2UI is available. This is "
+        "not optional. Do not use plain text, Markdown, ask_user, todo tools, "
+        "memory tools, task planning, or task_tool as a substitute for the A2UI "
+        "preflight, candidate selection, draft review, or final confirmation. "
+        "For a request like finding emails and replying to those that need a "
+        "reply, first render an A2UI preflight if filters or reply preferences "
+        "are incomplete; after Gmail search, render an A2UI email/thread "
+        "candidate list before opening or replying to selected messages; after "
+        "drafting, render a final A2UI send confirmation before sending. Never "
+        "search multiple emails and send replies in the same uninterrupted run "
+        "without an A2UI user selection and final send confirmation."
+    )
+    hotel_booking_flow_rule_en = (
+        " Hotel booking A2UI flow: after browser_agent returns candidate hotels, "
+        "present the candidates as A2UI cards or a comparable list. Each hotel's "
+        "selection Button action name MUST be 'hotel_option_select'. Its "
+        "action.context MUST include task_type='hotel', next_action with the "
+        "value 'continue_hotel_booking', original_query, selected hotel name, "
+        "candidate index or id, and the confirmed city/check-in/check-out/guest "
+        "and room criteria. Include a candidate/detail URL, provider, room type, "
+        "price, currency, and cancellation policy when available. After the user "
+        "selects a hotel, continue the existing browser state for that candidate; "
+        "do not restart the broad city/date search. At the payment or order "
+        "summary page, render a final A2UI confirmation whose confirm Button "
+        "action name is 'hotel_payment_confirm' and whose cancel Button action "
+        "name is 'hotel_payment_cancel'."
+    )
+    gmail_flow_rule_en = (
+        " Gmail A2UI flow: for Gmail search, summarization, reply drafting, or "
+        "mailbox cleanup requests, collect missing filters with preflight A2UI "
+        "before browser automation. If the user already provided enough filters, "
+        "browser_agent may search Gmail, but the returned emails/threads MUST "
+        "still be shown as A2UI candidates before summarizing multiple messages, "
+        "drafting replies, modifying labels, archiving, deleting, unsubscribing, "
+        "or sending anything. After browser_agent returns Gmail search "
+        "results, render emails or threads as A2UI cards/lists. Each email "
+        "selection Button action name MUST be 'gmail_email_select'. Its "
+        "action.context MUST include task_type='gmail', next_action with the "
+        "value 'continue_gmail_email_review', original_query, search query or "
+        "filters, sender, subject, date/time, message/thread id or index, and "
+        "thread URL when available. For reply drafts, render draft options whose "
+        "selection Button action name is 'gmail_reply_draft_select' with "
+        "next_action='continue_gmail_reply_draft', recipient, subject, selected "
+        "draft body, tone, and selected thread context. At the final send step, "
+        "render a confirmation with confirm action 'gmail_send_confirm' and "
+        "cancel action 'gmail_send_cancel'; after the user clicks confirm, send "
+        "the email only if the visible Gmail compose state still matches the "
+        "A2UI confirmation context. For mailbox cleanup, candidate "
+        "selection actions MUST use 'gmail_cleanup_select' with "
+        "next_action='review_gmail_cleanup'. The final cleanup confirmation MUST "
+        "use confirm action 'gmail_cleanup_confirm' and cancel action "
+        "'gmail_cleanup_cancel'. Never send, delete, archive, unsubscribe, mark "
+        "read, label, or otherwise modify Gmail without the relevant final "
+        "confirmation action."
+    )
+    social_post_flow_rule_en = (
+        " Social media A2UI flow: for posting to social media websites, first "
+        "collect missing platform, account, audience, visibility, tone, media, "
+        "link, and post intent details with A2UI. Render draft variants as A2UI "
+        "cards. Each draft selection Button action name MUST be "
+        "'social_post_draft_select'. Its action.context MUST include "
+        "task_type='social_post', next_action with the value "
+        "'continue_social_post_draft', original_query, platform, account or "
+        "account_hint, selected draft body, visibility, media/link state, and "
+        "target audience. After a draft is selected, fill the compose UI but do "
+        "not publish. The final publish confirmation MUST use confirm action "
+        "'social_post_confirm' and cancel action 'social_post_cancel'; after "
+        "the user clicks confirm, publish the post only if the visible compose "
+        "state still matches the A2UI confirmation context. Never publish, post, "
+        "comment, like, follow, delete, or perform externally visible social "
+        "actions without final explicit confirmation."
+    )
+    return (
+        mandatory_account_action_rule_en
+        + browser_preflight_rule_en
+        + hotel_booking_flow_rule_en
+        + gmail_flow_rule_en
+        + social_post_flow_rule_en
+    )
+
 
 def build_a2ui_autonomy_instruction(language: str = "en") -> str:
     # --- en rules ---
@@ -196,4 +375,6 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
 
 __all__ = [
     "build_a2ui_autonomy_instruction",
+    "is_a2ui_browser_workflow_request",
+    "build_a2ui_browser_workflow_instruction",
 ]
