@@ -101,6 +101,22 @@ def test_provider_does_not_change_personal_allowlist(tmp_path):
     assert LocalWorkConfig().shell_allowlist == before
 
 
+def test_bash_publication_includes_webpage_fetch():
+    fields = module().with_bash_tool({})
+    nested = fields["tools"][0]["params"]["tools"]
+    assert nested == [{"type": "core.web_fetch"}]
+    upgraded = module().ensure_web_fetch({
+        "tools": [{"type": "jiuwenmate.bash", "params": {"tools": [{"type": "demo.plugin"}]}}],
+        "system_prompt": "已有提示",
+    })
+    assert upgraded["tools"][0]["params"]["tools"] == [
+        {"type": "demo.plugin"},
+        {"type": "core.web_fetch"},
+    ]
+    assert "fetch_webpage" in upgraded["system_prompt"]
+    assert module().ensure_web_fetch(upgraded) == upgraded
+
+
 def test_duplicate_bash_tool_is_rejected():
     from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
     with pytest.raises(PersistentAgentError):
