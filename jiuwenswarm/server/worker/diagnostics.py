@@ -22,9 +22,12 @@ def enable_worker_diagnostics() -> None:
     _enabled = True
 
 
-def arm_stall_dump() -> None:
+def arm_stall_dump(*, beat_age: float | None = None) -> None:
     global _last_arm
     now = time.monotonic()
+    if beat_age is not None and beat_age >= min(5.0, _STALL_DUMP_TIMEOUT / 2):
+        # Off-loop pongs must not postpone the native dump of a stalled loop.
+        return
     if _enabled and now - _last_arm >= min(5.0, _STALL_DUMP_TIMEOUT / 2):
         # This native timer still fires when Python's event loop is blocked.
         # Every incoming IPC frame rearms it. A detached resident Worker has

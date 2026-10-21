@@ -631,6 +631,70 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
 @pytest.mark.skipif(
     os.name != "nt", reason="Windows named-pipe heartbeat fast path"
 )
+async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
+    tmp_path, monkeypatch, caplog,
+):
+    """A business frame must not strand heartbeats behind a stalled loop."""
+    from websockets.asyncio.client import connect as ws_connect
+
+    async with _worker("freeze", tmp_path, monkeypatch) as (supervisor, process):
+        pid = supervisor.worker_pid
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with ws_connect(url, proxy=None) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                first = _request(1)
+                first.session_id = "stalled-session"
+                tasks = [asyncio.create_task(supervisor.dispatch_parsed_request(
+                    gateway["ws"], first, gateway["lock"],
+                ))]
+                assert json.loads(await asyncio.wait_for(client.recv(), 3))["phase"] == "freezing"
+                began = time.monotonic()
+                await asyncio.sleep(0.5)
+                for index in range(3):
+                    request = _request(8)
+                    request.session_id = f"queued-session-{index}"
+                    request.params["freeze"] = False
+                    tasks.append(asyncio.create_task(supervisor.dispatch_parsed_request(
+                        gateway["ws"], request, gateway["lock"],
+                    )))
+                frames = []
+
+                async def receive():
+                    async for raw in client:
+                        frames.append(json.loads(raw))
+
+                receiver = asyncio.create_task(receive())
+                try:
+                    await asyncio.wait_for(asyncio.gather(*tasks), 80)
+                    async with asyncio.timeout(3):
+                        while sum(frame.get("phase") == "final" for frame in frames) < 3:
+                            await asyncio.sleep(0.01)
+                    assert time.monotonic() - began >= 55
+                    assert supervisor.worker_pid == pid and process.returncode is None
+                    assert supervisor._restart_count == 0
+                    assert "heartbeat timed out" not in caplog.text
+                    assert not any("runtime worker closed" in json.dumps(frame) for frame in frames)
+                    stderr = process.stderr_path.read_text(encoding="utf-8")
+                    assert "Timeout (0:00:25)" in stderr and "dispatch_parsed_request" in stderr
+                    (tmp_path / "acceptance.json").write_text(json.dumps({
+                        "case": "queued_sessions_during_stall", "pid": pid,
+                        "stall_seconds": 60, "heartbeat_timeout": 30, "sessions": 4,
+                        "later_requests_completed": 3, "restarts": 0,
+                        "stderr": str(process.stderr_path), "native_stack_dump": True,
+                    }, indent=2), encoding="utf-8")
+                finally:
+                    receiver.cancel()
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(receiver, *tasks, return_exceptions=True)
+    assert process.returncode == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows named-pipe heartbeat fast path"
+)
 async def test_real_freeze_worker_survives_loop_stall(tmp_path, monkeypatch, caplog):
     """A blocked business loop keeps transport liveness and must not be killed.
 
