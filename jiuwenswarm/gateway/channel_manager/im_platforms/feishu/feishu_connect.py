@@ -309,8 +309,18 @@ class FeishuChannel(BaseChannel):
                         try:
                             read = await self._api_client.im.v1.message.aget(
                                 GetMessageRequest.builder().message_id(message_id).build())
+                            if not read.success():
+                                # Quota and transport failures are not proof the message was removed.
+                                logger.warning(
+                                    "[JM-11] Feishu message check unavailable: app_id=%s message_id=%s code=%s msg=%s",
+                                    getattr(self.config, "app_id", ""),
+                                    message_id,
+                                    getattr(read, "code", None),
+                                    getattr(read, "msg", None),
+                                )
+                                return message_id, {"status": "unknown"}
                             items = getattr(getattr(read, "data", None), "items", None)
-                            if not read.success() or not items or len(items) != 1:
+                            if not items or len(items) != 1:
                                 return message_id, {"status": "unavailable"}
                             item = items[0]
                             if item.message_id != message_id or item.chat_id != chat_id:
@@ -327,8 +337,14 @@ class FeishuChannel(BaseChannel):
                                 "text": self._persistent_text(content, item),
                                 "attachment_refs": list(self._persistent_attachment_refs(message_id, content)),
                                 "changed_at": stamp.isoformat()}
-                        except Exception:
-                            return message_id, {"status": "unavailable"}
+                        except Exception as exc:
+                            logger.warning(
+                                "[JM-11] Feishu message check unavailable: app_id=%s message_id=%s error_type=%s",
+                                getattr(self.config, "app_id", ""),
+                                message_id,
+                                type(exc).__name__,
+                            )
+                            return message_id, {"status": "unknown"}
 
                 return {"status": "ok", "messages": dict(await asyncio.gather(
                     *(read_message(mid) for mid in message_ids)))}

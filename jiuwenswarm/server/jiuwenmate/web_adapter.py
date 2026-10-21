@@ -289,7 +289,8 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 if self._stream is not None:
                     self._stream.start()
                 await manager.start()
-                await manager.recover(WEB_NAMESPACE)
+                # Feishu routes continue on the fanout runtime, which can verify group membership.
+                await manager.recover(WEB_NAMESPACE, channels=frozenset({"web"}), include_unrouted=True)
                 self._conversations = await asyncio.to_thread(WebConversationStore, manager.db_path)
                 self._manager = manager
             return self._manager

@@ -107,6 +107,7 @@ class ColleagueSettings:
     tags: tuple[str, ...] = ()
     category: str = "custom"
     avatar_url: str = ""
+    group_reply_mode: str = "adaptive"
     capabilities: CapabilitySelection = field(default_factory=CapabilitySelection)
 
     def __post_init__(self) -> None:
@@ -118,6 +119,8 @@ class ColleagueSettings:
         object.__setattr__(self, "tags", _items("tags", self.tags))
         object.__setattr__(self, "category", _text("category", self.category, limit=64, required=True))
         object.__setattr__(self, "avatar_url", _text("avatar_url", self.avatar_url, limit=2048, required=False))
+        if self.group_reply_mode not in ("passive", "adaptive"):
+            raise PersistentAgentError("invalid group_reply_mode")
         if not isinstance(self.capabilities, CapabilitySelection):
             raise PersistentAgentError("invalid capabilities")
 
@@ -132,6 +135,7 @@ class ColleagueSettings:
             "tags": list(self.tags),
             "category": self.category,
             "avatar_url": self.avatar_url,
+            "group_reply_mode": self.group_reply_mode,
             "capabilities": self.capabilities.to_dict(),
         }
 
@@ -139,7 +143,7 @@ class ColleagueSettings:
     def from_dict(cls, data: Any) -> ColleagueSettings:
         if not isinstance(data, dict):
             raise PersistentAgentError("invalid settings")
-        known = {"name", "description", "persona", "tags", "category", "avatar_url", "capabilities"}
+        known = {"name", "description", "persona", "tags", "category", "avatar_url", "capabilities", "group_reply_mode"}
         unknown = set(data) - known
         if unknown:
             raise PersistentAgentError(f"unknown settings fields: {sorted(unknown)}")
@@ -208,6 +212,7 @@ class ColleagueView:
     created_at: datetime
     updated_at: datetime
     workspace_dir: str | None = None
+    group_reply_mode: str = "adaptive"
 
     @classmethod
     def from_definition(cls, definition: ColleagueDefinition) -> ColleagueView:
@@ -219,6 +224,7 @@ class ColleagueView:
             tags=settings.tags,
             category=settings.category,
             avatar_url=settings.avatar_url,
+            group_reply_mode=settings.group_reply_mode,
             capabilities=settings.capabilities,
             source_template_id=definition.source_template_id,
             is_default=definition.is_default,
@@ -246,4 +252,5 @@ class ColleagueView:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "workspace_dir": self.workspace_dir,
+            "group_reply_mode": self.group_reply_mode,
         }

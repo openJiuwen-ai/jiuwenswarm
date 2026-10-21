@@ -25,7 +25,11 @@ if TYPE_CHECKING:
     from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
     from openjiuwen.harness.persistent_agent import RequestInput
 
-from jiuwenswarm.server.jiuwenmate.group_collaboration import waits_for_named_colleague
+from jiuwenswarm.server.jiuwenmate.group_collaboration import (
+    greeting_respondent,
+    is_pure_greeting,
+    waits_for_named_colleague,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +323,9 @@ def create_default_persistent_group_fanout(
                     await asyncio.to_thread(manager.group_archive.append, access.namespace_id, access.group_id, fresh,
                         source_ref=f"refresh:{message.message_id}", changed_at=changed_at)
                     updated.append(fresh)
+                elif status == "unknown":
+                    # Feishu did not answer. The archived inbound text remains the trigger.
+                    updated.append(message)
                 else:
                     updated.append(message.model_copy(update={"status": "unavailable", "text": None, "attachment_refs": ()}))
             return tuple(updated)
@@ -508,12 +515,35 @@ class PersistentGroupFanout:
                     )
                     request_input = request_input.model_copy(update={"source": request_source})
                 else:
+                    settings = await asyncio.to_thread(
+                        self._service.read_settings, binding.namespace_id, binding.agent_id,
+                    )
+                    if settings.group_reply_mode == "passive":
+                        return InboundDisposition.HANDLED
                     roster = await asyncio.to_thread(
                         self._agent_manager.group_participant_roster,
                         binding.namespace_id,
                         group.group_chat_id,
                     )
-                    if waits_for_named_colleague(request_input.text or "", roster, binding.agent_id):
+                    if is_pure_greeting(request_input.text or ""):
+                        enriched = []
+                        for member in roster:
+                            view = await asyncio.to_thread(
+                                self._service.get_colleague, binding.namespace_id, member["agent_id"],
+                            )
+                            enriched.append({
+                                **member,
+                                "description": getattr(view, "description", ""),
+                                "group_reply_mode": getattr(view, "group_reply_mode", "adaptive"),
+                            })
+                        respondent = greeting_respondent(enriched)
+                        if respondent is not None and respondent != binding.agent_id:
+                            logger.info(
+                                "[JiuwenMate] group greeting is answered by another colleague: agent_id=%s",
+                                binding.agent_id,
+                            )
+                            return InboundDisposition.HANDLED
+                    elif waits_for_named_colleague(request_input.text or "", roster, binding.agent_id):
                         logger.info(
                             "[JiuwenMate] group message waits for the named colleague: agent_id=%s",
                             binding.agent_id,

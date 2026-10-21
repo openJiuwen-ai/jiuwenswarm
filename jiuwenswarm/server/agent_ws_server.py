@@ -2145,6 +2145,13 @@ class AgentWebSocketServer:
             )
             try:
                 await manager.start()
+                from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_NAMESPACE
+
+                namespaces = {item.namespace_id for item in configured_feishu_bindings()} or {WEB_NAMESPACE}
+                for namespace_id in sorted(namespaces):
+                    await manager.recover(
+                        namespace_id, channels=frozenset({"feishu"}), include_unrouted=False,
+                    )
             except BaseException:
                 await manager.aclose()
                 raise

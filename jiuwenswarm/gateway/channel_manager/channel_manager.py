@@ -138,7 +138,7 @@ class ChannelManager(ABC):
             return {"outcome": "failed", "error_code": "FEISHU_APP_AMBIGUOUS"}
 
         try:
-            mention_targets = self._jm09_mention_targets(payload.get("mention_targets"), matches[0])
+            mention_targets = await self._jm09_mention_targets(payload.get("mention_targets"), matches[0])
             send_kwargs: dict[str, Any] = {
                 "chat_id": chat_id,
                 "text": text,
@@ -159,7 +159,7 @@ class ChannelManager(ABC):
             )
             return {"outcome": "unknown", "error_code": "FEISHU_SEND_ERROR"}
 
-    def _jm09_mention_targets(self, value: Any, sender_channel: Any) -> list[dict[str, Any]]:
+    async def _jm09_mention_targets(self, value: Any, sender_channel: Any) -> list[dict[str, Any]]:
         """Map validated employee IDs to one connected Bot identity without guessing."""
         if not isinstance(value, list):
             return []
@@ -186,11 +186,35 @@ class ChannelManager(ABC):
             ]
             target: dict[str, Any] = {"agent_id": agent_id, "name": name, "app_ids": sorted(allowed_app_ids)}
             if len(candidates) == 1:
-                open_id = getattr(getattr(candidates[0][1], "config", None), "bot_open_id", None)
-                if isinstance(open_id, str) and open_id.strip():
-                    target["open_id"] = open_id.strip()
+                open_id = await self._jm09_bot_open_id(candidates[0][1])
+                if open_id:
+                    target["open_id"] = open_id
             targets.append(target)
         return targets
+
+    async def _jm09_bot_open_id(self, channel: Any) -> str:
+        """Use the connected Bot identity, loading it from Feishu when this process has not stored one."""
+        open_id = self._stored_bot_open_id(channel)
+        if open_id:
+            return open_id
+        fetch = getattr(channel, "_fetch_bot_open_id", None)
+        if not callable(fetch):
+            return ""
+        try:
+            await asyncio.to_thread(fetch)
+        except Exception as exc:
+            logger.warning(
+                "[ChannelManager] Feishu bot identity unavailable: app_id=%s error_type=%s",
+                getattr(getattr(channel, "config", None), "app_id", ""),
+                type(exc).__name__,
+            )
+            return ""
+        return self._stored_bot_open_id(channel)
+
+    @staticmethod
+    def _stored_bot_open_id(channel: Any) -> str:
+        open_id = getattr(getattr(channel, "config", None), "bot_open_id", None)
+        return open_id.strip() if isinstance(open_id, str) else ""
 
     @staticmethod
     def _jm09_output_file(file: dict[str, Any]) -> Path | None:

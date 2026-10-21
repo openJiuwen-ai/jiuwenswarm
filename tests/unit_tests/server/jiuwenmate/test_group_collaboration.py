@@ -1,6 +1,9 @@
 from jiuwenswarm.server.jiuwenmate.group_collaboration import (
     build_group_collaboration_guidance,
+    build_group_execution_guidance,
     earliest_named_colleague,
+    greeting_respondent,
+    is_pure_greeting,
     resolve_group_mentions,
     waits_for_named_colleague,
 )
@@ -22,10 +25,27 @@ def test_guidance_uses_only_the_dynamic_group_roster():
     assert "交接标记" in guidance
     assert "飞书群的公开消息" in guidance
     assert "后台" in guidance
-
+    assert "各自回复" in guidance
+    assert "由你判断" in guidance
 
 def test_guidance_is_absent_without_another_available_member():
     assert build_group_collaboration_guidance([]) == ""
+
+
+def test_execution_guidance_requires_ignore_outside_the_colleague_duty():
+    guidance = build_group_execution_guidance(
+        [{"agent_id": "study", "name": "agent学习小助手"}]
+    )
+
+    assert "职责完全无关" in guidance
+    assert "ignore" in guidance
+    assert "还没有同事回复" in guidance
+    assert "轻量日常交流" in guidance
+    assert "范围从宽判断" in guidance
+    assert "由你判断" in guidance
+    alone = build_group_execution_guidance([])
+    assert "交接标记" not in alone
+    assert alone in guidance
 
 
 def test_guidance_keeps_member_names_on_one_safe_line():
@@ -84,6 +104,42 @@ def test_group_handoff_allows_only_one_target_per_message():
 
     assert text == "交给 [[agent:agent-b]]，再交给 。"
     assert mentions == [{"agent_id": "agent-b", "name": "同事乙"}]
+
+
+def test_model_selected_roster_member_is_kept_without_matching_the_registered_name():
+    text, mentions = resolve_group_mentions(
+        "痛点如上，交给 [[agent:study]]。",
+        [
+            {"agent_id": "life", "name": "生活小助手"},
+            {"agent_id": "study", "name": "agent学习小助手"},
+        ],
+        sender_agent_id="life",
+    )
+
+    assert text == "痛点如上，交给 [[agent:study]]。"
+    assert mentions == [{"agent_id": "study", "name": "agent学习小助手"}]
+
+
+def test_pure_greeting_has_no_task_and_one_daily_colleague_answers():
+    assert is_pure_greeting("大家好")
+    assert is_pure_greeting("你好！")
+    assert is_pure_greeting("在吗")
+    assert is_pure_greeting("  Hi  ")
+    assert not is_pure_greeting("你好，推荐一个南京的景点")
+    assert not is_pure_greeting("大家好，都自我介绍一下")
+    assert not is_pure_greeting("谁来帮我推荐一个南京的景点")
+
+    roster = [
+        {"agent_id": "study", "name": "agent学习小助手", "description": "擅长Agent相关知识"},
+        {"agent_id": "life", "name": "生活小助手", "description": "解决生活中的问题"},
+    ]
+    assert greeting_respondent(roster) == "life"
+    passive = [
+        {**roster[1], "group_reply_mode": "passive"},
+        roster[0],
+    ]
+    assert greeting_respondent(passive) == "study"
+    assert greeting_respondent([]) is None
 
 
 def test_earliest_named_colleague_keeps_the_first_and_longest_name():

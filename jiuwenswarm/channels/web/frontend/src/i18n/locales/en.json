@@ -271,6 +271,13 @@
       "joinedAt": "Joined: {{time}}",
       "quickIm": "Quick IM channel setup",
       "goConfigure": "Configure",
+      "groupReplyMode": "Group reply mode",
+      "groupReplyModes": {
+        "passive": "Passive",
+        "passiveHint": "Reply only when mentioned in a Feishu group.",
+        "adaptive": "Adaptive",
+        "adaptiveHint": "Reply when mentioned, and assess other group messages based on the agent's role and responsibilities."
+      },
       "feishuHint": "Authorize the agent and monitor its activity.",
       "authorize": "Authorize",
       "authorized": "Authorized",

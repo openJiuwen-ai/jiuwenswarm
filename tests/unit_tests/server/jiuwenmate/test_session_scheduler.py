@@ -522,6 +522,7 @@ async def test_group_execution_preserves_verified_bot_mention_after_trigger_refr
     assert spec.fingerprint() == context.execution.config_fingerprint
     assert spec.system_prompt is None
     assert "动态同事" in context.system_prompt_addendum
+    assert "职责完全无关" in context.system_prompt_addendum
     enriched_text = host.core.inputs["请处理这个问题"].text
     assert "请处理这个问题" in enriched_text
 

@@ -22,7 +22,7 @@ from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 from jiuwenswarm.server.jiuwenmate.conversation_search import ConversationSearch
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
-from jiuwenswarm.server.jiuwenmate.group_collaboration import build_group_collaboration_guidance
+from jiuwenswarm.server.jiuwenmate.group_collaboration import build_group_execution_guidance
 from jiuwenswarm.server.jiuwenmate.group_search_cursor_repository import GroupSearchCursorRepository
 from jiuwenswarm.server.jiuwenmate.execution_models import ExecutionRecord, RequestState
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
@@ -187,7 +187,7 @@ class ExecutionDriver:
                             type(exc).__name__,
                         )
                         roster = []
-                    guidance = build_group_collaboration_guidance(roster)
+                    guidance = build_group_execution_guidance(roster)
             spec, context = build_invocation(
                 snapshot,
                 record,

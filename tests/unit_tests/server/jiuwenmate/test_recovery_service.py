@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from jiuwenswarm.server.jiuwenmate.execution_control_service import ControlStore
-from jiuwenswarm.server.jiuwenmate.execution_models import build_execution_context
+from jiuwenswarm.server.jiuwenmate.execution_models import RequestRouteSnapshot, build_execution_context
 from jiuwenswarm.server.jiuwenmate.recovery_service import RecoveryStore, RequestRecovery
 from test_session_scheduler import ACCESS, NOW, NS, Host
 
@@ -209,3 +211,51 @@ async def test_tool_calls_without_a_saved_completion_are_recorded_as_unverified(
     assert host.core.started == ["中断", "排队"]
     view = (await host.manager.request_view(NS, left.interrupted.record.request_id)).to_dict()
     assert view["recovery"]["unverified_tool_calls"] == ["call-open"]
+
+
+async def test_web_recovery_leaves_a_dispatched_feishu_request_for_the_feishu_runtime(tmp_path):
+    before = Host(tmp_path)
+    feishu_session = before.session(conversation="feishu")
+    web_session = before.session(conversation="web")
+    snapshot = before.service.snapshot(NS, "mate_dev", "v1")
+    route = RequestRouteSnapshot(
+        channel="feishu", app_id="cli_app", target_id="oc_group", source_message_id="om_1",
+    )
+    for session, text, route_snapshot in (
+        (feishu_session, "飞书", route),
+        (web_session, "网页", None),
+    ):
+        before.sessions.accept_request(
+            session,
+            snapshot=snapshot,
+            source_ref=f"source:{text}",
+            access=ACCESS,
+            request_input=core.RequestInput(kind="scheduled", text=text, reply_target=session.conversation.key),
+            received_at=NOW,
+            route_snapshot=route_snapshot,
+        )
+    feishu = before.sessions.session_requests(NS, feishu_session.session_id)[0]
+    web = before.sessions.session_requests(NS, web_session.session_id)[0]
+    before.sessions.start_execution(NS, feishu.record.request_id, now=NOW)
+    before.sessions.start_execution(NS, web.record.request_id, now=NOW)
+
+    host = Host(tmp_path)
+    await host.manager.start()
+    recovered = await host.manager.recover(NS, channels=frozenset({"web"}), include_unrouted=True)
+    assert [item.request_id for item in recovered] == [web.record.request_id]
+    assert host.sessions.get_request(NS, feishu.record.request_id).status == "dispatched"
+    host.core.release("网页")
+    await host.manager.aclose()
+
+    resumed = Host(tmp_path)
+    await resumed.manager.start()
+    recovered = await resumed.manager.recover(NS, channels=frozenset({"feishu"}), include_unrouted=False)
+    assert [item.request_id for item in recovered] == [feishu.record.request_id]
+    for _ in range(50):
+        if "飞书" in resumed.core.started:
+            break
+        await asyncio.sleep(0.02)
+    assert "飞书" in resumed.core.started
+    resumed.core.release("飞书")
+    await resumed.scheduler.drain()
+    await resumed.manager.aclose()

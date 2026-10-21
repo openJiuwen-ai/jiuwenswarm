@@ -149,9 +149,17 @@ class RecoveryService:
         self._control_of = control_of
         self._clock = clock
 
-    async def recover(self, namespace_id: str) -> list[RequestRecovery]:
+    async def recover(
+        self,
+        namespace_id: str,
+        *,
+        channels: frozenset[str] | None = None,
+        include_unrouted: bool = True,
+    ) -> list[RequestRecovery]:
         """Queue waiting Requests again and close the dispatched ones left behind; their Sessions move on."""
-        left = await self._scheduler.recover(namespace_id)
+        left = await self._scheduler.recover(
+            namespace_id, channels=channels, include_unrouted=include_unrouted,
+        )
         closed = []
         for state in left:
             try:

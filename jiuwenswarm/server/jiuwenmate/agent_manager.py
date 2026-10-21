@@ -400,9 +400,17 @@ class AgentManager:
         session = await asyncio.to_thread(self._sessions.get_session, namespace_id, state.record.session_id)
         return await self._view(state, session.conversation.key)
 
-    async def recover(self, namespace_id: str) -> list[RequestRecovery]:
+    async def recover(
+        self,
+        namespace_id: str,
+        *,
+        channels: frozenset[str] | None = None,
+        include_unrouted: bool = True,
+    ) -> list[RequestRecovery]:
         """Resume scheduling after a restart: queued Requests run again, ones left dispatched are closed."""
-        return await self._recovery.recover(namespace_id)
+        return await self._recovery.recover(
+            namespace_id, channels=channels, include_unrouted=include_unrouted,
+        )
 
     async def control_request(
         self, namespace_id: str, request_id: str, *, reason: str, access: AccessSnapshot

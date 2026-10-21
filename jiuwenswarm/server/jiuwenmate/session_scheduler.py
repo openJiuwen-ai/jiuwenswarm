@@ -108,9 +108,20 @@ class SessionScheduler:
         if not opened:
             raise PersistentAgentError("request is not awaiting continuation", code="CONTINUATION_NOT_READY")
 
-    async def recover(self, namespace_id: str) -> list[RequestState]:
-        """Schedule queued Requests again; return dispatched ones left by a previous process."""
+    async def recover(
+        self,
+        namespace_id: str,
+        *,
+        channels: frozenset[str] | None = None,
+        include_unrouted: bool = True,
+    ) -> list[RequestState]:
+        """Schedule queued Requests again; return dispatched ones left by a previous process.
+
+        ``channels`` limits recovery to routes this runtime can finish. An unrouted
+        Request stays with the caller that sets ``include_unrouted``.
+        """
         pending = await asyncio.to_thread(self._sessions.pending_requests, namespace_id)
+        pending = [state for state in pending if _route_selected(state, channels, include_unrouted)]
         running = {run.state.record.request_id for run in self._running.values()}
         left = [state for state in pending if state.status == "dispatched" and state.record.request_id not in running]
         for state in pending:
@@ -245,3 +256,13 @@ class SessionScheduler:
         finally:
             self._running.pop(key, None)
         await self._pump()
+
+
+def _route_selected(state: RequestState, channels: frozenset[str] | None, include_unrouted: bool) -> bool:
+    if channels is None:
+        return True
+    route = state.record.route_snapshot
+    channel = None if route is None else route.channel
+    if channel is None:
+        return include_unrouted
+    return channel in channels

@@ -3675,6 +3675,71 @@
   font-size: 12px;
 }
 
+.jiuwenmate-profile__reply-mode {
+  display: grid;
+  gap: 8px;
+}
+
+.jiuwenmate-profile__reply-mode-heading strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.jiuwenmate-profile__reply-mode-options {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(100%, 440px);
+  padding: 3px;
+  border: 1px solid var(--jm-border);
+  border-radius: 8px;
+  background: var(--jm-surface-muted);
+}
+
+.jiuwenmate-profile__reply-mode-option {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--jm-text-2);
+  cursor: pointer;
+  text-align: left;
+}
+
+.jiuwenmate-profile__reply-mode-option[aria-pressed='true'] {
+  border-color: var(--jm-blue);
+  background: var(--jm-blue-soft);
+  box-shadow: inset 0 0 0 1px var(--jm-blue);
+  color: var(--jm-blue);
+}
+
+.jiuwenmate-profile__reply-mode-option:focus-visible {
+  outline: 2px solid var(--jm-blue);
+  outline-offset: 2px;
+}
+
+.jiuwenmate-profile__reply-mode-option:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.jiuwenmate-profile__reply-mode-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.jiuwenmate-profile__reply-mode-copy strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.jiuwenmate-profile__reply-mode-copy small {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .jiuwenmate-profile__resource-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
