@@ -127,6 +127,29 @@ def _persist(
     return next_state
 
 
+def _persist_delivered_state(
+    context: Any,
+    *,
+    workflow_id: str,
+    conversation_id: str,
+) -> dict[str, Any]:
+    """构造一个 phase=completed 的只读 state 供幂等短路返回，不写 session（rail 负责）。
+
+    context/workflow_id 仅用于与 _persist 对齐调用形态，实际未使用——短路返回的
+    state 不落盘，rail 的 after_tool_call 也不应为此 state 调 _record_delivery
+    （short_state 的 query/file_name 为空，_record_delivery 的查表键不命中）。
+    """
+    return {
+        "schema_version": _STATE_SCHEMA_VERSION,
+        "phase": "completed",
+        "query": "",
+        "file_name": "",
+        "conversation_id": conversation_id,
+        "requested_report_type": "brief",
+        "revision": 0,
+    }
+
+
 def _result(kind: str, state: dict[str, Any], **fields: Any) -> dict[str, Any]:
     result = {
         "schema_version": EXECUTION_SCHEMA,
