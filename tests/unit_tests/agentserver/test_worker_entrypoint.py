@@ -1,0 +1,74 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+"""Unit tests for the Runtime Worker entrypoint startup wiring."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+import jiuwenswarm.common.external_cli_runtime as external_cli_runtime
+from jiuwenswarm.server.worker import main as worker_main
+
+
+def _patch_scaffolding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Silence the entrypoint's logging and diagnostics side effects."""
+    from jiuwenswarm.common import background_logging
+    from jiuwenswarm.server.worker import diagnostics
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["jiuwenswarm-runtime-worker", "--socket", "unused-ipc.sock"],
+    )
+    monkeypatch.setattr(background_logging, "enable_background_logging", lambda: None)
+    monkeypatch.setattr(background_logging, "stop_background_logging", lambda *args, **kwargs: True)
+    monkeypatch.setattr(diagnostics, "enable_worker_diagnostics", lambda: None)
+
+
+def test_worker_main_activates_external_cli_paths_before_runtime_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Team members import their CLI SDK in the worker; paths must be live first."""
+    import jiuwenswarm.server.worker.service as worker_service
+
+    order: list[str] = []
+
+    async def _record_serve(*args: object, **kwargs: object) -> None:
+        order.append("serve")
+
+    _patch_scaffolding(monkeypatch)
+    monkeypatch.setattr(
+        external_cli_runtime,
+        "activate_external_cli_runtime_paths",
+        lambda: order.append("activate"),
+    )
+    monkeypatch.setattr(worker_service, "serve_worker", _record_serve)
+
+    worker_main.main()
+
+    assert order == ["activate", "serve"]
+
+
+def test_worker_entry_activation_appends_managed_site_packages_when_frozen(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Simulate the frozen app: the managed SDK dirs join sys.path on startup."""
+    managed_root = tmp_path / "external-cli"
+
+    def _site_packages(cli_agent: str) -> Path:
+        return managed_root / cli_agent / "site-packages"
+
+    monkeypatch.setattr(external_cli_runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(external_cli_runtime, "_is_frozen_macos", lambda: False)
+    monkeypatch.setattr(external_cli_runtime, "_runtime_site_packages", _site_packages)
+    monkeypatch.setattr(external_cli_runtime.sys, "path", list(sys.path))
+
+    worker_main._activate_managed_external_cli_paths()
+
+    cli_agents = external_cli_runtime.external_cli_runtime_names()
+    assert external_cli_runtime.sys.path[-len(cli_agents) :] == [
+        str(_site_packages(cli_agent)) for cli_agent in cli_agents
+    ]

@@ -11,8 +11,24 @@ from os import _exit as exit_process
 import signal
 
 
+def _activate_managed_external_cli_paths() -> None:
+    """Expose managed external CLI SDK paths before runtime modules load.
+
+    The frozen app installs the optional external CLI SDKs (``claude_agent_sdk``,
+    ``openai_codex``) outside the bundle, and every process importing them must
+    append their site-packages directories to ``sys.path`` first. Agent turns,
+    including team members backed by those SDKs, execute in this process.
+    """
+    from jiuwenswarm.common.external_cli_runtime import (
+        activate_external_cli_runtime_paths,
+    )
+
+    activate_external_cli_runtime_paths()
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    _activate_managed_external_cli_paths()
     from jiuwenswarm.common.background_logging import (
         enable_background_logging,
         stop_background_logging,
