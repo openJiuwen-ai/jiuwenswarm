@@ -229,6 +229,25 @@ class PersistentAgentRepository(SQLiteStore):
                 ),
             )
 
+    def save_capability_version(
+        self, namespace_id: str, snapshot: ConfigSnapshot, *, previous_version: str, published_at: datetime,
+    ) -> None:
+        """Advance only the published capability snapshot, preserving all draft revisions."""
+        with self._transaction() as conn:
+            changed = conn.execute(
+                "UPDATE colleagues SET current_version = ?, next_version = next_version + 1"
+                " WHERE namespace_id = ? AND agent_id = ? AND current_version = ? AND 'v' || next_version = ?",
+                (snapshot.config_version, namespace_id, snapshot.agent_id, previous_version, snapshot.config_version),
+            ).rowcount
+            if not changed:
+                raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
+            conn.execute(
+                "INSERT INTO config_versions (namespace_id, agent_id, config_version, snapshot_json, published_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (namespace_id, snapshot.agent_id, snapshot.config_version,
+                 json.dumps(snapshot.to_dict(), ensure_ascii=False), published_at.isoformat()),
+            )
+
     def mark_published(self, namespace_id: str, agent_id: str, *, revision: int) -> None:
         """Record that ``revision`` publishes to the current version unchanged."""
         with self._transaction() as conn:

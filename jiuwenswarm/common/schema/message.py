@@ -31,6 +31,7 @@ def _ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None
 
     CHAT_SEND = "chat.send"
     JIUWENMATE_FEISHU_INBOUND = "jiuwenmate.feishu.inbound"
+    JIUWENMATE_FEISHU_PREPARE = "jiuwenmate.feishu.prepare"
     JIUWENMATE_DELIVERY_ACK = "jiuwenmate.delivery.ack"
     JIUWENMATE_GROUP_RESPONSE = "jiuwenmate.group.response"
     CHAT_RESUME = "chat.resume"
