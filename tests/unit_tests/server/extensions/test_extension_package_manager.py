@@ -1984,3 +1984,39 @@ class TestUpdateAndDeleteAgentTemplate:
         catalog.uninstall_agent_template({"id": "mine"})
         assert not pkg.exists()
         assert all(e["id"] != "mine" for e in marketplace_entries(AGENT_TEMPLATES))
+
+
+@pytest.mark.parametrize("as_archive", [False, True])
+@pytest.mark.parametrize("as_mapping", [False, True])
+@pytest.mark.parametrize("skill_path", [
+    "/tmp/docx-pro",
+    r"C:\Users\Administrator\skills\docx-pro",
+    r"\\server\share\docx-pro",
+])
+def test_import_group_rejects_absolute_skill_paths(
+    extension_workspace: Path, tmp_path: Path,
+    skill_path: str, as_mapping: bool, as_archive: bool,
+) -> None:
+    source = _seed_valid_agent_group(
+        tmp_path / "source-home" / "agent" / "workspace",
+        "invalid-skills", under="local",
+    )
+    manifest_path = source / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["skills"] = [{"dir": skill_path}] if as_mapping else [skill_path]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    upload = source
+    if as_archive:
+        upload = tmp_path / "invalid-skills.zip"
+        with zipfile.ZipFile(upload, "w") as archive:
+            for path in source.rglob("*"):
+                if path.is_file():
+                    archive.write(path, Path(source.name) / path.relative_to(source))
+    with pytest.raises(ValueError, match="skill"):
+        catalog.import_agent_group({"path": str(upload)})
+    destination = (
+        extension_workspace.parent.parent / ".agent_teams"
+        / AGENT_GROUPS / "local" / "invalid-skills"
+    )
+    assert not destination.exists()
+    assert not catalog.is_agent_group_installed("invalid-skills")
