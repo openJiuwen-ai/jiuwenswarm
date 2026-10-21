@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.gateway.cron.controller import CronController
+from jiuwenswarm.gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 
 
 @pytest.mark.asyncio
@@ -244,12 +245,15 @@ async def test_create_job_without_marker_allows_default_project_and_no_fields() 
     cc = _make_controller()
     job = await cc.create_job(
         {
+            "id": PROACTIVE_JOB_ID,
             "name": "proactive",
             "cron_expr": "0 9 * * *",
             "targets": "web",
             "mode": "proactive.tick",
         }
     )
+    assert cc._store.create_calls[0]["job_id"] == PROACTIVE_JOB_ID
+    assert job["mode"] == "proactive.tick"
     assert job["project_id"] == ""
     assert job["work_mode"] == "work"
 
