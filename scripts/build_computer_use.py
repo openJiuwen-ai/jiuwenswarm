@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from pathlib import Path
 import runpy
@@ -67,6 +68,7 @@ def finalize_macos_bundle(project_root: Path, collection_root: Path, app_bundle:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser(description="Build native wheel payloads, or validate both release artifacts.")
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--wheel-artifact", action="store_true", help="Compile and archive the current platform")
@@ -91,7 +93,7 @@ def main() -> None:
         subprocess.run(["/usr/bin/codesign", "--force", "--options", "runtime", "--timestamp",
                         "--sign", args.sign_identity, str(executable.parents[2])], check=True)
     archive = CONTRACT["write_artifact"](root, args.artifact_dir, target)
-    sys.stdout.write(str(archive) + "\n")
+    logging.getLogger(__name__).info("Computer Use native artifact: %s", archive)
 
 
 if __name__ == "__main__":

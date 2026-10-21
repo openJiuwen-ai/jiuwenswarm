@@ -69,7 +69,7 @@ def host_target() -> str:
 
 def _allowed_path(name: str, target: str) -> bool:
     path = PurePosixPath(name)
-    if path.is_absolute() or ".." in path.parts or "\\" in name or ":" in name:
+    if path.is_absolute() or ".." in path.parts or any(character in name for character in ("\\", ":")):
         return False
     if target == "macos-arm64":
         return name.startswith(MAC_APP + "/") and path.as_posix() == name
@@ -82,7 +82,9 @@ def write_artifact(root: Path, destination: Path, target: str) -> Path:
     for path in required:
         if not path.is_file():
             raise RuntimeError(f"Native runtime is incomplete: {path}")
-    files = sorted(path for path in (root / MAC_APP).rglob("*") if path.is_file()) if target == "macos-arm64" else required
+    files = required
+    if target == "macos-arm64":
+        files = sorted(path for path in (root / MAC_APP).rglob("*") if path.is_file())
     destination.mkdir(parents=True, exist_ok=True)
     archive = destination / f"{target}.zip"
     manifest = {}
@@ -106,8 +108,9 @@ def read_artifact(directory: Path, target: str, *, source: str | None = None) ->
     if not metadata_file.is_file() or not archive.is_file():
         raise RuntimeError(f"Missing precompiled Computer Use artifact: {target}; collect both platform builds first.")
     metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
-    if (not isinstance(metadata, dict) or metadata.get("schema") != 1 or metadata.get("target") != target
-            or not isinstance(metadata.get("files"), dict) or not set(TARGETS[target]).issubset(metadata["files"])):
+    valid_header = isinstance(metadata, dict) and metadata.get("schema") == 1 and metadata.get("target") == target
+    files = metadata.get("files") if valid_header else None
+    if not valid_header or not isinstance(files, dict) or not set(TARGETS[target]).issubset(files):
         raise RuntimeError(f"Invalid Computer Use artifact metadata: {target}")
     if source is not None and metadata.get("source") != source:
         raise RuntimeError(f"Computer Use artifact {target} was built from different sources; rebuild both platforms.")

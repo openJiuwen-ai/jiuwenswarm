@@ -279,7 +279,7 @@ class CuaAgentInput(ConstructionInput):
     )
     repl_python: str | None = param_field(
         default=None,
-        description="Python 3.12+ executable with workswarm[cua] installed for the programmatic engine.",
+        description="Python 3.11+ executable with workswarm[cua] installed for the programmatic engine.",
     )
     workspace_root: str | None = context_field(
         resolver=_workspace_root,
