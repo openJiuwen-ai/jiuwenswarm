@@ -286,6 +286,7 @@ async def test_connection_identity_and_saved_conversation_scope(monkeypatch, cas
 
     monkeypatch.setattr(task_adapter, "task_agent_query", metadata)
     manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
     manager.authorize, manager.client = task_identity, object()
     ws = SimpleNamespace(
         remote_address=("127.0.0.1", 1234), request_headers={"Origin": "http://127.0.0.1:5384"},
@@ -483,6 +484,7 @@ async def test_query_summary_covers_unfinished_tasks_beyond_first_page(tmp_path)
     service.started = True  # No executions: use isolated persisted records only.
     service.kick = Mock(return_value=None)
     manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
     manager._service, manager.concurrency = service, 2
     for i in range(7):
         task = service.submit("alice", "scope", str(i), str(i))
@@ -562,6 +564,7 @@ async def test_voice_reorder_rejects_stale_queue_then_accepts_new_request(tmp_pa
     service.started = True
     service.kick = Mock(return_value=None)
     manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
     manager._service, manager.concurrency = service, 2
     jobs = [service.submit("alice", "scope", str(i), str(i)) for i in range(8)]
     stale_version = manager.snapshot("alice", "scope").get("queue_version")

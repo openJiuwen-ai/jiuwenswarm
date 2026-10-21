@@ -2,6 +2,7 @@ import { useWorkspaceStore } from '../../stores';
 import { useChatStore } from '../../stores/chatStore';
 import { resolveChatModelSelection, useSessionStore } from '../../stores/sessionStore';
 import { webClient } from '../../services/webClient';
+import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { useDesignerStore } from './designerStore';
 import { useDesignerChatStore, type DesignerChatMessage } from './designerChatStore';
 import { designerWorkspaceClient } from './designerGraphClient';
@@ -73,6 +74,7 @@ export async function sendDesignerLeaderMessage(params: {
   chat.setThinking(sessionId, true);
   try {
     await useDesignerStore.getState().flushSave();
+    await flushApplicationConversationHistory(sessionId);
     await webClient.request('chat.send', {
       session_id: sessionId,
       query: prompt,

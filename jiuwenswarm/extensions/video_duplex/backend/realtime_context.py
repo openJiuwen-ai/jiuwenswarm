@@ -198,7 +198,10 @@ def task_snapshot(snapshot):
         selected.append(item)
         used += size
     return {"queue_version": snapshot.get("queue_version"), "jobs": selected,
-            "total_jobs": len(jobs), "omitted_jobs": len(jobs) - len(selected)}
+            "total_jobs": len(jobs), "omitted_jobs": len(jobs) - len(selected),
+            **({"conversation": {key: str(value)[:200] for key, value in snapshot["conversation"].items()
+                                  if key in {"mode", "work_mode", "project_id"}}}
+               if snapshot.get("conversation") else {})}
 
 
 async def prepare_context(session_id, owner, get_tasks, *, cache_dir: Path | None = None):
@@ -240,7 +243,8 @@ async def prepare_context(session_id, owner, get_tasks, *, cache_dir: Path | Non
         "schema_version": 1, "session_id": session_id, "memory_method": method,
         "memory": memory, "recent_turns": recent, "context_incomplete": incomplete,
     }, get_tasks())
-    if not turns and not package["tasks"]["total_jobs"]:
+    if (not turns and not package["tasks"]["total_jobs"]
+            and package["tasks"].get("conversation", {}).get("work_mode") not in {"code", "design"}):
         return None
     return package
 

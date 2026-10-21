@@ -150,6 +150,17 @@ async def test_empty_history_and_no_tasks_returns_no_background(saved):
     assert await context.prepare_context("chat-a", "alice", lambda: {"jobs": []}) is None
 
 
+@pytest.mark.parametrize("work_mode", ["code", "design"])
+async def test_empty_mode_session_still_restores_its_execution_profile(saved, work_mode):
+    saved.clear()
+    mode = "team.design" if work_mode == "design" else "agent.code.normal"
+    package = await context.prepare_context("chat-a", "alice", lambda: {
+        "jobs": [], "conversation": {"mode": mode, "work_mode": work_mode, "project_id": "project", "api_key": "private"},
+    })
+    assert package["tasks"]["conversation"] == {"mode": mode, "work_mode": work_mode, "project_id": "project"}
+    assert "private" not in context.render_context(package)
+
+
 async def test_shared_restorer_preserves_history_and_refreshes_only_task_facts(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import Mock

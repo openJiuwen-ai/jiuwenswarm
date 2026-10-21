@@ -381,6 +381,7 @@ async def execute_core_agent(
     interaction_answer: Any = None,
     brief_nonce: str = "",
     managed_task_binding: dict[str, str] | None = None,
+    execution_target: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one delegated video task through the standard, full Core Agent API."""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
@@ -413,6 +414,14 @@ async def execute_core_agent(
         "video_core_session_id": core_session_id,
         "video_delegation_context": delegation_context or [],
     }
+    if execution_target:
+        params.update(execution_target)
+    if params["mode"] == "team.design":
+        params["query"] = params["content"] = prompt + (
+            "\nThis is a Design assistant turn in the existing project. Use its design tools. "
+            "Finishing this reply does not mean canvas rendering has completed. "
+            "Report generation state only from current tool results."
+        )
     media_item = _frame_media_item(frame_data_url)
     if media_item is not None:
         params["media_items"] = [media_item]

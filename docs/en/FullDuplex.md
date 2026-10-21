@@ -1,6 +1,6 @@
 # Full-duplex conversation continuity
 
-Enable Full-duplex in the experimental settings and start it from a saved Agent chat.
+Enable Full-duplex in the experimental settings and start it from a saved Work or Code chat, or a Design project.
 The blue controller stays available when you switch chats or open Settings. Voice and
 Core Agent results remain attached to the chat where you started the session. Starting
 Full-duplex in another chat replaces the previous media session. Use Exit to stop it.
@@ -54,3 +54,40 @@ a page reload. Distinct turns with identical text remain separate in restored hi
 JoyAI refreshes an expired context token in the same authorized chat and retries the
 unexecuted user request once. Cancellation or session replacement stops that retry.
 Authorization failures and errors after inference begins are not replayed.
+
+## Work, Code and Design modes
+
+Work and Code use the Full-duplex button in the chat input. Code tasks retain the chat's
+project directory and execution mode, including plan mode. In Design, start from the
+conversation panel of an existing project with a bound canvas. Starting waits for the
+canvas to save. A blank Design landing page needs a project and conversation first.
+
+![Full-duplex entry in Design (isolated component preview)](../images/full-duplex-designer.png)
+
+The server selects execution from session metadata owned by the current user. Realtime
+tool arguments cannot change the mode or project. Acceptance saves the execution target;
+execution checks it again. If the mode or project changes while queued, the task fails
+and must be submitted again. Answers and cancellation retain the original task's session,
+mode and project.
+
+```mermaid
+flowchart LR
+  Voice[Qwen / JoyAI] --> Queue[Existing task queue]
+  Queue --> Route[Session mode routing]
+  Metadata[Authorized session metadata] --> Route
+  Route --> Work[Native Work Agent]
+  Route --> Code[Native Code Agent / plan mode]
+  Route --> Design[Native Design Team]
+```
+
+The existing queue, controller and media connections are reused. The Design assistant
+uses native design tools in the current project. Voice and text share the Design session;
+later typed turns also receive recent saved voice context. Native question cards remain
+answerable. Voice answers and cancellation use the current task binding, so a stale
+cancellation cannot stop a later turn.
+
+Completion or cancellation of a voice Design task refers to the assistant's current turn.
+Independent canvas generation stays under the native Design workflow. Finishing a reply
+does not prove rendering has finished; cancelling the assistant does not cancel all canvas
+generation. Tests cover routing, bindings, answers, cancellation and the UI entry. They
+do not call a live model or an external canvas generation service.

@@ -2795,6 +2795,19 @@ async def process_team_message_stream(
     inputs: dict[str, Any],
     deep_agent: DeepAgent,
 ) -> AsyncIterator[AgentResponseChunk]:
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.design_execution import bind_design_voice_task
+
+    async with bind_design_voice_task(request, inputs):
+        async with aclosing(_process_team_message_stream_with_design(request, inputs, deep_agent)) as stream:
+            async for chunk in stream:
+                yield chunk
+
+
+async def _process_team_message_stream_with_design(
+    request: Any,
+    inputs: dict[str, Any],
+    deep_agent: DeepAgent,
+) -> AsyncIterator[AgentResponseChunk]:
     """Hold the session startup lock until registration, never while streaming.
 
     ``team.design`` sessions bind their execution context here (graph,

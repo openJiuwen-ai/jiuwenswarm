@@ -654,9 +654,9 @@ def register_video_live_handler(
             content = ""
 
         previous_title: str | None = None
+        metadata = get_session_metadata(visible_session_id, cache_bust=True)
         if role == "user" and content.strip():
             # Refresh before history writes so a rename by AgentServer is respected.
-            metadata = get_session_metadata(visible_session_id, cache_bust=True)
             previous_title = str(metadata.get("title") or "")
             if previous_title == "Full-duplex conversation":
                 # Older plugin versions persisted this placeholder as a real title.
@@ -678,7 +678,7 @@ def register_video_live_handler(
             timestamp=timestamp,
             event_type=event_type,
             extra=extra,
-            mode="agent",
+            mode=str(metadata.get("mode") or ("team.design" if metadata.get("work_mode") == "design" else "agent")),
         )
         if previous_title is not None:
             title = str(get_session_metadata(visible_session_id).get("title") or "")
