@@ -65,28 +65,36 @@ export async function uploadDesignerAsset(file: File): Promise<{
   filename: string;
   mime_type?: string;
 }> {
-  const form = new FormData();
-  form.append('file', file);
-  const response = await fetch('/file-api/upload', {
-    method: 'POST',
-    body: form,
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail.slice(0, 160) || `HTTP ${response.status}`);
-  }
-  const payload = (await response.json()) as {
-    files?: Array<{ path?: string; filename?: string; mime_type?: string }>;
-    errors?: Array<{ error?: string }>;
-  };
-  const uploaded = payload.files?.find((item) => item.path);
-  if (!uploaded?.path) {
-    throw new Error(payload.errors?.[0]?.error || 'upload_failed');
+  if (file.size === 0) throw new Error('empty_file');
+  if (file.size > 32 * 1024 * 1024) throw new Error('file_too_large');
+  const { webRequest } = await import('../../services/webClient');
+  const uploadId = crypto.randomUUID();
+  const safeName = (file.name.split(/[\\/]/).pop() || 'upload.bin')
+    .replace(/[\x00-\x1f\\/:*?"<>|]/g, '_')
+    .slice(0, 120);
+  const targetPath = `uploads/designer/${uploadId}_${safeName}`;
+  const chunkSize = 512 * 1024;
+  let resolvedPath = '';
+  for (let offset = 0; offset < file.size; offset += chunkSize) {
+    const bytes = new Uint8Array(await file.slice(offset, offset + chunkSize).arrayBuffer());
+    let binary = '';
+    for (let start = 0; start < bytes.length; start += 8192) {
+      binary += String.fromCharCode(...bytes.subarray(start, start + 8192));
+    }
+    const uploaded = await webRequest<{ path: string }>('file.upload_chunk', {
+      upload_id: uploadId,
+      target_rel_path: targetPath,
+      ...(resolvedPath ? { resolved_path: resolvedPath } : {}),
+      data: btoa(binary),
+      final: offset + chunkSize >= file.size,
+    });
+    if (!uploaded.path) throw new Error('upload_failed');
+    resolvedPath = uploaded.path;
   }
   return {
-    path: uploaded.path,
-    filename: uploaded.filename || file.name,
-    mime_type: uploaded.mime_type,
+    path: resolvedPath,
+    filename: file.name,
+    mime_type: file.type,
   };
 }
 
