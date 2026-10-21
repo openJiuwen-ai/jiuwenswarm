@@ -260,6 +260,11 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
                 await session.write_stream(
                     OutputSchema(
                         type="error",
+                        # index 为 OutputSchema 必填字段（rail 级错误帧惯例 999，
+                        # 同 llm_retry_notify_rail 的 exhausted 帧）；缺失会被
+                        # pydantic 校验拒绝，异常被下方 except 吞掉后熔断提示
+                        # 静默丢失——用户看不到「建议 /compact 或新会话」。
+                        index=999,
                         payload={
                             "error_type": "context_overflow_circuit_break",
                             "message": (

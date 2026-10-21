@@ -742,6 +742,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo(
                 "_context_overflow_recovery_rail",
                 self._build_context_overflow_recovery_rail,
+                {"config_base": config_base},
             ),
             _RailBuildInfo("_code_task_planning_rail", self._build_code_task_planning_rail),
             _RailBuildInfo("_code_agent_rail", self._build_code_agent_rail),

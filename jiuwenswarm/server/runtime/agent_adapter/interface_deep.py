@@ -9364,11 +9364,38 @@ class JiuWenSwarmDeepAdapter:
             return None
 
     @staticmethod
-    def _build_context_overflow_recovery_rail() -> ContextOverflowRecoveryRail | None:
-        """Build ContextOverflowRecoveryRail."""
+    def _build_context_overflow_recovery_rail(
+        config_base: dict[str, Any] | None = None,
+    ) -> ContextOverflowRecoveryRail | None:
+        """Build ContextOverflowRecoveryRail.
+
+        连续溢出恢复次数上限读 ``execution_guard.context_overflow_recovery.
+        max_attempts``（缺省 3；缺省/非法/<=0 一律回落 3），与 ``llm_retry_rail``
+        同住 ``execution_guard`` 配置段。熔断后向前端推送
+        ``context_overflow_circuit_break`` 错误帧（建议 /compact 或新会话）。
+        """
+        max_attempts = 3
+        if isinstance(config_base, dict):
+            guard_cfg = config_base.get("execution_guard", {})
+            recovery_cfg = (
+                guard_cfg.get("context_overflow_recovery", {})
+                if isinstance(guard_cfg, dict)
+                else {}
+            )
+            if isinstance(recovery_cfg, dict):
+                try:
+                    parsed = int(recovery_cfg.get("max_attempts", 3))
+                    if parsed > 0:
+                        max_attempts = parsed
+                except (TypeError, ValueError):
+                    pass
         try:
-            recovery_rail = ContextOverflowRecoveryRail(max_recovery_attempts=3)
-            logger.info("[JiuWenClawDeepAdapter] ContextOverflowRecoveryRail create success")
+            recovery_rail = ContextOverflowRecoveryRail(max_recovery_attempts=max_attempts)
+            logger.info(
+                "[JiuWenClawDeepAdapter] ContextOverflowRecoveryRail create success "
+                "(max_recovery_attempts=%d)",
+                max_attempts,
+            )
         except Exception as exc:
             logger.warning("[JiuWenClawDeepAdapter] ContextOverflowRecoveryRail create failed: %s", exc)
             recovery_rail = None
@@ -10347,7 +10374,11 @@ class JiuWenSwarmDeepAdapter:
             ),
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
-            _RailBuildInfo("_context_overflow_recovery_rail", self._build_context_overflow_recovery_rail),
+            _RailBuildInfo(
+                "_context_overflow_recovery_rail",
+                self._build_context_overflow_recovery_rail,
+                {"config_base": config_base},
+            ),
             _RailBuildInfo(
                 "_llm_retry_rail",
                 self._build_llm_retry_rail,

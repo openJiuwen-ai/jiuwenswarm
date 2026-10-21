@@ -1006,6 +1006,13 @@ execution_guard:
     repeat_window_chars: 1024
     # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
     single_char_repeat_count: 90
+  # 上下文溢出恢复（413 兜底）：模型调用报 413/上下文超限时，自动触发
+  # FullCompactProcessor 把历史压成 summary 并重进调用；连续失败达到上限后
+  # 熔断，向前端推送 context_overflow_circuit_break 错误帧（建议 /compact 或
+  # 新会话）。rail 常驻（normal/code/flash 同挂），无 enabled 开关。
+  context_overflow_recovery:
+    # 连续溢出自动恢复次数上限；超过后熔断不再重试。缺省/非法/<=0 均回落 3
+    max_attempts: 3
   # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
   # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
   # 不是 issue 的 OPEN/HALF_OPEN 恢复型熔断。
