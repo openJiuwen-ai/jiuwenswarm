@@ -3246,6 +3246,10 @@ class AgentRuntime:
             return SessionWorkKind.CONTROL_INPUT
         if request.req_method is ReqMethod.COMMAND_GOAL:
             action = str(params.get("action") or "get").strip().lower()
+            # Reading a goal must not create a running execution: the UI uses
+            # its snapshot to decide whether the first input needs queueing.
+            if action == "get":
+                return None
             return (
                 SessionWorkKind.GOAL_STREAM
                 if action in {"set", "resume"}

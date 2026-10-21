@@ -1562,6 +1562,55 @@ async def test_goal_start_waits_for_active_session_message(streaming, action) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("action", [None, "get", " GET "])
+async def test_slow_goal_read_does_not_publish_running_session_work(streaming, action) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class GoalReader(FakeAgent):
+        async def process_message(self, request):
+            entered.set()
+            await release.wait()
+            return await super().process_message(request)
+
+        async def process_message_stream(self, request):
+            entered.set()
+            await release.wait()
+            async for chunk in super().process_message_stream(request):
+                yield chunk
+
+    manager = FakeAgentManager()
+    manager.agent = GoalReader()
+    runtime = AgentRuntime(
+        agent_manager=manager, initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+    sid = "readonly-goal-session"
+    params = {"mode": "agent"}
+    if action is not None:
+        params["action"] = action
+    query = AgentRequest(
+        request_id="goal-observer", session_id=sid, channel_id="web",
+        req_method=ReqMethod.COMMAND_GOAL, is_stream=streaming, params=params,
+    )
+    task = asyncio.create_task(
+        _collect_events(runtime.stream(query, trigger_hook=False))
+        if streaming else runtime.invoke(query, trigger_hook=False)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        snapshot = runtime.get_session_snapshot(sid)
+        assert snapshot is None or snapshot.executions == ()
+        assert not task.done()
+        release.set()
+        await asyncio.wait_for(task, 1)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stop", ["pause", "cancel"])
 async def test_goal_stop_releases_waiting_session_message(stop) -> None:
     admission = SessionRunAdmission()

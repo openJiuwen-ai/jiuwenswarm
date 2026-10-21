@@ -171,13 +171,13 @@ async def test_work_and_code_normal_stream_use_session_registry(
     [
         ("set", SessionWorkKind.GOAL_STREAM),
         ("resume", SessionWorkKind.GOAL_STREAM),
-        ("get", SessionWorkKind.GOAL_CONTROL),
+        ("get", None),
         ("pause", SessionWorkKind.GOAL_CONTROL),
         ("clear", SessionWorkKind.GOAL_CONTROL),
     ],
 )
 def test_goal_commands_are_native_session_runtime_work(
-    action: str, expected: SessionWorkKind
+    action: str, expected: SessionWorkKind | None
 ) -> None:
     request = AgentRequest(
         request_id=f"goal-{action}",
@@ -189,7 +189,7 @@ def test_goal_commands_are_native_session_runtime_work(
     )
 
     assert AgentRuntime.session_work_kind(request) is expected
-    assert AgentRuntime.uses_session_runtime(request)
+    assert AgentRuntime.uses_session_runtime(request) is (expected is not None)
 
 
 @pytest.mark.parametrize(
