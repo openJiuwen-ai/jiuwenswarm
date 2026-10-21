@@ -154,7 +154,8 @@ import ApplicationServices
         return (vertical, delta)
     }
 
-    init(request: NativePointerIntent, from: CGPoint, to: CGPoint?, viewport: CGSize, source: CGEventSource) throws {
+    init(request: NativePointerIntent, from: CGPoint, to: CGPoint?, viewport: CGSize, source: CGEventSource,
+         durationMs: Int? = nil) throws {
         let points = [from] + (to.map { [$0] } ?? [])
         guard points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }),
               viewport.width.isFinite, viewport.height.isFinite, viewport.width > 0, viewport.height > 0 else {
@@ -206,10 +207,12 @@ import ApplicationServices
                 guard dx.isFinite, dy.isFinite, abs(dx) < Double(Int64.max), abs(dy) < Double(Int64.max) else {
                     throw DriverError("drag delta exceeds native event range", code: .invalidRequest)
                 }
-                let event = try mouse(.leftMouseDragged, at: point)
+                let dragType: CGEventType = request.button == "right" ? .rightMouseDragged : request.button == "middle" ? .otherMouseDragged : .leftMouseDragged
+                let event = try mouse(dragType, at: point)
                 event.setIntegerValueField(.mouseEventDeltaX, value: Int64(dx))
                 event.setIntegerValueField(.mouseEventDeltaY, value: Int64(dy))
-                result.append(.init(event: event, release: nil, point: point, delayMs: 12)); previous = point
+                result.append(.init(event: event, release: nil, point: point,
+                    delayMs: durationMs.map { max(0, $0) / count } ?? 12)); previous = point
             }
             result.append(.init(event: nil, release: nil, point: to, delayMs: 12))
         }
