@@ -44,8 +44,10 @@ const { useWebSocket } = await import('../node_modules/.cache/permission-answer-
 const { useChatStore, useSessionStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
 const { default: i18n } = await import('../node_modules/.cache/permission-answer-transport/i18n/index.js');
 const { webClient } = await import('../node_modules/.cache/permission-answer-transport/services/webClient.js');
+const { setMultiModelCollaborationEnabled } = await import('../node_modules/.cache/permission-answer-transport/features/multiModelCollaboration/featureConfig.js');
 const sessionId = 'attachment-transport';
 async function mounted(run) {
+  setMultiModelCollaborationEnabled(false);
   useChatStore.getState().ensureRuntime(sessionId);
   useChatStore.getState().setActiveSessionId(sessionId);
   useSessionStore.getState().ensureRuntime(sessionId);
@@ -113,7 +115,9 @@ test('ready local paths are reused while unpersisted content is uploaded', async
   assert.equal(upload.method, 'media.persist');
   await respond(socket, upload, persisted(upload));
   const send = socket.requests.at(-1);
-  assert.deepEqual(socket.requests.map(r => r.method), ['media.persist', 'chat.send']);
+  assert.deepEqual(socket.requests.map(r => r.method), ['media.persist', 'session.assets.register', 'chat.send']);
+  const assetRegistration = socket.requests.find(r => r.method === 'session.assets.register');
+  await respond(socket, assetRegistration, { items: [] });
   assert.equal(send.params.media_items[0].path, '/local/large.txt');
   await respond(socket, send, { accepted: true });
   assert.equal(await result, true);
@@ -127,4 +131,172 @@ test('a rejected upload stops the send instead of silently dropping the attachme
   assert.equal(socket.requests.length, 2);
   assert.ok(socket.requests.every(r => r.method === 'document.persist'));
   assert.ok(observed.errors[0].includes('2.txt'));
+}));
+
+for (const enabled of [false, true]) {
+  test(`ordinary chat.send carries its model and no MoA bool when feature is ${enabled}`, async () => mounted(async ({ observed, socket }) => {
+    useSessionStore.getState().setAvailableModels([{ model_name: 'ordinary-model', is_default: true }], 'ordinary-model');
+    useSessionStore.getState().setSelectedModelName(sessionId, 'ordinary-model');
+    setMultiModelCollaborationEnabled(enabled);
+    let result;
+    await act(async () => { result = observed.api.sendMessage('hello', sessionId); });
+    const send = socket.requests.at(-1);
+    assert.equal(send.method, 'chat.send');
+    assert.equal(send.params.moa_enabled, undefined);
+    assert.equal(send.params.model_name, 'ordinary-model');
+    await respond(socket, send, { accepted: true });
+    assert.equal(await result, true);
+  }));
+}
+
+const groupSelection = { type: 'model_group', id: 'mgp-stable' };
+for (const intent of ['resume', 'supplement']) {
+  test(`${intent} preserves the stable group after collaboration is turned off`, async () => mounted(async ({ observed, socket }) => {
+    useSessionStore.getState().setSelectedModelSelection(sessionId, groupSelection);
+    let result;
+    await act(async () => { result = observed.api.interrupt(sessionId, intent, { newInput: 'continue' }); });
+    const request = socket.requests.at(-1);
+    assert.equal(request.method, 'chat.interrupt');
+    assert.equal(request.params.moa_enabled, undefined);
+    assert.deepEqual(request.params.model_selection, groupSelection);
+    assert.equal(request.params.model_name, undefined);
+    await respond(socket, request, { success: true });
+    assert.equal(await result, true);
+  }));
+}
+
+test('structured chat.send carries the selected model group', async () => mounted(async ({ observed, socket }) => {
+  useSessionStore.getState().setSelectedModelSelection(sessionId, groupSelection);
+  setMultiModelCollaborationEnabled(true);
+  let result;
+  await act(async () => { result = observed.api.sendStructuredChatContent([{ type: 'text', text: 'hello' }], sessionId); });
+  const request = socket.requests.at(-1);
+  assert.equal(request.method, 'chat.send');
+  assert.equal(request.params.moa_enabled, undefined);
+  assert.deepEqual(request.params.model_selection, groupSelection);
+  assert.equal(request.params.model_name, undefined);
+  await respond(socket, request, { accepted: true });
+  await result;
+}));
+
+for (const selection of [{ type: 'model', id: 'mdl-stable' }, groupSelection]) {
+  for (const enabled of [false, true]) {
+    test(`stable ${selection.type} chat.send with collaboration ${enabled}`, async () => mounted(async ({ observed, socket }) => {
+      useSessionStore.getState().setSelectedModelSelection(sessionId, selection);
+      setMultiModelCollaborationEnabled(enabled);
+      let result;
+      await act(async () => { result = observed.api.sendMessage('hello', sessionId); });
+      if (selection.type === 'model_group' && !enabled) {
+        assert.equal(await result, false);
+        assert.equal(socket.requests.length, 0);
+        assert.equal(observed.errors.length, 1);
+        assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, selection);
+        return;
+      }
+      const send = socket.requests.at(-1);
+      assert.equal(send.method, 'chat.send');
+      assert.equal(send.params.moa_enabled, undefined);
+      assert.deepEqual(send.params.model_selection, selection);
+      assert.equal(send.params.model_name, undefined);
+      await respond(socket, send, { accepted: true });
+      assert.equal(await result, true);
+    }));
+  }
+}
+
+test('disabling collaboration rejects an idle queued new message before claiming it', async () => mounted(async ({ observed, socket }) => {
+  useSessionStore.getState().setSelectedModelSelection(sessionId, groupSelection);
+  useChatStore.getState().addToTaskQueue(sessionId, 'queued-task');
+  observed.api.drainTaskQueueIfIdle(sessionId);
+  assert.equal(socket.requests.length, 0);
+  assert.equal(useChatStore.getState().getRuntime(sessionId).taskQueue[0].status, 'queued');
+  assert.equal(await observed.api.sendMessage('queued-task', sessionId, [], { queuedTaskId: 'stale-id' }), false);
+  assert.equal(socket.requests.length, 0);
+}));
+
+test('a processing invocation can receive queued input after feature-off', async () => mounted(async ({ observed, socket }) => {
+  useSessionStore.getState().setSelectedModelSelection(sessionId, groupSelection);
+  useChatStore.getState().setProcessing(sessionId, true);
+  useChatStore.getState().addToTaskQueue(sessionId, 'follow-up');
+  const taskId = useChatStore.getState().getRuntime(sessionId).taskQueue.at(-1).id;
+  let result;
+  await act(async () => { result = observed.api.sendMessage('follow-up', sessionId, [], { queuedTaskId: taskId }); });
+  const request = socket.requests.at(-1);
+  assert.equal(request.method, 'chat.send');
+  assert.equal(request.params.input_mode, 'steer');
+  assert.deepEqual(request.params.model_selection, groupSelection);
+  assert.equal(request.params.moa_enabled, undefined);
+  await respond(socket, request, { accepted: true });
+  await act(async () => socket.receive({ type: 'event', event: 'runtime.accepted', payload: { request_id: request.id, accepted: true } }));
+  assert.equal(await result, true);
+}));
+
+for (const mode of ['agent', 'team']) {
+  test(`${mode}: scheduled or team model groups remain available without collaboration`, async () => mounted(async ({ observed, socket }) => {
+    useSessionStore.getState().setMode(sessionId, mode);
+    useSessionStore.getState().setSelectedModelSelection(sessionId, groupSelection);
+    if (mode === 'agent') useSessionStore.getState().setSessions([{ session_id: sessionId, cron_id: 'scheduled-job', mode }]);
+    let result;
+    await act(async () => { result = observed.api.sendMessage('hello', sessionId); });
+    const request = socket.requests.at(-1);
+    assert.equal(request.method, 'chat.send');
+    assert.deepEqual(request.params.model_selection, groupSelection);
+    await respond(socket, request, { accepted: true });
+    assert.equal(await result, true);
+    await act(async () => useSessionStore.getState().setSessions([]));
+  }));
+}
+
+
+test('default ordinary model sends its stable ID even with a default model group after catalog loads', async () => mounted(async ({ observed, socket }) => {
+  useSessionStore.getState().setAvailableModels([], 'ordinary-model');
+  useSessionStore.getState().setSelectedModelName(sessionId, 'ordinary-model');
+  useSessionStore.getState().setAvailableModels([{ model_id: 'mdl-ordinary', model_name: 'ordinary-model', is_default: true }], 'ordinary-model');
+  useSessionStore.getState().setAvailableModelGroups([{ model_group_id: 'mgp-default', is_default: true,
+    routes: [{ model_id: 'mdl-ordinary', route_id: 'r-default' }] }]);
+  setMultiModelCollaborationEnabled(true);
+  let result;
+  await act(async () => { result = observed.api.sendMessage('hello', sessionId); });
+  const request = socket.requests.at(-1);
+  assert.deepEqual(request.params.model_selection, { type: 'model', id: 'mdl-ordinary' });
+  assert.equal(request.params.model_name, undefined);
+  assert.equal(request.params.moa_enabled, undefined);
+  await respond(socket, request, { accepted: true });
+  assert.equal(await result, true);
+}));
+
+for (const mode of ['agent', 'team']) {
+  test(`${mode}: model-name-only execution events preserve a selected model group`, async () => mounted(async ({ observed, socket }) => {
+    useSessionStore.getState().setMode(sessionId, mode);
+    useSessionStore.getState().setAvailableModels([
+      { model_id: 'mdl-glm', model_name: 'glm-5.3', is_default: true },
+      { model_id: 'mdl-deepseek', model_name: 'deepseek-v4.1-flash', is_default: false },
+    ], 'glm-5.3');
+    useSessionStore.getState().setSelectedModelSelection(sessionId, groupSelection);
+    setMultiModelCollaborationEnabled(true);
+    useChatStore.getState().addMessage(sessionId, { id: 'initial-query', role: 'user', content: 'before', timestamp: new Date().toISOString() });
+    await act(async () => socket.receive({ type: 'event', event: 'chat.message_updated', payload: {
+      session_id: sessionId, updates: { query: 'after', model_name: 'glm-5.3' },
+    } }));
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, groupSelection);
+    assert.equal(useChatStore.getState().getRuntime(sessionId).messages.at(-1).content, 'after');
+    assert.deepEqual(useSessionStore.getState().getOutgoingModelParams(sessionId), { model_selection: groupSelection });
+    assert.equal(socket.requests.length, 0, 'member resolution does not submit a new selection');
+  }));
+}
+
+test('an explicit stable selection event replaces the group while a legacy ordinary-model rewrite still updates its model', async () => mounted(async ({ socket }) => {
+  useSessionStore.getState().setAvailableModels([
+    { model_id: 'mdl-glm', model_name: 'glm-5.3', is_default: true },
+    { model_id: 'mdl-deepseek', model_name: 'deepseek-v4.1-flash', is_default: false },
+  ], 'glm-5.3');
+  useSessionStore.getState().setSelectedModelSelection(sessionId, groupSelection);
+  await act(async () => socket.receive({ type: 'event', event: 'chat.message_updated', payload: {
+    session_id: sessionId, updates: { model_selection: { type: 'model', id: 'mdl-glm' } },
+  } }));
+  assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, { type: 'model', id: 'mdl-glm' });
+  await act(async () => socket.receive({ type: 'event', event: 'chat.message_updated', payload: {
+    session_id: sessionId, updates: { model_name: 'deepseek-v4.1-flash' },
+  } }));
+  assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, { type: 'model', id: 'mdl-deepseek' });
 }));

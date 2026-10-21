@@ -729,8 +729,8 @@ async def test_org_turn_closes_only_owner_processing(
 
     pushes = [call.args[0] for call in transport.send_push.call_args_list]
     event_types = [push["payload"]["event_type"] for push in pushes]
-    assert event_types == (
-        ["chat.final", "chat.processing_status"] if ends_owner_processing else ["chat.final"]
+    assert event_types == ["chat.final", "org.turn_completed"] + (
+        ["chat.processing_status"] if ends_owner_processing else []
     )
     if ends_owner_processing:
         wire = build_server_push_wire(pushes[-1])
@@ -740,3 +740,71 @@ async def test_org_turn_closes_only_owner_processing(
         assert browser_event["is_processing"] is False
         assert browser_event["is_complete"] is True
         assert browser_event["team_id"] == team_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["team.idle", "team.completed", "eof", "error"])
+async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
+    """A report segment is not the end of a Summary Leader's tool loop."""
+    from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+
+    class Agent:
+        spec = SimpleNamespace(metadata={"summary_team": True, "channel_id": "web"})
+
+        async def stream(self, inputs, session):
+            yield SimpleNamespace(payload={"event_type": "chat.final", "content": "report"})
+            yield SimpleNamespace(payload={"event_type": "chat.reasoning", "content": "submit report"})
+            if ending == "error":
+                raise RuntimeError("submission failed")
+            if ending != "eof":
+                yield SimpleNamespace(payload={"event_type": ending})
+
+    agent = Agent()
+    entry = SimpleNamespace(agent=agent, current_session_id="session", state=RuntimeState.PAUSED)
+    runtime = SimpleNamespace(
+        pool=SimpleNamespace(get=AsyncMock(return_value=entry)),
+        activate=AsyncMock(return_value=SimpleNamespace(
+            agent=agent, action=SimpleNamespace(kind=RunActionKind.RESUME_FROM_PAUSE),
+            session=SimpleNamespace(post_run=AsyncMock()),
+        )),
+        finalize=AsyncMock(),
+    )
+    transport = SimpleNamespace(send_push=AsyncMock(return_value=True))
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime, push_transport=transport)
+
+    async def relay(chunk, **kwargs):
+        await launcher.push_expert_payload(chunk.payload, **{
+            key: value for key, value in kwargs.items() if key != "summary_task_id"
+        })
+        return {**chunk.payload, "role": "leader"}
+
+    launcher._relay_expert_chunk = relay
+    ok = await launcher.run_organization_turn(
+        "summary-team", "session", {}, source="org_summary_background", request_id="round-1",
+    )
+    assert ok is (ending != "error")
+    pushes = [call.args[0] for call in transport.send_push.call_args_list]
+    assert [push["payload"]["event_type"] for push in pushes] == [
+        "chat.final", "chat.reasoning", "chat.error" if ending == "error" else "org.turn_completed",
+    ]
+    terminal = pushes[-1]
+    assert terminal["is_complete"] is False  # Do not close the shared Owner subscription.
+    chunk = parse_agent_server_wire_chunk(build_server_push_wire(terminal))
+    message = MessageHandler._chunk_to_message(chunk, "session")
+    frame = object.__new__(WebChannel)._serialize_frame(message, None)
+    assert frame["event"] == terminal["payload"]["event_type"]
+    assert frame["payload"]["team_id"] == "summary-team"
+    assert frame["payload"]["request_id"] == "round-1"
+    if ending != "error":
+        channel = object.__new__(WebChannel)
+        channel._session_busy = {"session": True}
+        channel._track_session_busy(message)
+        assert channel.is_session_busy("session") is True
+    runtime.finalize.assert_awaited_once()
+    runtime.activate.return_value.session.post_run.assert_awaited_once()

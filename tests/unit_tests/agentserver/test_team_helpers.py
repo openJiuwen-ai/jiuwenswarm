@@ -39,6 +39,23 @@ async def _noop_broadcast(*_args, **_kwargs) -> None:
     return None
 
 
+@pytest.fixture(autouse=True)
+def _record_unattended_team_history(monkeypatch):
+    """Keep unattended Team history writes out of the real session store.
+
+    ``_UnattendedTeamRoundHistoryWriter`` fires whenever a fake manager's
+    ``broadcast_event`` reports no waiter; without this blanket the affected
+    tests would silently append records to ~/.jiuwenswarm.  Tests that
+    assert on history records re-patch ``append_history_record`` on the
+    same monkeypatch instance, which overrides this recorder.
+    """
+    recorded: list[dict] = []
+    monkeypatch.setattr(
+        team_helpers, "append_history_record", lambda **kwargs: recorded.append(kwargs)
+    )
+    return recorded
+
+
 def test_team_event_queue_is_bounded() -> None:
     queue = team_helpers._new_team_event_queue()
 
@@ -3729,6 +3746,8 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
         query: str,
         *,
         generation=None,
+        round_request_id=None,
+        cross_session_marker=None,
         run_context=None,
         round_id: int,
         envs: dict | None = None,
@@ -3827,6 +3846,8 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
         query: str,
         *,
         generation=None,
+        round_request_id=None,
+        cross_session_marker=None,
         run_context=None,
         round_id: int,
         envs: dict | None = None,
@@ -4399,6 +4420,8 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
         query: str,
         *,
         generation=None,
+        round_request_id=None,
+        cross_session_marker=None,
         run_context=None,
         round_id: int,
         envs: dict | None = None,
@@ -4530,6 +4553,8 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
         query: str,
         *,
         generation=None,
+        round_request_id=None,
+        cross_session_marker=None,
         run_context=None,
         round_id: int,
         envs: dict | None = None,
@@ -4594,6 +4619,8 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
         query: str,
         *,
         generation=None,
+        round_request_id=None,
+        cross_session_marker=None,
         run_context=None,
         round_id: int,
         envs: dict | None = None,
@@ -5444,6 +5471,136 @@ async def test_cancelled_team_round_cold_recovery_binds_a_fresh_monitor(monkeypa
     await rebound_handler.stop()
 
 
+class _LeaderBoundMonitor:
+    """TeamMonitor stand-in whose streams stay open until ``stop()``."""
+
+    def __init__(self, team_agent: object) -> None:
+        self.team_agent = team_agent
+        self.started = False
+        self.stopped = False
+        self._closed = asyncio.Event()
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.stopped = True
+        self._closed.set()
+
+    async def events(self):
+        await self._closed.wait()
+        if False:
+            yield None
+
+    async def workflow_events(self):
+        await self._closed.wait()
+        if False:
+            yield None
+
+
+def _patch_leader_pool(monkeypatch, manager, pool: dict[str, object]) -> list[_LeaderBoundMonitor]:
+    """Serve a fresh monitor bound to ``pool["leader"]`` on every lookup."""
+    created: list[_LeaderBoundMonitor] = []
+
+    async def _get_monitor(**_kwargs):
+        monitor = _LeaderBoundMonitor(pool["leader"])
+        created.append(monitor)
+        return monitor
+
+    async def _consume_noop(*_args) -> None:
+        return None
+
+    monkeypatch.setattr(team_helpers.Runner, "get_agent_team_monitor", _get_monitor)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel_id: manager)
+    monkeypatch.setattr(team_helpers, "_consume_monitor_events", _consume_noop)
+    monkeypatch.setattr(team_helpers, "_consume_workflow_events", _consume_noop)
+    return created
+
+
+@pytest.mark.anyio
+async def test_ensure_monitor_rebinds_when_pool_leader_is_replaced(monkeypatch):
+    """A leader rebuilt inside core activate (model change) must get a fresh monitor."""
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    session_id = "sess-leader-rebuilt"
+    pool: dict[str, object] = {"leader": object()}
+    created = _patch_leader_pool(monkeypatch, manager, pool)
+
+    await team_helpers.ensure_monitor_handlers_for_active_runtime("web", session_id, "unit-team")
+    old_handler = manager.get_monitor(session_id)
+    assert old_handler is not None and old_handler.is_running is True
+    old_leader = pool["leader"]
+    assert old_handler.bound_team_agent is old_leader
+
+    # The paused runtime is rebuilt with a new leader instance behind swarm's back.
+    pool["leader"] = object()
+    await team_helpers.ensure_monitor_handlers_for_active_runtime("web", session_id, "unit-team")
+
+    new_handler = manager.get_monitor(session_id)
+    assert new_handler is not old_handler
+    assert new_handler.is_running is True
+    assert new_handler.bound_team_agent is pool["leader"]
+    assert old_handler.is_running is False
+    assert created[0].stopped is True
+    assert created[-1].started is True and created[-1].stopped is False
+    await new_handler.stop()
+
+
+@pytest.mark.anyio
+async def test_ensure_monitor_keeps_handler_bound_to_current_leader(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    session_id = "sess-leader-unchanged"
+    pool: dict[str, object] = {"leader": object()}
+    created = _patch_leader_pool(monkeypatch, manager, pool)
+
+    await team_helpers.ensure_monitor_handlers_for_active_runtime("web", session_id, "unit-team")
+    handler = manager.get_monitor(session_id)
+    await team_helpers.ensure_monitor_handlers_for_active_runtime("web", session_id, "unit-team")
+
+    assert manager.get_monitor(session_id) is handler
+    assert handler.is_running is True
+    assert created[0].stopped is False
+    # The probe monitor for the second lookup is never started.
+    assert created[1].started is False
+    await handler.stop()
+
+
+@pytest.mark.anyio
+async def test_ensure_monitor_rebinds_workflow_handler_and_keeps_runs(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    session_id = "sess-leader-rebuilt-wf"
+    pool: dict[str, object] = {"leader": object()}
+    _patch_leader_pool(monkeypatch, manager, pool)
+    monkeypatch.setattr(team_helpers, "restore_workflow_runs", lambda _sid: {})
+
+    await team_helpers.ensure_monitor_handlers_for_active_runtime(
+        "web", session_id, "unit-team", enable_swarmflow=True,
+    )
+    old_wf = manager.get_workflow_handler(session_id)
+    assert old_wf is not None and old_wf.is_running is True
+    in_memory_runs = {"run-1": SimpleNamespace(run_id="run-1")}
+    monkeypatch.setattr(old_wf, "get_run_states", lambda: dict(in_memory_runs))
+
+    pool["leader"] = object()
+    await team_helpers.ensure_monitor_handlers_for_active_runtime(
+        "web", session_id, "unit-team", enable_swarmflow=True,
+    )
+
+    new_wf = manager.get_workflow_handler(session_id)
+    assert new_wf is not old_wf
+    assert old_wf.is_running is False
+    assert new_wf.is_running is True
+    assert new_wf.bound_team_agent is pool["leader"]
+    assert set(new_wf.get_run_states()) == {"run-1"}
+    await new_wf.stop()
+    await manager.get_monitor(session_id).stop()
+
+
 @pytest.mark.anyio
 async def test_failed_stream_cancel_does_not_reenter_full_waiter_queue(monkeypatch):
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
@@ -6136,6 +6293,50 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
 
 
 @pytest.mark.anyio
+async def test_consume_workflow_events_reports_session_budget_exhaustion_as_chat_error(monkeypatch):
+    """The web UI must show a terminal session-budget failure even with no active run."""
+    broadcasted: list[dict[str, object]] = []
+    event = {
+        "event_type": "workflow.updated",
+        "session_id": "sess-budget",
+        "workflow": {
+            "id": "run-budget",
+            "status": "stopped",
+            "budget_exhausted_scope": "session",
+            "budget": {"total": 1000, "spent": 1000, "remaining": 0, "exhausted": True},
+        },
+    }
+
+    class _FakeWorkflowHandler:
+        is_running = True
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
+        seen_activity: dict = {}
+
+        async def events(self):
+            yield event
+
+        @staticmethod
+        def get_run_states():
+            return {}
+
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+
+    await _TeamHelpersTestApi.consume_workflow_events(
+        "web", "sess-budget", _FakeWorkflowHandler(),
+    )
+
+    errors = [item for item in broadcasted if item.get("event_type") == "chat.error"]
+    assert errors == [{
+        "event_type": "chat.error",
+        "session_id": "sess-budget",
+        "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
+        "error": "Session budget exhausted",
+    }]
+
+
+@pytest.mark.anyio
 async def test_consume_workflow_events_dedup_survives_consumer_restart(monkeypatch):
     """A resume relaunch replays the whole event history (cached prefix):
     every already-completed phase's agents re-emit started+completed. The
@@ -6771,7 +6972,7 @@ async def test_broadcast_team_state_snapshot_replays_mirrored_workflow_members(m
     human = by_id["run-running:a-human"]
     assert human["workflow_run_id"] == "run-running"
     assert human["role"] == "human_agent"
-    assert human["mode"] == "human"
+    assert "mode" not in human
     assert "cli_agent" not in human
     # finished run: member_id carries its own run id, terminal node maps to idle
     assert by_id["run-finished:b-claude"]["workflow_run_id"] == "run-finished"
@@ -7339,7 +7540,10 @@ def test_workflow_updated_to_team_events_spawned_member_carries_node_identity():
     assert "role" not in codex
     gate = spawned_events["run-1:a-gate"]
     assert gate["role"] == "human_agent"
-    assert gate["mode"] == "human"
+    # ``mode`` must stay absent: the frontend opens the "invite a human" card
+    # on mode == "human", and a workflow human node is an inline question to
+    # the session user, not an invitable roster member.
+    assert "mode" not in gate
     assert "cli_agent" not in gate
     native = spawned_events["run-1:a-native"]
     assert "cli_agent" not in native and "role" not in native
@@ -7622,7 +7826,7 @@ def test_persist_and_restore_session_budget(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         session_metadata,
         "_enqueue_write",
-        lambda session_id, metadata: written.append((session_id, dict(metadata))),
+        lambda session_id, metadata, **kwargs: written.append((session_id, dict(metadata))),
     )
 
     snapshot = {"total": 500000, "spent": 280000, "remaining": 220000, "scope": "session", "exhausted": False}
@@ -7663,7 +7867,7 @@ def test_persist_and_restore_session_swarmflow_config(monkeypatch: pytest.Monkey
     monkeypatch.setattr(
         session_metadata,
         "_enqueue_write",
-        lambda session_id, metadata: written.append((session_id, dict(metadata))),
+        lambda session_id, metadata, **kwargs: written.append((session_id, dict(metadata))),
     )
 
     config = {"enable_swarmflow": True, "swarmflow_budget": 50000}
@@ -7676,6 +7880,71 @@ def test_persist_and_restore_session_swarmflow_config(monkeypatch: pytest.Monkey
         lambda session_id, cache_bust=True: {**store, "session_swarmflow_config": config},
     )
     assert team_helpers.restore_session_swarmflow_config("sess-swarmflow-cfg") == config
+
+
+def test_persist_session_swarmflow_config_survives_agent_group_sync_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """First build of an AgentGroup session persists the swarmflow config and then, right
+    after, the agent_group binding with ``cache_bust=True, sync_write=True``. That writer
+    reads disk, so a config that only sits in the async write queue is clobbered and the
+    swarmflow toggle vanishes on the next session switch."""
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    sessions_root = tmp_path / "sessions"
+    for target in (
+        "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+        "jiuwenswarm.common.utils.get_agent_sessions_dir",
+    ):
+        monkeypatch.setattr(target, lambda: sessions_root)
+    # Freeze the async worker: the queued write must not race the test.
+    monkeypatch.setattr(session_metadata, "_ensure_worker_started", lambda: None)
+    session_id = "sess-swarmflow-race"
+    session_metadata.init_session_metadata(session_id=session_id, channel_id="web", title="t", mode="team")
+
+    config = {"enable_swarmflow": True, "swarmflow_budget": None, "swarmflow_worktree": None}
+    team_helpers.persist_session_swarmflow_config(session_id, config)
+    session_metadata.update_session_metadata(
+        session_id=session_id,
+        agent_group_name="designer",
+        touch_last_message_at=False,
+        cache_bust=True,
+        sync_write=True,
+    )
+
+    on_disk = json.loads((sessions_root / session_id / "metadata.json").read_text(encoding="utf-8"))
+    assert on_disk["agent_group_name"] == "designer"
+    assert on_disk["session_swarmflow_config"] == config
+
+
+def test_persist_workflow_runs_survives_turn_metadata_sync_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """``workflow_completed`` lands in the async queue; the end-of-turn metadata sync then
+    reads disk (cache_bust) and replaces the whole file. If the checkpoint is still queued,
+    the completed run is rolled back to its pre-terminal state (restores as 'running 19/19')."""
+    from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    sessions_root = tmp_path / "sessions"
+    for target in (
+        "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+        "jiuwenswarm.common.utils.get_agent_sessions_dir",
+    ):
+        monkeypatch.setattr(target, lambda: sessions_root)
+    monkeypatch.setattr(session_metadata, "_ensure_worker_started", lambda: None)
+    session_id = "sess-wf-persist-race"
+    session_metadata.init_session_metadata(session_id=session_id, channel_id="web", title="t", mode="team")
+
+    run = WorkflowRunState(id="wf_1", name="n", status="completed")
+    team_helpers.persist_workflow_runs({"wf_1": run}, session_id, session_budget={"spent": 7})
+    session_metadata.sync_session_request_metadata(
+        session_id=session_id, channel_id="web", mode="team", model=None, last_user_message_at=1.0,
+    )
+
+    on_disk = json.loads((sessions_root / session_id / "metadata.json").read_text(encoding="utf-8"))
+    assert on_disk["workflow_runs"]["wf_1"]["status"] == "completed"
+    assert on_disk["session_budget"] == {"spent": 7}
 
 
 def test_restore_session_swarmflow_config_absent_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -7744,7 +8013,7 @@ def test_resolve_session_swarmflow_config_falls_back_to_metadata(
     monkeypatch.setattr(
         session_metadata,
         "_enqueue_write",
-        lambda session_id, metadata: written.append((session_id, dict(metadata))),
+        lambda session_id, metadata, **kwargs: written.append((session_id, dict(metadata))),
     )
 
     config = {"enable_swarmflow": True, "swarmflow_budget": 30000}
@@ -8339,3 +8608,21 @@ def test_workflow_updated_to_team_events_non_activity_delta_unchanged():
     )
     assert [e["event"]["type"] for e in out] == ["team.task.completed", "team.member.status_changed"]
     assert not [e for e in out if e["event_type"] in {"chat.tool_call", "chat.tool_result"}]
+
+
+def test_wf_spawned_member_event_carries_expert_identity():
+    """An expert node mirrors under its script label like any worker, carrying the expert identity alongside."""
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _wf_spawned_member_event
+
+    expert = _wf_spawned_member_event(
+        "run-1", "team-1",
+        {"id": "a1", "name": "clip_3", "agent_template": "clip", "display_name": "视频镜头师"},
+        status="busy",
+    )
+    assert expert["name"] == "clip_3"
+    assert expert["agent_template"] == "clip" and expert["display_name"] == "视频镜头师"
+    assert "cli_agent" not in expert and "role" not in expert
+
+    plain = _wf_spawned_member_event("run-1", "team-1", {"id": "a2", "name": "free"}, status="busy")
+    assert plain["name"] == "free"
+    assert "agent_template" not in plain and "display_name" not in plain

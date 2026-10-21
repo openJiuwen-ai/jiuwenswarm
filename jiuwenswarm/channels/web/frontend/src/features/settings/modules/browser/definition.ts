@@ -31,15 +31,6 @@ export const browserModule: SettingsModuleDefinition = {
             { value: 'hybrid', labelKey: 'settingsPanel.browser.decisionHybrid' },
           ],
         },
-        {
-          id: 'browser-decision-provider',
-          component: 'select',
-          key: 'decision_provider',
-          options: [
-            { value: 'openrouter', labelKey: 'settingsPanel.browser.providerOpenrouter' },
-            { value: 'typesafe', labelKey: 'settingsPanel.browser.providerTypesafe' },
-          ],
-        },
         { id: 'browser-jev-key', component: 'custom', render: JevKeySettings },
       ],
     },

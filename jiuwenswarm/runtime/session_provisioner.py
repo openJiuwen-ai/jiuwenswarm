@@ -19,7 +19,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Generic, Protocol, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeAlias, TypeVar
 from weakref import WeakValueDictionary
 
 from jiuwenswarm.runtime.session_delete import (
@@ -136,6 +136,8 @@ class SessionCreateInput:
     title: str = ""
     user_id: str = ""
     model_name: str = ""
+    model_selection: dict[str, Any] | None = None
+    moa_enabled: bool | None = None
     cron_id: str = ""
 
     def __post_init__(self) -> None:
@@ -143,6 +145,10 @@ class SessionCreateInput:
         _require_bool("persist_session_supplied", self.persist_session_supplied)
         _require_bool("is_swarm", self.is_swarm)
         _require_bool("team_hint", self.team_hint)
+        _require_optional_bool("moa_enabled", self.moa_enabled)
+        if self.model_selection is not None:
+            from jiuwenswarm.common.model_selection import ModelSelection
+            ModelSelection.model_validate(self.model_selection)
         _require_optional_bool("work_mode_explicit", self.work_mode_explicit)
 
 
@@ -191,6 +197,7 @@ class SessionCreateResult:
     created: bool
     canonical_mode: str
     explicit_id_compatibility: bool = False
+    moa_enabled: bool = False
 
     def __post_init__(self) -> None:
         _require_bool("persist_session", self.persist_session)
@@ -210,6 +217,7 @@ class SessionSwitchResult:
     session_id: str
     mode: str
     switched: bool = True
+    moa_enabled: bool = False
 
     def __post_init__(self) -> None:
         _require_bool("switched", self.switched)
@@ -223,6 +231,7 @@ class SessionForkResult:
     source_session_id: str
     session_id: str
     title: str
+    moa_enabled: bool = False
 
 
 SessionProvisionInput: TypeAlias = (
@@ -724,8 +733,29 @@ class RuntimeSessionProvisioner:
             )
             canonical_mode = resolved.canonical_mode
             is_swarm = provision_input.is_swarm or resolved.is_team
+            from jiuwenswarm.common.config import get_config
+            from jiuwenswarm.common.model_selection import ModelSelection
+            from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
+
+            raw_selection = provision_input.model_selection or existing_metadata.get("model_selection")
+            selection = ModelSelection.model_validate(raw_selection) if raw_selection is not None else None
+            try:
+                if provision_input.cron_id and selection is not None:
+                    from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+
+                    selection = ModelSelectionResolver().restore(selection)
+                config_snapshot = get_config()
+                moa_enabled = effective_moa_enabled(
+                    config_snapshot, selection, mode=canonical_mode,
+                    is_cron=bool(provision_input.cron_id),
+                )
+                if moa_enabled:
+                    resolve_moa_settings(config_snapshot, selection)
+            except (ValueError, RuntimeError) as exc:
+                raise SessionProvisionError(str(exc), code=getattr(exc, "code", "BAD_REQUEST")) from exc
             prewarm_eligible = (
                 not is_swarm
+                and not moa_enabled
                 and canonical_mode
                 in {
                     "agent",
@@ -754,6 +784,7 @@ class RuntimeSessionProvisioner:
                     persist_session=persist_session,
                     prewarm_eligible=prewarm_eligible,
                     create_token=create_token,
+                    **({"moa_enabled": True} if moa_enabled else {}),
                 )
                 session_id = claim.session_id
                 claimed_session_id = session_id
@@ -779,6 +810,7 @@ class RuntimeSessionProvisioner:
                     prewarm_status=prewarm_status,
                     created=False,
                     canonical_mode=canonical_mode,
+                    moa_enabled=stored.get("moa_enabled") is True,
                 )
                 return self._stage_create_result(
                     result,
@@ -810,12 +842,17 @@ class RuntimeSessionProvisioner:
                     persist_session=persist_session,
                     work_mode=final_work_mode,
                     model=str(provision_input.model_name or "").strip(),
+                    moa_enabled=moa_enabled,
                     cron_id=str(provision_input.cron_id or "").strip(),
                     channel_metadata=channel_metadata,
                 )
                 if not explicit_tui_session:
                     self._agent_manager.activate_session_prewarm(session_id)
 
+            if provision_input.model_selection is not None:
+                from jiuwenswarm.server.runtime.session.model_selection_store import set_session_model_selection
+
+                set_session_model_selection(session_id, selection)
             switch_context, dispatch_signals = await self._prepare_create_owner(
                 channel_id=channel_id,
                 session_id=session_id,
@@ -834,6 +871,7 @@ class RuntimeSessionProvisioner:
                 created=session_created,
                 canonical_mode=canonical_mode,
                 explicit_id_compatibility=explicit_tui_session,
+                moa_enabled=moa_enabled,
             )
             return self._stage_create_result(
                 result,
@@ -1170,6 +1208,7 @@ class RuntimeSessionProvisioner:
             channel_id=channel_id,
             session_id=target_session_id,
             mode=resolved_mode,
+            moa_enabled=target_metadata.get("moa_enabled") is True,
         )
         return self._stage_session_provision(
             result,
@@ -1296,6 +1335,7 @@ class RuntimeSessionProvisioner:
             ),
             session_id=str(fork_result.get("session_id") or target_session_id),
             title=str(fork_result.get("title") or ""),
+            moa_enabled=fork_result.get("moa_enabled") is True,
         )
         return self._stage_session_provision(
             result,

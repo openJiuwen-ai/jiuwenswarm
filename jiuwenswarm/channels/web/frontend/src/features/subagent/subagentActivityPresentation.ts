@@ -155,7 +155,8 @@ function applyTodoPayload(tasks: Map<string, SubagentTask>, toolName: string, pa
     : toolName.includes('complete')
       ? 'result'
       : 'update';
-  for (const entry of taskEntries(payload.tasks ?? payload.todos)) applyTaskEntry(tasks, entry, atMs, source);
+  // `tasks` is the todo_create input key used by sessions recorded before it was renamed to `todos`.
+  for (const entry of taskEntries(payload.todos ?? payload.tasks)) applyTaskEntry(tasks, entry, atMs, source);
   if (typeof payload.task_id !== 'string') return;
   if (toolName.includes('remove')) {
     tasks.delete(payload.task_id);

@@ -36,6 +36,8 @@ export interface Session {
   model?: string;
   /** Stable selection persisted via session.selection.set / metadata. */
   model_selection?: ModelSelection | null;
+  /** Legacy server metadata; collaboration is derived from feature settings and model_selection. */
+  moa_enabled?: boolean;
   mode: AgentMode;
   status: SessionStatus;
   message_count: number;
@@ -59,6 +61,8 @@ export interface Session {
   agent_group_name?: string | null;
   /** 首次 AgentGroup 绑定时锁定的 leader 身份；旧 session 可能没有该字段。 */
   team_leader_identity?: unknown;
+  /** 首次 AgentGroup 绑定时锁定的展示身份；旧 session 会在包仍存在时补齐。 */
+  team_group_identity?: unknown;
   // ---- session.list 扩展字段 ----
   channel_id?: string; // 渠道ID
   user_id?: string; // 创建人ID
@@ -175,6 +179,8 @@ export type ModelGroup = {
 export type ModelSelectionReference = {
   scope: string;
   scope_id?: string;
+  /** User-facing label when the backend resolved a display name (#5477). */
+  label?: string;
 };
 
 export interface VendorPreset {
@@ -189,6 +195,8 @@ export interface VendorPreset {
   icon_key: string;
   models_endpoint: string | null;
   models_needs_key: boolean;
+  /** 仅用于图片/视频生成的厂商（如自部署 vLLM-Omni），不出现在对话 / 理解类模型选择中。 */
+  generation_only?: boolean;
   supports_anthropic: boolean;
   anthropic_base: string | null;
   anthropic_client_provider: string | null;

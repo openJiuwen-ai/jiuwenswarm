@@ -29,6 +29,7 @@ interface SessionSidebarProps {
   applicationPlugins?: ApplicationPluginContribution[];
   /** 导航图标 hover 变化：进入传 key、移出传 null（multi-session 侧栏收起态的 hover 预览用） */
   onNavItemHover?: (key: MainNavKey | null) => void;
+  onNavItemPointerDownCapture?: (key: MainNavKey) => void;
 }
 
 interface NavItem {
@@ -101,6 +102,7 @@ export function SessionSidebar({
   hiddenNavItems = [],
   applicationPlugins = [],
   onNavItemHover,
+  onNavItemPointerDownCapture,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
 
@@ -155,6 +157,7 @@ export function SessionSidebar({
           key={item.key}
           className={`icon-rail-nav-item${isNavItemActive(item) ? ' icon-rail-nav-item--active' : ''}`}
           onClick={() => handleNavClick(item.key)}
+          onPointerDownCapture={() => onNavItemPointerDownCapture?.(item.key)}
           onMouseEnter={() => onNavItemHover?.(item.key)}
           onMouseLeave={() => onNavItemHover?.(null)}
           data-testid="session-sidebar-nav-item"

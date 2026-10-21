@@ -13,7 +13,7 @@ Smart Approval never grants lasting access to a tool and cannot override an expl
 | Scenario | Smart Approval | Notes |
 | --- | --- | --- |
 | Web, single-agent Work mode | Supported | This is the primary supported experience. |
-| Code Agent and Code plan | Not supported | Support for Code modes is planned. |
+| Single-agent Code normal and Code plan | Supported | Root agent only. Plan write restrictions and plan approval remain effective; subagents do not inherit Smart Approval. |
 | Teams, clusters, and distributed teams | Not supported | Tool approval is not yet available in these modes. Smart Approval support will follow. |
 
 “Not supported” refers only to Smart Approval; the underlying mode remains available.

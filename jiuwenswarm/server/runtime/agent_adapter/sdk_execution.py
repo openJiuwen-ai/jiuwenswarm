@@ -47,6 +47,8 @@ class SDKExecutionDriver:
         partially initialized slot.
         """
         owner = self._owner
+        if getattr(owner, "_external_harness_binding", None) is not None:
+            return
         if owner._instance is None:
             raise RuntimeError("DeepAgent instance is not initialized")
 
@@ -243,12 +245,25 @@ class SDKExecutionDriver:
             else:
                 # pause/resume：需要 session-scoped adapter 的 StreamEventRail，按原逻辑创建。
                 session_adapter = await owner._get_or_create_session_adapter(
-                    request.session_id
+                    request.session_id, retain_moa_snapshot=True,
+                    **(
+                        {"model_selection": request.params["model_selection"]}
+                        if request.params.get("model_selection") is not None else {}
+                    ),
+                    **({"moa_enabled": request.params["moa_enabled"]} if "moa_enabled" in request.params else {}),
+                    **owner.moa_access_kwargs(request),
                 )
                 try:
                     return await session_adapter.process_interrupt(request)
                 finally:
                     await owner._evict_idle_session_adapters()
+
+        if getattr(self, "_external_harness_binding", None) is not None:
+            from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
+                process_external_harness_interrupt,
+            )
+
+            return await process_external_harness_interrupt(self, request)
 
         intent = request.params.get("intent", "cancel")
         new_input = request.params.get("new_input")

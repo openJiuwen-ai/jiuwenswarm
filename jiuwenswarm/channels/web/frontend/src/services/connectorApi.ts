@@ -138,6 +138,8 @@ interface RawConnectResponse {
   description?: string;
   doc_url?: string | null;
   doc_label?: string;
+  oauth_doc_url?: string;
+  oauth_success_prefix?: string;
   fields?: Record<string, ConnectorCredentialField>;
   step_index?: number;
   steps_total?: number;
@@ -162,6 +164,8 @@ function fromRawConnect(raw: RawConnectResponse): ConnectorConnectResponse {
     description: raw.description,
     docUrl: raw.doc_url,
     docLabel: raw.doc_label,
+    oauthDocUrl: raw.oauth_doc_url,
+    oauthSuccessPrefix: raw.oauth_success_prefix,
     fields: raw.fields,
     stepIndex: raw.step_index,
     stepsTotal: raw.steps_total,

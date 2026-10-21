@@ -130,12 +130,14 @@ def _configure_openjiuwen_logging() -> None:
 
 
 def _apply_runtime_entry_patches() -> None:
+    from jiuwenswarm.common.native_tokenizer_cache import install_native_tokenizer_cache
     from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
         install_shell_tool_safety_hooks,
     )
-    from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
+    from jiuwenswarm.common.llm_provider_compat_patch import apply_provider_compat_patches
     from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
 
+    install_native_tokenizer_cache()
     install_shell_tool_safety_hooks()
     apply_provider_compat_patches()
     try:
@@ -230,6 +232,11 @@ def preload_runtime_backend() -> None:
         from jiuwenswarm.common.utils import cleanup_stale_openjiuwen_descs
 
         cleanup_stale_openjiuwen_descs()
+    from jiuwenswarm.server.runtime.provider_setup import install_front as install_providers
+
+    began = time.monotonic()
+    install_providers()
+    _log_preparation_stage("provider_setup", began)
     began = time.monotonic()
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="worker-required") as preparation:
         config = preparation.submit(_prepare_worker_configuration)
@@ -239,6 +246,10 @@ def preload_runtime_backend() -> None:
     _log_preparation_stage("required_parallel_join", began)
     began = time.monotonic()
     _configure_openjiuwen_logging()
+    from jiuwenswarm.common.background_logging import install_core_logging_queue, wrap_log_handlers
+
+    install_core_logging_queue()
+    wrap_log_handlers()
     _log_preparation_stage("logging", began)
     began = time.monotonic()
     _apply_runtime_entry_patches()

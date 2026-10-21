@@ -126,7 +126,7 @@ def test_team_group_selection_calls_resolver_and_materializes_one_logical_entry(
     ]
 
 
-def test_team_materializes_model_group_without_routing_as_single_model(
+def test_team_materializes_model_group_without_routing_as_routed_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_team_loader(monkeypatch)
@@ -163,11 +163,16 @@ def test_team_materializes_model_group_without_routing_as_single_model(
         model_selection={"type": "model_group", "id": "group-single"},
     )
 
-    assert spec.model_pool_strategy == "by_model_name"
+    # Team defaults a strategy-less group to ordered failover, so it still
+    # materializes as the single logical IntelliRouter entry.
+    assert spec.model_pool_strategy == "intelli_router"
     assert len(spec.model_pool) == 1
-    assert spec.model_pool[0].model_name == "primary-model"
-    assert spec.model_pool[0].api_provider == "OpenAI"
-    assert spec.leader.model_name == "primary-model"
+    assert spec.model_pool[0].model_name == "*"
+    assert spec.model_pool[0].api_provider == "intelli_router"
+    assert spec.leader.model_name == "*"
+    router = spec.model_pool[0].metadata["client"]["intelli_router"]
+    assert router["strategy"] == "ordered-failover"
+    assert [item["model_name"] for item in router["deployments"]] == ["primary-model"]
 
 
 def test_team_group_keeps_external_cli_deployment_hint(
@@ -214,6 +219,67 @@ def test_team_group_keeps_external_cli_deployment_hint(
     assert spec.predefined_members[0].model_name == "qwen-plus"
 
 
+def test_team_single_model_selection_keeps_every_configured_model_in_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jiuwenswarm.agents.harness.team.team_manager as manager_module
+
+    captured: dict = {}
+
+    def fake_load_team_spec_dict(**kwargs):
+        captured["requested_model_name"] = kwargs.get("requested_model_name")
+        return _team_config()
+
+    def fake_effective_entries(_config_base, **kwargs):
+        captured["effective_requested_model_name"] = kwargs.get("requested_model_name")
+        return [
+            {
+                "model_client_config": {
+                    "model_name": name,
+                    "api_key": f"{name}-key",
+                    "api_base": f"https://{name}.example",
+                    "client_provider": "OpenAI",
+                },
+            }
+            for name in ("deepseek-v4-flash", "GLM-5.3-Flash", "GLM-5.3")
+        ]
+
+    monkeypatch.setattr(manager_module, "get_config", lambda: {})
+    monkeypatch.setattr(manager_module, "load_team_spec_dict", fake_load_team_spec_dict)
+    monkeypatch.setattr(manager_module, "get_effective_team_model_entries", fake_effective_entries)
+    monkeypatch.setattr(
+        TeamManager,
+        "_resolve_and_compile_team_selection",
+        staticmethod(
+            lambda _selection: compile_model_selection(
+                ResolvedModel(
+                    model_id="model-ds",
+                    model_name="deepseek-v4-flash",
+                    provider="OpenAI",
+                    api_key="deepseek-v4-flash-key",
+                    api_base="https://deepseek-v4-flash.example",
+                )
+            )
+        ),
+    )
+
+    spec = TeamManager._load_team_spec(
+        "session-single-model",
+        model_selection={"type": "model", "id": "model-ds"},
+    )
+
+    # The selection names the default model; the pool still offers every
+    # configured model so members can be assigned any of them.
+    assert captured["requested_model_name"] == "deepseek-v4-flash"
+    assert captured["effective_requested_model_name"] == "deepseek-v4-flash"
+    assert spec.model_pool_strategy == "by_model_name"
+    assert [entry.model_name for entry in spec.model_pool] == [
+        "deepseek-v4-flash",
+        "GLM-5.3-Flash",
+        "GLM-5.3",
+    ]
+
+
 def test_team_route_pinned_group_selection_reaches_resolver(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -250,6 +316,7 @@ def test_cold_restore_reads_stable_selection_and_forwards_it_to_team_loader(
 ) -> None:
     manager = TeamManager()
     captured: dict = {}
+    monkeypatch.setattr(TeamManager, "_default_if_deleted", staticmethod(lambda selection: selection))
 
     monkeypatch.setattr(
         manager,
@@ -287,6 +354,7 @@ def test_cold_restore_prefers_team_binding_selection_over_session_metadata(
 ) -> None:
     manager = TeamManager()
     captured: dict = {}
+    monkeypatch.setattr(TeamManager, "_default_if_deleted", staticmethod(lambda selection: selection))
     monkeypatch.setattr(
         manager,
         "_lookup_bound_team_identity",
@@ -316,6 +384,40 @@ def test_cold_restore_prefers_team_binding_selection_over_session_metadata(
         "type": "model_group",
         "id": "team-group",
     }
+
+
+@pytest.mark.parametrize("source", ["binding", "session"])
+def test_cold_restore_deleted_selection_uses_default(monkeypatch: pytest.MonkeyPatch, source: str) -> None:
+    manager = TeamManager()
+    captured: dict = {}
+    monkeypatch.setattr("jiuwenswarm.common.model_catalog.get_config", lambda: {"models": {
+        "defaults": [{"model_id": "current", "is_default": True,
+                      "model_client_config": {"model_name": "current"}}],
+    }})
+    monkeypatch.setattr(
+        manager, "_lookup_bound_team_identity",
+        lambda _session_id: ("shared-team" if source == "binding" else None, None, None),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False: {"team_name": "shared-team"} if source == "binding" else {},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: SimpleNamespace(get_team_selection=lambda _name: {"type": "model", "id": "deleted"}),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
+        lambda _session_id: ModelSelection(type="model", id="deleted"),
+    )
+
+    def fake_load(_session_id: str, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(team_name="team")
+
+    monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(fake_load))
+    manager._load_session_team_spec("session-restore")
+    assert captured["model_selection"] == ModelSelection(type="model", id="current")
 
 
 def test_cold_restore_preserves_resolver_business_error_without_default_fallback(
@@ -468,3 +570,59 @@ def test_swarm_compiler_adapter_preserves_group_identity_and_route_fields():
     assert compiled.model_client_config.client_provider == ProviderType.IntelliRouter.value
     assert [route.route_id for route in compiled.model_client_config.intelli_router.deployments] == ["r1"]
     assert compiled.model_client_config.intelli_router.deployments[0].request_defaults == {"max_tokens": 128}
+
+
+def _two_route_resolver(monkeypatch: pytest.MonkeyPatch, routing: dict | None) -> None:
+    """Route TeamManager through the real resolver over a two-model group."""
+    group = {
+        "model_group_id": "g1", "enabled": True, "is_default": True,
+        "routes": [
+            {"route_id": "r1", "model_id": "m1"},
+            {"route_id": "r2", "model_id": "m2"},
+        ],
+    }
+    if routing is not None:
+        group["routing"] = routing
+    catalog = _Catalog(groups=[group], models=[
+        {"model_id": "m1", "model_name": "model-one", "provider": "OpenAI",
+         "api_base": "https://one.test", "api_key": "mock-key-one"},
+        {"model_id": "m2", "model_name": "model-two", "provider": "OpenAI",
+         "api_base": "https://two.test", "api_key": "mock-key-two"},
+    ])
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.model_routing_registry.ModelSelectionResolver",
+        lambda: ModelSelectionResolver(catalog),
+    )
+
+
+def test_team_group_without_routing_defaults_to_ordered_failover(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Groups saved from the UI carry no routing; Team must still route the whole group."""
+    _two_route_resolver(monkeypatch, routing=None)
+
+    compiled = TeamManager._resolve_and_compile_team_selection(ModelSelection(type="model_group", id="g1"))
+
+    router = compiled.model_client_config.intelli_router
+    assert router is not None
+    assert router.strategy == "ordered-failover"
+    assert [item.model_name for item in router.deployments] == ["model-one", "model-two"]
+
+
+def test_team_group_keeps_its_own_routing_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
+    _two_route_resolver(monkeypatch, routing={"strategy": "tag-filtered", "num_retries": 1})
+
+    compiled = TeamManager._resolve_and_compile_team_selection(ModelSelection(type="model_group", id="g1"))
+
+    router = compiled.model_client_config.intelli_router
+    assert router.strategy == "tag-filtered"
+    assert router.num_retries == 1
+
+
+def test_team_manual_route_without_routing_stays_a_single_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    _two_route_resolver(monkeypatch, routing=None)
+
+    compiled = TeamManager._resolve_and_compile_team_selection(
+        ModelSelection(type="model_group", id="g1", route_id="r2")
+    )
+
+    assert compiled.model_client_config.intelli_router is None
+    assert compiled.model_request_config.model_name == "model-two"

@@ -889,24 +889,24 @@ class TeamsManagement:
         self, session_id: str, channel_id: str
     ) -> list[dict[str, Any]]:
         """Collect every team that currently belongs to ``session_id``.
-
+    
         Two sources are merged because a session can hold several teams, and
         they do not live in the same registry:
-
+    
         * the Runner-owned ``TeamRuntimePool`` — the multi-team object pool,
           keyed by ``team_name``, entries bound to ``current_session_id``;
         * ``TeamManager``'s per-session markers (``_active_team_names`` /
           ``_pending_team_names``) plus session metadata ``team_name``, which
           cover sessions whose runtime has not been pooled yet (or is already
           torn down but still resumable).
-
+    
         Later sources only fill gaps, so a pooled entry keeps its live state.
         """
         host = self.host
         from jiuwenswarm.agents.harness.team import get_team_manager
-
+    
         entries: dict[str, dict[str, Any]] = {}
-
+    
         def _upsert(team_name: str, *, state: str, **extra: Any) -> None:
             team_name = str(team_name or "").strip()
             if not team_name:
@@ -931,11 +931,11 @@ class TeamsManagement:
                     existing[key] = value
             if state == "running" or existing.get("state") in (None, ""):
                 existing["state"] = state
-
+    
         runner_pool = None
         try:
             from openjiuwen.core.runner.runner import GLOBAL_RUNNER
-
+    
             runtime_mgr = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
             runner_pool = getattr(runtime_mgr, "pool", None)
         except Exception as e:
@@ -977,14 +977,14 @@ class TeamsManagement:
                 )
         team_manager = get_team_manager(channel_id)
         metadata_team_name = ""
+        live_team_name = ""
         if session_id:
             session_info = team_manager.get_runtime_team_snapshot().get(session_id)
             if session_info:
+                live_team_name = str(session_info.get("team_name") or "").strip()
                 _upsert(
-                    str(session_info.get("team_name") or ""),
-                    state="running"
-                    if session_info.get("state") == "active"
-                    else "pending",
+                    live_team_name,
+                    state="running" if session_info.get("state") == "active" else "pending",
                     source="manager",
                 )
             active_name = team_manager.get_active_team_name(session_id)
@@ -1004,9 +1004,18 @@ class TeamsManagement:
                     agent_group_name=metadata.get("agent_group_name"),
                     source="metadata",
                 )
+    
+        # ``team_name`` reaches session metadata only when the team runtime
+        # becomes ready (sync_team_identity_metadata). During the first-turn
+        # assembly window the session's own team is already listed via the
+        # TeamManager markers above; without the live-binding fallback every
+        # team would answer is_owner=false and the Web conversation view would
+        # flip to the empty team panel until the next poll. Metadata stays
+        # authoritative once it has been persisted.
+        owner_team_name = metadata_team_name or live_team_name
         for entry in entries.values():
             entry["is_owner"] = bool(
-                metadata_team_name and entry["team_id"] == metadata_team_name
+                owner_team_name and entry["team_id"] == owner_team_name
             )
             if not entry.get("organization_id"):
                 org_id = host._lookup_session_org_binding(session_id, entry["team_id"])

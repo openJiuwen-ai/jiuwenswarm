@@ -11,7 +11,6 @@ from jiuwenswarm.common.model_catalog import ModelCatalog, SelectionReference
 from jiuwenswarm.common.model_errors import (
     MODEL_SELECTION_FORBIDDEN,
     MODEL_SELECTION_NOT_FOUND,
-    MODEL_SELECTION_REFERENCED,
     ModelSelectionError,
 )
 from jiuwenswarm.common.model_selection import ModelSelection
@@ -29,11 +28,12 @@ RESOURCE_OPERATIONS = {
 
 async def find_resource_references(catalog, selection, *, user_id=""):
     """Read the configured Cron backend, never substitute a local file for etcd."""
-    from jiuwenswarm.runtime.cron.factory import create_gateway_cron_store, load_cron_store_settings
+    from jiuwenswarm.common.cron_settings import load_cron_store_settings
+    from jiuwenswarm.common.external_providers import provider
     from jiuwenswarm.common.model_migration import migrate_legacy_cron_selections
 
     references = catalog.find_references(selection, include_cron=False)
-    store = await create_gateway_cron_store(catalog.config)
+    store = await provider("cron_store_factory").create_gateway_cron_store(catalog.config)
     is_etcd = load_cron_store_settings(catalog.config).backend == "etcd"
     try:
         await migrate_legacy_cron_selections(store, catalog=catalog, user_id=user_id if is_etcd else None)
@@ -53,7 +53,7 @@ async def _resource_payload(operation, params, *, user_id=""):
     if operation == "groups.list":
         return {"groups": catalog.list_public_groups()}
     if operation == "models.get":
-        return {"model": catalog.get_public_model_detail(str(params.get("model_id") or ""))}
+        return {"model": catalog.get_public_model_detail(str(params.get("model_id") or ""), include_api_key=True)}
     if operation == "models.references":
         references = await find_resource_references(catalog, ModelSelection.model_validate(params), user_id=user_id)
         return {"references": [ref.__dict__ for ref in references]}
@@ -63,14 +63,6 @@ async def _resource_payload(operation, params, *, user_id=""):
         resource_id = str(params.get(key) or "")
         if resource_type == "model" and catalog.get_model(resource_id)["source"] == "agentos":
             raise ModelSelectionError(MODEL_SELECTION_FORBIDDEN, "AgentOS models are read-only")
-        references = await find_resource_references(
-            catalog, ModelSelection(type=resource_type, id=resource_id), user_id=user_id,
-        )
-        if references:
-            raise ModelSelectionError(
-                MODEL_SELECTION_REFERENCED, "resource is still referenced",
-                references=[ref.__dict__ for ref in references],
-            )
         if not delete_model_resource(resource_type, resource_id, cron_references_checked=True):
             raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, "resource does not exist")
         return {key: resource_id, "deleted": True}
@@ -92,9 +84,16 @@ async def model_resource_handler(
     try:
         payload = await _resource_payload(operation, params or {}, user_id=user_id)
         if operation.endswith((".upsert", ".delete")):
+            if operation == "models.delete":
+                # Model delete may also prune group routes that referenced it.
+                changed_keys = ["models.defaults", "models.groups"]
+            elif operation.startswith("groups"):
+                changed_keys = ["models.groups"]
+            else:
+                changed_keys = ["models.defaults"]
             applied = await _apply_models_change(
                 on_config_saved, agent_client,
-                changed_keys=["models.groups" if operation.startswith("groups") else "models.defaults"],
+                changed_keys=changed_keys,
             )
             payload["applied_without_restart"] = applied
         await channel.send_response(ws, req_id, ok=True, payload=payload)
@@ -105,8 +104,8 @@ async def model_resource_handler(
 
 
 async def session_selection_handler(channel, ws, req_id, params, session_id):
-    from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
-    from jiuwenswarm.server.runtime.session.model_selection_store import set_session_model_selection
+    from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
+    from jiuwenswarm.common.model_selection_store import set_session_model_selection
 
     try:
         params = params or {}

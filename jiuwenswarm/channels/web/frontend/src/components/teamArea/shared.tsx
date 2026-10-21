@@ -30,6 +30,10 @@ export interface TeamMember {
   cli_agent?: string | null;
   /** 镜像的 swarmflow worker 带 run id；真实队友无此字段。 */
   workflow_run_id?: string;
+  /** 专家节点引用的专家团成员名；普通 worker 与真实队友为空 */
+  agent_template?: string | null;
+  /** 专家的展示名（manifest i18n）；与 agent_template 一起作名册辅助行 */
+  display_name?: string | null;
 }
 
 export interface TeamTaskEvent {
@@ -205,10 +209,22 @@ export const getMemberAvatarKey = (member: TeamMember): string => {
  * 名册查找必然落空——CLI 身份（品牌头像）与人类身份必须在这里显式给出，
  * 否则树视图（传 identity）显示品牌脸、成员列表显示哈希插画，两边对不上。
  */
-export const getMemberAvatarIdentity = (member: TeamMember): { cliAgent?: string; role?: string; mode?: string } => {
+export const getMemberAvatarIdentity = (
+  member: TeamMember,
+): { cliAgent?: string; role?: string; mode?: string; agentTemplate?: string } => {
   if (member.cli_agent) return { cliAgent: member.cli_agent };
   if (member.role === 'human_agent' || member.mode === 'human') return { role: 'human_agent' };
+  if (member.agent_template) return { agentTemplate: member.agent_template };
   return {};
+};
+
+/** 名册辅助行：专家显示"展示名（成员名）"；普通成员无。 */
+export const getMemberExpertHint = (member: TeamMember): string | null => {
+  if (!member.agent_template) return null;
+  const display = member.display_name?.trim();
+  return display && display !== member.agent_template
+    ? `${display}（${member.agent_template}）`
+    : member.agent_template;
 };
 
 const resolveMemberIdentity = (member: TeamMember | string): { memberId: string; displayName: string } => {
@@ -309,6 +325,8 @@ export const getMemberStatusKey = (member: TeamMember): string => {
   if (status.includes('execut') || status.includes('running') || status.includes('busy') || status.includes('working')) return 'running';
   if (status.includes('ready') || status.includes('idle')) return 'idle';
   if (status.includes('restart')) return 'restarting';
+  // 休眠成员已退场但仍在名册上，被点名即可唤醒，不能归到 shutdown。
+  if (status.includes('dormant')) return 'dormant';
   if (status.includes('shutdown') || status.includes('down')) return 'shutdown';
   if (status.includes('error') || status.includes('fail')) return 'error';
   if (status.includes('unstarted')) return 'unstarted';
@@ -322,6 +340,7 @@ export const getMemberStatusDotClass = (member: TeamMember): string => {
   if (key === 'error') return 'bg-red-500';
   if (key === 'restarting') return 'bg-amber-500';
   if (key === 'shutdown') return 'bg-gray-400';
+  if (key === 'dormant') return 'bg-indigo-300';
   return 'bg-slate-300';
 };
 

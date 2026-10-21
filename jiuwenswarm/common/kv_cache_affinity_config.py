@@ -99,9 +99,7 @@ def model_provider(model: Any | None) -> str:
     """Resolve the effective provider from an OpenJiuwen Model or its client."""
 
     for owner in (model, getattr(model, "_client", None)):
-        provider = _model_client_provider(
-            getattr(owner, "model_client_config", None)
-        )
+        provider = _model_client_provider(getattr(owner, "model_client_config", None))
         if provider:
             return provider
     return ""
@@ -211,6 +209,53 @@ def get_default_model_provider(config: dict[str, Any] | None) -> str:
     return _model_client_provider(get_default_model_client_config(config))
 
 
+def _get_agentos_model_client_configs(
+    config: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    config = config if isinstance(config, dict) else {}
+    models = config.get("models")
+    models = models if isinstance(models, dict) else {}
+    agentos_entries = models.get("agentos")
+    agentos_configs: list[dict[str, Any]] = []
+    if isinstance(agentos_entries, list):
+        for entry in agentos_entries:
+            if not isinstance(entry, dict):
+                continue
+            model_client_config = entry.get("model_client_config")
+            if isinstance(model_client_config, dict) and model_client_config.get(
+                "model_name"
+            ):
+                agentos_configs.append(model_client_config)
+    return agentos_configs
+
+
+def get_kv_cache_control_model_client_configs(
+    config: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Return the authoritative model configs for KVC control policy.
+
+    A configured ``models.agentos`` list takes precedence as a whole. Generic
+    defaults are used only when no valid AgentOS model entry exists.
+    """
+
+    agentos_configs = _get_agentos_model_client_configs(config)
+    return agentos_configs or [get_default_model_client_config(config)]
+
+
+def get_kv_cache_control_model_client_config(
+    config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the first authoritative KVC control model configuration."""
+
+    return get_kv_cache_control_model_client_configs(config)[0]
+
+
+def get_kv_cache_control_model_provider(config: dict[str, Any] | None) -> str:
+    """Return the provider used to build application-level KVC policy."""
+
+    return _model_client_provider(get_kv_cache_control_model_client_config(config))
+
+
 def is_affinity_enabled(config: dict[str, Any] | None) -> bool:
     kv_config = get_kv_cache_affinity_application_config(config)
     return bool(kv_config.get(KV_CACHE_AFFINITY_ENABLED_KEY, False))
@@ -239,11 +284,16 @@ def validate_affinity_invariant(
         return True, []
 
     failures: list[str] = []
-    model_client_config = get_default_model_client_config(config)
-    provider = _model_client_provider(model_client_config)
-    if not has_kv_cache_affinity_capability(model_client_config):
+    agentos_configs = _get_agentos_model_client_configs(config)
+    model_client_configs = agentos_configs or [get_default_model_client_config(config)]
+    uses_agentos = bool(agentos_configs)
+    label = "AgentOS model" if uses_agentos else "default model"
+    for model_client_config in model_client_configs:
+        provider = _model_client_provider(model_client_config)
+        if has_kv_cache_affinity_capability(model_client_config):
+            continue
         failures.append(
-            "default model must declare extensions.kv_cache.mode=affinity "
+            f"{label} must declare extensions.kv_cache.mode=affinity "
             f"or use legacy provider {ASCEND_AFFINITY_PROVIDER}; "
             f"got provider={provider or '<empty>'} "
             f"mode={_kv_cache_mode(model_client_config) or '<empty>'}"

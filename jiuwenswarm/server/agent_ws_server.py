@@ -44,9 +44,13 @@ from jiuwenswarm.common.ws_diagnostics import (
 from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.runtime.plan import PlanModeController
 from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
+from jiuwenswarm.server.worker.execution_services import ProductionHostServices, TransportClosed
 from jiuwenswarm.server.ws_send import send_wire_payload
 
 logger = logging.getLogger(__name__)
+_DIAGNOSIS_REQ_METHODS = frozenset(
+    method for method in ReqMethod if method.value.startswith("diagnosis.")
+)
 _SERVER_PLAN_CONTROLLER = PlanModeController()
 _session_mode_sync_locks = _SERVER_PLAN_CONTROLLER.sync_locks
 _plan_exited_sessions = _SERVER_PLAN_CONTROLLER.exited_sessions
@@ -70,6 +74,11 @@ def _renew_server_plan_controller() -> PlanModeController:
     _plan_exited_sessions = controller.exited_sessions
     _plan_active_sessions = controller.active_sessions
     return controller
+
+
+def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
+    """Retain the historical import surface of the shared plan controller."""
+    PlanModeController.inject_activation_reminder(request)
 
 
 def _parse_single_byte_range(
@@ -142,10 +151,44 @@ def _payload_to_request(data: dict[str, Any]) -> AgentRequest:
     )
 
 
+def _compat_binding(name: str) -> Any:
+    value = globals().get(name)
+    return value if value is not None else __getattr__(name)
+
+
+class _CompatibilityHostServices(ProductionHostServices):
+    """Keep the legacy socket's integration ports outside the execution host."""
+
+    def encode_response(self, response: Any, *, response_id: str, sequence: int = 0) -> dict[str, Any]:
+        encode = _compat_binding("encode_agent_response_for_wire")
+        if sequence:
+            return encode(response, response_id=response_id, sequence=sequence)
+        return encode(response, response_id=response_id)
+
+    def encode_chunk(self, chunk: Any, *, response_id: str, sequence: int, is_stream: bool = True) -> dict[str, Any]:
+        encode = _compat_binding("encode_agent_chunk_for_wire")
+        if not is_stream:
+            return encode(chunk, response_id=response_id, sequence=sequence, is_stream=False)
+        return encode(chunk, response_id=response_id, sequence=sequence)
+
+    async def send(self, sink: Any, payload: dict[str, Any]) -> bool:
+        try:
+            return await send_wire_payload(sink, payload)
+        except WebSocketConnectionClosed as exc:
+            raise TransportClosed(str(exc)) from exc
+
+
 class AgentWebSocketServer(WorkerExecutionHost):
     """Historical Gateway socket API backed by the same execution owner."""
 
     _instance: ClassVar[AgentWebSocketServer | None] = None
+
+    @property
+    def services(self) -> Any:
+        value = getattr(self, "_host_services", None)
+        if value is None:
+            value = self._host_services = _CompatibilityHostServices()
+        return value
 
     @property
     def _plan_controller(self) -> PlanModeController:
@@ -165,7 +208,8 @@ class AgentWebSocketServer(WorkerExecutionHost):
         services: Any = None,
     ) -> None:
         super().__init__(
-            host, port, services=services, plan_controller=_SERVER_PLAN_CONTROLLER
+            host, port, services=services if services is not None else _CompatibilityHostServices(),
+            plan_controller=_SERVER_PLAN_CONTROLLER,
         )
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
@@ -730,7 +774,7 @@ _COMPAT_EXPORTS = {
         "get_permissions_config_req_methods",
     ),
     "get_a4p_req_methods": (
-        "jiuwenswarm.agents.harness.common.a4p_rpc",
+        "jiuwenswarm.agents.harness.common.a4p.rpc",
         "get_a4p_req_methods",
     ),
     "DEFAULT_SANDBOX_POLICY_FILE": (

@@ -4,11 +4,12 @@ import type { WebConnectionState } from '../../types';
 import type { SettingsRequest } from './services/settingsContract';
 import type {
   ExternalCliAgentKind,
+  ExternalCliDependencyInstallStatus,
   ExternalCliDetectResult,
   ExternalCliPendingChoice,
 } from '../../components/ExternalCliAgentsSection';
 import type { ExternalCliInstallStatuses } from '../../components/ExternalCliInstallDialog';
-import { SettingsPageLayout } from './SettingsPageLayout';
+import { SettingsPageLayout, type SettingsSidebarControls } from './SettingsPageLayout';
 import { SettingsServicesProvider } from './services/SettingsServicesProvider';
 import type { SettingsPageDefinition } from './registry/types';
 import type { SettingsModuleTarget } from './settingsNavigation';
@@ -23,25 +24,28 @@ export function SettingsPage({
   onSelectExternalCliPath,
   onTrackExternalCliDependencyInstalls,
   externalCliInstallStatuses,
-  externalCliInstallBusy,
-  onOpenExternalCliInstallDialog,
+  onGetExternalCliInstallStatus,
+  onExternalCliInstallStatusChange,
   externalCliPendingChoices,
   onExternalCliPendingChoicesChange,
   externalCliDetectResults,
   onExternalCliDetectResultsChange,
   initialModuleId,
+  sidebar,
 }: {
   definition: SettingsPageDefinition;
   isConnected: boolean;
   connectionState: WebConnectionState;
   request: SettingsRequest;
   onHasChangesChange?: (hasChanges: boolean) => void;
-  onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string) => Promise<ExternalCliDetectResult>;
+  onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string, useBuiltin?: boolean) => Promise<ExternalCliDetectResult>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
-  externalCliInstallBusy?: boolean;
-  onOpenExternalCliInstallDialog?: () => void;
+  onGetExternalCliInstallStatus?: (
+    agent: ExternalCliAgentKind,
+  ) => Promise<ExternalCliDependencyInstallStatus>;
+  onExternalCliInstallStatusChange?: (agent: ExternalCliAgentKind, status: ExternalCliDependencyInstallStatus) => void;
   externalCliPendingChoices?: Partial<Record<ExternalCliAgentKind, ExternalCliPendingChoice>>;
   onExternalCliPendingChoicesChange?: (
     next:
@@ -52,9 +56,14 @@ export function SettingsPage({
   ) => void;
   externalCliDetectResults?: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>;
   onExternalCliDetectResultsChange?: (
-    next: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>,
+    next:
+      | Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>
+      | ((current: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>) => Partial<
+          Record<ExternalCliAgentKind, ExternalCliDetectResult>
+        >),
   ) => void;
   initialModuleId?: SettingsModuleTarget;
+  sidebar?: SettingsSidebarControls;
 }) {
   return (
     <SettingsServicesProvider
@@ -66,14 +75,14 @@ export function SettingsPage({
       onSelectExternalCliPath={onSelectExternalCliPath}
       onTrackExternalCliDependencyInstalls={onTrackExternalCliDependencyInstalls}
       externalCliInstallStatuses={externalCliInstallStatuses}
-      externalCliInstallBusy={externalCliInstallBusy}
-      onOpenExternalCliInstallDialog={onOpenExternalCliInstallDialog}
+      onGetExternalCliInstallStatus={onGetExternalCliInstallStatus}
+      onExternalCliInstallStatusChange={onExternalCliInstallStatusChange}
       externalCliPendingChoices={externalCliPendingChoices}
       onExternalCliPendingChoicesChange={onExternalCliPendingChoicesChange}
       externalCliDetectResults={externalCliDetectResults}
       onExternalCliDetectResultsChange={onExternalCliDetectResultsChange}
     >
-      <SettingsPageLayout definition={definition} initialModuleId={initialModuleId} />
+      <SettingsPageLayout definition={definition} initialModuleId={initialModuleId} sidebar={sidebar} />
     </SettingsServicesProvider>
   );
 }

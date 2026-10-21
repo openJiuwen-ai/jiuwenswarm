@@ -63,6 +63,7 @@ def shell_tool_names() -> list[str]:
 _CODE_TOOLS = {"code"}
 _PATH_TOOLS = {
     "apply_patch",
+    "lsp",
     "read_file",
     "read_pdf",
     "write_file",

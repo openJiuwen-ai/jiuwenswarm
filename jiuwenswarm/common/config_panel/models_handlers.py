@@ -48,7 +48,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
 )
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_config_validation import probe_model_connection, raise_if_invalid
-from jiuwenswarm.common.model_errors import MODEL_SELECTION_REFERENCED, ModelSelectionError
+from jiuwenswarm.common.model_errors import ModelSelectionError
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
     validate_reasoning_level_for_model,
@@ -792,21 +792,6 @@ async def models_replace_all_handler(
         return
     try:
         new_models = build_models_defaults_from_frontend(params.get("models"))
-        from jiuwenswarm.common.config_panel.model_resource_handlers import find_resource_references
-        from jiuwenswarm.common.model_selection import ModelSelection
-
-        catalog = ModelCatalog()
-        retained_ids = {entry.get("model_id") for entry in new_models}
-        for old in catalog.snapshot["defaults"]:
-            if old.get("model_id") in retained_ids:
-                continue
-            selection = ModelSelection(type="model", id=old["model_id"])
-            references = await find_resource_references(catalog, selection, user_id=user_id)
-            if references:
-                raise ModelSelectionError(
-                    MODEL_SELECTION_REFERENCED, "resource is still referenced",
-                    references=[ref.__dict__ for ref in references],
-                )
         if (
             is_affinity_enabled(get_config_raw())
             and not has_kv_cache_affinity_capability(

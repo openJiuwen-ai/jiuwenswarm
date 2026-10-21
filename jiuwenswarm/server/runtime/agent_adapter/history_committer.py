@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from typing import Any, Awaitable, Callable
 
@@ -52,6 +53,70 @@ class HistoryCommitter:
         self.final_content = ""
         self.output_phase_metadata: dict[str, Any] = {}
         self.saw_goal_stream_output = False
+        self._team_member_history = None
+
+    async def persist_team_member_pending(self, *, completed_at: float | None = None) -> None:
+        """Drain member buckets independently, retaining failed writes for retry."""
+        await self.retry_pending_writes()
+        history = self._team_member_history
+        if history is None:
+            return
+        for key in history.member_keys():
+            snapshot = copy.deepcopy(self._team_member_history)
+            pending = snapshot.take_pending_final(key, completed_at=completed_at)
+            if pending is None:
+                self._team_member_history = snapshot
+                continue
+            extra = self._decorate_record("chat.final", dict(pending.extra), None)
+            record = self._assistant_record("chat.final", pending.content, extra, pending.started_at)
+            await self._commit_record(record, lambda value=snapshot: setattr(self, "_team_member_history", value))
+
+    async def handle_team_member_event(self, payload: dict[str, Any]) -> bool:
+        """Keep teammate deltas and reasoning out of the leader's durable buffers."""
+        from jiuwenswarm.server.runtime.agent_adapter.team_member_stream_history import (
+            MEMBER_SEGMENT_BOUNDARY_EVENTS, TeamMemberStreamHistory, team_member_stream_key,
+        )
+
+        key = team_member_stream_key(payload)
+        if key is None:
+            return False
+        await self.retry_pending_writes()
+        if self._team_member_history is None:
+            self._team_member_history = TeamMemberStreamHistory()
+        history = self._team_member_history
+        event = str(payload.get("event_type") or "")
+        content = str(payload.get("content") or "")
+        if event == "chat.delta":
+            history.note_delta(key, content, payload)
+            return True
+        if event == "chat.reasoning":
+            history.note_reasoning(key, content, payload)
+            return True
+        if event in MEMBER_SEGMENT_BOUNDARY_EVENTS or (event == "chat.final" and not content):
+            snapshot = copy.deepcopy(history)
+            pending = snapshot.take_pending_final(key)
+            if pending is not None:
+                extra = self._decorate_record("chat.final", dict(pending.extra), payload)
+                record = self._assistant_record("chat.final", pending.content, extra, pending.started_at)
+                await self._commit_record(record, lambda: setattr(self, "_team_member_history", snapshot))
+                history = self._team_member_history
+        if not (event.startswith("chat.") or event == "context.usage"):
+            return True
+        snapshot = copy.deepcopy(history)
+        started_at, order = snapshot.text_segment_start(key)
+        extra = {name: value for name, value in payload.items() if name not in {"event_type", "content"}}
+        if event in {"chat.final", "chat.tool_call"}:
+            extra = snapshot.attach_reasoning(key, extra) or extra
+        if event == "chat.final":
+            if order:
+                extra["output_order"] = order
+            snapshot.discard_text(key, final_content=content)
+        record = self._assistant_record(
+            event, payload.get("content") or payload.get("error") or "",
+            self._decorate_record(event, extra, payload), started_at if event == "chat.final" else None,
+        )
+        await self._commit_record(record, lambda: setattr(self, "_team_member_history", snapshot))
+        return True
 
     def note_durable_reasoning_delta(self, payload: dict[str, Any]) -> None:
         if self.pending_reasoning_started_at is None:
@@ -243,6 +308,8 @@ class HistoryCommitter:
         accepted-write cancellation barriers with an ordinary request stream.
         """
         await self.retry_pending_writes()
+        if await self.handle_team_member_event(payload):
+            return
         event_type = payload.get("event_type")
         if not isinstance(event_type, str):
             return
@@ -297,6 +364,7 @@ class HistoryCommitter:
     async def _commit_input_boundary(self, payload: dict[str, Any]) -> None:
         await self.persist_pending_final_text(completed_at=payload["timestamp"] / 1000)
         await self.persist_pending_reasoning()
+        await self.persist_team_member_pending(completed_at=payload["timestamp"] / 1000)
         await self._write_record(
             session_id=self.session_id,
             request_id=payload["input_request_id"],

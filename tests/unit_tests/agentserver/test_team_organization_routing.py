@@ -12,6 +12,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server import agent_ws_server
+from jiuwenswarm.server.management import teams as teams_owner
 
 
 def request(method=ReqMethod.CHAT_SEND, team="expert"):
@@ -35,7 +36,7 @@ def backend(org):
 async def test_cancel_isolated_from_owner(monkeypatch, organization, allowed):
     server = object.__new__(AgentWebSocketServer)
     monkeypatch.setattr(
-        agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"}
+        teams_owner, "get_session_metadata", lambda _: {"team_name": "owner"}
     )
     monkeypatch.setattr(
         server,
@@ -103,8 +104,6 @@ def test_regular_stream_key_is_unchanged():
 
 @pytest.mark.asyncio
 async def test_team_list_defaults_to_owner_even_when_expert_is_running(monkeypatch):
-    from jiuwenswarm.server import agent_ws_server
-
     server = object.__new__(AgentWebSocketServer)
     sent = []
 
@@ -127,6 +126,101 @@ async def test_team_list_defaults_to_owner_even_when_expert_is_running(monkeypat
     monkeypatch.setattr(agent_ws_server, "send_wire_payload", send)
     await server._handle_team_list(object(), request(), asyncio.Lock())
     assert sent[0].payload["default_team_id"] == "owner"
+
+
+def team_manager_marker(snapshot=None, active=None, pending=None):
+    return SimpleNamespace(
+        get_runtime_team_snapshot=lambda: snapshot or {},
+        get_active_team_name=lambda session_id: active,
+        _pending_team_names=pending or {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_team_list_marks_assembling_team_owner_before_metadata_persisted(monkeypatch):
+    """First-turn window: the team is listed via TeamManager markers while
+    ``team_name`` has not yet been persisted to session metadata. The Web
+    conversation view must not flip to the empty team panel, so the live
+    binding has to answer is_owner."""
+    server = object.__new__(AgentWebSocketServer)
+    manager = team_manager_marker(
+        snapshot={"session": {"team_name": "biz-plan", "state": "pending"}},
+        pending={"session": "biz-plan"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager", lambda channel_id: manager
+    )
+    monkeypatch.setattr(teams_owner, "get_session_metadata", lambda _: {})
+    monkeypatch.setattr("openjiuwen.core.runner.runner.GLOBAL_RUNNER", None)
+
+    teams = await server._team_list_entries("session", "web")
+
+    assert [(team["team_id"], team["is_owner"]) for team in teams] == [
+        ("biz-plan", True)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_team_list_metadata_owner_wins_over_live_marker(monkeypatch):
+    """Persisted metadata stays authoritative once written, even when the
+    live TeamManager marker points at another team."""
+    server = object.__new__(AgentWebSocketServer)
+    manager = team_manager_marker(
+        snapshot={"session": {"team_name": "rebound", "state": "active"}},
+        active="rebound",
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager", lambda channel_id: manager
+    )
+    monkeypatch.setattr(
+        teams_owner, "get_session_metadata", lambda _: {"team_name": "owner-team"}
+    )
+    monkeypatch.setattr("openjiuwen.core.runner.runner.GLOBAL_RUNNER", None)
+
+    teams = await server._team_list_entries("session", "web")
+
+    assert {team["team_id"]: team["is_owner"] for team in teams} == {
+        "rebound": False,
+        "owner-team": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_team_list_without_owner_binding_marks_no_owner(monkeypatch):
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id: team_manager_marker(),
+    )
+    monkeypatch.setattr(teams_owner, "get_session_metadata", lambda _: {})
+    monkeypatch.setattr("openjiuwen.core.runner.runner.GLOBAL_RUNNER", None)
+
+    async def teams_for_session(session_id):
+        return [
+            SimpleNamespace(
+                team_name="expert",
+                state=SimpleNamespace(value="running"),
+                agent=SimpleNamespace(
+                    team_backend=SimpleNamespace(
+                        is_leader=True, leader_member_name="leader"
+                    ),
+                    card=SimpleNamespace(name="Expert"),
+                    spec=SimpleNamespace(metadata={}),
+                ),
+                current_session_id=session_id,
+            )
+        ]
+
+    runtime_manager = SimpleNamespace(pool=SimpleNamespace(teams_for_session=teams_for_session))
+    monkeypatch.setattr(
+        "openjiuwen.core.runner.runner.GLOBAL_RUNNER", SimpleNamespace(
+            _team_runtime_manager=runtime_manager
+        )
+    )
+
+    teams = await server._team_list_entries("session", "web")
+
+    assert teams and all(team["is_owner"] is False for team in teams)
 
 
 @pytest.mark.asyncio
@@ -180,13 +274,13 @@ async def test_direct_expert_failure_persists_error_once(monkeypatch, succeeded)
     server = object.__new__(AgentWebSocketServer)
     history = []
     monkeypatch.setattr(
-        agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"}
+        teams_owner, "get_session_metadata", lambda _: {"team_name": "owner"}
     )
     monkeypatch.setattr(
         server, "_resolve_team_backend", lambda sid, team: backend("org")
     )
     monkeypatch.setattr(
-        agent_ws_server,
+        teams_owner,
         "append_history_record",
         lambda **kwargs: history.append(kwargs),
     )
@@ -222,13 +316,13 @@ async def test_denied_expert_request_does_not_write_history(monkeypatch):
     server = object.__new__(AgentWebSocketServer)
     history = []
     monkeypatch.setattr(
-        agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"}
+        teams_owner, "get_session_metadata", lambda _: {"team_name": "owner"}
     )
     monkeypatch.setattr(
         server, "_resolve_team_backend", lambda sid, team: backend(team)
     )
     monkeypatch.setattr(
-        agent_ws_server,
+        teams_owner,
         "append_history_record",
         lambda **kwargs: history.append(kwargs),
     )

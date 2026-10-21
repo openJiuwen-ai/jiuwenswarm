@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.runtime.host_services import (
+from jiuwenswarm.common.host_services import (
     install_runtime_push_handler,
     restore_runtime_push_handler,
 )

@@ -271,12 +271,32 @@ class StreamExecutionService:
         # connectors before the agent runs. Always pass a list (never None):
         # empty clears selection when neither side contributes names.
         params = request.params if isinstance(request.params, dict) else {}
+        try:
+            runtime_binding = facade._resolve_runtime_binding_for_request(adapter, request, session_id)
+        except (OSError, TypeError, ValueError) as exc:
+            yield AgentResponseChunk(
+                request_id=rid, channel_id=cid,
+                payload={"event_type": "chat.error", "error": str(exc)}, is_complete=True,
+            )
+            return
+        reconcile_kwargs = {
+            "model_name": params.get("model_name"),
+            "history_before_request_id": request.request_id,
+            "execution_request": request,
+        }
+        if runtime_binding is not None:
+            reconcile_kwargs["runtime_binding"] = runtime_binding
+        if params.get("model_selection") is not None:
+            reconcile_kwargs["model_selection"] = params["model_selection"]
+        if "moa_enabled" in params:
+            reconcile_kwargs["moa_enabled"] = params["moa_enabled"]
+        moa_access = getattr(adapter, "moa_access_kwargs", None)
+        if callable(moa_access):
+            reconcile_kwargs.update(moa_access(request))
         await facade.reconcile_session_mcp(
             request.session_id,
             ports.compute_chat_send_mcp_needed(params),
-            model_name=params.get("model_name"),
-            history_before_request_id=request.request_id,
-            execution_request=request,
+            **reconcile_kwargs,
         )
         # Team 的交互回答走普通流式路径，不经过 deliver_control_input。
         # 与单 Agent 使用同一落盘格式，按原问题的 params.request_id 配对。

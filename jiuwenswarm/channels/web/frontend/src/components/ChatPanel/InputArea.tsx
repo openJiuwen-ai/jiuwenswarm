@@ -20,7 +20,7 @@
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { AtSign, ChevronRight, CircleX, Loader2, Lock, Mic, Pencil, Plus, Settings, Square, Workflow, X } from 'lucide-react';
+import { AtSign, ChevronRight, CircleX, ListChecks, Loader2, Lock, Mic, Pencil, Plus, Rocket, Settings, Square, SquarePlay, Workflow, X } from 'lucide-react';
 
 // import { stopAllTts } from '../../utils';
 import {
@@ -31,6 +31,8 @@ import {
   useWorkspaceStore,
   usePersonalContextStore,
 } from '../../stores';
+import { isConversationModelGroupBlocked } from '../../multi-session/state/conversationModelSelection';
+import { useMultiModelCollaborationEnabled } from '../../features/multiModelCollaboration/featureConfig';
 import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import { getSelectedAgentGroup } from '../../stores/agentGroupCatalogSeed';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
@@ -122,7 +124,6 @@ import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
 import CommandIcon from '../../assets/chat/command.svg?react';
 import closeSvg from '../../assets/work-mode/close.svg?raw';
 import { insertPlainText } from '../../utils/textEditCommands';
-
 // 个人上下文图标——文档/知识库隐喻，与 SessionSidebar 的 personalContextNavIcon 同源内联 SVG。
 function PersonalContextIcon(props: SVGProps<SVGSVGElement>) {
   return (
@@ -149,6 +150,13 @@ import { TeamSelector } from './TeamSelector';
 import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
+import {
+  resolveTeamBootstrapMode,
+  resolveTeamDispatchMode,
+  useTeamScheduledDispatchEnabled,
+} from '../../features/teamDispatch/featureConfig';
 
 const MENU_GAP = 10;
 /** 智能体选择列表单行高度（与 ChatPanel.css 的 .chat-agent-picker__item min-height 一致） */
@@ -165,6 +173,8 @@ const GROUP_PICKER_ROW_HEIGHT = 40;
 function isSameAgentOption(item: AgentCatalogItem, selectedId: string | null): boolean {
   return selectedId !== null && (item.id === selectedId || item.runtimePackageName === selectedId);
 }
+/** 「+」菜单含文件/技能/计划/目标/设计。欢迎页若按 200px 判断向下展开，底部「设计」会被视口裁掉。 */
+const ATTACH_MENU_ESTIMATED_HEIGHT = 360;
 
 function resolveMenuDirection(anchorBottom: number, menuHeight: number) {
   const spaceBelow = window.innerHeight - anchorBottom - MENU_GAP;
@@ -182,13 +192,16 @@ import {
   createAgentGroupManagementClient,
   getAgentAvatarUrl,
   isAgentGroupSelected,
+  isExternalHarnessCatalogItem,
   type AgentCatalogItem,
   type AgentGroupCatalogItem,
   type AgentGroupIdentity,
 } from '../../features/agentManagement';
+import { DESIGNER_REF_MAX_INLINE_BYTES } from '../../features/designer/designerReferences';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { isImeCompositionKey } from './imeComposition';
 import { useTaskAsr } from '../../features/taskAsr/useTaskAsr';
+import { RecordingWaveform } from '../../features/taskAsr/RecordingWaveform';
 import { useTaskAsrEnabled } from '../../features/taskAsr/featureFlag';
 import { ApplicationPluginTaskInputActions } from '../../applicationPlugins/ApplicationPluginOutlet';
 
@@ -477,12 +490,14 @@ const ATTACHMENT_ACCEPT = [
   .filter((item) => !FORBIDDEN_DOCUMENT_EXTENSIONS.has(item.toLowerCase()))
   .join(',');
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v']);
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a']);
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_COUNT = 20;
 const ATTACHMENT_ALERT_DURATION_MS = 3000;
 
-type AttachmentKind = 'image' | 'document';
+type AttachmentKind = 'image' | 'video' | 'audio' | 'document';
 type AttachmentStatus = 'uploading' | 'ready' | 'error';
 
 interface AttachmentDraft {
@@ -623,24 +638,47 @@ function getLocalFilePath(file: File | undefined, explicitPath?: string): string
   return undefined;
 }
 
+function isVideoFile(file: File): boolean {
+  if (file.type.startsWith('video/')) return true;
+  return VIDEO_EXTENSIONS.has(getFileExtension(file.name || ''));
+}
+
+function isAudioFile(file: File): boolean {
+  if (file.type.startsWith('audio/')) return true;
+  return AUDIO_EXTENSIONS.has(getFileExtension(file.name || ''));
+}
+
 /** Classify a picked file for routing to media.persist vs document.persist. */
-function resolveAttachmentKind(file: File): AttachmentKind | null {
+function resolveAttachmentKind(file: File, designMode: boolean): AttachmentKind | null {
   if (isImageFile(file)) return 'image';
+  if (designMode && isVideoFile(file)) return 'video';
+  if (designMode && isAudioFile(file)) return 'audio';
   if (isForbiddenDocumentFile(file)) return null;
   return 'document';
+}
+
+function getMediaValidationError(file: File, t: TFunction, maxBytes: number): string | null {
+  if (file.size > maxBytes) {
+    return t('chat.inputAttachment.fileSizeExceeded', {
+      name: file.name || t('chat.inputAttachment.unnamedFile'),
+      limit: formatAttachmentSize(maxBytes),
+    });
+  }
+  return null;
 }
 
 function getImageValidationError(file: File, t: TFunction): string | null {
   if (!isImageFile(file)) {
     return t('chat.inputAttachment.unsupportedFileType', { name: file.name || t('chat.inputAttachment.unnamedFile') });
   }
-  if (file.size > MAX_IMAGE_BYTES) {
-    return t('chat.inputAttachment.fileSizeExceeded', {
-      name: file.name || t('chat.inputAttachment.unnamedFile'),
-      limit: formatAttachmentSize(MAX_IMAGE_BYTES),
-    });
+  return getMediaValidationError(file, t, MAX_IMAGE_BYTES);
+}
+
+function getAvValidationError(file: File, t: TFunction): string | null {
+  if (!isVideoFile(file) && !isAudioFile(file)) {
+    return t('chat.inputAttachment.unsupportedFileType', { name: file.name || t('chat.inputAttachment.unnamedFile') });
   }
-  return null;
+  return getMediaValidationError(file, t, MAX_FILE_BYTES);
 }
 
 function clearAttachmentAlertTimers(timers: Map<string, number>): void {
@@ -764,6 +802,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [projectCreateMode, setProjectCreateMode] = useState<ProjectCreateMode>('blank');
   const [menuDirection, setMenuDirection] = useState<'up' | 'down'>('up');
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const [externalAgentSwitchNotice, setExternalAgentSwitchNotice] = useState<string | null>(null);
   const [agentPickerQuery, setAgentPickerQuery] = useState('');
   const [pickerTab, setPickerTab] = useState<'agent' | 'group'>('agent');
   const { tooltip: agentTooltipNode, handlers: agentTooltipHandlers } = useAdaptiveTooltip({ offsetX: -50 });
@@ -873,7 +912,36 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const runs = s.runtimes[activeSessionId ?? '']?.workflowRuns ?? [];
     return runs.some((run) => run.phases?.some((phase) => phase.agents?.some((agent) => agent.status === 'running')));
   });
-  const composerDisabled = agentGroupUnavailable || isCompactRunning || (hasPendingQuestion && !hasRunningAgent);
+  const workMode = useWorkspaceStore((state) => state.workMode);
+  // Design mode reuses this composer for the old DesignerLanding page. The first
+  // prompt is a one-shot compose: no abort, and no second prompt while it runs.
+  const isDesignLanding = workMode === 'design' && activeSessionId === NEW_CONVERSATION_ID;
+  const designLandingSubmitting = isDesignLanding && isProcessing;
+  const composerDisabled =
+    agentGroupUnavailable ||
+    isCompactRunning ||
+    (hasPendingQuestion && !hasRunningAgent) ||
+    designLandingSubmitting;
+
+  useEffect(() => {
+    if (!designLandingSubmitting) return;
+    setAttachMenuOpen(false);
+    setAgentPickerOpen(false);
+    setExtensionPanelOpen(false);
+    setSkillPanelOpen(false);
+  }, [designLandingSubmitting]);
+  const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const collaborationEnabled = useMultiModelCollaborationEnabled();
+  const selectedModelSelection = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedModelSelection);
+  const selectionMetadata = useSessionStore((s) => s.currentSession?.session_id === activeSessionId
+    ? s.currentSession
+    : s.sessions.find((session) => session.session_id === activeSessionId));
+  const modelGroupSendBlocked = !isDesignLanding && !isProcessing && isConversationModelGroupBlocked({
+    mode,
+    cronId: selectionMetadata?.cron_id,
+    selectedModelSelection,
+    collaborationEnabled,
+  });
   const selectedAgentId = useSessionStore((s) => {
     const runtime = s.runtimes[activeSessionId ?? ''];
     if (runtime?.mode !== 'agent') return null;
@@ -918,10 +986,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const agentGroupLocked = Boolean(agentGroupBinding || agentGroupBindingPending);
   const selectedGroup = groupOptions.find((item) => item.name === selectedGroupId || item.id === selectedGroupId) ?? null;
   const displayedGroupId = organizationTeam ? organizationTeam.agent_group_name?.trim() || null : selectedGroupId;
-  const displayedGroup = useMemo(
+  const conversationId = useOrganizationConversationKey(activeSessionId);
+  const groupSnapshot = useSessionStore((s) => s.runtimes[conversationId]?.teamGroupIdentity ?? null);
+  const catalogGroup = useMemo(
     () => (organizationTeam ? resolveOrganizationTeamIdentity(organizationTeam, groupOptions) : selectedGroup),
     [organizationTeam, groupOptions, selectedGroup],
   );
+  const displayedGroup = catalogGroup ?? (
+    groupSnapshot && (groupSnapshot.name === displayedGroupId || groupSnapshot.id === displayedGroupId)
+      ? groupSnapshot
+      : null
+  );
+  const displayedGroupName = resolveTeamGroupDisplayName(displayedGroup, i18n.language) || displayedGroupId;
   const organizationGroupCatalogNeeded = Boolean(organizationTeam?.agent_group_name);
   const installedGroupOptions = useMemo(
     () => groupOptions.filter((item) => item.installed && item.capabilities.canUse),
@@ -939,7 +1015,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   useEffect(() => {
     if (!onAgentGroupIdentityChange) return;
-    onAgentGroupIdentityChange(displayedGroupId && displayedGroup ? displayedGroup : null);
+    // 卸载后的已绑定专家团不再出现在本地目录，但历史消息仍需要使用
+    // 原来的本地化展示名；只有确实没有选中专家团时才清空会话身份。
+    if (displayedGroup) {
+      onAgentGroupIdentityChange(displayedGroup);
+    } else if (!displayedGroupId) {
+      onAgentGroupIdentityChange(null);
+    }
   }, [onAgentGroupIdentityChange, displayedGroup, displayedGroupId]);
 
   useEffect(() => {
@@ -1009,7 +1091,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isLoadingHistory = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isLoadingHistory ?? false);
   const inputValue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.inputValue ?? '');
   const evolutionStatus = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.evolutionStatus ?? null);
-  const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? []);
   const teamMembers = useSessionStore(
     (s) => s.runtimes[activeSessionId ?? '']?.teamMembers ?? [],
@@ -1021,9 +1102,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return s.sessions.find((session) => session.session_id === activeSessionId) ?? null;
   });
   const canPersistAttachments = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
-  const { workMode, projects, selectedProject, setSelectedProject, createProject } = useWorkspaceStore();
+  const { projects, selectedProject, setSelectedProject, createProject } = useWorkspaceStore();
   const loadedMsgLen = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages?.length ?? 0);
   const hasHistory = (currentSession?.message_count ?? 0) > 0 || loadedMsgLen > 0;
+  const externalAgentSwitchBlocked = Boolean(
+    activeSessionId && activeSessionId !== NEW_CONVERSATION_ID && hasHistory,
+  );
+
+  useEffect(() => {
+    if (!externalAgentSwitchNotice) return;
+    const timer = window.setTimeout(() => setExternalAgentSwitchNotice(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [externalAgentSwitchNotice]);
   const goalArmed = useGoalStore((s) => s.runtimes[activeSessionId ?? '']?.armed ?? false);
   const currentGoal = useGoalStore((s) => s.runtimes[activeSessionId ?? '']?.goal ?? null);
   // 目标 active 时普通发送改走排队，而不是文档 §5.1 原定的 input_mode:'steer' 实时插话——
@@ -1091,6 +1181,26 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const swarmflowBudget = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.swarmflowBudget ?? null);
   // 进入真实会话后开关只读：仅新建对话页可修改，真实会话可查看不可改
   const swarmflowToggleDisabled = isProcessing || (activeSessionId !== NEW_CONVERSATION_ID && hasHistory);
+  // 会话级调度模式：实验开关「调度模式」打开才展示；团队按首条消息建好后不可再改，
+  // 与 swarmflow 开关同一把锁（仅新建对话页可拨）。
+  const teamScheduledDispatchEnabled = useTeamScheduledDispatchEnabled();
+  const sessionTeamDispatchMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamDispatchMode);
+  const teamDispatchScheduled = resolveTeamDispatchMode(sessionTeamDispatchMode) === 'scheduled';
+  const teamDispatchToggleDisabled = swarmflowToggleDisabled;
+  // 调度模式的子开关「启动即建队」（F_122）：只在调度模式打开时展示，同一把锁。
+  const sessionTeamBootstrapMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamBootstrapMode);
+  const teamBootstrapFramework = resolveTeamBootstrapMode(sessionTeamBootstrapMode) === 'framework';
+  const setTeamDispatchScheduled = (next: boolean) => {
+    if (!activeSessionId || teamDispatchToggleDisabled) return;
+    const store = useSessionStore.getState();
+    store.setTeamDispatchMode(activeSessionId, next ? 'scheduled' : 'autonomous');
+    // 关掉调度模式时子开关一并复位：framework 只在 scheduled 下合法。
+    if (!next) store.setTeamBootstrapMode(activeSessionId, 'leader');
+  };
+  const setTeamBootstrapFramework = (next: boolean) => {
+    if (!activeSessionId || teamDispatchToggleDisabled) return;
+    useSessionStore.getState().setTeamBootstrapMode(activeSessionId, next ? 'framework' : 'leader');
+  };
   const canUsePlanMenu = supportsPlanMode(mode);
   const planTagVisible = canUsePlanMenu && planActive;
 
@@ -1444,6 +1554,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const {
     isRecording: isListening,
     isTranscribing,
+    audioLevel,
     isSupported: taskAsrSupported,
     toggleRecording,
   } = useTaskAsr({
@@ -1452,13 +1563,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   });
   const taskAsrEnabled = useTaskAsrEnabled();
 
-  const imageInputDisabled = isImageInputDisabled({
-    isListening: isListening || isTranscribing,
-    isCompactRunning,
-    isInterruptible,
-    isTeamMode,
-    isAgentMode,
-  });
+  const imageInputDisabled =
+    designLandingSubmitting ||
+    isImageInputDisabled({
+      isListening: isListening || isTranscribing,
+      isCompactRunning,
+      isInterruptible,
+      isTeamMode,
+      isAgentMode,
+    });
   const isDesktopBridgeReady = useDesktopLocalFilePickerReady();
   const uploadLimitsTooltip = [
     t('chat.inputAttachment.imageLimitTooltip', { limit: MAX_IMAGE_BYTES / (1024 * 1024) }),
@@ -1544,9 +1657,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const releaseUnsentUploads = useCallback((drafts: AttachmentDraft[]) => {
     const removingIds = new Set(drafts.map((draft) => draft.id));
     const remaining = attachmentsRef.current.filter((draft) => !removingIds.has(draft.id));
+    const registeredPaths = new Set(sessionAssetsRef.current.map((asset) => normalizePath(asset.path)));
     const plan = planUnsentImageDiscard(
       drafts.map(toUnsentImageDraft),
       remaining.map(toUnsentImageDraft),
+      registeredPaths,
+      normalizePath,
     );
     const sessionId = activeSessionId || '';
     for (const id of plan.pendingIds) {
@@ -1683,6 +1799,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               filename: attachment.filename,
               localPath: attachment.localPath,
             })
+          : attachment.kind === 'video' || attachment.kind === 'audio'
+            ? (attachment.file ? getAvValidationError(attachment.file, t) : null)
           : attachment.file
             ? getImageValidationError(attachment.file, t)
             : attachment.base64Data
@@ -1760,6 +1878,51 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             });
           }
         })();
+        return;
+      }
+
+      if (attachment.kind === 'video' || attachment.kind === 'audio') {
+        const localPath = getLocalFilePath(attachment.file, attachment.localPath);
+        if (localPath) {
+          updateAttachment(attachment.id, {
+            persistedMediaItem: {
+              type: attachment.kind,
+              filename: attachment.filename,
+              mime_type: attachment.mimeType,
+              path: localPath,
+              size_bytes: attachment.size,
+            },
+            status: 'ready',
+            error: undefined,
+          });
+          return;
+        }
+        if (!attachment.file) {
+          const error = t('chat.inputAttachment.uploadFailed');
+          pushAttachmentAlert(error);
+          updateAttachment(attachment.id, { status: 'error', error });
+          return;
+        }
+        if (attachment.file.size > DESIGNER_REF_MAX_INLINE_BYTES) {
+          const error = t('designer.chat.tooLarge');
+          pushAttachmentAlert(error);
+          updateAttachment(attachment.id, { status: 'error', error });
+          return;
+        }
+        void readBinaryFileAsBase64(attachment.file).then((payload) => {
+          if (!payload?.base64Data) {
+            updateAttachment(attachment.id, {
+              status: 'error',
+              error: t('chat.inputAttachment.uploadFailed'),
+            });
+            return;
+          }
+          updateAttachment(attachment.id, {
+            base64Data: payload.base64Data,
+            status: 'ready',
+            error: undefined,
+          });
+        });
         return;
       }
 
@@ -1885,7 +2048,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       }
 
       const drafts = filesToAdd.reduce<AttachmentDraft[]>((items, file) => {
-        const kind = resolveAttachmentKind(file);
+        const kind = resolveAttachmentKind(file, workMode === 'design');
         if (!kind) {
           const message = isForbiddenDocumentFile(file)
             ? t('chat.inputAttachment.forbiddenFileType', { name: file.name || t('chat.inputAttachment.unnamedFile') })
@@ -1911,7 +2074,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         const validationError =
           kind === 'document'
             ? getDocumentValidationError(file, t, { filename: base.filename, localPath })
-            : getImageValidationError(file, t);
+            : kind === 'video' || kind === 'audio'
+              ? getAvValidationError(file, t)
+              : getImageValidationError(file, t);
         if (validationError) {
           pushAttachmentAlert(validationError);
           items.push({
@@ -1936,7 +2101,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         uploadAttachment(draft);
       });
     },
-    [attachments, pushAttachmentAlert, uploadAttachment, t],
+    [attachments, pushAttachmentAlert, uploadAttachment, t, workMode],
   );
 
   const appendLocalFilePicks = useCallback(
@@ -2141,7 +2306,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       if (!attachMenuRef.current) return;
       const rect = attachMenuRef.current.getBoundingClientRect();
       setAttachMenuAnchor(rect);
-      setAttachMenuDirection(window.innerHeight - rect.bottom >= 200 ? 'down' : 'up');
+      setAttachMenuDirection(resolveMenuDirection(rect.bottom, ATTACH_MENU_ESTIMATED_HEIGHT));
     }
     window.addEventListener('resize', updateAttachMenuPosition);
     window.addEventListener('scroll', updateAttachMenuPosition, true);
@@ -2380,7 +2545,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   const handleSubmit = useCallback(() => {
-    if (composerDisabled) return;
+    if (composerDisabled || isListening || isTranscribing || modelGroupSendBlocked) return;
 
     // 用富文本（含 chip 标记）作为发送内容，气泡可交织渲染技能
     const richContent = extractRichContent();
@@ -2505,6 +2670,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     hasUploadingAttachments,
     hasAttachmentErrors,
     composerDisabled,
+    isListening,
+    isTranscribing,
+    modelGroupSendBlocked,
     isInterruptible,
     onSubmit,
     onForkSession,
@@ -2528,11 +2696,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // preparing a follow-up. A pending approval keeps Stop available and blocks Send.
   const hasDraft = hasTextDraft || attachments.length > 0 || isListening || isTranscribing;
   const isImageInterruptBlocked = isInterruptible && !isTeamMode && !isAgentMode && readyMediaItems.length > 0;
-  const showStop = isProcessing && !isPaused && (!hasDraft || hasPendingQuestion);
+  const showStop =
+    !designLandingSubmitting && isProcessing && !isPaused && (!hasDraft || hasPendingQuestion);
   const hasReadyMedia = readyMediaItems.length > 0;
   const canSubmit =
     showStop ||
     (!composerDisabled &&
+      !isListening &&
+      !isTranscribing &&
+      !modelGroupSendBlocked &&
       (hasTextDraft || hasReadyMedia) &&
       !isLoadingHistory &&
       !isImageInterruptBlocked &&
@@ -2540,18 +2712,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       !hasAttachmentErrors);
 
   const handleSendButtonClick = useCallback(() => {
+    if (designLandingSubmitting) return;
     if (showStop) {
       onCancel();
       return;
     }
 
     handleSubmit();
-  }, [handleSubmit, showStop, onCancel]);
+  }, [designLandingSubmitting, handleSubmit, showStop, onCancel]);
 
   const fullDuplexActionEligible =
     !showStop &&
     !composerDisabled &&
-    !hasTextDraft &&
     attachments.length === 0 &&
     !isListening &&
     !isTranscribing &&
@@ -3376,9 +3548,30 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const handleModeSwitch = useCallback(
     async (targetMode: AgentMode) => {
       if (isProcessing || hasHistory || mode === targetMode) return;
+      // Draft-session in-place mode switch: skills picked for the previous
+      // mode no longer apply, so drop them from the store and remove their
+      // inline chips from the editor. (Switching from a real session enters a
+      // fresh conversation instead, whose rebuilt runtime starts without
+      // skills, so the old session keeps its picks.)
+      const sid = activeSessionId;
+      if (sid && sid === NEW_CONVERSATION_ID) {
+        clearSelectedSkills(sid);
+        const el = inputRef.current;
+        if (el) {
+          el.querySelectorAll('[data-skill]').forEach((chip) => {
+            // Also drop the zero-width-space spacer after the chip.
+            const next = chip.nextSibling;
+            if (next && next.nodeType === Node.TEXT_NODE && next.textContent === '\u200B') {
+              next.remove();
+            }
+            chip.remove();
+          });
+          useChatStore.getState().setInputValue(sid, extractPlainText());
+        }
+      }
       onSwitchMode(targetMode);
     },
-    [isProcessing, hasHistory, mode, onSwitchMode],
+    [activeSessionId, clearSelectedSkills, extractPlainText, hasHistory, isProcessing, mode, onSwitchMode],
   );
 
   const handleModeSelect = useCallback(
@@ -3796,10 +3989,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     ? t('chat.placeholderAwaitingApproval')
                     : isListening
                       ? t('chat.placeholderVoice')
-                      : isTeamMode
-                        ? isInterruptible && !isPaused
-                          ? t('chat.placeholderTeamModeProcessing')
-                          : t('chat.placeholderTeamMode')
+                      : designLandingSubmitting
+                        ? t('chat.placeholder')
+                        : isTeamMode
+                          ? isInterruptible && !isPaused
+                            ? t('chat.placeholderTeamModeProcessing')
+                            : t('chat.placeholderTeamMode')
                         : isAutoHarnessMode
                           ? t('autoHarness.inputPlaceholder')
                           : isAgentMode && isInterruptible
@@ -3839,7 +4034,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       if (!attachMenuOpen && attachMenuRef.current) {
                         const rect = attachMenuRef.current.getBoundingClientRect();
                         setAttachMenuAnchor(rect);
-                        setAttachMenuDirection(window.innerHeight - rect.bottom >= 200 ? 'down' : 'up');
+                        setAttachMenuDirection(resolveMenuDirection(rect.bottom, ATTACH_MENU_ESTIMATED_HEIGHT));
                       }
                       setAttachMenuOpen((open) => !open);
                       setExtensionPanelOpen(false);
@@ -3854,7 +4049,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     aria-label={attachTriggerDisabled ? t('chat.addFileDisabled') : t('chat.addFile')}
                     aria-haspopup="menu"
                     aria-expanded={attachMenuOpen}
-                    data-tooltip={attachTriggerDisabled ? t('chat.addFileDisabled') : t('chat.addFileTooltip')}
+                    data-tooltip={
+                      attachTriggerDisabled
+                        ? t('chat.addFileDisabled')
+                        : isDesignLanding
+                          ? t('chat.addFile')
+                          : t('chat.addFileTooltip')
+                    }
                     {...attachTooltipHandlers}
                   >
                     <Plus className="chat-input-btn-icon" strokeWidth={1.8} />
@@ -3904,6 +4105,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             <span className="chat-mode-select__label">{t('chat.addFile')}</span>
                           </span>
                         </button>
+                        {!isDesignLanding && (
+                        <>
                         <div className="chat-attach-menu-item-anchor">
                           <button
                             type="button"
@@ -4010,6 +4213,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 filteredAgentOptions.map((item) => {
                                   const avatarUrl = getAgentAvatarUrl(item);
                                   const isSelected = isSameAgentOption(item, selectedAgentId);
+                                  const externalSwitchBlocked =
+                                    externalAgentSwitchBlocked && isExternalHarnessCatalogItem(item);
                                   return (
                                     <button
                                       key={item.id}
@@ -4017,21 +4222,27 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                       className={clsx(
                                         'chat-agent-picker__item',
                                         isSelected && 'is-selected',
-                                        agentSelectionDisabled && 'is-locked',
+                                        (agentSelectionDisabled || externalSwitchBlocked) && 'is-locked',
                                       )}
                                       role="menuitemradio"
                                       aria-checked={isSelected}
-                                      aria-disabled={agentSelectionDisabled}
+                                      aria-disabled={agentSelectionDisabled || externalSwitchBlocked}
                                       data-testid="chat-panel-agent-picker-item"
                                       data-variant={item.id}
                                       data-tooltip={
                                         agentSelectionDisabled
                                           ? t('chat.agentOnlyInSingleAgentMode')
-                                          : item.description || undefined
+                                          : externalSwitchBlocked
+                                            ? t('chat.externalAgentRequiresNewSession')
+                                            : item.description || undefined
                                       }
                                       {...agentTooltipHandlers}
                                       onClick={() => {
                                         if (!activeSessionId || agentSelectionDisabled) return;
+                                        if (externalSwitchBlocked) {
+                                          setExternalAgentSwitchNotice(t('chat.externalAgentRequiresNewSession'));
+                                          return;
+                                        }
                                         useSessionStore.getState().setMode(activeSessionId, 'agent');
                                         setAgentSelectionIntent(activeSessionId, { kind: 'select', id: item.id });
                                         setAttachMenuOpen(false);
@@ -4158,6 +4369,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               )}
                             </PickerPanel>
                           )}
+                          {externalAgentSwitchNotice ? (
+                            <div className="app-toast-wrapper app-toast-wrapper--top-center">
+                              <div
+                                className="app-session-toast"
+                                role="status"
+                                aria-live="polite"
+                                data-testid="chat-panel-external-agent-switch-notice"
+                              >
+                                {externalAgentSwitchNotice}
+                              </div>
+                            </div>
+                          ) : null}
                           {agentTooltipNode}
                         </div>
                         {/* 插件/MCP 装备目前后端在集群模式下不生效（JiuWenSwarmDeepAdapter
@@ -4299,6 +4522,55 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               </div>
                             );
                           })()}
+                        {isTeamMode && teamScheduledDispatchEnabled && (
+                          <div
+                            className={cx(
+                              'chat-mode-select__option',
+                              teamDispatchToggleDisabled && 'chat-mode-select__option--disabled',
+                            )}
+                            role="menuitem"
+                            data-testid="chat-panel-input-attach-menu-team-dispatch"
+                            title={t(teamDispatchToggleDisabled ? 'teamDispatch.readonlyHint' : 'teamDispatch.toggleHint')}
+                            onClick={() => setTeamDispatchScheduled(!teamDispatchScheduled)}
+                          >
+                            <span className="chat-mode-select__option-main">
+                              <span className="chat-mode-select__icon" aria-hidden="true">
+                                <ListChecks className="w-4 h-4" />
+                              </span>
+                              <span className="chat-mode-select__label">{t('teamDispatch.toggleLabel')}</span>
+                            </span>
+                            <Switch
+                              checked={teamDispatchScheduled}
+                              disabled={teamDispatchToggleDisabled}
+                              onChange={setTeamDispatchScheduled}
+                            />
+                          </div>
+                        )}
+                        {isTeamMode && teamScheduledDispatchEnabled && teamDispatchScheduled && (
+                          <div
+                            className={cx(
+                              'chat-mode-select__option',
+                              'chat-mode-select__option--sub',
+                              teamDispatchToggleDisabled && 'chat-mode-select__option--disabled',
+                            )}
+                            role="menuitem"
+                            data-testid="chat-panel-input-attach-menu-team-bootstrap"
+                            title={t(teamDispatchToggleDisabled ? 'teamBootstrap.readonlyHint' : 'teamBootstrap.toggleHint')}
+                            onClick={() => setTeamBootstrapFramework(!teamBootstrapFramework)}
+                          >
+                            <span className="chat-mode-select__option-main">
+                              <span className="chat-mode-select__icon" aria-hidden="true">
+                                <Rocket className="w-4 h-4" />
+                              </span>
+                              <span className="chat-mode-select__label">{t('teamBootstrap.toggleLabel')}</span>
+                            </span>
+                            <Switch
+                              checked={teamBootstrapFramework}
+                              disabled={teamDispatchToggleDisabled}
+                              onChange={setTeamBootstrapFramework}
+                            />
+                          </div>
+                        )}
                         {isTeamMode &&
                           (() => {
                             const toggleSwarmflow = (next: boolean) => {
@@ -4450,10 +4722,29 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           </div>
                         )}
+                        </>
+                        )}
                       </div>,
                       document.body,
                     )}
                 </div>
+                {workMode === 'design' && showWorkContextRow && (
+                  <div className="chat-mode-select" data-testid="chat-panel-video-generation">
+                    <div
+                      className="chat-mode-select__trigger chat-mode-select__trigger--feature-on chat-mode-select__trigger--current"
+                      data-testid="chat-panel-video-generation-trigger"
+                    >
+                      <span className="chat-mode-select__value">
+                        <span className="chat-mode-select__icon" aria-hidden="true">
+                          <SquarePlay className="w-4 h-4" />
+                        </span>
+                        <span className="chat-mode-select__label">{t('chat.videoGeneration')}</span>
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {workMode !== 'design' && (
+                <>
                 <div
                   ref={modeMenuRef}
                   className={clsx('chat-mode-select', isModeMenuOpen && 'chat-mode-select--open')}
@@ -4593,6 +4884,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     onSavePermission={onSavePermission}
                   />
                 )}
+                </>
+                )}
 
                 {selectedAgentId && (
                   <div className="chat-agent-tag">
@@ -4643,11 +4936,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           }
                         />
                       ) : (
-                        (displayedGroup?.displayName || displayedGroupId).trim().slice(0, 1).toUpperCase() || '?'
+                        displayedGroupName?.trim().slice(0, 1).toUpperCase() || '?'
                       )}
                     </span>
                     <span className="chat-agent-tag__label" data-testid="chat-panel-agent-group-tag-label">
-                      {displayedGroup?.displayName || displayedGroupId}
+                      {displayedGroupName}
                     </span>
                     {agentGroupLocked || existingTeamGroupSelectionDisabled ? (
                       <Lock className="chat-agent-tag__lock" size={12} strokeWidth={2} aria-hidden="true" />
@@ -4804,11 +5097,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
                 {(isAgentMode || isTeamMode) && <ContextUsageIndicator />}
 
-                <ChatModelSelector
+                {isListening ? <RecordingWaveform level={audioLevel} /> : <ChatModelSelector
                   disabled={
                     isProcessing || composerDisabled || (!isAgentMode && activeSessionId !== NEW_CONVERSATION_ID)
                   }
-                />
+                />}
 
                 {taskAsrEnabled && <button
                   type="button"
@@ -4819,7 +5112,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     isListening && 'chat-input-btn--recording',
                     (composerDisabled || isTranscribing || !taskAsrSupported) && 'chat-input-btn--disabled',
                   )}
-                  aria-label={isListening ? t('chat.stopRecording') : t('chat.startRecording')}
+                  aria-label={isTranscribing ? t('chat.transcribing') : isListening ? t('chat.stopRecording') : t('chat.startRecording')}
                   aria-pressed={isListening}
                   data-tooltip={
                     isTranscribing
@@ -4839,6 +5132,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       strokeWidth={1.8}
                       aria-hidden="true"
                     />
+                  ) : isListening ? (
+                    <Square className="chat-input-btn-icon" fill="currentColor" strokeWidth={1.8} aria-hidden="true" />
                   ) : (
                     <Mic className="chat-input-btn-icon" strokeWidth={1.8} aria-hidden="true" />
                   )}
@@ -4847,6 +5142,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
                 <ApplicationPluginTaskInputActions
                   eligible={fullDuplexActionEligible && !isTeamMode}
+                  hasTextDraft={hasTextDraft}
                   sessionId={activeSessionId}
                   ensureSession={onEnsureSession}
                   labels={{
@@ -4865,12 +5161,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           showStop && 'chat-input-btn--stop',
                           canSubmit ? 'chat-input-btn--send-active' : 'chat-input-btn--disabled',
                         )}
-                        data-tooltip={showStop ? t('chat.stop') : t('chat.send')}
+                        data-tooltip={designLandingSubmitting ? undefined : showStop ? t('chat.stop') : t('chat.send')}
                         {...sendTooltipHandlers}
                         data-testid="chat-panel-input-send"
-                        data-variant={showStop ? 'stop' : 'send'}
+                        data-variant={designLandingSubmitting ? 'submitting' : showStop ? 'stop' : 'send'}
                       >
-                        {showStop ? (
+                        {designLandingSubmitting ? (
+                          <Loader2
+                            className="chat-input-btn-icon chat-input-btn-icon--spin"
+                            strokeWidth={1.8}
+                            aria-hidden="true"
+                          />
+                        ) : showStop ? (
                           <Square
                             className="chat-input-btn-icon"
                             fill="currentColor"

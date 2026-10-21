@@ -74,6 +74,7 @@ async def _invoke(
 ):
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
     from jiuwenswarm.server import agent_ws_server
+    from jiuwenswarm.server.management import teams as teams_owner
 
     ws = _FakeWS()
     lock = asyncio.Lock()
@@ -96,7 +97,7 @@ async def _invoke(
             side_effect=_db,
         ),
         mock.patch.object(
-            agent_ws_server,
+            teams_owner,
             "get_session_metadata",
             return_value=(
                 {"team_name": metadata_team_name} if metadata_team_name else {}
@@ -104,7 +105,7 @@ async def _invoke(
         ),
     ):
         await agent_ws_server.AgentWebSocketServer._handle_team_snapshot(
-            None, ws, request, lock
+            object.__new__(agent_ws_server.AgentWebSocketServer), ws, request, lock
         )
 
     assert len(ws.sent) == 1

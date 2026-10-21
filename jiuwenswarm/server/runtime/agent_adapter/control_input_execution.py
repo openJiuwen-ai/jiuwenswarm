@@ -58,7 +58,10 @@ class ControlInputExecutionService:
             await facade.reconcile_session_mcp(
                 request.session_id, ports.compute_mcp_needed(params),
                 model_name=params.get("model_name"), history_before_request_id=request.request_id,
-                execution_request=request,
+                execution_request=request, retain_moa_snapshot=True,
+                **({"model_selection": params["model_selection"]} if params.get("model_selection") is not None else {}),
+                **({"moa_enabled": params["moa_enabled"]} if "moa_enabled" in params else {}),
+                **(adapter.moa_access_kwargs(request) if callable(getattr(adapter, "moa_access_kwargs", None)) else {}),
             )
             # The answered question keeps its original request id. Continuation
             # output belongs to the new envelope id and excludes resume source.

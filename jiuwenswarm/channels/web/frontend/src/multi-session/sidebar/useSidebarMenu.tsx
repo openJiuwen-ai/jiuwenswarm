@@ -1,5 +1,5 @@
 import { createElement, useRef, useState, type ReactNode } from 'react';
-import { flushSync } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { Archive } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from '../../components/ui';
@@ -49,6 +49,8 @@ export type SidebarMenuOptions =
       type: 'project';
       project: ProjectInfo;
       archiveSessionsDisabled?: boolean;
+      /** 项目移除成功后回调（如 Design 页需要离开已移除项目的路由） */
+      onRemoved?: (projectId: string) => void;
     };
 
 type RenameTarget =
@@ -410,6 +412,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
       if (projectAction === 'delete') {
         const removed = await removeProject(projectId);
         await loadCronJobs();
+        if (options.type === 'project') options.onRemoved?.(projectId);
         // 项目下没有定时任务时只提示“项目已移除”；字段缺失（旧网关）沿用原文案。
         toast.open({
           content: removed.stopped_cron_jobs === 0
@@ -507,7 +510,10 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     }
   }
 
-  const dialogs: ReactNode = (
+  // 弹窗内联在行元素里时，:focus-within 触发的 z-index:10 会把 fixed 弹窗
+  // 封顶在行的堆叠上下文内，开启轨迹后被 z-index:19 的视图切换工具栏盖住；
+  // 挂到 body 才能真正全屏遮罩
+  const dialogs: ReactNode = createPortal(
     <>
       {renameTarget ? (
         <RenameDialog
@@ -567,7 +573,8 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
           onDelete={() => { void submitDeleteSession(); }}
         />
       ) : null}
-    </>
+    </>,
+    document.body,
   );
 
   let items: SidebarMenuItem[] = [];

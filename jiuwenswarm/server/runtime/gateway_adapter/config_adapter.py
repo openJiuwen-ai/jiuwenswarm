@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 from jiuwenswarm.runtime.config_reload import (
@@ -18,6 +19,7 @@ from jiuwenswarm.runtime.config_reload import (
 )
 
 from jiuwenswarm.common.config import resolve_env_vars
+from jiuwenswarm.common.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
@@ -116,6 +118,7 @@ class ConfigAdapter(GatewayAdapter):
 
     methods = frozenset({
         ReqMethod.CONFIG_GET.value,
+        ReqMethod.CONFIG_MOA_STATUS.value,
         ReqMethod.CONFIG_SET.value,
         ReqMethod.CONFIG_SAVE_ALL.value,
         ReqMethod.CONFIG_VALIDATE_MODEL.value,
@@ -144,6 +147,17 @@ class ConfigAdapter(GatewayAdapter):
     })
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
+        if request.req_method == ReqMethod.CONFIG_MOA_STATUS:
+            from jiuwenswarm.common.config import get_config
+            from jiuwenswarm.server.runtime.moa_runtime import moa_status
+
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id,
+                ok=True,
+                payload=moa_status(get_config(), (request.params or {}).get("model_selection")),
+                metadata=request.metadata,
+            )
+
         if request.req_method == ReqMethod.MODELS_ZEN_ENTRIES:
             from jiuwenswarm.server.runtime.opencode_zen import public_zen_free_model_rows
 
@@ -219,7 +233,14 @@ class ConfigAdapter(GatewayAdapter):
                 register_tui_config_handlers,
             )
 
-            register_tui_config_handlers(channel)
+            # A4g review P2：TUI 通道同样接 server 侧 in-process reload（B1'
+            # 既有缺口——原先只给 web 通道传回调；统一 E2A 后 legacy TUI 的
+            # config.set 也走此路径，热重载语义必须补齐）。
+            register_tui_config_handlers(
+                channel,
+                on_config_saved=self._on_config_saved,
+                agent_client=None,
+            )
         else:
             from jiuwenswarm.common.config_panel.config_set_handlers import (
                 register_config_set_handlers,
@@ -232,11 +253,24 @@ class ConfigAdapter(GatewayAdapter):
                 channel,
                 on_config_saved=self._on_config_saved,
             )
-            register_models_handlers(channel, user_id=request.user_id)
+            # models/model_groups 域的写操作同样触发 server 侧 in-process reload
+            # （models.replace_all / upsert / delete 改动模型配置后 agent 需热生效；
+            # 原先只给 config.set/save_all 接回调，E2A 路径漏掉了模型域）
+            register_models_handlers(
+                channel,
+                on_config_saved=self._on_config_saved,
+                user_id=request.user_id,
+            )
         handler = channel.methods.get(request.req_method.value)
         if handler is None:
             return build_error_response(request, "unsupported config method", code="BAD_REQUEST")
-        await handler(object(), request.request_id, request.params or {}, request.session_id)
+        # 登录会话 id 由 Gateway 从受认证连接属性注入（键约定见
+        # e2a.constants.E2A_AUTH_SESSION_PARAM_KEY）；本地构造 ws 上下文还原，
+        # models.list 据此合并登录送的免费模型（common handler 读 ws 属性）。
+        handler_params = dict(request.params or {})
+        auth_session = str(handler_params.pop(E2A_AUTH_SESSION_PARAM_KEY, "") or "").strip()
+        handler_ws = SimpleNamespace(_jiuwen_auth_session=auth_session)
+        await handler(handler_ws, request.request_id, handler_params, request.session_id)
         response = channel.response
         if response is None:
             return build_error_response(request, "config handler produced no response")
@@ -306,7 +340,8 @@ class ConfigAdapter(GatewayAdapter):
             headless = True
         # Older clients omit the decision fields; the saved values then stay untouched.
         decision_updates, error = browser_decision_updates(
-            params.get("decision_mode"), params.get("decision_provider"), config
+            params.get("decision_mode"), params.get("decision_provider"), config,
+            model=params.get("decision_model"), api_base=params.get("decision_api_base"),
         )
         if error:
             return build_error_response(request, error, code="BAD_REQUEST")

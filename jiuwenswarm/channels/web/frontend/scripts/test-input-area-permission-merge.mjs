@@ -10,6 +10,7 @@ await build({
     'src/stores/index.ts',
     'src/i18n/index.ts',
     'src/features/teamOrganization/featureConfig.ts',
+    'src/features/multiModelCollaboration/featureConfig.ts',
     'src/services/webClient.ts',
   ],
   outbase: 'src',
@@ -35,7 +36,9 @@ await build({
         builder.onLoad({ filter: /.*/, namespace: 'task-action' }, () => ({
           contents: `import { createElement } from 'react';
             export function ApplicationPluginTaskInputActions(props) {
-              return props.eligible ? createElement('button', { 'data-testid': 'test-duplex-action' }, 'Full-duplex') : props.fallback;
+              return props.eligible && !props.hasTextDraft
+                ? createElement('button', { 'data-testid': 'test-duplex-action' }, 'Full-duplex')
+                : props.fallback;
             }`,
           loader: 'js',
           resolveDir: root,

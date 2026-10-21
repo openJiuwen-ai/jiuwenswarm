@@ -120,6 +120,12 @@ def _translate_argparse_error(message: str) -> str:
     return message
 
 
+class _StoreOutput(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace._output_explicit = True
+
+
 class ChineseArgumentParser(argparse.ArgumentParser):
     """Keep argparse behavior while presenting its fixed labels in Chinese."""
 
@@ -242,9 +248,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(work_mode="code")
     parser.add_argument(
         "--output",
+        action=_StoreOutput,
         choices=("human", "json", "jsonl"),
         default="human",
-        help="Runtime 事件流的输出格式。",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--timeout", type=float, help="总执行超时时间，单位为秒。")
     parser.add_argument("--show-reasoning", action="store_true", help="显示思考过程。")
@@ -395,6 +402,8 @@ def main() -> None:
             args.prompt is not None
             and not getattr(args, "_interactive_worker", False)
         ):
+            if getattr(args, "_output_explicit", False):
+                parser.error("非交互式命令不支持 --output")
             mode = resolve_display_mode(args.mode, args.work_mode)
             if is_plan_mode(mode) or is_team_mode(mode):
                 parser.error(

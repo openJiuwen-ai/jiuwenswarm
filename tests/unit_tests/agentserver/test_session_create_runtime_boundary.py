@@ -199,12 +199,12 @@ def test_session_create_handler_is_runtime_adapter_only() -> None:
         "prepare_session_create",
         "commit_session_provision",
         "abort_session_provision",
+        "encode_response",
+        "send",
     } <= called_attributes
     assert {
         "SessionCreateInput",
         "SessionProvisionCommitContext",
-        "encode_agent_response_for_wire",
-        "send_wire_payload",
     } <= called_names
     assert {"SessionProvisionCommitTiming", "send_lock"} <= referenced_names
     assert "AFTER_RESULT_DELIVERY" in referenced_attributes
@@ -298,6 +298,7 @@ async def test_success_preserves_claim_metadata_team_send_kvc_order() -> None:
         "projectDir": "/resolved/project",
         "workMode": "work",
         "persist_session": True,
+        "moa_enabled": False,
         "prewarm_hit": True,
         "prewarm_status": "ready",
     }

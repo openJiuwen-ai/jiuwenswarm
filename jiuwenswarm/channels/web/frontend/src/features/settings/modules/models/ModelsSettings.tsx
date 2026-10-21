@@ -19,19 +19,19 @@ import { ModelDialog } from './ModelDialog';
 import { ModelGroupDialog } from './ModelGroupDialog';
 import { ModelGroupsSettings } from './ModelGroupsSettings';
 import { getVendorLabel } from './ModelProviderSelect';
-import { displayModelProtocol, parseVendorCatalog } from './modelAdapters';
+import { displayModelProtocol, parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
 import {
   extractModelSelectionReferences,
+  formatModelSelectionReferenceScopes,
   getGroupDefaultRouteId,
   getModelGroupDisplayName,
   parseModelGroup,
   parseModelGroups,
-  parseModelSelectionReferences,
   promoteGroupRouteDefault,
   removeGroupRoute,
 } from './modelGroupAdapters';
 import { useSessionStore } from '../../../../stores/sessionStore';
-import { getEditableModels } from './modelListOperations';
+import { getEditableModels, isRuntimeGrantedModel } from './modelListOperations';
 
 const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
   reasoning: null,
@@ -68,8 +68,8 @@ export function parseModelResource(payload: unknown): ModelEntry {
     alias: typeof model.alias === 'string' ? model.alias : '',
     model_name: client.model_name,
     api_base: client.api_base,
-    api_key: '',
-    has_api_key: writeOnlyFields.includes('model_client_config.api_key'),
+    api_key: typeof client.api_key === 'string' ? client.api_key : '',
+    has_api_key: Boolean(client.api_key) || writeOnlyFields.includes('model_client_config.api_key'),
     model_provider: typeof client.client_provider === 'string' ? client.client_provider : '',
     timeout: typeof client.timeout === 'number' ? client.timeout : undefined,
     temperature: typeof config.temperature === 'number' ? config.temperature : undefined,
@@ -101,7 +101,7 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   if (model.endpoint_profile) client.endpoint_profile = model.endpoint_profile;
   const config: Record<string, unknown> = {};
   if (model.temperature !== undefined) config.temperature = model.temperature;
-  if (model.reasoning_level) config.reasoning_level = model.reasoning_level;
+  config.reasoning_level = model.reasoning_level ?? '';
   if (model.context_window_tokens !== undefined) config.context_window = model.context_window_tokens;
   return {
     ...(model.model_id ? { model_id: model.model_id } : {}),
@@ -234,7 +234,7 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
     try {
       const payload = await request<{ vendors?: unknown }>('vendors.list');
       if (currentRequestId !== catalogRequestId.current) return;
-      setCatalog(parseVendorCatalog(payload.vendors));
+      setCatalog(withoutGenerationOnlyPresets(parseVendorCatalog(payload.vendors)));
     } catch (error) {
       if (currentRequestId === catalogRequestId.current) {
         setCatalogError(
@@ -339,36 +339,17 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
     }
   };
 
-  const requestDeleteModel = async (model: ModelEntry) => {
+  const requestDeleteModel = (model: ModelEntry) => {
     if (!model.model_id) return;
     setConfirmError('');
-    try {
-      const referencesPayload = await request('models.references', { type: 'model', id: model.model_id });
-      const references = parseModelSelectionReferences(referencesPayload);
-      if (references.length > 0) {
-        showValidationToast({
-          success: false,
-          message: t('settingsPanel.models.modelReferenced', {
-            count: references.length,
-            scopes: references.map((item) => item.scope).join(', '),
-          }),
-        });
-        return;
-      }
-      setConfirmation({
-        type: 'delete-model',
-        model,
-        message: t('settingsPanel.models.deleteConfirm', {
-          alias: model.alias || t('settingsPanel.models.missingCustomName'),
-          model: model.model_name,
-        }),
-      });
-    } catch (error) {
-      showValidationToast({
-        success: false,
-        message: error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'),
-      });
-    }
+    setConfirmation({
+      type: 'delete-model',
+      model,
+      message: t('settingsPanel.models.deleteConfirm', {
+        alias: model.alias || t('settingsPanel.models.missingCustomName'),
+        model: model.model_name,
+      }),
+    });
   };
 
   const saveModelGroup = async (group: ModelGroup) => {
@@ -401,49 +382,16 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
     }
   };
 
-  const requestDeleteModelGroup = async (group: ModelGroup) => {
+  const requestDeleteModelGroup = (group: ModelGroup) => {
     if (!group.model_group_id) return;
     setConfirmError('');
-    try {
-      const referencesPayload = await request('models.references', {
-        type: 'model_group',
-        id: group.model_group_id,
-      });
-      const references = parseModelSelectionReferences(referencesPayload);
-      if (references.length > 0) {
-        showValidationToast({
-          success: false,
-          message: t('settingsPanel.models.modelGroupReferenced', {
-            count: references.length,
-            scopes: references.map((item) => item.scope).join(', '),
-          }),
-        });
-        return;
-      }
-      setConfirmation({
-        type: 'delete-group',
-        group,
-        message: t('settingsPanel.models.deleteModelGroupConfirm', {
-          name: getModelGroupDisplayName(group),
-        }),
-      });
-    } catch (error) {
-      const referenced = extractModelSelectionReferences(error);
-      if (referenced.length > 0 || (error as { code?: string })?.code === 'MODEL_SELECTION_REFERENCED') {
-        showValidationToast({
-          success: false,
-          message: t('settingsPanel.models.modelGroupReferenced', {
-            count: referenced.length || 1,
-            scopes: referenced.map((item) => item.scope).join(', ') || 'unknown',
-          }),
-        });
-        return;
-      }
-      showValidationToast({
-        success: false,
-        message: error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'),
-      });
-    }
+    setConfirmation({
+      type: 'delete-group',
+      group,
+      message: t('settingsPanel.models.deleteModelGroupConfirm', {
+        name: getModelGroupDisplayName(group),
+      }),
+    });
   };
 
   const confirmModelOperation = async () => {
@@ -470,38 +418,39 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
         await saveModelGroup(nextGroup);
       } else if (confirmation.group.model_group_id) {
         setSaving(true);
-        try {
-          await saveQueue.enqueue(
-            'model_group.delete',
-            () =>
-              request(
-                'model_groups.delete',
-                { model_group_id: confirmation.group.model_group_id },
-                {
-                  timeoutMs: 600_000,
-                },
-              ),
-            { errorScope: 'page' },
-          );
-        } catch (error) {
-          const referenced = extractModelSelectionReferences(error);
-          if (referenced.length > 0 || (error as { code?: string })?.code === 'MODEL_SELECTION_REFERENCED') {
-            throw new Error(
-              t('settingsPanel.models.modelGroupReferenced', {
-                count: referenced.length || 1,
-                scopes: referenced.map((item) => item.scope).join(', ') || 'unknown',
-              }),
-            );
-          }
-          throw error;
-        }
+        await saveQueue.enqueue(
+          'model_group.delete',
+          () =>
+            request(
+              'model_groups.delete',
+              { model_group_id: confirmation.group.model_group_id },
+              {
+                timeoutMs: 600_000,
+              },
+            ),
+          { errorScope: 'page' },
+        );
         const refreshedPayload = await request('models.list');
         applyCatalog(parseModelsPayload(refreshedPayload));
         showValidationToast({ success: true, message: t('settingsPanel.models.savedApplied') });
       }
       setConfirmation(null);
     } catch (error) {
-      setConfirmError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+      const references = extractModelSelectionReferences(error);
+      if (references.length > 0) {
+        const key =
+          confirmation?.type === 'delete-group'
+            ? 'settingsPanel.models.modelGroupReferenced'
+            : 'settingsPanel.models.modelReferenced';
+        setConfirmError(
+          t(key, {
+            count: references.length,
+            scopes: formatModelSelectionReferenceScopes(references, models, modelGroups),
+          }),
+        );
+      } else {
+        setConfirmError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+      }
     } finally {
       setConfirming(false);
       setSaving(false);
@@ -561,6 +510,7 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
   };
 
   const renderModelCard = (model: ModelEntry, index: number) => {
+    if (isRuntimeGrantedModel(model)) return null;
     const key = modelIdentity(model, index);
     const validationState = validationStates[key];
     const presentation = getCardPresentation(model);

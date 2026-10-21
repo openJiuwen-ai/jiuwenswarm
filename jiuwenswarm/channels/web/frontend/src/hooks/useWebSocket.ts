@@ -4,6 +4,9 @@
  * 管理 WebSocket 连接和消息处理
  */
 
+import { isConversationModelGroupBlocked } from '../multi-session/state/conversationModelSelection';
+import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
+import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
 import { readOutputOrder } from '../features/sessionOutput';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
 import {
@@ -139,7 +142,9 @@ import {
 } from '../features/agentManagement/port';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
+import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 const TEAM_CONNECTION_GRACE_MS = 5000;
@@ -1355,6 +1360,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             typeof snapshotMember.workflow_run_id === 'string'
               ? snapshotMember.workflow_run_id
               : existing?.workflow_run_id,
+          agent_template:
+            typeof snapshotMember.agent_template === 'string'
+              ? snapshotMember.agent_template
+              : existing?.agent_template,
+          display_name:
+            typeof snapshotMember.display_name === 'string'
+              ? snapshotMember.display_name
+              : existing?.display_name,
         }];
       });
       if (snapshotMembers.length !== response.members.length || snapshotMembers.length === 0) return;
@@ -1456,6 +1469,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           sessionId,
           Object.prototype.hasOwnProperty.call(session, 'team_leader_identity')
             ? normalizeTeamLeaderIdentity(session.team_leader_identity)
+            : null,
+        );
+        useSessionStore.getState().setTeamGroupIdentity(
+          sessionId,
+          Object.prototype.hasOwnProperty.call(session, 'team_group_identity')
+            ? normalizeTeamGroupIdentity(session.team_group_identity)
             : null,
         );
         useSessionStore.getState().setAgentGroupBinding(sessionId, groupId);
@@ -1905,6 +1924,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const runtime = useChatStore.getState().getRuntime(sessionId);
     if (runtime?.isProcessing || runtime?.queuePaused) return;
     if (!sendMessageRef.current) return;
+    const sessionState = useSessionStore.getState();
+    const sessionMetadata = sessionState.currentSession?.session_id === sessionId
+      ? sessionState.currentSession
+      : sessionState.sessions.find((session) => session.session_id === sessionId);
+    if (isConversationModelGroupBlocked({
+      mode: currentMode,
+      cronId: sessionMetadata?.cron_id,
+      selectedModelSelection: sessionState.getRuntime(sessionId)?.selectedModelSelection,
+      collaborationEnabled: isMultiModelCollaborationEnabled(),
+    })) return;
     const nextTask = useChatStore.getState().claimQueuedTask(sessionId);
     if (nextTask) {
       sendMessageRef.current(nextTask.content, sessionId, nextTask.mediaItems ?? []);
@@ -1935,6 +1964,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return false;
         }
       }
+      const sessionState = useSessionStore.getState();
+      const sessionMetadata = sessionState.currentSession?.session_id === sessionId
+        ? sessionState.currentSession
+        : sessionState.sessions.find((session) => session.session_id === sessionId);
+      if (!useChatStore.getState().getRuntime(sessionId)?.isProcessing && isConversationModelGroupBlocked({
+        mode: sessionState.getRuntime(sessionId)?.mode,
+        cronId: sessionMetadata?.cron_id,
+        selectedModelSelection: sessionState.getRuntime(sessionId)?.selectedModelSelection,
+        collaborationEnabled: isMultiModelCollaborationEnabled(),
+      })) {
+        onErrorRef.current?.(t('chat.modelSelector.collaborationDisabled'));
+        return false;
+      }
       const taskId = options?.queuedTaskId;
       if (taskId) {
         const store = useChatStore.getState();
@@ -1942,6 +1984,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // Keep this request's ACK/errors separate from the original chat's lifecycle.
         await sendQueuedTaskInput(sessionId, taskId, request, {
           mode: resolveOutgoingMode(sessionId, 'agent'),
+          ...useSessionStore.getState().getModelSelectionPayload(sessionId),
           ...getSessionWorkContext(sessionId),
         });
         const runtime = useChatStore.getState().getRuntime(sessionId);
@@ -2170,6 +2213,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(sessionRt?.swarmflowWorktree !== undefined
             ? { swarmflow_worktree: sessionRt.swarmflowWorktree }
             : {}),
+          // 会话级团队调度模式：新建会话时由欢迎页开关落成显式值，恢复会话时从 metadata 读回；
+          // 未设置时不发送，后端按 会话持久化 > 团队配置 回退。
+          ...(sessionRt?.teamDispatchMode !== undefined
+            ? { team_dispatch_mode: sessionRt.teamDispatchMode }
+            : {}),
+          // 调度模式的子开关「启动即建队」：同样只在显式值存在时下发。
+          ...(sessionRt?.teamBootstrapMode !== undefined
+            ? { team_bootstrap_mode: sessionRt.teamBootstrapMode }
+            : {}),
         }, {
           // 登记乐观 user 气泡的单号：runtime.accepted 到达时按单号回填服务端权威
           // 时间戳（见 optimisticUserBubblesRef 注释与 runtime.accepted 处理器）。
@@ -2229,6 +2281,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const sendStructuredChatContent = useCallback(
     async (content: unknown, sessionId: string) => {
+      const state = useSessionStore.getState();
+      const metadata = state.currentSession?.session_id === sessionId
+        ? state.currentSession
+        : state.sessions.find((session) => session.session_id === sessionId);
+      if (!useChatStore.getState().getRuntime(sessionId)?.isProcessing && isConversationModelGroupBlocked({
+        mode: state.getRuntime(sessionId)?.mode,
+        cronId: metadata?.cron_id,
+        selectedModelSelection: state.getRuntime(sessionId)?.selectedModelSelection,
+        collaborationEnabled: isMultiModelCollaborationEnabled(),
+      })) {
+        onErrorRef.current?.(t('chat.modelSelector.collaborationDisabled'));
+        return;
+      }
       resetContextCompressionTurn(sessionId);
       userInputVersionRef.current += 1;
       stopAllTts();
@@ -2399,8 +2464,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             Object.assign(params, resolvePlanEntryPayload(sessionId, outgoingMode));
           }
         }
-        if (intent === 'supplement') {
-          params.new_input = newInput ?? '';
+        if (intent === 'supplement') params.new_input = newInput ?? '';
+        if (intent === 'supplement' || intent === 'resume') {
           Object.assign(params, useSessionStore.getState().getOutgoingModelParams(sessionId));
         }
         await request('chat.interrupt', params);
@@ -2662,6 +2727,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               session_id: sessionId,
               query: '',
               mode: resolvedResumeMode,
+              ...useSessionStore.getState().getModelSelectionPayload(sessionId),
               ...getSessionWorkContext(sessionId),
               request_id: requestId,
               answers: permissionAnswers,
@@ -4821,7 +4887,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         }
 
-        if (typeof updates.model_name === 'string' && updates.model_name) {
+        const updatedSelection = parseModelSelection(updates.model_selection);
+        if (updatedSelection) {
+          useSessionStore.getState().setSelectedModelSelection(sessionId, updatedSelection);
+        } else if (
+          typeof updates.model_name === 'string' && updates.model_name &&
+          useSessionStore.getState().getRuntime(sessionId)?.selectedModelSelection?.type !== 'model_group'
+        ) {
+          // A resolved group member's execution name is not a new conversation selection.
           useSessionStore.getState().setSelectedModelName(sessionId, updates.model_name);
         }
       }),
@@ -5308,6 +5381,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             updated_at: e.updated_at,
             workflow_run_id: e.workflow_run_id,
           });
+          const timelineEntry = toTaskTimelineEntry(event as Record<string, unknown>, e.timestamp || Date.now());
+          if (timelineEntry) {
+            useSessionStore.getState().appendTeamTaskTimeline(sessionId, [timelineEntry]);
+          }
           const normalizedTask = normalizeTaskEvent(event);
           if (normalizedTask) {
             useSessionStore.getState().upsertTeamTask(sessionId, normalizedTask);
@@ -5335,6 +5412,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             role?: string;
             cli_agent?: string | null;
             workflow_run_id?: string;
+            agent_template?: string | null;
+            display_name?: string | null;
+            target_status?: string;
           };
           if (e.member_id) markTeamConnectionStateChanged(sessionId, e.member_id);
           if (e.member_id && (e.status || e.new_status || e.execution_status)) {
@@ -5344,7 +5424,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const activeSessionId = getPayloadSessionId(payload) || undefined;
           upsertHumanShareCommandFromEvent(payload, e);
           if (e.type === 'team.member.shutdown' && e.member_id) {
-            applyTeamMemberShutdown(e.member_id, activeSessionId);
+            // 休眠退场同样发 shutdown 事件，但成员仍在名册上、被点名即可唤醒；
+            // 只有终态为 shut_down（或旧后端不带 target_status）时才移出名册，
+            // 休眠成员随后由 status_changed → dormant 更新状态。
+            if (e.target_status !== 'dormant') {
+              applyTeamMemberShutdown(e.member_id, activeSessionId);
+            }
           } else if (e.type === 'team.member.status_changed' && e.member_id && e.new_status) {
             useSessionStore.getState().updateTeamMemberStatus(
               sessionId,
@@ -5388,6 +5473,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               role: e.role,
               cli_agent: e.cli_agent,
               workflow_run_id: e.workflow_run_id,
+              agent_template: e.agent_template,
+              display_name: e.display_name,
             });
           }
         }

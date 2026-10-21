@@ -71,6 +71,7 @@
 | `agent_type` | `agent` / `agent_session` | 把节点派给三方 CLI Agent（`'claude'` / `'codex'`，须在团队三方 Agent 白名单内）；与 `schema` 可组合，详见下文「三方 Agent」 |
 | `builtin_model` | `agent` / `agent_session` | 仅三方节点：用 CLI 自带登录跑其内置目录中的型号；与 `model` 互斥，详见下文「三方 Agent → 模型」 |
 | `effort` | `agent` / `agent_session` | 仅三方节点且伴随 `builtin_model`：推理强度档位，须在该型号声明的档位内；缺省取默认档 |
+| `agent_template` | `agent` / `agent_session` | 把节点交给**当前会话已绑定专家团**的某个成员执行（填成员裸名，如 `'clip'`）；worker 以该成员的人设与能力快照运行，详见下文「专家 worker」 |
 
 示例：
 
@@ -384,6 +385,28 @@ sess = agent_session(label="iter", options={"agent_type": "claude"})
 
 - **工具活动（live-only）**：运行中的树状图节点行内提示最近工具名，节点详情面板列出工具活动对（`tool_call` / `tool_result`）；完成轮次后，成员调用列表同步呈现该成员的调用记录（既有链）；活动**仅 live 生效**：缓存命中或续跑回放不重发，整页刷新后树内活动随 checkpoint 恢复。
 - **run 分组**：成员列表、会话缩略图、任务面板按工作流 run 分组展示，组头显示工作流名 + run 短 id + 状态徽标；真实队友与普通任务不受影响。整页刷新后，镜像成员（含已结束 run）随团队快照恢复并保持分组。
+
+---
+
+## 专家 worker（`agent_template`）
+
+> **引擎版本门禁**：`openjiuwen` 低于本特性版本时，旧引擎会直接拒绝 `agent_template` 键（报 `unknown option`）；升级 pin 后本节功能才生效。
+
+脚本可把单个节点交给**当前会话已绑定专家团**的某个成员执行：
+
+```python
+result = await agent("裁剪这张图", label="clip",
+                     options={"agent_template": "clip"})
+sess = agent_session(label="design", options={"agent_template": "designer"})
+```
+
+| 要点 | 说明 |
+|------|------|
+| 成员裸名 | `agent_template` 填专家团成员的**裸名**（如 `"clip"`），不带 `designer/` 这类前缀 |
+| 能力来源 | worker 以该成员的人设与能力快照（技能 / 工具 / 门禁 / MCP）运行，**不再继承**通用队友工具 |
+| 两算子 + 首锁 | `agent()` 与 `agent_session()` 均可用；会话在**首个真实轮次**锁定成员，中途换人需 `fork()` |
+| 发射前失败 | 四类情况在发射前报错，并在错误里列出当前可用成员名：名字不在专家团内、名字带 `/`、与 `agent_type` 同时出现、该成员声明了外部运行时 |
+| 缺省不变 | 不写 `agent_template` 时行为与以前完全一致；写了则画布节点主文字仍是 label，悬浮显示"专家：展示名（成员名）"；头像统一为按展示名哈希的插画并叠加 ★ 专家角标（与普通队友同视觉体系，靠角标区分；专家团包内的头像只在管理页展示）。成员名册与任务卡同脸；名册条目与普通 worker 一样显示 label 与 `@member_id`，专家多一行辅助 `★ 展示名（成员名）`。`agent_template` 不能写 `leader`（Team Leader 不是 worker），校验器与引擎都会拒绝 |
 
 ---
 

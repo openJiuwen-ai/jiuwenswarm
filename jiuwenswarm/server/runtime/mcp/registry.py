@@ -1537,3 +1537,18 @@ __all__ = [
     "CODE_CREDENTIALS_INVALID",
     "CODE_INSTALL_SCRIPT_DEP",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# common 注入点自注册：import 即注册，供 common 经
+# ``common.external_providers.provider("mcp_registry")`` 反向取用（分层规则 R1）。
+# --------------------------------------------------------------------------- #
+def _register_common_provider() -> None:
+    import sys
+
+    from jiuwenswarm.common.external_providers import register
+
+    register("mcp_registry", sys.modules[__name__])
+
+
+_register_common_provider()

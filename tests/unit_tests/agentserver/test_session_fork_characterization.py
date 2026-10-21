@@ -155,6 +155,7 @@ async def test_session_fork_server_preserves_runtime_commit_and_wire_order() -> 
         "session_id": "fork-target",
         "source_session_id": "fork-source",
         "title": "Forked session",
+        "moa_enabled": False,
     }
     assert response.metadata is None
 
@@ -341,6 +342,7 @@ async def test_session_fork_crosses_real_runtime_boundary_end_to_end(
             "session_id": "fork-target",
             "source_session_id": "fork-source",
             "title": "Forked session",
+            "moa_enabled": False,
         }
     finally:
         await runtime.close()
@@ -618,4 +620,4 @@ def test_session_fork_handler_keeps_transport_and_runtime_boundary() -> None:
     assert "prepare_session_fork" in source
     assert "commit_session_provision" in source
     assert "send_lock" in source
-    assert "send_wire_payload" in source
+    assert "self.services.send" in source

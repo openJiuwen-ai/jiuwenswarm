@@ -95,6 +95,19 @@ class ModelCatalog:
                 return group
         raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, f"unknown model_group_id {group_id!r}")
 
+    def has_selection(self, selection: ModelSelection) -> bool:
+        """Whether a saved selection still names a model, group, and route."""
+        if selection.type == "model":
+            return selection.id in self.snapshot["by_id"]
+        for group in self.snapshot["groups"]:
+            if not isinstance(group, dict) or group.get("model_group_id") != selection.id:
+                continue
+            return selection.route_id is None or any(
+                isinstance(route, dict) and route.get("route_id") == selection.route_id
+                for route in group.get("routes") or []
+            )
+        return False
+
     @staticmethod
     def _safe_model(entry: dict[str, Any], source: str) -> dict[str, Any]:
         mcc = entry.get("model_client_config") or {}
@@ -114,18 +127,25 @@ class ModelCatalog:
                     result.append(self._safe_model(entry, source))
         return result
 
-    def get_public_model_detail(self, model_id: str) -> dict[str, Any]:
-        """Return an editable model DTO without write-only credentials.
+    def get_public_model_detail(self, model_id: str, *, include_api_key: bool = False) -> dict[str, Any]:
+        """Return model details, optionally including a user-configured API key.
 
         Updates are merge-based, so omitted write-only fields remain unchanged.
         AgentOS models are intentionally exposed as read-only catalog entries.
+        Editing may include the decrypted API key of a user-configured model.
         """
+        from jiuwenswarm.common.auth.model_catalog import is_login_model
+
         hit = self.get_model(model_id)
         entry = deepcopy(hit["entry"])
+        model_config = entry.get("model_config_obj")
+        if isinstance(model_config, dict) and isinstance(model_config.get("reasoning_level"), bool):
+            model_config["reasoning_level"] = "on" if model_config["reasoning_level"] else "off"
+        expose_api_key = include_api_key and hit["source"] == "defaults" and not is_login_model(entry)
         client = entry.get("model_client_config")
         write_only_fields: list[str] = []
         if isinstance(client, dict):
-            if "api_key" in client:
+            if "api_key" in client and not expose_api_key:
                 client.pop("api_key", None)
                 write_only_fields.append("model_client_config.api_key")
             if "custom_headers" in client:

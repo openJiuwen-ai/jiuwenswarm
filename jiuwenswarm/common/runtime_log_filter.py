@@ -45,12 +45,20 @@ class RuntimeLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         # Normal request logs never format messages or acquire the lock here.
         if record.levelno < logging.WARNING:
-            if record.name not in _BROWSER_LOGGERS:
+            stream_timing = (
+                record.name == "runner"
+                and record.levelno == logging.INFO
+                and str(record.msg).startswith(_STREAM_TIMING_PREFIX)
+            )
+            if record.name not in _BROWSER_LOGGERS and not stream_timing:
                 return True
-            if not str(record.msg).startswith("BrowserService heartbeat: restart deferred"):
+            if not stream_timing and not str(record.msg).startswith("BrowserService heartbeat: restart deferred"):
                 return True
         message = record.getMessage()
-        category = _diagnostic_category(record.name, message)
+        if record.name == "runner" and record.levelno == logging.INFO and message.startswith(_STREAM_TIMING_PREFIX):
+            category = "rail_stream_timing"
+        else:
+            category = _diagnostic_category(record.name, message)
         if not category:
             return True
 
@@ -108,6 +116,7 @@ class RuntimeLogFilter(logging.Filter):
 
 
 _BROWSER_LOGGERS = ("browser_agent", "openjiuwen.browser_agent")
+_STREAM_TIMING_PREFIX = "[RailChain] _framework:llm_stream_output callbacks="
 _FILTER = RuntimeLogFilter()
 
 
@@ -121,4 +130,9 @@ def install_runtime_log_filter() -> None:
         logging.getLogger(name).addFilter(_FILTER)
 
 
-atexit.register(_FILTER.flush)
+def flush_runtime_log_filter() -> None:
+    """Publish final repeat counts before a Worker closes its log queue."""
+    _FILTER.flush()
+
+
+atexit.register(flush_runtime_log_filter)

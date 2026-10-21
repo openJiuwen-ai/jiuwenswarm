@@ -24,7 +24,9 @@ logger = logging.getLogger(__name__)
 _DELIVERED: ContextVar[list[bool] | None] = ContextVar("runtime_ipc_delivered", default=None)
 _REQUEST_GENERATION: ContextVar[int | None] = ContextVar("runtime_ipc_generation", default=None)
 _DISPATCH_ID: ContextVar[str] = ContextVar("runtime_dispatch_id", default="")
-_DELIVERY_TIMEOUT = 5.0
+# The Front allows ten seconds for Gateway forwarding. Leave time for its
+# failure acknowledgement before treating the IPC delivery itself as lost.
+_DELIVERY_TIMEOUT = 15.0
 
 
 class ConnHolder:

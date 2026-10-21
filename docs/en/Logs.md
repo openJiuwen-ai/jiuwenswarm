@@ -142,6 +142,16 @@ The logging system adopts the following rotation strategy:
 4. All logs except gateway are aggregated into `full.log`
 5. Automatic rotation when log files reach size limit
 
+### 4.3 Runtime Worker Log Load Protection
+
+The Runtime Worker writes configured Python log handlers on a background thread, preserving their files, levels, filters, and masking rules. This includes SDK loggers created lazily for Team execution, model calls, and resource registration, as well as handlers replaced during reconfiguration. Each record retains the emitting session's context for background filters. The queue holds at most 512 records. When full, it drops new records and reports the cumulative `dropped` count once writing resumes. Normal exit waits up to two seconds for the logging thread, allowing a process whose Runtime cleanup has finished to exit even if the disk remains blocked.
+
+When a handler fails to write or close, the background thread counts failures and reports the operation, handler type, exception type, and count to stderr. Each operation reports its first failure and every 100th failure. Diagnostics omit the original exception message to avoid exposing credentials. An unavailable stderr increments a separate diagnostic failure count.
+
+A log message or exception text longer than 65,536 characters is replaced entirely with `[log payload omitted: ...]` before masking. JSON records use a valid JSON summary containing `log_payload_omitted`. This bounds large-payload work on the business thread. The log limit does not apply to session history. INFO timing records for `llm_stream_output` callbacks keep the first record per source each minute and summarize repeats. DEBUG and WARNING records retain their normal behavior. Heartbeat timeout settings are unchanged.
+
+On Windows, a dedicated named-pipe reader continues answering heartbeats while the business loop is stalled, including when additional session requests or delivery acknowledgements arrive. Business messages remain ordered in a buffer capped at 256 messages and 64 MiB; exceeding either bound reports an IPC backlog error. Pongs report business-loop age, so a live transport does not hide a sustained stall. A stalled loop still produces a native thread stack dump in Worker stderr after about 25 seconds; off-loop heartbeats do not postpone it. The Supervisor retains its 30-second transport timeout and 180-second sustained-stall restart threshold.
+
 ## 5. Log Configuration
 
 ### 5.1 Configuration File

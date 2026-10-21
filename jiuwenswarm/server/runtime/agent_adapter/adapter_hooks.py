@@ -14,6 +14,9 @@ from typing import Any, Protocol
 
 
 class AdapterHookServices(Protocol):
+    async def sync_conversation_context(self, harness: Any, session_id: str) -> None:
+        """Synchronize a managed conversation at its authorized input boundary."""
+
     async def before_memory(self, request: Any) -> str:
         """Return the memory block authorized for this request."""
 
@@ -34,6 +37,11 @@ class AdapterHookServices(Protocol):
 
 
 class ExtensionAdapterHookServices:
+    async def sync_conversation_context(self, harness: Any, session_id: str) -> None:
+        from jiuwenswarm.extensions.video_duplex.backend.conversation_context import sync_conversation_context
+
+        await sync_conversation_context(harness, session_id)
+
     async def install_task_rail(self, harness: Any, rail: Any, *, reload: bool = False) -> Any:
         from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import install_task_rail
 

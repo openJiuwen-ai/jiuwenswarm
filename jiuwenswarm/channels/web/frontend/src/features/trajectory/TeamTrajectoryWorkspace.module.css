@@ -30,6 +30,32 @@
   height: 100%;
   min-height: 0;
   flex: 0 0 100%;
+  /* Let the member name stick to the lanes scroller; the ledger scrolls inside. */
+  overflow: visible;
+}
+
+.laneRowExpanded :global([role='toolbar']) {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.laneRow[data-highlighted='true'] :global([role='toolbar']),
+.laneRowExpanded[data-highlighted='true'] :global([role='toolbar']) {
+  background: #ddecff;
+}
+
+.memberCluster {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.memberCheck {
+  flex: none;
+  margin: 0;
 }
 
 .memberControl {

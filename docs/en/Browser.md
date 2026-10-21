@@ -61,6 +61,19 @@ In visible mode, the Chrome window appears when the first browser task starts.
 Complete login, MFA, or other required manual authorization in that window, then
 continue the task in the conversation.
 
+### 2.4 Optional browser decision providers
+
+Under **Settings > Browser**, configure the target provider's credentials before
+selecting the provider and a Jev mode. Credentials are independent: an OpenRouter
+key is not a TypeSafe key. Reopening **Configure** prefills the saved key with
+password masking and a reveal control. Clearing an inactive provider does not
+disable the active provider.
+
+| Provider | Default model | API key environment variable |
+|---|---|---|
+| OpenRouter | `typesafe/jev-1.13` | `OPENROUTER_API_KEY` |
+| TypeSafe | `jev-1.13.0` | `TYPESAFE_API_KEY` |
+
 ## 3. Usage guidance
 
 - Keep the same agent session for long workflows that depend on login state.

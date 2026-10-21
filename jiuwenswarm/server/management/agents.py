@@ -555,8 +555,10 @@ class AgentsManagement:
             if reload_scopes:
                 reload_kwargs["reload_scopes"] = reload_scopes
             if isinstance(config_payload, dict) and "a4p" in config_payload:
-                from jiuwenswarm.agents.harness.common.a4p_runtime import get_a4p_config
-
+                from jiuwenswarm.agents.harness.common.a4p.runtime import (
+                    get_a4p_config,
+                )
+    
                 config_payload = {**config_payload, "a4p": get_a4p_config()}
             agent_reload_scopes = {
                 "model",
@@ -586,7 +588,7 @@ class AgentsManagement:
                 )
             if should_refresh_image_modality:
                 from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
-
+    
                 host.spawn_background(
                     warm_zen_free_models(reason="agent.reload_config"), name="zen-models-reload"
                 )
@@ -598,7 +600,7 @@ class AgentsManagement:
                     from jiuwenswarm.agents.harness.team import (
                         stop_all_paused_team_session_runtimes_across_managers,
                     )
-
+    
                     stopped = (
                         await stop_all_paused_team_session_runtimes_across_managers(
                             reason="agent.reload_config: "
@@ -627,7 +629,7 @@ class AgentsManagement:
                     from jiuwenswarm.server.runtime.proactive_adapter import (
                         build_proactive_agent,
                     )
-
+    
                     host._proactive_engine.rebuild_proactive_agent(
                         build_proactive_agent
                     )

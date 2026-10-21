@@ -25,6 +25,7 @@ from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     SESSION_MESSAGE_ORIGIN,
+    with_cross_session_history_metadata,
 )
 
 from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
@@ -143,6 +144,13 @@ def _with_request_runtime_context(
     context["extra"] = extra
     run_data["context"] = context
     return run_data
+
+
+def _cross_session_marker_from_params(params: Any) -> Any:
+    """Extract the internal cross-Session marker from request params."""
+    if not isinstance(params, dict):
+        return None
+    return params.get(SESSION_MESSAGE_INTERNAL_KEY)
 
 
 class _TeamPlanApprovalPayloadError(ValueError):
@@ -515,7 +523,9 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
     if not isinstance(params, dict):
         return None
 
-    extra = _with_cross_session_history_metadata(None, params) or {}
+    extra = with_cross_session_history_metadata(
+        None, _cross_session_marker_from_params(params)
+    ) or {}
     raw_media_items = params.get("media_items")
     if isinstance(raw_media_items, list):
         media_items: list[dict[str, Any]] = []
@@ -1999,52 +2009,65 @@ class JiuWenSwarm:
 
     async def _process_interrupt(self, request: AgentRequest) -> AgentResponse:
         """处理 interrupt 请求.
-
+    
         根据 intent 分流：
         - pause: 暂停 ReAct 循环（不取消任务）
         - resume: 恢复已暂停的 ReAct 循环
         - cancel: 取消当前 session 正在运行的任务
         - supplement: 取消当前任务但保留 todo
-
+    
         Args:
             request: AgentRequest，params 中可包含：
                 - intent: 中断意图 ('pause' | 'cancel' | 'resume' | 'supplement')
                 - new_input: 新的用户输入（用于切换任务）
-
+    
         Returns:
             AgentResponse 包含 interrupt_result 事件数据
         """
         intent = request.params.get("intent", "cancel")
         session_id = self._session_manager.get_session_id(request.session_id)
         is_team_mode = is_team_params(request.params if isinstance(request.params, dict) else None)
-
+    
         if is_team_mode:
             return await self._process_team_interrupt(
                 request=request,
                 intent=intent,
                 session_id=session_id,
             )
-
+    
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
-
+        external_session_checker = getattr(
+            adapter,
+            "is_external_harness_session",
+            None,
+        )
+        is_external_session = bool(
+            callable(external_session_checker)
+            and external_session_checker(request.session_id)
+        )
+    
         if intent == "pause":
             # 暂停：不取消任务，只暂停 ReAct 循环
             return await adapter.process_interrupt(request)
-
+    
         if intent == "resume":
             # 恢复：恢复 ReAct 循环
             return await adapter.process_interrupt(request)
-
+    
         if intent == "supplement":
             # 取消当前 session 的任务
             response = await adapter.process_interrupt(request)
+            if is_external_session:
+                return response
             await self._session_manager.cancel_session_task(session_id, "interrupt(supplement): ")
             return response
-
+    
         # cancel: 先调用 adapter.process_interrupt（此时 session 仍在 _active_session_ids 中，
         # guard 能通过），再 cancel_session_task（其 finally 会把 session 从 _active_session_ids 移除）。
         # 顺序不能反，否则 process_interrupt 的 session guard 会误判为 "not active" 而跳过 abort。
         response = await adapter.process_interrupt(request)
+        if is_external_session:
+            return response
         await self._cancel_team_work_for_session(
             session_id,
             request.channel_id,
@@ -2086,7 +2109,7 @@ class JiuWenSwarm:
         session_id: str,
     ) -> AgentResponse:
         """Handle interrupt requests for Team mode.
-
+    
         Team runtime is persistent and owned by openjiuwen Runner pool. For team sessions:
         - pause stops the foreground stream and parks the runtime in paused state
           via Runner.pause_agent_team, allowing same-session resume.
@@ -2096,10 +2119,10 @@ class JiuWenSwarm:
           message directly to continue a paused session.
         """
         from jiuwenswarm.agents.harness.team import get_team_manager
-
+    
         team_manager = get_team_manager(request.channel_id)
         reason = f"interrupt(intent={intent}): "
-
+    
         if intent == "resume":
             return self._build_interrupt_result_response(
                 request,
@@ -2107,10 +2130,25 @@ class JiuWenSwarm:
                 success=True,
                 message="团队暂停后，直接发送下一条消息即可继续。",
             )
-
+    
         if intent in {"pause", "cancel"}:
             if intent == "pause":
                 paused = await team_manager.pause_session_runtime(session_id, reason=reason)
+                if paused:
+                    # The persistent foreground stream survives pause, so the
+                    # gateway's stream-exit fallback never fires.  Emit the
+                    # terminal frame explicitly; shape matches the old
+                    # gateway fallback exactly.
+                    await team_manager.broadcast_event(
+                        session_id,
+                        {
+                            "event_type": "chat.processing_status",
+                            "session_id": session_id,
+                            "is_processing": False,
+                            "is_complete": True,
+                        },
+                        channel_id=request.channel_id,
+                    )
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,
@@ -2142,7 +2180,7 @@ class JiuWenSwarm:
                 success=success,
                 message=message,
             )
-
+    
         return self._build_interrupt_result_response(
             request,
             intent=intent,
@@ -2204,12 +2242,12 @@ class JiuWenSwarm:
         schedule_session: bool,
     ) -> AgentResponse:
         """处理非流式请求.
-
+    
         支持多 session 并发执行，同 session 内任务按先进后出顺序执行.
         """
         if request.req_method == ReqMethod.CHAT_CANCEL:
             return await self._process_interrupt(request)
-
+    
         if request.req_method == ReqMethod.CHAT_ANSWER:
             adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
             validator = getattr(
@@ -2218,11 +2256,11 @@ class JiuWenSwarm:
             if callable(validator):
                 validator(request)
             return await adapter.handle_user_answer(request)
-
+    
         if request.req_method == ReqMethod.CHAT_SWARMFLOW_REPLY:
             adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
             return await adapter.handle_swarmflow_reply(request)
-
+    
         # Non-stream goal command (GET, PAUSE, CLEAR)
         if request.req_method == ReqMethod.COMMAND_GOAL:
             try:
@@ -2323,39 +2361,39 @@ class JiuWenSwarm:
                     payload={"error": f"Goal command error: {exc}"},
                     metadata=request.metadata,
                 )
-
+    
         # 无状态请求（skills / skilldev / plugins / Skill Graph）不需要 adapter，
         # 在 _ensure_adapter 之前检查，避免触发 adapter 懒初始化。
         # COMMAND_GOAL 已在上方单独处理（其内部按需 ensure），不影响本顺序。
         skilldev_response = await self._handle_skilldev_request(request)
         if skilldev_response is not None:
             return skilldev_response
-
+    
         skills_response = await self._handle_skills_request(request)
         if skills_response is not None:
             return skills_response
-
+    
         session_asset_response = await self._handle_session_asset_request(request)
         if session_asset_response is not None:
             return session_asset_response
-
+    
         plugins_response = await self._handle_plugins_request(request)
         if plugins_response is not None:
             return plugins_response
-
+    
         package_catalog_response = await self._handle_package_catalog_request(request)
         if package_catalog_response is not None:
             return package_catalog_response
-
+    
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
         validator = getattr(adapter, "validate_auto_permission_workspace_request", None)
         if callable(validator):
             validator(request)
-
+    
         heartbeat_response = await adapter.handle_heartbeat(request)
         if heartbeat_response is not None:
             return heartbeat_response
-
+    
         session_id = self._session_manager.get_session_id(request.session_id)
         if isinstance(request.params, dict):
             restore_chat_send_equipment_params(session_id, request.params)
@@ -2377,12 +2415,12 @@ class JiuWenSwarm:
             )
         # 注：ask_user_answer 的落盘在 deliver_control_input 里——ask_user_interrupt
         # resume 走 control-input 路径，不经过本方法。
-
+    
         logger.info(
             "[JiuWenSwarm] 处理请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
             request.request_id, request.channel_id, session_id, self._sdk_name,
         )
-
+    
         try:
             inputs, memory_mode, user_turn = self._build_inputs(request)
         except _TeamPlanApprovalPayloadError as exc:
@@ -2393,33 +2431,59 @@ class JiuWenSwarm:
                 payload={"error": str(exc)},
                 metadata=request.metadata,
             )
-
+    
         # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
         # connectors before the agent runs. Always pass a list (never None):
         # empty clears selection when neither side contributes names.
         params = request.params if isinstance(request.params, dict) else {}
+        try:
+            runtime_binding = self._resolve_runtime_binding_for_request(
+                adapter,
+                request,
+                session_id,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc)},
+                metadata=request.metadata,
+            )
+        reconcile_kwargs: dict[str, Any] = {
+            "model_name": params.get("model_name"),
+            "history_before_request_id": request.request_id,
+        }
+        if runtime_binding is not None:
+            reconcile_kwargs["runtime_binding"] = runtime_binding
+        if params.get("model_selection") is not None:
+            reconcile_kwargs["model_selection"] = params["model_selection"]
+        if "moa_enabled" in params:
+            reconcile_kwargs["moa_enabled"] = params["moa_enabled"]
+        moa_access = getattr(adapter, "moa_access_kwargs", None)
+        if callable(moa_access):
+            reconcile_kwargs.update(moa_access(request))
+        reconcile_kwargs["execution_request"] = request
         await self.reconcile_session_mcp(
             request.session_id,
             compute_chat_send_mcp_needed(params),
-            model_name=params.get("model_name"),
-            history_before_request_id=request.request_id,
-            execution_request=request,
+            **reconcile_kwargs,
         )
-
+    
         # cloud memory: before chat hook
         if memory_mode == "cloud":
             inputs["memory_block"] = await self._get_hook_services().before_memory(request)
-
+    
         async def run_agent_task():
             return await adapter.process_message_impl(request, inputs)
-
+    
         if schedule_session:
             result = await self._session_manager.submit_and_wait(
                 session_id, run_agent_task
             )
         else:
             result = await run_agent_task()
-
+    
         if result.ok and result.payload.get("content"):
             content = result.payload["content"]
             content_str = content if isinstance(content, str) else str(content)
@@ -2468,14 +2532,14 @@ class JiuWenSwarm:
             # cloud memory: after chat hook
             if memory_mode == "cloud":
                 await self._get_hook_services().after_memory(request, content_str)
-
+    
             # auto memory: extract memories after conversation ends
             # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
             mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
             config = get_config()
             if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
                 _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
-
+    
         return result
 
     async def deliver_session_input(
@@ -2690,9 +2754,14 @@ class JiuWenSwarm:
         model_name: str | None = None,
         history_before_request_id: str | None = None,
         execution_request: AgentRequest | None = None,
+        runtime_binding: dict[str, Any] | None = None,
+        moa_enabled: bool | None = None,
+        model_selection: Any = None,
+        moa_can_access: Any = None,
+        retain_moa_snapshot: bool = False,
     ) -> None:
         """Reconcile this session's MCP set to ``needed`` (idempotent diff).
-
+    
         Session-level enable driven by chat.send: callers should pass the union
         of ``params.mcp`` and connectors from ``agent_template_name`` /
         ``plugin_names`` (see ``compute_chat_send_mcp_needed``). ``None`` /
@@ -2709,6 +2778,8 @@ class JiuWenSwarm:
             # Adapter doesn't support session-level MCP (e.g. a stub/mock
             # adapter) — session-level enable is a no-op for it.
             return
+        parameters = {}
+        accepts_kwargs = False
         try:
             parameters = inspect.signature(reconcile).parameters
         except (TypeError, ValueError):
@@ -2729,6 +2800,16 @@ class JiuWenSwarm:
                 )
             if execution_request is not None and "execution_request" in parameters:
                 supported_kwargs["execution_request"] = execution_request
+            if "runtime_binding" in parameters or accepts_kwargs:
+                supported_kwargs["runtime_binding"] = runtime_binding
+            if model_selection is not None and ("model_selection" in parameters or accepts_kwargs):
+                supported_kwargs["model_selection"] = model_selection
+            if moa_enabled is not None and ("moa_enabled" in parameters or accepts_kwargs):
+                supported_kwargs["moa_enabled"] = moa_enabled
+            if moa_can_access is not None and ("moa_can_access" in parameters or accepts_kwargs):
+                supported_kwargs["moa_can_access"] = moa_can_access
+            if retain_moa_snapshot and ("retain_moa_snapshot" in parameters or accepts_kwargs):
+                supported_kwargs["retain_moa_snapshot"] = True
         await reconcile(session_id, needed, **supported_kwargs)
 
     def sync_mcp_credentials(self) -> bool:
@@ -3069,6 +3150,23 @@ class JiuWenSwarm:
             self._adapter = None
 
         logger.info("[JiuWenSwarm] cleanup: 完成")
+
+    @staticmethod
+    def _resolve_runtime_binding_for_request(
+        adapter: AgentAdapter,
+        request: AgentRequest,
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        """Resolve one chat's runtime before any session-child side effects."""
+        if request.req_method is not ReqMethod.CHAT_SEND:
+            return None
+        resolver = getattr(adapter, "resolve_runtime_binding", None)
+        if not callable(resolver):
+            return None
+        params = request.params if isinstance(request.params, dict) else {}
+        runtime_binding = resolver(session_id, params)
+        request.trusted_runtime_binding = runtime_binding
+        return runtime_binding
 
 
 def __getattr__(name: str):

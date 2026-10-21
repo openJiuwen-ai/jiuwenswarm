@@ -251,6 +251,67 @@ def test_replay_is_bounded_and_caller_isolated_with_terminal_snapshot():
     assert store.replay(request(user="other"), after=0) == []
 
 
+@pytest.mark.parametrize("attach_only", [True, False, "true", None])
+def test_passive_team_subscription_is_not_session_work(attach_only):
+    store = WorkerEventStore()
+    observer = replace(request("observer"), params={"mode": "team", "attach_only": attach_only})
+    record = store.register(observer, "observer-dispatch")
+    store.append({"request_id": "observer", "body": {"event_type": "chat.delta", "content": "live"}},
+                 record.dispatch_id)
+    assert store.snapshot(observer)["is_processing"] is (attach_only is not True)
+    assert record.active is True
+    assert len(store.replay(observer, after=0)) == 1
+    assert len(store.snapshot(observer)["dispatches"]) == 1
+    store.register(request("actual-work"), "actual-dispatch")
+    assert store.snapshot(observer)["is_processing"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("real_state", [None, "succeeded", "running", "waiting_for_input", "queued"])
+async def test_resume_does_not_treat_attach_execution_as_busy(real_state):
+    from jiuwenswarm.runtime.session.model import SessionExecutionHandle, SessionExecutionState, SessionWorkKind
+
+    holder = ConnHolder()
+    conn = Connection()
+    generation = holder.open_session(conn)
+    bridge = WorkerGatewayBridge(holder)
+    dispatcher = WorkerDispatcher(bridge)
+    observer = replace(request("observer"), params={"mode": "team", "attach_only": True})
+    observer_record = bridge.events.register(observer, "observer-dispatch")
+
+    def execution(request_id, state):
+        return SessionExecutionHandle(
+            execution_id=request_id, session_id="session-1", request_id=request_id,
+            root_request_id=request_id, generation=1, state=state, work_kind=SessionWorkKind.TEAM_REQUEST,
+        ).snapshot()
+
+    executions = [execution("observer", SessionExecutionState.WAITING_FOR_INPUT)]
+    if real_state is not None:
+        record = bridge.events.register(request("actual-work"), "actual-dispatch")
+        if real_state != "queued":
+            executions.append(execution("actual-work", SessionExecutionState(real_state)))
+            bridge.events.finish(record.dispatch_id)
+    dispatcher._runtime = SimpleNamespace(get_session_snapshot=lambda _: SimpleNamespace(executions=executions))
+    await dispatcher._subscribe_locked({"payload": dump_agent_request(request())}, conn, generation)
+    snapshot = conn.frames[-1]["payload"]
+    assert snapshot["is_processing"] is (real_state in {"running", "waiting_for_input", "queued"})
+    assert observer_record.active is True
+    assert observer_record.is_processing is False
+    assert any(item["request_id"] == "observer" for item in snapshot["executions"])
+
+
+def test_summary_turn_end_does_not_finish_owner_execution():
+    store = WorkerEventStore()
+    record = store.register(request(), "owner-dispatch")
+    record.is_processing = True
+    store.append({"request_id": "summary-round:2", "body": {
+        "event_type": "org.turn_completed", "team_id": "summary-team", "request_id": "summary-round",
+    }}, record.dispatch_id)
+    assert record.is_processing is True
+    assert record.terminal is None
+    assert store.snapshot(request())["is_processing"] is True
+
+
 def test_replayed_frame_retains_authoritative_session_and_app_routing():
     store = WorkerEventStore()
     accepted = request()
@@ -365,7 +426,10 @@ async def test_runtime_failure_completes_accepted_warming_requests():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("first_hello_fails", [False, True])
-async def test_resident_service_pins_identity_even_after_failed_first_hello(monkeypatch, first_hello_fails):
+@pytest.mark.parametrize("disconnect_error", [OSError, service.IpcError])
+async def test_resident_service_pins_identity_even_after_failed_first_hello(
+    monkeypatch, first_hello_fails, disconnect_error,
+):
     disk = {"identity": "launch-code"}
     hash_current_disk = Mock(side_effect=lambda: disk["identity"])
     runtime_started = asyncio.Event()
@@ -390,7 +454,7 @@ async def test_resident_service_pins_identity_even_after_failed_first_hello(monk
                 return startup_acceptance(self.frames[0])
             await runtime_started.wait()
             if self.index == 0:
-                raise OSError("Front restarted after Runtime loaded")
+                raise disconnect_error("Front restarted after Runtime loaded")
             return {"kind": KIND_SHUTDOWN}
 
         async def close(self):
@@ -466,6 +530,7 @@ async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
     disk = {"identity": "stub-launch-code"}
     hash_current_disk = Mock(side_effect=lambda: disk["identity"])
     frames = [[], []]
+    closed = []
     index = 0
 
     class Connection:
@@ -486,6 +551,9 @@ async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
                 raise OSError("Front detached")
             return {"kind": KIND_SHUTDOWN}
 
+        async def close(self):
+            closed.append(self.position)
+
     async def accept():
         nonlocal index
         connection = Connection(index)
@@ -504,6 +572,7 @@ async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
     assert hellos[0]["instance"] == hellos[1]["instance"]
     hash_current_disk.assert_called_once_with()
     server.close.assert_awaited_once()
+    assert closed == [0, 1]
 
 
 @pytest.mark.asyncio

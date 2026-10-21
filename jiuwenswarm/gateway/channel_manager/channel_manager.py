@@ -150,9 +150,10 @@ class ChannelManager(ABC):
         """为 IM 通道注入附件落盘钩子（Phase 3：经 E2A 落盘到目标 AgentServer）。
 
         仅在通道支持 ``set_file_persist_hook`` 且 MessageHandler 持有 AgentServer
-        客户端时注入。钩子把下载字节经 base64 交给 AgentServer 的
-        ``IM_FILE_PERSIST``，落盘到注入目录的 ``<平台>_files/downloads/``；失败
-        抛错（决策 D6：按可重试错误失败整条消息），不回落到 Gateway 本地写盘。
+        客户端时注入。钩子把下载字节交给目标 AgentServer 落盘到注入目录的
+        ``<平台>_files/downloads/``：小附件经 base64 E2A（``IM_FILE_PERSIST``），
+        大附件经 E2A 分块上传（``FILE_UPLOAD_CHUNK``）；失败抛错（决策 D6：按
+        可重试错误失败整条消息），不回落到 Gateway 本地写盘。
         """
         setter = getattr(channel, "set_file_persist_hook", None)
         if setter is None:
@@ -165,10 +166,7 @@ class ChannelManager(ABC):
         # its HTTP/E2A upload by a Gateway-local default would target the wrong
         # user.  Leave the existing single-user IM path untouched until the IM
         # channel carries that route context end to end.
-        from jiuwenswarm.gateway.routing.e2a_proxy import (
-            is_agentos_routing_client,
-            is_legacy_shared_directory_client,
-        )
+        from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
 
         # IM 的 AgentOS 多用户路由尚未实现。绝不能让 FileService 因此回退到
         # Gateway 的部署目录；安装一个明确失败的 hook，让上层返回可重试附件
@@ -181,8 +179,9 @@ class ChannelManager(ABC):
 
             setter(_agentos_route_required)
             return
-        if is_legacy_shared_directory_client(agent_client):
-            return
+        # A1g：legacy 单用户也装真 hook（E2A IM_FILE_PERSIST 落 AgentServer
+        # 注入目录，server 侧 docstring 明言"Gateway 不再直写"决策 D6）——
+        # 本地回落仅为无 AgentServer 上下文的测试场景保留（hook 未注入时）。
         platform = str(getattr(channel, "channel_id", "") or "").strip()
         # 企业飞书多 Bot 使用 ``feishu_enterprise:<bot_key>`` 作为 channel_id；
         # 冒号不能作为 WorkspaceFileAdapter 的目录标识（Windows 也不允许），
@@ -203,12 +202,14 @@ class ChannelManager(ABC):
             )
 
             content_bytes = bytes(content)
-            # 传输取舍（方案 §10.5）：大附件走受认证 HTTP bridge 上传（不落盘
-            # Gateway），避免 base64 帧超过内部 WS 8MB 帧限制（PayloadTooBig 会
-            # 击穿整个 Gateway↔AgentServer 连接）；小附件与文本内容走 base64 E2A。
+            # 传输取舍（方案 §10.5）：超限的 base64 帧会超过内部 WS 8MB 帧限制
+            # （PayloadTooBig 会击穿整个 Gateway↔AgentServer 连接），大附件改走
+            # E2A 分块上传（2MB/块，每块一个 FILE_UPLOAD_CHUNK）；小附件与文本
+            # 内容走 base64 E2A。不使用 HTTP bridge（upload_file_bytes）——其
+            # 上传端口推导仅对已启动独立上传监听器的部署有效，单机模式不监听。
             if len(content_bytes) > E2A_PAYLOAD_MAX_BYTES:
                 from jiuwenswarm.gateway.routing.agent_http_bridge import (
-                    upload_file_bytes,
+                    upload_file_bytes_via_e2a,
                 )
 
                 import mimetypes
@@ -217,13 +218,18 @@ class ChannelManager(ABC):
                     f"agent/workspace/{storage_platform}_files/downloads/"
                     f"{category}/{filename}"
                 )
-                ok, payload = await asyncio.to_thread(
-                    upload_file_bytes, content_bytes, rel_path
+                ok, payload = await upload_file_bytes_via_e2a(
+                    content_bytes,
+                    rel_path,
+                    agent_client=agent_client,
+                    user_id=None,
+                    channel_id=platform or "im",
+                    session_id=None,
                 )
                 if not ok:
-                    # 决策 D6：钩子仅在非共享目录客户端上安装，上传失败一律按
-                    # 可重试错误抛出，绝不回退到 Gateway 本地落盘（否则附件会
-                    # 写进 Gateway 部署目录而非目标 AgentServer 的注入目录）。
+                    # 决策 D6：上传失败一律按可重试错误抛出，绝不回退到 Gateway
+                    # 本地落盘（否则附件会写进 Gateway 部署目录而非目标
+                    # AgentServer 的注入目录）。
                     raise RuntimeError(
                         str(payload.get("error") or "im attachment upload failed")
                     )

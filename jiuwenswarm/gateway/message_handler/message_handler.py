@@ -17,12 +17,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, Literal
 
-from jiuwenswarm.runtime.host_services import (
+from jiuwenswarm.common.host_services import (
     install_runtime_wake_handler,
     restore_runtime_wake_handler,
 )
-from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
-from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
+from jiuwenswarm.common.schema.message import TEAM_ATTACH_ONLY_PARAM
+from jiuwenswarm.gateway.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
 from jiuwenswarm.gateway.im_pipeline.im_session_input import (
     prepare_im_session_input,
@@ -55,8 +55,8 @@ from jiuwenswarm.gateway.message_handler.prompts.security_review_prompt import (
     GitPreExecError,
     build_security_review_prompt,
 )
-from jiuwenswarm.extensions.hook_event import GatewayHookEvents
-from jiuwenswarm.extensions.hooks_context import GatewayChatHookContext
+from jiuwenswarm.common.hook_event import GatewayHookEvents
+from jiuwenswarm.common.hooks_context import GatewayChatHookContext
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.mode_matrix import (
     DEPRECATION_MAP,
@@ -76,6 +76,7 @@ from jiuwenswarm.gateway.routing.session_sharing import SessionSharingRegistry, 
 
 logger = logging.getLogger(__name__)
 
+_DIAGNOSIS_PUSH_EVENTS = frozenset({"trajectory.diagnosis.progress", "trajectory.diagnosis.status"})
 _ACP_CHANNEL_ID = "acp"
 _ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
 # \mode 切换合法输入集：新 canonical + 旧 canonical（DEPRECATION_MAP.keys()）
@@ -3299,6 +3300,8 @@ class MessageHandler(ABC):
             return
         if await self._handle_trajectory_update_push(chunk, session_id):
             return
+        if await self._handle_diagnosis_push(chunk, session_id):
+            return
         
         # 获取原始请求的 metadata，用于合并
         request_metadata = self._stream_metadata.get(rid)
@@ -3447,6 +3450,33 @@ class MessageHandler(ABC):
         )
         return True
 
+    async def _handle_diagnosis_push(
+        self,
+        chunk: Any,
+        session_id: str | None,
+    ) -> bool:
+        """Forward one AgentServer diagnosis event to the browser connections of its session."""
+        payload = chunk.payload
+        if not isinstance(payload, dict):
+            return False
+        event = payload.get("event_type")
+        if event not in _DIAGNOSIS_PUSH_EVENTS:
+            return False
+        resolved_session_id = str(payload.get("session_id") or session_id or "").strip()
+        if not resolved_session_id:
+            logger.warning("[MessageHandler] diagnosis push without session_id ignored")
+            return True
+        web_channel = self._resolve_web_channel()
+        if web_channel is None:
+            logger.debug("[MessageHandler] diagnosis push skipped because web channel is unavailable")
+            return True
+        body = {key: value for key, value in payload.items() if key != "event_type"}
+        try:
+            await web_channel.send_session_event(resolved_session_id, str(event), body)
+        except Exception:  # noqa: BLE001
+            logger.warning("[MessageHandler] diagnosis push forward failed", exc_info=True)
+        return True
+
     def set_cron_controller(self, controller: Any) -> None:
         self._cron_controller = controller
 
@@ -3497,9 +3527,6 @@ class MessageHandler(ABC):
             if isinstance(request_metadata, dict)
             else ""
         )
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-
-        is_agentos = is_agentos_routing_client(self.agent_client)
         owner_user_id = str(user_id or "").strip()
 
         async def _get_owned_job(job_id: str) -> dict[str, Any] | None:
@@ -3561,10 +3588,10 @@ class MessageHandler(ABC):
                 request_mode = self._stream_modes.get(request_id)
                 if request_mode:
                     params["mode"] = request_mode
-                # project 已在 AgentServer 的用户目录中完成解析；Gateway 侧目录
-                # 与用户目录隔离时，允许 controller 跳过其本地反查。
-                if is_agentos:
-                    params["_agentos_project_binding_verified"] = True
+                # A3g：agent 工具链路的 project 已由目标 AgentServer 在其目录
+                # 完成解析（CronTools 校验），controller 跳过本地反查——不再
+                # 区分 AgentOS/legacy，gateway 本地 project_store 反查已删除。
+                params["_agentos_project_binding_verified"] = True
                 data = await cc.create_job(params)
             elif action == "update":
                 job_id = str(params.get("job_id") or "")
@@ -3574,8 +3601,7 @@ class MessageHandler(ABC):
                 patch.pop("_auth_session", None)
                 if auth_session:
                     patch["_auth_session"] = auth_session
-                if is_agentos:
-                    patch["_agentos_project_binding_verified"] = True
+                patch["_agentos_project_binding_verified"] = True
                 data = await cc.update_job(job_id, patch)
             elif action == "delete":
                 job_id = str(params.get("job_id") or "")
@@ -4235,19 +4261,17 @@ class MessageHandler(ABC):
         explicit = str(params.get("model_name") or "").strip()
         if explicit:
             return explicit
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
-
-        if not is_legacy_shared_directory_client(self.agent_client):
-            return ""
         try:
-            from jiuwenswarm.gateway.embedded.runtime.session.model_selection_store import (
+            from jiuwenswarm.common.external_providers import provider
+            from jiuwenswarm.common.model_selection_store import (
                 get_session_model_selection,
             )
-            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
 
             if get_session_model_selection(session_id) is not None:
                 return ""
-            metadata = get_session_metadata(session_id, cache_bust=True, enable_writeback=False)
+            metadata = provider("session_metadata").get_session_metadata(
+                session_id, cache_bust=True, enable_writeback=False,
+            )
         except Exception:  # noqa: BLE001 — 读不到就当没有
             logger.debug("[MessageHandler] 读取会话模型失败 session=%s", session_id, exc_info=True)
             return ""

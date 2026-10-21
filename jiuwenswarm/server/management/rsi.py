@@ -28,7 +28,7 @@ class RsiManagement:
         host = self.host
         try:
             from jiuwenswarm.runtime.checkpointer import ensure_persistent_checkpointer
-
+    
             await ensure_persistent_checkpointer()
             await host._try_start_heartbeat_runtime()
             return None
@@ -164,7 +164,7 @@ class RsiManagement:
     @staticmethod
     def _rsi_harness_refs_provider(params: dict[str, Any] | None = None) -> str | None:
         """Resolve an explicit installed Plugin, or use the active Harness.
-
+    
         ``package_id`` uses the same Plugin registry as chat. Omitting it keeps
         the existing baseline fallback; ``harness_id`` remains a legacy registry
         selector. Arbitrary browser-supplied paths are not resolved here.
@@ -177,14 +177,14 @@ class RsiManagement:
         from jiuwenswarm.common.utils import (
             get_user_workspace_dir as current_workspace_dir,
         )
-
+    
         requested_id = str((params or {}).get("package_id") or "").strip()
         if requested_id:
             from jiuwenswarm.agents.harness.common.rsi.errors import RsiInvalidHarness
             from jiuwenswarm.server.runtime import (
                 extension_package_manager as equipment,
             )
-
+    
             try:
                 if not equipment.is_plugin_allowed(requested_id):
                     raise ValueError(f"Plugin is not installed: {requested_id}")
@@ -221,7 +221,7 @@ class RsiManagement:
         from jiuwenswarm.agents.harness.common.auto_harness.service import (
             _HARNESS_PACKAGES_FILE,
         )
-
+    
         try:
             data = {}
             if _HARNESS_PACKAGES_FILE.is_file():

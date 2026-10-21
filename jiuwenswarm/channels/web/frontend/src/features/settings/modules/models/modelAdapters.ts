@@ -98,6 +98,7 @@ export function parseVendorCatalog(value: unknown): VendorPresetMap {
         typeof preset.icon_key !== 'string' ||
         !isNullableString(preset.models_endpoint) ||
         typeof preset.models_needs_key !== 'boolean' ||
+        (preset.generation_only !== undefined && typeof preset.generation_only !== 'boolean') ||
         typeof preset.supports_anthropic !== 'boolean' ||
         !isNullableString(preset.anthropic_base) ||
         !isNullableString(preset.anthropic_client_provider)
@@ -116,6 +117,16 @@ export function parseVendorCatalog(value: unknown): VendorPresetMap {
     });
   }
   return result;
+}
+
+/** Chat and understanding models must not offer generation-only vendors such as vLLM-Omni. */
+export function withoutGenerationOnlyPresets(catalog: VendorPresetMap): VendorPresetMap {
+  return {
+    ...catalog,
+    token_plan: catalog.token_plan.filter((preset) => !preset.generation_only),
+    coding_plan: catalog.coding_plan.filter((preset) => !preset.generation_only),
+    custom_api: catalog.custom_api.filter((preset) => !preset.generation_only),
+  };
 }
 
 export function findVendorPreset(catalog: VendorPresetMap, selection: string): VendorPreset | undefined {

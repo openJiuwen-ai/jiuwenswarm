@@ -24,7 +24,8 @@ import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { SwarmflowTreeView } from './SwarmflowTreeView';
 import { SwarmflowGraphView } from './SwarmflowGraphView';
 import type { WorkflowAgent, WorkflowRun } from './workflowTypes';
-import { workflowAgentIdentity, workflowPhaseWorkers } from './workflowTypes';
+import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers } from './workflowTypes';
+import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
 import { groupByWorkflowRun } from './runGrouping';
 import { RunGroupHeader } from './RunGroupHeader';
 
@@ -158,6 +159,7 @@ export function ProgressSection({
 }) {
   const { t } = useTranslation();
   const emptyIllustrationSize = displayMode === 'count' ? 48 : 72;
+  useEnsurePhaseAgents(tasks, workflowRuns);
 
   if (tasks.length === 0) {
     return (
@@ -621,7 +623,7 @@ function BoardTaskCard({
 function WorkflowWorkerAvatarStack({ workers }: { workers: WorkflowAgent[] }) {
   const visible = workers.slice(0, 3);
   const extra = workers.length - visible.length;
-  const names = workers.map((worker) => worker.name).join(', ');
+  const names = workers.map((worker) => workflowAgentDisplayName(worker)).join(', ');
   return (
     <div
       className="flex items-center"
@@ -631,9 +633,9 @@ function WorkflowWorkerAvatarStack({ workers }: { workers: WorkflowAgent[] }) {
       {visible.map((worker, index) => (
         <div key={worker.id} className={index > 0 ? '-ml-2 rounded-full ring-2 ring-[var(--color-task-card-surface)]' : 'rounded-full'}>
           <TeamMemberAvatar
-            member={worker.name}
+            member={workflowAgentAvatarName(worker)}
             identity={workflowAgentIdentity(worker)}
-            alt={worker.name}
+            alt={workflowAgentAvatarName(worker)}
             className="h-8 w-8 rounded-full"
             imageClassName="rounded-full"
           />

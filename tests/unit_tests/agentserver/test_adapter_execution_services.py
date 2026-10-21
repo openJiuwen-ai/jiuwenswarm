@@ -125,8 +125,11 @@ def test_failed_model_recipe_is_retryable_and_publishes_alias_only_on_success():
 
 def make_assembler(monkeypatch, children, *, can_access=None):
     from jiuwenswarm.agents.harness.common import session_ops_service
+    from jiuwenswarm.server.runtime.session import session_metadata
 
     monkeypatch.setattr(session_ops_service, "warmup_session_context", AsyncMock())
+    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda _sid: {})
+    monkeypatch.setattr(session_metadata, "update_session_metadata", Mock())
     owner = SimpleNamespace(
         _is_session_scoped_adapter=False,
         _session_adapter_key=lambda sid: sid or "default",
@@ -141,8 +144,9 @@ def make_assembler(monkeypatch, children, *, can_access=None):
         _drain_history_preparation=AsyncMock(),
         _model_selection_can_access=can_access,
         _requested_model_name=lambda request: request.params["model_name"],
+        _is_cron_execution_session=lambda _sid: False,
     )
-    return SessionAssembler(owner), owner
+    return SessionAssembler(owner, configuration=lambda: {}, load_binding=lambda _sid: None), owner
 
 
 def make_child():
@@ -159,6 +163,10 @@ def make_child():
         create_instance=AsyncMock(),
         start_interaction=AsyncMock(),
         cleanup=AsyncMock(),
+        _is_session_live=lambda _sid: False,
+        _has_live_root_permission_owner=lambda _sid: False,
+        _moa_enabled=False,
+        _moa_fingerprint=None,
     )
 
 
@@ -183,6 +191,33 @@ async def test_session_assembly_singleflight_publishes_one_complete_owner(monkey
     owner._new_session_scoped_adapter.assert_called_once_with("same-session")
     child.start_interaction.assert_awaited_once_with(session_id="same-session")
     assert assembler.adapters == {"same-session": child}
+
+
+@pytest.mark.asyncio
+async def test_history_preparation_keeps_construction_before_interaction(monkeypatch):
+    from jiuwenswarm.agents.harness.common import session_ops_service
+
+    child = make_child()
+    child._instance = None
+    order = []
+
+    async def construct(*_args, **_kwargs):
+        order.append("construct")
+        child._instance = object()
+
+    async def start(*, session_id):
+        assert child._instance is not None
+        order.append("start")
+
+    child.create_instance = construct
+    child.start_interaction = start
+    monkeypatch.setattr(session_ops_service, "prefetch_session_history", lambda *_args, **_kwargs: {})
+    assembler, _owner = make_assembler(monkeypatch, [child])
+    result = await asyncio.wait_for(
+        assembler.ensure("history-session", history_before_request_id="first-request"), 2,
+    )
+    assert result is child
+    assert order == ["construct", "start"]
 
 
 @pytest.mark.asyncio
@@ -307,7 +342,7 @@ async def test_shutdown_joins_inflight_assembly_before_disposing_its_child(monke
     child.create_instance = create
     assembler, _owner = make_assembler(monkeypatch, [child])
     assembly = asyncio.create_task(assembler.ensure("inflight"))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 1)
     shutdown = asyncio.create_task(assembler.cleanup_children())
     await asyncio.sleep(0)
     assert not shutdown.done()

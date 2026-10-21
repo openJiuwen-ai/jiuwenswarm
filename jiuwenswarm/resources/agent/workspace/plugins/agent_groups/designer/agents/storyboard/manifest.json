@@ -1,0 +1,42 @@
+{
+  "package_type": "agent_template",
+  "name": "storyboard",
+  "display_name": {
+    "zh": "分镜师",
+    "en": "Storyboard Artist"
+  },
+  "description": "把大纲落成一行一个镜头的分镜表，并交回表格产物。",
+  "persona": {
+    "dir": "persona"
+  },
+  "tools": [
+    {
+      "file": "tools/read_node_context.py",
+      "class": "ReadNodeContext"
+    },
+    {
+      "file": "tools/generate_storyboard.py",
+      "class": "GenerateStoryboard"
+    },
+    {
+      "file": "tools/submit_node_output.py",
+      "class": "SubmitNodeOutput"
+    }
+  ],
+  "rails": [
+    {
+      "file": "rails/node_guard.py",
+      "class": "NodeGuardRail"
+    }
+  ],
+  "skills": [
+    {
+      "dir": "skills/storyboard",
+      "mode": "all"
+    }
+  ],
+  "metadata": {
+    "node_type": "storyboard",
+    "output_kind": "table"
+  }
+}

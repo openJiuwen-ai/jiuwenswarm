@@ -17,7 +17,8 @@ import pytest
 
 from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
 from jiuwenswarm.common.model_selection import ModelSelection
-from jiuwenswarm.server.runtime.session import lifecycle, model_selection_store as store
+from jiuwenswarm.common import external_providers, model_selection_store as store
+from jiuwenswarm.server.runtime.session import lifecycle
 from jiuwenswarm.server.runtime.session import session_metadata
 
 
@@ -26,6 +27,7 @@ def sessions(tmp_path, monkeypatch):
     root = tmp_path / "agent" / "sessions"
     for module in (store, lifecycle, session_metadata):
         monkeypatch.setattr(module, "get_agent_sessions_dir", lambda: root)
+    monkeypatch.setitem(external_providers._providers, "session_metadata", session_metadata)
     return root
 
 

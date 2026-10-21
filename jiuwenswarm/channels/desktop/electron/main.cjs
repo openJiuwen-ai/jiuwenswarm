@@ -1703,6 +1703,10 @@ function sanitizeFilename(filename, fallback = 'download') {
   return base || fallback;
 }
 
+function getPreferredDownloadPath(filename) {
+  return path.join(app.getPath('downloads'), sanitizeFilename(filename));
+}
+
 async function uniqueDownloadPath(filename) {
   const downloads = app.getPath('downloads');
   const safeName = sanitizeFilename(filename);
@@ -1719,6 +1723,89 @@ async function uniqueDownloadPath(filename) {
   }
 }
 
+/** Decode a browser FileReader-style data URL into bytes for local save. */
+function decodeDownloadDataUrl(dataUrl) {
+  const raw = String(dataUrl);
+  if (!raw.startsWith('data:')) throw new Error('Unsupported download protocol: data-url');
+  const comma = raw.indexOf(',');
+  if (comma < 0) throw new Error('Invalid data URL');
+  const metadata = raw.slice(5, comma);
+  const payload = raw.slice(comma + 1);
+  const isBase64 = /(?:^|;)base64$/i.test(metadata);
+  if (isBase64) return Buffer.from(payload, 'base64');
+  return Buffer.from(decodeURIComponent(payload), 'utf8');
+}
+
+async function saveDownloadedFile(url, filename) {
+  // File-preview text downloads (e.g. manifest.json) pass a data: URL from the
+  // renderer. Accept those locally; keep rejecting other non-http(s) schemes.
+  const rawUrl = String(url);
+  let inlineBytes = null;
+  let targetUrl = null;
+  if (rawUrl.startsWith('data:')) {
+    inlineBytes = decodeDownloadDataUrl(rawUrl);
+  } else {
+    targetUrl = new URL(rawUrl, currentFrontendUrl);
+    if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+      throw new Error(`Unsupported download protocol: ${targetUrl.protocol}`);
+    }
+  }
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: path.join(app.getPath('downloads'), sanitizeFilename(filename)),
+  });
+  if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+  const targetPath = result.filePath;
+  const temporaryPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${randomUUID()}.part`);
+  let temporaryCreated = false;
+  try {
+    if (inlineBytes) {
+      // Mark created as soon as the exclusive create succeeds so a mid-write
+      // failure (e.g. ENOSPC) still removes the leftover .part in finally.
+      const handle = await fs.open(temporaryPath, 'wx');
+      temporaryCreated = true;
+      try {
+        await handle.writeFile(inlineBytes);
+      } finally {
+        await handle.close().catch(() => {});
+      }
+    } else {
+      const response = await net.fetch(targetUrl);
+      if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
+      if (!response.body) throw new Error('Download response has no body');
+      const handle = await fs.open(temporaryPath, 'wx');
+      temporaryCreated = true;
+      await pipeline(Readable.fromWeb(response.body), handle.createWriteStream());
+    }
+    await fs.rename(temporaryPath, targetPath);
+    temporaryCreated = false;
+  } finally {
+    if (temporaryCreated) await fs.unlink(temporaryPath).catch(error => console.warn('Failed to remove partial download:', error));
+  }
+  shell.showItemInFolder(targetPath);
+  return { ok: true, cancelled: false };
+}
+
+async function cleanupStaleUpdateDownloads() {
+  const dataRoot = process.env.JIUWENSWARM_DATA_DIR || path.join(app.getPath('home'), '.jiuwenswarm');
+  const updatesDir = path.join(dataRoot, '.updates');
+  // A different instance may still be downloading. Retain recently written files.
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  try {
+    for (const name of await fs.readdir(updatesDir)) {
+      if (!/\.(?:exe|dmg|tar\.gz)\.part$/i.test(name)) continue;
+      const candidate = path.join(updatesDir, name);
+      try {
+        const stat = await fs.lstat(candidate);
+        if (stat.isFile() && stat.mtimeMs < cutoff) await fs.unlink(candidate);
+      } catch (error) {
+        if (error.code !== 'ENOENT') console.warn('Failed to remove stale update download:', error);
+      }
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.warn('Failed to inspect update downloads:', error);
+  }
+}
+
 // ─── Blob 分块保存事务 ──────────────────────────────────────────────────────
 // 契约对齐 Python 桌面 desktop_app 的 begin/append/finish/abort_blob_save：
 // 元数据白名单、1MiB 分块、校验 PNG 签名、同目录临时文件 + 原子替换。
@@ -1727,6 +1814,10 @@ const BLOB_EXPORT_SPECS = {
   'image/svg+xml': { suffixes: ['.svg'], parameters: ['charset=utf-8'], filter: { name: 'SVG Image', extensions: ['svg'] } },
   'text/plain': { suffixes: ['.mmd'], parameters: ['charset=utf-8'], filter: { name: 'Mermaid Diagram', extensions: ['mmd'] } },
   'application/json': { suffixes: ['.json'], parameters: ['charset=utf-8'], filter: { name: 'JSON Archive', extensions: ['json'] } },
+  // Trajectory panel exports (.trajectory.zip / .trajectory.jsonl). Keep in sync
+  // with DATA_URL_EXPORT_SPECS in desktop_app.py (contract test enforces this).
+  'application/zip': { suffixes: ['.zip'], parameters: [], filter: { name: 'ZIP Archive', extensions: ['zip'] } },
+  'application/jsonl': { suffixes: ['.jsonl'], parameters: ['charset=utf-8'], filter: { name: 'JSONL Archive', extensions: ['jsonl'] } },
 };
 const BASE64_CHUNK_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 const blobSaveTransfers = new Map();
@@ -2243,6 +2334,40 @@ function canUseBackendUpdateHelper() {
   }
 }
 
+// 从厂商文档页 HTML 实时提取隐式授权直链。只接受落在 successOrigin 下、路径含
+// /oauth/ 且以 authorize 结尾的链接（即授权端点与成功页同源），HTML 实体会反转义
+// （文档页把查询参数里的 & 写成 &#x26; / &amp;）。抓取失败或页面中没有授权链接时
+// 返回 null，前端保持手动粘贴流程。
+async function fetchImplicitAuthorizeUrl(docPage, successOrigin) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  let html;
+  try {
+    const response = await net.fetch(docPage.href, { signal: controller.signal });
+    if (!response.ok) return null;
+    html = await response.text();
+  } catch (error) {
+    console.warn('[electron] fetch oauth doc page failed', error);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+  const pattern = new RegExp(
+    `${successOrigin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/[\\w./-]*authorize\\?[^"'<>\\s]+`,
+  );
+  const match = pattern.exec(html);
+  if (!match) return null;
+  const href = match[0]
+    .replace(/&#x26;/gi, '&')
+    .replace(/&#38;/g, '&')
+    .replace(/&amp;/g, '&');
+  try {
+    return new URL(href);
+  } catch {
+    return null;
+  }
+}
+
 function registerIpcHandlers() {
   ipcMain.on('desktop:is-frontend-only', event => {
     if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
@@ -2289,6 +2414,80 @@ function registerIpcHandlers() {
     } catch {
       return false;
     }
+  });
+  // 连接器隐式授权截取：部分远程 MCP（如百度网盘）官方只提供隐式授权——授权成功后
+  // 302 到厂商的 login_success 静态页，access_token 放在 URL # 片段里。网页受同源策略
+  // 限制读不到跨域跳转目标的 URL，Electron 作为浏览器宿主可以在导航事件层截取。
+  //
+  // 授权直链不在连接器包里硬编码（百度个人体验密钥 client_id 会不定期变更，固定直链
+  // 会失效——见连接器设计文档风险 #1）；包只声明 docPageUrl（厂商文档页）与
+  // successUrlPrefix（授权成功页前缀），这里实时抓取文档页 HTML 提取当前授权链接。
+  registerHandler('desktop:capture-oauth-token', async options => {
+    let docPage, successPrefix, successOrigin;
+    try {
+      docPage = new URL(String(options?.docPageUrl || ''));
+      successPrefix = String(options?.successUrlPrefix || '');
+      successOrigin = new URL(successPrefix).origin;
+    } catch {
+      return null;
+    }
+    // 校验：仅 https、不带内嵌凭据；成功页前缀必须是该 origin 下的路径。
+    if (docPage.protocol !== 'https:' || docPage.username || docPage.password
+        || !successPrefix.startsWith(`${successOrigin}/`)) {
+      return null;
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) return null;
+    const authorizeUrl = await fetchImplicitAuthorizeUrl(docPage, successOrigin);
+    if (!authorizeUrl) return null;
+    const title = String(options?.title || '').trim().slice(0, 64);
+    return new Promise(resolve => {
+      const authWindow = new BrowserWindow({
+        parent: mainWindow,
+        modal: true,
+        width: 480,
+        height: 720,
+        autoHideMenuBar: true,
+        title: title || '授权',
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+      });
+      let settled = false;
+      const finish = result => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+        if (!authWindow.isDestroyed()) authWindow.destroy();
+      };
+      // 授权流程内禁止弹新窗口；target=_blank 的链接收回本窗内跳转。
+      authWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (url.startsWith('https://')) void authWindow.loadURL(url);
+        return { action: 'deny' };
+      });
+      // 返回 true 表示命中成功页且已截取 token，调用方应拦截这次导航。
+      const capture = rawUrl => {
+        if (typeof rawUrl !== 'string' || !rawUrl.startsWith(successPrefix)) return false;
+        let params;
+        try {
+          params = new URLSearchParams(new URL(rawUrl).hash.replace(/^#/, ''));
+        } catch {
+          return false;
+        }
+        const token = params.get('access_token');
+        if (!token) return false;
+        finish({ accessToken: token });
+        return true;
+      };
+      const { webContents } = authWindow;
+      webContents.on('will-redirect', (event, targetUrl) => {
+        if (capture(targetUrl)) event.preventDefault();
+      });
+      webContents.on('will-navigate', (event, targetUrl) => {
+        if (capture(targetUrl)) event.preventDefault();
+      });
+      webContents.on('did-navigate', (_event, targetUrl) => { capture(targetUrl); });
+      webContents.on('did-redirect-navigation', (_event, targetUrl) => { capture(targetUrl); });
+      authWindow.on('closed', () => finish(null));
+      void authWindow.loadURL(authorizeUrl.href);
+    });
   });
   registerHandler('desktop:select-project-directory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -2489,24 +2688,15 @@ function registerIpcHandlers() {
     BrowserWindow,
     getFrontendUrl: () => currentFrontendUrl,
     getCookies: url => mainWindow.webContents.session.cookies.get({ url }),
-    uniqueDownloadPath,
+    getPreferredDownloadPath,
     showItemInFolder: file => shell.showItemInFolder(file),
+    onProgress: progress => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('desktop:share-image-export-progress', progress);
+      }
+    },
   }));
-  registerHandler('desktop:download-file', async (url, filename) => {
-    const targetUrl = new URL(String(url), currentFrontendUrl);
-    // 仅允许 http/https：渲染器传入 file: 等本地协议会把任意本地文件写进下载目录。
-    if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
-      throw new Error(`Unsupported download protocol: ${targetUrl.protocol}`);
-    }
-    const response = await net.fetch(targetUrl);
-    if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
-    if (!response.body) throw new Error('Download response has no body');
-    const targetPath = await uniqueDownloadPath(filename);
-    // 流式落盘，避免大文件整体驻留内存。
-    await pipeline(Readable.fromWeb(response.body), fsSync.createWriteStream(targetPath));
-    shell.showItemInFolder(targetPath);
-    return true;
-  });
+  registerHandler('desktop:download-file', saveDownloadedFile);
   registerHandler('desktop:install-update', async installerPath => {
     const target = path.resolve(String(installerPath));
     if (process.platform === 'darwin') {
@@ -2781,6 +2971,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    await cleanupStaleUpdateDownloads();
     // 共享浏览器 partition 的 permission handler 在 ensureBrowserView 内按需注册。
     // 先读回上次运行保存的会话页面 URL（重启还原），再进入启动流程。
     Menu.setApplicationMenu(null);

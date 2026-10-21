@@ -284,6 +284,26 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_update():
     }
 
 
+def test_parse_stream_chunk_converts_session_budget_exhaustion_to_chat_error():
+    parsed = parse_stream_chunk(
+        types.SimpleNamespace(
+            type="answer",
+            payload={
+                "reason": "swarmflow session token budget exhausted (101/100)",
+                "exhausted_ledger": "session",
+                "output": "",
+                "result_type": "",
+            },
+        )
+    )
+
+    assert parsed == {
+        "event_type": "chat.error",
+        "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
+        "error": "Session budget exhausted",
+    }
+
+
 def _full_context_usage_payload():
     return {
         "event_type": "context.usage",
@@ -1042,6 +1062,7 @@ async def test_handle_session_create_returns_session_id(monkeypatch, tmp_path):
                 "projectDir": "",
                 "workMode": "work",
                 "persist_session": False,
+                "moa_enabled": False,
                 "prewarm_hit": True,
                 "prewarm_status": "ready",
             },
@@ -1620,6 +1641,7 @@ async def test_handle_session_create_injected_default_work_mode_does_not_mismatc
                 "projectDir": code_project.project_dir,
                 "workMode": "code",
                 "persist_session": False,
+                "moa_enabled": False,
                 "prewarm_hit": True,
                 "prewarm_status": "ready",
             },
@@ -1706,6 +1728,7 @@ async def legacy_handle_session_create_acks_before_async_kvc(monkeypatch, tmp_pa
                 "projectDir": "",
                 "workMode": "work",
                 "persist_session": False,
+                "moa_enabled": False,
                 "prewarm_hit": True,
                 "prewarm_status": "ready",
             },
@@ -1775,6 +1798,7 @@ async def test_handle_session_create_prepares_team_before_ack(monkeypatch, tmp_p
                 "projectDir": "",
                 "workMode": "work",
                 "persist_session": False,
+                "moa_enabled": False,
                 "prewarm_hit": False,
                 "prewarm_status": "bypassed",
             },
@@ -2076,6 +2100,7 @@ async def test_handle_session_create_prewarm_miss_preserves_success_contract(
                 "projectDir": "",
                 "workMode": "work",
                 "persist_session": False,
+                "moa_enabled": False,
                 "prewarm_hit": False,
                 "prewarm_status": "warming",
             },
@@ -2728,6 +2753,7 @@ async def test_handle_session_switch_delegates_product_lifecycle(
         "payload": {
             "session_id": "sess_002",
             "mode": resolved_mode,
+            "moa_enabled": False,
             "switched": True,
         },
         "ok": True,
@@ -2822,6 +2848,7 @@ async def test_handle_session_switch_records_foreground_before_ack(monkeypatch):
             "payload": {
                 "session_id": "sess_002",
                 "mode": "agent.plan",
+                "moa_enabled": False,
                 "switched": True,
             },
             "ok": True,

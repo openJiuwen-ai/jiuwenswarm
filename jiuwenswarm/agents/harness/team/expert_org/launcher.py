@@ -373,6 +373,18 @@ class JiuwenExpertTeamLauncher:
                     source=source,
                 )
                 frame_sequence += 1
+            # A Leader can emit a final segment before its last tool call.
+            # End the Team turn explicitly without ending the shared Session.
+            await self.push_expert_payload(
+                {"event_type": "org.turn_completed", "team_id": team_id},
+                team_id=team_id,
+                session_id=session_id,
+                channel_id=resolved_channel_id,
+                round_id=round_id,
+                frame_sequence=frame_sequence,
+                source=source,
+            )
+            frame_sequence += 1
             if source in {"org_root_background", "org_root_delivery"}:
                 from jiuwenswarm.server.runtime.session.session_metadata import (
                     get_session_metadata,

@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.metadata
 import importlib.util
 import json
 import logging
 import os
 import platform
+import re
 import shutil
 import ssl
 import subprocess
@@ -51,11 +53,16 @@ class _LazyHttpx:
 # only when a download actually needs it.
 httpx = _LazyHttpx()
 
-_SUPPORTED_AGENTS = ("claude", "codex")
-_REQUIRED_MODULES = {
-    "claude": ("claude_agent_sdk",),
-    "codex": ("openai_codex", "codex_cli_bin"),
-}
+# Manifest sections sharing one entry schema: ``agents`` holds the vendor SDK
+# runtimes of providers built into openjiuwen (Claude Code, Codex);
+# ``providers`` holds third-party harness provider packages, which carry their
+# vendor CLI themselves. A runtime name is unique across both sections.
+_MANIFEST_SECTIONS = ("agents", "providers")
+# openjiuwen resolves third-party harness providers through this entry point
+# group, so an installed provider package must declare its name in it.
+_PROVIDER_ENTRY_POINT_GROUP = "openjiuwen.harness_providers"
+# Runtime names become directory names under ``runtime/external-cli``.
+_RUNTIME_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
 _INSTALL_METADATA_FILE = ".jiuwenswarm-runtime.json"
 _DOWNLOAD_TIMEOUT_SECONDS = 120
 _DOWNLOAD_CHUNK_SIZE_BYTES = 64 * 1024
@@ -161,10 +168,9 @@ def _download_ssl_context() -> ssl.SSLContext:
 
 def get_external_cli_runtime_status(cli_agent: str) -> dict[str, Any]:
     """Return the managed runtime compatibility state for an optional CLI."""
-    _validate_cli_agent(cli_agent)
-    manifest = _load_manifest()
+    entry = _runtime_entry(cli_agent)
     platform_key = _runtime_platform_key()
-    artifacts = manifest["agents"][cli_agent].get("platforms", {}).get(platform_key)
+    artifacts = entry.get("platforms", {}).get(platform_key)
     if not artifacts:
         raise RuntimeError(f"{cli_agent} runtime is not available for {platform_key}")
 
@@ -204,7 +210,7 @@ def get_external_cli_runtime_status(cli_agent: str) -> dict[str, Any]:
     if metadata != expected_metadata:
         result["runtime_state"] = "update_required"
         return result
-    if not _required_runtime_files_present(cli_agent, target):
+    if _missing_runtime_files(entry, platform_key, target):
         result["runtime_state"] = "invalid"
         return result
 
@@ -212,9 +218,25 @@ def get_external_cli_runtime_status(cli_agent: str) -> dict[str, Any]:
     return result
 
 
+def external_cli_runtime_names() -> tuple[str, ...]:
+    """Return every runtime the bundled manifest describes.
+
+    Built-in agent SDK runtimes come first, then third-party harness provider
+    packages.
+
+    Raises:
+        RuntimeError: When the manifest is missing or invalid.
+    """
+    return tuple(_runtime_entries(_load_manifest()))
+
+
 def external_cli_site_packages(cli_agent: str) -> Path:
     """Return the stable site-packages directory for an optional CLI agent."""
-    _validate_cli_agent(cli_agent)
+    _runtime_entry(cli_agent)
+    return _runtime_site_packages(cli_agent)
+
+
+def _runtime_site_packages(cli_agent: str) -> Path:
     if _is_frozen_windows():
         return (
             Path(sys.executable).resolve().parent
@@ -243,8 +265,15 @@ def activate_external_cli_runtime_paths() -> None:
     """Expose optional runtime directories before business modules are imported."""
     if not (_is_frozen_windows() or _is_frozen_macos()):
         return
-    for cli_agent in _SUPPORTED_AGENTS:
-        site_packages = external_cli_site_packages(cli_agent)
+    try:
+        cli_agents = external_cli_runtime_names()
+    except RuntimeError as exc:
+        # Optional runtimes must never block startup; installing one reports
+        # the same manifest error to the user.
+        logger.warning("Optional external CLI runtimes are unavailable: %s", exc)
+        return
+    for cli_agent in cli_agents:
+        site_packages = _runtime_site_packages(cli_agent)
         try:
             site_packages.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -268,13 +297,11 @@ def install_external_cli_runtime(
     """Download and install a pinned optional CLI runtime."""
     import portalocker
 
-    _validate_cli_agent(cli_agent)
+    entry = _runtime_entry(cli_agent)
     emit = log_callback or (lambda _message: None)
     report_progress = progress_callback or (lambda _progress: None)
-    manifest = _load_manifest()
     platform_key = _runtime_platform_key()
-    agent_manifest = manifest["agents"][cli_agent]
-    artifacts = agent_manifest.get("platforms", {}).get(platform_key)
+    artifacts = entry.get("platforms", {}).get(platform_key)
     if not artifacts:
         raise RuntimeError(f"{cli_agent} runtime is not available for {platform_key}")
 
@@ -349,14 +376,13 @@ def install_external_cli_runtime_from_artifacts(
     """Install a verified Windows runtime from previously downloaded wheels."""
     import portalocker
 
-    _validate_cli_agent(cli_agent)
+    entry = _runtime_entry(cli_agent)
     if not _is_frozen_windows():
         raise RuntimeError(
             "elevated external CLI runtime installation requires frozen Windows"
         )
-    manifest = _load_manifest()
     platform_key = _runtime_platform_key()
-    artifacts = manifest["agents"][cli_agent].get("platforms", {}).get(platform_key)
+    artifacts = entry.get("platforms", {}).get(platform_key)
     if not artifacts:
         raise RuntimeError(f"{cli_agent} runtime is not available for {platform_key}")
 
@@ -500,7 +526,7 @@ def _complete_staged_runtime_install(
     target: Path,
     staging_site_packages: Path,
 ) -> None:
-    _validate_staged_runtime(cli_agent, staging_site_packages)
+    _validate_staged_runtime(cli_agent, platform_key, staging_site_packages)
     metadata = {
         "agent": cli_agent,
         "platform": platform_key,
@@ -608,9 +634,18 @@ def _run_elevated_windows_runtime_installer(
         close_handle(execute_info.h_process)
 
 
-def _validate_cli_agent(cli_agent: str) -> None:
-    if cli_agent not in _SUPPORTED_AGENTS:
+def _runtime_entry(cli_agent: str) -> dict[str, Any]:
+    entry = _runtime_entries(_load_manifest()).get(cli_agent)
+    if entry is None:
         raise ValueError(f"unsupported external cli agent: {cli_agent}")
+    return entry
+
+
+def _runtime_entries(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    entries: dict[str, dict[str, Any]] = {}
+    for section in _MANIFEST_SECTIONS:
+        entries.update(manifest.get(section, {}))
+    return entries
 
 
 def _is_frozen_windows() -> bool:
@@ -622,8 +657,9 @@ def _is_frozen_macos() -> bool:
 
 
 def _verify_installed_runtime(cli_agent: str) -> None:
+    entry = _runtime_entry(cli_agent)
     importlib.invalidate_caches()
-    target = external_cli_site_packages(cli_agent)
+    target = _runtime_site_packages(cli_agent)
     try:
         next(target.iterdir(), None)
     except OSError as exc:
@@ -632,9 +668,15 @@ def _verify_installed_runtime(cli_agent: str) -> None:
         ) from exc
     missing = [
         module
-        for module in _REQUIRED_MODULES[cli_agent]
+        for module in entry.get("required_modules", ())
         if importlib.util.find_spec(module) is None
     ]
+    entry_point = entry.get("entry_point")
+    if entry_point and not importlib.metadata.entry_points(
+        group=_PROVIDER_ENTRY_POINT_GROUP,
+        name=entry_point,
+    ):
+        missing.append(f"entry point {_PROVIDER_ENTRY_POINT_GROUP}:{entry_point}")
     if missing:
         raise RuntimeError(
             f"installed {cli_agent} runtime is unavailable: {', '.join(missing)}"
@@ -657,15 +699,17 @@ def pinned_sdk_requirements(cli_agent: str) -> list[str]:
     index happens to list as latest. Returns [] when the manifest has no
     entry for the agent, letting the plain extra resolve as before.
     """
-    _validate_cli_agent(cli_agent)
     try:
         manifest = _load_manifest()
-        platforms = manifest["agents"][cli_agent].get("platforms", {})
     except RuntimeError:
         # An unreadable manifest should not break source installs; fall back
         # to the unpinned extra.
         logger.debug("Falling back to unpinned %s SDK requirements", cli_agent)
         return []
+    entry = _runtime_entries(manifest).get(cli_agent)
+    if entry is None:
+        raise ValueError(f"unsupported external cli agent: {cli_agent}")
+    platforms = entry.get("platforms", {})
     # SDK versions are identical across platforms in the manifest; take any.
     for artifacts in platforms.values():
         return [
@@ -676,11 +720,46 @@ def pinned_sdk_requirements(cli_agent: str) -> list[str]:
     return []
 
 
-def _required_runtime_files_present(cli_agent: str, site_packages: Path) -> bool:
-    return all(
-        (site_packages / module).exists() or (site_packages / f"{module}.py").is_file()
-        for module in _REQUIRED_MODULES[cli_agent]
-    )
+def _missing_runtime_files(
+    entry: dict[str, Any],
+    platform_key: str,
+    site_packages: Path,
+) -> list[str]:
+    """List what an extracted runtime lacks according to its manifest entry.
+
+    Args:
+        entry: The runtime's manifest entry.
+        platform_key: Platform whose bundled executable must be present.
+        site_packages: Directory the runtime's wheels were extracted into.
+
+    Returns:
+        Missing modules, executable and provider entry point; empty when the
+        runtime is complete.
+    """
+    missing = [
+        module
+        for module in entry.get("required_modules", ())
+        if not _module_present(site_packages, module)
+    ]
+    executable = entry.get("executables", {}).get(platform_key)
+    if executable and not site_packages.joinpath(*PurePosixPath(executable).parts).is_file():
+        missing.append(executable)
+    entry_point = entry.get("entry_point")
+    if entry_point and not _declares_provider_entry_point(site_packages, entry_point):
+        missing.append(f"entry point {_PROVIDER_ENTRY_POINT_GROUP}:{entry_point}")
+    return missing
+
+
+def _module_present(site_packages: Path, module: str) -> bool:
+    return (site_packages / module).is_dir() or (site_packages / f"{module}.py").is_file()
+
+
+def _declares_provider_entry_point(site_packages: Path, name: str) -> bool:
+    for dist_info in site_packages.glob("*.dist-info"):
+        entry_points = importlib.metadata.Distribution.at(dist_info).entry_points
+        if entry_points.select(group=_PROVIDER_ENTRY_POINT_GROUP, name=name):
+            return True
+    return False
 
 
 def _manifest_path() -> Path:
@@ -696,11 +775,54 @@ def _load_manifest() -> dict[str, Any]:
         raise RuntimeError(
             f"failed to load external CLI runtime manifest: {exc}"
         ) from exc
-    if payload.get("schema_version") != 1 or not isinstance(
-        payload.get("agents"), dict
-    ):
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
         raise RuntimeError("invalid external CLI runtime manifest")
+    seen: set[str] = set()
+    for section in _MANIFEST_SECTIONS:
+        entries = payload.get(section, {})
+        if not isinstance(entries, dict):
+            raise RuntimeError(f"invalid external CLI runtime manifest: {section} must be an object")
+        for name, entry in entries.items():
+            if name in seen:
+                raise RuntimeError(f"invalid external CLI runtime manifest: duplicate runtime {name!r}")
+            _validate_manifest_entry(name, entry)
+            seen.add(name)
     return payload
+
+
+def _validate_manifest_entry(name: str, entry: Any) -> None:
+    """Reject a manifest entry the installer cannot act on safely.
+
+    Raises:
+        RuntimeError: When the name or any field is malformed.
+    """
+    prefix = f"invalid external CLI runtime manifest entry {name!r}"
+    if not _RUNTIME_NAME_PATTERN.fullmatch(name):
+        raise RuntimeError(f"{prefix}: name must match {_RUNTIME_NAME_PATTERN.pattern}")
+    if not isinstance(entry, dict) or not isinstance(entry.get("platforms"), dict):
+        raise RuntimeError(f"{prefix}: platforms must be an object")
+    modules = entry.get("required_modules")
+    if not isinstance(modules, list) or not modules:
+        raise RuntimeError(f"{prefix}: required_modules must be a non-empty list")
+    if not all(_is_text(module) for module in modules):
+        raise RuntimeError(f"{prefix}: required_modules must hold module names")
+    executables = entry.get("executables", {})
+    if not isinstance(executables, dict) or not all(_is_text(path) for path in executables.values()):
+        raise RuntimeError(f"{prefix}: executables must map platforms to paths")
+    if not all(_is_relative_posix_path(path) for path in executables.values()):
+        raise RuntimeError(f"{prefix}: executables must be relative to site-packages")
+    entry_point = entry.get("entry_point")
+    if entry_point is not None and not _is_text(entry_point):
+        raise RuntimeError(f"{prefix}: entry_point must be a non-empty string")
+
+
+def _is_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _is_relative_posix_path(value: str) -> bool:
+    path = PurePosixPath(value)
+    return not path.is_absolute() and ".." not in path.parts
 
 
 def _runtime_platform_key() -> str:
@@ -973,30 +1095,16 @@ def _safe_extract_wheel(wheel_path: Path, destination: Path) -> None:
         raise RuntimeError(f"failed to extract {wheel_path.name}: {exc}") from exc
 
 
-def _validate_staged_runtime(cli_agent: str, staging_site_packages: Path) -> None:
-    missing = [
-        module
-        for module in _REQUIRED_MODULES[cli_agent]
-        if not (staging_site_packages / module).is_dir()
-    ]
+def _validate_staged_runtime(
+    cli_agent: str,
+    platform_key: str,
+    staging_site_packages: Path,
+) -> None:
+    missing = _missing_runtime_files(_runtime_entry(cli_agent), platform_key, staging_site_packages)
     if missing:
         raise RuntimeError(
             f"downloaded {cli_agent} runtime is incomplete: {', '.join(missing)}"
         )
-    if cli_agent == "claude":
-        executable = "claude.exe" if os.name == "nt" else "claude"
-        if not (
-            staging_site_packages / "claude_agent_sdk" / "_bundled" / executable
-        ).is_file():
-            raise RuntimeError(
-                "downloaded Claude runtime does not contain its CLI executable"
-            )
-    if cli_agent == "codex":
-        executable = "codex.exe" if os.name == "nt" else "codex"
-        if not (staging_site_packages / "codex_cli_bin" / "bin" / executable).is_file():
-            raise RuntimeError(
-                "downloaded Codex runtime does not contain its CLI executable"
-            )
 
 
 def _replace_runtime_directory(target: Path, staging: Path) -> None:

@@ -32,6 +32,7 @@ from jiuwenswarm.server.ipc.protocol import (
     request_scope,
 )
 from jiuwenswarm.server.ipc.stream import IpcConnection
+from jiuwenswarm.server.worker.diagnostics import LoopBeat, heartbeat_reply
 from jiuwenswarm.server.worker.gateway_bridge import (
     WorkerGatewayBridge,
     begin_delivery_tracking,
@@ -51,8 +52,9 @@ _DRAIN_TIMEOUT = 5.0
 class WorkerDispatcher:
     """Turn IPC messages into Runtime calls and stream wire frames back."""
 
-    def __init__(self, bridge: WorkerGatewayBridge) -> None:
+    def __init__(self, bridge: WorkerGatewayBridge, beat: LoopBeat | None = None) -> None:
         self._bridge = bridge
+        self._beat = beat
         self._lock = asyncio.Lock()
         self._runtime: Any = None
         self._ready = False
@@ -150,7 +152,16 @@ class WorkerDispatcher:
             )
             return True
         if kind == KIND_HEARTBEAT:
-            await conn.send({"kind": KIND_HEARTBEAT, "pid": os.getpid()})
+            # Loop-driven fallback: the named-pipe fast path already answered
+            # this ping off-loop, so this branch serves stream transports.
+            beat_age = self._beat.age if self._beat is not None else None
+            await conn.send(heartbeat_reply(beat_age))
+            return True
+        if kind == KIND_DELIVERY_ACK:
+            self._bridge.acknowledge(message)
+            return True
+        if kind == KIND_SUBSCRIBE:
+            self._spawn(self._subscribe(message, conn, generation), generation)
             return True
         if kind == KIND_DELIVERY_ACK:
             self._bridge.acknowledge(message)
@@ -228,6 +239,9 @@ class WorkerDispatcher:
             return None
         for record in list(self._bridge.events.records.values()):
             if record.scope != request_scope(request):
+                continue
+            if record.is_passive_subscription:
+                record.is_processing = False
                 continue
             if record.last_execution_id:
                 executions = [item for item in state.executions if item.execution_id == record.last_execution_id]
@@ -520,9 +534,13 @@ class WorkerDispatcher:
                     )
                     # Accepted warming/queued dispatches have no Coordinator
                     # execution yet. An empty execution list must not clear them.
+                    work_requests = {
+                        record.request.request_id for record in self._bridge.events.records.values()
+                        if record.scope == request_scope(request) and not record.is_passive_subscription
+                    }
                     snapshot["is_processing"] = snapshot["is_processing"] or any(
                         not item.state.terminal for item in state.executions
-                        if item.request_id in allowed or item.root_request_id in allowed)
+                        if item.request_id in work_requests or item.root_request_id in work_requests)
                     waiting = {item.waiting_control_id for item in state.executions
                                if not item.state.terminal and item.waiting_control_id}
                     for record in self._bridge.events.records.values():

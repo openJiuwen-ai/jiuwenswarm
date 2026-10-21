@@ -14,7 +14,7 @@ TEAM_EXECUTION_CONTEXT_METADATA_KEY = "_team_execution_context"
 
 # ``chat.send`` requests carrying this truthy param attach a response
 # subscription to an already-running Team Session without submitting input.
-TEAM_ATTACH_ONLY_PARAM = "attach_only"
+from jiuwenswarm.common.schema.message import TEAM_ATTACH_ONLY_PARAM  # noqa: F401,E402  re-export
 
 
 class SessionExecutionEndedError(RuntimeError):

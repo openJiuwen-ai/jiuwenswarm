@@ -526,6 +526,9 @@ def fork_session(
         "project_id": source_meta.get("project_id", ""),
         "project_dir": source_meta.get("project_dir", ""),
     }
+    metadata["moa_enabled"] = source_meta.get("moa_enabled") is True
+    if "model_selection" in source_meta:
+        metadata["model_selection"] = copy.deepcopy(source_meta["model_selection"])
     if "model" in source_meta:
         metadata["model"] = source_meta["model"]
     source_equipment = source_meta.get("session_equipment")
@@ -552,6 +555,7 @@ def fork_session(
         "session_id": target_session_id,
         "source_session_id": source_session_id,
         "title": final_title,
+        "moa_enabled": metadata["moa_enabled"],
     }
 
 
@@ -1332,6 +1336,8 @@ def _build_context_messages_from_history(
                     messages = [UserMessage(
                         content=content,
                         metadata={
+                            **({"duplex_history_id": record.get("id") or record.get("request_id")}
+                               if record.get("channel_id") == "video_duplex" else {}),
                             OPENJIUWEN_MESSAGE_ORIGIN_METADATA: OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
                             OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: source_kind,
                         },
@@ -1427,6 +1433,8 @@ def _build_context_messages_from_history(
                 context_messages.append(AssistantMessage(
                     content=content.strip() if content.strip() else "",
                     reasoning_content=reasoning if reasoning else None,
+                    metadata=({"duplex_history_id": record.get("id") or record.get("request_id")}
+                              if record.get("channel_id") == "video_duplex" else {}),
                 ))
 
         elif event_type == "context.compact_summary":
@@ -1592,6 +1600,13 @@ async def warmup_session_context(
             processors=_get_context_processors(react_agent),
             history_messages=context_messages,
         )
+        restored_context = context_engine.get_context(session_id=session_id)
+        if restored_context is not None:
+            restored_context.duplex_history_ids = {
+                record.get("id") or record.get("request_id")
+                for record in history_records
+                if record.get("channel_id") == "video_duplex"
+            }
     except Exception as exc:
         logger.warning("warmup_session_context: create_context failed for %s: %s", session_id, exc)
         return False

@@ -142,6 +142,12 @@ _PROVIDERS = {
     ),
 }
 
+_PROVIDERS["designer"] = (
+    "jiuwenswarm.server.runtime.gateway_adapter.designer_adapter",
+    "DesignerAdapter",
+    frozenset(method.value for method in ReqMethod if method.value.startswith("designer.")),
+)
+
 _METHOD_PROVIDERS = {
     method: key for key, (_, _, methods) in _PROVIDERS.items() for method in methods
 }

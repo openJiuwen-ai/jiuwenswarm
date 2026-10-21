@@ -80,6 +80,8 @@ const EMPTY_DRAFT: AgentDraft = {
   skillRefs: [],
   mcpRefs: [],
   suggestedPrompts: [],
+  useExternalHarness: false,
+  externalHarnessProvider: 'claudecode',
 };
 
 const EMPTY_GROUP_DRAFT: AgentGroupDraft = {
@@ -98,10 +100,15 @@ const EMPTY_GROUP_DRAFT: AgentGroupDraft = {
 
 function detailToDraft(detail: AgentDetail): AgentDraft {
   const presetIds = new Set<string>(AGENT_TAG_OPTIONS.map((option) => option.id));
+  const harnessTagLabels = new Set(['三方Harness', 'External Harness']);
   const tagIds = detail.tags
     .map((tag) => tag.id)
     .filter((id): id is string => presetIds.has(id));
-  const customTags = detail.tags.filter((tag) => !presetIds.has(tag.id)).map((tag) => tag.label);
+  const customTags = detail.tags
+    .filter((tag) => !presetIds.has(tag.id) && !harnessTagLabels.has(tag.label) && !harnessTagLabels.has(tag.id))
+    .map((tag) => tag.label);
+  const provider = detail.runtime?.provider_name;
+  const useExternalHarness = provider === 'claudecode' || provider === 'codex';
   return {
     id: detail.id,
     name: detail.displayName,
@@ -110,8 +117,10 @@ function detailToDraft(detail: AgentDetail): AgentDraft {
     tagIds,
     customTags,
     skillRefs: detail.skills.map((skill) => skill.id),
-    mcpRefs: detail.mcps.map((mcp) => mcp.id),
+    mcpRefs: useExternalHarness ? [] : detail.mcps.map((mcp) => mcp.id),
     suggestedPrompts: detail.suggestedPrompts,
+    useExternalHarness,
+    externalHarnessProvider: provider === 'codex' ? 'codex' : 'claudecode',
   };
 }
 
@@ -986,11 +995,13 @@ export function AgentManagementPanel({
   };
 
   const handleUninstallGroup = async (id: string) => {
+    const before = groupDetail?.id === id ? groupDetail : [...groupCatalogRef.current, ...groupMineRef.current].find(item => item.id === id);
+    const confirmed = window.confirm(t('agentManagement.confirm.uninstallGroupMessage', { name: before?.displayName ?? id }));
+    if (!confirmed) return;
     markBusy(id);
     setActionNotice(null);
     try {
       const fromDetail = view === 'group-detail' && groupSelectedId === id;
-      const before = groupDetail?.id === id ? groupDetail : [...groupCatalogRef.current, ...groupMineRef.current].find(item => item.id === id);
       const result = await groupClient.uninstallGroup(id);
       await Promise.all([loadGroups('catalog'), loadGroups('mine')]);
       if (fromDetail && before?.source === 'local') {
@@ -1099,6 +1110,7 @@ export function AgentManagementPanel({
         setGroupCreateError(t('agentManagement.group.states.duplicateName'));
         return;
       }
+      const displayName = groupDraft.name.trim();
       const result = await groupClient.createGroup({
         ...groupDraft,
         id: groupDraft.id || deriveAgentGroupId(groupDraft.name),
@@ -1108,7 +1120,12 @@ export function AgentManagementPanel({
       setGroupMineQuery('');
       setMineKind('group');
       setView('mine');
-      showActionNotice(t('agentManagement.group.states.createSuccess', { id: result.id }));
+      // Toast must use the user-facing display name, not package id (#5470).
+      showActionNotice(
+        t('agentManagement.group.states.createSuccess', {
+          name: displayName || result.id,
+        }),
+      );
     } catch (error) {
       setGroupCreateError(formatActionError(error, t('agentManagement.group.form.saveError')));
     } finally {

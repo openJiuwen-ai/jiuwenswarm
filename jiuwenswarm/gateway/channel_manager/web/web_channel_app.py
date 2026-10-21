@@ -16,7 +16,7 @@ from jiuwenswarm.common.security.ws_origin import (
     is_origin_check_enabled,
 )
 from jiuwenswarm.gateway.channel_manager.web.ws_connection_adapter import StarletteWsAdapter
-from jiuwenswarm.extensions.application_host import (
+from jiuwenswarm.gateway.extensions.application_host import (
     iter_websocket_routes,
     mount_application_plugin_http_routes,
 )
@@ -54,6 +54,7 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        redirect_slashes=False,
     )
     app.state.web_channel = channel
     plugin_registry = getattr(channel, "application_plugin_registry", None)
@@ -118,6 +119,9 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     from jiuwenswarm.gateway.channel_manager.web.container_file_http import (
         attach_container_file_routes,
     )
+    from jiuwenswarm.gateway.channel_manager.web.diagnosis_http import (
+        attach_diagnosis_routes,
+    )
     from jiuwenswarm.gateway.channel_manager.web.trajectory_http import (
         attach_trajectory_routes,
     )
@@ -125,6 +129,8 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
 
     attach_container_file_routes(app, channel)
     attach_trajectory_routes(app, channel)
+    # The diagnosis service runs in the AgentServer; these routes only proxy to it.
+    attach_diagnosis_routes(app, channel)
     # register auth http routes for huawei account login
     register_auth_routes(app)
 

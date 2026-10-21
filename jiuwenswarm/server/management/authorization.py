@@ -46,8 +46,8 @@ class AuthorizationManagement:
     ) -> None:
         """Handle a4p.* requests forwarded from the Web User Authorizer."""
         host = self.host
-        from jiuwenswarm.agents.harness.common.a4p_rpc import dispatch_a4p_request
-
+        from jiuwenswarm.agents.harness.common.a4p.rpc import dispatch_a4p_request
+    
         resp = await dispatch_a4p_request(request)
         wire = host.services.encode_response(resp, response_id=request.request_id)
         async with send_lock:
@@ -59,14 +59,14 @@ class AuthorizationManagement:
         """Gateway 推回的登录模型凭据：续期后的新 token，或会话注销后的撤销。"""
         host = self.host
         from jiuwenswarm.common.auth.login_credentials import apply_credential_update
-
+    
         applied = apply_credential_update(request.params)
         proactive = getattr(host, "_proactive_engine", None)
         if applied and proactive is not None:
             from jiuwenswarm.server.runtime.proactive_adapter import (
                 build_proactive_agent,
             )
-
+    
             proactive.rebuild_proactive_agent(build_proactive_agent)
         resp = AgentResponse(
             request_id=request.request_id,

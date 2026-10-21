@@ -5,12 +5,18 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import time
 from typing import Any, Callable
 
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.mode_matrix import is_team_mode
+from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
+    ExternalHarnessBindingError, load_persisted_external_harness_binding, persist_external_harness_binding,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -24,9 +30,17 @@ class SessionAssembler:
     the interaction loop, pending config and history restoration are installed.
     """
 
-    def __init__(self, backend: Any, *, history_io: Callable = run_history_io) -> None:
+    def __init__(
+        self, backend: Any, *, history_io: Callable = run_history_io,
+        configuration: Callable = get_config,
+        load_binding: Callable = load_persisted_external_harness_binding,
+        persist_binding: Callable = persist_external_harness_binding,
+    ) -> None:
         self._owner = backend
         self._history_io = history_io
+        self._configuration = configuration
+        self._load_binding = load_binding
+        self._persist_binding = persist_binding
         self.adapters: dict[str, Any] = {}
         self.locks: dict[str, asyncio.Lock] = {}
         self.failed_cleanup: dict[str, Any] = {}
@@ -44,11 +58,18 @@ class SessionAssembler:
         host_external_input: bool = False,
         permission_project_dir: str | None = None,
         execution_request: AgentRequest | None = None,
+        external_harness_binding: dict[str, Any] | None = None,
+        moa_enabled: bool | None = None,
+        model_selection: Any = None,
+        moa_can_access: Callable[[str, str], bool] | None = None,
+        retain_moa_snapshot: bool = False,
     ) -> Any:
         """Return the session-owned adapter, creating and initializing it once."""
         owner = self._owner
         if self._closing:
             raise RuntimeError("session assembler is closing")
+        if moa_enabled is not None and not isinstance(moa_enabled, bool):
+            raise ValueError("moa_enabled must be a boolean")
         if owner._is_session_scoped_adapter:
             owner._touch_session_adapter(session_id)
             return owner
@@ -67,6 +88,156 @@ class SessionAssembler:
                     "session_cleanup_pending"
                 ) from self._cleanup_errors.get(sid)
             existing = self.adapters.get(sid)
+            if external_harness_binding is None and existing is None:
+                external_harness_binding = self._load_binding(sid)
+
+            if existing is not None and external_harness_binding is not None:
+                requested_kind = external_harness_binding.get("kind")
+                current_binding = getattr(
+                    existing,
+                    "_external_harness_binding",
+                    None,
+                )
+                is_external_request = requested_kind == "external_harness"
+                binding_unchanged = (
+                    isinstance(current_binding, dict)
+                    and current_binding.get("agent_template_name")
+                    == external_harness_binding.get("agent_template_name")
+                    and current_binding.get("provider_name")
+                    == external_harness_binding.get("provider_name")
+                )
+                can_rebind_idle_child = (
+                    current_binding is None
+                    and not existing._session_mcp_reconcile_started  # pylint: disable=protected-access
+                    and not existing._is_session_active(sid)  # pylint: disable=protected-access
+                )
+                if requested_kind == "deep_agent" and current_binding is None:
+                    pass
+                elif is_external_request and binding_unchanged:
+                    pass
+                elif is_external_request and can_rebind_idle_child:
+                    await existing.cleanup()
+                    owner._drop_session_adapter_cache_entry(
+                        sid,
+                        remove_lock=False,
+                    )
+                    existing = None
+                else:
+                    raise ExternalHarnessBindingError(
+                        "当前 session child 的运行时与请求不一致；"
+                        "请新建会话后切换专家或运行时"
+                    )
+            effective_moa = False
+            is_external_harness = (
+                (
+                    isinstance(external_harness_binding, dict)
+                    and external_harness_binding.get("kind") == "external_harness"
+                )
+                or getattr(existing, "_external_harness_binding", None) is not None
+            )
+            if not is_external_harness:
+                from jiuwenswarm.server.runtime.session.session_metadata import (
+                    get_session_metadata, update_session_metadata,
+                )
+
+                metadata = get_session_metadata(sid)
+                from jiuwenswarm.common.model_selection import ModelSelection
+                from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
+
+                # Explicit stable selections win; legacy ordinary names are also an
+                # explicit switch away from a persisted group. The old boolean is
+                # accepted for transport compatibility but never drives execution.
+                raw_selection = model_selection
+                if raw_selection is None and model_name:
+                    if model_name.startswith(("model:", "model_group:")):
+                        kind, identifier, *route = model_name.split(":", 2)
+                        raw_selection = {"type": kind, "id": identifier, "route_id": route[0] if route else None}
+                elif raw_selection is None:
+                    raw_selection = metadata.get("model_selection")
+                selection = ModelSelection.model_validate(raw_selection) if raw_selection is not None else None
+                mode = owner._session_instance_mode
+                moa_snapshot = None
+                moa_fingerprint = None
+                # Same-class children own their execution and permission lifetimes.
+                busy = existing is not None and (
+                    retain_moa_snapshot
+                    or existing._is_session_live(sid)  # pylint: disable=protected-access
+                    or existing._has_live_root_permission_owner(sid)  # pylint: disable=protected-access
+                )
+                if busy:
+                    installed_selection = getattr(existing, "_collaboration_model_selection", None)
+                    explicit_switch = model_selection is not None or bool(model_name)
+                    if not retain_moa_snapshot and explicit_switch and selection != installed_selection:
+                        raise RuntimeError("Model selection cannot change while the session is executing")
+                    # Global settings and metadata changes never replace a running
+                    # or permission-suspended invocation's installed snapshot.
+                    effective_moa = getattr(existing, "_moa_enabled", False)
+                    selection = installed_selection
+                    moa_fingerprint = getattr(existing, "_moa_fingerprint", None)
+                    if effective_moa and moa_can_access is not None:
+                        # Read the same-class child's installed snapshot, not global settings.
+                        resolve_moa_settings(
+                            existing._instance_overrides["moa_config_snapshot"],  # pylint: disable=protected-access
+                            selection,
+                            can_access=moa_can_access,
+                        )
+                else:
+                    moa_snapshot = copy.deepcopy(self._configuration())
+                    restoring_saved_selection = model_selection is None and not model_name
+                    if selection is not None and (
+                        restoring_saved_selection or owner._is_cron_execution_session(sid)
+                    ):
+                        from jiuwenswarm.common.model_catalog import ModelCatalog
+                        from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+
+                        selection = ModelSelectionResolver(ModelCatalog(moa_snapshot)).restore(selection)
+                    effective_moa = effective_moa_enabled(
+                        moa_snapshot, selection, mode=mode,
+                        is_cron=owner._is_cron_execution_session(sid),
+                    )
+                    if effective_moa:
+                        _, _, moa_fingerprint = resolve_moa_settings(
+                            moa_snapshot, selection,
+                            **({"can_access": moa_can_access} if moa_can_access is not None else {}),
+                        )
+                    else:
+                        moa_snapshot = None
+                    if model_selection is not None and selection is not None:
+                        from jiuwenswarm.server.runtime.session.session_metadata import update_session_model_selection
+                        update_session_model_selection(sid, selection.model_dump())
+                    elif model_name and selection is None:
+                        previous_selection = metadata.get("model_selection")
+                        had_group_selection = (
+                            isinstance(previous_selection, dict)
+                            and previous_selection.get("type") == "model_group"
+                        )
+                        if (
+                            had_group_selection
+                            and not is_team_mode(mode)
+                            and not owner._is_cron_execution_session(sid)
+                        ):
+                            # Login/free choices use a legacy name rather than a stable
+                            # resource DTO. Clear the old group so it cannot override
+                            # that explicit ordinary choice or return after a refresh.
+                            from jiuwenswarm.server.runtime.session.session_metadata import (
+                                update_session_model_selection,
+                            )
+                            update_session_model_selection(sid, None)
+                            update_session_metadata(
+                                session_id=sid, model=model_name, moa_enabled=False,
+                                touch_last_message_at=False, sync_write=True,
+                            )
+                            metadata["moa_enabled"] = False
+                if existing is not None and not busy:
+                    if (
+                        effective_moa != getattr(existing, "_moa_enabled", False)
+                        or moa_fingerprint != getattr(existing, "_moa_fingerprint", None)
+                    ):
+                        # Rebuild under the same lock used for session creation, then
+                        # restore disk history before the next turn can enter.
+                        await existing.cleanup()
+                        owner._drop_session_adapter_cache_entry(sid, remove_lock=False)
+                        existing = None
             # Same-class child cleanup remains serialized by this session lock.
             if (
                 existing is not None and existing._permission_state.permission_isolated  # pylint: disable=protected-access
@@ -108,8 +279,9 @@ class SessionAssembler:
                     )
                     and (
                         frozen_mcp_scan_names != requested_mcp_scan_names
-                        or not existing.skill_retrieval_model_profile_matches(
-                            model_name
+                        or (
+                            not effective_moa
+                            and not existing.skill_retrieval_model_profile_matches(model_name)
                         )
                     )
                 )
@@ -149,6 +321,27 @@ class SessionAssembler:
                 return existing
 
             adapter = owner._new_session_scoped_adapter(sid)
+            if (
+                isinstance(external_harness_binding, dict)
+                and external_harness_binding.get("kind") == "external_harness"
+            ):
+                adapter._external_harness_binding = external_harness_binding  # pylint: disable=protected-access
+                self._persist_binding(sid, external_harness_binding)
+                self.adapters[sid] = adapter
+                owner._session_adapter_versions[sid] = (
+                    owner._session_adapter_config_version
+                )
+                owner._touch_session_adapter(sid)
+                if reserve_activity:
+                    adapter._register_session_agent_task(  # pylint: disable=protected-access
+                        sid
+                    )
+                logger.info(
+                    "[AgentServer] External Harness session adapter created: "
+                    "session_id=%s",
+                    sid,
+                )
+                return adapter
             if execution_request is not None:
                 model_name = owner._requested_model_name(execution_request)
             # Execution selection is request-local, rather than a persisted
@@ -181,6 +374,11 @@ class SessionAssembler:
             create_started_at = time.monotonic()
             if permission_project_dir is not None:
                 config = {**(config or {}), "project_dir": permission_project_dir}
+            config = {**(config or {}), "moa_enabled": effective_moa,
+                      "moa_model_selection": selection.model_dump() if selection is not None else None}
+            if moa_snapshot is not None:
+                config["moa_config_snapshot"] = moa_snapshot
+                config["moa_can_access"] = moa_can_access
             history_preparation = None
             if history_before_request_id:
                 from jiuwenswarm.agents.harness.common.session_ops_service import (
@@ -203,6 +401,7 @@ class SessionAssembler:
                         sub_mode=owner._session_instance_sub_mode,
                         **owner._session_instance_extra_create_kwargs(),
                     )
+                    adapter._collaboration_model_selection = selection
                     adapter.persist_skill_retrieval_session_profile()
                     instance_ready_at = time.monotonic()
 
@@ -256,6 +455,11 @@ class SessionAssembler:
             except BaseException:
                 await self._cleanup_failed_child(sid, adapter)
                 raise
+            if metadata.get("moa_enabled") is not effective_moa:
+                update_session_metadata(
+                    session_id=sid, moa_enabled=effective_moa,
+                    touch_last_message_at=False, sync_write=True,
+                )
             # Cache readers outside ensure() must never observe a partially
             # installed permission/interaction/history owner.
             self.adapters[sid] = adapter

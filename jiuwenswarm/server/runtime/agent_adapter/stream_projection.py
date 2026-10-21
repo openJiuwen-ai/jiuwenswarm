@@ -210,6 +210,7 @@ class StreamResponsePipeline:
                     yield chunk
         finally:
             try:
+                await self.history_committer.persist_team_member_pending()
                 # proactive 请求：流结束时把缓存的话术轮 final 补落（带 source/rec_id）。
                 # 流里的非空 final 都被延迟到此刻按序落盘，只有最后一个非工具轮 final
                 # （=推荐话术）带 proactive 标记，其余（工具轮总结/延续轮）为普通气泡。
@@ -495,6 +496,9 @@ class StreamResponsePipeline:
                     "request_id=%s",
                     self.rid,
                 )
+                return
+            if self.is_team_mode and await self.history_committer.handle_team_member_event(data.payload):
+                yield data
                 return
             if et == "chat.delta":
                 self.projector.final_answer_chunks.append(payload_content)
@@ -791,6 +795,11 @@ class StreamResponsePipeline:
             return
         if et == "chat.final":
             ensure_final_mode_inplace(data)
+        if self.is_team_mode and await self.history_committer.handle_team_member_event(data):
+            yield AgentResponseChunk(
+                request_id=self.rid, channel_id=self.cid, payload=data, is_complete=False,
+            )
+            return
         if et == "chat.delta":
             self.projector.final_answer_chunks.append(payload_content)
             if self.projector.suppress_a2ui_stream or a2ui_split is not None:

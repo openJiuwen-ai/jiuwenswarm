@@ -16,6 +16,8 @@ jiuwenswarm-process --list-sessions
 
 The command prints full IDs, last message times, modes, titles, and project directories, then exits. It includes both Agent and Team sessions owned by Process CLI, ordered by last message time descending and ID for ties. It does not start an Agent/Runtime, call a model, or write back session metadata.
 
+Columns align by the terminal display width of the current page, with at least two spaces between columns and `会话ID` as the first header. Full IDs, titles, and project directories are preserved; lines may wrap when they exceed the terminal width.
+
 The list covers all Process CLI sessions in the current data directory without automatic filtering by the terminal working directory. Other channels are excluded. Archived and ephemeral sessions follow the existing local catalog filters.
 
 The default data directory is `%USERPROFILE%\.jiuwenswarm` on Windows. If configured, `JIUWENSWARM_DATA_DIR` overrides it. Queries and resumed tasks must use the same data directory.

@@ -42,6 +42,8 @@ export type SettingSubItems = {
 };
 export type SettingsCustomItemProps = {
   disabled: boolean;
+  /** Report an active editor so a parent switch cannot unmount its unsaved draft. */
+  onEditingChange?: (editing: boolean) => void;
 };
 export type SettingItemDefinition =
   | (SettingItemBase & {

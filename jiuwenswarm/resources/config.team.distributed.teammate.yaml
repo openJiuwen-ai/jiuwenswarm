@@ -777,7 +777,7 @@ team:
     leader:
       workspace:
         stable_base: true
-      max_iterations: 200
+      # Leader 不受 max_iterations 限制，配置了也会被忽略，保证长程任务持续执行
       completion_timeout: 600.0
     teammate:
       workspace:
@@ -863,7 +863,7 @@ modes:
         leader:
           workspace:
             stable_base: true
-          max_iterations: 200
+          # Leader 不受 max_iterations 限制，配置了也会被忽略，保证长程任务持续执行
           completion_timeout: 600.0
 
       workspace:

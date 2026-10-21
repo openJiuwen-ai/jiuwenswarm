@@ -1630,3 +1630,30 @@ def test_load_team_spec_dict_progressive_tool_defaults_false(monkeypatch, tmp_pa
     spec = load_team_spec_dict()
 
     assert spec["progressive_tool"] is False
+
+
+@pytest.mark.parametrize(
+    "leader_config",
+    [{}, {"max_iterations": 200, "completion_timeout": 6000.0}],
+)
+def test_leader_run_budget_is_unbounded_even_when_configured(leader_config):
+    """A long-horizon leader's ReAct loop is never capped, while teammates keep their budget."""
+    spec = load_team_spec_dict(
+        config_base=_config_with_team({"leader": leader_config, "teammate": {"max_iterations": 80}}),
+    )
+    leader = spec["agents"]["leader"]
+    assert leader["max_iterations"] is None
+    assert leader["completion_timeout"] == leader_config.get("completion_timeout", 600.0)
+    teammate = spec["agents"]["teammate"]
+    assert teammate["max_iterations"] == 80
+    assert teammate["completion_timeout"] == 600.0
+
+
+def test_leader_from_top_level_reference_is_unbounded():
+    """``$agent_leader`` references resolve to an unbounded leader too."""
+    config = _config_with_team({"leader": "$agent_leader"})
+    config["agents"] = {"agent_leader": {"max_iterations": 200, "completion_timeout": 6000.0}}
+    spec = load_team_spec_dict(config_base=config)
+    assert spec["agents"]["leader"]["max_iterations"] is None
+    assert spec["agents"]["leader"]["completion_timeout"] == 6000.0
+    assert config["agents"]["agent_leader"]["max_iterations"] == 200

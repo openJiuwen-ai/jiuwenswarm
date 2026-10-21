@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+_DIAGNOSIS_METHOD_NAMES = frozenset({
+    "diagnosis.run", "diagnosis.list", "diagnosis.get", "diagnosis.cancel",
+    "diagnosis.delete", "diagnosis.ttse.trigger",
+})
+
 import asyncio
 import datetime as _dt
 import logging
@@ -15,7 +20,7 @@ from jiuwenswarm.common.stage_timer import async_stage
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
 )
-from jiuwenswarm.agents.harness.common.a4p_rpc import get_a4p_req_methods
+from jiuwenswarm.agents.harness.common.a4p.rpc import get_a4p_req_methods
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
     get_permissions_config_req_methods,
 )
@@ -268,7 +273,7 @@ class ExecutionRequests:
                 request.channel_id,
                 preview_text(_request_query_text(request)),
             )
-
+    
         pending_chat_request: tuple[AgentRuntime, str, str] | None = None
         registry = getattr(self, "_preparation_registry", None)
         priority_token = None
@@ -289,7 +294,7 @@ class ExecutionRequests:
                     from jiuwenswarm.server.worker.preparation import (
                         CapabilityUnavailableError,
                     )
-
+    
                     try:
                         if registry is not None:
                             await registry.ensure("sandbox")
@@ -309,6 +314,10 @@ class ExecutionRequests:
                         await registry.ensure("proactive")
                     else:
                         await asyncio.shield(preparation)
+            from jiuwenswarm.server.runtime.group_requests import dispatch_group_request
+    
+            if await dispatch_group_request(self, ws, request, send_lock):
+                return
             if request.req_method is not None and request.req_method.value.startswith(
                 "assets.publish."
             ):
@@ -320,7 +329,7 @@ class ExecutionRequests:
                 from jiuwenswarm.server.personal_context.ws_handler import (
                     handle_personal_context_request,
                 )
-
+    
                 preparation = getattr(self, "_personal_context_start_task", None)
                 if preparation is not None:
                     if registry is not None:
@@ -341,7 +350,7 @@ class ExecutionRequests:
                     ),
                 )
                 return
-
+    
             if (
                 request.channel_id == "acp"
                 and request.req_method != ReqMethod.INITIALIZE
@@ -353,17 +362,17 @@ class ExecutionRequests:
                     ws_caps or self._agent_manager.get_client_capabilities("acp"),
                 )
                 request.metadata = metadata
-
+    
             if await self._handle_gateway_cron_callback(ws, request, send_lock):
                 return
-
+    
             if await self._handle_lifecycle_request(ws, request, send_lock):
                 return
             from jiuwenswarm.server.runtime.session.lifecycle import (
                 LifecycleError,
                 guard,
             )
-
+    
             guarded_params = request.params if isinstance(request.params, dict) else {}
             guarded_method = request.req_method.value if request.req_method else ""
             unguarded_methods = {
@@ -401,10 +410,10 @@ class ExecutionRequests:
                             ),
                         )
                     return
-
+    
             if await self._dispatch_gateway_adapter_request(ws, request, send_lock):
                 return
-
+    
             if (
                 request.req_method
                 in {
@@ -417,16 +426,16 @@ class ExecutionRequests:
                 runtime = self._execution_runtime()
                 runtime.begin_chat_request(request.session_id, request.request_id)
                 pending_chat_request = (runtime, request.session_id, request.request_id)
-
+    
             # Extensions must observe and may normalize chat input before
             # automatic team binding or any other request-side effect. Runtime
             # execution below is told not to trigger this hook a second time.
             await self._trigger_before_chat_request_hook(request)
-
+    
             if request.req_method == ReqMethod.HEARTBEAT_JOB:
                 await self._handle_heartbeat_job(ws, request, send_lock)
                 return
-
+    
             if request.req_method == ReqMethod.SESSION_LIST:
                 await self._handle_session_list(ws, request, send_lock)
                 return
@@ -658,6 +667,10 @@ class ExecutionRequests:
             if request.req_method == ReqMethod.HARNESS_PACKAGES_DELETE:
                 await self._handle_harness_packages_delete(ws, request, send_lock)
                 return
+            # Trajectory diagnosis: run, query and TTSE writes proxied by the Gateway.
+            if request.req_method is not None and request.req_method.value in _DIAGNOSIS_METHOD_NAMES:
+                await self._handle_diagnosis_request(ws, request, send_lock)
+                return
             # RSI 优化平台：16 个 rsi.* web method 统一分发（B2）
             if isinstance(
                 request.req_method, ReqMethod
@@ -785,7 +798,7 @@ class ExecutionRequests:
                 cleanup_after_cancel = self._is_client_disconnect_cancel_request(
                     request
                 )
-
+    
                 # 只有 cancel/supplement 才取消流式任务
                 # pause/resume 不取消，因为任务仍在运行（pause 在 checkpoint 阻塞，resume 解除阻塞）
                 stream_tasks: list[asyncio.Task] = []
@@ -802,7 +815,7 @@ class ExecutionRequests:
                         stream_stop_event.set()
                         stream_task.cancel()
                         stream_tasks.append(stream_task)
-
+    
                 cancel_response: AgentResponse | None = None
                 try:
                     # 专门处理 cancel，复用已有 agent（不再 fallthrough 到 _handle_unary）
@@ -939,7 +952,7 @@ class ExecutionRequests:
             from jiuwenswarm.server.runtime.mcp.exc_group import (
                 reraise_as_exception,
             )
-
+    
             try:
                 reraise_as_exception(e)
             except KeyboardInterrupt:
@@ -2788,11 +2801,11 @@ class ExecutionRequests:
             operation,
             request.request_id,
         )
-
+    
         runtime = None
         prepared = None
         response_delivered = False
-
+    
         async def abort_prepared(
             primary_error: BaseException | None,
         ) -> None:
@@ -2822,7 +2835,7 @@ class ExecutionRequests:
                     ),
                     abort_error,
                 )
-
+    
         try:
             channel_id = request.channel_id or "default"
             params = request.params if isinstance(request.params, dict) else {}
@@ -2833,7 +2846,10 @@ class ExecutionRequests:
                     "persist_session must be a boolean",
                     code="BAD_REQUEST",
                 )
-
+    
+            if "moa_enabled" in params and not isinstance(params["moa_enabled"], bool):
+                raise SessionProvisionError("moa_enabled must be a boolean", code="BAD_REQUEST")
+    
             explicit_work_mode_marker = params.get("_work_mode_explicit")
             requested = params.get("session_id")
             requested_session_id = (
@@ -2845,7 +2861,7 @@ class ExecutionRequests:
                     "bypassing prewarm compatibility path: session_id=%s",
                     requested_session_id,
                 )
-
+    
             runtime = self._execution_runtime()
             await runtime.start()
             prepared = await runtime.prepare_session_create(
@@ -2878,18 +2894,20 @@ class ExecutionRequests:
                         or ""
                     ).strip(),
                     model_name=str(params.get("model_name") or "").strip(),
+                    model_selection=params.get("model_selection"),
+                    moa_enabled=params.get("moa_enabled"),
                     cron_id=str(params.get("cron_id") or "").strip(),
                 )
             )
             params.pop("_work_mode_explicit", None)
             result = prepared.result
-
+    
             # Preserve the established mutation visible to in-process callers.
             params["project_id"] = result.project_id
             params["project_dir"] = result.project_dir
             params["work_mode"] = result.work_mode
             params["mode"] = result.canonical_mode
-
+    
             payload = {
                 "sessionId": result.session_id,
                 "session_id": result.session_id,
@@ -2897,6 +2915,7 @@ class ExecutionRequests:
                 "projectDir": result.project_dir,
                 "workMode": result.work_mode,
                 "persist_session": result.persist_session,
+                "moa_enabled": result.moa_enabled,
                 "prewarm_hit": result.prewarm_hit,
                 "prewarm_status": result.prewarm_status,
             }
@@ -2907,7 +2926,7 @@ class ExecutionRequests:
                         "mode": result.canonical_mode,
                     }
                 )
-
+    
             response = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -2922,7 +2941,7 @@ class ExecutionRequests:
                 if not await self.services.send(ws, wire):
                     raise RuntimeError("session provision result was not delivered")
             response_delivered = True
-
+    
             await runtime.commit_session_provision(
                 prepared,
                 timing=SessionProvisionCommitTiming.AFTER_RESULT_DELIVERY,
@@ -2979,14 +2998,14 @@ class ExecutionRequests:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Translate ``session.fork`` between WebSocket wire and Runtime.
-
+    
         Args:
             ws: WebSocket connection.
             request: AgentRequest with source_session_id, target_session_id, title.
             send_lock: Send lock.
         """
         logger.info("[AgentServer] session.fork: request_id=%s", request.request_id)
-
+    
         runtime = None
         prepared = None
         try:
@@ -3011,13 +3030,13 @@ class ExecutionRequests:
             if not isinstance(fork_point, dict):
                 fork_point = {}
             channel_id = request.channel_id or "default"
-
+    
             if not source:
                 raise SessionProvisionError(
                     "source_session_id is required",
                     code="BAD_REQUEST",
                 )
-
+    
             runtime = self._execution_runtime()
             await runtime.start()
             prepared = await runtime.prepare_session_fork(
@@ -3037,7 +3056,7 @@ class ExecutionRequests:
                 prepared,
                 timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY,
             )
-
+    
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -3046,19 +3065,20 @@ class ExecutionRequests:
                     "session_id": result.session_id,
                     "source_session_id": result.source_session_id,
                     "title": result.title,
+                    "moa_enabled": result.moa_enabled,
                 },
             )
             wire = self.services.encode_response(resp, response_id=request.request_id)
             async with send_lock:
                 await self.services.send(ws, wire)
-
+    
             logger.info(
                 "[AgentServer] session.fork completed: source=%s target=%s title=%s",
                 source,
                 result.session_id,
                 result.title,
             )
-
+    
         except SessionProvisionError as e:
             logger.warning("[AgentServer] session.fork rejected: %s", e)
             payload = {"error": str(e)}
@@ -3481,7 +3501,7 @@ class ExecutionRequests:
         params = request.params if isinstance(request.params, dict) else {}
         target = str(params.get("session_id") or request.session_id or "").strip()
         previous_session_id = str(params.get("previous_session_id") or "").strip()
-
+    
         if not target:
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -3494,14 +3514,14 @@ class ExecutionRequests:
             async with send_lock:
                 await self.services.send(ws, wire)
             return
-
+    
         channel_id = str(request.channel_id or "").strip() or "default"
         lock_key = f"{id(ws)}:{channel_id}"
         switch_lock = _session_switch_locks.get(lock_key)
         if switch_lock is None:
             switch_lock = asyncio.Lock()
             _session_switch_locks[lock_key] = switch_lock
-
+    
         async with switch_lock:
             runtime = self._execution_runtime()
             prepared = None
@@ -3533,10 +3553,11 @@ class ExecutionRequests:
                         "session_id": result.session_id,
                         "mode": result.mode,
                         "switched": result.switched,
+                        "moa_enabled": result.moa_enabled,
                     },
                     metadata=request.metadata,
                 )
-
+    
                 wire = self.services.encode_response(
                     resp,
                     response_id=request.request_id,

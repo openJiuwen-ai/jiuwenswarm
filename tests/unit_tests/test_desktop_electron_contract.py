@@ -605,7 +605,7 @@ def test_windows_electron_sets_amd64_before_any_preflight() -> None:
     assert architecture_override < project_root < machine_check < runtime_resolution < dependency_sync
     assert '$DetectedMachine -cne "AMD64"' in source
     assert "Windows Electron packaging requires platform.machine() == AMD64" in source
-    assert "uv sync --locked --extra dev --python-platform x86_64-pc-windows-msvc" in source
+    assert "uv sync --locked --extra dev --extra cua --python-platform x86_64-pc-windows-msvc" in source
     assert "--extra claude" not in source
     assert "--extra codex" not in source
 
@@ -689,8 +689,24 @@ def test_windows_electron_signs_payload_installer_and_uninstaller() -> None:
         "RequireSigning",
     ):
         assert setting in source
-    icon_index = source.index("& $Rcedit $ShellExePath --set-icon $LogoIco")
-    payload_sign_index = source.index("Invoke-CodeSigning", icon_index)
+    # Icon and version resources are applied in two rcedit passes on a temp copy
+    # (one-pass icon+version can corrupt the PE on Windows).
+    icon_index = source.index("& $Rcedit $RceditTemp --set-icon $LogoIco")
+    version_index = source.index("& $Rcedit $RceditTemp `", icon_index)
+    rcedit_end_index = source.index("if ($LASTEXITCODE -ne 0)", version_index)
+    rcedit_command = source[icon_index:rcedit_end_index]
+    for argument in (
+        "--set-icon $LogoIco",
+        "--set-version-string FileDescription $BuildDisplayName",
+        "--set-version-string ProductName $BuildDisplayName",
+        "--set-version-string InternalName $ShellExeName",
+        "--set-version-string OriginalFilename $ShellExeName",
+        "--set-file-version $BuildVersion",
+        "--set-product-version $BuildVersion",
+    ):
+        assert argument in rcedit_command
+    assert "Copy-Item -LiteralPath $RceditTemp -Destination $ShellExePath" in source
+    payload_sign_index = source.index("Invoke-CodeSigning", rcedit_end_index)
     iscc_index = source.index("& $Iscc @IsccArguments")
     verify_index = source.index("Assert-ValidEmbeddedSignature", iscc_index)
     assert icon_index < payload_sign_index < iscc_index < verify_index

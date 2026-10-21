@@ -2,13 +2,13 @@ import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   A2UISetting,
-  ExternalCliSettingsItem,
+  ExternalCliCustomAgentsItem,
   ProactiveLimitsSetting,
   RSISetting,
-  TaskAsrSetting,
-  TaskFullDuplexSetting,
+  TrajectoryDiagnosisSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
+import { MultiModelVerificationSettings } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
@@ -18,19 +18,9 @@ export const experimentalModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
-      id: 'asr',
-      titleKey: 'settingsPanel.experimental.taskAsr',
-      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
-    },
-    {
-      id: 'task-full-duplex',
-      titleKey: 'settingsPanel.experimental.taskFullDuplex',
-      items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
-    },
-    {
-      id: 'external-cli-agents',
+      id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
-      items: [{ id: 'external-cli-agents', component: 'custom', render: ExternalCliSettingsItem }],
+      items: [{ id: 'external-cli-custom-agents', component: 'custom', render: ExternalCliCustomAgentsItem }],
     },
     {
       id: 'rsi',
@@ -51,7 +41,10 @@ export const experimentalModule: SettingsModuleDefinition = {
     {
       id: 'trajectory-ui',
       titleKey: 'settingsPanel.experimental.trajectoryUi',
-      items: [{ id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting }],
+      items: [
+        { id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting },
+        { id: 'trajectory-diagnosis-enabled', component: 'custom', render: TrajectoryDiagnosisSetting },
+      ],
     },
     {
       id: 'skill-pack',
@@ -111,6 +104,22 @@ export const experimentalModule: SettingsModuleDefinition = {
             show: 'always',
             disabled: 'when-parent-unchecked',
             items: [{ id: 'proactive-limits', component: 'custom', render: ProactiveLimitsSetting }],
+          },
+        },
+      ],
+    },
+    {
+      id: 'multi-model-collaboration',
+      titleKey: 'settingsPanel.experimental.multiModelCollaboration',
+      items: [
+        {
+          id: 'multi-model-collaboration-enabled',
+          component: 'switch',
+          key: 'multi_model_collaboration_enabled',
+          subItems: {
+            show: 'when-parent-checked',
+            disabled: 'never',
+            items: [{ id: 'multi-model-verification', component: 'custom', render: MultiModelVerificationSettings }],
           },
         },
       ],

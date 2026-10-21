@@ -2000,6 +2000,7 @@ async def test_get_swarm_enriched_team_spec_uses_bound_stable_team_name(
 
     class _Spec:
         team_name = "template_team"
+        bootstrap_mode = "leader"
 
     async def fake_ensure_postgresql(self, config_base: dict) -> None:
         _ = self, config_base
@@ -2063,6 +2064,7 @@ async def test_get_swarm_enriched_team_spec_uses_bound_team_entity_snapshot(
 
     class _Spec:
         team_name = "template_team"
+        bootstrap_mode = "leader"
 
     async def fake_ensure_postgresql(self, config_base: dict) -> None:
         _ = self, config_base
@@ -2131,6 +2133,7 @@ async def test_get_swarm_enriched_team_spec_keeps_legacy_session_scoped_team_nam
 
     class _Spec:
         team_name = "template_team"
+        bootstrap_mode = "leader"
 
     async def fake_ensure_postgresql(self, config_base: dict) -> None:
         _ = self, config_base

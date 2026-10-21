@@ -51,7 +51,7 @@ DEFAULT_TEAM_TASK_VERIFICATION_ENABLED = False
 EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY = "external_cli_publish_url"
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
 EXTERNAL_TRANSPORT_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_transport")
-_ALLOWED_EXTERNAL_CLI_AGENTS = {"claude", "codex"}
+_BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
 # Keep progressive tool search enabled by default for existing user workspaces
 # whose config.yaml predates this switch.
 DEFAULT_PROGRESSIVE_TOOL_ENABLED = False
@@ -381,7 +381,7 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
 def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
     """Return whether both Symphony and its evolution switch are enabled."""
 
-    from jiuwenswarm.symphony.config import (
+    from jiuwenswarm.common.symphony_config import (
         resolve_symphony_enabled,
         resolve_symphony_evolution_enabled,
     )
@@ -1108,6 +1108,15 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_trajectory_diagnosis_in_config(enabled: bool) -> None:
+    """Update the trajectory diagnosis feature switch and persist config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "trajectory_ui" not in data or data["trajectory_ui"] is None:
+        data["trajectory_ui"] = {}
+    data["trajectory_ui"]["diagnosis_enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_team_organization_ui_in_config(enabled: bool) -> None:
     """Persist the experimental Organization UI switch without changing runtime capabilities."""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -1823,6 +1832,16 @@ def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict
 
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
+    model_config = saved.get("model_config_obj")
+    if isinstance(model_config, dict) and "reasoning_level" in model_config:
+        from jiuwenswarm.common.reasoning_config import normalize_reasoning_level
+
+        raw_level = model_config["reasoning_level"]
+        level = normalize_reasoning_level(raw_level)
+        if raw_level is not None and str(raw_level).strip() and level is None:
+            raise ValueError("Invalid reasoning_level")
+        # PyYAML reads unquoted on/off as booleans; keep the editable DTO stable.
+        model_config["reasoning_level"] = DoubleQuotedScalarString(level or "")
     saved.setdefault("model_id", _new_business_id("mdl"))
 
     def _mutate(data):
@@ -1882,29 +1901,6 @@ def _validate_model_candidate(candidate: dict[str, Any]) -> None:
     raise_if_invalid(candidate)
 
 
-def _require_unreferenced_model(
-    data: dict[str, Any], resource_type: str, resource_id: str, *, cron_references_checked: bool = False,
-) -> None:
-    from jiuwenswarm.common.model_catalog import ModelCatalog
-    from jiuwenswarm.common.model_errors import MODEL_SELECTION_REFERENCED, ModelSelectionError
-    from jiuwenswarm.common.model_selection import ModelSelection
-    from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
-
-    is_etcd = load_cron_store_settings(data).backend == "etcd"
-    if is_etcd and not cron_references_checked:
-        raise ModelSelectionError(
-            MODEL_SELECTION_REFERENCED, "use the resource API to check etcd references before deletion",
-        )
-    refs = ModelCatalog(data).find_references(
-        ModelSelection(type=resource_type, id=resource_id), include_cron=not is_etcd,
-    )
-    if refs:
-        raise ModelSelectionError(
-            MODEL_SELECTION_REFERENCED, "resource is still referenced",
-            references=[ref.__dict__ for ref in refs],
-        )
-
-
 def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
     from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
 
@@ -1951,7 +1947,25 @@ def delete_model_resource(resource_type: str, resource_id: str, *, cron_referenc
         filtered = [entry for entry in entries if entry.get(id_key) != resource_id]
         if len(filtered) == len(entries):
             return None
-        _require_unreferenced_model(data, resource_type, resource_id, cron_references_checked=cron_references_checked)
+        if resource_type == "model":
+            # Drop routes that still point at this model so delete does not fail
+            # validation with raw mgp_/mdl_ ids in the UI (#5477). Groups left
+            # with no routes are removed.
+            next_groups = []
+            for group in candidate.get("groups") or []:
+                if not isinstance(group, dict):
+                    continue
+                routes = [
+                    route
+                    for route in (group.get("routes") or [])
+                    if not (isinstance(route, dict) and str(route.get("model_id") or "") == resource_id)
+                ]
+                if not routes:
+                    continue
+                next_group = dict(group)
+                next_group["routes"] = routes
+                next_groups.append(next_group)
+            candidate["groups"] = next_groups
         candidate[key] = filtered
         _validate_model_candidate(candidate)
         deleted = True
@@ -2064,11 +2078,6 @@ def update_default_models_in_config(
     def _mutate(data):
         if "models" not in data:
             data["models"] = {}
-        retained_ids = {entry.get("model_id") for entry in models_list}
-        for previous in data["models"].get("defaults") or []:
-            model_id = previous.get("model_id")
-            if model_id and model_id not in retained_ids:
-                _require_unreferenced_model(data, "model", model_id, cron_references_checked=cron_references_checked)
         for entry in models_list:
             if isinstance(entry, dict) and isinstance(entry.get("alias"), str):
                 entry["alias"] = DoubleQuotedScalarString(entry["alias"])
@@ -2417,8 +2426,7 @@ def _normalize_external_cli_team_config(
     else:
         transformed_team.pop("external_cli_agents", None)
 
-    has_codex = any(item["cli_agent"] == "codex" for item in normalized_cli_agents)
-    if not has_codex:
+    if not _requires_external_transport(normalized_cli_agents):
         transformed_team.pop("external_transport", None)
         return
 
@@ -2431,12 +2439,12 @@ def _normalize_external_cli_team_config(
     params = external_transport.get("params")
     params = dict(params) if isinstance(params, dict) else {}
     if transport_type and transport_type != "hybrid":
-        raise ValueError(f"{field_name} includes codex but external_transport.type must be hybrid")
+        raise ValueError(f"{field_name} needs a cross-process agent but external_transport.type must be hybrid")
 
     if not params.get("external_publish_url"):
         url = str(publish_url or "").strip()
         if not url:
-            raise ValueError(f"{field_name} includes codex but external_cli_publish_url is empty")
+            raise ValueError(f"{field_name} needs a cross-process agent but external_cli_publish_url is empty")
         params["external_publish_url"] = url
 
     transformed_team["external_transport"] = {"type": "hybrid", "params": params}
@@ -2494,12 +2502,30 @@ def _normalize_builtin_models(value: Any, field_name: str) -> list[dict[str, Any
     return normalized
 
 
+def _allowed_external_cli_agents() -> tuple[str, ...]:
+    """Return Claude, Codex and every installed custom agent."""
+    from jiuwenswarm.common.custom_agent_runtime import custom_agent_names
+
+    return (*_BUILTIN_EXTERNAL_CLI_AGENTS, *custom_agent_names())
+
+
+def _requires_external_transport(agents: list[dict[str, Any]]) -> bool:
+    """Return whether an enabled agent reaches the team from another process.
+
+    Claude mounts its team tools in process. Codex and custom agents run a
+    team MCP server or messenger outside this process, which needs the hybrid
+    transport and its publish URL.
+    """
+    return any(item["cli_agent"] != "claude" for item in agents)
+
+
 def _normalize_external_cli_agents(value: Any, field_name: str) -> list[dict[str, Any]]:
     if value is None or value == "":
         return []
     if not isinstance(value, list):
         raise ValueError(f"{field_name} must be an array")
 
+    allowed_agents = _allowed_external_cli_agents()
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, item in enumerate(value):
@@ -2511,8 +2537,8 @@ def _normalize_external_cli_agents(value: Any, field_name: str) -> list[dict[str
             raise ValueError(f"{field_name}[{index}] must be an object or string")
         if not cli_agent:
             continue
-        if cli_agent not in _ALLOWED_EXTERNAL_CLI_AGENTS:
-            allowed = ", ".join(sorted(_ALLOWED_EXTERNAL_CLI_AGENTS))
+        if cli_agent not in allowed_agents:
+            allowed = ", ".join(allowed_agents)
             raise ValueError(f"{field_name}[{index}].cli_agent must be one of: {allowed}")
         if cli_agent in seen:
             continue
@@ -2693,7 +2719,7 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
     else:
         current.pop(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1], None)
 
-    if any(item["cli_agent"] == "codex" for item in normalized_agents):
+    if _requires_external_transport(normalized_agents):
         external_transport = current.get(EXTERNAL_TRANSPORT_CONFIG_PATH[-1])
         if isinstance(external_transport, dict):
             transport_type = str(external_transport.get("type") or "").strip()
@@ -2703,11 +2729,15 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
             transport_type = ""
             params = {}
         if transport_type and transport_type != "hybrid":
-            raise ValueError("external_cli_agents includes codex but external_transport.type must be hybrid")
+            raise ValueError(
+                "external_cli_agents needs a cross-process agent but external_transport.type must be hybrid"
+            )
         if not params.get("external_publish_url"):
             url = str(publish_url or "").strip()
             if not url:
-                raise ValueError("external_cli_agents includes codex but external_cli_publish_url is empty")
+                raise ValueError(
+                    "external_cli_agents needs a cross-process agent but external_cli_publish_url is empty"
+                )
             params["external_publish_url"] = url
         current[EXTERNAL_TRANSPORT_CONFIG_PATH[-1]] = {"type": "hybrid", "params": params}
     else:
@@ -2822,18 +2852,14 @@ def get_mcp_servers() -> list[dict[str, Any]]:
     # B. mcp/state.json — 已连接 MCP（state==connected）.
     state_mcps: list[dict[str, Any]] = []
     try:
-        from jiuwenswarm.server.runtime.mcp.state_store import (
-            list_connected_mcps,
-            record_to_mcp_entry,
-        )
-        from jiuwenswarm.server.runtime.mcp.registry import (
-            is_stale_marketplace_record,
-        )
-        for rec in list_connected_mcps():
+        from jiuwenswarm.common.external_providers import provider
+        mcp_state = provider("mcp_state")
+        mcp_registry = provider("mcp_registry")
+        for rec in mcp_state.list_connected_mcps():
             name = rec.get("name", "")
-            if not name or is_stale_marketplace_record(name, rec):
+            if not name or mcp_registry.is_stale_marketplace_record(name, rec):
                 continue
-            entry = record_to_mcp_entry(name, rec)
+            entry = mcp_state.record_to_mcp_entry(name, rec)
             # skill-only MCPs return None
             if entry is not None:
                 state_mcps.append(entry)
@@ -2945,8 +2971,8 @@ def remove_mcp_server_in_config(name: str) -> dict[str, Any]:
 def _mcp_name_in_state(name: str) -> bool:
     """Whether state.json has a record for ``name`` (any state)."""
     try:
-        from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
-        return get_mcp_record(name) is not None
+        from jiuwenswarm.common.external_providers import provider
+        return provider("mcp_state").get_mcp_record(name) is not None
     except Exception:  # noqa: BLE001
         return False
 
@@ -2976,10 +3002,11 @@ def upsert_mcp_server(
     if _mcp_name_in_config_yaml(name):
         return upsert_mcp_server_in_config(server)
     # Else state.json is the creation/update home for TUI MCPs.
-    from jiuwenswarm.server.runtime.mcp.state_store import upsert_mcp_record
+    from jiuwenswarm.common.external_providers import provider
+    mcp_state = provider("mcp_state")
     prior = _mcp_name_in_state(name)
     enabled = bool(server.get("enabled", True)) if "enabled" in server else None
-    rec = upsert_mcp_record(name, server, state=state,
+    rec = mcp_state.upsert_mcp_record(name, server, state=state,
                             integration_type=_integration_type_for(server),
                             enabled=enabled)
     # Shape a config-like entry for the response (carries enabled through).
@@ -3001,11 +3028,10 @@ def set_mcp_server_enabled(name: str, enabled: bool) -> dict[str, Any]:
     if not target:
         raise ValueError("MCP server name is required")
     if _mcp_name_in_state(target):
-        from jiuwenswarm.server.runtime.mcp.state_store import (
-            get_mcp_record, set_mcp_enabled,
-        )
-        set_mcp_enabled(target, enabled=enabled)
-        rec = get_mcp_record(target) or {}
+        from jiuwenswarm.common.external_providers import provider
+        mcp_state = provider("mcp_state")
+        mcp_state.set_mcp_enabled(target, enabled=enabled)
+        rec = mcp_state.get_mcp_record(target) or {}
         entry = dict(rec)
         entry["name"] = target
         return entry
@@ -3022,8 +3048,8 @@ def remove_mcp_server(name: str) -> dict[str, Any]:
     if not target:
         raise ValueError("MCP server name is required")
     if _mcp_name_in_state(target):
-        from jiuwenswarm.server.runtime.mcp.state_store import remove_mcp_record
-        removed = remove_mcp_record(target) or {}
+        from jiuwenswarm.common.external_providers import provider
+        removed = provider("mcp_state").remove_mcp_record(target) or {}
         entry = dict(removed)
         entry["name"] = target
         return entry
@@ -3650,7 +3676,7 @@ _DEFAULT_SANDBOX_STARTUP_MODE = "internal"
 _DEFAULT_SANDBOX_POLICY_FILE = "code-agent-policy.yaml"
 
 # YuanRong sandbox knobs under flat ``sandbox:`` (see get_sandbox_endpoint).
-_VALID_YUANRONG_EXECUTORS = ("default", "docker")
+_VALID_YUANRONG_EXECUTORS = ("default", "docker", "conch")
 _DEFAULT_YUANRONG_EXECUTOR = "docker"
 _DEFAULT_YUANRONG_URL = "http://yuanrong.local"
 _YUANRONG_ENDPOINT_OPTIONAL_KEYS: tuple[str, ...] = (

@@ -50,7 +50,7 @@ class AssetsManagement:
             from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import (
                 start_hub_catalog_preload,
             )
-
+    
             await start_hub_catalog_preload(
                 SkillManager(workspace_dir=str(get_agent_workspace_dir()))
             )
@@ -66,7 +66,7 @@ class AssetsManagement:
         from jiuwenswarm.server.runtime.marketplace.asset_publish_api import (
             PublishAPIError,
         )
-
+    
         try:
             if request.channel_id != "web":
                 raise PublishAPIError("WEB_CHANNEL_REQUIRED")

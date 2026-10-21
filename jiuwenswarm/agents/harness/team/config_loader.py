@@ -29,8 +29,43 @@ from jiuwenswarm.common.team_template_config import (
 
 logger = logging.getLogger(__name__)
 
+
+def _prepare_external_cli_agents(spec_dict: dict[str, Any]) -> None:
+    """Finish the external CLI agent entries before the team spec is built.
+
+    Each catalog of built-in models is reconciled with what its CLI last
+    reported (the configuration keeps the policy, the CLI owns the facts).
+    Enabled custom agents (user-uploaded harness providers, each extracted
+    into its own ``site-packages``) become resolvable once that directory is
+    on ``sys.path``, and get the ``openjiuwen-team-mcp`` stdio server for their
+    team tools, whose location depends on whether this is a frozen build.
+    """
+    from jiuwenswarm.common.custom_agent_runtime import (
+        activate_custom_agent_paths,
+        custom_agent_names,
+        team_mcp_server_command,
+    )
+    from jiuwenswarm.common.external_cli_catalog import apply_reported_models
+
+    entries = spec_dict.get("external_cli_agents")
+    if not isinstance(entries, list):
+        return
+    apply_reported_models(entries)
+    custom_names = set(custom_agent_names())
+    if not custom_names:
+        return
+    activate_custom_agent_paths()
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("cli_agent") in custom_names:
+            entry.setdefault("mcp_server_command", team_mcp_server_command())
+
 _DEFAULT_MAX_ITERATIONS = 200
 _DEFAULT_COMPLETION_TIMEOUT = 600.0
+# The leader coordinates the whole team for the lifetime of a long-horizon
+# task, so its inner ReAct loop must never be cut short. ``None`` means
+# unbounded. ``completion_timeout`` is left alone: on the team path it only sets
+# the slow-round log threshold and never aborts a round.
+_LEADER_UNBOUNDED_BUDGET = {"max_iterations": None}
 _DEFAULT_AGENT_WORKSPACE = {"stable_base": True}
 _DEFAULT_TEAM_WORKSPACE = {"enabled": True}
 _DEFAULT_TRANSPORT = {"type": "inprocess"}
@@ -392,6 +427,10 @@ def _build_agents_config(
             completion_timeout=completion_timeout,
         )
 
+    # Applied after the merge on purpose: a cap written by an older config
+    # template must not survive and truncate a long-running leader.
+    agents["leader"].update(_LEADER_UNBOUNDED_BUDGET)
+
     if set(agents.keys()) == {"leader"}:
         logger.info(
             "[TeamConfigLoader] agents config contains only leader; "
@@ -561,12 +600,17 @@ def load_team_spec_dict(
     )
     spec_dict = deepcopy(team_raw)
     spec_dict.pop("enable_team_plan", None)
+    _prepare_external_cli_agents(spec_dict)
 
     spec_dict["team_name"] = str(team_raw.get("team_name") or resolved_template_id or "team").strip() or "team"
     spec_dict["lifecycle"] = team_raw.get("lifecycle", "persistent")
     spec_dict["teammate_mode"] = team_raw.get("teammate_mode", "build_mode")
     spec_dict["spawn_mode"] = team_raw.get("spawn_mode", "inprocess")
     spec_dict["dispatch_mode"] = team_raw.get("dispatch_mode", "autonomous")
+    # Who materializes the team (F_122): the leader via build_team, or the
+    # framework on start. team_display_name / team_desc only matter under
+    # "framework" and pass through from the raw section unchanged.
+    spec_dict["bootstrap_mode"] = team_raw.get("bootstrap_mode", "leader")
     spec_dict["enable_task_verification"] = team_raw.get("enable_task_verification", False)
     spec_dict["enable_hitt"] = team_raw.get("enable_hitt", True)
     spec_dict["enable_permissions"] = _resolve_enable_permissions(config_base)
@@ -575,8 +619,10 @@ def load_team_spec_dict(
         (config_base.get("experimental") or {}).get("team_organization_ui_enabled", False)
     )
     _apply_swarmflow_budget(spec_dict, team_raw.get("swarmflow_budget"))
-    # Team-level key, independent of the single-agent progressive_tool_enabled
-    # switch; the spec field is named progressive_tool on the engine side.
+    # Team-level key forcing swarmflow workers into progressive exposure; the
+    # spec field is named progressive_tool on the engine side. Leader /
+    # teammate members (and, through the teammate base spec, workers) follow
+    # the top-level progressive_tool_enabled switch in config_specs instead.
     spec_dict["progressive_tool"] = bool(spec_dict.pop("swarmflow_progressive_tool", False))
     spec_dict["leader"] = _build_leader_spec(team_raw)
     spec_dict["agents"] = agents

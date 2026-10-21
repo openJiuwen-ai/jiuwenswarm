@@ -46,6 +46,7 @@ from jiuwenswarm.server.worker.execution_services import (
 )
 
 logger = logging.getLogger("jiuwenswarm.server.agent_ws_server")
+_PUSH_NO_GATEWAY_WARN_INTERVAL_S = 30.0
 
 
 async def _reuse_server_runtime_dependencies() -> None:
@@ -73,23 +74,31 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
 
     @property
     def _tokenizer_service(self) -> Any:
-        if self._tokenizer_service_instance is None:
+        if getattr(self, "_tokenizer_service_instance", None) is None:
             from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
 
             self._tokenizer_service_instance = TokenizerService()
         return self._tokenizer_service_instance
 
+    @_tokenizer_service.setter
+    def _tokenizer_service(self, service: Any) -> None:
+        self._tokenizer_service_instance = service
+
     @property
     def _jiuwenbox_runner(self) -> Any:
-        if self._jiuwenbox_runner_instance is None:
+        if getattr(self, "_jiuwenbox_runner_instance", None) is None:
             from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
 
             self._jiuwenbox_runner_instance = JiuwenBoxRunner.instance()
         return self._jiuwenbox_runner_instance
 
+    @_jiuwenbox_runner.setter
+    def _jiuwenbox_runner(self, runner: Any) -> None:
+        self._jiuwenbox_runner_instance = runner
+
     @property
     def _personal_context_host(self) -> Any:
-        if self._personal_context_host_instance is None:
+        if getattr(self, "_personal_context_host_instance", None) is None:
             from jiuwenswarm.server.personal_context import PersonalContextHostAPI
             from jiuwenswarm.common.utils import get_user_workspace_dir
 
@@ -97,6 +106,10 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                 home=get_user_workspace_dir() / ".personal_context",
             )
         return self._personal_context_host_instance
+
+    @_personal_context_host.setter
+    def _personal_context_host(self, host: Any) -> None:
+        self._personal_context_host_instance = host
 
     def __init__(
         self,
@@ -115,6 +128,9 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         # 当前 Gateway 连接，用于 send_push 主动推送
         self._current_ws: Any = None
         self._current_send_lock: asyncio.Lock | None = None
+        # send_push 无连接告警限流：首条立即告警，之后按窗口汇总
+        self._push_no_gateway_suppressed = 0
+        self._push_no_gateway_warned_at: float | None = None
         self._acp_client_capabilities_by_ws: dict[int, dict[str, Any]] = {}
         # AgentServer and the process CLI share this transport-independent Runtime.
         # Keep the manager alias for legacy transport handlers.
@@ -126,8 +142,11 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         self._runtime_push_handler = None
         self._previous_runtime_push_handler = None
         self._runtime_services_started = False
+        self._group_service = None
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
+        # Trajectory diagnosis host (lazy, see _get_diagnosis_host)
+        self._diagnosis_host: Any = None
         # Optional production Provider injection point.  The concrete class is
         # supplied by the composition root once it is available.
         self._rsi_harness_provider: Any = None
@@ -137,7 +156,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         self._agent_manager.set_heartbeat_service(self._heartbeat_runtime)
         self._install_session_message_service()
         from jiuwenswarm.server.worker.management_adapters import LazyAdapterRegistry
-
+    
         self._adapter_registry = LazyAdapterRegistry(self)
         self._tokenizer_service_instance = None
         # Tokenizer downloads are best-effort background work. Context creation
@@ -262,7 +281,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         on_execution_min_ready: Any = None,
     ) -> None:
         """Front readiness callbacks. ``on_ready`` is Agent Runtime start, not attach.
-
+    
         Retryable warmup errors use ``on_warmup_retry`` (stay ``RUNTIME_WARMING``).
         ``on_failed`` is only for unrecoverable startup that stops retrying.
         """
@@ -341,12 +360,12 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         reason: str,
     ) -> asyncio.Task[bool]:
         """Schedule a non-blocking tokenizer warm-up task.
-
+    
         The service-level lock deduplicates overlapping resolutions. Keeping
         each task until completion lets a reload submit its newest config
         without cancelling an in-flight worker-thread download.
         """
-
+    
         async def _run() -> bool:
             try:
                 result = await self._tokenizer_service.warm(config, reason=reason)
@@ -374,7 +393,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                     exc,
                 )
                 return False
-
+    
         task = asyncio.create_task(_run(), name=f"tokenizer-warmup:{reason}")
         self._tokenizer_warmup_tasks.add(task)
         task.add_done_callback(self._tokenizer_warmup_tasks.discard)
@@ -427,7 +446,14 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
     ) -> None:
         """Publish the Front-owned Gateway socket for send_push / ACP caps."""
         self.bind_gateway_transport(ws, send_lock)
+        self._reset_push_no_gateway_warning()
         await self._session_message_service.set_available(True)
+        try:
+            from jiuwenswarm.observability.gateway_hints import trajectory_gateway_hint_bridge
+    
+            trajectory_gateway_hint_bridge.notify_available()
+        except Exception:
+            logger.debug("[AgentWebSocketServer] trajectory hint wakeup failed", exc_info=True)
 
     async def _bind_transport(self) -> None:
         raise ValueError("WorkerExecutionHost does not own a listen socket")
@@ -592,12 +618,12 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         self, *, reason: str, reset_cache: bool = False
     ) -> None:
         """把图像模态探针任务放进统一槽位调度。
-
+    
         启动预热与模型配置变更重探共用 ``_image_modality_refresh_task`` 这一个
         任务槽位：新任务启动前取消上一轮未完成的任务，避免启动预热在配置变化
         后继续跑完并写回过期结论（新配置先 reset 缓存、旧任务随后覆盖）。
         任务由 ``_stop_main_services`` 在 shutdown 时统一 cancel 回收。
-
+    
         Args:
             reason: 传给 warm/refresh 的日志标签（"startup" / "model config change"）。
             reset_cache: True 时先清空旧结论再探（配置变更场景），False 仅补探。
@@ -606,7 +632,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             refresh_image_modality_cache,
             warm_image_modality_cache,
         )
-
+    
         previous_task = self._image_modality_refresh_task
         if previous_task is not None and not previous_task.done():
             previous_task.cancel()
@@ -635,7 +661,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             return False
         if start_cancelled is not None:
             raise start_cancelled
-
+    
         rail_sync_cancelled: asyncio.CancelledError | None = None
         try:
             state_reader = getattr(
@@ -661,13 +687,13 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
 
     async def _bootstrap_internal_jiuwenbox(self) -> bool | None:
         """启动时按 ``config.yaml::sandbox`` 自动拉起 jiuwenbox 子进程。
-
+    
         触发条件: ``config.yaml::sandbox.startup_mode`` **显式**写为 ``internal``。
         这里刻意走 :func:`get_sandbox_startup_mode_explicit` 而不是
         :func:`get_sandbox_startup_mode` —— 后者在字段缺失时默认回落到
         ``internal``, 会让没在用沙箱的用户升级版本后突然多出 jiuwenbox 进程;
         boot 阶段必须严格区分 "用户写过 internal" 和 "走默认值"。
-
+    
         不再单独依赖 ``sandbox.enabled``:
         - 老逻辑要 ``enabled=True`` AND ``startup_mode=internal`` 才拉, 但
           ``enabled`` 是 ``/sandbox`` 命令的产物, 用户手改 yaml 设了 ``internal``
@@ -679,7 +705,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
           但**重启后会被本方法重新拉起** (因为 ``startup_mode`` 没改)。要让
           disable 跨重启生效, 把 ``startup_mode`` 改为 ``external`` 或从 yaml
           里删掉该字段即可。
-
+    
         与 :meth:`_handle_sandbox_enable` 的其余差别:
         - 不调用 ``agent_manager.recreate_agent``: 启动阶段还没有任何会话/agent
           实例, 没东西需要重建; 后续会话首次进入时按现有 ``sandbox.url`` 直接装载。
@@ -716,7 +742,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                     explicit_mode,
                 )
                 return
-
+    
             # startup_mode=internal 已经定下来; 其余字段从归一后的 endpoint
             # 取, 缺啥用默认。
             endpoint = get_sandbox_endpoint()
@@ -742,7 +768,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                     policy_path,
                 )
                 return False
-
+    
             host, preferred_port = self._parse_sandbox_host_port(url)
             port = self._allocate_internal_jiuwenbox_port(host, preferred_port)
             if port != preferred_port:
@@ -753,7 +779,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                     preferred_port,
                     port,
                 )
-
+    
             try:
                 api_token = resolve_sandbox_api_token(startup_mode="internal")
             except ValueError as exc:
@@ -766,7 +792,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             # Sync onto the agent-server process so provider HTTP clients /
             # hybrid-shell host orchestration inherit the same Bearer token.
             sync_sandbox_api_token_environ(api_token)
-
+    
             ok = await self._jiuwenbox_runner.ensure_running(
                 host=host,
                 port=port,
@@ -786,7 +812,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                     stderr_tail or "(empty)",
                 )
                 return False
-
+    
             # 端口可能在 _allocate_internal_jiuwenbox_port 里换过, 把最终生效
             # 的 url 落盘, 这样 (a) 后续会话/agent 重建直接读到正确端点,
             # (b) /sandbox status 显示也是真实值, 不再是 config 里旧的 8321。
@@ -803,7 +829,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                     "after auto-start: %s",
                     exc,
                 )
-
+    
             # auto-start 成功 → ``runtime.enabled`` 同步为 True, 这样 /sandbox
             # status / TUI 显示的状态跟真实运行的 jiuwenbox 对齐。如果用户上次
             # /sandbox disable 留下了 False, 这里会被覆盖 —— 这是已知的、属于
@@ -816,7 +842,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                     "failed after auto-start: %s",
                     exc,
                 )
-
+    
             logger.info(
                 "[AgentWebSocketServer] jiuwenbox auto-started at %s (policy=%s)",
                 url,
@@ -922,6 +948,14 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         if sandbox_start is not None:
             sandbox_start.cancel()
             await asyncio.gather(sandbox_start, return_exceptions=True)
+        diagnosis_host = getattr(self, "_diagnosis_host", None)
+        if diagnosis_host is not None:
+            # A restart builds a fresh host so the shutdown flag does not linger.
+            self._diagnosis_host = None
+            try:
+                await diagnosis_host.shutdown()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentWebSocketServer] diagnosis shutdown failed: %s", exc)
         task = getattr(self, "_asset_start_task", None)
         if task is not None:
             task.cancel()
@@ -934,7 +968,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import (
             close_hub_catalog_cache,
         )
-
+    
         await close_hub_catalog_cache()
         archive_service = getattr(self, "_archive_service", None)
         if archive_service is not None:
@@ -1003,7 +1037,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             self._server.close()
             await self._server.wait_closed()
             self._server = None
-
+    
         closing_runtime = self._runtime
         runtime_close_completed = False
         runtime_close_error: BaseException | None = None
@@ -1032,17 +1066,17 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             # Never allocate a replacement Runtime while shutting down.
             if runtime_close_completed or closing_runtime.closed:
                 self._runtime_services_started = False
-
+    
         try:
             from jiuwenswarm.symphony.service import get_swarm_symphony_service
-
+    
             await get_swarm_symphony_service().close()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[AgentWebSocketServer] Symphony runtime close failed: %s",
                 exc,
             )
-
+    
         runtime_push_handler = getattr(self, "_runtime_push_handler", None)
         if runtime_push_handler is not None:
             restore_runtime_push_handler(
@@ -1050,7 +1084,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                 getattr(self, "_previous_runtime_push_handler", None),
             )
             self._runtime_push_handler = None
-
+    
         if not had_server and not runtime_only:
             if runtime_close_error is not None and (
                 not isinstance(runtime_close_error, Exception)
@@ -1097,7 +1131,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
             get_kv_cache_application_owner,
         )
-
+    
         owner = get_kv_cache_application_owner()
         self._kv_cache_application_owner = owner
         registry = RuntimeParticipantRegistry()
@@ -1136,14 +1170,14 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
 
     async def send_push(self, msg) -> bool:
         """AgentServer 主动向 Gateway 推送消息。
-
+    
         payload 格式与 AgentResponse.payload 一致，
         可含 event_type 等字段供 Gateway 转为 Message 派发到 Channel。
         """
         if self._current_ws is None or self._current_send_lock is None:
-            logger.warning("[AgentWebSocketServer] send_push 失败: 无活跃 Gateway 连接")
+            self._warn_push_without_gateway()
             return False
-
+    
         try:
             payload = msg.get("payload") if isinstance(msg, dict) else None
             if isinstance(payload, dict) and payload.get("event_type") == "chat.error":
@@ -1198,3 +1232,76 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         if self._model_cache:
             self._model_cache.clear()
         self._default_model = None
+
+    def _get_diagnosis_host(self) -> Any:
+        """Lazily build the trajectory diagnosis host once."""
+        if getattr(self, "_diagnosis_host", None) is None:
+            from jiuwenswarm.server.diagnosis.host import DiagnosisHost
+
+            self._diagnosis_host = DiagnosisHost(
+                get_agent_manager=lambda: self._agent_manager,
+                send_push=self.send_push,
+            )
+        return self._diagnosis_host
+
+    async def _handle_diagnosis_request(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Answer one ``diagnosis.*`` request proxied by the Gateway."""
+        from jiuwenswarm.common.schema.agent import AgentResponse
+
+        try:
+            resp = await self._get_diagnosis_host().handle(request)
+        except Exception as exc:
+            logger.exception("[AgentServer] diagnosis request failed: %s", exc)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "INTERNAL_ERROR"},
+            )
+
+        wire = self.services.encode_response(resp, response_id=request.request_id)
+        async with send_lock:
+            await self.services.send(ws, wire)
+
+    def _reset_push_no_gateway_warning(self) -> None:
+        suppressed = getattr(self, "_push_no_gateway_suppressed", 0)
+        if suppressed:
+            logger.info(
+                "[AgentWebSocketServer] Gateway 连接已恢复，此前 %d 条 send_push 失败告警已省略",
+                suppressed,
+            )
+        self._push_no_gateway_suppressed = 0
+        self._push_no_gateway_warned_at = None
+
+    def _warn_push_without_gateway(self) -> None:
+        """无活跃 Gateway 连接时限流告警，避免生产者重试刷屏。"""
+        now = time.monotonic()
+        warned_at = getattr(self, "_push_no_gateway_warned_at", None)
+        suppressed = getattr(self, "_push_no_gateway_suppressed", 0)
+        if warned_at is not None and now - warned_at < _PUSH_NO_GATEWAY_WARN_INTERVAL_S:
+            self._push_no_gateway_suppressed = suppressed + 1
+            return
+        self._push_no_gateway_warned_at = now
+        self._push_no_gateway_suppressed = 0
+        if suppressed:
+            logger.warning(
+                "[AgentWebSocketServer] send_push 失败: 无活跃 Gateway 连接"
+                "（过去 %.0fs 内另有 %d 条同类失败已省略）",
+                _PUSH_NO_GATEWAY_WARN_INTERVAL_S,
+                suppressed,
+            )
+        else:
+            logger.warning(
+                "[AgentWebSocketServer] send_push 失败: 无活跃 Gateway 连接"
+            )
+
+    def get_group_service(self):
+        """Return the lazily initialized group management service."""
+        from jiuwenswarm.server.runtime.group_service import GroupService
+
+        service = getattr(self, "_group_service", None)
+        if service is None:
+            service = self._group_service = GroupService(self._execution_runtime())
+        return service

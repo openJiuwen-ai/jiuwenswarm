@@ -38,7 +38,7 @@ class WorkflowsManagement:
             existing_workflow_handler,
             restored_workflows,
         )
-
+    
         session_id = request.session_id or ""
         channel_id = request.channel_id or "web"
         params = request.params if isinstance(request.params, dict) else {}
@@ -84,7 +84,7 @@ class WorkflowsManagement:
             if isinstance(workflow_id, str) and workflow_id.strip()
             else None
         )
-
+    
         def _find_workflow() -> dict[str, Any] | None:
             if not target_id:
                 return None
@@ -96,7 +96,7 @@ class WorkflowsManagement:
                 ),
                 None,
             )
-
+    
         if action == "list":
             offset = _coerce_int(
                 params.get("offset"), default=0, minimum=0, maximum=10000000
