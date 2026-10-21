@@ -1485,11 +1485,13 @@ def preserve_agent_group_display_identity(
 
     sessions_dir = get_agent_sessions_dir()
     archived_dir = sessions_dir.parent / "sessions_archived"
-    session_ids = {
-        directory.name
-        for root in (sessions_dir, archived_dir) if root.is_dir()
-        for directory in root.iterdir() if directory.is_dir()
-    }
+    session_ids: set[str] = set()
+    for root in (sessions_dir, archived_dir):
+        if not root.is_dir():
+            continue
+        for directory in root.iterdir():
+            if directory.is_dir():
+                session_ids.add(directory.name)
     for session_id in sorted(session_ids):
         with lc.resource_lock("session", session_id):
             session_dir = lc.resolve_session(
