@@ -203,7 +203,7 @@ Feishu 入站绑定校验成功后，JM-08 在调用 JM-07 受理 Request 时同
 2. 对群消息核验 Feishu 事件与接收 Bot 绑定；Bot 收到该群事件即符合已确认的群接入规则。随后标准化群 / 私聊来源和 `RequestInput`，按上述契约构造仅含发送者身份、无访问 scope 的 `AccessSnapshot`；该快照不决定群准入，也不授予工作空间访问权。
 3. 群聊通过 `GroupChatRepository.resolve(namespace_id, "feishu", chat_id, now=...)` 取得稳定 `group_chat_id`；随后由 JM-03 `ExecutionRepository.resolve_session` 按 namespace、Agent 和 `ConversationRef` 定位 Session。私聊直接使用飞书私聊 `ConversationRef`。
 4. 调用 JM-07 `AgentManager.scheduler.accept(session, snapshot=..., source_ref=..., access=..., request_input=..., received_at=...)`。该入口内部调用 JM-03 `accept_request`：数据库唯一约束是 Request 幂等的权威事实，`is_new=False` 表示来源已受理。
-5. 新受理 Request 进入 JM-07 的 Session 排队与调度；是否对群消息作出响应由 PA-07 在 core 侧判断。JM-08 不根据 @ 或关键词提前过滤业务消息。
+5. 未被飞书明确 @ 时，先按 [JM-23](F_23_group-reply-mode.md) 决定是否受理：被动模式只保留归档，不创建 Request；没有具体内容的寒暄只受理一位自适应员工。通过后，新 Request 进入 JM-07 的 Session 排队与调度。是否回应由 PA-07 判断，并阅读 JM-23 附加的职责与轻量交流说明。飞书明确 @ 不经过该模式门闩。
 
 并发与隔离不变量：
 
@@ -299,5 +299,6 @@ Feishu 入站绑定校验成功后，JM-08 在调用 JM-07 受理 Request 时同
 | 2026-10-15 | 为 JM-09 在 Request 受理时持久化 Feishu `app_id`、`chat_id`、来源 `message_id` 与 `reply_to`；明确该快照属于 JM-08 的入站事实，outbox、出站 ACK 与文本发送由 F09/JM-09 负责；个人版路径不变 | JM-09 方案细化与当前 Request / E2A 代码；JM-08/JM-09 聚焦自动化验证 |
 | 2026-10-19 | 飞书应用配置直接以 `app_id` + `persistent_agent_id` 表达一对一绑定；同一同事改绑时替换旧应用项，不另存绑定表或绑定 ID；解析后映射为运行时 `agent_id` | 用户确认；创建弹窗保存凭据与绑定，同事列表从配置恢复状态；重复绑定失败关闭；3 项定向测试、前端相关测试及生产构建通过，真实飞书入站仍待复测 |
 | 2026-10-20 | 修复明确 @ 当前接收 Bot 的身份映射：在 JM-08 入站回调前自动解析/加载 Bot `open_id`，将命中的 Feishu `open_id` 映射为当前绑定 Agent 的内部 ID，仅追加到本次 Request 来源；公共群归档保持平台原始 @ 标识 | Feishu `app_id` / `app_secret` 查询 Bot 信息；PA-07 明确 @ 的确定性 `respond` 契约；5 项定向测试通过。两测试文件全量 61 项通过，1 项未发布同事处置预期差异未在本次修改 |
+| 2026-10-21 | 群消息在受理前增加 JM-23 回复模式。被动且未被明确 @ 时不创建 Request；纯寒暄只受理一位自适应员工。第 5.4 节第 5 步改按该规则描述 | [F_23](F_23_group-reply-mode.md)；真实飞书仍待验收 |
 
 生产装配已接入；待使用真实 Feishu 测试应用和测试群确认事件身份字段、SDK 重投行为及 JM-09 文本回执。JM-08 不新增工作空间权限或其策略，也不伪造执行上下文；PA-07 群执行、PA-08 文件投递和 PA-15 中途协作不属于 JM-08 闭环。

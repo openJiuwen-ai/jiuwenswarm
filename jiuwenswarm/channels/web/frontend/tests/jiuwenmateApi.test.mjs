@@ -625,3 +625,11 @@ test('schedule API preserves interval, validity, completed state and real run hi
   assert.equal(history.runs[0].description, '连接超时');
   assert.equal(history.plan.runCount, 2);
 });
+
+test('group reply mode survives edits and defaults to adaptive for existing colleagues', () => {
+  assert.equal(toColleague(wireColleague).groupReplyMode, 'adaptive');
+  const colleague = toColleague({ ...wireColleague, group_reply_mode: 'passive' });
+  assert.equal(colleague.groupReplyMode, 'passive');
+  assert.equal(withColleagueEdit(colleague, [], { name: 'Renamed' }).group_reply_mode, 'passive');
+  assert.equal(withColleagueEdit(colleague, [], { groupReplyMode: 'adaptive' }).group_reply_mode, 'adaptive');
+});

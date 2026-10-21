@@ -59,7 +59,7 @@ sequenceDiagram
     participant Sch as SessionScheduler
     participant Repo as ExecutionRepository
     participant Store as RecoveryStore
-    Adapter->>Mgr: 首次调用时 start() 与 recover("local")
+    Adapter->>Mgr: Web 首次调用时 start()，并只恢复 web 与未路由 Request
     Mgr->>Rec: recover
     Rec->>Sch: recover（排队消息重新调度，返回遗留 Request）
     loop 每个遗留 Request
@@ -181,3 +181,4 @@ sequenceDiagram
 ## 10. 设计演进与修订
 
 - 2026-10-15：建档并实现重启扫描与执行异常核对子范围。
+- 2026-10-21：Web 运行时只恢复 `channel=web` 的 Request，并包含没有路由快照的 Request。飞书群分发运行时只恢复 `channel=feishu` 的 Request，不包含未路由 Request。飞书 Request 因此留在能够核验群成员的运行时上。宿主测试 `test_web_recovery_leaves_a_dispatched_feishu_request_for_the_feishu_runtime` 已通过；真实重启后的飞书补投递未验收。

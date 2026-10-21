@@ -542,7 +542,10 @@ async def test_delivery_service_attaches_only_current_group_handoff_targets(host
         namespace_id=NS,
         send_delivery=send,
         clock=lambda: NOW,
-        mention_roster=lambda job: [{"agent_id": "agent-peer", "name": "执行同事"}],
+        mention_roster=lambda job: [
+            {"agent_id": AGENT, "name": "发送同事"},
+            {"agent_id": "agent-peer", "name": "执行同事"},
+        ],
     )
 
     assert await service.dispatch_pending() == 1

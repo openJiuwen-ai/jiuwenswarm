@@ -363,6 +363,48 @@ async def test_later_named_colleague_waits_for_the_first_public_reply(host):
 
 
 @pytest.mark.asyncio
+async def test_a_pure_greeting_is_accepted_only_for_one_daily_colleague(host):
+    from dataclasses import replace
+
+    life = host.colleague("生活小助手")
+    study = host.colleague("agent学习小助手")
+    fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
+    group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
+    for agent_id, app_id in ((life, "app-life"), (study, "app-study")):
+        host.groups.update_membership(
+            NS, agent_id, group.group_chat_id, app_id,
+            status="active", observed_at=NOW, source_ref=f"test:{app_id}",
+        )
+    life_event = _event(receiving_app_id="app-life", text="大家好", mention_ids=(), reply_to=None)
+    study_event = _event(receiving_app_id="app-study", text="大家好", mention_ids=(), reply_to=None)
+
+    assert await fanout.handle(study_event) is InboundDisposition.HANDLED
+    assert await fanout.handle(life_event) is InboundDisposition.HANDLED
+    assert len(host.request_states(life, life_event)) == 1
+    assert host.request_states(study, study_event) == []
+
+    task = _event(
+        receiving_app_id="app-study", message_id="om_task", text="你好，推荐一个南京的景点",
+        mention_ids=(), reply_to=None,
+    )
+    assert await fanout.handle(task) is InboundDisposition.HANDLED
+    assert len(host.request_states(study, task)) == 1
+
+    settings = host.service.read_settings(NS, life)
+    host.service.update_settings(NS, life, replace(settings, group_reply_mode="passive"))
+    greeted = _event(
+        receiving_app_id="app-study", message_id="om_again", text="在吗", mention_ids=(), reply_to=None,
+    )
+    life_again = _event(
+        receiving_app_id="app-life", message_id="om_again", text="在吗", mention_ids=(), reply_to=None,
+    )
+    assert await fanout.handle(greeted) is InboundDisposition.HANDLED
+    assert await fanout.handle(life_again) is InboundDisposition.HANDLED
+    assert any(state.record.source_ref == "feishu:message:om_again" for state in host.request_states(study, greeted))
+    assert all(state.record.source_ref != "feishu:message:om_again" for state in host.request_states(life, life_again))
+
+
+@pytest.mark.asyncio
 async def test_delivered_handoff_starts_only_the_named_colleague(host):
     life = host.colleague("生活小助手")
     study = host.colleague("agent学习小助手")
@@ -930,3 +972,37 @@ async def test_message_handler_delegates_to_configured_fanout():
 
     assert result is InboundDisposition.HANDLED
     fanout.handle.assert_awaited_once_with(event)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,mentioned,chat_type,expected", [
+    ("passive", False, "group", 0),
+    ("passive", True, "group", 1),
+    ("adaptive", False, "group", 1),
+    ("passive", False, "p2p", 1),
+])
+async def test_group_reply_mode_controls_requests_and_preserves_context(host, mode, mentioned, chat_type, expected):
+    from dataclasses import replace
+
+    agent_id = host.colleague("研发同事")
+    settings = host.service.read_settings(NS, agent_id)
+    host.service.update_settings(NS, agent_id, replace(settings, group_reply_mode=mode))
+    assert host.service.read_settings(NS, agent_id).group_reply_mode == mode
+    assert host.service.get_colleague(NS, agent_id).to_dict()["group_reply_mode"] == mode
+    fanout = host.fanout([_binding("app-dev", agent_id)])
+    event = _event(chat_type=chat_type, receiver_bot_mentioned=mentioned)
+
+    assert await fanout.handle(event) is InboundDisposition.HANDLED
+    assert len(host.request_states(agent_id, event)) == expected
+    if chat_type == "group":
+        group = host.groups.resolve(NS, "feishu", event.chat_id, now=NOW)
+        archived = host.manager.group_archive.current_messages(NS, group.group_chat_id, (event.message_id,))
+        assert len(archived) == 1
+
+
+def test_group_reply_mode_defaults_and_validation():
+    from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
+    assert ColleagueSettings.from_dict({"name": "Test"}).group_reply_mode == "adaptive"
+    with pytest.raises(PersistentAgentError, match="group_reply_mode"):
+        ColleagueSettings.from_dict({"name": "Test", "group_reply_mode": "invalid"})
