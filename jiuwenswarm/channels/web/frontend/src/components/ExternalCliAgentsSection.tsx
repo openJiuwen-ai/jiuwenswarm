@@ -656,10 +656,14 @@ export function ExternalCliAgentsSection({
 
   /**
    * Validates a requested CLI path with a detect probe, then commits the
-   * path. On a failed probe the previous detect result is restored so the
-   * status badge keeps its last known state (e.g. "已安装") instead of
-   * flipping to "未安装" — the error message at the bottom is the failure
-   * feedback, not a status change.
+   * path. Two failure modes are handled distinctly:
+   *  - probe returned a result but status is not ok/warning (e.g. path
+   *    missing): restore the previous result so the badge keeps its last
+   *    known state, and surface the probe's failure message.
+   *  - probe is undefined (detect() threw — network/timeout — and already
+   *    wrote an 'unavailable' result in its catch, or was superseded by a
+   *    newer probe): do NOT overwrite that result; add a generic failure
+   *    message so the user gets feedback instead of a silent no-op.
    */
   const validateAndCommitPath = useCallback(
     async (cliAgent: ExternalCliAgentKind, requestedPath: string): Promise<boolean> => {
@@ -672,15 +676,25 @@ export function ExternalCliAgentsSection({
           const previousResult = resultsRef.current[cliAgent];
           const probe = await detect(cliAgent, requestedPath, false);
           if (!probe || (probe.status !== 'ok' && probe.status !== 'warning')) {
-            // Restore the previous result so a failed probe doesn't flip
-            // the status badge to "not installed".
-            if (previousResult) {
-              updateResults(cliAgent, previousResult);
-            } else {
-              clearDetectResult(cliAgent);
-            }
             if (probe) {
+              // Got a result but validation failed: restore the previous
+              // result so the badge doesn't flip to "not installed".
+              if (previousResult) {
+                updateResults(cliAgent, previousResult);
+              } else {
+                clearDetectResult(cliAgent);
+              }
               setAgentError(cliAgent, detectFailureMessage(probe, requestedPath, cliAgent, t));
+            } else {
+              // probe === undefined: detect() threw (it already wrote an
+              // 'unavailable' result in its catch) or was superseded by a
+              // newer probe. Don't overwrite the result — let detect's
+              // unavailable status show. Add a generic failure message so
+              // the user gets feedback instead of a silent no-op.
+              setAgentError(cliAgent, t('config.externalCli.unavailableCli', {
+                agent: externalCliAgentDisplayName(cliAgent),
+                reason: '',
+              }));
             }
             return false;
           }
