@@ -55,6 +55,11 @@ async def _start_worker_runtime(
     await server.start(bind_transport=False)
     measurements.stage("runtime_started")
     telemetry.install_runtime_observability(server)
+    from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import (
+        install_session_token_usage_subagent_hook,
+    )
+
+    install_session_token_usage_subagent_hook()
     measurements.stage("observability_installed")
     await capabilities.start_optional_preparation(runtime, signals, measurements)
     measurements.stage("runtime_host_installed")
