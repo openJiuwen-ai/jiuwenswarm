@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -154,6 +155,16 @@ def write_history(sessions_dir: Path, session_id: str, records: list[Any]) -> Pa
         for item in records
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # 让文件 mtime 与日志里最新的时间戳一致（引擎按 mtime 粗筛过期会话）。
+    stamps = [
+        float(record["timestamp"])
+        for record in records
+        if isinstance(record, dict)
+        and isinstance(record.get("timestamp"), (int, float))
+        and not isinstance(record.get("timestamp"), bool)
+    ]
+    if stamps:
+        os.utime(path, (max(stamps), max(stamps)))
     return path
 
 
@@ -1052,19 +1063,62 @@ def test_prices_path_override_inside_the_data_root_is_used(
         "prices_path": "usage_board/custom.json" if override_kind == "relative" else str(target)
     }
 
-    assert plugin._prices_path() == target
+    assert plugin._prices_path() == target.resolve()
     assert plugin._display_path(plugin._prices_path()) == str(Path("usage_board") / "custom.json")
 
 
-@pytest.mark.parametrize(
-    "outside",
-    ["../outside.json", "../../outside.json", "D:/definitely-outside.json"],
-)
-def test_prices_path_override_outside_the_data_root_is_ignored(
+@pytest.mark.parametrize("outside", ["../outside.json", "../../outside.json"])
+def test_prices_path_override_escaping_the_data_root_is_ignored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outside: str
 ) -> None:
     plugin, _channel, _responses, data_root, _sessions_dir = make_env(tmp_path, monkeypatch)
     plugin._config = {"prices_path": outside}
+
+    assert plugin._prices_path() == data_root / "usage_board" / "prices.json"
+
+
+def test_prices_path_override_with_absolute_outside_path_is_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """绝对路径形式的越界覆盖必须被拒（用平台无关的绝对路径，CI 跑在 Linux 上）。"""
+
+    plugin, _channel, _responses, data_root, _sessions_dir = make_env(tmp_path, monkeypatch)
+    outside = tmp_path.parent / "definitely-outside.json"
+    assert outside.is_absolute()
+
+    plugin._config = {"prices_path": str(outside)}
+
+    assert plugin._prices_path() == data_root / "usage_board" / "prices.json"
+
+
+def test_prices_path_windows_style_override_cannot_escape_the_data_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``D:/...`` 只在 Windows 上是绝对路径；在 POSIX 上必须被关在数据根内。"""
+
+    plugin, _channel, _responses, data_root, _sessions_dir = make_env(tmp_path, monkeypatch)
+    plugin._config = {"prices_path": "D:/definitely-outside.json"}
+
+    assert plugin._is_within(plugin._prices_path(), [data_root])
+
+
+def test_prices_path_symlink_escape_is_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """数据根内的符号链接指向根外时必须拒绝（abspath 看不出来，resolve 才行）。"""
+
+    plugin, _channel, _responses, data_root, _sessions_dir = make_env(tmp_path, monkeypatch)
+    outside_dir = tmp_path.parent / "outside-prices"
+    outside_dir.mkdir(exist_ok=True)
+    outside_file = outside_dir / "prices.json"
+    outside_file.write_text('{"currency": "USD", "models": {}}', encoding="utf-8")
+    link = data_root / "linked.json"
+    try:
+        link.symlink_to(outside_file)
+    except (OSError, NotImplementedError):
+        pytest.skip("当前环境不允许创建符号链接")
+
+    plugin._config = {"prices_path": "linked.json"}
 
     assert plugin._prices_path() == data_root / "usage_board" / "prices.json"
 

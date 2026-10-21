@@ -42,13 +42,20 @@ INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
 def running_jiuwenswarm_version() -> str:
-    """尽力拿到当前宿主版本；拿不到就返回空串（不臆测）。"""
+    """尽力拿到当前宿主版本；拿不到就返回空串（不臆测）。
+
+    优先用宿主的权威来源 ``jiuwenswarm.common.version.get_runtime_version()``：
+    发行包名是 ``workswarm``，用 ``importlib.metadata.version("jiuwenswarm")`` 在安装环境里
+    必然查不到，会退化成读 ``pyproject.toml``，而装成 wheel 后源码树并不存在。
+    """
 
     try:
-        from importlib.metadata import version
+        from jiuwenswarm.common.version import get_runtime_version
 
-        return version("jiuwenswarm")
-    except Exception:  # noqa: BLE001 - 未安装 dist-info（源码直跑）时退化
+        found = str(get_runtime_version() or "").strip()
+        if found:
+            return found
+    except Exception:  # noqa: BLE001 - 宿主模块不可用时退化到本地兜底
         pass
     for candidate in (
         _PLUGIN_DIR.parents[2] / "pyproject.toml",
@@ -329,8 +336,9 @@ class UsageBoardApplicationPlugin(ApplicationPluginExtension):
             candidate = Path(override.strip()).expanduser()
             if not candidate.is_absolute():
                 candidate = base / candidate
-            resolved = Path(os.path.abspath(str(candidate)))
-            if self._is_within(resolved, [Path(os.path.abspath(str(base)))]):
+            # 必须 resolve()：abspath 不展开符号链接，数据根内指向外部的链接会绕过 _is_within。
+            resolved = candidate.resolve()
+            if self._is_within(resolved, [base.resolve()]):
                 return resolved
         return base / usage_engine.PRICES_RELATIVE_PATH
 

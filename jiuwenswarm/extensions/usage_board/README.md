@@ -27,6 +27,7 @@
 3. 两者都存在时额外交叉核对：相对偏差 > 1% 记 `UB003`，两个数都返回给前端；
 4. `calls`（模型调用次数）只来自 `chat.usage_metadata`，没有时为 `null`；
 5. 费用：`cost_reported`（事件里的 `total_cost`）优先；缺失时按价格表估算；两者都没有计 `unpriced_turns`；
+   显式上报 `0`（免费/按积分计量）算**已上报**，不会回退成估算；
 6. 负值/非有限数由**本插件**按 0 处理并记 `UB007`（宿主对非法金额是直接判 `BUDGET_METER_UNAVAILABLE`，
    对非法 token 计数是跳过，都不按 0：`jiuwenswarm/channels/process_cli/machine_policy.py:74-79`、
    `jiuwenswarm/channels/process_cli/machine_result.py:99-104`）；
@@ -86,6 +87,9 @@
 | 预算口径不同 | `swarmflow_budget` 是**团队级** token 预算，由该团队**所有** swarmflow run 共享（`jiuwenswarm/resources/config.yaml:1626-1629`），与扫描范围口径不同，只作参照 |
 | 单会话上限 | 每会话最多解析 20000 条事件（超限记 `UB006`）；详情最多返回 500 行回合（超限只置 `turns_truncated`，不记结论） |
 | 按天分桶 | 把 epoch 秒按本机时区（`datetime.fromtimestamp`）归到自然日，跨时区机器结果可能不同 |
+| 过期会话粗筛 | 按天过滤时先用 `history.jsonl` 的 mtime 判断：mtime 早于窗口下界的文件直接跳过、不解析（避免过期会话很多时空读盘）；回填旧文件或时钟异常可能少算，计入 `scanned.skipped_by_days` |
+| 导出脱敏 | 导出内容不含 `data_dir`/`sessions_dir`/单会话 `path`，Markdown 里目录只保留最后两段；面板本身是本机的，`usage.board.paths` 仍返回绝对路径方便定位数据 |
+| 上报 0 费用 | 显式上报 `0`（免费/按积分计量）算「已上报」，不会回退成价格表估算；`cost_source` 仍为 `reported` |
 
 ## 自测
 

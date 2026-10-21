@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import jiuwenswarm
-from jiuwenswarm.extensions.application_host import (
+from jiuwenswarm.gateway.extensions.application_host import (
     application_plugin_manifest,
     mount_application_plugin_http_routes,
 )

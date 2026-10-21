@@ -357,14 +357,18 @@ def _usage_int(value: Any) -> tuple[int, bool]:
 
 
 def _usage_cost(value: Any) -> tuple[float | None, bool]:
-    """返回 (金额或 None, 是否被判为异常)；负值/非有限数视为异常。"""
+    """返回 (金额或 None, 是否被判为异常)；负值/非有限数视为异常。
+
+    显式上报的 ``0`` 是**有效金额**（免费/按积分计量），必须与「字段缺失」区分：
+    否则下游会把免费回合当成未上报，回退到价格表估出一个虚假的非零费用。
+    """
     if isinstance(value, bool):
         return None, True
     if isinstance(value, (int, float)):
         number = float(value)
         if not math.isfinite(number) or number < 0:
             return None, True
-        return (round(number, COST_ROUND), False) if number > 0 else (None, False)
+        return round(number, COST_ROUND), False
     if isinstance(value, str):
         text = value.strip()
         if not text:
@@ -438,6 +442,8 @@ class _Totals:
     cost_estimated: float = 0.0
     priced_turns: int = 0
     unpriced_turns: int = 0
+    #: 是否有回合**上报过**金额（哪怕上报的是 0），用于区分「上报 0」与「完全没上报」。
+    cost_reported_known: bool = False
 
     def add_call(self, call: CallUsage, prices: PriceTable) -> None:
         self.turns += 1
@@ -449,6 +455,7 @@ class _Totals:
         if source == "reported":
             self.cost_reported += amount or 0.0
             self.priced_turns += 1
+            self.cost_reported_known = True
         elif source == "estimated":
             self.cost_estimated += amount or 0.0
             self.priced_turns += 1
@@ -461,7 +468,7 @@ class _Totals:
 
     @property
     def cost_source(self) -> str:
-        reported = round(self.cost_reported, COST_ROUND) > 0
+        reported = self.cost_reported_known or round(self.cost_reported, COST_ROUND) > 0
         estimated = round(self.cost_estimated, COST_ROUND) > 0
         if reported and estimated:
             return "mixed"
@@ -862,6 +869,15 @@ def scan_sessions(
         if not history.is_file():
             skipped_no_history += 1
             continue
+        if cutoff is not None:
+            # 先用 mtime 粗筛：日志是追加写的，最后修改时间早于窗口下界的文件
+            # 不可能含有窗口内的事件，不必整文件解析（过期会话很多时省掉大量 IO）。
+            try:
+                if history.stat().st_mtime < cutoff:
+                    skipped_by_days += 1
+                    continue
+            except OSError:
+                pass
         session = load_session_file(history, session_id=folder.name)
         files_read += 1
         total_bytes += session.size_bytes
@@ -898,6 +914,9 @@ def scan_sessions(
         totals.cache_tokens += session_totals.cache_tokens
         totals.cost_reported += session_totals.cost_reported
         totals.cost_estimated += session_totals.cost_estimated
+        totals.cost_reported_known = (
+            totals.cost_reported_known or session_totals.cost_reported_known
+        )
         totals.priced_turns += session_totals.priced_turns
         totals.unpriced_turns += session_totals.unpriced_turns
         unpriced_total += session_totals.unpriced_turns
@@ -1023,9 +1042,10 @@ def _count_bucket_calls(
     """
 
     for call in calls:
-        bucket = buckets.get(key_for(call))
-        if bucket is None:
+        key = key_for(call)
+        if not key:
             continue
+        bucket = buckets.setdefault(key, _Totals())
         bucket.calls += 1
         bucket.calls_known = True
 
@@ -1137,7 +1157,7 @@ def render_markdown(overview: dict[str, Any]) -> str:
         "# 用量与费用看板",
         "",
         f"- 生成时间：{overview.get('generated_at')}",
-        f"- 会话目录：`{overview.get('sessions_dir')}`",
+        f"- 会话目录：`{_redact_path(overview.get('sessions_dir'))}`（已脱敏）",
         f"- 统计范围：最近 {overview.get('days')} 天，会话 {overview.get('scanned', {}).get('sessions', 0)} 个",
         "",
         "## 合计",
@@ -1242,6 +1262,39 @@ def _csv(value: Any) -> str:
     return text
 
 
+def _redact_path(value: Any) -> str:
+    """导出用：只保留路径最后两段，避免把本机绝对路径（含用户名）写进报告。"""
+
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    parts = [part for part in Path(text).parts if part not in ("/", "\\", "")]
+    if len(parts) <= 2:
+        return text
+    return "…/" + "/".join(parts[-2:])
+
+
+#: 导出时必须摘掉的绝对路径字段（只在本地方便用的字段，不外带）。
+_EXPORT_PATH_KEYS = ("data_dir", "sessions_dir", "path")
+
+
+def _export_payload(overview: dict[str, Any]) -> dict[str, Any]:
+    """导出用副本：剔除本机绝对路径，避免报告被分享时泄露用户名/目录结构。"""
+
+    payload = {
+        key: value for key, value in overview.items() if key not in _EXPORT_PATH_KEYS
+    }
+    sessions = payload.get("sessions")
+    if isinstance(sessions, list):
+        payload["sessions"] = [
+            {key: value for key, value in row.items() if key not in _EXPORT_PATH_KEYS}
+            if isinstance(row, dict)
+            else row
+            for row in sessions
+        ]
+    return payload
+
+
 def _cost_text(cost: Any, source: Any) -> str:
     if cost in (None, 0, 0.0) and source == "missing":
         return "—（未上报且无价格表）"
@@ -1268,7 +1321,9 @@ def build_export(
     if name not in EXPORT_FORMATS:
         raise ValueError(f"不支持的导出格式：{fmt!r}（可选 {', '.join(EXPORT_FORMATS)}）")
     if name == "json":
-        content = json.dumps(overview, ensure_ascii=False, indent=2, sort_keys=False)
+        content = json.dumps(
+            _export_payload(overview), ensure_ascii=False, indent=2, sort_keys=False
+        )
     elif name == "markdown":
         content = render_markdown(overview)
     else:

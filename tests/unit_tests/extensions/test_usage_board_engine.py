@@ -146,6 +146,16 @@ def write_history(sessions_dir: Path, session_id: str, records: list[dict | str]
         for item in records
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # 让文件 mtime 与日志里最新的时间戳一致：宿主是追加写，引擎会按 mtime 粗筛过期会话。
+    stamps = [
+        float(record["timestamp"])
+        for record in records
+        if isinstance(record, dict)
+        and isinstance(record.get("timestamp"), (int, float))
+        and not isinstance(record.get("timestamp"), bool)
+    ]
+    if stamps:
+        os.utime(path, (max(stamps), max(stamps)))
     return path
 
 
@@ -314,6 +324,32 @@ def test_unpriced_call_stays_missing() -> None:
 
     assert cost is None
     assert source == "missing"
+
+
+def test_reported_zero_cost_is_not_replaced_by_an_estimate() -> None:
+    """上报 0（免费/按积分计量）是有效金额，不能回退成价格表估算。"""
+
+    prices = PriceTable(entries=(usage_engine.PriceEntry("gpt-5", 5.0, 15.0, "USD"),))
+    call = _call(input_tokens=1_000_000, output_tokens=1_000_000, cost_reported=0.0)
+
+    assert cost_for_call(call, prices) == (0.0, "reported")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0, (0.0, False)),
+        (0.0, (0.0, False)),
+        ("0", (0.0, False)),
+        (None, (None, False)),
+        ("", (None, False)),
+        (-1, (None, True)),
+        (float("nan"), (None, True)),
+        ("abc", (None, True)),
+    ],
+)
+def test_usage_cost_separates_zero_from_missing(value: Any, expected: tuple) -> None:
+    assert usage_engine._usage_cost(value) == expected
 
 
 # --------------------------------------------------------------------------
@@ -661,6 +697,70 @@ def test_scan_uses_placeholder_bucket_for_missing_model(tmp_path: Path) -> None:
     assert overview["by_model"][0]["model"] == "(未标注模型)"
 
 
+def test_scan_reported_zero_cost_stays_reported(tmp_path: Path) -> None:
+    """会话上报 0 费用时：不估算、总计口径仍是 reported。"""
+
+    sessions_dir = tmp_path / "agent" / "sessions"
+    write_history(
+        sessions_dir,
+        "free",
+        [summary_record(input_tokens=1000, output_tokens=500, cost=0.0)],
+    )
+    write_prices(
+        tmp_path,
+        {"currency": "USD", "models": {"gpt-5": {"input_per_1m": 5.0, "output_per_1m": 15.0}}},
+    )
+    prices = usage_engine.load_price_table(tmp_path / "usage_board" / "prices.json")
+
+    overview = scan_sessions(sessions_dir, prices=prices, now=TS + 60)
+
+    assert overview["totals"]["cost_total"] == 0.0
+    assert overview["totals"]["cost_estimated"] == 0.0
+    assert overview["totals"]["cost_source"] == "reported"
+    assert overview["sessions"][0]["cost_source"] == "reported"
+    assert overview["by_model"][0]["cost_source"] == "reported"
+    assert "0.0（模型上报）" in render_markdown(overview)
+
+
+def test_scan_counts_metadata_calls_for_models_absent_from_summary(
+    tmp_path: Path,
+) -> None:
+    """by_model 的 calls 必须涵盖 summary 里没出现的模型，否则分桶 calls 总和 < totals.calls。"""
+
+    sessions_dir = tmp_path / "agent" / "sessions"
+    write_history(
+        sessions_dir,
+        "mixed",
+        [
+            summary_record(model="gpt-5", total_tokens=150),
+            metadata_record(model="aux-model", total_tokens=10),
+        ],
+    )
+
+    overview = scan_sessions(sessions_dir, now=TS + 60)
+    rows = {row["model"]: row for row in overview["by_model"]}
+
+    assert rows["aux-model"]["calls"] == 1
+    assert rows["aux-model"]["turns"] == 0
+    assert rows["aux-model"]["total_tokens"] == 0
+    assert sum(row["calls"] or 0 for row in overview["by_model"]) == overview["totals"]["calls"]
+
+
+def test_scan_skips_expired_sessions_by_mtime_without_parsing(tmp_path: Path) -> None:
+    """过期会话按 mtime 直接跳过：既不计入扫描，也不整文件解析。"""
+
+    sessions_dir = tmp_path / "agent" / "sessions"
+    write_history(sessions_dir, "old", [summary_record(ts=TS)])
+    fresh_ts = TS + 10 * 86400
+    write_history(sessions_dir, "fresh", [summary_record(ts=fresh_ts)])
+
+    overview = scan_sessions(sessions_dir, days=1, now=fresh_ts + 60)
+
+    assert overview["scanned"]["files_read"] == 1
+    assert overview["scanned"]["skipped_by_days"] == 1
+    assert [row["session_id"] for row in overview["sessions"]] == ["fresh"]
+
+
 def test_scan_reports_invalid_parameters_with_defaults(tmp_path: Path) -> None:
     sessions_dir = tmp_path / "agent" / "sessions"
     write_history(sessions_dir, "s1", [json.dumps(summary_record())])
@@ -843,6 +943,24 @@ def test_build_export_falls_back_to_generic_filename(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 # 结论目录与时间工具
 # --------------------------------------------------------------------------
+
+
+def test_exports_do_not_leak_absolute_paths(tmp_path: Path) -> None:
+    """导出内容不得包含本机绝对路径（data_dir/sessions_dir/单会话 path）。"""
+
+    overview = _overview_with_data(tmp_path)
+    root = str(tmp_path)
+
+    json_payload = json.loads(build_export(overview, "json")["content"])
+    assert "data_dir" not in json_payload
+    assert "sessions_dir" not in json_payload
+    assert all("path" not in row for row in json_payload["sessions"])
+
+    for fmt in ("json", "markdown", "csv"):
+        assert root not in build_export(overview, fmt)["content"]
+
+    markdown = build_export(overview, "markdown")["content"]
+    assert "…/agent/sessions" in markdown
 
 
 def test_finding_catalog_is_sorted_and_unique() -> None:
