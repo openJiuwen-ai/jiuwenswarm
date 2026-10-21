@@ -24,6 +24,7 @@ from openjiuwen.harness.security.patterns import (
     write_permissions_section_to_agent_config_yaml,
 )
 
+from jiuwenswarm.common.tool_display import extract_call_goal
 from jiuwenswarm.server.runtime.skill_turbo.rails.permission_rail import (
     SkillTurboPermissionRail,
 )
@@ -139,6 +140,10 @@ class FlashPermissionRail(SkillTurboPermissionRail):
     async def resolve_interrupt(
         self, ctx, tool_call, user_input, auto_confirm_config=None
     ):
+        if tool_call is not None:
+            # Match execution args while preserving the original call's UI metadata.
+            _, arguments = extract_call_goal(tool_call.arguments)
+            tool_call = tool_call.model_copy(update={"arguments": arguments})
         if tool_call and tool_call.name == "search_skill":
             try:
                 return await self._authorize_install(

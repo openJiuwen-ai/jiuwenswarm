@@ -4,6 +4,8 @@
 from dataclasses import dataclass
 from typing import Any
 
+from jiuwenswarm.common.tool_display import extract_call_goal
+
 
 @dataclass(frozen=True)
 class Operation:
@@ -34,11 +36,11 @@ def is_projected(name: str, args: dict) -> bool:
 
 def project_operations(name: str, args: dict, config: dict) -> list[Operation]:
     """Return every operation that must pass before the outer tool executes."""
+    _, args = extract_call_goal(args)
     if name == "web_flash":
-        fields = {k: v for k, v in args.items() if k != "call_goal"}
-        if len(fields) != 1:
+        if len(args) != 1:
             raise ValueError("fill exactly one web action object")
-        action, inner = next(iter(fields.items()))
+        action, inner = next(iter(args.items()))
         if (
             action not in {"search", "fetch"}
             or not isinstance(inner, dict)

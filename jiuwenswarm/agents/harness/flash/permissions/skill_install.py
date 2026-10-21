@@ -5,6 +5,8 @@ from copy import deepcopy
 
 from openjiuwen.core.foundation.tool import Tool
 
+from jiuwenswarm.common.tool_display import extract_call_goal
+
 _STATE = "__flash_skill_install__"
 
 
@@ -44,6 +46,7 @@ class FlashSkillSearchTool(Tool):
         )
 
     async def invoke(self, inputs, **kwargs):
+        _, inputs = extract_call_goal(inputs)
         session, call_id = kwargs.get("session"), kwargs.get("tool_call_id")
         prepared = state_for(session, call_id)
         if prepared is None:
