@@ -192,8 +192,11 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
     )
     unsupported_component_rule_en = (
         " A2UI does not support modal, dialog, popup, alert, toast, "
-        "or floating overlay. Use inline status, inline card, or confirmation "
-        "area inside the normal surface instead."
+        "or floating overlay. Do not simulate these with absolute-positioned "
+        "cards or fake close buttons. Use inline status, inline card, or "
+        "confirmation area inside the normal surface instead. If the request "
+        "cannot be approximated faithfully, answer in plain text that the "
+        "requested component is not currently supported."
     )
     autonomy_rule_en = (
         " When the user's request requires interactive information collection "
@@ -207,6 +210,14 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "3. Reply is a single narrative explanation, brief fact, or greeting → plain text. "
         "Fallback: when a reply matches multiple rules, prefer the more structured format "
         "(A2UI > plain text). "
+        "A2UI typical scenarios: information collection forms, actionable "
+        "confirmations, multi-result comparison, object detail views, "
+        "media-rich cards, dashboards/status/inventory/task summaries, and "
+        "tool-result presentations. For real-world recommendation, comparison, "
+        "shopping, ranking, price, travel, restaurant, or product requests, "
+        "use tools first when available, then decide whether A2UI is the best "
+        "final presentation. If the user already provided complete structured "
+        "data or asks for a demo, you may render directly without tools. "
         "Capability boundary FIRST: even when you cannot execute the final "
         "action (no browser agent, no Gmail/social/tax login, no payment), if "
         "the user needs you to collect structured intent (options/fields/"
@@ -243,7 +254,11 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "Never write tool_call, invoke, or function-call tags as plain text."
     )
     requested_component_rule_en = (
-        " You must match the requested component type. For every user-editable "
+        " You must match the requested component type: generate a card list "
+        "only when the user asks for cards or a card list; Card/list is not "
+        "a universal fallback. For a single object detail request, build a "
+        "single object detail layout, not a multi-card demo. Do not substitute "
+        "a fixed demo for the requested component. For every user-editable "
         "interactive component — TextField, MultipleChoice, CheckBox, "
         "DateTimeInput, and Slider — bind its value/selections to a data "
         "model path, initialize that path with dataModelUpdate, and include "
@@ -293,7 +308,9 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
     )
     unsupported_component_rule_zh = (
         " A2UI 不支持弹窗、模态框、dialog、popup、alert、toast、浮层。"
+        "不要用绝对定位卡片或假的关闭按钮模拟这些组件。"
         "请在普通 surface 内使用行内状态、行内卡片或确认区域替代。"
+        "如果无法忠实近似，请用纯文本说明当前暂不支持该组件。"
     )
     autonomy_rule_zh = (
         " 当用户的请求需要交互式收集信息（如选择、输入、确认等），"
@@ -303,6 +320,11 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "2. 回复包含 2 个及以上同类项的并列对比 → 必须 A2UI；"
         "3. 回复仅为单条叙述性解释、简短事实、寒暄 → 纯文本。"
         "兜底：当某回复同时满足多条格式规则时，优先选择更结构化的格式（A2UI > 纯文本）。"
+        "A2UI 典型场景：信息收集表单、可操作确认、多结果比较、"
+        "单对象详情、带媒体的卡片、仪表盘/状态/库存/任务摘要，以及工具结果的交互式展示。"
+        "对于真实世界推荐、对比、选购、排行、价格、旅行、餐厅或产品请求，"
+        "如果有可用工具，应先使用工具获取依据，再判断 A2UI 是否是最佳最终展示方式。"
+        "如果用户已经提供完整结构化数据，或明确要求演示 UI，可以直接渲染而不调用工具。"
         "能力边界优先：即使你无法执行最终动作（无浏览器代理、无 Gmail/社媒/个税登录、"
         "无支付），只要用户需要你收集结构化意图（选项/字段/偏好/数量），"
         "你必须用 A2UI 表单收集——绝不能因做不了执行就退回 Markdown 文字问或 "
@@ -327,12 +349,15 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "绝不能把 tool_call、invoke 或函数调用标签当作普通文本输出。"
     )
     requested_component_rule_zh = (
-        " 必须匹配用户请求的组件类型。对每个可交互组件——TextField、"
+        " 必须匹配用户请求的组件类型：只有用户要求卡片或卡片列表时才生成 "
+        "card list；Card/list 不是万能 fallback。单个对象详情请求应生成单对象"
+        "详情布局，不要生成多卡片 demo。不要用固定 demo 替代用户请求的组件。"
+        "对每个可交互组件——TextField、"
         "MultipleChoice、CheckBox、DateTimeInput、Slider——必须把其 value/selections "
         "绑定到 data model 路径，用 dataModelUpdate 初始化该路径，并在 "
         "Button.action.context 中用 path reference 包含提交值。"
-        "Use DateTimeInput (not TextField) for any date or time selection "
-        "field. 表单提交不能输出空的 Button.action.context。"
+        "日期或时间选择字段必须用 DateTimeInput（不用 TextField）。"
+        "表单提交不能输出空的 Button.action.context。"
         "Button 必须用 \"child\" 引用一个组件 id（如 Text 组件）作为按钮文字，不要用 \"label\" 字段。"
         "MultipleChoice 尤其要注意：selections 必须是带 \"path\" 键的对象"
         "（如 selections={\"path\":\"/form/cabinClass\"}），默认选中值必须通过 "
@@ -342,6 +367,9 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "List 或卡片列表展示重复数据时，dataModelUpdate 的 key 不能重复，"
         "请把数组编码为集合 key 并用索引项（\"0\"、\"1\"），每个 item 含嵌套 "
         "valueMap 字段，模板内用 item-relative path。"
+        "不要在模板内使用集合绝对路径（如 /phones/name）。"
+        "不要在模板渲染出的组件内部嵌套 template；"
+        "请把重复 item 的明细拍平成外层 item 字段，或使用显式子组件绑定这些字段。"
         + image_url_rule_zh
         + unsupported_component_rule_zh
     )
@@ -375,6 +403,6 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
 
 __all__ = [
     "build_a2ui_autonomy_instruction",
-    "is_a2ui_browser_workflow_request",
     "build_a2ui_browser_workflow_instruction",
+    "is_a2ui_browser_workflow_request",
 ]
