@@ -5,12 +5,17 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from typing import Any
+from weakref import WeakValueDictionary
+
+from jiuwenswarm.server.runtime.team_organization_identity_store import save_organization_team_identity
 
 logger = logging.getLogger(__name__)
+_recovery_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 @dataclass(frozen=True)
@@ -725,6 +730,81 @@ class JiuwenExpertTeamLauncher:
                 "expert team message_manager must use the shared TeamDatabase instance"
             )
 
+    async def restore(
+        self, *, team_id: str, session_id: str, organization: Any, db: Any,
+        channel_id: str | None = None,
+    ) -> Any:
+        """Cold-recover an invited Team under its original ID, without an LLM turn."""
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+        from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
+        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package_bundle
+        from jiuwenswarm.server.runtime.extension_package_manager import resolve_agent_group_dir
+
+        if not organization_enabled():
+            raise ValueError("Team Organization is disabled")
+        if team_id == organization.owner_team_id or not any(
+            leader.team_id == team_id for leader in organization.leaders
+        ):
+            raise ValueError("target is not an invited expert in this organization")
+        lock = _recovery_locks.setdefault(team_id, asyncio.Lock())
+        async with lock:
+            if not organization_enabled():
+                raise ValueError("Team Organization is disabled")
+            runtime = self._get_runtime()
+            entry = await runtime.pool.get(team_id)
+            if entry is not None:
+                if entry.current_session_id != session_id:
+                    raise ValueError("target expert team is bound to another session")
+                backend = getattr(entry.agent, "team_backend", None)
+                if (
+                    backend is None or backend.db is not db
+                    or getattr(getattr(backend, "org_task_manager", None), "organization_id", None)
+                    != organization.organization_id
+                ):
+                    raise ValueError("existing expert has an incompatible organization binding")
+                return backend
+            team = await db.team.get_team(team_id)
+            if team is None:
+                raise ValueError("persisted expert team is missing")
+            identity = load_organization_team_identity(team_id)
+            group_name = identity.get("agent_group_name", "")
+            if not group_name:
+                from jiuwenswarm.agents.harness.team.expert_org.catalog import JiuwenExpertGroupCatalog
+
+                label = str(getattr(team, "display_name", "") or "").strip()
+                candidates = [group for group in JiuwenExpertGroupCatalog.list()
+                              if label and label in (group.agent_group_name, group.display_name)]
+                if len(candidates) != 1:
+                    raise ValueError("historical expert package identity is missing or ambiguous")
+                group_name = candidates[0].agent_group_name
+            package = load_agent_group_package_bundle(resolve_agent_group_dir(group_name))
+            channel = _resolve_launch_channel_id(channel_id, session_id)
+            spec = await self._build_enriched_spec(
+                team_id=team_id, session_id=session_id, agent_group_name=group_name,
+                agent_group_package=package, display_name=getattr(team, "display_name", None),
+                channel_id=channel, shared_db=db,
+            )
+            self.ensure_turn_runner_installed()
+            if not organization_enabled():
+                raise ValueError("Team Organization is disabled")
+            try:
+                activation = await runtime.activate(spec, session_id)
+                agent = getattr(activation, "agent", None)
+                backend = getattr(agent, "team_backend", None)
+                if (
+                    backend is None or backend.db is not db
+                    or getattr(getattr(backend, "org_task_manager", None), "organization_id", None)
+                    != organization.organization_id
+                ):
+                    raise ValueError("recovered expert has an incompatible organization binding")
+                if not await runtime.pause(team_name=team_id, session_id=session_id):
+                    raise ValueError("recovered expert could not enter the paused state")
+                self._team_channels[(session_id, team_id)] = channel
+                return backend
+            except Exception:
+                await self.stop(team_id=team_id, session_id=session_id)
+                raise
+
     async def launch(
         self,
         *,
@@ -799,6 +879,17 @@ class JiuwenExpertTeamLauncher:
                     spec=spec,
                 )
                 self._verify_shared_database(agent, donor_backend)
+
+            try:
+                save_organization_team_identity(
+                    team_id, agent_group_name=group_name,
+                    display_name=str(display_name or group_name).strip(),
+                )
+            except Exception:
+                logger.warning(
+                    "[ExpertTeamLauncher] identity persistence failed; keeping activated expert team=%s session=%s",
+                    team_id, session_id, exc_info=True,
+                )
 
             # Design: expert Team should sit PAUSED without an idle LLM warm-up.
             pause = getattr(runtime, "pause", None)

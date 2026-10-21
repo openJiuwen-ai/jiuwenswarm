@@ -13,12 +13,35 @@ export function resolveOrganizationTeamIdentity(
   snapshot?: AgentGroupIdentity | null,
 ): AgentGroupIdentity | null {
   const groupName = team?.agent_group_name?.trim();
-  if (!groupName) return null;
+  const savedName = team?.display_name?.trim();
   const stored = normalizeTeamGroupIdentity(team?.team_group_identity) ?? snapshot;
-  const group = groups.find((item) => item.name === groupName || item.id === groupName);
-  return group
-    ? { id: group.id, name: group.name, displayName: group.displayName, avatarUrl: group.avatarUrl }
-    : stored && (stored.name === groupName || stored.id === groupName) ? stored : null;
+  // Older Teams only saved a display name; require an unambiguous catalog match.
+  const candidates = groupName
+    ? groups.filter((item) => item.name === groupName || item.id === groupName)
+    : savedName
+      ? groups.filter((item) => item.name === savedName || item.id === savedName || item.displayName === savedName)
+      : [];
+  const group = candidates.length === 1 ? candidates[0] : undefined;
+  if (group) {
+    return { id: group.id, name: group.name, displayName: group.displayName, avatarUrl: group.avatarUrl };
+  }
+  if (!groupName || !stored) return null;
+  return stored.name === groupName || stored.id === groupName ? stored : null;
+}
+
+export function resolveOrganizationTeamLabel(
+  team: RuntimeTeamInfo | undefined | null,
+  groups: AgentGroupCatalogItem[],
+  fallback: string,
+): string {
+  return (
+    resolveOrganizationTeamIdentity(team, groups)?.displayName ||
+    team?.display_name?.trim() ||
+    team?.agent_group_name?.trim() ||
+    team?.team_id?.trim() ||
+    team?.team_name?.trim() ||
+    fallback
+  );
 }
 
 /** The organization panel loads the installed directory only while it is displaying an organization. */
