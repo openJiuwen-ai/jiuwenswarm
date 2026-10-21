@@ -14,7 +14,7 @@ provider:
 * ``DesignerAuthoringRail``    — designer_graph_autorun (this rail): a fresh
   creative request → the old Director chain runs server-side and saves the
   composed graph; the leader then reports and asks the user to run;
-* ``DesignerExecutionRail``    — designer_run_graph: trigger the compiled
+* ``DesignerExecutionRail``    — swarmflow: trigger the compiled
   canvas (full / single node / cascade);
 * ``designer_graph_tools``     — designer_graph_get / graph_patch and the
   picked node toolset: small user-driven edits and context reads.
@@ -55,7 +55,7 @@ _PROMPT_CN = """# 画布建图（designer_graph_autorun）
 
 服务端会按导演链建图（分析→写创意简报→审核→写分镜→审核→生成执行图→校验），产出带完整锁体系的图并推送到画布。调用约定：
 
-- 建图成功后**直接调用 `designer_run_graph` 开始执行**（不带参数），不需要先询问用户；调用后告诉用户"图已生成，执行已开始，画布可看进度"。
+- 建图成功后**直接调用 `swarmflow` 开始执行**（不带参数），不需要先询问用户；调用后告诉用户"图已生成，执行已开始，画布可看进度"。
 - 工具返回后，简明汇报图的结构（几个角色/场景/镜头）。
 - 用户明确说"先不要跑/先看看图"等拒绝执行的意思时，不要调用 run_graph，等用户确认。
 - 不要自己用 graph_patch 从零拼整图——graph_patch 只用于用户要求的小改（加减节点/改提示词/连线/删节点）。
@@ -69,7 +69,7 @@ X"). Pass the user's complete request as ``prompt``. The Director chain runs ser
 review → storyboard → review → execution graph → validate), saves the
 composed graph to the canvas, and the tool returns a structure summary.
 
-On success, IMMEDIATELY call ``designer_run_graph`` (no args) to start the
+On success, IMMEDIATELY call ``swarmflow`` (no args) to start the
 run — do not ask first; tell the user the graph is built, execution has
 started and progress is on the canvas. Only hold off when the user has
 explicitly said not to run yet. Report the structure briefly (roles/scenes/
@@ -203,7 +203,7 @@ class DesignerAuthoringRail(DeepAgentRail):
             summary = ", ".join(f"{v}×{k}" for k, v in sorted(roles.items()))
             return (
                 f"建图完成：{len(nodes)} 个节点（{summary}）。"
-                "图已保存并推送到画布；请直接调用 designer_run_graph 开始执行。"
+                "图已保存并推送到画布；请直接调用 swarmflow 开始执行。"
             )
 
         card = ToolCard(
