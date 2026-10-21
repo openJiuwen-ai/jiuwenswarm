@@ -34,6 +34,8 @@ from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort, Me
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from openjiuwen.harness import persistent_agent as core
+from jiuwenswarm.server.jiuwenmate.bash_runtime import bind_bash_runtime, close_bash_runtime
+from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +109,7 @@ class ExecutionDriver:
         execute: ExecuteEntry = _default_execute,
         abort: AbortEntry = _default_abort,
         clock: Callable[[], datetime] = _utc_now,
+        cli: FeishuCliRuntime | None = None,
     ) -> None:
         self._snapshots = snapshots
         self._commit_port = commit_port
@@ -128,12 +131,14 @@ class ExecutionDriver:
         self._execute = execute
         self._abort = abort
         self._clock = clock
+        self._cli = cli or FeishuCliRuntime(windows.db_path.parent)
 
     def new_handle(self) -> ExecutionHandle:
         return ExecutionHandle(self._abort)
 
     async def run(self, state: RequestState, execution: ExecutionRecord, handle: ExecutionHandle) -> str:
         record = state.record
+        context = None
         try:
             snapshot = await asyncio.to_thread(
                 self._snapshots, record.namespace_id, record.agent_id, record.config_version
@@ -195,6 +200,7 @@ class ExecutionDriver:
                 ports=ports,
                 system_prompt_addendum=guidance or None,
             )
+            bind_bash_runtime(context, office=self._workspaces.path(record.namespace_id, record.agent_id), cli=self._cli)
             await handle._attach(context)
             inputs = record.request_input
             if record.request_input.kind == "group_message" and ports.group_chat is not None:
@@ -229,14 +235,17 @@ class ExecutionDriver:
             )
             return "failed"
         finally:
-            self._queue.forget(record.namespace_id, execution.execution_id)
             try:
-                await asyncio.to_thread(
-                    self._budgets.settle_unreported, record.namespace_id, execution.execution_id, now=self._clock()
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[JiuwenMate] unreported model calls not settled: execution=%s error=%s",
-                    execution.execution_id,
-                    exc,
-                )
+                await close_bash_runtime(context)
+            finally:
+                self._queue.forget(record.namespace_id, execution.execution_id)
+                try:
+                    await asyncio.to_thread(
+                        self._budgets.settle_unreported, record.namespace_id, execution.execution_id, now=self._clock()
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuwenMate] unreported model calls not settled: execution=%s error=%s",
+                        execution.execution_id,
+                        exc,
+                    )

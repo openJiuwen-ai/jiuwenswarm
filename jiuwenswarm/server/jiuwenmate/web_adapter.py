@@ -295,6 +295,10 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 self._manager = manager
             return self._manager
 
+    async def prepare_feishu_cli(self, agent_id: str) -> dict[str, object]:
+        manager = await self._runtime()
+        return manager.schedule_feishu_cli(WEB_NAMESPACE, agent_id)
+
     async def aclose(self) -> None:
         """Stop running Executions with the host; a later call starts a new runtime."""
         async with self._manager_lock:

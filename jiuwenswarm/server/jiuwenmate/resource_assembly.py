@@ -164,7 +164,7 @@ def assemble_resources(
             "\n\n## 已装配技能\n\n"
             f"所选技能和插件的副本在办公目录的 `{relative}/` 下，用相对路径读取。"
             "这些副本只属于这个同事，修改它们不会改动技能库原件。"
-            "不使用 bash、code 或其他需要人工确认的命令。"
+            "需要运行脚本或 CLI 时遵守命令使用约定，不使用 code 工具。"
         )
     elif plugin_rails:
         fields["rails"] = list(plugin_rails)
@@ -209,6 +209,59 @@ def assemble_resources(
         skill_root=skill_root,
         knowledge_root=knowledge_root_relative,
     )
+
+
+_FEISHU_PROMPT = re.compile(r"\n<!-- jm-feishu-cli -->.*?<!-- /jm-feishu-cli -->", re.DOTALL)
+
+
+def apply_feishu_skills(fields: dict[str, Any], office: Path, directories: tuple[Path, ...]) -> dict[str, Any]:
+    """Replace only auto-mounted CLI assets, keeping user-selected resources intact."""
+    import copy
+
+    if not directories and _FEISHU_PROMPT.search(fields.get("system_prompt", "")) is None:
+        return fields
+    result = copy.deepcopy(fields)
+    prompt = _FEISHU_PROMPT.sub("", result.get("system_prompt", ""))
+    rails = result.get("rails") or []
+    result["rails"] = rails
+    auto_parent = office / "resources" / "feishu-skills"
+    old_names = set()
+    skill_rail = next((rail for rail in rails if rail.get("type") == _SKILL_RAIL), None)
+    roots = []
+    if skill_rail is not None:
+        raw = skill_rail["params"]["skills_dir"]
+        for value in ([raw] if isinstance(raw, str) else raw):
+            path = Path(value)
+            if path.parent == auto_parent:
+                old_names.update(item.parent.name for item in path.rglob("SKILL.md"))
+            else:
+                roots.append(value)
+    user_names = {item.parent.name for root in roots for item in Path(root).rglob("SKILL.md")}
+    names = [name for name in (result.get("skills") or []) if name not in old_names or name in user_names]
+    chosen: dict[str, SkillSource] = {}
+    for directory in directories:
+        for file in sorted(directory.rglob("SKILL.md")):
+            _accept(chosen, _checked(SkillSource(name=file.parent.name, directory=file.parent)))
+    if chosen:
+        root = _materialize_skills(office, tuple(chosen.values()), directory_name="feishu-skills")
+        roots.append(str(root))
+        names = list(dict.fromkeys([*names, *chosen]))
+        relative = root.relative_to(office).as_posix()
+        prompt += (
+            "\n<!-- jm-feishu-cli -->\n## 飞书 CLI\n"
+            f"当前同事已绑定飞书应用，可使用 lark-cli。配套技能位于 `{relative}/`。"
+            "先读取相关 SKILL.md，按说明创建飞书文档。认证由宿主提供，不要读取或修改。"
+            "不要使用个人版登录身份；创建回执与文档访问权限分别核实。\n<!-- /jm-feishu-cli -->"
+        )
+    if roots:
+        if skill_rail is None:
+            skill_rail = {"type": _SKILL_RAIL, "params": {"include_tools": False, "skill_mode": "all"}}
+            rails.insert(0, skill_rail)
+        skill_rail["params"]["skills_dir"] = roots[0] if len(roots) == 1 else roots
+    elif skill_rail is not None:
+        rails.remove(skill_rail)
+    result["skills"], result["system_prompt"] = names, prompt
+    return result
 
 
 def _connector_configs(agent_id: str, connectors: tuple[ConnectorSource, ...]) -> list[dict[str, Any]]:
