@@ -267,7 +267,7 @@ async def test_close_prevents_queued_sync_registration_from_running(monkeypatch)
 async def test_runtime_keeps_registry_open_through_teardown_then_closes_it(failed):
     framework = AsyncCallbackFramework(enable_logging=False)
     owner = bind_callback_registry_owner(framework)
-    server = SimpleNamespace(_worker_callback_registry_owner=owner)
+    server = SimpleNamespace(worker_callback_registry_owner=owner)
     runtime = WorkerRuntime(server=server, stop_event=asyncio.Event())
 
     async def teardown():
@@ -312,7 +312,7 @@ async def test_failed_construction_leaves_registry_with_its_cleanup_owner(monkey
     owner = getattr(framework.register, "_worker_callback_registry_owner")
     if published:
         assert retained == [server]
-        assert server._worker_callback_registry_owner is owner
+        assert server.worker_callback_registry_owner is owner
         assert not framework.has_subscribers("event")
         await owner.aclose()
     else:

@@ -31,7 +31,7 @@ async def construct_runtime_server(
 
     async def publish(server: Any) -> None:
         nonlocal published
-        server._worker_callback_registry_owner = registry_owner
+        server.worker_callback_registry_owner = registry_owner
         if on_constructed is not None:
             # The receiver owns cleanup even if its bind operation then fails.
             published = True

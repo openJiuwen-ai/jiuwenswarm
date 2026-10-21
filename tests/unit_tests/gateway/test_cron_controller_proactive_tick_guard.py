@@ -23,20 +23,6 @@ from jiuwenswarm.gateway.cron.proactive_cron_sync import (
 from jiuwenswarm.gateway.cron.store import CronJobStore
 
 
-def _patch_project_binding(monkeypatch: pytest.MonkeyPatch) -> None:
-    """项目绑定解析桩：create/update 不依赖 Gateway 本地项目表。"""
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.project_store.resolve_cron_project_binding",
-        lambda raw_pid, project_dir, work_mode: SimpleNamespace(
-            project_id="p1", work_mode="work", error=None
-        ),
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.project_store.resolve_cron_job_patch",
-        lambda patch, **kwargs: None,
-    )
-
-
 def _make_controller(tmp_path) -> tuple[CronController, CronJobStore]:
     store = CronJobStore(path=tmp_path / "cron_jobs.json")
     scheduler = SimpleNamespace(
@@ -59,10 +45,9 @@ def _job_params(**overrides) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_create_job_rejects_proactive_tick_mode(tmp_path, monkeypatch):
+async def test_create_job_rejects_proactive_tick_mode(tmp_path):
     """用户路径创建 mode=proactive.tick 的任务 → 入口即拒，不落库。"""
     controller, store = _make_controller(tmp_path)
-    _patch_project_binding(monkeypatch)
 
     with pytest.raises(ValueError, match="proactive.tick"):
         await controller.create_job(_job_params(mode="proactive.tick", name="模式_proactive.tick"))
@@ -72,11 +57,10 @@ async def test_create_job_rejects_proactive_tick_mode(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_create_job_allows_auto_registered_proactive_tick_job(
-    tmp_path, monkeypatch
+    tmp_path,
 ):
     """proactive_cron_sync 的固定 id 注册不受影响（内部路径唯一合法入口）。"""
     controller, store = _make_controller(tmp_path)
-    _patch_project_binding(monkeypatch)
 
     job = await controller.create_job(
         _job_params(
@@ -93,10 +77,9 @@ async def test_create_job_allows_auto_registered_proactive_tick_job(
 
 
 @pytest.mark.asyncio
-async def test_update_job_rejects_switching_to_proactive_tick(tmp_path, monkeypatch):
+async def test_update_job_rejects_switching_to_proactive_tick(tmp_path):
     """把既有任务改成 proactive.tick → 拒绝，任务保持原模式。"""
     controller, store = _make_controller(tmp_path)
-    _patch_project_binding(monkeypatch)
     job = await controller.create_job(_job_params(mode="agent"))
 
     with pytest.raises(ValueError, match="proactive.tick"):
@@ -107,10 +90,9 @@ async def test_update_job_rejects_switching_to_proactive_tick(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_update_job_allows_normal_mode_change(tmp_path, monkeypatch):
+async def test_update_job_allows_normal_mode_change(tmp_path):
     """普通模式间切换不受 guard 影响。"""
     controller, _ = _make_controller(tmp_path)
-    _patch_project_binding(monkeypatch)
     job = await controller.create_job(_job_params(mode="agent"))
 
     updated = await controller.update_job(job["id"], {"mode": "team"})

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import CancelledError, Future, TimeoutError
+from concurrent.futures import CancelledError, Future
 from functools import wraps
 import threading
 from typing import Any, Callable
@@ -48,6 +48,12 @@ class CallbackRegistryOwner:
         with self._state_lock:
             if self._closed or not self._loop.is_running():
                 raise RuntimeError("Worker callback registry owner is closed")
+
+    def check_owner_loop(self) -> None:
+        """Require an open registry on the loop that originally bound it."""
+        self._require_open()
+        if self._loop is not asyncio.get_running_loop():
+            raise RuntimeError("Worker callback registry already belongs to another event loop")
 
     def _forget(self, future: Future) -> None:
         with self._state_lock:
@@ -152,8 +158,6 @@ def bind_callback_registry_owner(framework: Any) -> CallbackRegistryOwner:
     method = getattr(framework, "register", None)
     owner = getattr(method, "_worker_callback_registry_owner", None)
     if isinstance(owner, CallbackRegistryOwner):
-        owner._require_open()
-        if owner._loop is not asyncio.get_running_loop():
-            raise RuntimeError("Worker callback registry already belongs to another event loop")
+        owner.check_owner_loop()
         return owner
     return CallbackRegistryOwner(framework)

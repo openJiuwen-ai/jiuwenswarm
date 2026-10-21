@@ -50,7 +50,7 @@ class WorkerRuntime:
         try:
             await self._shutdown_owned_resources()
         finally:
-            registry_owner = getattr(self.server, "_worker_callback_registry_owner", None)
+            registry_owner = getattr(self.server, "worker_callback_registry_owner", None)
             if registry_owner is not None:
                 await registry_owner.aclose()
 

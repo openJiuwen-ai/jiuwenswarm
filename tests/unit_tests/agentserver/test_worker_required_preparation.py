@@ -13,20 +13,6 @@ from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
 from jiuwenswarm.server.worker.telemetry import StartupTelemetry
 
 
-@pytest.fixture
-async def worker_callback_framework(monkeypatch):
-    """Give each simulated Worker its own process-lifetime SDK registry."""
-    from openjiuwen.core.runner import Runner
-    from openjiuwen.core.runner.callback import AsyncCallbackFramework
-
-    framework = AsyncCallbackFramework(enable_logging=False)
-    monkeypatch.setattr(Runner, "callback_framework", framework)
-    yield framework
-    owner = getattr(framework.register, "_worker_callback_registry_owner", None)
-    if owner is not None:
-        await owner.aclose()
-
-
 @pytest.mark.asyncio
 async def test_required_configuration_and_sdk_import_overlap_before_runtime_patches(monkeypatch):
     barrier = threading.Barrier(2, timeout=2)
