@@ -92,6 +92,7 @@ class RuntimePromptRail(DeepAgentRail):
     def uninit(self, agent) -> None:
         """清理注入的 section 并释放引用。"""
         if self.system_prompt_builder is not None:
+            self.system_prompt_builder.remove_section("video_duplex.voice_receipt")
             self.system_prompt_builder.remove_section("time")
             self.system_prompt_builder.remove_section("runtime.model_answer_policy")
             self.system_prompt_builder.remove_section("language_output")
@@ -359,6 +360,10 @@ class RuntimePromptRail(DeepAgentRail):
             "tui_current_project_policy",
             "trusted_dirs_policy"):
             self.system_prompt_builder.remove_section(name)
+
+        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import apply_summary_policy
+
+        apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
 
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
 
@@ -703,6 +708,10 @@ class RuntimePromptRail(DeepAgentRail):
             or runtime_state.get("language")
             or "unknown"
         ).strip()
+        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import apply_summary_policy
+
+        apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
+
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
 
         if not self._force_english and self._language == "cn":

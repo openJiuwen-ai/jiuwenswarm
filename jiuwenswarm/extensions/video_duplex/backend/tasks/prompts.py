@@ -59,7 +59,7 @@ def task_receipt_followup(receipt):
 
 
 def build_execution_prompt(
-    question, query, visual_context, context_text, brief_protocol
+    question, query, visual_context, context_text
 ):
     return (
         f"User task requirements (including user changes in chronological order): {question or query}\n"
@@ -83,12 +83,11 @@ def build_execution_prompt(
         "the filesystem, fetch pages again or recognize unrelated video frames. Verify "
         "external or time-sensitive facts using "
         "search and page contents.\n\n"
-        "Final answer: follow the reply language instruction below. After the necessary actions, respond "
+        "Final answer: follow the reply language policy. After the necessary actions, respond "
         "directly to the original instruction with "
         "results, necessary evidence and sources. Do not narrate tool calls, fetching, "
         "retries or verification. Follow the user's "
         "requested format and detail; otherwise be concise."
-        f"{brief_protocol}"
     )
 
 
@@ -98,7 +97,10 @@ def build_brief_prompt(begin, end, language_rule="Speak to the user in Simplifie
         f"{begin}\n"
         f"Write a separate, natural, brief receipt in one or two sentences. {language_rule} Summarize the "
         "task result for the realtime model to announce. Do not include code, JSON, URLs, Markdown links or full "
-        "page contents, and do not claim the task is still unfinished.\n"
+        "page contents. The Core Agent turn ending does not prove that a background workflow or the user goal is complete. "
+        "Preserve pending, partial, blocked and failed outcomes from the full answer. Only claim an artifact is ready "
+        "when its production is confirmed; starting a workflow is not completion. Do not promise automatic follow-up "
+        "unless a notification mechanism is confirmed.\n"
         f"{end}\n"
         "Output these random markers exactly once, unchanged."
     )

@@ -3263,7 +3263,9 @@ async def test_concurrent_team_steers_reach_interact_without_round_wait(monkeypa
 
 
 @pytest.mark.anyio
-async def test_cron_team_followup_retains_bounded_round_ownership(monkeypatch):
+@pytest.mark.parametrize("request_kind", ["cron", "design"])
+@pytest.mark.parametrize("finish", [False, True])
+async def test_cron_team_followup_retains_bounded_round_ownership(monkeypatch, request_kind, finish):
     from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
         SessionRunAdmission,
     )
@@ -3287,14 +3289,26 @@ async def test_cron_team_followup_retains_bounded_round_ownership(monkeypatch):
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel_id: manager)
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
     admission = SessionRunAdmission()
+    request_id = "cron-job:run-1" if request_kind == "cron" else "voice-design-round"
     request = AgentRequest(
         session_id="sess-cron-bounded",
-        request_id="cron-job:run-1",
-        channel_id="web",
+        request_id=request_id,
+        channel_id="web" if request_kind == "cron" else "video_tool",
         metadata={},
-        params={"mode": "team"},
+        params={"mode": "team"} if request_kind == "cron" else {
+            "mode": "team.design", "managed_task_binding": {"endpoint": "test", "task_id": "test"},
+        },
         user_id="owner",
     )
+    if request_kind == "design":
+        from jiuwenswarm.extensions.video_duplex.backend.tasks import design_execution
+
+        @contextlib.asynccontextmanager
+        async def task_binding(*_):
+            yield
+
+        monkeypatch.setattr(design_execution, "bind_design_voice_task", task_binding)
+        monkeypatch.setattr(team_helpers, "_bind_design_round_if_needed", AsyncMock(return_value=None))
 
     token = team_helpers.bind_team_heartbeat_service(
         SimpleNamespace(admission=admission)
@@ -3311,20 +3325,54 @@ async def test_cron_team_followup_retains_bounded_round_ownership(monkeypatch):
     task = asyncio.create_task(_consume())
     try:
         await asyncio.wait_for(interacted.wait(), timeout=1.0)
-        assert manager.is_round_owner("sess-cron-bounded", "cron-job:run-1") is True
+        assert manager.is_round_owner("sess-cron-bounded", request_id) is True
         assert admission.is_user_active("sess-cron-bounded") is True
         assert (
             await admission.try_begin_heartbeat("sess-cron-bounded", "hb-overlap")
             is False
         )
+        if finish:
+            queue = dict(manager.get_waiters("sess-cron-bounded"))[request_id]
+            await queue.put({"event_type": "chat.final" if request_kind == "design" else "chat.delta",
+                             "content": "The canvas has zero nodes."})
+            await asyncio.sleep(0)
+            assert not task.done(), "a text final is not a round completion receipt"
+            await queue.put({"event_type": "chat.processing_status", "is_processing": False, "is_complete": True})
+            await asyncio.wait_for(task, timeout=5.0)
+            assert manager.has_stream_task("sess-cron-bounded"), "round completion must not stop the persistent Team"
     finally:
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
         team_helpers.reset_team_heartbeat_service(token)
 
     assert manager.is_round_active("sess-cron-bounded") is False
     assert admission.is_user_active("sess-cron-bounded") is False
+
+
+@pytest.mark.anyio
+async def test_design_bounded_waiter_requires_native_terminal_even_after_final(monkeypatch):
+    queue = asyncio.Queue()
+    monkeypatch.setattr(team_helpers, "cron_team_round_should_end", lambda _: True)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _: SimpleNamespace(has_stream_task=lambda _: True))
+    stream = team_helpers._wait_for_bounded_team_round_events(
+        request_queue=queue, round_state={}, request_id="voice-design", channel_id="video_tool",
+        session_id="design", require_terminal=True,
+    )
+    await queue.put({"event_type": "chat.final", "content": "Result text"})
+    assert (await anext(stream))["event_type"] == "chat.final"
+    pending = asyncio.create_task(anext(stream))
+    try:
+        done, _ = await asyncio.wait({pending}, timeout=0.15)
+        assert not done, "text and the Cron completion heuristic cannot settle a Design task"
+        await queue.put({"event_type": "chat.processing_status", "is_processing": False, "is_complete": True})
+        assert (await asyncio.wait_for(pending, timeout=1))["is_complete"] is True
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+    finally:
+        pending.cancel()
+        await stream.aclose()
 
 
 @pytest.mark.anyio
@@ -8626,3 +8674,37 @@ def test_wf_spawned_member_event_carries_expert_identity():
     plain = _wf_spawned_member_event("run-1", "team-1", {"id": "a2", "name": "free"}, status="busy")
     assert plain["name"] == "free"
     assert "agent_template" not in plain and "display_name" not in plain
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_scoped", [False, True])
+async def test_cold_start_preserves_request_waiter_with_attached_page(monkeypatch, request_scoped):
+    """A page subscription must not consume a bounded task's result ownership."""
+    import jiuwenswarm.agents.harness.team.team_manager as manager_module
+
+    manager = SimpleNamespace(
+        prepare_runtime_activation=AsyncMock(),
+        has_interactive_waiter=Mock(return_value=True),
+    )
+    add_waiter = Mock()
+    running = []
+
+    async def consume(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(manager_module, "sync_team_observability", lambda: None)
+    monkeypatch.setattr(team_helpers, "_add_team_waiter", add_waiter)
+    monkeypatch.setattr(team_helpers, "_consume_stream_with_query", consume)
+    monkeypatch.setattr(team_helpers, "increment_session_round_count", lambda sid: 1)
+    monkeypatch.setattr(team_helpers, "_register_team_stream_task",
+                        lambda manager, sid, task, **kwargs: running.append(task))
+    queue = await team_helpers._start_team_stream_round(
+        channel_id="video_tool", session_id="design-cold", request_id="voice-round",
+        team_manager=manager, team_name="design", team_spec={}, query="edit image",
+        request_scoped_waiter=request_scoped,
+    )
+    await asyncio.gather(*running)
+    assert (queue is not None) is request_scoped
+    assert add_waiter.call_count == int(request_scoped)
+    if request_scoped:
+        assert add_waiter.call_args.args[2:4] == ("voice-round", queue)

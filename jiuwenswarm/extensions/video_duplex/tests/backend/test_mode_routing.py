@@ -198,6 +198,36 @@ async def test_real_team_stream_entry_uses_design_binding(monkeypatch, design_ho
     assert store.read(task["id"])["execution_settled"]
 
 
+async def test_design_through_real_adapter_wrapper_binds_only_once(monkeypatch, design_host):
+    from contextlib import asynccontextmanager, nullcontext
+    from jiuwenswarm.server.runtime.agent_adapter import team_helpers
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    store, task, request = design_host
+
+    @asynccontextmanager
+    async def admission(*_):
+        yield
+
+    async def native_stream(*_):
+        assert store.read(task["id"])["execution_bound"]
+        yield "native-design-output"
+
+    monkeypatch.setattr(team_helpers, "_process_team_message_stream_with_design", native_stream)
+    adapter = SimpleNamespace(
+        _permission_request_admission=admission,
+        validate_auto_permission_workspace_request=lambda _: None,
+        _bind_permission_request_context=lambda _: nullcontext(),
+        _process_message_stream_impl=lambda req, inputs: team_helpers.process_team_message_stream(req, inputs, None),
+        _is_session_scoped_adapter=True,
+        task_execution_binding=(SimpleNamespace(_react_agent=object(), active_round=None), SimpleNamespace(managed_tasks={})),
+    )
+    chunks = [chunk async for chunk in JiuWenSwarmDeepAdapter.process_message_stream_impl(adapter, request, {})]
+    assert chunks == ["native-design-output"]
+    saved = store.read(task["id"])
+    assert saved["execution_settled"] and not saved["execution_cancelled"]
+
+
 async def test_real_team_cancel_entry_requires_exact_round_and_native_ack(monkeypatch, design_host):
     import jiuwenswarm.agents.harness.team as team_module
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm

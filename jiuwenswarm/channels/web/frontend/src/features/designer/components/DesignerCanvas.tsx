@@ -257,6 +257,19 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
     }
   }, [graph.graph_id, reactFlowGraph, selectedNodeId, setNodes, setEdges, fitView]);
 
+  // Refresh display data independently so config edits do not reset a local drag.
+  useEffect(() => {
+    const updated = toReactFlowGraph(graph);
+    const nodeData = new Map(updated.nodes.map((node) => [node.id, node.data]));
+    const edgeLabels = new Map(updated.edges.map((edge) => [edge.id, edge.label]));
+    setNodes((previous) => previous.map((node) => (
+      nodeData.has(node.id) ? { ...node, data: nodeData.get(node.id)! } : node
+    )));
+    setEdges((previous) => previous.map((edge) => (
+      edgeLabels.has(edge.id) ? { ...edge, label: edgeLabels.get(edge.id) } : edge
+    )));
+  }, [graph, reactFlowGraph, selectedNodeId, setNodes, setEdges]);
+
   useOnSelectionChange({
     onChange: ({ nodes: selectedNodes }) => {
       const only = selectedNodes.length === 1 ? selectedNodes[0] : null;

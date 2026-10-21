@@ -17,6 +17,15 @@ into that context before a typed turn and written to the live session snapshot s
 ReAct does not overwrite it with older context. Active Core Agent work must finish
 before another typed request can use the same execution session.
 
+
+While Full-duplex is active, final root Core replies in the same conversation, including
+text requests and background replies, enter the voice result queue. Core writes the spoken
+summary; reasoning deltas, tool progress and member output are not announced individually.
+Summaries use fixed delimiters rather than task IDs written by the model. Transport-level
+conversation, request and media-session identities still route and deduplicate results.
+Delegated tasks retain their existing delivery path. Exit or replacement stops the old
+subscription; Qwen renewal temporarily holds new receipts.
+
 ```mermaid
 flowchart LR
   Voice[Realtime voice connection] -->|Delegate| Core[Chat Core Agent session]
@@ -60,7 +69,10 @@ Authorization failures and errors after inference begins are not replayed.
 Work and Code use the Full-duplex button in the chat input. Code tasks retain the chat's
 project directory and execution mode, including plan mode. In Design, start from the
 conversation panel of an existing project with a bound canvas. Starting waits for the
-canvas to save. A blank Design landing page needs a project and conversation first.
+canvas to save. The Design landing page also supports direct Full-duplex startup: it
+creates and binds an empty saved canvas and Design session, opens the Design page, then
+starts media. No typed message or invented creative request is needed. Creation failure
+does not start media; retry after correcting the error.
 
 ![Full-duplex entry in Design (isolated component preview)](../images/full-duplex-designer.png)
 
@@ -85,9 +97,28 @@ uses native design tools in the current project. Voice and text share the Design
 later typed turns also receive recent saved voice context. Native question cards remain
 answerable. Voice answers and cancellation use the current task binding, so a stale
 cancellation cannot stop a later turn.
+Voice tasks retain their own per-round result subscription even when the Design page
+already has a subscription. Canvas, node, run and assistant activity updates use the
+saved Design session's Web channel, so the page does not need a refresh.
 
 Completion or cancellation of a voice Design task refers to the assistant's current turn.
 Independent canvas generation stays under the native Design workflow. Finishing a reply
 does not prove rendering has finished; cancelling the assistant does not cancel all canvas
 generation. Tests cover routing, bindings, answers, cancellation and the UI entry. They
-do not call a live model or an external canvas generation service.
+use test substitutes; live Agent canvas operations are checked separately on the local
+service. These checks do not establish the reliability of external image or video generation.
+
+All three modes share the summary protocol, answer parser and receipt contract in
+`core_receipts.py`. Active Full-duplex sessions receive the summary policy through the
+runtime system prompt, without adding it separately to text and delegated requests.
+For standalone video tools without an active subscription, the server request entry
+adds the compatibility prompt once. Native replies and managed tasks retain their
+event channels but share receipt conversion. The frontend consumes the backend brief
+without building another fallback from the answer body. Durable voice history loading
+and filtering are shared; Agent and Design Team retain native context insertion.
+If a summary is missing, the backend preserves Core's actual answer instead of replacing
+it with a generic success claim.
+Long-lived Design text streams observe later managed tasks without publishing a second
+voice receipt for those tasks.
+Final replies that omit the closing summary marker use the same length and format
+validation, so the marker does not enter speech output.

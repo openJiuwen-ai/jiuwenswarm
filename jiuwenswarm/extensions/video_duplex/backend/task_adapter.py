@@ -18,6 +18,7 @@ from .tasks.prompts import (
     task_query_instructions,
 )
 from .qwen_omni_tools import parse_qwen_omni_tool_call
+from .core_receipts import receipt_payload
 
 logger = logging.getLogger(__name__)
 AGENT_QUERY_TIMEOUT = 20
@@ -283,7 +284,6 @@ class AgentTaskExecutor:
             interaction_answer=self.answer_input(task)
             if task.get("resume_answer")
             else None,
-            brief_nonce=task["id"],
             managed_task_binding=self.endpoint.binding(task),
             execution_target=target,
         )
@@ -391,9 +391,7 @@ class VideoSearchManager:
             status=task["status"],
             revision=task["revision"],
             sequence=task["sequence"],
-            result=result.get("answer", ""),
-            display_result=result.get("display_result", ""),
-            realtime_brief=result.get("realtime_brief"),
+            **receipt_payload(result, question=task["instruction"]),
             files=files,
             artifact_lookup_failed=bool(result.get("artifact_lookup_failed")),
             progress_history=task["progress"],

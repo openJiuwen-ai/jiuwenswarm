@@ -696,8 +696,24 @@ def register_video_live_handler(
             payload={"persisted": True, "event_id": event_id},
         )
 
+    async def _core_receipts(ws, req_id, params, session_id):
+        from .task_adapter import task_identity, task_agent_query
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        try:
+            owner, scope = task_identity(ws, str((params or {}).get("search_session_id") or ""))
+            if not scope.startswith("task-duplex:"):
+                raise ValueError("Core receipts require a saved conversation")
+            payload = await task_agent_query(agent_client, ReqMethod.VOICE_SESSION_RECEIPTS,
+                {"token": params.get("token"), "action": params.get("action")},
+                scope.removeprefix("task-duplex:"), owner)
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except Exception as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CORE_RECEIPT_REJECTED")
+
     handlers = {
         "video.realtime.config": _realtime_config,
+        "video.core.subscribe": _core_receipts,
         "video.joyai.frame": _joyai_frame,
         "video.realtime.telemetry": _realtime_telemetry,
         "video.conversation.append": _append_conversation,

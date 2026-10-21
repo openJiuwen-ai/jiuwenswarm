@@ -33,18 +33,15 @@ async def add_voice_context(request, inputs):
     if request.params.get("answers"):
         return
     from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
-    from jiuwenswarm.server.runtime.session.session_history import flush_pending_writes, load_history_records
-    from ..conversation_context import conversation_record_id
+    from ..conversation_context import load_voice_history
     from ..realtime_context import RESTORE_INSTRUCTIONS
 
     turn = inputs.get(TEAM_USER_TURN_KEY)
     if not isinstance(turn, UserTurn) or not isinstance(turn.text, str):
         return
-    if not await asyncio.to_thread(flush_pending_writes, timeout=5):
-        raise RuntimeError("Voice history is still saving; retry the Design request")
-    records = await asyncio.to_thread(load_history_records, request.session_id)
+    records = await load_voice_history(request.session_id)
     recent = [{"role": item["role"], "text": str(item.get("content") or "")[:1000]}
-              for item in records if conversation_record_id(item)][-6:]
+              for item in records][-6:]
     if recent:
         background = RESTORE_INSTRUCTIONS + "\n" + json.dumps({"recent_voice_turns": recent}, ensure_ascii=False)
         inputs[TEAM_USER_TURN_KEY] = turn.with_text(background + "\n\nCurrent request:\n" + turn.text)

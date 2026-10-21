@@ -1393,6 +1393,9 @@ class AgentRuntime:
                 agent_execution=_agent_execution,
             )
         finally:
+            from jiuwenswarm.extensions.video_duplex.backend.session_receipts import finish_request
+
+            finish_request(request)
             reset_runtime_context(token)
 
     async def _invoke_started(
@@ -1407,6 +1410,9 @@ class AgentRuntime:
 
         if trigger_hook:
             await self._trigger_before_chat_request_hook(request)
+        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import prepare_request
+
+        prepare_request(request)
         channel_id = request.channel_id or "default"
         foreground = request.req_method in self._chat_turn_methods()
         activity_participants = (
@@ -1586,6 +1592,11 @@ class AgentRuntime:
                 raise end_error
         if cancellation is not None:
             raise cancellation
+        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import publish_result, finish_request
+
+        for event in events:
+            await publish_result(request, event)
+        finish_request(request)
         return events
 
     async def answer_interaction(
@@ -1986,6 +1997,9 @@ class AgentRuntime:
                         )
                 if execution_id is not None and isinstance(event.payload, dict):
                     event.payload["execution_id"] = execution_id
+                from jiuwenswarm.extensions.video_duplex.backend.session_receipts import publish_result
+
+                await publish_result(request, event)
                 yield event
         finally:
             token = set_runtime_context(self, self._agent_manager)
@@ -2000,6 +2014,9 @@ class AgentRuntime:
                         cause=ExecutionCancelCause.CONSUMER_CLOSED,
                     )
                 await stream.aclose()
+                from jiuwenswarm.extensions.video_duplex.backend.session_receipts import finish_request
+
+                finish_request(request)
             finally:
                 reset_runtime_context(token)
 
@@ -2017,6 +2034,9 @@ class AgentRuntime:
 
         if trigger_hook:
             await self._trigger_before_chat_request_hook(request)
+        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import prepare_request
+
+        prepare_request(request)
         channel_id = request.channel_id or "default"
         is_chat_turn = request.req_method in self._chat_turn_methods()
         foreground = is_chat_turn and not background
@@ -3284,6 +3304,12 @@ class AgentRuntime:
         # WAITING_FOR_INPUT while the Session stays entered).
         if self._is_attach_only_request(request):
             return TeamWaiterKind.PERSISTENT
+        params = request.params or {}
+        if (request.channel_id == "video_tool" and params.get("mode") == "team.design"
+                and params.get("managed_task_binding")):
+            # A managed invocation must observe its own terminal receipt even
+            # when the Design page already owns a persistent response stream.
+            return TeamWaiterKind.REQUEST
         if background or self._team_session_message_id(request) is not None:
             return TeamWaiterKind.NONE
         from jiuwenswarm.agents.harness.team import get_team_manager
