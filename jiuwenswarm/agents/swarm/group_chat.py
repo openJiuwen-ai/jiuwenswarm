@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from weakref import WeakValueDictionary
 
 from openjiuwen.agent_teams.harness.manifest import ElementKind, harness_element
@@ -23,14 +24,19 @@ from openjiuwen.agent_teams.external import external_cli_agent_spec_from_templat
 from openjiuwen.core.foundation.tool import Tool, ToolCard, ToolOutput
 from openjiuwen.core.runner import Runner
 from openjiuwen.harness.resources import load_agent_template_package
-from openjiuwen.harness.schema.deep_agent_spec import BuiltinToolSpec
+from openjiuwen.harness.schema.deep_agent_spec import BuiltinToolSpec, RailSpec
 from openjiuwen.harness.rails.base import DeepAgentRail
+
+logger = logging.getLogger(__name__)
 
 RUN_TEAM = "swarm.group_run_team"
 SUBMIT_RESULT = "swarm.group_submit_team_result"
 GROUP_MEMBER_TEMPLATE = "swarm.group_member_template"
 _locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _results: dict[str, asyncio.Future] = {}
+_private_runs: dict[str, dict] = {}
+PRIVATE_TASK_POLICY = "swarm.group_private_task_policy"
+BEGIN_TEAM_TASK = "swarm.group_begin_team_task"
 
 
 def resolve_group_members(session_id: str, requested, *, is_first_request: bool):
@@ -135,7 +141,10 @@ def assemble_group_members(spec, members: list[dict]) -> None:
                 prompt,
                 "You represent an expert team in this public group. Answer directly when appropriate. "
                 "For work requiring your team, call run_team with a stable run_id and the task. "
-                "The tool posts the submitted result to the group as you; do not post it twice. "
+                "The tool starts background work and returns its execution_id; remain available for new messages. "
+                "Use run_team action=update or cancel to change that execution. "
+                "For a follow-up use run_team action=continue with a new run_id and the previous execution_id. "
+                "Results are posted automatically; do not post or submit them twice. "
                 "Use group_send_message for your own discussion. Do not build the outer group.",
             )
         member_params = dict(
@@ -175,14 +184,20 @@ class SubmitTeamResult(_GroupTool):
             ToolCard(
                 id="group.submit_team_result",
                 name="submit_team_result",
-                description="Submit the final expert-team result to the group proxy. Only submit a final deliverable.",
+                description=(
+                    "Submit the final deliverable for the current execution_id from your execution context. "
+                    "Direct answers need no task card; call start_group_task before doing substantive work."
+                ),
                 input_params={
                     "type": "object",
                     "properties": {
                         "result": {"type": "string"},
+                        "execution_id": {"type": "string"},
                         "attachments": {"type": "array", "items": {"type": "object"}},
                     },
-                    "required": ["result"],
+                    "required": (
+                        ["result", "execution_id"] if _private_runs.get(key, {}).get("execution_id") else ["result"]
+                    ),
                 },
             )
         )
@@ -202,6 +217,10 @@ class SubmitTeamResult(_GroupTool):
             return ToolOutput(success=False, error="attachments must be a list")
         if any(not isinstance(item, dict) for item in attachments):
             return ToolOutput(success=False, error="attachments must be JSON objects")
+        current = _private_runs.get(self.key)
+        if current is not None and current.get("execution_id"):
+            if inputs.get("execution_id") != current["execution_id"]:
+                return ToolOutput(success=False, error="execution_id must match the active private-team task")
         submission = {"result": result, "attachments": attachments} if attachments else result
         future.set_result(submission)
         return ToolOutput(success=True, data={"submitted": True})
@@ -213,28 +232,46 @@ class RunTeam(_GroupTool):
             ToolCard(
                 id="group.run_team",
                 name="run_team",
-                description="Run your bound expert team on demand. Reuse run_id when retrying the same task. "
-                "The submitted final result is posted to the public group under your identity.",
+                description=(
+                    "Manage private-team work: start a new context, continue a completed context, "
+                    "update or cancel active work. Reuse run_id for retries. "
+                    "A direct answer is posted as chat; a card appears only when actual work starts."
+                ),
                 input_params={
                     "type": "object",
                     "properties": {
+                        "action": {"type": "string", "enum": ["start", "continue", "update", "cancel"]},
                         "run_id": {"type": "string"},
-                        "task": {"type": "string"},
+                        "content": {"type": "string"},
+                        "execution_id": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "task": {"type": "string", "description": "Legacy alias for content."},
+                        "continue_from_execution_id": {"type": "string", "description": "Legacy continuation alias."},
                     },
-                    "required": ["run_id", "task"],
+                    "required": [],
                 },
             )
         )
         self.backend, self.context, self.child_spec = backend, context, child_spec
 
     async def invoke(self, inputs, **kwargs):
-        run_id, task = inputs.get("run_id"), inputs.get("task")
+        action = inputs.get("action")
+        if action is None:
+            action = "continue" if inputs.get("continue_from_execution_id") else "start"
+        if not isinstance(action, str) or action not in {"start", "continue", "update", "cancel"}:
+            return ToolOutput(success=False, error="invalid run_team action")
+        if self.backend.conversation_mode != "group_chat":
+            return ToolOutput(success=False, error="run_team requires a group_chat runtime")
+        if action in {"update", "cancel"}:
+            return await self._adjust({**inputs, "action": action})
+        previous_id = inputs.get("execution_id") or inputs.get("continue_from_execution_id")
+        if action == "continue" and not previous_id:
+            return ToolOutput(success=False, error="continue requires a source execution_id")
+        if action == "start" and previous_id:
+            return ToolOutput(success=False, error="use action=continue to reuse an execution context")
+        run_id, task = inputs.get("run_id"), inputs.get("content") or inputs.get("task")
         if not all(isinstance(v, str) and v.strip() for v in (run_id, task)):
             return ToolOutput(success=False, error="run_id and task must be nonempty")
-        if self.backend.conversation_mode != "group_chat":
-            return ToolOutput(
-                success=False, error="run_team requires a group_chat runtime"
-            )
         session = self.context.session_id
         key = hashlib.sha256(
             json.dumps(
@@ -254,7 +291,23 @@ class RunTeam(_GroupTool):
             execution = None
             store = GroupExecutions(session)
             if managed:
+                from jiuwenswarm.server.runtime.group_execution import TERMINAL
+                from jiuwenswarm.agents.harness.team import get_team_manager
+
                 await store.reconcile()
+                previous = None
+                if previous_id is not None:
+                    try:
+                        previous = store.get(previous_id)
+                    except ValueError as exc:
+                        return ToolOutput(success=False, error=str(exc))
+                    if previous["member_name"] != self.backend.member_name:
+                        return ToolOutput(success=False, error="continuation must belong to this member")
+                    if previous["status"] != "completed" or not previous.get("team_session_id"):
+                        return ToolOutput(
+                            success=False, error="continuation requires a completed private-team execution",
+                        )
+                manager = get_team_manager(self.context.channel_id)
                 for record in store.read().values():
                     if record.get("run_key") == key:
                         execution = record
@@ -262,14 +315,57 @@ class RunTeam(_GroupTool):
                 if execution is None:
                     execution = store.active(self.backend.member_name)
                 if execution is None:
-                    execution = (await store.create([self.backend.member_name], task, run_id))[0]
+                    if previous is not None:
+                        previous_worker = manager.get_stream_task(previous["team_session_id"])
+                        if previous_worker is not None and not previous_worker.done():
+                            return ToolOutput(success=False, error=
+                            "private team is busy or still finishing its last run")
+                    execution = (await store.create([self.backend.member_name], task, key, defer_card=True))[0]
                 if execution["task"] != task:
                     return ToolOutput(success=False, error="run_team task must match the assigned execution")
-                if execution["status"] in {"failed", "cancelled", "interrupted"}:
-                    return ToolOutput(success=False, error="execution ended; use a new run_id to start another task")
-                execution = await store.update(
-                    execution["execution_id"], run_key=key, execution_kind="team", presentation="card",
-                )
+                if execution.get("run_key") and execution["run_key"] != key:
+                    return ToolOutput(
+                        success=False, error="member has another run; use its run_id to retry or adjust it",
+                    )
+                if execution.get("run_key") and execution.get("previous_execution_id") != previous_id:
+                    return ToolOutput(success=False, error="run_id was used with another continuation")
+                if execution["status"] in TERMINAL:
+                    if execution["status"] == "completed":
+                        return ToolOutput(success=True, data=execution)
+                    return ToolOutput(success=False, error="execution ended; use a new run_id")
+                team_key = execution.get("private_team_key") or key
+                if previous is not None:
+                    team_key = previous.get("private_team_key") or previous.get("run_key")
+                child_session = f"group-run-{team_key[:32]}"
+                from jiuwenswarm.server.runtime.group_service import group_lock
+
+                async with group_lock(f"group-adjust-{team_key}"):
+                    existing_worker = manager.get_stream_task(child_session)
+                    if existing_worker is not None and not existing_worker.done():
+                        if execution.get("run_key") == key:
+                            return ToolOutput(success=True, data={
+                                "execution_id": execution["execution_id"], "accepted": True,
+                            })
+                        return ToolOutput(success=False, error="private team is busy")
+                    execution = await store.update(
+                        execution["execution_id"], run_key=key, execution_kind="team", background=True,
+                        private_team_key=team_key, team_session_id=child_session,
+                        previous_execution_id=previous_id,
+                        team_id=f"group-expert-{team_key[:24]}",
+                    )
+                    from jiuwenswarm.server.runtime.session import lifecycle
+
+                    async with group_lock(session):
+                        current_group = read_group(session)
+                        if current_group is None or current_group["status"] == "deleting":
+                            return ToolOutput(success=False, error="group is unavailable")
+                        lifecycle.guard(session)
+                        worker = asyncio.create_task(self._execute_background(key, task, execution, manager))
+                        manager.register_stream_task(child_session, worker)
+                    return ToolOutput(success=True, data={
+                        "execution_id": execution["execution_id"], "accepted": True,
+                        "posted_to_group": False,
+                    })
             try:
                 return await self._run(key, task, execution=execution)
             except asyncio.CancelledError:
@@ -282,6 +378,91 @@ class RunTeam(_GroupTool):
                     if current["phase"] != "publishing":
                         await store.update(execution["execution_id"], status="failed", phase="failed")
                 return ToolOutput(success=False, error=str(exc))
+
+    async def _adjust(self, inputs):
+        from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+        from jiuwenswarm.server.runtime.group_service import GroupError
+        from openjiuwen.core.runner import Runner
+        from openjiuwen.agent_teams.interaction.payload import GodViewMessage
+        from jiuwenswarm.agents.harness.team import get_team_manager
+        from jiuwenswarm.server.runtime.group_execution import TERMINAL
+        from jiuwenswarm.server.runtime.group_service import group_lock
+
+        store = GroupExecutions(self.context.session_id)
+        try:
+            action = inputs.get("action")
+            if not isinstance(action, str):
+                raise GroupError("BAD_REQUEST", "action must be update or cancel")
+            if action not in {"update", "cancel"}:
+                raise GroupError("BAD_REQUEST", "action must be update or cancel")
+            record = store.get(inputs.get("execution_id"))
+            if record["member_name"] != self.backend.member_name:
+                raise GroupError("NOT_FOUND", "execution not found")
+            if record["status"] in TERMINAL:
+                raise GroupError("CONFLICT", "execution has ended; use run_team continuation for follow-up")
+            child_session = record.get("team_session_id")
+            if not child_session:
+                raise GroupError("UNSUPPORTED_RUNTIME", "execution has no private team to adjust")
+            # Serialize cancellation with a continuation that reuses the same team.
+            async with group_lock(f"group-adjust-{record['private_team_key']}"):
+                record = store.get(record["execution_id"])
+                if record["status"] in TERMINAL:
+                    raise GroupError("CONFLICT", "execution has already ended")
+                manager = get_team_manager(self.context.channel_id)
+                worker = manager.get_stream_task(child_session)
+                if worker is None or worker.done():
+                    raise GroupError("NOT_RUNNING", "private-team worker is not running on this server")
+                if action == "cancel":
+                    reason = inputs.get("reason", "user_cancelled")
+                    if not isinstance(reason, str):
+                        raise GroupError("BAD_REQUEST", "reason must be text")
+                    await store.update(record["execution_id"], phase="cancelling", cancellation_reason=reason)
+                    await manager.stop_session_runtime(child_session, reason="group.execution.cancel")
+                    current = store.get(record["execution_id"])
+                    if current["status"] in TERMINAL and current["status"] != "cancelled":
+                        raise GroupError("CONFLICT", "execution ended with status " + current["status"])
+                    result = await store.update(record["execution_id"], status="cancelled", phase="cancelled")
+                    return ToolOutput(success=True, data=result)
+                instruction = inputs.get("content") or inputs.get("instruction")
+                if not isinstance(instruction, str) or not instruction.strip():
+                    raise GroupError("BAD_REQUEST", "instruction must be nonempty text")
+                if len(instruction) > 20000:
+                    raise GroupError("BAD_REQUEST", "instruction exceeds 20000 characters")
+                delivered = await Runner.interact_agent_team(
+                    GodViewMessage(body=instruction), team_name=record["team_id"], session_id=child_session,
+                )
+                if not delivered.ok:
+                    raise GroupError("DELIVERY_FAILED", delivered.reason or "instruction was not accepted")
+                current = store.get(record["execution_id"])
+                adjustments = [*current.get("adjustments", []), {"instruction": instruction, "delivered": True}]
+                result = await store.update(record["execution_id"], adjustments=adjustments)
+                return ToolOutput(success=True, data={**result, "instruction_delivered": True})
+        except (ValueError, OSError, RuntimeError) as exc:
+            return ToolOutput(success=False, error=str(exc))
+
+    async def _execute_background(self, key: str, task: str, execution: dict, manager) -> None:
+        from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+        from jiuwenswarm.server.runtime.group_service import read_group
+
+        store = GroupExecutions(self.context.session_id)
+        try:
+            await self._run(key, task, execution=execution)
+        except asyncio.CancelledError:
+            group = read_group(self.context.session_id)
+            if group is not None and group["status"] != "deleting":
+                await store.update(execution["execution_id"], status="cancelled", phase="cancelled")
+            raise
+        except Exception:
+            logger.exception("Private group execution failed execution=%s", execution["execution_id"])
+            group = read_group(self.context.session_id)
+            if group is not None and group["status"] != "deleting":
+                current = store.get(execution["execution_id"])
+                if current["phase"] != "publishing":
+                    await store.update(execution["execution_id"], status="failed", phase="failed")
+        finally:
+            child_session = execution["team_session_id"]
+            if manager.get_stream_task(child_session) is asyncio.current_task():
+                manager.pop_stream_task(child_session)
 
     async def _run(self, key: str, task: str, *, execution=None):
         from openjiuwen.agent_teams.team_workspace.frontmatter import atomic_write
@@ -303,13 +484,14 @@ class RunTeam(_GroupTool):
 
         if not state.get("result"):
             child = TeamAgentSpec.model_validate(self.child_spec)
-            child.team_name = f"group-expert-{key[:24]}"
-            child_session = f"group-run-{key[:32]}"
+            team_key = execution.get("private_team_key", key) if execution is not None else key
+            child.team_name = f"group-expert-{team_key[:24]}"
+            child_session = f"group-run-{team_key[:32]}"
             child.external_transport = None
             if child.workspace is not None:
                 child.workspace = child.workspace.model_copy(
                     update={
-                        "root_path": str(state_path.parent / key / "workspace"),
+                        "root_path": str(state_path.parent / team_key / "workspace"),
                     }
                 )
             # Build fresh host context for the private team, not the proxy's workspace.
@@ -325,8 +507,19 @@ class RunTeam(_GroupTool):
             )
             child.agents["leader"].tools = [
                 *(child.agents["leader"].tools or []),
-                BuiltinToolSpec(type=SUBMIT_RESULT, params={"key": key}),
+                BuiltinToolSpec(type=SUBMIT_RESULT, params={"key": team_key}),
             ]
+            if execution is not None:
+                child.agents["leader"].tools.append(BuiltinToolSpec(type=BEGIN_TEAM_TASK, params={"key": team_key}))
+                leader_agent = child.agents["leader"]
+                leader_agent.rails = [*(leader_agent.rails or []), RailSpec(
+                    type=PRIVATE_TASK_POLICY, params={"key": team_key},
+                )]
+            _private_runs[team_key] = {
+                "member_name": self.backend.member_name,
+                "execution_id": execution["execution_id"] if execution is not None else None,
+                "group_id": self.context.session_id if execution is not None else None,
+            }
             child.leader = child.leader.model_copy(
                 update={
                     "prompt": (child.leader.prompt or "")
@@ -348,7 +541,7 @@ class RunTeam(_GroupTool):
                     execution["execution_id"], status="running", phase="executing", team_id=child.team_name,
                 )
             future = asyncio.get_running_loop().create_future()
-            _results[key] = future
+            _results[team_key] = future
 
             async def consume():
                 from openjiuwen.agent_teams.context import set_session_id, reset_session_id
@@ -357,10 +550,12 @@ class RunTeam(_GroupTool):
                 handler = None
                 progress_worker = None
 
+                async def record_progress(event):
+                    await GroupExecutions(self.context.session_id).task_event(execution["execution_id"], event)
+
                 async def watch_progress():
                     async for event in handler.events():
-                        if event.get("event_type") == "team.task":
-                            await GroupExecutions(self.context.session_id).task_event(execution["execution_id"], event)
+                        await record_progress(event)
 
                 try:
                     async for chunk in Runner.run_agent_team_streaming(
@@ -371,9 +566,7 @@ class RunTeam(_GroupTool):
                             continue
                         event_type = payload.get("event_type")
                         if execution is not None:
-                            await GroupExecutions(self.context.session_id).task_event(
-                                execution["execution_id"], payload,
-                            )
+                            await record_progress(payload)
                             if event_type == "team.runtime_ready" and handler is None:
                                 token = set_session_id(child_session)
                                 try:
@@ -414,13 +607,16 @@ class RunTeam(_GroupTool):
                 save()
             finally:
                 try:
-                    await Runner.pause_agent_team(
+                    paused = await Runner.pause_agent_team(
                         team_name=child.team_name, session_id=child_session
                     )
+                    if paused is False:
+                        raise RuntimeError("private team could not be paused")
                 finally:
                     worker.cancel()
                     await asyncio.gather(worker, return_exceptions=True)
-                    _results.pop(key, None)
+                    _results.pop(team_key, None)
+                    _private_runs.pop(team_key, None)
                     if not state.get("result"):
                         state["status"] = "interrupted"
                         save()
@@ -453,6 +649,95 @@ class RunTeam(_GroupTool):
                 "posted_to_group": True,
             },
         )
+
+
+class BeginTeamTask(_GroupTool):
+    def __init__(self, key: str):
+        super().__init__(ToolCard(
+            id="group.begin_private_task", name="start_group_task",
+            description="Start substantive work for the current execution_id and create its public task card.",
+            input_params={
+                "type": "object", "required": ["execution_id"],
+                "properties": {"execution_id": {"type": "string"}}, "additionalProperties": False,
+            },
+        ))
+        self.key = key
+
+    async def invoke(self, inputs, **kwargs):
+        from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+        current = _private_runs.get(self.key)
+        if current is None or inputs.get("execution_id") != current["execution_id"]:
+            return ToolOutput(success=False, error="execution_id must match the current private invocation")
+        future = _results.get(self.key)
+        if future is None or future.done():
+            return ToolOutput(success=False, error="result submission has begun")
+        try:
+            record = await GroupExecutions(current["group_id"]).begin_task(
+                current["execution_id"], current["member_name"],
+            )
+            return ToolOutput(success=True, data={"execution_id": record["execution_id"], "task_started": True})
+        except (ValueError, OSError) as exc:
+            return ToolOutput(success=False, error=str(exc))
+
+
+class PrivateTaskPolicy(DeepAgentRail):
+    """Keep direct answers separate from work that needs a public task card."""
+
+    def __init__(self, context, key: str):
+        super().__init__()
+        self.context = context
+        self.key = key
+
+    async def before_invoke(self, ctx):
+        from openjiuwen.harness.prompts import PromptSection
+
+        current = _private_runs.get(self.key)
+        if current is None:
+            return
+        content = (
+            "Current execution_id: " + current["execution_id"]
+            + ". If you can answer directly, call submit_team_result with this ID; do not start a task. "
+            "Before substantive work or using other tools, call start_group_task with this ID. "
+            "Then perform the work and submit the final result with submit_team_result. "
+            "You can do a task yourself; build_team is optional. Never reuse an earlier execution_id."
+        )
+        builder = ctx.agent.system_prompt_builder
+        builder.remove_section("group_private_execution")
+        builder.add_section(PromptSection(
+            name="group_private_execution", content={"en": content, "cn": content}, priority=95,
+        ))
+
+    async def before_tool_call(self, ctx):
+        from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+        from openjiuwen.core.foundation.llm import ToolMessage
+
+        if ctx.inputs.tool_name in {"start_group_task", "submit_team_result"}:
+            return
+        current = _private_runs.get(self.key)
+        if current is None:
+            return
+        record = GroupExecutions(current["group_id"]).get(current["execution_id"])
+        if record["presentation"] == "card":
+            return
+        error = "Call start_group_task for the current execution_id before using work tools."
+        call = ctx.inputs.tool_call
+        ctx.extra["_skip_tool"] = True
+        ctx.inputs.tool_result = {"error": error}
+        ctx.inputs.tool_msg = ToolMessage(content=error, tool_call_id=call.id if call else "")
+
+
+@harness_element(kind=ElementKind.TOOL, name=BEGIN_TEAM_TASK, description="Confirm private-team substantive work.")
+def build_begin_team_task(params, context):
+    backend = get_team_backend(context)
+    if backend is None or not backend.is_leader:
+        raise ValueError("only the private leader may start its task card")
+    return BeginTeamTask(params["key"])
+
+
+@harness_element(kind=ElementKind.RAIL, name=PRIVATE_TASK_POLICY, description="Private response or task policy.")
+def build_private_task_policy(params, context):
+    return PrivateTaskPolicy(context, params["key"])
 
 
 @harness_element(

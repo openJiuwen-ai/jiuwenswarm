@@ -1,5 +1,6 @@
 """Group task tools and invocation policy, using the existing harness extensions."""
 
+import hashlib
 import json
 
 from openjiuwen.agent_teams.harness.manifest import ElementKind, harness_element
@@ -17,10 +18,16 @@ TASK_POLICY = "swarm.group_task_policy"
 TASK_RULES = (
     "An @ mention alone is ordinary conversation: reply with group_send_message. "
     "For substantive work you choose to undertake, call start_group_task before doing the work. "
-    "For an assigned execution, do not publish progress, reasoning or intermediate results to the group. "
+    "For an assigned execution, call start_group_task before substantive work; direct answers need no card. "
+    "Use submit_group_task_result for an assigned direct answer without starting a task. "
+    "Do not publish progress, reasoning or intermediate results to the group. "
     "Use submit_group_task_result for the final result and attachment references. "
     "An expert-team proxy may do the work directly and submit the result itself. "
-    "Only call run_team when work requires the private team; it updates the same execution card."
+    "Call run_team to consult the private team context. It does not create a card until actual work starts. "
+    "run_team returns immediately after accepting background work. Do not submit its result yourself. "
+    "Stay available for ordinary chat. Use run_team action=update or cancel on its execution_id for changes. "
+    "A follow-up after completion is run_team action=continue with a new run_id and the old execution_id. "
+    "For ambiguous references ask which task; do not guess."
 )
 
 
@@ -68,14 +75,27 @@ class GroupTaskTool(Tool):
         store = GroupExecutions(self.context.session_id)
         try:
             if self.submit:
+                record = store.get(inputs.get("execution_id"))
+                if record["member_name"] != self.backend.member_name:
+                    raise GroupError("NOT_FOUND", "execution not found")
+                if record.get("background"):
+                    raise GroupError("CONFLICT", "private team owns result submission")
                 result = await store.finish(
                     inputs.get("execution_id"), self.backend, inputs.get("result"), inputs.get("attachments", []),
                 )
             else:
-                records = await store.create(
-                    [self.backend.member_name], inputs.get("task"), inputs.get("run_id"),
-                )
-                result = await store.update(records[0]["execution_id"], status="running", phase="executing")
+                run_id = inputs.get("run_id")
+                if not isinstance(run_id, str) or not run_id.strip():
+                    raise GroupError("BAD_REQUEST", "run_id must be nonempty text")
+                identity = json.dumps([self.context.session_id, self.backend.member_name, run_id])
+                token = hashlib.sha256(identity.encode()).hexdigest()
+                active = store.active(self.backend.member_name)
+                if active is None:
+                    records = await store.create([self.backend.member_name], inputs.get("task"), token, defer_card=True)
+                    active = records[0]
+                if active.get("background"):
+                    raise GroupError("CONFLICT", "private leader owns task startup")
+                result = await store.begin_task(active["execution_id"], self.backend.member_name)
             return ToolOutput(success=True, data=result)
         except (ValueError, OSError) as exc:
             return ToolOutput(success=False, error=str(exc))
@@ -105,9 +125,23 @@ class GroupTaskPolicyRail(DeepAgentRail):
         if active is not None:
             if active["status"] == "queued":
                 active = await store.update(active["execution_id"], status="running", phase="executing")
-            content += "\nAssigned execution (use this ID; do not create another task): " + json.dumps({
+            label = "Assigned execution (use this ID; do not create another task): "
+            if active.get("background"):
+                label = "Background execution (use run_team action=update/cancel for changes): "
+            content += "\n" + label + json.dumps({
                 "execution_id": active["execution_id"], "task": active["task"],
             }, ensure_ascii=False)
+        previous = []
+        for record in store.read().values():
+            if record["member_name"] != self.context.member_name:
+                continue
+            ended = record["status"] in {"completed", "cancelled", "failed", "interrupted"}
+            if record.get("team_session_id") and ended:
+                previous.append({
+                    "execution_id": record["execution_id"], "task": record["task"], "status": record["status"],
+                    "result": (record.get("result") or "")[:1000],
+                })
+        content += "\nPrevious private-team executions available for follow-up: " + json.dumps(previous[-5:])
         builder = ctx.agent.system_prompt_builder
         builder.remove_section("group_task_policy")
         builder.add_section(PromptSection(
@@ -124,7 +158,9 @@ class GroupTaskPolicyRail(DeepAgentRail):
         backend = get_team_backend(self.context)
         if active is None and getattr(backend, "is_leader", False):
             active = store.active(None)
-        if active is None:
+        if active is None or active.get("background"):
+            return
+        if active.get("presentation", "card") != "card":
             return
         from openjiuwen.core.foundation.llm import ToolMessage
 
@@ -175,7 +211,7 @@ class GroupTaskPolicyRail(DeepAgentRail):
             return
         store = GroupExecutions(self.context.session_id)
         active = store.active(self.context.member_name)
-        if active is not None and active["phase"] != "publishing":
+        if active is not None and active["phase"] != "publishing" and not active.get("background"):
             await store.update(active["execution_id"], status="interrupted", phase="result_not_submitted")
 
 

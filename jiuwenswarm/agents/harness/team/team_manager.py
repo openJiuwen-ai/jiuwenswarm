@@ -478,6 +478,10 @@ class TeamManager:
             return False
         return session_id in self._stream_tasks
 
+    def get_stream_task(self, session_id: str) -> asyncio.Task | None:
+        """Return the registered worker without changing its ownership."""
+        return self._stream_tasks.get(session_id)
+
     def pop_stream_task(
         self,
         session_id: str,

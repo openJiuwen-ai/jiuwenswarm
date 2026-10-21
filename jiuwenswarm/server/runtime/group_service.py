@@ -125,6 +125,12 @@ def read_group(group_id: str) -> dict | None:
     state["receipts"] = {
         key: normalize_group_member(member) for key, member in state["receipts"].items()
     }
+    for member in state["compiled"].values():
+        template = member.get("template")
+        if template is not None:
+            template["tools"] = [
+                tool for tool in template.get("tools", []) if tool.get("type") != "swarm.group_adjust_task"
+            ]
     return state
 
 
@@ -544,6 +550,7 @@ class GroupService:
                     raise GroupError("GROUP_RESTART_REQUIRED", "task lifecycle policy requires cold recovery")
         return await GroupExecutions(group_id).create(
             params.get("mentions", []), params.get("query"), params.get("client_message_id") or request_id,
+            defer_card=True,
         )
 
     async def execution_list(self, group_id, params, *, user_id, channel_id):
@@ -553,7 +560,10 @@ class GroupService:
         limit, offset = _page(params)
         store = GroupExecutions(group_id)
         await store.reconcile()
-        records = list(store.read().values())
+        records = []
+        for record in store.read().values():
+            if record.get("presentation", "card") == "card":
+                records.append(record)
         records.sort(key=lambda item: (item["created_at"], item["execution_id"]))
         page_end = offset + limit
         return {
@@ -569,7 +579,10 @@ class GroupService:
         execution_id = _text(params.get("execution_id"), "execution_id", maximum=256)
         store = GroupExecutions(group_id)
         await store.reconcile()
-        return {"group_id": group_id, **public_execution(store.get(execution_id))}
+        record = store.get(execution_id)
+        if record.get("presentation", "card") != "card":
+            raise GroupError("NOT_FOUND", "task card not found")
+        return {"group_id": group_id, **public_execution(record)}
 
     async def delete(self, group_id, *, user_id, channel_id):
         async with group_lock(group_id):
@@ -579,6 +592,14 @@ class GroupService:
                 state["status"] = "deleting"
                 _save(state)
             try:
+                from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+                for execution in GroupExecutions(group_id).read().values():
+                    child_session = execution.get("team_session_id")
+                    if child_session:
+                        await self.manager_factory(channel_id).stop_session_runtime(
+                            child_session, reason="group.delete.private",
+                        )
                 await self.manager_factory(channel_id).stop_session_runtime(
                     group_id, reason="group.delete"
                 )
@@ -587,14 +608,23 @@ class GroupService:
                     group_id,
                     workspace_path=state.get("workspace_path"),
                 )
+                removed_teams = set()
                 for path in (log.history_path.parent / "team-runs").glob("*.json"):
                     run = json.loads(path.read_text(encoding="utf-8"))
+                    identity = (run.get("team_name"), run.get("session_id"))
+                    if identity in removed_teams:
+                        continue
                     if run.get("team_name") and run.get("session_id"):
+                        await self.manager_factory(channel_id).stop_session_runtime(
+                            run["session_id"], reason="group.delete.private",
+                        )
                         removed = await Runner.delete_agent_team(
                             team_name=run["team_name"],
                             session_ids=[run["session_id"]],
                             force=True,
                         )
+                        if removed:
+                            removed_teams.add(identity)
                         if not removed:
                             raise GroupError(
                                 "DELETE_FAILED",

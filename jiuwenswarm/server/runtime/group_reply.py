@@ -11,7 +11,8 @@ def correlate_public_reply(group_id: str, message: dict) -> dict:
     if client_id.startswith(prefix):
         execution_id = client_id[len(prefix):]
         record = GroupExecutions(group_id).read().get(execution_id)
-        if record is not None and record["member_name"] == message["sender"]:
+        is_card = record is not None and record.get("presentation", "card") == "card"
+        if is_card and record["member_name"] == message["sender"]:
             return {"execution_id": execution_id, "reply_id": record["reply_id"]}
     # Never guess the source invocation from an older unfinished reply.
     return {"execution_id": None, "reply_id": message["message_id"]}

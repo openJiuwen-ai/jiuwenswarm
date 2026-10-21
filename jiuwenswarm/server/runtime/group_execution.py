@@ -32,6 +32,7 @@ class GroupExecutions:
         if not isinstance(records, dict):
             raise GroupError("GROUP_CORRUPT", "invalid execution state")
         for record in records.values():
+            record.pop("result_source", None)
             if "definition_id" in record:
                 record.setdefault("id", record.pop("definition_id"))
             if "member_kind" in record:
@@ -41,7 +42,7 @@ class GroupExecutions:
             record.setdefault("reply_id", record["execution_id"])
             if record["execution_kind"] == "team" and not record.get("run_key") and not record.get("team_id"):
                 record["execution_kind"] = "agent"
-            record["presentation"] = "card"
+            record.setdefault("presentation", "card")
         return records
 
     def get(self, execution_id: str) -> dict:
@@ -128,6 +129,8 @@ class GroupExecutions:
     async def publish(self, record: dict, action: str) -> None:
         from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
 
+        if record.get("presentation", "card") != "card":
+            return
         group = read_group(self.group_id)
         if group is None or group["status"] == "deleting":
             return
@@ -148,7 +151,9 @@ class GroupExecutions:
             # The persisted snapshot is authoritative when delivery is unavailable.
             logger.warning("Group execution push failed group=%s", self.group_id, exc_info=True)
 
-    async def create(self, members: list[str], task: str, token: str) -> list[dict]:
+    async def create(
+        self, members: list[str], task: str, token: str, *, defer_card: bool = False,
+    ) -> list[dict]:
         if not isinstance(task, str) or not task.strip():
             raise GroupError("BAD_REQUEST", "task must be nonempty text")
         if len(task) > 20000:
@@ -196,7 +201,7 @@ class GroupExecutions:
                 record = {
                     "execution_id": key,
                     "reply_id": key,
-                    "presentation": "card",
+                    "presentation": "message" if defer_card else "card",
                     "owner": lifecycle.current_runtime_owner(),
                     "delivery_status": "pending",
                     "member_kind": roster[name]["kind"],
@@ -226,6 +231,27 @@ class GroupExecutions:
             self.save(records)
         for record in result:
             await self.publish(record, "created")
+        return result
+
+    async def begin_task(self, execution_id: str, member_name: str) -> dict:
+        """Publish a card only when its owner explicitly starts substantive work."""
+        async with group_lock(self.group_id):
+            records = self.read()
+            record = records.get(execution_id)
+            if record is None or record["member_name"] != member_name:
+                raise GroupError("NOT_FOUND", "execution not found")
+            if record["status"] in TERMINAL:
+                raise GroupError("CONFLICT", "execution has ended")
+            if record.get("phase") == "publishing":
+                raise GroupError("CONFLICT", "result submission has begun")
+            if record["presentation"] == "card":
+                return copy.deepcopy(record)
+            record.update(presentation="card", status="running", phase="executing")
+            record["revision"] += 1
+            record["updated_at"] = time.time()
+            self.save(records)
+            result = copy.deepcopy(record)
+        await self.publish(result, "created")
         return result
 
     async def update(self, execution_id: str, **changes) -> dict:
@@ -335,7 +361,10 @@ class GroupExecutions:
 
 
 def public_execution(record: dict) -> dict:
-    internal_fields = {"request_key", "request_members", "run_key", "owner"}
+    internal_fields = {
+        "request_key", "request_members", "run_key", "owner", "private_team_key",
+        "participants", "build_team_called", "previous_execution_id", "team_session_id", "background", "result_source",
+    }
     result = {}
     for key, value in record.items():
         if key not in internal_fields:
@@ -380,7 +409,7 @@ async def project_group_stream_event(session_id: str, event: dict) -> dict | Non
         if inner.get("type") == "team.member.execution_changed" and status in {"failed", "cancelled", "timed_out"}:
             store = GroupExecutions(session_id)
             active = store.active(inner.get("member_id"))
-            if active is not None:
+            if active is not None and not active.get("background"):
                 await store.update(active["execution_id"], status=status, phase=status)
         return event
     if event_type == "team.task":
