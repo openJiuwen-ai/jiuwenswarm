@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import stat
 from datetime import datetime, timedelta, timezone
 from itertools import count
+from types import SimpleNamespace
 
 import pytest
 from jiuwenswarm.server.jiuwenmate import service as service_module
@@ -125,6 +127,77 @@ def office(tmp_path):
     return store, root
 
 
+def test_workspace_store_ensures_shared_output_directory(tmp_path):
+    store = WorkspaceStore(tmp_path / "workspaces")
+
+    root = store.ensure(NS, AGENT)
+
+    assert (root / "output").is_dir()
+    assert store.ensure(NS, AGENT) == root
+
+
+def test_workspace_store_ensures_session_directory_idempotently(tmp_path):
+    store = WorkspaceStore(tmp_path / "workspaces")
+
+    first = store.ensure_session(NS, AGENT, "session-a")
+    second = store.ensure_session(NS, AGENT, "session-a")
+
+    assert first == second
+    assert first == store.path(NS, AGENT) / "sessions" / "session-a"
+    assert first.is_dir()
+    assert (store.path(NS, AGENT) / "output").is_dir()
+
+
+def test_workspace_store_rejects_reparse_point_in_session_path(tmp_path, monkeypatch):
+    store = WorkspaceStore(tmp_path / "workspaces")
+    root = store.ensure(NS, AGENT)
+    sessions = root / "sessions"
+    real_lstat = type(root).lstat
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+    def lstat(path):
+        if path == sessions:
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR | 0o700, st_file_attributes=reparse_flag
+            )
+        return real_lstat(path)
+
+    monkeypatch.setattr(type(root), "lstat", lstat)
+
+    with pytest.raises(PersistentAgentError):
+        store.ensure_session(NS, AGENT, "session-a")
+
+    assert not sessions.exists()
+
+
+def test_workspace_access_refuses_reparse_point_session_root(tmp_path, monkeypatch):
+    store = WorkspaceStore(tmp_path / "workspaces")
+    session_root = store.ensure_session(NS, AGENT, "session-1")
+    access = HostWorkspaceAccess(store, NS, AGENT)
+    real_lstat = type(session_root).lstat
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+    def lstat(path):
+        if path == session_root:
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR | 0o700, st_file_attributes=reparse_flag
+            )
+        return real_lstat(path)
+
+    monkeypatch.setattr(type(session_root), "lstat", lstat)
+
+    with pytest.raises(PersistentAgentError):
+        access.read_scope(execution())
+
+
+@pytest.mark.parametrize("session_id", ["../x", "a/b", "."])
+def test_workspace_store_ensures_reject_invalid_session_id(tmp_path, session_id):
+    store = WorkspaceStore(tmp_path / "workspaces")
+
+    with pytest.raises(PersistentAgentError):
+        store.ensure_session(NS, AGENT, session_id)
+
+
 async def test_a_web_request_reads_relative_paths_inside_the_office(office):
     store, root = office
     access = HostWorkspaceAccess(store, NS, AGENT)
@@ -135,6 +208,31 @@ async def test_a_web_request_reads_relative_paths_inside_the_office(office):
     assert resolved.path == (root / "资料" / "周报.md").resolve()
     assert resolved.source_ref == f"workspace://{NS}/{AGENT}/资料/周报.md"
     assert listed.path == root.resolve()
+
+
+async def test_agent_can_read_shared_output_across_sessions_but_not_another_session_draft(
+    office,
+):
+    store, root = office
+    output = root / "output"
+    output.mkdir(exist_ok=True)
+    (output / "交付.md").write_text("最终文件", encoding="utf-8")
+    other_session = root / "sessions" / "session-other"
+    other_session.mkdir(parents=True)
+    (other_session / "draft.md").write_text("私有草稿", encoding="utf-8")
+    access = HostWorkspaceAccess(store, NS, AGENT)
+    current = execution(
+        session_id="session-current", scope=frozenset({"chat", "workspace_read"})
+    )
+
+    shared = await resolve(access, current, "output/交付.md")
+    with pytest.raises(WorkspacePathError) as denied:
+        await resolve(access, current, "sessions/session-other/draft.md")
+    with pytest.raises(WorkspacePathError):
+        await resolve_write(access, current, "output/交付.md")
+
+    assert shared.path == (output / "交付.md").resolve()
+    assert denied.value.status == "forbidden"
 
 
 @pytest.mark.parametrize(
@@ -214,7 +312,14 @@ async def test_a_symlink_out_of_the_office_is_forbidden(tmp_path, office):
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.md").write_text("secret", encoding="utf-8")
-    os.symlink(outside, root / "link")
+    try:
+        os.symlink(outside, root / "link")
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip(
+                "creating symbolic links requires Windows Developer Mode or privilege"
+            )
+        raise
     access = HostWorkspaceAccess(store, NS, AGENT)
 
     with pytest.raises(WorkspacePathError) as denied:
@@ -247,6 +352,9 @@ def test_publishing_creates_the_office_and_deleting_removes_it(tmp_path):
 
     assert view.workspace_dir == str(office_dir) and office_dir.is_dir()
     assert WORKSPACE_PROMPT in spec.system_prompt
+    assert "sessions/<session_id>/" in spec.system_prompt
+    assert ".lark-slides/" in spec.system_prompt
+    assert "output/" in spec.system_prompt and "share_file" in spec.system_prompt
     assert set(spec.enabled_features) == {"construction", "workspace_read", "workspace_write", "window_management"}
     assert any(tool.type == "jiuwenmate.bash" for tool in spec.tools)
     assert spec.enable_sys_operation is True and spec.enable_read_image_multimodal is False

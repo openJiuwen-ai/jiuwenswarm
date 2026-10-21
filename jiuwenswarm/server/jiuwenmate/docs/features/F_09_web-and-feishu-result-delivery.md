@@ -6,13 +6,13 @@
 | --- | --- |
 | 建档日期 | 2026-10-15 |
 | 范围 | JiuwenSwarm 新版 JiuwenMate 的 Web 与飞书终态结果投递；定义 PA-08 文件交接边界，并实现飞书群内基于原生 @ 消息的 Agent 接力 |
-| 方案成熟度 | 文本投递实现阶段；Web / Gateway / AgentServer 自动化验证通过，文件与协作范围仍按 PA 特性门控 |
+| 方案成熟度 | 文本与文件宿主投递实现阶段；Web / Gateway / AgentServer 自动化验证通过，真实 Feishu 文件投递尚未验收 |
 | 计划条目 | [JM-09 结果投递服务](../designs/jiuwenmate-development-plan.md) |
 | 负责人 | 闫祉君（与开发计划一致） |
-| 状态 | 进行中（文本与群内接力宿主实现已完成；真实飞书与 Agent 联调、PA-08 文件未完成） |
+| 状态 | 进行中（文本、文件直读投递与群内接力宿主实现已完成；真实飞书与 Agent 联调待验收） |
 | 设计依据 | [JiuwenMate 服务端架构设计](../designs/jiuwenmate-architecture.md) 第 6.3、8.2、11.5 节；[JM-04 事件提交端口](F_04_commit-port.md)、[JM-08 飞书接入与群内分发](F_08_feishu-group-fanout.md)、[JM-10.02 Web 私聊](F_10_02_web-private-chat.md) |
 | 关联 feature | [F_04](F_04_commit-port.md) 提供已提交候选；[F_08](F_08_feishu-group-fanout.md) 提供飞书入站绑定；[F_10_02](F_10_02_web-private-chat.md) 提供 Web 查询与会话视图 |
-| 验证摘要 | JM-04 outbox、Web 文本状态查询、JM-08 Request 路由快照、AgentServer→Gateway→Feishu 文本发送 / ACK 路径已实现；群内消息接力的动态 roster、同群 Bot 校验和原生 @ 宿主替身验证已通过。未连真实应用；PA-08 文件及真实 PA-07 / Feishu 联合验收未完成。 |
+| 验证摘要 | JM-04 outbox、Web 文本状态查询、JM-08 Request 路由快照、AgentServer→Gateway→Feishu 文本 / 文件发送及 ACK 路径已实现；文件直接从 Agent `output/` 校验、读取，不复制到宿主 `outputs/`；群内接力自动化验证通过。真实 Feishu 文件投递与真实 Agent 联合验收未完成。 |
 | Refs | 需求来源：[JM-09 开发计划](../designs/jiuwenmate-development-plan.md)；Web 成功口径由负责人在本任务中确认；飞书 API 参考见第 3 节 |
 
 ## 2. 背景、目标与范围
@@ -32,20 +32,20 @@
 | Web 请求产生 final 输出 | 可从候选读文本 | final 与候选同事务持久化，并在 `request.get` / `chat.history` 返回 `available` 状态；WebSocket 仅尽力通知，不等待浏览器 ACK |
 | 飞书请求产生 final 文本输出 | 无 JM-09 专用出站路径 | 持久 outbox 依赖该 Request 的路由快照，按唯一 `app_id` 发送 Markdown 卡片并将 SDK `message_id` ACK 持久化；私聊新建消息不引用用户原消息，群聊仍回复来源消息 |
 | 发送超时、重投或进程重启 | 无法区分未发送、已发送但回执丢失 | 用持久幂等键及回执核对；无法确认时保持 `unknown`，不盲目换新键重发，也不重跑 Agent |
-| final 引用文件候选 | PA-08 尚未提供完整的文件交接适配 | 通过 PA-08 的受控 `file_ref` 解析文件；上传与可见消息分别记录，失败只恢复投递步骤 |
+| final 引用文件候选 | 按 PA-08 的 `file_ref`、大小和工作空间相对路径生成候选 | 校验 Agent `output/<文件名>` 与记录摘要一致；Web 直接链接原文件，Feishu 上传原文件并持久化 `file_key` 供重试复用 |
 | Agent 请求群内其他员工接力 | 终态文本没有目标员工的原生 @，不能触发对应员工的入站处理 | 从当前群的有效成员动态生成协作上下文；终态消息中的明确目标被解析为该群已授权员工，并转换成飞书原生 Bot @。接力完全经过公开群消息和目标员工自己的入站链路，不调用后台 Agent-to-Agent 接口 |
 
 ### 2.3 本次范围与非目标
 
-- 已实现范围：JM-04 final 引用文本候选后在同一事务建账；Web 文本结果与状态可查询；飞书文本结果经 Gateway 精确 app 路由发送并持久化 ACK；JM-08 在 Request 受理时持久化路由快照。未实现范围：PA-08 文件结果 / 下载与上传、真实 Feishu 联调及真实 Agent 端到端验收。
-- 文件结果边界仍受 PA-08 门控。群内接力复用 JM-09 的 final-only 结果投递，不新增后台 Agent 通信或副作用工具；PA-15 不提供群消息发送接口。
+- 已实现范围：JM-04 final 引用候选后建账；Web 文本状态可查询；飞书文本 / 文件结果经 Gateway 精确 app 路由发送并持久化 ACK；文件从 Agent `output/` 直接校验和读取，不复制到 JiuwenSwarm `outputs/`；JM-08 Request 路由快照及群内接力。真实 Feishu 文件投递及真实 Agent 端到端验收仍待执行。
+- 文件候选遵循 PA-08 的 `file_ref`、大小和路径契约。群内接力复用 JM-09 的 final-only 结果投递，不新增后台 Agent 通信或副作用工具；PA-15 不提供群消息发送接口。
 - 本次不包含：修改 agent-core 执行或输出候选语义；替代 PA-08 定义文件产物；替代 PA-15 实现工具意图；自动重跑 Agent；其它 IM 平台；改变个人版原有消息路由；把推理、工具日志或模型草稿作为群内终态回复。
 
 ## 3. 设计约束、假设与待决问题
 
 - **已确认约束与依赖：** JM-04 的候选输出已由 `HostCommitPort` / `ExecutionRepository` 持久化，final 缺少已保存候选时会被拒绝；JM-08 绑定按实际接收 `app_id` 匹配；JM-10.02 已提供 Web 请求查询与历史视图。Web 成功口径已确认：服务端持久化且可从会话历史查询即成功，WebSocket 不要求浏览器 ACK。
 - **已确认的 Agent Core 输出边界：** `output.proposed` 提供 `output_id`、`target_ref`、`share_mode`、文本或 `file_ref`；final 只引用 `output_refs`。JM-09 只消费 final 明确引用的候选，不从 `reply.delta`、reasoning、工具日志或未被 final 采用的候选推断外发内容。文件模式以 agent-core 的 PA-08 / S_02 为准，不在 JiuwenSwarm 重新解释。
-- **硬依赖：** JM-04 是投递账本创建的前置；飞书文本依赖 JM-08 绑定和 Request 路由快照；群内接力依赖当前群有效成员记录、目标员工的 Feishu 绑定和 JM-08 入站链路；文件子范围依赖 agent-core PA-08。
+- **硬依赖：** JM-04 是投递账本创建的前置；飞书文本 / 文件依赖 JM-08 绑定和 Request 路由快照；群内接力依赖当前群有效成员记录、目标员工的 Feishu 绑定和 JM-08 入站链路；文件处理依赖 agent-core PA-08 输出契约，已接入宿主校验和投递路径。
 - **关键假设：** 每条飞书 Request 可保留唯一的接收 `app_id` 与 `chat_id`；绑定变更后仍按请求受理时的快照发送，不临时改用另一个 Bot。若该 Bot 已停用或无法访问目标群，投递失败 / 待核实，不自动切换身份。
 - **待核实事项：** 当前 Feishu SDK / Open API 的消息幂等字段及适用边界、文件上传在回执丢失时的查询能力，需在 JM-09 实现和真实联调时按实际版本核验。飞书官方接口参考：[发送消息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/create)、[回复消息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/reply)、[上传文件](https://open.feishu.cn/document/server-docs/im-v1/file/create)、[获取会话历史消息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)。不能因文档链接存在就假定当前 SDK 已提供对应字段或权限。
 
@@ -53,7 +53,7 @@
 
 ### 4.1 方案概览
 
-采用“final 事务写入投递账本 + AgentServer 可恢复投递 + Gateway 执行平台副作用 + 回执回写”的路径。JM-04 保存 final 时，在同一 SQLite 事务中为其引用的文本候选建立投递记录：Web 记为 `available`，飞书记为 `pending`。群接力只丰富该终态文本的目标 Bot mention，不另建后台 Agent 通信；Gateway 通过带 `delivery_id` 的 E2A server-push 发送，并以 E2A ACK 返回结果。文件分阶段投递与文件结果查询尚未实现。
+采用“final 事务写入投递账本 + AgentServer 可恢复投递 + Gateway 执行平台副作用 + 回执回写”的路径。JM-04 保存 final 时，为被引用的候选建立投递记录：Web 结果可查询，飞书结果进入 `pending`。文本和文件都通过带 `delivery_id` 的 E2A server-push 交给 Gateway，Gateway 发回平台回执；群接力只丰富终态文本的目标 Bot mention，不另建后台 Agent 通信。文件从共享工作空间 `output/` 校验并直接读取，不建立第二份宿主副本。
 
 ```mermaid
 flowchart LR
@@ -108,14 +108,14 @@ flowchart LR
 
 - 选择与依据：复用 Gateway 的 FeishuChannel 与现有 `app_id` 配置；AgentServer 不直接持有飞书 app secret，也不从 Agent Core 读取 SDK 客户端。
 - 代价与成立条件：普通 `robot_messages` 仍可传输，但不能作为 JM-09 完成依据；真实平台 UUID 去重语义仍需验证。
-- 实现体现：JM-09 文本专用发送适配返回实际 `message_id` 并经 E2A ACK 回传；文件 `file_key` 尚未实现；个人版通用 `send()` 的返回与重试语义保持原样。
+- 实现体现：JM-09 专用发送适配返回实际 `message_id`，文件发送还会回传 `file_key`；个人版通用 `send()` 的返回与重试语义保持原样。
 - 相关候选：R-05（在 AgentServer 直接调用飞书 Open API）会重复维护凭据与渠道连接，拒绝。
 
-#### D-06 文件先按 PA-08 引用解析，再分阶段上传与发送
+#### D-06 文件按 PA-08 引用校验后直接使用 Agent 工作空间文件
 
-- 选择与依据：`file_ref` 是受控引用，不是本地路径。仅使用 PA-08 / 宿主批准的 resolver 解析；飞书“上传成功”和“发出可见消息”是两个不同事实。
-- 代价与成立条件：PA-08 的文件输出和分享方式尚未在 core 实现；JM-09 文件子范围在该契约可用前不能验收。
-- 实现体现：账本保留 `upload_status`、`file_key`、`send_status`、`message_id`；失败只重试可确认的阶段。
+- 选择与依据：`file_ref` 是内容摘要，不是本地路径。AgentServer 依据 PA-08 授权解析并校验 `<Agent 工作空间>/output/<文件名>`；Web 与 Gateway 使用同一共享工作空间原文件，不另存宿主副本；飞书发送成功后保存平台 `file_key`。
+- 代价与成立条件：Gateway 必须能访问与 AgentServer 相同的数据根 / workspace；分机部署没有共享挂载时，当前直读方案不可用，需另行实现受控文件传输。源文件被覆盖时不作为历史不可变归档。
+- 实现体现：`result_deliveries.file_key` 持久化上传回执并可在后续发送尝试复用；当前没有单独的 `upload_status` / `send_status` 阶段表，真实平台阶段恢复仍待联调验证。
 - 相关候选：R-06（把 `file_ref` 当文件系统路径或只记录上传成功）越过授权边界或把不可见资源误报为已交付，拒绝。
 
 ### 4.3 替代方案与排除理由
@@ -153,17 +153,17 @@ flowchart LR
 
 ### 5.2 关键类与函数设计
 
-以下区分已实现的文本能力与未实现的门控能力。
+以下记录当前宿主实现状态；真实平台联调仍未完成。
 
 | 名称 / 所属模块 | 变更 | 职责与调用边界 |
 | --- | --- | --- |
 | `RequestRouteSnapshot` / `execution_models.py` | 已新增，宿主内部模型 | 保存 channel、app、目标会话、来源消息和来源回复关系；旧 `RequestRecord` 缺字段时兼容读取；不扩展 agent-core 公共协议 |
-| `ResultDeliveryService` / `delivery_service.py` | 已新增，内部服务 | 扫描 Feishu 文本 pending、等待 Gateway 回执、分类 unknown；不重跑 Agent、不自动重发 unknown |
-| `ExecutionRepository` | 已扩展 | final + 文本 outbox 同事务写入；Web `available` 与 Feishu `pending` 状态可查询 / 更新 |
+| `ResultDeliveryService` / `delivery_service.py` | 已新增，内部服务 | 扫描 Feishu pending、等待 Gateway 回执、分类 unknown；不重跑 Agent、不自动重发 unknown |
+| `ExecutionRepository` | 已扩展 | final + outbox 同事务写入；生成 Agent `output/` 逻辑 key，并持久化 Web / Feishu 状态及已上传 `file_key` |
 | JM-08 E2A / `AgentWebSocketServer` | 已新增出站 ACK 入口 | 用 server-push 下发 delivery，接收 `jiuwenmate.delivery.ack` 并先持久化 ACK，再唤醒等待者 |
 | Gateway `MessageHandler` / `ChannelManager` | 已新增文本路径 | 不进入 `robot_messages`；严格按 `app_id` 解析唯一 FeishuChannel，并返回关联回执 |
-| `FeishuChannel.send_persistent_result` | 已新增 JM-09 专用路径 | 使用稳定 UUID 发文本 / 回复并返回消息 ID；通用个人版 `send()` 行为不变 |
-| 文件 resolver / 群消息接力 | 文件未实现；群接力宿主实现已完成 | 文件等待 PA-08 resolver；接力只使用 final 文本及 JM-09 原生群 @，不建立后台 Agent 通信或 PA-15 工具 |
+| `FeishuChannel.send_persistent_result` | 已新增 JM-09 专用路径 | 使用稳定 UUID 发文本 / 回复或已上传的文件消息，返回消息 ID 与 `file_key`；通用个人版 `send()` 行为不变 |
+| `WorkspaceOutputFiles` / 群消息接力 | 文件直读宿主实现与群接力宿主实现已完成 | 按 PA-08 核对授权、`output/<文件名>`、摘要和大小；Gateway 以逻辑 key 解析同一工作空间文件；群接力只使用 final 文本和 JM-09 原生群 @ |
 
 当前文本投递入口（内部实现）：
 
@@ -191,14 +191,14 @@ await ResultDeliveryService.apply_ack(ack)
 
 快照只存在于 JiuwenSwarm 的 `RequestRecord` / JM 数据库，不要求 agent-core `RequestInput` 新增飞书配置字段。`receiving_app_id` 必须在 JM-08 校验绑定时确定，不可从消息正文、mention 列表或执行结束时的当前配置推导。
 
-#### Gateway 出站命令与回执（当前文本契约）
+#### Gateway 出站命令与回执
 
 | 消息 | 调用方 / 消费者 | 输入与成功结果 | 失败语义 |
 | --- | --- | --- | --- |
-| server-push `event_type=jiuwenmate.delivery.send` | AgentServer → Gateway | `delivery_id`、`stage="send"`、快照 `app_id` / `chat_id` / `source_message_id`、稳定 `idempotency_key`、文本 | 无 Gateway 连接时保持 `pending`；等待 ACK 超时为 `unknown`；不经 `_robot_messages` |
-| `ReqMethod.JIUWENMATE_DELIVERY_ACK` (`jiuwenmate.delivery.ack`) | Gateway → AgentServer | `delivery_id`、`stage="send"`、`outcome`、可选 `external_message_id` / `error_code` | ACK 允许 `delivered` / `failed` / `unknown` / `pending`；AgentServer 先持久化再唤醒等待者；重复的相同 pending ACK 幂等；迟到的确定 ACK 可把 unknown 更新为确定结果 |
+| server-push `event_type=jiuwenmate.delivery.send` | AgentServer → Gateway | `delivery_id`、`stage="send"`、快照路由、稳定 `idempotency_key`、文本，或文件逻辑 key / 名称 / 大小 / `file_ref` / 已有 `file_key` | 无 Gateway 连接时保持 `pending`；等待 ACK 超时为 `unknown`；不传绝对文件路径，不经 `_robot_messages` |
+| `ReqMethod.JIUWENMATE_DELIVERY_ACK` (`jiuwenmate.delivery.ack`) | Gateway → AgentServer | `delivery_id`、`stage="send"`、`outcome`、可选 `external_message_id` / `file_key` / `error_code` | ACK 允许 `delivered` / `failed` / `unknown` / `pending`；AgentServer 先持久化回执和已上传 `file_key` 再结束等待；迟到的确定 ACK 可把 unknown 更新为确定结果 |
 
-字段按最小必要原则传递：不传 app secret、不传 Agent 内部日志、不把本地文件路径暴露给 Gateway。当前文本回执包含 Feishu `message_id`；文件 `file_key` 与后续可见消息 ACK 尚未实现。当前 Feishu SDK 请求携带稳定 UUID，但真实平台的去重行为仍须按目标租户与 API 验证。
+字段按最小必要原则传递：不传 app secret、不传 Agent 内部日志、不传绝对本机路径；文件使用限定在 `output/<文件名>` 的逻辑 key。回执包含 Feishu `message_id`，文件上传后还包含 `file_key`。Feishu SDK 请求携带稳定 UUID，但真实平台的去重行为仍须按目标租户与 API 验证。
 
 ### 5.4 数据模型与事实归属
 
@@ -209,9 +209,9 @@ JM-04 同一 `agents.sqlite3` 已新增 `result_deliveries` 表，不复制候�
 | 来源路由快照 | `(namespace_id, request_id)` | Request 持久记录 | JM-08 校验通过、Request 受理时一次写入；不可在投递时改写 |
 | 投递记录 | `(namespace_id, delivery_id)`；唯一键 `(namespace_id, request_id, output_id, channel, target_id)` | `result_deliveries` | final 事件与候选引用在同一 SQLite 事务内创建；状态由 DeliveryService 以事务 / CAS 更新 |
 | 候选正文 / 文件引用 | `(namespace_id, output_id)` | JM-04 `candidate_outputs` / core output event | JM-09 只读引用；投递记录不复制正文或本地文件路径 |
-| 外部回执 | `(namespace_id, delivery_id)` | `result_deliveries.external_message_id` / `error_code` | 收到 Gateway ACK 后保存；当前仅实现文本 `message_id`，文件 `file_key` 待 PA-08 |
+| 外部回执 | `(namespace_id, delivery_id)` | `result_deliveries.external_message_id` / `file_key` / `error_code` | 收到 Gateway ACK 后保存；重试复用已有 `file_key`，不重复上传 |
 
-当前 `result_deliveries` 包含 `delivery_id`、`request_id`、`execution_id`、`output_id`、`channel`、`target_id`、`status`、`idempotency_key`、`attempt_count`、`external_message_id`、`error_code` 和时间戳。上传阶段、`file_key`、文件正文与文件解析路径未实现；凭据与未脱敏平台响应不落库。
+当前 `result_deliveries` 包含 `delivery_id`、`request_id`、`execution_id`、`output_id`、`channel`、`target_id`、`status`、`idempotency_key`、`attempt_count`、`external_message_id`、`file_key`、`error_code` 和时间戳。数据库不保存文件正文或物理路径；凭据与未脱敏平台响应不落库。上传与文件消息发送在一次 Gateway 调用中完成，若已有 `file_key` 则只复用该 key，不重新上传。
 
 ### 5.5 状态机与生命周期
 
@@ -226,7 +226,7 @@ JM-04 同一 `agents.sqlite3` 已新增 `result_deliveries` 表，不复制候�
 | `unknown` | 迟到 ACK 确定平台结果 | `delivered` / `failed` | 使用原 delivery 更新回执 | 未核实前禁止自动重发 |
 | Web 候选已由历史 API 返回 | 查询投影 | `available` | 查询从 JM-04 持久结果读取 | WebSocket 丢失不改变状态 |
 
-`failed` 表示确定未完成；`unknown` 表示可能已完成但证据不足。Gateway 确认目标 app 未连接、尚未调用 Feishu API 时保留 `pending`，由后续周期扫描重试；一般超时或异常仍是 `unknown`，不能自动重试。文件状态机尚未实现。
+`failed` 表示确定未完成；`unknown` 表示可能已完成但证据不足。Gateway 确认目标 app 未连接、尚未调用 Feishu API 时保留 `pending`，由后续周期扫描重试；一般超时或异常仍是 `unknown`，不能自动重试。文件发送复用同一投递状态；上传成功返回的 `file_key` 先持久化，后续可见文件消息重试复用它，不再读取或上传源文件。
 
 ### 5.6 正常执行流程
 
@@ -290,6 +290,14 @@ AgentServer 启动后扫描 `pending`、过期 `sending` 与 `unknown`：`pendin
 | 文件类 `share_mode` | 查询接口返回受控文件描述；下载由带认证的服务端路由解析 `file_ref`，不返回物理路径 | PA-08 resolver → Gateway 上传 → 可见文件消息（按 PA-08 share mode） | 上传与所需可见消息阶段分别成功并落库 |
 | 未知 / 尚未支持的模式 | 不把引用伪装成可下载链接 | 不发送原始 `file_ref` | 记录不支持 / blocked，等待 PA-08 契约，不降级为裸路径或文本猜测 |
 
+Persistent Agent 工作空间的最终文件源路径遵循 F_14/JM-14：Agent 应先把需要交付的文件复制或移动到共享目录 `output/<文件名>`，再通过现有 `share_file` 以工作空间相对路径引用它。工作空间 `output/` 是 `<data_dir>/workspaces/<namespace_id>/<agent_id>/output/`，Agent 可跨 Session 读取；例如默认数据目录下是 `~/.jiuwenswarm/jiuwenmate/workspaces/local/<agent_id>/output/`。
+
+本方案最初设计由宿主将文件复制到内部 `outputs/`；该复制设计已由 **2026-10-21 JM-09 实施调整**替代。当前不再创建或读取宿主 `outputs/`：AgentServer 在接收文件候选和终态时核验来源文件的大小与 SHA-256；Web 生成文件视图及 Gateway 投递时，使用 `namespace_id/agent_id/output/<文件名>` 这一逻辑 key，在同一个 Agent 工作空间中重新解析并核验原文件。绝对本机路径不进入 Gateway 消息。Web 下载 URL 指向该原文件，不创建副本；Feishu 上传成功后保留平台 `file_key`，后续重试可直接复用，不要求重新读取源文件。已有 `outputs/` 目录和文件不会被本次代码删除，但新投递流程不再依赖它们。
+
+直接使用共享源文件意味着它不是不可变归档：如果 Agent 后续覆盖或删除同名文件，重新生成 Web 文件视图或执行尚未上传的 Feishu 投递时会因摘要或大小不匹配而失败关闭；已经上传并记录的 Feishu `file_key` 仍可用于后续发送。已签发的 Web 下载 URL 当前携带的是受签名保护的文件路径，不携带内容摘要；如果文件在签发后被覆盖，旧 URL 可能读到新内容。需要保留历史文件时，应由 Agent 以不同文件名保存到 `output/`；Web URL 的下载时内容校验留作后续增强，不恢复 `outputs/` 副本。
+
+这个目录约定本身不等于 PA-08 `file_ref` 解析、Web 下载、飞书上传或文件消息投递已完成；这些仍按上表的授权解析和分阶段投递契约验收。
+
 如果 JM-09 实施时尚无按 Request 授权解析 `file_ref` 的服务端接口，文件 Web 下载与 Feishu 文件发送应保持关闭；不能为了“闭环”绕过 PA-08 或 PA-14 的权限边界。
 
 #### JM-08 已完成的 JM-09 前置适配
@@ -328,12 +336,12 @@ AgentServer 启动后扫描 `pending`、过期 `sending` 与 `unknown`：`pendin
 | I-02 | `agent_manager.py`、新增 `delivery_service.py` | `AgentManager` 在 final 事务成功后通知投递服务；服务启动时恢复状态并扫描 pending，执行 Feishu 文本投递状态机 | I-01；服务单测 / 替身 |
 | I-03 | `agent_manager.py`、`web_adapter.py` | RequestView / history 暴露可查询结果和投递状态；文件输出仅给受控描述 / 下载引用 | JM-10.02；Web 查询与断线恢复测试 |
 | I-04（JM-08 适配） | `feishu_group_fanout.py`、`execution_models.py`、`execution_repository.py`、`agent_ws_server.py` | 已将入站 `app_id`、`chat_id`、来源消息 ID 与 `reply_to` 持久化；新增 JM-09 E2A 文本发送和 ACK，ACK 入库后才唤醒等待者 | 已实现；E2A / Request 往返及 ACK 持久化测试 |
-| I-05（Gateway 适配） | `gateway/message_handler/message_handler.py`、`gateway/channel_manager/channel_manager.py`、`gateway/channel_manager/im_platforms/feishu/feishu_connect.py` | 已精确按 app 路由并新增 JM-09 文本发送 / 回复适配，返回平台 `message_id`；接力目标以受限 ID 列表映射为原生 Bot @，不改变个人版通用 `send()` | 已实现；SDK 替身测试通过；真实 Feishu 待联调 |
-| I-06（PA-08 门控） | agent-core PA-08 输出契约接入；JiuwenSwarm file resolver 与 Web 下载路由 | 按 PA-08 已定稿契约受控解析 `file_ref`，按 `share_mode` 完成 Web 下载与 Feishu 上传 / 可见发送；不在 JM-09 重做 core 文件能力 | PA-08 合同、输出与授权解析已接通；否则文件子范围阻塞 |
+| I-05（Gateway 适配） | `gateway/message_handler/message_handler.py`、`gateway/channel_manager/channel_manager.py`、`gateway/channel_manager/im_platforms/feishu/feishu_connect.py` | 已精确按 app 路由并新增 JM-09 文本 / 文件发送适配；不改变个人版通用 `send()` | 宿主 SDK 替身测试通过；真实 Feishu 待联调 |
+| I-06（PA-08 文件接入） | `output_files.py`、`execution_repository.py`、`agent_manager.py`、Gateway resolver 与 Feishu 上传入口 | 接收候选和终态时核验 `output/<文件名>`、大小与 SHA-256；Web 视图签发原文件下载链接；Gateway 按逻辑 key 重新解析并核验后上传；不复制到宿主 `outputs/` | PA-08 契约已接通；定向文件测试通过；真实 Web 下载和 Feishu 文件发送未验收 |
 | I-07（群接力） | `agent_manager.py`、`execution_driver.py`、`group_chat_repository.py`、`delivery_service.py`、Gateway Feishu 文本适配 | 执行时生成当前群动态名单；final 明确交接标记经当前成员和 app 绑定复核后转成目标 Bot 原生 @，仍由目标员工自己的入站处理 | 宿主代码与 SDK 替身验证通过；真实群及真实 Agent 联调未执行 |
 | I-08 | `tests/unit_tests/server/jiuwenmate/test_commit_port.py`、`test_web_private_chat.py`、`test_feishu_group_production_wiring.py`、`tests/unit_tests/gateway/test_persistent_group_fanout.py` | 覆盖动态群名单范围、token 校验、群原生 @、私聊隔离、JM-09 ACK；个人版与较宽回归仍需执行 | 自动化结果按实际执行记录；真实 Feishu 与真实 Agent 联合验收待完成 |
 
-实施进度：I-01～I-05 文本投递和 I-07 群接力的宿主实现已完成，自动化验证通过。真实 Web / Feishu Agent 端到端验收仍需 S1 / S2a 对应的 core 执行链联合验证；飞书还需真实应用 / 群。文件在 PA-08 契约与受控 resolver 可用后实施 I-06。新能力只装配到新版 JM 服务，不全局改个人版通道语义。
+实施进度：I-01～I-07 的宿主实现已完成，自动化验证通过；文件投递直接使用 Agent 工作空间 `output/`，新路径不依赖宿主 `outputs/` 副本。真实 Web 下载、Feishu 文件上传与 Agent 端到端验收仍待执行；当前直接读取 Gateway 侧同一数据根下的 workspace，分机部署若无共享挂载需另建受控文件传输接口。新能力只装配到新版 JM 服务，不改变个人版通用发送 / 附件语义。
 
 兼容核对结论：新增 JM 表和 Request 路由元数据只服务新版 JiuwenMate；现有请求记录须支持缺少新路由字段的读取。旧记录缺少接收 `app_id` 时不补猜测、不自动投递飞书。新增 JM-09 专用 Feishu 发送适配，避免修改个人版通用 `send()` 的返回类型、重试和消息过滤语义。
 
@@ -342,7 +350,7 @@ AgentServer 启动后扫描 `pending`、过期 `sending` 与 `unknown`：`pendin
 - spec：投递状态和 E2A 消息为草案；评审并实现稳定后再建立 / 更新对应 spec，不能把本文草案当正式跨仓协议。
 - 架构 / 模块约定：本次未修改架构文档；durable outbox 由 AgentServer / JM-04 持有、Gateway 返回平台 ACK 的实现边界及后续文档同步，仍按架构设计确认流程处理。
 - 开发计划：JM-09 负责人、实现状态、验证证据与剩余前置已同步到计划条目；组件通过不等于 Web / Feishu 全范围交付完成。
-- 其他入口：JM-08 的 Request 路由快照已同步到 F_08；PA-08 文件模式定稿后再补充文件 resolver 及 Web / Feishu 映射。
+- 其他入口：JM-08 的 Request 路由快照已同步到 F_08；PA-08 文件契约及 JM-09 直读 `output/` 的实现边界已记录于本文 §5.10 和 §8.2。
 
 ## 7. 兼容与迁移
 
@@ -395,11 +403,13 @@ uv run pytest `
   -k 'not test_public_views_never_carry_model_credentials'
 ```
 
+2026-10-21 / 工作空间直接投递（替代上方旧验证结论）：`uv run --no-sync pytest --no-cov -q tests/unit_tests/server/jiuwenmate/test_output_files.py`，14 passed。覆盖候选校验、直接解析 Agent `output/`、禁止路径越界、内容变化后拒绝、Web 下载令牌指向原文件、Gateway 直读与 Feishu 上传 key 重试；测试确认不创建第二份 `outputs/`。未覆盖真实 Web 下载请求、真实 Feishu 上传 / 发消息、分机部署和并发覆盖场景。
+
 ### 8.3 验证结论
 
-- 已证明范围：JM-04 final + 文本 outbox 持久提交、Web 按 Request 查询结果及状态、JM-08 Feishu 入站路由快照、AgentServer→Gateway→Feishu 专用文本发送 / ACK 均有自动化覆盖；个人版 Gateway 消息与附件路径、JM-03/07 回归在最新 249 项通过中。
-- 未覆盖或未通过的承诺：未连接真实 Feishu 应用 / 群；未由真实 Agent Core 执行产生 final 并完成端到端接力验收；PA-08 文件投递尚无 resolver。群接力宿主自动化验证不等同真实平台送达或 S2a 联合验收。
-- 可支持的交付判断：JM-09 文本投递和群接力的宿主实现与自动化验证已具备；JM-09 整体仍因真实 Feishu / Agent 联调及 PA-08 文件未完成而进行中。
+- 已证明范围：JM-04 final + outbox 持久提交、Web 结果查询、JM-08 Feishu 入站路由快照、AgentServer→Gateway→Feishu 文本 / 文件适配和 ACK、从 Agent `output/` 直接解析文件均有自动化覆盖；个人版消息 / 附件定向回归通过。
+- 未覆盖或未通过的承诺：未连接真实 Feishu 应用 / 群；未完成真实 Agent Core 到 Web / Feishu 的端到端交付；Web 下载签发后的内容完整性校验、分机无共享文件系统场景和并发覆盖尚未覆盖。
+- 可支持的交付判断：JM-09 文本、文件直读投递和群接力的宿主代码与自动化验证已具备；JM-09 整体仍因真实 Feishu / Agent 联调及若干文件恢复边界未验收而进行中。
 
 ## 9. 风险与已知遗留
 

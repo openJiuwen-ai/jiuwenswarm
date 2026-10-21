@@ -1,4 +1,4 @@
-"""JM-09 / PA-08: retained file candidates, paused handoff and file deliveries."""
+"""JM-09 / PA-08: shared workspace outputs, paused handoff and file deliveries."""
 
 from __future__ import annotations
 
@@ -6,11 +6,14 @@ import hashlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs, urlparse
 
 import pytest
+from jiuwenswarm.common.file_download_token import WebFileDownloadManager, validate_file_download_token
 from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
 from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
 from jiuwenswarm.server.jiuwenmate.execution_models import (
     AccessSnapshot,
@@ -21,10 +24,8 @@ from jiuwenswarm.server.jiuwenmate.execution_models import (
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.output_files import (
-    OUTPUTS_DIR,
-    OutputFileStore,
-    output_file_key,
-    resolve_output_file,
+    WorkspaceOutputFiles,
+    workspace_output_key,
 )
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WorkspaceStore
@@ -85,13 +86,16 @@ def _start(repository, state):
     return build_execution_context(state.record, execution, capability_snapshot=SNAPSHOT.enabled_features)
 
 
-def _file_event(execution, seq, *, output_id="out-file", file_ref=FILE_REF, size=len(CONTENT), caption="本周周报"):
+def _file_event(
+    execution, seq, *, output_id="out-file", file_ref=FILE_REF, size=len(CONTENT),
+    caption="本周周报", file_path="output/周报.md",
+):
     payload = {
         "output_id": output_id,
         "target_ref": "reply-1",
         "share_mode": "attachment",
         "file_ref": file_ref,
-        "file_path": "reports/周报.md",
+        "file_path": file_path,
         "file_size": size,
     }
     if caption is not None:
@@ -131,9 +135,8 @@ async def host(tmp_path):
     repository = ExecutionRepository(tmp_path / "agents.sqlite3")
     workspaces = WorkspaceStore(tmp_path / "workspaces")
     office = workspaces.ensure(NS, AGENT)
-    (office / "reports").mkdir()
-    (office / "reports" / "周报.md").write_bytes(CONTENT)
-    files = OutputFileStore(tmp_path / OUTPUTS_DIR, workspaces)
+    (office / "output" / "周报.md").write_bytes(CONTENT)
+    files = WorkspaceOutputFiles(workspaces)
     queue = CommitQueue(repository)
     await queue.start()
     yield SimpleNamespace(
@@ -142,31 +145,65 @@ async def host(tmp_path):
         port=HostCommitPort(repository, queue, files=files),
         files=files,
         office=office,
+        data_dir=tmp_path,
     )
     await queue.aclose()
 
 
-async def test_final_retains_a_verified_copy_and_makes_the_file_available_on_web(host):
+async def test_final_uses_the_verified_workspace_file_and_makes_it_available_on_web(host):
     state = _accept(host.repository, "web:m-1")
     execution = _start(host.repository, state)
 
     await host.port.record(execution, _file_event(execution, 1))
     await host.port.record(execution, _final(execution, 2))
 
-    copy = host.files.root / output_file_key(NS, FILE_REF, "reports/周报.md")
-    assert copy.read_bytes() == CONTENT
-    (host.office / "reports" / "周报.md").write_bytes(b"edited later")
-    assert copy.read_bytes() == CONTENT
+    source = host.office / "output" / "周报.md"
+    assert source.read_bytes() == CONTENT
+    assert host.files.resolve(NS, AGENT, "output/周报.md", FILE_REF, len(CONTENT)) == source
+    assert not (host.data_dir / "outputs").exists()
+    source.write_bytes(b"edited later")
+    assert host.files.resolve(NS, AGENT, "output/周报.md", FILE_REF, len(CONTENT)) is None
     deliveries = host.repository.result_deliveries(NS, state.record.request_id)
     assert [(item["output_id"], item["channel"], item["status"]) for item in deliveries] == [
         ("out-file", "web", "available")
     ]
 
 
+async def test_web_file_view_signs_the_agent_output_without_copying_it(host, monkeypatch):
+    state = _accept(host.repository, "web:web-file-view")
+    execution = _start(host.repository, state)
+    output = _file_event(execution, 1).payload
+    manager = object.__new__(AgentManager)
+    manager._files = host.files
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", WebFileDownloadManager(secret="s" * 32))
+
+    view = manager._file_view(
+        SimpleNamespace(namespace_id=NS, agent_id=AGENT, session_id=state.record.session_id), output
+    )
+
+    token = parse_qs(urlparse(view["download_url"]).query)["token"][0]
+    assert validate_file_download_token(token)["path"] == str(host.office / "output" / "周报.md")
+    assert not (host.data_dir / "outputs").exists()
+
+
+async def test_shared_workspace_output_is_not_copied_into_a_second_persistent_directory(host):
+    (host.office / "output" / "最终报告.md").write_bytes(CONTENT)
+    state = _accept(host.repository, "web:output-1")
+    execution = _start(host.repository, state)
+
+    await host.port.record(execution, _file_event(execution, 1, file_path="output/最终报告.md"))
+    await host.port.record(execution, _final(execution, 2))
+
+    assert host.files.resolve(NS, AGENT, "output/最终报告.md", FILE_REF, len(CONTENT)) == (
+        host.office / "output" / "最终报告.md"
+    )
+    assert not (host.data_dir / "outputs").exists()
+
+
 async def test_file_changed_after_handoff_keeps_the_ending_unrecorded(host):
     state = _accept(host.repository, "web:m-1")
     execution = _start(host.repository, state)
-    (host.office / "reports" / "周报.md").write_bytes(b"changed before saving")
+    (host.office / "output" / "周报.md").write_bytes(b"changed before saving")
 
     await host.port.record(execution, _file_event(execution, 1))
     await host.queue.drain()
@@ -190,6 +227,20 @@ async def test_file_outside_the_read_scope_is_not_saved(host):
     assert caught.value.code == "OUTPUT_FILE_FORBIDDEN"
 
 
+async def test_file_candidate_outside_shared_output_is_not_handed_off(host):
+    state = _accept(host.repository, "web:non-output-file")
+    execution = _start(host.repository, state)
+
+    await host.port.record(execution, _file_event(execution, 1, file_path="reports/周报.md"))
+    await host.queue.drain()
+
+    with pytest.raises(PersistentAgentError) as caught:
+        await host.port.record(execution, _final(execution, 2))
+
+    assert caught.value.code == "OUTPUT_FILE_INVALID"
+    assert await host.port.read_execution_log(execution, execution.execution_id) == ()
+
+
 async def test_a_later_execution_may_propose_the_same_output_only_with_the_same_content(host):
     state = _accept(host.repository, "web:m-1")
     first = _start(host.repository, state)
@@ -210,7 +261,7 @@ async def test_a_later_execution_may_propose_the_same_output_only_with_the_same_
     assert caught.value.code == "CONFLICT"
 
 
-async def test_paused_hands_off_files_and_feishu_claims_the_retained_copy(host):
+async def test_paused_hands_off_files_and_feishu_claims_the_shared_workspace_output(host):
     route = RequestRouteSnapshot(channel="feishu", target_id="oc_group", app_id="cli_bound", source_message_id="om_1")
     state = _accept(host.repository, "feishu:om_1", route=route)
     execution = _start(host.repository, state)
@@ -225,7 +276,10 @@ async def test_paused_hands_off_files_and_feishu_claims_the_retained_copy(host):
     assert file["size"] == len(CONTENT)
     assert file["file_key"] is None
     assert jobs[0]["text"] == "本周周报"
-    assert resolve_output_file(host.files.root, file["key"]).read_bytes() == CONTENT
+    assert file["key"] == f"{NS}/{AGENT}/output/周报.md"
+    assert host.files.resolve_key(file["key"], file["file_ref"], file["size"]) == (
+        host.office / "output" / "周报.md"
+    )
 
     row = host.repository.update_result_delivery(
         NS, jobs[0]["delivery_id"], outcome="failed", external_message_id=None, error_code="FEISHU_1", now=NOW,
@@ -252,35 +306,59 @@ async def test_delivery_service_wakes_on_paused_and_keeps_the_uploaded_file_key(
     assert host.repository.claim_pending_result_deliveries(NS, now=NOW)[0]["file"]["file_key"] == "fk_up"
 
 
-def test_resolve_output_file_rejects_malformed_keys(tmp_path):
-    assert resolve_output_file(tmp_path, "../etc/passwd") is None
-    assert resolve_output_file(tmp_path, f"{NS}/{'0' * 64}/..") is None
-    assert resolve_output_file(tmp_path, f"{NS}/{'0' * 64}/missing.md") is None
+def test_workspace_output_key_rejects_paths_outside_output():
+    with pytest.raises(PersistentAgentError) as caught:
+        workspace_output_key(NS, AGENT, "reports/周报.md", FILE_REF, len(CONTENT))
+    assert caught.value.code == "OUTPUT_FILE_INVALID"
 
 
-async def test_channel_manager_sends_the_retained_copy_with_its_upload_key(tmp_path, monkeypatch):
-    key = output_file_key(NS, FILE_REF, "reports/周报.md")
-    copy = tmp_path / OUTPUTS_DIR / key
-    copy.parent.mkdir(parents=True)
-    copy.write_bytes(CONTENT)
+async def test_channel_manager_reads_the_agent_output_directly_and_rejects_changed_content(tmp_path, monkeypatch):
+    source = tmp_path / "workspaces" / NS / AGENT / "output" / "周报.md"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(CONTENT)
     monkeypatch.setattr("jiuwenswarm.server.jiuwenmate.service.default_data_dir", lambda: tmp_path)
     manager = ChannelManager(object.__new__(MessageHandler))
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound"), MagicMock())
     channel.send_persistent_result = AsyncMock(return_value={"outcome": "delivered", "external_message_id": "om_f"})
     manager.register_channel(channel)
-    payload = {"app_id": "cli_bound", "chat_id": "oc_group", "idempotency_key": "k", "text": None}
+    payload = {
+        "app_id": "cli_bound",
+        "namespace_id": NS,
+        "agent_id": AGENT,
+        "chat_id": "oc_group",
+        "idempotency_key": "k",
+        "text": None,
+        "file": {
+            "key": f"{NS}/{AGENT}/output/周报.md",
+            "name": "周报.md",
+            "size": len(CONTENT),
+            "file_ref": FILE_REF,
+            "file_key": None,
+        },
+    }
 
-    result = await manager.deliver_persistent_result(
-        {**payload, "file": {"key": key, "size": len(CONTENT), "file_key": "fk_1"}}
-    )
+    result = await manager.deliver_persistent_result(payload)
+
+    assert result["outcome"] == "delivered"
+    assert channel.send_persistent_result.await_args.kwargs["file_path"] == str(source)
+    assert channel.send_persistent_result.await_args.kwargs["file_key"] is None
+    assert not (tmp_path / "outputs").exists()
+
+    already_uploaded = {
+        **payload,
+        "file": {**payload["file"], "file_key": "fk_existing"},
+    }
+    result = await manager.deliver_persistent_result(already_uploaded)
     assert result["outcome"] == "delivered"
     kwargs = channel.send_persistent_result.await_args.kwargs
-    assert kwargs["file_path"] == str(copy)
-    assert kwargs["file_key"] == "fk_1"
-    assert kwargs["text"] is None
+    assert kwargs["file_path"] is None
+    assert kwargs["file_key"] == "fk_existing"
 
-    missing = await manager.deliver_persistent_result({**payload, "file": {"key": key, "size": 1}})
-    assert missing == {"outcome": "failed", "error_code": "OUTPUT_FILE_MISSING"}
+    source.write_bytes(b"changed after candidate acceptance")
+    result = await manager.deliver_persistent_result(payload)
+
+    assert result == {"outcome": "failed", "error_code": "OUTPUT_FILE_MISSING"}
+    assert channel.send_persistent_result.await_count == 2
 
 
 async def test_feishu_file_result_sends_caption_then_uploads_once_and_reports_file_key(tmp_path):
@@ -320,3 +398,21 @@ async def test_feishu_file_retry_reuses_the_uploaded_file_key(tmp_path):
 
     channel._upload_file.assert_not_called()
     assert result == {"outcome": "failed", "error_code": "FEISHU_9", "file_key": "fk_old"}
+
+
+async def test_feishu_file_retry_with_uploaded_key_does_not_need_workspace_file():
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound"), MagicMock())
+    channel._api_client = object()
+    channel._upload_file = MagicMock()
+    channel._send_persistent_message = AsyncMock(
+        return_value={"outcome": "delivered", "external_message_id": "om_f"}
+    )
+
+    result = await channel.send_persistent_result(
+        chat_id="oc_group", text=None, source_message_id=None, idempotency_key="key-1",
+        file_path=None, file_key="fk_existing",
+    )
+
+    assert result == {"outcome": "delivered", "external_message_id": "om_f", "file_key": "fk_existing"}
+    channel._upload_file.assert_not_called()
+    assert channel._send_persistent_message.await_args.args[1] == "file"

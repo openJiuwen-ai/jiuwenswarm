@@ -194,6 +194,34 @@ async def settle(predicate) -> None:
     raise AssertionError("condition not reached")
 
 
+def stub_invocation_builder(monkeypatch, addenda=None):
+    from jiuwenswarm.server.jiuwenmate import execution_driver
+    from jiuwenswarm.server.jiuwenmate.execution_models import build_execution_context
+
+    calls = []
+
+    def build(snapshot, request, execution, *, ports, system_prompt_addendum=None):
+        calls.append(request.session_id)
+        if addenda is not None:
+            addenda.append(system_prompt_addendum)
+        context = SimpleNamespace(
+            execution=build_execution_context(
+                request, execution, capability_snapshot=snapshot.enabled_features,
+            ),
+            ports=ports,
+            extras={},
+            system_prompt_addendum=system_prompt_addendum,
+        )
+        return SimpleNamespace(
+            card=SimpleNamespace(id=request.agent_id),
+            fingerprint=lambda: request.config_fingerprint,
+            system_prompt=None,
+        ), context
+
+    monkeypatch.setattr(execution_driver, "build_invocation", build)
+    return calls
+
+
 @pytest.fixture
 async def host(tmp_path):
     host = Host(tmp_path)
@@ -218,6 +246,64 @@ async def test_requests_of_one_session_run_one_at_a_time_in_order(host):
     assert host.core.started == ["一", "二", "三"]
     assert host.core.peak == 1
     assert [host.status(s) for s in states] == [("ended", "completed")] * 3
+
+
+async def test_session_workspace_is_prepared_before_invocation_and_isolated(host, monkeypatch):
+    invocation_calls = stub_invocation_builder(monkeypatch)
+    states = [
+        await host.send("会话一产物", conversation="conversation-a"),
+        await host.send("会话二产物", conversation="conversation-b"),
+    ]
+    await settle(lambda: len(host.core.started) == 2)
+
+    session_roots = []
+    for text in ("会话一产物", "会话二产物"):
+        context = host.core.contexts[text]
+        session_root = (
+            host.service.workspaces.path(context.execution.namespace_id, context.execution.agent_id)
+            / "sessions"
+            / context.execution.session_id
+        )
+        assert session_root.is_dir()
+        session_roots.append(session_root)
+
+    assert session_roots[0] != session_roots[1]
+    assert set(invocation_calls) == {root.name for root in session_roots}
+    host.core.release("会话一产物", "会话二产物")
+    await host.scheduler.drain()
+    assert [host.status(state) for state in states] == [("ended", "completed")] * 2
+
+
+async def test_session_workspace_creation_failure_prevents_invocation(host, monkeypatch):
+    invocation_calls = stub_invocation_builder(monkeypatch)
+
+    def fail_to_prepare(*_args):
+        raise PersistentAgentError("session workspace unavailable")
+
+    monkeypatch.setattr(host.service.workspaces, "ensure_session", fail_to_prepare, raising=False)
+    host.core.release("目录准备失败")
+    state = await host.send("目录准备失败")
+    await settle(lambda: host.status(state)[0] == "ended")
+
+    assert host.core.started == []
+    assert invocation_calls == []
+    assert host.status(state) == ("ended", "failed")
+
+
+async def test_invocation_guides_session_drafts_and_shared_final_output(host, monkeypatch):
+    addenda = []
+    stub_invocation_builder(monkeypatch, addenda)
+    state = await host.send("整理文件")
+    session_id = state.record.session_id
+    host.core.release("整理文件")
+    await host.scheduler.drain()
+
+    assert host.status(state) == ("ended", "completed")
+    guidance = addenda[0]
+    assert f"sessions/{session_id}" in guidance
+    assert ".lark-slides/" in guidance
+    assert "output/" in guidance
+    assert "share_file" in guidance
 
 
 async def test_group_collaboration_roster_contains_only_published_active_members_of_that_group(tmp_path):
@@ -471,7 +557,8 @@ async def test_group_message_keeps_current_trigger_preflight_and_search_port(hos
     assert host.status(state) == ("ended", "completed")
 
 
-async def test_group_execution_preserves_verified_bot_mention_after_trigger_refresh(host):
+async def test_group_execution_preserves_verified_bot_mention_after_trigger_refresh(host, monkeypatch):
+    stub_invocation_builder(monkeypatch)
     group = host.manager.group_chats.resolve(NS, "feishu", "oc_group", now=NOW)
     archived_trigger = core.GroupMessage(
         message_id="mentioned-trigger",
@@ -523,6 +610,8 @@ async def test_group_execution_preserves_verified_bot_mention_after_trigger_refr
     assert spec.system_prompt is None
     assert "动态同事" in context.system_prompt_addendum
     assert "职责完全无关" in context.system_prompt_addendum
+    assert f"sessions/{context.execution.session_id}" in context.system_prompt_addendum
+    assert "output/" in context.system_prompt_addendum
     enriched_text = host.core.inputs["请处理这个问题"].text
     assert "请处理这个问题" in enriched_text
 

@@ -22,20 +22,45 @@ def tool(tmp_path, agent="agent-a"):
 
     office = tmp_path / agent
     office.mkdir(exist_ok=True)
+    session = office / "sessions" / "session-a"
+    session.mkdir(parents=True, exist_ok=True)
+    (office / "output").mkdir(exist_ok=True)
     context = SimpleNamespace(extras={}, execution=SimpleNamespace(
         namespace_id="local", agent_id=agent, session_id="session-a", execution_id="execution-a"), language="cn")
     context.extras[PARENT_SYS_OPERATION_EXTRAS_KEY] = SysOperation(SysOperationCard(id=agent))
     runtime = FeishuCliRuntime(tmp_path / "jm", config_loader=lambda: {})
     module().bind_bash_runtime(context, office=office, cli=runtime)
-    return module().build_bash_tool({}, context), office
+    return module().build_bash_tool({}, context), session
 
 
 @pytest.mark.asyncio
 async def test_published_agent_can_execute_bash_in_its_office(tmp_path):
-    bash, office = tool(tmp_path)
+    bash, session = tool(tmp_path)
     result = await bash.invoke({"command": 'python -c "import os; from pathlib import Path; Path(\'marker.txt\').write_text(os.getcwd())"'})
     assert result.success, result
-    assert (office / "marker.txt").read_text() == str(office)
+    assert (session / "marker.txt").read_text() == str(session)
+
+
+@pytest.mark.asyncio
+async def test_bash_defaults_to_session_and_exposes_shared_output_directory(tmp_path):
+    bash, session = tool(tmp_path)
+    command = """python -c "import os; from pathlib import Path; Path('cwd.txt').write_text(os.getcwd()); Path('draft.md').write_text('final'); Path(os.environ['JIUWENMATE_OUTPUT_DIR'], 'final.md').write_text(Path('draft.md').read_text()); Path('output.txt').write_text(os.environ['JIUWENMATE_OUTPUT_DIR'])"""
+    result = await bash.invoke({"command": command})
+    assert result.success, result
+    assert (session / "cwd.txt").read_text() == str(session)
+    assert (session / "output.txt").read_text() == str(session.parent.parent / "output")
+    assert (session.parent.parent / "output" / "final.md").read_text() == "final"
+
+
+@pytest.mark.asyncio
+async def test_relative_bash_workdir_is_resolved_from_the_current_session(tmp_path):
+    bash, session = tool(tmp_path)
+    nested = session / "nested"
+    nested.mkdir()
+    command = """python -c "import os; from pathlib import Path; Path('cwd.txt').write_text(os.getcwd())"""
+    result = await bash.invoke({"command": command, "workdir": "nested"})
+    assert result.success, result
+    assert (nested / "cwd.txt").read_text() == str(nested)
 
 
 @pytest.mark.asyncio

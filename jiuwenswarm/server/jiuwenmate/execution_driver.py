@@ -16,6 +16,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import aclosing
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
@@ -72,6 +73,19 @@ def outcome_of(terminal: core.AgentEvent | None) -> str:
     if terminal.event_type == core.EventType.EXECUTION_FINAL:
         return terminal.payload.status
     return "stopped" if terminal.payload.reason == "stopped" else "paused"
+
+
+def _session_workspace_guidance(session_id: str, session_workspace: Path, output_dir: Path) -> str:
+    """Describe the per-Session draft directory and shared final-output directory to this Invocation."""
+    return (
+        "## 本次执行的文件目录\n\n"
+        f"本次 Session 的中间产物目录是 `{session_workspace}`（工作空间相对路径 `sessions/{session_id}/`）。"
+        "普通中间文件直接放在该目录根下；仅 Lark Slides 专用的计划、截图等放在该目录的 `.lark-slides/`。"
+        "不要读取或修改其他 Session 的草稿。\n"
+        f"需要交付给用户的最终文件放入 Agent 共享目录 `{output_dir}`（工作空间相对路径 `output/`）。"
+        "最终文件从中间目录复制或移动到 `output/` 后，再用 `share_file` 登记相对路径 `output/<文件名>`。"
+        "不同会话可以读取同一 Agent 的 `output/` 文件。"
+    )
 
 
 class ExecutionHandle:
@@ -145,6 +159,11 @@ class ExecutionDriver:
         record = state.record
         context = None
         try:
+            session_workspace = self._workspaces.ensure_session(
+                record.namespace_id, record.agent_id, record.session_id
+            )
+            office = self._workspaces.path(record.namespace_id, record.agent_id)
+            output_dir = office / "output"
             snapshot = await asyncio.to_thread(
                 self._snapshots, record.namespace_id, record.agent_id, record.config_version
             )
@@ -198,14 +217,20 @@ class ExecutionDriver:
                         )
                         roster = []
                     guidance = build_group_execution_guidance(roster)
+            addenda = [
+                item for item in (
+                    guidance,
+                    _session_workspace_guidance(record.session_id, session_workspace, output_dir),
+                ) if item
+            ]
             spec, context = build_invocation(
                 snapshot,
                 record,
                 execution,
                 ports=ports,
-                system_prompt_addendum=guidance or None,
+                system_prompt_addendum="\n\n".join(addenda),
             )
-            bind_bash_runtime(context, office=self._workspaces.path(record.namespace_id, record.agent_id), cli=self._cli)
+            bind_bash_runtime(context, office=office, cli=self._cli)
             await handle._attach(context)
             inputs = record.request_input
             if record.request_input.kind == "group_message" and ports.group_chat is not None:

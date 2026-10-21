@@ -13,8 +13,10 @@ and it never creates, moves or reads files.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import stat
 from pathlib import Path
 
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
@@ -46,11 +48,124 @@ class WorkspaceStore:
         _require_dir_name("agent_id", agent_id)
         return self._root / namespace_id / agent_id
 
+    @staticmethod
+    def _is_redirected(metadata: os.stat_result) -> bool:
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        return stat.S_ISLNK(metadata.st_mode) or bool(
+            getattr(metadata, "st_file_attributes", 0) & reparse_flag
+        )
+
+    def _assert_safe_directory(self, path: Path, metadata: os.stat_result) -> None:
+        if self._is_redirected(metadata) or not stat.S_ISDIR(metadata.st_mode):
+            raise PersistentAgentError("workspace directory must be a real directory")
+        try:
+            path.resolve(strict=True).relative_to(self._root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise PersistentAgentError(
+                "workspace directory must stay within its root"
+            ) from exc
+
+    def _check_directory(self, path: Path, *, create: bool) -> Path:
+        """Create or validate a directory without accepting links below the workspace root."""
+        try:
+            relative = path.relative_to(self._root)
+            root_metadata = self._root.lstat()
+        except (OSError, ValueError) as exc:
+            raise PersistentAgentError("workspace directory is not available") from exc
+        self._assert_safe_directory(self._root, root_metadata)
+
+        current = self._root
+        for part in relative.parts:
+            current = current / part
+            try:
+                metadata = current.lstat()
+            except FileNotFoundError:
+                if not create or current == self._root:
+                    return path
+                try:
+                    current.mkdir(mode=0o700)
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise PersistentAgentError(
+                        "workspace directory could not be prepared"
+                    ) from exc
+                try:
+                    metadata = current.lstat()
+                except OSError as exc:
+                    raise PersistentAgentError(
+                        "workspace directory is not available"
+                    ) from exc
+            except OSError as exc:
+                raise PersistentAgentError("workspace directory is not available") from exc
+
+            self._assert_safe_directory(current, metadata)
+
+            if create:
+                try:
+                    os.chmod(current, 0o700)
+                    metadata = current.lstat()
+                except OSError as exc:
+                    raise PersistentAgentError(
+                        "workspace directory could not be secured"
+                    ) from exc
+                self._assert_safe_directory(current, metadata)
+        return path
+
+    def validate_session_paths(
+        self, namespace_id: str, agent_id: str, session_id: str
+    ) -> tuple[Path, Path]:
+        """Validate existing Session ancestors before exposing them as an authorization scope."""
+        _require_dir_name("session_id", session_id)
+        root = self.path(namespace_id, agent_id)
+        sessions = root / SESSIONS_DIR
+        current = sessions / session_id
+        self._check_directory(current, create=False)
+        return sessions, current
+
     def ensure(self, namespace_id: str, agent_id: str) -> Path:
         path = self.path(namespace_id, agent_id)
-        private_dir(path.parent)
-        private_dir(path)
+        self._check_directory(path.parent, create=True)
+        self._check_directory(path, create=True)
+        self._check_directory(path / "output", create=True)
         return path
+
+    def ensure_session(self, namespace_id: str, agent_id: str, session_id: str) -> Path:
+        """Ensure the Agent's shared output and one private execution-session directory."""
+        _require_dir_name("session_id", session_id)
+        root = self.ensure(namespace_id, agent_id)
+        session_root = root / SESSIONS_DIR / session_id
+        self._check_directory(session_root, create=True)
+        return session_root
+
+    def resolve_shared_output(self, namespace_id: str, agent_id: str, file_path: str) -> Path | None:
+        """Resolve a regular file directly under this Agent's shared ``output/`` directory."""
+        parts = file_path.split("/") if isinstance(file_path, str) else []
+        if (
+            len(parts) != 2
+            or parts[0] != "output"
+            or parts[1] in ("", ".", "..")
+            or any(char in parts[1] for char in ("\\", ":", "\x00"))
+        ):
+            return None
+
+        try:
+            workspace = self.path(namespace_id, agent_id)
+            output_root = workspace / "output"
+            self._check_directory(workspace, create=False)
+            self._check_directory(output_root, create=False)
+            output_metadata = output_root.lstat()
+            if self._is_redirected(output_metadata) or not stat.S_ISDIR(output_metadata.st_mode):
+                return None
+
+            candidate = output_root / parts[1]
+            metadata = candidate.lstat()
+            if self._is_redirected(metadata) or not stat.S_ISREG(metadata.st_mode):
+                return None
+            candidate.resolve(strict=True).relative_to(output_root.resolve(strict=True))
+            return candidate
+        except (OSError, RuntimeError, ValueError, PersistentAgentError):
+            return None
 
     def remove(self, namespace_id: str, agent_id: str) -> None:
         shutil.rmtree(self.path(namespace_id, agent_id), ignore_errors=True)
@@ -68,6 +183,7 @@ class HostWorkspaceAccess:
         knowledge_root: str | None = None,
     ) -> None:
         self._root = store.path(namespace_id, agent_id)
+        self._store = store
         self._namespace_id = namespace_id
         self._agent_id = agent_id
         self._knowledge_root = self._validated_knowledge_root(knowledge_root)
@@ -79,9 +195,9 @@ class HostWorkspaceAccess:
     def _session_roots(self, execution: ExecutionContext) -> tuple[Path, Path]:
         if execution.namespace_id != self._namespace_id or execution.agent_id != self._agent_id:
             raise PersistentAgentError("Execution belongs to another colleague")
-        _require_dir_name("session_id", execution.session_id)
-        sessions = self._root / SESSIONS_DIR
-        return sessions, sessions / execution.session_id
+        return self._store.validate_session_paths(
+            execution.namespace_id, execution.agent_id, execution.session_id
+        )
 
     @staticmethod
     def _granted(execution: ExecutionContext, feature: str) -> bool:

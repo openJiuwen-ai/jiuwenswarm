@@ -108,8 +108,8 @@ class ChannelManager(ABC):
     async def deliver_persistent_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Resolve exactly one active Feishu app; never fall back to another Bot.
 
-        A file delivery names the retained copy by its key under the JiuwenMate data
-        root, which Gateway shares with the AgentServer; text is then its optional caption.
+        A file delivery names the Agent's shared output by a logical workspace key;
+        Gateway resolves and verifies that file without receiving an absolute path.
         """
         app_id = payload.get("app_id")
         chat_id = payload.get("chat_id")
@@ -123,10 +123,14 @@ class ChannelManager(ABC):
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
         file_args: dict[str, Any] = {}
         if isinstance(file, dict):
-            path = self._persistent_output_file(file)
-            if path is None:
-                return {"outcome": "failed", "error_code": "OUTPUT_FILE_MISSING"}
-            file_args = {"file_path": str(path), "file_key": file.get("file_key") or None}
+            file_key = file.get("file_key")
+            if isinstance(file_key, str) and file_key.strip():
+                file_args = {"file_path": None, "file_key": file_key}
+            else:
+                path = self._persistent_output_file(file)
+                if path is None:
+                    return {"outcome": "failed", "error_code": "OUTPUT_FILE_MISSING"}
+                file_args = {"file_path": str(path), "file_key": None}
             text = text if isinstance(text, str) and text.strip() else None
 
         matches = [
@@ -220,17 +224,13 @@ class ChannelManager(ABC):
 
     @staticmethod
     def _persistent_output_file(file: dict[str, Any]) -> Path | None:
-        """The retained copy a delivery names, only when its size is the one handed off."""
-        from jiuwenswarm.server.jiuwenmate.output_files import OUTPUTS_DIR, resolve_output_file
+        """The still-matching shared workspace file named by a logical delivery key."""
+        from jiuwenswarm.server.jiuwenmate.output_files import WorkspaceOutputFiles
+        from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WorkspaceStore
         from jiuwenswarm.server.jiuwenmate.service import default_data_dir
 
-        path = resolve_output_file(default_data_dir() / OUTPUTS_DIR, file.get("key"))
-        if path is None:
-            return None
-        try:
-            return path if path.stat().st_size == file.get("size") else None
-        except OSError:
-            return None
+        workspaces = WorkspaceStore(default_data_dir() / "workspaces")
+        return WorkspaceOutputFiles(workspaces).resolve_key(file.get("key"), file.get("file_ref"), file.get("size"))
 
     @staticmethod
     def _resolve_app_id(channel: Any) -> str:
