@@ -58,16 +58,20 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
         )
         while True:
             conn = await server.accept()
-            generation = holder.open_session(conn)
+            generation = holder.begin_session()
             try:
-                await _send_hello(
+                hello = await _send_hello(
                     conn,
                     runtime_loaded=loaded["runtime"] is not None,
                     generation=generation,
                     instance=instance,
                     code_identity_value=worker_code_identity,
                 )
-            except (OSError, RuntimeError):
+                from jiuwenswarm.server.ipc.startup import await_startup_acceptance
+
+                await await_startup_acceptance(conn, hello)
+                holder.activate_session(conn, generation)
+            except (OSError, RuntimeError, asyncio.IncompleteReadError):
                 await _retire_session(holder, dispatcher)
                 await conn.close()
                 continue
@@ -274,11 +278,10 @@ async def _send_hello(
     generation: int,
     instance: str,
     code_identity_value: str | None = None,
-) -> None:
+) -> dict[str, Any]:
     from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
     identity = code_identity_value if code_identity_value is not None else await asyncio.to_thread(code_identity)
-    await conn.send(
-        {
+    hello = {
             "kind": KIND_HELLO,
             "protocol": PROTOCOL_VERSION,
             "pid": os.getpid(),
@@ -289,7 +292,8 @@ async def _send_hello(
             "data_scope": data_scope(),
             "code_identity": identity,
         }
-    )
+    await conn.send(hello)
+    return hello
 
 
 async def _read_session(conn: IpcConnection, dispatcher: WorkerDispatcher) -> bool:

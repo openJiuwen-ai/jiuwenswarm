@@ -321,6 +321,12 @@ excludes = [
     "tkinter",
     "scipy",
     "numpy.tests",
+    # Build-time CFFI helpers must not pull setuptools and its startup rthook
+    # into every Front/Worker/MCP process. Runtime CFFI wheels stay collected.
+    "setuptools",
+    "_distutils_hack",
+    "distutils",
+    "pkg_resources",
     # External CLI SDKs and their native executables are optional runtimes.
     # Frozen Windows builds install verified wheels under the application directory on demand.
     # Other platforms keep their managed optional runtimes in the user data directory.

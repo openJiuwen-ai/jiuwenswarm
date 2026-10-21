@@ -44,7 +44,6 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional
 import logging
 from logging.handlers import BaseRotatingHandler
-from ruamel.yaml import YAML
 
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
@@ -325,6 +324,8 @@ class _CompositeFilter(logging.Filter):
 
 def _load_logging_config_from_yaml() -> dict[str, Any]:
     """读取 ~/.jiuwenswarm/config/config.yaml 中的 logging 段（无则空）。"""
+    from ruamel.yaml import YAML
+
     try:
         cf = get_config_file()
         if not cf.exists():
@@ -535,6 +536,8 @@ def _resolve_preferred_language(
     config_yaml_dest: Path, explicit: Optional[str]
 ) -> str:
     """确定初始化使用的语言：显式参数优先，否则读已复制的 config，默认 zh。"""
+    from ruamel.yaml import YAML
+
     if explicit is not None:
         lang = str(explicit).strip().lower()
         return lang if lang in ("zh", "en") else "zh"

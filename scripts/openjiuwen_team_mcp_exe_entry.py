@@ -6,7 +6,8 @@ from __future__ import annotations
 import atexit
 import os
 import sys
-from contextlib import ExitStack
+from collections.abc import Callable
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from typing import TextIO
 
@@ -63,6 +64,23 @@ def _ensure_stdio() -> None:
         setattr(sys, attr_name, rebound)
 
 
+def _load_server_main() -> Callable[[], None]:
+    # MCP owns stdout. SDK bootstrap and every later SDK logger must use stderr.
+    # Configure through the public API before importing the complete Team tree.
+    with redirect_stdout(sys.stderr):
+        from openjiuwen.core.common.logging.log_config import configure_log_config
+
+        configure_log_config({
+            "backend": "loguru",
+            "sinks": {"mcp_stderr": {"target": "stderr", "colorize": False}},
+            "routes": {name: ["mcp_stderr"] for name in (
+                "common", "interface", "prompt_builder", "performance", "*")},
+        })
+        from openjiuwen.agent_teams.mcp.server import main as server_main
+
+    return server_main
+
+
 def main() -> None:
     """Run the OpenJiuWen team MCP server over stdio."""
     os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -73,9 +91,7 @@ def main() -> None:
         activate_external_cli_runtime_paths()
         _ensure_stdio()
 
-    from openjiuwen.agent_teams.mcp.server import main as server_main
-
-    server_main()
+    _load_server_main()()
 
 
 if __name__ == "__main__":

@@ -14,8 +14,8 @@ async def _wait_state(controller, state):
             await asyncio.sleep(0.005)
 
 
-def test_default_off_creates_no_task_or_profile():
-    controller = ProfilePrewarmer(get_config=lambda: {}, prepare=None,
+def test_explicit_off_creates_no_task_or_profile():
+    controller = ProfilePrewarmer(get_config=lambda: {"runtime_prewarm": {"enabled": False}}, prepare=None,
                                   admission=None, stop_event=asyncio.Event())
     controller.start()
     assert controller._task is None
@@ -66,8 +66,8 @@ async def test_prewarm_joins_admission_retries_and_invalidates_changed_configura
 async def test_budget_overrun_stops_retries_and_never_reports_a_hit(monkeypatch):
     from jiuwenswarm.server.worker import profile_prewarm
 
-    memory = iter([0, 2 * 1024 * 1024])
-    monkeypatch.setattr(profile_prewarm, "_rss", lambda: next(memory))
+    memory = {"bytes": 0}
+    monkeypatch.setattr(profile_prewarm, "_rss", lambda: memory["bytes"])
     config = {"runtime_prewarm": {"enabled": True, "idle_delay_seconds": 0,
                                   "max_rss_delta_mb": 1}}
     owner = PreparationRegistry()
@@ -76,6 +76,7 @@ async def test_budget_overrun_stops_retries_and_never_reports_a_hit(monkeypatch)
 
     async def prepare(*args):
         calls.append(args)
+        memory["bytes"] = 2 * 1024 * 1024
 
     controller = ProfilePrewarmer(get_config=lambda: config, prepare=prepare,
                                   admission=owner, stop_event=asyncio.Event())

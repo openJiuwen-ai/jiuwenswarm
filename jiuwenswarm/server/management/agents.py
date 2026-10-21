@@ -635,6 +635,12 @@ class AgentsManagement:
                     logger.warning(
                         "[AgentWebSocketServer] proactive agent rebuild failed: %s", exc
                     )
+            prewarmer = getattr(host, "_profile_prewarmer", None)
+            if prewarmer is not None:
+                try:
+                    prewarmer.start()
+                except Exception as exc:  # optional preparation never rejects a config reload
+                    logger.warning("[Worker] profile prewarm reload skipped: %s", type(exc).__name__)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,

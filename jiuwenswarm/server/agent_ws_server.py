@@ -1255,6 +1255,13 @@ _COMPAT_EXPORTS = {
 }
 
 
+def _uses_projectless_task_workspace(params: dict[str, object], channel_id: str) -> bool:
+    """Retain the historical predicate through its current Runtime owner."""
+    from jiuwenswarm.runtime.session_provisioner import RuntimeSessionProvisioner
+
+    return RuntimeSessionProvisioner._uses_projectless_workspace(params, channel_id)
+
+
 def __getattr__(name: str) -> Any:
     target = _COMPAT_EXPORTS.get(name)
     if target is None:

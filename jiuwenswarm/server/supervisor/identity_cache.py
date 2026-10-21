@@ -162,16 +162,27 @@ def _source_paths(package: Path) -> list[Path]:
     frontend = package / "channels" / "web" / "frontend"
     paths = []
 
-    def scan_error(error: OSError) -> None:
-        # An unreadable Runtime subtree cannot be silently omitted from identity.
-        raise error
+    def scan(current: Path) -> None:
+        # DirEntry retains enumeration metadata; do not stat every Python file.
+        # Errors still propagate: identity cannot omit an unreadable subtree.
+        with os.scandir(current) as entries:
+            for entry in entries:
+                if current == frontend and os.path.normcase(entry.name) == os.path.normcase("node_modules"):
+                    continue
+                if entry.is_dir():
+                    if not entry.is_symlink():
+                        scan(Path(entry.path))
+                elif os.path.normcase(entry.name).endswith(".py"):
+                    paths.append(Path(entry.path))
 
-    for directory, children, filenames in os.walk(package, topdown=True, onerror=scan_error):
-        current = Path(directory)
-        if current == frontend:
-            children[:] = [name for name in children if os.path.normcase(name) != os.path.normcase("node_modules")]
-        paths.extend(current / name for name in filenames if os.path.normcase(name).endswith(".py"))
+    scan(package)
     return sorted(paths)
+
+
+def _source_markers(paths: list[Path]) -> list:
+    # Per-file and chunked parallel probes regressed on the measured NTFS
+    # deployment. Keep content hashing's existing pool; marker calls are cheap.
+    return [_ntfs_marker(path) for path in paths]
 
 
 def _content_hashes(path: Path) -> dict[str, str]:
@@ -323,7 +334,7 @@ def _compute(package: Path, cache_path: Path | None) -> str:
         paths = _source_paths(package)
         git, tracked = _git_metadata(checkout)
         dependencies = _dependencies(checkout)
-        observed = [_ntfs_marker(path) for path in paths]
+        observed = _source_markers(paths)
         markers = {str(path.relative_to(checkout)): marker for path, marker in zip(paths, observed)}
         reusable = tracked is not None and all(marker is not None for marker in markers.values())
 
@@ -353,7 +364,7 @@ def _compute(package: Path, cache_path: Path | None) -> str:
         if paths != current_paths or git != _git_metadata(checkout)[0] or dependencies != _dependencies(checkout):
             continue
         if reusable:
-            current_markers = [_ntfs_marker(path) for path in paths]
+            current_markers = _source_markers(paths)
             if observed != current_markers:
                 continue
         dirty = []
@@ -412,7 +423,8 @@ def verify_launch_source(package: Path, observation: dict) -> str | None:
         if not cached or observation.get("checksum") != _bytes_digest(_encoded(cached)):
             return None
         paths = _source_paths(package)
-        markers = {str(path.relative_to(checkout)): _ntfs_marker(path) for path in paths}
+        markers = {str(path.relative_to(checkout)): marker
+                   for path, marker in zip(paths, _source_markers(paths))}
         if (set(markers) != set(cached["files"]) or any(marker is None
                 or marker != cached["files"][name].get("marker") for name, marker in markers.items())
                 or _dependencies(checkout) != cached.get("dependencies")):

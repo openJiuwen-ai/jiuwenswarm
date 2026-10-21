@@ -184,6 +184,10 @@ class PreparationRegistry:
         self._foreground_tokens.add(token)
         return token
 
+    @property
+    def background_paused(self) -> bool:
+        return bool(self._foreground_tokens)
+
     def resume_background(self, token: object) -> None:
         self._foreground_tokens.discard(token)
         self._admission_changed.set()

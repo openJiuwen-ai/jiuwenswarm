@@ -34,6 +34,28 @@ async def test_required_configuration_and_sdk_import_overlap_before_runtime_patc
     await asyncio.to_thread(runtime_backend.preload_runtime_backend)
 
 
+def test_dirty_description_layout_is_cleaned_even_with_parent_workspace_marker(monkeypatch):
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.worker import early_import
+
+    calls = []
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", "1")
+    monkeypatch.setattr(early_import, "current_import_ticket", lambda: None)
+    monkeypatch.setattr(early_import, "_clean_description_layout", lambda: False)
+    monkeypatch.setattr(utils, "cleanup_stale_openjiuwen_descs", lambda: calls.append("cleanup"))
+    monkeypatch.setattr(runtime_backend, "_prepare_worker_configuration", lambda: None)
+
+    def load_sdk():
+        assert calls == ["cleanup"]
+        calls.append("sdk")
+
+    monkeypatch.setattr(runtime_backend, "_preload_sdk_execution_modules", load_sdk)
+    monkeypatch.setattr(runtime_backend, "_configure_openjiuwen_logging", lambda: None)
+    monkeypatch.setattr(runtime_backend, "_apply_runtime_entry_patches", lambda: None)
+    runtime_backend.preload_runtime_backend()
+    assert calls == ["cleanup", "sdk"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failed_stage", ["configuration", "sdk"])
 async def test_required_preparation_failure_prevents_runtime_consumers(monkeypatch, failed_stage):

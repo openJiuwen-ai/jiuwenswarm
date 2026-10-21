@@ -42,8 +42,8 @@ class KernelIdentity:
     def for_agent(cls, *, project_dir: str, work_mode: str, definition: Any,
                   capabilities: Any, configuration: Any) -> KernelIdentity:
         from jiuwenswarm.common.utils import get_user_workspace_dir
-        data_dir = os.path.normcase(str(get_user_workspace_dir().resolve()))
-        project_dir = os.path.normcase(os.path.realpath(project_dir)) if project_dir else ""
+        data_dir = os.path.normcase(canonical_path(get_user_workspace_dir()))
+        project_dir = os.path.normcase(canonical_path(project_dir)) if project_dir else ""
         # user_id is a routing claim, never an input for the data directory.
         owner = identity_reference((data_dir, os.getenv("JIUWENSWARM_RUNTIME_PROFILE", "desktop")))
         return cls(owner, data_dir, project_dir, work_mode, identity_reference(definition),
@@ -423,3 +423,16 @@ _PROCESS_KERNEL = ResourceKernel()
 
 def process_kernel() -> ResourceKernel:
     return _PROCESS_KERNEL
+
+
+def canonical_path(path: str | os.PathLike[str]) -> str:
+    """Reuse canonical paths while both the link and target retain identity."""
+    absolute = os.path.abspath(path)
+    try:
+        target, link = os.stat(absolute), os.lstat(absolute)
+        stamp = tuple((value.st_dev, value.st_ino, value.st_ctime_ns) for value in (target, link))
+    except OSError:
+        return os.path.realpath(absolute)
+    identity = KernelIdentity("trusted-path", absolute, "", "canonical", "v1", "", identity_reference(stamp))
+    key = ResourceKey(identity, "canonical-path", absolute, "", "", "realpath")
+    return process_kernel().recipe(key, lambda: os.path.realpath(absolute))

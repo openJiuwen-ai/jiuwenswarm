@@ -97,6 +97,7 @@ class RuntimeSupervisor:
         self._affinity = SessionAffinity()
         self._registry = WorkerRegistry()
         self._conn: IpcConnection | None = None
+        self._validated_conn: IpcConnection | None = None
         self._process: WorkerProcess | None = None
         self._owns_process = False
         self._worker_pid: int | None = None
@@ -129,7 +130,7 @@ class RuntimeSupervisor:
 
     async def get_runtime_snapshot(self, request: AgentRequest) -> dict[str, Any]:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._validated_conn is not conn:
             return self._recovery_pending("worker_disconnected")
         query_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
@@ -226,7 +227,8 @@ class RuntimeSupervisor:
         worker_id = self._affinity.worker_for(request.session_id)
         # connect() publishes the transport before hello validates its identity
         # and registers the Worker. Requests must wait for that whole barrier.
-        if (self._conn is None or self._registry.get(worker_id) is None) and not self._fatal:
+        if (self._conn is None or self._validated_conn is not self._conn
+                or self._registry.get(worker_id) is None) and not self._fatal:
             try:
                 await asyncio.wait_for(self.run_until_ipc_ready(), timeout=self._connect_timeout)
             except asyncio.TimeoutError:
@@ -284,7 +286,7 @@ class RuntimeSupervisor:
             self._terminating = True
             await self._shutdown_owned_worker(deadline=deadline)
         self._stopping = True
-        if conn is not None and not terminate_worker:
+        if conn is not None and conn is self._validated_conn and not terminate_worker:
             try:
                 await conn.send({"kind": KIND_GATEWAY_DETACH, "remote": "front-stop"})
             except (OSError, RuntimeError):
@@ -292,6 +294,7 @@ class RuntimeSupervisor:
         self._owns_process = False
         self._process = None
         self._conn = None
+        self._validated_conn = None
         if deadline is None:
             await self._finish_stop(conn)
         else:
@@ -303,6 +306,16 @@ class RuntimeSupervisor:
                 cleanup.cancel()
                 logger.error("[Supervisor] final shutdown deadline exhausted before IPC/task cleanup completed")
         self._ipc_ready.set()
+
+    async def abort_startup(self) -> None:
+        """A failed Front startup only stops the process it just spawned."""
+        process = self._process if self._owns_process else None
+        if self._loop_task is not None and not self._loop_task.done():
+            self._loop_task.cancel()
+            await asyncio.gather(self._loop_task, return_exceptions=True)
+        await self.stop()
+        if process is not None:
+            await process.stop(timeout=5)
 
     async def _finish_stop(self, conn: IpcConnection | None) -> None:
         if conn is not None:
@@ -349,6 +362,7 @@ class RuntimeSupervisor:
 
     async def _bring_up(self) -> None:
         await self._cancel_side_tasks()
+        self._validated_conn = None
         launch_identity = None
         async with self._session_lock:
             from filelock import FileLock
@@ -388,10 +402,10 @@ class RuntimeSupervisor:
                             stub=self._stub, stub_ready_delay=self._stub_ready_delay,
                             stub_exit_on_request=self._stub_exit_on_request,
                         )
-                        await process.spawn()
-                        launch_identity = getattr(process, "launch_identity", None)
                         self._process = process
                         self._owns_process = True
+                        await process.spawn()
+                        launch_identity = getattr(process, "launch_identity", None)
                         self._conn = await connect_with_retry(self._socket_path, timeout=self._connect_timeout)
             finally:
                 election.release()
@@ -404,10 +418,13 @@ class RuntimeSupervisor:
                 kind = hello.get("kind") if isinstance(hello, dict) else type(hello).__name__
                 raise RuntimeError(f"expected hello, got {kind!r}")
             if int(hello.get("protocol") or 0) != PROTOCOL_VERSION:
-                raise RuntimeError("runtime ipc protocol mismatch")
-            from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
+                self._fatal = True
+                self._fatal_reason = "runtime ipc protocol mismatch"
+                raise RuntimeError(self._fatal_reason)
+            from jiuwenswarm.server.supervisor.identity import data_scope
+            from jiuwenswarm.server.supervisor.identity_probe import probe_identity
 
-            identity = launch_identity or await asyncio.to_thread(code_identity)
+            identity = launch_identity or (await probe_identity())[0]
             if hello.get("data_scope") != data_scope() or hello.get("code_identity") != identity:
                 self._fatal = True
                 self._fatal_reason = "resident Worker belongs to a different deployment or code version"
@@ -416,12 +433,19 @@ class RuntimeSupervisor:
                 self._fatal = True
                 self._fatal_reason = "resident Worker execution profile mismatch"
                 raise RuntimeError(self._fatal_reason)
-        except Exception:
+            from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+            await conn.send(startup_acceptance(hello))
+            self._validated_conn = conn
+        except (Exception, asyncio.CancelledError):
             self._conn = None
+            self._validated_conn = None
             try:
                 await conn.close()
             except Exception:  # noqa: BLE001
                 logger.debug("[Supervisor] ipc close after bad hello failed", exc_info=True)
+            if self._owns_process and self._process is not None:
+                await self._process.stop(timeout=5)
             raise
         self._generation += 1
         peer = hello.get("generation")
@@ -680,7 +704,7 @@ class RuntimeSupervisor:
 
     async def _notify_gateway(self, *, attached: bool, remote: Any = None) -> None:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._validated_conn is not conn:
             return
         try:
             if attached:

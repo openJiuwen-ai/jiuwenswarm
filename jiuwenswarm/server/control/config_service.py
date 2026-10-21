@@ -22,15 +22,28 @@ import yaml
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file
-from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
-from jiuwenswarm.symphony.config import (
-    resolve_symphony_enabled,
-    resolve_symphony_evolution_enabled,
-)
 
 logger = logging.getLogger(__name__)
+
+
+def get_runtime_version() -> str:
+    from jiuwenswarm.common.version import get_runtime_version as resolve
+
+    return resolve()
+
+
+def resolve_symphony_enabled(value: Any) -> bool:
+    from jiuwenswarm.symphony.config import resolve_symphony_enabled as resolve
+
+    return resolve(value)
+
+
+def resolve_symphony_evolution_enabled(value: Any) -> bool:
+    from jiuwenswarm.symphony.config import resolve_symphony_evolution_enabled as resolve
+
+    return resolve(value)
 
 _CONFIG_SET_ENV_MAP = {
     "model_provider": "MODEL_PROVIDER",
@@ -121,7 +134,7 @@ def _read_raw_config() -> dict[str, Any]:
         return {}
     try:
         with path.open("r", encoding="utf-8") as handle:
-            loaded = yaml.safe_load(handle) or {}
+            loaded = yaml.load(handle, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config_service] failed to read config.yaml: %s", exc)
         return {}

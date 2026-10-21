@@ -99,17 +99,8 @@ from openjiuwen.harness.rails import (
 from openjiuwen.harness.rails.personal_context import PersonalContextRail
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 
-try:
-    from openjiuwen.harness.rails.evolution import (
-        TTSEConfig,
-        TTSERail,
-    )
-except ImportError:
-    TTSEConfig = None  # type: ignore[misc, assignment]
-    TTSERail = None  # type: ignore[misc, assignment]
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
-from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
 from openjiuwen.harness.tools import (
     WebFetchWebpageTool,
@@ -138,9 +129,6 @@ from jiuwenswarm.server.runtime.session.history_io import (
     run_history_io, run_stream_parser, stream_chunk_writes_history,
 )
 
-from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
-    PERMISSION_GROUP_TYPES, PERMISSION_RAIL_TYPES, PermissionRailGroup, build_permission_group,
-)
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
     discard_pending_permission_interrupt_for_target,
     discard_permission_continuation, validate_manual_resume,
@@ -281,10 +269,10 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     build_statusline_setup_agent_config,
 )
 from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import (
-    init_a2x_client,
     register_blank_agent_if_teammate,
     resolve_a2x_config,
 )
+from jiuwenswarm.agents.harness.team.a2x.lazy_client import lease_a2x_client as init_a2x_client
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
@@ -388,9 +376,8 @@ from jiuwenswarm.symphony.llm import (
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_preview import preview_text
-from jiuwenswarm.common.stage_timer import StageTimer
+from jiuwenswarm.common.stage_timer import StageTimer, async_stage
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
-from jiuwenswarm.observability.turn import SessionTurnTracker, TurnIdentity
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 from jiuwenswarm.server.utils.utils import is_team_params  # noqa: E402
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
@@ -495,15 +482,7 @@ from jiuwenswarm.agents.harness.common.tools.visual_gen_tools import (
 
 from jiuwenswarm.agents.harness.common.tools import (
     SendFileToolkit,
-    SkillRetrievalToolkit,
     SkillToolkit,
-    build_model_discovery_settings,
-    is_skill_retrieval_enabled,
-    skill_sources_from_manager,
-    SymphonyToolkit,
-)
-from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
-    symphony_retrieval_compact_processor_spec,
 )
 from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
     SkillRetrievalPromptRail,
@@ -587,6 +566,46 @@ from jiuwenswarm.common.mode_matrix import (
     is_code_profile_mode,
     is_team_mode,
 )
+from jiuwenswarm.server.runtime.agent_adapter.deferred_capabilities import deferred
+
+build_browser_agent_config = deferred("openjiuwen.harness.subagents.browser_agent", "build_browser_agent_config")
+build_model_discovery_settings = deferred(
+    "jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits", "build_model_discovery_settings")
+is_skill_retrieval_enabled = deferred(
+    "jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits", "is_skill_retrieval_enabled")
+skill_sources_from_manager = deferred(
+    "jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits", "skill_sources_from_manager")
+SymphonyToolkit = deferred("jiuwenswarm.agents.harness.common.tools.symphony_toolkits", "SymphonyToolkit")
+symphony_retrieval_compact_processor_spec = deferred(
+    "jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor",
+    "symphony_retrieval_compact_processor_spec")
+build_permission_group = deferred(
+    "jiuwenswarm.server.runtime.agent_adapter.permission_rail_group", "build_permission_group")
+_UNLOADED_TTSE = object()
+TTSEConfig: Any = _UNLOADED_TTSE
+TTSERail: Any = _UNLOADED_TTSE
+
+if TYPE_CHECKING:
+    from jiuwenswarm.observability.turn import TurnIdentity, SessionTurnTracker
+    from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import PermissionRailGroup
+    from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
+else:
+    SessionTurnTracker = deferred("jiuwenswarm.observability.turn", "SessionTurnTracker")
+    PermissionRailGroup = deferred("jiuwenswarm.server.runtime.agent_adapter.permission_rail_group", "PermissionRailGroup")
+    SkillRetrievalToolkit = deferred(
+        "jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits", "SkillRetrievalToolkit")
+
+
+def _permission_rail_types():
+    from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import PERMISSION_RAIL_TYPES
+
+    return PERMISSION_RAIL_TYPES
+
+
+def _permission_group_types():
+    from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import PERMISSION_GROUP_TYPES
+
+    return PERMISSION_GROUP_TYPES
 
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
 apply_free_search_runtime_defaults()
@@ -1727,6 +1746,17 @@ class JiuWenSwarmDeepAdapter:
     def _session_adapter_locks(self, value):
         self._get_session_assembler().locks = value
 
+    @property
+    def _turn_tracker(self):
+        tracker = getattr(self, "_trajectory_tracker", None)
+        if tracker is None:
+            tracker = self._trajectory_tracker = SessionTurnTracker()
+        return tracker
+
+    @_turn_tracker.setter
+    def _turn_tracker(self, value):
+        self._trajectory_tracker = value
+
     def _get_model_factory(self):
         factory = getattr(self, "_model_factory", None)
         if factory is None:
@@ -1965,7 +1995,7 @@ class JiuWenSwarmDeepAdapter:
         # Trajectory turn identity for this session. A turn spans every trace
         # a HITL resume adds to the ReAct loop already running, so it cannot
         # live on a single root span — see ``_resolve_trajectory_turn``.
-        self._turn_tracker = SessionTurnTracker()
+        self._trajectory_tracker = None
         # Gate KVC-only metadata at the host boundary. Trajectory tracking is
         # independent, but an affinity-OFF request must enter Agent Core with
         # exactly the same effective inputs as before this feature.
@@ -2683,7 +2713,7 @@ class JiuWenSwarmDeepAdapter:
             save_session_equipment,
         )
 
-        save_session_equipment(
+        await asyncio.to_thread(save_session_equipment,
             request.session_id or "",
             agent_template_name=params.get("agent_template_name"),
             plugin_names=params.get("plugin_names"),
@@ -4027,6 +4057,7 @@ class JiuWenSwarmDeepAdapter:
         self._a2x_blank_service_id = ""
         self._a2x_blank_dataset = ""
 
+    @async_stage("a2x_preparation")
     async def _try_init_a2x_client(self, config_base: dict[str, Any], *, reload: bool = False) -> None:
         """Best-effort A2X client init that never blocks agent startup."""
         try:
@@ -4542,7 +4573,7 @@ class JiuWenSwarmDeepAdapter:
         excluded = (SubagentRail, RootPermissionQueueRail, RootContextRail, RootPermissionCompletionRail)
         candidates = []
         for rail in rails:
-            if isinstance(rail, excluded) or (smart and isinstance(rail, PERMISSION_RAIL_TYPES)):
+            if isinstance(rail, excluded) or (smart and isinstance(rail, _permission_rail_types())):
                 continue
             if smart and isinstance(rail, JiuSwarmStreamEventRail):
                 rail = _GeneralPurposeStreamRail()
@@ -4567,7 +4598,7 @@ class JiuWenSwarmDeepAdapter:
             for spec in current
         ):
             return current, self._general_purpose_rail_snapshot
-        types = PERMISSION_GROUP_TYPES
+        types = _permission_group_types()
         # Preserve only the GP's recorded ordinary rails. The SDK may mount
         # additional root-only defaults that were never part of this child.
         retained = [rail for rail in self._general_purpose_rail_snapshot if not isinstance(rail, types)]
@@ -8472,6 +8503,12 @@ class JiuWenSwarmDeepAdapter:
         Returns None when agent-core lacks TTSE, construction fails, or
         TrajectorySpanProcessor is unavailable. Does not register the rail.
         """
+        global TTSERail, TTSEConfig
+        if TTSERail is _UNLOADED_TTSE or TTSEConfig is _UNLOADED_TTSE:
+            try:
+                from openjiuwen.harness.rails.evolution import TTSERail, TTSEConfig
+            except ImportError:
+                TTSERail = TTSEConfig = None
         if TTSERail is None or TTSEConfig is None:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] TTSERail unavailable: agent-core missing ttse"
@@ -10222,7 +10259,7 @@ class JiuWenSwarmDeepAdapter:
                     raise RuntimeError("permission_rail_candidate_unavailable")
                 subagents, gp_snapshot = self._prepare_general_purpose_permission_update(expected, smart=smart)
                 # No live mutation has occurred if candidate construction raises.
-                old = self._instance.find_rails_by_type(PERMISSION_GROUP_TYPES)
+                old = self._instance.find_rails_by_type(_permission_group_types())
                 self._permission_state.track_cleanup([
                     *old, *expected.rails(),
                 ])
@@ -10964,6 +11001,7 @@ class JiuWenSwarmDeepAdapter:
                 await self._isolate_permission_instance()
             raise
 
+    @async_stage("agent_construction")
     async def _create_instance(
         self, config: dict[str, Any] | None = None, *, mode: str = "agent", sub_mode: str = None,
         agent_definition: dict[str, Any] | None = None,
@@ -11021,6 +11059,16 @@ class JiuWenSwarmDeepAdapter:
                 **(config_base.get("permissions") or {}), "enabled": True,
             }
         self._config_base_cache = config_base.copy()
+        from jiuwenswarm.runtime.agent_kernel import agent_recipe
+        from jiuwenswarm.runtime.kernel import KernelIdentity
+
+        self._agent_kernel = agent_recipe(
+            KernelIdentity.for_agent(project_dir=str(getattr(self, "_project_dir", "") or ""),
+                work_mode=mode, definition=agent_definition, capabilities=self._instance_overrides,
+                configuration=config_base),
+            definition=agent_definition, language=self._resolve_prompt_language(), rail_config=config_base.get("react", {}),
+            prompt_factory=lambda language: build_agent_identity_prompt(language=language))
+        self._session_instance_agent_definition = self._agent_kernel.definition_snapshot()
         if self._skill_retrieval_session_enabled is None:
             restored_profile = self._restored_skill_retrieval_profile
             self._skill_retrieval_session_enabled = (
@@ -11029,7 +11077,8 @@ class JiuWenSwarmDeepAdapter:
                 else self._resolve_skill_retrieval_session_enabled(config_base)
             )
         self._refresh_multimodal_configs(config_base)
-        config = config_base.get("react", {}).copy()
+        recipe_config = self._agent_kernel.rail_configuration()
+        config = recipe_config if recipe_config is not None else config_base.get("react", {}).copy()
         self._config_cache = config.copy()
         self._agent_name = self._instance_overrides.get(
             "agent_name", config.get("agent_name", "main_agent")
@@ -11043,9 +11092,9 @@ class JiuWenSwarmDeepAdapter:
         if self._uses_smart_permission_lifecycle(config_base):
             self._prepare_permission_workspace_binding()
         self._permission_workspace_root = self._resolve_permission_workspace_root()
-        self._platform_trusted_root = Path(get_agent_workspace_dir()).resolve(
-            strict=False
-        )
+        from jiuwenswarm.runtime.kernel import canonical_path
+
+        self._platform_trusted_root = Path(await asyncio.to_thread(canonical_path, get_agent_workspace_dir()))
         if self._skip_own_instance_build():
             # Root adapter 只做 router/template holder，不建 DeepAgent instance。
             # web channel 在此后台预热 connected MCP 的进程级连接缓存——首轮对话
@@ -11120,9 +11169,7 @@ class JiuWenSwarmDeepAdapter:
                     or (isinstance(mode, str) and mode.startswith("agent"))
                 ),
             )
-        system_prompt = build_agent_identity_prompt(
-            language=self._resolve_prompt_language(),
-        )
+        system_prompt = self._agent_kernel.identity_prompt
         if agent_definition is not None:
             system_prompt = (
                 f"{system_prompt.rstrip()}\n\n# Agent Instructions\n"

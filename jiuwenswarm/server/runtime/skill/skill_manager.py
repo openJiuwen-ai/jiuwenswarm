@@ -17,6 +17,7 @@ import ssl
 import stat
 import tarfile
 import tempfile
+import time
 import uuid
 from contextlib import contextmanager
 import zipfile
@@ -863,6 +864,7 @@ class SkillManager:
     """Skill 管理器，对应 skills.* 请求方法."""
 
     def __init__(self, workspace_dir: str | None = None) -> None:
+        began = time.monotonic()
         from jiuwenswarm.agents.harness.team.bootstrap import TeamStoragePreparation
 
         self._team_storage_preparation = TeamStoragePreparation()
@@ -899,6 +901,8 @@ class SkillManager:
         self._register_unmanaged_local_skills()
         # SkillNet 异步安装：install 立即返回 install_id，后台下载；完成后调用 hook 重载 Agent
         self._skillnet_install_complete_hook: Callable[[], Awaitable[None]] | None = None
+        logger.info("[Worker] preparation stage=skill_discovery duration_ms=%.3f",
+                    (time.monotonic() - began) * 1000)
 
     @property
     def _skillnet_install_jobs(self) -> dict[str, dict[str, Any]]:
@@ -6073,6 +6077,12 @@ class SkillManager:
         return obj
 
     @staticmethod
+    def _read_skill_metadata(path: Path) -> dict | None:
+        from jiuwenswarm.server.runtime.skill.metadata_index import read_metadata
+
+        return read_metadata(path, SkillManager._parse_skill_md_uncached)
+
+    @staticmethod
     def _parse_skill_md(path: Path) -> dict | None:
         from jiuwenswarm.runtime.kernel import KernelIdentity, ResourceKey, identity_reference, process_kernel
         try:
@@ -6261,7 +6271,7 @@ class SkillManager:
             if is_container_skillpack(child):
                 return self._build_container_pack_meta(child, source_default)
             return None
-        meta = self._parse_skill_md(md)
+        meta = self._read_skill_metadata(md)
         if meta is None:
             return None
 
@@ -6419,7 +6429,7 @@ class SkillManager:
             md = self._try_find_skill_file(child)
             if md is None:
                 continue
-            meta = self._parse_skill_md(md)
+            meta = self._read_skill_metadata(md)
             if meta is None:
                 continue
 
@@ -8873,7 +8883,7 @@ class SkillManager:
                 if is_container_skillpack(child):
                     names.add(child.name)
                 continue
-            meta = self._parse_skill_md(md)
+            meta = self._read_skill_metadata(md)
             if not isinstance(meta, dict):
                 continue
             names.add(child.name)
@@ -8911,7 +8921,7 @@ class SkillManager:
             md = self._try_find_skill_file(child)
             if md is None:
                 continue
-            meta = self._parse_skill_md(md)
+            meta = self._read_skill_metadata(md)
             if not isinstance(meta, dict):
                 continue
             name = child.name

@@ -226,6 +226,8 @@ class AgentManager:
         self._last_model_conn_configs: dict[tuple, Any] = {}
         self._session_create_tokens: dict[tuple[str, str], tuple[Any, Any]] = {}
         self._session_create_token_lock = asyncio.Lock()
+        self._preparation_admission: Any | None = None
+        self._foreground_preparation_tokens: list[tuple[Any, object]] = []
         from jiuwenswarm.server.runtime.agent_warm_pool import AgentWarmPool
 
         self.warm_pool = AgentWarmPool(self)
@@ -1290,11 +1292,31 @@ class AgentManager:
         if session_id:
             await self.warm_pool.wait_for_session(session_id)
 
+    def set_preparation_admission(self, admission: Any) -> None:
+        """Let the Worker pause its profile for the full Runtime chat turn."""
+        self._preparation_admission = admission
+
     async def begin_foreground_chat(self) -> None:
-        await self.warm_pool.begin_foreground()
+        admission = getattr(self, "_preparation_admission", None)
+        token = admission.pause_background() if admission is not None else None
+        try:
+            await self.warm_pool.begin_foreground()
+        except BaseException:
+            if admission is not None and token is not None:
+                admission.resume_background(token)
+            raise
+        if token is not None:
+            self._foreground_preparation_tokens.append((admission, token))
 
     async def end_foreground_chat(self) -> None:
-        await self.warm_pool.end_foreground()
+        tokens = getattr(self, "_foreground_preparation_tokens", [])
+        owner = tokens.pop() if tokens else None
+        try:
+            await self.warm_pool.end_foreground()
+        finally:
+            if owner is not None:
+                admission, token = owner
+                admission.resume_background(token)
 
     def activate_session_prewarm(self, session_id: str | None) -> None:
         """Mark a claimed prewarm workspace as a normal persisted session."""

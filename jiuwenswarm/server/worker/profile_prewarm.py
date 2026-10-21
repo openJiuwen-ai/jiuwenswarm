@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Opt-in, bounded preparation of one profile's shared model resources.
+"""Bounded default preparation of one profile's shared model resources.
 
 This never creates a Session, starts an Agent interaction, or sends a model
 request. A ready profile is not EXECUTION_MIN_READY. Budget observations include
@@ -13,12 +13,27 @@ import asyncio
 import logging
 import math
 import time
+from contextvars import ContextVar
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from jiuwenswarm.runtime.model_observation import bind_model_observer, unbind_model_observer
 
 logger = logging.getLogger(__name__)
+_ACTIVE_PREWARM: ContextVar[ProfilePrewarmer | None] = ContextVar("worker_profile_prewarm", default=None)
+
+
+class PreparationDeferred(RuntimeError):
+    def __init__(self, state: str) -> None:
+        super().__init__(state)
+        self.state = state
+
+
+async def prewarm_checkpoint() -> None:
+    """Stop subsequent optional steps; never interrupt an accepted sync import."""
+    controller = _ACTIVE_PREWARM.get()
+    if controller is not None:
+        await controller.checkpoint()
 
 
 def _number(config: dict, key: str, default: float, minimum: float, maximum: float) -> float:
@@ -31,7 +46,7 @@ def _number(config: dict, key: str, default: float, minimum: float, maximum: flo
 
 def _options(config: dict) -> dict:
     raw = config.get("runtime_prewarm")
-    return raw if isinstance(raw, dict) else {}
+    return {"enabled": True, **(raw if isinstance(raw, dict) else {})}
 
 
 def _identity(config: dict) -> str:
@@ -66,6 +81,26 @@ class ProfilePrewarmer:
         self._warm_model: Any = None
         self._task: asyncio.Task | None = None
         self._closed = False
+        self._budget: tuple[dict, float, float, int] | None = None
+        self._foreground_tokens: set[object] = set()
+        self._foreground_idle = asyncio.Event()
+        self._foreground_idle.set()
+
+    def pause_background(self) -> object:
+        """Keep this optional profile behind the complete foreground turn."""
+        token = object()
+        self._foreground_tokens.add(token)
+        self._foreground_idle.clear()
+        return token
+
+    def resume_background(self, token: object) -> None:
+        self._foreground_tokens.discard(token)
+        if not self._foreground_tokens:
+            self._foreground_idle.set()
+
+    @property
+    def foreground_paused(self) -> bool:
+        return bool(self._foreground_tokens)
 
     def start(self) -> None:
         if self._closed:
@@ -73,7 +108,7 @@ class ProfilePrewarmer:
         # Disabled installations have no polling task and import no model code.
         if _options(self._get_config()).get("enabled") is not True:
             return
-        if self._task is None:
+        if self._task is None or self._task.done():
             bind_model_observer(self)
             self._task = asyncio.create_task(self._run(), name="profile-prewarm")
             self._task.add_done_callback(self._completed)
@@ -86,7 +121,8 @@ class ProfilePrewarmer:
     def snapshot(self) -> dict[str, Any]:
         return {"state": self._state, "identity": self._identity,
                 "mode": self._mode, "channel_id": self._channel,
-                "attempts": self._attempts, "hits": self._hits, **self._metrics}
+                "attempts": self._attempts, "hits": self._hits,
+                "foreground_paused": self.foreground_paused, **self._metrics}
 
     def note_use(self, *, mode: str, channel_id: str, config: dict) -> bool:
         from jiuwenswarm.common.mode_matrix import is_code_profile_mode, is_team_mode
@@ -131,7 +167,7 @@ class ProfilePrewarmer:
             self._channel = str(options.get("channel_id", "web"))
             if self._mode not in {"agent", "code"} or self._channel not in {"web", "tui", "default"}:
                 self._state = "invalid_config"
-            limit = int(_number(options, "max_attempts", 2, 1, 3))
+            limit = int(_number(options, "max_attempts", 2, 1, 2))
             if self._state in {"ready", "budget_exceeded", "invalid_config"} or self._attempts >= limit:
                 await asyncio.sleep(1)
                 continue
@@ -139,11 +175,13 @@ class ProfilePrewarmer:
             if self._attempts:
                 delay = _number(options, "retry_delay_seconds", 5, 0, 60)
             await asyncio.sleep(delay)
+            await self._foreground_idle.wait()
             if self._stop.is_set() or _identity(self._get_config()) != identity:
                 continue
             async with self._admission.background_slot():
                 # Admission can wait behind foreground work/config updates.
-                if self._stop.is_set() or _identity(self._get_config()) != identity:
+                if (self._stop.is_set() or self.foreground_paused
+                        or _identity(self._get_config()) != identity):
                     continue
                 await self._attempt(config, options, identity)
 
@@ -152,37 +190,63 @@ class ProfilePrewarmer:
         self._state = "warming"
         self._metrics = {}
         began, cpu = time.monotonic(), time.process_time()
+        self._metrics["attempt_started_at_ns"] = time.perf_counter_ns()
         before = _rss()
+        self._budget = options, began, cpu, before
+        token = _ACTIVE_PREWARM.set(self)
         try:
-            timeout = _number(options, "timeout_seconds", 10, 0.1, 60)
+            timeout = _number(options, "timeout_seconds", 10, 0.1, 10)
             async with asyncio.timeout(timeout):
+                await self.checkpoint()
                 # AgentManager borrower pins belong to this finite attempt,
                 # rather than to the controller's polling lifetime.
                 model = await asyncio.create_task(self._prepare(self._mode, self._channel, config),
                                                   name="profile-prewarm-attempt")
+                await self.checkpoint()
             self._state = "ready" if _identity(self._get_config()) == identity else "stale"
             self._warm_model = model if self._state == "ready" else None
         except asyncio.CancelledError:
             self._state = "cancelled"
             raise
+        except PreparationDeferred as exc:
+            self._state = exc.state
+            self._warm_model = None
         except Exception as exc:  # noqa: BLE001 - optional work must not fail Runtime
             self._state = "failed"
             self._metrics["error_type"] = type(exc).__name__
             logger.warning("[Worker] profile prewarm attempt %d failed: %s",
                            self._attempts, type(exc).__name__)
         finally:
+            _ACTIVE_PREWARM.reset(token)
+            self._budget = None
             elapsed = time.monotonic() - began
             cpu_elapsed = time.process_time() - cpu
             delta_mb = max(0, _rss() - before) / (1024 * 1024)
             self._metrics.update(wall_ms=elapsed * 1000, cpu_ms=cpu_elapsed * 1000,
-                                 rss_delta_mb=delta_mb)
+                                 rss_delta_mb=delta_mb, attempt_completed_at_ns=time.perf_counter_ns())
             if self._state not in {"cancelled", "stale"} and (
-                cpu_elapsed > _number(options, "max_cpu_seconds", 5, 0.001, 60)
-                or delta_mb > _number(options, "max_rss_delta_mb", 256, 0.001, 2048)
-                or elapsed > _number(options, "timeout_seconds", 10, 0.1, 60)
+                cpu_elapsed > _number(options, "max_cpu_seconds", 5, 0.001, 5)
+                or delta_mb > _number(options, "max_rss_delta_mb", 256, 0.001, 256)
+                or elapsed > _number(options, "timeout_seconds", 10, 0.1, 10)
             ):
                 self._state = "budget_exceeded"
             logger.info("[Worker] profile_prewarm=%s", self.snapshot())
+
+    async def checkpoint(self) -> None:
+        await asyncio.sleep(0)
+        if self._closed or self._stop.is_set():
+            raise asyncio.CancelledError()
+        if _identity(self._get_config()) != self._identity:
+            raise PreparationDeferred("stale")
+        if self._budget is not None:
+            options, began, cpu, before = self._budget
+            if (time.monotonic() - began > _number(options, "timeout_seconds", 10, .1, 10)
+                    or time.process_time() - cpu > _number(options, "max_cpu_seconds", 5, .001, 5)
+                    or max(0, _rss() - before) / (1024 * 1024)
+                    > _number(options, "max_rss_delta_mb", 256, .001, 256)):
+                raise PreparationDeferred("budget_exceeded")
+        if self.foreground_paused or self._admission.background_paused:
+            raise PreparationDeferred("yielded_to_foreground")
 
     async def close(self) -> None:
         self._closed = True
@@ -191,4 +255,6 @@ class ProfilePrewarmer:
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
         self._warm_model = None
+        self._foreground_tokens.clear()
+        self._foreground_idle.set()
         unbind_model_observer(self)

@@ -27,6 +27,7 @@ class WorkerRuntime:
     image_task: asyncio.Task | None = None
     background_tasks: set[asyncio.Task] = field(default_factory=set)
     profile_prewarmer: Any = None
+    idle_import: Any = None
 
     def spawn(self, coroutine: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task:
         """Keep finite background notifications attached to this owner."""
@@ -51,6 +52,13 @@ class WorkerRuntime:
         self.stop_event.set()
         if self.profile_prewarmer is not None:
             await self.profile_prewarmer.close()
+        import_errors = []
+        for prefetch in (self.idle_import,):
+            if prefetch is not None:
+                try:
+                    await prefetch.close()
+                except TimeoutError as error:
+                    import_errors.append(error)
         owned = (self.image_task, self.proactive_task, self.teammate_task, self.zen_task, *self.background_tasks)
         tasks = list(dict.fromkeys(task for task in owned if task is not None))
         for task in tasks:
@@ -82,3 +90,8 @@ class WorkerRuntime:
         from jiuwenswarm.runtime.kernel import process_kernel
 
         await process_kernel().close()
+        from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import clear_blank_registration_cache
+
+        clear_blank_registration_cache()
+        if import_errors:
+            raise RuntimeError("Worker optional imports still running after resource cleanup") from import_errors[0]

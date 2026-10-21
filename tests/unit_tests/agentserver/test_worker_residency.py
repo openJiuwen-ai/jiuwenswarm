@@ -383,6 +383,11 @@ async def test_resident_service_pins_identity_even_after_failed_first_hello(monk
                 raise OSError("first Front disappeared while receiving HELLO")
 
         async def recv(self):
+            if not getattr(self, "accepted", False):
+                from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+                self.accepted = True
+                return startup_acceptance(self.frames[0])
             await runtime_started.wait()
             if self.index == 0:
                 raise OSError("Front restarted after Runtime loaded")
@@ -471,6 +476,11 @@ async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
             frames[self.position].append(frame)
 
         async def recv(self):
+            if not getattr(self, "accepted", False):
+                from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+                self.accepted = True
+                return startup_acceptance(frames[self.position][0])
             if self.position == 0:
                 disk["identity"] = "stub-new-disk-code"
                 raise OSError("Front detached")
@@ -502,7 +512,7 @@ async def test_resident_worker_startup_window_retries_without_spawning(monkeypat
     from jiuwenswarm.server.lifecycle import Readiness
     from jiuwenswarm.server.supervisor import runtime_supervisor as module
 
-    conn = SimpleNamespace(recv=AsyncMock(return_value={
+    conn = SimpleNamespace(send=AsyncMock(), close=AsyncMock(), recv=AsyncMock(return_value={
         "kind": KIND_HELLO, "protocol": module.PROTOCOL_VERSION,
         "data_scope": "scope", "code_identity": "code", "stub": False,
         "instance": "original-worker",
@@ -515,6 +525,8 @@ async def test_resident_worker_startup_window_retries_without_spawning(monkeypat
     monkeypatch.setattr(module, "WorkerProcess", process)
     monkeypatch.setattr(identity, "data_scope", lambda: "scope")
     monkeypatch.setattr(identity, "code_identity", lambda: "code")
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.identity_probe.probe_identity",
+                        AsyncMock(return_value=("code", None)))
     supervisor = module.RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), connect_timeout=.5)
     monkeypatch.setattr(supervisor, "_cancel_side_tasks", AsyncMock())
     monkeypatch.setattr(supervisor, "_start_side_tasks", Mock())

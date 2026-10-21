@@ -10,6 +10,7 @@ from typing import Any, Optional
 from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
+from jiuwenswarm.common.stage_timer import async_stage
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
@@ -100,6 +101,8 @@ _session_switch_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDiction
 
 class ExecutionRequests:
     """Request execution and durable mailbox handlers bound to one host."""
+
+    _stateless_fallback_agents: dict[str, Any]
 
     async def _dispatch_gateway_adapter_request(
         self,
@@ -1235,10 +1238,17 @@ class ExecutionRequests:
             return agent
         from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 
-        agent = JiuWenSwarm()  # 不调 create_instance，_adapter 保持 None
-        self._stateless_fallback_agents[channel_id] = agent
-        return agent
+        lock = getattr(self, "_stateless_fallback_lock", None)
+        if lock is None:
+            lock = self._stateless_fallback_lock = asyncio.Lock()
+        async with lock:
+            agent = self._stateless_fallback_agents.get(channel_id)
+            if agent is None:
+                agent = await asyncio.to_thread(JiuWenSwarm)
+                self._stateless_fallback_agents[channel_id] = agent
+            return agent
 
+    @async_stage("dispatch_turn_preparation")
     async def _prepare_code_mode_chat_turn(
         self,
         request: AgentRequest,

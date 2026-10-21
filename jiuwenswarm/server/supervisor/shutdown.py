@@ -23,30 +23,38 @@ def detach_front_process(pid: int) -> None:
     try:
         parent = psutil.Process(pid)
         children = parent.children(recursive=True)
-        by_pid = {child.pid: child for child in children}
-        retained = set()
-        fronts = []
-        for child in [parent, *children]:
+    except psutil.NoSuchProcess:
+        return
+    # A memory/tool subprocess can exit between enumeration and inspection.
+    # Its disappearance must not skip detaching the still-live Front.
+    records = {}
+    for child in [parent, *children]:
+        try:
             argv = child.cmdline()
-            module = argv[argv.index("-m") + 1] if "-m" in argv else ""
-            if module == "jiuwenswarm.server.worker.main":
-                retained.add(child.pid)
-            if module == "jiuwenswarm.server.app_agentserver" or "--desktop-run-agent" in argv:
-                fronts.append(child.pid)
-        if not fronts:
-            raise RuntimeError("Front detach refused a process without an AgentServer child")
-        for child in children:
             ancestor = child.ppid()
-            while ancestor in by_pid and ancestor not in retained:
-                ancestor = by_pid[ancestor].ppid()
-            if ancestor in retained:
-                retained.add(child.pid)
-        for child in reversed(children):
-            if child.pid not in retained:
-                try:
-                    child.terminate()
-                except psutil.NoSuchProcess:
-                    pass
+        except psutil.NoSuchProcess:
+            continue
+        module = argv[argv.index("-m") + 1] if "-m" in argv else ""
+        records[child.pid] = (child, ancestor, module, argv)
+    retained = {value for value, record in records.items()
+                if record[2] == "jiuwenswarm.server.worker.main"}
+    if not any(record[2] == "jiuwenswarm.server.app_agentserver" or "--desktop-run-agent" in record[3]
+               for record in records.values()):
+        raise RuntimeError("Front detach refused a process without an AgentServer child")
+    for child_pid, (_child, ancestor, _module, _argv) in records.items():
+        seen = set()
+        while ancestor in records and ancestor not in retained and ancestor not in seen:
+            seen.add(ancestor)
+            ancestor = records[ancestor][1]
+        if ancestor in retained:
+            retained.add(child_pid)
+    for child in reversed(children):
+        if child.pid not in retained:
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                pass
+    try:
         parent.terminate()
     except psutil.NoSuchProcess:
         pass
@@ -81,6 +89,9 @@ async def shutdown_resident_worker(*, timeout: float = 30.0) -> dict:
         import psutil
         worker = psutil.Process(int(hello["pid"]))
         created = worker.create_time()
+        from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+        await connection.send(startup_acceptance(hello))
         await connection.send({"kind": "shutdown"})
         while time.monotonic() < deadline:
             frame = await asyncio.wait_for(connection.recv(), max(.001, deadline - time.monotonic()))

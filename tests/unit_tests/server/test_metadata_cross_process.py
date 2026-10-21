@@ -8,8 +8,40 @@ import json
 import os
 import subprocess
 import sys
+import importlib
+from pathlib import Path
 
 import pytest
+
+
+@pytest.mark.parametrize("module_name", ["jiuwenswarm.server.runtime.session.session_metadata",
+                                        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata"])
+def test_external_replacement_during_read_never_stamps_stale_cache(monkeypatch, tmp_path, module_name):
+    metadata = importlib.import_module(module_name)
+    monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(metadata, "_METADATA_CACHE", {})
+    monkeypatch.setattr(metadata, "_CACHE_DISK_STAMPS", {})
+    monkeypatch.setattr(metadata, "_PENDING_FIELDS", {})
+    path = tmp_path / "race-session/metadata.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"session_id": "race-session", "title": "old"}), encoding="utf-8")
+    original = Path.read_text
+    replaced = False
+
+    def replace_after_read(current, *args, **kwargs):
+        nonlocal replaced
+        value = original(current, *args, **kwargs)
+        if current == path and not replaced:
+            replaced = True
+            replacement = path.with_suffix(".replacement")
+            replacement.write_text(json.dumps({"session_id": "race-session", "title": "external"}), encoding="utf-8")
+            os.replace(replacement, path)
+        return value
+
+    monkeypatch.setattr(Path, "read_text", replace_after_read)
+    result = metadata._read_metadata("race-session", lifecycle_state={"generation": 0}, archived=False)
+    assert result["title"] == "external"
+    assert metadata._read_metadata("race-session", lifecycle_state={"generation": 0}, archived=False)["title"] == "external"
 
 
 def test_front_fields_survive_worker_cache_and_queued_updates(tmp_path):

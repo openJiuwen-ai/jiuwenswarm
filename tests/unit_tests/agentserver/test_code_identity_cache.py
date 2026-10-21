@@ -558,6 +558,9 @@ async def test_bad_global_gitconfig_does_not_block_real_worker_hello(tmp_path, m
         hello = await asyncio.wait_for(conn.recv(), 5)
         assert hello["kind"] == "hello"
         assert hello["code_identity"] == worker.launch_identity
+        from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+        await conn.send(startup_acceptance(hello))
         assert (await asyncio.wait_for(conn.recv(), 5))["kind"] == "readiness"
         await conn.send({"kind": "shutdown"})
         assert (await asyncio.wait_for(conn.recv(), 5))["ok"] is True

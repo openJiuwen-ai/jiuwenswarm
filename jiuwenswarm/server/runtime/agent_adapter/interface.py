@@ -101,11 +101,7 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_env_file,
 )
-from jiuwenswarm.server.runtime.a2ui.integration import (
-    TeamA2UIBlockBuffer,
-    finalize_assistant_response_if_a2ui,
-)
-from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
+from jiuwenswarm.server.runtime.agent_adapter.deferred_capabilities import deferred
 from jiuwenswarm.agents.harness.common.auto_memory import (
     _execute_auto_memory_extraction,
 )
@@ -117,6 +113,16 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_EXTERNAL,
     HOST_USER_ORIGIN_INTERNAL,
 )
+
+TeamA2UIBlockBuffer = deferred("jiuwenswarm.server.runtime.a2ui.integration", "TeamA2UIBlockBuffer")
+should_finalize_a2ui_content = deferred(
+    "jiuwenswarm.server.runtime.a2ui.runtime.finalizer", "should_finalize_a2ui_content")
+
+
+async def finalize_assistant_response_if_a2ui(*args, **kwargs):
+    from jiuwenswarm.server.runtime.a2ui.integration import finalize_assistant_response_if_a2ui as finalize
+
+    return await finalize(*args, **kwargs)
 
 
 def _with_request_runtime_context(
@@ -1395,7 +1401,11 @@ class JiuWenSwarm:
             await self.reload_agent_config(config_base=config, env_overrides={})
 
     async def prepare_kernel(self, *, mode: str, config_base: dict[str, Any] | None = None) -> Any:
+        from jiuwenswarm.server.worker.profile_prewarm import prewarm_checkpoint
+
+        await prewarm_checkpoint()
         adapter = self._ensure_adapter(mode="code" if mode.startswith("code") else "agent")
+        await prewarm_checkpoint()
         prepare = getattr(adapter, "prepare_kernel", None)
         if callable(prepare):
             if config_base is None:

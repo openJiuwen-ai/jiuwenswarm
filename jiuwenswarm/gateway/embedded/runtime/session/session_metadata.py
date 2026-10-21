@@ -77,15 +77,15 @@ _COLLECT_INFLIGHT: dict[tuple[str, str], Future] = {}
 _METADATA_CACHE: dict[str, dict[str, Any]] = {}
 _METADATA_CACHE_GENERATIONS: dict[str, int] = {}
 _CACHE_LOCK = threading.Lock()
-_CACHE_DISK_STAMPS: dict[str, tuple[int, int] | None] = {}
+_CACHE_DISK_STAMPS: dict[str, tuple[int, ...] | None] = {}
 _PENDING_FIELDS: dict[str, dict[str, tuple[int, Any]]] = {}
 _WRITE_REVISION = 0
 
 
-def _disk_stamp(session_id: str) -> tuple[int, int] | None:
+def _disk_stamp(session_id: str) -> tuple[int, ...] | None:
     try:
         stat = (get_agent_sessions_dir() / session_id / "metadata.json").stat()
-        return stat.st_mtime_ns, stat.st_size
+        return stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns, stat.st_ino
     except OSError:
         return None
 
@@ -96,7 +96,9 @@ def _changed_fields(before: dict[str, Any], after: dict[str, Any]) -> frozenset[
 
 
 def _refresh_written_cache(session_id: str, written: dict[str, Any], options: _MetadataWriteOptions) -> None:
-    stamp = _disk_stamp(session_id)
+    # Another process may have written after our atomic replacement. Force a
+    # disk comparison before trusting this write snapshot on the next read.
+    stamp = None
     with _CACHE_LOCK:
         pending = _PENDING_FIELDS.get(session_id, {})
         if options.write_revision:
@@ -502,8 +504,15 @@ def _read_metadata(
     # replaces the whole file, so an unlocked read can land inside the
     # replacement window and observe empty content.
     try:
-        with _FILE_LOCK:
-            raw = fpath.read_text(encoding="utf-8")
+        for _attempt in range(3):
+            with _FILE_LOCK:
+                before_stamp = _disk_stamp(session_id)
+                raw = fpath.read_text(encoding="utf-8")
+                read_stamp = _disk_stamp(session_id)
+            if before_stamp == read_stamp:
+                break
+        else:
+            raise OSError("metadata changed repeatedly during read")
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "failed to read metadata.json: %s (session_id=%s)", exc, session_id,
@@ -538,7 +547,7 @@ def _read_metadata(
             data.update({key: value[1] for key, value in _PENDING_FIELDS.get(session_id, {}).items()})
             _METADATA_CACHE[session_id] = data.copy()
             _METADATA_CACHE_GENERATIONS[session_id] = generation
-            _CACHE_DISK_STAMPS[session_id] = _disk_stamp(session_id)
+            _CACHE_DISK_STAMPS[session_id] = read_stamp
     return data
 
 
