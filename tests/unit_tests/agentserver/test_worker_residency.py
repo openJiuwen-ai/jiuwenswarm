@@ -300,6 +300,39 @@ async def test_resume_does_not_treat_attach_execution_as_busy(real_state):
     assert any(item["request_id"] == "observer" for item in snapshot["executions"])
 
 
+@pytest.mark.parametrize("method", [ReqMethod.COMMAND_GOAL, ReqMethod.SESSION_PLAN_STATUS,
+                                   ReqMethod.SESSION_ASSETS_LIST, ReqMethod.HISTORY_GET])
+def test_pending_observation_does_not_mark_session_as_executing(method):
+    store = WorkerEventStore()
+    observer = request("observation", method=method)
+    record = store.register(observer, "observation-dispatch")
+    snapshot = store.snapshot(observer)
+    assert snapshot["is_processing"] is False
+    assert snapshot["dispatches"][0]["active"] is True
+    assert record.active is True
+
+    store.append({"request_id": observer.request_id, "body": {
+        "event_type": "chat.processing_status", "is_processing": True,
+    }}, record.dispatch_id)
+    assert store.snapshot(observer)["is_processing"] is True
+    store.append({"request_id": observer.request_id, "body": {
+        "event_type": "chat.processing_status", "is_processing": False,
+    }}, record.dispatch_id)
+    assert store.snapshot(observer)["is_processing"] is False
+
+
+@pytest.mark.parametrize("method", [ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME,
+                                   ReqMethod.CHAT_ANSWER, ReqMethod.CHAT_SWARMFLOW_REPLY])
+def test_queued_input_keeps_session_busy_before_execution_entry(method):
+    store = WorkerEventStore()
+    queued = request("queued-input", method=method)
+    record = store.register(queued, "queued-dispatch")
+    assert record.entered_at_ns is None
+    assert store.snapshot(queued)["is_processing"] is True
+    store.finish(record.dispatch_id)
+    assert store.snapshot(queued)["is_processing"] is False
+
+
 def test_summary_turn_end_does_not_finish_owner_execution():
     store = WorkerEventStore()
     record = store.register(request(), "owner-dispatch")

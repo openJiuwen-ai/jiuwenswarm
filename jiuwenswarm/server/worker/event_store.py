@@ -212,8 +212,16 @@ class WorkerEventStore:
             "worker_instance": self.instance,
             "cursor": self._sequence,
             "history_required": after < self._expired_sequence,
+            # Management RPCs can queue during startup without doing session
+            # work. A busy snapshot here can strand the first UI input in its
+            # task queue before chat.send is ever submitted.
             "is_processing": any(
-                record.active or record.is_processing for record in records if not record.is_passive_subscription
+                record.is_processing or (
+                    record.active and record.request.req_method in {
+                        ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME, ReqMethod.CHAT_ANSWER,
+                        ReqMethod.CHAT_SWARMFLOW_REPLY,
+                    }
+                ) for record in records if not record.is_passive_subscription
             ),
             "dispatches": [{
                 "dispatch_id": record.dispatch_id,
