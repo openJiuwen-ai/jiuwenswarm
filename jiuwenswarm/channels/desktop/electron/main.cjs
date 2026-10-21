@@ -1133,8 +1133,12 @@ function emitLayoutInvalidated() {
 // 只看有没有空格不够：纯中文裸词（如"清华大学"）会被 WHATWG URL 解析成
 // xn-- punycode 假域名（https://xn--xkry9kk1bz66a/），DNS 必然失败。
 function looksLikeBrowserHost(raw) {
+  // 显式 http(s) 优先于空白判定：含字面空格的 URL（如复制自邮件正文的
+  // https://example.com/foo bar）应交给 URL 解析器编码成 %20 正常导航，
+  // 而不是拿去检索——旧实现的豁免语义（/\s/ && !/^https?:\/\//）必须保留。
+  if (/^https?:\/\//i.test(raw)) return true;
   if (/\s/.test(raw)) return false;
-  if (/^https?:/i.test(raw) || /^about:/i.test(raw)) return true;
+  if (/^about:/i.test(raw)) return true;
   // IPv4：每段需 ≤255（WHATWG 会拒绝 999.1.1.1 这类地址，Chrome 对其走搜索）。
   if (/^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:[/?#].*)?$/.test(raw)) {
     return raw.split(/[/:?#]/)[0].split('.').every(octet => Number(octet) <= 255);
@@ -1300,7 +1304,7 @@ async function ensureBrowserView(sessionId, lease = null) {
   view.setBounds({ x: 0, y: 0, ...entry.viewportSize });
   view.setVisible(false);
   applyBrowserBounds(entry, lastBrowserBounds?.width > 0 && lastBrowserBounds?.height > 0
-    ? lastBrowserBounds : { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height });
+    ? lastBrowserBounds : { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height }, 'create-init');
   if (lease) entry.leases.set(lease.leaseId, lease.ownerPid);
   browserViews.set(key, entry);
   entry.ready = initializeBrowserView(entry).catch(error => {
@@ -1385,9 +1389,12 @@ async function initializeBrowserView(entry) {
   return entry;
 }
 
-function applyBrowserBounds(entry, bounds) {
+function applyBrowserBounds(entry, bounds, source = 'unknown') {
   if (!entry?.view || !mainWindow || mainWindow.isDestroyed()) return { x: 0, y: 0, width: 0, height: 0 };
-  if (!(Number(bounds?.width) > 0 && Number(bounds?.height) > 0)) return entry.view.getBounds();
+  if (!(Number(bounds?.width) > 0 && Number(bounds?.height) > 0)) {
+    console.log('[browser-bounds]', 'skip-invalid', { panelId: entry.panelId, source, requested: bounds });
+    return entry.view.getBounds();
+  }
   const contentBounds = mainWindow.getContentBounds();
   // Renderer rectangles are expressed in CSS pixels. Electron View bounds
   // use device-independent pixels, which only match CSS pixels at 100% zoom.
@@ -1398,7 +1405,11 @@ function applyBrowserBounds(entry, bounds) {
   const y = Math.max(0, Math.min(scaledY, contentBounds.height));
   const width = Math.max(0, Math.min(Math.round((Number(bounds?.width) || 0) * zoomFactor), contentBounds.width - x));
   const height = Math.max(0, Math.min(Math.round((Number(bounds?.height) || 0) * zoomFactor), contentBounds.height - y));
-  if (width === 0 || height === 0) return entry.view.getBounds();
+  if (width === 0 || height === 0) {
+    console.log('[browser-bounds]', 'skip-clamped-zero', { panelId: entry.panelId, source, requested: bounds, clamped: { x, y, width, height } });
+    return entry.view.getBounds();
+  }
+  console.log('[browser-bounds]', 'apply', { panelId: entry.panelId, source, requested: bounds, applied: { x, y, width, height }, zoomFactor });
   entry.view.setBounds({ x, y, width, height });
   // Native hidden views can have a zero layout viewport on Windows. Keep the
   // renderer's desktop viewport in sync with the pane even when not displayed.
@@ -1443,7 +1454,7 @@ function setBrowserPaneVisible(sessionId, visible, focus = true) {
       if (!entry || activePaneSessionId !== key) return;
       entry.visible = true;
       entry.view.setVisible(true);
-      if (lastBrowserBounds) applyBrowserBounds(entry, lastBrowserBounds);
+      if (lastBrowserBounds) applyBrowserBounds(entry, lastBrowserBounds, 'activate-cache');
       // focus=false 用于模态弹窗关闭后的恢复显示：不抢主窗口焦点。
       if (entry.visible && focus) entry.view.webContents.focus();
       emitBrowserState(entry);
