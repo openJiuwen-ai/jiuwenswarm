@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -829,14 +830,20 @@ async def handle_team_session_reset(ctx: RequestContext) -> None:
         team_manager = get_team_manager(
             str(metadata.get("channel_id") or request.channel_id or "")
         )
+        reset_t0 = time.perf_counter()
         # 1) Clear shell-side runtime tracking + first-request flag first.
         #    stop_runner=False: the Runner-owned runtime is stopped below by
         #    reset_session itself, mirroring delete_team's force-stop.
         try:
+            stop_shell_t0 = time.perf_counter()
             await team_manager.stop_session_runtime(
                 session_id,
                 reason="team.session.reset",
                 stop_runner=False,
+            )
+            logger.info(
+                "[TeamHandlers] lifecycle_timing reset reset_stop_shell duration_ms=%.0f",
+                (time.perf_counter() - stop_shell_t0) * 1000,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -848,10 +855,15 @@ async def handle_team_session_reset(ctx: RequestContext) -> None:
         # 2) openjiuwen session-scoped reset: drop session tables + release
         #    checkpoint + remove session worktrees, keep team_info/roster/binding.
         try:
+            reset_runner_t0 = time.perf_counter()
             ok = await Runner.reset_agent_team_session(
                 team_name=runtime_team_name,
                 session_id=session_id,
                 force=True,
+            )
+            logger.info(
+                "[TeamHandlers] lifecycle_timing reset reset_runner duration_ms=%.0f",
+                (time.perf_counter() - reset_runner_t0) * 1000,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -861,6 +873,10 @@ async def handle_team_session_reset(ctx: RequestContext) -> None:
                 exc,
             )
             ok = False
+        logger.info(
+            "[TeamHandlers] lifecycle_timing reset reset_total duration_ms=%.0f",
+            (time.perf_counter() - reset_t0) * 1000,
+        )
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,

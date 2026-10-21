@@ -2441,7 +2441,13 @@ class TeamManager:
             caller,
             session_id,
         )
+        cleanup_t0 = time.perf_counter()
         await self._cleanup_runtime_locals(session_id)
+        if caller == "cancel":
+            logger.info(
+                "[TeamManager] lifecycle_timing cancel cleanup_locals duration_ms=%.0f",
+                (time.perf_counter() - cleanup_t0) * 1000,
+            )
         logger.info(
             "[TeamManager] %s: cleanup done, clearing active, session_id=%s",
             caller,
@@ -2571,9 +2577,14 @@ class TeamManager:
         follow-up 归一化），不得把新消息注入垂死旧回合。
         """
         self._begin_cancel_in_flight(session_id)
+        cancel_t0 = time.perf_counter()
         try:
             return await self._cancel_session_runtime_impl(session_id, reason)
         finally:
+            logger.info(
+                "[TeamManager] lifecycle_timing cancel cancel_total duration_ms=%.0f",
+                (time.perf_counter() - cancel_t0) * 1000,
+            )
             # 兜底清除 cancel_requested：impl 异常退出也要解除对 pause 的
             # 抑制，否则后续 pause 会被永久抢占
             self._cancel_requested.pop(session_id, None)
@@ -2608,11 +2619,18 @@ class TeamManager:
         )
 
         language = prompt_language_from_team_agent(team_agent)
+        settle_t0 = time.perf_counter() if team_agent is not None else None
         await self._settle_live_cancelled_permission_interrupt(
             session_id,
             team_agent,
             language=language,
         )
+        # Skip the no-agent instant path; HITL settle can be slow when live.
+        if settle_t0 is not None:
+            logger.info(
+                "[TeamManager] lifecycle_timing cancel permission_settle duration_ms=%.0f",
+                (time.perf_counter() - settle_t0) * 1000,
+            )
 
         # 世代校验点 1：上面的 settle 是慢 await（Runner 清理可达数十秒），
         # 期间新回合可能已注册。世代变了 → 本次 cancel 迟到：放弃一切拆除，
@@ -2633,8 +2651,13 @@ class TeamManager:
         if lock.locked():
             team_name = self._resolve_session_team_name(session_id)
             if team_name:
+                stop_t0 = time.perf_counter()
                 await self._stop_runner_team_runtime(
                     session_id, team_name, "cancel: forced"
+                )
+                logger.info(
+                    "[TeamManager] lifecycle_timing cancel stop_runner duration_ms=%.0f",
+                    (time.perf_counter() - stop_t0) * 1000,
                 )
 
 
@@ -2682,8 +2705,13 @@ class TeamManager:
                 # Stop Runner-owned runtime first before cancelling stream task
                 # to avoid gate/teardown races and ensure pool removal
                 if team_name:
+                    stop_t0 = time.perf_counter()
                     runner_stopped = await self._stop_runner_team_runtime(
                         session_id, team_name, "cancel"
+                    )
+                    logger.info(
+                        "[TeamManager] lifecycle_timing cancel stop_runner duration_ms=%.0f",
+                        (time.perf_counter() - stop_t0) * 1000,
                     )
                     await self._stop_runner_team_agent_transport(session_id)
 

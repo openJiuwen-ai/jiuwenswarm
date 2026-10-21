@@ -1530,6 +1530,7 @@ async def _await_runner_pool_release(team_name: str, session_id: str) -> None:
     A paused entry is left alone so the next stream can resume it.
     """
     deadline = time.monotonic() + _POOL_RELEASE_TIMEOUT_S
+    wait_t0: float | None = None
     while True:
         try:
             infos = await Runner.list_active_teams()
@@ -1541,7 +1542,16 @@ async def _await_runner_pool_release(team_name: str, session_id: str) -> None:
             )
             return
         if not any(_pool_entry_running(info, team_name, session_id) for info in infos):
+            # Pure poll wait only — do not fold force-stop into this label.
+            if wait_t0 is not None:
+                logger.info(
+                    "[TeamHelpers] lifecycle_timing start await_pool_release "
+                    "outcome=released duration_ms=%.0f",
+                    (time.perf_counter() - wait_t0) * 1000,
+                )
             return
+        if wait_t0 is None:
+            wait_t0 = time.perf_counter()
         if time.monotonic() >= deadline:
             logger.warning(
                 "[TeamHelpers] runner pool still running before first stream; stopping: "
@@ -1549,6 +1559,14 @@ async def _await_runner_pool_release(team_name: str, session_id: str) -> None:
                 session_id,
                 team_name,
             )
+            # Emit wait duration before force-stop so the two costs stay comparable
+            # to the released path (same label = poll wait only).
+            logger.info(
+                "[TeamHelpers] lifecycle_timing start await_pool_release "
+                "outcome=timeout duration_ms=%.0f",
+                (time.perf_counter() - wait_t0) * 1000,
+            )
+            stop_t0 = time.perf_counter()
             try:
                 await Runner.stop_agent_team(team_name=team_name, session_id=session_id)
             except Exception as exc:
@@ -1557,6 +1575,10 @@ async def _await_runner_pool_release(team_name: str, session_id: str) -> None:
                     session_id,
                     exc,
                 )
+            logger.info(
+                "[TeamHelpers] lifecycle_timing start await_pool_force_stop duration_ms=%.0f",
+                (time.perf_counter() - stop_t0) * 1000,
+            )
             return
         await asyncio.sleep(_POOL_RELEASE_POLL_S)
 
@@ -2507,7 +2529,12 @@ async def process_team_message_stream(
                     session_id,
                     rid,
                 )
+                wait_t0 = time.perf_counter()
                 settled = await _wait_team_cancel_settled(team_manager, session_id)
+                logger.info(
+                    "[TeamHelpers] lifecycle_timing followup wait_cancel_settled duration_ms=%.0f",
+                    (time.perf_counter() - wait_t0) * 1000,
+                )
                 logger.info(
                     "[TeamHelpers] follow-up resume after cancel teardown wait: "
                     "channel_id=%s session_id=%s request_id=%s settled=%s",
@@ -3289,7 +3316,12 @@ async def _consume_stream_with_query(
             stream_aclose = getattr(team_stream, "aclose", None)
             if callable(stream_aclose):
                 try:
+                    aclose_t0 = time.perf_counter()
                     await stream_aclose()
+                    logger.info(
+                        "[TeamHelpers] lifecycle_timing finalize stream_aclose duration_ms=%.0f",
+                        (time.perf_counter() - aclose_t0) * 1000,
+                    )
                     aclose_ok = True
                 except Exception:
                     logger.debug(
