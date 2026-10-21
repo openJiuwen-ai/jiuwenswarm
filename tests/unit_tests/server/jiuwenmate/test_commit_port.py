@@ -583,7 +583,7 @@ async def test_delivery_service_strips_handoff_tokens_from_private_messages(host
     assert "mention_targets" not in sent[0]
 
 
-async def test_jm11_confirmed_reply_archive_retries_without_resending(host, tmp_path):
+async def test_group_confirmed_reply_archive_retries_without_resending(host, tmp_path):
     from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
     from jiuwenswarm.server.jiuwenmate.conversation_resources import ConversationResources
     from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
@@ -866,7 +866,7 @@ async def test_closed_queue_rejects_ordinary_events_but_writes_what_was_queued(t
     assert [event.local_seq for event in log] == [1]
 
 
-async def test_jm11_failed_archive_batch_does_not_starve_later_groups():
+async def test_group_failed_archive_batch_does_not_starve_later_groups():
     from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
 
     jobs = [{"updated_at": NOW.isoformat(), "delivery_id": f"d{index:03}"} for index in range(101)]

@@ -417,7 +417,7 @@ class MessageHandler(ABC):
         # path; Feishu's pre-handler adapter uses this method as a tri-state gate.
         self._persistent_group_fanout = None
         # JM-09 uses a separate server-push path and returns platform receipts over E2A.
-        self._jm09_delivery_handler = None
+        self._result_delivery_handler = None
 
         # 初始化 Gateway hooks handler
         try:
@@ -437,12 +437,12 @@ class MessageHandler(ABC):
         """Inject the optional JM-08 event router without changing personal mode."""
         self._persistent_group_fanout = fanout
 
-    def set_jm09_delivery_handler(self, handler: Any | None) -> None:
+    def set_result_delivery_handler(self, handler: Any | None) -> None:
         """Inject the Gateway's exact-app JM-09 delivery route."""
-        self._jm09_delivery_handler = handler
+        self._result_delivery_handler = handler
 
-    def set_jm11_group_handler(self, handler: Any | None) -> None:
-        self._jm11_group_handler = handler
+    def set_feishu_group_handler(self, handler: Any | None) -> None:
+        self._feishu_group_handler = handler
 
     async def handle_persistent_feishu_event(
         self, event: FeishuInboundEvent
@@ -3348,10 +3348,10 @@ class MessageHandler(ABC):
         ):
             # Feishu membership and message reads can take seconds. They must not
             # hold the ordered push lock, or the next colleague's check times out.
-            tasks = getattr(self, "_jm11_inspect_tasks", None)
+            tasks = getattr(self, "_feishu_group_inspect_tasks", None)
             if tasks is None:
-                tasks = self._jm11_inspect_tasks = set()
-            task = asyncio.create_task(self._handle_jm11_group_push(chunk.payload))
+                tasks = self._feishu_group_inspect_tasks = set()
+            task = asyncio.create_task(self._handle_feishu_group_push(chunk.payload))
             tasks.add(task)
             task.add_done_callback(tasks.discard)
             return
@@ -3361,14 +3361,14 @@ class MessageHandler(ABC):
         ):
             if isinstance(chunk.payload.get("file"), dict):
                 # An upload may take minutes; it must not hold the ordered push lock.
-                tasks = getattr(self, "_jm09_delivery_tasks", None)
+                tasks = getattr(self, "_result_delivery_tasks", None)
                 if tasks is None:
-                    tasks = self._jm09_delivery_tasks = set()
-                task = asyncio.create_task(self._handle_jm09_delivery_push(chunk.payload))
+                    tasks = self._result_delivery_tasks = set()
+                task = asyncio.create_task(self._handle_result_delivery_push(chunk.payload))
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
             else:
-                await self._handle_jm09_delivery_push(chunk.payload)
+                await self._handle_result_delivery_push(chunk.payload)
             return
         rid = str(chunk.request_id or "")
         if await self._handle_login_credential_refresh_push(chunk):
@@ -3488,14 +3488,14 @@ class MessageHandler(ABC):
             _push_app_id,
         )
 
-    async def _handle_jm11_group_push(self, payload: dict[str, Any]) -> None:
+    async def _handle_feishu_group_push(self, payload: dict[str, Any]) -> None:
         from jiuwenswarm.common.e2a.models import E2AEnvelope
         from jiuwenswarm.common.schema.message import ReqMethod
 
         query_id = payload.get("query_id")
         if not isinstance(query_id, str) or not query_id:
             return
-        handler = getattr(self, "_jm11_group_handler", None)
+        handler = getattr(self, "_feishu_group_handler", None)
         result = {"status": "unknown"}
         try:
             if callable(handler):
@@ -3511,7 +3511,7 @@ class MessageHandler(ABC):
         except Exception:
             logger.warning("[JM-11] membership response unavailable")
 
-    async def _handle_jm09_delivery_push(self, payload: dict[str, Any]) -> None:
+    async def _handle_result_delivery_push(self, payload: dict[str, Any]) -> None:
         """Send a persistent result through Gateway and return its platform receipt over E2A."""
         from uuid import uuid4
 
@@ -3523,7 +3523,7 @@ class MessageHandler(ABC):
         if not isinstance(delivery_id, str) or not delivery_id.strip() or stage != "send":
             return
 
-        handler = getattr(self, "_jm09_delivery_handler", None)
+        handler = getattr(self, "_result_delivery_handler", None)
         if not callable(handler):
             result: dict[str, Any] = {"outcome": "pending", "error_code": "CHANNEL_ROUTE_UNAVAILABLE"}
         else:
