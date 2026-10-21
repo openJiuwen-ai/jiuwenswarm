@@ -1289,8 +1289,44 @@ def test_successful_end_result_bypasses_process_display_text_limit():
     }
 
 
-def test_successful_end_result_keeps_json_shape_limit(monkeypatch):
-    monkeypatch.setattr(stream_router_module, "MAX_JSON_NODES", 4)
+@pytest.mark.parametrize("event", ["summary_response", "error"])
+@pytest.mark.parametrize("as_json", [False, True])
+def test_end_result_accepts_large_citation_structure(event, as_json):
+    fields = (
+        "name", "url", "title", "content", "chunk", "source",
+        "publish_time", "score", "from", "id", "reference_index",
+    )
+    # The failed eight-chapter run returned 1,466 citation instances. Each
+    # citation contributes twelve traversal nodes even with empty values.
+    result = {
+        "response_content": "# Final",
+        "citation_messages": {
+            "code": 0,
+            "msg": "success",
+            "data": [dict.fromkeys(fields, "") for _ in range(1466)],
+        },
+        "exception_info": "research warning" if event == "error" else "",
+    }
+    state = RouterState()
+
+    route_chunk(
+        {
+            "agent": "end",
+            "event": event,
+            "section_idx": "0",
+            "content": json.dumps(result) if as_json else result,
+        },
+        state,
+    )
+
+    assert state.final_report_started is (event == "summary_response")
+
+
+@pytest.mark.parametrize("event", ["summary_response", "error"])
+def test_end_result_keeps_terminal_json_shape_limit(monkeypatch, event):
+    monkeypatch.setattr(
+        stream_router_module, "MAX_TERMINAL_RESULT_JSON_NODES", 4,
+    )
     content = json.dumps({
         "response_content": "# Final",
         "metadata": [1, 2, 3],
@@ -1300,12 +1336,58 @@ def test_successful_end_result_keeps_json_shape_limit(monkeypatch):
         route_chunk(
             {
                 "agent": "end",
-                "event": "summary_response",
+                "event": event,
                 "section_idx": "0",
                 "content": content,
             },
             RouterState(),
         )
+
+
+def test_process_chunk_keeps_original_json_node_limit():
+    with pytest.raises(ValueError, match="deepresearch_router_limit_exceeded"):
+        route_chunk(
+            {"agent": "outline", "content": [None] * 16_384},
+            RouterState(),
+        )
+
+
+@pytest.mark.parametrize("event", ["summary_response", "error"])
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("node_count", [100_000, 100_001])
+def test_end_result_enforces_actual_terminal_node_boundary(event, as_json, node_count):
+    # Root object, response string and metadata list contribute three nodes.
+    result = {"response_content": "# Final", "metadata": [None] * (node_count - 3)}
+    chunk = {
+        "agent": "end",
+        "event": event,
+        "content": json.dumps(result) if as_json else result,
+    }
+    state = RouterState()
+
+    if node_count > 100_000:
+        with pytest.raises(ValueError, match="deepresearch_router_limit_exceeded"):
+            route_chunk(chunk, state)
+        assert state.final_report_started is False
+    else:
+        route_chunk(chunk, state)
+        assert state.final_report_started is (event == "summary_response")
+
+
+@pytest.mark.parametrize("event", ["summary_response", "error"])
+@pytest.mark.parametrize("violation", ["text", "depth", "cycle"])
+def test_end_result_keeps_other_safety_limits(monkeypatch, event, violation):
+    result = {"response_content": "# Final"}
+    if violation == "text":
+        monkeypatch.setattr(stream_router_module, "MAX_TERMINAL_RESULT_TEXT_CHARS", 16)
+        result["response_content"] = "x" * 17
+    elif violation == "depth":
+        result["metadata"] = _deep_json(65)
+    else:
+        result["metadata"] = result
+
+    with pytest.raises(ValueError, match="deepresearch_router_limit_exceeded"):
+        route_chunk({"agent": "end", "event": event, "content": result}, RouterState())
 
 
 def test_end_result_with_error_event_does_not_crash():

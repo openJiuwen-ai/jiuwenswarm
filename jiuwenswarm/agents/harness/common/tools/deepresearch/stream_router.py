@@ -87,6 +87,8 @@ MAX_STATE_ENTRIES = 256
 MAX_IDENTIFIER_CHARS = 1024
 MAX_CHUNK_TEXT_CHARS = 1_048_576
 MAX_TERMINAL_RESULT_TEXT_CHARS = 16 * 1024 * 1024
+# Match the stream protocol's node budget for citation-rich final results.
+MAX_TERMINAL_RESULT_JSON_NODES = 100_000
 MAX_ACCUMULATED_TEXT_CHARS = 1_048_576
 MAX_JSON_DEPTH = 64
 MAX_JSON_NODES = 16_384
@@ -191,9 +193,11 @@ def _validate_identifier(value: Any) -> str:
 
 
 def _validate_json_shape(
-    value: Any, *, max_text_chars: int = MAX_CHUNK_TEXT_CHARS
+    value: Any, *, max_text_chars: int = MAX_CHUNK_TEXT_CHARS,
+    max_nodes: int | None = None,
 ) -> int:
     """Bound container traversal without recursion or copying caller data."""
+    node_limit = MAX_JSON_NODES if max_nodes is None else max_nodes
     stack: list[tuple[Any, int, bool]] = [(value, 0, False)]
     active: set[int] = set()
     nodes = 0
@@ -204,7 +208,7 @@ def _validate_json_shape(
             active.discard(id(current))
             continue
         nodes += 1
-        if nodes > MAX_JSON_NODES or depth > MAX_JSON_DEPTH:
+        if nodes > node_limit or depth > MAX_JSON_DEPTH:
             raise ValueError(ROUTER_LIMIT_ERROR)
         if isinstance(current, str):
             if len(current) > max_text_chars:
@@ -792,10 +796,10 @@ def _can_start_final_report(state: RouterState, agent: str) -> bool:
 
 
 def _is_successful_workflow_end(chunk: dict, agent: str, event: str) -> bool:
-    """Recognize the SDK EndNode result emitted after the workflow has finished."""
+    """Validate SDK EndNode results and recognize successful completion."""
     if (
         agent != "end"
-        or event != _SUMMARY_RESPONSE_EVENT
+        or event not in {_SUMMARY_RESPONSE_EVENT, "error"}
         or str(chunk.get("section_idx", "0")).strip() not in {"", "0"}
     ):
         return False
@@ -803,15 +807,18 @@ def _is_successful_workflow_end(chunk: dict, agent: str, event: str) -> bool:
     _validate_json_shape(
         content,
         max_text_chars=MAX_TERMINAL_RESULT_TEXT_CHARS,
+        max_nodes=MAX_TERMINAL_RESULT_JSON_NODES,
     )
     result = _as_json_object(content)
     if result is not None:
         _validate_json_shape(
             result,
             max_text_chars=MAX_TERMINAL_RESULT_TEXT_CHARS,
+            max_nodes=MAX_TERMINAL_RESULT_JSON_NODES,
         )
     return bool(
-        result
+        event == _SUMMARY_RESPONSE_EVENT
+        and result
         and isinstance(result.get("response_content"), str)
         and result["response_content"].strip()
         and not result.get("exception_info")
