@@ -608,12 +608,14 @@ def _config_lock_path(config_path: Path) -> Path:
 
 
 @contextmanager
-def config_write_lock(*, lock_timeout: float = 10.0):
+def config_write_lock(*, lock_timeout: float = 10.0, config_path: Path | None = None):
     """Share the Global write boundary with layered permission transactions."""
     if not _CONFIG_WRITE_LOCK.acquire(timeout=lock_timeout):
         raise TimeoutError("config write lock timed out")
     try:
-        with portalocker.Lock(str(_config_lock_path(CONFIG_YAML_PATH)), timeout=lock_timeout):
+        with portalocker.Lock(
+            str(_config_lock_path(config_path or CONFIG_YAML_PATH)), timeout=lock_timeout
+        ):
             yield
     finally:
         _CONFIG_WRITE_LOCK.release()
@@ -3325,42 +3327,42 @@ def migrate_config_from_template(
         return False
 
     template_data = load_yaml_round_trip(template_path)
-    user_data = load_yaml_round_trip(user_config_path)
-
     if not isinstance(template_data, dict):
         return False
 
-    if user_data is None:
-        user_data = {}
+    with config_write_lock(config_path=user_config_path):
+        if not user_config_path.exists():
+            return False
+        user_data = load_yaml_round_trip(user_config_path)
+        if user_data is None:
+            user_data = {}
 
-    # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
-    # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
-    _migrate_legacy_agent_submode_memory(user_data)
-    _migrate_legacy_kv_cache_affinity_config(user_data)
+        # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
+        # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
+        _migrate_legacy_agent_submode_memory(user_data)
+        _migrate_legacy_kv_cache_affinity_config(user_data)
 
-    # Deep merge: template provides defaults, user values preserved.
-    # user_data is updated in place, which keeps comments and formatting.
-    changes = _deep_merge(template_data, user_data, prune=prune)
+        # Deep merge: template provides defaults, user values preserved.
+        # user_data is updated in place, which keeps comments and formatting.
+        changes = _deep_merge(template_data, user_data, prune=prune)
 
-    # Guard against an empty result overwriting a valid user config
-    if not user_data:
+        # Guard against an empty result overwriting a valid user config
+        if not user_data:
+            return False
+
+        # Write the program version with any changes to the merged config.
+        from jiuwenswarm.common._build_config import VERSION
+
+        if user_data.get("config_version") != VERSION:
+            user_data["config_version"] = VERSION
+            changes += 1
+
+        # Only write if there are actual changes
+        if changes:
+            dump_yaml_round_trip(user_config_path, user_data)
+            return True
+
         return False
-
-    # 写回程序版本号，与合并内容原子落盘；版本号变化计入变更数，
-    # 使旧 config（无版本号或版本号旧）必走写盘分支把版本号写回，
-    # 已写回的最新 config 下次启动被 ensure_config_migrated_from_template 短路。
-    from jiuwenswarm.common._build_config import VERSION
-
-    if user_data.get("config_version") != VERSION:
-        user_data["config_version"] = VERSION
-        changes += 1
-
-    # Only write if there are actual changes
-    if changes:
-        dump_yaml_round_trip(user_config_path, user_data)
-        return True
-
-    return False
 
 
 # ---------- 模型配置管理 ----------
