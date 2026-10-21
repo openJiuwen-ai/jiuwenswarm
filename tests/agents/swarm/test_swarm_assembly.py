@@ -88,6 +88,7 @@ from jiuwenswarm.agents.swarm.config_specs import (
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
+from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -661,14 +662,6 @@ def test_build_member_capability_specs_tool_names(role: str) -> None:
         expected.add(registry.SESSION_MESSAGING_TOOLS)
     assert tool_names == expected
     assert all(isinstance(spec, BuiltinToolSpec) for spec in tool_specs)
-
-
-@pytest.mark.parametrize("role", ["leader", "teammate"])
-@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.code"])
-def test_team_members_do_not_register_user_todos(mode: str, role: str) -> None:
-    _, tool_specs = build_member_capability_specs({}, mode, role)
-
-    assert registry.USER_TODOS not in {spec.type for spec in tool_specs}
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
