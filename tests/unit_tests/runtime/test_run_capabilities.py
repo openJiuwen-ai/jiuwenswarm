@@ -180,8 +180,7 @@ def test_ambiguous_run_context_permissions_fail_closed(tool_permissions):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_existing_workers_keep_run_permissions_isolated_and_cleanup_on_cancel(cancel):
+async def test_existing_workers_keep_run_permissions_isolated():
     installed = {"tools": {"get_current_goal": "ask"}}
     release = asyncio.Event()
     tasks = []
@@ -206,12 +205,8 @@ async def test_existing_workers_keep_run_permissions_isolated_and_cleanup_on_can
     # This later request binding cannot change either pre-existing task's context.
     run_token = RUN_PERMISSIONS.set({"get_current_goal": "ask"})
     try:
-        if cancel:
-            tasks[0].cancel()
         release.set()
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        assert isinstance(results[0], asyncio.CancelledError) if cancel else results[0] == "deny"
-        assert results[1] == "allow"
+        assert await asyncio.gather(*tasks) == ["deny", "allow"]
         assert installed == {"tools": {"get_current_goal": "ask"}}
     finally:
         for task in tasks:

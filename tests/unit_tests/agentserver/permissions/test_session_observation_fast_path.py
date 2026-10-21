@@ -267,17 +267,16 @@ INVALID_ARGUMENTS = [
 ]
 
 
-@pytest.mark.parametrize(("name", "args", "allowed"),
-                         [(name, args, True) for name, args in VALID_ARGUMENTS]
-                         + [(name, args, False) for name, args in INVALID_ARGUMENTS])
-def test_closed_observation_arguments(tmp_path, name, args, allowed):
+@pytest.mark.parametrize(("name", "args"), VALID_ARGUMENTS)
+def test_closed_observation_arguments(tmp_path, name, args):
     facts = build_tool_decision_facts(name, args, workspace_root=tmp_path, original_args_were_valid_object=True)
-    route = terminal_internal_route(facts, readonly_binding_verified=True)
-    assert (route is not None) is allowed
+    assert terminal_internal_route(facts, readonly_binding_verified=True) is not None
 
 
 @pytest.mark.parametrize(("name", "args"), INVALID_ARGUMENTS)
 async def test_invalid_observation_arguments_stay_manual(tmp_path, installed, name, args):
+    facts = build_tool_decision_facts(name, args, workspace_root=tmp_path, original_args_were_valid_object=True)
+    assert terminal_internal_route(facts, readonly_binding_verified=True) is None
     env = await installed(name, args)
     auto, _, reviewer, _ = _rail(tmp_path, PolicyEvaluation(level="allow", reason="configured"))
     auto.init(env.owner)

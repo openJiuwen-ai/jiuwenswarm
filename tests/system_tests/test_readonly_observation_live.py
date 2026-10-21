@@ -57,7 +57,6 @@ class _LiveRun:
             [sys.executable, "-B", "-m", "jiuwenswarm.channels.process_cli.main"], cwd=str(ROOT),
             env={"JIUWENSWARM_DATA_DIR": str(root), "JIUWENSWARM_CONFIG_DIR": str(self.config_dir)},
         )
-        self.turns = []
 
     async def run(self, label, prompt, *, session_id=None, permissions=None):
         events = []
@@ -85,7 +84,6 @@ class _LiveRun:
         (self.root / f"{label}.request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2))
         result = await self.client.run(request, on_event=record, deadline_seconds=220)
         (self.root / f"{label}.result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
-        self.turns.append((result, events))
         assert result["status"] == "completed", result
         assert result["usage"].get("model_calls", 0) > 0, result
         return result, events
@@ -142,9 +140,6 @@ def live(tmp_path, request):
         return run
 
     yield build
-    for run in runs:
-        # Keep synthetic event/audit evidence, remove copied connection credentials.
-        shutil.rmtree(run.config_dir, ignore_errors=True)
     sys.path.remove(str(ROOT / "sdks/python/src"))
 
 
@@ -166,21 +161,18 @@ def _assert_call(events, name, expected_args):
     return results
 
 
-def _assert_fast(run, names):
+def _assert_fast(run, events, name, expected_args):
+    results = _assert_call(events, name, expected_args)
     audit = run.audit()
-    for name in names:
-        rows = [row for row in audit if row["tool_name"] == name and not row.get("record_kind")]
-        assert rows, (name, audit)
-        assert all(row["decision"] == "allow" and row["reason"] == "canonical_internal_action_allow" for row in rows), rows
-    events = [event for _, turn in run.turns for event in turn]
+    rows = [row for row in audit if row["tool_name"] == name and not row.get("record_kind")]
+    assert rows, (name, audit)
+    assert all(row["decision"] == "allow" and row["reason"] == "canonical_internal_action_allow" for row in rows), rows
     assert not [event for event in events if event["event_type"] in {"interaction.requested", "chat.ask_user_question"}]
-    for name in names:
-        results = _results(events, name)
-        assert results, (name, events)
-        for item in results:
-            metadata = item.get("reviewer_metadata", {})
-            assert metadata.get("decision_source") == "canonical_internal_action", item
-            assert metadata.get("reviewer_lifecycle") == "not_called", item
+    for item in results:
+        metadata = item.get("reviewer_metadata", {})
+        assert metadata.get("decision_source") == "canonical_internal_action", item
+        assert metadata.get("reviewer_lifecycle") == "not_called", item
+    return results
 
 
 @pytest.mark.parametrize("mode", ["agent.work.normal", "agent.code.normal"])
@@ -205,8 +197,7 @@ async def test_live_each_observation(live, mode, name):
         "Use this tool's actual advertised schema. Do not substitute any other tool. "
         "Then report the exact data returned. If denied, report denial and stop."
     ), session_id=session_id)
-    _assert_fast(run, {name})
-    results = _assert_call(events, name, args)
+    results = _assert_fast(run, events, name, args)
     assert all(item.get("success") is not False and not item.get("is_error") for item in results), results
     if name == "recall_compressed_context":
         assert "READONLY_ARCHIVE_SENTINEL_5364" in json.dumps(results), results
@@ -252,8 +243,7 @@ async def test_live_recall_does_not_read_another_session(live):
         f"and memory_id='{archive.memory_id}'. Report the actual result, including any error."
     ))
     assert result["session_id"] != bootstrap["session_id"]
-    _assert_fast(run, {"recall_compressed_context"})
-    results = _assert_call(events, "recall_compressed_context", {
+    results = _assert_fast(run, events, "recall_compressed_context", {
         "query": "https://example.invalid/e2e", "memory_id": archive.memory_id,
     })
     assert "READONLY_ARCHIVE_SENTINEL_5364" not in json.dumps(results)
@@ -263,7 +253,6 @@ async def test_live_recall_does_not_read_another_session(live):
 
 async def test_live_discovery_envelope_preserves_target_denial(live):
     run = live(progressive=True)
-    # Exercise the real SDK discovery/envelope despite the separate smart-binding defect.
     # Only metadata discovery and its wrapper are allowed; the real target stays denied.
     run.set_installed_permissions({"tool_search": "allow", "tool_call": "allow", "get_current_goal": "deny"}, mode="manual")
     _, events = await run.run("envelope", (

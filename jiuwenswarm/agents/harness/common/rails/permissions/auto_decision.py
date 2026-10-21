@@ -459,9 +459,6 @@ def _closed_internal_args_valid(facts: ToolDecisionFacts, network: Any) -> bool:
     args = facts.untrusted_args
     if family == "internal_readonly":
         name = facts.tool_name
-        observation_args_valid = session_observation_args_valid(name, args)
-        if observation_args_valid is not None:
-            return observation_args_valid
         if name == "cron_list_jobs":
             return not args
         if name == "heartbeat_list_jobs":
@@ -525,11 +522,9 @@ def _closed_internal_args_valid(facts: ToolDecisionFacts, network: Any) -> bool:
 
 
 def _internal_network_scope(facts: ToolDecisionFacts) -> Any:
-    """Exclude closed local query text and SDK-owned opaque messages from URI checks."""
-    if (
-        facts.capability.operation_family == "internal_readonly"
-        and session_observation_args_valid(facts.tool_name, facts.untrusted_args) is True
-    ):
+    """Inspect URIs after the caller validates closed observation arguments."""
+    opaque_fields = set()
+    if facts.capability.operation_family == "internal_readonly":
         # These executors treat queries as local text, including URLs and shell syntax.
         opaque_fields = {
             "tool_search": {"query", "call_goal"},
@@ -537,25 +532,20 @@ def _internal_network_scope(facts: ToolDecisionFacts) -> Any:
             "list_skill": {"query"},
             "recall_compressed_context": {"query"},
         }.get(facts.tool_name, set())
-        return inspect_network_scope(replace(
-            facts, untrusted_args=MappingProxyType({
-                key: value for key, value in facts.untrusted_args.items() if key not in opaque_fields
-            }),
-        ))
-    opaque_field = {
-        "subagent_spawn": "task_description",
-        "subagent_send_input": "query",
-    }.get(facts.tool_name)
-    if (
-        facts.capability.operation_family != "subagent_runtime_control"
-        or opaque_field is None
-    ):
+    elif facts.capability.operation_family == "subagent_runtime_control":
+        opaque_field = {
+            "subagent_spawn": "task_description",
+            "subagent_send_input": "query",
+        }.get(facts.tool_name)
+        if opaque_field is not None:
+            opaque_fields = {opaque_field}
+    if not opaque_fields:
         return inspect_network_scope(facts)
-    checked_args = dict(facts.untrusted_args)
-    checked_args.pop(opaque_field, None)
-    return inspect_network_scope(
-        replace(facts, untrusted_args=MappingProxyType(checked_args))
-    )
+    return inspect_network_scope(replace(
+        facts, untrusted_args=MappingProxyType({
+            key: value for key, value in facts.untrusted_args.items() if key not in opaque_fields
+        }),
+    ))
 
 
 def terminal_low_risk_route(facts: ToolDecisionFacts) -> DecisionRoute | None:
@@ -583,6 +573,12 @@ def terminal_internal_route(
     readonly_binding_verified: bool = False,
 ) -> DecisionRoute | None:
     """Return the allow route for closed canonical Host actions."""
+    observation_args_valid = (
+        session_observation_args_valid(facts.tool_name, facts.untrusted_args)
+        if facts.capability.operation_family == "internal_readonly" else None
+    )
+    if observation_args_valid is False:
+        return None
     network = _internal_network_scope(facts)
     if facts.capability.operation_family == "internal_readonly" and not readonly_binding_verified:
         return None
@@ -598,7 +594,7 @@ def terminal_internal_route(
     ):
         return None
     if (
-        not _closed_internal_args_valid(facts, network)
+        (observation_args_valid is None and not _closed_internal_args_valid(facts, network))
         or facts.capability.risk_tier != "low"
         or facts.capability.high_flex
     ):
