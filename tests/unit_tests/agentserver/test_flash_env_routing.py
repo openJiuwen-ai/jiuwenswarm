@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""真实 config.yaml 加载到独立部署路由及显式 Flash 的边界。"""
+"""真实 config.yaml 加载到独立部署路由及 PC 显式模式的边界。"""
 
 import pytest
 import yaml
@@ -75,6 +75,14 @@ def test_standalone_creation_and_chat_use_resolved_configuration(monkeypatch, mo
 def test_environment_keeps_code_team_and_plan_routes(monkeypatch, params, expected):
     monkeypatch.setenv(FLASH_ENV, "true")
     assert _shared.resolve_request_runtime_mode(make_request(params)).adapter_mode == expected
+
+
+@pytest.mark.parametrize("enabled", ["true", "false"])
+@pytest.mark.parametrize("mode,expected", [(None, "agent"), ("agent.plan", "agent"), ("flash", "flash")])
+def test_pc_foreground_still_uses_explicit_mode(monkeypatch, enabled, mode, expected):
+    monkeypatch.setenv(FLASH_ENV, enabled)
+    request = make_request({"mode": mode, "work_mode": "work"}, channel="officeclaw")
+    assert _shared.resolve_request_runtime_mode(request).adapter_mode == expected
 
 
 @pytest.mark.parametrize("enabled", ["true", "false"])

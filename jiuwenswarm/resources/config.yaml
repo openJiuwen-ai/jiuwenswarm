@@ -1764,8 +1764,8 @@ modes:
 # 类常量，不在此配置。enabled 控制「是否对普通 agent 对话注入 flash」；
 # skill_selection 仅配置 Flash 内可选的已安装技能检索模块。
 # 触发点在 mode 解析层：独立部署的普通单 Agent 请求可按此配置选择 Flash。
-# 显式 mode=flash、Code、Team、显式 Plan 与已有会话绑定遵循原有路由规则。
-# 置 false（默认）时，普通单 Agent 默认走原 agent 实现。
+# OfficeClaw/PC 前台仍按显式 mode 选择；Code、Team、显式 Plan 与已有会话绑定
+# 保持原规则。置 false（默认）时，普通单 Agent 默认走原 agent 实现。
 #   enabled: false（默认）— 普通对话走 DeepAdapter（全量 rail + task loop）。
 #   enabled: true        — 普通对话注入 flash，走 FlashAdapter facade。
 flash:

@@ -386,14 +386,16 @@ async def test_handler_pool_manager_preserves_session_flash_binding(
     assert expected._adapter.messages[0][0] is request
     assert other._adapter.messages == []
     assert request.resolved_adapter_mode == stored_adapter
-    assert request.params["mode"] == "agent"
+    assert request.params["mode"] == stored_adapter
     if stored_adapter == "flash":
         assert request.resolved_adapter_source == "session_sticky"
+    # Wait for the real metadata writer before asserting durable mode.
+    await asyncio.wait_for(asyncio.to_thread(session_metadata._METADATA_QUEUE.join), timeout=5)
     metadata = session_metadata.get_session_metadata(
         "sticky-session", cache_bust=True, enable_writeback=False, sessions_root=tmp_path,
     )
     assert metadata["adapter_mode"] == stored_adapter
-    assert metadata["mode"] == "agent"
+    assert metadata["mode"] == (stored_adapter if incoming_mode else "agent")
 
 
 @pytest.mark.parametrize("mode,expected,sub_mode", [

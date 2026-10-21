@@ -904,6 +904,50 @@ async def test_handle_session_create_returns_session_id(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "wire_mode,global_enabled,expected",
+    [("flash", False, "flash"), ("agent.plan", True, "agent")],
+)
+async def test_officeclaw_session_create_persists_explicit_adapter(
+    monkeypatch, tmp_path, wire_mode, global_enabled, expected,
+):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.server.handlers import _shared
+
+    monkeypatch.setattr(_shared, "get_config", lambda: {"flash": {"enabled": global_enabled}})
+    server = AgentWebSocketServerHarness()
+    manager = FakeAgentManager(session_id="officeclaw_explicit_create")
+    server.set_agent_manager_for_test(manager)
+    prewarm = AsyncMock()
+    monkeypatch.setattr(server, "_tenant_pool", lambda: types.SimpleNamespace(
+        prewarm_session_in_background=prewarm,
+    ))
+    fake_ws = FakeWebSocket()
+    sessions_root = tmp_path / "sessions"
+    patch_shared_name(monkeypatch, "encode_agent_response_for_wire", fake_encode_agent_response_for_wire)
+    patch_session_roots(monkeypatch, sessions_root)
+    incoming = AgentRequest(
+        request_id="officeclaw-explicit-create",
+        channel_id="officeclaw",
+        req_method=ReqMethod.SESSION_CREATE,
+        params={"create_token": "explicit-create", "mode": wire_mode},
+    )
+
+    await server.handle_session_create_for_test(fake_ws, incoming, asyncio.Lock())
+    await asyncio.sleep(0)
+
+    assert fake_ws.sent[0]["ok"] is True
+    assert manager.claim_session_calls[0]["adapter_mode"] == expected
+    assert manager.claim_session_calls[0]["prewarm_eligible"] is True
+    metadata = json.loads(
+        (sessions_root / manager.session_id / "metadata.json").read_text(encoding="utf-8"),
+    )
+    assert metadata["mode"] == metadata["adapter_mode"] == expected
+    assert prewarm.await_args.kwargs["mode"] == expected
+    assert prewarm.await_args.kwargs["adapter_mode"] == expected
+
+
+@pytest.mark.asyncio
 async def test_handle_session_create_rejects_explicit_session_id(monkeypatch, tmp_path):
     server = AgentWebSocketServerHarness()
     fake_manager = FakeAgentManager(session_id="unused-default")

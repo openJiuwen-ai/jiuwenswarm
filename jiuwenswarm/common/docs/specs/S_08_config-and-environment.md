@@ -69,7 +69,12 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 - **N14 work_mode 正交**：work_mode（work 办公 / code 工程）与 mode 正交；Web 默认
   `work`、TUI 默认 `code`；虚拟默认项目 ID：work → `default`、code → `default_code`；
   `normalize_work_mode` 宽松（非法回落 default）仅限迁移/兜底，公开入口走严格校验。
-- **N15 Flash 配置占位符**：模板的 `flash.enabled` 与
+- **N15 OfficeClaw 显式 Flash**：前台聊天与会话创建由请求 `mode=flash` 选择
+  FlashAdapter，普通 Agent 请求不受 `flash.enabled` 隐式转换影响；其它渠道与后台
+  保留原规则。`flash` 保留独立 canonical，并纳入单 Agent 轨迹白名单；尚未实现的
+  `flash.*` 在此入口拒绝。续接结合已存 `mode` 与 `adapter_mode` 恢复，保证前台准备与租户池二次解析一致；活跃 Plan 与中断归属优先于新的默认模式。
+
+- **N16 Flash 配置占位符**：模板的 `flash.enabled` 与
   `flash.skill_selection.enabled` 分别引用 `${JIUWENSWARM_FLASH_ENABLED:-false}`
   与 `${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}`；两变量属于 Track A，
   沙箱启动注入后经统一配置加载解析，`get_config()` 返回布尔值，消费方不再直读环境。
@@ -77,7 +82,7 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   未注入时保留原布尔配置。非法字符串关闭开关，不改变其它字段的字符串解析语义。
   配置文件、实例创建/热更新快照及预热均通过 `resolve_config_env_vars` 统一解析。
   原始 YAML、合并缓存及 provider 输入保持不变；重启或清理配置缓存后重新解析。
-  显式 `mode=flash` 与既有 Flash 会话绑定不受默认开关关闭影响。
+  N15 的 OfficeClaw 显式模式与既有会话绑定不受默认开关替代。
 
 ## 接口契约
 
