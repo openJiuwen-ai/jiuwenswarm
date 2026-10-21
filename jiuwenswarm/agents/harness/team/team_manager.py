@@ -1329,21 +1329,27 @@ class TeamManager:
                 routing = dict(resolved.routing or {})
                 if not routing.get("strategy"):
                     routing["strategy"] = "ordered-failover"
-                if routing.get("timeout_seconds") is None:
-                    catalog_config = getattr(getattr(resolver, "catalog", None), "config", {}) or {}
-                    models_config = catalog_config.get("models") or {}
-                    raw_timeout = models_config.get("group_routing_timeout_seconds", 360)
+                catalog_config = getattr(getattr(resolver, "catalog", None), "config", {}) or {}
+                models_config = catalog_config.get("models") or {}
+                for key, config_key, default in (
+                    ("timeout_seconds", "group_routing_timeout_seconds", 360),
+                    ("stream_first_chunk_timeout", "group_stream_first_chunk_timeout_seconds", 300),
+                    ("stream_idle_timeout", "group_stream_idle_timeout_seconds", 120),
+                ):
+                    raw_timeout = routing.get(key)
+                    if raw_timeout is None:
+                        raw_timeout = models_config.get(config_key, default)
                     try:
                         timeout = float(raw_timeout)
                         if not math.isfinite(timeout) or timeout <= 0:
                             raise ValueError("timeout must be positive and finite")
                     except (TypeError, ValueError):
                         logger.warning(
-                            "Invalid models.group_routing_timeout_seconds %r; using 360 seconds",
-                            raw_timeout,
+                            "Invalid model group %s value %r; using %s seconds",
+                            key, raw_timeout, default,
                         )
-                        timeout = 360.0
-                    routing["timeout_seconds"] = timeout
+                        timeout = float(default)
+                    routing[key] = timeout
                 resolved = resolved.model_copy(update={"routing": routing})
             compiled = compile_model_selection(resolved)
         except ModelSelectionError:

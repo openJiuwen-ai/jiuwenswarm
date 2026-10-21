@@ -23,6 +23,9 @@ _PUBLIC_GROUP_KEYS = (
     "routes",
     "request_config",
 )
+_PUBLIC_GROUP_TIMEOUT_KEYS = (
+    "timeout_seconds", "stream_first_chunk_timeout", "stream_idle_timeout",
+)
 
 
 def _read_session_selection(path: Path) -> dict[str, Any] | None:
@@ -166,6 +169,15 @@ class ModelCatalog:
             for key in _PUBLIC_GROUP_KEYS:
                 value = deepcopy(group.get(key))
                 public[key] = value
+            routing = group.get("routing")
+            if isinstance(routing, dict):
+                timeouts = {
+                    key: deepcopy(routing[key])
+                    for key in _PUBLIC_GROUP_TIMEOUT_KEYS
+                    if key in routing
+                }
+                if timeouts:
+                    public["routing"] = timeouts
             result.append(public)
         return result
 
