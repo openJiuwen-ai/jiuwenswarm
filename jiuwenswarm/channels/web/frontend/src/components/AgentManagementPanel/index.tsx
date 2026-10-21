@@ -20,6 +20,7 @@ import {
   AgentManagementError,
   advancePendingInstallQueue,
   createAgentGroupManagementClient,
+  deriveAgentGroupId,
   createPendingInstallQueue,
   createAgentManagementClient,
   type AgentFileContent,
@@ -227,11 +228,6 @@ function deriveAgentId(name: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
   return slug.length >= 3 ? slug.slice(0, 50) : `agent-${Date.now().toString(36)}`;
-}
-
-function deriveAgentGroupId(name: string): string {
-  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return slug.length >= 3 ? slug.slice(0, 50) : `agent-group-${Date.now().toString(36)}`;
 }
 
 export function AgentManagementPanel({
