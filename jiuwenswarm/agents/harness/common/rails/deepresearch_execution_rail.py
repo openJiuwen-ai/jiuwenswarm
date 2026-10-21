@@ -268,6 +268,13 @@ def _interaction_tool_call(tool_call: Any, interaction_id: str) -> Any:
     return cloned
 
 
+def _clone_tool_call_with_id(tool_call: Any, new_id: str) -> Any:
+    model_copy = getattr(tool_call, "model_copy", None)
+    cloned = model_copy(deep=True) if callable(model_copy) else copy.deepcopy(tool_call)
+    cloned.id = new_id
+    return cloned
+
+
 def _resume_input(ctx: AgentCallbackContext, tool_call_id: str) -> Any:
     value = getattr(ctx, "extra", {}).get(RESUME_USER_INPUT_KEY)
     if isinstance(value, InteractiveInput):
@@ -401,6 +408,21 @@ class DeepResearchExecutionRail(DeepAgentRail):
             request_id=request_id,
             requested_report_type=requested_report_type,
         )
+        # B: 打断续跑时 harness 用 interaction_id 续跑，终端 chat.tool_result 会携带
+        # interaction_id，原始 tool_call_id 的 chat.tool_call 永远等不到配对结果，
+        # open_calls/pending 泄漏 -> 下一轮 LLM 误判「研究未完成」触发重弹问题/重跑。
+        # 这里把 tool_call.id 重写回 workflow_id（经 alias 解析的原始 id），使
+        # StreamEventRail(priority=80) 发出的 chat.tool_call/chat.tool_result 都对齐原始 id。
+        original_workflow_id = workflow_id
+        if tool_call_id != original_workflow_id:
+            try:
+                ctx.inputs.tool_call.id = original_workflow_id
+            except (AttributeError, TypeError):
+                # 不可变 tool_call 兜底：clone 一份再赋 id（参考 _interaction_tool_call 的 model_copy/deepcopy）
+                ctx.inputs.tool_call = _clone_tool_call_with_id(
+                    ctx.inputs.tool_call, original_workflow_id
+                )
+            tool_call_id = original_workflow_id  # 后续 tokens/cleanup 都用原始 id
         tokens = ctx.extra.setdefault(_TOKENS_KEY, {})
         tokens[tool_call_id] = token
 
