@@ -42,6 +42,7 @@ export interface JiuwenMateColleagueDraft {
   name: string;
   description: string;
   persona?: string;
+  groupReplyMode?: 'passive' | 'adaptive';
   tags: string[];
   category: JiuwenMateCategory;
   avatarUrl?: string;

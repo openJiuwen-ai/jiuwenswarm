@@ -89,6 +89,7 @@ export interface JiuwenMateWireSettings {
   tags: string[];
   category: string;
   avatar_url: string;
+  group_reply_mode?: 'passive' | 'adaptive';
   capabilities: JiuwenMateWireCapabilities;
 }
 
@@ -342,6 +343,7 @@ export function withColleagueEdit(
     name?: string;
     description?: string;
     persona?: string;
+    groupReplyMode?: 'passive' | 'adaptive';
     tags?: readonly string[];
     model?: string;
     skills?: readonly string[];
@@ -356,6 +358,7 @@ export function withColleagueEdit(
       name: edit.name ?? colleague.name,
       description: edit.description ?? colleague.description,
       persona: edit.persona ?? colleague.persona,
+      groupReplyMode: edit.groupReplyMode ?? colleague.groupReplyMode,
       tags: [...(edit.tags ?? colleague.tags)],
       capabilities: {
         ...colleague.capabilities,
@@ -380,6 +383,7 @@ export function toColleague(value: unknown): JiuwenMateColleague {
     id: text(wire.agent_id),
     name: text(wire.name),
     description: text(wire.description),
+    groupReplyMode: wire.group_reply_mode === 'passive' ? 'passive' : 'adaptive',
     ...(typeof wire.persona === 'string' ? { persona: wire.persona } : {}),
     tags: texts(wire.tags),
     category: CATEGORIES.includes(category) ? category : 'custom',
@@ -415,6 +419,7 @@ export function toWireSettings(
   return {
     name: draft.name.trim(),
     description: draft.description.trim(),
+    group_reply_mode: draft.groupReplyMode ?? 'adaptive',
     ...(draft.persona !== undefined ? { persona: draft.persona.trim() } : {}),
     tags: filled(draft.tags),
     category: draft.category,

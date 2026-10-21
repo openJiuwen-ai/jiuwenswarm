@@ -96,7 +96,7 @@ flowchart LR
 
 ### 5.1 模块责任与关键不变量
 
-- `models.py`：设置与视图的数据类型及输入校验（名称 ≤ 64 字符，描述 ≤ 2000 字符，人设 ≤ 20000 字符，列表 ≤ 64 项，拒绝未知字段）。
+- `models.py`：设置与视图的数据类型及输入校验（名称 ≤ 64 字符，描述 ≤ 2000 字符，人设 ≤ 20000 字符，列表 ≤ 64 项，拒绝未知字段）。`group_reply_mode` 只取 `passive` 或 `adaptive`，缺省 `adaptive`；入站读取当前设置，行为见 [F_23](F_23_group-reply-mode.md)。
 - `repository.py`：同事定义、版本及默认认领的持久化；Template 文件的生命周期。
 - `service.py`：业务流程编排，不向调用方暴露 Spec 或凭据。
 - 不变量：一个同事对应一个 Template 目录；`ColleagueView` 与 `ConfigVersionView` 不含模型凭据（JM-02-V-04）。

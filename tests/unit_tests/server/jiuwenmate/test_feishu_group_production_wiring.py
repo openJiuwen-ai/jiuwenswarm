@@ -236,6 +236,21 @@ async def test_jm11_gateway_refreshes_edited_and_recalled_bodies_in_the_target_g
 
 
 @pytest.mark.asyncio
+async def test_jm11_message_read_failure_stays_unknown_instead_of_unreadable():
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
+
+    async def read(_request):
+        return SimpleNamespace(success=lambda: False, code=99991403, msg="quota exceeded", data=None)
+
+    channel._api_client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(
+        message=SimpleNamespace(aget=read))))
+
+    result = await channel.inspect_persistent_group("oc_group", ("m1",))
+
+    assert result == {"status": "ok", "messages": {"m1": {"status": "unknown"}}}
+
+
+@pytest.mark.asyncio
 async def test_jm11_platform_lifecycle_event_enters_only_the_bound_persistent_route():
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
     events = []
@@ -392,6 +407,30 @@ async def test_default_runtime_consumes_message_refresh_without_rechecking_membe
 
 
 @pytest.mark.asyncio
+async def test_inconclusive_message_refresh_keeps_the_archived_trigger(tmp_path):
+    from openjiuwen.harness import persistent_agent as core
+
+    lookup = AsyncMock(return_value={"status": "ok", "messages": {"m1": {"status": "unknown"}}})
+    _fanout, manager = create_default_persistent_group_fanout(tmp_path / "jiuwenmate", verify_membership=lookup)
+    group = manager.group_chats.resolve("local", "feishu", "oc_group", now=NOW)
+    manager.group_chats.observe_access("local", "mate_1", group.group_chat_id, "cli_bound",
+                                       observed_at=NOW, source_ref="joined:1")
+    access = manager.group_chats.access_for("local", "mate_1", group.group_chat_id)
+    message = core.GroupMessage(message_id="m1", sender_id="ou_alice", sender_name="Alice",
+                                sender_kind="human", received_at=NOW, text="original")
+    manager.group_archive.append("local", group.group_chat_id, message, source_ref="event:m1")
+    try:
+        refreshed = await manager.refresh_group_messages(access, group, (message,))
+        assert refreshed[0].text == "original"
+        assert refreshed[0].status == "normal"
+        stored = manager.group_archive.current_messages("local", group.group_chat_id, ("m1",))[0]
+        assert stored.text == "original"
+        assert stored.status == "normal"
+    finally:
+        await manager.aclose()
+
+
+@pytest.mark.asyncio
 async def test_inconclusive_membership_keeps_an_active_binding_until_feishu_says_left(tmp_path, monkeypatch):
     binding = FeishuBinding(
         binding_id="binding-cli",
@@ -508,6 +547,7 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     fanout = object()
     manager = MagicMock()
     manager.start = AsyncMock()
+    manager.recover = AsyncMock()
     manager.aclose = AsyncMock()
     factory = MagicMock(return_value=(fanout, manager))
     monkeypatch.setattr(module, "configured_feishu_bindings", lambda: ())
@@ -521,10 +561,15 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     assert await server._ensure_persistent_group_fanout() is None
     factory.assert_not_called()
 
-    monkeypatch.setattr(module, "configured_feishu_bindings", lambda: (object(),))
+    monkeypatch.setattr(
+        module, "configured_feishu_bindings", lambda: (SimpleNamespace(namespace_id="local"),),
+    )
     assert await server._ensure_persistent_group_fanout() is fanout
     assert await server._ensure_persistent_group_fanout() is fanout
     manager.start.assert_awaited_once()
+    manager.recover.assert_awaited_once_with(
+        "local", channels=frozenset({"feishu"}), include_unrouted=False,
+    )
     assert factory.call_args.kwargs["send_delivery"] == server._send_jm09_delivery
 
     await server._close_persistent_group_fanout()
@@ -751,6 +796,84 @@ async def test_channel_manager_maps_handoff_target_to_its_native_bot_identity():
             {"agent_id": "agent-target", "name": "接手同事", "app_ids": ["cli_target"], "open_id": "ou_target"}
         ],
     )
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_loads_bot_open_id_before_rendering_a_native_mention():
+    handler = object.__new__(MessageHandler)
+    manager = ChannelManager(handler)
+    sender = FeishuChannel(
+        FeishuConfig(enabled=True, app_id="cli_sender", agent_id="agent-sender"), MagicMock()
+    )
+    target = FeishuChannel(
+        FeishuConfig(enabled=True, app_id="cli_target", agent_id="agent-target", bot_open_id=""), MagicMock()
+    )
+    sender.send_persistent_result = AsyncMock(return_value={"outcome": "delivered"})
+    target.send_persistent_result = AsyncMock(return_value={"outcome": "delivered"})
+
+    def remember_open_id() -> None:
+        target.config.bot_open_id = "ou_learned"
+
+    target._fetch_bot_open_id = remember_open_id
+    manager.register_channel(sender)
+    manager.register_channel(target)
+
+    await manager.deliver_jm09_persistent_result(
+        {
+            "app_id": "cli_sender",
+            "chat_id": "oc_group",
+            "source_message_id": "om_source",
+            "idempotency_key": "stable-key",
+            "text": "请接手 [[agent:agent-target]]",
+            "mention_targets": [{"agent_id": "agent-target", "name": "接手同事", "app_ids": ["cli_target"]}],
+        }
+    )
+
+    sender.send_persistent_result.assert_awaited_once_with(
+        chat_id="oc_group",
+        text="请接手 [[agent:agent-target]]",
+        source_message_id="om_source",
+        idempotency_key="stable-key",
+        mention_targets=[
+            {"agent_id": "agent-target", "name": "接手同事", "app_ids": ["cli_target"], "open_id": "ou_learned"}
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_keeps_the_handoff_when_bot_identity_cannot_be_loaded():
+    handler = object.__new__(MessageHandler)
+    manager = ChannelManager(handler)
+    sender = FeishuChannel(
+        FeishuConfig(enabled=True, app_id="cli_sender", agent_id="agent-sender"), MagicMock()
+    )
+    target = FeishuChannel(
+        FeishuConfig(enabled=True, app_id="cli_target", agent_id="agent-target", bot_open_id=""), MagicMock()
+    )
+    sender.send_persistent_result = AsyncMock(return_value={"outcome": "delivered"})
+    target.send_persistent_result = AsyncMock(return_value={"outcome": "delivered"})
+
+    def fail_open_id() -> None:
+        raise RuntimeError("quota")
+
+    target._fetch_bot_open_id = fail_open_id
+    manager.register_channel(sender)
+    manager.register_channel(target)
+
+    result = await manager.deliver_jm09_persistent_result(
+        {
+            "app_id": "cli_sender",
+            "chat_id": "oc_group",
+            "source_message_id": "om_source",
+            "idempotency_key": "stable-key",
+            "text": "请接手 [[agent:agent-target]]",
+            "mention_targets": [{"agent_id": "agent-target", "name": "接手同事", "app_ids": ["cli_target"]}],
+        }
+    )
+
+    assert result["outcome"] == "delivered"
+    sent = sender.send_persistent_result.await_args.kwargs
+    assert "open_id" not in sent["mention_targets"][0]
 
 
 @pytest.mark.asyncio

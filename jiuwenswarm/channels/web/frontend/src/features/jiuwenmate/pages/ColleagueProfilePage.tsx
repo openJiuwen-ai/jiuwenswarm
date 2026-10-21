@@ -99,6 +99,7 @@ type ResourceSection = (typeof RESOURCE_SECTIONS)[number];
 const PENCIL_SECTIONS = ['overview'] as const;
 
 export interface ColleagueSettingsEdit {
+  groupReplyMode?: 'passive' | 'adaptive';
   name?: string;
   description?: string;
   persona?: string;
@@ -189,6 +190,10 @@ export function ColleagueProfilePage({
   const [connectors, setConnectors] = useState(colleague.capabilities.connectors);
   const [plugins, setPlugins] = useState(colleague.capabilities.plugins);
   const [knowledge, setKnowledge] = useState(colleague.capabilities.knowledge);
+  const [groupReplyMode, setGroupReplyMode] = useState<'passive' | 'adaptive'>(colleague.groupReplyMode ?? 'adaptive');
+  useEffect(() => {
+    setGroupReplyMode(colleague.groupReplyMode ?? 'adaptive');
+  }, [colleague.groupReplyMode]);
   useEffect(() => {
     if (section !== 'persona' || !onLoadSettings) return;
     let active = true;
@@ -213,6 +218,11 @@ export function ColleagueProfilePage({
         if (edit.persona !== undefined) setSavedPersona(edit.persona);
       })
       .catch(() => undefined);
+  };
+  const changeGroupReplyMode = (mode: 'passive' | 'adaptive') => {
+    const previous = groupReplyMode;
+    setGroupReplyMode(mode);
+    void Promise.resolve(onSaveSettings?.({ groupReplyMode: mode })).catch(() => setGroupReplyMode(previous));
   };
   const openSection = (next: JiuwenMateProfileSection) => {
     setSection(next);
@@ -297,6 +307,7 @@ export function ColleagueProfilePage({
           ) : (
             <ProfileSectionDetail
               colleague={colleague}
+              groupReplyMode={groupReplyMode}
               modelCatalog={modelCatalog}
               section={section}
               persona={persona}
@@ -315,6 +326,7 @@ export function ColleagueProfilePage({
               onPluginsChange={setPlugins}
               onKnowledgeChange={setKnowledge}
               onSaveSettings={saveSettings}
+              onGroupReplyModeChange={changeGroupReplyMode}
               onConfigureIm={onConfigureIm}
               schedules={schedules}
               savingSchedule={savingSchedule}
@@ -721,6 +733,7 @@ function IdentityEditor({
 
 function ProfileSectionDetail({
   colleague,
+  groupReplyMode,
   modelCatalog,
   section,
   persona,
@@ -739,6 +752,7 @@ function ProfileSectionDetail({
   onPluginsChange,
   onKnowledgeChange,
   onSaveSettings,
+  onGroupReplyModeChange,
   onConfigureIm,
   schedules,
   savingSchedule,
@@ -750,6 +764,7 @@ function ProfileSectionDetail({
   onLoadScheduleHistory,
 }: {
   colleague: JiuwenMateColleague;
+  groupReplyMode: 'passive' | 'adaptive';
   modelCatalog: JiuwenMateModelCatalog;
   section: Exclude<JiuwenMateProfileSection, 'overview'>;
   persona: string;
@@ -768,6 +783,7 @@ function ProfileSectionDetail({
   onPluginsChange: (items: string[]) => void;
   onKnowledgeChange: (items: string[]) => void;
   onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
+  onGroupReplyModeChange: (mode: 'passive' | 'adaptive') => void;
   onConfigureIm: () => void;
   schedules: readonly JiuwenMateSchedule[];
   savingSchedule: boolean;
@@ -875,6 +891,34 @@ function ProfileSectionDetail({
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <h2>{title}</h2>
+        <div className="jiuwenmate-profile__reply-mode" data-testid="jiuwenmate-profile-group-reply-mode">
+          <div className="jiuwenmate-profile__reply-mode-heading">
+            <strong data-testid="jiuwenmate-profile-group-reply-title">{t('jiuwenmate.profile.groupReplyMode')}</strong>
+          </div>
+          <div className="jiuwenmate-profile__reply-mode-options" role="radiogroup" aria-label={t('jiuwenmate.profile.groupReplyMode')}>
+            {(['passive', 'adaptive'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className="jiuwenmate-profile__reply-mode-option"
+                aria-pressed={groupReplyMode === mode}
+                disabled={savingResources || !onSaveSettings}
+                data-testid="jiuwenmate-profile-group-reply-option"
+                data-variant={mode}
+                onClick={() => onGroupReplyModeChange(mode)}
+              >
+                <span className="jiuwenmate-profile__reply-mode-copy">
+                  <strong data-testid="jiuwenmate-profile-group-reply-label" data-variant={mode}>
+                    {t(`jiuwenmate.profile.groupReplyModes.${mode}`)}
+                  </strong>
+                  <small data-testid="jiuwenmate-profile-group-reply-hint" data-variant={mode}>
+                    {t(`jiuwenmate.profile.groupReplyModes.${mode}Hint`)}
+                  </small>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="jiuwenmate-profile__im-row jiuwenmate-profile__im-row--bordered">
           <img src={feishuIcon} alt="" aria-hidden />
           <span>
