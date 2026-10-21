@@ -159,6 +159,9 @@ printf 'Verifying frozen A2UI v0.8 bundle...\n'
 printf 'Verifying frozen RSI Harness baseline bundle...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_rsi_bundle.py"
 
+printf 'Verifying frozen Computer Use runtime without build tools...\n'
+"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_computer_use_bundle.py"
+
 printf 'Verifying frozen GitCode CLI bundle...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gitcode_cli_bundle.py"
 
@@ -183,6 +186,11 @@ fi
 # TUI 二进制、内置 node-runtime）仍是最省事的方式，会把所有可执行码一次性签掉。
 if [ "$DO_SIGN" = "1" ]; then
   printf '\n[6/9] Code sign the .app (hardened runtime + entitlements, --deep)...\n'
+  # Seal the embedded driver explicitly; --deep may skip code under Resources.
+  while IFS= read -r -d '' native_bundle; do
+    codesign --force --options runtime --entitlements "$ENTITLEMENTS" \
+      --sign "$SIGN_IDENTITY" "$native_bundle"
+  done < <(find "$APP_PATH/Contents" -depth -type d -name 'ComputerUseDriver.app' -print0)
   codesign --force --deep --options runtime \
     --entitlements "$ENTITLEMENTS" \
     --sign "$SIGN_IDENTITY" \

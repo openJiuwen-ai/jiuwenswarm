@@ -85,6 +85,17 @@ def collect_resources_data_files(source_dir, target_dir):
 
 
 
+
+# One shared build step for Windows/macOS, pywebview and Electron installers.
+# Native compiler inputs stay on the build machine; the installed app never builds.
+computer_use_source = os.path.join(project_root, "jiuwenswarm", "cua_engine", "src")
+computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))
+computer_use_data = computer_use_build["bundle_data"](Path(project_root))
+computer_use_submodules = (
+    collect_tree_python_modules(computer_use_source, ("computer_use",))
+    + ["jiuwenswarm.cua_engine.runtime"]
+) if computer_use_data else []
+
 try:
     webview_datas = collect_data_files("webview")
 except Exception as exc:
@@ -128,18 +139,7 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
-datas += computer_use_datas
-if sys.platform in ("darwin", "win32"):
-    datas += collect_data_files("computer_use", includes=["*.pyi", "py.typed"])
-# Every actual frozen backend build gets a distinct, bundled identity.
-_identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
-_identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
-_identity_helper = runpy.run_path(os.path.join(project_root, "jiuwenswarm", "common", "worker_build_identity.py"))
-_identity_helper["write_build_identity"](_identity_file, Path(project_root))
-datas.append((str(_identity_file), "jiuwenswarm"))
-_build_metadata_file = Path(_identity_directory.name, "build-metadata.json")
-build_config_module["write_build_metadata"](_build_metadata_file, build_config.version)
-datas.append((str(_build_metadata_file), "jiuwenswarm/resources"))
+datas += computer_use_data
 _playwright_mcp_resource_dir = os.path.join(
     project_root,
     "jiuwenswarm",
@@ -488,10 +488,10 @@ _bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
 
 a = Analysis(
     [entry_script],
-    pathex=[project_root],
+    pathex=[project_root, symphony_root, computer_use_source],
     binaries=_bundled_binaries,
     datas=datas,
-    hiddenimports=hiddenimports,
+    hiddenimports=hiddenimports + computer_use_submodules,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
