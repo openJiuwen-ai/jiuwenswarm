@@ -71,7 +71,9 @@ class LaunchSpec:
         env_vars = payload.get("env_vars")
         return cls(
             framework=str(payload.get("framework") or "").strip(),
-            framework_version=str(payload.get("framework_version") or "").strip(),
+            framework_version=str(
+                payload.get("framework_version") or payload.get("version") or ""
+            ).strip(),
             runtime_spec=dict(runtime_spec)
             if isinstance(runtime_spec, dict)
             else {},
