@@ -1137,6 +1137,9 @@
 
 .settings-model-group-multiselect__selected {
   display: grid;
+  max-height: min(360px, 42vh);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .settings-model-group-multiselect__hint {
@@ -1147,7 +1150,7 @@
 }
 
 .settings-model-group-multiselect__table {
-  overflow: visible;
+  overflow: hidden;
   border: 1px solid var(--color-settings-border);
   border-radius: 8px;
   background: var(--color-surface-card);
@@ -1295,10 +1298,15 @@
   cursor: pointer;
 }
 
-.settings-model-group-route-picker__option:hover,
-.settings-model-group-route-picker__option:focus-visible {
+.settings-model-group-route-picker__option:hover:not(:disabled),
+.settings-model-group-route-picker__option:focus-visible:not(:disabled) {
   background: var(--color-icon-btn-hover-surface);
   outline: none;
+}
+
+.settings-model-group-route-picker__option:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .settings-model-group-route-picker__option-actions {
@@ -1372,7 +1380,7 @@
 .ui-dialog.settings-model-group-dialog-surface {
   width: min(660px, calc(100vw - 32px));
   max-height: calc(100vh - 48px);
-  overflow: visible;
+  overflow: hidden;
   border-radius: 10px;
 }
 
@@ -1391,8 +1399,10 @@
 }
 
 .settings-model-group-dialog .form-dialog__body {
+  min-height: 0;
   padding: 8px 28px 18px;
-  overflow: visible;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .settings-model-group-dialog .form-dialog__footer {

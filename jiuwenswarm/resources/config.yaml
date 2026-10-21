@@ -572,6 +572,7 @@ agent_observability:
 # ============================================================
 trajectory_ui:
   enabled: false                     # 启用“对话 / 轨迹”数据链路
+  diagnosis_enabled: false           # 启用“诊断与归因”视图；开启后同样会记录轨迹数据，无需同时开启 enabled
   db_path: ""                       # Session database root; defaults to ~/.jiuwenswarm/.trace/sessions
   retention_days: 7                 # SQLite 轨迹保留天数
   queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
@@ -665,7 +666,7 @@ react:
     # cua_agent: 桌面自动化子代理，保留单步工具，增加 Python cua_repl 支持无障碍树与多步工作流。
     # 需安装 cua 可选依赖（pip install "workswarm[cua]" 或 uv sync --extra cua），并使用支持图片输入的模型。
     # 安装包内置 Python 3.12+ 与已编译驱动，无需用户安装编译工具。
-    # 源码运行时首次使用自动构建本机驱动（macOS 需 Swift，Windows 需 .NET Framework 4.8）。
+    # 源码运行需手动编译驱动：python -m jiuwenswarm.agents.harness.computer_use.worker --build-native。
     # 需提供目标系统的桌面权限。操作可能影响真实鼠标、键盘和前台，执行期间请勿操作电脑。
     cua_agent:
       enabled: false

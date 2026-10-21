@@ -150,6 +150,8 @@ import { TeamSelector } from './TeamSelector';
 import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import {
   resolveTeamBootstrapMode,
   resolveTeamDispatchMode,
@@ -984,10 +986,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const agentGroupLocked = Boolean(agentGroupBinding || agentGroupBindingPending);
   const selectedGroup = groupOptions.find((item) => item.name === selectedGroupId || item.id === selectedGroupId) ?? null;
   const displayedGroupId = organizationTeam ? organizationTeam.agent_group_name?.trim() || null : selectedGroupId;
-  const displayedGroup = useMemo(
+  const conversationId = useOrganizationConversationKey(activeSessionId);
+  const groupSnapshot = useSessionStore((s) => s.runtimes[conversationId]?.teamGroupIdentity ?? null);
+  const catalogGroup = useMemo(
     () => (organizationTeam ? resolveOrganizationTeamIdentity(organizationTeam, groupOptions) : selectedGroup),
     [organizationTeam, groupOptions, selectedGroup],
   );
+  const displayedGroup = catalogGroup ?? (
+    groupSnapshot && (groupSnapshot.name === displayedGroupId || groupSnapshot.id === displayedGroupId)
+      ? groupSnapshot
+      : null
+  );
+  const displayedGroupName = resolveTeamGroupDisplayName(displayedGroup, i18n.language) || displayedGroupId;
   const organizationGroupCatalogNeeded = Boolean(organizationTeam?.agent_group_name);
   const installedGroupOptions = useMemo(
     () => groupOptions.filter((item) => item.installed && item.capabilities.canUse),
@@ -4926,11 +4936,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           }
                         />
                       ) : (
-                        (displayedGroup?.displayName || displayedGroupId).trim().slice(0, 1).toUpperCase() || '?'
+                        displayedGroupName?.trim().slice(0, 1).toUpperCase() || '?'
                       )}
                     </span>
                     <span className="chat-agent-tag__label" data-testid="chat-panel-agent-group-tag-label">
-                      {displayedGroup?.displayName || displayedGroupId}
+                      {displayedGroupName}
                     </span>
                     {agentGroupLocked || existingTeamGroupSelectionDisabled ? (
                       <Lock className="chat-agent-tag__lock" size={12} strokeWidth={2} aria-hidden="true" />

@@ -312,6 +312,106 @@ async def _traffic(supervisor, gateway, client, frames):
 
 @pytest.mark.asyncio
 @pytest.mark.slow
+@pytest.mark.skipif(os.name != "nt", reason="inject a raw Windows pipe frame")
+async def test_real_worker_reconnects_after_invalid_frame(tmp_path, monkeypatch):
+    from websockets.asyncio.client import connect as ws_connect
+    from jiuwenswarm.server.ipc.protocol import HEADER
+
+    async with _worker("pool-pressure", tmp_path, monkeypatch, max_restarts=1) as (supervisor, process):
+        pid = supervisor.worker_pid
+        original_conn = supervisor._conn
+        # Bypass the sender's encoder to reproduce a malformed peer on the OS
+        # transport. The Worker must retire this connection and keep Runtime.
+        await asyncio.to_thread(original_conn._conn.send_bytes, HEADER.pack(1) + b"[")
+        async with asyncio.timeout(10):
+            while supervisor._conn is original_conn or supervisor._conn is None:
+                await asyncio.sleep(0.01)
+            assert await supervisor._readiness.wait_agent_ready(5)
+        assert supervisor.worker_pid == pid and process.returncode is None
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with ws_connect(url) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                await _traffic(supervisor, gateway, client, 20)
+        (tmp_path / "acceptance.json").write_text(json.dumps({
+            "case": "malformed_frame_reconnect", "pid": pid, "same_pid": True,
+            "ordered_frames_after_reconnect": 20, "stderr": str(process.stderr_path),
+        }, indent=2), encoding="utf-8")
+    assert process.returncode == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+async def test_real_worker_survives_large_log_regex(tmp_path, monkeypatch, caplog):
+    from websockets.asyncio.client import connect as ws_connect
+
+    async with _worker("regex-logging", tmp_path, monkeypatch) as (supervisor, process):
+        pid = supervisor.worker_pid
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with ws_connect(url) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                dispatch = asyncio.create_task(supervisor.dispatch_parsed_request(
+                    gateway["ws"], _request(1), gateway["lock"],
+                ))
+                first = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert first["phase"] == "regex_starting"
+                final = json.loads(await asyncio.wait_for(client.recv(), 5))
+                await asyncio.wait_for(dispatch, 2)
+                assert final["phase"] == "final" and final["log_seconds"] < 2
+                assert supervisor.worker_pid == pid and supervisor._restart_count == 0
+                assert process.returncode is None
+        assert "heartbeat timed out" not in caplog.text
+        (tmp_path / "acceptance.json").write_text(json.dumps({
+            "case": "large_log_regex", "pid": pid, "log_seconds": final["log_seconds"],
+            "restarts": supervisor._restart_count, "stderr": str(process.stderr_path),
+        }, indent=2), encoding="utf-8")
+    assert process.returncode == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+async def test_real_worker_survives_blocked_logging_and_exits_before_sink_recovers(
+    tmp_path, monkeypatch, caplog,
+):
+    from websockets.asyncio.client import connect as ws_connect
+
+    async with _worker("slow-logging", tmp_path, monkeypatch) as (supervisor, process):
+        pid = supervisor.worker_pid
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with ws_connect(url) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                began = time.monotonic()
+                dispatch = asyncio.create_task(supervisor.dispatch_parsed_request(
+                    gateway["ws"], _request(1), gateway["lock"],
+                ))
+                first = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert first["phase"] == "logging_pending"
+                assert first["first_seconds"] < 2
+                assert first["log_thread"] == "worker-log-writer"
+                await asyncio.sleep(31)
+                assert supervisor._last_rx > began + 25
+                assert supervisor._restart_count == 0
+                assert supervisor.worker_pid == pid and process.returncode is None
+                final = json.loads(await asyncio.wait_for(client.recv(), 10))
+                await asyncio.wait_for(dispatch, 2)
+                assert final["phase"] == "final" and final["sink_pending"]
+                assert final["blocked_seconds"] >= 36
+        assert "heartbeat timed out" not in caplog.text
+        assert "worker loop unresponsive" not in caplog.text
+        exit_started = time.monotonic()
+        await supervisor.stop(terminate_worker=True)
+        exit_seconds = time.monotonic() - exit_started
+        assert process.returncode == 0
+        assert exit_seconds < 5
+        (tmp_path / "acceptance.json").write_text(json.dumps({
+            "case": "blocked_log_sink", "pid": pid, "restarts": supervisor._restart_count,
+            "transport_timeout_seconds": 30, "blocked_seconds": final["blocked_seconds"],
+            "first_response_seconds": first["first_seconds"], "shutdown_seconds": exit_seconds,
+            "exit_code": process.returncode, "stderr": str(process.stderr_path),
+        }, indent=2), encoding="utf-8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
 async def test_real_worker_survives_busy_pools_timeout_and_reconnect(
     tmp_path, monkeypatch, caplog
 ):

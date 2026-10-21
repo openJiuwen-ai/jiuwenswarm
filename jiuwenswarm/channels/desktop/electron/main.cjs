@@ -1723,10 +1723,32 @@ async function uniqueDownloadPath(filename) {
   }
 }
 
+/** Decode a browser FileReader-style data URL into bytes for local save. */
+function decodeDownloadDataUrl(dataUrl) {
+  const raw = String(dataUrl);
+  if (!raw.startsWith('data:')) throw new Error('Unsupported download protocol: data-url');
+  const comma = raw.indexOf(',');
+  if (comma < 0) throw new Error('Invalid data URL');
+  const metadata = raw.slice(5, comma);
+  const payload = raw.slice(comma + 1);
+  const isBase64 = /(?:^|;)base64$/i.test(metadata);
+  if (isBase64) return Buffer.from(payload, 'base64');
+  return Buffer.from(decodeURIComponent(payload), 'utf8');
+}
+
 async function saveDownloadedFile(url, filename) {
-  const targetUrl = new URL(String(url), currentFrontendUrl);
-  if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
-    throw new Error(`Unsupported download protocol: ${targetUrl.protocol}`);
+  // File-preview text downloads (e.g. manifest.json) pass a data: URL from the
+  // renderer. Accept those locally; keep rejecting other non-http(s) schemes.
+  const rawUrl = String(url);
+  let inlineBytes = null;
+  let targetUrl = null;
+  if (rawUrl.startsWith('data:')) {
+    inlineBytes = decodeDownloadDataUrl(rawUrl);
+  } else {
+    targetUrl = new URL(rawUrl, currentFrontendUrl);
+    if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+      throw new Error(`Unsupported download protocol: ${targetUrl.protocol}`);
+    }
   }
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: path.join(app.getPath('downloads'), sanitizeFilename(filename)),
@@ -1736,12 +1758,24 @@ async function saveDownloadedFile(url, filename) {
   const temporaryPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${randomUUID()}.part`);
   let temporaryCreated = false;
   try {
-    const response = await net.fetch(targetUrl);
-    if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
-    if (!response.body) throw new Error('Download response has no body');
-    const handle = await fs.open(temporaryPath, 'wx');
-    temporaryCreated = true;
-    await pipeline(Readable.fromWeb(response.body), handle.createWriteStream());
+    if (inlineBytes) {
+      // Mark created as soon as the exclusive create succeeds so a mid-write
+      // failure (e.g. ENOSPC) still removes the leftover .part in finally.
+      const handle = await fs.open(temporaryPath, 'wx');
+      temporaryCreated = true;
+      try {
+        await handle.writeFile(inlineBytes);
+      } finally {
+        await handle.close().catch(() => {});
+      }
+    } else {
+      const response = await net.fetch(targetUrl);
+      if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
+      if (!response.body) throw new Error('Download response has no body');
+      const handle = await fs.open(temporaryPath, 'wx');
+      temporaryCreated = true;
+      await pipeline(Readable.fromWeb(response.body), handle.createWriteStream());
+    }
     await fs.rename(temporaryPath, targetPath);
     temporaryCreated = false;
   } finally {
@@ -1780,6 +1814,10 @@ const BLOB_EXPORT_SPECS = {
   'image/svg+xml': { suffixes: ['.svg'], parameters: ['charset=utf-8'], filter: { name: 'SVG Image', extensions: ['svg'] } },
   'text/plain': { suffixes: ['.mmd'], parameters: ['charset=utf-8'], filter: { name: 'Mermaid Diagram', extensions: ['mmd'] } },
   'application/json': { suffixes: ['.json'], parameters: ['charset=utf-8'], filter: { name: 'JSON Archive', extensions: ['json'] } },
+  // Trajectory panel exports (.trajectory.zip / .trajectory.jsonl). Keep in sync
+  // with DATA_URL_EXPORT_SPECS in desktop_app.py (contract test enforces this).
+  'application/zip': { suffixes: ['.zip'], parameters: [], filter: { name: 'ZIP Archive', extensions: ['zip'] } },
+  'application/jsonl': { suffixes: ['.jsonl'], parameters: ['charset=utf-8'], filter: { name: 'JSONL Archive', extensions: ['jsonl'] } },
 };
 const BASE64_CHUNK_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 const blobSaveTransfers = new Map();

@@ -89,6 +89,7 @@ from jiuwenswarm.agents.swarm.config_specs import (
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
+from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -663,6 +664,22 @@ def test_build_member_capability_specs_tool_names(role: str) -> None:
         expected.add(registry.SESSION_MESSAGING_TOOLS)
     assert tool_names == expected
     assert all(isinstance(spec, BuiltinToolSpec) for spec in tool_specs)
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_design_profile_web_tools_are_leader_only(role: str) -> None:
+    _, tool_specs = build_member_capability_specs({}, NEW_TEAM_DESIGN, role)
+    tool_names = {spec.type for spec in tool_specs}
+
+    expected = {registry.VISION, registry.AUDIO}
+    if role == "leader":
+        expected |= {
+            registry.WEB_SEARCH,
+            registry.WEB_FETCH,
+            registry.WEB_PAID_SEARCH,
+            registry.DESIGNER_GRAPH_TOOLS,
+        }
+    assert tool_names == expected
 
 
 def test_a4p_intent_authorization_provider_is_interactive_web_leader_only() -> None:

@@ -108,6 +108,94 @@ async def test_workspace_upload_chunks_stay_in_injected_user_dir(
 
 
 @pytest.mark.asyncio
+async def test_upload_chunk_concurrent_same_name_does_not_clobber(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """并发同 target_rel_path 首块必须各自占用唯一文件（独占创建）。
+
+    重建 A1g 删除的 test_persist_media_locally_concurrent_same_name_
+    does_not_clobber 并发守护：E2A 分块路径首块的 check-then-write 竞态
+    （unique_upload_path 后非原子 open）回归时本测试必须失败。
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from jiuwenswarm.server.runtime.gateway_adapter import workspace_file_adapter as module
+
+    monkeypatch.setattr(module, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(module, "is_path_within_user_dirs", lambda path: Path(path).is_relative_to(tmp_path))
+    adapter = WorkspaceFileAdapter()
+
+    def _first_chunk(index: int):
+        return asyncio.run(
+            adapter.handle(
+                _request(
+                    ReqMethod.FILE_UPLOAD_CHUNK,
+                    {
+                        "upload_id": f"u-{index}",
+                        "target_rel_path": "agent/sessions/s1/uploads/report.bin",
+                        "data": base64.b64encode(f"chunk-{index}".encode()).decode("ascii"),
+                        "final": True,
+                    },
+                )
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        responses = list(pool.map(_first_chunk, range(16)))
+
+    assert all(resp.ok for resp in responses)
+    paths = [Path(resp.payload["path"]) for resp in responses]
+    assert len(set(paths)) == 16
+    assert {path.read_bytes() for path in paths} == {
+        f"chunk-{index}".encode() for index in range(16)
+    }
+
+
+@pytest.mark.asyncio
+async def test_im_file_persist_concurrent_same_name_does_not_clobber(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """并发同名 IM 附件必须各自占用唯一文件（独占创建，不静默覆盖）。"""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter.get_agent_workspace_dir",
+        lambda: tmp_path,
+    )
+    adapter = WorkspaceFileAdapter()
+
+    def _persist(index: int):
+        data = f"content-{index}".encode()
+        return asyncio.run(
+            adapter.handle(
+                _request(
+                    ReqMethod.IM_FILE_PERSIST,
+                    {
+                        "platform": "feishu",
+                        "category": "files",
+                        "filename": "report.txt",
+                        "data": base64.b64encode(data).decode("ascii"),
+                    },
+                )
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        responses = list(pool.map(_persist, range(16)))
+
+    assert all(resp.ok for resp in responses)
+    paths = [Path(resp.payload["path"]) for resp in responses]
+    assert len(set(paths)) == 16
+    assert {path.read_bytes() for path in paths} == {
+        f"content-{index}".encode() for index in range(16)
+    }
+
+
+@pytest.mark.asyncio
 async def test_workspace_verified_download_revalidates_every_bounded_chunk(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -461,7 +461,9 @@ class RuntimeSupervisor:
             try:
                 await self._pump()
             except Exception as exc:  # noqa: BLE001
-                logger.warning("[Supervisor] worker session ended: %s", exc)
+                logger.warning("[Supervisor] worker session ended: %r", exc)
+                if not self._stopping and not self._terminating:
+                    self._log_diagnostics(repr(exc))
             if self._shutdown_done is not None and not self._shutdown_done.done():
                 self._shutdown_done.set_result(
                     {"ok": False, "error": "worker closed before shutdown acknowledgement"}

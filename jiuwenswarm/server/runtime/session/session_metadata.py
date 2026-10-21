@@ -1562,6 +1562,32 @@ def sync_session_request_metadata(
     return effective_project_dir
 
 
+def preserve_agent_group_display_identity(
+    agent_group_name: str, identity: dict[str, Any]
+) -> None:
+    """Persist missing legacy snapshots before uninstall removes their source."""
+    sessions_dir = get_agent_sessions_dir()
+    if not sessions_dir.is_dir():
+        return
+    for session_dir in sessions_dir.iterdir():
+        if not session_dir.is_dir():
+            continue
+        session_id = session_dir.name
+        metadata = _read_metadata_file_in(session_dir)
+        if (
+            metadata.get("agent_group_name") != agent_group_name
+            or "team_group_identity" in metadata
+        ):
+            continue
+        metadata["team_group_identity"] = copy.deepcopy(identity)
+        options = _MetadataWriteOptions(
+            merge_fields=frozenset({"team_group_identity"}),
+            expected_fields={"team_group_identity": (False, None)},
+        )
+        written = _write_metadata_sync(session_id, metadata, options)
+        _refresh_written_cache(session_id, written, options)
+
+
 def get_session_metadata(
     session_id: str,
     cache_bust: bool = False,

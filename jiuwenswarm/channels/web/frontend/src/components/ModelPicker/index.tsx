@@ -120,10 +120,10 @@ export default function ModelPicker({
   const displayLabel =
     unavailableSelectionLabel ||
     (selection?.type === 'model_group'
-      ? selectionLabel || selection.id
+      ? selectionLabel || t('chat.modelSelector.placeholder')
       : selected
         ? selected.alias || selected.model_name
-        : value || t('chat.modelSelector.placeholder'));
+        : selectionLabel || value || t('chat.modelSelector.placeholder'));
   const groups = [
     {
       id: 'free',

@@ -259,11 +259,13 @@ def _is_code_mode(mode: str) -> bool:
 
 # Design profile (team.design) capability set. The design leader is a
 # conversation surface over the design canvas and the workers are per-node
-# executors: skill/symphony/task-planning rails and the generic web/media
-# tools are out (the designer graph tools arrive via the agent_group leader
-# template, not the profile). Everything else — runtime/response prompts,
-# streaming, security, anomaly detection, heartbeat, context — stays because
-# the team runtime's session mechanics depend on them.
+# executors: skill/symphony/task-planning rails and the generic media tools
+# are out (the designer graph tools arrive via the agent_group leader
+# template, not the profile). Web search/fetch is leader-only, so the
+# per-node executors stay on their node inputs. Everything else —
+# runtime/response prompts, streaming, security, anomaly detection,
+# heartbeat, context — stays because the team runtime's session mechanics
+# depend on them.
 _DESIGN_RAIL_NAMES: tuple[str, ...] = (
     registry.RUNTIME_PROMPT,
     registry.RESPONSE_PROMPT,
@@ -281,6 +283,12 @@ _DESIGN_RAIL_NAMES: tuple[str, ...] = (
 _DESIGN_TOOL_NAMES: tuple[str, ...] = (
     registry.VISION,
     registry.AUDIO,
+)
+
+_DESIGN_LEADER_TOOL_NAMES: tuple[str, ...] = (
+    registry.WEB_SEARCH,
+    registry.WEB_FETCH,
+    registry.WEB_PAID_SEARCH,
 )
 
 
@@ -344,7 +352,7 @@ def _build_design_capability_specs(
         # provider, which resolves the session's graph binding. No send_file:
         # node outputs reach the frontend through the canvas node contract
         # (DESIGNER_RUN_UPDATED / graph output_refs), not chat file delivery.
-        tool_names = (*tool_names, registry.DESIGNER_GRAPH_TOOLS)
+        tool_names = (*tool_names, *_DESIGN_LEADER_TOOL_NAMES, registry.DESIGNER_GRAPH_TOOLS)
     tool_specs: list[BuiltinToolSpec] = [
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
         for name in tool_names

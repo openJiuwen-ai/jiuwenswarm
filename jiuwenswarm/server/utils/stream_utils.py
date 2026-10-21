@@ -177,6 +177,32 @@ def parse_stream_chunk(chunk: Any, *, _has_streamed_content: bool = False) -> di
     }
 
 
+def _parse_model_retry_notice(payload: Any) -> dict[str, Any] | None:
+    """Project Core retry diagnostics as status, never assistant answer text."""
+    if not isinstance(payload, dict) or payload.get("retrying") is not True:
+        return None
+
+    # Core logs the provider error before emitting this synthetic llm_output.
+    # Keep only numeric retry metadata on the wire; the raw error can contain
+    # a large provider response and is not part of the model's answer.
+    metadata = {
+        key: payload[key]
+        for key in ("attempt", "max_attempts", "error_code")
+        if type(payload.get(key)) is int and payload[key] > 0
+    }
+    content = "Model call failed; retrying"
+    if "attempt" in metadata and "max_attempts" in metadata:
+        content += f" ({metadata['attempt']}/{metadata['max_attempts']})"
+    return {
+        "event_type": "chat.notice",
+        "notice_type": "model_retry",
+        "level": "warning",
+        "content": content + ".",
+        "retrying": True,
+        **metadata,
+    }
+
+
 def _parse_dict_chunk(chunk: dict[str, Any], _has_streamed_content: bool) -> dict[str, Any] | None:
     """Parse dict chunk."""
     if "event_type" in chunk:
@@ -190,6 +216,10 @@ def _parse_dict_chunk(chunk: dict[str, Any], _has_streamed_content: bool) -> dic
 
     if "type" in chunk:
         event_type = chunk.get("type")
+        if event_type == "llm_output":
+            retry_notice = _parse_model_retry_notice(chunk.get("payload"))
+            if retry_notice is not None:
+                return retry_notice
         if event_type == "tool_call":
             return {
                 "event_type": "tool.use",
@@ -324,6 +354,9 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
             return {"event_type": "chat.error", "error": error}
 
     if chunk_type == "llm_output":
+        retry_notice = _parse_model_retry_notice(payload)
+        if retry_notice is not None:
+            return retry_notice
         content = (
             payload.get("content", "")
             if isinstance(payload, dict)
