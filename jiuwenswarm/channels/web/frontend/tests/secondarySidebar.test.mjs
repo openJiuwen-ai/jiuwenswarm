@@ -57,6 +57,8 @@ test('temporary previews and module switches preserve the shared preference acro
     assert.equal(state.peek.target, 'chat');
     act(() => state.peek.hover('experiments'));
     assert.equal(state.peek.target, 'experiments');
+    act(() => state.peek.hover('settings'));
+    assert.equal(state.peek.target, 'settings');
     act(() => state.peek.hover(null));
     await finishHoverClose();
     assert.equal(state.peek.target, null);

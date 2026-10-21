@@ -141,7 +141,7 @@ export function SettingsPageLayout({
       setActiveModuleId(nextId);
       onNavigate?.();
     },
-    [active?.module.id, saveQueue, saveStatus.status, unsavedChanges, onNavigate],
+    [active?.module.id, saveStatus.status, unsavedChanges, onNavigate],
   );
   if (!active) return null;
   return (
@@ -205,26 +205,23 @@ export function SettingsPageLayout({
               ) : saveStatus.status === 'error' ? (
                 <span className="settings-page__status settings-page__status--error" role="alert" data-testid="settings-save-status" data-variant="error">
                   <CircleAlert size={14} aria-hidden />
-                  {missingJevKey
-                    ? t('settingsPanel.browser.jevKeyMissing')
-                    : saveStatus.error || t('settingsPanel.feedback.saveFailed')}
+                  {saveStatus.error || t('settingsPanel.feedback.saveFailed')}
                 </span>
               ) : null}
             </header>
             <SettingsSourceProvider source={active.module.source}>
               <div className="settings-page__module" data-settings-module={active.module.id} data-testid="settings-module" data-variant={active.module.id}>
                 {active.visible.sections.map(({ section, items }) => (
-                  <SettingsSourceVisibility key={section.id} when={section.visibleWhen}>
-                    <SettingsSection
-                      title={section.titleKey ? t(section.titleKey) : undefined}
-                      description={section.descriptionKey ? t(section.descriptionKey) : undefined}
-                      separatedRows={section.separatedRows === true}
-                    >
-                      {items.map(({ item, access }) => (
-                        <SettingsItem key={item.id} item={item} access={access} />
-                      ))}
-                    </SettingsSection>
-                  </SettingsSourceVisibility>
+                  <SettingsSection
+                    key={section.id}
+                    title={section.titleKey ? t(section.titleKey) : undefined}
+                    description={section.descriptionKey ? t(section.descriptionKey) : undefined}
+                    separatedRows={section.separatedRows === true}
+                  >
+                    {items.map(({ item, access }) => (
+                      <SettingsItem key={item.id} item={item} access={access} />
+                    ))}
+                  </SettingsSection>
                 ))}
               </div>
             </SettingsSourceProvider>
