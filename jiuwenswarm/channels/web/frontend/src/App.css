@@ -18,6 +18,10 @@
   display: none;
 }
 
+.app-section--peek-only {
+  display: contents;
+}
+
 .chat-layout {
   position: relative;
   background: var(--color-surface-shell);
@@ -42,7 +46,8 @@
 }
 
 .chat-layout--peek-host .conversation-sidebar,
-.chat-layout--peek-host .rsi-rail {
+.chat-layout--peek-host .rsi-rail,
+.chat-layout--peek-host .settings-page__nav {
   pointer-events: auto;
 }
 

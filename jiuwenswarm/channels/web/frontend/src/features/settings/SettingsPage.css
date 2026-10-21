@@ -10,13 +10,37 @@
   background: var(--color-surface-content);
 }
 
+.settings-page--collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-page--peek-only {
+  display: contents;
+}
+
+.settings-page__nav-host {
+  min-height: 0;
+}
+
+.settings-page--collapsed > .settings-page__nav-host {
+  display: none;
+}
+
 .settings-page__nav {
   box-sizing: border-box;
   min-width: 208px;
   min-height: 0;
+  height: 100%;
   padding: 20px 16px 36px;
   overflow-y: auto;
   background: var(--color-settings-nav-surface);
+}
+
+.settings-page__nav.is-floating {
+  width: clamp(208px, 15.4167vw, 296px);
+  max-width: 100%;
+  background: var(--color-sidebar-surface);
+  box-shadow: var(--color-sidebar-shadow);
 }
 
 .settings-page__nav > h1,
@@ -1558,32 +1582,6 @@
 
 
 @media (max-width: 640px) {
-  .settings-page {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-    min-width: 0;
-  }
-
-  .settings-page__nav {
-    min-width: 0;
-    padding: 12px;
-  }
-
-  .settings-page__nav > h1 {
-    margin-bottom: 8px;
-  }
-
-  .settings-page__nav nav {
-    display: flex;
-    overflow-x: auto;
-  }
-
-  .settings-page__nav-button {
-    flex: 0 0 auto;
-    width: auto;
-    white-space: nowrap;
-  }
-
   .settings-page__content {
     padding: 24px 12px 40px;
   }
