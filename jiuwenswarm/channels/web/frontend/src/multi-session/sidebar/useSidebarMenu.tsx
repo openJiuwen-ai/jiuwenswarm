@@ -298,6 +298,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     removeProject,
     archiveSession,
     removeSessionLocally,
+    workMode,
   } = useWorkspaceStore();
   const loadCronJobs = useCronStore((s) => s.loadJobs);
   const loadCronSessions = useCronStore((s) => s.loadCronSessions);
@@ -601,7 +602,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     };
     items = getSessionMenuItems(pinned, t, {
       scope,
-      archivable: !cron,
+      archivable: !cron && workMode !== 'design',
     }).map((def) => ({
       ...def,
       icon: menuIcon(def.key, pinned),
