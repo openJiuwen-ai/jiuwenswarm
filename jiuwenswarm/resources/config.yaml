@@ -265,7 +265,7 @@ memory:
   # ------------------------------------------------------------
   # 用户画像（用户级记忆概览，OfficeAceUserProfileRail 自动注入 prompt）
   # ------------------------------------------------------------
-  # 独立于 engine/external：不要求 memory.engine=external 即可生效。
+  # 要求 memory.engine=external/both 且 external.provider=officeace_cloud。
   # endpoint/api_key 任一为空 → rail 不挂载（零残留，对话照常）。
   # user_id 复用上层 memory.external.user_id（${MEMORY_USER_ID:-__default__}），
   # 不在此段单独配置。
