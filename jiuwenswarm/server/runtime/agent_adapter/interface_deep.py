@@ -16752,8 +16752,21 @@ class JiuWenSwarmDeepAdapter:
             host_tools=inherited.host_tools if inherited and inherited.request_id == request.request_id else (),
             tool_permissions=tuple(tool_levels.items()) if isinstance(tool_levels, dict) else None,
             credential_context=self._scoped_login_auth(request),
+            supports_permission_approval=(
+                request_params.get("supports_permission_approval",
+                                   request_params.get("supports_user_interaction", True)) is True
+            ),
         )
         permission_rail = self._permission_rail
+        approval_rail = (
+            getattr(permission_rail, "base_rail", permission_rail)
+            if request.channel_id == "process_cli" else None
+        )
+        previous_approval_support = getattr(approval_rail, "supports_permission_approval", None)
+        if approval_rail is not None:
+            # SDK tool callbacks can run in tasks created before this request's
+            # ContextVars. Bind this restriction to the session's rail as well.
+            approval_rail.supports_permission_approval = context.supports_permission_approval
         previous_rail_levels = (
             getattr(permission_rail, "run_permission_levels", None)
             if permission_rail is not None else None
@@ -16789,6 +16802,8 @@ class JiuWenSwarmDeepAdapter:
             yield
         finally:
             CURRENT_RUN_CONTEXT.reset(context_token)
+            if approval_rail is not None:
+                approval_rail.supports_permission_approval = previous_approval_support
             if permission_rail is not None:
                 permission_rail.run_permission_levels = previous_rail_levels
             RUN_PERMISSIONS.reset(run_permissions_token)
