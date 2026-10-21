@@ -1887,6 +1887,25 @@ def _assert_package_id_available(
         raise ValueError(message)
 
 
+def _discard_orphaned_built_in_copy(kind: str, package_id: str) -> None:
+    """Drop a built_in/ install copy whose resources shelf package was removed.
+
+    built_in/ only holds installed copies of shelf packages, and listing only
+    reads the shelf, so once a package moves from the shelf to the Hub its old
+    copy is invisible yet still blocks installing the Hub package of that id.
+    Removing it is the uninstall the user can no longer reach from the UI.
+    """
+    built_in_dir = _built_in_root(kind) / package_id
+    resources_root = _resources_root(kind)
+    if not built_in_dir.is_dir():
+        return
+    if resources_root is not None and (resources_root / package_id).is_dir():
+        return
+    logger.info("discarding orphaned built_in %s package before Hub install: %s", kind, package_id)
+    _rmtree(built_in_dir)
+    _remove_marketplace_entry(kind, package_id)
+
+
 def _assert_agent_group_name_available(name: str) -> None:
     """Reject create/import when an AgentGroup has the same display name."""
     normalized_name = name.casefold()
@@ -3021,6 +3040,7 @@ async def _prepare_hub_equipment(
             )
 
     def reject_conflict(runtime_package_id: str) -> None:
+        _discard_orphaned_built_in_copy(kind, runtime_package_id)
         _assert_package_id_available(
             runtime_package_id,
             local_root=_local_root(kind),
@@ -4366,6 +4386,14 @@ async def install_agent_group_with_hub(
                 raise ValueError("Hub agent_group package name mismatch")
             load_agent_group_package(package_root)
 
+        def reject_conflict(value: str) -> None:
+            _discard_orphaned_built_in_copy(_AGENT_GROUP_KIND, value)
+            _assert_package_id_available(
+                value, local_root=_local_root(_AGENT_GROUP_KIND),
+                built_in_root=_built_in_root(_AGENT_GROUP_KIND),
+                resources_root=_resources_root(_AGENT_GROUP_KIND), kind="agent_group"
+            )
+
         result = await install_hub_asset_package(
             kind="agent_group",
             asset_id=requested_id,
@@ -4373,11 +4401,7 @@ async def install_agent_group_with_hub(
             state_store=store,
             package_name_validator=lambda value: _reject_package_name(value, "agent_group"),
             package_validator=validate,
-            conflict_validator=lambda value: _assert_package_id_available(
-                value, local_root=_local_root(_AGENT_GROUP_KIND),
-                built_in_root=_built_in_root(_AGENT_GROUP_KIND),
-                resources_root=_resources_root(_AGENT_GROUP_KIND), kind="agent_group"
-            ),
+            conflict_validator=reject_conflict,
             on_committed=lambda value: upsert_agent_group_marketplace_entry(
                 value.package_id, installed=False, source="hub"
             ),

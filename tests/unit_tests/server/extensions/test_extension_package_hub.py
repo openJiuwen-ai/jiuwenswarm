@@ -1213,6 +1213,35 @@ async def test_hub_asset_uuid_remains_external_while_package_name_drives_runtime
     ]
 
 @pytest.mark.asyncio
+async def test_hub_install_replaces_built_in_copy_whose_shelf_package_was_removed(
+    extension_workspace: Path,
+) -> None:
+    asset_id = "8c5a4c8a1bf0484a8027af89e12d13d4"
+    hub = FakeHubAssetPort(
+        _item(asset_id, "agent_template", package_name="sales-expert")
+    )
+    root = extension_workspace / "plugins" / "agent_templates"
+    orphan = root / "built_in" / "sales-expert"
+    orphan.mkdir(parents=True)
+    (orphan / "manifest.json").write_text(
+        json.dumps({"package_type": "agent_template", "name": "sales-expert"}),
+        encoding="utf-8",
+    )
+
+    ok, payload = await catalog.install_equipment_from_hub_gated(
+        "agent_templates",
+        {"id": asset_id},
+        hub_port=hub,
+        downloader=FakeDownloader(),
+    )
+
+    assert (ok, payload) == (True, {})
+    assert not orphan.exists()
+    assert (root / "local" / "sales-expert").is_dir()
+    assert catalog.is_agent_template_installed("sales-expert") is True
+
+
+@pytest.mark.asyncio
 async def test_expert_catalog_keeps_hub_card_with_same_named_local_package(extension_workspace):
     local = extension_workspace / 'plugins' / 'agent_templates' / 'local' / 'sales-expert'
     local.mkdir(parents=True)
