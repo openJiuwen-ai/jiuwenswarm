@@ -1129,13 +1129,31 @@ function emitLayoutInvalidated() {
   }
 }
 
+// 地址栏输入分流：看起来像主机名才导航，否则交给必应搜索。
+// 只看有没有空格不够：纯中文裸词（如"清华大学"）会被 WHATWG URL 解析成
+// xn-- punycode 假域名（https://xn--xkry9kk1bz66a/），DNS 必然失败。
+function looksLikeBrowserHost(raw) {
+  if (/\s/.test(raw)) return false;
+  if (/^https?:/i.test(raw) || /^about:/i.test(raw)) return true;
+  // IPv4：每段需 ≤255（WHATWG 会拒绝 999.1.1.1 这类地址，Chrome 对其走搜索）。
+  if (/^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:[/?#].*)?$/.test(raw)) {
+    return raw.split(/[/:?#]/)[0].split('.').every(octet => Number(octet) <= 255);
+  }
+  if (/^localhost(?::\d+)?(?:[/?#].*)?$/i.test(raw)) return true;
+  // 主机名需含点号 + TLD（标签允许中文域名字符，允许末尾 FQDN 点）；
+  // "清华大学"这类裸词走搜索。
+  return /^(?:[a-z\d\u00a1-\uffff](?:[a-z\d\u00a1-\uffff-]*[a-z\d\u00a1-\uffff])?\.)+[a-z\u00a1-\uffff]{2,}\.?(?::\d+)?(?:[/?#].*)?$/i.test(raw);
+}
+
 function normalizeBrowserTarget(rawValue) {
   const raw = String(rawValue || '').trim();
   if (!raw) return 'about:blank';
-  if (/\s/.test(raw) && !/^https?:\/\//i.test(raw)) {
+  if (!looksLikeBrowserHost(raw)) {
     return `https://cn.bing.com/search?q=${encodeURIComponent(raw)}`;
   }
-  const candidate = /^[a-z][a-z\d+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+  // 仅认 http(s)/about 为显式协议；example.com:8080、localhost:3000 里的冒号
+  // 是端口分隔符，之前会被误判成协议导致解析抛错。
+  const candidate = /^(?:https?|about):/i.test(raw) ? raw : `https://${raw}`;
   const parsed = new URL(candidate);
   if (!['https:', 'http:', 'about:'].includes(parsed.protocol)) {
     throw new Error(`Unsupported browser URL protocol: ${parsed.protocol}`);
