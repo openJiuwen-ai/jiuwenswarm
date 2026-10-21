@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -196,6 +197,20 @@ def _validate_routing(value: Any, location: str, errors: list[str]) -> None:
     strategy_kwargs = value.get("strategy_kwargs")
     if strategy_kwargs is not None and not isinstance(strategy_kwargs, dict):
         errors.append(f"{location}.strategy_kwargs must be an object")
+    for key in ("timeout_seconds", "stream_first_chunk_timeout", "stream_idle_timeout"):
+        timeout = value.get(key)
+        try:
+            valid_timeout = (
+                not isinstance(timeout, bool)
+                and isinstance(timeout, (int, float, str))
+                and (not isinstance(timeout, str) or bool(timeout.strip()))
+                and math.isfinite(float(timeout))
+                and float(timeout) > 0
+            )
+        except (OverflowError, TypeError, ValueError):
+            valid_timeout = False
+        if timeout is not None and not valid_timeout:
+            errors.append(f"{location}.{key} must be a positive finite number")
     # Recognized legacy strategies are accepted for upgrade compatibility,
     # but are neither executed nor forwarded to Core in model-pool mode.
 

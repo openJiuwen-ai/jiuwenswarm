@@ -1869,8 +1869,16 @@ def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
 
     saved = deepcopy(group)
     saved.setdefault("model_group_id", _new_business_id("mgp"))
-    # Legacy routing settings are inactive in model-pool mode.
-    saved.pop("routing", None)
+    # Keep per-group timeouts; legacy routing strategies remain inactive in model-pool mode.
+    routing = saved.pop("routing", None)
+    if isinstance(routing, dict):
+        timeouts = {
+            key: routing[key]
+            for key in ("timeout_seconds", "stream_first_chunk_timeout", "stream_idle_timeout")
+            if key in routing
+        }
+        if timeouts:
+            saved["routing"] = timeouts
     for route in saved.get("routes") or []:
         if isinstance(route, dict):
             route.setdefault("route_id", _new_business_id("rte"))

@@ -188,9 +188,12 @@ def test_agentos_resource_is_read_only(catalog_state, operation):
     assert caught.value.code == "MODEL_SELECTION_FORBIDDEN"
 
 
-def test_group_save_preserves_route_identity_and_drops_routing(catalog_state):
+def test_group_save_preserves_route_identity_and_group_timeouts(catalog_state):
     group = config_module.upsert_model_group_resource({
-        "display_name": "pool", "routing": {"strategy": "ordered-failover"},
+        "display_name": "pool", "routing": {
+            "strategy": "ordered-failover", "timeout_seconds": 420,
+            "stream_first_chunk_timeout": 280, "stream_idle_timeout": 90,
+        },
         "routes": [{"model_id": "mdl_a"}, {"model_id": "mdl_a"}],
     })
     ids = [route["route_id"] for route in group["routes"]]
@@ -198,8 +201,44 @@ def test_group_save_preserves_route_identity_and_drops_routing(catalog_state):
     group["routes"].reverse()
     saved = config_module.upsert_model_group_resource(group)
     assert [route["route_id"] for route in saved["routes"]] == ids[::-1]
-    assert "routing" not in saved
+    assert saved["routing"] == {
+        "timeout_seconds": 420,
+        "stream_first_chunk_timeout": 280,
+        "stream_idle_timeout": 90,
+    }
     assert len(catalog_state["models"]["groups"]) == 1
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), "bad", True])
+def test_group_save_rejects_invalid_timeout(catalog_state, value):
+    with pytest.raises(ModelSelectionError) as caught:
+        config_module.upsert_model_group_resource({
+            "display_name": "pool", "routes": [{"model_id": "mdl_a"}],
+            "routing": {"timeout_seconds": value},
+        })
+    assert caught.value.code == "MODEL_GROUP_INVALID"
+
+
+def test_group_save_accepts_numeric_timeout_from_environment(catalog_state):
+    saved = config_module.upsert_model_group_resource({
+        "display_name": "configured", "routes": [{"model_id": "mdl_a"}],
+        "routing": {"timeout_seconds": "75"},
+    })
+    assert saved["routing"]["timeout_seconds"] == "75"
+
+
+def test_groups_keep_independent_timeout_overrides(catalog_state):
+    first = config_module.upsert_model_group_resource({
+        "display_name": "fast", "routes": [{"model_id": "mdl_a"}],
+        "routing": {"timeout_seconds": 75},
+    })
+    second = config_module.upsert_model_group_resource({
+        "display_name": "slow", "routes": [{"model_id": "mdl_a"}],
+        "routing": {"timeout_seconds": 420},
+    })
+    groups = {group["model_group_id"]: group for group in catalog_state["models"]["groups"]}
+    assert groups[first["model_group_id"]]["routing"]["timeout_seconds"] == 75
+    assert groups[second["model_group_id"]]["routing"]["timeout_seconds"] == 420
 
 
 def test_only_explicit_default_edit_normalizes_flags(catalog_state):
