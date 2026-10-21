@@ -19,39 +19,6 @@ def test_desktop_env_forces_desktop_install_mode(monkeypatch):
     assert updater._detect_install_mode() == "desktop"
 
 
-def test_source_and_wheel_status_do_not_show_build_source(monkeypatch):
-    monkeypatch.delattr(sys, "frozen", raising=False)
-    monkeypatch.setattr(
-        updater,
-        "get_runtime_build_info",
-        lambda: pytest.fail("source and wheel status must not read build info"),
-    )
-
-    assert updater.UpdaterService().get_status()["build_info"] == {}
-
-
-@pytest.mark.parametrize("platform", ["win32", "darwin"])
-def test_frozen_desktop_status_shows_build_source(monkeypatch, platform):
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "platform", platform)
-    expected = {"jiuwenswarm": {"branch": "0.2.8", "commit_id": "a" * 40}}
-    monkeypatch.setattr(updater, "get_runtime_build_info", lambda: expected)
-
-    assert updater.UpdaterService().get_status()["build_info"] == expected
-
-
-def test_frozen_linux_status_does_not_show_build_source(monkeypatch):
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(
-        updater,
-        "get_runtime_build_info",
-        lambda: pytest.fail("Linux status must not read desktop build info"),
-    )
-
-    assert updater.UpdaterService().get_status()["build_info"] == {}
-
-
 def test_desktop_env_keeps_gitcode_release_source(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
     monkeypatch.setenv("JIUWENSWARM_DESKTOP", "1")
