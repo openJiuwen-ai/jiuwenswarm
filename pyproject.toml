@@ -199,10 +199,6 @@ default-groups = ['dev']
 
 [tool.uv.sources]
 jiuwenswarm-tui = { path = "./packages/jiuwenswarm-tui" }
-# >>> switch-jiuwenswarm-deps managed block >>>
-openjiuwen = { path = "/Users/developer/bugfix/dev/agent-core", editable = true }
-openjiuwen_deepsearch = { path = "/Users/developer/bugfix/dev/deepsearch/deepsearch", editable = true }
-# <<< switch-jiuwenswarm-deps managed block <<<
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)
