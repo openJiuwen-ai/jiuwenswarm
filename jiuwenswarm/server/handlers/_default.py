@@ -981,7 +981,8 @@ async def _handle_stream_impl(
                     chunk.agent_ref = request.agent_ref
                 if not await _emit_tenant(coalescer.push(chunk)):
                     return
-            await _emit_tenant(coalescer.flush())
+            if not await _emit_tenant(coalescer.flush()):
+                return
         finally:
             if prepared is not None:
                 await _check_post_process_plan_exit(ctx, request, prepared[2])

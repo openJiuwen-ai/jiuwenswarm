@@ -18,7 +18,7 @@ def _clock(monkeypatch, start: float = 0.0):
 def _chunk(event_type: str, content: str, **payload) -> AgentResponseChunk:
     body = {"event_type": event_type, "content": content}
     body.update(payload)
-    return AgentResponseChunk(request_id="r1", channel_id="officeclaw", payload=body)
+    return AgentResponseChunk(request_id="r1", channel_id="test-channel", payload=body)
 
 
 def _texts(chunks: list[AgentResponseChunk]) -> list[str]:
