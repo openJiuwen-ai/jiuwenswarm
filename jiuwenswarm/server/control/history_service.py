@@ -141,11 +141,15 @@ def load_history_cursor_page(
 
 
 def load_history_session_usage(session_id: str) -> dict[str, Any] | None:
-    """Read cumulative usage independently of the selected history page."""
+    """Read recorded cumulative usage independently of the selected history page."""
     from jiuwenswarm.server.runtime.session.session_token_usage import get_session_token_usage
 
     try:
-        return get_session_token_usage(session_id)
+        snapshot = get_session_token_usage(session_id)
+        revision = snapshot.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
+            return None
+        return snapshot
     except Exception:
         logger.warning("[History] cumulative session usage unavailable", exc_info=True)
         return None

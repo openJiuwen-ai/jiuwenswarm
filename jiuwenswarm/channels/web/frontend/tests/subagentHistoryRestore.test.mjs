@@ -65,6 +65,56 @@ test('history completion restores current totals even when the page has no usage
   }
 });
 
+test('history restore ignores zero-revision token usage snapshots', () => {
+  const emptyUsage = {
+    schema_version: 1,
+    revision: 0,
+    session_id: sessionId,
+    main: { input_tokens: null, output_tokens: null, input_calls: 0, output_calls: 0, calls_total: 0 },
+    others: { input_tokens: null, output_tokens: null, input_calls: 0, output_calls: 0, calls_total: 0 },
+  };
+  const done = {
+    type: 'event',
+    event: 'history.message',
+    payload: {
+      session_id: sessionId,
+      status: 'done',
+      cursor: null,
+      next_cursor: null,
+      has_more: false,
+      snapshot_id: 'empty-history',
+      snapshot_end: 0,
+      session_usage: emptyUsage,
+    },
+  };
+
+  let restored = null;
+  const handle = beginHistoryRestore({
+    sessionId,
+    onReady: () => {},
+    onSessionTokenUsage: (snapshot) => { restored = snapshot; },
+  });
+  try {
+    webClient.dispatchEventNow(done);
+    assert.equal(restored, null);
+  } finally {
+    handle.dispose();
+  }
+
+  let batch = null;
+  const batchHandle = fetchHistoryCursorBatch({
+    sessionId,
+    cursor: null,
+    onReady: (result) => { batch = result; },
+  });
+  try {
+    webClient.dispatchEventNow(done);
+    assert.equal(batch.tokenUsageSnapshot, null);
+  } finally {
+    batchHandle.dispose();
+  }
+});
+
 test('existing full-duplex spoken replies stay expanded after history restore without changing normal chat', () => {
   const messages = parseHistoryJsonFileToPreviewMessages([
     { id: 'ack', channel_id: 'video_duplex', role: 'assistant', event_type: 'chat.final', content: '好的，没问题，我现在就帮你生成这道题的代码。', timestamp: 1 },
@@ -504,6 +554,28 @@ test('session history restores persisted usage summary and session token totals'
     total_cost: 0.03,
   });
   assert.deepEqual(preview.tokenUsageSnapshot, sessionUsage);
+});
+
+test('session history ignores a cumulative snapshot belonging to another session', () => {
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'foreign-usage-summary',
+      role: 'assistant',
+      event_type: 'chat.usage_summary',
+      timestamp: 1787019581,
+      content: '',
+      usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+      session_usage: {
+        schema_version: 1,
+        revision: 1,
+        session_id: 'another-session',
+        main: { input_tokens: 10, output_tokens: 2, input_calls: 1, output_calls: 1, calls_total: 1 },
+        others: { input_tokens: 0, output_tokens: 0, input_calls: 0, output_calls: 0, calls_total: 0 },
+      },
+    },
+  ], sessionId);
+
+  assert.equal(preview.tokenUsageSnapshot, null);
 });
 
 test('session history restores the complete context usage payload without adding a chat message', () => {
