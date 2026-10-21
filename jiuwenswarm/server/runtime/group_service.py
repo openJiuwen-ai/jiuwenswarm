@@ -125,11 +125,12 @@ def read_group(group_id: str) -> dict | None:
     state["receipts"] = {
         key: normalize_group_member(member) for key, member in state["receipts"].items()
     }
+    retired_tools = {"swarm.group_adjust_task", "swarm.group_submit_task"}
     for member in state["compiled"].values():
         template = member.get("template")
         if template is not None:
             template["tools"] = [
-                tool for tool in template.get("tools", []) if tool.get("type") != "swarm.group_adjust_task"
+                tool for tool in template.get("tools", []) if tool.get("type") not in retired_tools
             ]
     return state
 
@@ -247,7 +248,7 @@ class GroupService:
             request_metadata={"mode": state["mode"], "group_members": members},
         )
         from jiuwenswarm.agents.swarm.group_chat import RUN_TEAM
-        from jiuwenswarm.agents.swarm.group_execution import START_TASK, SUBMIT_TASK
+        from jiuwenswarm.agents.swarm.group_execution import START_TASK
 
         compiled = {}
         for member in spec.predefined_members:
@@ -261,7 +262,7 @@ class GroupService:
                     *[
                         tool.model_dump(mode="json")
                         for tool in (agent.tools or [])
-                        if getattr(tool, "type", None) in {RUN_TEAM, START_TASK, SUBMIT_TASK}
+                        if getattr(tool, "type", None) in {RUN_TEAM, START_TASK}
                     ],
                 ]
             compiled[member.member_name] = {

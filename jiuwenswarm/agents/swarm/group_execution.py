@@ -4,6 +4,7 @@ import hashlib
 import json
 
 from openjiuwen.agent_teams.harness.manifest import ElementKind, harness_element
+from openjiuwen.agent_teams.group_chat.tools import GroupSendMessageTool
 from openjiuwen.agent_teams.rails.team_context import get_team_backend
 from openjiuwen.core.foundation.tool import Tool, ToolCard, ToolOutput
 from openjiuwen.harness.rails.base import DeepAgentRail
@@ -13,15 +14,14 @@ from jiuwenswarm.server.runtime.group_execution import GroupExecutions
 from jiuwenswarm.server.runtime.group_service import GroupError, read_group
 
 START_TASK = "swarm.group_start_task"
-SUBMIT_TASK = "swarm.group_submit_task"
 TASK_POLICY = "swarm.group_task_policy"
 TASK_RULES = (
     "An @ mention alone is ordinary conversation: reply with group_send_message. "
     "For substantive work you choose to undertake, call start_group_task before doing the work. "
     "For an assigned execution, call start_group_task before substantive work; direct answers need no card. "
-    "Use submit_group_task_result for an assigned direct answer without starting a task. "
+    "For an assigned direct answer, use group_send_message with its execution_id without starting a task. "
     "Do not publish progress, reasoning or intermediate results to the group. "
-    "Use submit_group_task_result for the final result and attachment references. "
+    "Use group_send_message with execution_id, content and attachments for the final task result. "
     "An expert-team proxy may do the work directly and submit the result itself. "
     "Call run_team to consult the private team context. It does not create a card until actual work starts. "
     "run_team returns immediately after accepting background work. Do not submit its result yourself. "
@@ -34,7 +34,8 @@ TASK_RULES = (
 def install_execution_policy(agent, *, include_tools=True):
     tools = list(agent.tools or [])
     known = {getattr(tool, "type", None) for tool in tools}
-    task_tools = (START_TASK, SUBMIT_TASK) if include_tools else ()
+    tools = [tool for tool in tools if getattr(tool, "type", None) != "swarm.group_submit_task"]
+    task_tools = (START_TASK,) if include_tools else ()
     for tool_type in task_tools:
         if tool_type not in known:
             tools.append(BuiltinToolSpec(type=tool_type))
@@ -46,27 +47,18 @@ def install_execution_policy(agent, *, include_tools=True):
 
 
 class GroupTaskTool(Tool):
-    def __init__(self, backend, context, *, submit: bool):
-        name = "submit_group_task_result" if submit else "start_group_task"
-        properties = (
-            {"execution_id": {"type": "string"}, "result": {"type": "string"},
-             "attachments": {"type": "array", "items": {"type": "object"}}}
-            if submit else {"run_id": {"type": "string"}, "task": {"type": "string"}}
-        )
+    def __init__(self, backend, context):
         super().__init__(ToolCard(
-            id=f"group.{name}", name=name,
-            description=(
-                "Publish the final task result." if submit else "Start substantive work, registering an execution."
-            ),
+            id="group.start_group_task", name="start_group_task",
+            description="Start substantive work, registering an execution.",
             input_params={
-                "type": "object", "properties": properties,
-                "required": ["execution_id", "result"] if submit else ["run_id", "task"],
-                "additionalProperties": False,
+                "type": "object",
+                "properties": {"run_id": {"type": "string"}, "task": {"type": "string"}},
+                "required": ["run_id", "task"], "additionalProperties": False,
             },
         ))
         self.backend = backend
         self.context = context
-        self.submit = submit
 
     async def stream(self, inputs, **kwargs):
         yield await self.invoke(inputs, **kwargs)
@@ -74,28 +66,58 @@ class GroupTaskTool(Tool):
     async def invoke(self, inputs, **kwargs):
         store = GroupExecutions(self.context.session_id)
         try:
-            if self.submit:
-                record = store.get(inputs.get("execution_id"))
-                if record["member_name"] != self.backend.member_name:
-                    raise GroupError("NOT_FOUND", "execution not found")
-                if record.get("background"):
-                    raise GroupError("CONFLICT", "private team owns result submission")
-                result = await store.finish(
-                    inputs.get("execution_id"), self.backend, inputs.get("result"), inputs.get("attachments", []),
-                )
-            else:
-                run_id = inputs.get("run_id")
-                if not isinstance(run_id, str) or not run_id.strip():
-                    raise GroupError("BAD_REQUEST", "run_id must be nonempty text")
-                identity = json.dumps([self.context.session_id, self.backend.member_name, run_id])
-                token = hashlib.sha256(identity.encode()).hexdigest()
-                active = store.active(self.backend.member_name)
-                if active is None:
-                    records = await store.create([self.backend.member_name], inputs.get("task"), token, defer_card=True)
-                    active = records[0]
-                if active.get("background"):
-                    raise GroupError("CONFLICT", "private leader owns task startup")
-                result = await store.begin_task(active["execution_id"], self.backend.member_name)
+            run_id = inputs.get("run_id")
+            if not isinstance(run_id, str) or not run_id.strip():
+                raise GroupError("BAD_REQUEST", "run_id must be nonempty text")
+            identity = json.dumps([self.context.session_id, self.backend.member_name, run_id])
+            token = hashlib.sha256(identity.encode()).hexdigest()
+            active = store.active(self.backend.member_name)
+            if active is None:
+                records = await store.create([self.backend.member_name], inputs.get("task"), token, defer_card=True)
+                active = records[0]
+            if active.get("background"):
+                raise GroupError("CONFLICT", "private leader owns task startup")
+            result = await store.begin_task(active["execution_id"], self.backend.member_name)
+            return ToolOutput(success=True, data=result)
+        except (ValueError, OSError) as exc:
+            return ToolOutput(success=False, error=str(exc))
+
+
+class GroupMessageTool(GroupSendMessageTool):
+    """Extend public group posting with explicit task completion."""
+
+    def __init__(self, backend, context, description: str):
+        super().__init__(backend, lambda _: description)
+        self.context = context
+        self.card.description += (
+            " For a final task result, supply execution_id and optional attachments; "
+            "this publishes the result and completes that execution. "
+            "Without execution_id this is ordinary chat, requiring client_message_id."
+        )
+        self.card.input_params["properties"].update({
+            "execution_id": {"type": "string"},
+            "attachments": {"type": "array", "items": {"type": "object"}},
+        })
+        self.card.input_params["required"] = ["content"]
+
+    async def invoke(self, inputs, **kwargs):
+        if "execution_id" not in inputs:
+            return await super().invoke(inputs, **kwargs)
+        store = GroupExecutions(self.context.session_id)
+        try:
+            allowed = {"content", "client_message_id", "mentions", "execution_id", "attachments"}
+            if set(inputs) - allowed:
+                raise GroupError("BAD_REQUEST", "unsupported group message fields")
+            if inputs.get("mentions"):
+                raise GroupError("BAD_REQUEST", "task results cannot mention members")
+            record = store.get(inputs["execution_id"])
+            if record["member_name"] != self.backend.member_name:
+                raise GroupError("NOT_FOUND", "execution not found")
+            if record.get("background"):
+                raise GroupError("CONFLICT", "private team owns result publication")
+            result = await store.finish(
+                inputs["execution_id"], self.backend, inputs.get("content"), inputs.get("attachments", []),
+            )
             return ToolOutput(success=True, data=result)
         except (ValueError, OSError) as exc:
             return ToolOutput(success=False, error=str(exc))
@@ -112,6 +134,16 @@ class GroupTaskPolicyRail(DeepAgentRail):
         group = read_group(self.context.session_id)
         if group is None:
             return
+        abilities = getattr(ctx.agent, "ability_manager", None)
+        if abilities is not None:
+            for card in abilities.list():
+                if card.name != "group_send_message":
+                    continue
+                if "execution_id" not in (card.input_params or {}).get("properties", {}):
+                    tool = GroupMessageTool(_backend(self.context), self.context, card.description)
+                    abilities.remove_ability(card.name)
+                    abilities.add_ability(tool.card, tool)
+                break
         store = GroupExecutions(self.context.session_id)
         await store.reconcile()
         active = store.active(self.context.member_name)
@@ -160,12 +192,22 @@ class GroupTaskPolicyRail(DeepAgentRail):
             active = store.active(None)
         if active is None or active.get("background"):
             return
+        if ctx.inputs.tool_name == "group_send_message":
+            call = ctx.inputs.tool_call
+            arguments = getattr(call, "arguments", None)
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except ValueError:
+                    arguments = None
+            if isinstance(arguments, dict) and arguments.get("execution_id") == active["execution_id"]:
+                return
         if active.get("presentation", "card") != "card":
             return
         from openjiuwen.core.foundation.llm import ToolMessage
 
         error = (
-            "An execution is active. Use submit_group_task_result for the final result; "
+            "An execution is active. Use group_send_message with its execution_id for the final result; "
             "progress stays in the execution card."
         )
         call = ctx.inputs.tool_call
@@ -217,12 +259,7 @@ class GroupTaskPolicyRail(DeepAgentRail):
 
 @harness_element(kind=ElementKind.TOOL, name=START_TASK, description="Create a group execution.")
 def build_start_group_task(params, context):
-    return GroupTaskTool(_backend(context), context, submit=False)
-
-
-@harness_element(kind=ElementKind.TOOL, name=SUBMIT_TASK, description="Submit a group execution result.")
-def build_submit_group_task(params, context):
-    return GroupTaskTool(_backend(context), context, submit=True)
+    return GroupTaskTool(_backend(context), context)
 
 
 def _backend(context):

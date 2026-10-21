@@ -134,10 +134,10 @@ async def test_run_submit_publish_and_retry_without_reexecution(proxy, monkeypat
     async def stream(child, inputs, *, session):
         calls.append((child, session))
         submit = next(
-            t for t in child.agents["leader"].tools if t.type == gc.SUBMIT_RESULT
+            t for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN
         )
         assert (
-            await gc.SubmitTeamResult(submit.params["key"]).invoke(
+            await gc.CompleteTeamRun(submit.params["key"]).invoke(
                 {"result": "final report"}
             )
         ).success
@@ -166,9 +166,9 @@ async def test_publish_failure_retries_saved_result(proxy, monkeypatch):
         key = next(
             t.params["key"]
             for t in child.agents["leader"].tools
-            if t.type == gc.SUBMIT_RESULT
+            if t.type == gc.COMPLETE_RUN
         )
-        await gc.SubmitTeamResult(key).invoke({"result": "saved result"})
+        await gc.CompleteTeamRun(key).invoke({"result": "saved result"})
         await asyncio.Event().wait()
         yield None
 
@@ -318,9 +318,9 @@ async def test_result_reaches_real_group_database_and_history(tmp_path, monkeypa
             key = next(
                 t.params["key"]
                 for t in child.agents["leader"].tools
-                if t.type == gc.SUBMIT_RESULT
+                if t.type == gc.COMPLETE_RUN
             )
-            await gc.SubmitTeamResult(key).invoke({"result": "expert report"})
+            await gc.CompleteTeamRun(key).invoke({"result": "expert report"})
             await asyncio.Event().wait()
             yield None
 
@@ -365,3 +365,9 @@ def test_legacy_metadata_roster_restores_and_compiles(tmp_path, monkeypatch, kin
     assert outer.predefined_members[0].member_name == "advisor"
     with pytest.raises(ValueError, match="replaced"):
         gc.resolve_group_members("legacy-session", [], is_first_request=False)
+
+
+def test_private_completion_tool_exposes_new_name():
+    tool = gc.CompleteTeamRun("tool-name-test")
+    assert tool.card.name == "complete_team_run"
+    assert gc.COMPLETE_RUN == "swarm.group_complete_team_run"
