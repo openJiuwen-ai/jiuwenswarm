@@ -63,6 +63,7 @@ async def serve_stub(
                 continue
             finally:
                 cancel_stall_dump()
+                await conn.close()
             runtime_loaded = True
             if closed:
                 return
