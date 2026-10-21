@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.gateway.cron.controller import CronController
+from jiuwenswarm.gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
+from jiuwenswarm.gateway.embedded.runtime.session.project_store import CronProjectBinding
 
 
 @pytest.mark.asyncio
@@ -247,6 +249,8 @@ async def test_create_job_without_marker_allows_default_project_and_no_fields() 
             "name": "system-path",
             "cron_expr": "0 9 * * *",
             "targets": "web",
+            "mode": "proactive.tick",
+            "id": PROACTIVE_JOB_ID,
         }
     )
     assert job["project_id"] == ""
@@ -264,8 +268,12 @@ async def test_create_job_without_marker_allows_default_project_and_no_fields() 
 
 
 @pytest.mark.asyncio
-async def test_update_job_tolerates_user_side_project_id() -> None:
-    """patch 含 marker 标记的显式真实 project_id 时，跳过本地反查。"""
+async def test_update_job_tolerates_user_side_project_id(monkeypatch) -> None:
+    """patch 含显式真实 project_id 且不在本地项目表时，跳过本地反查。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.embedded.runtime.session.project_store.get_project_by_id",
+        lambda project_id, cache_bust=True: None,
+    )
     cc = _make_controller()
     await cc.update_job(
         "job-1",
