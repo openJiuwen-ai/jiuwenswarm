@@ -56,6 +56,7 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
+    SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY,
     is_todo_close_nudge,
 )
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
@@ -319,7 +320,7 @@ def _infer_tool_result_error(value: Any) -> bool | None:
     return None
 
 
-# skill_turbo 专用 ContextVar 的绑定/复位收口（7 个 token 单一进出）。
+# skill_turbo 专用 ContextVar 的绑定/复位收口（8 个 token 单一进出）。
 # 详细机制与条件语义见 context_binding 模块；新增通道在该模块加一行即可。
 from jiuwenswarm.server.runtime.skill_turbo.context_binding import (  # noqa: E402
     bind_skill_turbo_context,
@@ -1264,8 +1265,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 }
 
         # SkillTurbo 专用 ContextVar 统一绑定（adapter / metadata / workspace /
-        # interactive_ask / outer_todo / subagent_parent / resume_answers 共 7 个，
-        # 条件语义与绑定实现见 context_binding.bind_skill_turbo_context）
+        # interactive_ask / outer_todo / outer_todo_pending / subagent_parent /
+        # resume_answers 共 8 个，条件语义与绑定实现见
+        # context_binding.bind_skill_turbo_context）
         try:
             _resume_answers = None
             extra = getattr(ctx, "extra", None)
@@ -1274,8 +1276,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
                 _resume_answers = extra.get(RESUME_USER_INPUT_KEY)
             _outer_todo_active = None
+            _outer_todo_pending = None
             if isinstance(extra, dict):
                 _outer_todo_active = extra.get(SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY)
+                _outer_todo_pending = extra.get(SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY)
             bind_skill_turbo_context(
                 ctx,
                 adapter=self._skill_turbo_adapter,
@@ -1283,6 +1287,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 parent_session=session,
                 resume_answers=_resume_answers,
                 outer_todo_active=_outer_todo_active,
+                outer_todo_pending=_outer_todo_pending,
             )
         except Exception:
             # metadata / resume_answers 绑定失败意味着 HITL 作答注入静默失效，

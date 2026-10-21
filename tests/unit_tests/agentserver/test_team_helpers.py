@@ -3732,6 +3732,7 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
         },
         "session_id": "sess-leader-only",
         "rid": 1,
+        "role": TeamRole.LEADER.value,
     }
     assert not any(event["event_type"] == "chat.llm_usage" for event in broadcasted)
     reasoning_event = next(event for event in broadcasted if event["event_type"] == "chat.reasoning")

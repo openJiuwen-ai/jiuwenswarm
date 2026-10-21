@@ -29,6 +29,7 @@ class AgentServerHookEvents(HookEventBase):
     MEMORY_BEFORE_CHAT = HookEventBase.get_event("memory_before_chat")
     MEMORY_AFTER_CHAT = HookEventBase.get_event("memory_after_chat")
     BEFORE_SYSTEM_PROMPT_BUILD = HookEventBase.get_event("before_system_prompt_build")
+    BEFORE_MODEL_HTTP = HookEventBase.get_event("before_model_http")
     IMAGE_ARTIFACT_POST_PROCESS = HookEventBase.get_event("image_artifact_post_process")
     ARTIFACT_POST_PROCESS = HookEventBase.get_event("artifact_post_process")
     AGENT_RELOAD_CONFIG = HookEventBase.get_event("agent_reload_config")

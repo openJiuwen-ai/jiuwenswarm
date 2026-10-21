@@ -1088,6 +1088,131 @@ _TEAM_BUILDING_EVENT_TYPES = frozenset({
 })
 
 
+# 团队推理/正文按时间片合并后再广播。1 秒与 !1981 的 subagent
+# chat.delta 合并间隔相同；技能加速当前是 3 秒，子代理镜像是 0.3 秒或 200 字。
+_TEAM_DELTA_FLUSH_SECONDS = 1.0
+_TEAM_DELTA_EVENT_TYPES = frozenset({"chat.delta", "chat.reasoning"})
+_TEAM_DELTA_TERMINAL_EVENTS = frozenset({
+    "chat.final",
+    "chat.error",
+    "chat.processing_status",
+})
+
+
+class _TeamDeltaBucket:
+    """同一说话人、同一事件类型上尚未发出的增量。"""
+
+    __slots__ = ("template", "parts", "since")
+
+    def __init__(self, template: dict[str, Any], now: float) -> None:
+        self.template = template
+        self.parts: list[str] = []
+        self.since = now
+
+
+class _TeamDeltaCoalescer:
+    """把团队流里的小增量拼成较少的帧，腾出连接给心跳。"""
+
+    def __init__(self) -> None:
+        self._buckets: dict[tuple[str, str, str, str], _TeamDeltaBucket] = {}
+
+    @staticmethod
+    def _bucket_key(event: dict[str, Any]) -> tuple[str, str, str, str]:
+        return (
+            str(event.get("role") or ""),
+            str(event.get("member_name") or ""),
+            str(event.get("event_type") or ""),
+            str(event.get("stream_source_id") or ""),
+        )
+
+    @staticmethod
+    def _text(event: dict[str, Any]) -> str:
+        content = event.get("content")
+        if isinstance(content, str):
+            return content
+        return ""
+
+    async def submit(
+        self,
+        channel_id: str | None,
+        session_id: str,
+        event: dict[str, Any],
+    ) -> None:
+        """缓冲增量；其它事件先把该说话人的增量发出，再原样广播。"""
+        kind = str(event.get("event_type") or "")
+        now = time.monotonic()
+        if kind not in _TEAM_DELTA_EVENT_TYPES:
+            if kind in _TEAM_DELTA_TERMINAL_EVENTS:
+                await self.flush_all(channel_id, session_id)
+            else:
+                self._flush_expired(channel_id, session_id, now)
+                await self._flush_speaker(channel_id, session_id, event)
+            _broadcast_event(channel_id, session_id, event)
+            return
+        text = self._text(event)
+        if not text:
+            return
+        key = self._bucket_key(event)
+        self._flush_expired(channel_id, session_id, now, except_key=key)
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            _broadcast_event(channel_id, session_id, event)
+            self._buckets[key] = _TeamDeltaBucket(dict(event), now)
+            return
+        bucket.parts.append(text)
+        if now - bucket.since >= _TEAM_DELTA_FLUSH_SECONDS:
+            self._flush_key(channel_id, session_id, key)
+
+    async def flush_all(self, channel_id: str | None, session_id: str) -> None:
+        """发出所有还攒着的增量。"""
+        for key in list(self._buckets):
+            self._flush_key(channel_id, session_id, key)
+
+    async def _flush_speaker(
+        self,
+        channel_id: str | None,
+        session_id: str,
+        event: dict[str, Any],
+    ) -> None:
+        role = str(event.get("role") or "")
+        member = str(event.get("member_name") or "")
+        keys = [key for key in self._buckets if key[0] == role and key[1] == member]
+        for key in keys:
+            self._flush_key(channel_id, session_id, key)
+
+    def _flush_expired(
+        self,
+        channel_id: str | None,
+        session_id: str,
+        now: float,
+        except_key: tuple[str, str, str, str] | None = None,
+    ) -> None:
+        """发出其它说话人已经超过时间片的增量，避免尾部一直等到终态。"""
+        for key in list(self._buckets):
+            if key == except_key:
+                continue
+            bucket = self._buckets.get(key)
+            if bucket is None or not bucket.parts:
+                continue
+            if now - bucket.since >= _TEAM_DELTA_FLUSH_SECONDS:
+                self._flush_key(channel_id, session_id, key)
+
+    def _flush_key(
+        self,
+        channel_id: str | None,
+        session_id: str,
+        key: tuple[str, str, str, str],
+    ) -> None:
+        bucket = self._buckets.get(key)
+        if bucket is None or not bucket.parts:
+            return
+        merged = dict(bucket.template)
+        merged["content"] = "".join(bucket.parts)
+        bucket.parts = []
+        bucket.since = time.monotonic()
+        _broadcast_event(channel_id, session_id, merged)
+
+
 def _broadcast_event(
     channel_id: str | None, session_id: str, event: dict[str, Any]
 ) -> None:
@@ -1557,6 +1682,7 @@ async def _finish_round_if_settled(
     round_id: Any,
     *,
     reason: str,
+    delta_coalescer: _TeamDeltaCoalescer | None = None,
 ) -> bool:
     """Re-evaluate _team_round_settled; on True, broadcast processing_status
     (is_complete=True) with per-round idempotent dedup and return True so the
@@ -1564,12 +1690,16 @@ async def _finish_round_if_settled(
 
     The dedup (claim_round_complete) is shared with the team.completed poll
     path so exactly one is_complete frame is emitted per round even when both
-    paths fire. claim_round_complete is sync (flag set before any await)."""
+    paths fire. claim_round_complete is sync (flag set before any await).
+    Pending deltas are flushed before is_complete, because clients stop
+    reading once that frame arrives."""
     if not await _team_round_settled(channel_id, session_id):
         return False
     tm = get_team_manager(channel_id)
     if not tm.claim_round_complete(session_id):
         return True  # already broadcast this round; idempotent
+    if delta_coalescer is not None:
+        await delta_coalescer.flush_all(channel_id, session_id)
     _broadcast_event(
         channel_id,
         session_id,
@@ -2741,6 +2871,17 @@ async def process_team_message_stream(
                 )
 
 
+def _attach_usage_speaker(event: dict[str, Any], chunk: Any) -> None:
+    """把用量帧标到产出它的成员，合并器才能先刷出这个人还攒着的正文。"""
+    if _is_teammate_output(chunk):
+        event["role"] = TeamRole.TEAMMATE.value
+    elif _is_leader_output(chunk):
+        event["role"] = TeamRole.LEADER.value
+    member_name = _resolve_chunk_member_name(event, chunk)
+    if member_name:
+        event["member_name"] = member_name
+
+
 def _extract_team_usage_metadata(chunk: Any) -> dict[str, Any] | None:
     payload = getattr(chunk, "payload", None)
     if not isinstance(payload, dict):
@@ -2772,6 +2913,7 @@ async def _consume_stream_with_query(
     # broadcast, cancelled on any progress chunk or stream exit
     pending_ask_user_resends: dict[str, asyncio.Task] = {}
     team_stream: Any = None
+    delta_coalescer = _TeamDeltaCoalescer()
     # Reset the team-events flag at the start of a new round so chat.final
     # can correctly determine whether the team is active.
     tm_ = get_team_manager(channel_id)
@@ -2857,16 +2999,14 @@ async def _consume_stream_with_query(
             if getattr(chunk, "type", None) == "llm_usage":
                 usage_metadata = _extract_team_usage_metadata(chunk)
                 if usage_metadata is not None:
-                    _broadcast_event(
-                        channel_id,
-                        session_id,
-                        {
-                            "event_type": "chat.usage_metadata",
-                            "metadata": {"usage_metadata": usage_metadata},
-                            "session_id": session_id,
-                            "rid": round_id,
-                        },
-                    )
+                    usage_event: dict[str, Any] = {
+                        "event_type": "chat.usage_metadata",
+                        "metadata": {"usage_metadata": usage_metadata},
+                        "session_id": session_id,
+                        "rid": round_id,
+                    }
+                    _attach_usage_speaker(usage_event, chunk)
+                    await delta_coalescer.submit(channel_id, session_id, usage_event)
                 continue
             is_leader = _is_leader_output(chunk)
             is_teammate = _is_teammate_output(chunk)
@@ -2984,6 +3124,7 @@ async def _consume_stream_with_query(
                         session_id,
                         reason,
                     )
+                    await delta_coalescer.flush_all(channel_id, session_id)
                     _broadcast_event(
                         channel_id,
                         session_id,
@@ -3015,6 +3156,7 @@ async def _consume_stream_with_query(
                     # exactly one is_complete frame per round.
                     tm_ = get_team_manager(channel_id)
                     if tm_.claim_round_complete(session_id):
+                        await delta_coalescer.flush_all(channel_id, session_id)
                         _broadcast_event(
                             channel_id,
                             session_id,
@@ -3030,7 +3172,7 @@ async def _consume_stream_with_query(
                         )
                     continue
                 elif parsed.get("event_type") == "chat.error":
-                    _broadcast_event(channel_id, session_id, parsed)
+                    await delta_coalescer.submit(channel_id, session_id, parsed)
                     if is_leader:
                         _broadcast_event(
                             channel_id,
@@ -3060,13 +3202,15 @@ async def _consume_stream_with_query(
                     # Deliver the final content before announcing that the
                     # round is complete. Clients may stop consuming the stream
                     # as soon as processing_status(False) arrives.
-                    _broadcast_event(channel_id, session_id, parsed)
+                    await delta_coalescer.submit(channel_id, session_id, parsed)
                     if is_leader and await _finish_round_if_settled(
-                        channel_id, session_id, round_id, reason="leader chat.final"
+                        channel_id, session_id, round_id,
+                        reason="leader chat.final",
+                        delta_coalescer=delta_coalescer,
                     ):
                         break
                     continue
-                _broadcast_event(channel_id, session_id, parsed)
+                await delta_coalescer.submit(channel_id, session_id, parsed)
                 # member-settle edge (leader-only): when a member transitions to
                 # a settled status, re-evaluate settle and close the stream if
                 # the round is settled — without waiting for a second leader
@@ -3079,6 +3223,7 @@ async def _consume_stream_with_query(
                         if await _finish_round_if_settled(
                             channel_id, session_id, round_id,
                             reason=f"member {evt.get('member_id')} -> {new_status}",
+                            delta_coalescer=delta_coalescer,
                         ):
                             break
 
@@ -3136,6 +3281,7 @@ async def _consume_stream_with_query(
             },
         )
     finally:
+        await delta_coalescer.flush_all(channel_id, session_id)
         # aclose 成功才表示 runner 已 finalize：persistent 团队已 pause、gate 已关。
         # 只取消请求协程时不会进这个 finally，标记保留，下一句仍走 interact。
         aclose_ok = False

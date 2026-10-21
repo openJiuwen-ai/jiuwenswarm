@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_07 / fallback-and-degradation |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`：fallback_handler.py、executor.py、plan_node.py、agent.py、skill_turbo_tools.py；外层装配 interface_deep.py（`spawn_fallback` / `DeepAgentFallbackHandler` 构建） |
-| 最近一次修订日期 | 2026-10-13 |
-| 关联 feature | 暂无（首批 specs） |
+| 最近一次修订日期 | 2026-10-20 |
+| 关联 feature | [[F_02]]（`_needs_fallback` 标志触发通道 + 停止提示 todo 感知拆分）；关联 bugfix [[B_02]]（异常通道 guard 置位 + 标志剥离解耦） |
 
 ## 范围 / 边界
 
@@ -44,7 +44,7 @@ skill_turbo 从"节点失败"到"交还外层 LLM"的**降级体系全景**：
 |---|------|---------|---------|------|
 | 1 | 路由级 | planner 无匹配 skill / 置信度 < 0.6 / skill_name 为空或未注册 / model_client 缺失 / 路由输出连续 2 次不可解析（仅解析类失败重试 1 次；confidence 不足与 skill_name=null 属模型正常判定，不重试） | planner.plan / planner._match_skill；agent.run_stream | `SkillTurboNotHandled("无匹配skill")` |
 | 2 | plan 代码级 | `PlanCodeValidationError`（AST 安全校验失败）/ `PlanCodeLoadError`（exec 失败 / 无 root 节点） | executor._prepare_root_node；agent.run_stream | `SkillTurboNotHandled("规划代码校验或加载失败: …")`（流式路径在 executor 内以 chat.error+complete 收口后正常结束、不 raise，归属差异见 [[S_01]] E5/E6 与 E13） |
-| 3 | 节点级 | 节点 `_execute/_execute_stream` 抛出**非 AbortError、非 FallbackContractError** 的异常 | plan_node.run / plan_node.run_stream（模板方法） | 进入 fallback 子代理流程（P3–P8） |
+| 3 | 节点级 | 节点 `_execute/_execute_stream` 抛出**非 AbortError、非 FallbackContractError** 的异常；或三态节点正常返回携带 `_needs_fallback=True`（run 的结果 dict / execute_subplan_stream 的 last_chunk，[[S_04]] N4） | plan_node.run / run_stream / execute_subplan_stream（模板方法） | 进入 fallback 子代理流程（P3–P8） |
 | 4 | fallback 终止级 | 契约未达成（`FallbackContractError`）或次数超限（`FallbackLimitExceededError`） | fallback_handler；executor._check_fallback_limit | 终止本 plan，不发 chat.error，上抛 → `SkillTurboNotHandled` |
 
 ### 统一收敛出口
@@ -107,6 +107,7 @@ p10 命中后**既不触发节点级 fallback，也不抛 FallbackContractError*
 15. **交付失败硬门禁**：`delivery_status=failed` → 工具返回强制 `success=false`，与 plan 流程是否"正常结束"无关。
 16. **收尾诚实性**：success 且无交付骨架且无 `send_file_status=="sent"` 确认 → 必须追加 NEUTRAL 中性提示（禁止宣称已发送）；失败分支不追加停止提示（留给 LLM 自主降级）。
 17. **编排节点覆盖 validator**：编排类节点（sub_plans 非空、负责终端交付物）应覆盖 `validate_fallback_success` 校验终端交付物真实存在；基类默认放行只适用于叶子节点。
+18. **标志触发 fallback 防循环**：`_needs_fallback` 标志通道与异常通道共用 fallback 预算与契约判定；`_fallback_triggered` guard 保证同节点一次 run 至多触发一次，**两通道进入 fallback 前均置位 guard**（含 run_stream 异常通道——防 fallback 末 chunk 再带标志经父节点 `try_begin_fallback()` 判定二次进入，[[B_02]]）；标志剥离与 guard 判定解耦——guard 拒绝时同样剥离（内部协议键不泄入返回值 / after 回调）。父节点经公开访问器 `try_begin_fallback()` / `fallback_stream_callback` 判定，禁直访子节点受保护成员。未携带标志的节点行为不变（零改动兼容）。
 
 ## 接口契约
 
@@ -279,7 +280,12 @@ planner.plan 返回 None（无匹配 / 低置信 / 未注册 / model_client 缺�
 
 ### P3 节点级 fallback 触发
 
-`PlanNode.run / run_stream` 模板方法（不可覆盖，[[S_04]] 契约第 2 条）捕获非 AbortError、非 FallbackContractError 异常 → WARNING 日志（plan_name / instruction / error）→ 无 fallback 回调则 raise，否则进 `_fallback[_stream]_callback`（executor 绑定）。节点内部吞异常会导致 fallback 不触发（契约第 8 条：失败应直接 raise）。
+`PlanNode.run / run_stream` 模板方法（不可覆盖，[[S_04]] 契约第 2 条）两条触发通道：
+
+1. **异常通道**：捕获非 AbortError、非 FallbackContractError 异常 → WARNING 日志（plan_name / instruction / error）→ 无 fallback 回调则 raise，否则**置位 `_fallback_triggered`** 后进 `_fallback[_stream]_callback`（executor 绑定；[[B_02]]：run_stream 异常通道置位 guard，防 fallback 末 chunk 再带标志经父节点判定二次触发）。节点内部吞异常会导致 fallback 不触发（契约第 8 条：失败应直接 raise）。
+2. **标志通道**（[[F_02]] D6 + [[B_02]] 剥离解耦）：三态节点正常返回携带 `_needs_fallback=True`（run 的结果 dict / `execute_subplan_stream` 的子节点流 last_chunk）→ **先无条件剥离标志** → 剥离值为真且防循环 guard 通过（`try_begin_fallback()`，同节点一次 run 至多一次；guard 拒绝时同样保持剥离，标志键不泄入返回值 / after 回调）→ run 构造 `RuntimeError`（message / fail_reason 进合成 error）进 `_fallback_callback`；流式经 `fallback_stream_callback` 续接产出（fallback chunk 续在原流尾部，`last_chunk` 逐个替换为修复结果，after 回调看到修复后结果）→ 与异常通道共用 P4-P8 全链（预算 / 契约判定 / 回写）。
+
+两通道共用同一预算与契约判定；AbortError / FallbackContractError 在标志通道同样不进 fallback（标志检测位于异常分流之后，正常返回路径才生效）。
 
 ### P4 fallback 前置检查
 
@@ -338,8 +344,8 @@ fallback 终止后**不在 turbo 内部转标准流程**，决策交还外层 LL
 
 流正常跑完先过 p10_delivery 硬门禁（delivery_status=failed → 强制 success=false）。成功分支三选一：
 
-1. 有 PPT 交付骨架 → 骨架挂 `_pending_ppt_delivery_summary` ContextVar（rail 之后再发，时序契约见 [[S_08]]）+ 停止提示（禁止本轮重复输出交付总结 / 再调工具）；
-2. 通用交付确认（任一节点 info `send_file_status == "sent"`，如 docx D8 / xlsx X9）→ confirmed 停止提示（已发送，禁止重复调用/发送）；
+1. 有 PPT 交付骨架 → 骨架挂 `_pending_ppt_delivery_summary` ContextVar（rail 之后再发，时序契约见 [[S_08]]）+ 停止提示（禁止本轮重复输出交付总结 / 再调工具）；**停止提示按外层 todo pending 拆分**（[[F_02]] D3）：`outer_todo_pending` 有后续未完成项（`{count, next_summary}`）→ CONTINUE 版（先 `todo_modify` 标完成当前项，再继续下一项 `{next_summary}`）；无后续项 → POST 版（原固定提示，禁止再调工具）。
+2. 通用交付确认（任一节点 info `send_file_status == "sent"`，如 docx D8 / xlsx X9）→ confirmed 停止提示（已发送，禁止重复调用/发送）。
 3. 无骨架无确认信号 → NEUTRAL 中性提示（"未能确认文件已生成并发送…不要声称文件已发送"，中英按 metadata.language）。
 
 失败分支：不追加停止提示，追加产物摘要。产物摘要（`_build_artifact_summary`）仅进 tool result 给 LLM，不直接给用户。
@@ -388,6 +394,8 @@ fallback 终止后**不在 turbo 内部转标准流程**，决策交还外层 LL
 | 16 | 路由重试范围 | 仅解析类失败重试 1 次；confidence 不足 / skill_name=null 是模型判断，不重试 | test_planner_route_retry |
 | 17 | 嵌套子计划的回写 | 父节点丢弃 execute_subplan 返回值 → inputs.update 是下游读新值的唯一通道 | test_fallback_context_writeback |
 | 18 | 非流式 / 流式降级语义分叉 | execute_plan（非流式）各类异常 re-raise 由 agent 统一包装；流式路径 E5/E6/E12 存在"事件化吞掉"分支——新增降级出口必须先明确归属哪一语义（[[S_01]]） | test_exit_path_frames（流式帧）+ test_executor_plan_code_import（非流式 raise） |
+| 19 | `_needs_fallback` 标志触发 fallback | 与异常通道共用预算与契约判定；`_fallback_triggered` guard 防二次触发（两通道均置位，fallback 产出再带标志不循环——含 run_stream 异常通道 + 父节点判定的组合路径）；流式路径标志剥离后 last_chunk 替换为修复结果；guard 拒绝路径同样剥离（标志键不泄入 after 回调）；无 callback 诚实 raise | test_plan_node_fallback_flag（run 6 场景 + 流式 6 场景） |
+| 20 | 停止提示 todo 感知拆分 | 仅 PPT 骨架路径按 `outer_todo_pending` 拆 CONTINUE/POST；confirmed / NEUTRAL 分支无 todo 感知（已知边界，[[F_02]] follow-up 3） | test_skill_turbo_tools（骨架分支） |
 
 ## 修改检查单
 
@@ -403,12 +411,15 @@ fallback 终止后**不在 turbo 内部转标准流程**，决策交还外层 LL
 | 新增编排类技能 | 必须覆盖 `validate_fallback_success` 校验终端交付物真实存在（对照 ppt_gen_root 参考实现） |
 | 改收尾三分支 | NEUTRAL / sent 确认 / 骨架三互斥分支齐全；失败分支不追加停止提示；p10 硬门禁先行 |
 | 改子代理 prompt（`_build_fallback_query`） | 三条硬规则语义不变；契约声明形态（单行内联代码）与 P6 四级候选兼容 |
+| 改 `_needs_fallback` 标志检测 | 防循环 guard（`try_begin_fallback`）两通道（异常 / 标志）进入 fallback 前均置位；标志剥离与 guard 判定解耦（guard 拒绝时同样剥离）；父节点只经公开访问器判定（G.CLS.11）；两通道预算与契约判定保持共用 |
+| 改收尾停止提示 | CONTINUE/POST 拆分仅看 `outer_todo_pending`；POST/NEUTRAL 的"禁止再调工具"语义不得丢失 |
 
 ## 测试资产
 
 | 测试文件 | 锁定行为 |
 |---|---|
 | `tests/unit_tests/server/runtime/skill_turbo/test_fallback_deliverable_gate.py` | 编排节点 validate_fallback_success 交付物门禁（部分成功不得虚报全成功） |
+| `tests/unit_tests/server/runtime/skill_turbo/test_plan_node_fallback_flag.py` | `_needs_fallback` 标志触发 fallback（两层检测 / 防循环 guard / 续接流 / 诚实 raise） |
 | `tests/unit_tests/server/runtime/skill_turbo/test_fallback_context_writeback.py` | 契约结果回写共享 inputs（下游读新值） |
 | `tests/unit_tests/server/runtime/skill_turbo/_ppt_gate_fixture.py` | 交付物门禁测试的 ppt 根节点夹具 |
 | `tests/unit_tests/agentserver/test_spawn_fallback_suspend_and_interrupt.py` | spawn_fallback 权限挂起保全 + interrupt 显式报错 |
