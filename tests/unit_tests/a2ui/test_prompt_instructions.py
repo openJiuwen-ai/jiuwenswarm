@@ -36,6 +36,15 @@ def test_a2ui_prompt_discourages_nested_templates():
     assert "flatten repeated item details" in instruction
 
 
+def test_a2ui_prompt_defines_hotel_booking_actions():
+    instruction = build_a2ui_browser_workflow_instruction()
+
+    assert "hotel_option_select" in instruction
+    assert "continue_hotel_booking" in instruction
+    assert "hotel_payment_confirm" in instruction
+    assert "hotel_payment_cancel" in instruction
+
+
 def test_a2ui_prompt_discourages_unsupported_popup_components():
     instruction = build_a2ui_autonomy_instruction("en")
 
@@ -52,55 +61,6 @@ def test_a2ui_zh_prompt_discourages_unsupported_popup_components():
     assert "浮层" in instruction
     assert "行内状态" in instruction
     assert "纯文本" in instruction
-
-
-def test_a2ui_zh_prompt_section_is_readable():
-    prompt = build_a2ui_prompt_section("zh")
-
-    assert "你是 jiuwenswarm 的 A2UI 生成器" not in prompt
-    assert "JiuwenSwarm 支持可选的 A2UI 输出格式" in prompt
-    assert "当用户需要列表、卡片、表单" in prompt
-    assert "浣犳槸" not in prompt
-    assert "鐢熸垚" not in prompt
-
-
-def test_a2ui_en_prompt_does_not_use_generator_identity():
-    prompt = build_a2ui_prompt_section("en")
-
-    assert "You are jiuwenswarm's A2UI generator" not in prompt
-    assert "JiuwenSwarm supports an optional A2UI output format" in prompt
-
-
-def test_a2ui_zh_client_event_prompt_is_readable():
-    prompt = build_a2ui_client_event_prompt(
-        {
-            "type": "a2ui.client_event",
-            "event": {
-                "userAction": {
-                    "name": "submit_form",
-                    "surfaceId": "surface-1",
-                    "sourceComponentId": "submit",
-                    "context": {"name": "张三"},
-                },
-            },
-        },
-        channel="web",
-        language="zh",
-    )
-
-    assert "你收到了一次 A2UI 组件交互" in prompt
-    assert "张三" in prompt
-    assert "submit_form" in prompt
-    assert "浣犳敹" not in prompt
-
-
-def test_a2ui_prompt_defines_hotel_booking_actions():
-    instruction = build_a2ui_browser_workflow_instruction()
-
-    assert "hotel_option_select" in instruction
-    assert "continue_hotel_booking" in instruction
-    assert "hotel_payment_confirm" in instruction
-    assert "hotel_payment_cancel" in instruction
 
 
 def test_a2ui_prompt_defines_gmail_and_social_actions():
@@ -148,3 +108,43 @@ def test_a2ui_prompt_adds_browser_rules_only_when_requested():
     assert "Mandatory A2UI account-action gate" not in generic_prompt
     assert "browser_preflight_submit" in browser_prompt
     assert "Mandatory A2UI account-action gate" in browser_prompt
+
+
+def test_a2ui_zh_prompt_section_is_readable():
+    prompt = build_a2ui_prompt_section("zh")
+
+    assert "你是 jiuwenswarm 的 A2UI 生成器" not in prompt
+    assert "JiuwenSwarm 支持可选的 A2UI 输出格式" in prompt
+    assert "当用户需要列表、卡片、表单" in prompt
+    assert "浣犳槸" not in prompt
+    assert "鐢熸垚" not in prompt
+
+
+def test_a2ui_en_prompt_does_not_use_generator_identity():
+    prompt = build_a2ui_prompt_section("en")
+
+    assert "You are jiuwenswarm's A2UI generator" not in prompt
+    assert "JiuwenSwarm supports an optional A2UI output format" in prompt
+
+
+def test_a2ui_zh_client_event_prompt_is_readable():
+    prompt = build_a2ui_client_event_prompt(
+        {
+            "type": "a2ui.client_event",
+            "event": {
+                "userAction": {
+                    "name": "submit_form",
+                    "surfaceId": "surface-1",
+                    "sourceComponentId": "submit",
+                    "context": {"name": "张三"},
+                },
+            },
+        },
+        channel="web",
+        language="zh",
+    )
+
+    assert "你收到了一次 A2UI 组件交互" in prompt
+    assert "张三" in prompt
+    assert "submit_form" in prompt
+    assert "浣犳敹" not in prompt

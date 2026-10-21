@@ -50,7 +50,10 @@ async def test_a2ui_system_flow_accepts_event_and_valid_response(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
 
     config = get_a2ui_config({"a2ui": {"enabled": True}})
-    prompt_section = build_a2ui_prompt_section("en")
+    prompt_section = build_a2ui_prompt_section(
+        "en",
+        include_browser_workflows=True,
+    )
     client_event = {
         "type": "a2ui.client_event",
         "event": {
@@ -78,7 +81,18 @@ async def test_a2ui_system_flow_accepts_event_and_valid_response(monkeypatch):
 
     assert config.enabled is True
     assert "<a2ui-json>" in prompt_section
-    assert "browser_preflight_submit" not in prompt_section
+    assert "browser_preflight_submit" in prompt_section
+    assert "hotel_option_select" in prompt_section
+    assert "hotel_payment_confirm" in prompt_section
+    assert "gmail_email_select" in prompt_section
+    assert "gmail_cleanup_confirm" in prompt_section
+    assert "social_post_draft_select" in prompt_section
+    assert "social_post_confirm" in prompt_section
+    assert "Do not ask for those missing browser-task details" in prompt_section
+    assert "ask_user tool" in prompt_section
+    assert "Mandatory A2UI account-action gate" in prompt_section
+    assert "task_tool as a substitute" in prompt_section
+    assert "returned emails/threads MUST still be shown as A2UI candidates" in prompt_section
     assert client_prompt is not None
     assert "submit_selection" in client_prompt
     assert "alpha" in client_prompt
