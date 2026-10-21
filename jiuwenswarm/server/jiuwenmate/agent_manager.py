@@ -47,7 +47,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import (
 )
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, OUTPUTS_DIR, OutputFileStore
+from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, WorkspaceOutputFiles
 from jiuwenswarm.server.jiuwenmate.ports.budget import DEFAULT_RESERVATION_TOKENS, HostBudgetPort
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
@@ -105,7 +105,7 @@ class RequestView:
     """What a page may show about one Request; replies and files are the outputs its ending handed off.
 
     A file is described by its name, size and caption and downloaded through a signed
-    link to the retained copy; no office path is shown.
+    link to the verified file in the colleague's shared output directory; no office path is shown.
     """
 
     state: RequestState
@@ -167,7 +167,7 @@ class AgentManager:
         clock: Callable[[], datetime] = _utc_now,
         on_event: Callable[[core.AgentEvent], None] | None = None,
         delivery_service: ResultDeliveryService | None = None,
-        files: OutputFileStore | None = None,
+        files: WorkspaceOutputFiles | None = None,
         schedule_interval: timedelta = DEFAULT_SCHEDULE_INTERVAL,
         cli: FeishuCliRuntime | None = None,
     ) -> None:
@@ -195,7 +195,7 @@ class AgentManager:
             self._delivery_service.set_mention_roster(self._delivery_mention_roster)
         self.verify_group_membership = unavailable_membership
         self.refresh_group_messages = None
-        self._files = files or OutputFileStore(sessions.db_path.parent / OUTPUTS_DIR, service.workspaces)
+        self._files = files or WorkspaceOutputFiles(service.workspaces)
         self._queue = CommitQueue(sessions, clock=clock)
         driver = ExecutionDriver(
             snapshots=service.snapshot,
@@ -573,13 +573,13 @@ class AgentManager:
         from jiuwenswarm.common.file_download_token import build_file_download_info
 
         name = (output.file_path or "").rsplit("/", 1)[-1] or "file"
-        stored = self._files.path(record.namespace_id, output) if output.file_ref and output.file_path else None
+        path = self._files.path(record.namespace_id, record.agent_id, output)
         download_url = None
-        if stored is not None and stored.is_file():
-            download_url = build_file_download_info(str(stored), name, record.session_id)["download_url"]
+        if path is not None and path.is_file():
+            download_url = build_file_download_info(str(path), name, record.session_id)["download_url"]
         size = output.file_size
-        if stored is not None and stored.is_file():
-            size = stored.stat().st_size
+        if path is not None and path.is_file():
+            size = path.stat().st_size
         return {
             "output_id": output.output_id,
             "name": name,

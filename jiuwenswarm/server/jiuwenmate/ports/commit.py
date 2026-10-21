@@ -6,9 +6,10 @@ Execution. Ordinary events are handed to ``CommitQueue`` and written in the
 background; a failed ordinary write leaves a gap in the log and never delays a
 later critical event. A final or paused event also stores, in the same
 transaction, every candidate output it references that the queue has not written
-yet. A file candidate is stored only after ``OutputFileStore`` kept a verified copy
-of its file; one that cannot be copied yet is held for the ending, which copies it
-again and is not recorded when that fails. An optional
+yet. A file candidate is stored only after ``WorkspaceOutputFiles`` verifies its
+request-authorized source in the Agent's shared ``output/`` directory; one that
+cannot be verified is held for the ending, which verifies it again and is not
+recorded when that fails. An optional
 observer sees each accepted event as it is recorded, before an ordinary event is
 written; it serves live display only and cannot affect the Execution.
 """
@@ -24,7 +25,7 @@ from datetime import datetime, timezone
 from jiuwenswarm.server.jiuwenmate.execution_models import PersistentContractError
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
-from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, OutputFileStore
+from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, WorkspaceOutputFiles
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType, ExecutionContext
 from openjiuwen.harness.persistent_agent.schema.port_results import ExecutionLink
 
@@ -134,7 +135,7 @@ class HostCommitPort:
         *,
         clock: Callable[[], datetime] = _utc_now,
         observer: Callable[[AgentEvent], None] | None = None,
-        files: OutputFileStore | None = None,
+        files: WorkspaceOutputFiles | None = None,
     ) -> None:
         self._repository = repository
         self._queue = queue
@@ -147,7 +148,7 @@ class HostCommitPort:
             raise PersistentContractError("record() requires an AgentEvent")
         event.assert_matches(execution)
         if event.event_type not in CRITICAL_EVENTS:
-            if await self._retained_or_held(execution, event):
+            if await self._verified_or_held(execution, event):
                 self._queue.submit(event)
             self._observe(event)
             return
@@ -155,21 +156,21 @@ class HostCommitPort:
         if event.event_type in _TERMINAL_EVENTS:
             batch = [*self._queue.pending_outputs(event), event]
             for output in batch[:-1]:
-                await asyncio.to_thread(self._retain, execution, output)
+                await asyncio.to_thread(self._verify_file, execution, output)
         await asyncio.to_thread(self._repository.record_events, batch, now=self._clock())
         if event.event_type in _TERMINAL_EVENTS:
             self._queue.forget(event.namespace_id, event.execution_id)
         self._observe(event)
 
-    async def _retained_or_held(self, execution: ExecutionContext, event: AgentEvent) -> bool:
-        """Whether an ordinary event may be queued; a file not yet retained waits for the ending."""
+    async def _verified_or_held(self, execution: ExecutionContext, event: AgentEvent) -> bool:
+        """Whether an ordinary event may be queued; an invalid file waits for the ending."""
         if event.event_type != EventType.OUTPUT_PROPOSED or event.payload.share_mode not in FILE_SHARE_MODES:
             return True
         try:
-            await asyncio.to_thread(self._retain, execution, event)
+            await asyncio.to_thread(self._verify_file, execution, event)
         except Exception as exc:
             logger.warning(
-                "[JiuwenMate] shared file not retained yet: execution=%s output=%s error=%s",
+                "[JiuwenMate] shared file not verified yet: execution=%s output=%s error=%s",
                 event.execution_id,
                 event.payload.output_id,
                 exc,
@@ -178,12 +179,12 @@ class HostCommitPort:
             return False
         return True
 
-    def _retain(self, execution: ExecutionContext, event: AgentEvent) -> None:
+    def _verify_file(self, execution: ExecutionContext, event: AgentEvent) -> None:
         if event.payload.share_mode not in FILE_SHARE_MODES:
             return
         if self._files is None:
-            raise PersistentAgentError("shared files cannot be retained by this host", code="OUTPUT_FILE_UNAVAILABLE")
-        self._files.retain(execution, event.payload)
+            raise PersistentAgentError("shared files cannot be verified by this host", code="OUTPUT_FILE_UNAVAILABLE")
+        self._files.verify(execution, event.payload)
 
     def _observe(self, event: AgentEvent) -> None:
         if self._observer is None:

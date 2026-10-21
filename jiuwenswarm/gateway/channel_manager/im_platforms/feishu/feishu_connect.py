@@ -1953,9 +1953,10 @@ class FeishuChannel(BaseChannel):
         if not self._api_client:
             return {"outcome": "failed", "error_code": "FEISHU_CLIENT_UNAVAILABLE"}
         has_text = isinstance(text, str) and bool(text.strip())
-        if not chat_id.strip() or not idempotency_key.strip() or not (has_text or file_path):
+        has_file = bool(file_path or file_key)
+        if not chat_id.strip() or not idempotency_key.strip() or not (has_text or has_file):
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
-        if file_path is None:
+        if not has_file:
             card_text = self._render_persistent_mentions(text or "", mention_targets or [])
             return await self._send_persistent_message(
                 chat_id,
@@ -1978,6 +1979,8 @@ class FeishuChannel(BaseChannel):
             if caption.get("outcome") != "delivered":
                 return caption
         if not file_key:
+            if not file_path:
+                return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
             file_key = await asyncio.get_running_loop().run_in_executor(None, self._upload_file, file_path)
             if not file_key:
                 return {"outcome": "failed", "error_code": "FEISHU_UPLOAD_FAILED"}

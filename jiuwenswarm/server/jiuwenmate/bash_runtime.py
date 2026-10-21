@@ -25,9 +25,12 @@ PROVIDER = "jiuwenmate.bash"
 WEB_FETCH_PROVIDER = "core.web_fetch"
 BASH_PROMPT = (
     "\n\n## 命令使用约定（非技术隔离）\n\n"
-    "可以使用 bash 运行必要的脚本和已准备的 CLI，默认工作目录为当前同事的办公目录。"
-    "只在当前办公目录内操作文件；不访问其他同事、个人版目录、宿主配置、数据库、群公共消息库，"
-    "不用绝对路径、..、符号链接或脚本绕过原工具的权限拒绝和版本冲突。"
+    "可以使用 bash 运行必要的脚本和已准备的 CLI，默认工作目录为本次 Session 的私有草稿目录。"
+    "普通中间文件直接放在本次 Session 目录；只有 Lark Slides 专用计划、截图等放在其中的 `.lark-slides/`。"
+    "最终交付文件放到 Agent 工作空间共享的 `output/`，并用 `share_file` 登记 `output/<文件名>`。"
+    "按本次执行注入的目录说明操作文件；不访问其他同事、个人版目录、宿主配置、数据库、群公共消息库，"
+    "文件工具使用工作空间相对路径；Bash 只使用本次执行指定的 Session 目录与 `JIUWENMATE_OUTPUT_DIR`。"
+    "不要使用其他绝对路径、..、符号链接或脚本绕过原工具的权限拒绝和版本冲突。"
     "sessions/ 中只使用本次 Session 的草稿，不访问其他会话；普通文件操作优先使用文件工具。"
     "不读取、显示或复制 Secret、Token 和认证配置；不全局安装依赖，不登录或切换飞书身份。"
     "飞书业务命令显式使用 --as bot，不使用 --as user，不借用个人版用户认证。"
@@ -79,7 +82,9 @@ def ensure_web_fetch(fields: dict[str, Any]) -> dict[str, Any]:
 
 
 def bind_bash_runtime(context, *, office: Path, cli) -> None:
-    context.extras[_KEY] = (office, cli, context.execution, [])
+    session_workspace = office / "sessions" / context.execution.session_id
+    output_dir = office / "output"
+    context.extras[_KEY] = (session_workspace, output_dir, cli, context.execution, [])
 
 
 def _process_key(execution) -> str:
@@ -88,8 +93,8 @@ def _process_key(execution) -> str:
 
 async def close_bash_runtime(context) -> None:
     if context is not None and _KEY in context.extras:
-        execution = context.extras[_KEY][2]
-        for tool in context.extras[_KEY][3]:
+        execution = context.extras[_KEY][3]
+        for tool in context.extras[_KEY][4]:
             await tool.aclose()
         key = _process_key(execution)
         kill_shell_processes_for_session(key)
@@ -126,17 +131,25 @@ class _OwnedShell(ShellOperation):
 
 
 class _Shell:
-    def __init__(self, shell, office, cli, execution):
-        self._shell, self._office, self._cli, self._execution = shell, office, cli, execution
+    def __init__(self, shell, session_workspace, output_dir, cli, execution):
+        self._shell = shell
+        self._session_workspace = session_workspace
+        self._output_dir = output_dir
+        self._cli = cli
+        self._execution = execution
 
     def _params(self, cwd, environment):
         env = dict(environment or {})
         child = self._cli.shell_environment(self._execution.namespace_id, self._execution.agent_id)
         managed = {"PATH", "LARKSUITE_CLI_CONFIG_DIR", "LARKSUITE_CLI_DATA_DIR"}
         env.update({key: value for key, value in child.items() if key in managed})
+        env["JIUWENMATE_OUTPUT_DIR"] = str(self._output_dir)
         env.update({key: "" for key in os.environ if key.startswith(("LARK_", "FEISHU_", "LARKSUITE_"))
                     and key not in managed})
-        return {"cwd": str(self._office) if not cwd else cwd, "environment": env}
+        directory = str(self._session_workspace) if not cwd else os.fspath(cwd)
+        if not os.path.isabs(directory):
+            directory = str(self._session_workspace / directory)
+        return {"cwd": directory, "environment": env}
 
     async def execute_cmd(self, command, *, cwd=None, timeout=300, environment=None, options=None, shell_type="auto"):
         return await self._shell.execute_cmd(command, timeout=timeout, options=options, shell_type=shell_type,
@@ -164,20 +177,20 @@ class _Operation:
 
 
 class _PersistentBash(BashTool):
-    def __init__(self, operation, office, execution, language):
+    def __init__(self, operation, session_workspace, execution, language):
         super().__init__(operation, language=language)
-        self._office, self._execution = office, execution
+        self._session_workspace, self._execution = session_workspace, execution
 
     def _inputs(self, inputs):
         # Core's large-output persistence uses a shared temporary directory.
         # Keep this adapter's output inline and bounded instead of sharing files.
-        directory = inputs.get("workdir") or str(self._office)
+        directory = inputs.get("workdir") or str(self._session_workspace)
         if not os.path.isabs(directory):
-            directory = str(self._office / directory)
+            directory = str(self._session_workspace / directory)
         return {**inputs, "workdir": directory, "max_output_chars": 0}
 
     def _build_history_path(self, session):
-        return str(self._office / "sessions" / self._execution.session_id / ".bash-history.json")
+        return str(self._session_workspace / ".bash-history.json")
 
     async def aclose(self):
         await self._operation.shell()._shell.aclose()
@@ -210,7 +223,7 @@ class _PersistentBash(BashTool):
 def build_bash_tool(params: dict[str, Any], context):
     if set(params) - {"tools"} or _KEY not in context.extras:
         raise ValueError("Bash requires a trusted JiuwenMate Invocation")
-    office, cli, execution, tools = context.extras[_KEY]
+    session_workspace, output_dir, cli, execution, tools = context.extras[_KEY]
     parent = parent_sys_operation(context)
     if parent is not None and parent.mode != OperationMode.LOCAL:
         raise ValueError("JiuwenMate Bash requires the local operation")
@@ -222,8 +235,8 @@ def build_bash_tool(params: dict[str, Any], context):
     if config.shell_allowlist is not None:
         config.shell_allowlist = [*config.shell_allowlist, "lark-cli", "lark-cli.cmd"]
     operation = SysOperation(SysOperationCard(id=f"jm-bash:{execution.execution_id}", work_config=config))
-    shell = _Shell(_OwnedShell(config), office, cli, execution)
-    tool = _PersistentBash(_Operation(parent or operation, shell), office, execution, context.language)
+    shell = _Shell(_OwnedShell(config), session_workspace, output_dir, cli, execution)
+    tool = _PersistentBash(_Operation(parent or operation, shell), session_workspace, execution, context.language)
     tools.append(tool)
     from openjiuwen.harness.manifest import ensure_builtin_elements_registered
 

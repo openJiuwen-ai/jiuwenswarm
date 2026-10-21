@@ -757,11 +757,14 @@ python -m pytest tests/integration_tests/jiuwenmate -q
 
 本附录保留当时的编号与结论；当前状态以第 4 节为准。2026-10-13 起，`SW-xx` 改称 `JM-xx`，序号不变。
 
+2026-10-21 / JM-09 跟进：结果文件不再复制到 JiuwenSwarm 内部 `outputs/`，而是按 `namespace_id/agent_id/output/<文件名>` 直接从 Agent 工作空间校验、下载和投递。已有 `outputs/` 内容保留，不迁移、不删除；验证和限制见 [F_09 §8.2](../features/F_09_web-and-feishu-result-delivery.md)。
+
 | 日期 | 条目 / 当时编号 | 变更或阶段产物 | 适用架构 / 验证范围 | 证据、当时遗留及当前替代关系 |
 | --- | --- | --- | --- | --- |
 | 2026-10-21 | JM-23 | 新增员工群聊回复模式：被动仅在被 @ 时受理，自适应按职责判断并放宽轻量交流，纯寒暄只由一位自适应员工受理；切换模式不重放旧消息 | 宿主组件；真实飞书与浏览器未执行 | 定向测试通过，见 [F_23](../features/F_23_group-reply-mode.md)；状态待验收；未提交 |
 | 2026-10-20 | JM-14 | 用户确认开放本地 Bash，以提示词约定工作范围；新增私有 lark-cli 运行资料、绑定后后台准备、独立认证、自动 Skill 发布和重启恢复，保留未发布草稿 | 不改个人版、agent-core 或总体架构；真实 core 与 SQLite，外部平台替身 | 新增 27 项测试通过；尚未真实安装 / 认证或创建飞书文档；详细边界及回归记录见 [F_14 §12](../features/F_14_workspace-read.md#12-bash-与飞书-cli-自动装配2026-10-20方案已确认)，未提交 |
 | 2026-10-21 | JM-14 | 独立审查后采用私有文件 SecretRef，避免 CLI 共享凭据库；补齐换绑重跑、配置变更新旧 Agent 通知、解绑启动核对、二进制版本核验和旧 Spec 保留草稿升级 | 真实本地 core / SQLite / Windows 受控 CLI，外部市场与飞书 API 替身 | 新增 41 passed；相关回归 686 passed、11 failed，失败分类及完整命令见 [F_14 §12.6](../features/F_14_workspace-read.md#126-验证与遗留)；真实安装 / 认证、文档权限与投递未验收，未提交 |
+| 2026-10-21 | JM-08、JM-09、JM-14 | Feishu 私聊 / 群聊均授予 `workspace_read` 且不授予 `workspace_write`；初始化共享 `output/` 与 `sessions/<session_id>/`；Bash 默认使用当前 Session 并通过 `JIUWENMATE_OUTPUT_DIR` 指向共享最终目录；文档区分 Agent 的 `output/` 与宿主留存 `outputs/` | JiuwenMate 宿主逻辑与路径策略单测；不改 agent-core、不改个人版路由 / 附件、不迁移旧文件 | 相关定向测试 26 passed；较大回归 459 passed、58 failed，失败含本地 agent-core `system_prompt_addendum` 构造不兼容及 Windows 符号链接权限问题，其余失败未逐一归因；个人版消息 / 附件测试文件通过；真实飞书产物投递未验收；F_08/F_09/F_14 记录详见各自 §8；未提交 |
 | 2026-10-19 | JM-08 | Feishu 应用配置采用 `app_id` + `persistent_agent_id` 一对一绑定；创建弹窗保存应用凭据，重复绑定时替换同事旧应用，解析后仍使用运行时 `agent_id`；不兼容旧配置键 | Gateway 配置保存与绑定解析、同事列表状态、前端授权弹窗 | 3 项后端定向测试、32 项前端测试和生产构建通过；真实 Feishu 入站复测待执行，见 [F_08](../features/F_08_feishu-group-fanout.md) |
 | 2026-10-17 | JM-11、JM-21 | 按用户确认编写 F_11、F_21：每群独立消息库与附件目录，无 local 路径层；权限关系在 agents.sqlite3。对齐本地 PA-23 跨群契约，区分当前群扫描与 Agent 级跨群搜索；原负责人和交付分类不变 | 方案设计与只读代码核对；非运行验证 | 两项按“已启动设计”记进行中；代码、测试和真实飞书／跨仓联调未开始。整项完成仍为本期 0/17、扩展 0/1；整体架构文件未修改 |
 | 2026-10-17 | JM-11 | 按 F_11 实现每群共享归档、访问关系、撤回与读取前刷新、内部平台核验、出站补归档重试及 GroupChatPort 注入；定稿契约同步 S_01。审查后补齐撤回触发拦截、换绑关系退休及可见下界重设、补归档分页轮转。JM-21 不实施 | 真实 SQLite、真实 core／模型替身、Gateway 与 SDK 替身，含个人版聚焦回归 | 最终合并回归 412 项通过、4 项既有容量配置／Windows 环境断言排除，详情见 F_11 第 8 节；真实飞书和生产 PA-18 配置验证仍待完成，JM-11 保持进行中；未提交 |
@@ -805,3 +808,4 @@ python -m pytest tests/integration_tests/jiuwenmate -q
 | 2026-10-16 | JM-16 | 新增 `activity_query.py` 与 `jiuwenmate.activity.get`：已开始且非 ignored 的 Request 计入任务，已结算调用计入次数和 Token，文件投递计入群产物；活跃数据页签改为读取该查询 | 真实 SQLite；前端接口映射 | `test_management_query.py` 4 passed；前端办公室 7 项、接口 19 项通过；任务中心未接入；状态改为进行中 |
 | 2026-10-22 | JM-10（会话管理与聊天侧栏） | 为会话增加持久置顶状态及旧数据库迁移；前端按置顶分组，行尾三点菜单提供重命名、置顶切换和删除；修复选中背景宽度受 Grid 隐式最小尺寸影响的问题 | SQLite 置顶与迁移测试、前端 API / workspace / 设计稿测试、生产构建与临时浏览器核对 | 3 项后端定向测试、25 项 API、7 项 workspace、5 项设计稿测试通过；生产构建通过；见 [F_10_02](../features/F_10_02_web-private-chat.md) |
 | 2026-10-17 | JM-19 | 新增 `scheduled_requests.py` 与四个 `jiuwenmate.schedule.*` 方法：计划写入同事库，到期后转为一条 `kind=scheduled` 的 Request，固定会话并去重；详情页可保存、启停和删除 | 可控时钟与真实 SQLite；前端静态渲染 | `test_scheduled_requests.py` 4 passed；浏览器与真实模型未执行；状态改为进行中，见 [F_19](../features/F_19_scheduled-requests.md) |
+| 2026-10-21 | JM-14（Session 路径安全复核） | 工作空间目录创建逐级检查真实目录与规范路径；拒绝符号链接 / Windows reparse point；读写 scope 暴露当前 Session 根前重复核验，防止草稿目录重定向到工作空间外 | reparse-point 回归；JM-08/09/14 聚焦测试；个人版消息 / 附件回归 | 新增安全回归 2 项通过；聚焦文件组 135 passed、1 skipped（Windows symlink 权限）；较大回归 512 passed、6 failed、1 skipped（Windows 文件模式、3 项旧 symlink 创建、1 项知识页断言）；个人版 63 passed；未提交，真实 Feishu 文件交付仍待验收，详见 [F_14](../features/F_14_workspace-read.md) |

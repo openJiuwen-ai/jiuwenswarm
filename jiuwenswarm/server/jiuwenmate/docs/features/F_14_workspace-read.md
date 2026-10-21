@@ -6,7 +6,7 @@
 | --- | --- |
 | 建档日期 | 2026-10-15 |
 | 范围 | jiuwenswarm：`server/jiuwenmate/ports/workspace_access.py`、`spec_provider.py`、`service.py`、`models.py`、`execution_driver.py`、`agent_manager.py`、`web_adapter.py`；前端 `channels/web/frontend/src/features/jiuwenmate/` 与 jiuwenmate 文案 |
-| 方案成熟度 | 已确认。只读部分（2026-10-15）：目录只建立不导入文件；Web 请求可读取整个办公目录。2026-10-20 补充：飞书私聊仅可读取当前发布版本中所选知识副本。写入部分（2026-10-15）：整个办公目录可写，另设本会话私有草稿区；只开放 Web 请求；写入不经人工确认，依赖意图记账与条件写入 |
+| 方案成熟度 | 已确认。Web 读写沿用既有规则。2026-10-21 补充飞书工作空间规则：私聊和群聊的启动、来源 scope 均授予 `workspace_read`，不授予 `workspace_write`；私聊保留既有 `workspace_knowledge_read`。同 Agent 共用工作空间，Session 中间产物隔离在 `sessions/<session_id>/`，最终交付文件放共享 `output/`。Bash 路径约定不是操作系统级隔离 |
 | 计划条目 | [JM-14](../designs/jiuwenmate-development-plan.md)：同事资源选择与隔离；本文覆盖办公目录读写、资源装配及 Bash / 自动飞书 CLI 补充范围 |
 | 负责人 | 常钰聪 |
 | 状态 | 进行中（办公目录读写、资源装配已有实现；2026-10-20 补充 Bash 与飞书 CLI 自动准备，见第 12 节；真实飞书创建与浏览器验收未做） |
@@ -36,17 +36,18 @@ core `9eb336b4` 已提供 PA-14：Spec 声明 `workspace_read` 且开启 `enable
 | 两次写入针对同一文件，且文件在预检后被改动 | 不适用 | 后写入的一方得到 `version_conflict`，不覆盖他人的修改 |
 | 访问其他 Session 的私有草稿 `sessions/<其他 session_id>/` | 不适用 | 读写都返回 `forbidden` |
 | 模型请求办公目录之外的路径（`..`、绝对路径、指向外部的符号链接） | 不适用 | 工具返回 `forbidden`，回复中不含目录外内容与宿主路径 |
-| 飞书群聊请求 | 不适用 | 读取与写入范围均为 `forbidden`，工具不访问任何文件 |
-| 飞书私聊请求且当前发布版本选择了知识页面 | 之前读写范围均为 `forbidden` | 读取范围仅包含该发布版本的 `resources/knowledge/<摘要>/`；办公目录其他位置不可读，写入仍为 `forbidden` |
+| 飞书群聊请求 | 原先文件工具均无工作空间范围 | `workspace_read` 可读当前 Session 草稿和 Agent 的共享工作空间（含 `output/`），其他 Session 草稿不可读；`workspace_write` 文件工具仍为 `forbidden` |
+| 飞书私聊请求 | 原先仅读取已选知识副本 | 除保留当前发布版本的 `workspace_knowledge_read` 外，也按 `workspace_read` 读取 Agent 共享工作空间与当前 Session；其他 Session 草稿不可读，`workspace_write` 文件工具仍为 `forbidden` |
+| 最终文件交付 | 文件可能留在某次执行的临时目录 | Agent 将最终文件复制或移动到工作空间 `output/`，再以 `output/<文件名>` 调用 `share_file`；宿主不自动移动文件 |
 | 用户需要知道文件放在哪里 | 无入口 | 同事详情页“知识”分区显示办公目录的本机路径 |
 | 删除同事 | 删除版本、Template 与窗口数据 | 同时删除其办公目录（含私有草稿） |
 
 ### 2.3 本次范围与非目标
 
-- 本次包含：每个同事一个办公目录；读取与写入范围端口；`workspace_read`、`workspace_write` 开放与端口校验；Session 私有草稿区的隔离；发布时开启文件工具并补充路径说明；Web 运行时启动时重新发布；页面显示目录。2026-10-20 补充：飞书私聊可读取其配置版本选定的知识副本，不开放办公目录其他内容；群聊权限不变。
+- 本次包含：每个同事一个办公目录；读取与写入范围端口；`workspace_read`、`workspace_write` 开放与端口校验；Session 私有草稿区的隔离；发布时开启文件工具并补充路径说明；Web 运行时启动时重新发布；页面显示目录。2026-10-20 增加飞书私聊所选知识副本读取。2026-10-21 再补充：飞书私聊和群聊均获 `workspace_read`、不获 `workspace_write`；同 Agent 工作空间共享 `output/`，会话中间文件置于各自 Session 目录。
 - 本次不包含：
   - 文件上传或导入：用户自行把文件放入目录（负责人确认）；
-  - 飞书请求读写：S2b 再确定群聊的授权来源（负责人确认）；
+  - 飞书写操作授权：本次仍不向 Feishu 的文件工具请求授予 `workspace_write`；不改变 Web 已有写入规则；
   - Skill、MCP、插件装配：`SkillUseRail` 会同时注册 `read_file`、代码与命令工具，随 S2b；
   - 写入前的人工确认：PA-09 本轮不开发，写入依赖意图记账与条件写入（负责人确认）；
   - 引导模型使用私有草稿区：模型无法得知本会话的 `session_id`（见第 3 节）；
@@ -62,9 +63,10 @@ core `9eb336b4` 已提供 PA-14：Spec 声明 `workspace_read` 且开启 `enable
   - 写入 Rail 要求 SysOperation 的文件系统声明 `supports_conditional_write`；本机文件系统满足该条件，写入时自动创建父目录。
   - core 的 `read_file` 工具描述要求绝对路径，而路径检查拒绝绝对路径。
   - 构建 Agent 时，core 默认在后台探测模型是否支持图片输入，该调用不经过预算端口；`enable_read_image_multimodal=False` 可关闭。
-  - 系统提示按同事版本发布、由各 Session 共用；core 的执行头（PA-06）只含 `request_id`、`execution_id` 与来源，不含 `session_id`。因此模型无法得知本会话私有草稿目录的名称。
+  - 系统提示基础内容按同事版本发布、由各 Session 共用；静态发布提示不能写死某次会话路径。宿主执行入口可从可信 `ExecutionRecord.session_id` 为当前 Invocation 追加具体 Session 目录说明，不需要改变 agent-core 执行头契约。
 - **负责人确认（2026-10-15）：** 只读部分为 Web 可读整个办公目录；写入部分为整个办公目录可写并另设本会话私有草稿区、只开放 Web 请求、写入不经人工确认。
 - **负责人确认（2026-10-20）：** 飞书私聊可读取当前配置版本中明确选定的知识副本；飞书群聊和办公目录其他文件继续拒绝读取，飞书不开放写入。
+- **负责人确认（2026-10-21）：** 上述飞书文件范围按新决策调整：同一 Agent 的飞书私聊和群聊都在 `startup_scope`、`source_scope` 授予 `workspace_read`，不授予 `workspace_write`；私聊已有 `workspace_knowledge_read` 保持不变。工作空间仍按 `namespace_id + agent_id` 唯一，不按群拆分。
 - **关键假设：** Web 本地用户是全部同事的所有者，因此 Web 请求可以读写任一同事自己的办公目录。
 - **待决问题：** 飞书群聊的读写授权来源（群成员、绑定者或管理员），由 S2b 确定。
 
@@ -93,7 +95,7 @@ sequenceDiagram
 
 #### D-01 授权依据为请求的访问快照与发布版本知识范围
 
-- 选择与依据：Request 接受时冻结 `AccessSnapshot`。启动范围与来源范围都含 `workspace_read` 时，读取整个办公目录；都含 `workspace_write` 时允许写入。飞书私聊另使用 `workspace_knowledge_read`，且只有已发布 `ConfigSnapshot` 带有知识根目录时，仅读取该 `resources/knowledge/<摘要>/`；群聊不含此权限，办公目录其他位置及所有写入仍拒绝。发布版本保存知识根目录，确保已有 Request 继续使用其接受时配置版本选定的副本。
+- 选择与依据：Request 接受时冻结 `AccessSnapshot`。启动范围与来源范围都含 `workspace_read` 时，PA-14 读取工具可访问该 Agent 工作空间；core 仍排除其他 Session 的私有草稿，仅当前 `session_id` 对应目录和共享内容可读。Web 的既有读写授权不变。2026-10-21 起，Feishu 私聊与群聊均在两个 scope 中加入 `workspace_read`，不加入 `workspace_write`；私聊另保留既有 `workspace_knowledge_read`，发布版本仍固定其知识副本。文件工具授权不等于 Bash 沙箱，Bash 的边界仍是提示词约定。
 - 实现体现：`HostWorkspaceAccess.resolve_read_scope`、`resolve_write_scope`、`resolve_feishu_access` 与 `ConfigSnapshot.knowledge_root`。
 
 #### D-02 目录按命名空间与同事划分，路径检查交给 core
@@ -108,7 +110,7 @@ sequenceDiagram
 
 #### D-04 系统提示补充路径说明
 
-- 选择与依据：core 的工具描述要求绝对路径，与路径检查相反，模型按描述调用会被拒绝。不修改 core 时，在发布的系统提示末尾固定追加 `WORKSPACE_PROMPT`，说明使用相对路径、修改前先读取、遇到版本冲突时重新读取，以及不读写 `sessions/`。
+- 选择与依据：core 的工具描述要求绝对路径，与路径检查相反，模型按描述调用会被拒绝。不修改 core 时，在发布的系统提示末尾追加 `WORKSPACE_PROMPT`，说明使用工作空间相对路径、修改前先读取、遇到版本冲突时重新读取。执行时再注入本次 `sessions/<session_id>/` 的用途；普通中间文件直接放该目录，Lark Slides 专用状态放其 `.lark-slides/`，最终文件复制或移动到共享 `output/`，再用 `output/<文件名>` 调用 `share_file`。不得将提示词或 Bash cwd 表述为强制隔离。
 - 实现体现：`service.WORKSPACE_PROMPT`、`publish`。
 
 #### D-05 Web 运行时启动时重新发布
@@ -116,10 +118,19 @@ sequenceDiagram
 - 选择与依据：旧版本 Spec 未开启文件能力。运行时首次启动前，`refresh_published` 重新发布没有未发布修改的同事；设置未变时 `publish` 沿用原版本，有未发布修改的同事保持原版本，避免把草稿发布出去。
 - 实现体现：`PersistentAgentService.refresh_published`、`JiuwenMateWebAdapter._runtime`。
 
-#### D-06 整个办公目录可写，`sessions/` 下按 Session 隔离
+#### D-06 工作空间按 Agent 共享，Session 中间文件与最终文件分区
 
-- 选择与依据：用户资料与同事产出的文件须在各会话之间共享，因此写入范围为整个办公目录。`sessions/` 作为 `private_sessions_root`，本 Session 的 `sessions/<session_id>/` 作为 `current_session_root`；core 的路径检查只允许访问本会话的子目录，`sessions/` 本身与其他会话的子目录均为 `forbidden`。读取范围采用同一组根目录，因此其他会话的草稿既不可写，也不可读。`session_id` 同样只允许字母、数字、`_`、`-`，否则端口抛出异常。
-- 实现体现：`HostWorkspaceAccess._session_roots`、`SESSIONS_DIR`。
+- 选择与依据：工作空间仍由 `namespace_id + agent_id` 唯一确定，多个飞书私聊 / 群聊共享同一根目录。执行入口在构建 Invocation 和解析 workspace scope 前创建 `sessions/<session_id>/`；非法 Session ID 或创建失败均失败关闭，禁止回退到 Agent 根目录。工作空间内用于授权的目录拒绝符号链接和 Windows reparse point，并在生成读写 scope 时再次验证当前 Session 路径仍位于 Agent 工作空间下，避免 `current_session_root` 特例越界。非 Lark Slides 中间文件直接放当前 Session 根目录；`.lark-slides/` 只用于 Lark Slides 专用计划、截图和恢复状态。Agent 的最终交付文件放共享 `output/`，跨 Session 可读。core 路径策略继续拒绝兄弟 Session 草稿。既有 Agent 根目录 `.lark-slides/` 等文件不自动移动或删除。
+- 实现体现：`WorkspaceStore.ensure_session`、`WorkspaceStore.ensure`、`HostWorkspaceAccess._session_roots`、`ExecutionDriver`。
+
+```text
+workspaces/local/<agent_id>/
+├── sessions/
+│   └── <session_id>/
+│       ├── <普通中间文件>
+│       └── .lark-slides/       # 仅 Lark Slides 的计划、截图和恢复状态
+└── output/                     # Agent 跨 Session 共享的最终文件
+```
 
 #### D-07 写入不经人工确认
 
@@ -140,10 +151,10 @@ sequenceDiagram
 
 ### 5.1 模块责任
 
-- `WorkspaceStore`：`path` 校验名称并返回目录；`ensure` 以私有权限建立目录；`remove` 删除目录。
-- `HostWorkspaceAccess`：持有一个同事的目录；`scope` 返回 `(namespace_id, agent_id)`；`resolve_read_scope` 与 `resolve_write_scope` 按 D-01、D-06 返回 `WorkspaceReadScope` / `WorkspaceWriteScope`，`source_ref` 为 `workspace://<namespace_id>/<agent_id>`。同一实例同时作为读取端口与写入端口。
+- `WorkspaceStore`：`path` 校验名称并返回目录；`ensure` 逐级检查并以私有权限建立 Agent 根目录与共享 `output/`，拒绝符号链接 / Windows reparse point 并核验规范路径；`ensure_session` 校验 `session_id` 后创建私有 Session 目录；`remove` 删除目录。
+- `HostWorkspaceAccess`：持有一个同事的目录；`scope` 返回 `(namespace_id, agent_id)`；生成读写 scope 前经 `WorkspaceStore.validate_session_paths` 复核当前 Session 路径未重定向且仍在 Agent 工作空间下，再按 D-01、D-06 返回 `WorkspaceReadScope` / `WorkspaceWriteScope`，`source_ref` 为 `workspace://<namespace_id>/<agent_id>`。同一实例同时作为读取端口与写入端口；飞书的 `workspace_read` 仍由 core 文件工具检查文件路径，Feishu 不获 `workspace_write`。
 - `PersistentAgentService`：`publish` 建立目录，Spec 写入 `enabled_features=["construction", "workspace_read", "workspace_write"]`、`enable_sys_operation=True`、`enable_read_image_multimodal=False` 与追加路径说明的系统提示；`refresh_published` 按 D-05 重新发布；`delete_colleague` 删除目录；视图带 `workspace_dir`。
-- `ExecutionDriver`：每次执行的端口加入本同事的 `HostWorkspaceAccess`，同时填入 `workspace_access` 与 `workspace_write_access`。
+- `ExecutionDriver`：每次执行先创建该 `ExecutionContext.session_id` 对应的目录，再构造本同事的 `HostWorkspaceAccess` 和 Invocation；Bash cwd 及路径提示绑定当前 Session，并为该 Invocation 提供共享 `output/` 路径。
 - 前端：`toColleague` 解析 `workspace_dir`；同事详情页“知识”分区显示目录与说明。
 
 ### 5.2 接口
@@ -173,6 +184,7 @@ sequenceDiagram
 | JM-14-V-01（只读部分） | Web 请求读取本同事目录；越界与无授权请求被拒绝 | `test_resource_scope.py` | 相对路径解析到本同事目录；缺少任一范围时为 `forbidden`；`..`、绝对路径、Windows 盘符、外链符号链接为 `forbidden`；其他同事的 Execution 抛出异常；非法名称被拒绝；发布建立目录、删除移除目录；重新发布跳过有未发布修改的同事；缺少或错配端口时拒绝调用 | 单测（真实 SQLite、真实 core 路径检查） |
 | JM-14-V-01（执行部分） | 真实 core 执行中调用 `read_file` | `test_web_real_core.py::test_a_colleague_reads_only_its_office_directory` | 读取目录内文件时回复含文件内容；请求 `../other/secret.md` 时回复不含他人文件内容与宿主路径 | 集成（真实 core `9eb336b4`，模型为替身） |
 | JM-14-V-02（Session 隔离） | 本会话访问自己的草稿；访问 `sessions/` 与其他会话的草稿 | `test_resource_scope.py::test_a_session_reaches_its_own_drafts_only` 等 | 本会话子目录可读可写；`sessions/`、其他会话子目录及其文件读写均为 `forbidden`；非法 `session_id` 抛出异常 | 单测（真实 core 路径检查） |
+| JM-14-V-04（Feishu 工作空间与产物布局，2026-10-21） | 飞书私聊 / 群聊授权、Session 初始化、共享最终文件读取与产物路径 | `test_feishu_group_production_wiring.py`、`test_resource_scope.py`、`test_session_scheduler.py`、`test_bash_runtime.py`、`test_output_files.py` | 两类 Feishu Request 的启动与来源 scope 都有 `workspace_read`、都没有 `workspace_write`；私聊保留 `workspace_knowledge_read`；`output/` 跨 Session 可读，兄弟 Session 草稿不可读且写入仍 forbidden；Session 目录在 Invocation 构建前存在；Session 授权路径拒绝 symlink / reparse point；Bash 默认 cwd 为当前 Session、相对 workdir 从该目录解析且输出路径指向共享 `output/`；当时 `share_file` 的交付副本策略见 JM-09 记录；该策略后由 F_09 2026-10-21 JM-09 跟进改为直接从 `output/` 解析与投递，不再复制到宿主 `outputs/` | 单测 / 真实 core 路径检查；不等同真实飞书文件投递验收 |
 | JM-14-V-02（冲突识别） | 文件在预检后被改动 | agent-core PA-16 条件写入测试 | 返回 `version_conflict`，不覆盖 | 由 core 组件测试覆盖；宿主只提供本机条件写入文件系统 |
 | JM-14-V-03 | 真实 core 执行中写入、修改、越界写入 | `test_web_real_core.py::test_a_colleague_writes_and_edits_shared_files_but_not_other_sessions_drafts` | `write_file` 创建、`edit_file` 修改共享文件，结果为“定稿”；写入其他会话草稿返回 `workspace path is not writable` 且文件不存在；SQLite 中按顺序记录 `write_file`、`edit_file` 两条 `tool.intent`，目标均为该文件；回复不含宿主路径 | 集成（真实 core `9eb336b4`、真实 `HostCommitPort` 与 SQLite，模型为替身） |
 | JM-14-V-03（写前屏障） | 意图落盘成功与失败 | `test_web_real_core.py` 的 PA-15 两项用例（`85b0e66d`） | 意图先落盘再产生副作用；落盘失败时副作用为零 | 集成 |
@@ -199,9 +211,17 @@ JM-14-V-01 的 Skill / MCP / 插件部分不在本次范围；V-03 中“清理�
 | — | `pytest tests/unit_tests/server tests/unit_tests/gateway tests/unit_tests/channel tests/integration_tests/jiuwenmate` | 2867 passed，1 skipped | AgentServer、Gateway 与 Web 渠道既有行为不变 |
 | — | `ruff check`（改动的文件） | 本次改动无新增问题；`execution_driver.py` 未使用的导入与 `test_web_real_core.py` 导入顺序为既有问题 | — |
 
+2026-10-21 / JM-14-V-04 本地增量验证（Python 3.12.12，Windows）：Feishu scope 定向测试 2 passed；`test_resource_scope.py -k 'shared_output or workspace_store_ensures or publishing_creates'` 7 passed；`test_session_scheduler.py -k 'session_workspace or invocation_guides_session or group_execution_preserves_verified_bot_mention'` 4 passed；`test_bash_runtime.py` 12 passed；`test_output_files.py -k shared_workspace_output` 1 passed。验证工作空间创建 `output/`、执行前创建 Session 草稿目录、跨 Session 读取共享 `output/`、拒绝读取兄弟 Session 草稿且不授予写权限、Bash cwd / 相对工作目录 / 输出环境变量、群协作提示仍与 Session 目录提示并存，以及当时 `share_file` 从 `output/` 复制到宿主内部 `outputs/` 的实现。**交付副本策略随后由 F_09 2026-10-21 JM-09 跟进替代**：新实现直接从 `output/` 解析和投递，见该文档 §8.2；历史测试结论仅描述当时实现，不代表当前仍复制。上述均为聚焦自动化测试，不代表真实 Feishu 文件投递验收。
+
+同日运行 `test_feishu_group_production_wiring.py`、`test_resource_scope.py`、`test_session_scheduler.py` 三个文件的整组回归：86 passed、23 failed。失败中 22 项 SessionScheduler 旧用例在当前本地 `openjiuwen` 依赖上被 `PersistentBuildContext.__init__()` 不接受 `system_prompt_addendum` 阻断；另 1 项符号链接用例因 Windows 当前进程无创建链接权限失败。此次新增的 Session 初始化和提示测试均使用替身隔离 Invocation builder 并通过；未据此修改 agent-core 或 Windows 安全策略。
+
+随后按本计划串行运行较大范围：`uv run pytest --no-cov -q -o log_cli=false --tb=short tests/unit_tests/server/jiuwenmate tests/unit_tests/gateway/test_message_handler_mode.py tests/unit_tests/channel/test_attachment_persist.py`，519 项中 512 passed、6 failed、1 skipped。个人版消息路由与附件两个测试文件 63 项全部通过。6 项既有失败分别为：2 项 Windows POSIX 文件权限位断言、3 项旧资源装配测试创建 symlink 时 WinError 1314、1 项未发布知识页测试的既有断言 IndexError；本次 JM-14 相关调度测试通过。真实飞书文件投递仍未验证。
+
+同日安全复核：新增 `WorkspaceStore` 目录创建与授权 scope 的 reparse-point 拒绝测试，覆盖 Windows junction / reparse point 元数据；两项回归通过。JM-08/09/14 聚焦文件组共 136 项，135 passed、1 skipped；唯一跳过项是 Windows 当前进程无创建真实 symlink 的权限，reparse-point mock 仍覆盖路径拒绝。`test_resource_scope.py` 不含该环境限制项为 41 passed；Session 调度定向测试 4 passed；个人版消息路由与附件回归 63 passed。改动文件的 `ruff check` 与 `git diff --check` 通过。上述不等同于真实 Feishu 文件发送验收。
+
 ### 8.3 验证结论
 
-只读与写入的宿主组件验证通过：Web 请求可以读写本同事办公目录，每次写入前意图已落盘；其他会话的私有草稿与越界路径被拒绝。飞书群聊仍拒绝文件访问；飞书私聊的已选知识副本范围由 2026-10-20 补充的回归测试验证。真实飞书模型读取、浏览器验收与联合验收未执行。
+历史验证（2026-10-20 及以前）证明 Web 请求可以读写本同事办公目录、写入前意图已落盘，其他 Session 草稿与越界路径被拒绝；当时飞书群聊拒绝文件访问，飞书私聊仅读取已选知识副本。2026-10-21 的新决策将 Feishu 私聊和群聊都改为 `workspace_read`，并新增 Session 中间产物与共享 `output/` 的布局；此新范围须以本次实现后的专项测试记录为准，不能由历史测试推定已通过。真实飞书文件投递、真实模型读取、浏览器验收与联合验收仍需单独确认。
 
 ## 9. 风险与已知遗留
 
@@ -219,12 +239,12 @@ JM-14-V-01 的 Skill / MCP / 插件部分不在本次范围；V-03 中“清理�
 | --- | --- | --- | --- |
 | Skill、MCP、插件装配 | 已实现发布装配 | 见第 11 节。未安装的名称会拒绝发布 | 真实模型执行验收 |
 | 员工知识选择 | 由 JM-22 承接 | 已发布个人上下文页面在发布时复制到办公目录，见 [F_22](F_22_employee-knowledge.md) | 真实模型读取验收 |
-| 模型无法使用私有草稿区 | core 限制 | 隔离已生效，但模型不知道本会话的 `session_id`；系统提示要求不读写 `sessions/` | core 执行头带出 `session_id`（PA-06） |
+| Bash 并非 Session 沙箱 | 设计边界 | 当前 Session cwd、动态提示和 `JIUWENMATE_OUTPUT_DIR` 帮助模型遵守目录约定，但不能阻止 Shell / 子进程越界访问；文件工具的 workspace scope 不约束 Bash | 需要强隔离时另行设计操作系统级沙箱 |
 | 删除会话时保留私有草稿 | 未实施 | 会话为软删除，草稿随会话保留；删除同事时一并删除 | 会话硬删除时评估 |
-| 飞书群聊读写 | 未实施 | 读取与写入均为 `forbidden` | 仍未开放 |
+| 飞书私聊 / 群聊工作空间读取 | 2026-10-21 已实现并通过定向测试 | 两类请求均授予文件工具 `workspace_read`；当前 Session 与 Agent 共享文件可读，兄弟 Session 草稿不可读；均不授予文件工具 `workspace_write`。Bash 不是该 scope 的安全边界 | JM-14-V-04；真实 Feishu / Agent 联调仍待完成 |
 | 飞书私聊所选知识读取 | 2026-10-20 实施 | 仅当前版本知识副本为 `allowed`；兼容从既有已发布 Spec 提示恢复范围；其他路径与写入为 `forbidden` | JM-22 |
 | 文件导入 | 未实施 | 用户在本机放置文件 | 待评估 |
-| 飞书私聊读取知识副本 | 2026-10-20 实施 | 使用独立 `workspace_knowledge_read` 能力和发布版本范围；兼容旧发布快照及已接受的私聊请求；不加入通用 `workspace_read` | 真实飞书模型联调 |
+| 飞书私聊读取知识副本 | 2026-10-20 实施；2026-10-21 新增通用工作空间读取 | 已选知识副本的 `workspace_knowledge_read` 能力和发布版本范围保持不变；私聊同时获得 `workspace_read`，兼容旧发布快照及已接受请求 | 真实飞书模型联调 |
 
 ## 10. 设计演进与修订
 
@@ -249,7 +269,7 @@ JM-14-V-01 的 Skill / MCP / 插件部分不在本次范围；V-03 中“清理�
 
 ### 12.1 已确认目标与现状
 
-用户要求开放 Bash，绑定飞书渠道后自动准备 lark-cli 和配套 Skill，不另做一套受限飞书命令工具。用户先要求仅访问当前 Agent 的工作空间；在说明提示词不提供强隔离后，明确选择“先用系统提示词约束”。因此当前目标是本地 Bash、默认 Agent 工作目录和提示词行为约定，不引入沙箱，也不再等待 Linux / WSL / Jiuwenbox 部署。
+用户要求开放 Bash，绑定飞书渠道后自动准备 lark-cli 和配套 Skill，不另做一套受限飞书命令工具。用户先要求仅访问当前 Agent 的工作空间；在说明提示词不提供强隔离后，明确选择“先用系统提示词约束”。因此当前目标是本地 Bash、默认当前 Session 工作目录和提示词行为约定，不引入沙箱，也不再等待 Linux / WSL / Jiuwenbox 部署。2026-10-21 进一步确认：同一 Agent 的多个飞书会话共用工作空间；当前 Session 保存中间产物，共享 `output/` 保存最终交付文件。
 
 本节记录 JM-14 的补充设计：用户已确认方案与实施计划，代码已在当前工作区实施，未提交。实际执行证据与尚未验证范围见第 12.6 节；JM-14 整项仍为进行中。本轮不改 agent-core、个人版默认行为或总体架构文档。
 
@@ -281,15 +301,16 @@ flowchart LR
 
 给模型的系统提示明确以下行为约定：
 
-1. 文件、脚本、输入和产物仅使用当前 Agent 办公目录；优先相对路径，不通过绝对路径、`..`、符号链接或其他程序访问其他 Agent、个人版目录、宿主配置、数据库和群公共消息库。
-2. `sessions/` 下仅使用本次 Session 的草稿，不读写其他会话。共享资料可在当前 Agent 的会话之间复用。
-3. 不读取、显示或复制认证配置、Secret、Token；不运行 CLI 的用户登录、切换应用、重置配置等身份管理命令。只使用宿主已经准备的当前 Agent 的飞书应用身份。
-4. 优先使用原有 `read_file/write_file/edit_file` 完成文件操作；Bash 用于必要的脚本与 CLI。修改已有文件前先读取；不要用 Shell 绕过工具报出的授权拒绝或版本冲突，不自行安装全局依赖。
-5. 创建文档与授予用户访问权分别核实，返回链接不等于用户已经能打开。不能把创建超时解释为未创建并再次提交。
+1. 普通中间文件直接放宿主提供的当前 `sessions/<session_id>/` 目录；Lark Slides 的计划、截图和恢复状态放在当前目录下的 `.lark-slides/`。不要把中间文件放进共享最终产物目录。
+2. 需要交付给用户的最终文件复制或移动到 `JIUWENMATE_OUTPUT_DIR` 指向的共享 `output/`；随后 `share_file` 使用相对路径 `output/<文件名>`。不同私聊 / 群聊属于同一个 Agent 工作空间，因此 `output/` 文件可跨会话读取；不要读取其他 Session 的草稿。
+3. 优先使用相对路径，不通过绝对路径、`..`、符号链接或其他程序访问其他 Agent、个人版目录、宿主配置、数据库和群公共消息库。`JIUWENMATE_OUTPUT_DIR` 只是方便找到最终文件目录，不是额外授权或安全隔离。
+4. 不读取、显示或复制认证配置、Secret、Token；不运行 CLI 的用户登录、切换应用、重置配置等身份管理命令。只使用宿主已经准备的当前 Agent 的飞书应用身份。
+5. 优先使用原有 `read_file/write_file/edit_file` 完成文件操作；Bash 用于必要的脚本与 CLI。修改已有文件前先读取；不要用 Shell 绕过工具报出的授权拒绝或版本冲突，不自行安装全局依赖。
+6. 创建文档与授予用户访问权分别核实，返回链接不等于用户已经能打开。不能把创建超时解释为未创建并再次提交。
 
-以上是行为约定，不是强制安全边界。本地 Bash 具有运行服务账号的实际权限：模型、脚本及子进程仍可能越界读取或修改文件、接触其他应用认证。飞书群聊原有文件工具的拒绝策略和私聊知识副本限制不能约束 Bash；本方案不承诺抵御提示词注入或恶意命令。不得在页面、文档或测试报告中把它描述为“只能访问工作空间”或“Session 已被 Bash 隔离”。
+以上是行为约定，不是强制安全边界。本地 Bash 具有运行服务账号的实际权限：模型、脚本及子进程仍可能越界读取或修改文件、接触其他应用认证。PA-14 的 `workspace_read` / `workspace_write` scope 只约束 core 文件工具，不约束 Bash；本方案不承诺抵御提示词注入或恶意命令。不得在页面、文档或测试报告中把它描述为“Bash 只能访问工作空间”或“Session 已被 Bash 隔离”。
 
-执行默认 cwd 使用当前 Agent 办公目录；环境、身份和默认目录按 Invocation 绑定，不修改进程全局 cwd 或 `os.environ`。保留现有命令工具的安全检查，不把全局安全模式改成放行所有命令。后台命令只表示已启动，不能当作已完成；超时、停止、换绑与后台任务的生命周期必须在执行侧明确处理。
+每次执行默认 cwd 为当前 `sessions/<session_id>/`；`JIUWENMATE_OUTPUT_DIR` 指向同一 Agent 的共享 `output/`。cwd、该环境变量及 CLI 身份按 Invocation 绑定，不修改进程全局 cwd 或 `os.environ`。保留现有命令工具的安全检查，不把全局安全模式改成放行所有命令。后台命令只表示已启动，不能当作已完成；超时、停止、换绑与后台任务的生命周期必须在执行侧明确处理。
 
 Bash 的本地文件变更不经过 `write_file/edit_file` 的 PA-16 条件写入；现有文件工具仍保持原保证，不能把条件写入保证扩展到任意命令。Bash 每次调用均按非只读工具进入 PA-15；这只保证调用前意图已提交，不提供跨系统事务或命令级恰好一次执行。
 
@@ -329,8 +350,8 @@ Bash 的本地文件变更不经过 `write_file/edit_file` 的 PA-16 条件写�
 
 以下为验证目标；实际结果单独记录，不表示已通过真实飞书验收：
 
-- JM-14-V-01：真实构造的工具清单包含 Bash，提示词包含办公目录、草稿、凭据和禁止绕过授权约定，默认 cwd 为当前 Agent；原文件工具的授权检查不变。不把模型遵守提示词当作越界攻击已被阻止。
-- JM-14-V-02：并发 Invocation 的默认目录、CLI 环境与身份不串用；宿主环境和 cwd 前后不变。原文件工具仍拒绝其他 Session 的草稿，但不声称 Bash 具有同等强制限制。
+- JM-14-V-01：真实构造的工具清单包含 Bash，提示词包含 Session 中间目录、共享 `output/`、凭据和禁止绕过授权约定，默认 cwd 为当前 Session；原文件工具的授权检查不变。不把模型遵守提示词当作越界攻击已被阻止。
+- JM-14-V-02：并发 Invocation 的默认目录、共享输出路径、CLI 环境与身份不串用；宿主环境和 cwd 前后不变。原文件工具仍拒绝其他 Session 的草稿，但不声称 Bash 具有同等强制限制。
 - JM-14-V-03：意图提交失败则无命令副作用；CLI 诊断脱敏，实例清理不卸载其他 Agent 的工具；超时或未知创建结果不自动重跑。原有个人版命令、卡片和附件测试用于兼容性检查，不修改其逻辑。
 - 两个 Agent 并发创建文档分别使用自己的应用；绑定准备、换绑、解绑、重启恢复不串用身份，不改变个人版环境与认证。
 - 真实飞书创建后核对文档正文、ID、链接以及请求者的实际访问权；Web 与飞书终态投递分别验证，不向群里泄露命令过程或凭据。
@@ -382,3 +403,5 @@ uv run --no-sync python -u -m pytest --no-cov -q -o log_cli=false --tb=short tes
 2026-10-20：最初讨论真实沙箱，以技术手段保证只能访问工作空间；说明该方案需要隔离运行环境后，用户选择先以系统提示词约束。因此原草稿的沙箱、仅挂载当前工作空间和强 Session 隔离设计不再作为本轮方案。保留本地 Bash 的实际权限风险，后续需要强隔离时重新设计与验收，不能用提示词测试替代。
 
 2026-10-21：一次独立只读审查指出共享凭据库副作用、准备中换绑通知丢失、配置变更与解绑恢复遗漏、二进制就绪核验不足及旧发布版本未补 Bash 的问题。核实后采用官方文件 SecretRef，不再执行共享凭据初始化；补齐新旧 Agent 通知、准备重跑、启动核对、版本检查及保留草稿的旧版本升级。取舍是额外维护办公目录外的私有凭据文件并在解绑 / 删除时清理，而不是引入宿主 Token 服务或修改个人版 CLI 驱动。
+
+2026-10-21：补充跨飞书私聊与群聊共享的 Agent 工作空间布局。发布 / 建立工作空间时确保 `output/` 存在；每次执行在构建 Invocation 前创建 `sessions/<session_id>/`，Bash 默认 cwd 和相对工作目录以该 Session 为基准，并向当前进程提供 `JIUWENMATE_OUTPUT_DIR`。普通中间文件放 Session 根目录，`.lark-slides/` 仅作为其中的 Lark Slides 专用目录，最终文件由 Agent 复制或移动到 `output/` 后通过 `share_file` 引用 `output/<文件名>`。Feishu 私聊与群聊的 `startup_scope` / `source_scope` 均授予 `workspace_read`、不授予 `workspace_write`；私聊原有 `workspace_knowledge_read` 保持不变。授权与工作空间仍按 namespace + Agent，不按群拆分。提示词和 cwd 不是 Bash 沙箱；旧的 Agent 根目录 `.lark-slides/` 不自动迁移或删除；宿主不自动提升最终文件或清理中间文件。实现与测试状态见本节后续记录及 JM-14-V-04。
