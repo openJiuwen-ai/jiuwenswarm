@@ -33,7 +33,13 @@ from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, 
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog, ResourceCatalog, assemble_resources
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, publish_spec
-from jiuwenswarm.server.jiuwenmate.bash_runtime import BASH_PROMPT, PROVIDER as BASH_PROVIDER, with_bash_tool
+from jiuwenswarm.server.jiuwenmate.bash_runtime import (
+    BASH_PROMPT,
+    WEB_FETCH_PROMPT,
+    PROVIDER as BASH_PROVIDER,
+    ensure_web_fetch,
+    with_bash_tool,
+)
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from jiuwenswarm.server.jiuwenmate.resource_assembly import apply_feishu_skills
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
@@ -475,7 +481,13 @@ class PersistentAgentService:
             cache_formal_tokenizer(context_engine)
         fields = with_bash_tool({
             "card": {"id": agent_id, "name": settings.name, "description": settings.description},
-            "system_prompt": self._templates.read_persona(agent_id) + WORKSPACE_PROMPT + assembled.prompt + BASH_PROMPT,
+            "system_prompt": (
+                self._templates.read_persona(agent_id)
+                + WORKSPACE_PROMPT
+                + assembled.prompt
+                + BASH_PROMPT
+                + WEB_FETCH_PROMPT
+            ),
             "model": model,
             "model_input_limit_tokens": input_limit,
             "capacity_safety_margin_tokens": margin,
@@ -527,6 +539,7 @@ class PersistentAgentService:
         if not any(tool.get("type") == BASH_PROVIDER for tool in (fields.get("tools") or [])):
             fields = with_bash_tool(fields)
             fields["system_prompt"] += BASH_PROMPT
+        fields = ensure_web_fetch(fields)
         if publish_spec(agent_id, current.config_version, fields).fingerprint == current.fingerprint:
             return self._version_view(namespace_id, agent_id, current.config_version)
         snapshot = publish_spec(agent_id, self._repository.next_version(namespace_id, agent_id), fields,

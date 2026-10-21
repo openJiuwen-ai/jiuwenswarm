@@ -22,6 +22,7 @@ from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import _kill_children, _stop
 
 _KEY = "jiuwenmate.bash_runtime"
 PROVIDER = "jiuwenmate.bash"
+WEB_FETCH_PROVIDER = "core.web_fetch"
 BASH_PROMPT = (
     "\n\n## 命令使用约定（非技术隔离）\n\n"
     "可以使用 bash 运行必要的脚本和已准备的 CLI，默认工作目录为当前同事的办公目录。"
@@ -33,6 +34,15 @@ BASH_PROMPT = (
     "只能使用宿主为当前同事准备的飞书应用。命令超时或回执缺失表示结果未知，不自动重复创建文档。"
     "后台启动不表示完成；执行结束时后台命令会清理。文档创建成功与请求者获得访问权须分别核实。"
 )
+WEB_FETCH_PROMPT = (
+    "\n\n## 网页读取\n\n"
+    "消息中的 http 或 https 链接，先用 fetch_webpage 读取正文，再据此回答。"
+    "读取失败时说明工具返回的原因，不要声称没有联网能力。不要用 bash 去访问网页。"
+)
+
+
+def _without_web_fetch(tools: list[Any]) -> list[Any]:
+    return [item for item in tools if not (isinstance(item, dict) and item.get("type") == WEB_FETCH_PROVIDER)]
 
 
 def with_bash_tool(fields: dict[str, Any]) -> dict[str, Any]:
@@ -41,10 +51,31 @@ def with_bash_tool(fields: dict[str, Any]) -> dict[str, Any]:
         raise PersistentAgentError("a plugin conflicts with the built-in bash tool", code="INVALID_CONFIG")
     # Build selected plugin tools together so their actual model-facing names
     # can be checked before core registers any of this Invocation's instances.
-    declaration = {"type": PROVIDER}
-    if tools:
-        declaration["params"] = {"tools": tools}
-    return {**fields, "tools": [declaration]}
+    # fetch_webpage is built in the same pass; its model-facing name must not collide.
+    nested = [*_without_web_fetch(tools), {"type": WEB_FETCH_PROVIDER}]
+    return {**fields, "tools": [{"type": PROVIDER, "params": {"tools": nested}}]}
+
+
+def ensure_web_fetch(fields: dict[str, Any]) -> dict[str, Any]:
+    """Add webpage fetch to a publication that already carries the bash provider."""
+    tools = fields.get("tools")
+    updated: list[Any] | Any = tools
+    if isinstance(tools, list):
+        updated = []
+        for item in tools:
+            if not isinstance(item, dict) or item.get("type") != PROVIDER:
+                updated.append(item)
+                continue
+            params = dict(item.get("params") or {})
+            nested = list(params.get("tools") or [])
+            if not any(isinstance(child, dict) and child.get("type") == WEB_FETCH_PROVIDER for child in nested):
+                params["tools"] = [*nested, {"type": WEB_FETCH_PROVIDER}]
+                item = {**item, "params": params}
+            updated.append(item)
+    prompt = fields.get("system_prompt") or ""
+    if WEB_FETCH_PROMPT not in prompt:
+        prompt += WEB_FETCH_PROMPT
+    return {**fields, "tools": updated, "system_prompt": prompt}
 
 
 def bind_bash_runtime(context, *, office: Path, cli) -> None:
@@ -194,6 +225,9 @@ def build_bash_tool(params: dict[str, Any], context):
     shell = _Shell(_OwnedShell(config), office, cli, execution)
     tool = _PersistentBash(_Operation(parent or operation, shell), office, execution, context.language)
     tools.append(tool)
+    from openjiuwen.harness.manifest import ensure_builtin_elements_registered
+
+    ensure_builtin_elements_registered()
     selected = []
     names = {"bash"}
     for declaration in params.get("tools", []):
