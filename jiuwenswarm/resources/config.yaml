@@ -26,7 +26,7 @@ sandbox:
   policy_file: windows-policy.yaml
 
 a2ui:
-  enabled: true                # a2ui 环境：开启生成式 UI（env JIUWENSWARM_A2UI_ENABLED=true 亦覆盖生效）
+  enabled: false               # a2ui 环境：开启生成式 UI（env JIUWENSWARM_A2UI_ENABLED=true 亦覆盖生效）
   protocol_version: "0.8"
   stream_validation_enabled: true
   non_web_fallback_enabled: false

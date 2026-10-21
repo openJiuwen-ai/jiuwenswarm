@@ -233,15 +233,6 @@ class ResponsePromptRail(DeepAgentRail):
                     self.system_prompt_builder.add_section(
                         _a2ui_boost_prompt()
                     )
-                    # 诊断日志：直接证据 boost 已注入（priority 117，THINKING_DISCIPLINE 后）
-                    logger.info(
-                        "[A2UI-BOOST] a2ui boost injected: request_id=%s "
-                        "conversation_id=%s channel=%s priority=%s",
-                        request_id or "-",
-                        conversation_id or "-",
-                        channel or "-",
-                        PromptPriority.A2UI_BOOST,
-                    )
                 else:
                     self.system_prompt_builder.remove_section(
                         LocalSectionName.A2UI_BOOST
