@@ -642,6 +642,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
   items = getProjectMenuItems(pinned, t, {
     isDefault: isDefaultProject(project),
     archiveSessionsDisabled,
+    archivable: workMode !== 'design',
   }).map((def) => ({
     ...def,
     icon: menuIcon(def.key, pinned),
