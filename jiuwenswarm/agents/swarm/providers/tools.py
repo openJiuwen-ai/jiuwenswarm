@@ -313,7 +313,12 @@ def vision_model_config_params(config: dict[str, Any]) -> dict[str, Any]:
             parsed_headers = json.loads(headers_raw)
             if isinstance(parsed_headers, dict) and parsed_headers:
                 default_headers = {str(k): str(v) for k, v in parsed_headers.items()}
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as exc:
+            logger.warning(
+                "VISION_DEFAULT_HEADERS is set but malformed (JSON parse failed: %s) "
+                "— auth headers dropped; session-mode vision calls will likely 401",
+                exc,
+            )
             default_headers = None
     return {
         "api_key": api_key,

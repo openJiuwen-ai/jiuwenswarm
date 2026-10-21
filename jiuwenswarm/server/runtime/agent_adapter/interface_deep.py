@@ -5428,18 +5428,41 @@ class JiuWenSwarmDeepAdapter:
                     vision_headers_dict = {
                         str(k): str(v) for k, v in parsed_headers.items()
                     }
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] VISION_DEFAULT_HEADERS is set but malformed "
+                    "(JSON parse failed: %s) — auth headers dropped; session-mode vision "
+                    "calls will likely 401",
+                    exc,
+                )
                 vision_headers_dict = None
         if not api_key or not base_url or not model_name:
             logger.info("[JiuWenSwarmDeepAdapter] vision tools skipped: incomplete config")
             return None
-        return VisionModelConfig(
-            api_key=api_key,
-            base_url=base_url,
-            model=model_name,
-            max_retries=parse_int(read_env("VISION_MAX_RETRIES"), 3),
-            default_headers=vision_headers_dict,
-        )
+        # P2 兜底：依赖的 openjiuwen 版本若尚未包含 default_headers 字段（联动合并
+        # 顺序失控），退回不带 headers 的旧构造——宁可丢认证头也不能让 TypeError
+        # 阻断 agent 创建（_build_vision_model_config 无 try 包裹，异常会冒泡到
+        # AgentManager.create_agent 导致所有视觉 agent 创建失败）。
+        try:
+            return VisionModelConfig(
+                api_key=api_key,
+                base_url=base_url,
+                model=model_name,
+                max_retries=parse_int(read_env("VISION_MAX_RETRIES"), 3),
+                default_headers=vision_headers_dict,
+            )
+        except TypeError:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] VisionModelConfig does not accept "
+                "default_headers (openjiuwen version mismatch?) — falling back to "
+                "no-auth-headers construction"
+            )
+            return VisionModelConfig(
+                api_key=api_key,
+                base_url=base_url,
+                model=model_name,
+                max_retries=parse_int(read_env("VISION_MAX_RETRIES"), 3),
+            )
 
     @staticmethod
     def _build_audio_model_config(
