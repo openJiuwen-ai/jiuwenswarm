@@ -306,6 +306,13 @@ def create_default_persistent_group_fanout(
         async def refresh(access, group, messages):
             facts = await verify_membership(access.app_id, group.platform_chat_id,
                                            tuple(item.message_id for item in messages))
+            if facts.get("status") == "unknown":
+                # A slow or dropped Feishu read is not proof the archived text changed.
+                logger.warning(
+                    "[JiuwenMate] group message refresh got no Feishu answer, keeping the archived text: agent_id=%s",
+                    access.agent_id,
+                )
+                return tuple(messages)
             if facts.get("status") != "ok" or not isinstance(facts.get("messages"), dict):
                 raise ValueError("current group message state unavailable")
             updated = []

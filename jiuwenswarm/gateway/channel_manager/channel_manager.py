@@ -97,9 +97,11 @@ class ChannelManager(ABC):
             if not isinstance(ids, (list, tuple)) or len(ids) > 500 or any(
                     not isinstance(mid, str) or not mid or len(mid) > 512 for mid in ids):
                 return {"status": "unknown"}
+            # A page of message reads can outlast 8s when the Feishu socket reconnects.
+            # The worker wait stays longer so this answer arrives before that wait ends.
             if ids:
-                return await asyncio.wait_for(matches[0].inspect_persistent_group(chat_id, tuple(ids)), timeout=8)
-            return await asyncio.wait_for(matches[0].inspect_persistent_group(chat_id), timeout=8)
+                return await asyncio.wait_for(matches[0].inspect_persistent_group(chat_id, tuple(ids)), timeout=20)
+            return await asyncio.wait_for(matches[0].inspect_persistent_group(chat_id), timeout=20)
         except Exception:
             return {"status": "unknown"}
 
