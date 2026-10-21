@@ -276,16 +276,24 @@ async def test_private_team_updates_one_card_and_repairs_final_publication(servi
         await asyncio.wait_for(wait_for_progress(), timeout=2)
         submit = next(item for item in child.agents["leader"].tools if item.type == gc.SUBMIT_RESULT)
         await gc.SubmitTeamResult(submit.params["key"]).invoke({
-            "result": "Final report", "attachments": [{"name": "report.md"}],
+            "result": "Final report", "attachments": [{"name": "report.md"}], "execution_id": key,
         })
         await asyncio.Event().wait()
 
     monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
     store = ge.GroupExecutions(group["group_id"])
     key = (await store.create(["advisor"], "Review", "assignment"))[0]["execution_id"]
-    assert not (await proxy.invoke({"run_id": key, "task": "Review"})).success
+    from jiuwenswarm.agents.harness.team import get_team_manager
+
+    accepted = await proxy.invoke({"run_id": key, "task": "Review"})
+    assert accepted.success and accepted.data["accepted"]
+    worker = get_team_manager("web").get_stream_task(store.get(accepted.data["execution_id"])["team_session_id"])
+    await asyncio.wait_for(asyncio.shield(worker), 2)
     assert store.get(key)["phase"] == "publishing"
-    assert (await proxy.invoke({"run_id": key, "task": "Review"})).success
+    retry = await proxy.invoke({"run_id": key, "task": "Review"})
+    assert retry.success
+    worker = get_team_manager("web").get_stream_task(store.get(retry.data["execution_id"])["team_session_id"])
+    await asyncio.wait_for(asyncio.shield(worker), 2)
     assert store.get(key)["status"] == "completed" and len(calls) == 1
     assert (await proxy.invoke({"run_id": key, "task": "Review"})).success
     assert len(store.read()) == 1 and len(calls) == 1
