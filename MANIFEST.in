@@ -21,6 +21,7 @@ global-exclude node_modules
 include jiuwenswarm/cua_engine/__init__.py
 include jiuwenswarm/cua_engine/hosting.py
 include jiuwenswarm/cua_engine/desktop.py
+include jiuwenswarm/cua_engine/artifacts.py
 include jiuwenswarm/cua_engine/pyproject.toml
 include jiuwenswarm/cua_engine/backends/macos/Package.swift
 recursive-include jiuwenswarm/cua_engine/src *.py *.pyi

@@ -56,8 +56,13 @@ def clean_jiuwenbox() -> None:
 
 
 def build_root_wheel() -> None:
+    # Both host builds are collected before publishing one portable wheel.
+    env = os.environ.copy()
+    if not env.get("JIUWENSWARM_CUA_ARTIFACTS"):
+        env["JIUWENSWARM_CUA_ARTIFACTS"] = str(ROOT / "dist/cua")
+    run([sys.executable, "scripts/build_computer_use.py", "--check-artifacts"], ROOT, env=env)
     SIDE_CAR_DIST.mkdir(parents=True, exist_ok=True)
-    run(["uv", "build", "--wheel", "--out-dir", str(SIDE_CAR_DIST)], ROOT)
+    run(["uv", "build", "--wheel", "--out-dir", str(SIDE_CAR_DIST)], ROOT, env=env)
 
 
 def build_sidecar_wheel(platform_tag: str | None = None) -> None:

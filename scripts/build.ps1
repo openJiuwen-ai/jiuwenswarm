@@ -48,13 +48,22 @@ try {
 # 2. 构建 wheel
 Write-Host "[build] 正在构建 wheel 包..." -ForegroundColor Yellow
 Push-Location $ProjectRoot
+$CuaArtifactsBefore = $env:JIUWENSWARM_CUA_ARTIFACTS
 try {
+    if ([string]::IsNullOrWhiteSpace($env:JIUWENSWARM_CUA_ARTIFACTS)) {
+        $env:JIUWENSWARM_CUA_ARTIFACTS = Join-Path $ProjectRoot "dist/cua"
+    }
+    python scripts/build_computer_use.py --check-artifacts
+    if ($LASTEXITCODE -ne 0) {
+        throw "CUA release artifacts are missing or do not match this revision"
+    }
     python -m pip install --upgrade build wheel 2>$null
     python -m build --wheel --no-isolation
     if ($LASTEXITCODE -ne 0) {
         throw "wheel 构建失败"
     }
 } finally {
+    $env:JIUWENSWARM_CUA_ARTIFACTS = $CuaArtifactsBefore
     Pop-Location
 }
 

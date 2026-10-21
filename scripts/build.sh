@@ -59,6 +59,8 @@ trap cleanup EXIT
 
 # 2. 构建 wheel
 echo "[build] 正在构建 wheel 包..."
+export JIUWENSWARM_CUA_ARTIFACTS="${JIUWENSWARM_CUA_ARTIFACTS:-$PROJECT_ROOT/dist/cua}"
+python scripts/build_computer_use.py --check-artifacts
 pip install -q --upgrade build wheel
 python -m build --wheel --no-isolation
 

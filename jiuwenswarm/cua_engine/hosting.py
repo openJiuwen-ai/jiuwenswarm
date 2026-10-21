@@ -6,7 +6,6 @@ The host supplies its resource and cache paths; no Agent framework is imported.
 from __future__ import annotations
 
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
-import hashlib
 import importlib.util
 import os
 from pathlib import Path
@@ -15,6 +14,8 @@ import sys
 import tempfile
 
 import portalocker
+
+from .artifacts import extract_artifact, host_target, read_artifact, runtime_matches, source_digest, source_files
 
 
 def import_engine(root: Path):
@@ -43,20 +44,9 @@ def import_engine(root: Path):
 
 def prepare_bundle(source: Path, cache: Path) -> Path:
     """Copy only runtime sources; never compile into site-packages."""
-    roots = ("src", "backends/macos/Sources", "backends/windows", "assets", "skills")
-    files = [source / "pyproject.toml", source / "backends/macos/Package.swift"]
-    for name in roots:
-        for path in (source / name).rglob("*"):
-            parts = path.relative_to(source).parts
-            if path.is_file() and not any(part.startswith(".") or part == "__pycache__" for part in parts):
-                files.append(path)
-    digest = hashlib.sha256()
-    for path in sorted(files):
-        digest.update(path.relative_to(source).as_posix().encode())
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
+    files = source_files(source)
     cache.mkdir(parents=True, exist_ok=True)
-    target = cache / digest.hexdigest()[:24]
+    target = cache / source_digest(source)[:24]
     with portalocker.Lock(str(target) + ".lock", timeout=180):
         if not target.exists():
             temporary = Path(tempfile.mkdtemp(prefix=".prepare-", dir=cache))
@@ -99,7 +89,7 @@ def _build_native(root: Path, build_log: Path | None) -> None:
                 os.dup2(output.fileno(), 2)
             # Compiler output must never become an MCP JSON-RPC response.
             os.dup2(2, 1)
-            build_native(root=root)
+            build_native(root=root, configuration="release")
         except Exception as error:
             if output is not None:
                 output.write(f"\n{type(error).__name__}: {error}\n")
@@ -112,18 +102,53 @@ def _build_native(root: Path, build_log: Path | None) -> None:
                 os.close(saved)
 
 
-def prepare_native(source: Path, *, cache: Path | None = None, build_log: Path | None = None) -> Path:
-    """Use a prebuilt runtime, or materialize and build in an explicit cache."""
-    root = prepare_bundle(source, cache) if cache is not None else source
+def _prebuilt_runtime(source: Path, cache: Path) -> Path:
+    target = host_target()
+    artifacts = source / "runtimes"
+    metadata = read_artifact(artifacts, target)
+    parent = cache / "prebuilt" / target
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root = parent / metadata["sha256"]
+    with portalocker.Lock(str(root) + ".lock", timeout=180):
+        if not root.exists():
+            temporary = Path(tempfile.mkdtemp(prefix=".prepare-", dir=parent))
+            try:
+                extract_artifact(artifacts, target, metadata, temporary)
+                temporary.rename(root)
+            finally:
+                if temporary.exists():
+                    shutil.rmtree(temporary)
+        if not runtime_matches(root, metadata):
+            raise RuntimeError(f"The cached Computer Use runtime is damaged; remove {root} and retry.")
+    return root
+
+
+def prepare_native(source: Path, *, cache: Path | None = None, build_log: Path | None = None,
+                   build: bool = False) -> Path:
+    """Resolve installed drivers; compile source only on an explicit user request."""
+    root = source
+    prebuilt = (source / "runtimes").is_dir()
     if cache is not None:
-        import_engine(root)
-        os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(root / "src"), os.environ.get("PYTHONPATH")]))
+        import_engine(source)
+        os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(source / "src"), os.environ.get("PYTHONPATH")]))
+        if prebuilt:
+            root = _prebuilt_runtime(source, cache)
+        elif build:
+            root = prepare_bundle(source, cache)
+        else:
+            root = cache / source_digest(source)[:24]
     from computer_use.paths import native_driver
 
     executable = Path(native_driver(root=root)["command"])
     if not _runtime_ready(executable):
-        if cache is None:
+        if cache is None or prebuilt:
             raise RuntimeError("The installed Computer Use driver is missing; reinstall the application.")
+        if not build:
+            raise RuntimeError(
+                "Computer Use is not compiled for this source installation. Run "
+                "python -m jiuwenswarm.agents.harness.computer_use.worker --build-native first; "
+                "other services do not require this optional step."
+            )
         with portalocker.Lock(str(root) + ".build.lock", timeout=180):
             if not _runtime_ready(executable):
                 try:
@@ -133,4 +158,8 @@ def prepare_native(source: Path, *, cache: Path | None = None, build_log: Path |
                     raise RuntimeError(f"Native desktop preparation failed: {error}.{detail}") from error
     if not _runtime_ready(executable):
         raise RuntimeError("Native desktop build did not produce the complete runtime.")
+    if cache is not None:
+        # The SDK's isolated execution subprocesses inherit the same immutable
+        # native root, independently of where their Python modules are loaded.
+        os.environ["COMPUTER_USE_RUNTIME_ROOT"] = str(root)
     return executable

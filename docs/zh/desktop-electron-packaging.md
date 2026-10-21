@@ -82,11 +82,29 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 ### Computer Use 原生驱动
 
-`cua_engine/hosting.py` 负责 SDK 加载、源码缓存和驱动构建，`cua_engine/desktop.py` 负责原生协议通信与进程清理，二者不依赖 Agent 框架。`agents/harness/computer_use/` 只负责接入原有桌面子代理、工具与生命周期；构建脚本直接调用引擎，不经过 Agent 接入层。
+`cua_engine/hosting.py` 负责 SDK 加载和驱动准备，`cua_engine/artifacts.py` 负责跨平台发布产物的归档、校验与选择，`cua_engine/desktop.py` 负责原生协议通信与进程清理，均不依赖 Agent 框架。`agents/harness/computer_use/` 只负责接入原有桌面子代理、工具与生命周期；构建脚本直接调用引擎，不经过 Agent 接入层。
 
 Windows 和 macOS 的完整安装包共用 `scripts/jiuwenswarm.spec`：构建机使用 Python 3.12 安装 `cua` 依赖，并由 `scripts/build_computer_use.py` 编译本机驱动。macOS 构建机需要 Swift 6 工具链；Windows 构建机需要 .NET Framework 4.8 编译器和 Windows 10 1903+ 的 WinRT 元数据。正式 macOS 发布仍只提供 ARM64 包。
 
-冻结包内置 Python SDK、Skill 和已编译的驱动。Windows 同时包含截图辅助程序和 UIA 互操作程序集；不会把 Swift/C# 编译输入或 UIA 构建工具放进运行资源。安装版直接执行包内驱动，不在用户电脑编译，也不复制到源码构建缓存；驱动缺失时报告安装包损坏。pip／源码运行在首次调用桌面工具时按需编译，进度和详细错误写入数据目录下的 `agent/.logs/computer_use_build.log`，不在服务启动时编译。缺少工具链或编译失败只使当前桌面工具报告不可用，不影响主服务和其他 Agent。成功的编译按源码版本缓存，后续直接复用。编译不启动驱动，也不请求桌面权限。
+冻结包内置 Python SDK、Skill 和已编译的驱动。Windows 同时包含截图辅助程序和 UIA 互操作程序集；不会把 Swift/C# 编译输入或 UIA 构建工具放进运行资源。安装版直接执行包内驱动，不在用户电脑编译，也不复制到源码构建缓存；驱动缺失时报告安装包损坏。
+
+源码安装和 `jiuwenswarm-start dev` 不隐式安装、编译驱动。需要桌面能力时，用户显式执行 `python -m jiuwenswarm.agents.harness.computer_use.worker --build-native`。源码和编译结果按引擎内容摘要隔离在数据目录下的 `computer_use/runtime`，构建日志写入 `agent/.logs/computer_use_build.log`。普通工具调用只查找已准备好的驱动，缺失时提示上述命令，不调用编译器。源码变更后需重新显式构建。未安装驱动或构建失败不影响主服务和其他 Agent。
+
+### 通用 wheel 的预编译驱动
+
+仍然发布一个 `py3-none-any.whl`。原生驱动是独立子进程，不是 CPython 扩展；macOS ARM64 和 Windows x64 的 ZIP 资源同时保存在 `jiuwenswarm/cua_engine/runtimes/`，不按系统拆分 Python 包。
+
+发布流水线在同一源码版本的 macOS、Windows 构建机上分别执行：
+
+```bash
+python scripts/build_computer_use.py --wheel-artifact
+```
+
+macOS 可附加 `--sign-identity "Developer ID Application: ..."`，在归档前应用正式签名。两台构建机分别输出 `dist/cua/macos-arm64.zip`、`macos-arm64.json`、`windows-x64.zip`、`windows-x64.json`。流水线汇总这四个文件到发布机的 `dist/cua/`；也可用环境变量 `JIUWENSWARM_CUA_ARTIFACTS` 指向汇总目录。然后使用原有 `scripts/build.sh`、`scripts/build.ps1` 或 `scripts/build_python_packages.py` 构建发布 wheel。这些入口必须先确认两套产物齐全、校验和正确，且都对应当前引擎源码；缺失、损坏或版本不一致则停止发布，不生成缺少驱动的正式 wheel。
+
+本地从源码执行 `pip install -e .` 或 `pip install .` 时，不需要准备上述发布产物，默认按源码安装处理，即使本地已有历史构建产物也不自动附带驱动。发布入口显式设置 `JIUWENSWARM_CUA_ARTIFACTS` 来启用预编译资源打包。未设置该变量时，直接调用底层 `uv build`／setuptools 也会生成本地开发包；正式发布应使用上述带产物检查的发布入口。复用构建目录时会先清除旧的驱动资源，避免把上一版本产物带入新 wheel。
+
+wheel 安装后，首次调用只按系统与 CPU 架构选择一套资源，校验并原子解压到用户数据目录下的 `computer_use/runtime/prebuilt/<target>/<archive-sha256>`。保留完整 macOS `.app` 的签名文件和执行权限；Windows 保留驱动、截图辅助程序和 UIA DLL。后续复用相同的不可变缓存。SDK 的隔离执行子进程继承该原生资源路径，不依赖 Python 模块所在位置。此过程不调用编译器、不启动另一平台驱动；不支持的平台或损坏资源只使桌面工具报告不可用，不影响其他服务。
 
 各构建入口在冻结后执行 `scripts/verify_computer_use_bundle.py`：清空外部 Python 路径并隐藏编译工具，验证 MCP 启动、REPL 多次调用的变量保留、包内驱动的协议握手和会话清理。检查不发送桌面输入、不要求授予桌面权限。实际使用时仍需用户批准系统权限，并启用桌面子代理、配置支持图片的模型。正式 macOS 签名流程会签署内置驱动，再封装外层应用。
 
