@@ -112,8 +112,8 @@ class ExecutionSession:
                                   code=request.code, history=policy))
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-        pending = dict(id=id_, title=request.title, startedAt=loop.time(), output=OutputBuffer(), future=future, timer=None,
-                       cancel=None)
+        pending = dict(id=id_, title=request.title, startedAt=loop.time(), output=OutputBuffer(),
+                       future=future, timer=None, cancel=None)
 
         def stalled():
             self.reset(f"Execution exceeded {self.timeout_ms} ms without native command progress.")
