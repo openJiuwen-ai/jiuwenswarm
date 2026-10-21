@@ -1837,6 +1837,7 @@ class TeamManager:
             spec.dispatch_mode = dispatch_mode
             if dispatch_mode != "scheduled":
                 spec.enable_task_verification = False
+                spec.enable_member_messaging = False
         if bootstrap_mode is not None:
             spec.bootstrap_mode = bootstrap_mode
         if spec.bootstrap_mode == "framework" and spec.dispatch_mode != "scheduled":

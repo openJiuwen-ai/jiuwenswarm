@@ -952,6 +952,10 @@
         "title": "Enable reviewers",
         "description": "Completed tasks are reviewed by verifiers. Tasks that fail review are returned for rework."
       },
+      "team_member_messaging_enabled": {
+        "title": "Enable member-to-member messaging",
+        "description": "Members can message each other directly (point-to-point, multicast, broadcast) instead of routing through the Leader. Task assignment and handoffs stay with the Leader and the scheduler."
+      },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
         "description": "Full-duplex is only available in single-Agent mode; its entry is hidden in swarm/team mode. Show a Full-duplex action when the composer is empty. Start a continuous voice conversation; the switch below controls optional screen sharing."

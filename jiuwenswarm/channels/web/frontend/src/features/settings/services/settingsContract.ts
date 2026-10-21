@@ -164,6 +164,12 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
     'boolean',
     'modes.team.jiuwen_team.enable_task_verification',
   ),
+  yamlField(
+    'team_member_messaging_enabled',
+    'experimental',
+    'boolean',
+    'modes.team.jiuwen_team.enable_member_messaging',
+  ),
   yamlField('task_full_duplex_enabled', 'experimental', 'boolean', 'experimental.task_full_duplex_enabled'),
   yamlField('task_asr_enabled', 'experimental', 'boolean', 'experimental.task_asr_enabled'),
   yamlField('symphony_evolution_enabled', 'experimental', 'boolean', 'symphony.evolution.flow.enabled'),

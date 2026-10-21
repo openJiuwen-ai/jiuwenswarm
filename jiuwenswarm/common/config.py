@@ -45,8 +45,10 @@ DEFAULT_SWARMFLOW_WORKTREE_ENABLED = False
 DEFAULT_SWARMFLOW_ENABLED = False
 TEAM_DISPATCH_MODE_CONFIG_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 TEAM_TASK_VERIFICATION_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
+TEAM_MEMBER_MESSAGING_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
 DEFAULT_TEAM_DISPATCH_MODE = "autonomous"
 DEFAULT_TEAM_TASK_VERIFICATION_ENABLED = False
+DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED = False
 EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY = "external_cli_publish_url"
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
 EXTERNAL_TRANSPORT_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_transport")
@@ -2614,6 +2616,11 @@ def update_team_scheduled_dispatch_in_config(enabled: bool) -> None:
 def update_team_task_verification_in_config(enabled: bool) -> None:
     """Update ``modes.team.jiuwen_team.enable_task_verification`` in config.yaml."""
     _set_config_path(TEAM_TASK_VERIFICATION_CONFIG_PATH, bool(enabled))
+
+
+def update_team_member_messaging_in_config(enabled: bool) -> None:
+    """Update ``modes.team.jiuwen_team.enable_member_messaging`` in config.yaml."""
+    _set_config_path(TEAM_MEMBER_MESSAGING_CONFIG_PATH, bool(enabled))
 
 
 def _carry_over_builtin_models(agents: list[dict[str, Any]], existing: Any) -> None:

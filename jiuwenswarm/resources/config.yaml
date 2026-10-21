@@ -1721,6 +1721,12 @@ modes:
       # 与本开关无关；本开关只影响 leader 的建任务引导语。见 F_62。
       enable_task_verification: false
 
+      # 调度模式下的成员间通信开关（TeamAgentSpec.enable_member_messaging）：
+      # 默认关闭时成员的 send_message 只能发给 leader / user，成员间信息由
+      # leader 转达；开启后成员可点对点、多播、广播给其他成员，任务指派与
+      # 交接仍归 leader 和调度框架。autonomous 模式下忽略。见 core F_126。
+      enable_member_messaging: false
+
       leader:
         member_name: team-leader
         display_name: 团队领导
