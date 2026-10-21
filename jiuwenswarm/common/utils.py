@@ -2663,21 +2663,36 @@ def _sanitize_log_text(text: str) -> str:
     serialized JSON corrupts them. Plain text retains the existing redaction.
     """
     decoder = json.JSONDecoder()
-    # Logger prefixes precede a JSON object/array. A bounded scan also handles
-    # embedded JSON in messages without quadratic work on arbitrary page text.
-    for match in list(re.finditer(r'[\{\[]', text))[:32]:
+    start_pattern = re.compile(r'[\{\[]')
+    chunks: list[str] = []
+    copy_from = 0
+    search_from = 0
+    candidates = 0
+    # Limit each unconsumed segment to 32 candidates, resetting after success.
+    # Scan the original text iteratively so shallow fragments do not grow the
+    # call stack or repeatedly scan and copy the remaining suffix.
+    while candidates < 32:
+        match = start_pattern.search(text, search_from)
+        if match is None:
+            break
+        start = match.start()
+        search_from = start + 1
+        candidates += 1
         try:
-            value, end = decoder.raw_decode(text, match.start())
+            value, end = decoder.raw_decode(text, start)
         except (ValueError, RecursionError):
             continue
         if not isinstance(value, (dict, list)):
             continue
-        return (
-            _sanitize_plain_log_text(text[:match.start()])
-            + json.dumps(_sanitize_log_value(value), ensure_ascii=False, separators=(",", ":"))
-            + _sanitize_log_text(text[end:])
+        chunks.append(_sanitize_plain_log_text(text[copy_from:start]))
+        chunks.append(
+            json.dumps(_sanitize_log_value(value), ensure_ascii=False, separators=(",", ":"))
         )
-    return _sanitize_plain_log_text(text)
+        copy_from = end
+        search_from = end
+        candidates = 0
+    chunks.append(_sanitize_plain_log_text(text[copy_from:]))
+    return "".join(chunks)
 
 
 _SAFE_AUTHORIZATION_OUTCOMES = ("allow", "deny", "block", "cancel")
