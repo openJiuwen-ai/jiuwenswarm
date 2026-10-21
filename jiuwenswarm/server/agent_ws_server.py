@@ -1161,10 +1161,10 @@ class AgentWebSocketServer:
         self._previous_runtime_push_handler = None
         self._runtime_services_started = False
         self._group_service = None
-        self._jm08_runtime_lock = asyncio.Lock()
-        self._jm08_fanout = None
-        self._jm08_agent_manager = None
-        self._jm09_delivery_waiters: dict[str, asyncio.Future] = {}
+        self._feishu_runtime_lock = asyncio.Lock()
+        self._feishu_group_fanout = None
+        self._feishu_agent_manager = None
+        self._result_delivery_waiters: dict[str, asyncio.Future] = {}
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
         # Optional production Provider injection point.  The concrete class is
@@ -2123,12 +2123,12 @@ class AgentWebSocketServer:
 
     async def _ensure_persistent_group_fanout(self):
         """Start JM-07 only when the owner's config contains a Feishu Agent binding."""
-        lock = getattr(self, "_jm08_runtime_lock", None)
+        lock = getattr(self, "_feishu_runtime_lock", None)
         if lock is None:
             lock = asyncio.Lock()
-            self._jm08_runtime_lock = lock
+            self._feishu_runtime_lock = lock
         async with lock:
-            fanout = getattr(self, "_jm08_fanout", None)
+            fanout = getattr(self, "_feishu_group_fanout", None)
             if fanout is not None:
                 return fanout
 
@@ -2140,8 +2140,8 @@ class AgentWebSocketServer:
             if not configured_feishu_bindings():
                 return None
             fanout, manager = create_default_persistent_group_fanout(
-                send_delivery=self._send_jm09_delivery,
-                verify_membership=self._inspect_jm11_group,
+                send_delivery=self._send_result_delivery,
+                verify_membership=self._inspect_feishu_group,
             )
             try:
                 await manager.start()
@@ -2155,31 +2155,31 @@ class AgentWebSocketServer:
             except BaseException:
                 await manager.aclose()
                 raise
-            self._jm08_fanout = fanout
-            self._jm08_agent_manager = manager
+            self._feishu_group_fanout = fanout
+            self._feishu_agent_manager = manager
             logger.info("[AgentWebSocketServer] JM-08 Feishu fanout started")
             return fanout
 
     async def _close_persistent_group_fanout(self) -> None:
         """Close the JM-08 scheduler and JM-09 result delivery service during shutdown."""
-        lock = getattr(self, "_jm08_runtime_lock", None)
+        lock = getattr(self, "_feishu_runtime_lock", None)
         if lock is None:
             return
         async with lock:
-            manager = getattr(self, "_jm08_agent_manager", None)
-            self._jm08_agent_manager = None
-            self._jm08_fanout = None
+            manager = getattr(self, "_feishu_agent_manager", None)
+            self._feishu_agent_manager = None
+            self._feishu_group_fanout = None
             if manager is not None:
                 await manager.aclose()
 
-    async def _inspect_jm11_group(self, app_id: str, chat_id: str, message_ids: tuple[str, ...] = ()) -> dict[str, object]:
+    async def _inspect_feishu_group(self, app_id: str, chat_id: str, message_ids: tuple[str, ...] = ()) -> dict[str, object]:
         """Ask the owning Gateway to verify current membership; never authorize from history alone."""
         from uuid import uuid4
 
         query_id = uuid4().hex
-        waiters = getattr(self, "_jm11_group_waiters", None)
+        waiters = getattr(self, "_feishu_group_waiters", None)
         if waiters is None:
-            waiters = self._jm11_group_waiters = {}
+            waiters = self._feishu_group_waiters = {}
         future = asyncio.get_running_loop().create_future()
         waiters[query_id] = (future, app_id, chat_id, bool(message_ids))
         try:
@@ -2195,9 +2195,9 @@ class AgentWebSocketServer:
         finally:
             waiters.pop(query_id, None)
 
-    async def _handle_jm11_group_response(self, ws, request, send_lock) -> None:
+    async def _handle_feishu_group_response(self, ws, request, send_lock) -> None:
         params = request.params if isinstance(request.params, dict) else {}
-        pending = getattr(self, "_jm11_group_waiters", {}).get(params.get("query_id"))
+        pending = getattr(self, "_feishu_group_waiters", {}).get(params.get("query_id"))
         ok = bool(pending and (pending[1], pending[2]) == (params.get("app_id"), params.get("chat_id"))
                   and params.get("status") in ({"ok", "unknown"} if pending[3] else {"active", "left", "unknown"}))
         if ok and not pending[0].done():
@@ -2207,12 +2207,12 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
 
-    async def _send_jm09_delivery(self, job: dict[str, object]) -> dict[str, object]:
+    async def _send_result_delivery(self, job: dict[str, object]) -> dict[str, object]:
         """Push one durable Feishu result to Gateway and await its platform receipt."""
         delivery_id = job.get("delivery_id")
         if not isinstance(delivery_id, str) or not delivery_id.strip():
             return {"outcome": "failed", "error_code": "DELIVERY_ID_MISSING"}
-        if delivery_id in self._jm09_delivery_waiters:
+        if delivery_id in self._result_delivery_waiters:
             return {
                 "delivery_id": delivery_id,
                 "stage": "send",
@@ -2221,7 +2221,7 @@ class AgentWebSocketServer:
             }
 
         waiter = asyncio.get_running_loop().create_future()
-        self._jm09_delivery_waiters[delivery_id] = waiter
+        self._result_delivery_waiters[delivery_id] = waiter
         push = {
             "request_id": f"jm09_{delivery_id}",
             "channel_id": "feishu",
@@ -2263,17 +2263,17 @@ class AgentWebSocketServer:
                     "error_code": "ACK_TIMEOUT",
                 }
         finally:
-            if self._jm09_delivery_waiters.get(delivery_id) is waiter:
-                self._jm09_delivery_waiters.pop(delivery_id, None)
+            if self._result_delivery_waiters.get(delivery_id) is waiter:
+                self._result_delivery_waiters.pop(delivery_id, None)
 
-    async def _handle_jm09_delivery_ack(
+    async def _handle_result_delivery_ack(
         self,
         ws: Any,
         request: AgentRequest,
         send_lock: asyncio.Lock,
     ) -> None:
         """Persist the Gateway receipt before resolving the in-flight sender."""
-        manager = getattr(self, "_jm08_agent_manager", None)
+        manager = getattr(self, "_feishu_agent_manager", None)
         delivery_service = getattr(manager, "result_delivery_service", None)
         params = request.params if isinstance(request.params, dict) else {}
         response_payload: dict[str, Any]
@@ -2285,7 +2285,7 @@ class AgentWebSocketServer:
                 row = await delivery_service.apply_ack(params)
                 response_payload = {"status": row.get("status"), "delivery_id": params.get("delivery_id")}
                 delivery_id = params.get("delivery_id")
-                waiter = self._jm09_delivery_waiters.get(delivery_id) if isinstance(delivery_id, str) else None
+                waiter = self._result_delivery_waiters.get(delivery_id) if isinstance(delivery_id, str) else None
                 if waiter is not None and not waiter.done():
                     waiter.set_result(dict(params))
             except Exception as exc:
@@ -2614,7 +2614,7 @@ class AgentWebSocketServer:
         )
         await self.dispatch_parsed_request(ws, request, send_lock)
 
-    async def _handle_jm08_feishu_inbound(
+    async def _handle_feishu_inbound(
         self,
         ws: Any,
         request: AgentRequest,
@@ -2662,7 +2662,7 @@ class AgentWebSocketServer:
             agent_id = params.get("agent_id")
             payload = {"status": "unavailable"}
             if isinstance(agent_id, str) and agent_id.strip() and set(params) == {"agent_id"}:
-                manager = getattr(self, "_jm08_agent_manager", None)
+                manager = getattr(self, "_feishu_agent_manager", None)
                 if manager is not None:
                     payload = manager.schedule_feishu_cli("local", agent_id)
                 else:
@@ -2673,13 +2673,13 @@ class AgentWebSocketServer:
                 await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
             return
         if request.req_method == ReqMethod.JIUWENMATE_GROUP_RESPONSE:
-            await self._handle_jm11_group_response(ws, request, send_lock)
+            await self._handle_feishu_group_response(ws, request, send_lock)
             return
         if request.req_method == ReqMethod.JIUWENMATE_DELIVERY_ACK:
-            await self._handle_jm09_delivery_ack(ws, request, send_lock)
+            await self._handle_result_delivery_ack(ws, request, send_lock)
             return
         if request.req_method == ReqMethod.JIUWENMATE_FEISHU_INBOUND:
-            await self._handle_jm08_feishu_inbound(ws, request, send_lock)
+            await self._handle_feishu_inbound(ws, request, send_lock)
             return
         if request.req_method == ReqMethod.CHAT_SEND:
             server_logger.info(

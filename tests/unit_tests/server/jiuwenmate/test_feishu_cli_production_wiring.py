@@ -47,7 +47,7 @@ async def test_saved_binding_automatically_prepares_agent_cli(tmp_path, monkeypa
     manager, host = make_manager(tmp_path, lambda: config_module.load_yaml_round_trip(path), setup_cli)
     initial = host.current_snapshot("local", "agent-a")
     server = object.__new__(_agent_websocket_server_type())
-    server._jm08_agent_manager = manager
+    server._feishu_agent_manager = manager
     responses = []
 
     async def send_wire(_ws, payload):

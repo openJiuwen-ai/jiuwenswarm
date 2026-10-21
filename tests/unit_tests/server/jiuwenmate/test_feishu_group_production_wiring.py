@@ -30,38 +30,38 @@ NOW = datetime(2026, 10, 14, 9, 0, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio
-async def test_jm11_gateway_membership_lookup_uses_exact_bound_app():
+async def test_group_gateway_membership_lookup_uses_exact_bound_app():
     handler = object.__new__(MessageHandler)
     manager = ChannelManager(handler)
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
     channel.inspect_persistent_group = AsyncMock(return_value={"status": "active", "group_name": "Project"})
     manager.register_channel(channel)
-    result = await manager.inspect_jm11_group({"app_id": "cli_bound", "chat_id": "oc_group"})
+    result = await manager.inspect_feishu_group({"app_id": "cli_bound", "chat_id": "oc_group"})
     assert result == {"status": "active", "group_name": "Project"}
-    missing = await manager.inspect_jm11_group({"app_id": "other", "chat_id": "oc_group"})
+    missing = await manager.inspect_feishu_group({"app_id": "other", "chat_id": "oc_group"})
     assert missing["status"] == "unknown"
 
 
 @pytest.mark.asyncio
-async def test_jm11_membership_push_returns_a_correlated_response():
+async def test_group_membership_push_returns_a_correlated_response():
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     handler = object.__new__(MessageHandler)
     handler.agent_client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True)))
-    handler._jm11_group_handler = AsyncMock(return_value={"status": "left"})
+    handler._feishu_group_handler = AsyncMock(return_value={"status": "left"})
     payload = {"event_type": "jiuwenmate.group.inspect", "query_id": "query-1",
                "app_id": "cli_bound", "chat_id": "oc_group"}
     await handler._handle_agent_server_push(build_server_push_wire({
         "request_id": "query-1", "channel_id": "feishu", "payload": payload,
     }))
-    await asyncio.gather(*handler._jm11_inspect_tasks)
+    await asyncio.gather(*handler._feishu_group_inspect_tasks)
     envelope = handler.agent_client.send_request.await_args.args[0]
     assert envelope.method == "jiuwenmate.group.response"
     assert envelope.params["query_id"] == "query-1" and envelope.params["status"] == "left"
 
 
 @pytest.mark.asyncio
-async def test_jm11_inspect_returns_the_push_lock_before_feishu_responds():
+async def test_group_inspect_returns_the_push_lock_before_feishu_responds():
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     handler = object.__new__(MessageHandler)
@@ -74,7 +74,7 @@ async def test_jm11_inspect_returns_the_push_lock_before_feishu_responds():
         return {"status": "active"}
 
     handler.agent_client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True)))
-    handler._jm11_group_handler = slow
+    handler._feishu_group_handler = slow
     payload = {"event_type": "jiuwenmate.group.inspect", "query_id": "query-slow",
                "app_id": "cli_bound", "chat_id": "oc_group"}
     push = asyncio.create_task(handler._handle_agent_server_push(build_server_push_wire({
@@ -83,12 +83,12 @@ async def test_jm11_inspect_returns_the_push_lock_before_feishu_responds():
     await asyncio.wait_for(started.wait(), timeout=1)
     await asyncio.wait_for(push, timeout=1)
     release.set()
-    await asyncio.gather(*handler._jm11_inspect_tasks)
+    await asyncio.gather(*handler._feishu_group_inspect_tasks)
     handler.agent_client.send_request.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_jm11_server_rejects_wrong_app_response_and_cleans_up_query(monkeypatch):
+async def test_group_server_rejects_wrong_app_response_and_cleans_up_query(monkeypatch):
     server = object.__new__(_agent_websocket_server_type())
     monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", AsyncMock())
 
@@ -97,18 +97,18 @@ async def test_jm11_server_rejects_wrong_app_response_and_cleans_up_query(monkey
         query_id = params["query_id"]
         response = SimpleNamespace(request_id="response", channel_id="feishu",
             params={"query_id": query_id, "app_id": "wrong", "chat_id": "oc_group", "status": "active"})
-        await server._handle_jm11_group_response(object(), response, asyncio.Lock())
-        assert not server._jm11_group_waiters[query_id][0].done()
+        await server._handle_feishu_group_response(object(), response, asyncio.Lock())
+        assert not server._feishu_group_waiters[query_id][0].done()
         response.params["app_id"] = "cli_bound"
-        await server._handle_jm11_group_response(object(), response, asyncio.Lock())
+        await server._handle_feishu_group_response(object(), response, asyncio.Lock())
         return True
 
     server.send_push = push
-    assert (await server._inspect_jm11_group("cli_bound", "oc_group"))["status"] == "active"
-    assert server._jm11_group_waiters == {}
+    assert (await server._inspect_feishu_group("cli_bound", "oc_group"))["status"] == "active"
+    assert server._feishu_group_waiters == {}
     server.send_push = AsyncMock(return_value=False)
-    assert (await server._inspect_jm11_group("cli_bound", "oc_group"))["status"] == "unknown"
-    assert server._jm11_group_waiters == {}
+    assert (await server._inspect_feishu_group("cli_bound", "oc_group"))["status"] == "unknown"
+    assert server._feishu_group_waiters == {}
 
 
 @pytest.mark.asyncio
@@ -116,7 +116,7 @@ async def test_jm11_server_rejects_wrong_app_response_and_cleans_up_query(monkey
     ((), "active", "active"), (("m1",), "ok", "ok"),
     ((), "ok", "unknown"), (("m1",), "active", "unknown"),
 ])
-async def test_jm11_query_crosses_gateway_forwarding_and_returns_to_server(
+async def test_group_query_crosses_gateway_forwarding_and_returns_to_server(
     monkeypatch, message_ids, channel_status, expected,
 ):
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
@@ -129,11 +129,11 @@ async def test_jm11_query_crosses_gateway_forwarding_and_returns_to_server(
     messages = {"m1": {"status": "normal", "text": "current"}}
     channel.inspect_persistent_group = AsyncMock(return_value={"status": channel_status, "messages": messages})
     manager.register_channel(channel)
-    handler._jm11_group_handler = manager.inspect_jm11_group
+    handler._feishu_group_handler = manager.inspect_feishu_group
 
     async def respond(envelope):
         request = SimpleNamespace(request_id=envelope.request_id, channel_id="feishu", params=envelope.params)
-        await server._handle_jm11_group_response(object(), request, asyncio.Lock())
+        await server._handle_feishu_group_response(object(), request, asyncio.Lock())
 
     async def push(message):
         await handler._handle_agent_server_push(build_server_push_wire(message))
@@ -141,15 +141,15 @@ async def test_jm11_query_crosses_gateway_forwarding_and_returns_to_server(
 
     handler.agent_client = SimpleNamespace(send_request=respond)
     server.send_push = push
-    result = await server._inspect_jm11_group("cli_bound", "oc_group", message_ids)
+    result = await server._inspect_feishu_group("cli_bound", "oc_group", message_ids)
     assert result["status"] == expected
     if expected == "ok":
         assert result["messages"] == messages
-    assert server._jm11_group_waiters == {}
+    assert server._feishu_group_waiters == {}
 
 
 @pytest.mark.asyncio
-async def test_jm11_channel_checks_live_bot_membership_and_fails_closed():
+async def test_group_channel_checks_live_bot_membership_and_fails_closed():
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
     response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(is_in_chat=False))
     channel._api_client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(chat_members=SimpleNamespace(
@@ -165,7 +165,7 @@ async def test_jm11_channel_checks_live_bot_membership_and_fails_closed():
 @pytest.mark.parametrize("message_ids,valid_status,wrong_status", [
     ((), "active", "ok"), (("m1",), "ok", "active"),
 ])
-async def test_jm11_response_must_match_query_kind(monkeypatch, message_ids, valid_status, wrong_status):
+async def test_group_response_must_match_query_kind(monkeypatch, message_ids, valid_status, wrong_status):
     server = object.__new__(_agent_websocket_server_type())
     monkeypatch.setattr("jiuwenswarm.server.agent_ws_server.send_wire_payload", AsyncMock())
 
@@ -175,19 +175,19 @@ async def test_jm11_response_must_match_query_kind(monkeypatch, message_ids, val
             "query_id": payload["query_id"], "app_id": "cli_bound", "chat_id": "oc_group",
             "status": wrong_status, "messages": {},
         })
-        await server._handle_jm11_group_response(object(), response, asyncio.Lock())
-        assert not server._jm11_group_waiters[payload["query_id"]][0].done()
+        await server._handle_feishu_group_response(object(), response, asyncio.Lock())
+        assert not server._feishu_group_waiters[payload["query_id"]][0].done()
         response.params["status"] = valid_status
-        await server._handle_jm11_group_response(object(), response, asyncio.Lock())
+        await server._handle_feishu_group_response(object(), response, asyncio.Lock())
         return True
 
     server.send_push = push
-    assert (await server._inspect_jm11_group("cli_bound", "oc_group", message_ids))["status"] == valid_status
-    assert server._jm11_group_waiters == {}
+    assert (await server._inspect_feishu_group("cli_bound", "oc_group", message_ids))["status"] == valid_status
+    assert server._feishu_group_waiters == {}
 
 
 @pytest.mark.asyncio
-async def test_jm11_caches_group_name_but_not_membership(monkeypatch):
+async def test_group_caches_group_name_but_not_membership(monkeypatch):
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
     now = [0.0]
     monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect.time.monotonic",
@@ -211,7 +211,7 @@ async def test_jm11_caches_group_name_but_not_membership(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_jm11_gateway_refreshes_edited_and_recalled_bodies_in_the_target_group():
+async def test_group_gateway_refreshes_edited_and_recalled_bodies_in_the_target_group():
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
     membership = SimpleNamespace(success=lambda: True, data=SimpleNamespace(is_in_chat=True))
     edited = SimpleNamespace(message_id="m1", chat_id="oc_group", deleted=False, updated=True,
@@ -236,7 +236,7 @@ async def test_jm11_gateway_refreshes_edited_and_recalled_bodies_in_the_target_g
 
 
 @pytest.mark.asyncio
-async def test_jm11_message_read_failure_stays_unknown_instead_of_unreadable():
+async def test_group_message_read_failure_stays_unknown_instead_of_unreadable():
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
 
     async def read(_request):
@@ -251,7 +251,7 @@ async def test_jm11_message_read_failure_stays_unknown_instead_of_unreadable():
 
 
 @pytest.mark.asyncio
-async def test_jm11_platform_lifecycle_event_enters_only_the_bound_persistent_route():
+async def test_group_platform_lifecycle_event_enters_only_the_bound_persistent_route():
     channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound", agent_id="mate_1"), MagicMock())
     events = []
 
@@ -373,7 +373,7 @@ def test_feishu_direct_message_gets_only_the_selected_knowledge_read_scope():
 
 
 @pytest.mark.asyncio
-async def test_default_jm08_runtime_uses_one_owner_sqlite_store_and_closes_manager(tmp_path):
+async def test_default_feishu_runtime_uses_one_owner_sqlite_store_and_closes_manager(tmp_path):
     _fanout, manager = create_default_persistent_group_fanout(tmp_path / "jiuwenmate")
 
     await manager.start()
@@ -460,7 +460,7 @@ async def test_inconclusive_membership_keeps_an_active_binding_until_feishu_says
 
 
 @pytest.mark.asyncio
-async def test_default_jm08_manager_owns_jm09_delivery_worker_when_configured(tmp_path):
+async def test_default_feishu_manager_owns_result_delivery_worker_when_configured(tmp_path):
     async def send_delivery(_job):
         return None
 
@@ -512,7 +512,7 @@ async def test_unbound_feishu_event_does_not_make_an_e2a_request():
 
 
 @pytest.mark.asyncio
-async def test_agent_server_dispatches_jm08_request_without_entering_personal_chat_path(monkeypatch):
+async def test_agent_server_dispatches_feishu_request_without_entering_personal_chat_path(monkeypatch):
     AgentWebSocketServer = _agent_websocket_server_type()
 
     server = object.__new__(AgentWebSocketServer)
@@ -554,9 +554,9 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     monkeypatch.setattr(module, "create_default_persistent_group_fanout", factory)
 
     server = object.__new__(AgentWebSocketServer)
-    server._jm08_runtime_lock = asyncio.Lock()
-    server._jm08_fanout = None
-    server._jm08_agent_manager = None
+    server._feishu_runtime_lock = asyncio.Lock()
+    server._feishu_group_fanout = None
+    server._feishu_agent_manager = None
 
     assert await server._ensure_persistent_group_fanout() is None
     factory.assert_not_called()
@@ -570,22 +570,22 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     manager.recover.assert_awaited_once_with(
         "local", channels=frozenset({"feishu"}), include_unrouted=False,
     )
-    assert factory.call_args.kwargs["send_delivery"] == server._send_jm09_delivery
+    assert factory.call_args.kwargs["send_delivery"] == server._send_result_delivery
 
     await server._close_persistent_group_fanout()
     manager.aclose.assert_awaited_once()
-    assert server._jm08_fanout is None
+    assert server._feishu_group_fanout is None
 
 
 @pytest.mark.asyncio
-async def test_agent_server_routes_jm09_delivery_ack_to_persistent_manager(monkeypatch):
+async def test_agent_server_routes_result_delivery_ack_to_persistent_manager(monkeypatch):
     AgentWebSocketServer = _agent_websocket_server_type()
     server = object.__new__(AgentWebSocketServer)
     delivery_service = MagicMock()
     delivery_service.apply_ack = AsyncMock(return_value={"status": "delivered"})
-    server._jm08_agent_manager = SimpleNamespace(result_delivery_service=delivery_service)
+    server._feishu_agent_manager = SimpleNamespace(result_delivery_service=delivery_service)
     waiter = asyncio.get_running_loop().create_future()
-    server._jm09_delivery_waiters = {"del_1": waiter}
+    server._result_delivery_waiters = {"del_1": waiter}
     request = AgentRequest(
         request_id="ack-1",
         channel_id="feishu",
@@ -616,12 +616,12 @@ async def test_agent_server_routes_jm09_delivery_ack_to_persistent_manager(monke
 async def test_agent_server_delivery_push_waits_for_correlated_gateway_ack():
     AgentWebSocketServer = _agent_websocket_server_type()
     server = object.__new__(AgentWebSocketServer)
-    server._jm09_delivery_waiters = {}
+    server._result_delivery_waiters = {}
     sent = []
 
     async def send_push(message):
         sent.append(message)
-        waiter = server._jm09_delivery_waiters["del_1"]
+        waiter = server._result_delivery_waiters["del_1"]
         waiter.set_result(
             {
                 "delivery_id": "del_1",
@@ -633,7 +633,7 @@ async def test_agent_server_delivery_push_waits_for_correlated_gateway_ack():
         return True
 
     server.send_push = send_push
-    result = await server._send_jm09_delivery(
+    result = await server._send_result_delivery(
         {
             "delivery_id": "del_1",
             "app_id": "cli_bound",
@@ -649,20 +649,20 @@ async def test_agent_server_delivery_push_waits_for_correlated_gateway_ack():
     assert result["external_message_id"] == "om_sent"
     assert sent[0]["payload"]["event_type"] == "jiuwenmate.delivery.send"
     assert sent[0]["payload"]["app_id"] == "cli_bound"
-    assert server._jm09_delivery_waiters == {}
+    assert server._result_delivery_waiters == {}
 
 
 @pytest.mark.asyncio
 async def test_agent_server_delivery_push_forwards_handoff_targets():
     AgentWebSocketServer = _agent_websocket_server_type()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
-    server._jm09_delivery_waiters = {}
+    server._result_delivery_waiters = {}
     sent = []
     mentions = [{"agent_id": "agent-target", "name": "agent学习小助手", "app_ids": ["cli_target"]}]
 
     async def send_push(message):
         sent.append(message)
-        waiter = server._jm09_delivery_waiters["del_1"]
+        waiter = server._result_delivery_waiters["del_1"]
         waiter.set_result(
             {
                 "delivery_id": "del_1",
@@ -674,7 +674,7 @@ async def test_agent_server_delivery_push_forwards_handoff_targets():
         return True
 
     server.send_push = send_push
-    await server._send_jm09_delivery(
+    await server._send_result_delivery(
         {
             "delivery_id": "del_1",
             "app_id": "cli_bound",
@@ -690,14 +690,14 @@ async def test_agent_server_delivery_push_forwards_handoff_targets():
 
 
 @pytest.mark.asyncio
-async def test_gateway_consumes_jm09_push_and_returns_correlated_e2a_ack():
+async def test_gateway_consumes_result_push_and_returns_correlated_e2a_ack():
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     client = MagicMock()
     client.send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload={}))
     handler = object.__new__(MessageHandler)
     handler.agent_client = client
-    handler._jm09_delivery_handler = AsyncMock(
+    handler._result_delivery_handler = AsyncMock(
         return_value={"outcome": "delivered", "external_message_id": "om_sent"}
     )
     payload = {
@@ -715,7 +715,7 @@ async def test_gateway_consumes_jm09_push_and_returns_correlated_e2a_ack():
         build_server_push_wire({"request_id": "jm09_del_1", "channel_id": "feishu", "payload": payload})
     )
 
-    handler._jm09_delivery_handler.assert_awaited_once_with(payload)
+    handler._result_delivery_handler.assert_awaited_once_with(payload)
     client.send_request.assert_awaited_once()
     envelope = client.send_request.await_args.args[0]
     assert envelope.method == ReqMethod.JIUWENMATE_DELIVERY_ACK.value
@@ -729,7 +729,7 @@ async def test_gateway_consumes_jm09_push_and_returns_correlated_e2a_ack():
 
 
 @pytest.mark.asyncio
-async def test_channel_manager_routes_jm09_delivery_only_to_exact_feishu_app():
+async def test_channel_manager_routes_result_delivery_only_to_exact_feishu_app():
     handler = object.__new__(MessageHandler)
     manager = ChannelManager(handler)
     wrong_app = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_other"), MagicMock())
@@ -741,7 +741,7 @@ async def test_channel_manager_routes_jm09_delivery_only_to_exact_feishu_app():
     manager.register_channel(wrong_app)
     manager.register_channel(right_app)
 
-    result = await manager.deliver_jm09_persistent_result(
+    result = await manager.deliver_persistent_result(
         {
             "app_id": "cli_bound",
             "chat_id": "oc_group",
@@ -776,7 +776,7 @@ async def test_channel_manager_maps_handoff_target_to_its_native_bot_identity():
     manager.register_channel(sender)
     manager.register_channel(target)
 
-    await manager.deliver_jm09_persistent_result(
+    await manager.deliver_persistent_result(
         {
             "app_id": "cli_sender",
             "chat_id": "oc_group",
@@ -818,7 +818,7 @@ async def test_channel_manager_loads_bot_open_id_before_rendering_a_native_menti
     manager.register_channel(sender)
     manager.register_channel(target)
 
-    await manager.deliver_jm09_persistent_result(
+    await manager.deliver_persistent_result(
         {
             "app_id": "cli_sender",
             "chat_id": "oc_group",
@@ -860,7 +860,7 @@ async def test_channel_manager_keeps_the_handoff_when_bot_identity_cannot_be_loa
     manager.register_channel(sender)
     manager.register_channel(target)
 
-    result = await manager.deliver_jm09_persistent_result(
+    result = await manager.deliver_persistent_result(
         {
             "app_id": "cli_sender",
             "chat_id": "oc_group",
@@ -884,7 +884,7 @@ async def test_channel_manager_sends_direct_message_without_quoting_source():
     channel.send_persistent_result = AsyncMock(return_value={"outcome": "delivered"})
     manager.register_channel(channel)
 
-    await manager.deliver_jm09_persistent_result(
+    await manager.deliver_persistent_result(
         {
             "app_id": "cli_bound",
             "chat_id": "oc_dm",
@@ -908,7 +908,7 @@ async def test_channel_manager_keeps_delivery_pending_while_bound_app_is_disconn
     handler = object.__new__(MessageHandler)
     manager = ChannelManager(handler)
 
-    result = await manager.deliver_jm09_persistent_result(
+    result = await manager.deliver_persistent_result(
         {
             "app_id": "cli_bound",
             "chat_id": "oc_group",
@@ -929,7 +929,7 @@ async def test_gateway_reports_pending_when_no_delivery_handler_is_available():
     client.send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload={}))
     handler = object.__new__(MessageHandler)
     handler.agent_client = client
-    handler._jm09_delivery_handler = None
+    handler._result_delivery_handler = None
 
     await handler._handle_agent_server_push(
         build_server_push_wire(

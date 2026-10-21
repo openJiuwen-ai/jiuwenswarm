@@ -58,12 +58,12 @@ class ChannelManager(ABC):
         on_config_updated: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._message_handler = message_handler
-        set_delivery_handler = getattr(message_handler, "set_jm09_delivery_handler", None)
+        set_delivery_handler = getattr(message_handler, "set_result_delivery_handler", None)
         if callable(set_delivery_handler):
-            set_delivery_handler(self.deliver_jm09_persistent_result)
-        set_group_handler = getattr(message_handler, "set_jm11_group_handler", None)
+            set_delivery_handler(self.deliver_persistent_result)
+        set_group_handler = getattr(message_handler, "set_feishu_group_handler", None)
         if callable(set_group_handler):
-            set_group_handler(self.inspect_jm11_group)
+            set_group_handler(self.inspect_feishu_group)
         self._channels: dict[ChannelKey, "BaseChannel"] = {}
         self._dispatch_task: asyncio.Task | None = None
         self._running = False
@@ -83,7 +83,7 @@ class ChannelManager(ABC):
         # Channel 连接事件订阅回调列表
         self._channel_event_callbacks: list[Callable[[ChannelEvent], Awaitable[None]]] = []
 
-    async def inspect_jm11_group(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def inspect_feishu_group(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Read current membership only through the exact connected, bound Feishu application."""
         app_id, chat_id = payload.get("app_id"), payload.get("chat_id")
         if not all(isinstance(value, str) and value.strip() for value in (app_id, chat_id)):
@@ -103,7 +103,7 @@ class ChannelManager(ABC):
         except Exception:
             return {"status": "unknown"}
 
-    async def deliver_jm09_persistent_result(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def deliver_persistent_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Resolve exactly one active Feishu app; never fall back to another Bot.
 
         A file delivery names the retained copy by its key under the JiuwenMate data
@@ -121,7 +121,7 @@ class ChannelManager(ABC):
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
         file_args: dict[str, Any] = {}
         if isinstance(file, dict):
-            path = self._jm09_output_file(file)
+            path = self._persistent_output_file(file)
             if path is None:
                 return {"outcome": "failed", "error_code": "OUTPUT_FILE_MISSING"}
             file_args = {"file_path": str(path), "file_key": file.get("file_key") or None}
@@ -138,7 +138,7 @@ class ChannelManager(ABC):
             return {"outcome": "failed", "error_code": "FEISHU_APP_AMBIGUOUS"}
 
         try:
-            mention_targets = await self._jm09_mention_targets(payload.get("mention_targets"), matches[0])
+            mention_targets = await self._feishu_mention_targets(payload.get("mention_targets"), matches[0])
             send_kwargs: dict[str, Any] = {
                 "chat_id": chat_id,
                 "text": text,
@@ -159,7 +159,7 @@ class ChannelManager(ABC):
             )
             return {"outcome": "unknown", "error_code": "FEISHU_SEND_ERROR"}
 
-    async def _jm09_mention_targets(self, value: Any, sender_channel: Any) -> list[dict[str, Any]]:
+    async def _feishu_mention_targets(self, value: Any, sender_channel: Any) -> list[dict[str, Any]]:
         """Map validated employee IDs to one connected Bot identity without guessing."""
         if not isinstance(value, list):
             return []
@@ -186,13 +186,13 @@ class ChannelManager(ABC):
             ]
             target: dict[str, Any] = {"agent_id": agent_id, "name": name, "app_ids": sorted(allowed_app_ids)}
             if len(candidates) == 1:
-                open_id = await self._jm09_bot_open_id(candidates[0][1])
+                open_id = await self._feishu_bot_open_id(candidates[0][1])
                 if open_id:
                     target["open_id"] = open_id
             targets.append(target)
         return targets
 
-    async def _jm09_bot_open_id(self, channel: Any) -> str:
+    async def _feishu_bot_open_id(self, channel: Any) -> str:
         """Use the connected Bot identity, loading it from Feishu when this process has not stored one."""
         open_id = self._stored_bot_open_id(channel)
         if open_id:
@@ -217,7 +217,7 @@ class ChannelManager(ABC):
         return open_id.strip() if isinstance(open_id, str) else ""
 
     @staticmethod
-    def _jm09_output_file(file: dict[str, Any]) -> Path | None:
+    def _persistent_output_file(file: dict[str, Any]) -> Path | None:
         """The retained copy a delivery names, only when its size is the one handed off."""
         from jiuwenswarm.server.jiuwenmate.output_files import OUTPUTS_DIR, resolve_output_file
         from jiuwenswarm.server.jiuwenmate.service import default_data_dir
