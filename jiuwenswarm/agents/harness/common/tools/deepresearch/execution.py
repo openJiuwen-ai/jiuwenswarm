@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 import json
 import logging
 import re
 import time
 import uuid
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Mapping
 
 from openjiuwen.core.foundation.tool import tool
@@ -26,6 +27,9 @@ from jiuwenswarm.perf.context import DeepResearchReportType
 
 from .stream_router import _format_outline_card_markdown, stage_for_resume_node
 from .tools import (
+    MODEL_RESEARCH_FALLBACK_ERRORS,
+    MODEL_RESEARCH_FALLBACK_HINT,
+    build_model_research_fallback,
     _call_deepresearch_stream_impl,
     _deepresearch_stage_hint_ctx,
     _get_cached_outline_json,
@@ -40,8 +44,9 @@ logger = logging.getLogger(__name__)
 
 EXECUTION_SCHEMA = "openjiuwen.deepresearch.execute.v1"
 _STATE_SCHEMA_VERSION = 1
+MODEL_RESEARCH_HANDOFF_ERRORS = MODEL_RESEARCH_FALLBACK_ERRORS | {"materials_preparation_failed"}
 _IN_FLIGHT_PHASES = frozenset(
-    {"starting", "resuming_feedback", "resuming_outline", "resuming_stopped"}
+    {"preparing_materials", "starting", "resuming_feedback", "resuming_outline", "resuming_stopped"}
 )
 _QUESTION_NUMBER_PREFIX = re.compile(r"^\s*\d+[.、)]\s*")
 _OUTLINE_SECTION = re.compile(r"^\s*###\s+P\d+\s*:\s*(.+?)\s*$", re.MULTILINE)
@@ -67,6 +72,8 @@ class DeepResearchExecutionContext:
     save_state: Callable[[dict[str, Any]], None]
     request_id: str = ""
     requested_report_type: DeepResearchReportType | None = None
+    materials_context: dict[str, Any] | None = None
+    load_state: Callable[[], dict[str, Any] | None] | None = None
 
 
 _execution_context: ContextVar[DeepResearchExecutionContext | None] = ContextVar(
@@ -84,6 +91,8 @@ def bind_deepresearch_execution_context(
     agent_id: str = "jiuwenswarm",
     request_id: str = "",
     requested_report_type: DeepResearchReportType | None = None,
+    materials_context: dict[str, Any] | None = None,
+    load_state: Callable[[], dict[str, Any] | None] | None = None,
 ) -> Token:
     """Bind state and resume input for one outer tool execution."""
     return _execution_context.set(
@@ -96,6 +105,8 @@ def bind_deepresearch_execution_context(
             save_state=save_state,
             request_id=request_id.strip(),
             requested_report_type=requested_report_type,
+            materials_context=materials_context,
+            load_state=load_state,
         )
     )
 
@@ -525,6 +536,8 @@ async def _call_sdk(
     **kwargs: Any,
 ) -> str:
     """Measure one low-level SDK window without logging business content."""
+    if kwargs.get("_materials_reference") is None:
+        kwargs.pop("_materials_reference", None)
     started = time.monotonic()
     outcome_status = "exception"
     try:
@@ -740,6 +753,24 @@ def _outline_feedback(user_input: Any) -> tuple[str, str]:
     return "", interaction_result
 
 
+def _model_research_fallback_result(state: dict[str, Any]) -> dict[str, Any]:
+    """Return an unavailable-engine result for the main model, not a report."""
+    query = str(state.get("original_query") or state.get("query") or "")
+    content = MODEL_RESEARCH_FALLBACK_HINT
+    if state.get("error_code") == "materials_preparation_failed":
+        content = "本次材料准备失败，交由模型研究继续处理。" + content + (
+            "不得绕过已有文件权限或网络限制；使用正常授权工具处理可读取的材料，"
+            "不可用的核心材料不得声称已读取。保留原始研究目标，必要时请求用户补充材料，"
+            "并在报告中客观说明证据缺口，不编造材料内容。"
+        )
+    return _result(
+        "error", state,
+        error_code=str(state.get("error_code") or ""),
+        fallback=build_model_research_fallback(query, str(state.get("file_name") or "")),
+        content=content,
+    )
+
+
 def _terminal_error(
     context: DeepResearchExecutionContext,
     state: dict[str, Any],
@@ -937,6 +968,11 @@ async def _handle_outcome(
         return _stopped_result(context, state, conversation_id)
     error_code = str(outcome.get("error_code") or "deepresearch_failed")
     error = str(outcome.get("error") or "DeepResearch 执行失败。")
+    if action == "start" and status == "error" and error_code in MODEL_RESEARCH_FALLBACK_ERRORS:
+        state = _persist(
+            context, state, "error", error_code=error_code, model_research_fallback=True,
+        )
+        return _model_research_fallback_result(state)
     diagnostics: dict[str, Any] = {}
     returncode = outcome.get("returncode")
     if isinstance(returncode, int) and not isinstance(returncode, bool):
@@ -973,6 +1009,7 @@ async def _resume_stopped_conversation(
         outcome = await _call_sdk(
             context,
             action="resume",
+            _materials_reference=state.get("materials_reference"),
             conversation_id=claimed_cid,
             node="stopped",
             file_name=str(state.get("file_name") or ""),
@@ -1024,7 +1061,7 @@ def _query_matches_stopped_claim(query: str, state: Mapping[str, Any]) -> bool:
     incoming = str(query or "").strip()
     if not incoming:
         return True
-    original = str(state.get("query") or "").strip()
+    original = str(state.get("original_query") or state.get("query") or "").strip()
     if not original:
         return True
     return incoming == original
@@ -1067,8 +1104,13 @@ async def _run_sdk_step(
     if node:
         sdk_kwargs = dict(sdk_kwargs)
         sdk_kwargs["node"] = node
+    if state.get("materials_reference") is not None:
+        sdk_kwargs["_materials_reference"] = state["materials_reference"]
     outcome = await _call_sdk(context, action=action, **sdk_kwargs)
     return await _handle_outcome(context, state, outcome, action=action, node=node)
+
+
+_material_execution_locks = weakref.WeakValueDictionary()
 
 
 @tool(
@@ -1096,6 +1138,27 @@ async def deepresearch_execute(
     query: str,
     file_name: str = "",
     report_type: DeepResearchReportType | None = None,
+    conversation_id: str = "",
+) -> dict[str, Any]:
+    context = _execution_context.get()
+    if context is None or not (context.materials_context or (context.state or {}).get("materials_prepared")):
+        return await _execute_workflow(query, file_name, report_type, conversation_id)
+    key = (str((context.materials_context or {}).get("scope") or ""), context.tool_call_id)
+    lock = _material_execution_locks.setdefault(key, asyncio.Lock())
+    if lock.locked():
+        latest = context.load_state() if context.load_state else context.state
+        return _result("in_progress", dict(latest or {}), error_code="execution_uncertain")
+    async with lock:
+        latest = context.load_state() if context.load_state else context.state
+        token = _execution_context.set(replace(context, state=latest))
+        try:
+            return await _execute_workflow(query, file_name, report_type, conversation_id)
+        finally:
+            _execution_context.reset(token)
+
+
+async def _execute_workflow(
+    query: str, file_name: str = "", report_type: DeepResearchReportType | None = None,
     conversation_id: str = "",
 ) -> dict[str, Any]:
     """Run the interactive workflow without Main Agent resume choreography."""
@@ -1177,6 +1240,9 @@ async def deepresearch_execute(
     if phase in {"completed", "cancelled"}:
         return _result(phase, state, content="DeepResearch 任务已经结束。")
     if phase == "error":
+        if (state.get("model_research_fallback") is True
+                and state.get("error_code") in MODEL_RESEARCH_HANDOFF_ERRORS):
+            return _model_research_fallback_result(state)
         # 修复点3.2：error 相位 claim-or-fresh。3.1 修复前取消转译的
         # stopped 写入（phase=new）会被同一 revision 上的 error 覆盖写
         # 吞掉，error 相位下可能实际存有可恢复的停止快照。带
@@ -1443,6 +1509,7 @@ async def deepresearch_execute(
                             state, salvage.get("html_style_status")
                         ),
                     )
+        if claimed_cid and not state.get("materials_reference"):
             # 认领失败：checkpointer.db 与内存缓存均无该会话可恢复的中断状态
             # （已完结/已清理/不存在），或旧会话为停止快照但用户已更换主题；
             # 绝不复用旧会话的 id 发起新跑，换成全新 id 从头执行。换主题时
@@ -1473,6 +1540,30 @@ async def deepresearch_execute(
             )
         else:
             state = _persist(context, state, "starting")
+        from .materials import MaterialsError, MaterialsPolicyError, MATERIALS_POLICY, prepare_materials
+        material_context = context.materials_context
+        if material_context and not state.get("materials_prepared"):
+            state = _persist(context, state, "preparing_materials",
+                             original_query=str(material_context.get("original_query") or state["query"]))
+            from .tools import _push_materials_progress
+            try:
+                await _push_materials_progress("正在准备本次研究材料。")
+                reference = await prepare_materials(material_context, str(state["conversation_id"]))
+            except asyncio.CancelledError:
+                _persist(context, state, "cancelled")
+                raise
+            except MaterialsPolicyError as exc:
+                return _terminal_error(context, state, error_code="materials_preparation_failed", content=str(exc))
+            except (MaterialsError, OSError, ValueError):
+                state = _persist(context, state, "error", error_code="materials_preparation_failed",
+                                 model_research_fallback=True)
+                return _model_research_fallback_result(state)
+            original_query = str(material_context.get("original_query") or state["query"])
+            sdk_query = original_query
+            if reference and any(r["status"] == "ready" for r in reference["results"]):
+                sdk_query = MATERIALS_POLICY + "\n\n<原始研究请求>\n" + original_query + "\n</原始研究请求>"
+            state = _persist(context, state, "starting", materials_prepared=True,
+                             materials_reference=reference, original_query=original_query, query=sdk_query)
         return await _guard_user_stop(
             context,
             state,

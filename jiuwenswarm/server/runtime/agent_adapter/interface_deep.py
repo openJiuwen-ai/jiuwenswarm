@@ -9351,7 +9351,8 @@ class JiuWenSwarmDeepAdapter:
     ) -> DeepResearchExecutionRail | None:
         """Build the native HITL bridge for deepresearch_execute."""
         try:
-            rail = DeepResearchExecutionRail(model_provider=lambda: self._model)
+            rail = DeepResearchExecutionRail(model_provider=lambda: self._model,
+                                             materials_context_provider=self._get_deepresearch_material_context)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] DeepResearchExecutionRail create success"
             )
@@ -10094,6 +10095,36 @@ class JiuWenSwarmDeepAdapter:
             # disabled_tools is a security boundary. Refuse to initialize or
             # hot-reload with the blacklist silently disabled (fail closed).
             raise
+
+    def _get_deepresearch_material_context(self) -> dict[str, Any] | None:
+        # Per-session adapter snapshot survives long-lived runner Task boundaries.
+        import copy
+        context = copy.deepcopy(self._current_request_route.get("materials_context"))
+        if context is None:
+            return None
+        if not context["files"]:
+            return context
+        try:
+            permission_config = self._resolve_permission_config_for_agent(
+                session_id=str(self._current_request_route.get("session_id") or "")
+            )
+        except Exception:
+            # Unknown policy must not authorize material reads or expose config data.
+            logger.warning("[DeepResearch] Material permission configuration unavailable")
+            permission_config = {}
+        enabled = permission_config.get("enabled") if isinstance(permission_config, dict) else None
+        engine = getattr(getattr(self, "_permission_rail", None), "_engine", None)
+        from openjiuwen.harness.security.models import PermissionLevel
+        for item in context["files"]:
+            if enabled is False:
+                # A disabled permission system intentionally has no PermissionRail.
+                item["read_allowed"] = True
+            elif enabled is not True or engine is None:
+                item["read_allowed"] = False
+            else:
+                level, _ = engine.check_tool_permission_directly("read_file", {"file_path": item.get("path", "")})
+                item["read_allowed"] = level == PermissionLevel.ALLOW
+        return context
 
     def _get_deepresearch_tool_context(self) -> dict[str, str]:
         """Return the adapter-owned route that survives runner task boundaries.
@@ -18938,7 +18969,14 @@ class JiuWenSwarmDeepAdapter:
         )
         from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
 
+        from jiuwenswarm.agents.harness.common.tools.deepresearch.materials import context_from_request
+        material_context = context_from_request(
+            request.params,
+            scope="|".join(str(v or "") for v in (request.service_id, request.workspace_key, request.agent_id, session_id)),
+            output_dir=self._deepresearch_artifact_output_dir(request.params.get("project_dir")),
+        )
         self._current_request_route = {
+            "materials_context": material_context,
             "session_id": session_id,
             "request_id": request.request_id or "",
             "channel_id": request.channel_id or "",
@@ -19746,7 +19784,14 @@ class JiuWenSwarmDeepAdapter:
         )
         from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
 
+        from jiuwenswarm.agents.harness.common.tools.deepresearch.materials import context_from_request
+        material_context = context_from_request(
+            request.params,
+            scope="|".join(str(v or "") for v in (request.service_id, request.workspace_key, request.agent_id, session_id)),
+            output_dir=self._deepresearch_artifact_output_dir(request.params.get("project_dir")),
+        )
         self._current_request_route = {
+            "materials_context": material_context,
             "session_id": session_id,
             "request_id": rid or "",
             "channel_id": cid or "",

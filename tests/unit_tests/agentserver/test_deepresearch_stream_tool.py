@@ -5610,3 +5610,40 @@ def test_brief_final_pipeline_completion_is_recognized():
     )
 
     assert dt._has_completed_final_pipeline_node(state) is True
+
+
+@pytest.mark.asyncio
+async def test_material_reference_crosses_argv_without_body_or_large_config():
+    proc = _Proc([json.dumps({"__deepsearch_status__": "interrupted", "agent": "feedback_handler", "conversation_id": "C1"})])
+    reference = {"path": "/private/C1/materials.json", "sha256": "a" * 64, "conversation_id": "C1", "results": []}
+    patches = _stream_patches(proc)
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as spawn:
+        await dt._call_deepresearch_stream_impl(action="start", query="q", conversation_id="C1", _materials_reference=reference)
+    args = spawn.await_args.args
+    assert args[args.index("--materials-file") + 1] == reference["path"]
+    assert args[args.index("--materials-sha256") + 1] == reference["sha256"]
+    assert len(proc.stdin.data) < 64 * 1024
+    assert 'user_materials' not in proc.stdin.data.decode()
+    assert 'materials_file' not in str(dt.deepresearch_stream.card)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["start", "resume"])
+async def test_legacy_runner_missing_restarts_skill_only_for_new_research(action):
+    """Even the compatibility entry must direct a new task back to Skill step 1."""
+    with patch.object(dt, "resolve_python_executable", return_value=Path("/runtime/python")), patch.object(
+        dt, "_resolve_run_script", return_value=""
+    ), patch("asyncio.create_subprocess_exec", new=AsyncMock()) as spawn:
+        result = json.loads(await dt.deepresearch_stream._func(
+            action=action, query="程序员的 AI 发展方向", file_name="研究报告",
+            conversation_id="existing" if action == "resume" else "",
+        ))
+    assert result["error_code"] == "runner_missing"
+    assert result["error"] == "run_deepsearch.py not found"
+    spawn.assert_not_awaited()
+    if action == "start":
+        assert result["fallback"]["mode"] == "model_research"
+        assert result["fallback"]["restart_from"] == "明确问题与范围"
+        assert result["fallback"]["query"] == "程序员的 AI 发展方向"
+    else:
+        assert "fallback" not in result
