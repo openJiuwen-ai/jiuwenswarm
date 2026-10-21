@@ -93,3 +93,33 @@ def test_different_topic_not_blocked():
     asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
     # 不同主题：守卫不短路，正常进入 bind（tool_result 未被改写为 completed）
     assert ctx.inputs.tool_result is None or not isinstance(ctx.inputs.tool_result, dict)
+
+
+def test_short_circuit_skips_after_tool_call_side_effects():
+    """短路标记跳过 after_tool_call 副作用：避免双重 force_finish 与交付索引污染。
+
+    场景：before_tool_call 命中幂等短路后，框架仍调 after_tool_call。
+    after_tool_call 检测短路标记后 early-return（finally 仍执行，但 token 未
+    bind 故 reset 为 no-op），不应：再次 request_force_finish（破坏 ==[一条]
+    契约）、以空 query/file_name 调 _record_delivery（污染 delivery_index）。
+    """
+    real_entry = {
+        "query": "深度研究AI芯片行业",
+        "file_name": "ai_chip_report",
+        "conversation_id": "ad256fe6-...",
+        "html_style_status": "applied",
+        "delivered_at": 1791601751.0,
+    }
+    sess = _fake_session(delivery_index={"wf_1": dict(real_entry)})
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_new", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
+    rail_instance = rail.DeepResearchExecutionRail(model_provider=lambda: None)
+    asyncio.run(rail_instance.before_tool_call(ctx))
+    asyncio.run(rail_instance.after_tool_call(ctx))
+    assert len(ctx.force_finish_requests) == 1
+    idx = sess.get_state(rail.DEEPRESEARCH_DELIVERY_INDEX_KEY)
+    assert len(idx) == 1
+    assert "wf_1" in idx
+    assert idx["wf_1"]["query"] == real_entry["query"]
+    assert idx["wf_1"]["file_name"] == real_entry["file_name"]
+    assert "_deepresearch_short_circuit" not in ctx.extra

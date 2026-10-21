@@ -381,6 +381,8 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 tool_call_id,
                 str(hit.get("conversation_id") or ""),
             )
+            # 标记短路供 after_tool_call early-return，避免二次 force_finish 与空 delivery 记录
+            ctx.extra["_deepresearch_short_circuit"] = workflow_id
             return
 
         model = self._model_provider() if callable(self._model_provider) else None
@@ -406,6 +408,8 @@ class DeepResearchExecutionRail(DeepAgentRail):
         if _tool_name(ctx) != _TOOL_NAME:
             return
         try:
+            if ctx.extra.pop("_deepresearch_short_circuit", None) is not None:
+                return
             payload = _result_payload(ctx.inputs.tool_result)
             if payload is None or payload.get("schema_version") != EXECUTION_SCHEMA:
                 return
