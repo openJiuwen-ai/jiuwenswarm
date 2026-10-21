@@ -111,6 +111,7 @@
       "unsupported": "仅支持图片、视频或音频作为参考素材。"
     },
     "run": {
+      "moderationBlocked": "生成内容被模型的内容安全审核拦截。请把该节点提示词中的暴力、血腥等描写改为含蓄、象征性的画面后重新生成。",
       "controlLabel": "执行控制",
       "execute": "执行",
       "continue": "继续",

@@ -332,7 +332,7 @@ class CronController:
         model_selection = params.get("model_selection")
         if model_selection is not None:
             from jiuwenswarm.common.model_selection import ModelSelection
-            from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver
+            from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
             selection = ModelSelection.model_validate(model_selection)
             ModelSelectionResolver().resolve(selection)
             model_selection = selection.model_dump()

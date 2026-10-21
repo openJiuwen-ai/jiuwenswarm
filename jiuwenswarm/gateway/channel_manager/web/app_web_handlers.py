@@ -2080,7 +2080,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _schedule_agent_prewarm_sync(name: str) -> None:
         """Reconcile project-derived warm keys without delaying the Web RPC."""
-        from jiuwenswarm.gateway.embedded.runtime.agent_prewarm import prewarm_enabled_by_env
+        from jiuwenswarm.gateway.runtime.agent_prewarm import prewarm_enabled_by_env
 
         if not prewarm_enabled_by_env():
             return
@@ -5600,63 +5600,30 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("heartbeat.job.run_now", _hb_job_run_now)
     channel.register_method("heartbeat.job.cancel", _hb_job_cancel)
 
-    # 数字分身 — permissions.owner_scopes：仅 Web 网关直连 config（不经 E2A / config_rpc）。
+    # 数字分身 — permissions.owner_scopes：A5 起统一经目标 AgentServer 的
+    # ConfigAdapter 执行（写入后 server 侧 in-process reload）。
     # 其余 permissions.*（tools / rules / approval_overrides）走 _forward_permissions_to_agent。
 
     async def _permissions_owner_scopes_get(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client, proxy_unary_request
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
         from jiuwenswarm.common.schema.message import ReqMethod
 
-        resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
-            await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                                      params={}, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.PERMISSIONS_OWNER_SCOPES_GET,
-                                      label="permissions.owner_scopes.get")
-            return
-        from jiuwenswarm.common.config import get_permissions_owner_scopes
-
-        try:
-            payload = get_permissions_owner_scopes()
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-        except Exception as e:
-            logger.exception("[permissions.owner_scopes.get] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
+                                  params={}, session_id=session_id, user_id=user_id,
+                                  req_method=ReqMethod.PERMISSIONS_OWNER_SCOPES_GET,
+                                  label="permissions.owner_scopes.get")
 
     async def _permissions_owner_scopes_set(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.common.config import update_permissions_owner_scopes_in_config
-
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client, proxy_unary_request
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
         from jiuwenswarm.common.schema.message import ReqMethod
 
-        resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
-            await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                                      params=params, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.PERMISSIONS_OWNER_SCOPES_SET,
-                                      label="permissions.owner_scopes.set")
-            return
-        try:
-            owner_scopes = params.get("owner_scopes", {})
-            deny_guidance = params.get("deny_guidance_message")
-            update_permissions_owner_scopes_in_config(owner_scopes, deny_guidance)
-            applied_without_restart = await config_set_handlers.apply_config_change_set(
-                config_set_handlers.ConfigChangeSet({}, ["permissions"], force=True),
-                on_config_saved=on_config_saved,
-                agent_client=_resolve(agent_client),
-            )
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=True,
-                payload={"ok": True, "applied_without_restart": applied_without_restart},
-            )
-        except Exception as e:
-            logger.exception("[permissions.owner_scopes.set] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
+                                  params=params, session_id=session_id, user_id=user_id,
+                                  req_method=ReqMethod.PERMISSIONS_OWNER_SCOPES_SET,
+                                  label="permissions.owner_scopes.set")
 
     channel.register_method("permissions.owner_scopes.get", _permissions_owner_scopes_get)
     channel.register_method("permissions.owner_scopes.set", _permissions_owner_scopes_set)

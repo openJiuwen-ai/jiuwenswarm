@@ -9,6 +9,7 @@ import {
 import { useDesignerChatStore } from '../designerChatStore';
 import { seedDesignerChatHistory } from '../designerEntry';
 import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
+import { isDesignerModerationError } from '../designerRunView';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
 import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../designerStore';
@@ -323,8 +324,8 @@ export function DesignerPage({
             className="app-toast-wrapper app-toast-wrapper--top-center"
             data-testid="designer-run-error-toast"
           >
-            <div className="designer-error-toast" role="alert" data-testid="designer-error">
-              {runError}
+            <div className="designer-error-toast" role="alert" data-testid="designer-error" title={runError}>
+              {isDesignerModerationError(runError) ? t('designer.run.moderationBlocked') : runError}
             </div>
           </div>
         ) : null}

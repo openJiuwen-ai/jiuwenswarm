@@ -111,6 +111,7 @@
       "unsupported": "Only image, video, or audio files can be used as references."
     },
     "run": {
+      "moderationBlocked": "The model's content safety review blocked this generation. Tone down violent or graphic details in this node's prompt (imply them symbolically) and generate again.",
       "controlLabel": "Run controls",
       "execute": "Run",
       "continue": "Continue",

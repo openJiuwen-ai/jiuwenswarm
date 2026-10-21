@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_project import (
+from jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_project import (
     HarmonyOSProjectError,
     inspect_harmonyos_project,
     persist_harmonyos_project_context,
@@ -809,7 +809,7 @@ def _parse_node_major(version: Any) -> int | None:
 
 
 def _builtin_harmonyos_dev_suite_dir() -> Path:
-    # Copied under gateway/embedded, one level deeper than the AgentServer original.
+    # Migrated from the AgentServer original (A5: embedded 目录已消亡).
     package_root = Path(__file__).resolve().parents[4]
     return (
         package_root

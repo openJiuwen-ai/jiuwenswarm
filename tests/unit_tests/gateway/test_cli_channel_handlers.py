@@ -455,7 +455,7 @@ async def test_harmonyos_dev_init_legacy_client_falls_back_to_local(monkeypatch)
         return {"ok": True, "source": "local-fallback"}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -505,7 +505,7 @@ async def test_harmonyos_dev_init_remote_client_error_without_fallback(monkeypat
         return {"ok": True}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -565,7 +565,7 @@ async def test_harmonyos_dev_init_business_failure_does_not_rerun_locally(monkey
         return {"ok": True}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 

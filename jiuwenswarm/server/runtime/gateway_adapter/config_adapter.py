@@ -9,6 +9,7 @@ its response into an E2A response.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
 from types import SimpleNamespace
@@ -403,7 +404,23 @@ class ConfigAdapter(GatewayAdapter):
             update_permissions_owner_scopes_in_config(
                 params.get("owner_scopes", {}), params.get("deny_guidance_message")
             )
-            payload = {"ok": True}
+            # A5：写入后触发 server 侧 in-process reload（对齐原 gateway 本地
+            # apply_config_change_set 的热更新语义；reload_scopes 与其一致）。
+            applied_without_restart = True
+            if self._on_config_saved is not None:
+                from jiuwenswarm.common.config import get_config
+
+                result = self._on_config_saved(
+                    ["permissions"],
+                    env_updates={},
+                    config_payload=get_config() or {},
+                    reload_options={"reload_scopes": ["permissions"]},
+                )
+                if inspect.isawaitable(result):
+                    applied_without_restart = bool(await result)
+                else:
+                    applied_without_restart = bool(result)
+            payload = {"ok": True, "applied_without_restart": applied_without_restart}
         metadata = dict(request.metadata or {})
         if request.req_method == ReqMethod.PERMISSIONS_OWNER_SCOPES_SET:
             metadata["config_changed"] = True
