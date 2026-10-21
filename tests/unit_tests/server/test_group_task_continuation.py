@@ -62,12 +62,12 @@ async def wait_worker(run, accepted):
 
 
 async def submit_private(child, *, task=False):
-    key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.SUBMIT_RESULT)
+    key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
     execution_id = gc._private_runs[key]["execution_id"]
     if task:
         started = await gc.BeginTeamTask(key).invoke({"execution_id": execution_id})
         assert started.success
-    output = await gc.SubmitTeamResult(key).invoke({"result": "Final", "execution_id": execution_id})
+    output = await gc.CompleteTeamRun(key).invoke({"result": "Final", "execution_id": execution_id})
     assert output.success
 
 
@@ -214,11 +214,11 @@ async def test_stale_result_cannot_complete_a_followup(private_run, monkeypatch)
     async def stream(child, inputs, *, session):
         nonlocal count
         count += 1
-        key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.SUBMIT_RESULT)
+        key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
         if count == 2:
             followup_started.set()
             await release.wait()
-            rejected = await gc.SubmitTeamResult(key).invoke({
+            rejected = await gc.CompleteTeamRun(key).invoke({
                 "result": "Stale", "execution_id": first.data["execution_id"],
             })
             assert not rejected.success
@@ -426,7 +426,7 @@ async def test_unified_start_creates_card_only_for_substantive_work(private_run,
     events = [call.args[0]["payload"]["event_type"] for call in run.pushes.await_args_list]
     if substantive:
         assert events[0] == "group.execution.created"
-        assert events[-1] == "group.execution.finished"
+        assert events[-1] == "group.execution.updated"
         assert events.count("group.execution.created") == 1
     else:
         assert events == []
@@ -464,7 +464,7 @@ async def test_private_work_gate_and_stale_start(private_run, monkeypatch):
     run = private_run
 
     async def stream(child, inputs, *, session):
-        key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.SUBMIT_RESULT)
+        key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
         execution_id = gc._private_runs[key]["execution_id"]
         policy = gc.PrivateTaskPolicy(None, key)
         ctx = SimpleNamespace(
@@ -496,15 +496,18 @@ async def test_private_work_gate_and_stale_start(private_run, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_read_group_removes_retired_adjustment_tool(service):
+async def test_read_group_removes_retired_task_tools(service):
     import json
 
     group = await create(service, members=[{"kind": "agent_group", "id": "group", "member_name": "advisor"}])
     path = gs.group_path(group["group_id"])
     state = json.loads(path.read_text(encoding="utf-8"))
-    state["compiled"]["advisor"]["template"]["tools"].append({"type": "swarm.group_adjust_task"})
+    state["compiled"]["advisor"]["template"]["tools"].extend([
+        {"type": "swarm.group_adjust_task"}, {"type": "swarm.group_submit_task"},
+    ])
     path.write_text(json.dumps(state), encoding="utf-8")
     loaded = gs.read_group(group["group_id"])
     tools = loaded["compiled"]["advisor"]["template"]["tools"]
-    assert all(tool["type"] != "swarm.group_adjust_task" for tool in tools)
+    retired = {"swarm.group_adjust_task", "swarm.group_submit_task"}
+    assert all(tool["type"] not in retired for tool in tools)
     assert any(tool["type"] == gc.RUN_TEAM for tool in tools)

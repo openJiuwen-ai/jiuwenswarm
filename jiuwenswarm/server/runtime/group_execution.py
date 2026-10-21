@@ -98,7 +98,7 @@ class GroupExecutions:
             if changed:
                 self.save(records)
         for record in changed:
-            await self.publish(record, "finished")
+            await self.publish(record, "updated")
 
     async def fail_pending(self, execution_ids: list[str], phase: str, *, include_accepted=False) -> None:
         """Finish only this request's undelivered work; other members keep running."""
@@ -118,7 +118,7 @@ class GroupExecutions:
             if changed:
                 self.save(records)
         for record in changed:
-            await self.publish(record, "finished")
+            await self.publish(record, "updated")
 
     async def accept_delivery(self, client_message_id: str) -> None:
         request_key = hashlib.sha256(client_message_id.encode()).hexdigest()
@@ -269,8 +269,7 @@ class GroupExecutions:
             record["updated_at"] = time.time()
             self.save(records)
             result = copy.deepcopy(record)
-        action = "finished" if result["status"] in TERMINAL else "updated"
-        await self.publish(result, action)
+        await self.publish(result, "updated")
         return result
 
     async def finish(self, execution_id: str, backend, result: str, attachments: list) -> dict:
@@ -312,7 +311,7 @@ class GroupExecutions:
                 record["updated_at"] = time.time()
                 self.save(records)
                 completed = copy.deepcopy(record)
-            await self.publish(completed, "finished")
+            await self.publish(completed, "updated")
             return completed
 
     async def task_event(self, execution_id: str, payload: dict) -> None:

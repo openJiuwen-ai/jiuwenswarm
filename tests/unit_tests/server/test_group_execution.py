@@ -176,7 +176,7 @@ async def test_organization_milestones_are_system_cards_and_not_group_messages(s
 
 @pytest.mark.asyncio
 async def test_agent_can_start_work_and_submit_only_final_artifacts(service):
-    from jiuwenswarm.agents.swarm.group_execution import GroupTaskTool
+    from jiuwenswarm.agents.swarm.group_execution import GroupTaskTool, GroupMessageTool
 
     group = await make_group(service)
     backend = SimpleNamespace(
@@ -184,10 +184,10 @@ async def test_agent_can_start_work_and_submit_only_final_artifacts(service):
         append_group_message=AsyncMock(return_value=SimpleNamespace(message=SimpleNamespace(message_id="result"))),
     )
     context = SimpleNamespace(session_id=group["group_id"])
-    started = await GroupTaskTool(backend, context, submit=False).invoke({"run_id": "one", "task": "Review"})
+    started = await GroupTaskTool(backend, context).invoke({"run_id": "one", "task": "Review"})
     assert started.success and started.data["status"] == "running"
-    result = await GroupTaskTool(backend, context, submit=True).invoke({
-        "execution_id": started.data["execution_id"], "result": "Done", "attachments": [{"name": "report.md"}],
+    result = await GroupMessageTool(backend, context, "Post").invoke({
+        "execution_id": started.data["execution_id"], "content": "Done", "attachments": [{"name": "report.md"}],
     })
     assert result.success and result.data["status"] == "completed"
     backend.append_group_message.assert_awaited_once()
@@ -274,8 +274,8 @@ async def test_private_team_updates_one_card_and_repairs_final_publication(servi
         calls.append(child.team_name)
         yield SimpleNamespace(payload={"event_type": "team.runtime_ready"})
         await asyncio.wait_for(wait_for_progress(), timeout=2)
-        submit = next(item for item in child.agents["leader"].tools if item.type == gc.SUBMIT_RESULT)
-        await gc.SubmitTeamResult(submit.params["key"]).invoke({
+        submit = next(item for item in child.agents["leader"].tools if item.type == gc.COMPLETE_RUN)
+        await gc.CompleteTeamRun(submit.params["key"]).invoke({
             "result": "Final report", "attachments": [{"name": "report.md"}], "execution_id": key,
         })
         await asyncio.Event().wait()
@@ -549,3 +549,110 @@ async def test_finish_preserves_concurrent_terminal_state(service, monkeypatch, 
         await store.finish(key, backend, "Late result", [])
     assert store.get(key)["status"] == status
     backend.append_group_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_group_message_completion_is_idempotent_and_correlates_result(service):
+    from jiuwenswarm.agents.swarm.group_execution import GroupMessageTool
+    from jiuwenswarm.server.runtime.group_reply import correlate_public_reply
+
+    group = await make_group(service)
+    group_id = group["group_id"]
+    store = ge.GroupExecutions(group_id)
+    record = (await store.create(["advisor"], "Review", "message-final"))[0]
+    backend = SimpleNamespace(
+        member_name="advisor", conversation_mode="group_chat",
+        append_group_message=AsyncMock(return_value=SimpleNamespace(message=SimpleNamespace(message_id="final"))),
+    )
+    tool = GroupMessageTool(backend, SimpleNamespace(session_id=group_id), "Post")
+    inputs = {"execution_id": record["execution_id"], "content": "Done", "attachments": [{"path": "report.md"}]}
+    assert (await tool.invoke(inputs)).success
+    assert (await tool.invoke(inputs)).success
+    assert not (await tool.invoke({**inputs, "content": "Different"})).success
+    backend.append_group_message.assert_awaited_once()
+    posted = backend.append_group_message.await_args.kwargs
+    correlation = correlate_public_reply(group_id, {"sender": "advisor", **posted})
+    assert correlation["execution_id"] == record["execution_id"]
+    assert store.get(record["execution_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_group_message_plain_chat_uses_core_path_without_finishing_task(service):
+    from jiuwenswarm.agents.swarm.group_execution import GroupMessageTool
+
+    group = await make_group(service)
+    store = ge.GroupExecutions(group["group_id"])
+    record = (await store.create(["advisor"], "Review", "plain", defer_card=True))[0]
+    posted = Mock()
+    posted.model_dump.return_value = {"message": "Hello"}
+    backend = SimpleNamespace(
+        member_name="advisor", conversation_mode="group_chat", append_group_message=AsyncMock(return_value=posted),
+    )
+    tool = GroupMessageTool(backend, SimpleNamespace(session_id=group["group_id"]), "Post")
+    output = await tool.invoke({"content": "Hello", "client_message_id": "chat-1"})
+    assert output.success
+    assert store.get(record["execution_id"])["status"] == "queued"
+    assert not (await tool.invoke({"content": "Missing id"})).success
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["other_member", "background", "bad_attachments", "mentions", "empty_id"])
+async def test_group_message_rejects_invalid_completion(service, case):
+    from jiuwenswarm.agents.swarm.group_execution import GroupMessageTool
+
+    group = await make_group(service)
+    store = ge.GroupExecutions(group["group_id"])
+    record = (await store.create(["advisor"], "Review", case))[0]
+    backend = SimpleNamespace(member_name="other" if case == "other_member" else "advisor")
+    backend.append_group_message = AsyncMock()
+    inputs = {"content": "Done", "execution_id": record["execution_id"]}
+    if case == "background":
+        await store.update(record["execution_id"], background=True)
+    if case == "bad_attachments":
+        inputs["attachments"] = ["report.md"]
+    if case == "mentions":
+        inputs["mentions"] = ["advisor"]
+    if case == "empty_id":
+        inputs["execution_id"] = ""
+    tool = GroupMessageTool(backend, SimpleNamespace(session_id=group["group_id"]), "Post")
+    assert not (await tool.invoke(inputs)).success
+    backend.append_group_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_group_policy_replaces_core_message_schema_and_allows_explicit_final(service, monkeypatch):
+    import json
+    from openjiuwen.core.single_agent.ability_manager import AbilityManager
+    from openjiuwen.core.foundation.llm import ToolCall
+    from openjiuwen.agent_teams.group_chat.tools import GroupSendMessageTool
+    from jiuwenswarm.agents.swarm import group_execution as policies
+
+    group = await make_group(service)
+    group_id = group["group_id"]
+    record = (await ge.GroupExecutions(group_id).create(["advisor"], "Review", "schema"))[0]
+    backend = SimpleNamespace(member_name="advisor", conversation_mode="group_chat")
+    monkeypatch.setattr(policies, "get_team_backend", lambda _: backend)
+    abilities = AbilityManager(owner_id="group-schema-test")
+    original = GroupSendMessageTool(backend, lambda _: "Post")
+    abilities.add_ability(original.card, original)
+    rail = policies.GroupTaskPolicyRail(SimpleNamespace(session_id=group_id, member_name="advisor"))
+    ctx = SimpleNamespace(
+        agent=SimpleNamespace(ability_manager=abilities, system_prompt_builder=Mock()), extra={},
+        inputs=SimpleNamespace(tool_name="group_send_message", tool_call=ToolCall(
+            id="finish", type="function", name="group_send_message", arguments=json.dumps({"execution_id": record["execution_id"]}),
+        )),
+    )
+    try:
+        await rail.before_invoke(ctx)
+        await rail.before_invoke(ctx)
+        cards = [card for card in abilities.list() if card.name == "group_send_message"]
+        assert len(cards) == 1
+        assert "execution_id" in cards[0].input_params["properties"]
+        assert "attachments" in cards[0].input_params["properties"]
+        await rail.before_tool_call(ctx)
+        assert not ctx.extra
+        ctx.inputs.tool_call.arguments = "{}"
+        await rail.before_tool_call(ctx)
+        assert ctx.extra["_skip_tool"]
+    finally:
+        abilities.remove_ability("group_send_message")

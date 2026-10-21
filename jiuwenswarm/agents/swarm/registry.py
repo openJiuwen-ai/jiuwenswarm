@@ -64,12 +64,11 @@ from jiuwenswarm.common.config import get_config
 # Re-exported provider name constants for config_specs to reference by symbol.
 # Swarm-owned tools (each self-gated by config + whitelist-filtered).
 GROUP_RUN_TEAM = _group_chat.RUN_TEAM
-GROUP_SUBMIT_TEAM_RESULT = _group_chat.SUBMIT_RESULT
+GROUP_COMPLETE_TEAM_RUN = _group_chat.COMPLETE_RUN
 GROUP_MEMBER_TEMPLATE = _group_chat.GROUP_MEMBER_TEMPLATE
 GROUP_PRIVATE_TASK_POLICY = _group_chat.PRIVATE_TASK_POLICY
 GROUP_BEGIN_TEAM_TASK = _group_chat.BEGIN_TEAM_TASK
 GROUP_START_TASK = _group_execution.START_TASK
-GROUP_SUBMIT_TASK = _group_execution.SUBMIT_TASK
 GROUP_TASK_POLICY = _group_execution.TASK_POLICY
 
 SKILL_TOOLKIT = _tools.SKILL_TOOLKIT
@@ -208,12 +207,11 @@ def register_swarm_providers() -> None:
 
 __all__ = [
     "GROUP_RUN_TEAM",
-    "GROUP_SUBMIT_TEAM_RESULT",
+    "GROUP_COMPLETE_TEAM_RUN",
     "GROUP_MEMBER_TEMPLATE",
     "GROUP_PRIVATE_TASK_POLICY",
     "GROUP_BEGIN_TEAM_TASK",
     "GROUP_START_TASK",
-    "GROUP_SUBMIT_TASK",
     "GROUP_TASK_POLICY",
 
     "PERSONAL_CONTEXT",

@@ -30,7 +30,7 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 logger = logging.getLogger(__name__)
 
 RUN_TEAM = "swarm.group_run_team"
-SUBMIT_RESULT = "swarm.group_submit_team_result"
+COMPLETE_RUN = "swarm.group_complete_team_run"
 GROUP_MEMBER_TEMPLATE = "swarm.group_member_template"
 _locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _results: dict[str, asyncio.Future] = {}
@@ -178,14 +178,14 @@ class _GroupTool(Tool):
         yield await self.invoke(inputs, **kwargs)
 
 
-class SubmitTeamResult(_GroupTool):
+class CompleteTeamRun(_GroupTool):
     def __init__(self, key: str):
         super().__init__(
             ToolCard(
-                id="group.submit_team_result",
-                name="submit_team_result",
+                id="group.complete_team_run",
+                name="complete_team_run",
                 description=(
-                    "Submit the final deliverable for the current execution_id from your execution context. "
+                    "Complete this private-team run with its final result; the host publishes it to the group. "
                     "Direct answers need no task card; call start_group_task before doing substantive work."
                 ),
                 input_params={
@@ -507,7 +507,7 @@ class RunTeam(_GroupTool):
             )
             child.agents["leader"].tools = [
                 *(child.agents["leader"].tools or []),
-                BuiltinToolSpec(type=SUBMIT_RESULT, params={"key": team_key}),
+                BuiltinToolSpec(type=COMPLETE_RUN, params={"key": team_key}),
             ]
             if execution is not None:
                 child.agents["leader"].tools.append(BuiltinToolSpec(type=BEGIN_TEAM_TASK, params={"key": team_key}))
@@ -523,7 +523,7 @@ class RunTeam(_GroupTool):
             child.leader = child.leader.model_copy(
                 update={
                     "prompt": (child.leader.prompt or "")
-                    + "\nSubmit the final deliverable with submit_team_result. "
+                    + "\nSubmit the final deliverable with complete_team_run. "
                     "Do not finish with only a plain-text reply or clean_team."
                 }
             )
@@ -697,9 +697,9 @@ class PrivateTaskPolicy(DeepAgentRail):
             return
         content = (
             "Current execution_id: " + current["execution_id"]
-            + ". If you can answer directly, call submit_team_result with this ID; do not start a task. "
+            + ". If you can answer directly, call complete_team_run with this ID; do not start a task. "
             "Before substantive work or using other tools, call start_group_task with this ID. "
-            "Then perform the work and submit the final result with submit_team_result. "
+            "Then perform the work and submit the final result with complete_team_run. "
             "You can do a task yourself; build_team is optional. Never reuse an earlier execution_id."
         )
         builder = ctx.agent.system_prompt_builder
@@ -712,7 +712,7 @@ class PrivateTaskPolicy(DeepAgentRail):
         from jiuwenswarm.server.runtime.group_execution import GroupExecutions
         from openjiuwen.core.foundation.llm import ToolMessage
 
-        if ctx.inputs.tool_name in {"start_group_task", "submit_team_result"}:
+        if ctx.inputs.tool_name in {"start_group_task", "complete_team_run"}:
             return
         current = _private_runs.get(self.key)
         if current is None:
@@ -754,14 +754,14 @@ def build_group_run_team(params, context):
 
 @harness_element(
     kind=ElementKind.TOOL,
-    name=SUBMIT_RESULT,
-    description="Final-result submission from a private expert-team leader.",
+    name=COMPLETE_RUN,
+    description="Complete a private expert-team run and return its final result.",
 )
-def build_group_submit_result(params, context):
+def build_group_complete_run(params, context):
     backend = get_team_backend(context)
     if backend is None or not backend.is_leader:
         raise ValueError("only the private expert-team leader may submit results")
-    return SubmitTeamResult(params["key"])
+    return CompleteTeamRun(params["key"])
 
 
 class GroupMemberTemplateRail(DeepAgentRail):
