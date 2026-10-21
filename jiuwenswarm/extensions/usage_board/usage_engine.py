@@ -1035,10 +1035,12 @@ def _count_bucket_calls(
     calls: Iterable[CallUsage],
     key_for: Any,
 ) -> None:
-    """把逐次调用事件的次数记到对应桶上（桶必须已由计总循环建好）。
+    """把逐次调用事件的次数记到对应桶上（桶不存在时补建，保证分桶 calls 不丢）。
 
     计总用的是 ``billing_calls``（有 summary 时是 summary），而模型调用次数只来自
-    ``chat.usage_metadata``，所以这里单独按 ``metadata_calls`` 记数。
+    ``chat.usage_metadata``，所以这里单独按 ``metadata_calls`` 记数；某个模型只在
+    metadata 里出现（没进 summary）时，也必须为它建桶，否则各桶 ``calls`` 之和会小于
+    ``totals.calls``。
     """
 
     for call in calls:
