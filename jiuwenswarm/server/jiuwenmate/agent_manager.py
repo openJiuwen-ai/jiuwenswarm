@@ -22,6 +22,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
+from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
 from jiuwenswarm.server.jiuwenmate.ports.group_chat import unavailable_membership
@@ -168,12 +169,18 @@ class AgentManager:
         delivery_service: ResultDeliveryService | None = None,
         files: OutputFileStore | None = None,
         schedule_interval: timedelta = DEFAULT_SCHEDULE_INTERVAL,
+        cli: FeishuCliRuntime | None = None,
     ) -> None:
         if purge_interval <= timedelta(0) or schedule_interval <= timedelta(0):
             raise ValueError("purge_interval and schedule_interval must be positive")
         if archive_retention < timedelta(0):
             raise ValueError("archive_retention must not be negative")
         self._service = service
+        self.cli_runtime = cli or getattr(service, "cli_runtime", None) or FeishuCliRuntime(sessions.db_path.parent)
+        self._cli_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._cli_requested: set[tuple[str, str]] = set()
+        self._cli_slots = asyncio.Semaphore(2)
+        self._cli_closing = False
         self._sessions = sessions
         self._windows = windows
         self._archive_retention = archive_retention
@@ -213,6 +220,7 @@ class AgentManager:
             execute=execute,
             abort=abort,
             clock=clock,
+            cli=self.cli_runtime,
         )
         self._scheduler = SessionScheduler(sessions, driver, limits=limits, clock=clock)
         self._control = ExecutionControlService(sessions, self._scheduler, ControlStore(sessions.db_path), clock=clock)
@@ -317,9 +325,60 @@ class AgentManager:
         self._scheduler.start()
         self._purge_task = asyncio.create_task(self._purge_loop(), name="jiuwenmate-window-purge")
         self._schedule_task = asyncio.create_task(self._schedule_loop(), name="jiuwenmate-schedules")
+        agents = set(self.cli_runtime.bound_agents())
+        list_colleagues = getattr(self._service, "list_colleagues", None)
+        if list_colleagues is not None:
+            # Reconcile removed bindings too, without publishing an owner's pending draft.
+            colleagues = await asyncio.to_thread(list_colleagues, "local")
+            agents.update(("local", item.agent_id) for item in colleagues if item.current_version is not None)
+        for namespace_id, agent_id in agents:
+            self.schedule_feishu_cli(namespace_id, agent_id)
+
+    def schedule_feishu_cli(self, namespace_id: str, agent_id: str) -> dict[str, object]:
+        """Enqueue optional setup; never hold an IM/Web request open during npm installation."""
+        key = namespace_id, agent_id
+        if self._cli_closing:
+            return {"status": "pending"}
+        if key in self._cli_tasks:
+            self._cli_requested.add(key)
+        elif len(self._cli_tasks) < 64:
+            self._cli_tasks[key] = asyncio.create_task(self._prepare_cli_loop(key), name="jiuwenmate-feishu-cli")
+        return {"status": "pending"}
+
+    async def _prepare_cli_loop(self, key: tuple[str, str]) -> None:
+        try:
+            while not self._cli_closing:
+                self._cli_requested.discard(key)
+                await self.prepare_feishu_cli(*key)
+                if key not in self._cli_requested:
+                    break
+        finally:
+            # No callback gap: a new notification after this point creates a new worker.
+            self._cli_tasks.pop(key, None)
+            self._cli_requested.discard(key)
+
+    async def prepare_feishu_cli(self, namespace_id: str, agent_id: str) -> dict[str, object]:
+        async with self._cli_slots:
+            try:
+                await asyncio.to_thread(self._service.get_colleague, namespace_id, agent_id)
+                result = await self.cli_runtime.prepare(namespace_id, agent_id)
+                directories = self.cli_runtime.skill_directories(namespace_id, agent_id)
+                # Even unbinding/failure removes stale identity claims for new Requests.
+                published = await asyncio.to_thread(self._service.refresh_feishu_capability, namespace_id,
+                                                     agent_id, skill_directories=directories)
+                return {"status": result.get("status"), "publication": "ready" if published else "not_published"}
+            except Exception:
+                return {"status": "unavailable", "publication": "pending"}
 
     async def aclose(self) -> None:
         """Stop every Execution, wait for their streams to end, then stop cleanup and the commit queue."""
+        self._cli_closing = True
+        tasks = tuple(self._cli_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._cli_tasks.clear()
+        self._cli_requested.clear()
         await self._scheduler.aclose()
         if self._delivery_service is not None:
             await self._delivery_service.aclose()
@@ -338,9 +397,16 @@ class AgentManager:
     async def delete_colleague(self, namespace_id: str, agent_id: str) -> None:
         """End the colleague's queued and running work, then remove the colleague and its window data."""
         await self._scheduler.end_agent(namespace_id, agent_id)
+        preparing = self._cli_tasks.get((namespace_id, agent_id))
+        if preparing is not None:
+            preparing.cancel()
+            await asyncio.gather(preparing, return_exceptions=True)
+        self._cli_tasks.pop((namespace_id, agent_id), None)
+        self._cli_requested.discard((namespace_id, agent_id))
         await asyncio.to_thread(self._schedules.delete_agent, namespace_id, agent_id)
         try:
             await asyncio.to_thread(self._service.delete_colleague, namespace_id, agent_id)
+            await self.cli_runtime.remove_agent(namespace_id, agent_id)
         finally:
             self._scheduler.release_agent(namespace_id, agent_id)
 

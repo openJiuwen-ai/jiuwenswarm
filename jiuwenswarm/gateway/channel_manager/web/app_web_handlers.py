@@ -4339,6 +4339,35 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             logger.exception("[channel.feishu.get_bindings] 异常, req_id=%s: %s", req_id, e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
+    async def _notify_feishu_cli_changes(before, after):
+        """Reconcile both sides of a changed JM binding, never personal-only apps."""
+        def bindings(apps):
+            result = {}
+            for app in apps:
+                agent_id = str(app.get("persistent_agent_id") or "").strip()
+                if agent_id:
+                    result.setdefault(agent_id, []).append(app)
+            return result
+
+        previous, current = bindings(before), bindings(after)
+        affected = sorted(agent_id for agent_id in previous.keys() | current.keys()
+                          if previous.get(agent_id) != current.get(agent_id))
+        for agent_id in affected:
+            try:
+                from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+                from jiuwenswarm.common.schema.message import ReqMethod
+
+                client = _resolve(agent_client)
+                if client is not None:
+                    envelope = e2a_from_agent_fields(
+                        request_id=f"feishu-cli-{uuid.uuid4().hex}", channel_id="web",
+                        req_method=ReqMethod.JIUWENMATE_FEISHU_PREPARE,
+                        params={"agent_id": agent_id}, is_stream=False, timestamp=time.time(),
+                    )
+                    await asyncio.wait_for(client.send_request(envelope), timeout=2)
+            except Exception:
+                logger.warning("[channel.feishu] CLI preparation deferred; binding saved")
+
     async def _channel_feishu_bind_agent(ws, req_id, params, session_id):
         """Persist the one-to-one Feishu app and JiuwenMate colleague binding."""
         cm = _resolve(channel_manager)
@@ -4372,7 +4401,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         try:
             current = cm.get_conf("feishu")
-            apps = [dict(app) for app in _normalize_feishu_conf(current).get("apps", [])]
+            previous_apps = _normalize_feishu_conf(current).get("apps", [])
+            apps = [dict(app) for app in previous_apps]
             # A colleague has one Feishu app. Rebinding it replaces its previous app entry.
             apps = [
                 app for app in apps
@@ -4409,6 +4439,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             await cm.set_conf("feishu", new_conf)
             _schedule_clear_agent_config_cache("channel.feishu.bind_agent")
+            # Only enqueue setup; the AgentServer rereads the saved trusted binding.
+            # A disconnected server does not undo a successfully persisted binding.
+            await _notify_feishu_cli_changes(previous_apps, merged_apps)
             await channel.send_response(
                 ws,
                 req_id,
@@ -4470,6 +4503,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             finally:
                 if should_clear_agent_config_cache:
                     _schedule_clear_agent_config_cache("channel.feishu.set_conf")
+                    await _notify_feishu_cli_changes(existing_apps, merged_apps)
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.feishu.set_conf] 异常, req_id=%s: %s", req_id, e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")

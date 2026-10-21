@@ -246,8 +246,9 @@ def test_publishing_creates_the_office_and_deleting_removes_it(tmp_path):
     spec = service.current_snapshot(NS, view.agent_id).load_spec()
 
     assert view.workspace_dir == str(office_dir) and office_dir.is_dir()
-    assert spec.system_prompt.endswith(WORKSPACE_PROMPT)
-    assert set(spec.enabled_features) == {"construction", "workspace_read", "workspace_write"}
+    assert WORKSPACE_PROMPT in spec.system_prompt
+    assert set(spec.enabled_features) == {"construction", "workspace_read", "workspace_write", "window_management"}
+    assert any(tool.type == "jiuwenmate.bash" for tool in spec.tools)
     assert spec.enable_sys_operation is True and spec.enable_read_image_multimodal is False
 
     (office_dir / "笔记.md").write_text("x", encoding="utf-8")
@@ -270,7 +271,7 @@ def test_refresh_republishes_only_colleagues_without_pending_edits(tmp_path, mon
     refreshed = service.current_snapshot(NS, clean.agent_id)
     kept = service.current_snapshot(NS, edited.agent_id)
     assert refreshed.config_version == "v2"
-    assert refreshed.load_spec().system_prompt.endswith(WORKSPACE_PROMPT)
+    assert WORKSPACE_PROMPT in refreshed.load_spec().system_prompt
     assert kept.config_version == "v1"
     assert service.get_colleague(NS, edited.agent_id).has_unpublished_changes
 

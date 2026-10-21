@@ -463,9 +463,10 @@ def test_a_plugin_without_skills_publishes_its_tools_and_rails(tmp_path):
     )
     spec = host.current_snapshot(NS, view.agent_id).load_spec()
 
-    assert spec.tools[0].type == "harness.tool.file"
-    assert spec.tools[0].params["class_name"] == "Review"
-    assert spec.tools[0].params["file_path"] == str((package / "tools" / "review.py").resolve())
+    plugin = spec.tools[0].params["tools"][0]
+    assert plugin["type"] == "harness.tool.file"
+    assert plugin["params"]["class_name"] == "Review"
+    assert plugin["params"]["file_path"] == str((package / "tools" / "review.py").resolve())
     assert spec.rails[0].type == "harness.rail.file"
     assert spec.rails[0].params["class_name"] == "Guard"
     assert "已装配插件" in spec.system_prompt

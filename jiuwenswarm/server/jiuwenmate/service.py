@@ -33,6 +33,9 @@ from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, 
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog, ResourceCatalog, assemble_resources
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, publish_spec
+from jiuwenswarm.server.jiuwenmate.bash_runtime import BASH_PROMPT, PROVIDER as BASH_PROVIDER, with_bash_tool
+from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
+from jiuwenswarm.server.jiuwenmate.resource_assembly import apply_feishu_skills
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.harness.schema.deep_agent_spec import TeamModelConfig
 
@@ -281,6 +284,7 @@ class PersistentAgentService:
         self._template_source = template_source
         self._clock = clock
         self._id_factory = id_factory
+        self.cli_runtime = FeishuCliRuntime(repository.db_path.parent)
 
     @classmethod
     def create_default(cls, data_dir: Path | None = None) -> PersistentAgentService:
@@ -469,9 +473,9 @@ class PersistentAgentService:
         context_engine = formal_context_engine(model)
         if context_engine is not None:
             cache_formal_tokenizer(context_engine)
-        fields = {
+        fields = with_bash_tool({
             "card": {"id": agent_id, "name": settings.name, "description": settings.description},
-            "system_prompt": self._templates.read_persona(agent_id) + WORKSPACE_PROMPT + assembled.prompt,
+            "system_prompt": self._templates.read_persona(agent_id) + WORKSPACE_PROMPT + assembled.prompt + BASH_PROMPT,
             "model": model,
             "model_input_limit_tokens": input_limit,
             "capacity_safety_margin_tokens": margin,
@@ -482,14 +486,15 @@ class PersistentAgentService:
                 "window_management",
             ],
             "share_file_max_bytes": SHARE_FILE_MAX_BYTES,
-            # The guarded file tools need a filesystem operation; no shell tool is mounted.
+            # Guarded file tools and the Invocation-local Bash adapter reuse core operations.
             "enable_sys_operation": True,
             # Otherwise core probes the model for image input outside the budget port.
             "enable_read_image_multimodal": False,
             **assembled.spec_fields,
-        }
+        })
         if context_engine is not None:
             fields["context_engine_config"] = context_engine
+        fields = apply_feishu_skills(fields, office, self.cli_runtime.skill_directories(namespace_id, agent_id))
         try:
             if definition.current_version is not None:
                 current = self.snapshot(namespace_id, agent_id, definition.current_version)
@@ -505,6 +510,29 @@ class PersistentAgentService:
         except PersistentContractError as exc:
             raise PersistentAgentError(f"configuration cannot be published: {exc}", code="INVALID_CONFIG") from exc
         self._repository.save_version(namespace_id, snapshot, revision=definition.revision, published_at=self._clock())
+        return self._version_view(namespace_id, agent_id, snapshot.config_version)
+
+    def refresh_feishu_capability(
+        self, namespace_id: str, agent_id: str, *, skill_directories: tuple[Path, ...],
+    ) -> ConfigVersionView | None:
+        """Derive automatic CLI assets from the live version, never from unpublished settings."""
+        import json
+
+        definition = self._require(namespace_id, agent_id)
+        if definition.current_version is None:
+            return None
+        current = self.current_snapshot(namespace_id, agent_id)
+        fields = apply_feishu_skills(json.loads(current.spec_json), self._workspaces.path(namespace_id, agent_id),
+                                     skill_directories)
+        if not any(tool.get("type") == BASH_PROVIDER for tool in (fields.get("tools") or [])):
+            fields = with_bash_tool(fields)
+            fields["system_prompt"] += BASH_PROMPT
+        if publish_spec(agent_id, current.config_version, fields).fingerprint == current.fingerprint:
+            return self._version_view(namespace_id, agent_id, current.config_version)
+        snapshot = publish_spec(agent_id, self._repository.next_version(namespace_id, agent_id), fields,
+                                knowledge_root=current.knowledge_root)
+        self._repository.save_capability_version(namespace_id, snapshot, previous_version=current.config_version,
+                                                 published_at=self._clock())
         return self._version_view(namespace_id, agent_id, snapshot.config_version)
 
     def _version_view(self, namespace_id: str, agent_id: str, config_version: str) -> ConfigVersionView:

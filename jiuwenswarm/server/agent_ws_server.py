@@ -2657,6 +2657,21 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        if request.req_method == ReqMethod.JIUWENMATE_FEISHU_PREPARE:
+            params = request.params if isinstance(request.params, dict) else {}
+            agent_id = params.get("agent_id")
+            payload = {"status": "unavailable"}
+            if isinstance(agent_id, str) and agent_id.strip() and set(params) == {"agent_id"}:
+                manager = getattr(self, "_jm08_agent_manager", None)
+                if manager is not None:
+                    payload = manager.schedule_feishu_cli("local", agent_id)
+                else:
+                    payload = await self._jiuwenmate_web.prepare_feishu_cli(agent_id)
+            response = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
+                                     ok=True, payload=payload, metadata=request.metadata)
+            async with send_lock:
+                await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
+            return
         if request.req_method == ReqMethod.JIUWENMATE_GROUP_RESPONSE:
             await self._handle_jm11_group_response(ws, request, send_lock)
             return
