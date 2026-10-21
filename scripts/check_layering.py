@@ -8,7 +8,6 @@
   R1  common  禁止 import server / agents / channels / gateway / extensions / symphony
   R2  server  禁止 import gateway
   R3  gateway 禁止 import server / agents / channels
-  R4  gateway/embedded/ 禁止 import server / agents（AgentServer 拷贝）
 
 使用时机（《Gateway独立成仓-解耦设计》PR-2，单人解耦精简版）：
 
@@ -86,8 +85,6 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
         "jiuwenswarm.runtime.cron.factory",
     },
 }
-KNOWN_R4_EMBEDDED_FOREIGN: dict[str, set[str]] = {}
-
 # 燃尽基线（--baseline 对照用；数字口径见各字段注释）
 BASELINE = {
     # hard 闭包 = 从 gateway 出发仅沿模块级 import 可达的外部（非 gateway/common）模块数。
@@ -109,9 +106,6 @@ BASELINE = {
     # common 反向引用（R1 存量）：B1' 已全部消除（注入化 + 纯模块下沉）
     "common_backref_modules": 0,
     "common_backref_imports": 0,
-    # gateway/embedded/ 下 AgentServer 拷贝的规模（A1–A3/A5 迁移对象）
-    "embedded_files": 27,
-    "embedded_loc": 8702,
     # gateway 直接 import 的外部（非 gateway/common）模块数
     "gateway_direct_foreign": 23,
 }
@@ -330,11 +324,6 @@ def run_rules(graph: ImportGraph) -> int:
         (f"{PKG}.gateway.",), ("server", "agents", "channels", "runtime", "symphony"),
         KNOWN_R3_GATEWAY_FOREIGN,
     )
-    exit_code |= _check_rule(
-        graph, "R4 gateway/embedded/ 禁止 import server/agents（AgentServer 拷贝）",
-        (f"{PKG}.gateway.embedded.",), ("server", "agents"),
-        KNOWN_R4_EMBEDDED_FOREIGN,
-    )
     return exit_code
 
 
@@ -394,15 +383,6 @@ def run_baseline(graph: ImportGraph) -> None:
         "  模块数: %s，import 目标对: %s",
         _fmt_delta(backref_modules, BASELINE["common_backref_modules"]),
         _fmt_delta(backref_imports, BASELINE["common_backref_imports"]),
-    )
-
-    emb = [rel for rel in graph.files if rel.startswith("jiuwenswarm/gateway/embedded/")]
-    emb_loc = sum(len((REPO_ROOT / r).read_text(errors="replace").splitlines()) for r in emb)
-    logger.info("\n== gateway/embedded/（AgentServer 拷贝，A1–A3/A5 迁移对象）==")
-    logger.info(
-        "  文件数: %s，行数: %s",
-        _fmt_delta(len(emb), BASELINE["embedded_files"]),
-        _fmt_delta(emb_loc, BASELINE["embedded_loc"]),
     )
 
     direct = set()

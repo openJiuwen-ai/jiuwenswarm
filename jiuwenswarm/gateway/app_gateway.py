@@ -125,7 +125,7 @@ def _agent_prewarm_enabled() -> bool:
     Prewarming is opt-in via JIUWENSWARM_AGENT_PREWARM; when off the Gateway
     must not emit agent.prewarm.sync requests or related log noise.
     """
-    from jiuwenswarm.gateway.embedded.runtime.agent_prewarm import prewarm_enabled_by_env
+    from jiuwenswarm.gateway.runtime.agent_prewarm import prewarm_enabled_by_env
 
     return prewarm_enabled_by_env()
 

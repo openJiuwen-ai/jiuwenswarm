@@ -1633,3 +1633,37 @@ class TestParseIntParam:
         assert parse_int_param({"limit": "abc"}, "limit", 20, minimum=1, maximum=200) == 20
         assert parse_int_param({"limit": True}, "limit", 20, minimum=1, maximum=200) == 20
         assert parse_int_param({}, "limit", 20, minimum=1, maximum=200) == 20
+
+
+@pytest.mark.asyncio
+async def test_owner_scopes_set_triggers_async_reload_callback(tmp_path, monkeypatch) -> None:
+    """A5 review 回归：SET 分支的 reload 回调链路（inspect 缺失曾致 NameError）。
+
+    ConfigAdapter 生产装配恒带 on_config_saved（_reload_after_config_save 为
+    async）——该路径此前无任何测试覆盖，NameError 逃逸到线上才被发现。
+    """
+    reload_calls: list[tuple[list[str], dict]] = []
+
+    async def on_config_saved(updated_keys=None, *, env_updates=None, config_payload=None, reload_options=None):
+        reload_calls.append((list(updated_keys or []), dict(reload_options or {})))
+        return True
+
+    # handler 内惰性导入，patch 源模块（config_adapter 不是属性宿主）
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.update_permissions_owner_scopes_in_config",
+        lambda scopes, guidance: None,
+    )
+    from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import ConfigAdapter
+
+    adapter = ConfigAdapter(on_config_saved=on_config_saved)
+
+    response = await adapter.handle(
+        _request(
+            ReqMethod.PERMISSIONS_OWNER_SCOPES_SET,
+            {"owner_scopes": {"tool_edit": "allow"}, "deny_guidance_message": "x"},
+        )
+    )
+
+    assert response.ok is True
+    assert response.payload["applied_without_restart"] is True
+    assert reload_calls == [(["permissions"], {"reload_scopes": ["permissions"]})]

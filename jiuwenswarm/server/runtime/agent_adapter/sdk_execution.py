@@ -130,6 +130,32 @@ class SDKExecutionDriver:
                         "permission_queue_output_unavailable"
                     )
                 return None, False
+            if (
+                stream is not None
+                and answer is None
+                and owner._should_refresh_cron_web_context(request, send_without_output=send_without_output)
+            ):
+                # Web may have cached this session before its cron run completed.
+                # Restore that run once before accepting the first Web follow-up.
+                try:
+                    from jiuwenswarm.agents.harness.common.session_ops_service import (
+                        warmup_session_context,
+                    )
+
+                    owner._cron_web_context_refreshed = await warmup_session_context(
+                        deep_agent=owner._instance,
+                        session_id=request.session_id,
+                        history_before_request_id=request.request_id,
+                        refresh_existing=True,
+                    )
+                    if not owner._cron_web_context_refreshed:
+                        raise RuntimeError("定时任务历史恢复失败，请重试。")
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] cron Web context refresh failed: "
+                        "session_id=%s error=%s", request.session_id, exc,
+                    )
+                    raise
             if stream is not None:
                 from jiuwenswarm.server.runtime.agent_adapter.output_handoff import (
                     OutputHandoff,

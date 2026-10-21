@@ -1417,7 +1417,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         "execution: %s",
                         exc,
                     )
-                    from jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev import (
+                    from jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev import (
                         run_harmonyos_dev_init,
                     )
 

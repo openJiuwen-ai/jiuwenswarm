@@ -2024,6 +2024,7 @@ class JiuWenSwarmDeepAdapter:
         self._session_instance_agent_definition: dict[str, Any] | None = None
         self._is_session_scoped_adapter: bool = False
         self._parent_session_id: str | None = None
+        self._cron_web_context_refreshed: bool = False
         # Trajectory turn identity for this session. A turn spans every trace
         # a HITL resume adds to the ReAct loop already running, so it cannot
         # live on a single root span — see ``_resolve_trajectory_turn``.
@@ -14099,6 +14100,23 @@ class JiuWenSwarmDeepAdapter:
         return self._permission_dispatch.prepare_resume(
             inputs, root_session_id=root_session_id, loop_session=loop_session,
         )
+
+    def _should_refresh_cron_web_context(
+        self, request: AgentRequest, *, send_without_output: bool,
+    ) -> bool:
+        """Check whether the first Web follow-up can refresh an idle cron context."""
+        if send_without_output or request.channel_id != "web":
+            return False
+        if not request.session_id or getattr(self, "_cron_web_context_refreshed", False):
+            return False
+        session_id = request.session_id
+        if not self._is_cron_execution_session(session_id):
+            return False
+        if self._session_has_other_running_agent_tasks(session_id):
+            return False
+        if self._is_deep_agent_executing_for_session(session_id):
+            return False
+        return getattr(self._instance, "active_round", None) is None
 
     async def _attach_and_send_inputs(
         self,
