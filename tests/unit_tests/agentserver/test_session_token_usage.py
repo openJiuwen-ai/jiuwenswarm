@@ -59,6 +59,32 @@ def test_session_token_usage_keeps_missing_values_unknown(tmp_path):
     assert snapshot["others"]["output_tokens"] == 0
 
 
+def test_snapshot_treats_an_existing_database_without_ledger_tables_as_empty(tmp_path):
+    (tmp_path / "session_token_usage.sqlite3").touch()
+
+    snapshot = SessionTokenUsageLedger(tmp_path, "sess_usage").snapshot()
+
+    assert snapshot == {
+        "schema_version": 1,
+        "revision": 0,
+        "session_id": "sess_usage",
+        "main": {
+            "input_tokens": None,
+            "output_tokens": None,
+            "input_calls": 0,
+            "output_calls": 0,
+            "calls_total": 0,
+        },
+        "others": {
+            "input_tokens": None,
+            "output_tokens": None,
+            "input_calls": 0,
+            "output_calls": 0,
+            "calls_total": 0,
+        },
+    }
+
+
 def test_concurrent_agents_do_not_lose_session_token_updates(tmp_path):
     ledger = SessionTokenUsageLedger(tmp_path, "sess_usage")
 
