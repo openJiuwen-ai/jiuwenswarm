@@ -5017,13 +5017,16 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         # 键形状与 config_save_all_handler 的展平规则一致：config.set 键在顶层；
         # config.save_all 键嵌套在 params.config（前端外部 CLI 卡片的唯一保存
-        # 链路即 save_all 嵌套形状），agents/team 两处皆可出现。
+        # 链路即 save_all 嵌套形状），agents/team 两处皆可出现且**顶层优先**
+        # （save_all 的合并顺序：嵌套 config 先建，顶层 agents/team 后写覆盖——
+        # 门控若反向合并，碰撞形状下会漏判被顶层覆盖落盘的 team 载荷）。
         raw_config = params.get("config")
-        keys_view: dict[str, Any] = {
-            k: v for k, v in params.items() if k != "config"
-        }
-        if isinstance(raw_config, dict):
-            keys_view.update(raw_config)
+        keys_view: dict[str, Any] = (
+            dict(raw_config) if isinstance(raw_config, dict) else {}
+        )
+        for key, value in params.items():
+            if key != "config":
+                keys_view[key] = value
 
         codex_touched = any(
             key.startswith("external_cli_agent_codex_") for key in keys_view

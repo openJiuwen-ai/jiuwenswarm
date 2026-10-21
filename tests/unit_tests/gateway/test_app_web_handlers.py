@@ -2655,6 +2655,58 @@ async def test_config_save_all_nested_shape_triggers_install_gate(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_install_gate_team_collision_top_level_wins(monkeypatch):
+    """碰撞形状回归：顶层 team 与嵌套 config.team 并存时顶层优先（与
+    config_save_all_handler 的合并顺序一致）。
+
+    反向合并（嵌套覆盖顶层）时门控看到不含 codex 的嵌套 team 而漏判，
+    落盘的却是顶层含 codex 的 team——codex 未经安装门控直接启用。
+    """
+    channel = FakeWebChannel()
+
+    monkeypatch.setenv("WEB_PORT", "19000")
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client())
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+        lambda: {"preferred_language": "zh", "modes": {"team": {"jiuwen_team": {}}}},
+    )
+    ensure_calls: list[None] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        lambda: ensure_calls.append(None) or {
+            "status": "running", "error": "", "started_at": 1.0, "finished_at": 0.0,
+        },
+    )
+
+    await channel.methods["config.save_all"](
+        object(),
+        "req-team-collision",
+        {
+            # 顶层 team 含 codex（save_all 落盘的正是这份）；嵌套 config.team 不含
+            "team": [
+                {"team_name": "alpha", "external_cli_agents": [{"cli_agent": "codex"}]},
+            ],
+            "config": {
+                "team": [
+                    {"team_name": "alpha", "external_cli_agents": [{"cli_agent": "claude"}]},
+                ],
+            },
+        },
+        "sess-team-collision",
+    )
+
+    # 门控按合并后（顶层优先）的 team 载荷判定：codex 命中 → ensure 被调、短路
+    assert ensure_calls, "碰撞形状下门控必须按顶层 team 判定并触发安装"
+    assert channel.responses[-1]["ok"] is True
+    installs = channel.responses[-1]["payload"]["external_cli_dependency_installs"]
+    assert installs["codex"]["status"] == "running"
+    assert channel.responses[-1]["payload"]["updated"] == []
+
+
+@pytest.mark.asyncio
 async def test_config_set_starts_codex_dependency_install_without_saving_codex(monkeypatch):
     channel = FakeWebChannel()
     updates: list[tuple[list[str], str | None]] = []
