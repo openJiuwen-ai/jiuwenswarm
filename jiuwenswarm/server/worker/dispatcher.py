@@ -163,12 +163,6 @@ class WorkerDispatcher:
         if kind == KIND_SUBSCRIBE:
             self._spawn(self._subscribe(message, conn, generation), generation)
             return True
-        if kind == KIND_DELIVERY_ACK:
-            self._bridge.acknowledge(message)
-            return True
-        if kind == KIND_SUBSCRIBE:
-            self._spawn(self._subscribe(message, conn, generation), generation)
-            return True
         if kind == KIND_SHUTDOWN:
             self.shutdown_requested = True
             return False
