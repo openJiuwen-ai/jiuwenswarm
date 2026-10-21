@@ -57,6 +57,7 @@ from ruamel.yaml.comments import CommentedMap
 
 from jiuwenswarm.common.path_provider import (
     PathCategory,
+    PathContext,
     current_path_context,
     get_path_provider,
 )
@@ -1093,7 +1094,7 @@ def _migrate_workspace_to_jiuwenclaw_workspace(workspace_dir: Path) -> None:
     def _merge_one(tenant_root: Path) -> None:
         agent_root = tenant_root / "agent"
         old_workspace = agent_root / "workspace"
-        new_workspace = agent_root / "jiuwenclaw_workspace"
+        new_workspace = get_agent_workspace_dir(agent_root=agent_root, use_provider=False)
         if not old_workspace.exists():
             # 旧目录已不存在：可能是并发进程刚完成迁移（可能来不及重写元数据
             # 就崩溃），仍需重写元数据兜底（幂等，无命中不写盘）。
@@ -1222,7 +1223,9 @@ def _migrate_legacy_workspace(
     old_skills = workspace_dir / "agent" / "skills"
     old_memory = workspace_dir / "agent" / "memory"
 
-    new_workspace = workspace_dir / "agent" / "jiuwenclaw_workspace"
+    new_workspace = get_agent_workspace_dir(
+        agent_root=workspace_dir / get_agent_root_relative_dir(), use_provider=False,
+    )
     new_workspace.mkdir(parents=True, exist_ok=True)
 
     # 1. Migrate old home files
@@ -1579,12 +1582,12 @@ def prepare_workspace(
     agent_workspace = get_multi_tenant_user_workspace_dir("default")
     agent_workspace.mkdir(parents=True, exist_ok=True)
     (agent_workspace / ".checkpoint").mkdir(parents=True, exist_ok=True)
-    agent_root = agent_workspace / "agent"
+    agent_root = agent_workspace / get_agent_root_relative_dir()
     agent_root.mkdir(parents=True, exist_ok=True)
     agent_sessions = agent_root / "sessions"
 
     # ----- DeepAgent workspace (standard DeepAgents schema) -----
-    deepagent_workspace = agent_root / "jiuwenclaw_workspace"
+    deepagent_workspace = get_agent_workspace_dir(agent_root=agent_root, use_provider=False)
     default_project_workspace = deepagent_workspace / "projects"
     agent_skills = deepagent_workspace / "skills"
     agent_memory = deepagent_workspace / "memory"
@@ -1861,7 +1864,10 @@ def _resolve_paths(force=False) -> None:
     user_config_dir = workspace_dir / "config"
     # 租户默认工作区：个人版 service_default/agent_default；企业版 workspace_default
     multi_tenant_workspace = get_multi_tenant_user_workspace_dir("default")
-    user_workspace_dir = multi_tenant_workspace / "agent" / "jiuwenclaw_workspace"
+    user_workspace_dir = get_agent_workspace_dir(
+        agent_root=multi_tenant_workspace / get_agent_root_relative_dir(),
+        use_provider=False,
+    )
     if user_config_dir.exists():
         _root_dir = workspace_dir
         _config_dir = user_config_dir
@@ -1922,7 +1928,10 @@ def get_root_dir() -> Path:
     return _root_dir
 
 
-def _dispatch_path(category, *, node=None, session_id=None, explicit=None):
+def _dispatch_path(
+    category, *, node=None, session_id=None, explicit=None, context=None,
+    agent_root=None, workspace_key=None, service_id=None, agent_id=None,
+):
     """Resolve optional overrides without displacing explicit tenant paths."""
     if explicit is not None:
         return None
@@ -1930,7 +1939,13 @@ def _dispatch_path(category, *, node=None, session_id=None, explicit=None):
     if provider is None:
         return None
     try:
-        ctx = current_path_context(session_id=session_id)
+        ctx = context if context is not None else current_path_context(
+            session_id=session_id,
+            agent_root=agent_root,
+            workspace_key=workspace_key,
+            service_id=service_id,
+            agent_id=agent_id,
+        )
         if category == PathCategory.SHARED_SKILLS_DIRS:
             paths = provider.resolve_path_list(category, ctx)
             if paths is None:
@@ -1962,29 +1977,64 @@ def _dispatch_workspace_directories():
         return None
 
 
-def get_agent_workspace_dir() -> Path:
+def get_agent_workspace_dir(
+    *,
+    agent_root: Path | str | None = None,
+    workspace_key: str | None = None,
+    service_id: str | None = None,
+    agent_id: str | None = None,
+    use_provider: bool = True,
+    context: PathContext | None = None,
+) -> Path:
     """Get the agent workspace directory path.
 
     This is the DeepAgent standard workspace directory under the agent root.
     It contains standard nodes like skills, memory, todo, messages, etc.
+
+    agent_root 和租户标识是 Provider 的作用域提示，不是最终工作区路径。
+    Provider 未返回路径时保留原有作用域的默认布局；use_provider=False
+    供历史迁移、启动和相对布局计算使用。本函数不创建目录。
+    context 可单独指定 Provider 上下文，用于保留旧文件接口的默认回退根。
 
     Returns:
         Path to agent workspace:
         ``~/.jiuwenswarm/workspace_default/agent/jiuwenclaw_workspace``
         (or the request-bound tenant workspace when ContextVar is set).
     """
-    overridden = _dispatch_path(PathCategory.WORKSPACE)
-    if overridden is not None:
-        return overridden
-    try:
-        from jiuwenswarm.server.runtime.tenant_context import get_bound_jiuwenclaw_workspace
+    if agent_root is None and any(
+        value is not None for value in (workspace_key, service_id, agent_id)
+    ):
+        agent_root = resolve_tenant_agent_root_dir(
+            workspace_key, service_id=service_id, agent_id=agent_id,
+        )
+    if use_provider:
+        overridden = _dispatch_path(
+            PathCategory.WORKSPACE,
+            agent_root=agent_root,
+            workspace_key=workspace_key,
+            service_id=service_id,
+            agent_id=agent_id,
+            context=context,
+        )
+        if overridden is not None:
+            return overridden
+    if agent_root is None and all(
+        value is None for value in (workspace_key, service_id, agent_id)
+    ):
+        try:
+            from jiuwenswarm.server.runtime.tenant_context import get_bound_jiuwenclaw_workspace
 
-        bound = get_bound_jiuwenclaw_workspace()
-        if bound is not None:
-            return bound
-    except ImportError:
-        logger.debug("tenant_context unavailable for workspace bind", exc_info=True)
-    return get_agent_root_dir() / "jiuwenclaw_workspace"
+            bound = get_bound_jiuwenclaw_workspace()
+            if bound is not None:
+                return bound
+        except ImportError:
+            logger.debug("tenant_context unavailable for workspace bind", exc_info=True)
+        agent_root = get_agent_root_dir()
+    elif agent_root is None:
+        agent_root = resolve_tenant_agent_root_dir(
+            workspace_key, service_id=service_id, agent_id=agent_id,
+        )
+    return Path(agent_root) / "jiuwenclaw_workspace"
 
 
 def get_default_project_workspace_dir() -> Path:
@@ -2061,7 +2111,10 @@ def get_service_root_dir(service_id: str = "default") -> Path:
     return get_user_workspace_dir() / f"service_{sid}"
 
 
-def get_agent_root_dir() -> Path:
+def get_agent_root_dir(
+    *, agent_root: Path | str | None = None, workspace_key: str | None = None,
+    service_id: str | None = None, agent_id: str | None = None,
+) -> Path:
     """Get the agent root directory path (multi-tenant default).
 
     Path:
@@ -2069,9 +2122,20 @@ def get_agent_root_dir() -> Path:
     - 企业版: ``~/.jiuwenswarm/workspace_default/agent/``
     （或请求绑定的 agent root ContextVar）。
     """
-    overridden = _dispatch_path(PathCategory.AGENT_ROOT)
+    if agent_root is None and any(
+        value is not None for value in (workspace_key, service_id, agent_id)
+    ):
+        agent_root = resolve_tenant_agent_root_dir(
+            workspace_key, service_id=service_id, agent_id=agent_id,
+        )
+    overridden = _dispatch_path(
+        PathCategory.AGENT_ROOT, agent_root=agent_root, workspace_key=workspace_key,
+        service_id=service_id, agent_id=agent_id,
+    )
     if overridden is not None:
         return overridden
+    if agent_root is not None:
+        return Path(agent_root)
     try:
         from jiuwenswarm.server.runtime.tenant_context import get_bound_agent_root
 
@@ -2080,7 +2144,7 @@ def get_agent_root_dir() -> Path:
             return bound
     except ImportError:
         logger.debug("tenant_context unavailable for agent root bind", exc_info=True)
-    return get_multi_tenant_user_workspace_dir("default") / "agent"
+    return get_multi_tenant_user_workspace_dir("default") / get_agent_root_relative_dir()
 
 
 def get_agent_root_relative_dir() -> Path:
@@ -2090,13 +2154,17 @@ def get_agent_root_relative_dir() -> Path:
 
 def get_agent_workspace_relative_dir() -> Path:
     """Get the agent workspace relative path under a tenant workspace root."""
-    return get_agent_root_relative_dir() / "jiuwenclaw_workspace"
+    return get_agent_workspace_dir(
+        agent_root=get_agent_root_relative_dir(), use_provider=False,
+    )
 
 
 _AGENT_WORKSPACE_DIR_NAMES = frozenset({"workspace", "jiuwenclaw_workspace"})
 
 
-def collapse_nested_agent_workspace_dir(path: Path | str) -> Path:
+def collapse_nested_agent_workspace_dir(
+    path: Path | str, *, workspace_dir: Path | str | None = None,
+) -> Path:
     """Collapse ``.../workspace/workspace`` back to the agent workspace.
 
     The agent workspace is ``.../agent/workspace`` (legacy name) or
@@ -2108,6 +2176,13 @@ def collapse_nested_agent_workspace_dir(path: Path | str) -> Path:
     是 real FS 调用(实测 cwd_seed 段 46-93ms/轮);同参结果按路径语义稳定,
     lru_cache 后重复调用近零成本。
     """
+    if workspace_dir is None and get_path_provider() is not None:
+        workspace_dir = _dispatch_path(PathCategory.WORKSPACE)
+    if workspace_dir is not None:
+        resolved = Path(path).expanduser().resolve()
+        workspace = Path(workspace_dir).expanduser().resolve()
+        if resolved == workspace or resolved == workspace / "workspace":
+            return workspace
     return Path(_collapse_workspace_dir_cached(str(path)))
 
 
@@ -2199,10 +2274,20 @@ def get_tenant_agent_workspace_dir(workspace_key: str | None = None) -> Path:
     企业版 tenant_root 为 ``workspace_{key}``；个人版为 ``service_default/agent_default``。
     """
     wk = _effective_workspace_key(workspace_key)
-    return get_multi_tenant_user_workspace_dir(wk) / get_agent_workspace_relative_dir()
+    return get_agent_workspace_dir(
+        agent_root=get_multi_tenant_user_workspace_dir(wk) / get_agent_root_relative_dir(),
+        workspace_key=wk,
+    )
 
 
-def seed_tenant_agent_workspace(tenant_root: Path) -> None:
+def seed_tenant_agent_workspace(
+    tenant_root: Path,
+    *,
+    workspace_key: str | None = None,
+    service_id: str | None = None,
+    agent_id: str | None = None,
+    workspace_dir: Path | None = None,
+) -> None:
     """为租户工作区补种 DeepAgent 标准模板文件（幂等，已存在一律跳过）。
  
     ``prepare_workspace`` 只初始化默认租户（个人版 ``service_default/agent_default``），
@@ -2211,7 +2296,12 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
     HEARTBEAT/USER/MEMORY.md 等模板。首次进入某租户请求时调用本函数补齐，
     使 write_memory/read_memory 等记忆工具有完整的工作区骨架。
     """
-    workspace = Path(tenant_root) / get_agent_workspace_relative_dir()
+    workspace = Path(workspace_dir) if workspace_dir is not None else get_agent_workspace_dir(
+        agent_root=Path(tenant_root) / get_agent_root_relative_dir(),
+        workspace_key=workspace_key,
+        service_id=service_id,
+        agent_id=agent_id,
+    )
     memory_dir = workspace / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
  
@@ -2254,6 +2344,24 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
         logger.info(
             "seed_tenant_agent_workspace: %s -> %s", ", ".join(added), workspace,
         )
+
+
+def prepare_provider_workspace() -> None:
+    """扩展加载后补种插件工作区；不迁移或覆盖默认目录的数据。"""
+    if get_path_provider() is None:
+        return
+    tenant_root = get_multi_tenant_user_workspace_dir(
+        "default", service_id="default", agent_id="default",
+    )
+    workspace = get_agent_workspace_dir(
+        agent_root=tenant_root / get_agent_root_relative_dir(), workspace_key="default",
+        service_id="default", agent_id="default",
+    )
+    default = get_agent_workspace_dir(
+        agent_root=tenant_root / get_agent_root_relative_dir(), use_provider=False,
+    )
+    if workspace != default:
+        seed_tenant_agent_workspace(tenant_root, workspace_dir=workspace)
 
 
 def get_tenant_agent_skills_dirs(workspace_key: str | None = None) -> list[Path]:
@@ -2477,7 +2585,7 @@ def resolve_tenant_agent_root_dir(
         wk,
         service_id=service_id,
         agent_id=agent_id,
-    ) / "agent"
+    ) / get_agent_root_relative_dir()
 
 
 def resolve_tenant_agent_workspace_dir(
@@ -2487,11 +2595,15 @@ def resolve_tenant_agent_workspace_dir(
     agent_id: str | None = None,
 ) -> Path:
     """Resolve ``<tenant_root>/agent/jiuwenclaw_workspace``."""
-    return resolve_tenant_agent_root_dir(
+    agent_root = resolve_tenant_agent_root_dir(
         workspace_key,
         service_id=service_id,
         agent_id=agent_id,
-    ) / "jiuwenclaw_workspace"
+    )
+    return get_agent_workspace_dir(
+        agent_root=agent_root, workspace_key=workspace_key,
+        service_id=service_id, agent_id=agent_id,
+    )
 
 
 def resolve_tenant_sessions_dir(

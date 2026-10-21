@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.utils import get_agent_workspace_relative_dir
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,9 @@ class FileTransferConfig:
     chunk_size: int = 65536
     max_file_size: int = 104857600
     transfer_timeout: int = 300
-    received_files_dir: str = "agent/jiuwenclaw_workspace/received_files"
+    received_files_dir: str = (
+        get_agent_workspace_relative_dir() / "received_files"
+    ).as_posix()
     cleanup_interval: int = 3600
     cleanup_age: int = 86400
     max_concurrent_transfers: int = 5
@@ -46,7 +49,7 @@ class FileTransferConfig:
             "max_file_size": int(data.get("max_file_size", 104857600)),
             "transfer_timeout": int(data.get("transfer_timeout", 300)),
             "received_files_dir": str(
-                data.get("received_files_dir", "agent/jiuwenclaw_workspace/received_files")
+                data.get("received_files_dir", cls.received_files_dir)
             ),
             "cleanup_interval": int(data.get("cleanup_interval", 3600)),
             "cleanup_age": int(data.get("cleanup_age", 86400)),

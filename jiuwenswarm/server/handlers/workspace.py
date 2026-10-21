@@ -58,11 +58,17 @@ def _force_refresh(params: dict[str, Any]) -> bool:
     return False
 
 
-def _resolve_used_bytes(root: Any, params: dict[str, Any]) -> int:
+def _resolve_used_bytes(
+    root: Any, params: dict[str, Any], *, workspace_root=None,
+) -> int:
     uid, gid, bid = _identity_from_params(params)
     if _force_refresh(params):
-        return measure_and_cache(root, user_id=uid, group_id=gid, bot_id=bid)
-    mark_usage_active(root, user_id=uid, group_id=gid, bot_id=bid)
+        return measure_and_cache(
+            root, user_id=uid, group_id=gid, bot_id=bid, workspace_root=workspace_root,
+        )
+    mark_usage_active(
+        root, user_id=uid, group_id=gid, bot_id=bid, workspace_root=workspace_root,
+    )
     return get_cached_used(root)
 
 
@@ -91,13 +97,21 @@ async def handle_workspace(ctx: RequestContext) -> None:
     params = request.params if isinstance(request.params, dict) else {}
     try:
         root = _tenant_root_from_request(request)
-        svc = WorkspaceService(tenant_root=root)
+        svc = WorkspaceService.for_tenant(
+            root,
+            workspace_key=getattr(request, "workspace_key", None) or params.get("workspace_key")
+            or ("default" if is_enterprise() else None),
+            service_id=getattr(request, "service_id", None),
+            agent_id=getattr(request, "agent_id", None),
+        )
         if method == ReqMethod.WORKSPACE_TREE:
             data = svc.list_tree(params.get("relative_path"))
             # 不再附带全量 du；用量由独立 usage 接口 / 后台校准提供。
             resp = _ok_response(request, data)
         elif method == ReqMethod.WORKSPACE_USAGE:
-            used = await asyncio.to_thread(_resolve_used_bytes, root, params)
+            used = await asyncio.to_thread(
+                _resolve_used_bytes, root, params, workspace_root=svc.agent_workspace,
+            )
             resp = _ok_response(request, {"used_bytes": used})
         elif method == ReqMethod.WORKSPACE_ENTRIES_DELETE:
             paths = params.get("relative_paths")
@@ -107,7 +121,9 @@ async def handle_workspace(ctx: RequestContext) -> None:
                 )
             else:
                 data = svc.delete_entries([str(x) for x in paths])
-                used = await asyncio.to_thread(_resolve_used_bytes, root, params)
+                used = await asyncio.to_thread(
+                    _resolve_used_bytes, root, params, workspace_root=svc.agent_workspace,
+                )
                 data = {
                     **data,
                     "used_bytes": used,

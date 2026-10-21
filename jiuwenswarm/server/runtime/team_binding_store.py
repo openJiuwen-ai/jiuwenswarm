@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.common.utils import get_agent_root_relative_dir, get_user_workspace_dir
 
 TEAM_NAME_RE = re.compile(r"^[^/\\\x00-\x1f\x7f]{1,64}$")
 
@@ -110,7 +110,9 @@ class TeamBindingStore:
     """File-backed team binding catalog."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path or get_user_workspace_dir() / "agent" / "teams" / "bindings.json"
+        self._path = path or (
+            get_user_workspace_dir() / get_agent_root_relative_dir() / "teams" / "bindings.json"
+        )
         self._lock = threading.RLock()
 
     @property

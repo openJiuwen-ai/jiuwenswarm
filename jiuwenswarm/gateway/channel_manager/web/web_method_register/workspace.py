@@ -127,6 +127,7 @@ async def _forward_to_agent(
 
 def _local_service(params: dict[str, Any] | None) -> WorkspaceService:
     p = params if isinstance(params, dict) else {}
+    key = None
     if is_enterprise():
         key = str(p.get("workspace_key") or "default").strip() or "default"
         root = get_multi_tenant_user_workspace_dir(key)
@@ -137,7 +138,11 @@ def _local_service(params: dict[str, Any] | None) -> WorkspaceService:
             service_id=str(sid).strip() if sid else None,
             agent_id=str(aid).strip() if aid else None,
         )
-    return WorkspaceService(tenant_root=root)
+    return WorkspaceService.for_tenant(
+        root, workspace_key=key,
+        service_id=str(p["service_id"]).strip() if p.get("service_id") else None,
+        agent_id=str(p["agent_id"]).strip() if p.get("agent_id") else None,
+    )
 
 
 async def _usage_payload_from_used(
@@ -196,9 +201,13 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
         uid, gid, bid = _identity_from_params(params)
         if _force_refresh(params):
             return measure_and_cache(
-                svc.tenant_root, user_id=uid, group_id=gid, bot_id=bid
+                svc.tenant_root, user_id=uid, group_id=gid, bot_id=bid,
+                workspace_root=svc.agent_workspace,
             )
-        mark_usage_active(svc.tenant_root, user_id=uid, group_id=gid, bot_id=bid)
+        mark_usage_active(
+            svc.tenant_root, user_id=uid, group_id=gid, bot_id=bid,
+            workspace_root=svc.agent_workspace,
+        )
         return get_cached_used(svc.tenant_root)
 
     async def _tree(ws, req_id, params, session_id):

@@ -20,6 +20,8 @@ parse_dotenv_early("jiuwenswarm-app")
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
 from jiuwenswarm.common.utils import (
     cleanup_team_files,
+    get_agent_root_relative_dir,
+    get_agent_workspace_dir,
     get_env_file,
     get_user_workspace_dir,
     prepare_workspace,
@@ -32,7 +34,9 @@ _parsed_dotenv_path = get_parsed_dotenv()
 
 _workspace_dir = get_user_workspace_dir()
 _config_file = _workspace_dir / "config" / "config.yaml"
-_new_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
+_new_workspace = get_agent_workspace_dir(
+    agent_root=_workspace_dir / get_agent_root_relative_dir(), use_provider=False,
+)
 _old_workspace = _workspace_dir / "agent" / "workspace"
 
 # 始终清理 Team 旧版本遗留文件（幂等操作，在 prepare_workspace 之前执行）

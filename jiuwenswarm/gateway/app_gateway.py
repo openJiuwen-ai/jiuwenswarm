@@ -1679,6 +1679,9 @@ async def _run_with_telemetry(
     extension_manager = ExtensionManager(registry=extension_registry)
     telemetry_lifecycle.bind_extension_manager(extension_manager)
     await extension_manager.load_all_extensions()
+    from jiuwenswarm.common.utils import prepare_provider_workspace
+
+    prepare_provider_workspace()
     logger.info("[App] extensions loaded: %d", len(extension_manager.list_extensions()))
     await telemetry_lifecycle.start(
         process_role="gateway",

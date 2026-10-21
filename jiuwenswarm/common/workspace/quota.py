@@ -138,11 +138,13 @@ class UsageCacheEntry:
     user_id: str = ""
     group_id: str = ""
     bot_id: str = ""
+    workspace_root: str | None = None
 
 
 # resolved root path -> cache entry
 _USAGE_CACHE: dict[str, UsageCacheEntry] = {}
 _USAGE_CACHE_LOCK = threading.Lock()
+_WORKSPACE_ROOT_UNSET = object()
 
 
 def db_policies_loaded() -> bool:
@@ -271,6 +273,7 @@ def set_cached_used(
     user_id: str = "",
     group_id: str = "",
     bot_id: str = "",
+    workspace_root: Path | str | None | object = _WORKSPACE_ROOT_UNSET,
 ) -> int:
     """写入最近一次 du 结果。"""
     key = _root_key(tenant_root)
@@ -284,6 +287,8 @@ def set_cached_used(
         entry.has_value = True
         entry.reconciled_at = time.monotonic()
         entry.active = True
+        if workspace_root is not _WORKSPACE_ROOT_UNSET:
+            entry.workspace_root = _root_key(workspace_root) if workspace_root is not None else None
         _touch_identity(entry, user_id=user_id, group_id=group_id, bot_id=bot_id)
         return entry.used_bytes
 
@@ -294,6 +299,7 @@ def mark_usage_active(
     user_id: str = "",
     group_id: str = "",
     bot_id: str = "",
+    workspace_root: Path | str | None | object = _WORKSPACE_ROOT_UNSET,
 ) -> None:
     """登记活跃租户，供后台定时扫盘（不执行 du）。"""
     key = _root_key(tenant_root)
@@ -304,6 +310,8 @@ def mark_usage_active(
             _USAGE_CACHE[key] = entry
         else:
             entry.active = True
+        if workspace_root is not _WORKSPACE_ROOT_UNSET:
+            entry.workspace_root = _root_key(workspace_root) if workspace_root is not None else None
         _touch_identity(entry, user_id=user_id, group_id=group_id, bot_id=bot_id)
 
 
@@ -313,12 +321,22 @@ def measure_and_cache(
     user_id: str = "",
     group_id: str = "",
     bot_id: str = "",
+    workspace_root: Path | str | None | object = _WORKSPACE_ROOT_UNSET,
 ) -> int:
     """同步执行 du 并写入缓存（近限门禁 / 手动刷新 / 后台校准）。"""
     root = Path(tenant_root)
-    used = max(0, int(measure_used_bytes(root)))
+    with _USAGE_CACHE_LOCK:
+        entry = _USAGE_CACHE.get(_root_key(root))
+        if workspace_root is _WORKSPACE_ROOT_UNSET:
+            workspace_root = entry.workspace_root if entry is not None else None
+    measured = (
+        measure_used_bytes(root, workspace_root=Path(workspace_root))
+        if workspace_root is not None else measure_used_bytes(root)
+    )
+    used = max(0, int(measured))
     return set_cached_used(
-        root, used, user_id=user_id, group_id=group_id, bot_id=bot_id
+        root, used, user_id=user_id, group_id=group_id, bot_id=bot_id,
+        workspace_root=workspace_root,
     )
 
 
@@ -358,6 +376,7 @@ def list_usage_reconcile_targets(
                     user_id=entry.user_id,
                     group_id=entry.group_id,
                     bot_id=entry.bot_id,
+                    workspace_root=entry.workspace_root,
                 )
             )
     out.sort(key=lambda e: (e.has_value, e.reconciled_at))

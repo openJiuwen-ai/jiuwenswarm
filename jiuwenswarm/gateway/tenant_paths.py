@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.utils import (
+    get_agent_root_relative_dir,
+    get_agent_workspace_dir,
     get_multi_tenant_user_workspace_dir,
     normalize_tenant_scope_id,
 )
@@ -79,7 +81,9 @@ def resolve_channel_agent_workspace(workspace_key: str | None = None) -> Path:
     """``<tenant_root>/agent/jiuwenclaw_workspace``（经 ``get_multi_tenant_user_workspace_dir``）。"""
     wk = normalize_tenant_scope_id(workspace_key)
     base = get_multi_tenant_user_workspace_dir(wk)
-    return base / "agent" / "jiuwenclaw_workspace"
+    return get_agent_workspace_dir(
+        agent_root=base / get_agent_root_relative_dir(), workspace_key=wk,
+    )
 
 
 def resolve_channel_group_chat_memory_dir(workspace_key: str | None = None) -> Path:

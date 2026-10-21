@@ -35,10 +35,28 @@ class FileHttpRoots:
     auto_harness_root: Path
 
 
+def _workspace_for_project(project_root: Path) -> Path:
+    from jiuwenswarm.common.path_provider import current_path_context, get_path_provider
+    from jiuwenswarm.common.utils import (
+        get_agent_root_dir,
+        get_agent_root_relative_dir,
+        get_agent_workspace_dir,
+    )
+
+    context = None
+    if get_path_provider() is not None:
+        context = current_path_context(agent_root=get_agent_root_dir())
+    # Provider 使用当前租户身份；无覆盖时继续使用文件接口原有的兼容根。
+    return get_agent_workspace_dir(
+        agent_root=project_root / get_agent_root_relative_dir(), context=context,
+    ).resolve()
+
+
 def default_file_http_roots() -> FileHttpRoots:
     from openjiuwen.agent_teams.paths import get_agent_teams_home
 
     from jiuwenswarm.common.utils import (
+        get_agent_root_relative_dir,
         get_logs_dir,
         get_user_workspace_dir,
     )
@@ -46,7 +64,7 @@ def default_file_http_roots() -> FileHttpRoots:
     project_root = get_user_workspace_dir().resolve()
     # Legacy app_web sandbox: paths like ``agent/workspace`` live under
     # ``<user_workspace>/agent/``, not only multi-tenant ``get_agent_root_dir()``.
-    workspace_root = (project_root / "agent").resolve()
+    workspace_root = (project_root / get_agent_root_relative_dir()).resolve()
     return FileHttpRoots(
         project_root=project_root,
         workspace_root=workspace_root,
@@ -77,11 +95,13 @@ def is_path_under_directory(base: Path, target: Path) -> bool:
 
 
 def _is_under_file_roots(roots: FileHttpRoots, target: Path) -> bool:
+    from jiuwenswarm.common.utils import get_agent_root_relative_dir
+
     target_resolved = target.resolve()
     try:
         checks: list[Path] = [
             roots.workspace_root,
-            (roots.project_root / "agent").resolve(),
+            (roots.project_root / get_agent_root_relative_dir()).resolve(),
             roots.agent_teams_root,
             roots.logs_root,
             roots.auto_harness_root,
@@ -92,6 +112,9 @@ def _is_under_file_roots(roots: FileHttpRoots, target: Path) -> bool:
             bound_agent = get_agent_root_dir().resolve()
             if bound_agent not in checks:
                 checks.append(bound_agent)
+            workspace = _workspace_for_project(roots.project_root)
+            if workspace not in checks:
+                checks.append(workspace)
         except Exception:  # noqa: BLE001
             pass
         for root in checks:
@@ -130,7 +153,24 @@ def is_download_path_allowed(target: Path, roots: FileHttpRoots | None = None) -
 
 
 def resolve_under_project(roots: FileHttpRoots, rel_or_abs: str) -> Path:
-    return (roots.project_root / rel_or_abs).resolve()
+    from jiuwenswarm.common.utils import get_agent_root_relative_dir, get_agent_workspace_dir
+
+    requested = (roots.project_root / rel_or_abs).resolve()
+    default = get_agent_workspace_dir(
+        agent_root=roots.project_root / get_agent_root_relative_dir(), use_provider=False,
+    ).resolve()
+    # 逻辑路径保留原协议；只替换工作区前缀，随后仍走原有 allowed-roots 校验。
+    if requested.is_relative_to(default):
+        workspace = _workspace_for_project(roots.project_root)
+        return (workspace / requested.relative_to(default)).resolve()
+    return requested
+
+
+def _logical_file_path(roots: FileHttpRoots, path: Path) -> str:
+    workspace = _workspace_for_project(roots.project_root)
+    if path.is_relative_to(workspace):
+        return str(Path("agent/jiuwenclaw_workspace") / path.relative_to(workspace))
+    return str(path.relative_to(roots.project_root))
 
 
 def _normalize_lang_suffix(name: str) -> str:
@@ -147,14 +187,19 @@ def _normalize_lang_suffix(name: str) -> str:
 
 def generate_agent_data(project_root: Path) -> None:
     """Generate agent/jiuwenclaw_workspace/agent-data.json from agent tree."""
-    agent_root = (project_root / "agent").resolve()
-    workspace_root = (agent_root / "jiuwenclaw_workspace").resolve()
+    from jiuwenswarm.common.utils import get_agent_root_relative_dir, get_agent_workspace_dir
+
+    agent_root = (project_root / get_agent_root_relative_dir()).resolve()
+    workspace_root = _workspace_for_project(project_root)
     output_path = (workspace_root / "agent-data.json").resolve()
     root_folder_key = "__root__"
 
-    if not agent_root.exists():
+    default_workspace = get_agent_workspace_dir(
+        agent_root=agent_root, use_provider=False,
+    ).resolve()
+    if not agent_root.exists() and workspace_root == default_workspace:
         raise FileNotFoundError("agent directory not found")
-    if not agent_root.is_dir():
+    if agent_root.exists() and not agent_root.is_dir():
         raise NotADirectoryError("agent is not a directory")
 
     folder_data: dict[str, list[dict[str, str | bool]]] = {}
@@ -164,7 +209,9 @@ def generate_agent_data(project_root: Path) -> None:
             continue
         if any(part.startswith(".") for part in entry.relative_to(workspace_root).parts):
             continue
-        relative_folder_path = entry.parent.relative_to(agent_root).as_posix()
+        relative_folder_path = (
+            Path("jiuwenclaw_workspace") / entry.parent.relative_to(workspace_root)
+        ).as_posix()
         folder_key = root_folder_key if relative_folder_path == "." else relative_folder_path
 
         display_name = _normalize_lang_suffix(entry.name)
@@ -246,7 +293,7 @@ def list_markdown(roots: FileHttpRoots, dir_arg: str) -> tuple[int, dict[str, An
         files.append(
             {
                 "name": entry.name,
-                "path": str(entry.relative_to(roots.project_root)),
+                "path": _logical_file_path(roots, entry),
             }
         )
     return 200, {"files": files}
@@ -269,7 +316,7 @@ def list_files(roots: FileHttpRoots, dir_arg: str) -> tuple[int, dict[str, Any]]
         files.append(
             {
                 "name": entry.name,
-                "path": str(entry.relative_to(roots.project_root)),
+                "path": _logical_file_path(roots, entry),
                 "isMarkdown": is_markdown(entry) if entry.is_file() else False,
                 "isDirectory": entry.is_dir(),
             }
@@ -303,8 +350,11 @@ def read_file_text(
             # requests to it so the caller actually receives the data.
             if normalized_arg == "agent/workspace/agent-data.json":
                 full_path = (
-                    roots.project_root / "agent" / "jiuwenclaw_workspace" / "agent-data.json"
+                    _workspace_for_project(roots.project_root)
+                    / "agent-data.json"
                 ).resolve()
+            if not is_path_under_allowed_root(roots, full_path):
+                return 403, {"error": "forbidden_path"}, None, None
         if not full_path.exists():
             return (
                 404,
@@ -362,8 +412,17 @@ def write_markdown_content(
         from jiuwenswarm.common.workspace.quota import (
             WorkspaceQuotaExceeded,
             check_path_write,
+            mark_usage_active,
+            resolve_tenant_root,
         )
+        from jiuwenswarm.common.utils import get_agent_root_relative_dir, get_agent_workspace_dir
 
+        workspace = _workspace_for_project(roots.project_root)
+        default = get_agent_workspace_dir(
+            agent_root=roots.project_root / get_agent_root_relative_dir(), use_provider=False,
+        ).resolve()
+        if workspace != default and full_path.is_relative_to(workspace):
+            mark_usage_active(resolve_tenant_root(), workspace_root=workspace)
         check_path_write(full_path, request_content, encoding="utf-8")
     except WorkspaceQuotaExceeded:
         return 403, {"error": "WORKSPACE_QUOTA_EXCEEDED", "detail": "WORKSPACE_QUOTA_EXCEEDED"}

@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 
-from jiuwenswarm.common.utils import get_agent_root_dir
+from jiuwenswarm.common.utils import get_agent_root_dir, get_agent_workspace_dir
 from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
@@ -781,7 +781,8 @@ def resolve_default_project_dir(
     """
     dir_name = validate_project_dir_name(name)
     mode = _normalize_work_mode_value(work_mode)
-    return str(get_agent_root_dir() / "jiuwenclaw_workspace" / mode / dir_name)
+    workspace_dir = get_agent_workspace_dir(agent_root=get_agent_root_dir())
+    return str(workspace_dir / mode / dir_name)
 
 
 def create_project(
