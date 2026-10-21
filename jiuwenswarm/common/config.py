@@ -2622,10 +2622,12 @@ def _normalize_external_cli_agents(value: Any, field_name: str) -> list[dict[str
         if isinstance(item, dict):
             cli_path = str(item.get("cli_path") or "").strip()
             legacy_codex_bin = str(item.get("codex_bin") or "").strip()
+            from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
             if cli_path:
-                normalized_item["cli_path"] = cli_path
+                normalized_item["cli_path"] = resolve_preserved_cli_path(cli_path)
             elif cli_agent == "codex" and legacy_codex_bin:
-                normalized_item["cli_path"] = legacy_codex_bin
+                normalized_item["cli_path"] = resolve_preserved_cli_path(legacy_codex_bin)
             builtin_models = _normalize_builtin_models(
                 item.get("builtin_models"),
                 f"{field_name}[{index}].builtin_models",

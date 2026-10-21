@@ -57,6 +57,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 AppMutex=JiuwenSwarm.App,Global\JiuwenSwarm.App,{#MyAppName}.App,Global\{#MyAppName}.App
 CloseApplications=yes
 RestartApplications=no
+ChangesEnvironment=yes
 #ifdef BuildSignToolName
   ; The compiler-provided Sign Tool signs Setup itself. Enabling the signed
   ; uninstaller also signs temporary self-copies executed from {tmp}.
@@ -71,6 +72,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
+Source: "preserve-windows-cli.ps1"; Flags: dontcopy
 Source: "..\dist\{#BuildDistDirName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\jiuwenswarm\channels\web\frontend\public\logo.ico"; DestDir: "{app}"; DestName: "logo-{#MyAppVersion}.ico"; Flags: ignoreversion
 
@@ -102,6 +104,7 @@ Type: dirifempty; Name: "{app}"
 Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall
 
 [Code]
+#include "windows-cli-preservation.iss"
 function HasDescriptionStemInTree(const Directory, Stem: String): Boolean;
 var
   FindRec: TFindRec;
@@ -228,6 +231,8 @@ begin
 
   { The current per-user installation directory is writable by Setup. }
   CleanupStaleOpenJiuwenDescriptions();
+  if not PreserveWindowsCli(ExpandConstant('{app}'), 'Initialize') then
+    RaiseException('External CLI initialization failed. Preserved files remain in the user data directory.');
 end;
 
 const
@@ -382,6 +387,11 @@ var
   DownloadFailureReason: String;
 begin
   Result := '';
+  if not PreserveWindowsCli(ExpandConstant('{app}'), 'Preserve') then
+  begin
+    Result := 'External CLI preservation failed; installation stopped before cleanup.';
+    exit;
+  end;
 
   if GetWebView2RuntimeVersion(RuntimeVersion) then
   begin
@@ -552,6 +562,11 @@ begin
             '若应用正在运行，请先关闭后再继续。' + #13#10 + #13#10 +
             '是否现在卸载旧版本？',
             mbConfirmation, MB_YESNO) <> IDYES then
+  begin
+    Result := False;
+    Exit;
+  end;
+  if not PreserveWindowsCli(ExtractFileDir(LegacyUninstaller), 'Preserve') then
   begin
     Result := False;
     Exit;
