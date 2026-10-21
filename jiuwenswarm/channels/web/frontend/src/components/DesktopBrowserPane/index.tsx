@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Globe2, LoaderCircle, LockKeyhole, RefreshCw, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Globe2, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ElectronBrowserState } from '../../types/electron';
@@ -233,13 +233,6 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
           {browserState.loading ? <X aria-hidden size={17} /> : <RefreshCw aria-hidden size={16} />}
         </button>
         <form className="desktop-browser-address-form" onSubmit={navigate} data-testid="desktop-browser-address-form">
-          {browserState.loading ? (
-            <LoaderCircle className="desktop-browser-address-icon desktop-browser-loading" aria-hidden size={15} />
-          ) : browserState.url.startsWith('https://') ? (
-            <LockKeyhole className="desktop-browser-address-icon" aria-hidden size={14} />
-          ) : (
-            <Globe2 className="desktop-browser-address-icon" aria-hidden size={15} />
-          )}
           <input
             className="desktop-browser-address"
             data-testid="desktop-browser-address"
