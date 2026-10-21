@@ -35,7 +35,7 @@ async def test_proxy_working_itself_pushes_the_same_card_protocol_as_a_team(serv
     await store.finish(record["execution_id"], backend, "Reviewed directly", [])
     payloads = [call.args[0]["payload"] for call in push.await_args_list]
     assert [item["event_type"] for item in payloads] == [
-        "group.execution.created", "group.execution.updated", "group.execution.updated", "group.execution.finished",
+        "group.execution.created", "group.execution.updated", "group.execution.updated", "group.execution.updated",
     ]
     assert {item["execution_id"] for item in payloads} == {record["execution_id"]}
     assert payloads[-1]["result"] == "Reviewed directly"
@@ -89,3 +89,38 @@ async def test_final_result_is_correlated_by_execution_id_only(service, monkeypa
     })
     assert other["execution_id"] is None
     assert gr.correlate_public_reply(gid, {"sender": "user"}) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["completed", "failed", "cancelled", "timed_out", "delivery_failed", "owner_lost"])
+async def test_terminal_paths_use_updated_event_with_persisted_status(service, monkeypatch, path):
+    from jiuwenswarm.server.gateway_push import transport
+
+    push = AsyncMock(return_value=True)
+    monkeypatch.setattr(transport.WebSocketGatewayPushTransport, "send_push", push)
+    group = await group_with_proxy(service)
+    store = ge.GroupExecutions(group["group_id"])
+    record = (await store.create(["advisor"], "Review", path))[0]
+    key = record["execution_id"]
+    if path == "completed":
+        backend = SimpleNamespace(
+            member_name="advisor",
+            append_group_message=AsyncMock(return_value=SimpleNamespace(message=SimpleNamespace(message_id="final"))),
+        )
+        await store.finish(key, backend, "Done", [])
+    elif path == "delivery_failed":
+        await store.fail_pending([key], "delivery_failed")
+    elif path == "owner_lost":
+        monkeypatch.setattr(ge.lifecycle, "runtime_owner_alive", lambda _: False)
+        await store.reconcile()
+    else:
+        await store.update(key, status=path, phase=path)
+    payloads = [call.args[0]["payload"] for call in push.await_args_list]
+    assert {item["event_type"] for item in payloads} == {
+        "group.execution.created", "group.execution.updated",
+    }
+    expected = {"delivery_failed": "failed", "owner_lost": "interrupted"}.get(path, path)
+    assert payloads[-1]["event_type"] == "group.execution.updated"
+    assert payloads[-1]["status"] == expected
+    assert store.get(key)["status"] == expected
+    assert payloads[-1]["revision"] > payloads[0]["revision"]
