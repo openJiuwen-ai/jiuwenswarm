@@ -8588,7 +8588,9 @@ class AgentWebSocketServer:
         # Build McpServerConfig (same logic as _fetch_mcp_tools_from_config)
         payload: dict[str, Any] = {"server_name": name, "client_type": transport}
         if transport == "stdio":
-            command = server_payload.get("command", "")
+            from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+            command = resolve_preserved_cli_path(server_payload.get("command", ""))
             if not command:
                 return True, "skipped: no command"
             # stdio 预检查改为纯静态校验,静态校验零 spawn、零 anyio。
@@ -8599,6 +8601,7 @@ class AgentWebSocketServer:
                 for arg in raw_args:
                     if not isinstance(arg, str):
                         continue
+                    arg = resolve_preserved_cli_path(arg)
                     looks_like_path = (
                         arg.startswith(("/", "./", "../", "~"))
                         or arg.endswith((".js", ".mjs", ".cjs", ".json", ".py", ".sh"))

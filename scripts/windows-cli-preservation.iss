@@ -24,3 +24,15 @@ begin
       MsgBox('External CLI initialization failed. Recovery copies remain in the user data directory.' +
         Chr(13) + Chr(10) + 'Details: ' + ReportPath, mbError, MB_OK);
 end;
+
+function RestoreWindowsCliConfiguration(const BackendPath: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(BackendPath, '--desktop-restore-upgrade-config', '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if Result then
+    Result := ResultCode = 0;
+  if not Result then
+    MsgBox('Legacy agent configuration recovery failed. The encrypted snapshot remains in the user data directory.', mbError, MB_OK);
+end;

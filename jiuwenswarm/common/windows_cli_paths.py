@@ -17,9 +17,11 @@ def windows_npm_root() -> Path:
     return get_user_workspace_dir() / "runtime" / "npm"
 
 
-def _preserved_prefixes() -> list[tuple[Path, Path]]:
+def _preserved_prefixes(*, sdk: bool = False) -> list[tuple[Path, Path]]:
     """Read completed records, confining working copies to our installed store."""
-    store = windows_npm_root() / "preserved"
+    root = windows_npm_root()
+    store = root.parent / "external-cli-preserved" if sdk else root / "preserved"
+    installed = root.parent / "external-cli" if sdk else root / "installed"
     if not store.is_dir():
         return []
     try:
@@ -34,28 +36,37 @@ def _preserved_prefixes() -> list[tuple[Path, Path]]:
                 continue
             source = Path(data["source"])
             target = Path(data["target"])
-            target.resolve().relative_to((windows_npm_root() / "installed").resolve())
+            target.resolve().relative_to(installed.resolve())
+            if sdk:
+                from jiuwenswarm.common.external_cli_runtime import get_external_cli_runtime_status
+
+                if target.parent.parent.resolve() != installed.resolve() or target.name != "site-packages":
+                    continue
+                if get_external_cli_runtime_status(target.parent.name)["runtime_state"] != "current":
+                    continue
             if source.is_absolute() and target.is_dir() and (source, target) not in prefixes:
                 prefixes.append((source, target))
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
             continue
     return prefixes
 
 
-def resolve_preserved_cli_path(value: str | None) -> str | None:
+def resolve_preserved_cli_path(value: str | None, *, directory: bool = False) -> str | None:
     """Translate only missing absolute paths covered by a verified preservation."""
     if os.name != "nt" or not value:
         return value
-    original = Path(value)
+    quote = value[:1] if value[:1] in {"\"", "'"} and value[-1:] == value[:1] else ""
+    original = Path(value[1:-1] if quote else value)
     if not original.is_absolute() or original.exists():
         return value
-    for source, target in _preserved_prefixes():
+    for source, target in [*_preserved_prefixes(), *_preserved_prefixes(sdk=True)]:
         try:
             relative = original.relative_to(source)
             candidate = target / relative
             candidate.resolve().relative_to(target.resolve())
-            if candidate.is_file():
-                return str(candidate)
+            matches = candidate.is_dir() if directory else candidate.is_file()
+            if matches:
+                return f"{quote}{candidate}{quote}"
         except (OSError, ValueError, KeyError, TypeError):
             continue
     return value

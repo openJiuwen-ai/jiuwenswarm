@@ -233,6 +233,8 @@ begin
   CleanupStaleOpenJiuwenDescriptions();
   if not PreserveWindowsCli(ExpandConstant('{app}'), 'Initialize') then
     RaiseException('External CLI initialization failed. Preserved files remain in the user data directory.');
+  if not RestoreWindowsCliConfiguration(ExpandConstant('{app}\{#MyAppExeName}')) then
+    RaiseException('External CLI configuration recovery failed.');
 end;
 
 const
@@ -376,6 +378,8 @@ begin
     Log('Downloaded WebView2 installer failed Microsoft Authenticode verification.');
 end;
 
+function MigrateLegacyAdminInstall(): Boolean; forward;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   RuntimeVersion: String;
@@ -390,6 +394,11 @@ begin
   if not PreserveWindowsCli(ExpandConstant('{app}'), 'Preserve') then
   begin
     Result := 'External CLI preservation failed; installation stopped before cleanup.';
+    exit;
+  end;
+  if not MigrateLegacyAdminInstall() then
+  begin
+    Result := 'Legacy administrator installation migration failed.';
     exit;
   end;
 
@@ -546,10 +555,11 @@ begin
   end;
 end;
 
-function InitializeSetup: Boolean;
+function MigrateLegacyAdminInstall(): Boolean;
 var
   LegacyUninstaller: String;
   ErrorCode: Integer;
+  Attempt: Integer;
 begin
   Result := True;
   // No old admin install: clean per-user install, no UAC at all.
@@ -571,6 +581,11 @@ begin
     Result := False;
     Exit;
   end;
+  if not PreserveWindowsCli(ExtractFileDir(LegacyUninstaller), 'PreserveConfig') then
+  begin
+    Result := False;
+    Exit;
+  end;
   // The old unins000.exe carries an admin manifest; runas lets it remove its
   // own Program Files tree + HKLM entry. /VERYSILENT keeps it headless.
   if not ShellExec('runas', LegacyUninstaller,
@@ -582,10 +597,17 @@ begin
     Result := False;
     Exit;
   end;
-  // Inno's uninstaller copies itself to TEMP and finishes asynchronously, so a
-  // completion check here would false-positive: the registry entry is removed
-  // near the end of the temp copy, after this call returns. The new per-user
-  // install targets {localappdata}\Programs and is independent of the old
-  // Program Files tree, so installation proceeds regardless. If the app was
-  // still running the new setup's own AppMutex guard will have blocked startup.
+  // Wait for the TEMP copy to finish before restoring agent configuration.
+  for Attempt := 1 to 480 do
+  begin
+    if (not FileExists(LegacyUninstaller)) and
+       (not RegKeyExists(HKLM, LegacyUninstallNativeSubkey)) and
+       (not RegKeyExists(HKLM, LegacyUninstallWowSubkey)) then
+    begin
+      Result := True;
+      Exit;
+    end;
+    Sleep(250);
+  end;
+  Result := False;
 end;

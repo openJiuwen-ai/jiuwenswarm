@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$InstallDir,
-    [ValidateSet('Preserve','Initialize')][string]$Mode = 'Preserve',
+    [ValidateSet('Preserve','Initialize','PreserveConfig')][string]$Mode = 'Preserve',
     [Parameter(Mandatory=$true)][string]$ReportPath
 )
 $ErrorActionPreference = 'Stop'
@@ -57,11 +57,12 @@ function File-Hash([string]$Path) {
     try { ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').ToLowerInvariant() }
     finally { $stream.Dispose(); $sha.Dispose() }
 }
-function Text-Hash([string]$Value) {
+function Bytes-Hash([byte[]]$Value) {
     $sha=[Security.Cryptography.SHA256]::Create()
-    try { ([BitConverter]::ToString($sha.ComputeHash($utf8.GetBytes($Value)))).Replace('-','').ToLowerInvariant() }
+    try { ([BitConverter]::ToString($sha.ComputeHash($Value))).Replace('-','').ToLowerInvariant() }
     finally { $sha.Dispose() }
 }
+function Text-Hash([string]$Value) { Bytes-Hash ($utf8.GetBytes($Value)) }
 function Inventory([string]$Root) {
     $rows=@(foreach ($file in @(Tree-Files $Root | Sort-Object FullName)) {
         [pscustomobject]@{path=$file.FullName.Substring($Root.Length+1); length=$file.Length; sha256=(File-Hash $file.FullName)}
@@ -70,6 +71,32 @@ function Inventory([string]$Root) {
 }
 function Write-Json([string]$Path, $Value) {
     [IO.File]::WriteAllText((Long-Path $Path),(ConvertTo-Json -InputObject $Value -Depth 8),$utf8)
+}
+function Preserve-UpgradeConfig() {
+    # Legacy uninstallers reset agent configuration. Keep a user-bound encrypted
+    # snapshot only around that uninstall; normal upgrades/uninstalls do not use it.
+    $root=Join-Path $dataRoot 'runtime\upgrade-config'
+    Check-Parents $root
+    [IO.Directory]::CreateDirectory((Long-Path $root)) | Out-Null
+    $pending=Join-Path $root 'pending.json'
+    Check-Parents $pending
+    $config=Join-Path $dataRoot 'config\config.yaml'
+    Check-Parents $config
+    if (-not [IO.File]::Exists((Long-Path $config))) { return }
+    $bytes=[IO.File]::ReadAllBytes((Long-Path $config))
+    $before=Bytes-Hash $bytes
+    if ([IO.File]::Exists((Long-Path $pending))) {
+        $saved=[IO.File]::ReadAllText((Long-Path $pending)) | ConvertFrom-Json
+        if ($saved.before_sha256 -ne $before) { throw 'A previous administrator upgrade configuration needs recovery first.' }
+    }
+    Add-Type -AssemblyName System.Security
+    $encrypted=[Security.Cryptography.ProtectedData]::Protect($bytes,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)
+    $record=@{schema=1; config=$config; before_sha256=$before; encrypted=[Convert]::ToBase64String($encrypted)}
+    if ((File-Hash $config) -ne $before) { throw 'Configuration changed while preserving it.' }
+    $stage=Join-Path $root ('.pending-'+[guid]::NewGuid().ToString('N'))
+    Write-Json $stage $record
+    if ([IO.File]::Exists((Long-Path $pending))) { [IO.File]::Replace((Long-Path $stage),(Long-Path $pending),[NullString]::Value) }
+    else { [IO.File]::Move((Long-Path $stage),(Long-Path $pending)) }
 }
 function Copy-Tree([string]$Source, [string]$Target) {
     [IO.Directory]::CreateDirectory((Long-Path $Target)) | Out-Null
@@ -83,6 +110,7 @@ function Copy-Tree([string]$Source, [string]$Target) {
 }
 function Assert-PrefixIdle([string]$Source) {
     foreach ($process in @(Get-CimInstance -ClassName Win32_Process)) {
+        if ($process.ProcessId -eq $PID) { continue }
         $executable=[string]$process.ExecutablePath
         $command=([string]$process.CommandLine).Replace('/','\')
         if (($executable -and (Inside $executable $Source)) -or
@@ -91,24 +119,37 @@ function Assert-PrefixIdle([string]$Source) {
         }
     }
 }
-function Preserve-Prefix([string]$Source) {
+function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
     $Source=Full-Path $Source
     # Read attributes instead of suppressing access/long-path errors as absence.
     try { $attributes=[IO.File]::GetAttributes((Long-Path $Source)) }
     catch [IO.FileNotFoundException] { return $null }
     catch [IO.DirectoryNotFoundException] { return $null }
-    if (-not ($attributes -band [IO.FileAttributes]::Directory)) { throw "Expected a Node directory: $Source" }
+    if (-not ($attributes -band [IO.FileAttributes]::Directory)) { throw "Expected a runtime directory: $Source" }
     Check-Parents $Source
     Assert-PrefixIdle $Source
     $before=Inventory $Source
     $digest=Text-Hash $before
     $id=(Text-Hash $Source.ToLowerInvariant()).Substring(0,8)+'-'+$digest.Substring(0,16)
+    $sdk=[bool]$RuntimeName
+    $installed=Join-Path $npmRoot 'installed'
+    if ($sdk) {
+        $store=Join-Path $dataRoot 'runtime\external-cli-preserved'
+        $installed=Join-Path $dataRoot 'runtime\external-cli'
+        Check-Parents $store
+        Check-Parents $installed
+        [IO.Directory]::CreateDirectory((Long-Path $store)) | Out-Null
+    }
     $target=Join-Path $store $id
     $prefix=Join-Path $target 'prefix'
     Check-Parents $prefix
-    $installed=Join-Path $npmRoot 'installed'
     $activeDirectory=Join-Path $installed $id
     $active=Join-Path $activeDirectory 'prefix'
+    if ($sdk) {
+        $activeDirectory=Join-Path $installed $RuntimeName
+        $active=Join-Path $activeDirectory 'site-packages'
+        if (-not (Inside $active $installed)) { throw 'SDK destination escapes the user runtime directory.' }
+    }
     $previous=@(foreach ($directory in [IO.Directory]::GetDirectories((Long-Path $store))) {
         if ([IO.Path]::GetFileName($directory).StartsWith('.')) { continue }
         $record=Join-Path (Normal-Path $directory) 'mapping.json'
@@ -135,7 +176,22 @@ function Preserve-Prefix([string]$Source) {
     # The verified backup is never placed on PATH. A separate working copy may
     # be updated by the CLI without damaging the recovery material.
     Check-Parents $active
-    if (Test-Path -LiteralPath $activeDirectory) {
+    if ($sdk) {
+        [IO.Directory]::CreateDirectory((Long-Path $activeDirectory)) | Out-Null
+        $agentLock=[IO.File]::Open((Join-Path $activeDirectory '.install.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        try {
+            # Keep a runtime already installed in the stable user location.
+            # Python validates its pins against the new manifest before import.
+            if (-not [IO.Directory]::Exists((Long-Path $active)) -or
+                [IO.Directory]::GetFileSystemEntries((Long-Path $active)).Count -eq 0) {
+                $stage=Join-Path $activeDirectory ('.migration-'+[guid]::NewGuid().ToString('N'))
+                Copy-Tree $prefix $stage
+                if ((Inventory $stage) -ne $before) { throw "SDK working copy verification failed: $Source" }
+                if ([IO.Directory]::Exists((Long-Path $active))) { [IO.Directory]::Delete((Long-Path $active),$false) }
+                [IO.Directory]::Move((Long-Path $stage),(Long-Path $active))
+            }
+        } finally { $agentLock.Dispose() }
+    } elseif (Test-Path -LiteralPath $activeDirectory) {
         $origin=Get-Content -LiteralPath (Join-Path $activeDirectory 'origin.json') -Raw | ConvertFrom-Json
         if ($origin.source -ne $Source -or $origin.initial_digest -ne $digest) { throw "Conflicting CLI destination: $activeDirectory" }
         if (-not [IO.Directory]::Exists((Long-Path $active)) -or
@@ -150,6 +206,22 @@ function Preserve-Prefix([string]$Source) {
         if ((Inventory (Join-Path $stage 'prefix')) -ne $before) { throw "Working copy verification failed: $Source" }
         Write-Json (Join-Path $stage 'origin.json') @{source=$Source; initial_digest=$digest}
         [IO.Directory]::Move((Long-Path $stage),(Long-Path $activeDirectory))
+    }
+    if (-not $sdk) {
+        # npm's local .bin shims look beside themselves for node.exe before
+        # falling back to PATH. Keep their original ABI when the app upgrades Node.
+        $localBin=Join-Path $active 'node_modules\.bin'
+        $localNode=Join-Path $localBin 'node.exe'
+        if ([IO.Directory]::Exists((Long-Path $localBin)) -and
+            [IO.File]::Exists((Long-Path (Join-Path $active 'node.exe'))) -and
+            -not [IO.File]::Exists((Long-Path $localNode))) {
+            Check-Parents $localNode
+            $nodeStage=Join-Path $localBin ('.node-pending-'+[guid]::NewGuid().ToString('N'))
+            $nodeSource=Join-Path $active 'node.exe'
+            [IO.File]::Copy((Long-Path $nodeSource),(Long-Path $nodeStage),$false)
+            if ((File-Hash $nodeStage) -ne (File-Hash $nodeSource)) { throw 'Local shim Node verification failed.' }
+            [IO.File]::Move((Long-Path $nodeStage),(Long-Path $localNode))
+        }
     }
     [pscustomobject]@{source=$Source; target=$active; backup=$prefix; digest=$digest; previous=$previous}
 }
@@ -229,8 +301,10 @@ try {
         if (-not $homeDirectory) { $homeDirectory=$env:USERPROFILE }
         $data=Join-Path $homeDirectory '.jiuwenswarm'
     }
-    $npmRoot=Full-Path (Join-Path $data 'runtime\npm')
-    if (Inside $npmRoot $InstallDir) { throw 'The CLI preservation directory must be outside the installation directory.' }
+    if (-not [IO.Path]::IsPathRooted($data)) { throw 'The user data directory must be an absolute path for upgrade preservation.' }
+    $dataRoot=Full-Path $data
+    $npmRoot=Full-Path (Join-Path $dataRoot 'runtime\npm')
+    if (Inside $dataRoot $InstallDir) { throw 'The CLI preservation directory must be outside the installation directory.' }
     Check-Parents $npmRoot
     $safeRoot=$true
     $store=Join-Path $npmRoot 'preserved'
@@ -238,10 +312,40 @@ try {
     $lockPath=Join-Path $npmRoot '.migration.lock'
     $lock=[IO.File]::Open($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
     try {
+        if ($Mode -eq 'PreserveConfig') {
+            Preserve-UpgradeConfig
+            Write-Json $ReportPath @{success=$true; mode=$Mode}
+            exit 0
+        }
         $mappings=@()
         foreach ($relative in @('runtime\node-runtime','resources\backend\runtime\node-runtime')) {
             $mapping=Preserve-Prefix (Join-Path $InstallDir $relative)
             if ($mapping) { $mappings += $mapping }
+        }
+        $sdkMappings=@()
+        foreach ($relative in @('runtime\external-cli','resources\backend\runtime\external-cli')) {
+            $sdkSource=Join-Path $InstallDir $relative
+            try { $sdkAttributes=[IO.File]::GetAttributes((Long-Path $sdkSource)) }
+            catch [IO.FileNotFoundException] { continue }
+            catch [IO.DirectoryNotFoundException] { continue }
+            if (-not ($sdkAttributes -band [IO.FileAttributes]::Directory)) { throw "Expected an SDK directory: $sdkSource" }
+            Check-Parents $sdkSource
+            Assert-PrefixIdle $InstallDir
+            foreach ($agentDirectory in [IO.Directory]::GetDirectories((Long-Path $sdkSource))) {
+                Check-Parents (Normal-Path $agentDirectory)
+                $name=[IO.Path]::GetFileName($agentDirectory)
+                if ($name -notmatch '^[a-z0-9][a-z0-9_-]*$') { throw "Unrecognized SDK directory requires manual preservation: $agentDirectory" }
+                $packages=Join-Path (Normal-Path $agentDirectory) 'site-packages'
+                $sourceLock=$null
+                $sourceLockPath=Join-Path (Normal-Path $agentDirectory) '.install.lock'
+                if ([IO.File]::Exists((Long-Path $sourceLockPath))) {
+                    $sourceLock=[IO.File]::Open((Long-Path $sourceLockPath),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+                }
+                try {
+                    $mapping=Preserve-Prefix $packages $name
+                    if ($mapping) { $sdkMappings += $mapping }
+                } finally { if ($sourceLock) { $sourceLock.Dispose() } }
+            }
         }
         $paths=@()
         if ($Mode -eq 'Initialize') {
@@ -286,8 +390,16 @@ try {
                 if ([IO.Directory]::Exists((Long-Path $previousBin))) { $paths += $previousBin }
             }
         }
+        # Working/global copies can take time. Recheck every old source once all
+        # copies finish so a late install cannot be erased by the next cleanup.
+        foreach ($mapping in @($mappings)+@($sdkMappings)) {
+            Check-Parents $mapping.source
+            if ((Text-Hash (Inventory $mapping.source)) -ne $mapping.digest) { throw "Source changed before cleanup: $($mapping.source)" }
+            Assert-PrefixIdle $mapping.source
+        }
+        if ($sdkMappings.Count) { Assert-PrefixIdle $InstallDir }
         Add-UserPaths $mappings $paths
-        Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=$mappings; npm_root=$npmRoot}
+        Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=$mappings; sdk_mappings=$sdkMappings; npm_root=$npmRoot}
     } finally { $lock.Dispose() }
 } catch {
     $message=$_.Exception.Message+"`r`n"+$_.ScriptStackTrace

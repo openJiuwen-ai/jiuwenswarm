@@ -249,6 +249,8 @@ begin
 
   if not PreserveWindowsCli(ExtractFileDir(ExePath), 'Preserve') then
     Exit;
+  if not PreserveWindowsCli(ExtractFileDir(ExePath), 'PreserveConfig') then
+    Exit;
 
   // 旧 unins000.exe 携带管理员清单；runas 让它删除自己的 Program Files
   // 目录与 HKLM 项。/VERYSILENT 保持无界面。
@@ -294,6 +296,12 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
     if not PreserveWindowsCli(ExpandConstant('{app}'), 'Initialize') then
       RaiseException('External CLI initialization failed. Preserved files remain in the user data directory.');
+    #ifndef ELECTRON_FRONTEND_ONLY
+    if not RestoreWindowsCliConfiguration(ExpandConstant('{app}\resources\backend\{#BackendExecutableName}')) then
+      RaiseException('External CLI configuration recovery failed.');
+    #endif
+  end;
 end;
