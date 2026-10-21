@@ -178,6 +178,7 @@ class WorkerChain:
     async def start(self):
         self.attempt += 1
         front, gateway = free_port(), free_port()
+        self.env.update(WEB_PORT=str(gateway), GATEWAY_PORT=str(free_port()))
         self.log = (self.directory / f'process-{self.attempt}.log').open('wb')
         commands = [
             ['-m', 'jiuwenswarm.server.app_agentserver', '--port', str(front)],

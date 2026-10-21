@@ -116,6 +116,38 @@ def test_worker_installs_providers_before_parallel_required_preparation(monkeypa
                            else {"providers", "config", "sdk"})
 
 
+def test_worker_provider_binding_does_not_import_sdk_before_parallel_preparation() -> None:
+    """Provider bindings cannot race the Worker's early SDK import thread."""
+    code = (
+        "import os, sys\n"
+        "os.environ['JIUWENSWARM_RUNTIME_WORKSPACE_READY'] = '1'\n"
+        "from jiuwenswarm.server.worker import runtime_backend\n"
+        "from jiuwenswarm.common.external_providers import registered_domains\n"
+        "def check():\n"
+        "    assert 'openjiuwen' not in sys.modules\n"
+        "    assert not any(key.startswith('openjiuwen.agent_teams') for key in sys.modules)\n"
+        "runtime_backend._prepare_worker_configuration = check\n"
+        "runtime_backend._preload_sdk_execution_modules = check\n"
+        "class PreparationJoined(Exception): pass\n"
+        "def stop_after_join(): raise PreparationJoined\n"
+        "runtime_backend._configure_openjiuwen_logging = stop_after_join\n"
+        "try: runtime_backend.preload_runtime_backend()\n"
+        "except PreparationJoined: pass\n"
+        "check()\n"
+        "print(sorted(registered_domains()))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stderr[-800:]
+    assert str(sorted(SERVER_PROVIDER_DOMAINS)) in result.stdout, result.stdout
+
+
 @pytest.mark.slow
 def test_front_process_config_path_registers_providers() -> None:
     """P1 回归：Front（主进程）控制面的 config 路径完成装配。

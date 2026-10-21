@@ -2387,12 +2387,6 @@ async def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
             )
             return self.agent
 
-    monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_chunk_for_wire",
-        fake_encode_agent_chunk_for_wire,
-    )
-
     async def run_case():
         server = AgentWebSocketServerHarness()
         fake_manager = FakeAgentManager()
@@ -2464,12 +2458,6 @@ async def test_handle_stream_accepts_code_team_sub_mode(monkeypatch):
                 }
             )
             return self.agent
-
-    monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_chunk_for_wire",
-        fake_encode_agent_chunk_for_wire,
-    )
 
     async def run_case():
         server = AgentWebSocketServerHarness()

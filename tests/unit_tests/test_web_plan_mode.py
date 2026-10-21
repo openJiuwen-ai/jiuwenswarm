@@ -494,7 +494,7 @@ def test_plain_work_turn_without_plan_trace_skips_state_sync():
 
     request = _request({"mode": "agent", "work_mode": "work"})
 
-    assert AgentWebSocketServer._session_may_hold_plan_state(request, "s1") is False
+    assert object.__new__(AgentWebSocketServer)._session_may_hold_plan_state(request, "s1") is False
 
 
 def test_previous_plan_mode_in_metadata_still_triggers_state_sync():
@@ -512,7 +512,7 @@ def test_previous_plan_mode_in_metadata_still_triggers_state_sync():
         }
     )
 
-    assert AgentWebSocketServer._session_may_hold_plan_state(request, "s1") is True
+    assert object.__new__(AgentWebSocketServer)._session_may_hold_plan_state(request, "s1") is True
 
 
 def test_in_memory_plan_mark_triggers_state_sync():
@@ -524,7 +524,7 @@ def test_in_memory_plan_mark_triggers_state_sync():
     request = _request({"mode": "agent", "work_mode": "work"})
     _plan_active_sessions.add("s-marked")
     try:
-        assert AgentWebSocketServer._session_may_hold_plan_state(request, "s-marked") is True
+        assert object.__new__(AgentWebSocketServer)._session_may_hold_plan_state(request, "s-marked") is True
     finally:
         _plan_active_sessions.discard("s-marked")
 
