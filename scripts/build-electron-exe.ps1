@@ -391,10 +391,6 @@ $BuildConfigJson = uv run --no-project --python 3.11 python `
     "$ProjectRoot\scripts\build_config.py" --sync --emit-json
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $BuildConfig = $BuildConfigJson | ConvertFrom-Json
-if (-not $FrontendOnly) {
-    uv run --no-project --python 3.11 python "$ProjectRoot\scripts\generate_build_info.py" --require-agent-core-branch
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
 $BuildDistDirName = [string]$BuildConfig.dist_dir_name
 $BuildExecutableNameWindows = [string]$BuildConfig.executable_name_windows
 $BuildVersion = [string]$BuildConfig.version
