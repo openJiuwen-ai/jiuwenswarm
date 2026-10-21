@@ -6,12 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "computer-use-toolkit"
 version = "0.0.1"
 description = "Programmatic desktop interaction for agents"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "regex>=2024.11.6",
-    "mcp>=1.30,<2",
+    "mcp>=1.29,<2",
     "jsonschema>=4.25,<5",
-    "pillow>=12.3,<13",
+    "pillow>=12.2,<13",
 ]
 
 [project.scripts]
