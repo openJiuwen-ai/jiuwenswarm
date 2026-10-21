@@ -3,22 +3,15 @@
 
 from __future__ import annotations
 
-import argparse
-import logging
-import os
 from pathlib import Path
-import runpy
 import shutil
 import subprocess
 import sys
 
 RESOURCE_DESTINATION = "computer_use/_resources"
-CONTRACT = runpy.run_path(str(Path(__file__).resolve().parents[1] / "jiuwenswarm/cua_engine/artifacts.py"))
 
 
 def import_engine(root: Path):
-    # Artifact validation on a release assembler needs only the standard
-    # library; SDK dependencies are loaded only by actual compiler jobs.
     from jiuwenswarm.cua_engine.hosting import import_engine as load
 
     return load(root)
@@ -67,34 +60,3 @@ def finalize_macos_bundle(project_root: Path, collection_root: Path, app_bundle:
     subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app_bundle)], check=True)
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    parser = argparse.ArgumentParser(description="Build native wheel payloads, or validate both release artifacts.")
-    action = parser.add_mutually_exclusive_group(required=True)
-    action.add_argument("--wheel-artifact", action="store_true", help="Compile and archive the current platform")
-    action.add_argument("--check-artifacts", action="store_true", help="Require both platforms from this revision")
-    project = Path(__file__).resolve().parents[1]
-    parser.add_argument("--artifact-dir", type=Path,
-                        default=Path(os.environ.get("JIUWENSWARM_CUA_ARTIFACTS", project / "dist/cua")))
-    parser.add_argument("--sign-identity", help="Optional macOS release signing identity, applied before archiving")
-    args = parser.parse_args()
-    root = project / "jiuwenswarm/cua_engine"
-    if args.check_artifacts:
-        CONTRACT["check_artifacts"](args.artifact_dir, root)
-        return
-    target = CONTRACT["host_target"]()
-    import_engine(root)
-    from computer_use.scripts.native import build_native
-
-    executable = build_native(root=root, configuration="release")
-    if args.sign_identity:
-        if target != "macos-arm64":
-            raise RuntimeError("--sign-identity applies only to the macOS artifact")
-        subprocess.run(["/usr/bin/codesign", "--force", "--options", "runtime", "--timestamp",
-                        "--sign", args.sign_identity, str(executable.parents[2])], check=True)
-    archive = CONTRACT["write_artifact"](root, args.artifact_dir, target)
-    logging.getLogger(__name__).info("Computer Use native artifact: %s", archive)
-
-
-if __name__ == "__main__":
-    main()

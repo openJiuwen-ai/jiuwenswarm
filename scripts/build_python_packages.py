@@ -56,15 +56,8 @@ def clean_jiuwenbox() -> None:
 
 
 def build_root_wheel() -> None:
-    # Release assemblers explicitly provide both native builds. Source/CI
-    # packaging must also work on a host without desktop compiler toolchains.
-    env = os.environ.copy()
-    if env.get("JIUWENSWARM_CUA_ARTIFACTS"):
-        run([sys.executable, "scripts/build_computer_use.py", "--check-artifacts"], ROOT, env=env)
-    else:
-        logging.info("[build] Building a source wheel without precompiled CUA drivers.")
     SIDE_CAR_DIST.mkdir(parents=True, exist_ok=True)
-    run(["uv", "build", "--wheel", "--out-dir", str(SIDE_CAR_DIST)], ROOT, env=env)
+    run(["uv", "build", "--wheel", "--out-dir", str(SIDE_CAR_DIST)], ROOT)
 
 
 def build_sidecar_wheel(platform_tag: str | None = None) -> None:

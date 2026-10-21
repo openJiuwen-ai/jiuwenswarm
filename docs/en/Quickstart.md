@@ -48,8 +48,6 @@ jiuwenswarm-init
 jiuwenswarm-start
 ```
 
-Computer Use is optional. The released universal wheel includes precompiled drivers for macOS 14+ ARM64 and Windows x64. It selects the current platform automatically and only extracts that platform's runtime on first use; no Swift/C# compiler toolchain is needed. Windows requires .NET Framework 4.8 and Windows 10 1903+; `cua_repl` requires Python 3.11+. Released dmg/exe installers also include the native driver and Python. Desktop use still requires enabling the subagent and granting system permissions. Unsupported platforms or unavailable drivers do not prevent the main services or other agents from running.
-
 After successful startup, the terminal will display a service port banner:
 
 ```
@@ -199,14 +197,6 @@ cd jiuwenswarm
   pip install .
   ```
   **Note:** This installation method depends on the project's installable package (`pyproject.toml`), and will also install `jiuwenswarm` itself by default.
-
-- Optional: build and install Computer Use
-
-  Source installations and `jiuwenswarm-start dev` do not install or compile the native driver automatically, including on the first desktop tool call. To enable desktop capabilities, explicitly run this command from the project root:
-  ```bash
-  python -m jiuwenswarm.agents.harness.computer_use.worker --build-native
-  ```
-  macOS builds require Swift 6 and macOS 14+; Windows builds require the .NET Framework 4.8 compiler and corresponding WinRT metadata. Build outputs are cached under `computer_use/runtime` in the user data directory; logs are stored in `agent/.logs/computer_use_build.log`. Subsequent calls reuse the prepared driver. Repeat this explicit command after engine source changes. This step is separate from frontend dependency installation and does not start the driver or request desktop permissions.
 
 - Install frontend dependencies
 

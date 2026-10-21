@@ -14,7 +14,7 @@ if not defined BUILD_DISPLAY_NAME exit /b 1
 echo Build identity: %BUILD_DISPLAY_NAME% %BUILD_VERSION%
 echo.
 
-echo [1/3] Installing Python dependencies (including Computer Use)...
+echo [1/3] Installing Python deps (uv sync --extra dev --extra cua)...
 call uv sync --extra dev --extra cua
 if errorlevel 1 exit /b 1
 

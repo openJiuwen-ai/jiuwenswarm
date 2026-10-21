@@ -18,9 +18,6 @@ def repository_root():
     if getattr(sys, "frozen", False):
         # Frozen distributions ship an immutable, already compiled runtime.
         return assets
-    prepared = os.environ.get("COMPUTER_USE_RUNTIME_ROOT")
-    if prepared:
-        return Path(prepared)
     root = checkout_root()
     if root is not None:
         return root

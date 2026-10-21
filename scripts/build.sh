@@ -59,11 +59,6 @@ trap cleanup EXIT
 
 # 2. 构建 wheel
 echo "[build] 正在构建 wheel 包..."
-if [[ -n "${JIUWENSWARM_CUA_ARTIFACTS:-}" ]]; then
-    python scripts/build_computer_use.py --check-artifacts
-else
-    echo "[build] 构建源码开发 wheel，不附带预编译 CUA 驱动。"
-fi
 pip install -q --upgrade build wheel
 python -m build --wheel --no-isolation
 

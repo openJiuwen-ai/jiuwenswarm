@@ -340,7 +340,7 @@ $BuildSetupFilename = [string]$BuildConfig.setup_filename
 Write-Host "Build identity: $BuildDisplayName $BuildVersion" -ForegroundColor Gray
 
 # 1. Install dependencies
-Write-Host "[1/4] Installing Python dependencies (including Computer Use)..." -ForegroundColor Yellow
+Write-Host "[1/4] Installing Python dependencies (uv sync --extra dev --extra cua)..." -ForegroundColor Yellow
 uv sync --extra dev --extra cua
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

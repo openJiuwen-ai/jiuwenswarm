@@ -2,9 +2,13 @@
 from pathlib import Path
 import sys
 
-from jiuwenswarm.cua_engine.hosting import import_engine
-
 __all__ = ["engine_root", "import_engine"]
+
+
+def import_engine(root: Path):
+    from jiuwenswarm.cua_engine.hosting import import_engine as load
+
+    return load(root)
 
 
 def engine_root() -> Path:

@@ -48,8 +48,6 @@ jiuwenswarm-init
 jiuwenswarm-start
 ```
 
-Computer Use 是可选能力。正式发布的通用 wheel 同时附带 macOS 14+ ARM64、Windows x64 的预编译驱动，运行时自动选择，首次使用只解压当前平台资源，无需安装 Swift/C# 编译工具。Windows 运行环境需 .NET Framework 4.8 和 Windows 10 1903+；`cua_repl` 需 Python 3.11+。正式 dmg／exe 同样附带本机驱动和 Python。使用桌面能力仍需启用桌面子代理并授予系统权限；不支持的系统或驱动不可用不会影响主服务和其他 Agent。
-
 启动成功后，终端会显示服务端口信息横幅：
 
 ```
@@ -199,14 +197,6 @@ cd jiuwenswarm
   pip install .
   ```
   **注意：** 该安装方式依赖项目的可安装包（pyproject.toml），同时会默认安装`jiuwenswarm`自己。
-
-- 可选：编译安装 Computer Use
-
-  源码安装和 `jiuwenswarm-start dev` 默认不编译、不安装原生驱动，也不会在首次调用工具时自动编译。需要桌面能力时，在项目根目录显式执行：
-  ```bash
-  python -m jiuwenswarm.agents.harness.computer_use.worker --build-native
-  ```
-  macOS 构建需要 Swift 6 和 macOS 14+；Windows 构建需要 .NET Framework 4.8 编译器及对应 WinRT 元数据。编译结果存入用户数据目录的 `computer_use/runtime`，构建日志位于 `agent/.logs/computer_use_build.log`。后续直接使用已构建驱动；引擎源码改变后需重新执行此命令。此步骤不影响前端依赖的安装，也不启动驱动或请求桌面权限。
 
 - 安装前端依赖
 

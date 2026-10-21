@@ -49,14 +49,6 @@ try {
 Write-Host "[build] 正在构建 wheel 包..." -ForegroundColor Yellow
 Push-Location $ProjectRoot
 try {
-    if (-not [string]::IsNullOrEmpty($env:JIUWENSWARM_CUA_ARTIFACTS)) {
-        python scripts/build_computer_use.py --check-artifacts
-        if ($LASTEXITCODE -ne 0) {
-            throw "CUA release artifacts are missing or do not match this revision"
-        }
-    } else {
-        Write-Host "[build] 构建源码开发 wheel，不附带预编译 CUA 驱动。"
-    }
     python -m pip install --upgrade build wheel 2>$null
     python -m build --wheel --no-isolation
     if ($LASTEXITCODE -ne 0) {

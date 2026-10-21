@@ -13,7 +13,10 @@ import tempfile
 
 from mcp import StdioServerParameters
 
+from jiuwenswarm.agents.harness.common.cua_defaults import build_cua_agent_card
 from jiuwenswarm.agents.harness.computer_use import engine_root
+from jiuwenswarm.agents.harness.computer_use.config import build_cua_agent_config
+from jiuwenswarm.agents.harness.computer_use.rail import CuaExtensionRail
 from jiuwenswarm.agents.harness.computer_use.runtime import ReplRuntime
 from jiuwenswarm.agents.harness.computer_use.worker import prepare_native
 
@@ -40,6 +43,9 @@ async def verify_computer_use_bundle() -> None:
         raise RuntimeError("Computer Use bundle verification must run inside the frozen executable")
     if sys.version_info < (3, 11):
         raise RuntimeError("The installed cua_repl requires a bundled Python 3.11+ runtime")
+    spec = build_cua_agent_config(None, card=build_cua_agent_card())
+    if not any(isinstance(rail, CuaExtensionRail) for rail in spec.rails or []):
+        raise RuntimeError("The desktop installer did not enable its bundled CUA extension")
     executable = prepare_native()
     skill_name = "computer-use-macos" if sys.platform == "darwin" else "computer-use-windows"
     skill = engine_root() / "skills" / skill_name / "SKILL.md"

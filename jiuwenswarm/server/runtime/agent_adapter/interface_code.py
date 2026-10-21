@@ -45,6 +45,7 @@ from openjiuwen.harness.schema.deep_agent_spec import (
     WorkspaceSpec,
 )
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
+from jiuwenswarm.agents.harness.computer_use.config import build_cua_agent_config
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
@@ -58,7 +59,6 @@ from openjiuwen.harness.tools import (
 )
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 
-from jiuwenswarm.agents.harness.computer_use.config import build_cua_agent_config
 from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
 )
@@ -2675,7 +2675,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             if self._is_subagent_enabled(cua_agent_cfg) and cua_model_rejects_images(model):
                 logger.warning(
                     "[JiuwenSwarmCodeAdapter] cua_agent skipped: the model rejects image input "
-                    "and desktop visual observation requires image input"
+                    "and cua_agent sees the screen only through screenshots"
                 )
             elif self._is_subagent_enabled(cua_agent_cfg):
                 cua_spec = build_cua_agent_config(

@@ -3,7 +3,7 @@
 r"""JiuwenSwarm PyInstaller 打包配置。
 
 构建前请先：
-1. 安装依赖: uv sync --extra dev (Windows 另加 --extra cua)
+1. 安装依赖: uv sync --extra dev
 2. 构建前端: cd jiuwenswarm/channels/web/frontend && npm run build
 3. 执行平台 wrapper: .\scripts\build-exe.ps1 或 bash scripts/build-macos.sh
 """
@@ -332,7 +332,7 @@ hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_s
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules + team_kv_cache_hiddenimports + dispatch_submodules + computer_use_submodules
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules + team_kv_cache_hiddenimports + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
@@ -511,7 +511,7 @@ a = Analysis(
     pathex=[project_root, symphony_root, computer_use_source],
     binaries=_bundled_binaries,
     datas=datas,
-    hiddenimports=hiddenimports,
+    hiddenimports=hiddenimports + computer_use_submodules,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -524,7 +524,7 @@ a = Analysis(
 
 mcp_a = Analysis(
     [mcp_entry_script],
-    pathex=[project_root, symphony_root, computer_use_source],
+    pathex=[project_root, symphony_root],
     binaries=[],
     datas=[],
     hiddenimports=hiddenimports,

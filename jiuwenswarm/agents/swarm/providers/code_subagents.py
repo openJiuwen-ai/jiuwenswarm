@@ -273,14 +273,6 @@ class CuaAgentInput(ConstructionInput):
         default=False,
         description="Hold desktop actions while the user is using the machine; release once it is idle again.",
     )
-    repl_enabled: bool = param_field(
-        default=True,
-        description="Add the Python cua_repl tool for multi-step desktop workflows.",
-    )
-    repl_python: str | None = param_field(
-        default=None,
-        description="Python 3.11+ executable with workswarm[cua] installed for the programmatic engine.",
-    )
     workspace_root: str | None = context_field(
         resolver=_workspace_root,
         description="Member workspace root (defaults to ./ when absent).",
@@ -296,14 +288,14 @@ class CuaAgentInput(ConstructionInput):
     kind=ElementKind.SUBAGENT,
     name=SWARM_CUA_AGENT,
     description="Desktop (computer-use) sub-agent driving host application windows through "
-    "screenshots, accessibility and Python workflows; skipped when no parent model is available.",
+    "screenshots and real mouse/keyboard input; skipped when no parent model is available.",
     input_model=CuaAgentInput,
 )
 def build_swarm_cua_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext) -> Any:
     """Build the cua desktop sub-agent config for a team member.
 
-    Each materialized child owns its REPL namespace and native handles.
-    Members still share the real desktop; tool calls are serialized.
+    Members share the one host desktop, so no per-member instance key is
+    derived (unlike ``browser_key``).
     """
     inp = CuaAgentInput.resolve(factory_kwargs, ctx)
     model = ctx.extras.get(_PARENT_MODEL_EXTRAS_KEY)
@@ -322,10 +314,9 @@ def build_swarm_cua_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext
         max_iterations=inp.max_iterations,
         cua_snapshot_keep_last_k=inp.snapshot_keep_last_k,
         cua_pause_on_user_input=inp.pause_on_user_input,
-        cua_repl_enabled=inp.repl_enabled,
-        cua_repl_python=inp.repl_python,
     )
-    # Preserve the original CUA factory options alongside the workspace policy.
+    # Preserve the cua_* factory kwargs baked in by agent-core; only add the
+    # workspace flag.
     spec.factory_kwargs = {**(spec.factory_kwargs or {}), "auto_create_workspace": False}
     return spec
 
