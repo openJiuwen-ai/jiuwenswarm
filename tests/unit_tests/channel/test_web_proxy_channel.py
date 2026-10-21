@@ -37,9 +37,13 @@ from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect im
     _ensure_http_proxy_session,
     _ensure_proxy_session,
 )
+from jiuwenswarm.gateway.channel_manager.protocol.web_proxy import (
+    web_proxy_listen,
+)
 from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
     WebPortManager,
     _manager_for,
+    _request_target_summary,
     build_agent_port_app,
     handle_3rdagent_web,
 )
@@ -149,6 +153,32 @@ def test_merge_request_query_noop_without_business_query() -> None:
     url = "http://yr:8888/serverless/v1/http?instance=x&port=3080"
     assert _merge_request_query(url, "") == url
     assert _merge_request_query(url, "token=secret&port=1") == url
+
+
+def test_request_target_summary_keeps_bundle_payload_out_of_logs() -> None:
+    tail = "__agentbox_plugins_/" + "A" * 4000
+    upstream = (
+        f"http://yr:8888/serverless/v1/http/{tail}"
+        "?instance=x&port=3080&sessionId=s1"
+    )
+    kind, path_length, query_length, digest = _request_target_summary(
+        tail, upstream
+    )
+    assert kind == "plugin_bundle"
+    assert path_length == len(tail)
+    assert query_length == len("instance=x&port=3080&sessionId=s1")
+    assert len(digest) == 12
+    assert tail not in digest
+
+
+def test_request_target_summary_regular_path() -> None:
+    kind, path_length, query_length, digest = _request_target_summary(
+        "api/foo", "http://yr:8888/serverless/v1/http/api/foo?instance=x"
+    )
+    assert kind == "regular"
+    assert path_length == len("api/foo")
+    assert query_length == len("instance=x")
+    assert len(digest) == 12
 
 
 def test_forward_headers_sets_non_loopback_xff_and_strips_iam(monkeypatch) -> None:
@@ -481,6 +511,47 @@ async def test_port_http_forwards_root_and_assets_without_rewrite() -> None:
         http_session = ctx.channel.web_proxy_http_session
         assert http_session is not None and http_session.connector.force_close is True
         assert ctx.channel.web_proxy_session is None
+
+
+@pytest.mark.asyncio
+async def test_http_proxy_logs_bundle_summary_not_full_path(monkeypatch) -> None:
+    tail = "__agentbox_plugins_/" + "A" * 4000
+
+    async def upstream_handler(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    messages: list[str] = []
+
+    def _capture_info(message, *args, **kwargs) -> None:
+        messages.append(message % args if args else message)
+
+    monkeypatch.setattr(web_proxy_listen.logger, "info", _capture_info)
+    async with _proxied_upstream(upstream_handler) as ctx:
+        resp = await ctx.client.get(f"/{tail}?user_id=u1")
+        assert resp.status_code == 200
+
+    assert messages
+    log_text = "\n".join(messages)
+    assert tail not in log_text
+    assert "target_kind=plugin_bundle" in log_text
+    assert f"path_len={len(tail)}" in log_text
+    assert "target_digest=" in log_text
+
+
+@pytest.mark.asyncio
+async def test_port_http_returns_upstream_redirect_without_following() -> None:
+    upstream_paths: list[str] = []
+
+    async def upstream_handler(request: web.Request) -> web.Response:
+        upstream_paths.append(request.path)
+        return web.Response(status=302, headers={"Location": "/login"})
+
+    async with _proxied_upstream(upstream_handler) as ctx:
+        resp = await ctx.client.get("/old?user_id=u1")
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login"
+
+    assert upstream_paths == ["/old"]
 
 
 @pytest.mark.asyncio

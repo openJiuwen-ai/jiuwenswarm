@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import socket
@@ -511,6 +512,33 @@ async def _iter_request_body(request: Request):
             yield chunk
 
 
+_PLUGIN_BUNDLE_PREFIX = "__agentbox_plugins_/"
+_TARGET_DIGEST_LENGTH = 12
+
+
+def _request_target_summary(
+    tail: str, upstream_url: str
+) -> tuple[str, int, int, str]:
+    """Return a log-safe summary instead of the full proxy target.
+
+    Plugin bundle paths embed a multi-KB Base64URL payload. Logging them in
+    full is synchronous I/O on the event loop and can stall every request when
+    the log backend applies backpressure; keep only kind, lengths and an
+    opaque digest for correlation.
+    """
+    normalized = (tail or "").lstrip("/")
+    kind = (
+        "plugin_bundle"
+        if normalized.startswith(_PLUGIN_BUNDLE_PREFIX)
+        else "regular"
+    )
+    digest = hashlib.sha256(
+        (tail or "").encode("utf-8", errors="replace")
+    ).hexdigest()[:_TARGET_DIGEST_LENGTH]
+    query = urllib.parse.urlsplit(upstream_url).query
+    return kind, len(tail or ""), len(query), digest
+
+
 async def _proxy_http(
     app: FastAPI,
     channel: Any,
@@ -545,11 +573,18 @@ async def _proxy_http(
         upstream_url = _merge_request_query(
             upstream_url, str(request.url.query or "")
         )
+        target_kind, path_length, query_length, target_digest = (
+            _request_target_summary(tail, upstream_url)
+        )
         logger.info(
-            "[WebProxy] HTTP proxy: agent=%s method=%s path=/%s",
+            "[WebProxy] HTTP proxy: agent=%s method=%s target_kind=%s "
+            "path_len=%d query_len=%d target_digest=%s",
             agent_type,
             request.method,
-            tail,
+            target_kind,
+            path_length,
+            query_length,
+            target_digest,
         )
         try:
             ctx = session.request(
@@ -560,6 +595,7 @@ async def _proxy_http(
                     client_host=str(getattr(request.client, "host", "") or ""),
                     user_id=user_id,
                 ),
+                allow_redirects=False,
                 data=(
                     _iter_request_body(request)
                     if _request_has_body(request)
@@ -568,7 +604,15 @@ async def _proxy_http(
             )
             upstream_resp = await ctx.__aenter__()
         except aiohttp.ClientError as exc:
-            logger.warning("[WebProxy] HTTP proxy failed: agent=%s path=/%s", agent_type, tail)
+            logger.warning(
+                "[WebProxy] HTTP proxy failed: agent=%s target_kind=%s "
+                "path_len=%d query_len=%d target_digest=%s",
+                agent_type,
+                target_kind,
+                path_length,
+                query_length,
+                target_digest,
+            )
             logger.debug("[WebProxy] HTTP proxy error detail: %s", exc)
             return PlainTextResponse(f"upstream error: {exc}", status_code=502)
 
