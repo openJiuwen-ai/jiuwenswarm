@@ -59,6 +59,7 @@ from jiuwenswarm.telemetry.enrichment.callbacks import (
 from jiuwenswarm.telemetry.enrichment.tokens import ContextTokenBreakdown
 from jiuwenswarm.telemetry.span_registry import SpanRegistryProcessor
 from jiuwenswarm.telemetry.metrics import TelemetryMetrics, metrics_channel_id
+from jiuwenswarm.telemetry.metrics import metrics_adapter_mode_id, metrics_mode_id
 
 
 def test_callback_label_keeps_searching_after_string_conversion_failure() -> None:
@@ -357,6 +358,17 @@ def request_metric_channel() -> Iterator[None]:
         yield
     finally:
         metrics_channel_id.reset(token)
+
+
+@pytest.fixture
+def request_metric_modes() -> Iterator[None]:
+    mode_token = metrics_mode_id.set("agent")
+    adapter_token = metrics_adapter_mode_id.set("flash")
+    try:
+        yield
+    finally:
+        metrics_adapter_mode_id.reset(adapter_token)
+        metrics_mode_id.reset(mode_token)
 
 
 def _decorate_like_real_model(
@@ -1279,7 +1291,8 @@ async def test_llm_usage_with_cache_information_records_cache_hit_rate() -> None
                 usage_metadata=SimpleNamespace(
                     input_tokens=10,
                     output_tokens=2,
-                    prompt_tokens_details=SimpleNamespace(cached_tokens=6),
+                    cache_read_tokens=4,
+                    cache_write_tokens=2,
                     cache_creation_input_tokens=2,
                 ),
             ),
@@ -1287,7 +1300,79 @@ async def test_llm_usage_with_cache_information_records_cache_hit_rate() -> None
 
         points = _metric_points(reader, "jiuwenclaw.llm.cache_hit_rate")
         assert len(points) == 1
-        assert points[0].sum == pytest.approx(0.5)
+        assert points[0].sum == pytest.approx(0.4)
+    finally:
+        await callbacks.unregister(framework)
+        meter_provider.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_llm_zero_cache_usage_observed_records_zero_hit_rate() -> None:
+    reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[reader])
+    callbacks = RichTelemetryCallbacks(
+        span_registry=SpanRegistryProcessor(max_spans=8, ttl_seconds=60),
+        metrics=TelemetryMetrics(meter_provider),
+        config=TelemetryConfig(enabled=True),
+    )
+    framework = AsyncCallbackFramework()
+    await callbacks.register(framework)
+    try:
+        await framework.trigger(
+            LLMCallEvents.LLM_INVOKE_INPUT,
+            messages=[{"role": "user", "content": "no-cache-hit"}],
+            model="no-cache-hit-model",
+        )
+        await framework.trigger(
+            LLMCallEvents.LLM_INVOKE_OUTPUT,
+            result=SimpleNamespace(
+                content="ok",
+                tool_calls=[],
+                usage_metadata=SimpleNamespace(
+                    input_tokens=8,
+                    output_tokens=2,
+                    cache_read_tokens=0,
+                    cache_miss_tokens=8,
+                    cache_write_tokens=0,
+                ),
+            ),
+        )
+
+        points = _metric_points(reader, "jiuwenclaw.llm.cache_hit_rate")
+        assert len(points) == 1
+        assert points[0].sum == pytest.approx(0.0)
+    finally:
+        await callbacks.unregister(framework)
+        meter_provider.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_llm_without_cache_usage_skips_hit_rate() -> None:
+    reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[reader])
+    callbacks = RichTelemetryCallbacks(
+        span_registry=SpanRegistryProcessor(max_spans=8, ttl_seconds=60),
+        metrics=TelemetryMetrics(meter_provider),
+        config=TelemetryConfig(enabled=True),
+    )
+    framework = AsyncCallbackFramework()
+    await callbacks.register(framework)
+    try:
+        await framework.trigger(
+            LLMCallEvents.LLM_INVOKE_INPUT,
+            messages=[{"role": "user", "content": "cache-unsupported"}],
+            model="cache-unsupported-model",
+        )
+        await framework.trigger(
+            LLMCallEvents.LLM_INVOKE_OUTPUT,
+            result=SimpleNamespace(
+                content="ok",
+                tool_calls=[],
+                usage_metadata=SimpleNamespace(input_tokens=8, output_tokens=2),
+            ),
+        )
+
+        assert not _metric_points(reader, "jiuwenclaw.llm.cache_hit_rate")
     finally:
         await callbacks.unregister(framework)
         meter_provider.shutdown()
@@ -1297,8 +1382,9 @@ async def test_llm_usage_with_cache_information_records_cache_hit_rate() -> None
 async def test_unsampled_enterprise_metric_labels_match_sampled_contract(
     unsampled_telemetry_env: SimpleNamespace,
     request_metric_channel: None,
+    request_metric_modes: None,
 ) -> None:
-    del request_metric_channel
+    del request_metric_channel, request_metric_modes
     await unsampled_telemetry_env.framework.trigger(
         AgentEvents.AGENT_INVOKE_INPUT,
         {
@@ -1360,16 +1446,22 @@ async def test_unsampled_enterprise_metric_labels_match_sampled_contract(
     assert dict(agent_points[0].attributes) == {
         "jiuwenclaw.agent.name": "unsampled-agent",
         "jiuwenclaw.channel.id": "web",
+        "jiuwenclaw.mode": "agent",
+        "jiuwenclaw.adapter.mode": "flash",
     }
     assert dict(llm_duration_points[0].attributes) == {
         "gen_ai.request.model": "unsampled-model",
         "gen_ai.system": "openai",
         "jiuwenclaw.channel.id": "web",
+        "jiuwenclaw.mode": "agent",
+        "jiuwenclaw.adapter.mode": "flash",
     }
     assert dict(llm_count_points[0].attributes) == {
         "gen_ai.request.model": "unsampled-model",
         "status": "success",
         "jiuwenclaw.channel.id": "web",
+        "jiuwenclaw.mode": "agent",
+        "jiuwenclaw.adapter.mode": "flash",
     }
     assert {
         point.attributes["gen_ai.token.type"]: dict(point.attributes)
@@ -1379,12 +1471,16 @@ async def test_unsampled_enterprise_metric_labels_match_sampled_contract(
             "gen_ai.request.model": "unsampled-model",
             "gen_ai.system": "openai",
             "jiuwenclaw.channel.id": "web",
+            "jiuwenclaw.mode": "agent",
+            "jiuwenclaw.adapter.mode": "flash",
             "gen_ai.token.type": "input",
         },
         "output": {
             "gen_ai.request.model": "unsampled-model",
             "gen_ai.system": "openai",
             "jiuwenclaw.channel.id": "web",
+            "jiuwenclaw.mode": "agent",
+            "jiuwenclaw.adapter.mode": "flash",
             "gen_ai.token.type": "output",
         },
     }
@@ -1392,6 +1488,8 @@ async def test_unsampled_enterprise_metric_labels_match_sampled_contract(
     expected_tool_attributes = {
         "gen_ai.tool.name": "weather",
         "jiuwenclaw.channel.id": "web",
+        "jiuwenclaw.mode": "agent",
+        "jiuwenclaw.adapter.mode": "flash",
     }
     for metric_name in (
         "gen_ai.tool.duration",
@@ -1430,6 +1528,8 @@ async def test_unsampled_enterprise_metric_labels_match_sampled_contract(
         "gen_ai.request.model": "after-agent",
         "gen_ai.system": "openai",
         "jiuwenclaw.channel.id": "web",
+        "jiuwenclaw.mode": "agent",
+        "jiuwenclaw.adapter.mode": "flash",
     }
 
 

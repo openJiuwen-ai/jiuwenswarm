@@ -31,6 +31,7 @@ _INHERITED_CONTEXT_ATTRIBUTES = frozenset(
         "jiuwenclaw.agent.parent",
         "jiuwenclaw.iteration",
         "jiuwenclaw.mode",
+        "jiuwenclaw.adapter.mode",
     }
 )
 

@@ -30,7 +30,12 @@ from jiuwenswarm.telemetry.attributes import (
     JIUWENCLAW_MODE,
     USER_ID,
 )
-from jiuwenswarm.telemetry.metrics import metrics_channel_id, metrics_session_id
+from jiuwenswarm.telemetry.metrics import (
+    metrics_adapter_mode_id,
+    metrics_channel_id,
+    metrics_mode_id,
+    metrics_session_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +66,8 @@ class IncomingRequestBinding:
     identity_token: Token[IdentityInfo | None]
     metric_session_token: Token[str | None]
     metric_channel_token: Token[str | None]
+    metric_mode_token: Token[str | None]
+    metric_adapter_mode_token: Token[str | None]
     _marker: object
     _stack_token: Token[tuple[object, ...]]
 
@@ -240,6 +247,43 @@ def bind_incoming_request(request: object) -> IncomingRequestBinding:
             finally:
                 otel_context.detach(otel_token)
         raise
+    params = getattr(request, "params", None)
+    raw_mode = (
+        str(params.get("mode") or "")
+        if isinstance(params, Mapping)
+        else ""
+    )
+    try:
+        metric_mode_token = metrics_mode_id.set(raw_mode)
+    except BaseException:
+        try:
+            metrics_channel_id.reset(metric_channel_token)
+        finally:
+            try:
+                metrics_session_id.reset(metric_session_token)
+            finally:
+                try:
+                    IdentityStore.clear(identity_token)
+                finally:
+                    otel_context.detach(otel_token)
+        raise
+    try:
+        metric_adapter_mode_token = metrics_adapter_mode_id.set(None)
+    except BaseException:
+        try:
+            metrics_mode_id.reset(metric_mode_token)
+        finally:
+            try:
+                metrics_channel_id.reset(metric_channel_token)
+            finally:
+                try:
+                    metrics_session_id.reset(metric_session_token)
+                finally:
+                    try:
+                        IdentityStore.clear(identity_token)
+                    finally:
+                        otel_context.detach(otel_token)
+        raise
     _bind_incoming_trace_attributes(request, identity)
     _bind_current_request_id(request)
     marker = object()
@@ -251,6 +295,8 @@ def bind_incoming_request(request: object) -> IncomingRequestBinding:
         identity_token=identity_token,
         metric_session_token=metric_session_token,
         metric_channel_token=metric_channel_token,
+        metric_mode_token=metric_mode_token,
+        metric_adapter_mode_token=metric_adapter_mode_token,
         _marker=marker,
         _stack_token=stack_token,
     )
@@ -283,6 +329,10 @@ def refresh_incoming_mode_binding(
     adapter_text = str(adapter_mode or "").strip()
     if not text and not adapter_text:
         return
+    if text:
+        metrics_mode_id.set(text)
+    if adapter_text:
+        metrics_adapter_mode_id.set(adapter_text)
     try:
         span_context = trace.get_current_span().get_span_context()
         if not span_context.is_valid:
@@ -386,10 +436,16 @@ def reset_incoming_request(binding: IncomingRequestBinding) -> None:
             metrics_session_id.reset(binding.metric_session_token)
         finally:
             try:
-                IdentityStore.clear(binding.identity_token)
+                metrics_mode_id.reset(binding.metric_mode_token)
             finally:
-                _clear_current_request_id()
-                otel_context.detach(binding.otel_token)
+                try:
+                    metrics_adapter_mode_id.reset(binding.metric_adapter_mode_token)
+                finally:
+                    try:
+                        IdentityStore.clear(binding.identity_token)
+                    finally:
+                        _clear_current_request_id()
+                        otel_context.detach(binding.otel_token)
 
 
 def _clear_current_request_id() -> None:

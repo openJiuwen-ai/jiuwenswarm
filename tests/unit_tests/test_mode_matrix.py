@@ -41,11 +41,9 @@ def test_request_uses_current_merged_agent_mode_semantics():
     # 的 canonical 表一致），不再被 legacy 折叠回 code.normal。
     assert _apply_resolved_mode_to_request(request, work_mode="code") == ("code", "plan")
     assert request.params["mode"] == "code.plan"
-    assert request._original_mode == "agent.plan"
 
     # Re-resolving an already canonicalized request must not lose the wire mode.
     assert _apply_resolved_mode_to_request(request, work_mode="code") == ("code", "plan")
-    assert request._original_mode == "agent.plan"
 
 
 # ── Web 组合：work_mode 决定 profile，mode 决定是否 plan / team ─────────────

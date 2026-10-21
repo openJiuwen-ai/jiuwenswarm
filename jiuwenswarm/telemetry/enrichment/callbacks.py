@@ -105,6 +105,7 @@ from jiuwenswarm.telemetry.enrichment.tokens import (
 )
 from jiuwenswarm.telemetry.enrichment.skills import SkillObservation, extract_skill
 from jiuwenswarm.telemetry.metrics import TelemetryMetrics, metrics_channel_id
+from jiuwenswarm.telemetry.metrics import metrics_adapter_mode_id, metrics_mode_id
 from jiuwenswarm.telemetry.span_registry import SpanRegistryProcessor
 
 
@@ -863,7 +864,7 @@ class RichTelemetryCallbacks:
             + usage.cache_creation_input_tokens
             + usage.uncached_input_tokens
         )
-        if usage.cache_read_input_tokens or usage.cache_creation_input_tokens:
+        if usage.cache_usage_observed:
             if cache_total > 0:
                 self._metric_record(
                     "jiuwenclaw.llm.cache_hit_rate",
@@ -973,10 +974,13 @@ class RichTelemetryCallbacks:
                 self._state_span_value(span, JIUWENCLAW_CHANNEL_ID)
                 or state.channel_id
             )
-            state.mode = self._state_span_value(span, JIUWENCLAW_MODE)
-            state.adapter_mode = self._state_span_value(
-                span,
-                JIUWENCLAW_ADAPTER_MODE,
+            state.mode = (
+                self._state_span_value(span, JIUWENCLAW_MODE)
+                or self._request_metric_mode()
+            )
+            state.adapter_mode = (
+                self._state_span_value(span, JIUWENCLAW_ADAPTER_MODE)
+                or self._request_metric_adapter_mode()
             )
             state.agent_name = self._state_agent_name(span) or state.agent_name
             if span is None:
@@ -1171,6 +1175,8 @@ class RichTelemetryCallbacks:
                 "agent_name",
                 "agent_id",
             ),
+            mode=self._request_metric_mode(),
+            adapter_mode=self._request_metric_adapter_mode(),
         )
         self._metric_state.start("agent", "", state)
         try:
@@ -1215,10 +1221,13 @@ class RichTelemetryCallbacks:
                 self._state_span_value(span, JIUWENCLAW_CHANNEL_ID)
                 or state.channel_id
             )
-            state.mode = self._state_span_value(span, JIUWENCLAW_MODE)
-            state.adapter_mode = self._state_span_value(
-                span,
-                JIUWENCLAW_ADAPTER_MODE,
+            state.mode = (
+                self._state_span_value(span, JIUWENCLAW_MODE)
+                or self._request_metric_mode()
+            )
+            state.adapter_mode = (
+                self._state_span_value(span, JIUWENCLAW_ADAPTER_MODE)
+                or self._request_metric_adapter_mode()
             )
             state.agent_name = self._state_agent_name(span) or state.agent_name
             if session_id not in (None, ""):
@@ -1346,8 +1355,14 @@ class RichTelemetryCallbacks:
             channel_id=self._state_span_value(span, JIUWENCLAW_CHANNEL_ID)
             or self._request_metric_channel(),
             agent_name=self._state_agent_name(span),
-            mode=self._state_span_value(span, JIUWENCLAW_MODE),
-            adapter_mode=self._state_span_value(span, JIUWENCLAW_ADAPTER_MODE),
+            mode=(
+                self._state_span_value(span, JIUWENCLAW_MODE)
+                or self._request_metric_mode()
+            ),
+            adapter_mode=(
+                self._state_span_value(span, JIUWENCLAW_ADAPTER_MODE)
+                or self._request_metric_adapter_mode()
+            ),
         )
         identity = self._call_identity(kwargs)
         self._metric_state.start("llm", identity, state)
@@ -1673,6 +1688,20 @@ class RichTelemetryCallbacks:
     def _request_metric_channel() -> str:
         try:
             return str(metrics_channel_id.get() or "")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _request_metric_mode() -> str:
+        try:
+            return str(metrics_mode_id.get() or "")
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _request_metric_adapter_mode() -> str:
+        try:
+            return str(metrics_adapter_mode_id.get() or "")
         except Exception:
             return ""
 

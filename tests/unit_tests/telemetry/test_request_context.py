@@ -349,10 +349,10 @@ def test_apply_resolved_mode_to_request_refreshes_explicit_flash(
     assert _shared._apply_resolved_mode_to_request(request) == ("flash", None)
     assert request.params["mode"] == "flash"
     assert request.resolved_adapter_mode == "flash"
-    refreshed.assert_not_called()
+    refreshed.assert_called_once_with("flash", "flash")
 
 
-def test_apply_resolved_mode_to_request_skips_unchanged_agent(
+def test_apply_resolved_mode_to_request_refreshes_unchanged_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from jiuwenswarm.common.schema.agent import AgentRequest
@@ -372,7 +372,32 @@ def test_apply_resolved_mode_to_request_skips_unchanged_agent(
     )
 
     assert _shared._apply_resolved_mode_to_request(request) == ("agent", None)
-    refreshed.assert_not_called()
+    refreshed.assert_called_once_with("agent", "agent")
+
+
+def test_apply_resolved_mode_to_request_normalizes_explicit_flash_variant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.server.handlers import _shared
+
+    refreshed = Mock()
+    monkeypatch.setattr(_shared, "refresh_incoming_mode_binding", refreshed)
+    monkeypatch.setattr(
+        _shared,
+        "get_config",
+        lambda: {"flash": {"enabled": True}},
+    )
+    request = AgentRequest(
+        request_id="request-flash-variant",
+        channel_id="web",
+        params={"mode": " FLASH "},
+    )
+
+    assert _shared._apply_resolved_mode_to_request(request) == ("flash", None)
+    assert request.params["mode"] == "flash"
+    assert request.resolved_adapter_mode == "flash"
+    refreshed.assert_called_once_with("flash", "flash")
 
 
 def test_bind_failure_restores_attached_otel_context(

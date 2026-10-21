@@ -88,6 +88,12 @@ metrics_session_id: ContextVar[str | None] = ContextVar(
 metrics_channel_id: ContextVar[str | None] = ContextVar(
     "metrics_channel_id", default=None
 )
+metrics_mode_id: ContextVar[str | None] = ContextVar(
+    "metrics_mode_id", default=None
+)
+metrics_adapter_mode_id: ContextVar[str | None] = ContextVar(
+    "metrics_adapter_mode_id", default=None
+)
 
 
 class _SessionActiveObserverState:
