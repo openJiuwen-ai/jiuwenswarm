@@ -100,11 +100,19 @@ export interface AgentGroupManagementClient {
   uninstallGroup(id: string): Promise<{ notice?: string }>;
 }
 
-export function deriveAgentGroupId(name: string): string {
+function derivePackageId(name: string, fallbackPrefix: 'agent' | 'agent-group'): string {
   const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   // Preserve the 50-character ID budget, including the UUID suffix.
-  const prefix = slug.length >= 3 ? slug.slice(0, 13) : 'agent-group';
+  const prefix = slug.length >= 3 ? slug.slice(0, 13) : fallbackPrefix;
   return `${prefix}-${generateUuidV4()}`;
+}
+
+export function deriveAgentId(name: string): string {
+  return derivePackageId(name, 'agent');
+}
+
+export function deriveAgentGroupId(name: string): string {
+  return derivePackageId(name, 'agent-group');
 }
 
 export function buildAgentGroupCreatePayload(draft: AgentGroupDraft): Record<string, unknown> {
