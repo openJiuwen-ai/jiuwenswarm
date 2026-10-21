@@ -109,6 +109,14 @@ class SessionTokenUsageLedger:
         with closing(sqlite3.connect(self._path, timeout=10)) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute("BEGIN")
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if not {"usage_events", "usage_state"}.issubset(tables):
+                return self._empty_snapshot()
             return self._snapshot(connection)
 
     def _snapshot(self, connection: sqlite3.Connection) -> dict[str, Any]:
