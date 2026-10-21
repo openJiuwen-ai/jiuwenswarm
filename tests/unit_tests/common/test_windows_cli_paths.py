@@ -154,6 +154,9 @@ def test_new_global_command_wins_over_preserved_copy_without_shadowing_bundled_n
     active = root / "installed" / "snapshot" / "prefix"
     active.mkdir(parents=True)
     (active / "example.cmd").write_text("@echo old preserved version\n")
+    # POSIX shutil.which requires executable fixtures even for Windows filenames.
+    for command in (bundled / "node.exe", prefix / "node.exe", prefix / "example.cmd", active / "example.cmd"):
+        command.chmod(command.stat().st_mode | 0o111)
     mapping = root / "preserved" / "snapshot" / "mapping.json"
     mapping.parent.mkdir(parents=True)
     mapping.write_text(json.dumps({"schema": 1, "source": str(tmp_path / "old"), "target": str(active)}))
