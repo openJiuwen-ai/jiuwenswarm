@@ -2189,7 +2189,7 @@ class AgentWebSocketServer:
             }})
             if not sent:
                 return {"status": "unknown"}
-            return await asyncio.wait_for(future, timeout=10)
+            return await asyncio.wait_for(future, timeout=25)
         except TimeoutError:
             return {"status": "unknown"}
         finally:

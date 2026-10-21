@@ -462,6 +462,27 @@ async def test_message_refresh_still_rejects_a_different_body_at_the_same_revisi
 
 
 @pytest.mark.asyncio
+async def test_message_refresh_without_a_feishu_answer_keeps_the_archived_text(tmp_path):
+    from openjiuwen.harness import persistent_agent as core
+
+    lookup = AsyncMock(return_value={"status": "unknown"})
+    _fanout, manager = create_default_persistent_group_fanout(tmp_path / "jiuwenmate", verify_membership=lookup)
+    group = manager.group_chats.resolve("local", "feishu", "oc_group", now=NOW)
+    manager.group_chats.observe_access("local", "mate_1", group.group_chat_id, "cli_bound",
+                                       observed_at=NOW, source_ref="joined:1")
+    access = manager.group_chats.access_for("local", "mate_1", group.group_chat_id)
+    message = core.GroupMessage(message_id="m1", sender_id="ou_alice", sender_name="Alice",
+                                sender_kind="human", received_at=NOW, text="original")
+    manager.group_archive.append("local", group.group_chat_id, message, source_ref="event:m1")
+    try:
+        refreshed = await manager.refresh_group_messages(access, group, (message,))
+        assert refreshed[0].text == "original"
+        assert refreshed[0].status == "normal"
+    finally:
+        await manager.aclose()
+
+
+@pytest.mark.asyncio
 async def test_inconclusive_message_refresh_keeps_the_archived_trigger(tmp_path):
     from openjiuwen.harness import persistent_agent as core
 
