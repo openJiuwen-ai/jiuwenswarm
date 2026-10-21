@@ -566,7 +566,7 @@ from jiuwenswarm.common.config import (
     get_ttse_enabled,
     is_subagent_mirror_child_stream_enabled,
     is_subagent_runtime_enabled,
-    resolve_env_vars,
+    resolve_config_env_vars,
     resolve_string_or_list_config,
 )
 from jiuwenswarm.common.mcp_config import (
@@ -1750,7 +1750,7 @@ def _resolve_instance_config_base(config_base: dict[str, Any] | None) -> dict[st
     # 合并：模板补全缺失键（如 react.ttse / react.subagents），外部显式键与独有
     # 键全部保留。create_instance 与 reload 共用，避免热更丢掉模板默认值。
     template = load_yaml_dict(resolve_shipped_template_config_path())
-    return resolve_env_vars(fill_template_defaults(config_base, template))
+    return resolve_config_env_vars(fill_template_defaults(config_base, template))
 
 
 def _deep_agent_context_engine_config(react_cfg: dict[str, Any] | None) -> ContextEngineConfig:
