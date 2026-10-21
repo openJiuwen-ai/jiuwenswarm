@@ -16,6 +16,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from openjiuwen.core.foundation.llm.model_clients.base_model_client import (
+    ModelRequestConfig,
+)
 from jiuwenswarm.agents.harness.common.rails.model_routing import (
     ModelCapability,
     ModelRoutingRail,
@@ -405,6 +408,97 @@ async def test_enable_routing_logs_high_score_switch(monkeypatch):
 
 
 # ---- auto 档端到端：真分类器 + 真阈值 ---- #
+
+
+# ---- before_model_call：显式思考强度优先于默认注入 ---- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model_config_obj",
+    [
+        {"model_name": "glm-5.3", "reasoning_effort": "high"},
+        {
+            "model_name": "glm-5.3",
+            "extra_body": {"reasoning_effort": "high"},
+        },
+        ModelRequestConfig(
+            model_name="glm-5.3",
+            reasoning_effort="high",
+        ),
+    ],
+)
+async def test_before_model_call_preserves_explicit_reasoning_effort(model_config_obj):
+    """GLM-5.3 已显式指定 effort 时，rail 不能用 default low 覆盖。"""
+    rail = _rail()
+    agent = _FakeAgent("glm-5.3")
+    agent._config.model_config_obj = model_config_obj
+    ctx = _ctx(agent=agent)
+
+    await rail.before_model_call(ctx)
+
+    assert "llm_call_kwargs" not in ctx.extra
+
+
+@pytest.mark.asyncio
+async def test_before_model_call_preserves_explicit_wrapper_agent_effort():
+    """DeepAgent 外壳场景：显式 effort 在 inner ReActAgent config 上也不能被覆盖。"""
+    rail = _rail()
+    inner = _FakeAgent("glm-5.3")
+    inner._config.model_config_obj = {"model_name": "glm-5.3", "reasoning_effort": "high"}
+    outer = SimpleNamespace(model_name="glm-5.3", _react_agent=inner)
+    ctx = _ctx(agent=outer)
+
+    await rail.before_model_call(ctx)
+
+    assert "llm_call_kwargs" not in ctx.extra
+
+
+@pytest.mark.asyncio
+async def test_before_model_call_preserves_existing_llm_call_kwargs():
+    """其他 rail 已写入显式 per-call effort 时，ModelRoutingRail 不能改写。"""
+    rail = _rail()
+    agent = _FakeAgent("glm-5.3")
+    ctx = _ctx(agent=agent)
+    explicit = {"reasoning_effort": "high"}
+    ctx.extra["llm_call_kwargs"] = explicit
+
+    await rail.before_model_call(ctx)
+
+    assert ctx.extra["llm_call_kwargs"] == explicit
+
+
+@pytest.mark.asyncio
+async def test_before_model_call_injects_default_for_glm53_without_effort():
+    """GLM-5.3 只开启思考、未指定 effort（auto 档形态）时才补 default low。"""
+    rail = _rail()
+    agent = _FakeAgent("glm-5.3")
+    agent._config.model_config_obj = {
+        "model_name": "glm-5.3",
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+    ctx = _ctx(agent=agent)
+
+    await rail.before_model_call(ctx)
+
+    assert ctx.extra["llm_call_kwargs"]["reasoning_effort"] == "low"
+    assert ctx.extra["llm_call_kwargs"]["extra_body"]["thinking"]["type"] == "enabled"
+
+
+@pytest.mark.asyncio
+async def test_before_model_call_keeps_deepseek_default_without_effort():
+    """DPS auto 低分不切换：default 是 no-op，不能注入 low。"""
+    rail = _rail()
+    agent = _FakeAgent("deepseek-v4.1-flash")
+    agent._config.model_config_obj = {
+        "model_name": "deepseek-v4.1-flash",
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+    ctx = _ctx(agent=agent)
+
+    await rail.before_model_call(ctx)
+
+    assert "llm_call_kwargs" not in ctx.extra
 
 
 def _real_classifier_rail() -> ModelRoutingRail:
