@@ -167,10 +167,13 @@ class ProcessCliPermissionInterruptRail(JiuwenSwarmPermissionInterruptRail):
         if scene_hook is not None:
             async def preserve_human_gate(scene_input: Any) -> Any:
                 outcome = await scene_hook(scene_input)
-                if (outcome is not None and outcome[0] == "approve"
-                        and (not _supports_permission_approval(engine) or engine.requires_manual_command_approval(
-                            scene_input.normalized_tool_name, scene_input.tool_args,
-                        ))):
+                if outcome is None or outcome[0] != "approve":
+                    return outcome
+                if not _supports_permission_approval(engine):
+                    return None
+                if engine.requires_manual_command_approval(
+                    scene_input.normalized_tool_name, scene_input.tool_args,
+                ):
                     return None
                 return outcome
 
