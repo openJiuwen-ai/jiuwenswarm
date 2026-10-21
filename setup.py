@@ -24,8 +24,8 @@ class BuildWithNative(build_py):
         if output.exists():
             shutil.rmtree(output)
         configured = os.environ.get("JIUWENSWARM_CUA_ARTIFACTS")
-        # Local source installs may omit optional desktop capabilities. Official
-        # release entry points explicitly opt in and require both payloads.
+        # Source/CI builds may omit optional desktop capabilities. Release
+        # assemblers explicitly supply the artifact directory and need both payloads.
         if not configured:
             return
         artifacts = Path(configured).resolve()

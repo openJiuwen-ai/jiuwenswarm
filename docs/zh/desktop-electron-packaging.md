@@ -60,7 +60,7 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 流程：
 
-1. `uv sync --locked --extra dev --extra cua`，Windows 指定 `--python-platform x86_64-pc-windows-msvc`（FrontendOnly 跳过）
+1. `uv sync --locked --extra dev`，Windows 另加 `--extra cua --python-platform x86_64-pc-windows-msvc`（FrontendOnly 跳过）
 2. 前端 `vite build`（`ELECTRON=true` → `base: './'`；`$env:ELECTRON` 用 try/finally 恢复避免污染 shell）
 3. electron 目录 `npm install`（Electron runtime 来自 `node_modules/electron/dist`）
 4. `build_config.py --sync --emit-json` 读取 **dist 目录名 / exe 名 / 版本号**（当前 `workswarm` / `workswarm.exe` / pyproject 版本，单一来源，不写死；`--sync` 对齐 build-exe.ps1，否则 pyproject 改版本后 spec 漂移守卫会硬失败）→ PyInstaller 打后端 → 冻结 exe 自检 A2UI bundle（同 build-exe.ps1）
@@ -84,7 +84,7 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 `cua_engine/hosting.py` 负责 SDK 加载和驱动准备，`cua_engine/artifacts.py` 负责跨平台发布产物的归档、校验与选择，`cua_engine/desktop.py` 负责原生协议通信与进程清理，均不依赖 Agent 框架。`agents/harness/computer_use/` 只负责接入原有桌面子代理、工具与生命周期；构建脚本直接调用引擎，不经过 Agent 接入层。
 
-Windows 和 macOS 的完整安装包共用 `scripts/jiuwenswarm.spec`：构建机沿用主项目支持的 Python 版本（3.11–3.13）安装 `cua` 依赖，并由 `scripts/build_computer_use.py` 编译本机驱动。macOS 构建机需要 Swift 6 工具链；Windows 构建机需要 .NET Framework 4.8 编译器和 Windows 10 1903+ 的 WinRT 元数据。正式 macOS 发布仍只提供 ARM64 包。
+Windows 和 macOS 的完整安装包共用 `scripts/jiuwenswarm.spec`：构建机沿用主项目支持的 Python 版本（3.11–3.13），Windows 另装 `cua` 额外依赖，并由 `scripts/build_computer_use.py` 编译本机驱动。macOS 构建机需要 Swift 6 工具链；Windows 构建机需要 .NET Framework 4.8 编译器和 Windows 10 1903+ 的 WinRT 元数据。正式 macOS 发布仍只提供 ARM64 包。
 
 冻结包内置 Python SDK、Skill 和已编译的驱动。Windows 同时包含截图辅助程序和 UIA 互操作程序集；不会把 Swift/C# 编译输入或 UIA 构建工具放进运行资源。安装版直接执行包内驱动，不在用户电脑编译，也不复制到源码构建缓存；驱动缺失时报告安装包损坏。
 
@@ -100,9 +100,15 @@ Windows 和 macOS 的完整安装包共用 `scripts/jiuwenswarm.spec`：构建�
 python scripts/build_computer_use.py --wheel-artifact
 ```
 
-macOS 可附加 `--sign-identity "Developer ID Application: ..."`，在归档前应用正式签名。两台构建机分别输出 `dist/cua/macos-arm64.zip`、`macos-arm64.json`、`windows-x64.zip`、`windows-x64.json`。流水线汇总这四个文件到发布机的 `dist/cua/`；也可用环境变量 `JIUWENSWARM_CUA_ARTIFACTS` 指向汇总目录。然后使用原有 `scripts/build.sh`、`scripts/build.ps1` 或 `scripts/build_python_packages.py` 构建发布 wheel。这些入口必须先确认两套产物齐全、校验和正确，且都对应当前引擎源码；缺失、损坏或版本不一致则停止发布，不生成缺少驱动的正式 wheel。
+macOS 可附加 `--sign-identity "Developer ID Application: ..."`，在归档前应用正式签名。两台构建机分别输出 `dist/cua/macos-arm64.zip`、`macos-arm64.json`、`windows-x64.zip`、`windows-x64.json`。发布流水线汇总这四个文件，显式设置 `JIUWENSWARM_CUA_ARTIFACTS` 指向汇总目录，再构建正式 wheel：
 
-本地从源码执行 `pip install -e .` 或 `pip install .` 时，不需要准备上述发布产物，默认按源码安装处理，即使本地已有历史构建产物也不自动附带驱动。发布入口显式设置 `JIUWENSWARM_CUA_ARTIFACTS` 来启用预编译资源打包。未设置该变量时，直接调用底层 `uv build`／setuptools 也会生成本地开发包；正式发布应使用上述带产物检查的发布入口。复用构建目录时会先清除旧的驱动资源，避免把上一版本产物带入新 wheel。
+```bash
+JIUWENSWARM_CUA_ARTIFACTS="$PWD/dist/cua" bash scripts/build.sh
+```
+
+PowerShell 先设置 `$env:JIUWENSWARM_CUA_ARTIFACTS = "$PWD/dist/cua"`，再运行 `scripts/build.ps1`；Python 入口 `scripts/build_python_packages.py` 读取相同变量。设置后，各入口和 wheel 构建钩子都会确认两套产物齐全、校验和正确，且对应当前引擎源码。缺失、损坏或版本不一致会停止构建，不会降级为无驱动包。
+
+未设置该变量时，三个构建入口与底层 `uv build`／setuptools 均按源码开发包处理，不要求跨平台编译产物；Linux PR CI 可据此验证前端和 Python 包构建。构建入口会明确提示该包未附带预编译 CUA 驱动，不能作为上述正式发布包使用。本地执行 `pip install -e .` 或 `pip install .` 也不需要准备发布产物，即使已有历史构建产物也不自动附带驱动。复用构建目录时会先清除旧的驱动资源，避免把上一版本产物带入新 wheel。
 
 wheel 安装后，首次调用只按系统与 CPU 架构选择一套资源，校验并原子解压到用户数据目录下的 `computer_use/runtime/prebuilt/<target>/<archive-sha256>`。保留完整 macOS `.app` 的签名文件和执行权限；Windows 保留驱动、截图辅助程序和 UIA DLL。后续复用相同的不可变缓存。SDK 的隔离执行子进程继承该原生资源路径，不依赖 Python 模块所在位置。此过程不调用编译器、不启动另一平台驱动；不支持的平台或损坏资源只使桌面工具报告不可用，不影响其他服务。
 
