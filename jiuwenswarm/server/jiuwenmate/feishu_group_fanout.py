@@ -320,8 +320,11 @@ def create_default_persistent_group_fanout(
                     changed_at = datetime.fromisoformat(item["changed_at"])
                     fresh = type(message).model_validate({**message.model_dump(), "status": status,
                         "text": item.get("text"), "attachment_refs": item.get("attachment_refs", ())})
-                    await asyncio.to_thread(manager.group_archive.append, access.namespace_id, access.group_id, fresh,
-                        source_ref=f"refresh:{message.message_id}", changed_at=changed_at)
+                    await asyncio.to_thread(
+                        manager.group_archive.append, access.namespace_id, access.group_id, fresh,
+                        source_ref=f"refresh:{message.message_id}", changed_at=changed_at,
+                        allow_resolved_mentions=True,
+                    )
                     updated.append(fresh)
                 elif status == "unknown":
                     # Feishu did not answer. The archived inbound text remains the trigger.

@@ -97,7 +97,7 @@ class ConversationArchive:
             raise PersistentAgentError("group archive unavailable", code="ARCHIVE_UNAVAILABLE") from exc
 
     def append(self, namespace_id: str, group_id: str, message: GroupMessage, *, source_ref: str,
-               changed_at: datetime | None = None) -> str:
+               changed_at: datetime | None = None, allow_resolved_mentions: bool = False) -> str:
         message = GroupMessage.model_validate(message).model_copy(update={"queued_request": False})
         require_identifier("source_ref", source_ref)
         stamp = utc_time(changed_at).isoformat() if changed_at is not None else None
@@ -119,21 +119,36 @@ class ConversationArchive:
                     conn.execute("UPDATE messages SET payload=?,source_ref=? WHERE message_id=?",
                                  (current.model_dump_json(), source_ref, message.message_id))
                     conn.execute("UPDATE archive_info SET content_revision=content_revision+1")
-            elif stamp is not None and (row["changed_at"] is None or stamp > row["changed_at"]):
+            else:
                 previous = GroupMessage.model_validate_json(row["payload"])
-                message = message.model_copy(update={"received_at": previous.received_at,
-                                                     "sender_id": previous.sender_id,
-                                                     "sender_kind": previous.sender_kind})
-                conn.execute("UPDATE messages SET payload=?,changed_at=?,source_ref=? WHERE message_id=?",
-                             (message.model_dump_json(), stamp, source_ref, message.message_id))
-                if message != previous:
-                    conn.execute("UPDATE archive_info SET content_revision=content_revision+1")
-            elif GroupMessage.model_validate_json(row["payload"]) != message:
-                # A redelivery can have different presentation metadata, but never overwrite known content.
-                previous = GroupMessage.model_validate_json(row["payload"])
-                if previous.status != "recalled" and (previous.text, previous.attachment_refs) != (
-                        message.text, message.attachment_refs):
-                    raise PersistentAgentError("message content conflicts without a newer revision", code="CONFLICT")
+                newer = stamp is not None and (row["changed_at"] is None or stamp > row["changed_at"])
+                # An older build stored Feishu @_user_N / @_all. Refresh now resolves those
+                # tokens. The platform revision is unchanged, so this is not a conflicting edit.
+                resolved_mentions = (
+                    allow_resolved_mentions
+                    and stamp is not None
+                    and stamp == row["changed_at"]
+                    and isinstance(previous.text, str)
+                    and "@_" in previous.text
+                    and isinstance(message.text, str)
+                    and "@_" not in message.text
+                    and previous.attachment_refs == message.attachment_refs
+                )
+                if newer or resolved_mentions:
+                    message = message.model_copy(update={"received_at": previous.received_at,
+                                                         "sender_id": previous.sender_id,
+                                                         "sender_kind": previous.sender_kind})
+                    conn.execute("UPDATE messages SET payload=?,changed_at=?,source_ref=? WHERE message_id=?",
+                                 (message.model_dump_json(), stamp, source_ref, message.message_id))
+                    if message != previous:
+                        conn.execute("UPDATE archive_info SET content_revision=content_revision+1")
+                elif previous != message:
+                    # A redelivery can have different presentation metadata, but never overwrite known content.
+                    if previous.status != "recalled" and (previous.text, previous.attachment_refs) != (
+                            message.text, message.attachment_refs):
+                        raise PersistentAgentError(
+                            "message content conflicts without a newer revision", code="CONFLICT",
+                        )
         return message_reference(group_id, message.message_id)
 
     def recall(self, namespace_id: str, group_id: str, message_id: str, *, source_ref: str,

@@ -407,6 +407,61 @@ async def test_default_runtime_consumes_message_refresh_without_rechecking_membe
 
 
 @pytest.mark.asyncio
+async def test_message_refresh_replaces_a_mention_placeholder_at_the_same_revision(tmp_path):
+    from openjiuwen.harness import persistent_agent as core
+
+    lookup = AsyncMock(return_value={"status": "ok", "messages": {
+        "m1": {
+            "status": "normal",
+            "text": "@all 大家都自我介绍下",
+            "changed_at": NOW.isoformat(),
+            "attachment_refs": (),
+        },
+    }})
+    _fanout, manager = create_default_persistent_group_fanout(tmp_path / "jiuwenmate", verify_membership=lookup)
+    group = manager.group_chats.resolve("local", "feishu", "oc_group", now=NOW)
+    manager.group_chats.observe_access("local", "mate_1", group.group_chat_id, "cli_bound",
+                                       observed_at=NOW, source_ref="joined:1")
+    access = manager.group_chats.access_for("local", "mate_1", group.group_chat_id)
+    message = core.GroupMessage(message_id="m1", sender_id="ou_alice", sender_name="Alice",
+                                sender_kind="human", received_at=NOW, text="@_all 大家都自我介绍下")
+    manager.group_archive.append("local", group.group_chat_id, message, source_ref="event:m1", changed_at=NOW)
+    try:
+        refreshed = await manager.refresh_group_messages(access, group, (message,))
+        assert refreshed[0].text == "@all 大家都自我介绍下"
+        stored = manager.group_archive.current_messages("local", group.group_chat_id, ("m1",))[0]
+        assert stored.text == "@all 大家都自我介绍下"
+    finally:
+        await manager.aclose()
+
+
+@pytest.mark.asyncio
+async def test_message_refresh_still_rejects_a_different_body_at_the_same_revision(tmp_path):
+    from openjiuwen.harness import persistent_agent as core
+
+    from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
+    lookup = AsyncMock(return_value={"status": "ok", "messages": {
+        "m1": {"status": "normal", "text": "changed", "changed_at": NOW.isoformat(), "attachment_refs": ()},
+    }})
+    _fanout, manager = create_default_persistent_group_fanout(tmp_path / "jiuwenmate", verify_membership=lookup)
+    group = manager.group_chats.resolve("local", "feishu", "oc_group", now=NOW)
+    manager.group_chats.observe_access("local", "mate_1", group.group_chat_id, "cli_bound",
+                                       observed_at=NOW, source_ref="joined:1")
+    access = manager.group_chats.access_for("local", "mate_1", group.group_chat_id)
+    message = core.GroupMessage(message_id="m1", sender_id="ou_alice", sender_name="Alice",
+                                sender_kind="human", received_at=NOW, text="original")
+    manager.group_archive.append("local", group.group_chat_id, message, source_ref="event:m1", changed_at=NOW)
+    try:
+        with pytest.raises(PersistentAgentError, match="message content conflicts without a newer revision"):
+            await manager.refresh_group_messages(access, group, (message,))
+        stored = manager.group_archive.current_messages("local", group.group_chat_id, ("m1",))[0]
+        assert stored.text == "original"
+    finally:
+        await manager.aclose()
+
+
+@pytest.mark.asyncio
 async def test_inconclusive_message_refresh_keeps_the_archived_trigger(tmp_path):
     from openjiuwen.harness import persistent_agent as core
 
