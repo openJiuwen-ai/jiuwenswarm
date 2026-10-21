@@ -2687,7 +2687,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       !isListening &&
       !isTranscribing &&
       !modelGroupSendBlocked &&
-      (hasTextDraft || hasReadyMedia) &&
+      (hasTextDraft || hasReadyMedia || selectedSkills.length > 0) &&
       !isLoadingHistory &&
       !isImageInterruptBlocked &&
       !hasUploadingAttachments &&

@@ -655,9 +655,11 @@ export function ExternalCliAgentsSection({
   );
 
   /**
-   * Validates a requested CLI path with a throwaway detect call (the result is
-   * NOT written into the card state, so the card never flips while editing),
-   * then commits the path. Returns true when the commit succeeded.
+   * Validates a requested CLI path with a detect probe, then commits the
+   * path. On a failed probe the previous detect result is restored so the
+   * status badge keeps its last known state (e.g. "已安装") instead of
+   * flipping to "未安装" — the error message at the bottom is the failure
+   * feedback, not a status change.
    */
   const validateAndCommitPath = useCallback(
     async (cliAgent: ExternalCliAgentKind, requestedPath: string): Promise<boolean> => {
@@ -667,8 +669,16 @@ export function ExternalCliAgentsSection({
           // refreshed alongside the validation probe — otherwise enabling
           // after a page reload leaves the card showing "not installed" until
           // the next auto-detect tick.
+          const previousResult = resultsRef.current[cliAgent];
           const probe = await detect(cliAgent, requestedPath, false);
           if (!probe || (probe.status !== 'ok' && probe.status !== 'warning')) {
+            // Restore the previous result so a failed probe doesn't flip
+            // the status badge to "not installed".
+            if (previousResult) {
+              updateResults(cliAgent, previousResult);
+            } else {
+              clearDetectResult(cliAgent);
+            }
             if (probe) {
               setAgentError(cliAgent, detectFailureMessage(probe, requestedPath, cliAgent, t));
             }
@@ -688,7 +698,7 @@ export function ExternalCliAgentsSection({
       showHint(t('config.externalCli.savedHint'));
       return true;
     },
-    [commit, detect, onDetect, setAgentError, showHint, t],
+    [clearDetectResult, commit, detect, onDetect, setAgentError, showHint, t, updateResults],
   );
 
   /**
@@ -716,7 +726,17 @@ export function ExternalCliAgentsSection({
           return;
         }
         if (useBuiltin || !requestedPath.trim()) {
-          await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '' });
+          // Pre-set detecting so the card shows "检测中" during the enable
+          // transition — without this, there's a brief "未安装" flash between
+          // commit success (enabled=true) and the detect result landing.
+          // `detect` will set detecting=false when it resolves.
+          setDetecting((prev) => ({ ...prev, [cliAgent]: true }));
+          try {
+            await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '' });
+          } catch (error) {
+            setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
+            throw error;
+          }
           showHint(t('config.externalCli.savedHint'));
           // Refresh the detect result synchronously so the card never flashes
           // "not installed" after enabling (e.g. right after a page reload,
@@ -731,7 +751,7 @@ export function ExternalCliAgentsSection({
         setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
       }
     },
-    [commit, detect, setAgentError, showHint, t, validateAndCommitPath],
+    [commit, detect, setAgentError, setDetecting, showHint, t, validateAndCommitPath],
   );
 
   const startEdit = useCallback(
