@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-pytestmark = [pytest.mark.system, pytest.mark.integration]
+pytestmark = [pytest.mark.system, pytest.mark.integration, pytest.mark.asyncio]
 ROOT = Path(__file__).resolve().parents[2]
 OBSERVATIONS = {"tool_search", "skill_index", "list_skill", "get_current_goal", "recall_compressed_context"}
 
@@ -128,7 +128,7 @@ def live(tmp_path, request):
     source = Path(os.environ.get("JIUWENSWARM_E2E_CONFIG_DIR", Path.home() / ".jiuwenswarm/config"))
     if not all((source / name).is_file() for name in ("config.yaml", ".env")):
         pytest.fail("live model configuration is required for this explicitly enabled run")
-    sys.path.insert(0, str(ROOT / "sdks/python/src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sdks/python/src"))
     runs = []
 
     def build(*, retrieval=True, mode="agent.work.normal", progressive=False):

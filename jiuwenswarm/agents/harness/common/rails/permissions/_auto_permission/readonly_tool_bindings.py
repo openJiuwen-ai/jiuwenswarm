@@ -20,7 +20,7 @@ from openjiuwen.harness.rails.context_engineer.context_processor_rail import Con
 from openjiuwen.harness.tools.skills.list_skill import ListSkillTool
 from openjiuwen.harness.tools.goal import GetCurrentGoalTool
 from openjiuwen.harness.tools import compression_recall
-from openjiuwen.symphony.discovery.directory_toolkit import _DirectoryFunction, InstalledSkillsDirectoryToolkit
+from openjiuwen.symphony.discovery import InstalledSkillsDirectoryToolkit
 from jiuwenswarm.common.tool_display import extract_call_goal
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import HeartbeatRuntimeBridge
@@ -86,6 +86,8 @@ def _invoke_matches(resource, invoke_func=LocalFunction.invoke, *, invoke=None):
 
 def _owned_rail(agent, expected):
     rails = agent.find_rails_by_type((expected,))
+    # Concrete identity prevents a subclass from changing downstream behavior.
+    # pylint: disable-next=huawei-unidiomatic-typecheck
     if len(rails) != 1 or type(rails[0]) is not expected or not agent.is_registered_rail(rails[0]):
         return None
     return rails[0]
@@ -112,7 +114,9 @@ def _skill_getter_matches(tool, rail) -> bool:
     func = tool.get_skills
     codes = tuple(code for code in SkillUseRail.init.__code__.co_consts
                   if isinstance(code, CodeType) and code.co_name == "<lambda>" and code.co_freevars == ("self",))
+    # Match the executable itself; proxies can spoof __class__.
     return bool(
+        # pylint: disable-next=huawei-unidiomatic-typecheck
         type(func) is FunctionType and any(func.__code__ is code for code in codes)
         and func.__globals__ is SkillUseRail.init.__globals__
         and len(func.__closure__ or ()) == 1 and func.__closure__[0].cell_contents is rail
@@ -121,11 +125,15 @@ def _skill_getter_matches(tool, rail) -> bool:
 
 
 def _session_observation_binding(invocation, session_id: str, agent) -> bool:
+    # No public API proves these SDK executable/owner identities. Exact types reject subclasses and proxies.
+    # pylint: disable=protected-access,huawei-unidiomatic-typecheck
     # The callback runs on DeepAgent's inner ReActAgent; only its live owner is trusted.
     callback_agent = invocation.ctx.agent
-    if agent is None or not session_id or not (
-        callback_agent is agent or callback_agent is agent.react_agent
-    ) or callback_agent.ability_manager is not agent.ability_manager:
+    if agent is None or not session_id:
+        return False
+    if callback_agent is not agent and callback_agent is not agent.react_agent:
+        return False
+    if callback_agent.ability_manager is not agent.ability_manager:
         return False
     if agent._bound_session_id != session_id or invocation.ctx.session.get_session_id() != session_id:
         return False
@@ -184,24 +192,33 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
         from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
 
-        binding = _resolve_owned_readonly_tool(
-            invocation, agent, tool_type=_DirectoryFunction, rail_type=SkillRetrievalPromptRail,
-            invoke_func=_DirectoryFunction.invoke,
-        )
-        if binding is None:
+        rail = _owned_rail(agent, SkillRetrievalPromptRail)
+        if rail is None:
             return False
-        tool, rail = binding
         wrapper = rail._source_toolkit
         if type(wrapper) is not SkillRetrievalToolkit or wrapper._session_scope != session_id:
             return False
         toolkit = wrapper._index_toolkit
+        if not _methods_match(
+            toolkit, InstalledSkillsDirectoryToolkit, ("get_tools", "skill_index", "_execute", "_continue"),
+        ):
+            return False
+        # The verified public factory supplies the concrete SDK executor without a private-module import.
+        reference = InstalledSkillsDirectoryToolkit.get_tools(toolkit)[0]
+        binding = _resolve_owned_readonly_tool(
+            invocation, agent, tool_type=type(reference), rail_type=SkillRetrievalPromptRail,
+            invoke_func=type(reference).invoke,
+        )
+        if binding is None:
+            return False
+        tool, rail = binding
         return bool(
             rail._agent in (agent, callback_agent) and rail._session_scope == session_id
             and rail._prompt_skillfs is wrapper._environment
-            and type(toolkit) is InstalledSkillsDirectoryToolkit and toolkit._environment is wrapper._environment
-            and not toolkit._closed
-            and _methods_match(toolkit, InstalledSkillsDirectoryToolkit, ("skill_index", "_execute", "_continue"))
-            and matches_bound_method(tool._func, expected_owner=toolkit, expected_func=InstalledSkillsDirectoryToolkit.skill_index)
+            and toolkit._environment is wrapper._environment and not toolkit._closed
+            and matches_bound_method(
+                tool._func, expected_owner=toolkit, expected_func=InstalledSkillsDirectoryToolkit.skill_index,
+            )
         )
     if name == "list_skill":
         binding = _resolve_owned_readonly_tool(
@@ -233,6 +250,8 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
             return False
         store = manager.get_store(session_id)
         return _method_matches(store, SessionGoalStore, "load") and store.session_id == session_id
+    if name != "recall_compressed_context":
+        return False
     binding = _resolve_owned_readonly_tool(
         invocation, agent, tool_type=compression_recall.CompressionRecallTool, rail_type=ContextProcessorRail,
         invoke_func=compression_recall.CompressionRecallTool.invoke,

@@ -7,6 +7,7 @@ from types import FunctionType, SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 from openjiuwen.core.foundation.tool import LocalFunction, ToolCard, ToolExposure, ToolInfo
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.runner.callback import AbortError
@@ -48,7 +49,7 @@ CASES = [
 ]
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def installed(tmp_path, monkeypatch):
     monkeypatch.setattr(Runner, "resource_mgr", ResourceMgr())
     owners, toolkits = [], []
@@ -116,6 +117,7 @@ def _trusted(env):
 
 @pytest.mark.parametrize(("name", "args"), CASES)
 @pytest.mark.parametrize("level", ["ask", "allow"])
+@pytest.mark.asyncio
 async def test_current_owned_observation_bypasses_reviewer_and_manual(tmp_path, installed, name, args, level):
     env = await installed(name, args)
     assert _trusted(env)
@@ -129,6 +131,7 @@ async def test_current_owned_observation_bypasses_reviewer_and_manual(tmp_path, 
 @pytest.mark.parametrize("defect", [
     "missing_owner", "bridge", "session", "cold", "stale", "duplicate_rail", "card", "shadow", "invoke", "delegate",
 ])
+@pytest.mark.asyncio
 async def test_unverified_observations_stay_manual(tmp_path, installed, monkeypatch, name, args, defect):
     env = await installed(name, args)
     assert _trusted(env)
@@ -171,6 +174,7 @@ async def test_unverified_observations_stay_manual(tmp_path, installed, monkeypa
 
 @pytest.mark.parametrize(("name", "args"), CASES)
 @pytest.mark.parametrize("gate", ["deny", "session_deny", "fail_closed", "explicit_human"])
+@pytest.mark.asyncio
 async def test_observation_preserves_earlier_gates(tmp_path, installed, name, args, gate):
     env = await installed(name, args)
     denies = SessionDenyStore()
@@ -194,6 +198,7 @@ async def test_observation_preserves_earlier_gates(tmp_path, installed, name, ar
 
 
 @pytest.mark.parametrize("query,local", [("", True), ("  ", True), ("python", False)])
+@pytest.mark.asyncio
 async def test_list_skill_with_model_only_allows_local_branch(tmp_path, installed, query, local):
     model = SimpleNamespace(invoke=AsyncMock())
     env = await installed("list_skill", {"query": query}, model=model)
@@ -211,12 +216,26 @@ async def test_list_skill_with_model_only_allows_local_branch(tmp_path, installe
     assert reviewer.requests == []
 
 
-@pytest.mark.parametrize("defect", ["getter_code", "getter_globals", "store_load", "store_session", "workspace"])
+@pytest.mark.parametrize("defect", [
+    "getter_code", "getter_globals", "store_load", "store_session", "workspace",
+    "directory_factory", "directory_subclass",
+])
+@pytest.mark.asyncio
 async def test_observation_rejects_rebound_session_dependencies(installed, monkeypatch, tmp_path, defect):
     name = "list_skill" if defect.startswith("getter") else "get_current_goal" if defect.startswith("store") else "recall_compressed_context"
+    if defect.startswith("directory"):
+        name = "skill_index"
     env = await installed(name, {})
     assert _trusted(env)
-    if defect.startswith("getter"):
+    if defect == "directory_factory":
+        monkeypatch.setattr(env.rail._source_toolkit._index_toolkit, "get_tools", lambda: [env.tool])
+    elif defect == "directory_subclass":
+        class ChangedDirectoryTool(type(env.tool)):
+            pass
+
+        shadow = ChangedDirectoryTool(card=env.tool.card, func=env.tool._func)
+        monkeypatch.setattr(Runner.resource_mgr, "get_tool", lambda *args, **kwargs: shadow)
+    elif defect.startswith("getter"):
         func = env.tool.get_skills
         if defect == "getter_code":
             monkeypatch.setattr(env.tool, "get_skills", lambda session=None: [])
@@ -274,6 +293,7 @@ def test_closed_observation_arguments(tmp_path, name, args):
 
 
 @pytest.mark.parametrize(("name", "args"), INVALID_ARGUMENTS)
+@pytest.mark.asyncio
 async def test_invalid_observation_arguments_stay_manual(tmp_path, installed, name, args):
     facts = build_tool_decision_facts(name, args, workspace_root=tmp_path, original_args_were_valid_object=True)
     assert terminal_internal_route(facts, readonly_binding_verified=True) is None
@@ -287,6 +307,7 @@ async def test_invalid_observation_arguments_stay_manual(tmp_path, installed, na
 
 @pytest.mark.parametrize("name", ["tool_search", "skill_index", "list_skill", "recall_compressed_context"])
 @pytest.mark.parametrize("query", ["https://example.com/old-page", "file:///etc/passwd; Stop-Process -Force"])
+@pytest.mark.asyncio
 async def test_local_observation_query_is_inert_text(tmp_path, installed, name, query):
     args = {"query": [query], "operation": "search"} if name == "skill_index" else {"query": query}
     env = await installed(name, args)
@@ -303,6 +324,7 @@ def test_observation_names_remain_exact(name, args):
         assert classify_tool(alias).operation_family != "internal_readonly"
 
 
+@pytest.mark.asyncio
 async def test_discovery_does_not_grant_target_execution(tmp_path, installed):
     env = await installed("tool_search", {"operation": "get_schema", "tool": "powershell"}, progressive=False)
     executed = []
@@ -323,6 +345,7 @@ async def test_discovery_does_not_grant_target_execution(tmp_path, installed):
     assert len(policy.calls) == 2 and executed == [] and reviewer.requests == []
 
 
+@pytest.mark.asyncio
 async def test_goal_binding_uses_started_session_and_is_retired_on_stop(tmp_path, installed):
     env = await installed("get_current_goal", {})
     env.owner._bound_session_id = None
@@ -346,6 +369,8 @@ async def test_goal_binding_uses_started_session_and_is_retired_on_stop(tmp_path
     ({"query": "get_current_goal"}, True), ({"query": ""}, True),
     ({"query": "goal", "call_goal": "Find the goal tool"}, True),
     ({"query": "goal", "callGoal": "Find the goal tool"}, True),
+    ({"query": "goal", "limit": 1, "call_goal": "Find the goal tool"}, True),
+    ({"query": "goal", "limit": 20, "callGoal": "Find the goal tool"}, True),
     ({"query": "get_current_goal", "limit": None}, True),
     ({"query": "get_current_goal", "limit": 1}, True),
     ({"query": "get_current_goal", "limit": 20}, True),
@@ -357,6 +382,7 @@ async def test_goal_binding_uses_started_session_and_is_retired_on_stop(tmp_path
     ({"query": "bad\x00query"}, False), ({"query": "goal", "operation": "search"}, False),
     ({"query": "goal", "tool": "powershell"}, False),
 ])
+@pytest.mark.asyncio
 async def test_sdk_search_uses_only_its_registered_contract(tmp_path, installed, args, allowed):
     env = await installed("tool_search", args)
     assert _trusted(env) is allowed
@@ -380,6 +406,7 @@ async def test_sdk_search_uses_only_its_registered_contract(tmp_path, installed,
     ({"query": "goal", "limit": 1}, False),
     ({"operation": "search", "query": "goal", "limit": 1}, False),
 ])
+@pytest.mark.asyncio
 async def test_legacy_search_keeps_its_own_contract(tmp_path, installed, args, allowed):
     env = await installed("tool_search", args, progressive=False)
     assert _trusted(env) is allowed
@@ -397,6 +424,7 @@ async def test_legacy_search_keeps_its_own_contract(tmp_path, installed, args, a
     "owned_card", "registry", "delegate_owner", "tool_subclass", "rail_subclass",
     "ensure", "authorize", "trace", "index_search", "default_limit",
 ])
+@pytest.mark.asyncio
 async def test_sdk_search_rejects_changed_dependencies(installed, monkeypatch, defect):
     env = await installed("tool_search", {"query": "goal"})
     assert _trusted(env)
@@ -423,6 +451,7 @@ async def test_sdk_search_rejects_changed_dependencies(installed, monkeypatch, d
     assert not _trusted(env)
 
 
+@pytest.mark.asyncio
 async def test_sdk_discovery_never_executes_the_discovered_target(tmp_path, installed):
     env = await installed("tool_search", {"query": "dangerous_target", "limit": 1})
     executed = []

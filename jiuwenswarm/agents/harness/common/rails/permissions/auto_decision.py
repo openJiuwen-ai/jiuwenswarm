@@ -379,11 +379,15 @@ def _text_arg(args: Mapping[str, Any], *keys: str) -> str:
 
 
 def _bounded_text(value: Any, limit: int, *, empty: bool = False) -> bool:
+    # Exact JSON primitives exclude subclasses with overridden validation behavior.
+    # pylint: disable-next=huawei-unidiomatic-typecheck
     return type(value) is str and len(value) <= limit and "\x00" not in value and (empty or bool(value.strip()))
 
 
 def _catalogue_args_valid(name: str, args: Mapping[str, Any]) -> bool:
     """Accept only finite discovery inputs, including supported retired spellings."""
+    # Exact JSON lists exclude subclasses with overridden iteration or length.
+    # pylint: disable=huawei-unidiomatic-typecheck
     if name == "tool_search":
         if not args.keys() <= {"operation", "category", "tool", "tools", "query", "cursor", "call_goal"}:
             return False
@@ -429,6 +433,8 @@ def tool_search_args_valid(args: Mapping[str, Any], *, progressive: bool) -> boo
     return bool(
         args.keys() <= {"query", "limit"}
         and _bounded_text(args.get("query"), 4096, empty=True)
+        # bool is an int subclass but is not a valid result limit.
+        # pylint: disable-next=huawei-unidiomatic-typecheck
         and (limit is None or (type(limit) is int and 1 <= limit <= 20))
     )
 
