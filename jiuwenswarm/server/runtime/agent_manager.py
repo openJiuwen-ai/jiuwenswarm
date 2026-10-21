@@ -15,7 +15,6 @@ from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
 
-from jiuwenswarm.common.mode_matrix import resolve_adapter_mode
 from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.edition import is_enterprise
@@ -45,6 +44,8 @@ from jiuwenswarm.server.runtime.reload_result import (
 from jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail import (
     coalesce_config_skill_envs,
 )
+
+from jiuwenswarm.server.runtime.session_owner_routing import bind_request_to_session_owner
 
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
@@ -679,14 +680,11 @@ class AgentManager:
                 setter(self._personal_context_runtime_enabled)
             await agent.create_instance(
                 config,
-                # create_instance 的 mode 是**实现选型**（DeepAdapter/CodeAdapter/
-                # FlashAdapter），不是 manager 级业务模式。team facade 的 manager
-                # 模式是 'team'，但其底层实现与单专家相同（DeepAdapter，即 'agent'）；
-                # 传原始 mode_key 会让 adapter 以 mode='team' 登记，随后聊天请求按
-                # _adapter_mode_for_request 推导出 'agent'，触发 !8416 的严格模式
-                # 校验（current='team', requested='agent'），整个专家团不可用。
-                # cache_key 与 _jiuwenswarm_agent_mode 仍保留 manager 模式不变。
-                mode=resolve_adapter_mode(mode_key),
+                # 传原始 manager 模式（含 'team'）：_ensure_adapter 的严格校验按
+                # resolve_adapter_mode 映射后的**实现**比较（team 与 agent 同为
+                # DeepAdapter → 放行），且 adapter 保留业务模式标签供无参重建复用
+                # （上游 !8472 preserve adapter identity 的设计）。
+                mode=mode_key,
                 sub_mode=sub_mode_key or None,
                 config_base=self._latest_config_base,
             )
@@ -1294,6 +1292,7 @@ class AgentManager:
             # session runtime、但没有这条暂停命令，不能拿来续跑。
             owned = self.find_agent_for_interrupt_resume_nowait(session_id)
             if owned is not None:
+                bind_request_to_session_owner(request, owned)
                 logger.info(
                     "[AgentManager] interrupt resume reuse session owner: "
                     "session_id=%s channel_id=%s source=%s",
@@ -2005,7 +2004,20 @@ class AgentManager:
         resolved = resolve_request_runtime_mode(request)
         mode, sub_mode = resolved.manager_mode, resolved.sub_mode
         agent_mode = "agent" if mode == "auto_harness" else mode
-        request.resolved_adapter_mode = resolved.adapter_mode
+        adapter_mode = resolved.adapter_mode
+        adapter_source = resolved.adapter_source
+        # Handler preparation may have restored a durable Flash binding, or
+        # selected the implementation before a config reload. Reuse that
+        # decision for normal single-agent work, including its cache key.
+        # Code, Team and Plan continue to use their own routing rules.
+        if mode in {"agent", "flash"} and sub_mode is None:
+            prepared_mode = getattr(request, "resolved_adapter_mode", None)
+            if prepared_mode in {"agent", "flash"}:
+                agent_mode = prepared_mode
+                adapter_mode = prepared_mode
+                adapter_source = getattr(request, "resolved_adapter_source", None)
+        request.resolved_adapter_mode = adapter_mode
+        request.resolved_adapter_source = adapter_source
         project_dir = (
             params.get("project_dir")
             or params.get("workspace_dir")
