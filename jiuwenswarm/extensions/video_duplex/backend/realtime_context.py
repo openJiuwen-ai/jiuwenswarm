@@ -35,6 +35,10 @@ def render_context(package):
     return RESTORE_INSTRUCTIONS + "\n" + json.dumps(package, ensure_ascii=False) if package else ""
 
 
+class ContextRestoreExpired(ValueError):
+    """An unexecuted request may obtain a fresh restore token."""
+
+
 class RealtimeContextRestorer:
     """Shared authenticated restore flow; providers only choose delivery timing."""
 
@@ -63,7 +67,9 @@ class RealtimeContextRestorer:
             raise ValueError("Invalid context restore token")
         owner, scope = await self.task_manager.authorized_scope(ws, scope)
         saved = self._prepared.get(token)
-        if not saved or saved[:2] != (owner, scope):
+        if not saved:
+            raise ContextRestoreExpired("Context restore token expired; prepare fresh context")
+        if saved[:2] != (owner, scope):
             raise ValueError("Restored context is unavailable for this conversation; restart Full-duplex")
         package = refresh_context(saved[2], self.task_manager.snapshot(owner, scope))
         return render_context(package)
@@ -191,7 +197,10 @@ def task_snapshot(snapshot):
         selected.append(item)
         used += size
     return {"queue_version": snapshot.get("queue_version"), "jobs": selected,
-            "total_jobs": len(jobs), "omitted_jobs": len(jobs) - len(selected)}
+            "total_jobs": len(jobs), "omitted_jobs": len(jobs) - len(selected),
+            **({"conversation": {key: str(value)[:200] for key, value in snapshot["conversation"].items()
+                                  if key in {"mode", "work_mode", "project_id"}}}
+               if snapshot.get("conversation") else {})}
 
 
 async def prepare_context(session_id, owner, get_tasks, *, cache_dir: Path | None = None):
@@ -233,7 +242,8 @@ async def prepare_context(session_id, owner, get_tasks, *, cache_dir: Path | Non
         "schema_version": 1, "session_id": session_id, "memory_method": method,
         "memory": memory, "recent_turns": recent, "context_incomplete": incomplete,
     }, get_tasks())
-    if not turns and not package["tasks"]["total_jobs"]:
+    if (not turns and not package["tasks"]["total_jobs"]
+            and package["tasks"].get("conversation", {}).get("work_mode") not in {"code", "design"}):
         return None
     return package
 

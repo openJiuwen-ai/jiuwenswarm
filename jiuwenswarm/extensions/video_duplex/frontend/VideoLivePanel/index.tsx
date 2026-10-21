@@ -40,7 +40,6 @@ import {
 import {
   AgentAction,
   ChatContextItem,
-  RealtimeBrief,
   SearchJobPayload,
   SearchProgressJob,
   SearchJobState,
@@ -121,6 +120,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const mediaGenerationRef = useRef(0);
   const mediaToolCallIdsRef = useRef(new Set<string>());
   const mediaTaskIdsRef = useRef(new Set<string>());
+  const renewingRealtimeRef = useRef(false);
+  const renewalResultsRef = useRef(new Map<string, SearchJobPayload>());
   const latestUserInstructionRef = useRef({ text: '', turnId: '' });
   const searchJobsRef = useRef<Map<string, SearchJobState>>(new Map());
   const pollingSearchJobsRef = useRef<Set<string>>(new Set());
@@ -169,6 +170,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   };
 
   const stopModelTransport = (renewing = false) => {
+    renewingRealtimeRef.current = renewing;
+    if (!renewing) renewalResultsRef.current.clear();
     mediaGenerationRef.current += 1;
     startingRealtimeRef.current = null;
     mediaToolCallIdsRef.current.clear();
@@ -299,6 +302,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     return joyaiProviderRef.current;
   };
 
+  const coreReceiptTokenRef = useRef('');
+
   const handleFinalRealtimeUserText = (text: string) => {
     const transcript = text.trim();
     if (!isUsefulTranscript(transcript)) return;
@@ -340,16 +345,14 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     }
     const callId = payload.tool_call_id?.trim() || existing?.toolCallId;
     const turnId = payload.turn_id?.trim() || existing?.turnId;
-    const realtimeBrief: RealtimeBrief = payload.realtime_brief?.summary?.trim()
-      ? { ...payload.realtime_brief, summary: payload.realtime_brief.summary.trim() }
-      : {
-          status: 'completed',
-          result_kind: 'generic',
-          summary: '任务已经完成，完整结果已经显示在界面中。',
-          displayed_in_ui: true,
-          response_mode: 'brief',
-          source: 'fallback',
-        };
+    const realtimeBrief = payload.realtime_brief;
+    if (!realtimeBrief?.summary?.trim()) {
+      reportRealtimeEvent('search_result_queue_failed', {
+        job_id: payload.job_id,
+        message: 'missing Core voice receipt',
+      });
+      return;
+    }
     if (!headless) appendChat('assistant', result, 'tool_result');
     const queued =
       joyaiProviderRef.current?.handleCompletedSearch(payload, realtimeBrief, existing) ||
@@ -403,7 +406,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           summary: '任务处理失败，错误信息已经显示在界面中。',
           displayed_in_ui: true,
           response_mode: 'acknowledge',
-          source: 'fallback',
+          source: 'derived',
         },
         ...(mediaToolCallIdsRef.current.has(callId) ? { callId } : {}),
       });
@@ -506,6 +509,43 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       window.clearInterval(pollTimer);
     };
   }, [headless, onCoreAgentProgress]);
+
+  const coreReceiptsActive = isRecording || renewingRealtimeRef.current;
+
+  // Subscribe to ordinary text/background Core replies only for this media run.
+  // Delegated tasks keep their existing TaskService receipt path.
+  useEffect(() => {
+    const scope = searchSessionRef.current;
+    if (!coreReceiptsActive || !scope.startsWith('task-duplex:')) return;
+    const token = crypto.randomUUID();
+    coreReceiptTokenRef.current = token;
+    let stopped = false;
+    const subscribe = (action: 'start' | 'renew' | 'stop') => webRequest('video.core.subscribe', {
+      search_session_id: scope, token, action,
+    });
+    const off = webClient.on<SearchJobPayload & { subscription_token?: string }>('video.core.result', ({ payload }) => {
+      if (stopped || coreReceiptTokenRef.current !== token || payload.subscription_token !== token) return;
+      if (payload.search_session_id !== searchSessionRef.current) return;
+      if (renewingRealtimeRef.current && payload.job_id) {
+        renewalResultsRef.current.set(payload.job_id, payload);
+        return;
+      }
+      acceptCompletedSearch(payload);
+    });
+    void subscribe('start').catch((error) => {
+      if (!stopped) setError(error instanceof Error ? error.message : String(error));
+    });
+    const timer = window.setInterval(() => {
+      void subscribe('renew').catch((error) => console.warn('Core receipt subscription renewal failed:', error));
+    }, 20_000);
+    return () => {
+      stopped = true;
+      if (coreReceiptTokenRef.current === token) coreReceiptTokenRef.current = '';
+      off();
+      window.clearInterval(timer);
+      void subscribe('stop').catch(() => undefined);
+    };
+  }, [coreReceiptsActive]);
 
   useEffect(() => {
     const history = chatHistoryRef.current;
@@ -915,6 +955,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             onState: (state) => {
               if (duplexRef.current !== session) return;
               if (state === 'closed') {
+                renewingRealtimeRef.current = false;
+                renewalResultsRef.current.clear();
                 duplexRef.current = null;
                 mediaGenerationRef.current += 1;
                 mediaToolCallIdsRef.current.clear();
@@ -932,7 +974,16 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                       ? t('videoLive.status.speaking')
                       : '',
               );
-              if (state === 'listening') setIsRealtimeStarting(false);
+              if (state === 'listening') {
+                setIsRealtimeStarting(false);
+                renewingRealtimeRef.current = false;
+                const pending = [...renewalResultsRef.current.values()];
+                renewalResultsRef.current.clear();
+                for (const payload of pending) {
+                  if (payload.status === 'failed') acceptFailedSearch(payload);
+                  else acceptCompletedSearch(payload);
+                }
+              }
             },
             onError: setError,
             onIdleTimeout: () => {
@@ -1135,6 +1186,20 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     },
     deliverToolResult: (payload) => {
       if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;
+      // The runtime delivers terminal events once. Hold them while replacing
+      // Qwen's transport, including the interval spent fetching fresh config.
+      if (renewingRealtimeRef.current) {
+        const jobId = payload.job_id || '';
+        if (!mediaTaskIdsRef.current.has(jobId)) return;
+        if (payload.status === 'cancelled') {
+          renewalResultsRef.current.delete(jobId);
+          mediaTaskIdsRef.current.delete(jobId);
+          searchJobsRef.current.delete(jobId);
+        } else {
+          renewalResultsRef.current.set(jobId, payload);
+        }
+        return;
+      }
       // A function_call_output is valid only on the Qwen connection that created its call ID.
       // JoyAI jobs likewise need to belong to this media run; old results stay visible without replay.
       if (duplexRef.current) {

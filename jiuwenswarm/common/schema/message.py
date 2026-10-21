@@ -77,6 +77,8 @@ logger = logging.getLogger(__name__)
 # 响应订阅，不提交新输入（gateway / runtime / server 三方共用的协议参数名）。
 TEAM_ATTACH_ONLY_PARAM = "attach_only"
 
+_ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")
+
 
 class EventType(Enum):
     SESSION_ARCHIVED = "session.archived"

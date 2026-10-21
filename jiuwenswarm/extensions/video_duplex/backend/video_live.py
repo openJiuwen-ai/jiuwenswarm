@@ -207,7 +207,7 @@ def register_video_live_handler(
         log_asr=lambda event: _append_asr_log(event),
     )
 
-    from .realtime_context import RealtimeContextRestorer
+    from .realtime_context import ContextRestoreExpired, RealtimeContextRestorer
 
     context_restorer = RealtimeContextRestorer(search_manager)
 
@@ -347,6 +347,9 @@ def register_video_live_handler(
                 if request_kind != "user":
                     raise ValueError("Restored context is allowed only for user requests")
                 restore_instructions = await context_restorer.instructions(ws, search_session_id, restore_token)
+            except ContextRestoreExpired as exc:
+                await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_EXPIRED")
+                return
             except Exception as exc:
                 await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
                 return
@@ -651,9 +654,9 @@ def register_video_live_handler(
             content = ""
 
         previous_title: str | None = None
+        metadata = get_session_metadata(visible_session_id, cache_bust=True)
         if role == "user" and content.strip():
             # Refresh before history writes so a rename by AgentServer is respected.
-            metadata = get_session_metadata(visible_session_id, cache_bust=True)
             previous_title = str(metadata.get("title") or "")
             if previous_title == "Full-duplex conversation":
                 # Older plugin versions persisted this placeholder as a real title.
@@ -675,7 +678,7 @@ def register_video_live_handler(
             timestamp=timestamp,
             event_type=event_type,
             extra=extra,
-            mode="agent",
+            mode=str(metadata.get("mode") or ("team.design" if metadata.get("work_mode") == "design" else "agent")),
         )
         if previous_title is not None:
             title = str(get_session_metadata(visible_session_id).get("title") or "")
@@ -693,8 +696,24 @@ def register_video_live_handler(
             payload={"persisted": True, "event_id": event_id},
         )
 
+    async def _core_receipts(ws, req_id, params, session_id):
+        from .task_adapter import task_identity, task_agent_query
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        try:
+            owner, scope = task_identity(ws, str((params or {}).get("search_session_id") or ""))
+            if not scope.startswith("task-duplex:"):
+                raise ValueError("Core receipts require a saved conversation")
+            payload = await task_agent_query(agent_client, ReqMethod.VOICE_SESSION_RECEIPTS,
+                {"token": params.get("token"), "action": params.get("action")},
+                scope.removeprefix("task-duplex:"), owner)
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except Exception as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CORE_RECEIPT_REJECTED")
+
     handlers = {
         "video.realtime.config": _realtime_config,
+        "video.core.subscribe": _core_receipts,
         "video.joyai.frame": _joyai_frame,
         "video.realtime.telemetry": _realtime_telemetry,
         "video.conversation.append": _append_conversation,

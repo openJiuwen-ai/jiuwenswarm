@@ -10,7 +10,7 @@ test('video duplex contributes a task action backed by the headless existing wor
   const action = read('../../../extensions/video_duplex/frontend/TaskFullDuplexAction.tsx');
   const runtime = read('../../../extensions/video_duplex/frontend/TaskFullDuplexRuntime.tsx');
   const panel = read('../../../extensions/video_duplex/frontend/VideoLivePanel/index.tsx');
-  assert.match(inputArea, /eligible=\{fullDuplexActionEligible && !isTeamMode\}/);
+  assert.match(inputArea, /eligible=\{fullDuplexActionEligible && \(!isTeamMode \|\| isDesignLanding\)\}/);
   assert.match(entry, /applicationPluginTaskInputAction = TaskFullDuplexAction/);
   assert.match(entry, /applicationPluginTaskRuntime = TaskFullDuplexRuntime/);
   assert.match(action, /startTaskFullDuplex/);

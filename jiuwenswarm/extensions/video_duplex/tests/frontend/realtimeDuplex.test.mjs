@@ -642,6 +642,8 @@ test('tool results wait for active generation but dispatch during queued audio p
   assert.match(sent[0].item.output, /香港今天有雨/);
   assert.doesNotMatch(sent[0].item.output, /完整代码绝不能发送给Qwen/);
   assert.match(sent[1].item.content[0].text, /authoritative full answer is already visible/i);
+  assert.match(sent[1].item.content[0].text, /A completed invocation may report pending work, partial success or a blocked action/);
+  assert.doesNotMatch(sent[1].item.content[0].text, /This completes the earlier task/);
 
   session.handleEvent({ type: 'response.created', response: { id: 'answer-weather' } });
   session.handleEvent({

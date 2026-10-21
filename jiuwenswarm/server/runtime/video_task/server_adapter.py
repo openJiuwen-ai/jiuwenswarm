@@ -12,11 +12,16 @@ from .bridge import resolve_checkpoint_ack
 class VoiceTaskServerAdapter(GatewayAdapter):
     methods = frozenset({
         ReqMethod.VOICE_TASK_CHECKPOINT_ACK.value, ReqMethod.VOICE_TASK_FILES.value,
+        ReqMethod.VOICE_SESSION_RECEIPTS.value,
     })
 
     async def handle(self, request):
         if request.req_method == ReqMethod.VOICE_TASK_CHECKPOINT_ACK:
             payload = {"accepted": resolve_checkpoint_ack(request)}
+        elif request.req_method == ReqMethod.VOICE_SESSION_RECEIPTS:
+            from ..session_receipts import configure
+
+            payload = await configure(request)
         else:
             from jiuwenswarm.server.runtime.session.lifecycle import guard
             from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata

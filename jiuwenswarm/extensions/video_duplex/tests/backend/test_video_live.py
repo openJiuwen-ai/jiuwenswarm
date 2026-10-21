@@ -757,11 +757,15 @@ async def test_joyai_restores_history_on_user_turns_with_fresh_task_state(monkey
         manager.authorized_scope.return_value = (owner, scope)
         await channel.handlers["video.joyai.frame"](ws, "wrong-scope", request, "transport")
         assert channel.responses[-1][1]["ok"] is False
+        assert channel.responses[-1][1]["code"] == "CONTEXT_RESTORE_FAILED"
         assert provider.await_count == calls
     manager.authorized_scope.return_value = ("alice", "task-duplex:chat-a")
     await channel.handlers["video.joyai.frame"](ws, "frame-with-token", {**request, "instruction": "", "request_kind": "frame"}, "transport")
     assert channel.responses[-1][1]["ok"] is False
     assert provider.await_count == calls
+    await channel.handlers["video.joyai.frame"](ws, "expired-token", {**request, "restore_token": "expired"}, "transport")
+    assert channel.responses[-1][1]["code"] == "CONTEXT_RESTORE_EXPIRED"
+    assert provider.await_count == calls, "expired restore must fail before provider side effects"
     await channel.handlers["video.joyai.frame"](ws, "normal-frame", {
         "frame_data_url": request["frame_data_url"], "request_kind": "frame", "joyai_session_id": "media-a",
     }, "transport")
@@ -1336,6 +1340,7 @@ def test_registers_only_realtime_support_methods() -> None:
 
     assert set(channel.handlers) == {
         "video.realtime.config",
+        "video.core.subscribe",
         "video.joyai.frame",
         "video.realtime.telemetry",
         "video.conversation.append",
@@ -1965,6 +1970,11 @@ async def test_execute_core_agent_uses_unary_content_without_custom_wrapper(monk
 
     class FakeAgentClient:
         async def send_request(self, envelope):
+            from jiuwenswarm.extensions.video_duplex.backend.session_receipts import prepare_request
+
+            prepare_request(SimpleNamespace(
+                session_id=envelope.session_id, user_id=None, channel_id="video_tool", params=envelope.params,
+            ))
             requests.append(envelope)
             return SimpleNamespace(
                 ok=True,
@@ -2043,10 +2053,10 @@ def test_present_core_agent_result_rejects_unsafe_brief(unsafe_brief: str) -> No
     )
 
     assert "JIUWEN_BRIEF" not in presented["display_result"]
-    assert presented["realtime_brief"]["source"] == "fallback"
+    assert presented["realtime_brief"]["source"] == "derived"
     assert presented["realtime_brief"]["result_kind"] == "code"
     assert presented["realtime_brief"]["summary"] == (
-        "代码已经生成，完整内容已经显示在界面中。"
+        "```python\nprint('authoritative full answer')\n```"
     )
 
 
@@ -2056,14 +2066,19 @@ async def test_execute_core_agent_extracts_generated_brief_protocol() -> None:
 
     class FakeAgentClient:
         async def send_request(self, envelope):
+            from jiuwenswarm.extensions.video_duplex.backend.session_receipts import prepare_request
+
+            prepare_request(SimpleNamespace(
+                session_id=envelope.session_id, user_id=None, channel_id="video_tool", params=envelope.params,
+            ))
             requests.append(envelope)
             prompt = envelope.params["query"]
-            nonce = re.search(r"JIUWEN_BRIEF_BEGIN:([a-f0-9]+)", prompt).group(1)
+            assert "[[JIUWEN_BRIEF_BEGIN]]" in prompt
             content = (
                 "已完成完整任务。\n"
-                f"[[JIUWEN_BRIEF_BEGIN:{nonce}]]\n"
+                "[[JIUWEN_BRIEF_BEGIN]]\n"
                 "任务已完成，结果已经显示。\n"
-                f"[[JIUWEN_BRIEF_END:{nonce}]]"
+                "[[JIUWEN_BRIEF_END]]"
             )
             return SimpleNamespace(ok=True, payload={"content": content})
 
@@ -2810,7 +2825,7 @@ def test_core_answer_and_receipt_use_tool_language(monkeypatch, app_language, ex
     )
     protocol = video_search.core_agent_brief_protocol("test-nonce")
     assert expected in protocol
-    assert "[[JIUWEN_BRIEF_BEGIN:test-nonce]]" in protocol
+    assert "[[JIUWEN_BRIEF_BEGIN]]" in protocol
     assert "same language as their latest utterance" not in protocol
     assert video_search.full_answer_language_rule().startswith(
         "The complete answer" if app_language == "en" else "标记之前的完整答案"
@@ -2820,11 +2835,11 @@ def test_core_answer_and_receipt_use_tool_language(monkeypatch, app_language, ex
 @pytest.mark.parametrize(
     "app_language,question,expected",
     [
-        ("en", "生成文件", "The task has finished. The full result is available in the interface."),
-        ("zh", "Generate a file", "代码已经生成，完整内容已经显示在界面中。"),
+        ("en", "生成文件", "```python\nprint(1)\n```"),
+        ("zh", "Generate a file", "```python\nprint(1)\n```"),
     ],
 )
-def test_tool_fallback_follows_preferred_language(monkeypatch, app_language, question, expected):
+def test_unmarked_core_answer_is_preserved_in_any_reply_language(monkeypatch, app_language, question, expected):
     monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", "match")
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_config",
@@ -2849,7 +2864,7 @@ def test_explicit_english_tool_language_ignores_chinese_preferred(monkeypatch):
         "```python\nprint(1)\n```", nonce="missing", question="生成文件",
     )
     assert result["realtime_brief"]["summary"] == (
-        "The task has finished. The full result is available in the interface."
+        "```python\nprint(1)\n```"
     )
 
 
@@ -2859,6 +2874,11 @@ async def test_core_agent_full_answer_follows_tool_language(monkeypatch) -> None
 
     class FakeAgentClient:
         async def send_request(self, envelope):
+            from jiuwenswarm.extensions.video_duplex.backend.session_receipts import prepare_request
+
+            prepare_request(SimpleNamespace(
+                session_id=envelope.session_id, user_id=None, channel_id="video_tool", params=envelope.params,
+            ))
             requests.append(envelope)
             return SimpleNamespace(ok=True, payload={"content": "Hong Kong is about 30 C and cloudy."})
 
@@ -2878,3 +2898,22 @@ async def test_core_agent_full_answer_follows_tool_language(monkeypatch) -> None
     assert "must be written in English" in prompt
     assert "必须使用简体中文" not in prompt
     assert "Speak to the user in English" in prompt
+
+
+@pytest.mark.parametrize("answer", [
+    "图已经生成，视频正在后台执行，最终文件尚未生成。" * 8,
+    "构图已保存，但续跑被拒绝，因为上一轮还在运行。" * 8,
+    "The workflow started, but no video file is ready yet. " * 8,
+])
+def test_voice_result_preserves_pending_and_blocked_core_outcomes(answer):
+    presented = video_search.present_core_agent_result(
+        answer, nonce="no-marker", question="生成视频", tools_used=["designer_run_graph"],
+    )
+    assert presented["realtime_brief"]["summary"] == answer.strip()
+    assert presented["realtime_brief"]["source"] == "derived"
+
+
+def test_voice_brief_protocol_allows_unfinished_background_work():
+    prompt = video_search.core_agent_brief_protocol("pending-outcome")
+    assert "Preserve pending, partial, blocked and failed outcomes" in prompt
+    assert "do not claim the task is still unfinished" not in prompt

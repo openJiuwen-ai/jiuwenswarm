@@ -7,6 +7,7 @@ import { MessageList } from '../../../components/ChatPanel/MessageList';
 import { InlineQuestionCard } from '../../../components/ChatPanel/InlineQuestionCard';
 import { InteractionSlot } from '../../../components/InteractionSlot';
 import { webClient } from '../../../services/webClient';
+import { ApplicationPluginTaskInputActions } from '../../../applicationPlugins/ApplicationPluginOutlet';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSessionStore } from '../../../stores/sessionStore';
 import { buildConversationModelPayload } from '../../../multi-session/state/conversationModelSelection';
@@ -137,6 +138,17 @@ export function DesignerChatPanel() {
 
   const chatBusy = isProcessing || sending;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
+  const ensureDuplexSession = useCallback(async () => {
+    if (!sessionId || !domainGraph?.graph_id || isDesignerPreviewGraph(domainGraph)) return null;
+    try {
+      await useDesignerStore.getState().flushSave();
+      bindDesignerChatSession(sessionId);
+      return sessionId;
+    } catch (error) {
+      setAttachError(error instanceof Error ? error.message : t('designer.loadErrorFallback'));
+      return null;
+    }
+  }, [sessionId, domainGraph, t]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -277,6 +289,13 @@ export function DesignerChatPanel() {
       if (!sessionId) return false;
       const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestions[0];
       try {
+        if (pendingQuestion?.duplexJobId && pendingQuestion.request_id === requestId) {
+          await webClient.request('video.search.answer', {
+            session_id: sessionId, job_id: pendingQuestion.duplexJobId, request_id: requestId, answers,
+          });
+          useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
+          return true;
+        }
         await webClient.request('chat.send', {
           session_id: sessionId,
           query: '',
@@ -387,6 +406,21 @@ export function DesignerChatPanel() {
             {sessionId ? (
               <ChatModelSelector sessionId={sessionId} disabled={chatBusy} />
             ) : null}
+            <ApplicationPluginTaskInputActions
+              eligible={
+                Boolean(sessionId && domainGraph?.graph_id && !isDesignerPreviewGraph(domainGraph)) &&
+                !chatBusy && attachments.length === 0
+              }
+              hasTextDraft={Boolean(draft.trim())}
+              sessionId={sessionId}
+              ensureSession={ensureDuplexSession}
+              labels={{
+                start: t('chat.taskFullDuplexStart'),
+                starting: t('chat.taskFullDuplexStarting'),
+                stop: t('chat.taskFullDuplexStop'),
+              }}
+              fallback={
+                <>
             {isProcessing ? (
               <button
                 type="button"
@@ -423,6 +457,9 @@ export function DesignerChatPanel() {
                 )}
               </button>
             )}
+                </>
+              }
+            />
           </div>
         </div>
       </div>

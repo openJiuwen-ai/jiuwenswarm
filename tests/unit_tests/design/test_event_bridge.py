@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from openjiuwen.agent_teams.workflow.engine.progress import ProgressKind, WorkflowProgressEvent
 
@@ -135,3 +139,19 @@ def test_text_only_rerun_over_media_node_archives_old_ref():
     assert state["output_ref"] == ref_a
     assert state["history"][-1]["text"] == "v1"
     assert state["history"][-1]["output_ref"] == ref_a
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", ["designer.graph.updated", "designer.run.updated", "designer.node.updated", "designer.leader.activity"])
+@pytest.mark.parametrize("channel", ["video_tool", "web"])
+async def test_voice_design_canvas_events_reach_web_session(monkeypatch, event, channel):
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.runtime.design.team_bridge import _push_team_event
+
+    host = SimpleNamespace(send_push=AsyncMock())
+    monkeypatch.setattr(AgentWebSocketServer, "get_instance", lambda: host)
+    payload = {"event_type": event, "session_id": "design-chat", "graph": {"graph_id": "g"}}
+    await _push_team_event(channel, "design-chat", payload, "original-turn")
+    frame = host.send_push.call_args.args[0]
+    assert frame["channel_id"] == "web"
+    assert frame["session_id"] == "design-chat"
+    assert frame["request_id"] == "original-turn"
+    assert frame["payload"] is payload
