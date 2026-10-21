@@ -236,6 +236,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         # Turbo 工具会缓存交付总结；保留发送组件，启用仍由父类 Turbo 开关控制。
         "_skill_turbo_delivery_summary_rail",
         "_task_planning_rail",
+        # auto 档动态路由：请求级 enable_routing / 进程级 model_routing.enabled
+        # 均开启时，Flash 必须保留该 rail 才能执行分类器并真实 set_llm。
+        "_model_routing_rail",
         "_security_rail",
         "_heartbeat_rail",
         "_subagent_rail",

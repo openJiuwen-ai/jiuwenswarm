@@ -61,6 +61,7 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
     adapter = JiuwenSwarmFlashAdapter()
     rail_infos = [
         _info("_task_planning_rail"),          # in KEEP
+        _info("_model_routing_rail"),          # in KEEP (auto model routing)
         _info("_permission_rail"),              # in KEEP and PROTECTED
         _info("_disabled_tools_rail"),          # PROTECTED only
         _info("_skill_rail"),                   # in KEEP (skill execution)
@@ -79,6 +80,7 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
 
     assert kept == {
         "_task_planning_rail",
+        "_model_routing_rail",
         "_permission_rail",
         "_disabled_tools_rail",
         "_skill_rail",
@@ -88,6 +90,21 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
         "_memory_rail",
         "_ask_user_rail",
     }
+
+
+def test_model_routing_rail_is_in_flash_keep():
+    """Flash must retain ModelRoutingRail for auto-gear routing.
+
+    The rail is feature-gated by ``model_routing.enabled`` at build time and
+    by request-level ``enable_routing`` at invoke time, so including it in the
+    profile whitelist does not force routing for explicit model gears. Keeping
+    it is required for auto to consume the routing flag and switch models.
+    """
+    adapter = JiuwenSwarmFlashAdapter()
+    assert "_model_routing_rail" in adapter._FLASH_RAIL_KEEP
+
+    filtered = adapter._filter_rail_infos_by_keep([_info("_model_routing_rail")])
+    assert [info.attr_name for info in filtered] == ["_model_routing_rail"]
 
 
 def test_skill_execution_rails_are_in_keep():
