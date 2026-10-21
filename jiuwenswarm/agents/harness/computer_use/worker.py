@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 import sys
 
-from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.common.utils import get_logs_dir, get_user_workspace_dir
 from jiuwenswarm.cua_engine.hosting import prepare_native as prepare_engine
 
 from . import engine_root
@@ -15,7 +16,8 @@ from . import engine_root
 
 def prepare_native() -> Path:
     cache = None if getattr(sys, "frozen", False) else Path(get_user_workspace_dir()) / "computer_use/runtime"
-    return prepare_engine(engine_root(), cache=cache)
+    build_log = get_logs_dir() / "computer_use_build.log" if cache is not None else None
+    return prepare_engine(engine_root(), cache=cache, build_log=build_log)
 
 
 def main() -> None:
@@ -24,7 +26,13 @@ def main() -> None:
     args = parser.parse_args()
     if not args.prepare_native and sys.version_info < (3, 12):
         raise RuntimeError("cua_repl requires Python 3.12+. Set react.subagents.cua_agent.repl_python.")
-    executable = prepare_native()
+    try:
+        executable = prepare_native()
+    except Exception as error:
+        logging.getLogger(__name__).error("Computer Use unavailable: %s", error)
+        # Console entry point; never mix diagnostics into the MCP response stream.
+        # pylint: disable-next=avoid-using-exit
+        raise SystemExit(1) from None
     if args.prepare_native:
         # The native adapter parses this single JSON response at subprocess EOF.
         json.dump({"executable": str(executable)}, sys.stdout)

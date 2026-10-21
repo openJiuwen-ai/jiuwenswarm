@@ -5,6 +5,7 @@ The host supplies its resource and cache paths; no Agent framework is imported.
 
 from __future__ import annotations
 
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import hashlib
 import importlib.util
 import os
@@ -71,7 +72,47 @@ def prepare_bundle(source: Path, cache: Path) -> Path:
     return target
 
 
-def prepare_native(source: Path, *, cache: Path | None = None) -> Path:
+def _runtime_ready(executable: Path) -> bool:
+    files = [executable]
+    if sys.platform == "win32":
+        files.extend([executable.with_name("computer-use-capture.exe"),
+                      executable.with_name("Interop.NativeUIA.dll")])
+    return all(path.is_file() for path in files)
+
+
+def _build_native(root: Path, build_log: Path | None) -> None:
+    from computer_use.scripts.native import build_native
+
+    with ExitStack() as resources:
+        output = None
+        if build_log is not None:
+            build_log.parent.mkdir(parents=True, exist_ok=True)
+            output = resources.enter_context(build_log.open("a", encoding="utf-8"))
+        destination = output if output is not None else sys.stderr
+        resources.enter_context(redirect_stdout(destination))
+        resources.enter_context(redirect_stderr(destination))
+        descriptors = [(number, os.dup(number)) for number in (1, 2)]
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            if output is not None:
+                os.dup2(output.fileno(), 2)
+            # Compiler output must never become an MCP JSON-RPC response.
+            os.dup2(2, 1)
+            build_native(root=root)
+        except Exception as error:
+            if output is not None:
+                output.write(f"\n{type(error).__name__}: {error}\n")
+            raise
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            for number, saved in descriptors:
+                os.dup2(saved, number)
+                os.close(saved)
+
+
+def prepare_native(source: Path, *, cache: Path | None = None, build_log: Path | None = None) -> Path:
     """Use a prebuilt runtime, or materialize and build in an explicit cache."""
     root = prepare_bundle(source, cache) if cache is not None else source
     if cache is not None:
@@ -80,21 +121,16 @@ def prepare_native(source: Path, *, cache: Path | None = None) -> Path:
     from computer_use.paths import native_driver
 
     executable = Path(native_driver(root=root)["command"])
-    if not executable.is_file():
+    if not _runtime_ready(executable):
         if cache is None:
             raise RuntimeError("The installed Computer Use driver is missing; reinstall the application.")
         with portalocker.Lock(str(root) + ".build.lock", timeout=180):
-            if not executable.is_file():
-                from computer_use.scripts.native import build_cli
-
-                # stdout is exclusively MCP JSON-RPC, including during builds.
-                descriptor = os.dup(1)
+            if not _runtime_ready(executable):
                 try:
-                    sys.stdout.flush()
-                    os.dup2(2, 1)
-                    build_cli([])
-                finally:
-                    sys.stdout.flush()
-                    os.dup2(descriptor, 1)
-                    os.close(descriptor)
+                    _build_native(root, build_log)
+                except Exception as error:
+                    detail = f" Build log: {build_log}" if build_log is not None else ""
+                    raise RuntimeError(f"Native desktop preparation failed: {error}.{detail}") from error
+    if not _runtime_ready(executable):
+        raise RuntimeError("Native desktop build did not produce the complete runtime.")
     return executable

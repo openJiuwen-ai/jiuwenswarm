@@ -27,8 +27,11 @@ class MacOSBackend:
     def _prepare_driver(self):
         prepared = subprocess.run(
             [self.python, "-m", "jiuwenswarm.agents.harness.computer_use.worker", "--prepare-native"],
-            stdout=subprocess.PIPE, text=True, timeout=180, check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180,
         )
+        if prepared.returncode:
+            detail = prepared.stderr.strip()[-4000:] or f"exit code {prepared.returncode}"
+            raise CuaToolError("Native desktop preparation failed: " + detail)
         return json.loads(prepared.stdout)["executable"]
 
     def _call(self, operation, **arguments):

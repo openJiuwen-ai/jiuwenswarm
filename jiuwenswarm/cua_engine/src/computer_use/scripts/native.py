@@ -15,7 +15,10 @@ LOGGER = logging.getLogger(__name__)
 
 
 def run(command, args, cwd=None, capture=False):
-    result = subprocess.run([str(command), *map(str, args)], cwd=cwd, text=True, capture_output=capture)
+    result = subprocess.run(
+        [str(command), *map(str, args)], cwd=cwd, text=True, capture_output=capture,
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+    )
     if result.returncode:
         raise RuntimeError(f"{Path(command).name} failed ({result.returncode})." +
                            (f"\n{result.stderr}" if capture else ""))
@@ -25,6 +28,17 @@ def run(command, args, cwd=None, capture=False):
 def build_mac_os(root=None, *, configuration="debug"):
     if sys.platform != "darwin":
         raise RuntimeError("Only the macOS backend is implemented.")
+    swift = shutil.which("swift")
+    if swift is None:
+        raise RuntimeError("The macOS desktop driver requires a Swift 6 toolchain.")
+    if Path(swift).resolve() == Path("/usr/bin/swift"):
+        # The system swift shim may open the developer-tools installation dialog.
+        selected = subprocess.run(
+            ["/usr/bin/xcode-select", "--print-path"], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+        )
+        if selected.returncode:
+            raise RuntimeError("No active macOS developer tools; native desktop preparation skipped.")
     from .pointer import generate_pointer_assets
     root = Path(root) if root else repository_root()
     generate_pointer_assets(root=root)

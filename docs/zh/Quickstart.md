@@ -48,6 +48,8 @@ jiuwenswarm-init
 jiuwenswarm-start
 ```
 
+Computer Use 是可选能力，启动服务不要求安装 Swift 等编译工具。pip／源码安装只在首次调用桌面工具时按需编译；缺少工具链或编译失败不影响主服务和其他 Agent，详细日志位于数据目录的 `agent/.logs/computer_use_build.log`。macOS 桌面驱动需 Swift 6 和 macOS 14+，Windows 需 .NET Framework 4.8 和相应 WinRT 元数据；`cua_repl` 需 Python 3.12+。正式 dmg／exe 内置 Python 和已编译驱动，用户无需安装编译工具链，使用时仍需启用桌面子代理并授予系统权限。
+
 启动成功后，终端会显示服务端口信息横幅：
 
 ```

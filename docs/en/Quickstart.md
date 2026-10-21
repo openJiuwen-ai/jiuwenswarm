@@ -48,6 +48,8 @@ jiuwenswarm-init
 jiuwenswarm-start
 ```
 
+Computer Use is optional: starting the services does not require Swift or other compiler tools. Pip/source installations build the native driver only when a desktop tool is first called. Missing toolchains or build failures do not affect the main services or other agents; detailed logs are stored in `agent/.logs/computer_use_build.log` under the data directory. The macOS driver requires Swift 6 and macOS 14+; Windows requires .NET Framework 4.8 and the corresponding WinRT metadata. `cua_repl` requires Python 3.12+. Released dmg/exe installers include Python and compiled drivers, so users need no compiler toolchains; desktop use still requires enabling the subagent and granting system permissions.
+
 After successful startup, the terminal will display a service port banner:
 
 ```

@@ -86,7 +86,7 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 Windows 和 macOS 的完整安装包共用 `scripts/jiuwenswarm.spec`：构建机使用 Python 3.12 安装 `cua` 依赖，并由 `scripts/build_computer_use.py` 编译本机驱动。macOS 构建机需要 Swift 6 工具链；Windows 构建机需要 .NET Framework 4.8 编译器和 Windows 10 1903+ 的 WinRT 元数据。正式 macOS 发布仍只提供 ARM64 包。
 
-冻结包内置 Python SDK、Skill 和已编译的驱动。Windows 同时包含截图辅助程序和 UIA 互操作程序集；不会把 Swift/C# 编译输入或 UIA 构建工具放进运行资源。安装版直接执行包内驱动，不在用户电脑编译，也不复制到源码构建缓存；驱动缺失时报告安装包损坏。源码运行仍保留首次使用自动编译的流程。
+冻结包内置 Python SDK、Skill 和已编译的驱动。Windows 同时包含截图辅助程序和 UIA 互操作程序集；不会把 Swift/C# 编译输入或 UIA 构建工具放进运行资源。安装版直接执行包内驱动，不在用户电脑编译，也不复制到源码构建缓存；驱动缺失时报告安装包损坏。pip／源码运行在首次调用桌面工具时按需编译，进度和详细错误写入数据目录下的 `agent/.logs/computer_use_build.log`，不在服务启动时编译。缺少工具链或编译失败只使当前桌面工具报告不可用，不影响主服务和其他 Agent。成功的编译按源码版本缓存，后续直接复用。编译不启动驱动，也不请求桌面权限。
 
 各构建入口在冻结后执行 `scripts/verify_computer_use_bundle.py`：清空外部 Python 路径并隐藏编译工具，验证 MCP 启动、REPL 多次调用的变量保留、包内驱动的协议握手和会话清理。检查不发送桌面输入、不要求授予桌面权限。实际使用时仍需用户批准系统权限，并启用桌面子代理、配置支持图片的模型。正式 macOS 签名流程会签署内置驱动，再封装外层应用。
 
