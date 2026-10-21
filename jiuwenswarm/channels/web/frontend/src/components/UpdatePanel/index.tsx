@@ -8,7 +8,6 @@ interface UpdatePanelProps {
 
 interface UpdateStatusPayload {
   current_version?: unknown;
-  build_info?: unknown;
   latest_version?: unknown;
   state?: unknown;
   has_update?: unknown;
@@ -28,18 +27,6 @@ interface UpdateStatusPayload {
 interface UpdaterConfigPayload {
   release_api_type?: unknown;
   release_api_url?: unknown;
-}
-
-interface BuildSourceInfo {
-  branch?: unknown;
-  commit_id?: unknown;
-  source?: unknown;
-  version?: unknown;
-}
-
-interface BuildInfoPayload {
-  jiuwenswarm?: BuildSourceInfo;
-  agent_core?: BuildSourceInfo;
 }
 
 function normalizeString(value: unknown): string {
@@ -231,13 +218,6 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
   const installMode = normalizeString(status?.install_mode) || 'desktop';
   const isPipMode = installMode === 'pip';
   const currentVersion = normalizeString(status?.current_version) || '-';
-  const buildInfo = status?.build_info && typeof status.build_info === 'object'
-    ? status.build_info as BuildInfoPayload
-    : null;
-  const swarmBuild = buildInfo?.jiuwenswarm;
-  const coreBuild = buildInfo?.agent_core;
-  const swarmCommit = normalizeString(swarmBuild?.commit_id);
-  const coreCommit = normalizeString(coreBuild?.commit_id);
   const latestVersion = normalizeString(status?.latest_version) || '-';
   const releaseNotes = normalizeString(status?.release_notes);
   const publishedAt = formatPublishedAt(normalizeString(status?.published_at), i18n.language);
@@ -322,30 +302,6 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
             <div className="mt-2 font-semibold text-text" data-testid="update-panel-info-card-value" data-variant="published_at">{hasUpdate ? publishedAt : '-'}</div>
           </div>
         </div>
-
-        {swarmCommit && (
-          <div className="rounded-xl border border-border bg-panel-strong/70 px-4 py-3" data-testid="update-panel-build-source">
-            <div className="text-xs uppercase tracking-wide text-text-muted" data-testid="update-panel-build-source-title">{t('updatePanel.buildSource')}</div>
-            <div className="mt-2 grid gap-2 text-sm md:grid-cols-2">
-              <div className="min-w-0" data-testid="update-panel-build-source-row" data-variant="jiuwenswarm">
-                <span className="font-medium text-text">jiuwenswarm</span>
-                  <span className="ml-3 text-text-muted">{t('updatePanel.branch')}: {normalizeString(swarmBuild?.branch) || '-'}</span>
-                <span className="ml-3 font-mono text-text" title={swarmCommit}>commit {swarmCommit.slice(0, 12)}</span>
-              </div>
-              <div className="min-w-0" data-testid="update-panel-build-source-row" data-variant="agent-core">
-                <span className="font-medium text-text">agent-core</span>
-                {coreCommit ? (
-                  <>
-                    {normalizeString(coreBuild?.branch) && <span className="ml-3 text-text-muted">{t('updatePanel.branch')}: {normalizeString(coreBuild?.branch)}</span>}
-                    <span className="ml-3 font-mono text-text" title={coreCommit}>commit {coreCommit.slice(0, 12)}</span>
-                  </>
-                ) : (
-                  <span className="ml-3 text-text-muted">{t('updatePanel.packageVersion')}: {normalizeString(coreBuild?.version) || '-'}</span>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
 
         {(state === 'downloading' || state === 'upgrading' || (isPipMode && state === 'restart_pending')) && (
           <div className="rounded-xl border border-accent/30 bg-accent/10 px-4 py-4" data-testid="update-panel-progress">
