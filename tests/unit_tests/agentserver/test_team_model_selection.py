@@ -631,6 +631,20 @@ def test_team_group_timeout_uses_config_value(monkeypatch: pytest.MonkeyPatch) -
     assert compiled.model_client_config.intelli_router.timeout == 420
 
 
+@pytest.mark.parametrize("value", ["5m", "", None, 0, -1, "nan", "inf"])
+def test_team_group_invalid_config_timeout_uses_default(
+    monkeypatch: pytest.MonkeyPatch, value: object,
+) -> None:
+    _two_route_resolver(
+        monkeypatch, routing=None,
+        config={"models": {"group_routing_timeout_seconds": value}},
+    )
+
+    compiled = TeamManager._resolve_and_compile_team_selection(ModelSelection(type="model_group", id="g1"))
+
+    assert compiled.model_client_config.intelli_router.timeout == 360
+
+
 def test_team_manual_route_without_routing_stays_a_single_model(monkeypatch: pytest.MonkeyPatch) -> None:
     _two_route_resolver(monkeypatch, routing=None)
 

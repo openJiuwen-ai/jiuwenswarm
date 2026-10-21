@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import math
 import re
 import time
 import weakref
@@ -1329,11 +1330,20 @@ class TeamManager:
                 if not routing.get("strategy"):
                     routing["strategy"] = "ordered-failover"
                 if routing.get("timeout_seconds") is None:
-                    catalog_config = getattr(resolver.catalog, "config", {}) or {}
+                    catalog_config = getattr(getattr(resolver, "catalog", None), "config", {}) or {}
                     models_config = catalog_config.get("models") or {}
-                    routing["timeout_seconds"] = float(
-                        models_config.get("group_routing_timeout_seconds") or 360
-                    )
+                    raw_timeout = models_config.get("group_routing_timeout_seconds", 360)
+                    try:
+                        timeout = float(raw_timeout)
+                        if not math.isfinite(timeout) or timeout <= 0:
+                            raise ValueError("timeout must be positive and finite")
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Invalid models.group_routing_timeout_seconds %r; using 360 seconds",
+                            raw_timeout,
+                        )
+                        timeout = 360.0
+                    routing["timeout_seconds"] = timeout
                 resolved = resolved.model_copy(update={"routing": routing})
             compiled = compile_model_selection(resolved)
         except ModelSelectionError:
