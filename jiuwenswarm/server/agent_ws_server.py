@@ -6393,6 +6393,7 @@ class AgentWebSocketServer:
 
     async def _targeted_expert_response_stream(self, request: AgentRequest) -> Any:
         """Run one selected expert as a normal cancellable AgentServer stream."""
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(request.session_id or "").strip()
         team_id = str(params.get("target_team_id") or "").strip()
@@ -6422,9 +6423,38 @@ class AgentWebSocketServer:
             getattr(getattr(target_backend, "org_task_manager", None), "organization_id", None)
             or ""
         ).strip()
-        if not session_id or target_backend is None:
+        has_team_target = bool(session_id and team_id)
+        has_organization_binding = bool(owner_org_id and target_org_id)
+        needs_recovery = target_backend is None or not has_organization_binding
+        if not organization_enabled():
+            error = "Team Organization is disabled"
+        elif has_team_target and needs_recovery:
+            try:
+                persisted = await self._load_persisted_organization(session_id, team_id)
+                if persisted is None:
+                    error = "target expert team does not belong to the owner's organization"
+                else:
+                    from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
+
+                    db, organization = persisted
+                    owner_org_id = organization.organization_id
+                    target_backend = await JiuwenExpertTeamLauncher().restore(
+                        team_id=team_id, session_id=session_id, organization=organization,
+                        db=db, channel_id=channel_id,
+                    )
+                    target_org_id = str(
+                        getattr(getattr(target_backend, "org_task_manager", None), "organization_id", None) or ""
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "[AgentWebSocketServer] expert recovery failed: session=%s team=%s",
+                    session_id,
+                    team_id,
+                )
+                error = f"target expert team could not be restored: {exc}"
+        if not error and (not session_id or target_backend is None):
             error = "target expert team is not bound to this session"
-        elif not owner_org_id or target_org_id != owner_org_id:
+        elif not error and (not owner_org_id or target_org_id != owner_org_id):
             error = "target expert team does not belong to the owner's organization"
         precheck_failed = bool(error)
 
@@ -6762,6 +6792,63 @@ class AgentWebSocketServer:
                     source="metadata",
                 )
 
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+
+        try:
+            persisted = await self._load_persisted_organization(session_id) if organization_enabled() else None
+        except Exception:
+            persisted = None
+            logger.exception("[AgentWebSocketServer] historical team.list failed: session_id=%s", session_id)
+
+        if persisted is not None:
+            db, organization = persisted
+            # Membership is authoritative; optional labels must never remove a Team.
+            for leader in organization.leaders:
+                _upsert(
+                    leader.team_id,
+                    state="configured",
+                    leader_id=leader.leader_id,
+                    organization_id=organization.organization_id,
+                    capabilities=list(leader.capabilities or []),
+                    source="database",
+                )
+            try:
+                from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
+            except ImportError:
+                load_organization_team_identity = None
+                logger.warning("[AgentWebSocketServer] historical Team identity loader unavailable", exc_info=True)
+
+            for leader in organization.leaders:
+                team = None
+                identity = {}
+                try:
+                    team = await db.team.get_team(leader.team_id)
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team details unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+                try:
+                    if load_organization_team_identity is not None:
+                        identity = load_organization_team_identity(leader.team_id)
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team identity unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+                try:
+                    _upsert(
+                        leader.team_id,
+                        state="configured",
+                        display_name=getattr(team, "display_name", None) or identity.get("display_name"),
+                        agent_group_name=identity.get("agent_group_name"),
+                    )
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team labels unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+
         # ``team_name`` reaches session metadata only when the team runtime
         # becomes ready (sync_team_identity_metadata). During the first-turn
         # assembly window the session's own team is already listed via the
@@ -6780,6 +6867,24 @@ class AgentWebSocketServer:
                     entry["organization_id"] = org_id
 
         return list(entries.values())
+
+    async def _load_persisted_organization(
+        self, session_id: str, team_id: str = ""
+    ) -> tuple[Any, Any] | None:
+        from jiuwenswarm.server.runtime.team_organization_history import (
+            load_persisted_organization,
+            organization_enabled,
+        )
+
+        if not organization_enabled():
+            return None
+
+        metadata = (get_session_metadata(session_id) or {}) if session_id else {}
+        owner_team_id = str(metadata.get("team_name") or "").strip()
+        owner_backend = self._resolve_team_backend(session_id, owner_team_id)
+        return await load_persisted_organization(
+            session_id, team_id, db=getattr(owner_backend, "db", None)
+        )
 
     @staticmethod
     def _lookup_session_org_binding(session_id: str, team_id: str) -> str | None:
@@ -6843,10 +6948,13 @@ class AgentWebSocketServer:
     async def _handle_org_snapshot(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """Return organization + task-pool state for the right-hand info box.
 
-        The organization is always resolved from the exact session-bound Team
-        backend. A caller-supplied ``organization_id`` is only a consistency
-        check and never selects which organization is queried.
+        Resolve the live Team binding first, then durable membership anchored
+        to the session's owner. A caller-supplied ``organization_id`` is only
+        a consistency check and never selects the organization to query.
         """
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+
+        enabled = organization_enabled()
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "").strip()
         team_id = str(params.get("team_id") or "").strip()
@@ -6860,11 +6968,20 @@ class AgentWebSocketServer:
             "stats": {},
         }
 
-        backend = self._resolve_team_backend(session_id, team_id)
+        backend = self._resolve_team_backend(session_id, team_id) if enabled else None
+        db = getattr(backend, "db", None)
         organization_id = str(
             getattr(getattr(backend, "org_task_manager", None), "organization_id", None) or ""
         ).strip()
-        if not backend or not organization_id:
+        if enabled and not organization_id and team_id:
+            try:
+                persisted = await self._load_persisted_organization(session_id, team_id)
+                if persisted is not None:
+                    db, organization = persisted
+                    organization_id = organization.organization_id
+            except Exception:
+                logger.exception("[AgentWebSocketServer] historical org.snapshot failed: session_id=%s", session_id)
+        if db is None or not organization_id:
             payload: dict[str, Any] = dict(empty_payload)
         elif requested_organization_id and requested_organization_id != organization_id:
             logger.warning(
@@ -6882,6 +6999,7 @@ class AgentWebSocketServer:
                 team_id=team_id,
                 organization_id=organization_id,
                 backend=backend,
+                db=db,
             )
 
         logger.info(
@@ -6909,9 +7027,10 @@ class AgentWebSocketServer:
         team_id: str,
         organization_id: str,
         backend: Any,
+        db: Any = None,
     ) -> dict[str, Any]:
-        """Read one organization's spec + task pool through its process manager."""
-        from openjiuwen.agent_teams.organization.pool import get_process_org_manager
+        """Read durable organization state without changing runtime bindings."""
+        from openjiuwen.agent_teams.organization.manager import TeamOrganizationManager
 
         empty_payload: dict[str, Any] = {
             "organization": None,
@@ -6921,7 +7040,8 @@ class AgentWebSocketServer:
             "stats": {},
         }
 
-        db = getattr(backend, "db", None)
+        if db is None:
+            db = getattr(backend, "db", None)
         if db is None:
             logger.warning(
                 "[AgentWebSocketServer] org.snapshot has no db handle: session_id=%s team_id=%s",
@@ -6930,10 +7050,11 @@ class AgentWebSocketServer:
             )
             return empty_payload
 
-        manager = get_process_org_manager(
+        # A historical query may precede Team activation. Never cache its
+        # transport-less reader as the manager used for runtime coordination.
+        manager = TeamOrganizationManager(
             organization_id=organization_id,
             db=db,
-            messager=getattr(backend, "messager", None),
             session_id=session_id or None,
         )
         task_pool = manager.task_pool
