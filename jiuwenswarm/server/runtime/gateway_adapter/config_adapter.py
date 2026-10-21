@@ -9,6 +9,7 @@ its response into an E2A response.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
 from types import SimpleNamespace
