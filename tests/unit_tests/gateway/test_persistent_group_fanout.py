@@ -363,6 +363,33 @@ async def test_later_named_colleague_waits_for_the_first_public_reply(host):
 
 
 @pytest.mark.asyncio
+async def test_an_unmentioned_colleague_does_not_answer_a_named_ping(host):
+    life = host.colleague("生活小助手")
+    study = host.colleague("agent学习小助手")
+    fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
+    group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
+    for agent_id, app_id in ((life, "app-life"), (study, "app-study")):
+        host.groups.update_membership(
+            NS, agent_id, group.group_chat_id, app_id,
+            status="active", observed_at=NOW, source_ref=f"test:{app_id}",
+        )
+    text = "@生活小助手 理我一下"
+    life_event = _event(
+        receiving_app_id="app-life", text=text, mention_ids=("ou_life",),
+        receiver_bot_mentioned=True, reply_to=None,
+    )
+    study_event = _event(
+        receiving_app_id="app-study", text=text, mention_ids=("ou_life",),
+        receiver_bot_mentioned=False, reply_to=None,
+    )
+
+    assert await fanout.handle(life_event) is InboundDisposition.HANDLED
+    assert await fanout.handle(study_event) is InboundDisposition.HANDLED
+    assert len(host.request_states(life, life_event)) == 1
+    assert host.request_states(study, study_event) == []
+
+
+@pytest.mark.asyncio
 async def test_a_pure_greeting_is_accepted_only_for_one_daily_colleague(host):
     from dataclasses import replace
 
@@ -880,6 +907,55 @@ async def test_mention_of_another_bot_does_not_mark_receiving_bot_mentioned():
     channel.set_persistent_group_fanout_callback(handle)
     await channel._on_message(_raw_feishu_event(mention_ids=("ou_other",)))
 
+    assert received[0].receiver_bot_mentioned is False
+
+
+@pytest.mark.asyncio
+async def test_persistent_text_shows_the_mentioned_display_name():
+    channel = _feishu_channel(agent_id="mate_study")
+    channel.config.bot_open_id = "ou_study"
+    received = []
+
+    async def handle(event):
+        received.append(event)
+        return InboundDisposition.HANDLED
+
+    channel.set_persistent_group_fanout_callback(handle)
+    raw = _raw_feishu_event(
+        content=json.dumps({"text": "@_user_1 理我一下"}),
+        mention_ids=("ou_life",),
+    )
+    raw.event.message.mentions[0].key = "@_user_1"
+    raw.event.message.mentions[0].name = "生活小助手"
+
+    await channel._on_message(raw)
+
+    assert received[0].text == "@生活小助手 理我一下"
+    assert received[0].mention_ids == ("ou_life",)
+    assert received[0].receiver_bot_mentioned is False
+
+
+@pytest.mark.asyncio
+async def test_persistent_text_normalizes_an_all_mention_without_a_mention_object():
+    channel = _feishu_channel(agent_id="mate_study")
+    channel.config.bot_open_id = "ou_study"
+    received = []
+
+    async def handle(event):
+        received.append(event)
+        return InboundDisposition.HANDLED
+
+    channel.set_persistent_group_fanout_callback(handle)
+    raw = _raw_feishu_event(
+        content=json.dumps({"text": "@_all 大家都自我介绍下"}),
+        mention_ids=(),
+    )
+    raw.event.message.mentions = []
+
+    await channel._on_message(raw)
+
+    assert received[0].text == "@all 大家都自我介绍下"
+    assert received[0].mention_ids == ()
     assert received[0].receiver_bot_mentioned is False
 
 
