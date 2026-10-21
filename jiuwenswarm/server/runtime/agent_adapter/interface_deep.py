@@ -18260,17 +18260,7 @@ class JiuWenSwarmDeepAdapter:
         if (tool_levels is not None and self._permission_rail is None
                 and self._is_session_scoped_adapter):
             raise ValueError("run permissions require an enabled Runtime permission rail")
-        inherited = CURRENT_RUN_CONTEXT.get()
         context = RunContext(
-            request_id=str(request.request_id or ""),
-            session_id=str(request.session_id or ""),
-            max_turns=inherited.max_turns if inherited and inherited.request_id == request.request_id else None,
-            max_budget_usd=inherited.max_budget_usd
-            if inherited and inherited.request_id == request.request_id
-            else None,
-            host_tools=inherited.host_tools if inherited and inherited.request_id == request.request_id else (),
-            tool_permissions=tuple(tool_levels.items()) if isinstance(tool_levels, dict) else None,
-            credential_context=self._scoped_login_auth(request),
             supports_permission_approval=(
                 request_params.get("supports_permission_approval",
                                    request_params.get("supports_user_interaction", True)) is True
@@ -18295,6 +18285,8 @@ class JiuWenSwarmDeepAdapter:
             if permission_rail is not None:
                 cleanup.callback(setattr, permission_rail, "run_permission_levels", previous_rail_levels)
                 permission_rail.run_permission_levels = tool_levels
+            context_token = CURRENT_RUN_CONTEXT.set(context)
+            cleanup.callback(CURRENT_RUN_CONTEXT.reset, context_token)
             run_permissions_token = RUN_PERMISSIONS.set(tool_levels)
             cleanup.callback(RUN_PERMISSIONS.reset, run_permissions_token)
             runtime_mode = str(request_params.get("mode") or "agent").strip().lower()
@@ -18323,8 +18315,6 @@ class JiuWenSwarmDeepAdapter:
                     ),
                 )
                 cleanup.callback(reset_command_execution, command_token)
-            context_token = CURRENT_RUN_CONTEXT.set(context)
-            cleanup.callback(CURRENT_RUN_CONTEXT.reset, context_token)
             yield
 
     async def process_message_impl(
