@@ -1312,7 +1312,8 @@ class TeamManager:
         )
 
         try:
-            resolved = ModelSelectionResolver().resolve(
+            resolver = ModelSelectionResolver()
+            resolved = resolver.resolve(
                 SwarmModelSelection(
                     type=selection.type,
                     id=selection.id,
@@ -1320,17 +1321,20 @@ class TeamManager:
                 )
             )
             # Team routes across the whole group. Groups saved from the UI
-            # carry no routing strategy, which would compile to the first
-            # route only; default them to ordered failover. A manually
+            # carry no routing settings, which would compile to the first
+            # route only or use IntelliRouter's 30-second timeout. A manually
             # selected route keeps compiling to that single model.
-            if (
-                isinstance(resolved, ResolvedModelGroup)
-                and selection.route_id is None
-                and not (resolved.routing or {}).get("strategy")
-            ):
-                resolved = resolved.model_copy(
-                    update={"routing": {**(resolved.routing or {}), "strategy": "ordered-failover"}}
-                )
+            if isinstance(resolved, ResolvedModelGroup) and selection.route_id is None:
+                routing = dict(resolved.routing or {})
+                if not routing.get("strategy"):
+                    routing["strategy"] = "ordered-failover"
+                if routing.get("timeout_seconds") is None:
+                    catalog_config = getattr(resolver.catalog, "config", {}) or {}
+                    models_config = catalog_config.get("models") or {}
+                    routing["timeout_seconds"] = float(
+                        models_config.get("group_routing_timeout_seconds") or 360
+                    )
+                resolved = resolved.model_copy(update={"routing": routing})
             compiled = compile_model_selection(resolved)
         except ModelSelectionError:
             # Stable catalog / permission failures are meaningful to callers.
