@@ -45,6 +45,8 @@ from jiuwenswarm.server.handlers._shared import (
 )
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
+from jiuwenswarm.server.runtime.session_owner_routing import bind_request_to_session_owner
+
 
 logger = logging.getLogger(__name__)
 
@@ -638,6 +640,18 @@ async def _prepare_code_mode_chat_turn(
             canonical_mode,
         )
 
+    manager = agent_manager or ctx.services.agent_manager
+    await manager.wait_for_session_prewarm(request.session_id)
+    owned = None
+    if is_interrupt_continuation:
+        find_paused = getattr(manager, "find_agent_for_interrupt_resume_nowait", None)
+        if callable(find_paused):
+            owned = find_paused(sid)
+        if owned is not None:
+            # Bind before metadata sync so a changed default cannot overwrite
+            # the implementation of the session whose pause is being resumed.
+            bind_request_to_session_owner(request, owned)
+
     agent_mode = "agent" if mode == "auto_harness" else mode
     requested_project_dir = resolve_request_project_dir(request)
     # [改动] 写盘用 canonical mode（request.params["mode"]，已被规范化为
@@ -679,15 +693,9 @@ async def _prepare_code_mode_chat_turn(
         request.params["project_dir"] = project_dir
         request.metadata = dict(request.metadata or {})
         request.metadata["project_dir"] = project_dir
-    manager = agent_manager or ctx.services.agent_manager
-    await manager.wait_for_session_prewarm(request.session_id)
     # Scheme A: 普通续聊走请求 channel（web）；审批/HITL 续跑回到挂着 interrupt 的实例。
     session_id = str(request.session_id or "").strip()
     if is_interrupt_continuation:
-        owned = None
-        find_paused = getattr(manager, "find_agent_for_interrupt_resume_nowait", None)
-        if callable(find_paused):
-            owned = find_paused(session_id)
         if owned is not None:
             logger.info(
                 "[_prepare_code_mode_chat_turn] interrupt resume reuse session owner: "

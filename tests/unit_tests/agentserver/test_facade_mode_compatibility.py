@@ -9,16 +9,19 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server.handlers import _shared, chat
+from jiuwenswarm.server.handlers import _default, _shared, chat
 from jiuwenswarm.server.runtime.agent_adapter import interface
-from jiuwenswarm.server.runtime.agent_manager import AgentManager
+from jiuwenswarm.server.runtime.agent_manager import AgentManager, _make_agent_cache_key
 from jiuwenswarm.server.runtime.session.session_manager import SessionManager
+from jiuwenswarm.server.runtime.session import session_metadata
+from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
 
 class RecordingAdapter:
     def __init__(self, mode):
         self.mode = mode
         self.create_instance = AsyncMock()
+        self.handle_heartbeat = AsyncMock(return_value=None)
         self.interrupts = []
         self.messages = []
         self._session_adapters = {}
@@ -39,6 +42,13 @@ class RecordingAdapter:
             channel_id=request.channel_id,
             payload={"event_type": "chat.done"},
             is_complete=True,
+        )
+
+    async def process_message_impl(self, request, inputs):
+        self.messages.append((request, dict(inputs)))
+        return AgentResponse(
+            request_id=request.request_id, channel_id=request.channel_id,
+            ok=True, payload={"event_type": "chat.done"},
         )
 
 
@@ -78,6 +88,7 @@ def facades(monkeypatch, tmp_path):
         facade._skill_manager = Mock()
         facade._personal_context_runtime_enabled = False
         facade._session_manager = SessionManager(telemetry=Mock())
+        facade._permission_response_ledger = interface.PermissionResponseLedger()
         facade._append_history_record = Mock()
         facade._materialize_enterprise_attachments = AsyncMock()
         facade._bind_tenant_request_context = Mock(return_value=(None, None))
@@ -227,3 +238,174 @@ async def test_tenant_interrupt_uses_actual_session_owner(facades, monkeypatch, 
     assert created[1].interrupts == []
     assert len(created) == 2
     ctx.sink.send_wire.assert_awaited_once()
+
+
+@pytest.fixture
+def resume_routes(facades, monkeypatch, tmp_path):
+    """Keep real owner scans, cache routing, metadata and facade entry points."""
+    build, created = facades
+    config = {"flash": {"enabled": False}}
+    monkeypatch.setattr(_shared, "get_config", lambda: config)
+    monkeypatch.setattr(_default, "_sessions_dir_for_request", lambda _: tmp_path)
+    monkeypatch.setattr(_shared, "_sessions_dir_for_request", lambda _: tmp_path)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.agent_ws_server.ensure_interface_deep_and_checkpointer", AsyncMock(),
+    )
+    monkeypatch.setattr(_default, "_ensure_code_mode_state", AsyncMock(return_value=False))
+    monkeypatch.setattr(_default, "_check_post_process_plan_exit", AsyncMock())
+    manager = object.__new__(AgentManager)
+    manager.agents = {"officeclaw": {}}
+    manager._agent_borrowers = {}
+    manager._pending_tui_retirements = {}
+    manager.wait_for_session_prewarm = AsyncMock()
+    pool = object.__new__(TenantAgentPool)
+    pool.require_officeclaw_agent = Mock(return_value=None)
+    pool.iter_agent_managers_nowait = lambda: [manager]
+    pool.resolve_control_rpc_tenant = lambda req, aid, sid: (aid, sid)
+    pool.get_agent_manager = AsyncMock(return_value=manager)
+    pool._ensure_agent_manager = AsyncMock(return_value=manager)
+    pool._refresh_agent_manager_cache = AsyncMock()
+    ctx = SimpleNamespace(
+        services=SimpleNamespace(
+            agent_manager=manager, tenant_pool=lambda: pool, session_stream_tasks={},
+        ),
+        sink=SimpleNamespace(send_chunk=AsyncMock(return_value=True)),
+    )
+
+    async def add(mode, sub_mode=None):
+        facade = build()
+        await facade.create_instance(mode=mode, sub_mode=sub_mode)
+        key = _make_agent_cache_key(mode, sub_mode or "", str(tmp_path))
+        manager.agents["officeclaw"][key] = facade
+        return facade
+
+    def initialize(sid, adapter_mode="agent"):
+        session_metadata.init_session_metadata(
+            session_id=sid, channel_id="officeclaw", mode="agent", work_mode="work",
+            adapter_mode=adapter_mode, project_dir=str(tmp_path), sessions_root=tmp_path,
+        )
+
+    return SimpleNamespace(
+        add=add, initialize=initialize, config=config, manager=manager,
+        pool=pool, ctx=ctx, created=created,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["handler", "manager", "pool", "handler_pool"])
+@pytest.mark.parametrize("source", ["permission_interrupt", "confirm_interrupt", "ask_user_interrupt"])
+@pytest.mark.parametrize("bound_mode", ["agent", "flash"])
+@pytest.mark.parametrize("incoming_mode", ["agent.plan", None])
+async def test_resume_reaches_paused_owner_stream(
+    resume_routes, tmp_path, path, source, bound_mode, incoming_mode,
+):
+    routes = resume_routes
+    routes.initialize("paused-session")
+    owner = await routes.add(bound_mode)
+    other_mode = "flash" if bound_mode == "agent" else "agent"
+    unrelated = await routes.add(other_mode)
+    # A real paused interaction session, discoverable by the production scans.
+    owner._adapter._instance = SimpleNamespace(
+        _interaction_session=SimpleNamespace(session_id=lambda: "paused-session"),
+    )
+    owner._adapter._read_session_interrupt_state = lambda: {"tool_call_id": "tool-1"}
+    routes.config["flash"]["enabled"] = bound_mode == "agent"
+    request = make_request(
+        incoming_mode, session_id="paused-session", source=source,
+        answers=[{"option_id": "allow"}], request_id="tool-1", query="continue",
+        project_dir=str(tmp_path), work_mode="work",
+    )
+    # The pool shortcut can receive a decision computed by an upstream handler.
+    request.resolved_adapter_mode = other_mode
+    request.resolved_adapter_source = "flash_enabled_default" if other_mode == "flash" else "default"
+    if path == "handler":
+        _, _, selected = await _default._prepare_code_mode_chat_turn(
+            routes.ctx, request, "officeclaw",
+        )
+        assert selected is owner
+        chunks = await _collect(selected.process_message_stream(request))
+    elif path == "handler_pool":
+        await _default._handle_stream_impl(routes.ctx, request)
+        chunks = [call.args[0] for call in routes.ctx.sink.send_chunk.await_args_list]
+    else:
+        target = routes.manager if path == "manager" else routes.pool
+        chunks = await _collect(target.process_message_stream(request))
+    assert chunks[-1].is_complete
+    assert not any((chunk.payload or {}).get("event_type") == "chat.error" for chunk in chunks)
+    assert owner._adapter.messages[0][0] is request
+    assert unrelated._adapter.messages == []
+    assert request.resolved_adapter_mode == bound_mode
+    assert request.resolved_adapter_source == "session_owner"
+    assert len(routes.created) == 2
+    if path in {"handler", "handler_pool"}:
+        metadata = session_metadata.get_session_metadata(
+            "paused-session", cache_bust=True, enable_writeback=False, sessions_root=tmp_path,
+        )
+        assert metadata["adapter_mode"] == bound_mode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["manager", "pool"])
+@pytest.mark.parametrize("bound_mode", ["agent", "flash"])
+@pytest.mark.parametrize("source", ["permission_interrupt", "confirm_interrupt", "ask_user_interrupt"])
+async def test_resume_reaches_paused_owner_unary(resume_routes, tmp_path, path, bound_mode, source):
+    routes = resume_routes
+    owner = await routes.add(bound_mode)
+    owner._adapter._sessions_awaiting_tool_permission = {"paused-session"}
+    request = make_request(
+        "agent.plan", session_id="paused-session", source=source,
+        answers=[{"option_id": "allow"}], request_id="tool-1", query="continue",
+        project_dir=str(tmp_path), work_mode="work",
+    )
+    request.resolved_adapter_mode = "flash" if bound_mode == "agent" else "agent"
+    routes.config["flash"]["enabled"] = bound_mode == "agent"
+    target = routes.manager if path == "manager" else routes.pool
+    response = await target.process_message(request)
+    assert response.ok
+    assert owner._adapter.messages[0][0] is request
+    assert request.resolved_adapter_mode == bound_mode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored_adapter", ["agent", "flash"])
+@pytest.mark.parametrize("incoming_mode", ["agent.plan", None])
+async def test_handler_pool_manager_preserves_session_flash_binding(
+    resume_routes, tmp_path, stored_adapter, incoming_mode,
+):
+    routes = resume_routes
+    routes.initialize("sticky-session", stored_adapter)
+    deep = await routes.add("agent")
+    flash = await routes.add("flash")
+    routes.config["flash"]["enabled"] = False
+    request = make_request(
+        incoming_mode, session_id="sticky-session", query="hello",
+        project_dir=str(tmp_path), work_mode="work",
+    )
+    await _default._handle_stream_impl(routes.ctx, request)
+    expected, other = (flash, deep) if stored_adapter == "flash" else (deep, flash)
+    assert expected._adapter.messages[0][0] is request
+    assert other._adapter.messages == []
+    assert request.resolved_adapter_mode == stored_adapter
+    assert request.params["mode"] == "agent"
+    if stored_adapter == "flash":
+        assert request.resolved_adapter_source == "session_sticky"
+    metadata = session_metadata.get_session_metadata(
+        "sticky-session", cache_bust=True, enable_writeback=False, sessions_root=tmp_path,
+    )
+    assert metadata["adapter_mode"] == stored_adapter
+    assert metadata["mode"] == "agent"
+
+
+@pytest.mark.parametrize("mode,expected,sub_mode", [
+    ("agent.code.normal", "code", "normal"), ("team", "team", None),
+    ("agent.plan", "agent", "plan"), ("team.work.plan", "team", "plan"),
+])
+def test_prepared_flash_binding_cannot_override_code_team_or_plan(mode, expected, sub_mode, monkeypatch):
+    monkeypatch.setattr(_shared, "get_config", lambda: {"flash": {"enabled": True}})
+    request = make_request(mode, plan_entry_source="e2a", work_mode="work")
+    request.resolved_adapter_mode = "flash"
+    request.resolved_adapter_source = "session_sticky"
+    manager = object.__new__(AgentManager)
+    actual_mode, actual_sub, _ = manager._agent_lookup_from_request(request)
+    assert (actual_mode, actual_sub) == (expected, sub_mode)
+    assert request.resolved_adapter_mode == ("code" if expected == "code" else "agent")

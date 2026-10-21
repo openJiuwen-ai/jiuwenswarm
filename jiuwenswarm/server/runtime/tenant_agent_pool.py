@@ -43,6 +43,8 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     infer_multimodal_env_removals,
     sync_multimodal_env_omission_state,
 )
+from jiuwenswarm.server.runtime.session_owner_routing import bind_request_to_session_owner
+
 
 logger = logging.getLogger(__name__)
 
@@ -1187,6 +1189,7 @@ class TenantAgentPool:
                     if isinstance(request.params, dict)
                     else None,
                 )
+                bind_request_to_session_owner(request, owned)
                 return await owned.process_message(request)
         agent_id, service_id, workspace_key = self.extract_ids(request)
         await self.wait_for_session_prewarm(request.session_id)
@@ -1365,6 +1368,7 @@ class TenantAgentPool:
                     if isinstance(request.params, dict)
                     else None,
                 )
+                bind_request_to_session_owner(request, owned)
                 async for chunk in owned.process_message_stream(request):
                     yield chunk
                 return

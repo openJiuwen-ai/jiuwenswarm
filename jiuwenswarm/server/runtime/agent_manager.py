@@ -44,6 +44,8 @@ from jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail imp
     coalesce_config_skill_envs,
 )
 
+from jiuwenswarm.server.runtime.session_owner_routing import bind_request_to_session_owner
+
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 
@@ -1285,6 +1287,7 @@ class AgentManager:
             # session runtime、但没有这条暂停命令，不能拿来续跑。
             owned = self.find_agent_for_interrupt_resume_nowait(session_id)
             if owned is not None:
+                bind_request_to_session_owner(request, owned)
                 logger.info(
                     "[AgentManager] interrupt resume reuse session owner: "
                     "session_id=%s channel_id=%s source=%s",
@@ -1996,7 +1999,20 @@ class AgentManager:
         resolved = resolve_request_runtime_mode(request)
         mode, sub_mode = resolved.manager_mode, resolved.sub_mode
         agent_mode = "agent" if mode == "auto_harness" else mode
-        request.resolved_adapter_mode = resolved.adapter_mode
+        adapter_mode = resolved.adapter_mode
+        adapter_source = resolved.adapter_source
+        # Handler preparation may have restored a durable Flash binding, or
+        # selected the implementation before a config reload. Reuse that
+        # decision for normal single-agent work, including its cache key.
+        # Code, Team and Plan continue to use their own routing rules.
+        if mode in {"agent", "flash"} and sub_mode is None:
+            prepared_mode = getattr(request, "resolved_adapter_mode", None)
+            if prepared_mode in {"agent", "flash"}:
+                agent_mode = prepared_mode
+                adapter_mode = prepared_mode
+                adapter_source = getattr(request, "resolved_adapter_source", None)
+        request.resolved_adapter_mode = adapter_mode
+        request.resolved_adapter_source = adapter_source
         project_dir = (
             params.get("project_dir")
             or params.get("workspace_dir")
