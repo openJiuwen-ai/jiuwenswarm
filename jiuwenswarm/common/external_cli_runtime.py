@@ -190,7 +190,7 @@ def get_external_cli_runtime_status(cli_agent: str) -> dict[str, Any]:
     metadata_path = target / _INSTALL_METADATA_FILE
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         result["runtime_state"] = "invalid"
         return result
     if not isinstance(metadata, dict):
