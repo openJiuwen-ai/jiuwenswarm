@@ -2599,15 +2599,26 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     // 连 session 都还没建），此刻能查到的已登记素材是不完整的。真正的笔记在 useWebSocket.sendMessage
     // 里、落盘拿到路径之后统一补，同时也覆盖本会话之前已经登记过的素材。
     const trimmed = buildSubmitContent(trimmedBase, readyDrafts);
+    // Materialize skill markers when the store holds a selection that the
+    // editor DOM does not reflect (e.g. insertSkillChip skipped during IME
+    // composition). Without this, a skill-only send produces an empty
+    // `trimmed`, which the team onSubmit / plain-text onInterrupt channels
+    // silently drop, and the post-send clear below swallows the selection.
+    const submitContent = selectedSkills.reduce(
+      (content, skill) => (content.includes(`{{skill:${skill}}}`) ? content : `${content}{{skill:${skill}}}`),
+      trimmed,
+    );
     const hasReadyMedia = readyMediaItems.length > 0;
-    // Block only when there is neither text nor a ready attachment to send.
-    if ((!trimmedBase && !hasReadyMedia) || hasUploadingAttachments || hasAttachmentErrors) return;
+    // Block only when there is neither text, a ready attachment, nor a
+    // selected skill to send.
+    if ((!trimmedBase && !hasReadyMedia && selectedSkills.length === 0) || hasUploadingAttachments || hasAttachmentErrors) return;
     // In agent mode attachments queue with the task (taskQueue carries mediaItems).
     // Other non-team modes still go through the text-only onInterrupt channel where
     // attachments would be lost, so keep blocking there.
     if (isInterruptible && !isTeamMode && !isAgentMode && hasReadyMedia) return;
 
     const sid = useChatStore.getState().activeSessionId;
+    let sentViaTaskQueue = false;
     if (goalArmed && trimmedBase && sid && onSetGoal && sid !== NEW_CONVERSATION_ID) {
       // command.goal carries a text objective only; silently dropping attachments
       // would make users believe they were sent, so block explicitly with an alert.
@@ -2622,9 +2633,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     } else if (goalArmed && trimmedBase && sid === NEW_CONVERSATION_ID) {
       // 欢迎页尚无真实 session，armed 状态先保留，交给 App.tsx 的 handleSendMessage
       // 在 session.create 成功、拿到真实 session id 后再落地消息 + 调 onSetGoal
-      onSubmit(trimmed, readyMediaItems);
+      onSubmit(submitContent, readyMediaItems);
     } else if (isTeamMode) {
-      onSubmit(trimmed, readyMediaItems);
+      onSubmit(submitContent, readyMediaItems);
     } else if (queuePaused && isAgentMode && sid) {
       // 队列已暂停时，弹窗提示用户选择
       const queueLen = useChatStore.getState().getRuntime(sid)?.taskQueue.length ?? 0;
@@ -2633,23 +2644,25 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         // 清空队列并发送
         useChatStore.getState().clearTaskQueue(sid);
         useChatStore.getState().setQueuePaused(sid, false);
-        onSubmit(trimmed, readyMediaItems);
+        onSubmit(submitContent, readyMediaItems);
       } else {
         // 保持队列，新消息加入队列
-        useChatStore.getState().addToTaskQueue(sid, trimmed, readyMediaItems);
+        useChatStore.getState().addToTaskQueue(sid, submitContent, readyMediaItems);
+        sentViaTaskQueue = true;
       }
     } else if (isInterruptible) {
       if (isAgentMode) {
         if (sid) {
-          useChatStore.getState().addToTaskQueue(sid, trimmed, readyMediaItems);
+          useChatStore.getState().addToTaskQueue(sid, submitContent, readyMediaItems);
+          sentViaTaskQueue = true;
           // 目标 active 但当前没有任务在处理时，常规的自动排空触发点不会命中，主动兜底一次
           onDrainTaskQueueIfIdle?.(sid);
         }
       } else {
-        onInterrupt(trimmed);
+        onInterrupt(submitContent);
       }
     } else {
-      onSubmit(trimmed, readyMediaItems);
+      onSubmit(submitContent, readyMediaItems);
     }
     if (sid) {
       useChatStore.getState().setInputValue(sid, '');
@@ -2661,9 +2674,30 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (inputRef.current) {
       inputRef.current.innerHTML = '';
     }
+    // Clear selected skills from the store so canSubmit stays in sync with
+    // the editor DOM (chips were cleared above). Without this, the send
+    // button remains enabled on an empty input because selectedSkills still
+    // holds stale entries.
+    //
+    // Skip clearing for two paths where sendMessage reads selectedSkills
+    // asynchronously (after an await), which would race with this clear:
+    //  - NEW_CONVERSATION_ID: App.tsx migrates selectedSkills from 'new' to
+    //    the real session id after `await createConversationSession`. Clearing
+    //    here would wipe them before the migration at App.tsx.
+    //  - Task-queue paths (sentViaTaskQueue, including the paused "keep
+    //    queue" branch): drainTaskQueueIfIdle calls sendMessage later, which
+    //    reads selectedSkills from the session store. Clearing here would
+    //    wipe them before the drain.
+    // For direct onSubmit paths, sendMessage reads selectedSkills synchronously
+    // before its first await, so clearing here is safe.
+    const queuedToNewConversation = sid === NEW_CONVERSATION_ID;
+    if (sid && !queuedToNewConversation && !sentViaTaskQueue) {
+      clearSelectedSkills(sid);
+    }
     setComposerSuggestion(null);
   }, [
     attachments,
+    clearSelectedSkills,
     executeSlashCommand,
     extractRichContent,
     readyMediaItems,
@@ -2687,6 +2721,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onDrainTaskQueueIfIdle,
     pushAttachmentAlert,
     releaseUnsentUploads,
+    selectedSkills,
     t,
   ]);
 
@@ -2705,7 +2740,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       !isListening &&
       !isTranscribing &&
       !modelGroupSendBlocked &&
-      (hasTextDraft || hasReadyMedia) &&
+      (hasTextDraft || hasReadyMedia || selectedSkills.length > 0) &&
       !isLoadingHistory &&
       !isImageInterruptBlocked &&
       !hasUploadingAttachments &&
