@@ -5,8 +5,6 @@ import {
   createCommitAttempt,
   publishTimestamp,
   isSubmissionLocked,
-  shouldPollPublish,
-  canRetrySkillPack,
   definitiveCommitRejection,
 } from '../features/assetPublishState';
 import { getStoredOAuthProvider, getStoredOAuthToken } from '../utils/gitcodeOAuth';

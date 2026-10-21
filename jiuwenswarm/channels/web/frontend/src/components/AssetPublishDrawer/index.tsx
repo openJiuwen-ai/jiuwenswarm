@@ -12,7 +12,7 @@ import {
 } from '../../utils/gitcodeOAuth';
 import { PUBLISH_RESTORE_KEY, useAssetPublish } from '../../hooks/useAssetPublish';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
-import { publishOutcome, localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
+import { canStartNewVersion, localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
 import { publishIssueKey } from '../../features/assetPublishErrors';
 import type { AssetPublishOpenRequest, AssetReference, PublishMetadata } from '../../types/assetPublish';
 import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
@@ -489,7 +489,6 @@ function AssetPublishDrawer({
     description: 'descriptionHelp',
     tags: 'tagsHelp',
   };
-  const outcome = state.record ? publishOutcome(state.record) : null;
   const recordState = state.record ? localRecordState(state.record) : null;
   const ResultIcon =
     recordState === 'failed'
@@ -944,7 +943,7 @@ function AssetPublishDrawer({
           )}
         </section>
       )}
-      {state.record && showResult && recordState && (
+      {state.record && recordState && (
         <section
           aria-live="polite"
           className="asset-publish-result-card"
@@ -980,9 +979,20 @@ function AssetPublishDrawer({
             <p className="asset-publish-result-error text-danger">{issueText(state.record.error)}</p>
           )}
           <footer className="asset-publish-result-footer" data-testid="asset-publish-result-footer">
-            <p data-testid="asset-publish-observed-note">
-              {text(state.record.stage === 'completed' ? 'packPublishedNote' : 'observed')}
-            </p>
+            <p data-testid="asset-publish-observed-note">{text('observed')}</p>
+            {canStartNewVersion(state.record) && (
+              <button
+                type="button"
+                data-testid="asset-publish-new-version"
+                disabled={state.submissionLocked || state.busy}
+                onClick={() => {
+                  state.edit({});
+                  setReview(false);
+                }}
+              >
+                {text('recheck')}
+              </button>
+            )}
           </footer>
         </section>
       )}
