@@ -97,8 +97,8 @@ elif ! security find-identity -v -p codesigning | grep -q "$SIGN_IDENTITY"; then
   exit 1
 fi
 
-printf '[1/9] Install Python 3.12 dependencies (including Computer Use)...\n'
-uv sync --extra dev --extra cua --python 3.12
+printf '[1/9] Install Python dependencies (including Computer Use)...\n'
+uv sync --extra dev --extra cua
 
 printf '\n[2/9] Build frontend (jiuwenswarm/channels/web/frontend)...\n'
 rm -rf "$PROJECT_ROOT/jiuwenswarm/web/dist"

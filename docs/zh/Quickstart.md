@@ -48,7 +48,7 @@ jiuwenswarm-init
 jiuwenswarm-start
 ```
 
-Computer Use 是可选能力。正式发布的通用 wheel 同时附带 macOS 14+ ARM64、Windows x64 的预编译驱动，运行时自动选择，首次使用只解压当前平台资源，无需安装 Swift/C# 编译工具。Windows 运行环境需 .NET Framework 4.8 和 Windows 10 1903+；`cua_repl` 需 Python 3.12+。正式 dmg／exe 同样附带本机驱动和 Python。使用桌面能力仍需启用桌面子代理并授予系统权限；不支持的系统或驱动不可用不会影响主服务和其他 Agent。
+Computer Use 是可选能力。正式发布的通用 wheel 同时附带 macOS 14+ ARM64、Windows x64 的预编译驱动，运行时自动选择，首次使用只解压当前平台资源，无需安装 Swift/C# 编译工具。Windows 运行环境需 .NET Framework 4.8 和 Windows 10 1903+；`cua_repl` 需 Python 3.11+。正式 dmg／exe 同样附带本机驱动和 Python。使用桌面能力仍需启用桌面子代理并授予系统权限；不支持的系统或驱动不可用不会影响主服务和其他 Agent。
 
 启动成功后，终端会显示服务端口信息横幅：
 

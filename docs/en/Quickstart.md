@@ -48,7 +48,7 @@ jiuwenswarm-init
 jiuwenswarm-start
 ```
 
-Computer Use is optional. The released universal wheel includes precompiled drivers for macOS 14+ ARM64 and Windows x64. It selects the current platform automatically and only extracts that platform's runtime on first use; no Swift/C# compiler toolchain is needed. Windows requires .NET Framework 4.8 and Windows 10 1903+; `cua_repl` requires Python 3.12+. Released dmg/exe installers also include the native driver and Python. Desktop use still requires enabling the subagent and granting system permissions. Unsupported platforms or unavailable drivers do not prevent the main services or other agents from running.
+Computer Use is optional. The released universal wheel includes precompiled drivers for macOS 14+ ARM64 and Windows x64. It selects the current platform automatically and only extracts that platform's runtime on first use; no Swift/C# compiler toolchain is needed. Windows requires .NET Framework 4.8 and Windows 10 1903+; `cua_repl` requires Python 3.11+. Released dmg/exe installers also include the native driver and Python. Desktop use still requires enabling the subagent and granting system permissions. Unsupported platforms or unavailable drivers do not prevent the main services or other agents from running.
 
 After successful startup, the terminal will display a service port banner:
 

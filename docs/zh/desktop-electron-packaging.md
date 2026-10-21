@@ -60,7 +60,7 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 流程：
 
-1. `uv sync --locked --extra dev --extra cua --python 3.12`，Windows 指定 `--python-platform x86_64-pc-windows-msvc`（FrontendOnly 跳过）
+1. `uv sync --locked --extra dev --extra cua`，Windows 指定 `--python-platform x86_64-pc-windows-msvc`（FrontendOnly 跳过）
 2. 前端 `vite build`（`ELECTRON=true` → `base: './'`；`$env:ELECTRON` 用 try/finally 恢复避免污染 shell）
 3. electron 目录 `npm install`（Electron runtime 来自 `node_modules/electron/dist`）
 4. `build_config.py --sync --emit-json` 读取 **dist 目录名 / exe 名 / 版本号**（当前 `workswarm` / `workswarm.exe` / pyproject 版本，单一来源，不写死；`--sync` 对齐 build-exe.ps1，否则 pyproject 改版本后 spec 漂移守卫会硬失败）→ PyInstaller 打后端 → 冻结 exe 自检 A2UI bundle（同 build-exe.ps1）
@@ -84,7 +84,7 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 `cua_engine/hosting.py` 负责 SDK 加载和驱动准备，`cua_engine/artifacts.py` 负责跨平台发布产物的归档、校验与选择，`cua_engine/desktop.py` 负责原生协议通信与进程清理，均不依赖 Agent 框架。`agents/harness/computer_use/` 只负责接入原有桌面子代理、工具与生命周期；构建脚本直接调用引擎，不经过 Agent 接入层。
 
-Windows 和 macOS 的完整安装包共用 `scripts/jiuwenswarm.spec`：构建机使用 Python 3.12 安装 `cua` 依赖，并由 `scripts/build_computer_use.py` 编译本机驱动。macOS 构建机需要 Swift 6 工具链；Windows 构建机需要 .NET Framework 4.8 编译器和 Windows 10 1903+ 的 WinRT 元数据。正式 macOS 发布仍只提供 ARM64 包。
+Windows 和 macOS 的完整安装包共用 `scripts/jiuwenswarm.spec`：构建机沿用主项目支持的 Python 版本（3.11–3.13）安装 `cua` 依赖，并由 `scripts/build_computer_use.py` 编译本机驱动。macOS 构建机需要 Swift 6 工具链；Windows 构建机需要 .NET Framework 4.8 编译器和 Windows 10 1903+ 的 WinRT 元数据。正式 macOS 发布仍只提供 ARM64 包。
 
 冻结包内置 Python SDK、Skill 和已编译的驱动。Windows 同时包含截图辅助程序和 UIA 互操作程序集；不会把 Swift/C# 编译输入或 UIA 构建工具放进运行资源。安装版直接执行包内驱动，不在用户电脑编译，也不复制到源码构建缓存；驱动缺失时报告安装包损坏。
 

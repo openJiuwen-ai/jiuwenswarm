@@ -27,8 +27,8 @@ def bundle_data(project_root: Path) -> list[tuple[str, str]]:
     """Build before Analysis, and ship runtime assets without compiler inputs."""
     if sys.platform not in ("darwin", "win32"):
         return []
-    if sys.version_info < (3, 12):
-        raise RuntimeError("Desktop packages with cua_repl must be built using Python 3.12+.")
+    if sys.version_info < (3, 11):
+        raise RuntimeError("Desktop packages with cua_repl must be built using Python 3.11+.")
     root = project_root / "jiuwenswarm" / "cua_engine"
     import_engine(root)
     from computer_use.scripts.native import build_native

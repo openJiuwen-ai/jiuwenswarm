@@ -26,8 +26,8 @@ def main() -> None:
     action.add_argument("--prepare-native", action="store_true", help="Resolve an installed driver without compiling")
     action.add_argument("--build-native", action="store_true", help="Explicitly compile the optional source driver")
     args = parser.parse_args()
-    if not (args.prepare_native or args.build_native) and sys.version_info < (3, 12):
-        raise RuntimeError("cua_repl requires Python 3.12+. Set react.subagents.cua_agent.repl_python.")
+    if not (args.prepare_native or args.build_native) and sys.version_info < (3, 11):
+        raise RuntimeError("cua_repl requires Python 3.11+.")
     try:
         executable = prepare_native(build=True) if args.build_native else prepare_native()
     except Exception as error:

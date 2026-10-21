@@ -3,7 +3,7 @@
 r"""JiuwenSwarm PyInstaller 打包配置。
 
 构建前请先：
-1. 安装依赖: uv sync --extra dev --extra cua --python 3.12
+1. 安装依赖: uv sync --extra dev --extra cua
 2. 构建前端: cd jiuwenswarm/channels/web/frontend && npm run build
 3. 执行平台 wrapper: .\scripts\build-exe.ps1 或 bash scripts/build-macos.sh
 """

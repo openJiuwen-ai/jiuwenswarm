@@ -8,7 +8,6 @@ import sys
 from computer_use._json import loads as jsonLoads
 
 from .._json import dumps
-from ..client.execution import eager
 from ..client.preview import is_preview_event
 from .history import HISTORY_KEY, HistoryGate
 from .journal import Journal
@@ -43,13 +42,25 @@ class ExecutionSession:
         task.add_done_callback(self._tasks.discard)
         return task
 
-    @eager
-    async def execute(self, code, signal=None, history=None, title=None, on_progress=None):
+    def execute(self, code, signal=None, history=None, title=None, on_progress=None):
+        # Bind queued work to this generation before a reset can yield control.
+        coroutine = self._execute(code, signal, history, title, on_progress, self._generation)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return coroutine
+        return loop.create_task(coroutine)
+
+    async def _execute(self, code, signal, history, title, on_progress, generation):
         if self._closed:
             return execution_error("Execution session is closed.")
+        if generation != self._generation:
+            return execution_error(
+                "Execution was reset before code was sent. No code was executed; recreate variables before continuing.")
         if self._resetting is not None:
             result = await asyncio.shield(self._resetting)
-            return result if result.get("isError") else await self.execute(code, signal, history, title, on_progress)
+            return result if result.get("isError") else await self._execute(
+                code, signal, history, title, on_progress, generation)
         if self._retiring is not None:
             return execution_error(
                 "Native cleanup is still pending. Call computer_use_reset before continuing; no code was executed.")
@@ -58,14 +69,12 @@ class ExecutionSession:
         if signal is not None and signal.is_set():
             return execution_error("Call cancelled before execution.")
         self._starting = True
-        generation = self._generation
         starting = self._track(self._start())
         self._start_task = starting
 
         def started(_):
             if self._start_task is starting:
                 self._start_task = None
-                self._starting = False
 
         starting.add_done_callback(started)
         try:
@@ -75,6 +84,9 @@ class ExecutionSession:
             raise
         except Exception as error:
             return execution_error(str(error))
+        finally:
+            # Keep admission reserved until this task can publish _pending.
+            self._starting = False
         if generation != self._generation or self._closed:
             return execution_error(('Execution was reset before code was sent. No code was executed; '
                                     'recreate variables before '

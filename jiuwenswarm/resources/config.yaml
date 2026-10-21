@@ -665,15 +665,15 @@ react:
       # max_iterations: 100
     # cua_agent: 桌面自动化子代理，保留单步工具，增加 Python cua_repl 支持无障碍树与多步工作流。
     # 需安装 cua 可选依赖（pip install "workswarm[cua]" 或 uv sync --extra cua），并使用支持图片输入的模型。
-    # 安装包内置 Python 3.12+ 与已编译驱动，无需用户安装编译工具。
+    # 安装包内置 Python 3.11+ 与已编译驱动，无需用户安装编译工具。
     # 源码运行需手动编译驱动：python -m jiuwenswarm.agents.harness.computer_use.worker --build-native。
     # 需提供目标系统的桌面权限。操作可能影响真实鼠标、键盘和前台，执行期间请勿操作电脑。
     cua_agent:
       enabled: false
       # Keep individual tools; prefer Python cua_repl for multi-step workflows.
       repl_enabled: true
-      # Optional Python 3.12+ environment with workswarm[cua] installed (for a 3.11 host).
-      # repl_python: /path/to/python3.12
+      # Optional Python 3.11+ environment with workswarm[cua] installed; defaults to the host.
+      # repl_python: /path/to/python
       # max_iterations: 100
       # 上下文中完整保留的窗口截图数量；单窗口任务可设为 1 以大幅缩减上下文。默认 3。
       # snapshot_keep_last_k: 3

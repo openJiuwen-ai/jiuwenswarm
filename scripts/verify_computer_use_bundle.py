@@ -38,8 +38,8 @@ async def verify_computer_use_bundle() -> None:
     """Verify without a compiler, external Python, desktop input or permission prompts."""
     if not getattr(sys, "frozen", False):
         raise RuntimeError("Computer Use bundle verification must run inside the frozen executable")
-    if sys.version_info < (3, 12):
-        raise RuntimeError("The installed cua_repl requires a bundled Python 3.12+ runtime")
+    if sys.version_info < (3, 11):
+        raise RuntimeError("The installed cua_repl requires a bundled Python 3.11+ runtime")
     executable = prepare_native()
     skill_name = "computer-use-macos" if sys.platform == "darwin" else "computer-use-windows"
     skill = engine_root() / "skills" / skill_name / "SKILL.md"
