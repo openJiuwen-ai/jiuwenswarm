@@ -17,7 +17,11 @@ from openjiuwen.harness.security import PermissionLevel, PermissionResult, Skill
 from openjiuwen.harness.security.permission_engine.toolguard.tool_policy import evaluate_tiered_policy
 from jiuwenswarm.agents.harness.common.channel_runtime_context import CURRENT_SESSION_ID
 from jiuwenswarm.common.np_transport import named_pipe_transport_for
-from jiuwenswarm.common.permission_profile import resolve_permission_profile_rules
+from jiuwenswarm.common.permission_profile import (
+    PERMISSION_PROFILE_DEFAULT,
+    PERMISSION_PROFILE_FULL_ACCESS,
+    resolve_permission_profile_rules,
+)
 from jiuwenswarm.common.utils import logger
 
 ACTIVE_BEHAVIOR: contextvars.ContextVar[tuple | None] = contextvars.ContextVar("active_behavior", default=None)
@@ -137,6 +141,13 @@ def cloud_authorization_enabled(config: dict) -> bool:
     return config.get("xiaoyi_work_security", {}).get("cloud_authorization", {}).get("enabled") is True
 
 
+def _effective_permission_profile(config: dict) -> str:
+    permissions = config.get("permissions", {})
+    if isinstance(permissions, dict) and permissions.get("enabled") is False:
+        return PERMISSION_PROFILE_FULL_ACCESS
+    return PERMISSION_PROFILE_DEFAULT
+
+
 def runtime_permission_config(config: dict) -> dict:
     """Keep desktop policy checks active even in the full-access UI mode.
 
@@ -214,6 +225,7 @@ class BehaviorSecurityBridge:
             composition.get("revision") if isinstance(composition, dict) else None,
             cloud_authorization_enabled(self.config),
             self.config.get("security", {}).get("fail_closed", {}).get("enabled") is True,
+            _effective_permission_profile(self.config),
         )
         return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
@@ -366,8 +378,8 @@ class BehaviorSecurityBridge:
                 )
             else:
                 fail_closed = self.config.get("security", {}).get("fail_closed", {}).get("enabled") is True
-                if fail_closed:
-                    result = PermissionResult(PermissionLevel.DENY, reason="云端不可用，拒绝本次操作")
+                if fail_closed and _effective_permission_profile(self.config) != PERMISSION_PROFILE_FULL_ACCESS:
+                    result = PermissionResult(PermissionLevel.ASK, reason="云端不可用，请授权本次操作")
                 elif event.get("stage") == "skill.before_install":
                     # Installation still asks; tool authorize fail-opens like inspect.
                     result = PermissionResult(PermissionLevel.ASK, reason="云端不可用，请授权本次操作")
