@@ -73,6 +73,7 @@ from jiuwenswarm.common.config import (
     update_task_asr_in_config,
     update_team_scheduled_dispatch_in_config,
     update_team_task_verification_in_config,
+    update_trajectory_diagnosis_in_config,
     update_trajectory_ui_in_config,
     update_default_models_in_config,
     update_login_model_settings_in_config,
@@ -218,7 +219,9 @@ class ConfigChangeSet:
                 scopes.add("proactive")
             elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
                 scopes.add("agent_runtime")
-            elif key_text == "trajectory_ui_enabled":
+            elif key_text in {"trajectory_ui_enabled", "trajectory_ui_diagnosis_enabled"}:
+                # Diagnosis switches the trajectory data plane on as well, so
+                # it needs the same runtime sync as the trajectory view switch.
                 scopes.update({"agent_runtime", "web_ui"})
             elif key_text in {"task_full_duplex_enabled", "team_organization_ui_enabled"}:
                 scopes.add("web_ui")
@@ -371,6 +374,7 @@ CONFIG_YAML_KEYS = frozenset({
     "a2ui_enabled",
     "rsi_enabled",
     "trajectory_ui_enabled",
+    "trajectory_ui_diagnosis_enabled",
     "task_full_duplex_enabled",
     "team_organization_ui_enabled",
     "task_asr_enabled",
@@ -1495,6 +1499,8 @@ def apply_config_payload(
                 update_a2ui_in_config(update)
             elif param_key == "trajectory_ui_enabled":
                 update_trajectory_ui_in_config(parsed)
+            elif param_key == "trajectory_ui_diagnosis_enabled":
+                update_trajectory_diagnosis_in_config(parsed)
             elif param_key == "task_full_duplex_enabled":
                 update_task_full_duplex_in_config(parsed)
             elif param_key == "team_organization_ui_enabled":
@@ -1710,6 +1716,9 @@ async def config_get_handler(
         payload["trajectory_ui_enabled"] = (
             "true" if trajectory_cfg.get("enabled", False) else "false"
         )
+        payload["trajectory_ui_diagnosis_enabled"] = (
+            "true" if trajectory_cfg.get("diagnosis_enabled", False) else "false"
+        )
         experimental_cfg = raw.get("experimental") or {}
         payload["team_organization_ui_enabled"] = (
             "true" if experimental_cfg.get("team_organization_ui_enabled", False) else "false"
@@ -1762,6 +1771,7 @@ async def config_get_handler(
         for key, value in get_default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")
+        payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
         payload.setdefault("task_asr_enabled", "false")

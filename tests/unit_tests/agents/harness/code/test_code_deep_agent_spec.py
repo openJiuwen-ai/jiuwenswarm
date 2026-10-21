@@ -63,6 +63,12 @@ class _FakeCodeAdapter:
     def _tool_owner_id():
         return "code-spec-test-agent"
 
+    @staticmethod
+    def _materialize_tool_retrieval_spec_tools(_agent_id, _tools, _config_base=None):
+        # The fake never arms the retrieval layer; the real adapter gates on
+        # the top-level switches inside this method.
+        return None
+
 
 def _model() -> Model:
     return Model(

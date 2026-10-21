@@ -1280,6 +1280,25 @@ def _start_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | Non
 _RUN_TASKS: set[asyncio.Task[None]] = set()
 
 
+async def _ensure_design_context(graph: dict[str, Any]) -> None:
+    """Warm the design context for a canvas trigger (best-effort).
+
+    A rerun after a server restart arrives with a cold in-process registry —
+    the chat round that normally binds the worker base spec never ran in
+    this process. Bind it here from the same enriched-spec source. A real
+    setup failure stays visible as the coordinator's own RuntimeError.
+    """
+    try:
+        from jiuwenswarm.server.runtime.design.team_bridge import ensure_design_context
+
+        await ensure_design_context(graph)
+    except Exception:  # noqa: BLE001 — warm-up must not block the trigger path
+        logger.exception(
+            "[DesignerAdapter] design context warm-up failed: graph_id=%s",
+            graph.get("graph_id"),
+        )
+
+
 def _launch_run_trigger(
     coordinator: RunCoordinator,
     payload: dict[str, Any],
@@ -1464,6 +1483,10 @@ class DesignerAdapter(GatewayAdapter):
                     # answer with the initial 'running' record at once; the
                     # canvas follows progress via designer.run.updated /
                     # designer.node.updated pushes and designer.run.get.
+                    # A canvas rerun can arrive with a cold in-process registry
+                    # (server restarted since the last chat round); warm the
+                    # design context so the trigger finds its worker base spec.
+                    await _ensure_design_context(payload["graph"])
                     _launch_run_trigger(coordinator, payload, _run_update_callback(request))
                     run_out = _initial_running_run(payload)
                     # Accept-and-trigger contract: answer with a RUNNING

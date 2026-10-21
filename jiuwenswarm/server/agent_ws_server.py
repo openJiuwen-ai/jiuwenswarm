@@ -366,6 +366,17 @@ def _log_background_session_kvc_failure(task: asyncio.Task) -> None:
             exc_info=exc,
         )
 
+_DIAGNOSIS_REQ_METHODS = frozenset(
+    {
+        ReqMethod.DIAGNOSIS_RUN,
+        ReqMethod.DIAGNOSIS_LIST,
+        ReqMethod.DIAGNOSIS_GET,
+        ReqMethod.DIAGNOSIS_CANCEL,
+        ReqMethod.DIAGNOSIS_DELETE,
+        ReqMethod.DIAGNOSIS_TTSE_TRIGGER,
+    },
+)
+
 _SERVER_PLAN_CONTROLLER = PlanModeController()
 # Compatibility aliases for existing diagnostics/tests. Runtime semantics live
 # in PlanModeController and are shared by AgentServer and process-style CLI.
@@ -1162,6 +1173,8 @@ class AgentWebSocketServer:
         self._group_service = None
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
+        # Trajectory diagnosis host (lazy, see _get_diagnosis_host)
+        self._diagnosis_host: Any = None
         # Optional production Provider injection point.  The concrete class is
         # supplied by the composition root once it is available.
         self._rsi_harness_provider: Any = None
@@ -1929,6 +1942,14 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        diagnosis_host = getattr(self, "_diagnosis_host", None)
+        if diagnosis_host is not None:
+            # A restart builds a fresh host so the shutdown flag does not linger.
+            self._diagnosis_host = None
+            try:
+                await diagnosis_host.shutdown()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentWebSocketServer] diagnosis shutdown failed: %s", exc)
         task = getattr(self, "_asset_start_task", None)
         if task is not None:
             task.cancel()
@@ -2729,6 +2750,10 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.HARNESS_PACKAGES_DELETE:
                 await self._handle_harness_packages_delete(ws, request, send_lock)
+                return
+            # Trajectory diagnosis: run, query and TTSE writes proxied by the Gateway.
+            if request.req_method in _DIAGNOSIS_REQ_METHODS:
+                await self._handle_diagnosis_request(ws, request, send_lock)
                 return
             # RSI 优化平台：16 个 rsi.* web method 统一分发（B2）
             if (
@@ -12427,6 +12452,36 @@ class AgentWebSocketServer:
                 )
         except Exception as exc:
             logger.exception("[AgentServer] rsi request failed: %s", exc)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "INTERNAL_ERROR"},
+            )
+
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    def _get_diagnosis_host(self) -> Any:
+        """Lazily build the trajectory diagnosis host once."""
+        if getattr(self, "_diagnosis_host", None) is None:
+            from jiuwenswarm.server.diagnosis.host import DiagnosisHost
+
+            self._diagnosis_host = DiagnosisHost(
+                get_agent_manager=lambda: self._agent_manager,
+                send_push=self.send_push,
+            )
+        return self._diagnosis_host
+
+    async def _handle_diagnosis_request(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Answer one ``diagnosis.*`` request proxied by the Gateway."""
+        try:
+            resp = await self._get_diagnosis_host().handle(request)
+        except Exception as exc:
+            logger.exception("[AgentServer] diagnosis request failed: %s", exc)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,

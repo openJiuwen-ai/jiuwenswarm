@@ -1071,6 +1071,15 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_trajectory_diagnosis_in_config(enabled: bool) -> None:
+    """Update the trajectory diagnosis feature switch and persist config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "trajectory_ui" not in data or data["trajectory_ui"] is None:
+        data["trajectory_ui"] = {}
+    data["trajectory_ui"]["diagnosis_enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_team_organization_ui_in_config(enabled: bool) -> None:
     """Persist the experimental Organization UI switch without changing runtime capabilities."""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -1901,6 +1910,25 @@ def delete_model_resource(resource_type: str, resource_id: str, *, cron_referenc
         filtered = [entry for entry in entries if entry.get(id_key) != resource_id]
         if len(filtered) == len(entries):
             return None
+        if resource_type == "model":
+            # Drop routes that still point at this model so delete does not fail
+            # validation with raw mgp_/mdl_ ids in the UI (#5477). Groups left
+            # with no routes are removed.
+            next_groups = []
+            for group in candidate.get("groups") or []:
+                if not isinstance(group, dict):
+                    continue
+                routes = [
+                    route
+                    for route in (group.get("routes") or [])
+                    if not (isinstance(route, dict) and str(route.get("model_id") or "") == resource_id)
+                ]
+                if not routes:
+                    continue
+                next_group = dict(group)
+                next_group["routes"] = routes
+                next_groups.append(next_group)
+            candidate["groups"] = next_groups
         candidate[key] = filtered
         _validate_model_candidate(candidate)
         deleted = True

@@ -153,7 +153,11 @@ export function CompactTaskList({
                   <UnassignedTeamAvatar className="h-4 w-4 rounded-full shrink-0" />
                 ))}
             <ApplicationTaskControls taskId={task.task_id}>
-              <span className="min-w-0 flex-1 text-sm leading-[22px] text-text truncate" data-testid="team-area-task-planning-task-title">
+              <span
+                className="min-w-0 flex-1 text-sm leading-[22px] text-text truncate"
+                data-testid="team-area-task-planning-task-title"
+                title={title}
+              >
                 {title}
               </span>
             </ApplicationTaskControls>

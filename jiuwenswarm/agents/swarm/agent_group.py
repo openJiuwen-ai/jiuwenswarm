@@ -167,7 +167,9 @@ def _shared_skills(package_dir: Path, payload: dict[str, Any]) -> list[SkillSpec
             values: dict[str, Any] = {"dir": str(skills_path / name), "mode": "all"}
         elif isinstance(raw, dict) and isinstance(raw.get("dir"), str):
             raw_dir = raw["dir"]
-            if Path(raw_dir).expanduser().is_absolute():
+            if Path(raw_dir).expanduser().is_absolute() or PureWindowsPath(raw_dir).drive:
+                raise ValueError("agent_group skill dir must be package-relative")
+            if PureWindowsPath(raw_dir).root:
                 raise ValueError("agent_group skill dir must be package-relative")
             values = {**raw, "dir": str(package_dir / raw_dir)}
         else:

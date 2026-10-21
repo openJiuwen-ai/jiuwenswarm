@@ -1,0 +1,150 @@
+.root {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.375rem 0;
+}
+
+.menu,
+.folds {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.menuButton,
+.icon,
+.searchInput {
+  border-radius: 0.375rem;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+}
+
+.menuButton,
+.icon {
+  border: 0;
+}
+
+.searchInput {
+  border: 1px solid var(--color-border-default);
+}
+
+.menuButton,
+.icon {
+  height: 1.75rem;
+  cursor: pointer;
+}
+
+.menuButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.375rem 0 0.625rem;
+}
+
+.menuButton:disabled,
+.icon:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.menuButton {
+  color: var(--color-text-primary);
+}
+
+.chevron {
+  flex: none;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+
+.panel {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  min-width: 9.5rem;
+  flex-direction: column;
+  padding: 0.25rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.5rem;
+  background: var(--color-surface-card);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 8%);
+}
+
+.panel button {
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+  padding: 0.375rem 0.5rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.panel button:hover,
+.panel button[aria-selected='true'] {
+  background: var(--color-surface-hover);
+}
+
+.icon {
+  display: inline-flex;
+  width: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--color-text-secondary);
+}
+
+.icon:hover:not(:disabled),
+.menuButton:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
+
+.iconActive {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.menuButton:focus-visible,
+.icon:focus-visible,
+.searchInput:focus-visible,
+.panel button:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 1px;
+}
+
+.search {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  width: 12.5rem;
+  align-items: center;
+}
+
+.searchGlyph {
+  position: absolute;
+  left: 0.5rem;
+  display: inline-flex;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  height: 1.75rem;
+  padding: 0 0.5rem 0 1.75rem;
+}
+
+.searchInput::placeholder {
+  color: var(--color-text-secondary);
+}

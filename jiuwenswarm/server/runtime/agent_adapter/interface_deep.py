@@ -2082,6 +2082,7 @@ class JiuWenSwarmDeepAdapter:
         self._session_instance_agent_definition: dict[str, Any] | None = None
         self._is_session_scoped_adapter: bool = False
         self._parent_session_id: str | None = None
+        self._cron_web_context_refreshed: bool = False
         # Trajectory turn identity for this session. A turn spans every trace
         # a HITL resume adds to the ReAct loop already running, so it cannot
         # live on a single root span — see ``_resolve_trajectory_turn``.
@@ -6779,6 +6780,7 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         """Sync progressive tool retrieval registration after config reload."""
         enabled = self._tool_retrieval_tools_enabled_for_runtime(config_base)
+        was_registered = self._tool_retrieval_tools_registered
         tools, registered = self._sync_tool_group(
             current_tools=self._tool_retrieval_tools,
             registered=self._tool_retrieval_tools_registered,
@@ -6790,7 +6792,13 @@ class JiuWenSwarmDeepAdapter:
         self._tool_retrieval_tools_registered = registered
         if not enabled:
             self._tool_retrieval_toolkit = None
-            self._drop_tool_names_from_runtime(_TOOL_RETRIEVAL_TOOL_NAMES)
+            # Clean the meta-tool names only when this layer owned them. With
+            # the optimize switch off from session start, ``tool_search`` /
+            # ``tool_call`` belong to the engine's bundled ProgressiveToolRail
+            # (the pre-optimize behavior) — a by-name drop here would strip
+            # the bundled rail's meta tools on every config reload.
+            if was_registered:
+                self._drop_tool_names_from_runtime(_TOOL_RETRIEVAL_TOOL_NAMES)
 
     async def _sync_skill_retrieval_prompt_rail_for_runtime(
         self,
@@ -14589,6 +14597,23 @@ class JiuWenSwarmDeepAdapter:
         )
 
 
+    def _should_refresh_cron_web_context(
+        self, request: AgentRequest, *, send_without_output: bool,
+    ) -> bool:
+        """Check whether the first Web follow-up can refresh an idle cron context."""
+        if send_without_output or request.channel_id != "web":
+            return False
+        if not request.session_id or getattr(self, "_cron_web_context_refreshed", False):
+            return False
+        session_id = request.session_id
+        if not self._is_cron_execution_session(session_id):
+            return False
+        if self._session_has_other_running_agent_tasks(session_id):
+            return False
+        if self._is_deep_agent_executing_for_session(session_id):
+            return False
+        return getattr(self._instance, "active_round", None) is None
+
     async def _attach_and_send_inputs(
         self,
         request: AgentRequest,
@@ -14621,6 +14646,32 @@ class JiuWenSwarmDeepAdapter:
                 if answer is not None:
                     raise RootPermissionQueueError("permission_queue_output_unavailable")
                 return None, False
+            if (
+                stream is not None
+                and answer is None
+                and self._should_refresh_cron_web_context(request, send_without_output=send_without_output)
+            ):
+                # Web may have cached this session before its cron run completed.
+                # Restore that run once before accepting the first Web follow-up.
+                try:
+                    from jiuwenswarm.agents.harness.common.session_ops_service import (
+                        warmup_session_context,
+                    )
+
+                    self._cron_web_context_refreshed = await warmup_session_context(
+                        deep_agent=self._instance,
+                        session_id=request.session_id,
+                        history_before_request_id=request.request_id,
+                        refresh_existing=True,
+                    )
+                    if not self._cron_web_context_refreshed:
+                        raise RuntimeError("定时任务历史恢复失败，请重试。")
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] cron Web context refresh failed: "
+                        "session_id=%s error=%s", request.session_id, exc,
+                    )
+                    raise
             if stream is not None:
                 from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
 

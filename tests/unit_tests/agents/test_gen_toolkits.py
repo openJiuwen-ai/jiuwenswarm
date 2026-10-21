@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import httpx
 import pytest
+import requests
 
 from jiuwenswarm.agents.harness.common.tools import gen_toolkits as gt
 
@@ -211,6 +212,50 @@ async def test_minimax_check_video(monkeypatch, tmp_path):
     _patch_client(monkeypatch, _mm_video_handler(["succeeded"]))
     result = await _check("minimax", "k", _MM_GLOBAL, "T1", str(tmp_path))
     assert result.startswith("Video generated successfully!") and (tmp_path / "video_T1.mp4").exists()
+
+
+def _unreachable(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("[Errno 11001] getaddrinfo failed", request=request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend", "api_base"),
+    [("minimax", _MM_CHINA), ("modelark", _ARK_INTL), ("dashscope", "https://dashscope.aliyuncs.com/api/v1")],
+)
+async def test_check_video_keeps_job_pending_when_provider_unreachable(monkeypatch, tmp_path, backend, api_base):
+    _patch_client(monkeypatch, _unreachable)
+    result = await _check(backend, "k", api_base, "T1", str(tmp_path))
+    assert result.startswith("Video job T1 is still unconfirmed") and "getaddrinfo failed" in result
+
+
+@pytest.mark.asyncio
+async def test_minimax_check_video_keeps_job_pending_when_download_times_out(monkeypatch, tmp_path):
+    succeeded = _mm_video_handler(["succeeded"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "cdn.example":
+            raise httpx.ReadTimeout("timed out", request=request)
+        return succeeded(request)
+
+    _patch_client(monkeypatch, handler)
+    result = await _check("minimax", "k", _MM_GLOBAL, "T1", str(tmp_path))
+    assert result.startswith("Video job T1 is still unconfirmed")
+
+
+@pytest.mark.asyncio
+async def test_minimax_video_submit_polls_past_a_dns_failure(monkeypatch, tmp_path):
+    rendering = _mm_video_handler(["running", "succeeded"])
+    failures = iter([True])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/v2/query/") and next(failures, False):
+            return _unreachable(request)
+        return rendering(request)
+
+    _patch_client(monkeypatch, handler)
+    result = await _submit("minimax", "k", _MM_GLOBAL, "m", "p", "16:9", "720p", 5, False, None, str(tmp_path))
+    assert result.startswith("Video generated successfully!")
 
 
 # --------------------------------------------------------------------------- #
@@ -591,6 +636,16 @@ async def test_vllm_omni_check_video_reports_failure(monkeypatch):
     )
     target = gt.GenerationTarget("vllm-omni", "", "http://127.0.0.1:8091/v1", "")
     assert await gt.check_video(target, "vid-1", None) == "[ERROR]: video job vid-1 ended with status failed: OOM"
+
+
+@pytest.mark.asyncio
+async def test_vllm_omni_check_video_keeps_job_pending_when_server_unreachable(monkeypatch):
+    def unreachable(**kwargs: Any) -> gt.vllm_omni_gen.VllmOmniVideoStatus:
+        raise requests.ConnectionError("connection refused")
+
+    monkeypatch.setattr(gt.vllm_omni_gen, "query_vllm_omni_video_sync", unreachable)
+    target = gt.GenerationTarget("vllm-omni", "", "http://127.0.0.1:8091/v1", "")
+    assert (await gt.check_video(target, "vid-1", None)).startswith("Video job vid-1 is still unconfirmed")
 
 
 @pytest.mark.parametrize(

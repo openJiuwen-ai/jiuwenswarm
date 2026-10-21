@@ -4,7 +4,7 @@ import { assetPublishApi } from '../services/assetPublishApi';
 import {
   createCommitAttempt,
   publishTimestamp,
-  publishOutcome,
+  isSubmissionLocked,
   definitiveCommitRejection,
 } from '../features/assetPublishState';
 import { getStoredOAuthProvider, getStoredOAuthToken } from '../utils/gitcodeOAuth';
@@ -50,7 +50,7 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
     const active = activeSubmission.current;
     if (active && !(active.operationId === next.operation_id || (active.draftId && active.draftId === next.draft_id)))
       return false;
-    const locked = ['queued', 'uploading', 'unknown'].includes(publishOutcome(next));
+    const locked = isSubmissionLocked(next);
     activeSubmission.current = locked
       ? { draftId: next.draft_id || active?.draftId, operationId: next.operation_id }
       : null;

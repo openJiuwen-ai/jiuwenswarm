@@ -166,6 +166,33 @@ async def test_controller_creates_etcd_job_without_login_model(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_etcd_create_job_persists_mcp_and_credential_ref():
+    """Regression: EtcdCronJobStore.create_job must accept mcp/credential_ref
+    (mirrors FileCronJobStore). 0.2.7 shipped the cron-mcp feature with the
+    etcd store signature missing these params, so every create on
+    store_backend=etcd raised "unexpected keyword argument 'mcp'". This pins
+    the etcd store to the same contract as the file store.
+    """
+    store, _fake = _store()
+    created = await store.create_job(
+        name="daily",
+        cron_expr="0 9 * * *",
+        timezone="Asia/Shanghai",
+        description="with-mcp",
+        targets="web",
+        mcp=["vision", "audio"],
+        credential_ref="cred-abc",
+    )
+    assert created.mcp == ["vision", "audio"]
+    assert created.credential_ref == "cred-abc"
+
+    fetched = await store.get_job(created.id)
+    assert fetched is not None
+    assert fetched.mcp == ["vision", "audio"]
+    assert fetched.credential_ref == "cred-abc"
+
+
+@pytest.mark.asyncio
 async def test_etcd_cas_conflict_retries_once():
     store, fake = _store()
     job = await store.create_job(

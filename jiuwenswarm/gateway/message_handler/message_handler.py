@@ -76,6 +76,7 @@ from jiuwenswarm.gateway.routing.session_sharing import SessionSharingRegistry, 
 
 logger = logging.getLogger(__name__)
 
+_DIAGNOSIS_PUSH_EVENTS = frozenset({"trajectory.diagnosis.progress", "trajectory.diagnosis.status"})
 _ACP_CHANNEL_ID = "acp"
 _ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
 # \mode 切换合法输入集：新 canonical + 旧 canonical（DEPRECATION_MAP.keys()）
@@ -3299,6 +3300,8 @@ class MessageHandler(ABC):
             return
         if await self._handle_trajectory_update_push(chunk, session_id):
             return
+        if await self._handle_diagnosis_push(chunk, session_id):
+            return
         
         # 获取原始请求的 metadata，用于合并
         request_metadata = self._stream_metadata.get(rid)
@@ -3445,6 +3448,33 @@ class MessageHandler(ABC):
                 ),
             )
         )
+        return True
+
+    async def _handle_diagnosis_push(
+        self,
+        chunk: Any,
+        session_id: str | None,
+    ) -> bool:
+        """Forward one AgentServer diagnosis event to the browser connections of its session."""
+        payload = chunk.payload
+        if not isinstance(payload, dict):
+            return False
+        event = payload.get("event_type")
+        if event not in _DIAGNOSIS_PUSH_EVENTS:
+            return False
+        resolved_session_id = str(payload.get("session_id") or session_id or "").strip()
+        if not resolved_session_id:
+            logger.warning("[MessageHandler] diagnosis push without session_id ignored")
+            return True
+        web_channel = self._resolve_web_channel()
+        if web_channel is None:
+            logger.debug("[MessageHandler] diagnosis push skipped because web channel is unavailable")
+            return True
+        body = {key: value for key, value in payload.items() if key != "event_type"}
+        try:
+            await web_channel.send_session_event(resolved_session_id, str(event), body)
+        except Exception:  # noqa: BLE001
+            logger.warning("[MessageHandler] diagnosis push forward failed", exc_info=True)
         return True
 
     def set_cron_controller(self, controller: Any) -> None:

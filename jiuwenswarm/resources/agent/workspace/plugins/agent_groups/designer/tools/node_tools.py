@@ -137,6 +137,29 @@ def _note_member_error(
     note(node_id, error)
 
 
+def note_rejection(shot_ticket: Any, member: str, tool: str, error: str) -> None:
+    """Record why ``tool`` refused the member's call on its node.
+
+    A member stops without ``structured_output`` once a tool fails, so this
+    note is the only reason the node can show. An earlier, more specific error
+    stays, and a refusal after the node already generated explains nothing.
+    """
+    try:
+        env, node = _resolve(shot_ticket, member)
+    except _ToolError as exc:
+        _warn_unresolved(tool, shot_ticket, f"{error} ({exc.code})")
+        return
+    node_id = str(node.get("id") or "")
+    if node_id in env["generations"]:
+        return
+    _note_member_error(env, node_id, f"{tool} rejected: {error}", keep_existing=True)
+
+
+def _warn_unresolved(tool: str, shot_ticket: Any, error: str) -> None:
+    """A refusal no node can carry; the worker log is the only trace."""
+    logger.warning("[design-tools] %s rejected: error=%s ticket=%s", tool, error, shot_ticket)
+
+
 def _same_file(left: str, right: str) -> bool:
     from jiuwenswarm.server.runtime.designer.handlers.common import path_from_uri
 
@@ -157,6 +180,7 @@ async def read_node_context(shot_ticket: Any) -> dict[str, Any]:
     try:
         env, node = _resolve(shot_ticket)
     except _ToolError as exc:
+        _warn_unresolved("read_node_context", shot_ticket, exc.code)
         return {"error": exc.code}
     try:
         return _context_packet(env, node)
@@ -361,6 +385,7 @@ async def generate_node_output(
     try:
         env, node = _resolve(shot_ticket, member)
     except _ToolError as exc:
+        _warn_unresolved(f"{member} generate", shot_ticket, exc.code)
         return failure(exc.code)
     node_id = str(node.get("id") or "")
     focused = prompt.strip()
@@ -483,6 +508,7 @@ async def submit_node_output(
     try:
         env, node = _resolve(shot_ticket)
     except _ToolError as exc:
+        _warn_unresolved("submit_node_output", shot_ticket, exc.code)
         return rejected(exc.code)
     node_id = str(node.get("id") or "")
     result = _submit(env, node, node_id, uri=uri, extra_uris=extra_uris, text=text, label=label)
@@ -569,6 +595,7 @@ def _read_text(ref: dict[str, Any]) -> str:
 __all__ = [
     "MEMBER_OUTPUT_KIND",
     "generate_node_output",
+    "note_rejection",
     "read_node_context",
     "submit_node_output",
 ]

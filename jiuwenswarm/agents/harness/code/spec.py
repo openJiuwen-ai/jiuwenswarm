@@ -149,6 +149,14 @@ def _build_code_tool_bundle(
     # after materialization updates the AbilityManager owner.
     for tool in tools:
         register_tool(tool, agent_id)
+
+    # tool_search: progressive disclosure of explicitly-deferred tools.
+    # Gate-driven (not list-driven) and delegated to the adapter — mirror of
+    # the deep adapter's ``_get_tool_cards`` tail; extends ``tools`` in place
+    # so the card rides the standard spec like every configured tool above.
+    adapter._materialize_tool_retrieval_spec_tools(  # pylint: disable=protected-access
+        agent_id, tools, ctx.config_base
+    )
     return [tool.card for tool in tools if getattr(tool, "card", None) is not None]
 
 
