@@ -46,6 +46,7 @@ from jiuwenswarm.server.handlers._shared import (
     _session_mode_sync_locks,
     _sessions_dir_for_request,
     _sync_chat_request_metadata,
+    _uses_explicit_officeclaw_mode,
     _uses_tenant_pool,
     resolve_request_project_dir,
     resolve_request_runtime_mode,
@@ -563,13 +564,16 @@ async def _prepare_code_mode_chat_turn(
         # tool_call id.  Restore the original canonical mode before applying
         # defaults; otherwise the request is irreversibly rewritten to
         # ``agent`` and the tenant pool creates a different adapter instance.
-        if is_interrupt_continuation and not explicit_mode_provided:
+        explicit_officeclaw = _uses_explicit_officeclaw_mode(request)
+        restore_session_mode = is_interrupt_continuation or explicit_officeclaw
+        keep_interrupted_mode = is_interrupt_continuation and explicit_officeclaw
+        if restore_session_mode and (not explicit_mode_provided or keep_interrupted_mode):
             stored_mode = str(session_metadata.get("mode") or "").strip()
             if stored_mode and stored_mode.lower() != "unknown":
                 params["mode"] = stored_mode
                 _raw_mode = stored_mode
                 logger.info(
-                    "[AgentWebSocketServer] interrupt continuation routing "
+                    "[AgentWebSocketServer] session continuation routing "
                     "restored: session_id=%s mode=%s source=%s",
                     sid,
                     stored_mode,
@@ -653,6 +657,10 @@ async def _prepare_code_mode_chat_turn(
         mode = "flash"
         request.resolved_adapter_mode = "flash"
         request.resolved_adapter_source = "session_sticky"
+        if _uses_explicit_officeclaw_mode(request):
+            # 租户池稍后再次解析请求，保留 Flash canonical 才不会退回 Deep。
+            canonical_mode = "flash"
+            params["mode"] = canonical_mode
         logger.info(
             "[_prepare_code_mode_chat_turn] Flash session affinity restored: "
             "session_id=%s canonical_mode=%s",

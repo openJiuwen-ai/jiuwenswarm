@@ -13,12 +13,12 @@ config.yaml。父类只提供通用工具工厂与生命周期扩展点，不感
 一致：CodeAdapter 把 ``_FIXED_RAIL_NAMES`` / ``_is_code_agent`` 等定义硬编码为
 类常量，flash 同样把行为开关、keep 白名单与工具面裁剪作为类常量/override。
 
-部署组合提示：``flash.enabled`` 是进程级开关，不区分 channel / 请求来源——
-officeclaw 对话与 cron / heartbeat / proactive 等后台流水线同样进入 flash。
+部署组合提示：OfficeClaw 交互请求由 Relay 显式发送 ``mode=flash`` 选型，
+不再由 ``flash.enabled`` 将普通 Agent 请求自动转换为 Flash；其它渠道和后台
+来源沿用各自的既有路由策略。具体准入与会话续接由 ``_shared`` 的模式解析负责。
 flash 白名单不含 ``_llm_retry_rail`` / ``_context_overflow_recovery_rail``
 等健壮性 rail，长文档 / 弱网任务的容错弱于
-normal；officeclaw 等部署开启 flash 前需评估此影响面，如需按来源豁免应在
-mode 解析 guard（``_shared.resolve_agent_request_mode``）增加 channel 过滤。
+normal，部署时仍需评估所选 Flash profile 的能力边界。
 
 flash 行为由类常量定义：
 - :data:`_FLASH_REACT_OVERRIDE` — react/evolution 覆盖（``enable_task_loop=false``

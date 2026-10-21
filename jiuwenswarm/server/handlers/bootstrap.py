@@ -228,6 +228,7 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 and canonical_mode in {
                     "agent",
                     NEW_AGENT_WORK_NORMAL,
+                    "flash",
                     "code",
                     "code.normal",
                 }

@@ -114,7 +114,7 @@ def test_explicit_plan_entry_keeps_plan_when_flash_enabled(flash_config, channel
     assert resolved.is_plan
 
 
-def test_legacy_officeclaw_plan_token_obeys_flash_config(flash_config):
+def test_legacy_officeclaw_plan_token_keeps_deep_despite_flash_config(flash_config):
     request = make_request(
         {"mode": "agent.plan", "work_mode": "work"}, channel="officeclaw",
     )
@@ -122,8 +122,8 @@ def test_legacy_officeclaw_plan_token_obeys_flash_config(flash_config):
     resolved = _shared.resolve_request_runtime_mode(request)
 
     assert resolved.canonical_mode == "agent"
-    assert resolved.manager_mode == "flash"
-    assert resolved.adapter_mode == "flash"
+    assert resolved.manager_mode == "agent"
+    assert resolved.adapter_mode == "agent"
     assert not resolved.is_plan
 
 
@@ -209,7 +209,7 @@ async def test_officeace_request_reaches_flash_factory_and_reuses_facade(
     create_instance = AsyncMock()
     monkeypatch.setattr(JiuWenSwarm, "create_instance", create_instance)
     request = make_request(
-        {"mode": "agent", "work_mode": "work", "query": "hello"},
+        {"mode": "flash", "work_mode": "work", "query": "hello"},
         channel="officeclaw",
     )
 
@@ -225,7 +225,7 @@ async def test_officeace_request_reaches_flash_factory_and_reuses_facade(
     assert facade._adapter_mode == "flash"
 
     second_request = make_request(
-        {"mode": "agent", "work_mode": "work", "query": "continue"},
+        {"mode": "flash", "work_mode": "work", "query": "continue"},
         channel="officeclaw",
         request_id="flash-routing-second",
     )
@@ -287,7 +287,7 @@ async def test_flash_enabled_interrupt_answer_returns_to_existing_deep_owner(
     selected = await manager._get_agent_for_request(request)
 
     assert selected is deep_owner
-    assert request.resolved_adapter_mode == "flash"
+    assert request.resolved_adapter_mode == "agent"
     manager.get_agent.assert_not_awaited()
 
 

@@ -114,6 +114,7 @@ TEAM_CANONICAL_MODES: frozenset[str] = frozenset(
 # instead of becoming readable merely because they are not known Team modes.
 SINGLE_AGENT_CANONICAL_MODES: frozenset[str] = frozenset(
     {
+        "flash",
         NEW_AGENT_WORK_NORMAL,
         NEW_AGENT_WORK_PLAN,
         NEW_AGENT_CODE_NORMAL,
