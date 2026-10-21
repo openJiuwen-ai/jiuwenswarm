@@ -580,6 +580,13 @@ def _dispatch() -> int | None:
 
         reset_external_cli_agents_in_config()
         return 0
+    if _pop_flag("--desktop-restore-upgrade-config"):
+        if len(sys.argv) != 1:
+            raise ValueError("upgrade configuration restore does not accept arguments")
+        from jiuwenswarm.common.windows_upgrade_config import restore_legacy_upgrade_config
+
+        restore_legacy_upgrade_config()
+        return 0
     # 已知子命令分发（不检查单实例锁）
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "init":
         sys.argv.pop(1)

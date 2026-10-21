@@ -232,6 +232,126 @@ def _prefix(app, layout="runtime/node-runtime"):
     return prefix
 
 
+@pytest.mark.parametrize("layout", ["runtime/external-cli", "resources/backend/runtime/external-cli"])
+def test_sdk_preservation_is_complete_stable_and_repeatable(tmp_path, preservation_runner, layout):
+    app = tmp_path / "old app"
+    source = app / layout / "claude" / "site-packages"
+    (source / "claude_agent_sdk" / "_bundled").mkdir(parents=True)
+    (source / "claude_agent_sdk" / "_bundled" / "claude.exe").write_bytes(b"native fixture")
+    (source / ".jiuwenswarm-runtime.json").write_text('{"agent":"claude"}')
+    (source / "sdk.dist-info").mkdir()
+    (source / "sdk.dist-info" / "METADATA").write_text("vendor metadata")
+    result, report, npm, user_path = preservation_runner(app)
+    assert result.returncode == 0, report.read_text(encoding="utf-8") + result.stderr
+    record = json.loads(report.read_text(encoding="utf-8"))["sdk_mappings"][0]
+    target = npm.parent / "external-cli" / "claude" / "site-packages"
+    assert Path(record["target"]) == target
+    assert (target / "sdk.dist-info" / "METADATA").read_text() == "vendor metadata"
+    assert not user_path.exists(), "SDK imports must not modify user PATH"
+    (target / "sdk.dist-info" / "METADATA").write_text("new stable installation")
+    again, _, _, _ = preservation_runner(app)
+    assert again.returncode == 0
+    assert (target / "sdk.dist-info" / "METADATA").read_text() == "new stable installation"
+    assert (Path(record["backup"]) / "sdk.dist-info" / "METADATA").read_text() == "vendor metadata"
+    assert len(list((npm.parent / "external-cli-preserved").glob("*/manifest.json"))) == 1
+
+
+@pytest.mark.parametrize("concurrent_change", [False, True])
+def test_legacy_uninstaller_config_reset_is_recovered_without_overwriting_changes(tmp_path, preservation_runner, monkeypatch, concurrent_change):
+    from jiuwenswarm.common import config, utils, windows_upgrade_config
+
+    app = tmp_path / "old admin app"
+    _, _, npm, _ = preservation_runner(app)
+    data = npm.parent.parent
+    config_file = data / "config/config.yaml"
+    config_file.parent.mkdir()
+    config_file.write_text(
+        "# preserve user comments\nmodel:\n  api_key: fixture-secret-do-not-print\nmodes:\n  team:\n    jiuwen_team:\n      external_cli_agents:\n        claude:\n          enabled: true\n          cli_path: ''\n      external_transport:\n        port: 8765\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_YAML_PATH", config_file)
+    monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: data)
+    original = config.load_yaml_round_trip(config_file)
+    preserved, report, _, _ = preservation_runner(app, mode="PreserveConfig")
+    assert preserved.returncode == 0, report.read_text(encoding="utf-8")
+    pending = data / "runtime/upgrade-config/pending.json"
+    assert "fixture-secret" not in pending.read_text(encoding="utf-8")
+    repeated, report, _, _ = preservation_runner(app, mode="PreserveConfig")
+    assert repeated.returncode == 0, report.read_text(encoding="utf-8")
+    # Exercise the real old backend reset operation, without launching an app.
+    config.reset_external_cli_agents_in_config()
+    if concurrent_change:
+        with config_file.open("a", encoding="utf-8") as stream:
+            stream.write("new_setting: user change\n")
+        before = config_file.read_bytes()
+        with pytest.raises(RuntimeError, match="Configuration changed"):
+            windows_upgrade_config.restore_legacy_upgrade_config()
+        assert config_file.read_bytes() == before
+        assert pending.is_file()
+    else:
+        windows_upgrade_config.restore_legacy_upgrade_config()
+        assert config.load_yaml_round_trip(config_file) == original
+        assert "# preserve user comments" in config_file.read_text(encoding="utf-8")
+        assert not pending.exists()
+        windows_upgrade_config.restore_legacy_upgrade_config()
+
+
+def test_sdk_cli_path_mapping_requires_a_compatible_managed_target(windows_environment, tmp_path, monkeypatch):
+    from jiuwenswarm.common import external_cli_runtime
+
+    npm, _ = windows_environment
+    source = tmp_path / "old/runtime/external-cli/claude/site-packages"
+    target = npm.parent / "external-cli/claude/site-packages"
+    executable = target / "claude_agent_sdk/_bundled/claude.exe"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    record = npm.parent / "external-cli-preserved/snapshot/mapping.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps({"schema": 1, "source": str(source), "target": str(target)}))
+    old = str(source / "claude_agent_sdk/_bundled/claude.exe")
+    monkeypatch.setattr(external_cli_runtime, "get_external_cli_runtime_status", lambda _name: {"runtime_state": "current"})
+    assert paths.resolve_preserved_cli_path(old) == str(executable)
+    monkeypatch.setattr(external_cli_runtime, "get_external_cli_runtime_status", lambda _name: {"runtime_state": "update_required"})
+    assert paths.resolve_preserved_cli_path(old) == old
+
+
+def test_late_source_install_blocks_cleanup_after_working_copy(tmp_path, preservation_runner):
+    app = tmp_path / "app"
+    source = _prefix(app)
+    script = preservation_runner.script
+    original = script.read_text(encoding="utf-8")
+    copy = "Copy-Tree $prefix (Join-Path $stage 'prefix')"
+    assert original.count(copy) == 1
+    script.write_text(original.replace(copy, copy + "\n[IO.File]::WriteAllText((Join-Path $Source 'late-install'),'new user install')"), encoding="utf-8")
+    result, report, _, user_path = preservation_runner(app)
+    assert result.returncode != 0
+    assert "Source changed before cleanup" in report.read_text(encoding="utf-8")
+    assert (source / "late-install").read_text() == "new user install"
+    assert not user_path.exists()
+
+
+def test_mcp_command_arguments_and_cwd_resolve_without_rewriting_config(windows_environment, tmp_path):
+    from copy import deepcopy
+    from jiuwenswarm.common.mcp_config import build_mcp_server_config
+
+    root, _ = windows_environment
+    source = tmp_path / "old/runtime/node-runtime"
+    active = root / "installed/snapshot/prefix"
+    active.mkdir(parents=True)
+    (active / "codegraph.cmd").touch()
+    record = root / "preserved/snapshot/mapping.json"
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps({"schema": 1, "source": str(source), "target": str(active)}))
+    entry = {"name": "codegraph", "transport": "stdio", "command": "cmd.exe", "args": ["/d", "/c", f'"{source / "codegraph.cmd"}"', "serve", "--mcp"], "cwd": str(source)}
+    original = deepcopy(entry)
+    built = build_mcp_server_config(entry)
+    assert built.params["args"][2] == f'"{active / "codegraph.cmd"}"'
+    assert built.params["cwd"] == str(active)
+    entry["command"] = str(source / "codegraph.cmd")
+    assert build_mcp_server_config(entry).params["command"] == str(active / "codegraph.cmd")
+    entry["command"] = "cmd.exe"
+    assert entry == original
+
+
 @pytest.mark.parametrize("layout", ["runtime/node-runtime", "resources/backend/runtime/node-runtime"])
 def test_preservation_retains_complete_prefix_and_is_repeatable(tmp_path, preservation_runner, layout):
     app = tmp_path / "app with spaces"
@@ -243,6 +363,8 @@ def test_preservation_retains_complete_prefix_and_is_repeatable(tmp_path, preser
     assert (target / "unknown-user-file").read_text() == "must not be dropped"
     assert (target / "node_modules/shared-dependency/index.js").is_file()
     assert (target / "node_modules/.bin/example.cmd").is_file()
+    assert (target / "node_modules/.bin/node.exe").read_bytes() == (source / "node.exe").read_bytes()
+    assert not (Path(data["mappings"][0]["backup"]) / "node_modules/.bin/node.exe").exists()
     assert (source / "unknown-user-file").is_file()
     user_path = path_result.read_text(encoding="utf-8")
     assert user_path.startswith(f"%USERPROFILE%\\tools;;{target};C:\\existing;C:\\existing")
