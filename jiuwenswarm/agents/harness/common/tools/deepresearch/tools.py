@@ -22,11 +22,12 @@ import unicodedata
 import uuid
 import zipfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import AsyncExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 from openjiuwen.core.foundation.tool import tool
 from openjiuwen.core.sys_operation.cwd import get_cwd
@@ -750,6 +751,12 @@ def _encode_deepresearch_config(config: dict[str, str]) -> bytes:
 def _config_secret_values(config: dict[str, str]) -> tuple[str, ...]:
     """Return request-scoped secret values without retaining ambient state."""
     values = set()
+    try:
+        for server in json.loads(config.get("MCP_SERVERS_JSON", "[]")):
+            values.update(value for value in server.get("headers", {}).values() if isinstance(value, str) and value)
+            values.update(value for _, value in parse_qsl(urlsplit(server.get("server_url", "")).query) if value)
+    except (ValueError, TypeError, AttributeError):
+        pass
     for key, value in config.items():
         is_secret = value and any(
             marker in str(key).upper() for marker in _SECRET_CONFIG_KEY_MARKERS
@@ -2534,6 +2541,7 @@ async def _push_materials_progress(content: str) -> None:
 
 
 _materials_reference_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar("deepresearch_materials_reference", default=None)
+_mcp_servers_ctx: contextvars.ContextVar[list[dict] | None] = contextvars.ContextVar("deepresearch_mcp_servers", default=None)
 
 
 # Both dedicated entry points must hand new research back to the same Skill.
@@ -2571,13 +2579,25 @@ def _startup_error_outcome(
 
 
 async def _call_deepresearch_stream_impl(
-    *, _router_state: object | None = None, _materials_reference: dict | None = None, **kwargs: Any
+    *, _router_state: object | None = None, _materials_reference: dict | None = None,
+    _mcp_servers: list[dict] | None = None, **kwargs: Any
 ) -> str:
     token = _deepresearch_router_state_ctx.set(_router_state)
     materials_token = _materials_reference_ctx.set(_materials_reference)
     try:
-        stream_impl = getattr(deepresearch_stream, "_func")
-        return await stream_impl(**kwargs)
+        async with AsyncExitStack() as stack:
+            from .mcp_search import search_mcp_gateway
+            try:
+                native_servers = await stack.enter_async_context(search_mcp_gateway(_mcp_servers))
+            except Exception:
+                return json.dumps({"status": "error", "error_code": "mcp_gateway_unavailable",
+                                   "error": "DeepResearch MCP authorization endpoint is unavailable"})
+            mcp_token = _mcp_servers_ctx.set(native_servers)
+            try:
+                stream_impl = getattr(deepresearch_stream, "_func")
+                return await stream_impl(**kwargs)
+            finally:
+                _mcp_servers_ctx.reset(mcp_token)
     finally:
         _deepresearch_router_state_ctx.reset(token)
         _materials_reference_ctx.reset(materials_token)
@@ -2787,6 +2807,9 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
         )
         if report_type is not None:
             config["REPORT_TYPE"] = report_type
+        mcp_servers = _mcp_servers_ctx.get()
+        if mcp_servers:
+            config["MCP_SERVERS_JSON"] = json.dumps(mcp_servers, ensure_ascii=False)
         child_env = _build_deepresearch_child_env(
             interactive_ask=True,
             service_id=str(route.get("service_id") or "default"),
@@ -2794,6 +2817,11 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             runtime_config=config,
             executable=python_bin,
         )
+        if mcp_servers:
+            # Only the private loopback endpoint bypasses configured HTTP proxies.
+            bypass = child_env.get("NO_PROXY") or child_env.get("no_proxy") or ""
+            child_env["NO_PROXY"] = ",".join(filter(None, (bypass, "127.0.0.1")))
+            child_env["no_proxy"] = child_env["NO_PROXY"]
         config_frame = _encode_deepresearch_config(config)
     except DeepResearchRuntimeError as exc:
         code = str(exc)

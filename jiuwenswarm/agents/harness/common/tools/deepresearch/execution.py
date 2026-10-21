@@ -7,12 +7,13 @@ from __future__ import annotations
 import asyncio
 import weakref
 import json
+import inspect
 import logging
 import re
 import time
 import uuid
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Mapping
 
 from openjiuwen.core.foundation.tool import tool
@@ -73,6 +74,8 @@ class DeepResearchExecutionContext:
     request_id: str = ""
     requested_report_type: DeepResearchReportType | None = None
     materials_context: dict[str, Any] | None = None
+    mcp_servers: list[dict[str, Any]] | None = field(default=None, repr=False)
+    mcp_context_provider: Callable[[], Any] | None = field(default=None, repr=False)
     load_state: Callable[[], dict[str, Any] | None] | None = None
 
 
@@ -92,6 +95,8 @@ def bind_deepresearch_execution_context(
     request_id: str = "",
     requested_report_type: DeepResearchReportType | None = None,
     materials_context: dict[str, Any] | None = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
+    mcp_context_provider: Callable[[], Any] | None = None,
     load_state: Callable[[], dict[str, Any] | None] | None = None,
 ) -> Token:
     """Bind state and resume input for one outer tool execution."""
@@ -106,6 +111,8 @@ def bind_deepresearch_execution_context(
             request_id=request_id.strip(),
             requested_report_type=requested_report_type,
             materials_context=materials_context,
+            mcp_servers=mcp_servers,
+            mcp_context_provider=mcp_context_provider,
             load_state=load_state,
         )
     )
@@ -531,6 +538,14 @@ async def _generate_options(
     return [[] for _ in questions]
 
 
+def _current_mcp_servers(context: DeepResearchExecutionContext, state: dict) -> list[dict] | None:
+    """Resume with current credentials for original sources only (never persist secrets)."""
+    from .mcp_search import source_identity
+    identities = state.get("mcp_source_identities") or {}
+    return [server for server in context.mcp_servers or []
+            if identities.get(server["server_name"]) == source_identity(server)] or None
+
+
 async def _call_sdk(
     context: DeepResearchExecutionContext,
     **kwargs: Any,
@@ -538,6 +553,16 @@ async def _call_sdk(
     """Measure one low-level SDK window without logging business content."""
     if kwargs.get("_materials_reference") is None:
         kwargs.pop("_materials_reference", None)
+    provider = getattr(context, "mcp_context_provider", None)
+    if kwargs.get("_mcp_servers") and callable(provider):
+        from .mcp_search import source_identity
+        identities = {source_identity(server) for server in kwargs["_mcp_servers"]}
+        current = provider()
+        if inspect.isawaitable(current):
+            current = await current
+        kwargs["_mcp_servers"] = [server for server in current or [] if source_identity(server) in identities] or None
+    if kwargs.get("_mcp_servers") is None:
+        kwargs.pop("_mcp_servers", None)
     started = time.monotonic()
     outcome_status = "exception"
     try:
@@ -1010,6 +1035,7 @@ async def _resume_stopped_conversation(
             context,
             action="resume",
             _materials_reference=state.get("materials_reference"),
+            _mcp_servers=_current_mcp_servers(context, state),
             conversation_id=claimed_cid,
             node="stopped",
             file_name=str(state.get("file_name") or ""),
@@ -1106,6 +1132,7 @@ async def _run_sdk_step(
         sdk_kwargs["node"] = node
     if state.get("materials_reference") is not None:
         sdk_kwargs["_materials_reference"] = state["materials_reference"]
+    sdk_kwargs["_mcp_servers"] = _current_mcp_servers(context, state)
     outcome = await _call_sdk(context, action=action, **sdk_kwargs)
     return await _handle_outcome(context, state, outcome, action=action, node=node)
 
@@ -1172,6 +1199,7 @@ async def _execute_workflow(
             "state": {},
         }
     state = dict(context.state or {})
+    new_workflow = not state
     if not state:
         state = {
             "schema_version": _STATE_SCHEMA_VERSION,
@@ -1483,6 +1511,14 @@ async def _execute_workflow(
                 state,
                 interaction=_outline_review_interaction(outline_text),
             )
+        # A claimed checkpoint returned above. Its original source identities
+        # cannot be reconstructed from today's connections, so keep them empty.
+        if new_workflow and context.mcp_servers:
+            from .mcp_search import source_identity
+            state["mcp_server_names"] = [server["server_name"] for server in context.mcp_servers]
+            state["mcp_source_identities"] = {
+                server["server_name"]: source_identity(server) for server in context.mcp_servers
+            }
         if claimed_cid:
             # 修复7：认领失败先止损——报告若已随此前运行落盘（收尾阶段被
             # 停/交付前崩溃后快照已清理），且用户仍在追问同一主题，直接

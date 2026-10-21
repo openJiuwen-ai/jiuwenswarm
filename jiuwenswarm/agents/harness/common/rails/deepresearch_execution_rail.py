@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import logging
 from typing import Any, Mapping
@@ -267,10 +268,11 @@ class DeepResearchExecutionRail(DeepAgentRail):
     # interrupt and does not leak the internal envelope as a tool result.
     priority = 81
 
-    def __init__(self, *, model_provider, materials_context_provider=None):
+    def __init__(self, *, model_provider, materials_context_provider=None, mcp_context_provider=None):
         super().__init__()
         self._model_provider = model_provider
         self._materials_context_provider = materials_context_provider
+        self._mcp_context_provider = mcp_context_provider
         self._agent_id = "jiuwenswarm"
 
     def init(self, agent: Any) -> None:
@@ -310,6 +312,9 @@ class DeepResearchExecutionRail(DeepAgentRail):
         )
         request_id = str((request_context or {}).get("request_id") or "").strip()
         requested_report_type = (request_context or {}).get("requested_report_type")
+        mcp_servers = self._mcp_context_provider() if callable(self._mcp_context_provider) else None
+        if inspect.isawaitable(mcp_servers):
+            mcp_servers = await mcp_servers
         token = bind_deepresearch_execution_context(
             tool_call_id=workflow_id,
             state=states.get(workflow_id),
@@ -320,6 +325,8 @@ class DeepResearchExecutionRail(DeepAgentRail):
             request_id=request_id,
             requested_report_type=requested_report_type,
             materials_context=(self._materials_context_provider() if callable(self._materials_context_provider) else None),
+            mcp_servers=mcp_servers,
+            mcp_context_provider=self._mcp_context_provider,
             load_state=lambda: _load_states(ctx.session).get(workflow_id),
         )
         tokens = ctx.extra.setdefault(_TOKENS_KEY, {})

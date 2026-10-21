@@ -2488,6 +2488,8 @@ class _RequestMcpToolBuffers:
     # Discover every source before mutating the shared resource/ability managers.
     # The bool preserves fail-closed registration for identity-pinned system tools.
     pending_tools: list[tuple[RequestScopedOfficeClawMcpTool, bool]] = field(default_factory=list)
+    research_servers: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    research_tool_names: dict[str, list[str]] = field(default_factory=dict)
 
 
 _SESSION_ADAPTER_IDLE_TTL_ENV = "JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC"
@@ -2745,6 +2747,7 @@ class JiuWenSwarmDeepAdapter:
         # adapter. Used for safe short-name cleanup and diagnostics; invoke
         # allowlisting is enforced via bind_active_office_claw_mcp_tools.
         self._active_office_claw_mcp: OfficeClawMcpRegistration | None = None
+        self._deepresearch_mcp_snapshot = None
         # Tenant tip namespace for Track-B env reads (sync_agents_configs).
         # Defaults match unbound single-tenant; AgentManager / copy_tenant_env_bindings_from
         # overwrite for per-agent scopes.
@@ -4878,6 +4881,13 @@ class JiuWenSwarmDeepAdapter:
                 )
                 continue
             self._stage_request_mcp_tools(request, server_name, tool_defs, params, buffers)
+            if tool_defs:
+                from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import project_search_server
+                research_server = project_search_server(server_name, server_config, params)
+                if research_server:
+                    buffers.research_servers.append(research_server)
+                    buffers.research_tool_names[server_name] = [str(tool.get("name") or "").strip()
+                                                               for tool in tool_defs]
             if server_name == "office-claw" and not invocation_id:
                 env = params.get("env") if isinstance(params.get("env"), dict) else {}
                 invocation_id = str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
@@ -4924,6 +4934,7 @@ class JiuWenSwarmDeepAdapter:
     ) -> OfficeClawMcpRegistration:
         if replace_request_scoped_mcp_registration(registration, registration):
             self._active_office_claw_mcp = registration
+            self._deepresearch_mcp_snapshot = None
             set_agent_office_claw_tool_ids(self._instance, ())
             self._sync_office_claw_allowlist_to_progressive_rail(None)
         logger.info("[latency] stage=2 name=mcp request_id=%s", registration.request_id)
@@ -4974,6 +4985,18 @@ class JiuWenSwarmDeepAdapter:
                     self._stage_request_mcp_tools(
                         request, name, tool_defs, params, buffers, use_global_pool=True,
                     )
+                    reader = getattr(get_mcp_server_registry(), "get_server", None)
+                    try:
+                        policy = await reader(name) if callable(reader) else None
+                    except Exception:
+                        policy = None
+                    if policy and policy.get("enabled") and tool_defs:
+                        from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import project_search_server
+                        research_server = project_search_server(name, policy["config"], params)
+                        if research_server:
+                            buffers.research_servers.append(research_server)
+                            buffers.research_tool_names[name] = [str(tool.get("name") or "").strip()
+                                                                 for tool in tool_defs]
             # Preserve source priority: registry -> leftovers -> office-claw when
             # a registry list is present; otherwise office-claw -> connectors.
             if office_claw_config is not None and not server_names:
@@ -5001,6 +5024,12 @@ class JiuWenSwarmDeepAdapter:
                 raise RuntimeError("request-scoped MCP generation superseded during install")
             self._active_office_claw_mcp = registration
             set_agent_office_claw_tool_ids(self._instance, registration.tool_ids)
+            from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import fully_admitted_servers
+            research_servers = fully_admitted_servers(
+                buffers.research_servers, buffers.research_tool_names,
+                [(tool._server_name, tool.card.name) for tool in registration.tool_instances],
+            )
+            self._deepresearch_mcp_snapshot = (registration, research_servers, frozenset(server_names))
             publish_live_office_claw_allowlist(registration.tool_ids)
             for tool in registration.tool_instances:
                 register_live_office_claw_tool_instance(tool, registration.tool_ids)
@@ -5238,6 +5267,7 @@ class JiuWenSwarmDeepAdapter:
             and self._active_office_claw_mcp.request_id == registration.request_id
         ):
             self._active_office_claw_mcp = None
+            self._deepresearch_mcp_snapshot = None
             self._sync_office_claw_allowlist_to_progressive_rail(None)
             # Only clear the shared AM allowlist when we are cleaning the *current*
             # active registration. A superseded request's cleanup must not wipe the
@@ -9352,7 +9382,8 @@ class JiuWenSwarmDeepAdapter:
         """Build the native HITL bridge for deepresearch_execute."""
         try:
             rail = DeepResearchExecutionRail(model_provider=lambda: self._model,
-                                             materials_context_provider=self._get_deepresearch_material_context)
+                                             materials_context_provider=self._get_deepresearch_material_context,
+                                             mcp_context_provider=self._get_deepresearch_mcp_context)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] DeepResearchExecutionRail create success"
             )
@@ -10095,6 +10126,13 @@ class JiuWenSwarmDeepAdapter:
             # disabled_tools is a security boundary. Refuse to initialize or
             # hot-reload with the blacklist silently disabled (fail closed).
             raise
+
+    async def _get_deepresearch_mcp_context(self) -> list[dict[str, Any]]:
+        from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import get_search_mcp_context
+        return await get_search_mcp_context(
+            self, registry_provider=get_mcp_server_registry,
+            owner_policy_provider=get_effective_permissions_config,
+        )
 
     def _get_deepresearch_material_context(self) -> dict[str, Any] | None:
         # Per-session adapter snapshot survives long-lived runner Task boundaries.

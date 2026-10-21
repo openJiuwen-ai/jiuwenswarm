@@ -5647,3 +5647,32 @@ async def test_legacy_runner_missing_restarts_skill_only_for_new_research(action
         assert result["fallback"]["query"] == "程序员的 AI 发展方向"
     else:
         assert "fallback" not in result
+
+
+@pytest.mark.asyncio
+async def test_native_mcp_is_transmitted_only_in_stdin_and_context_is_reset():
+    from contextlib import asynccontextmanager
+    from jiuwenswarm.agents.harness.common.tools.deepresearch import mcp_search
+    source = {"server_name": "search", "server_url": "https://mcp.tavily.com/mcp/",
+              "transport_type": "streamable_http", "headers": {"Authorization": "remote-secret"},
+              "timeout": 30.0, "type": "search"}
+    native = {**source, "server_url": "http://127.0.0.1:34567/mcp",
+              "headers": {"Authorization": "gateway-secret"}}
+
+    @asynccontextmanager
+    async def gateway(servers):
+        assert servers == [source]
+        yield [native]
+
+    proc = _Proc([json.dumps({"__deepsearch_status__": "error", "error_code": "test_stop"})])
+    patches = _stream_patches(proc)
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as spawn:
+        with patch.object(mcp_search, "search_mcp_gateway", gateway):
+            await dt._call_deepresearch_stream_impl(action="start", query="q", _mcp_servers=[source])
+    frame = json.loads(proc.stdin.data)
+    assert frame["version"] == 1
+    assert json.loads(frame["config"]["MCP_SERVERS_JSON"]) == [native]
+    assert "remote-secret" not in repr(frame)
+    assert "gateway-secret" not in repr(spawn.await_args)
+    assert "127.0.0.1" in spawn.await_args.kwargs["env"]["NO_PROXY"]
+    assert dt._mcp_servers_ctx.get() is None
