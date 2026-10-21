@@ -210,7 +210,7 @@ async def test_unbound_event_is_left_for_the_personal_route_without_creating_sta
 
 
 @pytest.mark.asyncio
-async def test_jm11_archives_own_echo_before_suppressing_dispatch(host):
+async def test_group_archives_own_echo_before_suppressing_dispatch(host):
     from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 
     agent_id = host.colleague("研发同事")
@@ -225,7 +225,7 @@ async def test_jm11_archives_own_echo_before_suppressing_dispatch(host):
 
 
 @pytest.mark.asyncio
-async def test_jm11_two_agents_share_archive_but_not_request_dedup(host):
+async def test_group_two_agents_share_archive_but_not_request_dedup(host):
     from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 
     first, second = host.colleague("A"), host.colleague("B")
@@ -240,7 +240,7 @@ async def test_jm11_two_agents_share_archive_but_not_request_dedup(host):
 
 
 @pytest.mark.asyncio
-async def test_jm11_recall_before_original_does_not_create_a_request(host):
+async def test_group_recall_before_original_does_not_create_a_request(host):
     agent_id = host.colleague("A")
     fanout = host.fanout([_binding("app-dev", agent_id)])
     await fanout.handle(_event(event_kind="recalled", event_id="recall-first", changed_at=NOW))
@@ -249,7 +249,7 @@ async def test_jm11_recall_before_original_does_not_create_a_request(host):
 
 
 @pytest.mark.asyncio
-async def test_jm11_rebinding_retires_only_unconfigured_bot_access(host):
+async def test_group_rebinding_retires_only_unconfigured_bot_access(host):
     agent_id = host.colleague("A")
     bindings = {"app-dev": _binding("app-dev", agent_id)}
     fanout = host.fanout([], binding_resolver=lambda platform, app: (bindings[app],) if app in bindings else ())
@@ -266,7 +266,7 @@ async def test_jm11_rebinding_retires_only_unconfigured_bot_access(host):
 
 
 @pytest.mark.asyncio
-async def test_jm11_recall_and_left_events_update_records_without_requests(host):
+async def test_group_recall_and_left_events_update_records_without_requests(host):
     agent_id = host.colleague("A")
     fanout = host.fanout([_binding("app-dev", agent_id)])
     await fanout.handle(_event())
@@ -655,7 +655,7 @@ def _feishu_channel(app_id="app-dev", agent_id="") -> FeishuChannel:
 
 
 @pytest.mark.asyncio
-async def test_jm09_feishu_result_replies_to_source_with_stable_uuid_and_receipt():
+async def test_delivery_feishu_result_replies_to_source_with_stable_uuid_and_receipt():
     channel = _feishu_channel()
     response = SimpleNamespace(
         success=lambda: True,
@@ -687,7 +687,7 @@ async def test_jm09_feishu_result_replies_to_source_with_stable_uuid_and_receipt
 
 
 @pytest.mark.asyncio
-async def test_jm09_feishu_result_only_contains_the_answer():
+async def test_delivery_feishu_result_only_contains_the_answer():
     channel = _feishu_channel(agent_id="mate_dev")
     channel.config.bot_open_id = "ou_self"
     response = SimpleNamespace(
@@ -712,7 +712,7 @@ async def test_jm09_feishu_result_only_contains_the_answer():
 
 
 @pytest.mark.asyncio
-async def test_jm09_feishu_result_renders_a_native_bot_mention_for_group_handoff():
+async def test_delivery_feishu_result_renders_a_native_bot_mention_for_group_handoff():
     channel = _feishu_channel(agent_id="agent-sender")
     response = SimpleNamespace(
         success=lambda: True,
@@ -736,7 +736,7 @@ async def test_jm09_feishu_result_renders_a_native_bot_mention_for_group_handoff
 
 
 @pytest.mark.asyncio
-async def test_jm09_feishu_result_keeps_a_readable_name_when_target_bot_is_unavailable():
+async def test_delivery_feishu_result_keeps_a_readable_name_when_target_bot_is_unavailable():
     channel = _feishu_channel(agent_id="agent-sender")
     response = SimpleNamespace(
         success=lambda: True,
@@ -760,7 +760,7 @@ async def test_jm09_feishu_result_keeps_a_readable_name_when_target_bot_is_unava
 
 
 @pytest.mark.asyncio
-async def test_jm09_feishu_result_uses_chat_create_when_no_source_message():
+async def test_delivery_feishu_result_uses_chat_create_when_no_source_message():
     channel = _feishu_channel()
     response = SimpleNamespace(
         success=lambda: True,

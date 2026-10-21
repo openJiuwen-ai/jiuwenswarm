@@ -270,7 +270,7 @@ async def test_channel_manager_sends_the_retained_copy_with_its_upload_key(tmp_p
     manager.register_channel(channel)
     payload = {"app_id": "cli_bound", "chat_id": "oc_group", "idempotency_key": "k", "text": None}
 
-    result = await manager.deliver_jm09_persistent_result(
+    result = await manager.deliver_persistent_result(
         {**payload, "file": {"key": key, "size": len(CONTENT), "file_key": "fk_1"}}
     )
     assert result["outcome"] == "delivered"
@@ -279,7 +279,7 @@ async def test_channel_manager_sends_the_retained_copy_with_its_upload_key(tmp_p
     assert kwargs["file_key"] == "fk_1"
     assert kwargs["text"] is None
 
-    missing = await manager.deliver_jm09_persistent_result({**payload, "file": {"key": key, "size": 1}})
+    missing = await manager.deliver_persistent_result({**payload, "file": {"key": key, "size": 1}})
     assert missing == {"outcome": "failed", "error_code": "OUTPUT_FILE_MISSING"}
 
 
