@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from tests.unit_tests.gateway.config_routing_harness import make_config_routing_client
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.config_panel import tui_models_handlers
@@ -454,7 +455,7 @@ async def test_harmonyos_dev_init_legacy_client_falls_back_to_local(monkeypatch)
         return {"ok": True, "source": "local-fallback"}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -504,7 +505,7 @@ async def test_harmonyos_dev_init_remote_client_error_without_fallback(monkeypat
         return {"ok": True}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -564,7 +565,7 @@ async def test_harmonyos_dev_init_business_failure_does_not_rerun_locally(monkey
         return {"ok": True}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -835,7 +836,7 @@ async def test_config_validate_model_handler_uses_local_probe(monkeypatch):
     register_cli_handlers(
         CliHandlersBindParams(
             channel=server,
-            agent_client=None,
+            agent_client=make_config_routing_client(),
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -888,7 +889,7 @@ async def test_config_validate_model_retries_failed_probe_with_more_tokens(
     register_cli_handlers(
         CliHandlersBindParams(
             channel=server,
-            agent_client=None,
+            agent_client=make_config_routing_client(),
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -974,6 +975,7 @@ async def test_command_model_switch_sends_scoped_agent_reload(monkeypatch):
         CliHandlersBindParams(
             channel=server,
             agent_client=_offline_local_client(),
+            force_local_config=True,
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -1067,6 +1069,7 @@ async def test_command_model_delete_matches_by_name_when_index_drifted(monkeypat
         CliHandlersBindParams(
             channel=server,
             agent_client=_offline_local_client(),
+            force_local_config=True,
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -1152,6 +1155,7 @@ async def test_command_model_delete_rejects_when_index_and_name_mismatch(monkeyp
         CliHandlersBindParams(
             channel=server,
             agent_client=_offline_local_client(),
+            force_local_config=True,
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -1201,6 +1205,7 @@ async def test_command_model_lists_agentos_models_without_defaults(monkeypatch):
         CliHandlersBindParams(
             channel=server,
             agent_client=_offline_local_client(),
+            force_local_config=True,
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -1715,7 +1720,7 @@ async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch):
     register_cli_handlers(
         CliHandlersBindParams(
             channel=server,
-            agent_client=None,
+            agent_client=make_config_routing_client(),
             message_handler=None,
             on_config_saved=None,
             path="/tui",

@@ -1510,6 +1510,7 @@ async def warmup_session_context(
     session_id: str,
     history_before_request_id: str | None = None,
     history_snapshot: SessionHistorySnapshot | None = None,
+    refresh_existing: bool = False,
 ) -> bool:
     """Restart-safe restore of context_engine messages from on-disk history.
 
@@ -1526,6 +1527,9 @@ async def warmup_session_context(
     history、不清理 Session state（agent/workflow 状态已由 checkpointer 在
     pre_run 恢复）、不强写 checkpointer（消息持久化本就由 history.jsonl 承担）。
 
+    ``refresh_existing`` replaces the cached Web context on its first follow-up
+    to a cron run, retaining completed prior-round outputs after queued input.
+
     ``history_snapshot`` is an optional request-local pre-read. Reuse requires
     the same owner, lifecycle generation, cutoff and unchanged history file;
     otherwise this function keeps its original on-disk read and filtering.
@@ -1536,7 +1540,8 @@ async def warmup_session_context(
         return False
 
     context_engine = react_agent.context_engine
-    if context_engine.get_context(session_id=session_id) is not None:
+    existing_context = context_engine.get_context(session_id=session_id)
+    if existing_context is not None and not refresh_existing:
         # 内存上下文已存在（进程未重启 / 已 warmup / rewind 重建过）
         return True
 
@@ -1560,9 +1565,21 @@ async def warmup_session_context(
 
     if boundary_request_id:
         for index, record in enumerate(history_records):
-            if str(record.get("request_id") or "").strip() == boundary_request_id:
-                history_records = history_records[:index]
-                break
+            if str(record.get("request_id") or "").strip() != boundary_request_id:
+                continue
+            prior_records = history_records[:index]
+            if refresh_existing:
+                prior_request_ids = {
+                    str(item.get("request_id") or "").strip() for item in prior_records
+                }
+                for item in history_records[index + 1:]:
+                    if item.get("role") != "assistant":
+                        continue
+                    request_id = str(item.get("request_id") or "").strip()
+                    if request_id in prior_request_ids:
+                        prior_records.append(item)
+            history_records = prior_records
+            break
 
     context_messages, skipped = _build_context_messages_from_history(history_records)
     if not context_messages:
@@ -1593,6 +1610,10 @@ async def warmup_session_context(
             return False
 
     try:
+        if existing_context is not None:
+            context_state = existing_context.save_state()
+            context_state["messages"] = context_messages
+            existing_context.load_state({existing_context.context_id(): context_state})
         await context_engine.create_context(
             session=session,
             processors=_get_context_processors(react_agent),

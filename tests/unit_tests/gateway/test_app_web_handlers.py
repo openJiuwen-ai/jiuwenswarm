@@ -10,6 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.unit_tests.gateway.config_routing_harness import (
+    make_config_routing_client,
+    make_legacy_config_routing_client,
+)
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
 from jiuwenswarm.extensions.registry import ExtensionRegistry
@@ -155,7 +159,7 @@ async def test_models_get_returns_editable_detail_with_api_key(monkeypatch) -> N
 
     monkeypatch.setattr("jiuwenswarm.common.config_panel.model_resource_handlers.ModelCatalog", FakeCatalog)
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.get"](object(), "req-model", {"model_id": "mdl_a"}, "sid")
 
@@ -202,7 +206,7 @@ async def test_config_validate_model_retries_failed_probe_with_more_tokens(
     monkeypatch.setattr(models_handlers, "Model", FakeModel)
     monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(models_handlers, "get_default_models", lambda _config: [])
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.validate_model"](
         object(),
@@ -261,7 +265,7 @@ class _CapturingSessionListAgentClient:
 @pytest.mark.asyncio
 async def test_vendors_fetch_models_applies_alibaba_allowlist(monkeypatch):
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     monkeypatch.setattr(
         "httpx.get",
         lambda *args, **kwargs: _FakeModelsResponse(
@@ -293,7 +297,7 @@ async def test_vendors_fetch_models_applies_alibaba_allowlist(monkeypatch):
 @pytest.mark.asyncio
 async def test_vendors_fetch_models_keeps_namespaced_models_for_other_vendors(monkeypatch):
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     monkeypatch.setattr(
         "httpx.get",
         lambda *args, **kwargs: _FakeModelsResponse(
@@ -319,7 +323,7 @@ async def test_vendors_fetch_models_keeps_namespaced_models_for_other_vendors(mo
 @pytest.mark.asyncio
 async def test_vendors_fetch_models_falls_back_when_all_alibaba_models_are_namespaced(monkeypatch):
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     monkeypatch.setattr(
         "httpx.get",
         lambda *args, **kwargs: _FakeModelsResponse(["MiniMax/MiniMax-M2.5"]),
@@ -493,7 +497,7 @@ async def test_heartbeat_web_methods_preserve_health_check_aliases_and_session()
 @pytest.mark.asyncio
 async def test_heartbeat_web_reports_unavailable_and_missing_job_codes() -> None:
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["heartbeat.job.list"](
         object(), "list-unavailable", {}, "session-current"
@@ -566,7 +570,7 @@ async def test_path_select_file_returns_selected_path(
         "jiuwenswarm.channels.web.directory_picker.select_file_native",
         fake_select_file_native,
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["path.select_file"](
         object(),
@@ -595,7 +599,7 @@ async def test_path_select_file_returns_cancelled(monkeypatch: pytest.MonkeyPatc
         "jiuwenswarm.channels.web.directory_picker.select_file_native",
         lambda **_: None,
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["path.select_file"](
         object(),
@@ -1033,7 +1037,7 @@ async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
     )
     monkeypatch.setattr(opencode_zen, "get_zen_free_model_entries", lambda: [])
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.list"](object(), "req-models", {}, "session-1")
 
@@ -1065,7 +1069,7 @@ async def test_models_list_omits_context_for_empty_template_model(monkeypatch) -
     )
     monkeypatch.setattr(opencode_zen, "get_zen_free_model_entries", lambda: [])
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.list"](object(), "req-empty-model", {}, "session-1")
 
@@ -1090,7 +1094,7 @@ async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch) -> No
     monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(models_handlers, "get_available_models", fake_available)
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     ws = SimpleNamespace(_jiuwen_auth_session="auth-sess-1")
 
     await channel.methods["models.list"](ws, "req-models", {}, "session-1")
@@ -1122,12 +1126,14 @@ async def test_models_list_includes_cached_zen_free_models(monkeypatch) -> None:
 
     monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(models_handlers, "get_default_models", lambda _config: [])
+    # A4g：E2A 路径的 zen 免费模型合并在 server 侧 ConfigAdapter（等价于原
+    # gateway wrapper 的 fetch_zen_free_model_rows + zen_rows 注入）
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.zen_query.fetch_zen_free_model_rows",
-        _rows,
+        "jiuwenswarm.server.runtime.opencode_zen.append_zen_free_models",
+        lambda models: models.append(zen_row),
     )
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.list"](object(), "req-models", {}, "session-1")
 
@@ -1158,7 +1164,7 @@ async def test_openai_account_models_list_returns_refreshed_auth_status(
     monkeypatch.setattr(app_web_handlers, "OpenAIAccountAuthManager", FakeOpenAIAccountAuthManager)
     monkeypatch.setattr(app_web_handlers, "OpenAIAccountModelCatalog", FakeOpenAIAccountModelCatalog)
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["openai_account.models.list"](object(), "req-models", {}, "sess-1")
 
@@ -1215,7 +1221,7 @@ async def test_openai_account_logout_clears_pending_login_jobs(
         ),
     )
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["openai_account.auth.logout"](object(), "req-logout", {}, "sess-1")
 
@@ -1240,7 +1246,7 @@ async def test_openai_account_logout_wins_against_inflight_poll(
         ),
     )
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     poll_task = asyncio.create_task(channel.methods["openai_account.auth.poll_login"](
         object(), "req-poll", {"login_id": "login-1"}, "sess-1",
@@ -1354,6 +1360,7 @@ async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, t
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
             on_config_saved=on_config_saved,
         )
     )
@@ -1399,6 +1406,7 @@ async def test_config_set_reports_saved_when_hot_reload_callback_fails(monkeypat
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
             on_config_saved=on_config_saved,
         )
     )
@@ -1454,6 +1462,7 @@ async def test_config_set_persists_setup_guide_without_runtime_reload(monkeypatc
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
             on_config_saved=on_config_saved,
         )
     )
@@ -1493,7 +1502,7 @@ async def test_config_get_returns_setup_guide_switch(monkeypatch, raw_config, ex
         "get_instance",
         lambda: SimpleNamespace(get_crypto_provider=lambda: None),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](
         object(),
@@ -1519,7 +1528,7 @@ async def test_config_get_returns_jev_credentials_like_model_settings(monkeypatc
         "get_instance",
         lambda: SimpleNamespace(get_crypto_provider=lambda: None),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](object(), "req-get-jev", {}, "sess-get-jev")
 
@@ -1560,7 +1569,7 @@ async def test_trajectory_ui_switch_round_trips_through_config_rpc(monkeypatch):
         "update_trajectory_ui_in_config",
         lambda enabled: persisted.append(enabled),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](object(), "req-trajectory-get", {}, "session")
     assert channel.responses[-1]["payload"]["trajectory_ui_enabled"] == "false"
@@ -1596,7 +1605,7 @@ async def test_task_full_duplex_switch_round_trips_through_config_rpc(monkeypatc
         "update_task_full_duplex_in_config",
         lambda enabled: persisted.append(enabled),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](object(), "req-duplex-get", {}, "session")
     assert channel.responses[-1]["payload"]["task_full_duplex_enabled"] == "false"
@@ -1625,7 +1634,7 @@ async def test_config_get_returns_rsi_switch(monkeypatch, raw_config, expected):
     channel = FakeWebChannel()
     monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: raw_config)
     monkeypatch.setattr(config_set_handlers, "get_config", lambda: raw_config)
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](
         object(),
@@ -1668,6 +1677,7 @@ async def test_config_save_all_persists_rsi_switch(monkeypatch):
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
             on_config_saved=on_config_saved,
         )
     )
@@ -1730,7 +1740,7 @@ async def test_task_asr_rpc_returns_transcript(monkeypatch):
         return "transcribed speech"
 
     monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", fake_transcribe)
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["task.asr.transcribe"](
         object(),
@@ -1764,7 +1774,11 @@ async def test_media_capability_provider_identity_round_trips_through_config_rpc
         return True
 
     _register_web_handlers(
-        WebHandlersBindParams(channel=channel, on_config_saved=on_config_saved)
+        WebHandlersBindParams(
+            channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
+            on_config_saved=on_config_saved,
+        )
     )
 
     await channel.methods["config.set"](
@@ -1823,7 +1837,7 @@ async def test_config_get_returns_canonical_permission_profile(
     monkeypatch.setattr(
         app_web_handlers, "_flatten_modes_team_for_config_panel", lambda raw: {}
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](object(), "req-profile", {}, "sess-profile")
 
@@ -1844,7 +1858,7 @@ async def test_config_get_returns_canonical_permission_profile(
 async def test_config_set_rejects_invalid_permission_facade(monkeypatch, params):
     channel = FakeWebChannel()
     monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: {})
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.set"](object(), "req-profile", params, "sess-profile")
 
@@ -1879,7 +1893,7 @@ async def test_config_set_returns_canonical_permission_facade(
         "update_permissions_profile_in_config",
         lambda profile: saved.append(profile),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.set"](object(), "req-profile", params, "sess-profile")
 
@@ -1905,7 +1919,11 @@ async def test_config_save_all_returns_canonical_permission_facade(monkeypatch):
         return True
 
     _register_web_handlers(
-        WebHandlersBindParams(channel=channel, on_config_saved=on_config_saved)
+        WebHandlersBindParams(
+            channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
+            on_config_saved=on_config_saved,
+        )
     )
 
     await channel.methods["config.save_all"](
@@ -1941,7 +1959,7 @@ async def test_invalid_combined_payload_does_not_persist_permission_profile(
         "update_permissions_profile_in_config",
         lambda profile: saved.append(profile),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.set"](
         object(),
@@ -1970,7 +1988,7 @@ async def test_permission_profile_write_failure_returns_no_canonical_success(
         "update_permissions_profile_in_config",
         fail_update,
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.set"](
         object(),
@@ -2024,7 +2042,7 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
         "update_permissions_profile_in_config",
         lambda profile: saved.append(profile),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.save_all"](
         object(),
@@ -2089,6 +2107,7 @@ async def test_models_replace_all_applies_scoped_reload_before_responding(monkey
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
             on_config_saved=on_config_saved,
         )
     )
@@ -2139,7 +2158,7 @@ async def test_models_replace_all_applies_scoped_reload_before_responding(monkey
 )
 async def test_models_replace_all_rejects_invalid_vendor_identity(vendor_key, plan, expected_error):
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.replace_all"](
         object(),
@@ -2167,7 +2186,7 @@ async def test_models_replace_all_rejects_invalid_vendor_identity(vendor_key, pl
 @pytest.mark.asyncio
 async def test_models_replace_all_rejects_reasoning_level_not_supported_by_model():
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.replace_all"](
         object(),
@@ -2196,7 +2215,7 @@ async def test_config_set_routes_team_payload_to_modes_team_helper(monkeypatch):
     channel = FakeWebChannel()
     recorded: list[dict] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr("jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
                         lambda: {"preferred_language": "zh"})
@@ -2233,7 +2252,7 @@ async def test_config_set_installs_codex_dependency_before_team_save(monkeypatch
     dependency_checks: list[None] = []
     recorded: list[dict] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client()))
 
     monkeypatch.setattr("jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
                         lambda: {"preferred_language": "zh"})
@@ -2272,7 +2291,7 @@ async def test_config_set_does_not_install_codex_for_claude_only(monkeypatch):
     channel = FakeWebChannel()
     dependency_checks: list[None] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr("jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
                         lambda: {"preferred_language": "zh"})
@@ -2312,7 +2331,7 @@ async def test_config_set_updates_external_cli_switches_without_team_save(monkey
     updates: list[tuple[list[str], str | None]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -2356,7 +2375,7 @@ async def test_config_set_saves_external_cli_path_after_detection(monkeypatch):
     updates: list[tuple[list[dict[str, str]], str | None]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -2407,7 +2426,7 @@ async def test_config_set_claude_switch_keeps_codex_entry_verbatim(monkeypatch):
     updates: list[tuple[list[dict], str | None]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -2466,7 +2485,7 @@ async def test_config_set_uses_builtin_codex_without_validating_stale_windows_sc
     updates: list[tuple[list[dict[str, str]], str | None]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -2519,7 +2538,7 @@ async def test_config_set_rejects_codex_windows_script_when_manual_path(monkeypa
     channel = FakeWebChannel()
     updates: list[tuple[list[dict[str, str]], str | None]] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
         lambda: {"preferred_language": "zh", "modes": {"team": {"jiuwen_team": {}}}},
@@ -2561,7 +2580,7 @@ async def test_config_set_rejects_unavailable_external_cli_path(monkeypatch):
     channel = FakeWebChannel()
     updates: list[tuple[list[dict[str, str]], str | None]] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
         lambda: {"preferred_language": "zh", "modes": {"team": {"jiuwen_team": {}}}},
@@ -2597,12 +2616,107 @@ async def test_config_set_rejects_unavailable_external_cli_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_config_save_all_nested_shape_triggers_install_gate(monkeypatch):
+    """A4g review P1 回归：save_all 嵌套键形状（前端真实链路）必须触发安装门控。
+
+    前端外部 CLI 卡片的唯一保存通道是 config.save_all 且键嵌套在
+    params.config 下；门控若只扫顶层键则对真实流量永不触发（安装不启动、
+    agent 以启用态直接落盘）。
+    """
+    channel = FakeWebChannel()
+
+    monkeypatch.setenv("WEB_PORT", "19000")
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client())
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+        lambda: {"preferred_language": "zh", "modes": {"team": {"jiuwen_team": {}}}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        lambda: {"status": "running", "error": "", "started_at": 1.0, "finished_at": 0.0},
+    )
+
+    await channel.methods["config.save_all"](
+        object(),
+        "req-save-all-nested-install",
+        {
+            "config": {
+                "external_cli_agent_codex_enabled": "true",
+                "external_cli_agent_codex_use_builtin": "true",
+            }
+        },
+        "sess-save-all-nested",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    installs = channel.responses[-1]["payload"]["external_cli_dependency_installs"]
+    assert installs["codex"]["status"] == "running"
+    # 安装启动即短路：嵌套键未被落盘（updated 为空）
+    assert channel.responses[-1]["payload"]["updated"] == []
+
+
+@pytest.mark.asyncio
+async def test_install_gate_team_collision_top_level_wins(monkeypatch):
+    """碰撞形状回归：顶层 team 与嵌套 config.team 并存时顶层优先（与
+    config_save_all_handler 的合并顺序一致）。
+
+    反向合并（嵌套覆盖顶层）时门控看到不含 codex 的嵌套 team 而漏判，
+    落盘的却是顶层含 codex 的 team——codex 未经安装门控直接启用。
+    """
+    channel = FakeWebChannel()
+
+    monkeypatch.setenv("WEB_PORT", "19000")
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client())
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+        lambda: {"preferred_language": "zh", "modes": {"team": {"jiuwen_team": {}}}},
+    )
+    ensure_calls: list[None] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        lambda: ensure_calls.append(None) or {
+            "status": "running", "error": "", "started_at": 1.0, "finished_at": 0.0,
+        },
+    )
+
+    await channel.methods["config.save_all"](
+        object(),
+        "req-team-collision",
+        {
+            # 顶层 team 含 codex（save_all 落盘的正是这份）；嵌套 config.team 不含
+            "team": [
+                {"team_name": "alpha", "external_cli_agents": [{"cli_agent": "codex"}]},
+            ],
+            "config": {
+                "team": [
+                    {"team_name": "alpha", "external_cli_agents": [{"cli_agent": "claude"}]},
+                ],
+            },
+        },
+        "sess-team-collision",
+    )
+
+    # 门控按合并后（顶层优先）的 team 载荷判定：codex 命中 → ensure 被调、短路
+    assert ensure_calls, "碰撞形状下门控必须按顶层 team 判定并触发安装"
+    assert channel.responses[-1]["ok"] is True
+    installs = channel.responses[-1]["payload"]["external_cli_dependency_installs"]
+    assert installs["codex"]["status"] == "running"
+    assert channel.responses[-1]["payload"]["updated"] == []
+
+
+@pytest.mark.asyncio
 async def test_config_set_starts_codex_dependency_install_without_saving_codex(monkeypatch):
     channel = FakeWebChannel()
     updates: list[tuple[list[str], str | None]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -2635,9 +2749,13 @@ async def test_config_set_starts_codex_dependency_install_without_saving_codex(m
         "sess-codex-installing",
     )
 
-    assert updates == [([], "ws://127.0.0.1:19000/ws")]
+    # A4g 门控语义：安装启动时整条 config.set 短路（不写配置、不发 E2A），
+    # 响应携带安装状态；安装完成后前端重发，配置才落盘（终态与原
+    # "过滤安装中 agent 的部分写入"一致）。
+    assert updates == []
     assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["codex_dependency_install"]["status"] == "running"
+    installs = channel.responses[-1]["payload"]["external_cli_dependency_installs"]
+    assert installs["codex"]["status"] == "running"
 
 
 @pytest.mark.asyncio
@@ -2646,7 +2764,7 @@ async def test_config_set_saves_claude_while_codex_dependency_is_installing(monk
     updates: list[tuple[list[str], str | None]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -2681,9 +2799,13 @@ async def test_config_set_saves_claude_while_codex_dependency_is_installing(monk
         "sess-claude-codex-installing",
     )
 
-    assert updates == [([{"cli_agent": "claude"}], "ws://127.0.0.1:19000/ws")]
+    # A4g 门控语义：codex 安装中即短路整条请求（claude 待安装完成后随重发
+    # 一起落盘，终态与原部分写入一致）。
+    assert updates == []
     assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["codex_dependency_install"]["status"] == "running"
+    installs = channel.responses[-1]["payload"]["external_cli_dependency_installs"]
+    assert installs["codex"]["status"] == "running"
+    assert "claude" not in installs
 
 
 def test_build_external_cli_publish_url_uses_web_channel_env(monkeypatch):
@@ -3070,7 +3192,7 @@ def test_optional_dependency_install_times_out_after_one_hour(
 @pytest.mark.asyncio
 async def test_external_cli_codex_install_status_returns_snapshot():
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     with app_web_handlers._CODEX_DEPENDENCY_INSTALL_LOCK:
         app_web_handlers._CODEX_DEPENDENCY_INSTALL_STATUS.update({
             "status": "running",
@@ -3187,6 +3309,9 @@ async def test_config_set_updates_canonical_skill_evolution(
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(
+                lambda _, **kwargs: (saved_updates.append(kwargs) or True)
+            ),
             on_config_saved=lambda _, **kwargs: (
                 saved_updates.append(kwargs) or True
             ),
@@ -3229,7 +3354,7 @@ async def test_config_set_preserves_deleted_template_for_bound_team(monkeypatch,
         },
     }
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -3274,7 +3399,7 @@ async def test_config_set_preserves_deleted_template_for_bound_team(monkeypatch,
 async def test_config_set_returns_bad_request_when_team_payload_is_invalid(monkeypatch):
     channel = FakeWebChannel()
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr("jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
                         lambda: {"preferred_language": "zh"})
@@ -3474,7 +3599,7 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
     recorded_symphony: list[dict] = []
     recorded_skill_retrieval: list[dict] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -3974,7 +4099,7 @@ async def test_channel_set_conf_channel_manager_unavailable(monkeypatch):
     """cm 为 None → 返回 SERVICE_UNAVAILABLE。"""
     channel = FakeWebChannel()
     # 不传 channel_manager，_resolve 返回 None
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["channel.feishu.set_conf"](object(), "req-1", {"apps": []}, "sess-1")
     assert channel.responses[-1]["ok"] is False
@@ -4526,7 +4651,7 @@ def _use_managed_provider_runtime(
 
 async def _call_external_cli(method: str, cli_agent: str) -> dict:
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     await channel.methods[method](object(), f"req-{method}", {"cli_agent": cli_agent}, "sess-external-cli")
     return channel.responses[-1]
 

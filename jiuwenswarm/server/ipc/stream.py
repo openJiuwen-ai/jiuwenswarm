@@ -14,6 +14,7 @@ import logging
 import os
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Any, Callable
@@ -30,6 +31,8 @@ from jiuwenswarm.server.ipc.protocol import (
 logger = logging.getLogger(__name__)
 
 _PIPE_AUTHKEY = b"jiuwenswarm-runtime-ipc-v1"
+_PIPE_PENDING_MESSAGES = 256
+_PIPE_PENDING_BYTES = 2 * MAX_FRAME_BYTES
 
 
 def endpoint_address(path: str) -> str:
@@ -181,6 +184,15 @@ class PipeConnection(IpcConnection):
         self._writer_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="runtime-ipc-write"
         )
+        self._receive_lock = asyncio.Lock()
+        self._receive_mutex = threading.Lock()
+        self._pending: deque[tuple[dict[str, Any], int]] = deque()
+        self._pending_bytes = 0
+        self._reader_started = False
+        self._reader_error: Exception | None = None
+        self._read_waiter: asyncio.Future[None] | None = None
+        self._read_notified = False
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def send(self, message: dict[str, Any]) -> None:
         if self._closed:
@@ -208,25 +220,93 @@ class PipeConnection(IpcConnection):
         """Blocking thread-safe send for the reader-thread heartbeat path."""
         self._send_bytes_locked(encode_frame(message))
 
-    def _recv_raw(self) -> dict[str, Any]:
-        """Read on the reader thread, answering heartbeat pings inline.
+    def _read_loop(self) -> None:
+        """Keep draining the pipe even between business-loop recv calls.
 
-        A blocked event loop must not stop transport liveness reporting: the
-        pong carries the worker's own loop-liveness age, so the Supervisor
-        can tell a stalled loop from a dead pipe instead of guessing.
+        Returning after one business message strands subsequent heartbeats
+        when session initialization stalls the event loop. Retain ordered,
+        bounded business messages here while answering pings on this thread.
         """
-        while True:
-            frame = self._conn.recv_bytes()
-            self._last_rx = time.monotonic()
-            message = self._decode_pipe_frame(frame)
-            responder = self._heartbeat_responder
-            if responder is not None and message.get("kind") == KIND_HEARTBEAT:
-                try:
+        try:
+            while not self._closed:
+                # Closing a stdlib pipe does not cancel every pending native
+                # read. Bound idle waits so shutdown can join this executor.
+                if not self._conn.poll(0.1):
+                    continue
+                if self._closed:
+                    return
+                frame = self._conn.recv_bytes(maxlength=MAX_FRAME_BYTES + HEADER.size)
+                self._last_rx = time.monotonic()
+                message = self._decode_pipe_frame(frame)
+                responder = self._heartbeat_responder
+                if responder is not None and message.get("kind") == KIND_HEARTBEAT:
                     responder(message)
-                except Exception:  # noqa: BLE001
-                    logger.warning("[IPC] heartbeat fast path failed", exc_info=True)
-                continue
-            return message
+                    continue
+                with self._receive_mutex:
+                    if self._closed:
+                        return
+                    if (len(self._pending) >= _PIPE_PENDING_MESSAGES
+                            or self._pending_bytes + len(frame) > _PIPE_PENDING_BYTES):
+                        raise IpcError("ipc business receive backlog exceeded")
+                    self._pending.append((message, len(frame)))
+                    self._pending_bytes += len(frame)
+                self._notify_reader()
+        except Exception as exc:  # noqa: BLE001 - deliver native and protocol errors to recv
+            with self._receive_mutex:
+                self._reader_error = exc
+            self._notify_reader()
+
+    def _notify_reader(self) -> None:
+        with self._receive_mutex:
+            loop = self._loop
+            if loop is None or self._read_waiter is None or self._read_notified:
+                return
+            self._read_notified = True
+        try:
+            loop.call_soon_threadsafe(self._wake_reader)
+        except RuntimeError:
+            # Connection teardown can finish after its event loop has closed.
+            with self._receive_mutex:
+                self._read_notified = False
+
+    def _wake_reader(self) -> None:
+        with self._receive_mutex:
+            self._read_notified = False
+            waiter = self._read_waiter
+        if waiter is not None and not waiter.done():
+            waiter.set_result(None)
+
+    async def _next_message(self) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        if not self._reader_started:
+            self._loop = loop
+            self._reader_started = True
+            self._reader_pool.submit(self._read_loop)
+        while True:
+            with self._receive_mutex:
+                if self._closed:
+                    raise ConnectionError("ipc connection is closed")
+                if self._pending:
+                    message, size = self._pending.popleft()
+                    self._pending_bytes -= size
+                    return message
+                if self._reader_error is not None:
+                    raise self._reader_error
+                waiter = loop.create_future()
+                self._read_waiter = waiter
+            try:
+                await waiter
+            finally:
+                with self._receive_mutex:
+                    if self._read_waiter is waiter:
+                        self._read_waiter = None
+
+    def diagnostics(self) -> dict[str, Any]:
+        snapshot = super().diagnostics()
+        with self._receive_mutex:
+            snapshot["receive_pending"] = len(self._pending)
+            snapshot["receive_pending_bytes"] = self._pending_bytes
+        return snapshot
 
     @staticmethod
     def _decode_pipe_frame(frame: bytes) -> dict[str, Any]:
@@ -244,9 +324,8 @@ class PipeConnection(IpcConnection):
             raise ConnectionError("ipc connection is closed")
         self._receiving_since = time.monotonic()
         try:
-            message = await asyncio.get_running_loop().run_in_executor(
-                self._reader_pool, self._recv_raw
-            )
+            async with self._receive_lock:
+                message = await self._next_message()
             self._last_rx = time.monotonic()
             return message
         except asyncio.CancelledError:
@@ -266,6 +345,10 @@ class PipeConnection(IpcConnection):
         if self._closed:
             return
         self._closed = True
+        with self._receive_mutex:
+            self._pending.clear()
+            self._pending_bytes = 0
+        self._notify_reader()
         close = getattr(self._conn, "close", None)
         try:
             if callable(close):

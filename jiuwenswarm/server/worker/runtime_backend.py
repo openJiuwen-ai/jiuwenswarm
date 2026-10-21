@@ -244,8 +244,9 @@ def preload_runtime_backend() -> None:
     _log_preparation_stage("required_parallel_join", began)
     began = time.monotonic()
     _configure_openjiuwen_logging()
-    from jiuwenswarm.common.background_logging import wrap_log_handlers
+    from jiuwenswarm.common.background_logging import install_core_logging_queue, wrap_log_handlers
 
+    install_core_logging_queue()
     wrap_log_handlers()
     _log_preparation_stage("logging", began)
     began = time.monotonic()

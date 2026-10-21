@@ -540,6 +540,7 @@ function AppContent({
     close: closeSidebarPeek,
     surfaceProps: peekSurfaceProps,
   } = useSecondarySidebarPeek();
+  const isSettingsNarrowViewport = useMediaQuery('(max-width: 640px)');
   const isRsiNarrowViewport = useMediaQuery('(max-width: 1250px)');
   const rsiHasExperiments = useRsiStore((s) => s.list.length > 0);
   const rsiListKnownEmpty = useRsiStore((s) => s.listLoadedOnce && s.list.length === 0);
@@ -1142,8 +1143,8 @@ function AppContent({
     (activeNav === 'experiments' && rsiHasExperiments && !rsiSidebarCollapsed);
 
   useEffect(() => {
-    if (hasFixedSecondarySidebar) closeSidebarPeek();
-  }, [hasFixedSecondarySidebar, closeSidebarPeek]);
+    if (hasFixedSecondarySidebar || (sidebarPeek === 'settings' && !isSettingsNarrowViewport)) closeSidebarPeek();
+  }, [hasFixedSecondarySidebar, sidebarPeek, isSettingsNarrowViewport, closeSidebarPeek]);
 
   const trajectoryTaskPanelAvailable = toolPanelHasContent || isRestoringTeamHistory;
   const effectiveTeamAreaExpanded = isTeamAreaExpanded;
@@ -3889,7 +3890,8 @@ function AppContent({
   const handleNavItemClick = (nav: MainNavKey) => {
     const peekTarget = (
       (nav === 'chat' && conversationSidebarCollapsed) ||
-      (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed)
+      (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed) ||
+      (nav === 'settings' && isSettingsNarrowViewport)
     ) ? nav : null;
     handleNavigate(nav, peekTarget);
   };
@@ -4241,7 +4243,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         hiddenNavItems={hiddenNavItems}
         applicationPlugins={visibleApplicationPlugins}
         onNavItemHover={(key) => {
-          const target = key === 'chat' || (key === 'experiments' && !rsiListKnownEmpty) ? key : null;
+          const target = (
+            key === 'chat' ||
+            (key === 'settings' && isSettingsNarrowViewport) ||
+            (key === 'experiments' && !rsiListKnownEmpty)
+          ) ? key : null;
           hoverSidebarPeek(!hasFixedSecondarySidebar ? target : null);
         }}
         onNavItemPointerDownCapture={(key) => {
@@ -4271,7 +4277,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         )}
 
-        {sidebarPeek && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
+        {sidebarPeek && sidebarPeek !== 'settings' && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
           <div className="chat-layout--peek-host" {...peekSurfaceProps}>
             {sidebarPeek === 'chat' ? (
               <ConversationSidebar
@@ -4615,8 +4621,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             </div>
           </div>
         )}
-        {activeNav === 'settings' && (
-          <div className="app-section">
+        {(activeNav === 'settings' || (isSettingsNarrowViewport && sidebarPeek === 'settings' && !hasFixedSecondarySidebar)) && (
+          <div className={activeNav === 'settings' ? 'app-section' : 'app-section--peek-only'}>
             <SettingsPage
               definition={settingsPageDefinition}
               isConnected={isConnected}
@@ -4634,6 +4640,13 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               externalCliDetectResults={externalCliDetectResults}
               onExternalCliDetectResultsChange={setExternalCliDetectResults}
               initialModuleId={requestedSettingsModuleId ?? undefined}
+              sidebar={{
+                isActive: activeNav === 'settings',
+                collapsed: isSettingsNarrowViewport,
+                peek: isSettingsNarrowViewport && sidebarPeek === 'settings' && !hasFixedSecondarySidebar,
+                surfaceProps: peekSurfaceProps,
+                onNavigate: () => { handleNavigate('settings'); },
+              }}
             />
           </div>
         )}

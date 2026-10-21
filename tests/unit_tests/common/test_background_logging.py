@@ -12,6 +12,75 @@ import pytest
 from jiuwenswarm.common.background_logging import BackgroundLogWriter
 
 
+def test_late_sdk_logger_and_reconfigured_handlers_use_background_queue(monkeypatch):
+    from types import SimpleNamespace
+
+    from openjiuwen.core.common.logging import LogManager
+    from jiuwenswarm.common import background_logging
+
+    output = io.StringIO()
+    target = logging.Logger("late-sdk", logging.INFO)
+    target.handlers = [logging.StreamHandler(output)]
+    sdk_logger = SimpleNamespace(_logger=target)
+    monkeypatch.setattr(LogManager, "get_logger", classmethod(lambda cls, name: sdk_logger))
+    writer = BackgroundLogWriter()
+    monkeypatch.setattr(background_logging, "_writer", writer)
+    background_logging.install_core_logging_queue()
+    installed = LogManager.get_logger.__func__
+    try:
+        background_logging.install_core_logging_queue()
+        assert LogManager.get_logger.__func__ is installed
+        assert LogManager.get_logger("late-sdk") is sdk_logger
+        assert target.handlers[0].writer is writer
+        target.info("first")
+        # Core logging reload can replace a logger's sinks after first use.
+        target.handlers[0].close()
+        target.handlers = [logging.StreamHandler(output)]
+        LogManager.get_logger("late-sdk")
+        target.info("after reload")
+    finally:
+        assert writer.stop()
+    assert output.getvalue() == "first\nafter reload\n"
+
+
+def test_core_logging_hook_preserves_non_stdlib_backends(monkeypatch):
+    from openjiuwen.core.common.logging import LogManager
+    from jiuwenswarm.common import background_logging
+
+    custom_logger = object()
+    monkeypatch.setattr(LogManager, "get_logger", classmethod(lambda cls, name: custom_logger))
+    background_logging.install_core_logging_queue()
+    assert LogManager.get_logger("custom") is custom_logger
+
+
+def test_background_sink_filters_keep_session_context():
+    from contextvars import ContextVar
+
+    session = ContextVar("background_log_test_session", default="missing")
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(logging.Formatter("%(session_id)s %(message)s"))
+
+    def enrich(record):
+        record.session_id = session.get()
+        return True
+
+    handler.addFilter(enrich)
+    target = logging.Logger("context-test", logging.INFO)
+    target.handlers = [handler]
+    writer = BackgroundLogWriter()
+    writer.wrap(target)
+    token = session.set("session-one")
+    try:
+        target.info("first")
+        session.set("session-two")
+        target.info("second")
+    finally:
+        session.reset(token)
+        assert writer.stop()
+    assert output.getvalue() == "session-one first\nsession-two second\n"
+
+
 def test_blocked_sink_has_bounded_queue_and_shutdown():
     started = threading.Event()
     release = threading.Event()

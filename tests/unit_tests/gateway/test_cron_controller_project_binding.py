@@ -240,14 +240,13 @@ async def test_create_job_rejects_unresolved_project_dir() -> None:
 
 @pytest.mark.asyncio
 async def test_create_job_without_marker_allows_default_project_and_no_fields() -> None:
-    """无项目字段的系统路径（proactive.tick）与默认项目 ID 不需要 marker。"""
+    """无项目字段的请求（系统路径，如 proactive 自动注册）与默认项目 ID 不需要 marker。"""
     cc = _make_controller()
     job = await cc.create_job(
         {
-            "name": "proactive",
+            "name": "system-path",
             "cron_expr": "0 9 * * *",
             "targets": "web",
-            "mode": "proactive.tick",
         }
     )
     assert job["project_id"] == ""

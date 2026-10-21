@@ -120,7 +120,8 @@ def test_reasoning_resource_detail_recovers_legacy_yaml_booleans(catalog_state, 
     assert catalog_state["models"]["defaults"][0]["model_config_obj"]["reasoning_level"] is level
 
 
-@pytest.mark.parametrize("runtime", ["server", "gateway.embedded"])
+# A5：gateway.embedded 副本已删除（gateway 生产统一用 common.model_routing_registry）。
+@pytest.mark.parametrize("runtime", ["server"])
 @pytest.mark.parametrize("level, mode", [("on", "enabled"), ("off", "disabled"), (True, "enabled"), (False, "disabled")])
 def test_stable_selection_translates_reasoning_before_core_compilation(catalog_state, runtime, level, mode):
     from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
@@ -334,7 +335,8 @@ def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime)
 
 
 def test_gateway_resolver_rejects_all_disabled_routes(catalog_state):
-    from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver as GatewayResolver
+    # A5：gateway 生产（cron/controller）统一用 common 版 resolver
+    from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver as GatewayResolver
 
     catalog_state["models"]["groups"] = [{
         "model_group_id": "mgp_a",
