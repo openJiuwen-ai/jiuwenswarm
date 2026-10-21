@@ -1,5 +1,7 @@
 """Web 组合模式解析与 TUI 历史模式直通的回归测试。"""
 
+from functools import partial
+
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -27,7 +29,9 @@ from jiuwenswarm.server.agent_ws_server import (
 
 
 def _resolve(params):
-    return resolve_request_mode(params, resolve_agent_request_mode)
+    # 模式矩阵验证协议归一，不依赖开发机的 flash.enabled 部署配置。
+    legacy = partial(resolve_agent_request_mode, allow_flash_default=False)
+    return resolve_request_mode(params, legacy)
 
 
 def test_request_uses_current_merged_agent_mode_semantics():
@@ -413,6 +417,11 @@ def test_single_agent_mode_rejects_legacy_names(mode):
 )
 def test_single_agent_mode_rejects_new_team_canonical_names(mode):
     assert not is_single_agent_mode(mode)
+
+
+def test_explicit_flash_is_single_agent_mode():
+    assert is_single_agent_mode("flash")
+    assert not is_single_agent_mode("flash.fast")
 
 
 def test_base_mode_without_plan_is_identity_for_normal_modes():

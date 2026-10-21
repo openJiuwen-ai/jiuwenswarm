@@ -75,6 +75,7 @@ async def _wait_until(predicate, *, attempts: int = 100) -> None:
 
 @pytest.fixture
 def isolated_pool(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("JIUWENSWARM_FLASH_ENABLED", raising=False)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_warm_pool.get_agent_sessions_dir",
         lambda: tmp_path,
@@ -512,3 +513,35 @@ def test_new_boot_cleans_only_metadata_less_marked_workspace(
 
     assert not (tmp_path / stale_id).exists()
     assert (tmp_path / persisted_id / "metadata.json").is_file()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("env_value,config_enabled,expected", [
+    ("true", False, "flash"), ("false", True, "agent"), (None, True, "flash"),
+])
+@pytest.mark.parametrize("snapshot", ["raw", "resolved"])
+async def test_prewarm_uses_same_flash_environment_as_requests(
+    isolated_pool, monkeypatch, tmp_path, env_value, config_enabled, expected, snapshot,
+):
+    from jiuwenswarm.common import config as config_module
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(f"flash:\n  enabled: {str(config_enabled).lower()}\n", encoding="utf-8")
+    monkeypatch.setattr(config_module, "get_config_file", lambda: config_file)
+    config_module.clear_config_cache()
+    monkeypatch.delenv("JIUWENSWARM_FLASH_ENABLED", raising=False)
+    if env_value is not None:
+        monkeypatch.setenv("JIUWENSWARM_FLASH_ENABLED", env_value)
+    agent = _FakeRootAgent()
+    pool = isolated_pool(agent)
+    try:
+        config = config_module.get_config_raw() if snapshot == "raw" else config_module.get_config()
+        await pool.sync(["web"], config=config)
+        await _wait_until(lambda: len(pool._slots) == 1)
+        assert pool._manager.get_agent_calls[0]["mode"] == expected
+        assert agent.prepare_calls[0]["adapter_mode"] == expected
+        desired = pool._desired_keys(config=config)
+        assert all(key.adapter_mode == "code" for key in desired if key.work_mode == "code")
+    finally:
+        await pool.close()
+        config_module.clear_config_cache()

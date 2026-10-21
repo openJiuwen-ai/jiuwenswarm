@@ -160,6 +160,13 @@ def _has_persistable_assistant_payload(
         return True
     if str(payload.get("reasoning_content") or "").strip():
         return True
+    if et == "context.usage":
+        # Blank assistant event whose structured context-usage.v1 snapshot must
+        # survive history restore. Reject legacy three-field frames that lack
+        # canonical context_window / parts (they cannot rebuild the indicator).
+        return isinstance(payload.get("context_window"), dict) and isinstance(
+            payload.get("parts"), dict
+        )
     if et == "chat.file" and payload.get("files"):
         return True
     if et == "chat.tool_call" and (payload.get("tool_call") or payload.get("tool_calls")):
