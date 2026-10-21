@@ -49,6 +49,15 @@ class WorkerRuntime:
 
     async def shutdown(self) -> None:
         """Drain resources within the enclosing Worker service's deadline."""
+        try:
+            await self._shutdown_owned_resources()
+        finally:
+            registry_owner = getattr(self.server, "worker_callback_registry_owner", None)
+            if registry_owner is not None:
+                await registry_owner.aclose()
+
+    async def _shutdown_owned_resources(self) -> None:
+        """Keep registry dispatch available until SDK teardown has settled."""
         self.stop_event.set()
         if self.profile_prewarmer is not None:
             await self.profile_prewarmer.close()
