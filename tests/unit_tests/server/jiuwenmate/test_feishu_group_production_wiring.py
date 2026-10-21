@@ -356,20 +356,22 @@ def test_feishu_event_payload_round_trip_preserves_normalized_message_and_bindin
     assert restored.receiver_bot_mentioned is True
 
 
-def test_feishu_access_snapshot_identifies_sender_without_workspace_scopes():
-    access = resolve_feishu_access(None, _event())
+@pytest.mark.parametrize(
+    ("chat_type", "expected_scope"),
+    [
+        ("group", frozenset({"chat", "workspace_read"})),
+        ("p2p", frozenset({"chat", "workspace_read", "workspace_knowledge_read"})),
+    ],
+)
+def test_feishu_access_snapshot_grants_workspace_read_without_write(chat_type, expected_scope):
+    access = resolve_feishu_access(None, _event(chat_type=chat_type, reply_to=None))
 
     assert access.principal_ref == "feishu:user:ou_alice"
-    assert access.startup_scope == frozenset({"chat"})
-    assert access.source_scope == frozenset({"chat"})
+    assert access.startup_scope == expected_scope
+    assert access.source_scope == expected_scope
+    assert "workspace_write" not in access.startup_scope
+    assert "workspace_write" not in access.source_scope
     assert access.policy_revision
-
-
-def test_feishu_direct_message_gets_only_the_selected_knowledge_read_scope():
-    access = resolve_feishu_access(None, _event(chat_type="p2p", reply_to=None))
-
-    assert access.startup_scope == frozenset({"chat", "workspace_knowledge_read"})
-    assert access.source_scope == frozenset({"chat", "workspace_knowledge_read"})
 
 
 @pytest.mark.asyncio

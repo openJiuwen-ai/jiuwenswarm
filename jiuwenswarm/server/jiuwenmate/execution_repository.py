@@ -5,8 +5,8 @@ key)`` tuple, each part in its own column, so two conversations never share a
 Session because of joined or truncated strings. Requests are written before
 dispatch and survive restarts; a supplementary message is always a new Request.
 Events are stored once per ``event_id``; a candidate output keeps the ``output_id``
-of the event that first proposed it, and a file candidate's file is retained by
-``OutputFileStore`` before the candidate is stored.
+of the event that first proposed it, and a file candidate is verified in the
+Agent's shared ``output/`` directory before the candidate is stored.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import (
     SessionRecord,
 )
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
-from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, output_file_key
+from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, shared_output_file_name, workspace_output_key
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType, RequestInput
@@ -667,8 +667,9 @@ class ExecutionRepository(SQLiteStore):
     ) -> list[dict[str, object]]:
         """Atomically claim Feishu deliveries and return their stored route and payload.
 
-        A file delivery also carries the key of its retained copy and the ``file_key`` of
-        an earlier upload, so a retry sends the uploaded file again instead of uploading anew.
+        A file delivery also carries a logical key for the Agent's shared ``output/`` file
+        and the ``file_key`` of an earlier upload, so a retry sends the uploaded file again
+        instead of uploading anew.
         """
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError("limit must be a positive integer")
@@ -740,11 +741,16 @@ class ExecutionRepository(SQLiteStore):
                 }
                 if share_mode in FILE_SHARE_MODES:
                     try:
+                        file_path = payload["file_path"]
+                        file_ref = payload["file_ref"]
+                        file_size = payload.get("file_size")
                         job["file"] = {
-                            "key": output_file_key(namespace_id, payload["file_ref"], payload["file_path"]),
-                            "name": payload["file_path"].rsplit("/", 1)[-1],
-                            "size": payload.get("file_size"),
-                            "file_ref": payload["file_ref"],
+                            "key": workspace_output_key(
+                                namespace_id, record.agent_id, file_path, file_ref, file_size
+                            ),
+                            "name": shared_output_file_name(file_path, file_ref, file_size),
+                            "size": file_size,
+                            "file_ref": file_ref,
                             "file_key": row["file_key"],
                         }
                     except PersistentAgentError:
