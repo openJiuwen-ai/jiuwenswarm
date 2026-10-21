@@ -320,13 +320,18 @@ def vision_model_config_params(config: dict[str, Any]) -> dict[str, Any]:
                 exc,
             )
             default_headers = None
-    return {
+    params: dict[str, Any] = {
         "api_key": api_key,
         "base_url": base_url,
         "model": model_name,
         "max_retries": _parse_int(_tip_getenv("VISION_MAX_RETRIES"), 3),
-        "default_headers": default_headers,
     }
+    # 仅在有值时才传 default_headers：VisionModelConfig 的 dataclass default 是 None，
+    # 不传等价于传 None；但无条件传该键在依赖版本尚未包含该字段（联动合并顺序
+    # 失控）时会 TypeError——与 interface_deep._build_vision_model_config 的兜底对称。
+    if default_headers is not None:
+        params["default_headers"] = default_headers
+    return params
 
 
 def audio_dedicated_configured(config: dict[str, Any]) -> bool:
