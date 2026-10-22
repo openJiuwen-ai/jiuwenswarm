@@ -3,7 +3,12 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive, message_reference, time_micros
+from jiuwenswarm.server.jiuwenmate.conversation_archive import (
+    ConversationArchive,
+    _retain_latest,
+    message_reference,
+    time_micros,
+)
 from jiuwenswarm.server.jiuwenmate.search_contracts import GroupMessageSearchHit
 from openjiuwen.harness.persistent_agent import GroupMessage, GroupMessageQuery
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import utc_time
@@ -30,6 +35,7 @@ class ConversationSearch:
     def snapshot_group(self, namespace_id: str, group_id: str) -> GroupSearchSnapshot:
         """Capture the archive watermark and content state without creating a missing archive."""
         with self._archive.connection(namespace_id, group_id) as conn:
+            _retain_latest(conn)
             info = conn.execute("SELECT content_revision, gap FROM archive_info WHERE singleton=1").fetchone()
             if info is None:
                 raise PersistentAgentError("group archive unavailable", code="ARCHIVE_UNAVAILABLE")

@@ -61,7 +61,7 @@
   "jiuwenmate": {
     "title": "九问员工",
     "mode": {
-      "enter": "九问员工",
+      "enter": "团队版",
       "exit": "切换为个人版"
     },
     "nav": {
@@ -362,6 +362,7 @@
       "noArtifacts": "暂无产物",
       "noChannels": "暂无频道",
       "noChannelsHint": "配置 IM 渠道后，可在这里查看员工在群聊中的工作记录",
+      "loadingChannelMessages": "正在加载群记录…",
       "noChannelMessages": "这个群还没有可查看的公共记录",
       "messageRecalled": "这条消息已撤回",
       "attachment": "附件（{{count}}）",

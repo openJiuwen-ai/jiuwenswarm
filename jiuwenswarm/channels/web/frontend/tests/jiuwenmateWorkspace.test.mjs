@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  channelRecordView,
   closeChannelTrace,
   createWorkspaceState,
   mergeWorkspaceConversations,
@@ -28,6 +29,15 @@ const rows = [
   { id: 't3-tool', turn: 3, role: 'tool', content: 'paid_search（"query"）' },
   { id: 't3-answer', turn: 3, role: 'assistant', content: '杭州天气' },
 ];
+
+test('an open group stays loading until its own records arrive', () => {
+  assert.equal(channelRecordView('mate_a:grp_6', null, 0), 'loading');
+  assert.equal(channelRecordView('mate_a:grp_6', 'mate_a:grp_5', 4), 'loading');
+  assert.equal(channelRecordView('mate_b:grp_6', 'mate_a:grp_6', 4), 'loading');
+  assert.equal(channelRecordView('mate_a:grp_6', 'mate_a:grp_6', 0), 'empty');
+  assert.equal(channelRecordView('mate_a:grp_6', 'mate_a:grp_6', 4), 'records');
+  assert.equal(channelRecordView(null, null, 0), 'empty');
+});
 
 test('keeps the selected colleague conversations visible while its list refreshes', () => {
   const selected = {

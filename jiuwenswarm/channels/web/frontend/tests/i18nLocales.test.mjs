@@ -205,6 +205,13 @@ test('代码里静态引用的本功能文案都存在', () => {
   );
 });
 
+test('个人版入口显示为团队版', () => {
+  const zh = JSON.parse(locales.zh);
+  const en = JSON.parse(locales.en);
+  assert.equal(zh.jiuwenmate.mode.enter, '团队版');
+  assert.equal(en.jiuwenmate.mode.enter, 'Team edition');
+});
+
 test('九问员工空状态使用设计稿文案', () => {
   const zh = JSON.parse(locales.zh);
   const en = JSON.parse(locales.en);

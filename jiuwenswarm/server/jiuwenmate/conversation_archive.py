@@ -18,6 +18,8 @@ from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_i
 from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
 from openjiuwen.harness.persistent_agent import GroupMessage
 
+# The Swarm group record keeps this many newest messages. Older rows are deleted.
+_RETAINED_MESSAGES = 100
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS archive_info (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1), namespace_id TEXT NOT NULL, group_id TEXT NOT NULL,
@@ -149,6 +151,7 @@ class ConversationArchive:
                         raise PersistentAgentError(
                             "message content conflicts without a newer revision", code="CONFLICT",
                         )
+            _retain_latest(conn)
         return message_reference(group_id, message.message_id)
 
     def recall(self, namespace_id: str, group_id: str, message_id: str, *, source_ref: str,
@@ -187,6 +190,7 @@ class ConversationArchive:
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
             raise PersistentAgentError("invalid group page limit")
         with self.connection(namespace_id, group_id) as conn:
+            _retain_latest(conn)
             info = conn.execute("SELECT * FROM archive_info").fetchone()
             secret = bytes(conn.execute("SELECT secret FROM archive_secrets WHERE singleton=1").fetchone()[0])
             scope = hashlib.sha256(json.dumps([namespace_id, group_id, reader_id,
@@ -232,6 +236,17 @@ class ConversationArchive:
             return ArchivePage("incomplete" if partial else "found" if page else "empty",
                                tuple(GroupMessage.model_validate_json(row["payload"]) for row in page),
                                next_cursor, scanned, "known collection gap" if partial else None)
+
+
+def _retain_latest(conn) -> None:
+    """Drop every message older than the newest retained page. Recall tombstones stay."""
+    deleted = conn.execute(
+        "DELETE FROM messages WHERE ingest_seq NOT IN "
+        "(SELECT ingest_seq FROM messages ORDER BY ingest_seq DESC LIMIT ?)",
+        (_RETAINED_MESSAGES,),
+    ).rowcount
+    if deleted:
+        conn.execute("UPDATE archive_info SET content_revision=content_revision+1")
 
 
 def message_reference(group_id: str, message_id: str) -> str:

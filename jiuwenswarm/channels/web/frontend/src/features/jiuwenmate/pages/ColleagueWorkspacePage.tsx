@@ -64,6 +64,7 @@ function channelGroups(channels: readonly JiuwenMateChannel[]): { platform: stri
 import { useConversations } from '../useConversations';
 import { newId, usePrivateChat, type JiuwenMateChatApi } from '../usePrivateChat';
 import {
+  channelRecordView,
   closeChannelTrace,
   clearManagementChannel,
   createWorkspaceState,
@@ -195,6 +196,9 @@ export function ColleagueWorkspacePage({
   const [traceRows, setTraceRows] = useState<readonly JiuwenMateTraceRow[]>([]);
   const [traceStartedAt, setTraceStartedAt] = useState('');
   const [channelNotice, setChannelNotice] = useState('');
+  const [settledChannelKey, setSettledChannelKey] = useState<string | null>(null);
+  const channelKey = agentId && channelId ? `${agentId}:${channelId}` : null;
+  const channelRecords = channelRecordView(channelKey, settledChannelKey, channelMessages.length);
 
   useEffect(() => {
     let cancelled = false;
@@ -240,21 +244,40 @@ export function ColleagueWorkspacePage({
   useEffect(() => {
     if (!channelApi || !agentId || !channelId) {
       setChannelMessages([]);
+      setSettledChannelKey(null);
       setTraceRows([]);
       setTraceStartedAt('');
       return undefined;
     }
     let cancelled = false;
     const groupId = channelId;
-    Promise.all([channelApi.channelMessages(agentId, groupId), channelApi.channelTrace(agentId, groupId)])
-      .then(([messages, trace]) => {
+    const requestKey = `${agentId}:${groupId}`;
+    setChannelNotice('');
+    setChannelMessages([]);
+    channelApi
+      .channelMessages(agentId, groupId)
+      .then((messages) => {
         if (cancelled) return;
         setChannelMessages(messages);
+        setSettledChannelKey(requestKey);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setChannelMessages([]);
+        setSettledChannelKey(requestKey);
+        setChannelNotice(errorMessage(error) || 'failed');
+      });
+    channelApi
+      .channelTrace(agentId, groupId)
+      .then((trace) => {
+        if (cancelled) return;
         setTraceRows(trace.rows);
         setTraceStartedAt(trace.startedAt);
       })
-      .catch((error: unknown) => {
-        if (!cancelled) setChannelNotice(errorMessage(error) || 'failed');
+      .catch(() => {
+        if (cancelled) return;
+        setTraceRows([]);
+        setTraceStartedAt('');
       });
     return () => {
       cancelled = true;
@@ -727,12 +750,18 @@ export function ColleagueWorkspacePage({
           onBack={() => setState((current) => closeChannelTrace(current))}
         />
       ) : (
-        <div className="jiuwenmate-channel-view__messages">
+        <div className="jiuwenmate-channel-view__messages" aria-busy={channelRecords === 'loading'}>
           {channelNotice ? <p className="jiuwenmate-records__empty">{channelNotice}</p> : null}
-          {!channelNotice && channelMessages.length === 0 ? (
+          {!channelNotice && channelRecords === 'loading' ? (
+            <p className="jiuwenmate-records__empty" data-testid="jiuwenmate-channel-messages-loading">
+              {t('jiuwenmate.workspace.loadingChannelMessages')}
+            </p>
+          ) : null}
+          {!channelNotice && channelRecords === 'empty' ? (
             <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noChannelMessages')}</p>
           ) : null}
-          {channelMessages.map((message) => (
+          {channelRecords === 'records'
+            ? channelMessages.map((message) => (
             <article key={message.id} data-testid="jiuwenmate-channel-message" data-variant={message.id} data-own={message.fromColleague ? 'true' : 'false'}>
               <header>
                 {message.fromColleague ? (
@@ -763,7 +792,8 @@ export function ColleagueWorkspacePage({
                 </div>
               ) : null}
             </article>
-          ))}
+          ))
+            : null}
         </div>
       )}
     </section>

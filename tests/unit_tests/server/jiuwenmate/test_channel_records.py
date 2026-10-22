@@ -144,6 +144,38 @@ def test_trace_rows_skip_events_without_text():
     assert rows[0]["role"] == "user" and rows[0]["content"] == "整理进展"
 
 
+class _TraceEvent:
+    def __init__(self, kind: str, seq: int, **payload: object) -> None:
+        self.event_type = kind
+        self.event_id = f"evt-{seq}"
+        self.occurred_at = NOW + timedelta(milliseconds=seq)
+        self.payload = type("Payload", (), payload)()
+
+
+def test_a_streamed_reply_is_one_trace_row_not_one_character_per_row():
+    fragments = [str(index % 10) for index in range(250)]
+    events = [_TraceEvent("reply.delta", index, text=fragment) for index, fragment in enumerate(fragments, start=1)]
+    events.extend([
+        _TraceEvent("model.completed", 251, model_call_id="mc-1"),
+        _TraceEvent("output.proposed", 252, text="".join(fragments)),
+        _TraceEvent("output.proposed", 253, text="附件说明"),
+    ])
+    tool_turn = (
+        _TraceEvent("reply.delta", 1, text="先"),
+        _TraceEvent("reply.delta", 2, text="查"),
+        _TraceEvent("tool.intent", 3, tool_name="read_file", args_summary="笔记"),
+        _TraceEvent("reply.delta", 4, text="查完"),
+        _TraceEvent("reply.delta", 5, text="了"),
+        _TraceEvent("output.proposed", 6, text="查完了"),
+    )
+
+    streamed = [row["content"] for row in trace_rows([("问题", tuple(events))])]
+    with_tool = [row["content"] for row in trace_rows([("问题", tool_turn)])]
+
+    assert streamed == ["问题", "".join(fragments), "mc-1", "附件说明"]
+    assert with_tool == ["问题", "先查", "read_file 笔记", "查完了"]
+
+
 def test_the_same_display_name_is_listed_once_per_platform(tmp_path):
     records, groups, archive, _sessions = _records(tmp_path)
     older = groups.resolve(NS, "feishu", "oc_old", now=NOW)

@@ -17,7 +17,7 @@ from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatReposit
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 
 _TRACE_LIMIT = 200
-_MESSAGE_LIMIT = 50
+_MESSAGE_LIMIT = 100
 _SKIPPED_EVENTS = frozenset({"participation.decided", "window.switched"})
 
 
@@ -52,8 +52,6 @@ def _event_view(event) -> tuple[str, str, str, int, int] | None:
     if kind in _SKIPPED_EVENTS:
         return None
     payload = event.payload
-    if kind == "reply.delta":
-        return "assistant", "model", str(getattr(payload, "text", "") or ""), 0, 0
     if kind == "progress.updated":
         return "system", "model", str(getattr(payload, "text", "") or ""), 0, 0
     if kind == "output.proposed":
@@ -79,27 +77,71 @@ def _event_view(event) -> tuple[str, str, str, int, int] | None:
     return None
 
 
+def _finish_reply(stamped: list[tuple[datetime, dict[str, object]]], open_reply: dict[str, object] | None) -> str | None:
+    """Close one streamed reply. An empty fragment run is dropped."""
+    if open_reply is None:
+        return None
+    open_reply["content"] = str(open_reply["content"]).strip()
+    if open_reply["content"]:
+        return str(open_reply["content"])
+    stamped.pop()
+    return None
+
+
 def trace_rows(requests: list[tuple[str, tuple]], *, origin: datetime | None = None) -> list[dict[str, object]]:
-    """Fold request text and saved events into the trace rows the page already renders."""
+    """Fold request text and saved events into the trace rows the page already renders.
+
+    A model reply is stored as many ``reply.delta`` fragments, often one or two
+    characters each. One model call becomes one assistant row. ``output.proposed``
+    is omitted when its text is that same reply; a different candidate stays.
+    """
     stamped: list[tuple[datetime, dict[str, object]]] = []
+    stopped = False
     for turn, (text, events) in enumerate(requests, start=1):
         if text.strip():
             moment = events[0].occurred_at if events else origin or _utc_now()
             stamped.append((moment, _row(f"request-{turn}", turn, "user", "input", text.strip(), 0, 0)))
+        open_reply: dict[str, object] | None = None
+        last_reply: str | None = None
         for event in events:
+            kind = _event_type(event)
+            if kind == "reply.delta":
+                fragment = str(getattr(event.payload, "text", "") or "")
+                if not fragment:
+                    continue
+                if open_reply is None:
+                    if len(stamped) >= _TRACE_LIMIT:
+                        stopped = True
+                        break
+                    row = _row(event.event_id, turn, "assistant", "model", "", 0, 0)
+                    row["content"] = fragment
+                    stamped.append((event.occurred_at, row))
+                    open_reply = row
+                else:
+                    open_reply["content"] = str(open_reply["content"]) + fragment
+                continue
+            closed = _finish_reply(stamped, open_reply)
+            if closed is not None:
+                last_reply = closed
+            open_reply = None
             viewed = _event_view(event)
             if viewed is None:
                 continue
             role, lane, content, incoming, outgoing = viewed
+            file_path = str(getattr(event.payload, "file_path", "") or "")
+            if kind == "output.proposed" and not file_path and content.strip() == (last_reply or ""):
+                continue
             if not content.strip() and incoming == 0 and outgoing == 0:
                 continue
+            if len(stamped) >= _TRACE_LIMIT:
+                stopped = True
+                break
             stamped.append((
                 event.occurred_at,
                 _row(event.event_id, turn, role, lane, content.strip(), incoming, outgoing),
             ))
-            if len(stamped) >= _TRACE_LIMIT:
-                break
-        if len(stamped) >= _TRACE_LIMIT:
+        _finish_reply(stamped, open_reply)
+        if stopped or len(stamped) >= _TRACE_LIMIT:
             break
     if not stamped:
         return []

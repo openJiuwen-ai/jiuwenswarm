@@ -61,7 +61,7 @@
   "jiuwenmate": {
     "title": "JiuwenMate",
     "mode": {
-      "enter": "JiuwenMate",
+      "enter": "Team edition",
       "exit": "Switch to personal edition"
     },
     "nav": {
@@ -362,6 +362,7 @@
       "noArtifacts": "No artifacts",
       "noChannels": "No channels",
       "noChannelsHint": "After an IM channel is configured, the employee's group chat records appear here",
+      "loadingChannelMessages": "Loading group record…",
       "noChannelMessages": "This group has no public record to show",
       "messageRecalled": "This message was recalled",
       "attachment": "Attachments ({{count}})",

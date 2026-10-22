@@ -54,6 +54,15 @@ def test_same_message_concurrent_receivers_and_restart_share_one_record(records)
     assert [item.message_id for item in page.messages] == ["m1"]
 
 
+def test_a_group_discards_messages_older_than_the_latest_hundred(records):
+    for number in range(1, 106):
+        append(records, number)
+    page = records.archive.recent(
+        "local", records.group.group_chat_id, cursor=None, limit=200, visible_from=NOW,
+    )
+    assert [item.message_id for item in page.messages] == [f"m{number}" for number in range(6, 106)]
+
+
 def test_recall_before_message_and_redelivery_never_restore_body(records):
     records.archive.recall("local", records.group.group_chat_id, "m1", source_ref="recall:1", changed_at=NOW)
     append(records, 1, attachment_refs=("feishu:attachment:m1:file",))
