@@ -18,8 +18,8 @@ import { FreeModelsSettings } from './FreeModelsSettings';
 import { ModelDialog } from './ModelDialog';
 import { ModelGroupDialog } from './ModelGroupDialog';
 import { ModelGroupsSettings } from './ModelGroupsSettings';
-import { getVendorLabel } from './ModelProviderSelect';
-import { displayModelProtocol, parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
+import { parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
+import { formatModelMetadata, getModelDisplayName } from './modelPresentation';
 import {
   extractModelSelectionReferences,
   formatModelSelectionReferenceScopes,
@@ -489,25 +489,11 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
     }
   };
 
-  const getCardPresentation = (model: ModelEntry) => {
-    const customName = model.alias?.trim() || model.model_name;
-    const protocol = displayModelProtocol(model);
-    const protocolLabel = t(`settingsPanel.models.protocols.${protocol}`);
-    if (model.model_provider === 'OpenAIAccount') {
-      return {
-        customName,
-        metadata: [t('settingsPanel.models.openaiAccount'), protocolLabel, model.model_name].join(' · '),
-        logo: getModelLogoUrl(model),
-      };
-    }
-    const vendorKey = model.vendor_key?.trim();
-    const providerLabel = vendorKey ? getVendorLabel(vendorKey, t) : t('settingsPanel.models.customVendor');
-    return {
-      customName,
-      metadata: [providerLabel, protocolLabel, model.model_name].join(' · '),
-      logo: getModelLogoUrl(model),
-    };
-  };
+  const getCardPresentation = (model: ModelEntry) => ({
+    customName: getModelDisplayName(model),
+    metadata: formatModelMetadata(model, t),
+    logo: getModelLogoUrl(model),
+  });
 
   const renderModelCard = (model: ModelEntry, index: number) => {
     if (isRuntimeGrantedModel(model)) return null;
@@ -688,6 +674,7 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
       {groupDialog ? (
         <ModelGroupDialog
           models={models}
+          modelGroups={modelGroups}
           group={groupDialog.group}
           saving={saving}
           onClose={() => setGroupDialog(null)}
