@@ -1170,14 +1170,18 @@ class TeamManager:
         """Include Runner-owned cleanup after a cancel caller has timed out."""
         if self.has_pending_cancel(session_id):
             return True
-        team_name = team_name or self.get_active_team_name(session_id)
+        team_name = team_name or self._lookup_session_team_name(session_id)
         if not team_name:
             return False
         from openjiuwen.core.runner.runner import GLOBAL_RUNNER
 
         runtime_mgr = _runner_team_runtime_manager(GLOBAL_RUNNER)
         entry = await runtime_mgr.pool.get(team_name)
-        return entry is not None and entry.state is RuntimeState.STOPPING
+        return (
+            entry is not None
+            and entry.current_session_id == session_id
+            and entry.state is RuntimeState.STOPPING
+        )
 
     async def _ensure_runtime_not_stopping(self, session_id: str, team_name: str) -> None:
         if await self.is_runtime_stopping(session_id, team_name=team_name):
@@ -1730,9 +1734,9 @@ class TeamManager:
         return active.agent
 
     async def interact(self, session_id: str, user_input: Any) -> tuple[bool, str | None]:
-        if self.has_pending_cancel(session_id):
-            return False, "stopping"
         try:
+            if await self.is_runtime_stopping(session_id):
+                return False, "stopping"
             if not self.is_runtime_active(session_id):
                 restored = await self.wait_for_resumable_runtime(session_id)
                 if restored:
@@ -2722,6 +2726,7 @@ class TeamManager:
                 # 记录终态原因：stream task 被拆除后，follow-up waiter 靠它区分
                 # "被取消退出"与"正常完成"，不再假报 is_complete
                 # （_cancel_requested 在本函数内即被 pop，活不到 waiter 查询时刻）
+                previous_terminal_state = self.get_session_terminal_state(session_id)
                 self.record_session_terminal_state(session_id, "cancelled")
                 logger.info(
                     "[TeamManager] %s cancel team session runtime: session_id=%s",
@@ -2736,9 +2741,19 @@ class TeamManager:
                 # to avoid gate/teardown races and ensure pool removal
                 if team_name:
                     stop_t0 = time.perf_counter()
-                    runner_stopped = await self._stop_runner_team_runtime(
-                        session_id, team_name, "cancel"
-                    )
+                    try:
+                        runner_stopped = await self._stop_runner_team_runtime(
+                            session_id, team_name, "cancel"
+                        )
+                    except Exception:
+                        # Failed teardown must not leave a terminal marker on a live round.
+                        # A replacement round owns its own terminal state.
+                        if self._is_current_runtime_epoch(session_id, target_epoch):
+                            if previous_terminal_state is None:
+                                self.clear_session_terminal_state(session_id)
+                            else:
+                                self.record_session_terminal_state(session_id, previous_terminal_state)
+                        raise
                     logger.info(
                         "[TeamManager] lifecycle_timing cancel stop_runner duration_ms=%.0f",
                         (time.perf_counter() - stop_t0) * 1000,
@@ -2896,6 +2911,7 @@ class TeamManager:
             )
             # 记录终态原因：pause 同样会拆除当前流任务（interface 随后调
             # cancel_session_task），follow-up waiter 靠它如实上报"已暂停"而非假报完成
+            previous_terminal_state = self.get_session_terminal_state(session_id)
             self.record_session_terminal_state(session_id, "paused")
 
             team_name = self._resolve_session_team_name(session_id)
@@ -2936,9 +2952,18 @@ class TeamManager:
                             return False
                         team_name = self._resolve_session_team_name(session_id)
                         if team_name:
-                            await self._stop_runner_team_runtime(
-                                session_id, team_name, "pause aborted"
-                            )
+                            try:
+                                await self._stop_runner_team_runtime(
+                                    session_id, team_name, "pause aborted"
+                                )
+                            except Exception:
+                                # A failed preemption must retain the still-stopping runtime.
+                                if self._is_current_runtime_epoch(session_id, target_epoch):
+                                    if previous_terminal_state is None:
+                                        self.clear_session_terminal_state(session_id)
+                                    else:
+                                        self.record_session_terminal_state(session_id, previous_terminal_state)
+                                return False
                         await self._finalize_runtime_cleanup(session_id, "pause aborted")
                         return False
                     finally:

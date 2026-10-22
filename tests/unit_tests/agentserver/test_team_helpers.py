@@ -5419,6 +5419,7 @@ async def test_finish_round_if_settled_broadcasts_once_when_settled(monkeypatch)
         )
         async def get_team_snapshot(self):
             return {"members": [{"member_id": "leader", "status": "ready"}], "tasks": []}
+
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         _claimed = {}
         @staticmethod
@@ -5763,8 +5764,8 @@ async def test_followup_rejects_stopping_before_snapshot_or_waiter(monkeypatch, 
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("replace_before_close", [False, True])
-async def test_old_stream_close_cannot_complete_or_clear_replacement(monkeypatch, replace_before_close):
+@pytest.mark.parametrize("replacement_stage", ["close", "chunks", "first", "error"])
+async def test_old_stream_close_cannot_complete_or_clear_replacement(monkeypatch, replacement_stage):
     class Manager(_InactiveTeamRuntimeManagerMixin):
         owner = None
         cleared = []
@@ -5792,11 +5793,14 @@ async def test_old_stream_close_cannot_complete_or_clear_replacement(monkeypatch
             return self
 
         async def __anext__(self):
-            if not replace_before_close:
+            if replacement_stage == "close":
                 raise StopAsyncIteration
             self.chunks += 1
-            if self.chunks == 3:
+            replace_at = 3 if replacement_stage == "chunks" else 1
+            if self.chunks == replace_at:
                 manager.owner = replacement
+                if replacement_stage == "error":
+                    raise RuntimeError("old stream failed")
             return SimpleNamespace(
                 type="llm_reasoning", payload={"content": f"old-{self.chunks}"}, role="leader",
             )
@@ -5819,3 +5823,5 @@ async def test_old_stream_close_cannot_complete_or_clear_replacement(monkeypatch
     assert not manager.cleared
     assert not any(event.get("event_type") == "team.completed" for event in events)
     assert not any(event.get("content") == "old-2" for event in events)
+    errors = [event for event in events if event.get("event_type") == "chat.error"]
+    assert len(errors) == (1 if replacement_stage == "close" else 0)

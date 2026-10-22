@@ -3314,7 +3314,7 @@ async def _consume_stream_with_query(
         # Round over — no resends should outlive the stream loop.
         _cancel_ask_user_resends(pending_ask_user_resends)
         # If stream ended without any chunks, broadcast an error event
-        if received_chunks == 0:
+        if received_chunks == 0 and tm_.owns_stream_task(session_id, asyncio.current_task()):
             logger.warning(
                 "[TeamHelpers] stream ended with no output: channel_id=%s session_id=%s",
                 _resolve_channel_id(channel_id),
@@ -3354,6 +3354,8 @@ async def _consume_stream_with_query(
             exc,
             exc_info=True,
         )
+        if not tm_.owns_stream_task(session_id, asyncio.current_task()):
+            return
         _broadcast_event(
             channel_id,
             session_id,

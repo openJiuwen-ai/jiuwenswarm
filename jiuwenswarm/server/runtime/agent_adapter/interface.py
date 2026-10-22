@@ -2585,15 +2585,23 @@ class JiuWenSwarm:
         if intent in {"pause", "cancel"}:
             if intent == "pause":
                 paused = await team_manager.pause_session_runtime(session_id, reason=reason)
-                await self._session_manager.cancel_session_task(
-                    session_id,
-                    reason,
-                    wait_timeout=5.0,
-                )
+                if paused:
+                    await self._session_manager.cancel_session_task(
+                        session_id,
+                        reason,
+                        wait_timeout=5.0,
+                    )
                 message = "团队已暂停" if paused else "当前没有可暂停的团队任务"
             else:
                 # Use cancel_session_runtime to remove from Runner pool
-                cancelled = await team_manager.cancel_session_runtime(session_id, reason=reason)
+                try:
+                    cancelled = await team_manager.cancel_session_runtime(session_id, reason=reason)
+                except Exception:
+                    logger.exception("[JiuWenSwarm] team cancel failed: session_id=%s", session_id)
+                    return self._build_interrupt_result_response(
+                        request, intent=intent, success=False,
+                        message="团队停止未完成，请稍后重试",
+                    )
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,

@@ -637,8 +637,8 @@ class TeamMonitorHandler(BaseMonitorHandler):
         """monitor 不在时直查 ``team.db`` 取任务依赖边（team.tasks.dependencies RPC 用）。
 
         镜像 ``get_team_snapshot_from_db`` 的 contextvar 模式：绑定 ``session_id`` 上下文
-        后直查 per-session 动态表 ``team_task_dependency_<hash>``。``create_cur_session_tables``
-        已映射 dep 表（agent-core engine.py:753/759），故历史会话的依赖行可读到。
+        后通过 DAO 的 session model 直查已有动态表 ``team_task_dependency_<hash>``，
+        不触发绑定阶段的建表操作。
 
         Args:
             session_id: 会话 id，用于解析动态 task_dependency 表后缀。
