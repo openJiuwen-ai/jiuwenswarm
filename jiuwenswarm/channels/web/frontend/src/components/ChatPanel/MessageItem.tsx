@@ -1150,7 +1150,7 @@ function getSavedSkillTokens(): Set<string> {
   } catch { return new Set<string>(); }
 }
 
-function FileDownloadList({
+export function FileDownloadList({
   files,
   className,
   onPreview,

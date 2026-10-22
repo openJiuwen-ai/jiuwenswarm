@@ -1,4 +1,5 @@
 import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
+import { GroupChatWorkspace } from './features/groupChat/GroupChatWorkspace';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
@@ -810,11 +811,15 @@ function AppContent({
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
       setActiveNav('chat');
-    } else if (route.kind === 'design-project' && !isEnterprise()) {
-      let cancelled = false;
-      const nextSessionId = route.sessionId ?? NEW_CONVERSATION_ID;
-      sessionIdRef.current = nextSessionId;
-      setSessionId(nextSessionId);
+    } else if (route.kind === 'group-chat') {
+      sessionIdRef.current = NEW_CONVERSATION_ID;
+      setSessionId(NEW_CONVERSATION_ID);
+      setActiveNav('groupChat');
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
+    } else if (route.kind === 'design-project') {
+      sessionIdRef.current = NEW_CONVERSATION_ID;
+      setSessionId(NEW_CONVERSATION_ID);
       setActiveNav('chat');
       void useWorkspaceStore.getState().setWorkMode('design').then(() => {
         if (cancelled) return;
@@ -876,6 +881,14 @@ function AppContent({
   const sessions = useSessionStore((s) => s.sessions);
   const currentSession = useSessionStore((s) => s.currentSession);
   const routeSessionId = route.kind === 'chat-session' ? route.sessionId : null;
+  useEffect(() => {
+    if (!routeSessionId) return;
+    const session = currentSession?.session_id === routeSessionId
+      ? currentSession : sessions.find((item) => item.session_id === routeSessionId);
+    if (session?.type === 'group_chat') {
+      navigate({ kind: 'group-chat', groupId: routeSessionId }, { replace: true });
+    }
+  }, [currentSession, navigate, routeSessionId, sessions]);
   const projects = useWorkspaceStore((s) => s.projects);
   // A new conversation belongs to the selected project: its message is sent there and its cards come from there.
   const newConversationProjectId = useWorkspaceStore((s) => newConversationTopicProjectId(s.selectedProject));
@@ -4158,6 +4171,10 @@ function AppContent({
         return;
       }
       closeSidebarPeek();
+      if (target !== 'new' && target.type === 'group_chat') {
+        navigate({ kind: 'group-chat', groupId: target.session_id });
+        return;
+      }
       if (target === 'new') {
         enterNewConversation(mode, options, { clearPreviousSession: options?.clearPreviousSession });
         return;
@@ -4172,6 +4189,7 @@ function AppContent({
     [
       confirmLeaveSettings,
       closeSidebarPeek,
+      navigate,
       enterNewConversation,
       handleRestoreSession,
       isToolPanelAutoHideViewport,
@@ -4193,7 +4211,9 @@ function AppContent({
       setRsiOpenCreateNonce(0);
       if (nav !== 'settings') setRequestedSettingsModuleId(null);
       setActiveNav(nav);
+      if (nav === 'groupChat') navigate({ kind: 'group-chat' });
       if (nav === 'chat') {
+        if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
         if (isMobile) {
           setTeamAreaExpanded(false);
           setSingleAgentPanelExpanded(false);
@@ -4216,6 +4236,8 @@ function AppContent({
     [
       closeSidebarPeek,
       openSidebarPeek,
+      navigate,
+      route.kind,
       confirmLeaveSettings,
       isMobile,
       modelSetupGuideStep,
@@ -4733,7 +4755,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       ) : null}
 
       {/* Main Content */}
-      <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
+      <main className={`content ${activeNav === 'chat' || activeNav === 'groupChat' ? 'content--chat' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
         {configError && (
           <div className="card mb-4" data-testid="app-config-error">
             <div className="text-sm text-text-muted">
@@ -4750,7 +4772,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="chat-layout--peek-host" {...peekSurfaceProps}>
             {sidebarPeek === 'chat' ? (
               <ConversationSidebar
-                activeSessionId={activeNav === 'cron' || sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                activeSessionId={route.kind === 'group-chat'
+                  ? route.groupId ?? null
+                  : activeNav === 'cron' || sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
                 onSelectDesignSession={handleSelectDesignSession}
@@ -4779,7 +4803,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <>
             <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
               <ConversationSidebar
-                activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                activeSessionId={route.kind === 'group-chat'
+                  ? route.groupId ?? null
+                  : sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
                 onSelectDesignSession={handleSelectDesignSession}
@@ -4994,6 +5020,13 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               )}
             </div>
           </>
+        )}
+        {activeNav === 'groupChat' && (
+          <GroupChatWorkspace
+            key={route.kind === 'group-chat' ? route.groupId ?? 'groups' : 'groups'}
+            groupId={route.kind === 'group-chat' ? route.groupId : undefined}
+            onSelect={(groupId) => navigate({ kind: 'group-chat', groupId })}
+          />
         )}
         {activeNav === 'experiments' && (
           <div className="app-section">

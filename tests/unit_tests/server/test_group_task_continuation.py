@@ -511,3 +511,55 @@ async def test_read_group_removes_retired_task_tools(service):
     retired = {"swarm.group_adjust_task", "swarm.group_submit_task"}
     assert all(tool["type"] not in retired for tool in tools)
     assert any(tool["type"] == gc.RUN_TEAM for tool in tools)
+
+
+@pytest.mark.asyncio
+async def test_private_leader_question_waits_for_answer_without_ending_execution(private_run, service, monkeypatch):
+    import json
+    from openjiuwen.core.foundation.llm import ToolCall
+    from jiuwenswarm.agents.swarm.group_questions import GroupAskUserRail
+    from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+    run = private_run
+    asked = asyncio.Event()
+    resumed = asyncio.Event()
+
+    class Owner:
+        async def send_input(self, request):
+            assert request.inputs["query"].user_inputs["private-question"]["answers"] == {"Budget?": "Low"}
+            resumed.set()
+
+    owner = Owner()
+
+    async def stream(child, inputs, *, session):
+        context = SimpleNamespace(session_id=session, member_name="team_leader", language="en")
+        key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
+        current = gc._private_runs[key]
+        rail = GroupAskUserRail(context, {"group_id": run.context.session_id,
+                                         "member_name": "advisor", "execution_id": current["execution_id"]})
+        ctx = SimpleNamespace(agent=owner)
+        await rail.before_invoke(ctx)
+        call = ToolCall(id="private-question", type="function", name="ask_user", arguments=json.dumps({
+            "questions": [{"question": "Budget?", "options": [{"label": "Low"}, {"label": "High"}]}],
+        }))
+        await rail.resolve_interrupt(ctx, call, None)
+        yield SimpleNamespace(payload={"event_type": "team.idle"})
+        asked.set()
+        await resumed.wait()
+        await submit_private(child, task=True)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    accepted = await run.proxy.invoke({"action": "start", "run_id": "question", "content": "Plan a trip"})
+    await asyncio.wait_for(asked.wait(), 2)
+    pending = service.get(run.context.session_id, user_id="owner", channel_id="web")["pending_questions"]
+    assert len(pending) == 1
+    record = run.store.get(accepted.data["execution_id"])
+    assert record["status"] == "running" and record["presentation"] == "message"
+    await GroupQuestions(run.context.session_id).answer(
+        pending[0]["request_id"], [{"question": "Budget?", "selected_options": ["Low"]}],
+    )
+    result = await wait_worker(run, accepted)
+    assert result["status"] == "completed" and result["presentation"] == "card"
+    assert GroupQuestions(run.context.session_id).pending() == []
+    run.backend.append_group_message.assert_awaited_once()
