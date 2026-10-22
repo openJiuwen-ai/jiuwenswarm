@@ -4806,13 +4806,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
-        jobs = await cc.list_jobs()
         # 按 web 连接 user_id 过滤:只返回该用户创建的定时任务(隔离)。
-        # user_id 为空(连接未带)时维持原行为(返回全部);agent 内部创建的 cron
-        # (user_id 空串)在带 user_id 的连接下被过滤掉(对人类用户不可见)。
+        # 过滤在 controller 内进行,先于按属主路由的准入闸门,避免为其他
+        # 用户的沙箱冷启动/超时买单。user_id 为空(连接未带)时维持原行为
+        # (返回全部);agent 内部创建的 cron(user_id 空串)在带 user_id 的
+        # 连接下被过滤掉(对人类用户不可见)。
         uid_str = str(user_id or "").strip()
-        if uid_str:
-            jobs = [j for j in jobs if str(j.get("user_id") or "").strip() == uid_str]
+        jobs = await cc.list_jobs(user_id=uid_str or None)
         # 可选按 project_id 过滤(支持 default/default_code 虚拟项目)
         if isinstance(params, dict):
             raw_pid = params.get("project_id")

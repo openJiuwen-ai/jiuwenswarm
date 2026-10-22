@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent_gateway.message_handler import message_handler as mh_module
-from agent_gateway.message_handler.message_handler import MessageHandler
+from jiuwenswarm.gateway.message_handler import message_handler as mh_module
+from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 
 
 class _CronController:
@@ -48,7 +48,7 @@ def _env(method: str) -> SimpleNamespace:
 
 def _route_to_agentos(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "agent_gateway.routing.e2a_proxy.is_agentos_routing_client",
+        "jiuwenswarm.gateway.routing.e2a_proxy.is_agentos_routing_client",
         lambda _client: True,
     )
 
