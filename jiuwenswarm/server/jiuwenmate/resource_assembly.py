@@ -250,8 +250,11 @@ def apply_feishu_skills(fields: dict[str, Any], office: Path, directories: tuple
         prompt += (
             "\n<!-- jm-feishu-cli -->\n## 飞书 CLI\n"
             f"当前同事已绑定飞书应用，可使用 lark-cli。配套技能位于 `{relative}/`。"
-            "先读取相关 SKILL.md，按说明创建飞书文档。认证由宿主提供，不要读取或修改。"
-            "不要使用个人版登录身份；创建回执与文档访问权限分别核实。\n<!-- /jm-feishu-cli -->"
+            "先读取 `lark-shared` 和相关业务 Skill 的 SKILL.md。飞书应用级操作默认使用 bot；"
+            "读取用户个人相关信息时，按 Skill 指引在当前同事独立的 CLI 配置中完成一次 `auth login`，并显式使用 `--as user`。"
+            "需要用户完成授权时，使用 Skill 指定的非阻塞登录方式，仅把验证链接发给用户并结束本轮；用户回来后再检查登录状态。"
+            "该用户登录态由此 Agent 的私有 CLI 配置保存，供该 Agent 的私聊和群聊共同使用；群内结果直接回复当前群，群成员均可见。"
+            "不要读取、输出或复制 Token、Secret 或认证文件；创建回执与文档访问权限分别核实。\n<!-- /jm-feishu-cli -->"
         )
     if roots:
         if skill_rail is None:

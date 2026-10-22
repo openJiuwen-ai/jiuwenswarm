@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -383,6 +384,101 @@ async def test_feishu_file_result_sends_caption_then_uploads_once_and_reports_fi
     assert file_call.args[1] == "file" and file_call.args[4] == "key-1"
     assert '"fk_new"' in file_call.args[2]
     channel._upload_file.assert_called_once()
+
+
+@pytest.mark.parametrize("source_message_id", ["om_source", None])
+async def test_feishu_qr_result_is_an_inline_image_with_caption(tmp_path, source_message_id):
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound"), MagicMock())
+    channel._api_client = MagicMock()
+    api = channel._api_client.im.v1
+    api.image.create.return_value = SimpleNamespace(
+        success=lambda: True, data=SimpleNamespace(image_key="img_v3_qr"),
+    )
+    api.file.create.return_value = SimpleNamespace(
+        success=lambda: True, data=SimpleNamespace(file_key="file_v3_qr"),
+    )
+    response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(message=SimpleNamespace(message_id="om_qr")))
+    api.message.reply.return_value = response
+    api.message.create.return_value = response
+    source = tmp_path / "qr_calendar_auth.PNG"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nqr-test")
+
+    result = await channel.send_persistent_result(
+        chat_id="oc_group", text="飞书日历授权二维码", source_message_id=source_message_id,
+        idempotency_key="qr-key", file_path=str(source),
+    )
+
+    assert result == {"outcome": "delivered", "external_message_id": "om_qr", "file_key": "img_v3_qr"}
+    send = api.message.reply if source_message_id else api.message.create
+    caption, image = [call.args[0] for call in send.call_args_list]
+    assert caption.request_body.msg_type == "interactive"
+    assert caption.request_body.uuid != "qr-key"
+    assert image.request_body.msg_type == "image"
+    assert json.loads(image.request_body.content) == {"image_key": "img_v3_qr"}
+    assert image.request_body.uuid == "qr-key"
+    if source_message_id:
+        assert image.message_id == source_message_id
+    else:
+        assert image.request_body.receive_id == "oc_group"
+    assert api.image.create.call_count == 1
+    api.file.create.assert_not_called()
+
+
+async def test_feishu_image_retry_reuses_key_without_workspace_file(tmp_path):
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound"), MagicMock())
+    channel._api_client = MagicMock()
+    api = channel._api_client.im.v1
+    api.image.create.return_value = SimpleNamespace(
+        success=lambda: True, data=SimpleNamespace(image_key="img_v3_qr"),
+    )
+    api.file.create.return_value = SimpleNamespace(
+        success=lambda: True, data=SimpleNamespace(file_key="file_v3_qr"),
+    )
+    api.message.create.side_effect = [
+        TimeoutError("send receipt lost"),
+        SimpleNamespace(success=lambda: True, data=SimpleNamespace(message=SimpleNamespace(message_id="om_qr"))),
+    ]
+    source = tmp_path / "qr.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nqr-test")
+    first = await channel.send_persistent_result(
+        chat_id="oc_group", text=None, source_message_id=None, idempotency_key="qr-key", file_path=str(source),
+    )
+    assert first["outcome"] == "unknown"
+
+    result = await channel.send_persistent_result(
+        chat_id="oc_group", text=None, source_message_id=None, idempotency_key="qr-key", file_key=first["file_key"],
+    )
+
+    assert result == {"outcome": "delivered", "external_message_id": "om_qr", "file_key": "img_v3_qr"}
+    assert api.image.create.call_count == 1
+    api.file.create.assert_not_called()
+    for call in api.message.create.call_args_list:
+        assert call.args[0].request_body.msg_type == "image"
+        assert call.args[0].request_body.uuid == "qr-key"
+        assert json.loads(call.args[0].request_body.content) == {"image_key": "img_v3_qr"}
+
+
+async def test_feishu_image_upload_failure_does_not_send_another_file(tmp_path):
+    channel = FeishuChannel(FeishuConfig(enabled=True, app_id="cli_bound"), MagicMock())
+    channel._api_client = MagicMock()
+    api = channel._api_client.im.v1
+    api.image.create.return_value = SimpleNamespace(success=lambda: False, code=999, msg="image rejected")
+    api.file.create.return_value = SimpleNamespace(
+        success=lambda: True, data=SimpleNamespace(file_key="file_v3_qr"),
+    )
+    api.message.create.return_value = SimpleNamespace(
+        success=lambda: True, data=SimpleNamespace(message=SimpleNamespace(message_id="om_wrong_file")),
+    )
+    source = tmp_path / "qr.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nqr-test")
+
+    result = await channel.send_persistent_result(
+        chat_id="oc_group", text=None, source_message_id=None, idempotency_key="qr-key", file_path=str(source),
+    )
+
+    assert result == {"outcome": "failed", "error_code": "FEISHU_UPLOAD_FAILED"}
+    api.file.create.assert_not_called()
+    api.message.create.assert_not_called()
 
 
 async def test_feishu_file_retry_reuses_the_uploaded_file_key(tmp_path):

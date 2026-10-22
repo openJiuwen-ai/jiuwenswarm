@@ -130,7 +130,7 @@ def test_bash_publication_includes_webpage_fetch():
     fields = module().with_bash_tool({})
     nested = fields["tools"][0]["params"]["tools"]
     assert nested == [{"type": "core.web_fetch"}]
-    upgraded = module().ensure_web_fetch({
+    upgraded = module().refresh_builtin_tools({
         "tools": [{"type": "jiuwenmate.bash", "params": {"tools": [{"type": "demo.plugin"}]}}],
         "system_prompt": "已有提示",
     })
@@ -139,7 +139,7 @@ def test_bash_publication_includes_webpage_fetch():
         {"type": "core.web_fetch"},
     ]
     assert "fetch_webpage" in upgraded["system_prompt"]
-    assert module().ensure_web_fetch(upgraded) == upgraded
+    assert module().refresh_builtin_tools(upgraded) == upgraded
 
 
 def test_duplicate_bash_tool_is_rejected():

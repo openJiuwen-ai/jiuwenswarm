@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +33,14 @@ BASH_PROMPT = (
     "文件工具使用工作空间相对路径；Bash 只使用本次执行指定的 Session 目录与 `JIUWENMATE_OUTPUT_DIR`。"
     "不要使用其他绝对路径、..、符号链接或脚本绕过原工具的权限拒绝和版本冲突。"
     "sessions/ 中只使用本次 Session 的草稿，不访问其他会话；普通文件操作优先使用文件工具。"
-    "不读取、显示或复制 Secret、Token 和认证配置；不全局安装依赖，不登录或切换飞书身份。"
-    "飞书业务命令显式使用 --as bot，不使用 --as user，不借用个人版用户认证。"
+    "不读取、显示或复制 Secret、Token 和认证配置；不全局安装依赖。飞书用户授权只按 Skill 为当前 Agent 的独立 CLI profile 完成，"
+    "不借用其他 Agent 或个人版登录态，也不切换到其他飞书用户。"
+    "飞书应用级操作默认使用 bot；读取个人日历等用户资源时，按 lark-shared 与 lark-calendar Skill 的说明，"
+    "在当前同事独立的 Lark CLI 配置中完成一次用户登录，并显式使用 --as user。"
+    "Agent 工具无法在同一轮等待用户授权：按 Skill 指引用非阻塞登录获取验证链接，只把链接交给用户；"
+    "用户完成授权并再次发消息后，再核验登录状态并继续，不要启动会被中断的长轮询。"
+    "同一同事的用户登录态在其私聊和群聊间共享；群内查询直接在当前群回复，群成员均可见，不另发确认卡片。"
+    "不要读取、显示或复制 Token、用户认证文件或 Secret。"
     "只能使用宿主为当前同事准备的飞书应用。命令超时或回执缺失表示结果未知，不自动重复创建文档。"
     "后台启动不表示完成；执行结束时后台命令会清理。文档创建成功与请求者获得访问权须分别核实。"
 )
@@ -59,23 +66,36 @@ def with_bash_tool(fields: dict[str, Any]) -> dict[str, Any]:
     return {**fields, "tools": [{"type": PROVIDER, "params": {"tools": nested}}]}
 
 
-def ensure_web_fetch(fields: dict[str, Any]) -> dict[str, Any]:
-    """Add webpage fetch to a publication that already carries the bash provider."""
+def refresh_builtin_tools(fields: dict[str, Any]) -> dict[str, Any]:
+    """Refresh host tools and command guidance without republishing user drafts."""
     tools = fields.get("tools")
     updated: list[Any] | Any = tools
     if isinstance(tools, list):
         updated = []
         for item in tools:
+            if isinstance(item, dict) and item.get("type") == "jiuwenmate.personal_calendar":
+                continue
             if not isinstance(item, dict) or item.get("type") != PROVIDER:
                 updated.append(item)
                 continue
             params = dict(item.get("params") or {})
-            nested = list(params.get("tools") or [])
+            nested = [child for child in (params.get("tools") or [])
+                      if not (isinstance(child, dict) and child.get("type") == "jiuwenmate.personal_calendar")]
             if not any(isinstance(child, dict) and child.get("type") == WEB_FETCH_PROVIDER for child in nested):
-                params["tools"] = [*nested, {"type": WEB_FETCH_PROVIDER}]
-                item = {**item, "params": params}
-            updated.append(item)
+                nested.append({"type": WEB_FETCH_PROVIDER})
+            params["tools"] = nested
+            updated.append({**item, "params": params})
     prompt = fields.get("system_prompt") or ""
+    if isinstance(updated, list) and any(isinstance(item, dict) and item.get("type") == PROVIDER for item in updated):
+        # Replace only the host-generated section; keep the persona and other sections.
+        prompt, replaced = re.subn(
+            r"(?ms)^## 命令使用约定（非技术隔离）\n.*?(?=^## |^<!-- jm-feishu-cli -->|\Z)",
+            lambda _: BASH_PROMPT.lstrip("\n") + "\n\n",
+            prompt,
+            count=1,
+        )
+        if not replaced:
+            prompt += BASH_PROMPT
     if WEB_FETCH_PROMPT not in prompt:
         prompt += WEB_FETCH_PROMPT
     return {**fields, "tools": updated, "system_prompt": prompt}

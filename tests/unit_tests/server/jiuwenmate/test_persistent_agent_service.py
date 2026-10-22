@@ -212,6 +212,7 @@ def test_custom_colleague_gets_its_own_core_template_and_first_version(tmp_path)
     assert spec.card.id == view.agent_id
     assert spec.system_prompt.startswith("你是研发同事。\n\n负责整理研发进展。" + WORKSPACE_PROMPT)
     assert spec.skills == ["report-writer"] and "已装配技能" in spec.system_prompt
+    assert "群聊必须先由提问者私聊确认" not in spec.system_prompt
     assert set(spec.enabled_features) == {
         "construction",
         "workspace_read",
