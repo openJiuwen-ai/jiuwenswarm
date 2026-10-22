@@ -973,6 +973,42 @@ async def test_persistent_text_shows_the_mentioned_display_name():
 
 
 @pytest.mark.asyncio
+async def test_persistent_post_keeps_the_at_node_name_in_the_body():
+    channel = _feishu_channel(agent_id="mate_study")
+    channel.config.bot_open_id = "ou_study"
+    received = []
+
+    async def handle(event):
+        received.append(event)
+        return InboundDisposition.HANDLED
+
+    channel.set_persistent_group_fanout_callback(handle)
+    raw = _raw_feishu_event(
+        message_type="post",
+        content=json.dumps(
+            {
+                "title": "",
+                "content": [
+                    [
+                        {"tag": "at", "user_id": "@_user_1", "user_name": "ai员工生活小助手"},
+                        {"tag": "text", "text": " 请完成一次客服工单运营分析"},
+                    ]
+                ],
+            }
+        ),
+        mention_ids=("ou_life",),
+    )
+    raw.event.message.mentions[0].key = "@_user_1"
+    raw.event.message.mentions[0].name = "ai员工生活小助手"
+
+    await channel._on_message(raw)
+
+    assert received[0].text == "@ai员工生活小助手 请完成一次客服工单运营分析"
+    assert received[0].mention_ids == ("ou_life",)
+    assert received[0].receiver_bot_mentioned is False
+
+
+@pytest.mark.asyncio
 async def test_persistent_text_normalizes_an_all_mention_without_a_mention_object():
     channel = _feishu_channel(agent_id="mate_study")
     channel.config.bot_open_id = "ou_study"

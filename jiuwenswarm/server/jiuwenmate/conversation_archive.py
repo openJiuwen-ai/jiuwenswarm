@@ -20,6 +20,7 @@ from openjiuwen.harness.persistent_agent import GroupMessage
 
 # The Swarm group record keeps this many newest messages. Older rows are deleted.
 _RETAINED_MESSAGES = 100
+_RICH_TEXT_MENTION = re.compile(r"@[^\s@]+")
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS archive_info (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1), namespace_id TEXT NOT NULL, group_id TEXT NOT NULL,
@@ -33,6 +34,14 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS recalls (message_id TEXT PRIMARY KEY, source_ref TEXT NOT NULL, changed_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS archive_secrets (singleton INTEGER PRIMARY KEY CHECK(singleton=1), secret BLOB NOT NULL);
 """
+
+
+def _restored_rich_text_mention(previous: str, current: str) -> bool:
+    """A rich-text refresh can put @name back beside text that was stored without the at-node."""
+    if "@" not in current or previous == current:
+        return False
+    without_mentions = _RICH_TEXT_MENTION.sub("", current)
+    return " ".join(without_mentions.split()) == " ".join(previous.split())
 
 
 @dataclass(frozen=True)
@@ -131,10 +140,13 @@ class ConversationArchive:
                     and stamp is not None
                     and stamp == row["changed_at"]
                     and isinstance(previous.text, str)
-                    and "@_" in previous.text
                     and isinstance(message.text, str)
                     and "@_" not in message.text
                     and previous.attachment_refs == message.attachment_refs
+                    and (
+                        "@_" in previous.text
+                        or _restored_rich_text_mention(previous.text, message.text)
+                    )
                 )
                 if newer or resolved_mentions:
                     message = message.model_copy(update={"received_at": previous.received_at,

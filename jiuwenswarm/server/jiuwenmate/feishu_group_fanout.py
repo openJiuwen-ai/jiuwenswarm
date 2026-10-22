@@ -315,6 +315,8 @@ def create_default_persistent_group_fanout(
         manager.verify_group_membership = verify
 
         async def refresh(access, group, messages):
+            from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
             facts = await verify_membership(access.app_id, group.platform_chat_id,
                                            tuple(item.message_id for item in messages))
             if facts.get("status") == "unknown":
@@ -338,12 +340,23 @@ def create_default_persistent_group_fanout(
                     changed_at = datetime.fromisoformat(item["changed_at"])
                     fresh = type(message).model_validate({**message.model_dump(), "status": status,
                         "text": item.get("text"), "attachment_refs": item.get("attachment_refs", ())})
-                    await asyncio.to_thread(
-                        manager.group_archive.append, access.namespace_id, access.group_id, fresh,
-                        source_ref=f"refresh:{message.message_id}", changed_at=changed_at,
-                        allow_resolved_mentions=True,
-                    )
-                    updated.append(fresh)
+                    try:
+                        await asyncio.to_thread(
+                            manager.group_archive.append, access.namespace_id, access.group_id, fresh,
+                            source_ref=f"refresh:{message.message_id}", changed_at=changed_at,
+                            allow_resolved_mentions=True,
+                        )
+                    except PersistentAgentError as exc:
+                        if exc.code != "CONFLICT":
+                            raise
+                        # One unchanged revision must not fail the whole history read.
+                        logger.warning(
+                            "[JiuwenMate] group refresh kept the archived text: message_id=%s",
+                            message.message_id,
+                        )
+                        updated.append(message)
+                    else:
+                        updated.append(fresh)
                 elif status == "unknown":
                     # Feishu did not answer. The archived inbound text remains the trigger.
                     updated.append(message)
