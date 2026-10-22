@@ -536,6 +536,7 @@ function AppContent({
   // 再次点击已激活的“实验”图标时递增，作为展开 RSI 实验栏的信号（对齐 chat 图标展开会话栏的行为）
   const [rsiRailExpandNonce, setRsiRailExpandNonce] = useState(0);
   const [isJiuwenMate, setIsJiuwenMate] = useState(false);
+  const openInstalledExpertRef = useRef<(packageName: string) => void>(() => {});
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -4576,7 +4577,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         <div className="app-section min-h-0">
           <AgentManagementPanel
             isActive
-            onUseAgent={handleUseAgent}
+            onUseAgent={(packageName) => openInstalledExpertRef.current(packageName)}
             onUsePrompt={handleUseAgentPrompt}
             onUseAgentGroup={handleUseAgentGroup}
             onUseGroupPrompt={handleUseGroupPrompt}
@@ -4684,6 +4685,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       <JiuwenMateApp
         onExit={() => setIsJiuwenMate(false)}
         renderExistingPage={renderJiuwenMateExistingPage}
+        useInstalledExpertRef={openInstalledExpertRef}
         confirmDiscardSettings={() => {
           if (!settingsHasChangesRef.current) return true;
           if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;

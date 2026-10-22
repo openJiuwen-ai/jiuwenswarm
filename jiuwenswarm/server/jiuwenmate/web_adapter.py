@@ -529,7 +529,23 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_LIST.value:
             return {"colleagues": [_colleague_wire(view) for view in service.list_colleagues(WEB_NAMESPACE)]}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_CREATE.value:
-            return {"colleague": _colleague_wire(service.create_colleague(WEB_NAMESPACE, _settings(params)))}
+            template_id = params.get("template_id")
+            if template_id is not None and not isinstance(template_id, str):
+                raise PersistentAgentError("template_id is required")
+            source_template_id = params.get("source_template_id")
+            if source_template_id is not None and not isinstance(source_template_id, str):
+                raise PersistentAgentError("source_template_id is required")
+            return {
+                "colleague": _colleague_wire(
+                    service.create_colleague(
+                        WEB_NAMESPACE,
+                        _settings(params),
+                        template_id=template_id or None,
+                        source_template_id=source_template_id or None,
+                        unique_source=params.get("unique_source") is True,
+                    )
+                )
+            }
         agent_id = _text_param(params, "agent_id")
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_GET.value:
             return {"colleague": _colleague_wire(service.get_colleague(WEB_NAMESPACE, agent_id))}

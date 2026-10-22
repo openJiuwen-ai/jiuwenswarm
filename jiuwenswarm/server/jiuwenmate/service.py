@@ -384,10 +384,23 @@ class PersistentAgentService:
         return None if definition is None else self._view(definition)
 
     def create_colleague(
-        self, namespace_id: str, settings: ColleagueSettings, *, template_id: str | None = None
+        self,
+        namespace_id: str,
+        settings: ColleagueSettings,
+        *,
+        template_id: str | None = None,
+        source_template_id: str | None = None,
+        unique_source: bool = False,
     ) -> ColleagueView:
         """Create a colleague with its own Template and publish its first version."""
         require_identifier("namespace_id", namespace_id)
+        recorded_source = source_template_id or template_id
+        if recorded_source is not None:
+            require_identifier("source_template_id", recorded_source)
+            if unique_source and any(
+                item.source_template_id == recorded_source for item in self._repository.list(namespace_id)
+            ):
+                raise PersistentAgentError("this employee already exists", code="CONFLICT")
         if template_id is not None:
             require_identifier("template_id", template_id)
             card = self._template_source(template_id)
@@ -406,7 +419,9 @@ class PersistentAgentService:
                 raise PersistentAgentError("no model is configured", code="MODEL_NOT_CONFIGURED")
             settings = replace(settings, capabilities=replace(settings.capabilities, model=default_model))
         self._check_model(settings, "probe")
-        definition, inserted = self._insert(namespace_id, settings, source_template_id=template_id, is_default=False)
+        definition, inserted = self._insert(
+            namespace_id, settings, source_template_id=recorded_source, is_default=False,
+        )
         try:
             self.publish(namespace_id, definition.agent_id)
         except Exception:

@@ -36,6 +36,16 @@ def _minutes(started: datetime, ended: datetime) -> int:
     return max(0, int((ended - started).total_seconds() // 60))
 
 
+def _group_label(mapped: Mapping[str, str] | None, key: str) -> str:
+    """Prefer the stored group name. A platform chat id is only a fallback."""
+    if mapped is None:
+        return key
+    stored = _optional(mapped, "name")
+    if stored and stored.strip():
+        return stored.strip()
+    return str(mapped["platform_chat_id"])
+
+
 def _optional(row: Mapping[str, str | None], key: str) -> str | None:
     try:
         value = row[key]
@@ -141,7 +151,7 @@ def assemble_activity(
                 mapped = group_names.get(key)
                 bucket = {
                     "group_chat_id": key,
-                    "name": mapped["platform_chat_id"] if mapped is not None else key,
+                    "name": _group_label(mapped, key),
                     "platform": mapped["platform"] if mapped is not None else "",
                     "artifacts": 0,
                     "tokens": 0,
@@ -357,7 +367,10 @@ class ActivityQuery:
                     (namespace_id,),
                 ).fetchall()
                 groups = conn.execute(
-                    "SELECT group_chat_id, platform, platform_chat_id FROM group_chats WHERE namespace_id = ?",
+                    "SELECT g.group_chat_id, g.platform, g.platform_chat_id, d.name AS name "
+                    "FROM group_chats g LEFT JOIN group_details d "
+                    "ON d.namespace_id = g.namespace_id AND d.group_chat_id = g.group_chat_id "
+                    "WHERE g.namespace_id = ?",
                     (namespace_id,),
                 ).fetchall()
         except sqlite3.Error as exc:

@@ -48,6 +48,12 @@ export interface JiuwenMateColleagueDraft {
   avatarUrl?: string;
   /** Palette shift of the default custom portrait. Saved as an avatar address of the form hue:N. */
   avatarHue?: number;
+  /** Built-in template id or installed expert package. Each source can be used once. */
+  sourceTemplateId?: string;
+  /** Template name at selection time. Recognizes employees saved before the source id. */
+  sourceTemplateName?: string;
+  /** Set when the source is an installed expert package the server can copy. */
+  installedPackageName?: string;
   capabilities: JiuwenMateCapabilities;
 }
 
@@ -63,16 +69,24 @@ export interface JiuwenMateColleague extends JiuwenMateColleagueDraft {
   workspaceDir?: string | null;
 }
 
-export interface JiuwenMateCoreAbility {
-  title: string;
+/** One named entry in an expert-style template: skill, tool, rail, or connector capability. */
+export interface JiuwenMateBoundItem {
+  id: string;
+  name: string;
   description: string;
 }
 
 export interface JiuwenMateTemplate extends JiuwenMateColleagueDraft {
   id: string;
-  coreAbilities: JiuwenMateCoreAbility[];
+  persona: string;
+  skills: readonly JiuwenMateBoundItem[];
+  tools: readonly JiuwenMateBoundItem[];
+  rails: readonly JiuwenMateBoundItem[];
+  mcps: readonly JiuwenMateBoundItem[];
   /** Curated vocabulary for matching local skills and querying Skills Plaza. */
   skillSearchTerms?: string[];
+  /** Set when this card comes from an installed expert package. */
+  installedPackageName?: string;
 }
 
 export interface JiuwenMateChannel {

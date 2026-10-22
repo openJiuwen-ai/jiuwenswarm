@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { webClient, webRequest } from '../../services/webClient';
 import { ImAuthorizeDialog } from './components/ImAuthorizeDialog';
-import { JiuwenMateConfirmDialog } from './components/JiuwenMateDialog';
+import { JiuwenMateConfirmDialog, JiuwenMateDialog } from './components/JiuwenMateDialog';
 import { JiuwenMateRail, type JiuwenMateRailView } from './components/JiuwenMateRail';
 import {
   cancelColleagueCreation,
@@ -39,16 +39,24 @@ import {
   type JiuwenMateSchedule,
 } from './jiuwenmateApi';
 import {
-  buildTemplateSkillSearchQuery,
+  templateSkillSearchQueries,
   recommendInstalledTemplateSkills,
   recommendMarketplaceTemplateSkills,
   splitAvailableColleagueCapabilities,
+  withInstalledExpertSkills,
   type MutableColleagueCapabilitySelections,
   type SkillInstallCandidate,
   type TemplateSkillRecommendations,
 } from './colleagueCapabilities';
 import type { ScheduleDraft } from './schedules/types';
+import { createLiveAgentManagementClient } from '../agentManagement/client';
 import { customAvatarHue } from './colleaguePortraits';
+import {
+  assignInstalledExpertHues,
+  installedExpertTemplateId,
+  loadInstalledExpertTemplates,
+  templateAlreadyCreated,
+} from './installedExperts';
 import { emptyCapabilities } from './mockData';
 import { ColleagueCreatePage } from './pages/ColleagueCreatePage';
 import { ColleagueEmptyPage } from './pages/ColleagueEmptyPage';
@@ -72,6 +80,8 @@ export interface JiuwenMateAppProps {
   onExit: () => void;
   renderExistingPage: (nav: JiuwenMateExistingPage) => ReactNode;
   confirmDiscardSettings?: () => boolean;
+  /** Plaza "use" on an installed expert opens the employee creation page for that package. */
+  useInstalledExpertRef?: MutableRefObject<(packageName: string) => void>;
 }
 
 type PendingConfirm = { kind: 'delete' | 'disable'; colleague: JiuwenMateColleague };
@@ -101,7 +111,12 @@ interface SkillInstallReply {
   skill?: { name?: string };
 }
 
-export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettings }: JiuwenMateAppProps) {
+export function JiuwenMateApp({
+  onExit,
+  renderExistingPage,
+  confirmDiscardSettings,
+  useInstalledExpertRef,
+}: JiuwenMateAppProps) {
   const { t } = useTranslation();
   const api = useMemo(
     () =>
@@ -119,6 +134,16 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
   const [modelCatalog, setModelCatalog] = useState<JiuwenMateModelCatalog>(EMPTY_MODEL_CATALOG);
   const [activeRailView, setActiveRailView] = useState<JiuwenMateRailView>('office');
   const [existingPage, setExistingPage] = useState<JiuwenMateExistingPage | null>(null);
+  const [installedExperts, setInstalledExperts] = useState<readonly JiuwenMateTemplate[]>([]);
+  const visibleInstalledExperts = useMemo(
+    () =>
+      assignInstalledExpertHues(
+        installedExperts,
+        state.colleagues.flatMap((colleague) => (colleague.avatarHue != null ? [colleague.avatarHue] : [])),
+      ),
+    [installedExperts, state.colleagues],
+  );
+  const [employeeExists, setEmployeeExists] = useState(false);
   const [publicLabel, setPublicLabel] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const [workspaceIntent, setWorkspaceIntent] = useState<{ nonce: number; intent: JiuwenMateWorkspaceIntent | null }>({
@@ -203,6 +228,39 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
   useEffect(() => {
     void loadColleagues();
   }, [loadColleagues]);
+
+  if (useInstalledExpertRef) {
+    useInstalledExpertRef.current = (packageName) => {
+      const name = packageName.trim();
+      setExistingPage(null);
+      setPublicLabel(null);
+      setActiveRailView('office');
+      setState((current) =>
+        name
+          ? selectColleagueTemplate(openColleagueCreation(current), installedExpertTemplateId(name))
+          : openColleagueCreation(current),
+      );
+    };
+  }
+
+  useEffect(() => {
+    if (state.view !== 'colleague-create') return undefined;
+    let cancelled = false;
+    const client = createLiveAgentManagementClient();
+    void loadInstalledExpertTemplates(
+      () => client.listCatalog({ filter: 'mine' }),
+      (id) => client.getDefinition(id),
+    )
+      .then((templates) => {
+        if (!cancelled) setInstalledExperts(templates);
+      })
+      .catch(() => {
+        if (!cancelled) setInstalledExperts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [state.view, existingPage]);
 
   useEffect(() => {
     if (loadStatus !== 'ready') return;
@@ -313,10 +371,10 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
       setActionError(t('jiuwenmate.profile.catalogLoading'));
       return;
     }
-    const { available, missing } = splitAvailableColleagueCapabilities(
-      template.capabilities,
-      resourceCatalog,
-    );
+    const split = splitAvailableColleagueCapabilities(template.capabilities, resourceCatalog);
+    const { available, missing } = template.installedPackageName
+      ? withInstalledExpertSkills(template.capabilities.skills, split)
+      : split;
     const requestId = skillRecommendationRequest.current + 1;
     skillRecommendationRequest.current = requestId;
     const localRecommendations = recommendInstalledTemplateSkills(
@@ -335,9 +393,14 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
       startColleagueRefinement(current, 'template', {
         name: template.name,
         description: template.description,
+        persona: template.persona,
         tags: [...template.tags],
         category: template.category,
         avatarUrl: template.avatarUrl,
+        avatarHue: template.avatarHue,
+        sourceTemplateId: template.installedPackageName ?? template.id,
+        sourceTemplateName: template.name,
+        ...(template.installedPackageName ? { installedPackageName: template.installedPackageName } : {}),
         capabilities: {
           ...template.capabilities,
           skills: available.skills,
@@ -348,35 +411,43 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
         },
       }),
     );
-    void webRequest<{
-      success?: boolean;
-      detail?: string;
-      items?: unknown[];
-    }>(
-      'skills.online_search.search',
-      { q: buildTemplateSkillSearchQuery(template), limit: 50 },
-      { timeoutMs: 45_000 },
+    const queries = templateSkillSearchQueries(template);
+    void Promise.all(
+      queries.map((query) =>
+        webRequest<{
+          success?: boolean;
+          detail?: string;
+          items?: unknown[];
+        }>('skills.online_search.search', { q: query, limit: 20 }, { timeoutMs: 45_000 }).catch((error) => ({
+          success: false,
+          detail: errorMessage(error),
+          items: [],
+        })),
+      ),
     )
-      .then((search) => {
+      .then((searches) => {
         if (requestId !== skillRecommendationRequest.current) return;
-        if (!search.success) {
+        const succeeded = searches.filter((search) => search.success);
+        if (succeeded.length === 0) {
           setSkillRecommendations({
             status: 'error',
             local: localRecommendations,
             plaza: [],
-            error: search.detail || t('jiuwenmate.create.skillSearchFailed'),
+            error: searches.find((search) => search.detail)?.detail || t('jiuwenmate.create.skillSearchFailed'),
           });
           return;
         }
         const plazaRecommendations = recommendMarketplaceTemplateSkills(
-          search,
+          { items: succeeded.flatMap((search) => search.items ?? []) },
           (resourceCatalog.skills ?? []).map((skill) => skill.name),
+          5,
+          template.skillSearchTerms ?? [],
         );
         setSkillRecommendations({
-          status: plazaRecommendations.length > 0 ? 'ready' : 'error',
+          status: 'ready',
           local: localRecommendations,
           plaza: plazaRecommendations,
-          error: plazaRecommendations.length > 0 ? null : t('jiuwenmate.create.skillSearchNoResults'),
+          error: null,
         });
       })
       .catch((error) => {
@@ -445,6 +516,10 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
   const completeCreation = async () => {
     const draft = state.draft;
     if (!draft || submitting) return;
+    if (templateAlreadyCreated(draft, state.colleagues)) {
+      setEmployeeExists(true);
+      return;
+    }
     setSubmitting(true);
     setActionError('');
     try {
@@ -647,6 +722,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             onOpenTemplateDetail={(id) => setState((current) => selectColleagueTemplate(current, id))}
             onCloseTemplateDetail={() => setState((current) => closeTemplateDetail(current))}
             onChooseTemplate={chooseTemplate}
+            installedExperts={visibleInstalledExperts}
             onOpenCustom={startCustomCreation}
             onCloseCustom={() => setState((current) => closeCustomColleagueDialog(current))}
             onConfirmCustom={({ name, description, avatarHue }) =>
@@ -823,6 +899,24 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             setState((current) => finishColleagueAuthorization(current, true));
           }}
         />
+      ) : null}
+      {employeeExists ? (
+        <JiuwenMateDialog
+          onClose={() => setEmployeeExists(false)}
+          testId="jiuwenmate-employee-exists-dialog"
+          footer={
+            <button
+              type="button"
+              className="jiuwenmate-dark-button"
+              onClick={() => setEmployeeExists(false)}
+              data-testid="jiuwenmate-employee-exists-confirm"
+            >
+              {t('jiuwenmate.common.confirm')}
+            </button>
+          }
+        >
+          <p className="jiuwenmate-dialog__message">{t('jiuwenmate.create.employeeExists')}</p>
+        </JiuwenMateDialog>
       ) : null}
       {pendingConfirm ? (
         <JiuwenMateConfirmDialog

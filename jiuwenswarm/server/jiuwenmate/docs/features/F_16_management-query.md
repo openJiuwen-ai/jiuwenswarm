@@ -91,7 +91,7 @@ flowchart LR
 | `channels` | 按 Session 的 `channel` 汇总调用、Token、任务、回复和失败 |
 | `groups` | `kind = group` 的会话；产物是该会话上状态为 `delivered` 或 `available` 的文件投递 |
 
-群名称使用平台会话标识；没有映射时使用 `group_chat_id`。Web 方法不接受调用方传入的命名空间，只查询 `local`。
+群名称使用 `group_details` 中已保存的群名；没有群名时使用平台会话标识，再没有映射时使用 `group_chat_id`。Web 方法不接受调用方传入的命名空间，只查询 `local`。
 
 ## 6. 影响面与实施设计
 
@@ -112,7 +112,7 @@ flowchart LR
 
 - 任务中心仍是样例页面。
 - 未结束任务的时长记为 0，不把排队时间算成工作时长。
-- 群没有单独的显示名称，表中使用平台会话标识。
+- 群名只读取已经写入 `group_details` 的名称。尚未同步到群名时，表中仍显示平台会话标识。
 
 ## 9. 设计演进与修订
 
