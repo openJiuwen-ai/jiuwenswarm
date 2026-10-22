@@ -911,6 +911,9 @@ class WebChannel(BaseWsChannel):
             # design page binds to; the {session_id, content} reduction here
             # would blank the canvas (empty canvas / no node progress).
             or event_name.startswith("designer.")
+            # webui.* 为插件渲染帧，payload 携带渲染树（target/revision/mode/root），
+            # 归约为 {session_id, content} 后前端解析不出槽位与节点。
+            or event_name.startswith("webui.")
         )
 
     @staticmethod

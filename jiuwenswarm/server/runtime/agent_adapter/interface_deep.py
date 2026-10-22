@@ -19849,6 +19849,27 @@ class JiuWenSwarmDeepAdapter:
             if context_window_tokens is not None:
                 payload["context_window_tokens"] = context_window_tokens
 
+            from jiuwenswarm.extensions_v2.events.context_usage import (
+                ContextUsageUpdate,
+                notify_context_usage,
+            )
+
+            cache_hit_rate = summary.get("cache_hit_rate")
+            notify_context_usage(
+                ContextUsageUpdate(
+                    session_id=session_id,
+                    request_id=rid,
+                    input_tokens=usage_accumulator["input_tokens"],
+                    output_tokens=usage_accumulator["output_tokens"],
+                    total_tokens=usage_accumulator["total_tokens"],
+                    cache_tokens=usage_accumulator["cache_tokens"],
+                    cache_hit_rate=cache_hit_rate if isinstance(cache_hit_rate, str) else None,
+                    context_window_tokens=context_window_tokens,
+                    usage_percent=context_usage_percent,
+                    model=payload.get("model") if isinstance(payload.get("model"), str) else None,
+                )
+            )
+
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,

@@ -15,6 +15,7 @@
     "test:organization-leader-identity": "node --test tests/organizationLeaderIdentity.test.mjs",
     "test:browser-agent-activity": "esbuild src/features/browserAgentActivity.ts src/stores/sessionStore.ts src/stores/subagentStore.ts --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/browser-agent-activity --define:import.meta.env={} && node --test tests/browserAgentActivity.test.mjs",
     "test:browser-display": "esbuild tests/fixtures/browserDisplayExports.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/browser-display/exports.mjs --loader:.css=empty --loader:.svg=dataurl --loader:.png=dataurl --define:import.meta.env={} && node --test tests/browserDisplay.test.mjs",
+    "test:webui-store": "esbuild src/features/webui/webuiStore.ts src/features/webui/types.ts --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/webui-store --define:import.meta.env={} && node --test tests/webuiStore.test.mjs",
     "test:generation-models": "esbuild src/features/settings/modules/agent/generationModels.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/generation-models/generationModels.mjs && node --test tests/generationModels.test.mjs",
     "test:generation-model-dialog": "node --test tests/generationModelDialog.test.mjs",
     "test:a4p-authorization": "node --test tests/a4pAuthorization.test.mjs",
