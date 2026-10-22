@@ -2824,6 +2824,8 @@ class JiuWenSwarmDeepAdapter:
         self._model_identity_to_keys: dict[str, list[str]] = {}
         # 同 identity 下「凭证指纹 → cache key」：等价 owner 复用同一 key，不重复 append。
         self._model_identity_owners: dict[str, dict[str, str]] = {}
+        self._model_entry_by_ref: dict[str, dict[str, Any]] = {}
+        self._applied_model_refs: set[str] = set()
         # Optional lite/pro mapping from models.defaults[].tier for task_tool.
         self._tier_model_cache: dict[str, Model] = {}
         # Cache system prompt to avoid re-building on every btw/recap call.
@@ -6632,6 +6634,7 @@ class JiuWenSwarmDeepAdapter:
             self._model_cache[cache_key] = model
             self._model_name_to_keys.setdefault(model_name, []).append(cache_key)
             self._model_identity_to_keys.setdefault(model_ref, []).append(cache_key)
+            self._model_entry_by_ref.setdefault(model_ref, copy.deepcopy(entry))
         else:
             logger.info("[JiuWenSwarmDeepAdapter] 复用等价模型登记 %s (%s)", model_name, cache_key)
 
@@ -6749,10 +6752,16 @@ class JiuWenSwarmDeepAdapter:
             )
             return self._model
 
+        previous_entries: dict[str, dict[str, Any]] = {}
+        for ref in self._applied_model_refs:
+            entry = self._model_entry_by_ref.get(ref)
+            if entry is not None and len(self._model_identity_to_keys.get(ref, [])) == 1:
+                previous_entries[ref] = entry
         self._model_cache.clear()
         self._model_name_to_keys.clear()
         self._model_identity_to_keys.clear()
         self._model_identity_owners.clear()
+        self._model_entry_by_ref.clear()
         self._tier_model_cache.clear()
         self._inject_attribution_to_config(config)
         self._build_model_cache_from_defaults(config)
@@ -6797,7 +6806,40 @@ class JiuWenSwarmDeepAdapter:
         self._model_client_config = self._model.model_client_config
         self._model_request_config = self._model.model_config
         self._last_models_config_fingerprint = new_fp
+        self._retain_dropped_models(previous_entries)
         return self._model
+
+    def _retain_dropped_models(self, previous_entries: dict[str, dict[str, Any]]) -> None:
+        retained: list[str] = []
+        for model_ref, entry in previous_entries.items():
+            if model_ref in self._model_identity_to_keys:
+                continue
+            mcc = entry.get("model_client_config") or {}
+            model_name = str(mcc.get("model_name") or "")
+            try:
+                model = self._build_model_from_entry(mcc, entry.get("model_config_obj") or {})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] 保留重载前模型失败 %s: %s", model_name, exc
+                )
+                continue
+            idx = 0
+            while f"{model_name}#{idx}" in self._model_cache:
+                idx += 1
+            cache_key = f"{model_name}#{idx}"
+            self._model_cache[cache_key] = model
+            self._model_identity_to_keys[model_ref] = [cache_key]
+            self._model_identity_owners[model_ref] = {
+                build_model_credential_fingerprint(model.model_client_config): cache_key
+            }
+            self._model_entry_by_ref[model_ref] = entry
+            if model_name not in self._model_name_to_keys and model_name not in self._model_cache:
+                self._model_name_to_keys[model_name] = [cache_key]
+            retained.append(cache_key)
+        if retained:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] 保留重载前模型 %s", retained
+            )
 
     @staticmethod
     def _models_config_fingerprint(config: dict) -> str:
@@ -6877,6 +6919,11 @@ class JiuWenSwarmDeepAdapter:
             resolved = self._model_cache.get(keys[0])
             if resolved is not None:
                 return resolved
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] 请求模型 %r 未登记，回退默认模型 %s",
+            requested,
+            getattr(getattr(self._model, "model_config", None), "model_name", ""),
+        )
         return self._model
 
     def _lookup_model_by_name(self, requested_model_name: str = "") -> Model | None:
@@ -7191,6 +7238,11 @@ class JiuWenSwarmDeepAdapter:
         # Keep adapter default + DeepAgent parent model in sync so omitted
         # task_tool model_* selectors inherit the currently switched model.
         self._model = model
+        self._applied_model_refs.update(
+            ref
+            for ref, keys in self._model_identity_to_keys.items()
+            if any(self._model_cache.get(key) is model for key in keys)
+        )
         deep_config = getattr(self._instance, "_deep_config", None) or getattr(
             self._instance, "deep_config", None
         )

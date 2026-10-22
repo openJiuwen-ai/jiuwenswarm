@@ -131,6 +131,7 @@ def _registry_adapter():
     adapter._model = None
     adapter._model_cache, adapter._model_name_to_keys = {}, {}
     adapter._model_identity_to_keys, adapter._model_identity_owners = {}, {}
+    adapter._model_entry_by_ref = {}
     adapter._tier_model_cache = {}
     adapter._build_model_from_entry = lambda mcc, mco: SimpleNamespace(
         model_client_config=SimpleNamespace(
