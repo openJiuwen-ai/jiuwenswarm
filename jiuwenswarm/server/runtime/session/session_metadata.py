@@ -24,6 +24,7 @@ from jiuwenswarm.common.mode_matrix import (
     is_new_canonical_mode,
     is_team_mode,
 )
+from jiuwenswarm.server.runtime.debug_trace.directives import strip_debug_directive
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     SUPPORTED_WORK_MODES,
@@ -1014,6 +1015,7 @@ def _auto_title(content: str) -> str:
     # 先剥离所有小写 XML 注入标签，
     # 避免将系统提示/文件注入/工具标签误识别为会话标题
     cleaned = _INJECTED_TAG_RE.sub("", content).strip()
+    cleaned, _ = strip_debug_directive(cleaned)
     if not cleaned:
         return ""
     title = cleaned.replace("\n", " ")
