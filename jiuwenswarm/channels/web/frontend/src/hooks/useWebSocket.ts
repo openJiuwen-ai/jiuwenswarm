@@ -594,6 +594,11 @@ const HEARTBEAT_MUTATION_TOOL_NAMES = new Set([
   'heartbeat_cancel_run',
 ]);
 
+/** 评审 N-5：心跳终态收口的 run_id 去重缓存上限。Set 只增不清会随心跳轮数缓慢增长；
+ * 超限裁掉一半最旧的——被裁掉的只可能是极老 run 的迟到重复终态事件，普通轮终态兜底
+ * 同款收口动作（setProcessing(false)/排空队列）在 idle 下幂等，重新执行不会引入新状态。 */
+const HEARTBEAT_CLOSE_RUN_ID_CACHE_LIMIT = 128;
+
 // The task card's title/content are now sourced solely from the backend
 // `team.task` events (which carry the DB task_id + body) and the `team.snapshot`
 // fallback — never from tool_call arguments. Building an optimistic card from
@@ -1940,6 +1945,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const heartbeatSessionCloseHandledRunIdsRef = useRef<Set<string>>(new Set());
   const closeHeartbeatSessionState = useCallback((sessionId: string, runId: string) => {
     if (heartbeatSessionCloseHandledRunIdsRef.current.has(runId)) return;
+    // 评审 N-5：超上限时保留一半最新 run_id（Set 按插入序迭代），防止长期驻留的标签页
+    // 随心跳轮数缓慢泄漏。裁剪窗口远大于同一 run 三个终态事件的到达间隔，正常去重不受影响。
+    if (heartbeatSessionCloseHandledRunIdsRef.current.size >= HEARTBEAT_CLOSE_RUN_ID_CACHE_LIMIT) {
+      heartbeatSessionCloseHandledRunIdsRef.current = new Set(
+        Array.from(heartbeatSessionCloseHandledRunIdsRef.current)
+          .slice(-Math.floor(HEARTBEAT_CLOSE_RUN_ID_CACHE_LIMIT / 2)),
+      );
+    }
     heartbeatSessionCloseHandledRunIdsRef.current.add(runId);
     if (useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) return;
     const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
@@ -2733,6 +2746,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
 
+        // §8 步骤2（评审回归补齐）：心跳轮的 reasoning 不进会话级 reasoningSegments、
+        // 也不做 processing 恢复。思考块没有按 run_id 的独立 sink，追加进会话段会把心跳
+        // 思考并进普通轮未闭合的思考块（与 delta 覆盖普通回答同一类错归属）；且终态收口
+        // 按 run_id 去重后没有第二次收口机会，迟到 reasoning 把 processing 翻回 true 会
+        // 把输入区转圈挂死。心跳轮的思考刷新后由历史回放（reasoningReplay）恢复。
+        if (extractAutomation(payload)) return;
+
         // 只在明确属于当前活跃请求时恢复 processing，避免 evolution 后置 reasoning
         // 把已完成会话重新拉回处理中。
         if (shouldRecoverProcessingFromReasoning(sessionId, payload)) {
@@ -3461,6 +3481,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         if (pauseHoldActiveRef.current) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
+        // §8 步骤2（评审回归补齐）：心跳轮的 tool_call 不进会话级 toolExecutions 时间线、
+        // 不做 processing 恢复、不收尾 currentStreamId/team-leader 气泡——否则会掐断用户
+        // 正在流式的气泡；且终态收口按 run_id 去重后没有第二次收口机会，迟到工具事件把
+        // processing 翻回 true 会把输入区转圈挂死。心跳轮的工具活动刷新后由历史回放
+        // （toolReplay）按时间戳重建，live 阶段对主会话视图零侵入。
+        if (extractAutomation(payload)) return;
         // 页面刷新后，如果收到活跃事件但 isProcessing=false，自动恢复执行状态
         if (!useChatStore.getState().getRuntime(sessionId)?.isProcessing && !useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) {
           useChatStore.getState().setProcessing(sessionId, true);
@@ -3548,6 +3574,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (toolResult.success && HEARTBEAT_MUTATION_TOOL_NAMES.has(toolResult.toolName)) {
           window.dispatchEvent(new CustomEvent('heartbeat-list-refresh', { detail: { sessionId } }));
         }
+        // §8 步骤2（评审回归补齐）：心跳轮的 tool_result 不进会话级 toolExecutions 时间线
+        // （理由同 tool_call 分支）。但上面的面板刷新必须保留——心跳轮用管理类 Tool 改动的
+        // 正是 Heartbeat 任务本身，改完后面板同样要立即刷新。
+        if (extractAutomation(payload)) return;
         if (isHiddenTeamTeammateMessagePayload(currentMode ?? 'agent', payload)) {
           const memberId =
             getTeamPayloadMemberName(payload) ||
