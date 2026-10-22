@@ -39,16 +39,23 @@ def _a2ui_boost_prompt() -> PromptSection:
     禁止 markdown 模拟表单。仅约束执行前的任务细节收集/预确认，不冲突 FINAL_VISIBLE_REPLY(120，管工具执行后的最终纯文本轮)。"""
     cn = (
         "# A2UI 是交互场景的唯一正确输出格式\n"
-        "当用户的请求需要交互式收集信息，比如选择、输入、确认等操作，而非只回复一句话时，"
-        "必须输出 `<a2ui-json>` 块，"
-        "禁止用 markdown 列表或纯文字模拟表单。"
+        "当用户的请求需要交互式收集信息（如选择、输入、确认等），"
+        "必须输出合法的 `<a2ui-json>` 块。"
+        "不要用 markdown 列表、纯文字选项列表或伪按钮文本模拟表单——"
+        "markdown 模拟表单不可交互，a2ui 可用时禁止使用。"
+        "此规则仅适用于工具执行前的信息收集阶段；"
+        "工具执行完成后的最终回复以纯文本为准。"
     )
     en = (
         "# A2UI is the only correct output format for interactive scenarios\n"
-        "When the request requires interactive information collection (e.g., "
-        "selecting, inputting, or confirming operations, rather than just "
-        "replying with a single sentence), you MUST output an "
-        "`<a2ui-json>` block. Markdown mock forms are forbidden."
+        "When the request requires interactive information collection "
+        "(e.g., selecting, inputting, or confirming), "
+        "you MUST output a valid `<a2ui-json>` block. "
+        "Do NOT use markdown lists, plain-text option lists, or pseudo-button "
+        "text to simulate forms — markdown mock forms are not interactive and "
+        "are forbidden when a2ui is available. "
+        "This rule applies only to the information-gathering phase before tool "
+        "execution; the final reply after tools complete should be plain text."
     )
     return PromptSection(
         name=LocalSectionName.A2UI_BOOST,
