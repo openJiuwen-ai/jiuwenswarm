@@ -111,7 +111,7 @@ export const groupChatClient = {
     };
     stops.push(webClient.on('chat.error', onFailure));
     stops.push(webClient.on('team.interact.failed', onFailure));
-    void webRequest('chat.send', { group_id: groupId, ...input }, {
+    void webRequest('chat.send', { group_id: groupId, ...input, mode: 'team', type: 'group_chat' }, {
       isStream: true, timeoutMs: 60_000, signal: controller.signal, onRequestId: (id) => { requestId = id; },
     }).catch(fail);
   }),

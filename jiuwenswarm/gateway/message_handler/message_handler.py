@@ -891,6 +891,11 @@ class MessageHandler(ABC):
 
     @classmethod
     def _should_cancel_existing_stream_before_chat_send(cls, msg: "Message") -> bool:
+        params = msg.params if isinstance(msg.params, dict) else {}
+        group_id = params.get("group_id")
+        # Group members receive independent messages; another mention must not stop the whole group.
+        if isinstance(group_id, str) and group_id.strip():
+            return False
         # 主动推荐消息不取消现有流式任务，避免干扰用户当前对话
         if isinstance(msg.params, dict) and msg.params.get("source") == "proactive_recommendation":
             return False
