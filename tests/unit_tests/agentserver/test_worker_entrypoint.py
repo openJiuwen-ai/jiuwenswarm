@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import signal
 import sys
 from pathlib import Path
 
@@ -10,6 +12,25 @@ import pytest
 
 import jiuwenswarm.common.external_cli_runtime as external_cli_runtime
 from jiuwenswarm.server.worker import main as worker_main
+
+
+@pytest.fixture
+def restore_process_state():
+    """Snapshot and restore what in-process ``main()`` runs mutate globally.
+
+    ``main()`` installs SIGINT/SIGTERM handlers on its own event loop and
+    leaves that loop as the thread's current (closed) loop after returning;
+    without restoration, later tests in the same process would inherit them.
+    """
+    policy = asyncio.get_event_loop_policy()
+    previous_loop = policy.get_event_loop()
+    previous_handlers = {
+        sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
+    }
+    yield
+    for sig, handler in previous_handlers.items():
+        signal.signal(sig, handler)
+    asyncio.set_event_loop(previous_loop)
 
 
 def _patch_scaffolding(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -26,6 +47,7 @@ def _patch_scaffolding(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_worker_main_activates_external_cli_paths_before_runtime_load(
     monkeypatch: pytest.MonkeyPatch,
+    restore_process_state: None,
 ) -> None:
     """Team members import their CLI SDK in the worker; paths must be live first."""
     import jiuwenswarm.server.worker.service as worker_service
@@ -48,7 +70,10 @@ def test_worker_main_activates_external_cli_paths_before_runtime_load(
     assert order == ["activate", "serve"]
 
 
-def test_worker_main_survives_activation_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_main_survives_activation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    restore_process_state: None,
+) -> None:
     """An optional SDK problem must not take the whole worker down."""
     import jiuwenswarm.server.worker.service as worker_service
 
@@ -70,7 +95,10 @@ def test_worker_main_survives_activation_failure(monkeypatch: pytest.MonkeyPatch
     assert order == ["activate", "serve"]
 
 
-def test_worker_stub_mode_skips_external_cli_activation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_stub_mode_skips_external_cli_activation(
+    monkeypatch: pytest.MonkeyPatch,
+    restore_process_state: None,
+) -> None:
     """The stub speaks IPC without loading the Runtime, so it skips activation."""
     from jiuwenswarm.server.worker import stub as worker_stub
 
