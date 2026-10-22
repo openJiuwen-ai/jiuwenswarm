@@ -43,14 +43,17 @@ sequenceDiagram
     participant L as lifecycle
     participant A as assembly
     participant R as Registry
+    participant BS as bootstrap
     participant W as WebUIRuntime
     participant M as ExtensionManager
     L->>A: install_extensions(server)
     A->>A: 创建 bus / manager / transport / webui
     A->>M: init(bus, host_version, host_event_types, host_handlers)
     M->>R: init(bus, host_event_types, host_handlers)
-    R->>W: register_event_types(bus)
-    R->>W: register_handlers(bus)
+    R->>BS: register_event_types(bus)
+    BS->>W: register_event_types(bus)
+    R->>BS: register_handlers(bus)
+    BS->>W: register_handlers(bus)
     R->>R: trigger(ops.build) 一次
     M->>R: open_install_dir(install_dir, host_version)
     A->>M: load_installed()
@@ -63,6 +66,7 @@ sequenceDiagram
 | 组件 | 负责 |
 | --- | --- |
 | `assembly` | 单例、锁、创建顺序、失败降级、停机编排 |
+| `bootstrap` | 汇总平台事件类型、CORE Handler 与 BUILTIN Handler 的注册 |
 | `ExtensionManager` | Registry 门面与安装目录 |
 | `WebUIRuntime` | `ui.*` 事件类型、CORE Handler、`ops.build` BUILTIN Handler |
 | `RenderTransport` | 将渲染帧转交给 AgentServer 推送能力 |

@@ -13,8 +13,8 @@ from typing import Any
 
 from openjiuwen.core.events import ExtensionEventBus
 
+from jiuwenswarm.extensions_v2 import bootstrap
 from jiuwenswarm.extensions_v2.config import resolve_install_dir
-from jiuwenswarm.extensions_v2.events.context_usage import register_context_usage_events
 from jiuwenswarm.extensions_v2.management import ExtensionManager
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
 from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
@@ -52,8 +52,8 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
             await assembly.manager.init(
                 assembly.bus,
                 host_version=_host_version(),
-                host_event_types=lambda bus: _register_host_events(assembly, bus),
-                host_handlers=assembly.webui.register_handlers,
+                host_event_types=lambda bus: bootstrap.register_event_types(bus, assembly.webui),
+                host_handlers=lambda bus: bootstrap.register_handlers(bus, assembly.webui),
             )
         except Exception:  # noqa: BLE001 - extensions must not block chat startup
             logger.exception("[ExtensionsV2] assembly failed; extension features are unavailable")
@@ -101,13 +101,6 @@ def _build_assembly(server: Any) -> ExtensionAssembly:
     webui = WebUIRuntime(bus=bus, transport=transport, catalog=catalog)
     manager.set_inactive_callback(webui.drop_package)
     return ExtensionAssembly(bus=bus, manager=manager, webui=webui, transport=transport)
-
-
-def _register_host_events(assembly: ExtensionAssembly, bus: ExtensionEventBus) -> None:
-    """Register every host-owned event type before ``ops.build`` runs."""
-
-    assembly.webui.register_event_types(bus)
-    register_context_usage_events(bus)
 
 
 async def _activate_installed(manager: ExtensionManager) -> None:

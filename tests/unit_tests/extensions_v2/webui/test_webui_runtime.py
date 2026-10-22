@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from openjiuwen.core.events import ExtensionEventBus
 
-from jiuwenswarm.extensions_v2.events.context_usage import register_context_usage_events
+from jiuwenswarm.extensions_v2.event_types.context_usage import register_context_usage_events
 from jiuwenswarm.extensions_v2.management import ExtensionManager
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
 from jiuwenswarm.extensions_v2.webui.models import (
