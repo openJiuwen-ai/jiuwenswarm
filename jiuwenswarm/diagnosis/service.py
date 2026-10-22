@@ -23,6 +23,7 @@ from jiuwenswarm.common.mode_matrix import (
     is_single_agent_mode,
     is_team_mode,
 )
+from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled, get_ttse_enabled
 from jiuwenswarm.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.diagnosis.engine import (
     DiagnosisEngine,
@@ -436,6 +437,9 @@ class DiagnosisService:
         record = state.record
         final_status = DiagnosisStatus.COMPLETED
         try:
+            # Host switches are read per run so a settings change takes effect on
+            # the next diagnosis; get_config() re-reads config.yaml on mtime change.
+            config = get_config()
             inputs = EngineInputs(
                 session_id=session_id,
                 mode_profile=state.context.mode_profile,
@@ -444,6 +448,8 @@ class DiagnosisService:
                 snapshot=state.snapshot,
                 ranges=state.ranges,
                 model=state.model,
+                skill_evolution=get_skill_evolution_enabled(config),
+                ttse_advice=get_ttse_enabled(config),
             )
 
             async def emit(event: EngineEvent) -> None:
