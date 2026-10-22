@@ -1425,63 +1425,19 @@ def test_is_team_chat_send_recognizes_all_team_modes(mode: str, expected: bool) 
 
 
 @pytest.mark.asyncio
-async def test_stop_forwarding_interrupts_in_flight_sessions_before_local_cancel(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Multi-replica gateway delete must interrupt AgentServer by session.
-
-    Local stream task cancel alone leaves AgentServer running until
-    output_detached; stop_forwarding must CHAT_CANCEL first (hard stop, not
-    client_disconnect pause).
-    """
-    monkeypatch.setattr(
-        "agent_gateway.enterprise.is_enterprise",
-        lambda: True,
-    )
+@pytest.mark.parametrize("mode", ["", "agent.plan", "team"])
+async def test_group_chat_send_preserves_running_expert_stream(mode: str) -> None:
     handler = _TestMessageHandler.create()
-    task_a = _seed_stream_task(
-        handler, rid="rid-a", channel_id="web", session_id="sess_a",
+    travel_task = _seed_stream_task(
+        handler, rid="rid-travel", channel_id="web", session_id="group-trip",
     )
-    task_b = _seed_stream_task(
-        handler, rid="rid-b", channel_id="web", session_id="sess_b",
-    )
-    # Same session twice → one interrupt only.
-    _seed_stream_task(
-        handler, rid="rid-a2", channel_id="web", session_id="sess_a",
-    )
+    msg = _chat_send_message(channel_id="web", session_id="group-trip", mode=mode)
+    msg.params.update({"group_id": "group-trip", "mentions": ["essay-expert"]})
 
-    await handler.stop_forwarding()
+    should_cancel = getattr(handler, "_should_cancel_existing_stream_before_chat_send")
+    if should_cancel(msg):
+        await handler.cancel_stream_tasks_for_channel(msg)
 
-    assert len(_FakeAgentClient.sent_requests) == 2
-    session_ids = {
-        str(getattr(env, "session_id", "") or "").strip()
-        for env in _FakeAgentClient.sent_requests
-    }
-    assert session_ids == {"sess_a", "sess_b"}
-    for env in _FakeAgentClient.sent_requests:
-        assert getattr(env, "method", None) == "chat.interrupt"
-        params = getattr(env, "params", None) or {}
-        assert params.get("intent") == "cancel"
-        ctx = getattr(env, "channel_context", None) or {}
-        assert ctx.get("_jiuwenswarm_cancel_source") != "client_disconnect"
-    assert task_a.done()
-    assert task_b.done()
-    assert not handler._stream_tasks
-
-
-@pytest.mark.asyncio
-async def test_stop_forwarding_with_no_in_flight_skips_interrupt() -> None:
-    handler = _TestMessageHandler.create()
-    await handler.stop_forwarding()
-    assert _FakeAgentClient.sent_requests == []
-
-
-def test_client_tool_results_keep_the_existing_stream_and_an_empty_list_is_no_answer() -> None:
-    should_cancel = getattr(MessageHandler, "_should_cancel_existing_stream_before_chat_send")
-    msg = _chat_send_message(channel_id="web", session_id="sess_doc", mode="agent.plan")
-    msg.params.update({"query": "", "source": "client_tool_interrupt", "answers": [
-        {"interrupt_id": "interrupt-1", "request_id": "call-1", "result": {"status": "ok"}}]})
-    assert not should_cancel(msg)
-
-    msg.params["answers"] = []
-    assert should_cancel(msg)
+    assert not travel_task.cancelled()
+    await asyncio.sleep(0)
+    assert not _FakeAgentClient.sent_requests

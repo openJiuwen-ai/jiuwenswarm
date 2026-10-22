@@ -113,7 +113,7 @@ test('send waits for persisted acceptance and ignores other groups and messages'
   const pending = groupChatClient.send('group-one', input).then(() => { accepted = true; });
   const sent = transport.calls.at(-1);
   assert.equal(sent.method, 'chat.send');
-  assert.deepEqual(sent.params, { group_id: 'group-one', ...input });
+  assert.deepEqual(sent.params, { group_id: 'group-one', ...input, mode: 'team', type: 'group_chat' });
   assert.equal(sent.options.isStream, true);
   assert.equal(sent.options.timeoutMs, 60000);
   await Promise.resolve();
