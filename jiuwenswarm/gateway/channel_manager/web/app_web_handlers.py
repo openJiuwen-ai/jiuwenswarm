@@ -2453,6 +2453,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 if resp.status_code != 200:
                     # 401/403 = key 错或鉴权方式不符(如 maas 需华为签名);
                     # 429 = 限流;5xx = 上游故障。把状态码透传给前端。
+                    if model_domain and resp.status_code in {401, 403}:
+                        return [], (
+                            "Ark rejected the API key on the configured regional address "
+                            f"(HTTP {resp.status_code}); check the key and API address"
+                        )
                     return [], f"remote returned HTTP {resp.status_code}"
                 try:
                     payload_json = resp.json()

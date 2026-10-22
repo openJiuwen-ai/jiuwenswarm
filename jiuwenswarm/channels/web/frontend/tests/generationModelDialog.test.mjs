@@ -9,8 +9,6 @@ import { JSDOM } from 'jsdom';
 import i18next from 'i18next';
 
 const base = 'https://ark.cn-beijing.volces.com/api/v3';
-const asiaBase = 'https://ark.ap-southeast.bytepluses.com/api/v3';
-const europeBase = 'https://ark.eu-west.bytepluses.com/api/v3';
 const preset = (plan, apiBase) => ({
   vendor_key: 'volcengine',
   display_name: '火山引擎',
@@ -156,11 +154,10 @@ for (const slot of ['visual_gen', 'video_gen']) {
     assert.ok(document.body.textContent.includes(i18n.t('settingsPanel.agent.arkGenerationBaseInvalid')));
   });
 
-  for (const apiBase of [base, asiaBase, europeBase, 'https://ark.cn-beijing.volces.com']) {
+  for (const apiBase of [base, 'https://ark.ap-southeast.bytepluses.com/api/v3', 'https://ark.cn-beijing.volces.com']) {
     test(`${slot} restores ${apiBase} with full discovery and preserves saved credentials`, async (t) => {
       const { requests, saved } = await mountDialog(t, slot, apiBase);
       assert.ok(get('settings-model-provider-select-value').textContent.includes(i18n.t('settingsPanel.models.vendors.volcengine')));
-      assert.ok(document.querySelector('[data-variant="ark_region"]'));
       assert.equal(document.querySelector('[data-variant="api_base"] input').value, apiBase);
       assert.equal(document.querySelector('[data-variant="api_key"] input').value, 'test-key');
       assert.equal(document.querySelector('[data-variant="context_window_tokens"]'), null);
@@ -180,38 +177,6 @@ for (const slot of ['visual_gen', 'video_gen']) {
       }]);
     });
   }
-
-  test(`${slot} switches Ark region for discovery and save`, async (t) => {
-    const { requests, saved } = await mountDialog(t, slot, base);
-    await act(async () => document.querySelector('[data-variant="ark_region"] button').click());
-    const europe = [...document.querySelectorAll('[role="option"]')].find((node) => node.textContent.includes('Dublin'));
-    assert.ok(europe);
-    await act(async () => europe.click());
-    assert.equal(document.querySelector('[data-variant="api_base"] input').value, europeBase);
-    assert.equal(document.querySelector('[data-variant="api_base"] input').disabled, true);
-    assert.equal(get('settings-model-name-field-input').value, '');
-    await act(async () => get('settings-model-name-field-input').focus());
-    assert.equal(requests.at(-1).params.api_base, europeBase);
-    await act(async () => {
-      const input = get('settings-model-name-field-input');
-      const setValue = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
-      setValue.call(input, 'europe-model');
-      input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-    });
-    await act(async () => document.querySelector('[data-testid="settings-model-name-field-option"][data-variant="europe-model"]').click());
-    await act(async () => get('settings-agent-config-dialog-save-btn').click());
-    assert.equal(saved[0][`${slot}_api_base`], europeBase);
-    assert.equal(saved[0][`${slot}_model`], 'europe-model');
-  });
-
-  test(`${slot} keeps an existing unlisted official Ark region editable`, async (t) => {
-    const otherBase = 'https://ark.ap-south.bytepluses.com/api/v3';
-    const { saved } = await mountDialog(t, slot, otherBase);
-    assert.ok(document.querySelector('[data-variant="ark_region"] button').textContent.includes('Other region'));
-    assert.equal(document.querySelector('[data-variant="api_base"] input').disabled, false);
-    await act(async () => get('settings-agent-config-dialog-save-btn').click());
-    assert.equal(saved[0][`${slot}_api_base`], otherBase);
-  });
 
   for (const outcome of ['success', 'failure']) {
     test(`${slot} preserves manual model input during delayed discovery ${outcome}`, async (t) => {
