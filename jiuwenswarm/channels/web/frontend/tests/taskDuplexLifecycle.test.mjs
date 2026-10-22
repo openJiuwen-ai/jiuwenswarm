@@ -118,7 +118,7 @@ let timers;
 const previousGlobals = new Map();
 
 beforeEach(async () => {
-  dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/' });
+  dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/', pretendToBeVisual: true });
   dom.window.HTMLCanvasElement.prototype.getContext = () => null;
   for (const [name, value] of Object.entries({
     window: dom.window,
