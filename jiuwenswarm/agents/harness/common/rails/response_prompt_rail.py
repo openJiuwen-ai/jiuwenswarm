@@ -26,6 +26,15 @@ logger = logging.getLogger(__name__)
 
 SKIP_A2UI_PROMPT_CONTEXT_KEY = "skip_a2ui"
 A2UI_BROWSER_WORKFLOW_CONTEXT_KEY = "a2ui_browser_workflow"
+# browser-workflow 功能总开关（休眠中）：False 时 a2ui prompt 不注入
+# preflight/发送确认门禁规则，browser 意图检测被旁路。
+# 翻 True 重开前必须：① 修复 3 个预存 latent 问题（prompt_instructions 的
+# build_a2ui_browser_workflow_instruction 无 language 纯英文 / _BROWSER_WORKFLOW_INTENT_RE
+# 过宽 / protocol 14 个 _build_* 前缀仅英文）；② 与工具注册联动——同时设置 env
+# PLAYWRIGHT_RUNTIME_MCP_ENABLED，否则只开 prompt 无工具；只开 env 不开本开关
+# 则模型可执行浏览器动作但缺确认门禁提示（安全不对称）。
+# 两处 call-site（before_invoke / before_model_call）均引用本常量，恢复只改这一处。
+_BROWSER_WORKFLOW_ENABLED = False
 _RESPONSE_SECTION_NAMES = (
     "response",
     LocalSectionName.THINKING_DISCIPLINE,
@@ -108,7 +117,9 @@ class ResponsePromptRail(DeepAgentRail):
                 if isinstance(inputs, dict)
                 else getattr(inputs, "query", None)
             )
-            extra[A2UI_BROWSER_WORKFLOW_CONTEXT_KEY] = False
+            extra[A2UI_BROWSER_WORKFLOW_CONTEXT_KEY] = (
+                _BROWSER_WORKFLOW_ENABLED and is_a2ui_browser_workflow_request(query)
+            )
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         if self.system_prompt_builder is None:
@@ -121,7 +132,7 @@ class ResponsePromptRail(DeepAgentRail):
         self._sync_a2ui_prompt_section(
             self._resolve_channel(ctx),
             skip_a2ui=self._should_skip_a2ui(ctx),
-            include_browser_workflows=False,
+            include_browser_workflows=_BROWSER_WORKFLOW_ENABLED and self._is_browser_workflow(ctx),
             identity=(
                 self._resolve_context_value(ctx, "request_id"),
                 (

@@ -8,7 +8,10 @@ import pytest
 from openjiuwen.core.single_agent.rail.base import InvokeInputs, ModelCallInputs
 
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import LocalSectionName
-from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
+from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import (
+    ResponsePromptRail,
+    _BROWSER_WORKFLOW_ENABLED,
+)
 from jiuwenswarm.server.runtime.a2ui.config import A2UIConfig
 
 
@@ -58,13 +61,12 @@ async def test_response_prompt_rail_keeps_a2ui_for_web_channel(monkeypatch):
     assert "browser_preflight_submit" not in content["en"]
 
 
-@pytest.mark.xfail(
-    reason="browser-workflow feature OFF: call-site硬关 (before_invoke "
-    "extra[KEY]=False + before_model_call include_browser_workflows=False) "
-    "so preflight rules are not injected. Remove xfail when the feature is "
-    "enabled (flip the two call sites + set PLAYWRIGHT_RUNTIME_MCP_ENABLED). "
-    "See memory a2ui-browser-workflow-enable-prereq-fixes.",
-    strict=False,
+@pytest.mark.skipif(
+    not _BROWSER_WORKFLOW_ENABLED,
+    reason="browser-workflow feature gate off (_BROWSER_WORKFLOW_ENABLED=False "
+    "in response_prompt_rail; requires fixing 3 latent prompt issues + env "
+    "PLAYWRIGHT_RUNTIME_MCP_ENABLED before re-enabling). Test auto-reactivates "
+    "when the gate flips True.",
 )
 @pytest.mark.asyncio
 async def test_response_prompt_rail_scopes_browser_rules_to_browser_request(monkeypatch):
