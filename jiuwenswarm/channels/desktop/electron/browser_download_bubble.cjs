@@ -105,9 +105,15 @@ function createDownloadBubbleController({
   const attachTop = (win) => {
     try {
       win.contentView.removeChildView(view);
+    } catch {
+      // The view may already be detached (or never attached) — the add below
+      // still has to run, otherwise the bubble never mounts yet show() would
+      // still report it visible (blank bubble with aria-expanded=true).
+    }
+    try {
       win.contentView.addChildView(view);
     } catch {
-      // The view may already be detached during teardown.
+      // The window or view may already be gone during shutdown.
     }
   };
 
