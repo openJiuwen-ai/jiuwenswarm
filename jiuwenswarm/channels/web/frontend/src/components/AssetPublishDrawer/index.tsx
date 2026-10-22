@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { FormDrawer, Input, Textarea } from '../ui';
 import {
   beginHubOAuth,
+  clearHubOAuthSession,
   getStoredOAuthProvider,
   getStoredOAuthUser,
   waitForHubOAuth,
@@ -129,6 +130,8 @@ const messages = {
     publicDescription: '审核通过后可在 Hub 中公开展示。',
     privateDescription: '仅对当前发布账号可见。',
     switchAccount: '切换账号',
+    signOut: '退出授权',
+    signOutConfirm: '退出后需要重新登录才能发布，已填写的发布信息会被清空。是否继续？',
     loginWith: '使用',
     signedIn: '已登录',
     forceWarning: '将尝试覆盖 Hub 中的同版本内容，请确认你有更新权限。',
@@ -223,6 +226,8 @@ const messages = {
     publicDescription: 'Visible in Hub after moderation approval.',
     privateDescription: 'Visible only to the publishing account.',
     switchAccount: 'Switch account',
+    signOut: 'Sign out',
+    signOutConfirm: 'You will need to sign in again to publish, and the current form will be cleared. Continue?',
     loginWith: 'Sign in with',
     signedIn: 'signed in',
     forceWarning: 'This will attempt to overwrite the same Hub version. Confirm that you have update permission.',
@@ -377,6 +382,17 @@ function AssetPublishDrawer({
         setLoginBusy(false);
       }
     }
+  };
+  const signOut = () => {
+    if (!window.confirm(text('signOutConfirm'))) return;
+    // Abort an authorization that is still polling, otherwise its result would store a token again.
+    loginAbort.current?.abort();
+    loginWindow.current?.close();
+    clearHubOAuthSession();
+    setSwitchingAccount(false);
+    setLoginError('');
+    // The hook listens for this event to re-read the authorization scope.
+    window.dispatchEvent(new CustomEvent('oauth-callback-complete'));
   };
   const invalid = validateMetadata(state.metadata).length > 0;
   const invalidFields = new Set(validateMetadata(state.metadata));
@@ -567,15 +583,26 @@ function AssetPublishDrawer({
               <span data-testid="asset-publish-destination">{hubHost(state.description.hub_url)}</span>
             )}
           </div>
-          <button
-            type="button"
-            className="asset-publish-text-button"
-            data-testid="asset-publish-switch-account"
-            aria-expanded={switchingAccount}
-            onClick={() => setSwitchingAccount((value) => !value)}
-          >
-            {text('switchAccount')}
-          </button>
+          <div className="asset-publish-account-actions">
+            <button
+              type="button"
+              className="asset-publish-text-button"
+              data-testid="asset-publish-switch-account"
+              aria-expanded={switchingAccount}
+              onClick={() => setSwitchingAccount((value) => !value)}
+            >
+              {text('switchAccount')}
+            </button>
+            <button
+              type="button"
+              className="asset-publish-text-button"
+              data-testid="asset-publish-sign-out"
+              onClick={signOut}
+              disabled={state.busy}
+            >
+              {text('signOut')}
+            </button>
+          </div>
           {switchingAccount && (
             <div className="asset-publish-provider-options">
               {(['gitcode', 'github'] as const).map((nextProvider) => (
