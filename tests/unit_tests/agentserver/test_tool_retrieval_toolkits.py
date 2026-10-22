@@ -103,10 +103,12 @@ def test_tool_search_card_is_registered_with_tool_search_name() -> None:
     # Mirrors the skill_index card contract: same parameter set and limits,
     # reworded for tools (call_goal is NOT in the card — stream_event_rail
     # injects it uniformly into the model-facing ToolInfo; the singular
-    # string ``tool`` drives the schema-read phase).
+    # string ``tool`` drives the schema-read phase). ``keyword`` (BM25
+    # filter within one category) is tool-side only.
     assert set(tools[0].card.input_params["properties"].keys()) == {
         "operation",
         "category",
+        "keyword",
         "tool",
     }
     assert tools[0].card.input_params["required"] == ["operation"]
@@ -118,20 +120,17 @@ def test_tool_search_card_is_registered_with_tool_search_name() -> None:
     assert "SKILL.md" not in tools[0].card.input_params["properties"]["operation"]["description"]
 
 
-def test_root_list_serves_categories_description_only() -> None:
-    """The root listing shows category lines only — no flat tool dump."""
+def test_bare_list_errors_with_call_shapes() -> None:
+    """Bare list (no category, no keyword) errors — the category catalogue
+    already sits in the system prompt, so re-dumping it wastes a call."""
 
-    tool = _build_toolkit().get_tools()[0]
+    toolkit = _build_toolkit()
+    tool = toolkit.get_tools()[0]
 
-    listing = asyncio.run(tool.invoke({"operation": "list"}))
-
-    assert "[category] cron:" in listing
-    assert "[category] heartbeat:" in listing
-    # Categorized tools are NOT listed at the root: their names are
-    # discovered through the category listing, not a flat dump.
-    assert "cron_create_job" not in listing
-    # No pagination footer — listings are served whole.
-    assert "[next]" not in listing
+    with pytest.raises(
+        ValueError, match='list needs "category" or "keyword"'
+    ):
+        asyncio.run(tool.invoke({"operation": "list"}))
 
 
 def test_category_list_serves_tools_schema_free() -> None:
@@ -184,26 +183,6 @@ def test_unknown_category_error_lists_valid_names() -> None:
         assert "cron, heartbeat" in str(exc)
 
 
-def test_uncategorized_and_connector_tools_at_root() -> None:
-    """Static-table misses surface at the root; MCP tools group by connector."""
-
-    tools = _deferred_tools() + [
-        ToolInfo(name="pdf_read", description="Read text from a PDF file"),
-        ToolInfo(name="mcp_amap_maps_geo", description="将地址转换为经纬度坐标"),
-        ToolInfo(name="mcp_amap_maps_text_search", description="关键词搜POI"),
-    ]
-    toolkit = _build_toolkit(
-        tools,
-        mcp_servers_provider=lambda: {"amap": {"zh": "高德地图位置服务。", "en": ""}},
-    )
-    listing = asyncio.run(toolkit.tool_search(operation="list"))
-
-    assert "- [tool] pdf_read: Read text from a PDF file" in listing
-    assert "[category] mcp_amap: 高德地图位置服务。" in listing
-    # Connector tools ride their virtual branch, not [tool] lines.
-    assert "mcp_amap_maps_geo: " not in listing
-
-
 def test_list_get_schema_roundtrip() -> None:
     """list returns names + short descriptions; get_schema returns the full
     {name, description, schema} record for exactly the requested tool."""
@@ -252,17 +231,19 @@ def test_list_get_schema_roundtrip() -> None:
 def test_retired_fields_degrade_instead_of_erroring() -> None:
     """Old prompt snapshots carrying retired fields keep working.
 
-    Keyword search is no longer offered on the card; card validation
-    rejects the field for model calls, and direct/lenient paths degrade to
-    a plain unfiltered listing. ``search`` aliases list.
+    ``query`` is dropped (it is not the live keyword field), so a legacy
+    bare search now hits the category/keyword requirement error — which
+    teaches the retry — while legacy list calls that already carry a
+    category degrade to the plain unfiltered listing. ``search`` aliases
+    list.
     """
 
     toolkit = _build_toolkit()
 
-    legacy = asyncio.run(
-        toolkit.tool_search(operation="search", query=["cron"])
-    )
-    assert "[category] cron:" in legacy
+    with pytest.raises(
+        ValueError, match='list needs "category" or "keyword"'
+    ):
+        asyncio.run(toolkit.tool_search(operation="search", query=["cron"]))
 
     degraded = asyncio.run(
         toolkit.tool_search(
@@ -270,22 +251,244 @@ def test_retired_fields_degrade_instead_of_erroring() -> None:
         )
     )
     assert "cron_create_job" in degraded
+    assert "cron_list_jobs" in degraded
 
 
-def test_root_listing_uncapped() -> None:
-    """Root listings are served whole — every uncategorized tool appears."""
+def test_list_keyword_filters_category_by_bm25() -> None:
+    """list + keyword BM25-filters one category; the header echoes both."""
 
-    tools = [
-        ToolInfo(name=f"tool_{index}", description=f"Tool number {index}")
-        for index in range(25)
+    toolkit = _build_toolkit()
+    tool = toolkit.get_tools()[0]
+
+    listing = asyncio.run(
+        tool.invoke({"operation": "list", "category": "cron", "keyword": "创建"})
+    )
+
+    assert '## Tools (category: cron, keyword: "创建")' in listing
+    assert "- [tool] cron_create_job: 创建新的 cron 定时任务" in listing
+    # "创建" only matches the create tool's description; the list tool drops.
+    assert "cron_list_jobs" not in listing
+
+
+def test_list_keyword_exact_tool_name_ranks_first() -> None:
+    """A keyword naming one full tool ranks that tool first."""
+
+    toolkit = _build_toolkit()
+
+    listing = asyncio.run(
+        toolkit.tool_search(
+            operation="list", category="cron", keyword="cron_list_jobs"
+        )
+    )
+
+    assert listing.index("cron_list_jobs") < listing.index("cron_create_job")
+
+
+def test_list_keyword_without_category_searches_all_tools() -> None:
+    """keyword with no category BM25-searches every live deferred tool."""
+
+    toolkit = _build_toolkit()
+    tool = toolkit.get_tools()[0]
+
+    listing = asyncio.run(tool.invoke({"operation": "list", "keyword": "cron"}))
+
+    assert '## Tools (keyword: "cron")' in listing
+    assert "- [tool] cron_create_job:" in listing
+    assert "- [tool] cron_list_jobs:" in listing
+    # "cron" matches neither the heartbeat tool's name nor its description.
+    assert "heartbeat_run_now" not in listing
+
+
+def test_list_keyword_global_search_covers_uncategorized_and_connectors() -> None:
+    """The root keyword sweep includes uncategorized and MCP tools."""
+
+    tools = _deferred_tools() + [
+        ToolInfo(name="pdf_read", description="Read text from a PDF file"),
+        ToolInfo(name="mcp_amap_maps_geo", description="将地址转换为经纬度坐标"),
     ]
     toolkit = _build_toolkit(tools)
 
-    result = asyncio.run(toolkit.tool_search(operation="list"))
+    listing = asyncio.run(toolkit.tool_search(operation="list", keyword="PDF"))
 
-    for index in range(25):
-        assert f"- [tool] tool_{index}: Tool number {index}" in result
-    assert "[next]" not in result
+    assert '## Tools (keyword: "PDF")' in listing
+    assert "- [tool] pdf_read:" in listing
+    assert "cron_create_job" not in listing
+
+
+def test_list_keyword_global_search_without_matches() -> None:
+    """A global no-hit keyword returns a 0/N notice, not an error."""
+
+    toolkit = _build_toolkit()
+
+    # The no-hit keyword shares no token (whole sequence or bigram) with
+    # any fixture doc.
+    listing = asyncio.run(
+        toolkit.tool_search(operation="list", keyword="视频生成")
+    )
+
+    assert 'keyword: "视频生成"' in listing
+    assert 'No tools match keyword "视频生成" (0 of 3)' in listing
+
+
+def test_list_keyword_junk_recall_regression() -> None:
+    """Keyword recall stays relevance-bound: junk descriptions sharing no
+    token with the query never surface (the user-visible failure for
+    keyword "图片生成 image generation" was a junk tail of 完成/发生-style
+    descriptions)."""
+
+    tools = _deferred_tools() + [
+        ToolInfo(
+            name="generate_image",
+            description="文生图：按文字提示词生成图片并保存到工作区。",
+        ),
+        ToolInfo(
+            name="generate_visual",
+            description="文生图：按文字提示词生成图片并保存到工作区。",
+        ),
+        ToolInfo(
+            name="goal_report",
+            description=(
+                "提交目标执行的结构化报告；任务完成或受阻时调用，"
+                "需求发生显著变化时也适用。"
+            ),
+        ),
+    ]
+    toolkit = _build_toolkit(tools)
+
+    listing = asyncio.run(
+        toolkit.tool_search(
+            operation="list", keyword="图片生成 image generation"
+        )
+    )
+
+    assert "- [tool] generate_image:" in listing
+    assert "- [tool] generate_visual:" in listing
+    # goal_report shares only the single characters 成/生 — dropped.
+    assert "goal_report" not in listing
+    assert "cron_create_job" not in listing
+    assert "heartbeat_run_now" not in listing
+
+
+def test_list_keyword_junk_only_corpus_reports_no_match() -> None:
+    """With nothing relevant registered, the sweep says so honestly
+    instead of returning the unigram junk tail."""
+
+    tools = [
+        ToolInfo(name="cron_create_job", description="创建新的 cron 定时任务"),
+        ToolInfo(
+            name="goal_report",
+            description=(
+                "提交目标执行的结构化报告；任务完成或受阻时调用，"
+                "需求发生显著变化时也适用。"
+            ),
+        ),
+    ]
+    toolkit = _build_toolkit(tools)
+
+    listing = asyncio.run(
+        toolkit.tool_search(
+            operation="list", keyword="图片生成 image generation"
+        )
+    )
+
+    assert "No tools match" in listing
+    assert "0 of 2" in listing
+
+
+def test_list_keyword_single_character_query_matches_nothing() -> None:
+    """Single-character queries match nothing — honest empty."""
+
+    toolkit = _build_toolkit()
+
+    listing = asyncio.run(toolkit.tool_search(operation="list", keyword="创"))
+
+    assert "0 of 3" in listing
+
+
+def test_list_keyword_without_matches_reports_counts() -> None:
+    """A no-hit keyword returns a 0/N notice instead of raising."""
+
+    toolkit = _build_toolkit()
+
+    listing = asyncio.run(
+        toolkit.tool_search(operation="list", category="cron", keyword="视频生成")
+    )
+
+    assert 'keyword: "视频生成"' in listing
+    assert 'No tools match keyword "视频生成" (0 of 2)' in listing
+
+
+def test_list_keyword_english_matches_description() -> None:
+    """English keywords hit ASCII descriptions across token boundaries."""
+
+    toolkit = _build_toolkit()
+
+    listing = asyncio.run(
+        toolkit.tool_search(operation="list", category="heartbeat", keyword="run")
+    )
+
+    assert "- [tool] heartbeat_run_now:" in listing
+
+
+def test_list_keyword_filters_connector_category() -> None:
+    """Connector virtual branches support the same keyword filter."""
+
+    tools = _deferred_tools() + [
+        ToolInfo(name="mcp_amap_maps_geo", description="将地址转换为经纬度坐标"),
+        ToolInfo(name="mcp_amap_maps_text_search", description="关键词搜POI"),
+    ]
+    toolkit = _build_toolkit(
+        tools,
+        mcp_servers_provider=lambda: {"amap": {"zh": "高德地图位置服务。", "en": ""}},
+    )
+
+    listing = asyncio.run(
+        toolkit.tool_search(operation="list", category="mcp_amap", keyword="坐标")
+    )
+
+    assert 'MCP connector: amap, keyword: "坐标"' in listing
+    assert "- [tool] mcp_amap_maps_geo:" in listing
+    assert "mcp_amap_maps_text_search" not in listing
+
+
+def test_list_keyword_dirty_input_degrades() -> None:
+    """Empty junk keyword spellings degrade to the unfiltered listing."""
+
+    toolkit = _build_toolkit()
+
+    # An empty array keyword counts as absent → the full category listing.
+    degraded = asyncio.run(
+        toolkit.tool_search(operation="list", category="cron", keyword=[])
+    )
+    assert "cron_create_job" in degraded
+    assert "cron_list_jobs" in degraded
+
+    # Array spellings join into one keyword string and filter normally.
+    joined = asyncio.run(
+        toolkit.tool_search(
+            operation="list", category="cron", keyword=["创建", "cron"]
+        )
+    )
+    assert "cron_create_job" in joined
+
+
+def test_get_schema_ignores_keyword() -> None:
+    """keyword is list-only; get_schema serves the schema record unchanged."""
+
+    toolkit = _build_toolkit()
+
+    record = json.loads(
+        str(
+            asyncio.run(
+                toolkit.tool_search(
+                    operation="get_schema", tool="cron_create_job", keyword="创建"
+                )
+            )
+        )
+    )
+
+    assert record["name"] == "cron_create_job"
+    assert record["schema"]["required"] == ["name"]
 
 
 def test_frozen_catalogue_intersects_live_registry() -> None:
