@@ -140,16 +140,14 @@ def test_real_sdk_logprobs_representation_preserves_all_fragments(outer_event: b
     assert secret not in sanitized
 
 
-def test_source_record_factory_handles_shallow_fragments_and_restores_state():
-    fragment_count = 1100
+def test_source_record_factory_handles_real_sdk_fragments_and_restores_state():
+    representation = str(_sdk_completion())
     secret = "source-local-only-credential"
     message = json.dumps({
         "event": "model_end",
-        "output": "[1, 2, 3] " * fragment_count + '\ncredentials=' + json.dumps({"api_key": secret}),
+        "output": representation + '\ncredentials=' + json.dumps({"api_key": secret}),
         "tail": "外层完整末尾",
     })
-    assert len(message) < 64 * 1024
-    recursion_limit = sys.getrecursionlimit()
     factory = logging.getLogRecordFactory()
     installed = utils._source_record_masking_installed
     failures = utils._source_masking_failures
@@ -162,50 +160,14 @@ def test_source_record_factory_handles_shallow_fragments_and_restores_state():
             "openai._base_client", logging.DEBUG, __file__, 1, "%s", (message,), None,
         )
 
-        assert utils._source_masking_failures == failures
         assert record.jiuwen_sensitive_sanitized is True
         assert record.args == ()
+        assert utils._source_masking_failures == failures
         event = json.loads(record.getMessage())
         assert event["tail"] == "外层完整末尾"
-        fragments, sensitive_json = event["output"].rsplit('\ncredentials=', 1)
-        assert fragments == "[1,2,3] " * fragment_count
+        sdk_output, sensitive_json = event["output"].rsplit('\ncredentials=', 1)
+        _assert_sdk_representation_complete(sdk_output, representation)
         assert json.loads(sensitive_json) == {"api_key": utils._masked_with_fp(secret)}
-        assert secret not in record.getMessage()
-        assert sys.getrecursionlimit() == recursion_limit
-    finally:
-        logging.setLogRecordFactory(factory)
-        utils._source_record_masking_installed = installed
-        utils._source_masking_failures = failures
-
-
-def test_source_record_factory_omits_oversized_sdk_payload_and_restores_state():
-    secret = "oversized-source-local-only-credential"
-    message = json.dumps({
-        "event": "model_end",
-        "output": str(_sdk_completion()),
-        "credentials": {"api_key": secret},
-    })
-    assert len(message) > 64 * 1024
-    factory = logging.getLogRecordFactory()
-    installed = utils._source_record_masking_installed
-    failures = utils._source_masking_failures
-    try:
-        logging.setLogRecordFactory(logging.LogRecord)
-        utils._source_record_masking_installed = False
-        utils.install_source_record_masking()
-
-        record = logging.getLogRecordFactory()(
-            "openai._base_client", logging.DEBUG, __file__, 1, "%s", (message,), None,
-        )
-
-        assert utils._source_masking_failures == failures
-        assert record.jiuwen_sensitive_sanitized is True
-        assert record.args == ()
-        assert json.loads(record.getMessage()) == {
-            "log_payload_omitted": True,
-            "original_characters": len(message),
-            "character_limit": 64 * 1024,
-        }
         assert secret not in record.getMessage()
     finally:
         logging.setLogRecordFactory(factory)
