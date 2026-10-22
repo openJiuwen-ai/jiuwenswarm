@@ -383,7 +383,7 @@ test('display name validation is required, unique among display names, and exclu
   };
   assert.match(validateModelDraft(baseDraft, models, undefined, catalog, t).alias, /aliasRequired/);
   assert.match(validateModelDraft({ ...baseDraft, alias: 'second' }, models, 3, catalog, t).alias, /aliasConflict/);
-  // Matching another model's ID (not its display name) is allowed.
+  // Matching another model's ID (not its explicit display name) is allowed.
   assert.equal(
     validateModelDraft({ ...baseDraft, alias: 'same-model' }, models, undefined, catalog, t).alias,
     undefined,
@@ -398,6 +398,50 @@ test('display name validation is required, unique among display names, and exclu
     validateModelDraft({ ...baseDraft, alias: 'unique', model_name: 'second' }, models, undefined, catalog, t)
       .model_name,
     /modelNameConflict/,
+  );
+
+  // Legacy peers with empty alias + same model_name: seeding display name from model_name
+  // must not block editing endpoint/key (#5646 / review P2).
+  const legacyDuplicateModels = [
+    {
+      model_id: 'mdl_a',
+      model_name: 'GLM-5.2',
+      alias: '',
+      api_base: 'https://one.example/v1',
+      api_key: 'one',
+      model_provider: 'OpenAI',
+    },
+    {
+      model_id: 'mdl_b',
+      model_name: 'GLM-5.2',
+      alias: '',
+      api_base: 'https://two.example/v1',
+      api_key: 'two',
+      model_provider: 'OpenAI',
+    },
+  ];
+  assert.equal(
+    validateModelDraft(
+      { ...baseDraft, alias: 'GLM-5.2', model_name: 'GLM-5.2' },
+      legacyDuplicateModels,
+      { model_id: 'mdl_a' },
+      catalog,
+      t,
+    ).alias,
+    undefined,
+  );
+  assert.match(
+    validateModelDraft(
+      { ...baseDraft, alias: 'GLM-5.2', model_name: 'GLM-5.2' },
+      [
+        { ...legacyDuplicateModels[0], alias: 'GLM-5.2' },
+        legacyDuplicateModels[1],
+      ],
+      { model_id: 'mdl_b' },
+      catalog,
+      t,
+    ).alias,
+    /aliasConflict/,
   );
 
   // Upsert edit path: entries use model_id without origin_index. Display name equal to own
@@ -440,6 +484,19 @@ test('display name validation is required, unique among display names, and exclu
     ).alias,
     /aliasConflict/,
   );
+});
+
+test('model group dialog validates unique group names and vendor switch keeps display-name sync', () => {
+  const groupDialog = source('src/features/settings/modules/models/ModelGroupDialog.tsx');
+  const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
+  assert.match(groupDialog, /modelGroups/);
+  assert.match(groupDialog, /modelGroupNameConflict/);
+  assert.match(groupDialog, /item === group \|\|[\s\S]{0,120}model_group_id/);
+  assert.match(
+    dialog,
+    /alias === previousModelName \|\| alias === previousSync[\s\S]{0,80}alias: ''/,
+  );
+  assert.match(dialog, /aliasSyncedFromModelName\.current = ''/);
 });
 
 test('model API keys accept 2048 characters and reject longer values', () => {
