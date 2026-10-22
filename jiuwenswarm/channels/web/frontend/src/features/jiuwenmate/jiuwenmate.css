@@ -2432,6 +2432,36 @@
   font-weight: 600;
 }
 
+.jiuwenmate-channel-view__messages article[data-own='true'] {
+  justify-items: end;
+}
+
+.jiuwenmate-channel-view__messages article[data-own='true'] > header {
+  flex-direction: row-reverse;
+}
+
+.jiuwenmate-channel-view__messages article[data-own='true'] > p,
+.jiuwenmate-channel-view__messages article[data-own='true'] > .jiuwenmate-attachment-card {
+  max-width: 80%;
+  justify-self: end;
+}
+
+.jiuwenmate-channel-group {
+  display: grid;
+  gap: 4px;
+}
+
+.jiuwenmate-channel-group + .jiuwenmate-channel-group {
+  margin-top: 12px;
+}
+
+.jiuwenmate-channel-group > h3 {
+  margin: 8px 2px 4px;
+  color: var(--jm-text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .jiuwenmate-channel-view__messages p {
   font-size: 13px;
   line-height: 1.7;

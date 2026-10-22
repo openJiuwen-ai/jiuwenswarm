@@ -518,6 +518,19 @@ export function toChatRequest(value: unknown): JiuwenMateChatRequest {
   };
 }
 
+export function sharedFileKey(file: JiuwenMateSharedFile): string {
+  return file.path || file.outputId;
+}
+
+/** Later handoffs of the same office path replace earlier copies in the artifact list. */
+export function latestSharedFiles(requests: readonly { files: readonly JiuwenMateSharedFile[] }[]): JiuwenMateSharedFile[] {
+  const latest = new Map<string, JiuwenMateSharedFile>();
+  for (const request of requests) {
+    for (const file of request.files) latest.set(sharedFileKey(file), file);
+  }
+  return [...latest.values()];
+}
+
 export function formatSharedFileSize(size: number): string {
   if (!Number.isFinite(size) || size < 0) return '0 B';
   if (size < 1024) return `${size} B`;
@@ -538,6 +551,7 @@ function toSharedFiles(value: unknown): JiuwenMateSharedFile[] {
       {
         outputId,
         name,
+        path: text(wire.path) || null,
         size: typeof wire.size === 'number' ? wire.size : 0,
         caption: text(wire.caption) || null,
         downloadUrl: downloadUrl.startsWith('/file-api/download?') ? downloadUrl : null,
@@ -809,7 +823,7 @@ export function toChannelMessage(value: unknown): JiuwenMateChannelMessage {
   return {
     id: text(wire.id),
     sender: text(wire.sender),
-    fromColleague: wire.sender_kind === 'agent',
+    fromColleague: wire.own === true,
     mentionColleague: false,
     content: text(wire.text),
     status: text(wire.status) || 'normal',

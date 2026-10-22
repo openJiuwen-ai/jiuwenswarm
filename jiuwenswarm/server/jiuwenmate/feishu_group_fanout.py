@@ -783,3 +783,82 @@ class PersistentGroupFanout:
             reply_target=event.chat_id,
             attachment_refs=attachment_refs,
         )
+
+
+_MEMBER_NAMES: dict[str, dict[str, str]] = {}
+_MEMBER_CLIENTS: dict[str, Any] = {}
+
+
+def feishu_member_names(platform_chat_id: str, app_ids: Sequence[str]) -> dict[str, str]:
+    """Map open_ids in one Feishu chat to the names those bots can see.
+
+    A Feishu open_id belongs to one app. The contact profile often has no name
+    field, while the chat member list carries the name shown in that chat.
+    """
+    if not isinstance(platform_chat_id, str) or not platform_chat_id.startswith("oc_"):
+        return {}
+    cached = _MEMBER_NAMES.get(platform_chat_id)
+    if cached is not None:
+        return cached
+    names: dict[str, str] = {}
+    try:
+        names = _query_feishu_members(platform_chat_id, app_ids)
+    except Exception:
+        logger.warning("[JiuwenMate] Feishu member name lookup failed")
+    _MEMBER_NAMES[platform_chat_id] = names
+    return names
+
+
+def _query_feishu_members(platform_chat_id: str, app_ids: Sequence[str]) -> dict[str, str]:
+    try:
+        import lark_oapi as lark
+        from lark_oapi.api.im.v1 import GetChatMembersRequest
+    except ImportError:
+        return {}
+    from jiuwenswarm.common.config import get_config
+
+    config = get_config()
+    channels = config.get("channels") if isinstance(config, Mapping) else None
+    apps = (channels.get("feishu") or {}).get("apps") if isinstance(channels, Mapping) else None
+    secrets: dict[str, str] = {}
+    if isinstance(apps, list):
+        for app in apps:
+            if not isinstance(app, Mapping) or app.get("enabled", True) is False:
+                continue
+            app_id = str(app.get("app_id") or "").strip()
+            secret = str(app.get("app_secret") or "").strip()
+            if app_id and secret:
+                secrets[app_id] = secret
+    names: dict[str, str] = {}
+    for app_id in app_ids:
+        secret = secrets.get(app_id)
+        if secret is None:
+            continue
+        client = _MEMBER_CLIENTS.get(app_id)
+        if client is None:
+            client = lark.Client.builder().app_id(app_id).app_secret(secret).build()
+            _MEMBER_CLIENTS[app_id] = client
+        page_token = ""
+        while True:
+            builder = (
+                GetChatMembersRequest.builder()
+                .chat_id(platform_chat_id)
+                .member_id_type("open_id")
+                .page_size(100)
+            )
+            if page_token:
+                builder = builder.page_token(page_token)
+            response = client.im.v1.chat_members.get(builder.build())
+            if not response.success():
+                break
+            for item in getattr(response.data, "items", None) or ():
+                member_id = str(getattr(item, "member_id", "") or "").strip()
+                member_name = str(getattr(item, "name", "") or "").strip()
+                if member_id and member_name:
+                    names.setdefault(member_id, member_name)
+            if not getattr(response.data, "has_more", False):
+                break
+            page_token = str(getattr(response.data, "page_token", "") or "")
+            if not page_token:
+                break
+    return names
