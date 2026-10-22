@@ -129,6 +129,12 @@ flowchart LR
 
 ### 5.5 数据模型与事实归属
 
+模型设置热更新复用 `refresh_published(namespace_id, *, models=None) -> bool`：模型保存代理入口传入配置保存回调，回调与 `agent.reload_config` 在原有模型热更新后通知 JiuwenMate，等待已有同事发布刷新结束。通知携带配置时，刷新使用该份已保存模型配置，并保留为本服务后续发布的模型来源，避免首次运行时初始化或手动发布又退回旧参数；下一次模型通知再更新该来源。Web 与飞书的新请求均从共享数据库读取更新后的版本；旧 Request 仍按原版本和指纹执行。没有 JiuwenMate 数据库的个人版实例不初始化同事服务。重复通知在指纹未变化时不新增版本。
+
+保留既有草稿边界：未发布的同事不自动发布；有未发布修改的已发布同事保留现有版本和草稿，返回未全部应用，须由用户明确发布后更新。自动刷新传入读取时的 `expected_revision`，与持久层版本检查共同防止并发保存的草稿被自动发布。单个同事模型解析或发布失败时保留旧版本，继续刷新其他同事；通过现有 `applied_without_restart` / reload 失败响应告知调用方，不把配置已保存等同于全部生效。显式 reload 的部分未应用返回 `PERSISTENT_MODELS_NOT_APPLIED`，网关识别后不重试、不触发重启兜底。本次不直接修改旧快照、不清空 Session、不修改 agent-core 的有效窗口解析或个人版热更新。
+
+同一宿主进程内的 Template 替换与人设读取使用共享锁：文件替换后，直到数据库 revision 保存成功或文件回滚完成前，其他服务实例不得读取中间人设。发布随后仍检查 revision，避免读到尚未提交的草稿；此锁不代替数据库版本检查，也不承诺跨进程文件事务。
+
 | 数据 | 隔离范围 | 权威位置 | 创建、更新与释放 |
 | --- | --- | --- | --- |
 | 同事定义 | (namespace_id, agent_id) | `agents.sqlite3` 的 `colleagues` 表 | 创建时插入；设置修改时 revision 加一；删除时移除 |
@@ -176,6 +182,9 @@ flowchart LR
 | 2026-10-12 / V-01～V-05 | 提交 `5f12ea8a` | `.venv/bin/python -m pytest tests/unit_tests/server/jiuwenmate -o addopts="--asyncio-mode=auto"` | 通过，全目录 54 passed（本特性 22 项） | 管理接口与页面 |
 | 2026-10-12 / 冒烟 | 本机模型配置 | 手工调用服务发布 | 发布 v1 成功 | 非自动化 |
 | 2026-10-13 / V-01～V-05（目录迁移后复核） | 提交 `12b619ad` | `.venv/bin/python -m pytest tests/unit_tests/server/jiuwenmate/test_persistent_agent_service.py -q -o addopts="--asyncio-mode=auto" -p no:cacheprovider` | 通过，22 passed | 同上 |
+| 2026-10-22 / 模型热更新通知 | Windows，现有 `.venv`；真实 SQLite，模型和渠道替身 | `.\.venv\Scripts\python.exe -m pytest -q -o addopts='--asyncio-mode=auto --strict-markers --tb=short' -o log_cli=false tests/unit_tests/server/test_config_adapter_permission_reload.py tests/unit_tests/server/jiuwenmate/test_persistent_agent_service.py tests/unit_tests/server/jiuwenmate/test_web_adapter.py tests/unit_tests/server/jiuwenmate/test_resource_scope.py tests/unit_tests/server/jiuwenmate/test_feishu_group_production_wiring.py tests/unit_tests/test_model_resource_fixes.py tests/unit_tests/gateway/test_message_handler_mode.py tests/unit_tests/channel/test_attachment_persist.py -k 'not test_public_views_never_carry_model_credentials and not test_web_gateway_does_not_forward_internal_jiuwenmate_methods'` | 239 passed、1 skipped、2 deselected、1 warning；覆盖真实保存回调与显式 reload、通知配置源及后续刷新不回退、E2A 错误码和不重启、新旧请求版本、重复通知、草稿与并发人设保护、单个失败继续、无 JM 数据的个人版不初始化；1 个 Authlib 弃用告警 | 未调用真实模型、未重启用户服务；1 项 Windows symlink 权限跳过；排除项单独执行均失败：Windows 文件权限位为 0666 而非 0600；既有 Web 接口清单未排除 `jiuwenmate.thinking_notice.ack`，与本次模型同步无关 |
+
+个人版模式路由与附件持久化的 63 项回归包含在上述结果中；两个排除项仍按上表单独失败记录，不代表全仓通过。并发人设场景使用同一路径的两个真实服务实例和双线程，暂停于文件替换后、数据库 revision 更新前，验证刷新等待提交后因版本冲突保留旧发布和新草稿。
 
 ### 8.3 验证结论
 
@@ -202,3 +211,9 @@ flowchart LR
 - 新证据与原因：[docs/AGENTS.md](../AGENTS.md) 要求特性设计先于实现，并由计划条目链接 feature。
 - 最终变化：依据已合入的源码和测试补写本文，未改变实现。
 - 验证：2026-10-13 在提交 `12b619ad` 上复核 22 项测试通过。
+
+### 2026-10-22 模型热更新通知 Persistent Agent
+
+- 原因：模型目录已保存 128K，而同事发布快照仍为 1M；原热更新只通知个人版 Agent 管理器，后续新版请求继续固定旧版本。
+- 方案：复用现有发布刷新，接通模型保存代理回调和显式 reload 入口，统一使用通知携带的模型配置；保护并发草稿，单个同事失败继续刷新，部分未应用不触发网关重启。不引入额外开关或第二套发布机制，不逐轮读取配置文件覆盖执行中快照。
+- 验证：新增场景先复现 6 failed、2 passed，补齐通知与返回值后通过；审查补齐实际代理回调、后续刷新回退、并发人设和网关不重启场景。最终含个人版模式与附件回归为 239 passed、1 skipped、2 deselected，排除项及实际命令见第 8.2 节。这里只更新配置发布接线，不代表真实模型换窗行为已重新验收。
