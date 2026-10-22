@@ -234,23 +234,6 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "forms are NOT interactive and are FORBIDDEN when A2UI is available. "
         "If you catch yourself writing option lists or button text as plain "
         "text, STOP and emit a2ui-json instead. "
-        "Positive/negative example anchoring: "
-        "Bad: search multiple hotels, show comparison in Markdown table + ask "
-        "\"tell me your budget\" in plain text; "
-        "Good: use A2UI Card to show hotel comparison + MultipleChoice form to "
-        "collect budget preference; "
-        "Bad: user asks \"help me pick a plan\" → list A/B/C options in markdown "
-        "+ ask user to type reply; "
-        "Good: use A2UI Card to show plan comparison + MultipleChoice for direct "
-        "selection; "
-        "Bad: recommend 3 travel routes, list in markdown ordered list + say "
-        "\"which one?\"; "
-        "Good: use A2UI Card to show route comparison + Button for click selection. "
-        "JSON self-check: before emitting an <a2ui-json> block, mentally "
-        "verify it is valid JSON — every string value with double quotes "
-        "inside must escape them (\\\"), every key needs a colon (:), no "
-        "stray symbols like + between key and value. A single typo breaks "
-        "the whole block and the UI will not render. "
         "Never write tool_call, invoke, or function-call tags as plain text."
     )
     requested_component_rule_en = (
@@ -297,8 +280,6 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         '  {"dataModelUpdate": {"surfaceId": "form", "path": "/form", "contents": [{"key": "name", "valueString": ""}]}}\n'
         "]\n"
         "</a2ui-json>\n"
-        "Follow this structure: beginRendering first, then surfaceUpdate with "
-        "components, then dataModelUpdate to initialize default values."
     )
 
     # --- zh rules ---
@@ -335,17 +316,6 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "不要用 markdown 列表、纯文字选项列表、"
         "或伪按钮文本模拟表单。markdown 模拟表单不可交互，a2ui 可用时禁止使用。"
         "如果你发现自己在用纯文字写选项或按钮，立即停止，改输出 a2ui-json。"
-        "正反例锚定："
-        "反例：搜索到多个酒店后用 Markdown 表格展示对比 + 纯文字询问预算和出行人数；"
-        "正例：用 A2UI Card 组件展示酒店对比 + MultipleChoice 表单收集预算偏好；"
-        "反例：用户问帮选方案 → 用 markdown 列表列出 A/B/C 三个方案让用户打字回复；"
-        "正例：用 A2UI Card 展示方案对比 + MultipleChoice 让用户直接选择；"
-        "反例：推荐 3 条旅游路线用 markdown 有序列列出 + 文字问想走哪条；"
-        "正例：用 A2UI Card 展示路线对比 + Button 让用户点击选择。"
-        "JSON 自检：输出 <a2ui-json> 块前，心算校验它是合法 JSON——"
-        "字符串值内的双引号必须转义（\\\"），每个 key 要有冒号（:），"
-        "key 与 value 之间不能有多余符号（如 +）。一个 typo 会让整块 JSON 失效，"
-        "界面将无法渲染。"
         "绝不能把 tool_call、invoke 或函数调用标签当作普通文本输出。"
     )
     requested_component_rule_zh = (
@@ -376,25 +346,16 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
 
     if language in {"zh", "cn"}:
         return (
-            "当用户的请求需要交互式收集信息或展示 2 个及以上同类项的结构化对比时，"
-            "输出 <a2ui-json>...</a2ui-json> block。"
             "输出一段很短的说明，然后输出合法的 a2ui-json block。"
-            "block 内必须是 A2UI server-to-client message list，"
-            "先 beginRendering，再 surfaceUpdate，再按需 dataModelUpdate。"
             "如果需要外部事实或图片，短暂使用工具后用 a2ui 呈现。"
             + autonomy_rule_zh
             + requested_component_rule_zh
             + a2ui_json_example
         )
     return (
-        "When the request requires interactive information collection or "
-        "displaying structured comparison of 2+ same-type items, output an "
-        "<a2ui-json>...</a2ui-json> block. Output a very short intro followed "
-        "by a valid a2ui-json block. The block must contain an A2UI "
-        "server-to-client message list, with beginRendering before "
-        "surfaceUpdate and dataModelUpdate only when needed. If external "
-        "facts or images are needed, use the available tools briefly, then "
-        "present with a2ui."
+        "Output a very short intro followed by a valid a2ui-json block. "
+        "If external facts or images are needed, use the available tools "
+        "briefly, then present with a2ui."
         + autonomy_rule_en
         + requested_component_rule_en
         + a2ui_json_example

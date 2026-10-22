@@ -107,7 +107,7 @@ def test_a2ui_zh_prompt_section_is_readable():
 
     assert "你是 jiuwenswarm 的 A2UI 生成器" not in prompt
     assert "JiuwenSwarm 支持 A2UI 输出格式" in prompt
-    assert "当用户需要列表、卡片、表单" in prompt
+    assert "交互场景用 A2UI" in prompt
     assert "浣犳槸" not in prompt
     assert "鐢熸垚" not in prompt
 

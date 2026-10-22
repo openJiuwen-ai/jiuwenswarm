@@ -100,18 +100,15 @@ class A2UIProtocolSpec:
         if language in {"zh", "cn"}:
             role = (
                 "JiuwenSwarm 支持 A2UI 输出格式。当富交互界面适合当前回答时，"
-                "可以生成严格符合 A2UI 0.8 schema 的消息。"
+                "应生成严格符合 A2UI 0.8 schema 的消息。"
             )
             ui = (
-                "当用户需要列表、卡片、表单、确认结果、可点击操作或结构化信息比较时使用 A2UI。"
-                "单条叙述性解释、简短回答、敏感内容或不需要交互的回答保持纯文本。"
+                "交互场景用 A2UI，非交互（纯叙述、简短事实、寒暄）保持纯文本。"
             )
             workflow = (
-                "如果使用 A2UI，回答可以包含说明文本和一个或多个 A2UI JSON block。"
-                f"每个 block 必须用 {A2UI_OPEN_TAG} 和 {A2UI_CLOSE_TAG} 包装。"
-                "block 内必须是 JSON list，list 中每个元素都是 A2UI server-to-client message。"
-                "必须先输出 beginRendering，再输出 surfaceUpdate；如果使用数据绑定，再按需输出 dataModelUpdate。"
-                "父组件必须先于子组件出现。不要输出其他协议版本的 schema、字段或组件。"
+                "如果使用 A2UI，必须先输出 beginRendering，再输出 surfaceUpdate；"
+                "如果使用数据绑定，再按需输出 dataModelUpdate。"
+                "不要输出其他协议版本的 schema、字段或组件。"
             )
         else:
             role = (
@@ -120,20 +117,14 @@ class A2UIProtocolSpec:
                 "strictly validate against the A2UI 0.8 schema."
             )
             ui = (
-                "Use A2UI for lists, cards, forms, confirmations, clickable "
-                "actions, and structured comparisons. Keep single narrative explanations, "
-                "short answers, sensitive answers, and non-interactive replies as "
-                "plain text."
+                "Use A2UI for interactive scenarios; keep non-interactive "
+                "replies (narrative, brief facts, greetings) as plain text."
             )
             workflow = (
-                "When using A2UI, the response may contain conversational text and "
-                f"one or more A2UI JSON blocks wrapped in {A2UI_OPEN_TAG} and "
-                f"{A2UI_CLOSE_TAG}. The JSON inside each block MUST be a JSON list "
-                "of A2UI server-to-client messages. Emit beginRendering before "
-                "surfaceUpdate; include dataModelUpdate only when data binding is "
-                "needed. List parent components before child components. Do not "
-                "emit schema, fields, or components from any protocol version "
-                "other than 0.8."
+                "When using A2UI, emit beginRendering before surfaceUpdate; "
+                "include dataModelUpdate only when data binding is needed. "
+                "Do not emit schema, fields, or components from any protocol "
+                "version other than 0.8."
             )
 
         workflow = f"{workflow}\n\n{build_a2ui_autonomy_instruction(language)}"
