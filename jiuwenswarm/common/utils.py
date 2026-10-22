@@ -2647,6 +2647,32 @@ def _mask_named_sensitive_kv(text: str) -> str:
     return "".join(chunks)
 
 
+def _has_possible_json_container_prefix(text: str, start: int) -> bool:
+    """Reject SDK/Python repr prefixes without constructing JSONDecodeError.
+
+    Failed decoding computes line/column information over the entire prefix,
+    which is expensive for many fragments in a large log. Only reject starts
+    that cannot be JSON; let the decoder validate everything else. Bound the
+    nested-container lookahead so deeply nested input stays the decoder's job.
+    """
+    position = start
+    for _ in range(64):
+        container = text[position]
+        position += 1
+        while position < len(text) and text[position] in " \t\r\n":
+            position += 1
+        if position == len(text):
+            return False
+        token = text[position]
+        if container == "{":
+            return token in '"}'
+        if token in "[{":
+            continue
+        # JSONDecoder also accepts the nonstandard NaN/Infinity constants.
+        return token in '"]-0123456789tfnNI'
+    return True
+
+
 def _sanitize_log_text(text: str) -> str:
     """Redact JSON by value, preserving numbers and valid serialization.
 
@@ -2669,6 +2695,8 @@ def _sanitize_log_text(text: str) -> str:
         start = match.start()
         search_from = start + 1
         candidates += 1
+        if not _has_possible_json_container_prefix(text, start):
+            continue
         try:
             value, end = decoder.raw_decode(text, start)
         except (ValueError, RecursionError):

@@ -395,7 +395,7 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     monkeypatch.setattr(adapter, "_skip_own_instance_build", lambda: False)
     monkeypatch.setattr(adapter, "_refresh_multimodal_configs", MagicMock())
     monkeypatch.setattr(adapter, "_create_model", create_model)
-    monkeypatch.setattr("jiuwenswarm.server.runtime.moa_runtime.build_moa_runtime", lambda *_args, **_kwargs: moa_runtime)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.moa_runtime.build_moa_runtime", AsyncMock(return_value=moa_runtime))
     apply_model = MagicMock()
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", apply_model)
     monkeypatch.setattr(adapter, "_create_sys_operation", create_sys_operation)

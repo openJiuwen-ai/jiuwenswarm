@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
-import math
 from typing import Any, Callable
 
 from jiuwenswarm.common.model_catalog import ModelCatalog
@@ -96,7 +96,7 @@ def resolve_moa_settings(config: dict[str, Any], selection: ModelSelection | dic
     candidate["aggregator_route_id"] = core_group.routes[0].route_id
     candidate["verifier"]["route_id"] = core_group.routes[0].route_id if not settings["jev_enabled"] else ""
     fingerprint = hashlib.sha256(json.dumps(
-        {"settings": candidate, "group": core_group.model_dump()},
+        {"runtime_version": 2, "settings": candidate, "group": core_group.model_dump()},
         sort_keys=True, default=str,
     ).encode()).hexdigest()
     return candidate, core_group, fingerprint
@@ -105,31 +105,61 @@ def resolve_moa_settings(config: dict[str, Any], selection: ModelSelection | dic
 def moa_status(config: dict[str, Any], selection: ModelSelection | dict | None = None) -> dict[str, Any]:
     """Compatibility readiness DTO; a selected group is now required."""
     try:
-        runtime = build_moa_runtime(config, selection)
-        candidate, group, _ = resolve_moa_settings(config, selection)
+        from openjiuwen.core.foundation.llm.routing import get_model_group_models
+
+        _, group, _ = resolve_moa_settings(config, selection)
+        aggregator = get_model_group_models(group)[0]
         model_id = group.routes[0].model.model_id
         entry = ModelCatalog(config).get_model(model_id)["entry"]
         return {
             "configured": True,
-            "aggregator_model_name": runtime.model_name,
+            "aggregator_model_name": aggregator.model_name,
             "aggregator_alias": str(entry.get("alias") or ""),
         }
     except Exception:
         return {"configured": False}
 
 
-@dataclass(frozen=True)
+@dataclass
 class MoARuntime:
     aggregator: Any
     config: Any
     fingerprint: str
     model_name: str
+    _jev_client: Any = field(default=None, repr=False)
+    _close_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+
+    async def aclose(self) -> None:
+        """Close the owned transport once, settling it before propagating cancellation."""
+        if self._jev_client is None:
+            return
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._jev_client.aclose())
+        cancelled = False
+        while not self._close_task.done():
+            try:
+                await asyncio.shield(self._close_task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                # Read the settled task below so an earlier cancellation wins.
+                break
+        if cancelled:
+            try:
+                self._close_task.result()
+            except Exception:
+                from openjiuwen.core.common.logging import agent_logger
+
+                agent_logger.warning("MoA transport cleanup failed: reason=transport_close_failed")
+            raise asyncio.CancelledError
+        self._close_task.result()
 
 
-def build_moa_runtime(config: dict[str, Any], selection: ModelSelection | dict,
-                      *, can_access: Callable[[str, str], bool] | None = None) -> MoARuntime:
+async def build_moa_runtime(config: dict[str, Any], selection: ModelSelection | dict,
+                            *, can_access: Callable[[str, str], bool] | None = None) -> MoARuntime:
     from openjiuwen.core.foundation.llm.routing import get_model_group_models
-    from openjiuwen.harness.moa import LlmVerifierProgressScorer, MoAConfig, VerifierConfig
+    from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
+    from openjiuwen.harness.moa import JevConfig, LlmVerifierProgressScorer, MoAConfig, VerifierConfig
 
     candidate, group, fingerprint = resolve_moa_settings(config, selection, can_access=can_access)
     members = get_model_group_models(group)
@@ -141,75 +171,39 @@ def build_moa_runtime(config: dict[str, Any], selection: ModelSelection | dict,
         )
     references = tuple(member.model for member in members[1:])
     verifier = candidate["verifier"]
-    scorer = (
-        JevProgressScorer(**candidate["jev"])
-        if verifier["type"] == "jev"
-        else LlmVerifierProgressScorer(model=aggregator.model)
-    )
-    return MoARuntime(
-        aggregator=aggregator.model,
-        config=MoAConfig(
-            reference_models=references, mode="verifier_routed", scorer=scorer,
-            verifier=VerifierConfig(interval=verifier["interval"]),
-        ),
-        fingerprint=fingerprint,
-        model_name=aggregator.model_name,
-    )
+    async with AsyncExitStack() as resources:
+        client = None
+        if verifier["type"] == "jev":
+            client = JevSystemOneClient(**candidate["jev"])
+            owned = MoARuntime(
+                aggregator.model, None, fingerprint, aggregator.model_name, _jev_client=client,
+            )
+            async def close_on_failure(exc_type, _exc, _traceback):
+                try:
+                    await owned.aclose()
+                except Exception:
+                    from openjiuwen.core.common.logging import agent_logger
 
+                    agent_logger.warning("MoA transport cleanup failed: reason=transport_close_failed")
+                    if exc_type is None:
+                        raise
+                return False
 
-class JevProgressScorer:
-    """Score the same A..T rubric using System One's calibrated distribution.
-
-    Each checkpoint owns and closes its HTTP client, including cancellation;
-    no shared mutable progress or client leaks between sessions or event loops.
-    """
-
-    def __init__(self, *, api_key: str, api_base: str, model_name: str, client_factory=None):
-        self._settings = {"api_key": api_key, "api_base": api_base, "model_name": model_name}
-        self._factory = client_factory
-
-    async def __call__(self, problem: str, steps: tuple[str, ...], n_evaluations: int) -> float:
-        from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
-        from openjiuwen.core.foundation.llm.system_one.schema import ChoiceQuestion
-        from openjiuwen.harness.prompts.moa_verifier import build_progress_prompt, format_steps
-
-        if n_evaluations < 1:
-            raise ValueError("n_evaluations must be positive")
-        letters = tuple(chr(65 + index) for index in range(20))
-        question = ChoiceQuestion(
-            instructions=build_progress_prompt(problem, format_steps(steps), len(steps), [len(steps)]),
-            criteria={
-                letter: f"Task satisfaction probability {index / 19:.6f}"
-                for index, letter in enumerate(letters)
-            },
+            resources.push_async_exit(close_on_failure)
+            moa = MoAConfig(
+                reference_models=references, mode="jev_routed",
+                jev=JevConfig(client=client, interval=verifier["interval"]),
+            )
+        else:
+            moa = MoAConfig(
+                reference_models=references, mode="verifier_routed",
+                scorer=LlmVerifierProgressScorer(model=aggregator.model),
+                verifier=VerifierConfig(interval=verifier["interval"], n_evaluations=3),
+            )
+        runtime = owned if client is not None else MoARuntime(
+            aggregator=aggregator.model, config=None, fingerprint=fingerprint,
+            model_name=aggregator.model_name,
         )
-        factory = self._factory or JevSystemOneClient
-        async with factory(**self._settings) as client:
-            tasks = [asyncio.create_task(client.system_one(
-                {"task": problem, "steps": list(steps)}, {"progress": question},
-            )) for _ in range(n_evaluations)]
-            try:
-                responses = await asyncio.gather(*tasks)
-            except BaseException:
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                raise
-        scores = []
-        for response in responses:
-            answer = response.answers.get("progress")
-            probabilities = getattr(answer, "probabilities", None)
-            if getattr(answer, "type", None) != "choice" or not isinstance(probabilities, dict):
-                raise ValueError("JEV returned no progress distribution")
-            if set(probabilities) != set(letters):
-                raise ValueError("JEV returned incomplete progress levels")
-            if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in probabilities.values()):
-                raise ValueError("JEV probabilities must be numeric")
-            values = [float(probabilities[letter]) for letter in letters]
-            if any(not math.isfinite(value) or not 0 <= value <= 1 for value in values):
-                raise ValueError("JEV returned invalid probabilities")
-            total = sum(values)
-            if not 0.9 <= total <= 1.1:
-                raise ValueError("JEV probabilities do not form a distribution")
-            scores.append(sum(index / 19 * value for index, value in enumerate(values)) / total)
-        return sum(scores) / len(scores)
+        runtime.config = moa
+        resources.pop_all()
+        return runtime

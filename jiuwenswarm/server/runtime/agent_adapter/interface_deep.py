@@ -4000,12 +4000,15 @@ class JiuWenSwarmDeepAdapter:
                 sub_mode=self._session_instance_sub_mode,
                 **self._session_instance_extra_create_kwargs(),
             )
-            # The same-class child retains the selection used to build its runtime.
-            adapter._collaboration_model_selection = selection  # pylint: disable=protected-access
-            adapter.persist_skill_retrieval_session_profile()
-            instance_ready_at = time.monotonic()
-
-            await adapter.start_interaction(session_id=sid)
+            try:
+                # The same-class child retains the selection used to build its runtime.
+                adapter._collaboration_model_selection = selection  # pylint: disable=protected-access
+                adapter.persist_skill_retrieval_session_profile()
+                instance_ready_at = time.monotonic()
+                await adapter.start_interaction(session_id=sid)
+            except BaseException:
+                await adapter._close_moa_runtime(suppress_errors=True)
+                raise
             interaction_ready_at = time.monotonic()
 
             self._session_adapters[sid] = adapter
@@ -7637,7 +7640,7 @@ class JiuWenSwarmDeepAdapter:
         self._stable_selection_cache = {requested: (fingerprint, model)}
         return model
 
-    def _prepare_moa_for_build(self, config_base: dict[str, Any], model: Model | None = None) -> Model:
+    async def _prepare_moa_for_build(self, config_base: dict[str, Any], model: Model | None = None) -> Model:
         """Freeze the session's selected group and scorer before initialization."""
         from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled
 
@@ -7647,8 +7650,7 @@ class JiuWenSwarmDeepAdapter:
             snapshot, selection, mode=self._session_instance_mode,
             is_cron=self._is_cron_execution_session(self._parent_session_id),
         )
-        self._moa_runtime = None
-        self._moa_fingerprint = None
+        await self._close_moa_runtime()
         if not self._moa_enabled:
             return model if model is not None else self._create_model(config_base)
         if is_team_mode(self._session_instance_mode) or self._is_cron_execution_session(self._parent_session_id):
@@ -7656,7 +7658,7 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.server.runtime.moa_runtime import build_moa_runtime
 
         snapshot = self._instance_overrides.get("moa_config_snapshot") or config_base
-        self._moa_runtime = build_moa_runtime(
+        self._moa_runtime = await build_moa_runtime(
             snapshot, selection, can_access=self._instance_overrides.get("moa_can_access"),
         )
         self._moa_fingerprint = self._moa_runtime.fingerprint
@@ -11767,6 +11769,7 @@ class JiuWenSwarmDeepAdapter:
             await self._create_instance(config, mode=mode, sub_mode=sub_mode,
                                         agent_definition=agent_definition)
         except BaseException:
+            await self._close_moa_runtime(suppress_errors=True)
             if self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
                 await self._isolate_permission_instance()
             raise
@@ -11867,7 +11870,7 @@ class JiuWenSwarmDeepAdapter:
                 self._start_mcp_prewarm()
             return
 
-        model = self._prepare_moa_for_build(config_base)
+        model = await self._prepare_moa_for_build(config_base)
         if (
             self._is_session_scoped_adapter
             and self._skill_retrieval_tools_enabled_for_runtime(config_base)
@@ -13774,7 +13777,33 @@ class JiuWenSwarmDeepAdapter:
             # Otherwise the next process can replay an already approved tool.
             await session.post_run()
 
+    async def _close_moa_runtime(self, *, suppress_errors: bool = False) -> None:
+        runtime = self._moa_runtime
+        try:
+            if runtime is not None:
+                await runtime.aclose()
+        except Exception:
+            logger.warning("MoA transport cleanup failed: reason=transport_close_failed")
+            if not suppress_errors:
+                raise
+        finally:
+            self._moa_runtime = None
+            self._moa_fingerprint = None
+
     async def cleanup(self) -> None:
+        """Release adapter-owned resources even when another cleanup step fails."""
+        try:
+            await self._cleanup_adapter_resources()
+        except BaseException:
+            try:
+                await self._close_moa_runtime(suppress_errors=True)
+            except asyncio.CancelledError:
+                logger.warning("MoA transport cleanup interrupted: reason=cleanup_cancelled")
+            raise
+        else:
+            await self._close_moa_runtime()
+
+    async def _cleanup_adapter_resources(self) -> None:
         """Release adapter-owned external runtime resources."""
         from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
             stop_external_harness,

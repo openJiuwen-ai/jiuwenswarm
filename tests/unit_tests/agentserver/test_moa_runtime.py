@@ -13,7 +13,7 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.moa_runtime import (
-    JevProgressScorer, build_moa_runtime, moa_status, resolve_moa_settings,
+    MoARuntime, build_moa_runtime, moa_status, resolve_moa_settings,
 )
 
 
@@ -49,9 +49,10 @@ def moa_config():
     }
 
 
-def test_group_parameters_and_member_overrides_survive_compilation(moa_config):
+@pytest.mark.asyncio
+async def test_group_parameters_and_member_overrides_survive_compilation(moa_config):
     saved = deepcopy(moa_config)
-    runtime = build_moa_runtime(moa_config, SELECTION)
+    runtime = await build_moa_runtime(moa_config, SELECTION)
     assert runtime.model_name == "model-a"
     assert runtime.aggregator.model_config.temperature == 0.5
     assert runtime.aggregator.model_config.max_tokens == 123
@@ -61,11 +62,13 @@ def test_group_parameters_and_member_overrides_survive_compilation(moa_config):
     assert runtime.config.scorer._model is runtime.aggregator
     assert runtime.config.mode == "verifier_routed"
     assert runtime.config.verifier.interval == 3
+    assert runtime.config.verifier.n_evaluations == 3
     assert moa_config == saved
 
 
 @pytest.mark.parametrize("jev_enabled", [False, True])
-def test_single_enabled_member_uses_its_model_without_moa(moa_config, jev_enabled, monkeypatch):
+@pytest.mark.asyncio
+async def test_single_enabled_member_uses_its_model_without_moa(moa_config, jev_enabled, monkeypatch):
     from openjiuwen.core.single_agent import AgentCard
 
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
@@ -81,7 +84,7 @@ def test_single_enabled_member_uses_its_model_without_moa(moa_config, jev_enable
             lambda: SimpleNamespace(decrypt=lambda _: "test-jev-key"),
         )
 
-    runtime = build_moa_runtime(moa_config, SELECTION)
+    runtime = await build_moa_runtime(moa_config, SELECTION)
     assert runtime.model_name == "model-b"
     assert runtime.aggregator.model_config.temperature == 0.7
     assert runtime.config is None
@@ -103,29 +106,33 @@ def test_single_enabled_member_uses_its_model_without_moa(moa_config, jev_enable
     )) is runtime.aggregator
 
 
-def test_status_is_safe_and_archival_roles_never_control_verification(moa_config):
+@pytest.mark.asyncio
+async def test_status_is_safe_and_archival_roles_never_control_verification(moa_config):
     assert moa_status(moa_config, SELECTION) == {
         "configured": True, "aggregator_model_name": "model-a", "aggregator_alias": "Alias a",
     }
     moa_config["moa"]["verifier"]["route_id"] = "rte_b"
-    runtime = build_moa_runtime(moa_config, SELECTION)
+    runtime = await build_moa_runtime(moa_config, SELECTION)
     assert runtime.config.scorer._model is runtime.aggregator
     assert runtime.model_name == "model-a"
 
 
-def test_jev_stored_credential_is_decrypted_only_in_runtime(moa_config, monkeypatch):
+@pytest.mark.asyncio
+async def test_jev_stored_credential_is_decrypted_only_in_runtime(moa_config, monkeypatch):
     moa_config["experimental"]["multi_model_collaboration"].update({"jev_enabled": True, "jev": {"api_key": "encrypted-value"}})
     monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: SimpleNamespace(decrypt=lambda _: "resolved-secret"))
-    runtime = build_moa_runtime(moa_config, SELECTION)
-    assert runtime.config.scorer._settings["api_key"] == "resolved-secret"
+    runtime = await build_moa_runtime(moa_config, SELECTION)
+    assert runtime.config.jev.client._api_key == "resolved-secret"
     assert moa_config["experimental"]["multi_model_collaboration"]["jev"]["api_key"] == "encrypted-value"
     public = moa_status(moa_config, SELECTION)
     assert public["configured"] is True
     assert "resolved-secret" not in str(public)
+    await runtime.aclose()
 
 
 @pytest.mark.parametrize("change", ["group", "aggregator", "member", "interval"])
-def test_stale_configuration_fails_before_an_invocation(moa_config, change):
+@pytest.mark.asyncio
+async def test_stale_configuration_fails_before_an_invocation(moa_config, change):
     if change == "group":
         moa_config["models"]["groups"][0]["enabled"] = False
     elif change == "aggregator":
@@ -137,7 +144,7 @@ def test_stale_configuration_fails_before_an_invocation(moa_config, change):
         moa_config["experimental"]["multi_model_collaboration"]["verifier_interval"] = 0
     assert moa_status(moa_config, SELECTION) == {"configured": False}
     with pytest.raises(Exception):
-        build_moa_runtime(moa_config, SELECTION)
+        await build_moa_runtime(moa_config, SELECTION)
 
 
 def test_fingerprint_tracks_member_credentials_and_requests(moa_config):
@@ -177,11 +184,12 @@ def test_group_member_with_api_key_auth_rejects_blank_credential(moa_config: dic
         resolve_moa_settings(moa_config, SELECTION)
 
 
-def test_unrelated_work_reload_keeps_the_installed_moa_objects(moa_config, monkeypatch):
+@pytest.mark.asyncio
+async def test_unrelated_work_reload_keeps_the_installed_moa_objects(moa_config, monkeypatch):
     from openjiuwen.core.single_agent import AgentCard
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
-    runtime = build_moa_runtime(moa_config, SELECTION)
+    runtime = await build_moa_runtime(moa_config, SELECTION)
     adapter = JiuWenSwarmDeepAdapter()
     adapter.mark_as_session_scoped("moa-reload")
     adapter._moa_runtime = runtime
@@ -198,13 +206,14 @@ def test_unrelated_work_reload_keeps_the_installed_moa_objects(moa_config, monke
 
 @pytest.mark.parametrize("ordinary", [{"type": "model", "id": "deleted"}, "malformed", None])
 @pytest.mark.parametrize("profile", ["work", "code"])
-def test_moa_validation_and_resolution_ignore_ordinary_selection(moa_config, monkeypatch, ordinary, profile):
+@pytest.mark.asyncio
+async def test_moa_validation_and_resolution_ignore_ordinary_selection(moa_config, monkeypatch, ordinary, profile):
     from jiuwenswarm.common.model_errors import ModelSelectionError
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
     from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
 
     adapter = (JiuWenSwarmDeepAdapter if profile == "work" else JiuwenSwarmCodeAdapter)()
-    runtime = build_moa_runtime(moa_config, SELECTION)
+    runtime = await build_moa_runtime(moa_config, SELECTION)
     adapter._moa_runtime = runtime
     saved_selection = AsyncMock(side_effect=ModelSelectionError("MODEL_SELECTION_NOT_FOUND", "deleted ordinary selection"))
     # Synchronous getter is deliberately unusable. Enhanced requests must not
@@ -219,7 +228,8 @@ def test_moa_validation_and_resolution_ignore_ordinary_selection(moa_config, mon
     saved_selection.assert_not_called()
 
 
-def test_moa_build_precedes_invalid_ordinary_default_group(moa_config, monkeypatch):
+@pytest.mark.asyncio
+async def test_moa_build_precedes_invalid_ordinary_default_group(moa_config, monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     moa_config["models"]["groups"].insert(0, {
@@ -231,7 +241,7 @@ def test_moa_build_precedes_invalid_ordinary_default_group(moa_config, monkeypat
     adapter._session_instance_mode = "agent.work.normal"
     ordinary_build = AsyncMock(side_effect=AssertionError("ordinary model must not be constructed"))
     monkeypatch.setattr(adapter, "_create_model", ordinary_build)
-    selected = adapter._prepare_moa_for_build(moa_config)
+    selected = await adapter._prepare_moa_for_build(moa_config)
     assert selected is adapter._moa_runtime.aggregator
     assert selected.model_config.model_name == "model-a"
     assert adapter._model_client_config is selected.model_client_config
@@ -278,7 +288,8 @@ async def test_work_public_creation_uses_moa_before_ordinary_selection(moa_confi
     ordinary_build.assert_not_called()
 
 
-def test_model_and_group_crud_update_the_next_moa_snapshot(moa_config, monkeypatch):
+@pytest.mark.asyncio
+async def test_model_and_group_crud_update_the_next_moa_snapshot(moa_config, monkeypatch):
     from jiuwenswarm.common import config as config_module
     from jiuwenswarm.common.model_catalog import ModelCatalog
 
@@ -298,12 +309,12 @@ def test_model_and_group_crud_update_the_next_moa_snapshot(moa_config, monkeypat
     monkeypatch.setattr(config_module, "get_config", lambda: deepcopy(state))
     monkeypatch.setattr(config_module, "get_crypto_provider", lambda: None)
     monkeypatch.setattr(ModelCatalog, "find_references", lambda *_args, **_kwargs: [])
-    installed = build_moa_runtime(state, SELECTION)
+    installed = await build_moa_runtime(state, SELECTION)
     config_module.upsert_model_resource({"model_id": "mdl_b", "model_client_config": {"api_key": "rotated-test-key"}})
     group = deepcopy(state["models"]["groups"][0])
     group["request_config"]["max_tokens"] = 777
     config_module.upsert_model_group_resource(group)
-    refreshed = build_moa_runtime(state, SELECTION)
+    refreshed = await build_moa_runtime(state, SELECTION)
     assert refreshed.fingerprint != installed.fingerprint
     assert installed.aggregator.model_config.max_tokens == 123
     assert refreshed.aggregator.model_config.max_tokens == 777
@@ -313,103 +324,8 @@ def test_model_and_group_crud_update_the_next_moa_snapshot(moa_config, monkeypat
     assert config_module.delete_model_resource("model_group", "mgp_moa", cron_references_checked=True)
     assert moa_status(state, SELECTION) == {"configured": False}
     with pytest.raises(Exception, match="unknown model_group_id"):
-        build_moa_runtime(state, SELECTION)
+        await build_moa_runtime(state, SELECTION)
     assert installed.aggregator.model_config.max_tokens == 123
-
-
-def _answer(probabilities):
-    return SimpleNamespace(answers={"progress": SimpleNamespace(type="choice", probabilities=probabilities)})
-
-
-class _JevClient:
-    def __init__(self, answer=None, error=None):
-        self.answer, self.error = answer, error
-        self.closed = False
-        self.entered = asyncio.Event()
-        self.calls = []
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_):
-        self.closed = True
-
-    async def system_one(self, state, questions):
-        self.calls.append((state, questions))
-        self.entered.set()
-        if self.error is not None:
-            raise self.error
-        if self.answer is None:
-            await asyncio.Event().wait()
-        return self.answer
-
-
-def _jev_scorer(client):
-    return JevProgressScorer(
-        api_key="write-only", api_base="https://example.test", model_name="jev",
-        client_factory=lambda **_: client,
-    )
-
-
-@pytest.mark.asyncio
-async def test_jev_uses_full_grade_distribution_and_closes_client():
-    probabilities = {chr(65 + index): 0.0 for index in range(20)}
-    probabilities.update({"A": 0.25, "T": 0.75})
-    client = _JevClient(answer=_answer(probabilities))
-    assert await _jev_scorer(client)("Task", ("Observed result",), 3) == 0.75
-    assert len(client.calls) == 3
-    assert len(client.calls[0][1]["progress"].criteria) == 20
-    assert "strict, skeptical" in client.calls[0][1]["progress"].instructions
-    assert client.closed
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("invalid", ["missing", "nan", "negative", "empty", "bool", "text"])
-async def test_jev_invalid_distribution_is_a_failure(invalid):
-    values = {chr(65 + index): 0.05 for index in range(20)}
-    if invalid == "missing":
-        values.pop("A")
-    elif invalid == "nan":
-        values["A"] = float("nan")
-    elif invalid == "negative":
-        values["A"] = -0.1
-    elif invalid == "bool":
-        values["A"] = True
-    elif invalid == "text":
-        values["A"] = "0.05"
-    else:
-        values = dict.fromkeys(values, 0.0)
-    client = _JevClient(answer=_answer(values))
-    with pytest.raises(ValueError):
-        await _jev_scorer(client)("Task", ("Step",), 1)
-    assert client.closed
-
-
-@pytest.mark.asyncio
-async def test_jev_cancel_and_transport_error_settle_requests_and_close():
-    client = _JevClient()
-    task = asyncio.create_task(_jev_scorer(client)("Task", ("Step",), 3))
-    entered = asyncio.create_task(client.entered.wait())
-    try:
-        done, _ = await asyncio.wait(
-            {task, entered}, timeout=2, return_when=asyncio.FIRST_COMPLETED,
-        )
-        if task in done:
-            await task
-            pytest.fail("JEV scorer completed before cancellation")
-        assert entered in done, "JEV scorer did not enter the client"
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-    finally:
-        task.cancel()
-        entered.cancel()
-        await asyncio.gather(task, entered, return_exceptions=True)
-    assert client.closed
-    failed = _JevClient(error=RuntimeError("network failure"))
-    with pytest.raises(RuntimeError, match="network"):
-        await _jev_scorer(failed)("Task", ("Step",), 3)
-    assert failed.closed
 
 
 @pytest.mark.asyncio
@@ -500,17 +416,19 @@ async def test_web_status_rpc_requires_available_agent_server(monkeypatch, missi
 
 
 @pytest.mark.parametrize("forbidden_kind,forbidden_id", [("model_group", "mgp_moa"), ("model", "mdl_b")])
-def test_moa_enforces_group_and_member_permissions(moa_config, forbidden_kind, forbidden_id):
+@pytest.mark.asyncio
+async def test_moa_enforces_group_and_member_permissions(moa_config, forbidden_kind, forbidden_id):
     from jiuwenswarm.common.model_errors import ModelSelectionError
 
     with pytest.raises(ModelSelectionError, match="forbidden"):
-        build_moa_runtime(moa_config, SELECTION, can_access=lambda kind, resource: (kind, resource) != (forbidden_kind, forbidden_id))
+        await build_moa_runtime(moa_config, SELECTION, can_access=lambda kind, resource: (kind, resource) != (forbidden_kind, forbidden_id))
 
 
-def test_first_enabled_route_is_aggregator_and_default_verifier(moa_config):
+@pytest.mark.asyncio
+async def test_first_enabled_route_is_aggregator_and_default_verifier(moa_config):
     routes = moa_config["models"]["groups"][0]["routes"]
     routes[0]["enabled"] = False
-    runtime = build_moa_runtime(moa_config, {**SELECTION, "route_id": "rte_c"})
+    runtime = await build_moa_runtime(moa_config, {**SELECTION, "route_id": "rte_c"})
     assert runtime.model_name == "model-b"
     assert runtime.config.scorer._model is runtime.aggregator
     assert runtime.config.reference_models[0].model_config.model_name == "model-c"
@@ -531,16 +449,19 @@ def test_ordinary_model_and_old_flag_never_enable_moa(moa_config):
     assert effective_moa_enabled(moa_config, None, mode="agent.work.normal") is False
 
 
-def test_jev_interval_and_default_change_affect_next_runtime(moa_config, monkeypatch):
+@pytest.mark.asyncio
+async def test_jev_interval_and_default_change_affect_next_runtime(moa_config, monkeypatch):
     monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
-    before = build_moa_runtime(moa_config, SELECTION)
+    before = await build_moa_runtime(moa_config, SELECTION)
     moa_config["experimental"]["multi_model_collaboration"].update({"jev_enabled": True, "verifier_interval": 1, "jev": {"api_key": "jev-secret"}})
     routes = moa_config["models"]["groups"][0]["routes"]
     routes[0], routes[1] = routes[1], routes[0]
-    after = build_moa_runtime(moa_config, SELECTION)
+    after = await build_moa_runtime(moa_config, SELECTION)
     assert before.model_name == "model-a" and before.config.verifier.interval == 3
-    assert after.model_name == "model-b" and after.config.verifier.interval == 1
-    assert isinstance(after.config.scorer, JevProgressScorer)
+    assert after.model_name == "model-b" and after.config.jev.interval == 1
+    assert after.config.scorer is None
+    assert after.config.mode == "jev_routed"
+    await after.aclose()
     assert before.fingerprint != after.fingerprint
 
 
@@ -584,3 +505,212 @@ def test_global_default_group_retains_upstream_team_and_cron_priority(moa_config
     adapter._is_cron_execution_session = lambda _: kind == "cron"
     request = AgentRequest(request_id="legacy", session_id="legacy", params={"model_name": "model-b"})
     assert adapter._requested_model_name(request) == "model_group:mgp_moa"
+
+
+@pytest.mark.asyncio
+async def test_status_and_single_member_never_construct_jev_transport(moa_config, monkeypatch):
+    moa_config["experimental"]["multi_model_collaboration"].update({
+        "jev_enabled": True, "jev": {"api_key": "test-key"},
+    })
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
+    def unexpected_client(**_kwargs):
+        raise AssertionError("Status and a single member must not create JEV transport")
+    monkeypatch.setattr("openjiuwen.core.foundation.llm.system_one.JevSystemOneClient", unexpected_client)
+    assert moa_status(moa_config, SELECTION)["configured"] is True
+    for route in moa_config["models"]["groups"][0]["routes"][1:]:
+        route["enabled"] = False
+    runtime = await build_moa_runtime(moa_config, SELECTION)
+    assert runtime.config is None
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_jev_factory_closes_client_on_configuration_failure(moa_config, monkeypatch):
+    import openjiuwen.harness.moa as moa
+    from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
+
+    moa_config["experimental"]["multi_model_collaboration"].update({
+        "jev_enabled": True, "jev": {"api_key": "test-key"},
+    })
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
+    closed = AsyncMock()
+    original_close = JevSystemOneClient.aclose
+    async def close(client):
+        await closed()
+        await original_close(client)
+    monkeypatch.setattr(JevSystemOneClient, "aclose", close)
+    def invalid_config(**_kwargs):
+        raise ValueError("configuration failed")
+    monkeypatch.setattr(moa, "MoAConfig", invalid_config)
+    with pytest.raises(ValueError, match="configuration failed"):
+        await build_moa_runtime(moa_config, SELECTION)
+    closed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_is_idempotent_and_settles_before_cancellation():
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def close():
+        entered.set()
+        await release.wait()
+    client = SimpleNamespace(aclose=AsyncMock(side_effect=close))
+    runtime = MoARuntime(None, None, "fingerprint", "model", _jev_client=client)
+    task = asyncio.create_task(runtime.aclose())
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await runtime.aclose()
+    client.aclose.assert_awaited_once()
+    assert runtime._close_task.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter_kind", ["work", "code"])
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_adapter_creation_failure_closes_owned_runtime(monkeypatch, adapter_kind, failure):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+
+    adapter = JiuWenSwarmDeepAdapter() if adapter_kind == "work" else JiuwenSwarmCodeAdapter()
+    runtime = SimpleNamespace(aclose=AsyncMock())
+    async def fail(*_args, **_kwargs):
+        adapter._moa_runtime = runtime
+        raise failure()
+    monkeypatch.setattr(adapter, "_create_instance", fail)
+    monkeypatch.setattr(adapter, "_uses_smart_permission_lifecycle", lambda _: False)
+    with pytest.raises(failure):
+        await adapter.create_instance()
+    runtime.aclose.assert_awaited_once()
+    assert adapter._moa_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_adapter_cleanup_closes_transport_when_other_cleanup_fails(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    adapter = JiuWenSwarmDeepAdapter()
+    runtime = SimpleNamespace(aclose=AsyncMock())
+    adapter._moa_runtime = runtime
+    monkeypatch.setattr(adapter, "_cleanup_adapter_resources", AsyncMock(side_effect=RuntimeError("cleanup failed")))
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await adapter.cleanup()
+    runtime.aclose.assert_awaited_once()
+    assert adapter._moa_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_preparing_runtime_closes_old_transport_before_replacement(moa_config, monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    adapter = JiuWenSwarmDeepAdapter()
+    old = SimpleNamespace(aclose=AsyncMock())
+    adapter._moa_runtime = old
+    adapter._instance_overrides = {"moa_model_selection": SELECTION}
+    adapter._session_instance_mode = "agent.work.normal"
+    await adapter._prepare_moa_for_build(moa_config)
+    old.aclose.assert_awaited_once()
+    assert adapter._moa_runtime is not old
+    await adapter._close_moa_runtime()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_session_start_failure_closes_uncached_child(moa_config, monkeypatch, failure):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    root = interface_deep.JiuWenSwarmDeepAdapter()
+    child = interface_deep.JiuWenSwarmDeepAdapter()
+    child.mark_as_session_scoped("failed-start")
+    runtime = MoARuntime(None, None, "fingerprint", "model", _jev_client=SimpleNamespace(aclose=AsyncMock()))
+    async def create(*_args, **_kwargs):
+        child._moa_runtime = runtime
+    monkeypatch.setattr(root, "_new_session_scoped_adapter", lambda _: child)
+    monkeypatch.setattr(root, "_load_skill_retrieval_session_profile", lambda _: None)
+    monkeypatch.setattr(child, "restore_skill_retrieval_session", lambda *_: None)
+    monkeypatch.setattr(child, "persist_skill_retrieval_session_profile", lambda: None)
+    monkeypatch.setattr(child, "create_instance", create)
+    monkeypatch.setattr(child, "start_interaction", AsyncMock(side_effect=failure()))
+    monkeypatch.setattr(interface_deep, "load_persisted_external_harness_binding", lambda _: None)
+    monkeypatch.setattr(interface_deep, "get_config", lambda: moa_config)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata", lambda _: {})
+    with pytest.raises(failure):
+        await root._get_or_create_session_adapter("failed-start", model_selection=SELECTION)
+    runtime._jev_client.aclose.assert_awaited_once()
+    assert "failed-start" not in root._session_adapters
+
+
+@pytest.mark.asyncio
+async def test_factory_cleanup_error_preserves_original_build_failure(moa_config, monkeypatch):
+    import openjiuwen.harness.moa as moa
+    from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
+
+    moa_config["experimental"]["multi_model_collaboration"].update({
+        "jev_enabled": True, "jev": {"api_key": "test-key"},
+    })
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
+    original_close = JevSystemOneClient.aclose
+    async def failing_close(client):
+        await original_close(client)
+        raise RuntimeError("private provider failure")
+    monkeypatch.setattr(JevSystemOneClient, "aclose", failing_close)
+    def invalid_config(**_kwargs):
+        raise ValueError("original configuration failed")
+    monkeypatch.setattr(moa, "MoAConfig", invalid_config)
+    with pytest.raises(ValueError, match="original configuration failed"):
+        await build_moa_runtime(moa_config, SELECTION)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_adapter_cleanup_preserves_primary_failure_when_close_fails(monkeypatch, failure):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    adapter = JiuWenSwarmDeepAdapter()
+    primary = failure("original cleanup failure")
+    runtime = MoARuntime(None, None, "fingerprint", "model", _jev_client=SimpleNamespace(
+        aclose=AsyncMock(side_effect=ValueError("private transport error")),
+    ))
+    adapter._moa_runtime = runtime
+    monkeypatch.setattr(adapter, "_cleanup_adapter_resources", AsyncMock(side_effect=primary))
+    with pytest.raises(failure) as caught:
+        await adapter.cleanup()
+    assert caught.value is primary
+    assert runtime._close_task.done()
+    runtime._jev_client.aclose.assert_awaited_once()
+    assert adapter._moa_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_preserves_cancellation_when_transport_close_fails():
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def failing_close():
+        entered.set()
+        await release.wait()
+        raise ValueError("private transport error")
+    runtime = MoARuntime(None, None, "fingerprint", "model", _jev_client=SimpleNamespace(
+        aclose=AsyncMock(side_effect=failing_close),
+    ))
+    task = asyncio.create_task(runtime.aclose())
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert runtime._close_task.done()
+    runtime._jev_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_propagates_transport_failure_without_primary_failure():
+    runtime = MoARuntime(None, None, "fingerprint", "model", _jev_client=SimpleNamespace(
+        aclose=AsyncMock(side_effect=ValueError("transport failed")),
+    ))
+    with pytest.raises(ValueError, match="transport failed"):
+        await runtime.aclose()
+    assert runtime._close_task.done()

@@ -963,6 +963,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 build_context=build_context, agent_definition=agent_definition,
             )
         except BaseException:
+            await self._close_moa_runtime(suppress_errors=True)
             if self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
                 await self._isolate_permission_instance()
             raise
@@ -1092,11 +1093,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             mode=self._session_instance_mode,
             is_cron=self._is_cron_execution_session(self._parent_session_id),
         ):
-            model = self._prepare_moa_for_build(config_base)
+            model = await self._prepare_moa_for_build(config_base)
         else:
             self._moa_enabled = False
-            self._moa_runtime = None
-            self._moa_fingerprint = None
+            await self._close_moa_runtime()
             if spec is None or spec.model is None:
                 model = self._create_model(config_base)
 
