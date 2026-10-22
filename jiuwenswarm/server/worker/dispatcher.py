@@ -14,6 +14,7 @@ from dataclasses import asdict
 from enum import Enum
 from typing import Any
 
+from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.ipc.protocol import (
@@ -382,6 +383,17 @@ class WorkerDispatcher:
             )
             self._bridge.events.complete(dispatch_id, state="failed", error=self._failure or "worker queue is full")
             return
+        # A resident worker outlives SDK installs made from the settings panel
+        # (the gateway process), so refresh the managed paths before this turn;
+        # team members backed by external CLIs probe and import them here.
+        try:
+            activate_external_cli_runtime_paths()
+        except Exception:  # noqa: BLE001 - optional capability must not fail the turn
+            logger.warning(
+                "[Worker] managed external CLI runtime activation failed; "
+                "external CLI members may stay unavailable this turn",
+                exc_info=True,
+            )
         gen_token = begin_request_generation(generation)
         dispatch_token = begin_request_dispatch(dispatch_id)
         from jiuwenswarm.runtime.execution_telemetry import execution_entry_sink, sdk_entry_sink

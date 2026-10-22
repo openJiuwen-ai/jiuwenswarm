@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -18,14 +19,16 @@ from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
+from jiuwenswarm.common.config_panel.config_set_handlers import (
+    flatten_external_cli_agents_for_config_panel as _flatten_external_cli_agents_for_config_panel,
+    flatten_modes_team_for_config_panel as _flatten_modes_team_for_config_panel,
+    flatten_symphony_for_config_panel as _flatten_symphony_for_config_panel,
+    inject_external_cli_publish_url as _inject_external_cli_publish_url,
+)
 from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,
     _build_external_cli_publish_url,
     _detect_external_cli_agent,
-    _flatten_external_cli_agents_for_config_panel,
-    _flatten_modes_team_for_config_panel,
-    _flatten_symphony_for_config_panel,
-    _inject_external_cli_publish_url,
     _normalize_feishu_conf,
     _normalize_xiaoyi_conf,
     _register_web_handlers,
@@ -128,6 +131,71 @@ async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
     )
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "A4P_WEB_SESSION_REQUIRED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cli_agent", "package", "relative"),
+    [("claude", "claude_agent_sdk", "_bundled/claude"),
+     ("codex", "codex_cli_bin", "bin/codex")],
+)
+@pytest.mark.parametrize("runtime_state", ["current", "update_required"])
+@pytest.mark.parametrize("platform_name", ["nt", "posix"])
+async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
+    monkeypatch, tmp_path, cli_agent, package, relative, runtime_state, platform_name
+):
+    from jiuwenswarm.common import external_cli_runtime as runtime
+
+    site = tmp_path / cli_agent / "site-packages"
+    suffix = ".exe" if platform_name == "nt" else ""
+    executable = site / package / (relative + suffix)
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    (site / package / "__init__.py").touch()
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    original_find_spec = importlib.util.find_spec
+
+    def find_spec(name, *args, **kwargs):
+        if name == package:
+            if str(site) not in sys.path:
+                return None
+            return importlib.util.spec_from_file_location(name, site / package / "__init__.py")
+        return original_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: True)
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(runtime, "external_cli_runtime_names", lambda: [cli_agent])
+    monkeypatch.setattr(runtime, "_runtime_site_packages", lambda _agent: site)
+    monkeypatch.setattr(runtime, "get_external_cli_runtime_status", lambda _agent: {"runtime_state": runtime_state})
+    # Replace only this module's reference, not the process-wide os.name.
+    monkeypatch.setattr(config_set_handlers, "os", SimpleNamespace(name=platform_name))
+    competing_cli = tmp_path / "path-bin" / (cli_agent + suffix)
+    competing_cli.parent.mkdir()
+    competing_cli.touch()
+    monkeypatch.setattr(
+        config_set_handlers.shutil, "which",
+        lambda name: str(competing_cli) if name == cli_agent and runtime_state == "current" else None,
+    )
+    monkeypatch.setattr(config_set_handlers, "external_cli_reference_version", lambda _agent: "1.2.3")
+    monkeypatch.setattr(config_set_handlers, "run_external_cli_version_command", lambda *_args: ("1.2.3", ""))
+    assert config_set_handlers.external_cli_managed_cli_path(cli_agent) == ""
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True)))
+
+    await channel.methods["external_cli.detect"](
+        object(), "detect-cold", {"cli_agent": cli_agent, "use_builtin": True}, "session"
+    )
+
+    result = channel.responses[-1]
+    assert result["ok"] is True
+    if runtime_state == "current":
+        assert result["payload"]["status"] == "ok"
+        assert Path(result["payload"]["path"]) == executable
+        assert result["payload"]["version"] == "1.2.3"
+    else:
+        assert result["payload"]["status"] == "missing"
+        assert str(site) not in sys.path
 
 
 class FakeAgentClient:
@@ -1535,8 +1603,8 @@ async def test_config_get_returns_jev_credentials_like_model_settings(monkeypatc
     payload = channel.responses[-1]["payload"]
     assert payload["jev_openrouter_api_key"] == "synthetic-openrouter-secret"
     assert payload["jev_typesafe_api_key"] == "synthetic-typesafe-secret"
-    assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_openrouter_api_key"] == "OPENROUTER_API_KEY"
-    assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_typesafe_api_key"] == "TYPESAFE_API_KEY"
+    assert config_set_handlers.CONFIG_SET_ENV_MAP["jev_openrouter_api_key"] == "OPENROUTER_API_KEY"
+    assert config_set_handlers.CONFIG_SET_ENV_MAP["jev_typesafe_api_key"] == "TYPESAFE_API_KEY"
 
 
 @pytest.mark.asyncio
@@ -1582,11 +1650,11 @@ async def test_trajectory_ui_switch_round_trips_through_config_rpc(monkeypatch):
     )
     assert persisted == [True]
     assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_enabled"]
-    change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_enabled"])
+    change_set = config_set_handlers.ConfigChangeSet({}, ["trajectory_ui_enabled"])
     assert change_set.reload_scopes == {"agent_runtime", "web_ui"}
     # Diagnosis switches the trajectory data plane on too, so it needs the same
     # runtime sync as the trajectory view switch.
-    diagnosis_change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_diagnosis_enabled"])
+    diagnosis_change_set = config_set_handlers.ConfigChangeSet({}, ["trajectory_ui_diagnosis_enabled"])
     assert diagnosis_change_set.reload_scopes == {"agent_runtime", "web_ui"}
 
 
@@ -1618,7 +1686,7 @@ async def test_task_full_duplex_switch_round_trips_through_config_rpc(monkeypatc
     )
     assert persisted == [True]
     assert channel.responses[-1]["payload"]["updated"] == ["task_full_duplex_enabled"]
-    change_set = app_web_handlers._ConfigChangeSet({}, ["task_full_duplex_enabled"])
+    change_set = config_set_handlers.ConfigChangeSet({}, ["task_full_duplex_enabled"])
     assert change_set.reload_scopes == {"web_ui"}
 
 
@@ -1704,30 +1772,30 @@ async def test_config_save_all_persists_rsi_switch(monkeypatch):
 
 
 def test_media_capability_config_uses_multimodal_hot_reload_scope():
-    for env_key in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS:
-        change_set = app_web_handlers._ConfigChangeSet({env_key: "true"}, [])
+    for env_key in config_set_handlers.MULTIMODAL_RELOAD_ENV_KEYS:
+        change_set = config_set_handlers.ConfigChangeSet({env_key: "true"}, [])
         assert change_set.reload_scopes == {"multimodal"}
 
 
 def test_media_capability_provider_identity_has_exact_env_contract():
     for modality in ("vision", "audio", "video"):
         prefix = modality.upper()
-        assert app_web_handlers._CONFIG_SET_ENV_MAP[f"{modality}_endpoint_profile"] == f"{prefix}_ENDPOINT_PROFILE"
-        assert app_web_handlers._CONFIG_SET_ENV_MAP[f"{modality}_vendor_key"] == f"{prefix}_VENDOR_KEY"
-        assert app_web_handlers._CONFIG_SET_ENV_MAP[f"{modality}_plan"] == f"{prefix}_PLAN"
-        assert f"{prefix}_ENDPOINT_PROFILE" in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
-        assert f"{prefix}_VENDOR_KEY" not in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
-        assert f"{prefix}_PLAN" not in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
+        assert config_set_handlers.CONFIG_SET_ENV_MAP[f"{modality}_endpoint_profile"] == f"{prefix}_ENDPOINT_PROFILE"
+        assert config_set_handlers.CONFIG_SET_ENV_MAP[f"{modality}_vendor_key"] == f"{prefix}_VENDOR_KEY"
+        assert config_set_handlers.CONFIG_SET_ENV_MAP[f"{modality}_plan"] == f"{prefix}_PLAN"
+        assert f"{prefix}_ENDPOINT_PROFILE" in config_set_handlers.MULTIMODAL_RELOAD_ENV_KEYS
+        assert f"{prefix}_VENDOR_KEY" not in config_set_handlers.MULTIMODAL_RELOAD_ENV_KEYS
+        assert f"{prefix}_PLAN" not in config_set_handlers.MULTIMODAL_RELOAD_ENV_KEYS
 
 
 def test_task_chat_uses_general_asr_config_independent_from_joyai():
-    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_api_base"] == "ASR_API_BASE"
-    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_api_key"] == "ASR_API_KEY"
-    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_model"] == "ASR_MODEL_NAME"
-    assert not any(value.startswith("VOICE_ASR_") for value in app_web_handlers._ASR_ENV_KEYS)
-    assert not any(value.startswith("JOYAI_") for value in app_web_handlers._ASR_ENV_KEYS)
-    for env_key in app_web_handlers._ASR_ENV_KEYS:
-        change_set = app_web_handlers._ConfigChangeSet({env_key: "value"}, [])
+    assert config_set_handlers.CONFIG_SET_ENV_MAP["asr_api_base"] == "ASR_API_BASE"
+    assert config_set_handlers.CONFIG_SET_ENV_MAP["asr_api_key"] == "ASR_API_KEY"
+    assert config_set_handlers.CONFIG_SET_ENV_MAP["asr_model"] == "ASR_MODEL_NAME"
+    assert not any(value.startswith("VOICE_ASR_") for value in config_set_handlers.ASR_ENV_KEYS)
+    assert not any(value.startswith("JOYAI_") for value in config_set_handlers.ASR_ENV_KEYS)
+    for env_key in config_set_handlers.ASR_ENV_KEYS:
+        change_set = config_set_handlers.ConfigChangeSet({env_key: "value"}, [])
         assert change_set.reload_scopes == {"web_ui"}
 
 
@@ -1835,7 +1903,7 @@ async def test_config_get_returns_canonical_permission_profile(
         lambda: SimpleNamespace(get_crypto_provider=lambda: None),
     )
     monkeypatch.setattr(
-        app_web_handlers, "_flatten_modes_team_for_config_panel", lambda raw: {}
+        config_set_handlers, "flatten_modes_team_for_config_panel", lambda raw: {}
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 

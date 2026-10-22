@@ -3721,8 +3721,8 @@ class AgentRuntime:
     async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
         if request.req_method not in AgentRuntime._chat_turn_methods():
             return
-        from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-        from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
+        from jiuwenswarm.common.hook_event import AgentServerHookEvents
+        from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
         from jiuwenswarm.extensions.registry import ExtensionRegistry
 
         params = request.params if isinstance(request.params, dict) else {}

@@ -737,7 +737,7 @@ class JiuwenExpertTeamLauncher:
         """Cold-recover an invited Team under its original ID, without an LLM turn."""
         from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
         from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
-        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package_bundle
+        from openjiuwen.agent_teams.experts import load_agent_group_package_bundle
         from jiuwenswarm.server.runtime.extension_package_manager import resolve_agent_group_dir
 
         if not organization_enabled():
