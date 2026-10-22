@@ -627,6 +627,7 @@ def _read_text(ref: dict[str, Any]) -> str:
 __all__ = [
     "MEMBER_OUTPUT_KIND",
     "generate_node_output",
+    "image_generate_timeout_seconds",
     "note_rejection",
     "read_node_context",
     "submit_node_output",
