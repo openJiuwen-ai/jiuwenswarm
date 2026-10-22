@@ -1571,7 +1571,7 @@ def _normalize_legacy_model_nulls(models: dict[str, Any]) -> bool:
             changed = True
         elif isinstance(entries, list):
             # Empty YAML list items have no configuration or identity to retain.
-            if source != "groups" and any(entry is None for entry in entries):
+            if any(entry is None for entry in entries):
                 entries[:] = [entry for entry in entries if entry is not None]
                 changed = True
             if source != "groups":
@@ -1634,7 +1634,7 @@ def _recover_model_fields(entry: dict[str, Any]) -> bool:
 def _recover_existing_model_fields(models: dict[str, Any]) -> bool:
     """Recover persisted model entries only, never an incoming model submission."""
     recovered = False
-    for source in ("defaults", "agentos"):
+    for source in ("defaults", "agentos", "groups"):
         entries = models.get(source)
         if not isinstance(entries, list):
             continue
@@ -1642,7 +1642,7 @@ def _recover_existing_model_fields(models: dict[str, Any]) -> bool:
             entries[:] = [entry for entry in entries if entry is None or isinstance(entry, dict)]
             recovered = True
         for entry in entries:
-            if isinstance(entry, dict):
+            if source != "groups" and isinstance(entry, dict):
                 recovered = _recover_model_fields(entry) or recovered
     return recovered
 
@@ -1793,7 +1793,7 @@ def load_models_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     models = _require_dict(config.get("models") or {}, "models")
     defaults = _decrypt_model_entries(models.get("defaults") or [])
     agentos = get_agentos_models(config)
-    groups = deepcopy(models.get("groups") or [])
+    groups = [deepcopy(group) for group in models.get("groups") or [] if isinstance(group, dict)]
     by_id: dict[str, dict[str, Any]] = {}
     for source, entries in (("defaults", defaults), ("agentos", agentos)):
         for entry in entries:

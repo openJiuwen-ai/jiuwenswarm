@@ -353,3 +353,69 @@ async def test_existing_invalid_subfields_are_backed_up_on_save(config_file, sec
     assert stored[0] == healthy
     assert stored[1][section][field] == repaired
     assert stored[1]["alias"] == "editable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [None, "invalid-group", ["invalid-group"]])
+@pytest.mark.parametrize("operation", [
+    "migration", "models.upsert", "models.delete", "groups.upsert", "groups.delete",
+])
+async def test_invalid_old_group_items_do_not_block_model_configuration(config_file, invalid, operation):
+    from jiuwenswarm.common.model_selection import ModelSelection
+
+    healthy = {
+        "model_group_id": "mgp_healthy", "display_name": "Healthy group", "enabled": True,
+        "routes": [{"route_id": "rte_existing", "model_id": "mdl_existing"}],
+        "request_config": {"temperature": 0.4}, "custom_extension": {"keep": True},
+    }
+    target = {
+        "model_group_id": "mgp_target",
+        "routes": [{"route_id": "rte_target", "model_id": "mdl_existing"}],
+    }
+    data = {"models": {
+        "defaults": [_model(), _model("mdl_spare", "spare")],
+        "groups": [invalid, healthy, target],
+    }}
+    config_file.write_text(yaml.safe_dump(data), encoding="utf-8")
+    before = config_file.read_bytes()
+    catalog = ModelCatalog()
+    assert len(catalog.list_public_groups()) == 2
+    references = catalog.find_references(ModelSelection(type="model", id="mdl_existing"))
+    assert {ref.scope_id for ref in references if ref.scope == "model_group"} == {"mgp_healthy", "mgp_target"}
+    await _list_models()
+    assert config_file.read_bytes() == before
+    assert not list(config_file.parent.glob("config.yaml.models-*.bak"))
+
+    if operation == "migration":
+        assert config_module.migrate_model_business_ids()
+        assert not config_module.migrate_model_business_ids()
+    else:
+        params = {
+            "models.upsert": {"model": _model("mdl_new", "new")},
+            "models.delete": {"model_id": "mdl_spare"},
+            "groups.upsert": {"group": {**target, "display_name": "Edited group"}},
+            "groups.delete": {"model_group_id": "mgp_target"},
+        }[operation]
+        response = await _resource(operation, params)
+        assert response["ok"], response
+    stored = yaml.safe_load(config_file.read_text(encoding="utf-8"))["models"]
+    assert all(isinstance(group, dict) for group in stored["groups"])
+    assert stored["groups"][0] == healthy
+    backups = list(config_file.parent.glob("config.yaml.models-*.bak"))
+    if invalid is None:
+        assert not backups
+    else:
+        assert len(backups) == 1 and backups[0].read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_new_invalid_group_route_is_rejected_without_repair(config_file):
+    data = {"models": {"defaults": [_model()], "groups": []}}
+    config_file.write_text(yaml.safe_dump(data), encoding="utf-8")
+    before = config_file.read_bytes()
+    response = await _resource("groups.upsert", {"group": {
+        "model_group_id": "mgp_bad", "routes": [None],
+    }})
+    assert not response["ok"]
+    assert "route[0] must be an object" in response["error"]
+    assert config_file.read_bytes() == before
