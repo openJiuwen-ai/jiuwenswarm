@@ -556,17 +556,6 @@ if ($FrontendOnly) {
     } else {
         Write-Warning "gitcode-cli has no bundled Windows binary; the GitCode connector will use its existing pip fallback"
     }
-
-    $RipgrepVerifier = Join-Path $ProjectRoot "scripts\verify_ripgrep_bundle.py"
-    $RipgrepVerifyProcess = Start-Process `
-        -FilePath $FrozenExe `
-        -ArgumentList @($RipgrepVerifier) `
-        -Wait `
-        -PassThru `
-        -NoNewWindow
-    if ($RipgrepVerifyProcess.ExitCode -ne 0) {
-        throw "Frozen ripgrep bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
-    }
 }
 
 # ── 5. Assemble final Electron app ────────────────────────────────────────────

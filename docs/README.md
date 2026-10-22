@@ -219,12 +219,22 @@
       <td width="50%">支持长短期记忆管理、对话后自动提取记忆、编码场景下的专属记忆沉淀，任务经验的检索、复用与持续积累，以及以 SDK 模式接入 agent-memory 记忆引擎。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>TUI 模式</strong></td>
+      <td width="28%"><a href="zh/SLASH_COMMAND_ARCHITECTURE.md">Slash 命令架构</a> / <a href="zh/Slash命令表.md">Slash 命令速查</a> / <a href="zh/模式系统.md">模式系统</a> / <a href="zh/TUI使用SwarmFlow指南.md">SwarmFlow（TUI）</a> / <a href="zh/自动修复PR.md">自动修复 PR</a></td>
+      <td width="50%">支持 TUI 终端中的 Slash 命令体系、常用命令速查、PLAN / AGENT / CODE / TEAM 模式切换，SwarmFlow 开关、运行树查看与 HITL 回复，以及 <code>/autofix-pr</code> 自动修复 PR 直至检查通过。</td>
+    </tr>
+    <tr>
       <th colspan="3" align="left" bgcolor="#f3f4f6"><h3>📄 附录</h3></th>
     </tr>
     <tr>
       <th width="22%">分类</th>
       <th width="28%">文档链接</th>
       <th width="50%">内容</th>
+    </tr>
+    <tr>
+      <td width="22%"><strong>打包 EXE</strong></td>
+      <td width="28%"><a href="zh/打包exe指南.md">打包 exe 指南</a></td>
+      <td width="50%">Windows 独立执行程序打包流程。</td>
     </tr>
     <tr>
       <td width="22%"><strong>自动更新</strong></td>

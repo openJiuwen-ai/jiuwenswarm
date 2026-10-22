@@ -49,21 +49,6 @@ _mark_startup_import_phase("runtime_workspace_deferred")
 _mark_startup_import_phase("entry_module_ready")
 
 
-def _report_bundled_ripgrep() -> None:
-    """Log which ripgrep the search tools use (frozen builds bundle one).
-
-    The Worker process also calls ``report_bundled_ripgrep_status(logger)`` when
-    it preloads the runtime backend; Front keeps this helper so desktop entry
-    diagnostics stay discoverable from the agentserver module.
-    """
-    try:
-        from jiuwenswarm.common.bundled_ripgrep import report_bundled_ripgrep_status
-
-        report_bundled_ripgrep_status(logger)
-    except Exception as exc:  # noqa: BLE001 - diagnostics only
-        logger.debug("[ripgrep] status report failed: %s", exc)
-
-
 
 async def _start_supervisor(front: object, host: str, port: int) -> object:
     """Attach the supervisor and wait until Worker IPC is up.

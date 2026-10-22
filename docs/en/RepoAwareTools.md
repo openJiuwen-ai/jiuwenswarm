@@ -199,7 +199,7 @@ Off-behaviour: with the three tool names removed and `repo_map.enabled: false`, 
 
 The swarm code profile reads the same keys through `config_specs._repo_tools_params` / `_repo_map_params`; `swarm.repo_tools` builds only the tools that are listed in `modes.code.tools`.
 
-Environment: `OPENJIUWEN_RG` (or `ICODE_RG`) points at a ripgrep binary; the offline process bundle and Docker layer set it.
+Environment: `OPENJIUWEN_RG` (or `ICODE_RG`) points at a ripgrep binary.
 
 **Without ripgrep** the built-in pure-Python engine answers automatically. It runs in a worker thread, so a scan never stalls other sessions or streaming replies, and it stops at the same 30 s time budget as ripgrep or after 20 000 files. When either limit cuts a scan short, the result header says so ("built-in search (no ripgrep) stopped at its file/time limit after N files; results may be incomplete …") instead of reporting a silent "no matches". It is noticeably slower than ripgrep on large trees, so install ripgrep for source runs:
 

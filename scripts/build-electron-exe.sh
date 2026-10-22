@@ -248,9 +248,6 @@ if [ "$FRONTEND_ONLY" = false ]; then
 
     # Same GitCode CLI self-check as build-macos.sh.
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gitcode_cli_bundle.py"
-
-    # Same bundled ripgrep self-check as build-macos.sh.
-    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_ripgrep_bundle.py"
 else
     echo ""
     echo "[4/6] Skipping PyInstaller (FrontendOnly)"

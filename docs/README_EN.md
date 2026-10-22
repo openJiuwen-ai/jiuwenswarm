@@ -212,6 +212,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <th width="50%">Description</th>
     </tr>
     <tr>
+      <td width="22%"><strong>Package EXE</strong></td>
+      <td width="28%"><a href="en/PackExeGuide.md">Package EXE Guide</a></td>
+      <td width="50%">Windows standalone executable packaging flow.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Auto Update</strong></td>
       <td width="28%"><a href="en/WindowsAutoUpdateDesign.md">Desktop Auto-Update Design</a></td>
       <td width="50%">Windows and macOS desktop auto-update design, flow, and key modules (including pre-release pushes).</td>

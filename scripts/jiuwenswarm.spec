@@ -429,28 +429,6 @@ else:
         os.chmod(_gc_stage, 0o755)
     _bundled_binaries.append((_gc_stage, "."))
 
-# Bundle ripgrep for agent-core's grep tool and the Code-mode repo tools.
-# scripts/fetch_ripgrep.py downloads the pinned official release (or copies a
-# local tree via JIUWENSWARM_RG_FROM), verifies SHA-256 and strips the macOS
-# quarantine flag. It goes to vendor/ripgrep, deliberately NOT on PATH: the
-# frozen entry points OPENJIUWEN_RG at it only after `rg --version` succeeds
-# (jiuwenswarm/common/bundled_ripgrep.py), so a copy the OS refuses to run is
-# never picked up. JIUWENSWARM_SKIP_RG_BUNDLE=1 builds without it on purpose
-# (search then uses rg on PATH or the built-in fallback).
-if os.environ.get("JIUWENSWARM_SKIP_RG_BUNDLE") == "1":
-    print("WARNING: JIUWENSWARM_SKIP_RG_BUNDLE=1, the frozen exe will not bundle ripgrep")
-else:
-    _rg_fetch = runpy.run_path(os.path.join(project_root, "scripts", "fetch_ripgrep.py"))
-    try:
-        _rg_binary = _rg_fetch["ensure_platform_binary"](Path(project_root))
-    except Exception as _rg_exc:  # noqa: BLE001 - explain how to build offline
-        raise SystemExit(
-            f"错误: 无法准备内置 ripgrep ({_rg_exc})。离线构建请设置 "
-            "JIUWENSWARM_RG_FROM=<含 <平台>/rg 的目录>，或设置 "
-            "JIUWENSWARM_SKIP_RG_BUNDLE=1 明确跳过。"
-        )
-    _bundled_binaries.append((str(_rg_binary), os.path.join("vendor", "ripgrep")))
-
 
 # Bundle pytest (pure-Python) so that `python -m pytest` works inside the
 # frozen exe. the frozen exe's -m branch uses runpy,
@@ -616,8 +594,7 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    # UPX-compressed ripgrep breaks its code signature on macOS.
-    upx_exclude=["rg", "rg.exe"],
+    upx_exclude=[],
     name=build_config.dist_dir_name,
 )
 

@@ -47,34 +47,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-### Bundled ripgrep
-
-The frozen desktop executable bundles the current platform's official ripgrep release binary (`rg`, `rg.exe` on Windows) under `vendor/ripgrep/`. It is used by the `grep` tool and the Code-mode repository search tools. `scripts/fetch_ripgrep.py` downloads it from the upstream GitHub release and verifies it against pinned SHA-256 checksums.
-
-| Software | Version | License | Provenance |
-|---|---:|---|---|
-| ripgrep | 15.2.0 | MIT OR Unlicense (dual-licensed; used under MIT) | `https://github.com/BurntSushi/ripgrep/releases/tag/15.2.0` |
-
-**License:** MIT License
-
-Copyright (c) 2015 Andrew Gallant
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
 ### Software: Python 3.11.x, 3.12.x, 3.13.x
 
 **License:** Python Software Foundation License V2

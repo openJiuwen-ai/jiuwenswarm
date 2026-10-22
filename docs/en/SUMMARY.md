@@ -51,6 +51,8 @@
     - [JetBrains Guide](ide/jetbrains/JetBrainsGuide.md)
     - [VS Code Guide](ide/vscode/VSCodeGuide.md)
   - [MCP Configuration](MCPConfiguration.md)
+  - [Packaging desktop executables](PackExeGuide.md)
+  - [ACP Plugin Usage](ACP_Client_Config.md)
   - [Desktop auto-update design](WindowsAutoUpdateDesign.md)
   - [Logging System](Logs.md)
   - [Debug Trace](DebugTrace.md)

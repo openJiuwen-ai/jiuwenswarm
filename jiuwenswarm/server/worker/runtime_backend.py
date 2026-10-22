@@ -244,12 +244,6 @@ def preload_runtime_backend() -> None:
     _log_preparation_stage("required_parallel_join", began)
     began = time.monotonic()
     _configure_openjiuwen_logging()
-    try:
-        from jiuwenswarm.common.bundled_ripgrep import report_bundled_ripgrep_status
-
-        report_bundled_ripgrep_status(logger)
-    except Exception as exc:  # noqa: BLE001 - diagnostics only
-        logger.debug("[ripgrep] status report failed: %s", exc)
     from jiuwenswarm.common.background_logging import install_core_logging_queue, wrap_log_handlers
 
     install_core_logging_queue()

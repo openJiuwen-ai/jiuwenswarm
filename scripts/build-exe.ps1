@@ -401,17 +401,6 @@ if ($GitCodeVerifyProcess.ExitCode -ne 0) {
     throw "Frozen GitCode CLI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
 }
 
-$RipgrepVerifier = Join-Path $ProjectRoot "scripts\verify_ripgrep_bundle.py"
-$RipgrepVerifyProcess = Start-Process `
-    -FilePath $FrozenExe `
-    -ArgumentList @($RipgrepVerifier) `
-    -Wait `
-    -PassThru `
-    -NoNewWindow
-if ($RipgrepVerifyProcess.ExitCode -ne 0) {
-    throw "Frozen ripgrep bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
-}
-
 # 3.5 Bundle Node.js runtime for browser tools
 if (Test-Truthy $BundleNode) {
     Write-Host "`n[3.5/4] Bundling Node.js runtime..." -ForegroundColor Yellow
