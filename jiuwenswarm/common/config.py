@@ -2186,8 +2186,7 @@ def update_default_models_in_config(
     models_list: list[dict[str, Any]], *, cron_references_checked: bool = False,
 ) -> None:
     def _mutate(data):
-        if "models" not in data:
-            data["models"] = {}
+        models = _models_for_write(data)
         for entry in models_list:
             if isinstance(entry, dict) and isinstance(entry.get("alias"), str):
                 entry["alias"] = DoubleQuotedScalarString(entry["alias"])
