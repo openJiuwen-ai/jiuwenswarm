@@ -386,14 +386,16 @@ async def test_handler_pool_manager_preserves_session_flash_binding(
     assert expected._adapter.messages[0][0] is request
     assert other._adapter.messages == []
     assert request.resolved_adapter_mode == stored_adapter
-    assert request.params["mode"] == "agent"
+    assert request.params["mode"] == stored_adapter
     if stored_adapter == "flash":
         assert request.resolved_adapter_source == "session_sticky"
+    # Wait for the real metadata writer before asserting durable mode.
+    await asyncio.wait_for(asyncio.to_thread(session_metadata._METADATA_QUEUE.join), timeout=5)
     metadata = session_metadata.get_session_metadata(
         "sticky-session", cache_bust=True, enable_writeback=False, sessions_root=tmp_path,
     )
     assert metadata["adapter_mode"] == stored_adapter
-    assert metadata["mode"] == "agent"
+    assert metadata["mode"] == (stored_adapter if incoming_mode else "agent")
 
 
 @pytest.mark.parametrize("mode,expected,sub_mode", [
@@ -409,3 +411,66 @@ def test_prepared_flash_binding_cannot_override_code_team_or_plan(mode, expected
     actual_mode, actual_sub, _ = manager._agent_lookup_from_request(request)
     assert (actual_mode, actual_sub) == (expected, sub_mode)
     assert request.resolved_adapter_mode == ("code" if expected == "code" else "agent")
+
+
+@pytest.fixture
+def standalone_yaml_configuration(monkeypatch, tmp_path):
+    from jiuwenswarm.common import config as config_module
+
+    path = tmp_path / "config.yaml"
+    monkeypatch.setattr(config_module, "get_config_file", lambda: path)
+    config_module.clear_config_cache()
+    yield config_module, path
+    config_module.clear_config_cache()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("env_value,config_enabled,expected", [
+    ("true", False, "flash"), ("false", True, "agent"),
+])
+async def test_standalone_flash_environment_reaches_stream_and_keeps_session_binding(
+    resume_routes, standalone_yaml_configuration, monkeypatch, tmp_path, env_value, config_enabled, expected,
+):
+    routes = resume_routes
+    session_metadata.init_session_metadata(
+        session_id="standalone-env", channel_id="web", mode="agent", work_mode="work",
+        adapter_mode="agent", project_dir=str(tmp_path), sessions_root=tmp_path,
+    )
+    deep = await routes.add("agent")
+    flash = await routes.add("flash")
+    routes.manager.agents["web"] = routes.manager.agents.pop("officeclaw")
+    config_module, config_file = standalone_yaml_configuration
+    config_file.write_text(f"flash:\n  enabled: {str(config_enabled).lower()}\n", encoding="utf-8")
+    monkeypatch.setattr(_shared, "get_config", config_module.get_config)
+    monkeypatch.setenv("JIUWENSWARM_FLASH_ENABLED", env_value)
+
+    async def send(request_id):
+        config_module.clear_config_cache()
+        incoming = make_request(
+            "agent.work.normal", session_id="standalone-env", query="hello",
+            work_mode="work", project_dir=str(tmp_path),
+        )
+        incoming.request_id = request_id
+        incoming.channel_id = "web"
+        _, _, prepared = await _default._prepare_code_mode_chat_turn(routes.ctx, incoming, "web")
+        chunks = await _collect(routes.manager.process_message_stream(incoming))
+        assert chunks[-1].is_complete
+        assert not any((c.payload or {}).get("event_type") == "chat.error" for c in chunks)
+        assert prepared is (flash if expected == "flash" else deep)
+        assert incoming.resolved_adapter_mode == expected
+        metadata = session_metadata.get_session_metadata(
+            "standalone-env", cache_bust=True, enable_writeback=False, sessions_root=tmp_path,
+        )
+        assert metadata["adapter_mode"] == expected
+        return incoming
+
+    first = await send("env-first")
+    selected, other = (flash, deep) if expected == "flash" else (deep, flash)
+    assert selected._adapter.messages[0][0] is first
+    assert other._adapter.messages == []
+    if expected == "flash":
+        monkeypatch.setenv("JIUWENSWARM_FLASH_ENABLED", "false")
+        second = await send("env-continue")
+        assert second.resolved_adapter_source == "session_sticky"
+        assert selected._adapter.messages[1][0] is second
+    assert len(routes.created) == 2

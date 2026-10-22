@@ -3726,7 +3726,14 @@ class JiuWenSwarm:
                                 continue
                         if isinstance(data.payload, dict) and isinstance(data.payload.get("event_type"), str):
                             et = str(data.payload.get("event_type"))
-                            should_record = et.startswith("chat.") or et.startswith("task.")
+                            # context.usage is a blank-content structured snapshot;
+                            # persist so history.get / Web restore can rebuild the
+                            # context indicator (align develop).
+                            should_record = (
+                                et.startswith("chat.")
+                                or et.startswith("task.")
+                                or et == "context.usage"
+                            )
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
                             if et == "context_compression_state":
@@ -3936,7 +3943,14 @@ class JiuWenSwarm:
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
                         et = str(data.get("event_type"))
                         merged_from_deltas = False
-                        should_record = et.startswith("chat.") or et.startswith("task.")
+                        # context.usage is a blank-content structured snapshot;
+                        # persist so history.get / Web restore can rebuild the
+                        # context indicator (align develop).
+                        should_record = (
+                            et.startswith("chat.")
+                            or et.startswith("task.")
+                            or et == "context.usage"
+                        )
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True
                         if et == "context_compression_state":

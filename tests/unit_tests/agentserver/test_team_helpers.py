@@ -3741,6 +3741,7 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
         },
         "session_id": "sess-leader-only",
         "rid": 1,
+        "role": TeamRole.LEADER.value,
     }
     assert not any(event["event_type"] == "chat.llm_usage" for event in broadcasted)
     reasoning_event = next(event for event in broadcasted if event["event_type"] == "chat.reasoning")
@@ -5721,7 +5722,8 @@ async def test_followup_rejects_stopping_before_snapshot_or_waiter(monkeypatch, 
 
 
 @pytest.mark.anyio
-async def test_old_stream_close_cannot_complete_or_clear_replacement(monkeypatch):
+@pytest.mark.parametrize("replace_before_close", [False, True])
+async def test_old_stream_close_cannot_complete_or_clear_replacement(monkeypatch, replace_before_close):
     class Manager(_InactiveTeamRuntimeManagerMixin):
         owner = None
         cleared = []
@@ -5743,11 +5745,20 @@ async def test_old_stream_close_cannot_complete_or_clear_replacement(monkeypatch
     events = []
 
     class Stream:
+        chunks = 0
+
         def __aiter__(self):
             return self
 
         async def __anext__(self):
-            raise StopAsyncIteration
+            if not replace_before_close:
+                raise StopAsyncIteration
+            self.chunks += 1
+            if self.chunks == 3:
+                manager.owner = replacement
+            return SimpleNamespace(
+                type="llm_reasoning", payload={"content": f"old-{self.chunks}"}, role="leader",
+            )
 
         async def aclose(self):
             # Reproduce a replacement registered while the old generator closes.
@@ -5760,8 +5771,10 @@ async def test_old_stream_close_cannot_complete_or_clear_replacement(monkeypatch
     monkeypatch.setattr(team_helpers, "_run_agent_team_streaming", lambda **kwargs: Stream())
     monkeypatch.setattr(team_helpers, "_await_runner_pool_release", no_wait)
     monkeypatch.setattr(team_helpers, "_broadcast_event", lambda channel, session, event: events.append(event))
+    monkeypatch.setattr(team_helpers.time, "monotonic", lambda: 0.0)
     manager.owner = asyncio.current_task()
     await _TeamHelpersTestApi.consume_stream_with_query("web", "s", SimpleNamespace(team_name="t"), "q")
     assert manager.owner is replacement
     assert not manager.cleared
     assert not any(event.get("event_type") == "team.completed" for event in events)
+    assert not any(event.get("content") == "old-2" for event in events)

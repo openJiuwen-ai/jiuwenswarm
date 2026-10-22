@@ -60,6 +60,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.ask_user_question_expired",
         "chat.ask_user_answered",
         "team.message",
+        "context.usage",
         "context.compact_boundary",
         "context.compact_summary",
         "context.rewind_summary",

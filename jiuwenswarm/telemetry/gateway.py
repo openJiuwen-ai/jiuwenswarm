@@ -25,6 +25,7 @@ from jiuwenswarm.telemetry.attributes import (
     JIUWENCLAW_CANCELED,
     JIUWENCLAW_CHANNEL_ID,
     JIUWENCLAW_DOMAIN_ID,
+    JIUWENCLAW_MODE,
     JIUWENCLAW_REQUEST_ID,
     JIUWENCLAW_SESSION_ID,
     JIUWENCLAW_USER_ID,
@@ -145,9 +146,15 @@ def open_gateway_request(envelope: object) -> GatewayRequestHandle:
     carrier = _channel_context(envelope)
     identity = _request_identity(envelope, carrier)
     span_attributes = _request_attributes(envelope, identity)
+    params = getattr(envelope, "params", None)
+    mode = str(params.get("mode") or "") if isinstance(params, dict) else ""
     metric_attributes = {
-        JIUWENCLAW_CHANNEL_ID: str(getattr(envelope, "channel", None) or "")
+        JIUWENCLAW_CHANNEL_ID: str(getattr(envelope, "channel", None) or ""),
     }
+    if mode.strip():
+        # The wire mode is read before AgentServer canonicalization and is not
+        # directly comparable with AgentServer-side canonical mode labels.
+        metric_attributes[JIUWENCLAW_MODE] = mode.strip()
     handle.metric_attributes = metric_attributes
     handle.telemetry_metrics = getattr(runtime, "telemetry_metrics", None)
     try:

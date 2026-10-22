@@ -1,6 +1,7 @@
 """model_routing.rail — ModelRoutingRail."""
 from __future__ import annotations
 import os
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
@@ -211,6 +212,7 @@ class ModelRoutingRail(DeepAgentRail):
         「具体模型」一种输入 → 仅 GLM-5.3 族注入产品默认 depth（low），其余 no-op。
         写 ``ctx.extra["llm_call_kwargs"]``，由 ReActAgent 每次 model call 消费。
         不支持思考控制的模型：adapt 降级为空 kwargs，本方法不写入。
+        显式 ``reasoning_effort``（顶层或 ``extra_body`` 内）优先，default 只补空白。
         """
         from jiuwenswarm.common.thinking.adapter import adapt_thinking
         from jiuwenswarm.common.thinking.types import thaw_llm_call_kwargs
@@ -223,10 +225,18 @@ class ModelRoutingRail(DeepAgentRail):
             if isinstance(cap_name, str) and cap_name.strip():
                 model_name = cap_name.strip()
         try:
+            extra = getattr(ctx, "extra", None)
+            if isinstance(extra, dict) and _has_explicit_reasoning_effort(
+                extra.get("llm_call_kwargs")
+            ):
+                return
+            if _has_explicit_reasoning_effort(
+                _model_config_to_dict(_resolve_agent_model_config(ctx))
+            ):
+                return
             profile = adapt_thinking("default", model_name=model_name)
             if not profile.injected or not profile.llm_call_kwargs:
                 return
-            extra = getattr(ctx, "extra", None)
             if not isinstance(extra, dict):
                 return
             kwargs = thaw_llm_call_kwargs(profile.llm_call_kwargs)
@@ -524,6 +534,46 @@ class ModelRoutingRail(DeepAgentRail):
 
 
 # ---- Helpers ---- #
+
+
+def _model_config_to_dict(model_config_obj: Any) -> dict[str, Any]:
+    """Best-effort dict copy of a model request config without mutating it."""
+    if model_config_obj is None:
+        return {}
+    try:
+        if isinstance(model_config_obj, Mapping):
+            return dict(model_config_obj)
+        dump = getattr(model_config_obj, "model_dump", None)
+        if callable(dump):
+            result = dump(exclude_none=True)
+            return result if isinstance(result, dict) else {}
+    except Exception:
+        return {}
+    return {}
+
+
+def _has_explicit_reasoning_effort(kwargs: Any) -> bool:
+    """Return True when a caller explicitly supplied GLM-style effort."""
+    if not isinstance(kwargs, Mapping):
+        return False
+    if "reasoning_effort" in kwargs and kwargs["reasoning_effort"] is not None:
+        return True
+    extra_body = kwargs.get("extra_body")
+    return (
+        isinstance(extra_body, Mapping)
+        and "reasoning_effort" in extra_body
+        and extra_body["reasoning_effort"] is not None
+    )
+
+
+def _resolve_agent_model_config(ctx: AgentCallbackContext) -> Any:
+    """Read the effective inner ReActAgent model request config."""
+    try:
+        react_agent = _resolve_react_agent(getattr(ctx, "agent", None))
+        cfg = getattr(react_agent, "_config", None) or getattr(react_agent, "config", None)
+        return getattr(cfg, "model_config_obj", None)
+    except Exception:
+        return None
 
 
 def _clone_cfg_with_model_name(cfg_obj: Any, model_name: str) -> Optional[dict]:
