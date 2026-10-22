@@ -303,13 +303,22 @@ def _compose_effective_local(
     # 回退合成保真：模板/用户 rules 与 HITL 写盘增量必须往返存活——
     # snapshot 路径的 update_config 会用本输出整体覆盖判定配置，
     # 丢键即 rules 审批/永久允许静默失效（复审 Must Fix）。
-    merged_rules: list[dict[str, Any]] = []
+    # 同 id 规则 global/user 双层并存时 user 后写优先，与
+    # _merge_approval_overrides 同型去重（评审 2026-10-22）。
+    rules_by_id: dict[str, dict[str, Any]] = {}
+    anon_rules: list[dict[str, Any]] = []
     for chunk in (global_migrated.get("rules"), user_migrated.get("rules")):
         if not isinstance(chunk, list):
             continue
         for rule in chunk:
-            if isinstance(rule, dict):
-                merged_rules.append(rule)
+            if not isinstance(rule, dict):
+                continue
+            rule_id = str(rule.get("id") or "").strip()
+            if not rule_id:
+                anon_rules.append(rule)
+            else:
+                rules_by_id[rule_id] = rule
+    merged_rules: list[dict[str, Any]] = list(rules_by_id.values()) + anon_rules
     if merged_rules:
         out["rules"] = merged_rules
     merged_overrides = _merge_approval_overrides(user_migrated, session_migrated)
