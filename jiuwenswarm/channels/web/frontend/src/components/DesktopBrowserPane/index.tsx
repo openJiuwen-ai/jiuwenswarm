@@ -108,7 +108,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
     // 重新点击按钮会重新锚定。
     const handleViewportResize = () => {
       syncBounds();
-      desktop.browser.hideDownloadBubble();
+      void desktop.browser.hideDownloadBubble();
     };
     const observer = new ResizeObserver(handleViewportResize);
     observer.observe(viewportRef.current);
@@ -159,7 +159,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
     if (!desktop) return;
     if (modalOverlayOpen) {
       // 模态弹窗挂载期间收起气泡，避免原生视图与气泡盖住弹窗。
-      desktop.browser.hideDownloadBubble();
+      void desktop.browser.hideDownloadBubble();
       void desktop.browser.setVisible(false, panelId);
       return;
     }
@@ -178,7 +178,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     if (!desktop) return;
     return () => {
-      desktop.browser.hideDownloadBubble();
+      void desktop.browser.hideDownloadBubble();
     };
   }, [desktop]);
 
@@ -188,7 +188,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
     const handleMouseDown = (event: MouseEvent) => {
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest('[data-testid="desktop-browser-download"]')) return;
-      desktop.browser.hideDownloadBubble();
+      void desktop.browser.hideDownloadBubble();
     };
     document.addEventListener('mousedown', handleMouseDown, true);
     return () => document.removeEventListener('mousedown', handleMouseDown, true);
@@ -197,7 +197,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   const toggleDownloadBubble = useCallback(() => {
     if (!desktop) return;
     if (downloadBubbleVisible) {
-      desktop.browser.hideDownloadBubble();
+      void desktop.browser.hideDownloadBubble();
       return;
     }
     const rect = downloadButtonRef.current?.getBoundingClientRect();

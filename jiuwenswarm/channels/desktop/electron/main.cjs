@@ -2931,7 +2931,7 @@ function registerIpcHandlers() {
     }
   };
   browserDownloadService.attach(session.fromPartition(SHARED_BROWSER_PARTITION), pushDownloads);
-  registerHandler('browser:list-downloads', () => browserDownloadService.list());
+  registerHandler('browser:list-downloads', () => browserDownloadService.list({ freshPresence: true }));
   registerHandler('browser:download-action', (downloadId, requestedAction) =>
     browserDownloadService.action(downloadId, requestedAction));
   registerHandler('browser:open-download', downloadId => browserDownloadService.openDownload(downloadId));
@@ -2959,7 +2959,7 @@ function registerIpcHandlers() {
     // panel does not remount on reopen. Push a fresh list so records changed
     // while hidden — e.g. a completed file deleted in Explorer showing Chrome's
     // "已删除" marker — appear immediately on reopen.
-    pushDownloads(browserDownloadService.list());
+    pushDownloads(browserDownloadService.list({ freshPresence: true }));
   });
   registerHandler('browser:hide-download-bubble', () => {
     downloadBubble.hide();
