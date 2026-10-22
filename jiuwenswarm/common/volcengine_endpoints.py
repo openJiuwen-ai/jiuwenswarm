@@ -20,13 +20,9 @@ def normalize_ark_api_base(api_base: str) -> str:
     """
     parsed = urlsplit(api_base.strip().rstrip("/"))
     host = parsed.hostname or ""
-    if (
-        parsed.scheme != "https"
-        or parsed.netloc.lower() != host
-        or not re.fullmatch(r"ark\.[\w-]+\.(?:volces\.com|bytepluses\.com)", host)
-        or parsed.path not in {"", "/api/v3"}
-        or parsed.query
-        or parsed.fragment
-    ):
+    valid_origin = parsed.scheme == "https" and parsed.netloc.lower() == host
+    valid_host = re.fullmatch(r"ark\.[\w-]+\.(?:volces\.com|bytepluses\.com)", host) is not None
+    valid_endpoint = parsed.path in {"", "/api/v3"} and not parsed.query and not parsed.fragment
+    if not valid_origin or not valid_host or not valid_endpoint:
         raise ValueError("Use an official regional Ark HTTPS /api/v3 address; Coding Plan does not support generation")
     return f"https://{host}/api/v3"

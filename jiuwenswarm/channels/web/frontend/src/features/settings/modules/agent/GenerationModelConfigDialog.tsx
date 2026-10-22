@@ -25,6 +25,7 @@ import {
   generationVendor,
   isArkGenerationApiBase,
   isEditableBaseVendor,
+  MODELARK_PROTOCOL,
   modelProtocol,
   regionalHintKey,
   VLLM_OMNI_PROTOCOL,
@@ -157,6 +158,7 @@ export function GenerationModelConfigDialog({
   const [fetchingKey, setFetchingKey] = useState<string | null>(null);
   const [fetchedModels, setFetchedModels] = useState<{ key: string; models: string[] } | null>(null);
   const [fetchStatus, setFetchStatus] = useState<{ key: string; text: string } | null>(null);
+  const [attemptedFetchKey, setAttemptedFetchKey] = useState<string | null>(null);
   // 只给下拉本身用的收窄版 catalog——preset/findStoredPreset 等逻辑仍然用上面
   // 完整的 catalog，不然已保存的旧配置（provider 是被收窄掉的厂商）编辑时会
   // 回显失败。
@@ -198,6 +200,7 @@ export function GenerationModelConfigDialog({
       return;
     }
     const currentRequestId = ++fetchRequestId.current;
+    setAttemptedFetchKey(identity);
     setFetchingKey(identity);
     setFetchStatus({ key: identity, text: t('settingsPanel.models.fetchModelsLoading') });
     try {
@@ -328,7 +331,7 @@ export function GenerationModelConfigDialog({
       if (!baseValue) next.api_base = t('config.modelList.apiBaseRequired');
       else if (baseValue.length > 512) next.api_base = t('config.modelList.apiBaseTooLong');
       else if (!/^https?:\/\//i.test(baseValue)) next.api_base = t('config.modelList.apiBaseUrlInvalid');
-      else if (arkSelection && !isArkGenerationApiBase(baseValue)) {
+      else if (values.protocol.trim() === MODELARK_PROTOCOL && !isArkGenerationApiBase(baseValue)) {
         next.api_base = t('settingsPanel.agent.arkGenerationBaseInvalid');
       }
     }
@@ -339,7 +342,7 @@ export function GenerationModelConfigDialog({
     if (!modelName && !optionalCredentials) next.model_name = t('config.modelList.modelNameRequired');
     else if (modelName.length > 100) next.model_name = t('config.modelList.modelNameTooLong');
     return next;
-  }, [arkSelection, custom, optionalCredentials, preset, showApiBase, t, values]);
+  }, [custom, optionalCredentials, preset, showApiBase, t, values]);
 
   const formItems: FormItem<GenerationDraft>[] = [
     {
@@ -422,7 +425,7 @@ export function GenerationModelConfigDialog({
           fetchDisabled={!isConnected || !values.api_key.trim() || fetchingKey === fetchKey}
           emptyText={t('settingsPanel.models.noModelResults')}
           onOpen={() => {
-            if (arkSelection && fetchedModels?.key !== fetchKey && fetchingKey !== fetchKey) void fetchGenerationModels();
+            if (arkSelection && attemptedFetchKey !== fetchKey && fetchingKey !== fetchKey) void fetchGenerationModels();
           }}
           onFetch={() => { void fetchGenerationModels(); }}
           onChange={(model) => {
