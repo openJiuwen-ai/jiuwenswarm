@@ -4245,7 +4245,6 @@ async def _finalize_org_bound_team_after_idle(
         )
 
 
-_TEAM_RESUME_FRAME_TIMEOUT_SECONDS = 30.0
 _TEAM_RESUME_TOTAL_TIMEOUT_SECONDS = 120.0
 
 
@@ -4471,16 +4470,12 @@ async def _consume_stream_with_query(
                     await _close_resume_stream()
                     break
                 try:
-                    # asyncio.timeout (not wait_for): wait_for drives the
-                    # generator step inside an ephemeral task, which splits
-                    # the agent's execution-subject contextvar scope across
-                    # contexts ("Token was created in a different Context").
-                    async with asyncio.timeout(
-                        min(_TEAM_RESUME_FRAME_TIMEOUT_SECONDS, remaining)
-                    ):
+                    # Keep iteration in this task: wait_for would split the
+                    # execution-subject contextvar scope across tasks.
+                    async with asyncio.timeout(remaining):
                         chunk = await anext(runner_stream)
                 except asyncio.TimeoutError:
-                    await _fail_resume_wait("Team recovery timed out waiting for the next frame")
+                    await _fail_resume_wait("Team recovery timed out before the runtime was ready")
                     await _close_resume_stream()
                     break
                 except StopAsyncIteration:

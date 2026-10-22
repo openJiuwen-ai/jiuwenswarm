@@ -5043,7 +5043,7 @@ async def test_consume_stream_with_query_reports_rejected_interrupt_resume_deliv
 
 
 @pytest.mark.anyio
-async def test_consume_stream_with_query_interrupt_resume_frame_timeout(monkeypatch):
+async def test_consume_stream_with_query_interrupt_resume_total_timeout(monkeypatch):
     broadcasted: list[dict] = []
     ready_calls: list[tuple[str, str]] = []
     interact_calls: list[tuple] = []
@@ -5054,7 +5054,7 @@ async def test_consume_stream_with_query_interrupt_resume_frame_timeout(monkeypa
             payload={"event_type": "team.runtime_ready"},
             role=TeamRole.LEADER,
         )
-        # Never emits team.recovered: the frame budget must fire.
+        # Never emits team.recovered: the total recovery budget must fire.
         await asyncio.Event().wait()
         yield  # pragma: no cover
 
@@ -5072,7 +5072,7 @@ async def test_consume_stream_with_query_interrupt_resume_frame_timeout(monkeypa
 
     fake_mgr = _resume_fake_manager(ready_calls)
     _patch_resume_env(monkeypatch, _FakeRunner, fake_mgr, broadcasted)
-    monkeypatch.setattr(team_helpers, "_TEAM_RESUME_FRAME_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(team_helpers, "_TEAM_RESUME_TOTAL_TIMEOUT_SECONDS", 0.05)
 
     await _TeamHelpersTestApi.consume_stream_with_query(
         "web",
