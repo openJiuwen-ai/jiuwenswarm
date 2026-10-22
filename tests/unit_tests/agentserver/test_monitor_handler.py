@@ -844,7 +844,18 @@ async def test_get_team_snapshot_from_db_requires_session_and_team() -> None:
 
 
 @pytest.mark.anyio
-async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
+@pytest.mark.parametrize("stored_status,expected_status", [
+    ("pending", "pending"),
+    ("in_progress", "in_progress"),
+    ("completed", "completed"),
+    ("cancelled", "cancelled"),
+    ("claimed", "in_progress"),
+    ("started", "in_progress"),
+    ("plan_approved", "in_progress"),
+])
+async def test_get_team_snapshot_from_db_reads_tasks_with_truncation(
+    stored_status: str, expected_status: str,
+) -> None:
     """When monitor is down, bind session_id and read tasks/members from team.db."""
     from pathlib import Path
     from unittest.mock import patch
@@ -856,7 +867,7 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
         task_id="uuid-1",
         title=long_title,
         content="body",
-        status="completed",
+        status=stored_status,
         assignee="worker-1",
         updated_at=123,
     )
@@ -870,7 +881,10 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
                 get_team_members=AsyncMock(return_value=[leader, member])
             )
             self.task = SimpleNamespace(
-                get_team_tasks=AsyncMock(return_value=[task])
+                get_team_tasks=AsyncMock(return_value=[task]),
+                get_team_dependencies=AsyncMock(return_value=[
+                    SimpleNamespace(task_id="b", depends_on_task_id="a", resolved=True)
+                ])
             )
             self.team = SimpleNamespace(
                 get_team=AsyncMock(return_value=_FakeTeamInfo())
@@ -912,16 +926,20 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
             "sess-19f8", "team-sess-1"
         )
 
+        edges = await TeamMonitorHandler.get_team_dependencies_from_db("sess-19f8", "team-sess-1")
+
+    assert edges == [{"task_id": "b", "depends_on_task_id": "a", "resolved": True}]
     assert snapshot is not None
-    assert bound == ["sess-19f8"]
+    assert bound == ["sess-19f8", "sess-19f8"]
     shared.initialize.assert_awaited()
-    shared.create_cur_session_tables.assert_awaited()
+    shared.create_cur_session_tables.assert_not_awaited()
     assert snapshot["team_id"] == "team-sess-1"
     assert [m["member_id"] for m in snapshot["members"]] == ["worker-1"]
     assert len(snapshot["tasks"]) == 1
     out = snapshot["tasks"][0]
     assert out["task_id"] == "uuid-1"
-    assert out["status"] == "completed"
+    assert out["status"] == expected_status
+    assert task.status == stored_status
     assert out["assignee"] == "worker-1"
     assert out["title_truncated"] is True
     assert out["title"].startswith("T" * _TASK_TEXT_LIMIT)

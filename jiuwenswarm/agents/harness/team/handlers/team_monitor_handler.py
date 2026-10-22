@@ -575,10 +575,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
         token = set_session_id(sid)
         try:
             await db.initialize()
-            # Ensure the per-session dynamic task table is mapped (checkfirst);
-            # historical sessions already have the table from the live run.
-            await db.create_cur_session_tables()
-
+            # DAO model factories map historical tables without bind-time DDL.
             team_info = await db.team.get_team(tname)
             leader_name = (
                 str(getattr(team_info, "leader_member_name", "") or "").strip()
@@ -608,7 +605,11 @@ class TeamMonitorHandler(BaseMonitorHandler):
                         "team_name": t.team_name,
                         **_task_text_field("title", t.title),
                         **_task_text_field("content", t.content),
-                        "status": t.status,
+                        "status": (
+                            "in_progress"
+                            if t.status in {"claimed", "started", "plan_approved"}
+                            else t.status
+                        ),
                         "assignee": t.assignee,
                         "updated_at": t.updated_at,
                     }
@@ -667,9 +668,6 @@ class TeamMonitorHandler(BaseMonitorHandler):
         token = set_session_id(sid)
         try:
             await db.initialize()
-            # Ensure the per-session dynamic dependency table is mapped (checkfirst);
-            # create_cur_session_tables maps dep_model (agent-core engine.py:753/759).
-            await db.create_cur_session_tables()
             edges = await db.task.get_team_dependencies(tname) or []
             return [
                 {

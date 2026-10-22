@@ -222,6 +222,9 @@ class _ResendTestManager:
     def clear_session_initialized(self, session_id: str) -> None:
         pass
 
+    def owns_stream_task(self, session_id: str, task: asyncio.Task) -> bool:
+        return task is asyncio.current_task()
+
     def pop_stream_task(self, session_id: str):
         pass
 

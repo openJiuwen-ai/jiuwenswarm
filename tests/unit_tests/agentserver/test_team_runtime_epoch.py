@@ -43,7 +43,14 @@ def _manager() -> _Harness:
 
 async def _register_round(mgr: _Harness, session_id: str, team_name: str) -> asyncio.Task:
     """模拟一个新回合的注册序列：prepare（bump epoch）→ 注册 stream task。"""
-    await mgr.prepare_runtime_activation(session_id, team_name)
+    if mgr.has_pending_cancel(session_id):
+        # Exercise the defensive epoch guard via an injected replacement.
+        # The production admission path must reject it while cancellation is pending.
+        with pytest.raises(RuntimeError, match="still stopping"):
+            await mgr.prepare_runtime_activation(session_id, team_name)
+        mgr.bump_session_runtime_epoch(session_id)
+    else:
+        await mgr.prepare_runtime_activation(session_id, team_name)
     task = asyncio.ensure_future(asyncio.sleep(3600))
     mgr.register_stream_task(session_id, task)
     return task
@@ -152,7 +159,9 @@ async def test_late_cancel_superseded_inside_lifecycle_lock() -> None:
             holder_locked.set()
             await cancel_parked.wait()
             # cancel 已在 forced stop / 等锁途中：此刻注册新回合（bump epoch）
-            await mgr.prepare_runtime_activation("sess-1", "team_t")
+            with pytest.raises(RuntimeError, match="still stopping"):
+                await mgr.prepare_runtime_activation("sess-1", "team_t")
+            mgr.bump_session_runtime_epoch("sess-1")
             new_task = asyncio.ensure_future(asyncio.sleep(3600))
             mgr.register_stream_task("sess-1", new_task)
             new_round_registered.set()
@@ -508,3 +517,67 @@ async def test_normal_pause_still_tears_down(
     monkeypatch.setattr(Runner, "pause_agent_team", fake_pause_agent_team)
     assert await mgr.pause_session_runtime("sess-2", reason="test") is True
     assert mgr.get_session_terminal_state("sess-2") == "paused"
+
+
+@pytest.mark.asyncio
+async def test_failed_runner_stop_preserves_runtime_and_rejects_interact(monkeypatch):
+    mgr = _manager()
+    mgr.commit_runtime_ready("s", "t")
+    task = await _register_round(mgr, "s", "t")
+    monkeypatch.setattr(Runner, "stop_agent_team", AsyncMock(side_effect=TimeoutError("still stopping")))
+    try:
+        with pytest.raises(TimeoutError, match="still stopping"):
+            await mgr.cancel_session_runtime("s")
+        assert mgr.has_stream_task("s")
+        assert not task.done()
+        assert mgr.is_runtime_active("s")
+        # The in-flight cancellation gate applies before any Runner delivery.
+        mgr._begin_cancel_in_flight("s")
+        try:
+            assert await mgr.interact("s", "continue") == (False, "stopping")
+            with pytest.raises(RuntimeError, match="still stopping"):
+                await mgr.prepare_runtime_activation("s", "t")
+        finally:
+            mgr._end_cancel_in_flight("s")
+    finally:
+        await _cancel_round_tasks(task)
+
+
+@pytest.mark.asyncio
+async def test_late_runner_stop_cannot_cleanup_new_round():
+    mgr = _manager()
+    mgr.commit_runtime_ready("s", "t")
+    old = await _register_round(mgr, "s", "t")
+    replacement = None
+
+    async def delayed_stop(*args):
+        nonlocal replacement
+        replacement = await _register_round(mgr, "s", "t")
+        mgr.commit_runtime_ready("s", "t")
+        return True
+
+    mgr._stop_runner_team_runtime = delayed_stop
+    try:
+        assert not await mgr.cancel_session_runtime("s")
+        assert mgr.owns_stream_task("s", replacement)
+        assert mgr.is_runtime_active("s")
+        assert not replacement.done()
+        assert mgr.get_session_terminal_state("s") is None
+    finally:
+        await _cancel_round_tasks(old, replacement)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state,expected", [("stopping", True), ("running", False)])
+async def test_runtime_stopping_survives_cancel_caller_timeout(monkeypatch, state, expected):
+    from types import SimpleNamespace
+    from jiuwenswarm.agents.harness.team import team_manager as module
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    mgr = _manager()
+    mgr.commit_runtime_ready("s", "t")
+    entry = SimpleNamespace(state=RuntimeState(state))
+    runtime = SimpleNamespace(pool=SimpleNamespace(get=AsyncMock(return_value=entry)))
+    monkeypatch.setattr(module, "_runner_team_runtime_manager", lambda runner: runtime)
+    assert not mgr.has_pending_cancel("s")
+    assert await mgr.is_runtime_stopping("s") is expected

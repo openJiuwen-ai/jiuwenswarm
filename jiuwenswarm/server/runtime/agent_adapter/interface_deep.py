@@ -18814,6 +18814,14 @@ class JiuWenSwarmDeepAdapter:
             )
 
         if not self._is_session_scoped_adapter:
+            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import get_team_stopping_error
+
+            stopping_error = await get_team_stopping_error(request, inputs.get("query"))
+            if stopping_error is not None:
+                return AgentResponse(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    ok=False, payload=stopping_error, metadata=request.metadata,
+                )
             # 提前绑定 LLM trace ContextVar，使 supervisor task（由
             # _get_or_create_session_adapter → start_interaction →
             # self._instance.start() 经 asyncio.create_task 创建）继承正确的
@@ -18845,18 +18853,25 @@ class JiuWenSwarmDeepAdapter:
             )
 
             request_mcp = None
-            if not is_team_control_continuation(request, inputs.get("query")):
-                try:
-                    request_mcp = await session_adapter.register_request_scoped_office_claw_mcp(request)
-                except McpRegistryChatError as mcp_err:
-                    return AgentResponse(
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        ok=False,
-                        payload={"error": str(mcp_err)},
-                        metadata=request.metadata,
-                    )
             try:
+                # Session preparation can yield while cancellation begins.
+                stopping_error = await get_team_stopping_error(request, inputs.get("query"))
+                if stopping_error is not None:
+                    return AgentResponse(
+                        request_id=request.request_id, channel_id=request.channel_id,
+                        ok=False, payload=stopping_error, metadata=request.metadata,
+                    )
+                if not is_team_control_continuation(request, inputs.get("query")):
+                    try:
+                        request_mcp = await session_adapter.register_request_scoped_office_claw_mcp(request)
+                    except McpRegistryChatError as mcp_err:
+                        return AgentResponse(
+                            request_id=request.request_id,
+                            channel_id=request.channel_id,
+                            ok=False,
+                            payload={"error": str(mcp_err)},
+                            metadata=request.metadata,
+                        )
                 with bind_active_office_claw_mcp_tools(
                     request_mcp.tool_ids if request_mcp is not None else ()
                 ):
@@ -19607,6 +19622,15 @@ class JiuWenSwarmDeepAdapter:
             )
             return
         if not self._is_session_scoped_adapter:
+            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import get_team_stopping_error
+
+            stopping_error = await get_team_stopping_error(request, inputs.get("query"))
+            if stopping_error is not None:
+                yield AgentResponseChunk(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    payload=stopping_error, is_complete=True, metadata=request.metadata or {},
+                )
+                return
             # 提前绑定 LLM trace ContextVar，使 supervisor task（由
             # _get_or_create_session_adapter → start_interaction →
             # self._instance.start() 经 asyncio.create_task 创建）继承正确的
@@ -19640,19 +19664,27 @@ class JiuWenSwarmDeepAdapter:
             )
 
             request_mcp = None
-            if not is_team_control_continuation(request, inputs.get("query")):
-                try:
-                    request_mcp = await session_adapter.register_request_scoped_office_claw_mcp(request)
-                except McpRegistryChatError as mcp_err:
+            try:
+                # Session preparation can yield while cancellation begins.
+                stopping_error = await get_team_stopping_error(request, inputs.get("query"))
+                if stopping_error is not None:
                     yield AgentResponseChunk(
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        payload={"event_type": "chat.error", "error": str(mcp_err)},
-                        is_complete=True,
-                        metadata=request.metadata or {},
+                        request_id=request.request_id, channel_id=request.channel_id,
+                        payload=stopping_error, is_complete=True, metadata=request.metadata or {},
                     )
                     return
-            try:
+                if not is_team_control_continuation(request, inputs.get("query")):
+                    try:
+                        request_mcp = await session_adapter.register_request_scoped_office_claw_mcp(request)
+                    except McpRegistryChatError as mcp_err:
+                        yield AgentResponseChunk(
+                            request_id=request.request_id,
+                            channel_id=request.channel_id,
+                            payload={"event_type": "chat.error", "error": str(mcp_err)},
+                            is_complete=True,
+                            metadata=request.metadata or {},
+                        )
+                        return
                 with bind_active_office_claw_mcp_tools(
                     request_mcp.tool_ids if request_mcp is not None else ()
                 ):
