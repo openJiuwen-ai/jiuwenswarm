@@ -46,6 +46,27 @@ logger = logging.getLogger(__name__)
 # run-trace：定位 session.create 与 chat.send 之间断点（phase 见 _log_cron_run_phase）
 _CRON_RUN_TRACE_PREFIX = "[Cron][run-trace]"
 
+# 调度器自己消费 Agent 流时，这些帧要进正在看的 cron_* 窗口。
+# chat.final：live 阶段也要先推一帧，让前端在 processing=false 拆线前用终稿
+# 覆盖字级 delta 拼接；_on_push 仍会再推一次（前端去重/同文覆盖）。
+_CRON_LIVE_FORWARD_EVENTS = frozenset({
+    "chat.reasoning",
+    "chat.delta",
+    "chat.tool_call",
+    "chat.tool_update",
+    "chat.tool_result",
+    "chat.processing_status",
+    "chat.ask_user_question",
+    # Token/cost 行依赖此帧；不转发则 live 气泡无 usage，刷新 history 才出现。
+    "chat.usage_summary",
+})
+_CRON_LIVE_MIRROR_EVENTS = _CRON_LIVE_FORWARD_EVENTS | frozenset({"chat.final"})
+_CRON_QUIET_PUSH_EVENTS = frozenset({
+    EventType.CHAT_DELTA,
+    EventType.CHAT_REASONING,
+    EventType.CHAT_PROCESSING_STATUS,
+})
+
 
 def _log_cron_run_phase(
     phase: str,
@@ -165,6 +186,54 @@ def _touch_remote_cron_session_catalog(session_id: str, *, now_ts: float) -> Non
         logger.warning(
             "[Cron] touch exec session catalog failed session_id=%s",
             sid,
+            exc_info=True,
+        )
+
+
+async def _persist_remote_cron_history(job: CronJob, state: CronRunState) -> None:
+    """Save the execution body independently of Pod-local files and push delivery.
+
+    ``awaiting_approval`` has no assistant body yet, but the user/task prompt must
+    still land in PG so refresh can restore the cron_* window content.
+    """
+    if not is_remote_storage() or not state.exec_session_id:
+        return
+    awaiting = state.status == "awaiting_approval"
+    if not awaiting and not state.result_text:
+        return
+    try:
+        from jiuwenswarm.channels.web.history_store.api import get_default_store
+
+        store = get_default_store()
+        request_id = f"cron-{state.run_id}"
+        query = str(job.description or job.name or "").strip()
+        if query:
+            await store.record_user(
+                request_id=request_id,
+                session_id=state.exec_session_id,
+                query=query,
+                ts=state.started_at or state.finished_at,
+                user=str(job.user_id or "").strip() or "guest",
+                group_id=job.group_id,
+                bot_id=job.bot_id,
+                project_id=job.project_id,
+                cron_id=job.id,
+                work_mode=job.work_mode or DEFAULT_WEB_WORK_MODE,
+            )
+        if awaiting:
+            return
+        await store.record_assistant(
+            request_id=request_id,
+            session_id=state.exec_session_id,
+            content=state.result_text,
+            event_type="chat.final" if state.status == "succeeded" else "chat.error",
+            ts=state.finished_at,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[Cron] persist exec history failed job=%s session_id=%s",
+            job.id,
+            state.exec_session_id,
             exc_info=True,
         )
 
@@ -359,6 +428,342 @@ class CronSchedulerService:
         self._claimed_run_ids: set[str] = set()
         # active-standby 下由 LeaderElection 控制：STANDBY 期间 loop 自旋但不消费事件
         self._active: bool = True
+        # job_id -> (deadline_ts, exec_session_id)。审批卡未回复时跳过下一次触发。
+        # 多副本时另写 Redis（见 _hold_job_for_permission）；读失败偏安全（当仍 hold）。
+        self._permission_hold: dict[str, tuple[float, str]] = {}
+        # 任务被取消时 finally 不能再 await 释放，改后台任务，避免拖垮收尾。
+        self._runtime_release_tasks: set[asyncio.Task] = set()
+
+    @staticmethod
+    def _redis_hold_required() -> bool:
+        """distributed / active-standby 下 hold 必须以 Redis 为准；不可用则 fail-closed。"""
+        try:
+            from jiuwenswarm.extensions.redis.redis_runtime import get_declared_deployment_mode
+
+            mode = str(get_declared_deployment_mode() or "").strip().lower()
+            return mode in {"distributed", "active-standby"}
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _get_active_permission_hold(self, job_id: str) -> tuple[float, str] | None:
+        item = self._permission_hold.get(job_id)
+        if item is None:
+            return None
+        until, session_id = item
+        if self._now_fn() >= until:
+            self._permission_hold.pop(job_id, None)
+            return None
+        return until, str(session_id or "").strip()
+
+    def _permission_hold_active(self, job_id: str) -> bool:
+        return self._get_active_permission_hold(job_id) is not None
+
+    def _permission_hold_session(self, job_id: str) -> str:
+        held = self._get_active_permission_hold(job_id)
+        return held[1] if held is not None else ""
+
+    async def _permission_hold_session_async(self, job_id: str) -> tuple[str, str]:
+        """返回 ``(session_id, source)``。
+
+        ``source`` ∈ ``{'', 'local', 'redis', '__hold_unknown__'}``。
+        Local hold first; then Redis. Redis required+unusable → sentinel
+        ``__hold_unknown__``（sid 与 source 同为该哨兵）。
+        """
+        local = self._permission_hold_session(job_id)
+        if local:
+            return local, "local"
+        if not self._redis_hold_required():
+            return "", ""
+        try:
+            from jiuwenswarm.extensions.redis.redis_keys import cron_permission_hold_rel
+            from jiuwenswarm.extensions.redis.redis_runtime import (
+                get_gateway_redis_client_if_open,
+            )
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                logger.warning(
+                    "[Cron] permission hold redis unavailable (fail-closed) job=%s",
+                    job_id,
+                )
+                return "__hold_unknown__", "__hold_unknown__"
+            raw = await client.get(cron_permission_hold_rel(job_id))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] permission hold redis read failed (fail-closed) job=%s",
+                job_id,
+                exc_info=True,
+            )
+            return "__hold_unknown__", "__hold_unknown__"
+        if raw is None:
+            return "", ""
+        if isinstance(raw, (bytes, bytearray)):
+            text = bytes(raw).decode("utf-8", errors="replace").strip()
+        else:
+            text = str(raw or "").strip()
+        if not text:
+            return "", ""
+        return text, "redis"
+
+    async def _permission_hold_blocks_new_run(self, job_id: str) -> bool:
+        """Whether wake / new run_now must not start a fresh execution."""
+        sid, source = await self._permission_hold_session_async(job_id)
+        if not sid:
+            return False
+        if sid == "__hold_unknown__":
+            return True
+        # 本机孤儿判定只适用于 local hold。Redis hold 可能是别的副本写入的，
+        # 本机 _runs 看不到 awaiting_approval 时不得误清全局 hold（靠 TTL 回收）。
+        if source == "local" and self._is_orphan_permission_hold(job_id, sid):
+            self._clear_permission_hold_for_job(
+                job_id, session_id=sid, reason="wake_orphan_hold",
+            )
+            return False
+        return True
+
+    def _find_awaiting_approval_run_id(self, job_id: str, session_id: str = "") -> str:
+        sid = str(session_id or "").strip()
+        for run_id, state in self._runs.items():
+            if state.job_id != job_id or state.status != "awaiting_approval":
+                continue
+            if sid and str(state.exec_session_id or "").strip() != sid:
+                continue
+            return run_id
+        return f"{job_id}:awaiting_approval"
+
+    def _is_orphan_permission_hold(self, job_id: str, held_session_id: str) -> bool:
+        """Hold 仍在，但已无真实 awaiting_approval / running 执行可续跑。
+
+        典型：续跑 UI 已完成，但 Redis/本地 hold 未清；``run_now`` 只能复用旧
+        会话（合成 ``job_id:awaiting_approval``），表现为卡住。真 HITL 时本机
+        必有 ``awaiting_approval`` run，不得当孤儿清掉。
+        """
+        sid = str(held_session_id or "").strip()
+        jid = str(job_id or "").strip()
+        if not jid or not sid:
+            return False
+        for state in self._runs.values():
+            if str(getattr(state, "job_id", "") or "").strip() != jid:
+                continue
+            status = str(getattr(state, "status", "") or "")
+            exec_sid = str(getattr(state, "exec_session_id", "") or "").strip()
+            if status == "awaiting_approval" and (not sid or exec_sid == sid):
+                return False
+            if exec_sid == sid and status == "running":
+                return False
+        return True
+
+    def _clear_permission_hold_for_job(
+        self, job_id: str, *, session_id: str = "", reason: str = "",
+    ) -> None:
+        jid = str(job_id or "").strip()
+        if not jid:
+            return
+        self._permission_hold.pop(jid, None)
+        self._schedule_hold_redis_clear(jid, session_id=session_id)
+        sid = str(session_id or "").strip()
+        if sid:
+            try:
+                from jiuwenswarm.gateway.cron.live_bus import cron_live_bus
+
+                cron_live_bus.clear_session(sid)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[Cron] clear live after hold clear failed session=%s",
+                    sid,
+                    exc_info=True,
+                )
+        if reason:
+            logger.info(
+                "[Cron] cleared permission hold job=%s session=%s reason=%s",
+                jid, sid or "-", reason,
+            )
+
+    def _hold_job_for_permission(self, job: CronJob, exec_session_id: str) -> None:
+        timeout = float(resolve_cron_job_timeout_seconds(job))
+        sid = str(exec_session_id or "")
+        self._permission_hold[job.id] = (self._now_fn() + timeout, sid)
+        self._schedule_hold_redis_write(job.id, sid, int(max(1, timeout)))
+
+    def _schedule_hold_redis_write(self, job_id: str, session_id: str, ttl: int) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._redis_write_permission_hold(job_id, session_id, ttl))
+
+    async def _redis_write_permission_hold(
+        self, job_id: str, session_id: str, ttl: int,
+    ) -> None:
+        if not self._redis_hold_required():
+            return
+        try:
+            from jiuwenswarm.extensions.redis.redis_keys import (
+                cron_permission_hold_by_session_rel,
+                cron_permission_hold_rel,
+            )
+            from jiuwenswarm.extensions.redis.redis_runtime import (
+                get_gateway_redis_client_if_open,
+            )
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                logger.warning(
+                    "[Cron] permission hold redis write skipped (no client) job=%s",
+                    job_id,
+                )
+                return
+            await client.set(
+                cron_permission_hold_rel(job_id),
+                session_id,
+                ttl_seconds=ttl,
+            )
+            if session_id:
+                await client.set(
+                    cron_permission_hold_by_session_rel(session_id),
+                    job_id,
+                    ttl_seconds=ttl,
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] permission hold redis write failed job=%s",
+                job_id,
+                exc_info=True,
+            )
+
+    def _schedule_hold_redis_clear(
+        self, job_id: str, *, session_id: str = "",
+    ) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(
+            self._redis_clear_permission_hold(job_id, session_id=session_id)
+        )
+
+    async def _redis_clear_permission_hold(
+        self, job_id: str, *, session_id: str = "",
+    ) -> None:
+        if not self._redis_hold_required():
+            return
+        try:
+            from jiuwenswarm.extensions.redis.redis_keys import (
+                cron_permission_hold_by_session_rel,
+                cron_permission_hold_rel,
+            )
+            from jiuwenswarm.extensions.redis.redis_runtime import (
+                get_gateway_redis_client_if_open,
+            )
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                logger.warning(
+                    "[Cron] permission hold redis clear skipped (no client) job=%s",
+                    job_id,
+                )
+                return
+            await client.delete(cron_permission_hold_rel(job_id))
+            sid = str(session_id or "").strip()
+            if sid:
+                await client.delete(cron_permission_hold_by_session_rel(sid))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] permission hold redis clear failed job=%s",
+                job_id,
+                exc_info=True,
+            )
+
+    def _schedule_hold_redis_clear_by_session(self, session_id: str) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._redis_clear_permission_hold_by_session(session_id))
+
+    async def _redis_clear_permission_hold_by_session(self, session_id: str) -> None:
+        if not self._redis_hold_required():
+            return
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        try:
+            from jiuwenswarm.extensions.redis.redis_keys import (
+                cron_permission_hold_by_session_rel,
+                cron_permission_hold_rel,
+            )
+            from jiuwenswarm.extensions.redis.redis_runtime import (
+                get_gateway_redis_client_if_open,
+            )
+
+            client = get_gateway_redis_client_if_open()
+            if client is None:
+                return
+            raw = await client.get(cron_permission_hold_by_session_rel(sid))
+            if raw is None:
+                return
+            if isinstance(raw, (bytes, bytearray)):
+                job_id = bytes(raw).decode("utf-8", errors="replace").strip()
+            else:
+                job_id = str(raw or "").strip()
+            if job_id:
+                await client.delete(cron_permission_hold_rel(job_id))
+            await client.delete(cron_permission_hold_by_session_rel(sid))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] permission hold redis clear-by-session failed session=%s",
+                sid,
+                exc_info=True,
+            )
+
+    def release_permission_hold_for_session(self, session_id: str) -> None:
+        """审批续跑成功后调用：放开调度，并清 live replay。"""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        released_jobs: list[str] = []
+        for job_id, (_until, held_sid) in list(self._permission_hold.items()):
+            if held_sid == sid:
+                self._permission_hold.pop(job_id, None)
+                released_jobs.append(job_id)
+        for job_id in released_jobs:
+            self._schedule_hold_redis_clear(job_id, session_id=sid)
+        if not released_jobs:
+            # Local miss：按 session 匹配任意 run 取 job_id，或走 session 反查键。
+            for _run_id, state in list(self._runs.items()):
+                if str(getattr(state, "exec_session_id", "") or "").strip() != sid:
+                    continue
+                self._schedule_hold_redis_clear(state.job_id, session_id=sid)
+                released_jobs.append(state.job_id)
+            if not released_jobs:
+                self._schedule_hold_redis_clear_by_session(sid)
+        if not released_jobs and not self._redis_hold_required():
+            return
+        # 审批续跑改走 chat.send SSE；调度器已停读。清掉含 ask_user 的 live
+        # replay，避免 /live 重订时把已答过的权限卡再弹出来。
+        try:
+            from jiuwenswarm.gateway.cron.live_bus import cron_live_bus
+
+            cron_live_bus.clear_session(sid)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] clear live replay after permission release failed session=%s",
+                sid,
+                exc_info=True,
+            )
+
+    def mark_permission_resume_succeeded(self, session_id: str) -> None:
+        """Resume ``chat.final`` arrived: leave awaiting_approval and release hold."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        for state in list(self._runs.values()):
+            if str(getattr(state, "exec_session_id", "") or "").strip() != sid:
+                continue
+            if state.status == "awaiting_approval":
+                state.status = "succeeded"
+                state.finished_at = self._now_fn()
+        self.release_permission_hold_for_session(sid)
 
     def _cancel_run_task(self, run_id: str, task: asyncio.Task, *, reason: str) -> None:
         """取消 in-flight run 并记录来源，便于关联 session.create 后未 chat.send。"""
@@ -571,6 +976,8 @@ class CronSchedulerService:
           主动 cancel，AgentServer 端的 task 会继续跑到完成——飞书等渠道
           会先收到"超时"文案，但任务实际仍在后台正常完成，结果到达 gateway
           时已无人接收而被丢弃（用户反馈"超时但结果正常完成"的矛盾现象）。
+        - ``reason="error"``: agent 流处理抛出非超时异常时，同样停掉
+          AgentServer 上还在跑的那一轮；日志原因与超时分开。
 
         session_id 必须用真实执行会话 ``state.exec_session_id``（格式
         ``cron_{ts}_{job.id}``）。AgentServer 的 ``_stop_session_interrupt_work``
@@ -578,6 +985,7 @@ class CronSchedulerService:
         ``cron_{job_id}`` 与真实会话不匹配，cancel 请求落不到点上。
         """
         target_session_id = (state.exec_session_id or "").strip() or f"cron_{state.job_id}"
+        job = self._jobs.get(state.job_id)
         try:
             interrupt_env = e2a_from_agent_fields(
                 request_id=f"cron-cancel-{state.run_id}",
@@ -587,6 +995,7 @@ class CronSchedulerService:
                 params={"cron": {"job_id": state.job_id, "run_id": state.run_id}},
                 is_stream=False,
                 timestamp=self._now_fn(),
+                user_id=str(getattr(job, "user_id", "") or "").strip() or None,
             )
             await self._agent_client.send_request(interrupt_env)
             logger.info(
@@ -764,7 +1173,7 @@ class CronSchedulerService:
             existing = self._runs.get(run_id)
             already_active = (
                 existing is not None
-                and existing.status in ("running", "succeeded", "failed")
+                and existing.status in ("running", "succeeded", "failed", "awaiting_approval")
             ) or (
                 run_id in self._run_tasks
                 and not self._run_tasks[run_id].done()
@@ -805,8 +1214,43 @@ class CronSchedulerService:
 
     async def trigger_run_now_info(
         self, job_id: str, *, preallocate: bool = False
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         job_id = str(job_id or "").strip()
+        # 上一轮工具审批未完成：立即执行复用旧 cron_*，勿再开空会话（否则前端转圈、Agent 不跑）。
+        # hold 按 job_id 索引（本地 + Redis）；Redis 不可用时 fail-closed 拒绝新开跑。
+        held_sid, hold_source = await self._permission_hold_session_async(job_id)
+        if held_sid == "__hold_unknown__":
+            raise RuntimeError(
+                "cron permission hold state unavailable; refusing new run (fail-closed)"
+            )
+        if held_sid:
+            # 仅本机 hold 可做孤儿清理；Redis hold 视为仍有效（多副本 fail-safe）。
+            if hold_source == "local" and self._is_orphan_permission_hold(
+                job_id, held_sid,
+            ):
+                # UI 已跑完但本机 hold 残留 → 清掉后走新建。
+                # 真待审批时本机必有 awaiting_approval run，不会进此分支。
+                self._clear_permission_hold_for_job(
+                    job_id,
+                    session_id=held_sid,
+                    reason="run_now_orphan_hold",
+                )
+            else:
+                held_run_id = self._find_awaiting_approval_run_id(job_id, held_sid)
+                logger.info(
+                    "[Cron] run_now reuses pending approval session job=%s "
+                    "run_id=%s session_id=%s source=%s",
+                    job_id,
+                    held_run_id,
+                    held_sid,
+                    hold_source,
+                )
+                return {
+                    "run_id": held_run_id,
+                    "session_id": held_sid,
+                    "awaiting_approval": True,
+                    "reused_pending_session": True,
+                }
         job = self._jobs.get(job_id) or await self._store.get_job(job_id)
         if job is None:
             raise KeyError("job not found")
@@ -1289,6 +1733,7 @@ class CronSchedulerService:
                     is_stream=False,
                     timestamp=self._now_fn(),
                     metadata={"cron": {"job_id": job.id, "run_id": ev.run_id}},
+                    user_id=str(job.user_id or "").strip() or None,
                 )
                 resp = await self._agent_client.send_request(envelope)
 
@@ -1493,7 +1938,7 @@ class CronSchedulerService:
 
         # 幂等保护：reload 可能对同一 run_id 重复排入 wake 事件。
         # 如果该 run 已完成（succeeded/failed）或已有结果文本，不再重复执行 agent。
-        if state.status in ("succeeded", "failed"):
+        if state.status in ("succeeded", "failed", "awaiting_approval"):
             logger.info(
                 "[Cron] _on_wake skipped: already %s run_id=%s job=%s",
                 state.status, run_id, job.id,
@@ -1514,12 +1959,31 @@ class CronSchedulerService:
             )
             return
 
+        if await self._permission_hold_blocks_new_run(job.id):
+            # 定时触发：跳过，避免未审批又开一轮。立即执行应在 trigger_run_now_info 已复用旧会话；
+            # 若仍进到这里（竞态/旧事件），也只标 skipped，禁止假成功。
+            # Redis 不可用时同样 skip（fail-closed，避免双跑）。
+            state.status = "skipped"
+            state.finished_at = self._now_fn()
+            held_sid, hold_source = await self._permission_hold_session_async(job.id)
+            logger.info(
+                "[Cron] _on_wake skipped: permission card pending job=%s run_id=%s "
+                "manual=%s held_session=%s source=%s",
+                job.id,
+                run_id,
+                bool(state.manual_trigger),
+                held_sid,
+                hold_source,
+            )
+            return
+
         _log_cron_run_phase("wake_start_run_agent", run_id=run_id, job_id=job.id)
 
         async def _run_agent() -> None:
             state.status = "running"
             state.started_at = self._now_fn()
             ok = False
+            awaiting_permission = False
             mode = CRON_JOB_DEFAULT_MODE
             channel_id = ""
             exec_session_id = ""
@@ -1653,7 +2117,7 @@ class CronSchedulerService:
                         timeout_seconds=timeout_seconds,
                     )
                 else:
-                    envelope.is_stream = False
+                    envelope.is_stream = True
                     timeout_seconds = resolve_cron_job_timeout_seconds(job)
                     _log_cron_run_phase(
                         "run_agent_before_chat_send",
@@ -1662,10 +2126,11 @@ class CronSchedulerService:
                         exec_session_id=exec_session_id,
                         timeout_seconds=timeout_seconds,
                     )
-                    text, ok = await self._run_unary_cron_job(
+                    text, ok, awaiting_permission = await self._run_agent_stream_job(
                         envelope=envelope,
-                        timeout_seconds=timeout_seconds,
+                        job=job,
                         state=state,
+                        timeout_seconds=timeout_seconds,
                     )
                     _log_cron_run_phase(
                         "run_agent_after_chat_send",
@@ -1676,13 +2141,23 @@ class CronSchedulerService:
                         result_text_len=len(text or ""),
                     )
                 await self._mark_last_session_ready(job, exec_session_id)
-                logger.info(
-                    "[Cron] run finished: job_id=%s exec_session_id=%s "
-                    "mode=%s ok=%s result_text_len=%d",
-                    job.id, exec_session_id, mode, ok, len(text or ""),
-                )
-                state.result_text = text
-                state.status = "succeeded" if ok else "failed"
+                if awaiting_permission:
+                    state.result_text = None
+                    state.error = None
+                    state.status = "awaiting_approval"
+                    self._hold_job_for_permission(job, exec_session_id)
+                    logger.info(
+                        "[Cron] run paused for permission: job_id=%s exec_session_id=%s",
+                        job.id, exec_session_id,
+                    )
+                else:
+                    logger.info(
+                        "[Cron] run finished: job_id=%s exec_session_id=%s "
+                        "mode=%s ok=%s result_text_len=%d",
+                        job.id, exec_session_id, mode, ok, len(text or ""),
+                    )
+                    state.result_text = text
+                    state.status = "succeeded" if ok else "failed"
             except asyncio.CancelledError:
                 state.status = "failed"
                 state.error = "cancelled"
@@ -1719,6 +2194,14 @@ class CronSchedulerService:
                 )
             finally:
                 state.finished_at = self._now_fn()
+                # 流已返回（含结束时的 touch）。非审批才释放槽位，且放在历史落库之前，
+                # 缩短和用户续聊 route 叠在一起的窗口。等审批必须留着原槽位。
+                if not awaiting_permission:
+                    release_sid = exec_session_id or state.exec_session_id or ""
+                    if state.error == "cancelled":
+                        self._schedule_runtime_session_release(release_sid)
+                    else:
+                        await self._release_finished_exec_session(release_sid)
                 is_cancelled_ghost = state.error == "cancelled"
                 if not is_cancelled_ghost:
                     await asyncio.to_thread(
@@ -1730,11 +2213,17 @@ class CronSchedulerService:
                 # Ensure failed runs also produce result_text so push logic can deliver it.
                 # But for cancelled ghost tasks, skip — no result should be pushed for
                 # a job the user has removed.
-                if not state.result_text and state.error and not is_cancelled_ghost:
+                missing_result_text = not state.result_text
+                should_fill_error_result = (
+                    not awaiting_permission
+                    and missing_result_text
+                    and bool(state.error)
+                )
+                if should_fill_error_result and not is_cancelled_ghost:
                     state.result_text = f"[cron] 任务执行失败: {state.error}"
-                # 仅在 local 模式写 gateway 本地磁盘兜底历史；remote 模式下会话
-                # 数据由 AgentServer 持久化，本地写入会污染 gateway 磁盘并被
-                # project.get_sessions 误读为普通会话(cron_id 丢失)。
+                if not is_cancelled_ghost:
+                    await _persist_remote_cron_history(job, state)
+                # local 模式保留磁盘兜底；remote 正文写历史库，避免依赖原 Pod。
                 local_fallback_ok = not is_cancelled_ghost and not is_remote_storage()
                 if state.result_text and not ok and local_fallback_ok:
                     query = ""
@@ -1794,6 +2283,61 @@ class CronSchedulerService:
             job_id=job.id,
             task_name=task.get_name(),
         )
+
+    def _session_has_inflight_followup(self, session_id: str) -> bool:
+        """用户已在同一条 ``cron_*`` 上发出普通 chat.send 时，不要拆掉刚续上的槽。"""
+        probe = getattr(self._message_handler, "has_inflight_chat_stream", None)
+        if not callable(probe):
+            return False
+        try:
+            return bool(probe(session_id))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] inflight follow-up probe failed session=%s",
+                session_id,
+                exc_info=True,
+            )
+            return False
+
+    async def _release_finished_exec_session(self, session_id: str) -> None:
+        """定时任务自己的流结束后，立刻释放 Runtime 槽位。
+
+        没有 ``release_session`` 的客户端（本地直连）跳过。释放失败不改变
+        run 状态，槽位按 ``session_ttl`` 过期。
+        """
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        if self._session_has_inflight_followup(sid):
+            logger.info(
+                "[Cron] skip runtime session release; follow-up in flight session=%s",
+                sid,
+            )
+            return
+        release = getattr(self._agent_client, "release_session", None)
+        if not callable(release):
+            return
+        try:
+            await release(sid)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[Cron] runtime session release failed session=%s",
+                sid,
+                exc_info=True,
+            )
+
+    def _schedule_runtime_session_release(self, session_id: str) -> None:
+        """取消路径里调度释放，避免在已取消的任务上再 await。"""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+
+        async def _run() -> None:
+            await self._release_finished_exec_session(sid)
+
+        task = asyncio.create_task(_run(), name=f"cron-release-{sid}")
+        self._runtime_release_tasks.add(task)
+        task.add_done_callback(self._runtime_release_tasks.discard)
 
     async def _mark_last_session_ready(self, job: CronJob, exec_session_id: str) -> None:
         """Record the execution session after the agent request has accepted it."""
@@ -1860,6 +2404,235 @@ class CronSchedulerService:
                 exec_session_id,
                 exc,
             )
+
+    async def _run_agent_stream_job(
+        self,
+        *,
+        envelope: Any,
+        job: CronJob,
+        state: CronRunState,
+        timeout_seconds: float,
+    ) -> tuple[str, bool, bool]:
+        """Agent 模式自己消费流：思考、正文和审批卡转到正在看的 ``cron_*``。
+
+        返回 ``(text, ok, awaiting_approval)``。暂停时断开的是调度器这条读取，
+        不取消 Agent 上已经暂停的那一轮。``chat.final`` 在 live 上先于
+        ``processing=false`` 发出，便于前端覆盖 delta 拼接；跑完后的 ``_on_push``
+        仍会再推终稿。
+        """
+        rid = str(getattr(envelope, "request_id", "") or "")
+        sid = str(getattr(envelope, "session_id", "") or "")
+        _log_cron_run_phase(
+            "chat_send_stream_begin",
+            run_id=state.run_id,
+            job_id=state.job_id,
+            exec_session_id=sid,
+            request_id=rid,
+            timeout_seconds=timeout_seconds,
+        )
+        stream_gen = self._agent_client.send_request_stream(envelope)
+        final_text = ""
+        deltas: list[str] = []
+        saw_final = False
+        forwarded_final = False
+        saw_ask = False
+        awaiting = False
+        ok = True
+
+        live_seq = 0
+
+        async def _forward_live(payload: dict[str, Any], event_name: str) -> None:
+            nonlocal live_seq
+            try:
+                event_type = EventType(event_name)
+            except ValueError:
+                return
+            live_seq += 1
+            # Monotonic seq so the browser can drop stale frames when two /live
+            # SSE readers briefly overlap (otherwise CJK deltas can swap, e.g. 令命).
+            enriched = dict(payload)
+            enriched["live_seq"] = live_seq
+            message_id = f"cron-live-{state.run_id}-{live_seq}"
+            if event_name == "chat.ask_user_question":
+                ask_request_id = str(payload.get("request_id") or rid or "ask")
+                message_id = f"cron-ask-{state.run_id}-{ask_request_id}"
+            try:
+                await self._push_to_targets(
+                    job,
+                    state,
+                    text="",
+                    is_placeholder=False,
+                    event_type=event_type,
+                    payload=enriched,
+                    message_id=message_id,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[Cron] live frame forward failed job=%s run_id=%s event=%s",
+                    job.id,
+                    state.run_id,
+                    event_name,
+                    exc_info=True,
+                )
+
+        async def _consume() -> None:
+            nonlocal final_text, saw_final, forwarded_final, saw_ask, awaiting, ok
+            # 首帧标 processing，打开窗口时立刻是「进行中」，而不是空时间线「已完成」。
+            await _forward_live(
+                {
+                    "event_type": "chat.processing_status",
+                    "is_processing": True,
+                    "current_task": "thinking",
+                    "session_id": sid,
+                    "request_id": rid,
+                },
+                "chat.processing_status",
+            )
+            try:
+                async for chunk in stream_gen:
+                    payload = chunk.payload if isinstance(chunk.payload, dict) else None
+                    event_type = str((payload or {}).get("event_type") or "").strip()
+                    if event_type in _CRON_LIVE_FORWARD_EVENTS and isinstance(payload, dict):
+                        if event_type == "chat.ask_user_question":
+                            saw_ask = True
+                        # 等审批时不要转发 is_processing=false，否则前端会先显示「已完成」。
+                        if (
+                            event_type == "chat.processing_status"
+                            and payload.get("is_processing") is False
+                        ):
+                            continue
+                        await _forward_live(payload, event_type)
+                        if event_type == "chat.delta":
+                            piece = _extract_text_from_agent_payload(payload)
+                            if piece:
+                                deltas.append(piece)
+                    elif event_type == "chat.invocation_paused" or (
+                        isinstance(payload, dict) and payload.get("awaiting_user_input")
+                    ):
+                        awaiting = True
+                        # 停读即可。关掉客户端连接不能取消 Agent 上这次暂停。
+                        break
+                    elif event_type == "chat.error":
+                        ok = False
+                        error_text = _extract_text_from_agent_payload(payload)
+                        if error_text and not saw_final:
+                            final_text = error_text
+                            saw_final = True
+                    elif event_type == "chat.final":
+                        text = _extract_text_from_agent_payload(payload)
+                        if text:
+                            final_text = text
+                            saw_final = True
+                        # HITL 暂停前也可能有铺垫 final；照常进 live，前端有权限卡时不拆线。
+                        if isinstance(payload, dict) and text:
+                            await _forward_live(payload, event_type)
+                            forwarded_final = True
+                    # 真暂停靠 awaiting；saw_ask  alone 不能挡 is_complete，
+                    # 否则非 HITL 的 ask 帧会把流拖死，最后还被误判成 awaiting_approval。
+                    if bool(getattr(chunk, "is_complete", False)) and not awaiting:
+                        break
+            finally:
+                try:
+                    await stream_gen.aclose()
+                except Exception:
+                    pass
+
+        try:
+            await asyncio.wait_for(_consume(), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            timeout_min = max(1, int(timeout_seconds // 60))
+            logger.warning(
+                "[Cron] agent stream timed out after %ss request_id=%s",
+                timeout_seconds,
+                rid,
+            )
+            try:
+                await stream_gen.aclose()
+            except Exception:
+                pass
+            await self._cancel_agent_session(state, reason="timeout")
+            try:
+                await _forward_live(
+                    {
+                        "event_type": "chat.processing_status",
+                        "is_processing": False,
+                        "session_id": sid,
+                        "request_id": rid,
+                    },
+                    "chat.processing_status",
+                )
+            except Exception:
+                pass
+            return f"[cron] 任务执行超时（>{timeout_min}min）", False, False
+        except Exception:
+            logger.warning(
+                "[Cron] agent stream failed request_id=%s",
+                rid,
+                exc_info=True,
+            )
+            try:
+                await stream_gen.aclose()
+            except Exception:
+                pass
+            await self._cancel_agent_session(state, reason="error")
+            try:
+                await _forward_live(
+                    {
+                        "event_type": "chat.processing_status",
+                        "is_processing": False,
+                        "session_id": sid,
+                        "request_id": rid,
+                    },
+                    "chat.processing_status",
+                )
+            except Exception:
+                pass
+            raise
+
+        # 只有真正收到 invocation_paused / awaiting_user_input 才算等审批。
+        # saw_ask  alone（流已跑完、或非暂停类 ask）必须补 false，否则前端一直转圈。
+        if awaiting:
+            _log_cron_run_phase(
+                "chat_send_stream_paused",
+                run_id=state.run_id,
+                job_id=state.job_id,
+                exec_session_id=sid,
+                request_id=rid,
+                saw_ask=saw_ask,
+            )
+            # 等审批：保持 processing=true，不要补 false / 不要补收口 final。
+            return "", True, True
+
+        text = final_text if saw_final else "".join(deltas)
+        # 正常跑完：先推权威 final，再补 processing=false，避免前端拆 live 后错拼钉死。
+        if text and not forwarded_final:
+            await _forward_live(
+                {
+                    "event_type": "chat.final",
+                    "content": text,
+                    "session_id": sid,
+                    "request_id": rid,
+                },
+                "chat.final",
+            )
+        # 流里的 is_processing=false 被上面吞掉了（避免审批前误收口）。
+        await _forward_live(
+            {
+                "event_type": "chat.processing_status",
+                "is_processing": False,
+                "session_id": sid,
+                "request_id": rid,
+            },
+            "chat.processing_status",
+        )
+
+        if ok and not text:
+            logger.warning(
+                "[Cron] agent stream succeeded but result_text empty request_id=%s",
+                rid,
+            )
+            return "[cron] 任务执行完成但未返回结果内容", False, False
+        return text, ok, False
 
     async def _run_unary_cron_job(
         self,
@@ -2080,6 +2853,12 @@ class CronSchedulerService:
 
         if state.pushed_final:
             return
+        if state.status in ("awaiting_approval", "skipped"):
+            logger.info(
+                "[Cron] _on_push skipped: %s job=%s run_id=%s",
+                state.status, job.id, run_id,
+            )
+            return
 
         if state.result_text:
             await self._push_to_targets(job, state, text=state.result_text, is_placeholder=False)
@@ -2120,35 +2899,55 @@ class CronSchedulerService:
         state.pushed_final = True
         logger.info("[Cron] push_update done job=%s run_id=%s", job.id, run_id)
 
-    async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
-        logger.info(
-            "[Cron] push_to_targets job=%s run_id=%s channel=%s is_placeholder=%s text_len=%d status=%s",
+    async def _push_to_targets(
+        self,
+        job: CronJob,
+        state: CronRunState,
+        *,
+        text: str,
+        is_placeholder: bool,
+        event_type: EventType = EventType.CHAT_FINAL,
+        payload: dict | None = None,
+        message_id: str | None = None,
+    ) -> None:
+        _log = logger.debug if event_type in _CRON_QUIET_PUSH_EVENTS else logger.info
+        _log(
+            "[Cron] push_to_targets job=%s run_id=%s channel=%s is_placeholder=%s text_len=%d status=%s event=%s",
             job.id,
             state.run_id,
             (job.targets or "").strip(),
             bool(is_placeholder),
             len(text or ""),
             state.status,
+            getattr(event_type, "value", event_type),
         )
         broadcast_text = _format_cron_broadcast_text(
             job_name=job.name,
             text=text,
             is_placeholder=is_placeholder,
         )
-        payload_extra = {
-            "content": broadcast_text,
-            "cron": {
-                "job_id": job.id,
-                "job_name": job.name,
-                "run_id": state.run_id,
-                "push_at": state.push_at_iso,
-                "wake_at": state.wake_at_iso,
-                "exec_channel_id": state.exec_channel_id,
-                "exec_session_id": state.exec_session_id,
-                "is_placeholder": bool(is_placeholder),
-                "status": state.status,
-            },
+        cron_meta = {
+            "job_id": job.id,
+            "job_name": job.name,
+            "run_id": state.run_id,
+            "push_at": state.push_at_iso,
+            "wake_at": state.wake_at_iso,
+            "exec_channel_id": state.exec_channel_id,
+            "exec_session_id": state.exec_session_id,
+            "is_placeholder": bool(is_placeholder),
+            "status": state.status,
         }
+        if payload is None:
+            payload_extra = {
+                "content": broadcast_text,
+                "cron": cron_meta,
+            }
+        else:
+            payload_extra = dict(payload)
+            payload_extra["cron"] = cron_meta
+            if state.exec_session_id:
+                payload_extra["session_id"] = state.exec_session_id
+                payload_extra["exec_session_id"] = state.exec_session_id
         channel_id = (job.targets or "").strip()
         if not channel_id:
             # targets 为空：占位/真实结果/push_update 补发均会在此静默丢失。
@@ -2382,7 +3181,7 @@ class CronSchedulerService:
 
         _msg_app_id = str(getattr(job, "app_id", None) or "").strip() or None
         msg = Message(
-            id=f"cron-push-{state.run_id}-{channel_id}",
+            id=message_id or f"cron-push-{state.run_id}-{channel_id}",
             type="event",
             channel_id=channel_id,
             session_id=msg_session_id,
@@ -2390,9 +3189,42 @@ class CronSchedulerService:
             timestamp=self._now_fn(),
             ok=True,
             payload=payload_extra,
-            event_type=EventType.CHAT_FINAL,
+            event_type=event_type,
             metadata=metadata,
             group_digital_avatar=_group_digital_avatar,
             app_id=_msg_app_id,
         )
+        # live 扇出与 WebChannel 投递解耦：企业版 HTTP 无 WS，不能因 channel 发送失败丢思考/审批帧。
+        self._mirror_cron_execution_live(state, event_type, payload_extra)
         await self._message_handler.publish_robot_messages(msg)
+
+    @staticmethod
+    def _mirror_cron_execution_live(
+        state: CronRunState,
+        event_type: EventType,
+        payload: dict | None,
+    ) -> None:
+        """Copy a cron frame onto the live bus for the open ``cron_*`` window."""
+        sid = str(getattr(state, "exec_session_id", "") or "").strip()
+        if not sid or not isinstance(payload, dict):
+            return
+        name = event_type.value if isinstance(event_type, EventType) else str(event_type)
+        if name not in _CRON_LIVE_MIRROR_EVENTS:
+            return
+        cron_meta = payload.get("cron")
+        if isinstance(cron_meta, dict) and cron_meta.get("is_placeholder"):
+            return
+        from jiuwenswarm.gateway.cron.live_bus import cron_live_bus
+
+        cron_live_bus.publish(sid, {
+            "type": "event",
+            "event": name,
+            "payload": payload,
+        })
+        # Finished runs must not leave deltas/finals in the replay buffer: a later
+        # page refresh would replay them over history and replace the newest
+        # follow-up answer with the first cron-run answer.
+        if name == "chat.processing_status" and payload.get("is_processing") is False:
+            cron_live_bus.clear_session(sid)
+        elif name == "chat.final":
+            cron_live_bus.clear_session(sid)

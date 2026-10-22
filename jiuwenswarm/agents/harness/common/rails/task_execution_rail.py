@@ -16,12 +16,13 @@ import re
 import stat
 import threading
 import time
+import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.foundation.llm import ToolCall, ToolMessage
 from openjiuwen.core.session.agent import Session
 from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.rail.base import (
@@ -32,11 +33,21 @@ from openjiuwen.core.single_agent.rail.base import (
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    filter_todos_for_display,
+    filter_todos_for_execution,
+    get_todo_generation_token,
+    remember_turn_user_query,
+    snapshot_includes_persistent_todos,
+)
+from jiuwenswarm.common.todo_generation import todo_item_generation_token
+from jiuwenswarm.common.todo_snapshot import overlay_serial_todo_statuses
 from jiuwenswarm.common.tool_display import build_tool_display_name
 from jiuwenswarm.common.utils import logger
-from jiuwenswarm.agents.harness.common.tools.todo_resume import (
-    filter_todos_by_generation,
-    get_todo_generation_token,
+from jiuwenswarm.server.runtime.agent_adapter.todo_close_text_hold import (
+    TODO_CLOSE_DROP_STREAM_TYPE,
+    TODO_CLOSE_HOLD_STREAM_TYPE,
+    TODO_CLOSE_RELEASE_STREAM_TYPE,
 )
 
 _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
@@ -45,6 +56,20 @@ _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
 SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY = (
     "_jiuwenswarm_skill_turbo_outer_todo_active"
 )
+SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY = (
+    "_jiuwenswarm_skill_turbo_outer_todo_pending"
+)
+# 纯文本收尾前插入的一次调用。名字用已注册的 todo_modify，避免下一轮
+# 请求里出现未注册工具名被模型接口拒绝。id 前缀把它和真改状态分开：
+# 不执行、不改 todo.json、不向前端发工具卡片，只回一条要求模型自己改状态的说明。
+TODO_CLOSE_NUDGE_ID_PREFIX = "todo-close-nudge-"
+TODO_CLOSE_NUDGE_TOOL_NAME = "todo_modify"
+
+
+def is_todo_close_nudge(tool_call: Any) -> bool:
+    """True when this call is the internal close nudge, not a real todo_modify."""
+    tool_call_id = str(getattr(tool_call, "id", "") or "")
+    return tool_call_id.startswith(TODO_CLOSE_NUDGE_ID_PREFIX)
 
 
 def get_current_task_id() -> str | None:
@@ -52,36 +77,43 @@ def get_current_task_id() -> str | None:
     return _ACTIVE_TASK_ID.get()
 
 
-_SERIAL_TODO_DONE_STATUSES = frozenset({"completed", "cancelled"})
+def _todo_close_nudge_message(
+    open_tasks: list[tuple[str, dict[str, Any]]],
+) -> str:
+    """Tell the model to close started todos before the plain-text final.
 
-
-def overlay_serial_todo_statuses(
-    items: list[dict[str, Any]],
-    *,
-    done_statuses: frozenset[str] | None = None,
-) -> list[dict[str, Any]]:
-    """Hide out-of-order completed/in_progress rows from a UI snapshot.
-
-    RelayClaw treats only the last visible row as live and hides pending.
-    Showing a later completed item while an earlier one is still open
-    looks like the list is out of order. Shared by TaskExecutionRail
-    (task.update) and StreamEventRail (todo.updated).
+    task.complete is emitted only after todo_modify sets status to completed.
+    A text-only turn while a started item is still in_progress leaves the
+    frontend task segment open, so the stop explanation stays inside it.
     """
-    done = done_statuses if done_statuses is not None else _SERIAL_TODO_DONE_STATUSES
-    overlay: list[dict[str, Any]] = []
-    found_open = False
-    for item in items:
-        copied = dict(item)
-        status = str(copied.get("status", "pending")).lower()
-        if status in done:
-            if found_open and status == "completed":
-                copied["status"] = "pending"
-        elif found_open:
-            copied["status"] = "pending"
-        else:
-            found_open = True
-        overlay.append(copied)
-    return overlay
+    lines = [
+        (
+            "[TODO_CLOSE_REQUIRED] 纯文本收尾被拦住：已开始的待办仍是 "
+            "in_progress，task.complete 还没发出。本轮只调用 todo_modify，"
+            "不要写给用户的正文。"
+        ),
+        "规则：",
+        (
+            "- 这一条步骤的工作已经做完就标 completed，即使后面的步骤被缺文件、"
+            "用户跳过或等待输入卡住。"
+        ),
+        "- 还没开始的保持 pending。",
+        "- 这一条自己的工作还没做完，不要标 completed。",
+        (
+            "- 只有整件事确定不再继续才标 cancelled"
+            "（含技能协议第 9 条的用户打断）。跳过问答、等待补文件都不是放弃。"
+        ),
+        (
+            "上一轮已经写出的正文没有送达用户，视为作废。"
+            "todo_modify 返回后，下一轮必须完整重写最终回复，"
+            "禁止用「如上所述」概括或引用上一轮。"
+        ),
+        "当前已开始且仍 in_progress：",
+    ]
+    for raw_id, task in open_tasks:
+        content = str(task.get("content", "")).replace("\n", " ")
+        lines.append(f"- id={raw_id} content={content}")
+    return "\n".join(lines)
 
 
 # 图像产物扩展名白名单
@@ -1346,6 +1378,13 @@ class TaskExecutionRail(DeepAgentRail):
         # 暂不发 task.start/complete，等前缀完成后按列表顺序补发。
         self._todo_complete_deferred: set[str] = set()
         self._todo_start_deferred: set[str] = set()
+        # 同一次 invoke 只拦一次纯文本收尾。模型仍不改状态就放行，
+        # 不伪造 completed，也不把未完成项全部 cancelled。
+        self._todo_close_nudge_used: bool = False
+        # 本轮模型调用已经通知适配器挂起外层正文。after 必须 drop 或 release。
+        self._todo_close_hold_pending: bool = False
+        # 上一帧 drop/release 没写进流。下一次 before_model_call 先重试这一帧。
+        self._todo_close_undelivered: str | None = None
 
     def set_skill_turbo_request_metadata(self, metadata: dict | None) -> None:
         """注入当前请求 metadata 副本，供 before_tool_call 解析请求级工作区。"""
@@ -1412,6 +1451,10 @@ class TaskExecutionRail(DeepAgentRail):
                     "[TaskExecutionRail] before_invoke: get_todo_generation_token failed",
                     exc_info=True,
                 )
+        if isinstance(ctx.inputs, InvokeInputs) and ctx.session is not None:
+            raw_query = ctx.inputs.query
+            query_text = raw_query if isinstance(raw_query, str) else ""
+            remember_turn_user_query(ctx.session, query_text)
         logger.info(
             "[TaskExecutionRail] before_invoke reset tracking: "
             "session_id=%s prev_todo_map_size=%d prev_active_tasks=%s "
@@ -1427,6 +1470,9 @@ class TaskExecutionRail(DeepAgentRail):
         self._todo_started = set()
         self._todo_complete_deferred = set()
         self._todo_start_deferred = set()
+        self._todo_close_nudge_used = False
+        self._todo_close_hold_pending = False
+        self._todo_close_undelivered = None
         self._tool_start_times = {}
         _ACTIVE_TASK_ID.set(None)
         if isinstance(ctx.inputs, InvokeInputs):
@@ -1448,11 +1494,231 @@ class TaskExecutionRail(DeepAgentRail):
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         """Bind task_id before LLM calls."""
         self._bind_context_to_in_progress_task()
+        await self._arm_todo_close_text_hold(ctx)
+
+    async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        """Hold a text-only ending while a started todo is still in_progress.
+
+        The ReAct loop treats a response with no tool calls as the final
+        answer. task.complete is only emitted when todo_modify sets
+        completed, so that answer would stay inside the open task segment.
+        Attach one internal tool call so the loop continues; the tool body
+        is replaced with an instruction to call todo_modify. A second
+        text-only response in the same invoke is left alone.
+
+        ``llm_output`` is already on the session stream by the time this
+        hook runs. ``before_model_call`` asks the adapter to hold that text
+        when a started todo is open; attaching the nudge drops it, and every
+        other ending releases it.
+
+        Not applied when the model output was truncated (``finish_reason``
+        ``length``): the truncation retry persists this assistant message
+        without a matching tool result. Not applied on the last ReAct
+        iteration, which has no room for the follow-up reply. ``force_finish``
+        paths (deepresearch direct display and similar) never reach this
+        hook and stay on their existing end behavior.
+        """
+        dropped = False
+        try:
+            dropped = self._attach_todo_close_nudge(ctx)
+        finally:
+            await self._finish_todo_close_text_hold(ctx, dropped=dropped)
+
+    def _attach_todo_close_nudge(self, ctx: AgentCallbackContext) -> bool:
+        """Replace one text-only ending with the internal todo_modify call."""
+        if self._todo_close_nudge_used or ctx.session is None:
+            return False
+        response = getattr(ctx.inputs, "response", None)
+        if response is None or getattr(response, "tool_calls", None):
+            return False
+        if str(getattr(response, "finish_reason", "") or "") == "length":
+            return False
+        if self._is_last_react_iteration(ctx):
+            return False
+        content = str(getattr(response, "content", None) or "").strip()
+        if not content:
+            return False
+        open_tasks = self._started_in_progress_tasks()
+        if not open_tasks:
+            return False
+        # 历史里留下这段字会让下一轮当成已经送达。适配器还没下发挂起的流式块。
+        response.content = ""
+        response.tool_calls = [
+            ToolCall(
+                id=f"todo-close-nudge-{uuid.uuid4().hex[:12]}",
+                type="function",
+                name=TODO_CLOSE_NUDGE_TOOL_NAME,
+                arguments="{}",
+            )
+        ]
+        self._todo_close_nudge_used = True
+        logger.info(
+            "[TaskExecutionRail] todo close nudge: open=%s",
+            [raw_id for raw_id, _task in open_tasks],
+        )
+        return True
+
+    async def _arm_todo_close_text_hold(self, ctx: AgentCallbackContext) -> None:
+        """Ask the adapter to buffer this call's outer text until we decide.
+
+        Only arm while this call can still be discarded. After the nudge has
+        been used, or on the last ReAct iteration, the text will be kept, so
+        it should stream token by token. ``finish_reason=length`` is not
+        known until the call returns, so a truncated turn is still held and
+        released afterwards.
+        """
+        await self._retry_undelivered_todo_close(ctx)
+        if self._todo_close_undelivered or ctx.session is None:
+            return
+        if self._todo_close_hold_pending:
+            return
+        if self._todo_close_nudge_used:
+            return
+        if self._is_last_react_iteration(ctx):
+            return
+        if not self._started_in_progress_tasks():
+            return
+        wrote = await self._write_todo_close_control(
+            ctx.session, TODO_CLOSE_HOLD_STREAM_TYPE,
+        )
+        if wrote:
+            self._todo_close_hold_pending = True
+
+    async def _finish_todo_close_text_hold(
+        self,
+        ctx: AgentCallbackContext,
+        *,
+        dropped: bool,
+    ) -> None:
+        """Drop the held text, or release it.
+
+        A failed write is remembered as ``drop`` or ``release``. The next
+        ``before_model_call`` retries that frame before arming again. Drop is
+        never rewritten as release: that would show the discarded draft.
+        """
+        if ctx.session is None:
+            self._todo_close_hold_pending = False
+            self._todo_close_undelivered = None
+            return
+        want_drop = dropped or self._todo_close_undelivered == "drop"
+        if want_drop:
+            if not self._todo_close_hold_pending and self._todo_close_undelivered != "drop":
+                return
+            wrote = await self._write_todo_close_control(
+                ctx.session, TODO_CLOSE_DROP_STREAM_TYPE,
+            )
+            self._mark_todo_close_delivered("drop", wrote)
+            return
+        if not self._todo_close_hold_pending and self._todo_close_undelivered != "release":
+            return
+        wrote = await self._write_todo_close_control(
+            ctx.session, TODO_CLOSE_RELEASE_STREAM_TYPE,
+        )
+        self._mark_todo_close_delivered("release", wrote)
+
+    async def _retry_undelivered_todo_close(self, ctx: AgentCallbackContext) -> None:
+        """Resend a drop or release the adapter never received."""
+        if ctx.session is None:
+            return
+        kind = self._todo_close_undelivered
+        if kind is None and self._todo_close_hold_pending:
+            kind = "release"
+        if kind not in ("drop", "release"):
+            return
+        stream_type = (
+            TODO_CLOSE_DROP_STREAM_TYPE
+            if kind == "drop"
+            else TODO_CLOSE_RELEASE_STREAM_TYPE
+        )
+        wrote = await self._write_todo_close_control(ctx.session, stream_type)
+        if wrote:
+            self._todo_close_undelivered = None
+            self._todo_close_hold_pending = False
+            return
+        self._todo_close_undelivered = kind
+
+    def _mark_todo_close_delivered(self, kind: str, wrote: bool) -> None:
+        if wrote:
+            self._todo_close_hold_pending = False
+            self._todo_close_undelivered = None
+            return
+        self._todo_close_undelivered = kind
+
+    async def _write_todo_close_control(self, session: Any, stream_type: str) -> bool:
+        try:
+            await session.write_stream(
+                OutputSchema(
+                    type=stream_type,
+                    index=0,
+                    payload={"result_type": "control"},
+                )
+            )
+        except Exception:
+            logger.warning(
+                "[TaskExecutionRail] todo close control %s failed",
+                stream_type,
+                exc_info=True,
+            )
+            return False
+        return True
+
+    def _is_last_react_iteration(self, ctx: AgentCallbackContext) -> bool:
+        """True when this model call is the final ReAct iteration."""
+        iteration = int(getattr(ctx.inputs, "react_iteration", 0) or 0)
+        agent = self._deep_agent
+        react = getattr(agent, "_react_agent", None)
+        config = getattr(react, "_config", None)
+        max_iterations = getattr(config, "max_iterations", None)
+        if iteration <= 0 or not isinstance(max_iterations, int):
+            return False
+        if max_iterations <= 0:
+            return False
+        return iteration >= max_iterations
+
+    def _started_in_progress_tasks(self) -> list[tuple[str, dict[str, Any]]]:
+        """Todos that must be closed before a plain-text ending.
+
+        Prefer items whose ``task.start`` was emitted in this invoke. HITL
+        resume clears ``_todo_started`` / ``_active_tasks`` in
+        ``before_invoke``, while ``todo.json`` and the already-open frontend
+        segment remain. Fall back to in-progress rows on disk so a text-only
+        resume still gets the nudge. Unstamped legacy rows
+        (``generation_token`` missing) are not this turn's work and are
+        skipped.
+        """
+        found: list[tuple[str, dict[str, Any]]] = []
+        seen: set[str] = set()
+        for full_id in self._active_tasks:
+            raw_id = full_id.removeprefix("todo:")
+            if raw_id not in self._todo_started:
+                continue
+            task = self._todo_map.get(raw_id)
+            if task is None:
+                continue
+            if str(task.get("status", "")).lower() != "in_progress":
+                continue
+            found.append((raw_id, task))
+            seen.add(raw_id)
+        if found:
+            return found
+        for raw_id, task in self._todo_map.items():
+            if raw_id in seen:
+                continue
+            if str(task.get("status", "")).lower() != "in_progress":
+                continue
+            if todo_item_generation_token(task) is None:
+                continue
+            found.append((raw_id, task))
+        return found
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         if not isinstance(ctx.inputs, ToolCallInputs):
             return
         tool_name = ctx.inputs.tool_name
+
+        if is_todo_close_nudge(ctx.inputs.tool_call):
+            self._reject_todo_close_nudge(ctx)
+            return
 
         if tool_name in self.TODO_TOOLS:
             session_id = ""
@@ -1521,11 +1787,28 @@ class TaskExecutionRail(DeepAgentRail):
             ctx.extra[SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY] = (
                 _ACTIVE_TASK_ID.get() is not None
             )
+            ctx.extra[SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY] = (
+                self._pending_items_after(_ACTIVE_TASK_ID.get())
+            )
+
+    def _reject_todo_close_nudge(self, ctx: AgentCallbackContext) -> None:
+        """Skip the internal nudge tool and return the todo_modify instruction."""
+        tc = ctx.inputs.tool_call
+        tool_call_id = str(getattr(tc, "id", "") or "")
+        msg = _todo_close_nudge_message(self._started_in_progress_tasks())
+        ctx.extra["_skip_tool"] = True
+        ctx.inputs.tool_result = msg
+        ctx.inputs.tool_msg = ToolMessage(
+            content=msg, tool_call_id=tool_call_id,
+        )
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         if not isinstance(ctx.inputs, ToolCallInputs):
             return
         tool_name = ctx.inputs.tool_name
+
+        if is_todo_close_nudge(ctx.inputs.tool_call):
+            return
 
         if tool_name in self.TODO_TOOLS:
             await self._sync_todo_and_emit_transitions(ctx)
@@ -1804,20 +2087,27 @@ class TaskExecutionRail(DeepAgentRail):
                 exc,
             )
 
-    def _load_todo_from_json(
-        self, session_id: str
-    ) -> list[dict[str, Any]]:
+    def _read_todo_file(self, session_id: str) -> list[dict[str, Any]]:
         todo_path = self._get_todo_workspace_path(session_id)
         if todo_path is None or not todo_path.exists():
             return []
-        with open(todo_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        with open(todo_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
         if not isinstance(data, list):
             return []
-        # 请求隔离：剔除已被新一轮请求取代的旧代条目（token 不一致）。
-        # before_invoke 捕获的 token 覆盖本 invoke 内全部加载点，过滤后的
-        # _todo_map / task.update 快照天然不含跨请求残留。
-        return filter_todos_by_generation(data, self._todo_generation_token)
+        return data
+
+    def _load_todo_from_json(
+        self, session_id: str
+    ) -> list[dict[str, Any]]:
+        # 执行地图：旧代条目和用户记下的待办都不进 _todo_map，
+        # 因此不会被绑定，也不会在新一轮首帧回放。
+        data = self._read_todo_file(session_id)
+        return filter_todos_for_execution(data, self._todo_generation_token)
+
+    def _load_todo_for_display(self, session_id: str) -> list[dict[str, Any]]:
+        data = self._read_todo_file(session_id)
+        return filter_todos_for_display(data, self._todo_generation_token)
 
     def _get_todo_workspace_path(
         self, session_id: str
@@ -1909,6 +2199,43 @@ class TaskExecutionRail(DeepAgentRail):
             if str(task.get("status", "")).lower() not in self._TODO_DONE_STATUSES:
                 return True
         return False
+
+    def _pending_items_after(self, task_id: str | None) -> dict[str, Any] | None:
+        """当前绑定项之后的未完成项快照；无外层 todo 或无后续项返回 None。
+
+        供停止提示条件化（_wrap_skill_turbo_result）：有后续未完成项时
+        引导模型先标记当前项完成再继续，而非一刀切终止本轮。
+        """
+        if not task_id:
+            return None
+        raw_id = task_id[5:] if task_id.startswith("todo:") else task_id
+        todo_map = self._todo_map
+        if not todo_map:
+            return None
+        current = todo_map.get(raw_id)
+        if not current:
+            return None
+        try:
+            current_index = int(current.get("index", 0))
+        except (TypeError, ValueError):
+            return None
+        pending: list[dict[str, Any]] = []
+        for other_id, task in self._iter_todos_by_index(todo_map):
+            try:
+                other_index = int(task.get("index", 0))
+            except (TypeError, ValueError):
+                continue
+            if (other_index, other_id) <= (current_index, raw_id):
+                continue
+            if str(task.get("status", "")).lower() in self._TODO_DONE_STATUSES:
+                continue
+            pending.append({"id": other_id, "content": task.get("content", ""), "index": other_index})
+        if not pending:
+            return None
+        return {
+            "count": len(pending),
+            "next_summary": pending[0].get("content", "") if pending else "",
+        }
 
     def _overlay_serial_todo_statuses(
         self,
@@ -2085,8 +2412,15 @@ class TaskExecutionRail(DeepAgentRail):
         self._bind_context_after_todo_sync(
             completed_in_batch, current_map
         )
+        include_persistent = snapshot_includes_persistent_todos(
+            tool_name,
+            self._parse_work_tool_args(ctx),
+            self._read_todo_file(session_id),
+        )
         await self._emit_task_update_event(
-            ctx.session, parent_request_id
+            ctx.session,
+            parent_request_id,
+            include_persistent=include_persistent,
         )
 
     async def _flush_serial_todo_transitions(
@@ -2251,16 +2585,105 @@ class TaskExecutionRail(DeepAgentRail):
                 exc_info=True,
             )
 
+    def external_todo_completion_events(
+        self,
+        session_id: str,
+        task_id: str,
+        *,
+        parent_request_id: str = "",
+    ) -> list[OutputSchema]:
+        """Build task events for a completed todo outside the normal rail hooks."""
+        normalized_task_id = str(task_id or "").removeprefix("todo:")
+        if not normalized_task_id:
+            return []
+
+        todo_items = self._load_todo_from_json(session_id)
+        task = next(
+            (
+                item
+                for item in todo_items
+                if str(item.get("id", "")) == normalized_task_id
+            ),
+            None,
+        )
+        if task is None:
+            logger.warning(
+                "[TaskExecutionRail] external todo completion target missing: %s",
+                normalized_task_id,
+            )
+            return []
+
+        self._todo_map = self._build_map_from_todo_items(todo_items)
+        self._todo_map_before_tool = {}
+        full_task_id = f"todo:{normalized_task_id}"
+        context = self._active_tasks.pop(full_task_id, None)
+        timestamp = time.time()
+        if get_current_task_id() == full_task_id:
+            _ACTIVE_TASK_ID.set(None)
+        self._todo_complete_deferred.discard(normalized_task_id)
+        self._todo_start_deferred.discard(normalized_task_id)
+
+        tasks = self._format_tasks_for_update(
+            self._overlay_serial_todo_statuses(todo_items), source="todo"
+        )
+        complete = OutputSchema(
+            type="task.complete",
+            index=0,
+            payload={
+                "task_id": full_task_id,
+                "task_content": (
+                    context.task_content
+                    if context
+                    else str(task.get("content", ""))
+                ),
+                "status": "succeeded",
+                "duration_ms": (
+                    int((timestamp - context.start_time) * 1000)
+                    if context
+                    else 0
+                ),
+                "error": None,
+                "timestamp": timestamp,
+                "source": "todo",
+                "parent_request_id": parent_request_id,
+            },
+        )
+        update = OutputSchema(
+            type="task.update",
+            index=0,
+            payload={
+                "tasks": tasks,
+                "total_tasks": len(tasks),
+                "completed_tasks": sum(
+                    task["status"] == "completed" for task in tasks
+                ),
+                "in_progress_tasks": sum(
+                    task["status"] == "in_progress" for task in tasks
+                ),
+                "pending_tasks": sum(
+                    task["status"] == "pending" for task in tasks
+                ),
+                "timestamp": timestamp,
+                "parent_request_id": parent_request_id,
+            },
+        )
+        return [complete, update]
+
     async def _emit_task_update_event(
         self,
         session: Session,
         parent_request_id: str | None = None,
+        *,
+        include_persistent: bool = False,
     ) -> None:
         """Send full task list snapshot (all todos) to the frontend."""
         session_id = session.get_session_id()
-        # _load_todo_from_json 已按 generation token 过滤旧代条目
-        # （请求隔离），快照天然不含跨请求残留。
-        todo_items = self._load_todo_from_json(session_id)
+        # 执行快照不含用户记下的待办。查询/修改提醒时改走展示列表，
+        # 且不把展示列表写回 _todo_map。
+        if include_persistent:
+            todo_items = self._load_todo_for_display(session_id)
+        else:
+            todo_items = self._load_todo_from_json(session_id)
         todo_items = self._overlay_serial_todo_statuses(todo_items)
         todo_tasks = self._format_tasks_for_update(
             todo_items, source="todo"

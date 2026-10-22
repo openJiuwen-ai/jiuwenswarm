@@ -16,12 +16,12 @@ def resolve_skill_turbo_thinking_kwargs(
 ) -> dict[str, Any]:
     """Optional thinking inject for SkillTurbo LLM calls.
 
-    ``thinking is None`` → empty dict (no adapt, identical to legacy invoke/stream).
-    Allowlisted models → vendor kwargs.
+    ``thinking is None`` → ``default`` (GLM-5.3 family → product depth low;
+    other models → no inject). Explicit off/on/depth → vendor kwargs when allowlisted.
     Unsupported / degraded / seam failure → empty dict (never abort).
     """
     if thinking is None:
-        return {}
+        thinking = "default"
 
     try:
         from jiuwenswarm.common.thinking.adapter import adapt_thinking

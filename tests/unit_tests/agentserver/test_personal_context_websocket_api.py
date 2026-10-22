@@ -532,7 +532,7 @@ def test_agentserver_registers_canonical_personal_context_methods() -> None:
     assert server_module._PERSONAL_CONTEXT_REQ_METHODS == {
         item for item in ReqMethod if item.value.startswith("personal_context.")
     }
-    assert len(server_module._PERSONAL_CONTEXT_REQ_METHODS) == 27
+    assert len(server_module._PERSONAL_CONTEXT_REQ_METHODS) == 35
 
 
 @pytest.mark.asyncio

@@ -213,6 +213,8 @@ interface ChatState {
 
   addMessage: (sessionId: string, message: Message) => void;
   replaceHistoryMessages: (sessionId: string, messages: Message[]) => void;
+  /** 只替换消息列表，保留思考/工具/审批卡等实时态（cron 监听流进行中用）。 */
+  applyHistoryMessagesKeepLive: (sessionId: string, messages: Message[]) => void;
   updateMessage: (sessionId: string, id: string, updates: Partial<Message>) => void;
   appendStreamContent: (sessionId: string, content: string, streamKey?: string) => void;
   appendReasoning: (sessionId: string, content: string, options?: { atMs?: number }) => void;
@@ -375,6 +377,41 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             },
             taskQueue: [],
             pendingQuestion: null,
+          },
+        },
+      };
+    });
+  },
+
+  applyHistoryMessagesKeepLive: (sessionId, messages) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      // Keep the in-flight streaming bubble: a mid-run history refresh must not
+      // drop currentStreamId's message, or later deltas append into a void and
+      // the visible text can diverge from the authoritative final.
+      const liveTail: Message[] = [];
+      if (runtime.currentStreamId) {
+        const streaming = runtime.messages.find((m) => m.id === runtime.currentStreamId);
+        if (streaming && !messages.some((m) => m.id === streaming.id)) {
+          liveTail.push(streaming);
+        }
+      }
+      for (const msg of runtime.messages) {
+        if (msg.isStreaming && msg.id !== runtime.currentStreamId) {
+          if (!messages.some((m) => m.id === msg.id) && !liveTail.some((m) => m.id === msg.id)) {
+            liveTail.push(msg);
+          }
+        }
+      }
+      const assigned = assignMessageRenderKeys(runtime, messages.concat(liveTail));
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            messages: assigned.messages,
+            messageRenderKeySeq: assigned.messageRenderKeySeq,
           },
         },
       };

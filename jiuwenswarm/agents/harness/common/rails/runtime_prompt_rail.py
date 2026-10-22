@@ -7,7 +7,6 @@ every model call by reading runtime_state.yaml in Python, so the LLM always
 sees the current values without needing to call any tool.
 """
 from __future__ import annotations
-from jiuwenswarm.edition import is_enterprise
 
 import os
 import sys
@@ -26,7 +25,10 @@ from openjiuwen.harness.prompts.prompt_attachment_manager import (
 from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
 from jiuwenswarm.common.utils import (
+    get_agent_memory_dir,
+    get_agent_skills_dir,
     get_agent_workspace_dir,
+    get_deepagent_todo_dir,
     get_runtime_state_path,
     get_user_workspace_dir,
     logger,
@@ -157,19 +159,63 @@ class RuntimePromptRail(DeepAgentRail):
         self._request_system_prompt = value
 
     def _resolve_agent_workspace_and_config(self) -> tuple[str, str]:
-        """Resolve agent workspace / config dirs; enterprise uses workspace_key paths."""
-        if self._workspace_dir and is_enterprise():
-            workspace_root = Path(self._workspace_dir)
-            base_workspace = workspace_root.parent.parent
-            return str(workspace_root), str(base_workspace / "config")
+        """Resolve agent workspace and JiuwenSwarm startup config dirs.
+
+        Agent workspace may be tenant-scoped (enterprise ``workspace_{key}``).
+        Startup config is always the process-wide ``~/.jiuwenswarm/config``,
+        never ``workspace_{key}/config``.
+        """
+        config_dir = str(get_user_workspace_dir() / "config")
         if self._workspace_dir:
+            return str(Path(self._workspace_dir)), config_dir
+        return str(get_agent_workspace_dir()), config_dir
+
+    @staticmethod
+    def _format_agent_data_paths(
+        agent_workspace_dir: str,
+        config_dir: str,
+        *,
+        language: str,
+    ) -> str:
+        """Absolute agent-internal paths for the runtime directory context.
+
+        Identity prompt only describes logical layout; this block is the sole
+        source of absolute paths for agent data (skills/memory/todo).
+
+        When ``agent_workspace_dir`` matches the bound
+        :func:`get_agent_workspace_dir`, resolve skills/memory/todo via the
+        PathProvider-aware getters so custom deployments stay consistent with
+        tools. An explicit alternate workspace root keeps the standard layout
+        contract (``<workspace>/{skills,memory,todo}``).
+        """
+        root = Path(agent_workspace_dir)
+        bound_ws = os.path.abspath(str(get_agent_workspace_dir()))
+        same_as_bound = os.path.normcase(os.path.abspath(str(root))) == os.path.normcase(
+            bound_ws
+        )
+        if same_as_bound:
+            skills = str(get_agent_skills_dir())
+            memory = str(get_agent_memory_dir())
+            todo = str(get_deepagent_todo_dir())
+        else:
+            # Explicit non-bound workspace: assume standard subdir layout.
+            skills = str(root / "skills")
+            memory = str(root / "memory")
+            todo = str(root / "todo")
+        if language == "cn":
             return (
-                str(Path(self._workspace_dir)),
-                str(get_user_workspace_dir() / "config"),
+                f"- Agent 内部数据目录：{agent_workspace_dir}\n"
+                f"- Agent 技能目录：{skills}\n"
+                f"- Agent 记忆目录：{memory}\n"
+                f"- Agent 待办目录：{todo}\n"
+                f"- JiuwenSwarm 启动配置目录：{config_dir}\n"
             )
         return (
-            str(get_agent_workspace_dir()),
-            str(get_user_workspace_dir() / "config"),
+            f"- Agent internal data directory: {agent_workspace_dir}\n"
+            f"- Agent skills directory: {skills}\n"
+            f"- Agent memory directory: {memory}\n"
+            f"- Agent todo directory: {todo}\n"
+            f"- JiuwenSwarm startup configuration directory: {config_dir}\n"
         )
 
     @staticmethod
@@ -565,7 +611,12 @@ class RuntimePromptRail(DeepAgentRail):
             trusted_dirs = self._existing_dirs(self._trusted_dirs)
             # Prefer explicit per-agent workspace; enterprise uses multi-tenant paths.
             resolved_ws, config_dir = self._resolve_agent_workspace_and_config()
-            agent_workspace_dir = self._existing_dir(self._workspace_dir) or resolved_ws
+            if self._workspace_dir and str(self._workspace_dir).strip():
+                agent_workspace_dir = os.path.abspath(
+                    os.path.expanduser(str(self._workspace_dir).strip())
+                )
+            else:
+                agent_workspace_dir = resolved_ws
             project_dir = self._existing_dir(self._project_dir)
             runtime_cwd = (
                 self._existing_dir(self._cwd)
@@ -584,6 +635,12 @@ class RuntimePromptRail(DeepAgentRail):
                 other_dirs.append(path)
             cn_dirs_display = ", ".join(other_dirs) if other_dirs else "无"
             en_dirs_display = ", ".join(other_dirs) if other_dirs else "none"
+            cn_agent_paths = self._format_agent_data_paths(
+                agent_workspace_dir, config_dir, language="cn"
+            )
+            en_agent_paths = self._format_agent_data_paths(
+                agent_workspace_dir, config_dir, language="en"
+            )
             logger.info(
                 "[RuntimePromptRail] directory context: channel=%s project_dir=%s "
                 "cwd=%s agent_workspace=%s has_project=%s",
@@ -600,8 +657,7 @@ class RuntimePromptRail(DeepAgentRail):
                         "# 运行时目录上下文\n\n"
                         f"- 当前项目目录（项目根目录，也是本次任务的 workspace 边界）：{project_dir}\n"
                         f"- 当前工作目录（cwd，也是 Bash 默认执行目录）：{runtime_cwd}\n"
-                        f"- Agent 内部数据目录：{agent_workspace_dir}\n"
-                        f"- JiuwenSwarm 启动配置目录：{config_dir}\n\n"
+                        f"{cn_agent_paths}\n"
                         "目录含义：\n"
                         "- 当前项目目录是用户正在处理的项目根目录，也是本次任务文件操作的主要边界。\n"
                         "- 当前工作目录是 Bash 未显式传入 `workdir` 时的默认执行目录，也是相对路径的解析基准。\n"
@@ -634,8 +690,7 @@ class RuntimePromptRail(DeepAgentRail):
                         "# 运行时目录上下文\n\n"
                         "- 当前项目目录：未设置\n"
                         f"- 当前工作目录（cwd，也是 Bash 默认执行目录）：{runtime_cwd}\n"
-                        f"- Agent 内部数据目录：{agent_workspace_dir}\n"
-                        f"- JiuwenSwarm 启动配置目录：{config_dir}\n\n"
+                        f"{cn_agent_paths}\n"
                         "当前没有绑定用户项目，也没有传入独立的任务工作路径。"
                         "当前工作目录暂时回退到 Agent 内部数据目录。\n\n"
                         "重要规则：\n"
@@ -660,8 +715,7 @@ class RuntimePromptRail(DeepAgentRail):
                         "# 运行时目录上下文\n\n"
                         "- 当前项目目录：未设置\n"
                         f"- 当前工作目录（cwd，也是 Bash 默认执行目录）：{runtime_cwd}\n"
-                        f"- Agent 内部数据目录：{agent_workspace_dir}\n"
-                        f"- JiuwenSwarm 启动配置目录：{config_dir}\n\n"
+                        f"{cn_agent_paths}\n"
                         "当前没有绑定用户项目。\n\n"
                         "目录含义：\n"
                         "- 当前工作目录是本次任务的文件操作目录和相对路径解析基准，但不要称其为项目目录。\n"
@@ -687,8 +741,7 @@ class RuntimePromptRail(DeepAgentRail):
                         "# Runtime Directory Context\n\n"
                         f"- Current project directory (project root and workspace boundary): {project_dir}\n"
                         f"- Current working directory (cwd and Bash default directory): {runtime_cwd}\n"
-                        f"- Agent internal data directory: {agent_workspace_dir}\n"
-                        f"- JiuwenSwarm startup configuration directory: {config_dir}\n\n"
+                        f"{en_agent_paths}\n"
                         "Directory semantics:\n"
                         "- The current project directory is the user project's root "
                         "and the main file-operation boundary.\n"
@@ -732,8 +785,7 @@ class RuntimePromptRail(DeepAgentRail):
                         "# Runtime Directory Context\n\n"
                         "- Current project directory: not set\n"
                         f"- Current working directory (cwd and Bash default directory): {runtime_cwd}\n"
-                        f"- Agent internal data directory: {agent_workspace_dir}\n"
-                        f"- JiuwenSwarm startup configuration directory: {config_dir}\n\n"
+                        f"{en_agent_paths}\n"
                         "No user project or independent task path is currently bound. "
                         "The current working directory has temporarily fallen back to "
                         "the Agent internal data directory.\n\n"
@@ -763,8 +815,7 @@ class RuntimePromptRail(DeepAgentRail):
                         "# Runtime Directory Context\n\n"
                         "- Current project directory: not set\n"
                         f"- Current working directory (cwd and Bash default directory): {runtime_cwd}\n"
-                        f"- Agent internal data directory: {agent_workspace_dir}\n"
-                        f"- JiuwenSwarm startup configuration directory: {config_dir}\n\n"
+                        f"{en_agent_paths}\n"
                         "No user project is currently bound.\n\n"
                         "Directory semantics:\n"
                         "- The current working directory is this task's file-operation directory "

@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
 
-from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
+from jiuwenswarm.common.utils import (
+    get_agent_sessions_dir,
+    get_agent_workspace_dir,
+    is_valid_session_id,
+)
 from jiuwenswarm.common.mode_matrix import NEW_AGENT_CODE_NORMAL, NEW_AGENT_WORK_NORMAL
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_WEB_WORK_MODE,
@@ -81,6 +85,14 @@ _INJECTED_TAG_START_RE = re.compile(
 
 def _has_valid_work_mode(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in SUPPORTED_WORK_MODES
+
+
+def _normalize_adapter_mode(value: Any) -> str | None:
+    """Normalize the implementation selection persisted with a session."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized if normalized in {"agent", "code", "flash"} else None
 
 
 def _is_first_lock_available(metadata: dict[str, Any], key: str) -> bool:
@@ -416,9 +428,7 @@ def _safe_session_subdir(
     stripped = (session_id or "").strip()
     if not stripped or "\x00" in stripped:
         return None
-    from jiuwenswarm.server.runtime.prompt_attachment_loader import sanitize_session_id
-
-    if sanitize_session_id(stripped) != stripped:
+    if not is_valid_session_id(stripped):
         return None
     root = Path(sessions_root) if sessions_root else get_agent_sessions_dir()
     try:
@@ -982,6 +992,7 @@ def init_session_metadata(
     model: str = "",
     cron_id: str = "",
     work_mode: str = "",
+    adapter_mode: str = "agent",
     channel_metadata: dict[str, Any] | None = None,
     sessions_root: str | Path | None = None,
 ) -> None:
@@ -996,6 +1007,7 @@ def init_session_metadata(
         if not (isinstance(work_mode, str) and work_mode.strip())
         else normalize_work_mode(work_mode)
     )
+    resolved_adapter_mode = _normalize_adapter_mode(adapter_mode) or "agent"
     metadata = {
         "session_id": session_id,
         "channel_id": channel_id,
@@ -1018,6 +1030,7 @@ def init_session_metadata(
         "pin_order": 0,
         "status": "idle",
         "work_mode": resolved_work_mode,
+        "adapter_mode": resolved_adapter_mode,
     }
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
@@ -1245,6 +1258,7 @@ def sync_session_request_metadata(
     explicit_mode_provided: bool = False,
     explicit_model_provided: bool = False,
     work_mode: str | None = None,
+    adapter_mode: str | None = None,
     sessions_root: str | Path | None = None,
 ) -> str | None:
     """校验请求带来的参数与磁盘 metadata.json 是否需要更新，并按字段语义写入。
@@ -1298,6 +1312,8 @@ def sync_session_request_metadata(
         session_id, cache_bust=True, sessions_root=root_s
     )
     effective_project_dir: str | None = None
+    normalized_adapter_mode = _normalize_adapter_mode(adapter_mode)
+    adapter_mode_changed = False
 
     if not metadata:
         # 会话元数据不存在：兜底新建（外部渠道隐式创建 session 的场景）
@@ -1308,6 +1324,7 @@ def sync_session_request_metadata(
             if not (isinstance(work_mode, str) and work_mode.strip())
             else normalize_work_mode(work_mode)
         )
+        adapter_mode_changed = normalized_adapter_mode is not None
         metadata = {
             "session_id": session_id,
             "channel_id": channel_id or "",
@@ -1330,6 +1347,7 @@ def sync_session_request_metadata(
             "pin_order": 0,
             "status": "idle",
             "work_mode": resolved_work_mode,
+            "adapter_mode": normalized_adapter_mode or "agent",
         }
         effective_project_dir = project_dir or None
     else:
@@ -1367,6 +1385,16 @@ def sync_session_request_metadata(
             if not _has_valid_work_mode(existing_wm):
                 metadata["work_mode"] = normalized_wm
 
+        # ``adapter_mode`` is an implementation selection, not a business
+        # canonical mode.  Persist changes synchronously so an immediate next
+        # turn (or a process reload) cannot lose the session's implementation
+        # affinity and accidentally fall back to Deep.
+        if normalized_adapter_mode is not None:
+            adapter_mode_changed = (
+                metadata.get("adapter_mode") != normalized_adapter_mode
+            )
+            metadata["adapter_mode"] = normalized_adapter_mode
+
         # model：显式覆盖式——仅当请求方显式携带 model 才覆盖；
         # 未显式携带（如只读 RPC 回退到进程 MODEL_NAME）则保持磁盘原值，
         # 不覆盖用户在该会话用 /model 切换过的模型
@@ -1394,6 +1422,7 @@ def sync_session_request_metadata(
         session_id,
         metadata,
         preserve_pin_fields=True,
+        sync_write=adapter_mode_changed,
         sessions_root=root_s,
     )
     return effective_project_dir

@@ -648,7 +648,10 @@ async def handle_command_recap(ctx: RequestContext) -> None:
         if agent is None:
             raise ValueError("Failed to get agent")
 
-        result_data = await agent.generate_recap(session_id=session_id)
+        result_data = await agent.generate_recap(
+            session_id=session_id,
+            request=request,
+        )
 
         resp = AgentResponse(
             request_id=request.request_id,

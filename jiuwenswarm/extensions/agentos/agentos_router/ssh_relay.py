@@ -43,6 +43,27 @@ _DEFAULT_CLIENT_KEY_NAMES = (
     "id_ed448",
     "agent_key",
 )
+# create_sandbox 返回后 frontend bastion / 实例 sshd 可能尚未就绪，对端会
+# 立刻掐连接（asyncssh: "SSH connection closed"）。对齐 chat WS 冷启动重试。
+_SSH_CONNECT_READY_TIMEOUT_SECONDS = 60.0
+_SSH_CONNECT_RETRY_INTERVAL_SECONDS = 1.0
+_SSH_CONNECT_RETRYABLE_TEXT_TOKENS = (
+    "ssh connection closed",
+    "connection closed",
+    "connection reset",
+    "connection refused",
+    "temporarily unavailable",
+    "connect call failed",
+    "timeout",
+)
+
+
+def _is_ssh_connect_retryable(exc: BaseException) -> bool:
+    """冷启动期间 frontend/sshd 未就绪的可重试错误."""
+    if isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError, OSError)):
+        return True
+    text = str(exc).lower()
+    return any(token in text for token in _SSH_CONNECT_RETRYABLE_TEXT_TOKENS)
 
 
 def _raise_missing_asyncssh(exc: ImportError) -> None:
@@ -202,13 +223,31 @@ class YuanrongSshRelay:
             )
         return key_paths
 
-    async def _relay(
+    async def wait_until_ready(
         self,
-        session: Any,
         instance_id: str,
         *,
         user_id: str = "",
-    ) -> int:
+    ) -> None:
+        """Probe southbound SSH until sshd accepts, then close the probe.
+
+        Used by ``3rdagent.switch`` after create so the client does not SSH
+        before the YuanRong instance is reachable.
+        """
+        conn = await self._connect_until_ready(instance_id, user_id=user_id)
+        conn.close()
+        try:
+            await conn.wait_closed()
+        except Exception:  # noqa: BLE001
+            logger.debug("[YuanrongSshRelay] probe close failed", exc_info=True)
+
+    async def _connect_until_ready(
+        self,
+        instance_id: str,
+        *,
+        user_id: str = "",
+        session_id: str = "",
+    ) -> Any:
         asyncssh = _import_asyncssh()
 
         host = self.backend_host
@@ -219,26 +258,73 @@ class YuanrongSshRelay:
             )
         username = self.backend_username(instance_id)
         client_keys = self._resolve_client_keys(user_id)
-
-        logger.info(
-            "[YuanrongSshRelay] connecting: %s@%s:%s session=%s keys_dir=%s keys=%s",
-            username,
-            host,
-            self._settings.port,
-            session.session_id,
-            resolve_client_keys_dir(self._settings.client_keys_dir, user_id),
-            len(client_keys),
+        keys_dir = resolve_client_keys_dir(self._settings.client_keys_dir, user_id)
+        deadline = (
+            asyncio.get_running_loop().time() + _SSH_CONNECT_READY_TIMEOUT_SECONDS
         )
-        conn = await asyncio.wait_for(
-            asyncssh.connect(
+        attempt = 0
+        while True:
+            attempt += 1
+            logger.info(
+                "[YuanrongSshRelay] connecting: %s@%s:%s session=%s "
+                "attempt=%s keys_dir=%s keys=%s",
+                username,
                 host,
-                port=self._settings.port,
-                username=username,
-                client_keys=client_keys,
-                agent_path=None,
-                known_hosts=None,
-            ),
-            timeout=self._settings.connect_timeout_s,
+                self._settings.port,
+                session_id or "-",
+                attempt,
+                keys_dir,
+                len(client_keys),
+            )
+            try:
+                conn = await asyncio.wait_for(
+                    asyncssh.connect(
+                        host,
+                        port=self._settings.port,
+                        username=username,
+                        client_keys=client_keys,
+                        agent_path=None,
+                        known_hosts=None,
+                    ),
+                    timeout=self._settings.connect_timeout_s,
+                )
+            except Exception as exc:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0 or not _is_ssh_connect_retryable(exc):
+                    raise
+                sleep_for = min(_SSH_CONNECT_RETRY_INTERVAL_SECONDS, remaining)
+                logger.warning(
+                    "[YuanrongSshRelay] ssh not ready, retrying: "
+                    "session=%s instance=%s attempt=%s sleep=%.1fs error=%s",
+                    session_id or "-",
+                    instance_id,
+                    attempt,
+                    sleep_for,
+                    exc,
+                )
+                await asyncio.sleep(sleep_for)
+                continue
+            if attempt > 1:
+                logger.info(
+                    "[YuanrongSshRelay] ssh ready after retry: "
+                    "session=%s instance=%s attempts=%s",
+                    session_id or "-",
+                    instance_id,
+                    attempt,
+                )
+            return conn
+
+    async def _relay(
+        self,
+        session: Any,
+        instance_id: str,
+        *,
+        user_id: str = "",
+    ) -> int:
+        conn = await self._connect_until_ready(
+            instance_id,
+            user_id=user_id,
+            session_id=str(getattr(session, "session_id", "") or ""),
         )
         try:
             return await self._relay_over_connection(session, conn)

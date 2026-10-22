@@ -432,11 +432,20 @@ def fill_template_defaults(
 
 
 def load_yaml_dict(path: Path) -> dict[str, Any]:
-    """用 yaml.safe_load 读取 YAML 文件为 dict；不存在或无效时返回空 dict。"""
+    """安全读取 YAML 字典；缺失或非映射返回空字典，解析错误仍抛出。"""
+    # 直接使用安全 C 解析器，避免通用反序列化入口；无 C 扩展时回退安全接口。
+    loader_class = getattr(yaml, "CSafeLoader", None)
     if not path.exists():
         return {}
     with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+        if loader_class is None:
+            data = yaml.safe_load(f)
+        else:
+            loader = loader_class(f)
+            try:
+                data = loader.get_single_data()
+            finally:
+                loader.dispose()
     return data if isinstance(data, dict) else {}
 
 
@@ -2022,8 +2031,19 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
     return workspace
 
 
+_VALID_SESSION_ID_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9])?$"
+)
+
+
+def is_valid_session_id(session_id: str) -> bool:
+    """Return whether a session id is safe to use as one path component."""
+
+    return _VALID_SESSION_ID_RE.fullmatch(session_id) is not None
+
+
 def get_prompt_attachment_dir() -> Path:
-    """Get the jiuwenswarm prompt attachment directory path."""
+    """Return the legacy prompt-attachment path without creating it."""
 
     overridden = _dispatch_path(PathCategory.PROMPT_ATTACHMENT)
     if overridden is not None:

@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
+    SKILL_TURBO_MODEL_IDENTITY_KEY,
+)
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
     _prepare_parent_stream_output,
@@ -34,6 +37,26 @@ def _fake_turbo():
     return inst
 
 
+
+
+def _isolated_session_side_effect(main_session: MagicMock):
+    """create_agent_session 的 side_effect：首次调用返回 main_session，之后返回独立
+    隔离 session mock（clear_resume_in_flight / clear_resume_ctx 的隔离键 session），
+    使隔离 session 的 post_run 不计入 main_session 的断言。
+    """
+    counter = {"n": 0}
+
+    def _factory(*_args, **_kwargs):
+        counter["n"] += 1
+        if counter["n"] == 1:
+            return main_session
+        isolated = MagicMock()
+        isolated.pre_run = AsyncMock()
+        isolated.post_run = AsyncMock()
+        isolated.close_stream = AsyncMock()
+        return isolated
+
+    return _factory
 @pytest.fixture
 def _skill_turbo_runtime():
     adapter = MagicMock()
@@ -126,7 +149,7 @@ async def test_load_resume_ctx_failure_still_post_runs_turbo_session(_skill_turb
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -182,7 +205,7 @@ async def test_clear_resume_ctx_failure_does_not_mask_resume_success(_skill_turb
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -201,6 +224,94 @@ async def test_clear_resume_ctx_failure_does_not_mask_resume_success(_skill_turb
     turbo_session.post_run.assert_awaited_once()
     assert result.get("success") is True
     assert "执行失败" not in str(result.get("error") or "")
+
+
+@pytest.mark.asyncio
+async def test_tool_resume_restores_model_before_building_skill_turbo(
+    _skill_turbo_runtime,
+) -> None:
+    adapter, turbo_session = _skill_turbo_runtime
+    adapter.current_model = "answer-model"
+    resume_ctx = {
+        "plan_code": "plan()",
+        "inputs": {
+            "query": _QUERY,
+            "metadata": {
+                SKILL_TURBO_MODEL_IDENTITY_KEY: {
+                    "model_name": "saved-model",
+                    "model_ref": "saved-model-ref",
+                }
+            },
+        },
+        "pending_tool_call_id": "tc-1",
+        "task_states": [],
+    }
+
+    def restore_model(_ctx):
+        adapter.current_model = "saved-model"
+
+    adapter.restore_skill_turbo_model_from_resume_ctx.side_effect = restore_model
+    adapter.build_skill_turbo_config.side_effect = lambda: {
+        "model_client": adapter.current_model
+    }
+    fake_turbo = _fake_turbo()
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_skill_turbo_adapter",
+            return_value=adapter,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_task_id",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_skill_turbo_resume_answers",
+            return_value={"audience": "高管"},
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_request_metadata",
+            return_value={
+                "session_id": "resume-sid",
+                "request_id": "req-resume",
+                "channel_id": "web",
+            },
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.get_subagent_parent_session",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars.get_effective_request_workspace_dir",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
+            return_value=fake_turbo,
+        ) as skill_turbo_cls,
+        patch(
+            "openjiuwen.core.session.agent.create_agent_session",
+            side_effect=_isolated_session_side_effect(turbo_session),
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.load_resume_ctx",
+            AsyncMock(return_value=resume_ctx),
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.clear_resume_ctx",
+            AsyncMock(),
+        ),
+    ):
+        result = await skill_turbo.invoke({"query": _QUERY})
+
+    assert result.get("success") is True
+    adapter.restore_skill_turbo_model_from_resume_ctx.assert_called_once_with(
+        resume_ctx
+    )
+    adapter.build_skill_turbo_config.assert_called_once_with()
+    skill_turbo_cls.assert_called_once_with({"model_client": "saved-model"})
 
 
 def _raise_on_resume(exc: BaseException):
@@ -260,7 +371,7 @@ async def test_hitl_abort_does_not_clear_or_post_run_turbo_session(
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -295,6 +406,273 @@ async def test_hitl_abort_does_not_clear_or_post_run_turbo_session(
     clear_ctx.assert_not_awaited()
     turbo_session.post_run.assert_not_awaited()
     turbo_session.close_stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_resume_answer_returns_clean_placeholder_without_stop_hint(
+    _skill_turbo_runtime,
+) -> None:
+    """重复作答（resume_in_flight 命中）提前返回不得追加 NEUTRAL 停止提示。
+
+    复现检视意见：duplicate 分支的 SkillTurbo 是 fresh 实例
+    （artifact_holder 为空），若走 _wrap_skill_turbo_result 必然落入 NEUTRAL
+    分支，追加"任务已结束…不要声称文件已发送"——与"任务正在处理中"语义
+    矛盾：原始请求仍在执行、稍后交付，B 轮 LLM 会据此向用户宣告交付失败。
+    且返回不得携带 success 键：帧级 success=true 会触发上层应用侧
+    isSuccessfulPptTurboToolResult 结构匹配，误判 PPT turbo 成功并替换
+    最终正文。同时锁定防重三件套：判重命中不 mark、不误清原始请求的
+    in-flight 标志（_did_mark_in_flight 守卫）、不启动第二次 resume_stream。
+    """
+    adapter, turbo_session = _skill_turbo_runtime
+    resume_ctx = {
+        "plan_code": "plan()",
+        "inputs": {"query": _QUERY},
+        "pending_tool_call_id": "tc-1",
+        "task_states": [],
+        "resume_in_flight": True,
+    }
+    mark_in_flight = AsyncMock()
+    clear_in_flight = AsyncMock()
+    fake_turbo = _fake_turbo()
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_skill_turbo_adapter",
+            return_value=adapter,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_task_id",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_skill_turbo_resume_answers",
+            return_value={"audience": "高管"},
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_request_metadata",
+            return_value={},
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.get_subagent_parent_session",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars.get_effective_request_workspace_dir",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
+            return_value=fake_turbo,
+        ),
+        patch(
+            "openjiuwen.core.session.agent.create_agent_session",
+            side_effect=_isolated_session_side_effect(turbo_session),
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.load_resume_ctx",
+            AsyncMock(return_value=resume_ctx),
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.mark_resume_in_flight",
+            mark_in_flight,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.clear_resume_in_flight",
+            clear_in_flight,
+        ),
+    ):
+        result = await skill_turbo.invoke({"query": _QUERY})
+
+    assert "success" not in result
+    text = str(result.get("result") or "")
+    assert "任务正在处理中" in text
+    # 不得出现任何"已结束 / 未确认交付"停止提示（NEUTRAL / CONFIRMED）
+    assert "[SYSTEM]" not in text
+    assert "任务已结束" not in text
+    assert "不要声称文件已发送" not in text
+    # 帧级守护：无 success 键的纯文本占位 dict → _infer_tool_result_error
+    # 判 None → chat.tool_result 帧不带 success 字段，上层应用侧
+    # isSuccessfulPptTurboToolResult（结构匹配 success===true）不会把
+    # 占位帧误判成 PPT turbo 成功
+    from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
+        _infer_tool_result_error,
+    )
+
+    assert _infer_tool_result_error(result) is None
+    mark_in_flight.assert_not_awaited()
+    clear_in_flight.assert_not_awaited()
+    fake_turbo.resume_stream.assert_not_called()
+    turbo_session.post_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_normal_resume_marks_and_clears_in_flight_once(
+    _skill_turbo_runtime,
+) -> None:
+    """正常 resume：mark 一次，finally 清一次（_did_mark_in_flight 守卫下）。"""
+    adapter, turbo_session = _skill_turbo_runtime
+    resume_ctx = {
+        "plan_code": "plan()",
+        "inputs": {"query": _QUERY},
+        "pending_tool_call_id": "tc-1",
+        "task_states": [],
+    }
+    mark_in_flight = AsyncMock()
+    clear_in_flight = AsyncMock()
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_skill_turbo_adapter",
+            return_value=adapter,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_task_id",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_skill_turbo_resume_answers",
+            return_value={"audience": "高管"},
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_request_metadata",
+            return_value={},
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.get_subagent_parent_session",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars.get_effective_request_workspace_dir",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
+            return_value=_fake_turbo(),
+        ),
+        patch(
+            "openjiuwen.core.session.agent.create_agent_session",
+            side_effect=_isolated_session_side_effect(turbo_session),
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.load_resume_ctx",
+            AsyncMock(return_value=resume_ctx),
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.mark_resume_in_flight",
+            mark_in_flight,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.clear_resume_in_flight",
+            clear_in_flight,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.clear_resume_ctx",
+            AsyncMock(),
+        ),
+    ):
+        result = await skill_turbo.invoke({"query": _QUERY})
+
+    assert result.get("success") is True
+    mark_in_flight.assert_awaited_once_with(turbo_session, resume_ctx)
+    clear_in_flight.assert_awaited_once_with(turbo_session)
+
+
+@pytest.mark.asyncio
+async def test_hitl_abort_clears_in_flight_but_keeps_checkpoint(
+    _skill_turbo_runtime,
+) -> None:
+    """resume 内二次中断：清 in-flight（防对断点的下次作答被误判重复）但保留新断点。
+
+    锁定 finally 语义：_did_mark_in_flight=True 时 AbortError/TIC 路径仍须
+    clear_resume_in_flight；release_checkpoint=False 时不得 clear_resume_ctx /
+    post_run（新断点由 executor 落盘，供再下一次作答恢复）。
+    """
+    adapter, turbo_session = _skill_turbo_runtime
+    turbo_session.close_stream = AsyncMock()
+    resume_ctx = {
+        "plan_code": "plan()",
+        "inputs": {"query": _QUERY},
+        "pending_tool_call_id": "tc-1",
+        "task_states": [],
+    }
+    tic = SimpleNamespace(tool_call=SimpleNamespace(id="tc-ask"))
+    mark_in_flight = AsyncMock()
+    clear_in_flight = AsyncMock()
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_skill_turbo_adapter",
+            return_value=adapter,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_task_id",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_skill_turbo_resume_answers",
+            return_value={"audience": "高管"},
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_request_metadata",
+            return_value={},
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.get_subagent_parent_session",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars.get_effective_request_workspace_dir",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
+            return_value=_raise_on_resume(AbortError("ask_user")),
+        ),
+        patch(
+            "openjiuwen.core.session.agent.create_agent_session",
+            side_effect=_isolated_session_side_effect(turbo_session),
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.load_resume_ctx",
+            AsyncMock(return_value=resume_ctx),
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.mark_resume_in_flight",
+            mark_in_flight,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.clear_resume_in_flight",
+            clear_in_flight,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.clear_resume_ctx",
+            AsyncMock(),
+        ) as clear_ctx,
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.extract_tool_interrupt",
+            return_value=tic,
+        ),
+    ):
+        from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+            set_skill_turbo_hitl_tic,
+        )
+
+        set_skill_turbo_hitl_tic(None)
+        try:
+            result = await skill_turbo.invoke({"query": _QUERY})
+        finally:
+            set_skill_turbo_hitl_tic(None)
+
+    mark_in_flight.assert_awaited_once_with(turbo_session, resume_ctx)
+    clear_in_flight.assert_awaited_once_with(turbo_session)
+    clear_ctx.assert_not_awaited()
+    turbo_session.post_run.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -337,7 +715,7 @@ async def test_abort_without_tic_keeps_resume_ctx(_skill_turbo_runtime) -> None:
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -402,7 +780,7 @@ async def test_generic_exception_keeps_resume_ctx(_skill_turbo_runtime) -> None:
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -465,7 +843,7 @@ async def test_not_handled_clears_resume_ctx(_skill_turbo_runtime) -> None:
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
@@ -635,7 +1013,7 @@ async def test_skill_turbo_returns_failure_when_p10_delivery_failed(
         ),
         patch(
             "openjiuwen.core.session.agent.create_agent_session",
-            return_value=turbo_session,
+            side_effect=_isolated_session_side_effect(turbo_session),
         ),
         patch(
             "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",

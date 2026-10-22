@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-import inspect
 import json
 import logging
 import os
@@ -49,6 +48,16 @@ from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.skill.workspace_provider import SkillWorkspaceProvider
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config, get_permissions_file_guard_workspace_access
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
+    PLAN_EXECUTE_OPTION_VALUES,
+    PLAN_SKIP_OPTION_VALUES,
+    plan_skip_feedback,
+)
+from jiuwenswarm.common.mode_matrix import (
+    is_web_composable_mode,
+    read_request_work_mode,
+    resolve_adapter_mode,
+)
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.ask_user import normalize_ask_user_response
@@ -446,6 +455,19 @@ def _should_defer_a2ui_processing_status(
     )
 
 
+def _is_foreign_stream_source(payload: Any) -> bool:
+    """True for frames mirrored from a nested stream (subagent / skill node).
+
+    Such frames carry a non-empty ``stream_source_id`` other than the ``main``
+    sentinel the gateway fills in. They must not move parent-turn bookkeeping
+    or land in the parent history.
+    """
+    if not isinstance(payload, dict):
+        return False
+    source_id = payload.get("stream_source_id")
+    return isinstance(source_id, str) and bool(source_id) and source_id != "main"
+
+
 def _is_duplicate_full_body_delta(pending_chunks: list[str], content: str) -> bool:
     """True when ``content`` is an exact replay of the already-buffered answer body.
 
@@ -686,6 +708,10 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_RETRIEVAL_INDEX_CANCEL: "handle_skills_retrieval_index_cancel",
     ReqMethod.SKILLS_RETRIEVAL_SEARCH: "handle_skills_retrieval_search",
     ReqMethod.SKILLS_RETRIEVAL_TREE: "handle_skills_retrieval_tree",
+    ReqMethod.SKILLS_GRAPH_BUILD: "handle_skills_graph_build",
+    ReqMethod.SKILLS_GRAPH_STATUS: "handle_skills_graph_status",
+    ReqMethod.SKILLS_GRAPH_GET: "handle_skills_graph_get",
+    ReqMethod.SKILLS_GRAPH_CANCEL: "handle_skills_graph_cancel",
     ReqMethod.SKILLS_EVOLUTION_STATUS: "handle_skills_evolution_status",
     ReqMethod.SKILLS_EVOLUTION_GET: "handle_skills_evolution_get",
     ReqMethod.SKILLS_EVOLUTION_SAVE: "handle_skills_evolution_save",
@@ -747,16 +773,6 @@ _PLUGIN_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.PLUGINS_DISABLE: "handle_plugins_disable",
     ReqMethod.PLUGINS_RELOAD: "handle_plugins_reload",
 }
-
-_SYMPHONY_METHODS: frozenset[ReqMethod] = frozenset(
-    {
-        ReqMethod.SYMPHONY_BUILD_SCORE,
-        ReqMethod.SYMPHONY_PAUSE_BUILD,
-        ReqMethod.SYMPHONY_SCORE_STATUS,
-        ReqMethod.SYMPHONY_GRAPH,
-        ReqMethod.SYMPHONY_PLAN,
-    }
-)
 
 _SKILL_COMMAND_REGEX = re.compile(
     r"^/skills use\s+(?P<skill_names>[^,]+)\s*,\s*(?P<query>.*)$"
@@ -1126,6 +1142,7 @@ class JiuWenSwarm:
         skill_manager: SkillManager | None = None,
     ) -> None:
         self._adapter: AgentAdapter | None = None
+        self._adapter_mode: str | None = None
         # PersonalContext Rail follows the Host runtime switch.  Keep the
         # latest snapshot on the facade so a lazily-created adapter inherits
         # the current state before its first rail synchronization.
@@ -1227,7 +1244,13 @@ class JiuWenSwarm:
         request: AgentRequest,
         session_id: str,
     ) -> None:
-        """Record HITL resume so refresh does not revive an already-answered card."""
+        """Record HITL resume so refresh does not revive an already-answered card.
+
+        Persist the **card** ``request_id`` as the client sent it (including
+        ``{call_id}#{n}``). Harness routing still strips the suffix elsewhere;
+        history restore matches on the card id, and stripping here made refresh
+        resurrect permission cards after a successful approve.
+        """
         params = request.params if isinstance(request.params, dict) else {}
         answers = params.get("answers")
         status = params.get("status")
@@ -1235,10 +1258,14 @@ class JiuWenSwarm:
         has_status = isinstance(status, str) and bool(status.strip())
         if not has_answers and not has_status:
             return
-        rid = _ask_user_answer_request_id(params, request.request_id)
+        raw_rid = str(params.get("request_id") or "").strip()
+        rid = raw_rid or _ask_user_answer_request_id(params, request.request_id)
         if not rid:
             return
         extra: dict[str, Any] = {"request_id": rid}
+        base_rid = strip_hitl_seq_suffix(rid)
+        if base_rid and base_rid != rid:
+            extra["base_request_id"] = base_rid
         source = str(params.get("source") or "").strip()
         if source:
             extra["source"] = source
@@ -1289,17 +1316,20 @@ class JiuWenSwarm:
         logger.info("[JiuWenSwarm] SkillDevService 初始化完成")
         return self._skilldev_service
 
-    def _ensure_adapter(self, *, mode: str = "agent") -> AgentAdapter:
+    def _ensure_adapter(self, *, mode: str | None = None) -> AgentAdapter:
         """确保 adapter 已初始化，如果未初始化则根据环境变量和 mode 创建."""
+        current_adapter_mode = getattr(self, "_adapter_mode", None)
+        selected_mode = mode or current_adapter_mode or "agent"
         if self._adapter is None:
             self._sdk_name = resolve_sdk_choice()
             self._adapter = create_adapter(
                 self._sdk_name,
-                mode=mode,
+                mode=selected_mode,
                 workspace_dir=self._workspace_dir,
                 agent_id=self._agent_id,
                 service_id=self._service_id,
             )
+            self._adapter_mode = selected_mode
             if hasattr(self._adapter, "set_skill_manager"):
                 self._adapter.set_skill_manager(self._skill_manager)
             setter = getattr(
@@ -1313,12 +1343,30 @@ class JiuWenSwarm:
             logger.info(
                 "[JiuWenSwarm] Initialized adapter: sdk=%s, mode=%s, workspace_dir=%s",
                 self._sdk_name,
-                mode,
+                selected_mode,
                 self._workspace_dir,
+            )
+            return self._adapter
+
+        # Facade is intentionally one adapter per cache key.  A request that
+        # explicitly asks for a different implementation must not silently use
+        # the existing Deep/Flash adapter; the manager is responsible for
+        # selecting a separate facade.
+        if current_adapter_mode is None:
+            self._adapter_mode = selected_mode
+            current_adapter_mode = selected_mode
+        # Compare implementations, while retaining the original business mode
+        # for parameterless rebuilds (team and agent both use DeepAdapter).
+        current_implementation = resolve_adapter_mode(current_adapter_mode)
+        requested_implementation = resolve_adapter_mode(selected_mode)
+        if mode is not None and requested_implementation != current_implementation:
+            raise RuntimeError(
+                "JiuWenSwarm adapter mode mismatch: "
+                f"current={current_adapter_mode!r}, requested={selected_mode!r}"
             )
         return self._adapter
 
-    def ensure_adapter(self, *, mode: str = "agent") -> AgentAdapter:
+    def ensure_adapter(self, *, mode: str | None = None) -> AgentAdapter:
         """Public wrapper for ``_ensure_adapter`` (used by AgentManager reload)."""
         return self._ensure_adapter(mode=mode)
 
@@ -1505,23 +1553,44 @@ class JiuWenSwarm:
 
     @staticmethod
     def _adapter_mode_for_request(request: AgentRequest) -> str:
+        """选择 Deep / Code adapter。
+
+        Web 请求（显式携带 ``work_mode``）由 ``work_mode`` 决定 profile：
+        ``code`` 走 CodeAdapter，``work`` 走 DeepAdapter。TUI 等历史客户端不带
+        ``work_mode``，继续按完整 mode 串判定，行为不变。
+        """
+        resolved_adapter_mode = getattr(request, "resolved_adapter_mode", None)
+        if resolved_adapter_mode in {"agent", "code", "flash"}:
+            return resolved_adapter_mode
         params = request.params if isinstance(request.params, dict) else {}
+        work_mode = read_request_work_mode(params)
         raw_mode = params.get("mode", "")
-        if isinstance(raw_mode, str):
-            mode = raw_mode.strip().lower()
-            if mode == "team.plan":
-                return "code"
-            if mode == "code" or mode.startswith("code."):
-                return "code"
-            if mode == "flash" or mode.startswith("flash."):
-                return "flash"
+        mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else ""
+        # 新版 mode_matrix 把 ``team`` 也列为 Web 可组合模式，但集群 adapter
+        # 选型从不随 work_mode 改变（4413 的矩阵尚未把 team 纳入组合集）。
+        # 当前所有发送方都保证 mode 非空（Web 出站恒带 mode、cron 恒非空、
+        # IM/TUI 不带 work_mode 走 legacy 分支），``mode or "agent"`` 仅为
+        # 防御性兜底；空 mode + work_mode=code 理论上会选 CodeAdapter（与
+        # 历史默认 DeepAdapter 不同），该组合现不可达。
+        if (
+            work_mode is not None
+            and mode != "team"
+            and is_web_composable_mode(mode or "agent")
+        ):
+            return "code" if work_mode == "code" else "agent"
+        if mode == "team.plan":
+            return "code"
+        if mode == "code" or mode.startswith("code."):
+            return "code"
+        if mode == "flash" or mode.startswith("flash."):
+            return "flash"
         return "agent"
 
     async def create_instance(
         self,
         config: dict[str, Any] | None = None,
         *,
-        mode: str = "agent",
+        mode: str | None = None,
         sub_mode: str = None,
         config_base: dict[str, Any] | None = None,
     ) -> None:
@@ -1532,17 +1601,18 @@ class JiuWenSwarm:
             mode: 实例化模式，"claw"（默认）或 "code"，透传给底层 adapter.
             sub_mode: 子模式
         """
-        adapter = self._ensure_adapter(mode=mode)
+        selected_mode = mode or self._adapter_mode or "agent"
+        adapter = self._ensure_adapter(mode=selected_mode)
         setattr(adapter, "_env_service_id", getattr(self, "_env_service_id", "default"))
         setattr(adapter, "_env_agent_id", getattr(self, "_env_agent_id", "default"))
         setattr(adapter, "_workspace_key", getattr(self, "_workspace_key", "default"))
-        create_kwargs: dict[str, Any] = {"mode": mode, "sub_mode": sub_mode}
+        create_kwargs: dict[str, Any] = {"mode": selected_mode, "sub_mode": sub_mode}
         if config_base is not None:
             create_kwargs["config_base"] = config_base
         await adapter.create_instance(config, **create_kwargs)
         logger.info(
             "[JiuWenSwarm] Agent instance created: sdk=%s, mode=%s, sub_mode=%s",
-            self._sdk_name, mode, sub_mode,
+            self._sdk_name, selected_mode, sub_mode,
         )
 
         sm = self._session_manager
@@ -1660,9 +1730,19 @@ class JiuWenSwarm:
         channel_id: str,
         mode: str,
         project_dir: str | None = None,
+        adapter_mode: str | None = None,
     ) -> None:
-        """Initialize and start the session-owned DeepAgent without sending input."""
-        adapter = self._ensure_adapter(mode="code" if mode.startswith("code") else "agent")
+        """Initialize and start the session-owned adapter without sending input.
+
+        ``mode`` remains the business canonical mode; ``adapter_mode`` is the
+        implementation selection (Deep / Code / Flash).  Prewarm callers that
+        omit ``adapter_mode`` retain the previous Deep/Code fallback for
+        compatibility.
+        """
+        selected_adapter_mode = adapter_mode or (
+            "code" if mode.startswith("code") else "agent"
+        )
+        adapter = self._ensure_adapter(mode=selected_adapter_mode)
         prepare = getattr(adapter, "prepare_session", None)
         if not callable(prepare):
             raise RuntimeError("active adapter does not support session prewarming")
@@ -2173,6 +2253,27 @@ class JiuWenSwarm:
                 "persist_allow": True,
                 "feedback": "",
             }
+        elif value in PLAN_EXECUTE_OPTION_VALUES:
+            # Web 的"执行"：批准并退出 plan，但本轮不再调模型。真正的执行由前端
+            # 紧接着补发的普通消息开启新一轮完成。``plan_execute`` 是额外键，
+            # ConfirmPayload 会忽略它，rail 在校验前从原始 dict 读取。
+            confirm_payload = {
+                "approved": True,
+                "auto_confirm": False,
+                "feedback": "",
+                "plan_execute": True,
+            }
+        elif value in PLAN_SKIP_OPTION_VALUES:
+            # Web 的"跳过"：不退出 plan，也不继续修改，直接结束本轮。
+            # ``plan_skip`` 是额外键，ConfirmPayload 会忽略它；
+            # PlanApprovalInterruptRail 在校验前从原始 dict 读取该标记。
+            confirm_payload = {
+                "approved": False,
+                "auto_confirm": False,
+                "feedback": custom_input
+                or plan_skip_feedback(get_config().get("preferred_language")),
+                "plan_skip": True,
+            }
         elif value in ("reject", "拒绝", "Reject", "继续规划", "其他意见"):
             feedback = custom_input or (
                 "用户希望继续规划" if value in ("Keep planning", "继续规划", "其他意见") else "用户拒绝"
@@ -2365,111 +2466,6 @@ class JiuWenSwarm:
             metadata=request.metadata,
         )
 
-    async def _handle_symphony_request(self, request: AgentRequest) -> AgentResponse | None:
-        """处理 Symphony extension RPC 请求."""
-        if request.req_method not in _SYMPHONY_METHODS:
-            return None
-
-        method = request.req_method.value
-        try:
-            handler = ExtensionRegistry.get_instance().get_rpc_handler(method)
-            if handler is None:
-                payload = {
-                    "success": False,
-                    "detail": f"Symphony extension RPC unavailable: {method}: handler not registered",
-                }
-            else:
-                result = handler(request.params or {}, request=request)
-                payload = await result if inspect.isawaitable(result) else result
-                if not isinstance(payload, dict):
-                    payload = {"success": True, "result": payload}
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("[JiuWenSwarm] Symphony RPC failed: %s", method)
-            return AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"success": False, "detail": f"{method}: {exc}"},
-                metadata=request.metadata,
-            )
-
-        return AgentResponse(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            ok=True,
-            payload=payload,
-            metadata=request.metadata,
-        )
-
-    async def _handle_symphony_request_stream(
-        self,
-        request: AgentRequest,
-    ) -> AsyncIterator[AgentResponseChunk]:
-        """Stream Symphony RPC progress events, then the final RPC payload."""
-        if request.req_method not in _SYMPHONY_METHODS:
-            return
-
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-        async def progress_callback(event: dict[str, Any]) -> None:
-            await queue.put(event)
-
-        metadata = dict(request.metadata or {})
-        metadata["symphony_progress_callback"] = progress_callback
-        stream_request = replace(request, metadata=metadata)
-        task = asyncio.create_task(self._handle_symphony_request(stream_request))
-
-        try:
-            while not task.done() or not queue.empty():
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    continue
-                yield AgentResponseChunk(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    payload={
-                        "event_type": event.get("type")
-                        or "symphony.beam_search.update",
-                        "beam_search_event": event,
-                    },
-                    is_complete=False,
-                )
-            response = await task
-        except Exception as exc:
-            logger.exception("[JiuWenSwarm] Symphony stream failed: %s", exc)
-            yield AgentResponseChunk(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                payload={"event_type": "chat.error", "error": str(exc)},
-                is_complete=False,
-            )
-            yield AgentResponseChunk(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                payload=None,
-                is_complete=True,
-            )
-            return
-
-        payload = dict(response.payload or {}) if response is not None else {}
-        payload.setdefault(
-            "event_type",
-            f"{request.req_method.value if request.req_method else 'symphony'}.result",
-        )
-        yield AgentResponseChunk(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            payload=payload,
-            is_complete=False,
-        )
-        yield AgentResponseChunk(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            payload=None,
-            is_complete=True,
-        )
-
     async def _process_interrupt(self, request: AgentRequest) -> AgentResponse:
         """处理 interrupt 请求.
 
@@ -2498,7 +2494,12 @@ class JiuWenSwarm:
                 session_id=session_id,
             )
 
-        adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
+        # Control requests belong to the already selected session owner. Legacy
+        # clients may send agent.plan or omit mode even for a Flash session.
+        if self._adapter is not None:
+            adapter = self._ensure_adapter()
+        else:
+            adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
 
         if intent == "pause":
             # 暂停：不取消任务，只暂停 ReAct 循环
@@ -2766,7 +2767,7 @@ class JiuWenSwarm:
                     metadata=request.metadata,
                 )
 
-        # 无状态请求（skills / skilldev / plugins / symphony）不需要 adapter，
+        # 无状态请求（skills / skilldev / plugins / Skill Graph）不需要 adapter，
         # 在 _ensure_adapter 之前检查，避免触发 adapter 懒初始化。
         # COMMAND_GOAL 已在上方单独处理（其内部按需 ensure），不影响本顺序。
         skilldev_response = await self._handle_skilldev_request(request)
@@ -2780,10 +2781,6 @@ class JiuWenSwarm:
         plugins_response = await self._handle_plugins_request(request)
         if plugins_response is not None:
             return plugins_response
-
-        symphony_response = await self._handle_symphony_request(request)
-        if symphony_response is not None:
-            return symphony_response
 
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
 
@@ -2876,7 +2873,9 @@ class JiuWenSwarm:
             ):
                 try:
                     hook_adapter = await adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
-                        session_id, request=request
+                        session_id,
+                        request=request,
+                        history_before_request_id=request.request_id,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -2908,6 +2907,20 @@ class JiuWenSwarm:
                             logger.warning(
                                 "[JiuWenClaw] ask_user stale guard failed session_id=%s "
                                 "(fail-open)",
+                                session_id,
+                                exc_info=True,
+                            )
+                    # 作答消费销毁（挂起表转移）：guard 放行（含 fail-open）=
+                    # 该卡应答被接受为当前代，摘除 base 挂起表条目。迁自
+                    # _try_skill_turbo_resume（删 Path A 后公共入口在此）。
+                    _consume = getattr(hook_adapter, "_consume_hitl_live_card_for_answer", None)
+                    if callable(_consume):
+                        try:
+                            _consume(request)
+                        except Exception:
+                            logger.warning(
+                                "[JiuWenClaw] ask_user consume live card failed "
+                                "session_id=%s (fail-open)",
                                 session_id,
                                 exc_info=True,
                             )
@@ -3194,18 +3207,12 @@ class JiuWenSwarm:
             )
             return
 
-        if request.req_method in _SYMPHONY_METHODS:
-            async for chunk in self._handle_symphony_request_stream(request):
-                yield chunk
-            return
-
-        # 无状态 RPC（skills / plugins / symphony）不需要 adapter，
+        # 无状态 RPC（skills / plugins / Skill Graph）不需要 adapter，
         # 委托给非流式 handler 并包装为单个 chunk，避免触发 adapter 懒初始化。
         # skilldev 已由上面的流式分支处理，这里不会再命中。
         for stateless_handler in (
             self._handle_skills_request,
             self._handle_plugins_request,
-            self._handle_symphony_request,
         ):
             stateless_response = await stateless_handler(request)
             if stateless_response is not None:
@@ -3296,7 +3303,9 @@ class JiuWenSwarm:
             ):
                 try:
                     hook_adapter = await adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
-                        session_id, request=request
+                        session_id,
+                        request=request,
+                        history_before_request_id=request.request_id,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -3335,6 +3344,20 @@ class JiuWenSwarm:
                             logger.warning(
                                 "[JiuWenClaw] stream ask_user stale guard failed session_id=%s "
                                 "(fail-open)",
+                                session_id,
+                                exc_info=True,
+                            )
+                    # 作答消费销毁（挂起表转移）：guard 放行（含 fail-open）=
+                    # 该卡应答被接受为当前代，摘除 base 挂起表条目。迁自
+                    # _try_skill_turbo_resume（删 Path A 后公共入口在此）。
+                    _consume = getattr(hook_adapter, "_consume_hitl_live_card_for_answer", None)
+                    if callable(_consume):
+                        try:
+                            _consume(request)
+                        except Exception:
+                            logger.warning(
+                                "[JiuWenClaw] stream ask_user consume live card failed "
+                                "session_id=%s (fail-open)",
                                 session_id,
                                 exc_info=True,
                             )
@@ -3444,7 +3467,9 @@ class JiuWenSwarm:
             ):
                 try:
                     _guard_adapter = await _guard_adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
-                        session_id, request=request
+                        session_id,
+                        request=request,
+                        history_before_request_id=request.request_id,
                     )
                 except Exception:
                     _guard_adapter = adapter
@@ -3701,7 +3726,14 @@ class JiuWenSwarm:
                                 continue
                         if isinstance(data.payload, dict) and isinstance(data.payload.get("event_type"), str):
                             et = str(data.payload.get("event_type"))
-                            should_record = et.startswith("chat.") or et.startswith("task.")
+                            # context.usage is a blank-content structured snapshot;
+                            # persist so history.get / Web restore can rebuild the
+                            # context indicator (align develop).
+                            should_record = (
+                                et.startswith("chat.")
+                                or et.startswith("task.")
+                                or et == "context.usage"
+                            )
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
                             if et == "context_compression_state":
@@ -3769,14 +3801,21 @@ class JiuWenSwarm:
                                 durable_pending_final_chunks.append(payload_content)
                                 should_record = False
                             elif et == "chat.reasoning":
-                                durable_pending_reasoning_chunks.append(payload_content)
+                                # Reasoning mirrored from a nested stream stays
+                                # out of the parent's reasoning buffer.
+                                if not _is_foreign_stream_source(data.payload):
+                                    durable_pending_reasoning_chunks.append(payload_content)
                                 should_record = False
                             elif et == "chat.tool_call":
-                                _persist_pending_final_text()
-                                # Post-tool LLM rounds must not inherit pre-tool
-                                # delta visibility; otherwise reasoning-only
-                                # follow-ups skip the empty-final rescue.
-                                final_answer_chunks = []
+                                # A child tool call must not close the parent's
+                                # in-flight answer segment or reset its delta
+                                # visibility.
+                                if not _is_foreign_stream_source(data.payload):
+                                    _persist_pending_final_text()
+                                    # Post-tool LLM rounds must not inherit pre-tool
+                                    # delta visibility; otherwise reasoning-only
+                                    # follow-ups skip the empty-final rescue.
+                                    final_answer_chunks = []
                             elif et == "chat.final":
                                 if isinstance(data.payload, dict):
                                     ensure_final_mode_inplace(data.payload)
@@ -3860,7 +3899,7 @@ class JiuWenSwarm:
                                         )
                                 durable_pending_final_chunks = []
 
-                            if should_record:
+                            if should_record and not _is_foreign_stream_source(data.payload):
                                 payload_dict = dict(data.payload)
                                 extra_fields = {k: v for k, v in payload_dict.items() if
                                                 k not in ("event_type", "content", "task_id")}
@@ -3904,7 +3943,14 @@ class JiuWenSwarm:
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
                         et = str(data.get("event_type"))
                         merged_from_deltas = False
-                        should_record = et.startswith("chat.") or et.startswith("task.")
+                        # context.usage is a blank-content structured snapshot;
+                        # persist so history.get / Web restore can rebuild the
+                        # context indicator (align develop).
+                        should_record = (
+                            et.startswith("chat.")
+                            or et.startswith("task.")
+                            or et == "context.usage"
+                        )
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True
                         if et == "context_compression_state":
@@ -3972,11 +4018,13 @@ class JiuWenSwarm:
                             durable_pending_final_chunks.append(payload_content)
                             should_record = False
                         elif et == "chat.reasoning":
-                            durable_pending_reasoning_chunks.append(payload_content)
+                            if not _is_foreign_stream_source(data):
+                                durable_pending_reasoning_chunks.append(payload_content)
                             should_record = False
                         elif et == "chat.tool_call":
-                            _persist_pending_final_text()
-                            final_answer_chunks = []
+                            if not _is_foreign_stream_source(data):
+                                _persist_pending_final_text()
+                                final_answer_chunks = []
                         elif et == "chat.final":
                             if suppress_a2ui_stream or a2ui_split is not None:
                                 first_a2ui_suppression = not suppress_a2ui_stream
@@ -4040,7 +4088,7 @@ class JiuWenSwarm:
                                 )
                             durable_pending_final_chunks = []
 
-                        if should_record:
+                        if should_record and not _is_foreign_stream_source(data):
                             extra_fields = {
                                 k: v
                                 for k, v in data.items()
@@ -4214,6 +4262,20 @@ class JiuWenSwarm:
             return None
         return await self._adapter.ensure_instance()
 
+    def get_live_session_instance(self, session_id: str | None):
+        """Return the DeepAgent already running ``session_id``, if any.
+
+        Returns None when no adapter exists, when the adapter predates this
+        accessor, or when the session has not started a child adapter yet.
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return None
+        getter = getattr(adapter, "get_live_session_instance", None)
+        if getter is None:
+            return None
+        return getter(session_id)
+
     async def apply_package_change_to_session_adapters(
         self,
         operation: str,
@@ -4274,7 +4336,11 @@ class JiuWenSwarm:
             raise ValueError("Agent adapter not available")
         return await adapter.get_context_usage(session_id=session_id)
 
-    async def generate_recap(self, session_id: str) -> dict[str, Any]:
+    async def generate_recap(
+        self,
+        session_id: str,
+        request: AgentRequest | None = None,
+    ) -> dict[str, Any]:
         """生成会话快速回顾（read-only，不修改对话历史）。
 
         取最近30条消息 → fast model → 1-2句摘要。
@@ -4291,7 +4357,10 @@ class JiuWenSwarm:
         adapter = self._adapter
         if adapter is None:
             raise ValueError("Agent adapter not available")
-        return await adapter.generate_recap(session_id=session_id)
+        return await adapter.generate_recap(
+            session_id=session_id,
+            request=request,
+        )
 
     async def compact_partial(
         self,

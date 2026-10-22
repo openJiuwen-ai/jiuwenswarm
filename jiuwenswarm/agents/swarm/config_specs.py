@@ -44,7 +44,6 @@ from jiuwenswarm.common.config import (
     get_default_model_provider,
     get_evolution_auto_save_enabled,
     get_evolution_review_trigger_enabled,
-    get_evolution_signal_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_create_enabled,
     resolve_string_or_list_config,
@@ -89,6 +88,10 @@ def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
 # provider name re-exported from the registry (no hard-coded strings).
 _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.RUNTIME_PROMPT,
+    # auto 档（relay 下发 enable_routing）成员级路由：每个成员各自跑分类器。
+    # 自身按 config.yaml::model_routing.enabled + JIUWENSWARM_MODEL_ROUTING_ENABLED
+    # 门控，关闭时 provider 返回 None（不挂载）。
+    registry.MODEL_ROUTING,
     registry.REQUEST_SCOPED_MCP_TOOLS,
     registry.TEAM_SKILL_STORAGE_POLICY,
     registry.TEAM_SHARED_SKILL_LINK_REFRESH,
@@ -140,6 +143,8 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
 # carry params and are appended separately.
 _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_RUNTIME_PROMPT,
+    # 同 _COMMON_RAIL_NAMES：code.team / team.plan 成员也要能 auto 档路由。
+    registry.MODEL_ROUTING,
     registry.REQUEST_SCOPED_MCP_TOOLS,
     registry.RESPONSE_PROMPT,
     registry.STREAM_EVENT,
@@ -389,6 +394,25 @@ def _member_evolution_rail_params(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _llm_retry_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Project adapter retry settings into the serializable member rail spec."""
+    guard = _config_section(config, "execution_guard")
+    retry = _config_section(guard, "llm_retry_rail")
+    params: dict[str, Any] = {
+        "max_retries": retry.get("max_retries", 2),
+        "repeat_min_pattern_chars": retry.get("repeat_min_pattern_chars", 2),
+        "repeat_max_pattern_chars": retry.get("repeat_max_pattern_chars", 64),
+        "repeat_min_count": retry.get("repeat_min_count", 6),
+        "repeat_min_total_chars": retry.get("repeat_min_total_chars", 160),
+        "repeat_window_chars": retry.get("repeat_window_chars", 1024),
+        "single_char_repeat_count": retry.get("single_char_repeat_count", 100),
+        "retry_transient_invoke_errors": retry.get("retry_transient_invoke_errors", True),
+        "notify_user_on_retry": retry.get("notify_user_on_retry", True),
+        "notify_user_on_exhausted": retry.get("notify_user_on_exhausted", True),
+    }
+    return params
+
+
 # Per-element attribute params, keyed by provider name; empty for parameterless.
 _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     registry.DISABLED_TOOLS: lambda c: {
@@ -407,6 +431,7 @@ _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     registry.TEAM_PERMISSION_POLICY: lambda c: {
         "permissions_config": _config_section(c, "permissions"),
     },
+    registry.TEAM_MEMBER_LLM_RETRY: _llm_retry_params,
     registry.CODE_CODING_MEMORY: lambda c: {
         "embed_config": _config_section(c, "embed")
     },
@@ -450,6 +475,13 @@ def _tool_params(name: str, config: dict[str, Any]) -> dict[str, Any]:
     """Return attribute params baked into tool *name* (empty when parameterless)."""
     builder = _TOOL_PARAM_BUILDERS.get(name)
     return builder(config) if builder else {}
+
+
+def _llm_retry_enabled(config: dict[str, Any]) -> bool:
+    """Reuse the adapter's existing retry guard switch for team members."""
+    guard = _config_section(config, "execution_guard")
+    retry = _config_section(guard, "llm_retry_rail")
+    return retry.get("enabled", False) is True
 
 
 def _team_common_rail_names(role: str) -> tuple[str, ...]:
@@ -509,6 +541,13 @@ def _build_team_capability_specs(
         RailSpec(type=name, params=_rail_params(name, config))
         for name in _team_common_rail_names(role)
     ]
+    if role in {"leader", "teammate"} and _llm_retry_enabled(config):
+        rails_specs.append(
+            RailSpec(
+                type=registry.TEAM_MEMBER_LLM_RETRY,
+                params=_rail_params(registry.TEAM_MEMBER_LLM_RETRY, config),
+            )
+        )
     if role == "leader":
         rails_specs.append(RailSpec(type=registry.STRUCTURED_ASK_USER))
 
@@ -593,6 +632,13 @@ def _build_code_capability_specs(
         RailSpec(type=name, params=_rail_params(name, config))
         for name in _code_base_rail_names(role)
     ]
+    if role in {"leader", "teammate"} and _llm_retry_enabled(config):
+        rails_specs.append(
+            RailSpec(
+                type=registry.TEAM_MEMBER_LLM_RETRY,
+                params=_rail_params(registry.TEAM_MEMBER_LLM_RETRY, config),
+            )
+        )
 
     if is_team_plan_leader:
         rails_specs.append(RailSpec(type=registry.TEAM_PLAN_APPROVAL))
@@ -869,6 +915,18 @@ def build_member_deep_agent_spec(
         update["enable_skill_discovery"] = not retrieval_enabled
 
     subagent_specs = build_member_subagent_specs(config, mode, role)
+
+    react_for_gp = (config or {}).get("react", {})
+    react_for_gp = react_for_gp if isinstance(react_for_gp, dict) else {}
+    gp_cfg = (
+        react_for_gp.get("subagents", {}).get("general_agent")
+        if isinstance(react_for_gp.get("subagents"), dict)
+        else None
+    )
+    # Team stays on synchronous task_tool (subagent runtime is not wired here),
+    # so this flag is the task_tool gate. An explicit false must clear a base
+    # spec that already turned general-purpose on.
+    update["add_general_purpose_agent"] = _is_subagent_enabled(gp_cfg)
 
     # In team mode, base_spec includes a browser_agent with hardcoded
     # server_id="playwright_official_stdio". All members share that single

@@ -342,6 +342,165 @@ def test_switch_branch_hint_includes_holding_worktree_path(monkeypatch, tmp_path
     assert holding_path in result.error.hint
 
 
+def test_switch_branch_allows_untracked_files_when_clean_is_required(monkeypatch, tmp_path):
+    """未跟踪文件不会被 checkout 改写，不能触发保护性切换拦截。"""
+    from jiuwenswarm.server.runtime.session import project_git
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = Project(
+        project_id="proj_test",
+        name="test",
+        project_dir=str(project_dir),
+        work_mode="code",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run_git(args, *, cwd, timeout=project_git.GIT_COMMAND_TIMEOUT_SEC):
+        calls.append(args)
+        if args == ["check-ref-format", "--branch", "feature"]:
+            return _cp(["git", *args], 0, stdout="feature\n")
+        if args == ["show-ref", "--verify", "refs/heads/feature"]:
+            return _cp(["git", *args], 0)
+        if args == ["checkout", "feature"]:
+            return _cp(["git", *args], 0)
+        return _cp(["git", *args], 0)
+
+    pre_status = project_git.GitRepoStatus(
+        is_git=True,
+        repo_root=str(project_dir),
+        branch="main",
+        is_dirty=True,
+        untracked=1,
+        local_branches=["feature", "main"],
+    )
+    post_status = project_git.GitRepoStatus(
+        is_git=True,
+        repo_root=str(project_dir),
+        branch="feature",
+        is_dirty=True,
+        untracked=1,
+        local_branches=["feature", "main"],
+    )
+    statuses = iter((pre_status, post_status))
+
+    monkeypatch.setattr(project_git, "_run_git", fake_run_git)
+    monkeypatch.setattr(
+        project_git, "_git_to_repo_status", lambda project, *, persist=False: next(statuses),
+    )
+
+    result = project_git.ProjectGitService.switch_branch(
+        project, "feature", require_clean=True,
+    )
+
+    assert result.success is True
+    assert ["checkout", "feature"] in calls
+
+
+def test_switch_branch_reports_untracked_checkout_collision(monkeypatch, tmp_path):
+    """目标分支会覆盖未跟踪文件时，应给出可执行的处理提示。"""
+    from jiuwenswarm.server.runtime.session import project_git
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = Project(
+        project_id="proj_test",
+        name="test",
+        project_dir=str(project_dir),
+        work_mode="code",
+    )
+
+    def fake_run_git(args, *, cwd, timeout=project_git.GIT_COMMAND_TIMEOUT_SEC):
+        if args == ["check-ref-format", "--branch", "feature"]:
+            return _cp(["git", *args], 0, stdout="feature\n")
+        if args == ["show-ref", "--verify", "refs/heads/feature"]:
+            return _cp(["git", *args], 0)
+        if args == ["checkout", "feature"]:
+            return _cp(
+                ["git", *args],
+                1,
+                stderr=(
+                    "error: The following untracked working tree files would be "
+                    "overwritten by checkout:\n    conflict.txt\n"
+                ),
+            )
+        return _cp(["git", *args], 0)
+
+    pre_status = project_git.GitRepoStatus(
+        is_git=True,
+        repo_root=str(project_dir),
+        branch="main",
+        is_dirty=True,
+        untracked=1,
+        local_branches=["feature", "main"],
+    )
+    monkeypatch.setattr(project_git, "_run_git", fake_run_git)
+    monkeypatch.setattr(
+        project_git,
+        "_git_to_repo_status",
+        lambda project, *, persist=False: pre_status,
+    )
+
+    result = project_git.ProjectGitService.switch_branch(
+        project, "feature", require_clean=True,
+    )
+
+    assert result.success is False
+    assert result.error is not None
+    assert "未跟踪文件" in result.error.message
+    assert "git stash -u" in result.error.hint
+
+
+@pytest.mark.parametrize("tracked_state", ["staged", "unstaged", "conflicted"])
+def test_switch_branch_still_rejects_tracked_changes_when_clean_is_required(
+    monkeypatch,
+    tmp_path,
+    tracked_state,
+):
+    """放宽 untracked 后仍必须拦截已跟踪文件的未提交修改。"""
+    from jiuwenswarm.server.runtime.session import project_git
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    project = Project(
+        project_id="proj_test",
+        name="test",
+        project_dir=str(project_dir),
+        work_mode="code",
+    )
+    status_kwargs = {tracked_state: 1}
+    pre_status = project_git.GitRepoStatus(
+        is_git=True,
+        repo_root=str(project_dir),
+        branch="main",
+        is_dirty=True,
+        untracked=1,
+        local_branches=["feature", "main"],
+        **status_kwargs,
+    )
+    def fake_run_git(args, *, cwd, timeout=project_git.GIT_COMMAND_TIMEOUT_SEC):
+        if args == ["check-ref-format", "--branch", "feature"]:
+            return _cp(["git", *args], 0, stdout="feature\n")
+        pytest.fail(f"unexpected git call after dirty-worktree guard: {args}")
+
+    monkeypatch.setattr(project_git, "_run_git", fake_run_git)
+    monkeypatch.setattr(
+        project_git,
+        "_git_to_repo_status",
+        lambda project, *, persist=False: pre_status,
+    )
+
+    result = project_git.ProjectGitService.switch_branch(
+        project,
+        "feature",
+        require_clean=True,
+    )
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.code == "WORKTREE_DIRTY"
+
+
 def test_create_branch_checkout_filenotfound_returns_pre_status(monkeypatch, tmp_path):
     """Bug 修复:FileNotFoundError 路径不再二次探测(git 已消失,二次探测必再失败)。"""
     from jiuwenswarm.server.runtime.session import project_git

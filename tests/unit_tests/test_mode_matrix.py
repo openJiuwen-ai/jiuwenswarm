@@ -1,5 +1,7 @@
 """Web 组合模式解析与 TUI 历史模式直通的回归测试。"""
 
+from functools import partial
+
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -27,7 +29,9 @@ from jiuwenswarm.server.agent_ws_server import (
 
 
 def _resolve(params):
-    return resolve_request_mode(params, resolve_agent_request_mode)
+    # 模式矩阵验证协议归一，不依赖开发机的 flash.enabled 部署配置。
+    legacy = partial(resolve_agent_request_mode, allow_flash_default=False)
+    return resolve_request_mode(params, legacy)
 
 
 def test_request_uses_current_merged_agent_mode_semantics():
@@ -36,8 +40,14 @@ def test_request_uses_current_merged_agent_mode_semantics():
         params={"mode": "agent.plan", "work_mode": "code"},
     )
 
-    assert _apply_resolved_mode_to_request(request, work_mode="code") == ("code", "normal")
-    assert request.params["mode"] == "code.normal"
+    # MR 4413 起 _apply 走 Web 组合分支：plan 开关在 code profile 下保留为
+    # code.plan（与下方 test_web_composition_covers_all_supported_combinations
+    # 的 canonical 表一致），不再被 legacy 折叠回 code.normal。
+    assert _apply_resolved_mode_to_request(request, work_mode="code") == ("code", "plan")
+    assert request.params["mode"] == "code.plan"
+
+    # Re-resolving an already canonicalized request must not lose the wire mode.
+    assert _apply_resolved_mode_to_request(request, work_mode="code") == ("code", "plan")
 
 
 # ── Web 组合：work_mode 决定 profile，mode 决定是否 plan / team ─────────────
@@ -382,6 +392,7 @@ def test_is_team_mode(mode, expected):
 @pytest.mark.parametrize(
     "mode",
     [
+        "flash",
         NEW_AGENT_WORK_NORMAL,
         NEW_AGENT_WORK_PLAN,
         NEW_AGENT_CODE_NORMAL,
@@ -406,6 +417,11 @@ def test_single_agent_mode_rejects_legacy_names(mode):
 )
 def test_single_agent_mode_rejects_new_team_canonical_names(mode):
     assert not is_single_agent_mode(mode)
+
+
+def test_explicit_flash_is_single_agent_mode():
+    assert is_single_agent_mode("flash")
+    assert not is_single_agent_mode("flash.fast")
 
 
 def test_base_mode_without_plan_is_identity_for_normal_modes():

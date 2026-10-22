@@ -2690,7 +2690,7 @@ class TestLegacyWorkspacePrefixRemap:
         """读路径惰性迁移:metadata 中旧前缀被重映射并异步写盘。
 
         直接调用 _apply_metadata_defaults_with_inference 绕开
-        sanitize_session_id 的导入链（其依赖 openjiuwen 子模块,
+        session id 白名单校验链路（其依赖运行时模块，
         在部分测试环境缺失,与 TestLazyMigrationOnRead 整类的既有
         环境性 ERROR 相同,非本用例逻辑问题）。
         """

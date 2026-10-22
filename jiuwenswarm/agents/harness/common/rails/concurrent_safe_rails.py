@@ -44,6 +44,8 @@ from openjiuwen.harness.tools.todo import (
 )
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
+from jiuwenswarm.agents.harness.common.tools.todo_resume import is_persistent_todo
+
 logger = logging.getLogger(__name__)
 
 _TODO_WRITE_TOOLS = frozenset({"todo_create", "todo_modify"})
@@ -294,6 +296,8 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
         skipped_terminal_overwrite = 0
 
         for todo in todos:
+            if is_persistent_todo(todo):
+                continue
             desired = status_by_task_id.get(todo.id)
             if desired is None or todo.status == desired:
                 continue
@@ -342,8 +346,12 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
 
         if not todos:
             return
+        execution_todos = [todo for todo in todos if not is_persistent_todo(todo)]
+        if not execution_todos:
+            await self._clear_task_plan(ctx)
+            return
 
-        plan_tasks = [self._todo_to_task_item(todo) for todo in todos]
+        plan_tasks = [self._todo_to_task_item(todo) for todo in execution_todos]
         in_progress = next(
             (task for task in plan_tasks if task.status == TodoStatus.IN_PROGRESS),
             None,

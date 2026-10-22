@@ -9,6 +9,8 @@ import datetime as _dt
 import logging
 import os
 from contextlib import asynccontextmanager
+from dataclasses import replace
+from functools import partial
 from typing import Any, Optional
 
 from pathlib import Path
@@ -23,9 +25,39 @@ from jiuwenswarm.common.utils import (
     resolve_tenant_agent_workspace_dir,
     resolve_tenant_sessions_dir,
 )
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
+    PLAN_REMINDER_ORIGINAL_QUERY_KEY,
+)
+from jiuwenswarm.common.mode_matrix import (
+    NEW_AGENT_WORK_NORMAL,
+    NEW_AGENT_WORK_PLAN,
+    ResolvedMode,
+    WEB_PLAN_AGENT,
+    canonicalize_mode_text,
+    resolve_request_mode,
+)
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+from jiuwenswarm.telemetry.request_context import refresh_incoming_mode_binding
 
 logger = logging.getLogger(__name__)
+
+
+# Plan 能力渠道：只有这些渠道（以及带显式进入标记的请求，见
+# EXPLICIT_PLAN_ENTRY_SOURCES）允许 plan 类 mode token 原样生效。officeclaw
+# 等 E2A 下游会把历史 token ``mode="agent.plan"`` 恒定发在普通单 agent 会话上，
+# 叠加 session metadata 回填的 ``work_mode`` 后会走 Web 组合分支误开 work plan
+# （评审 CR-1，2026-09-29）：白名单滤掉办公 agent 的全部业务工具，且 plan
+# 审批中断在下游通道无解。与 cron 的 ``_CRON_JOB_MODE_ALIASES``
+# （gateway/cron/models.py）同一思路：入口处归一，不依赖各消费点自行防御。
+PLAN_CAPABLE_CHANNELS: frozenset[str] = frozenset({"web", "tui"})
+
+# 显式进入 plan 的一次性来源标记（``plan_entry_source`` 的合法取值）。
+EXPLICIT_PLAN_ENTRY_SOURCES: frozenset[str] = frozenset(
+    {"slash_command", "e2a", "plan_toggle"}
+)
+
+# 参与 Web 组合后会产生 plan 态的 mode token。
+_PLAN_MODE_TOKENS: frozenset[str] = frozenset({WEB_PLAN_AGENT, NEW_AGENT_WORK_PLAN})
 
 
 # Session owner preparation completes before the response. Optional KVC signals
@@ -36,6 +68,25 @@ _background_session_kvc_tasks: set[asyncio.Task] = set()
 # Set by _check_post_process_plan_exit, consumed by _ensure_code_mode_state
 # to prevent TUI-race re-entrance to plan mode.
 _plan_exited_sessions: set[str] = set()
+
+# 本进程内曾进入过 plan 的 work 单 agent 会话。work 的准入面覆盖 IM / 定时任务 /
+# CLI / Web work 的每一条普通消息，而其中绝大多数会话从未开过 Plan；有这个标记
+# 才需要去同步 plan 状态。跨重启的情况另有一道判据（会话 metadata 里上一轮的
+# canonical mode），见 ``_session_may_hold_plan_state``。
+#
+# 已声明的取舍（评审 CR-9）：
+# - 键无渠道维度：下游会话 id 全局唯一，无碰撞面，不叠加渠道前缀。
+# - rewind 视同退出 plan：session.py 的 rewind 成功路径同步翻转双标记；
+#   session.delete 失败路径不清理是有意的——删除失败即会话仍在，标记保持。
+# - 标记跨重启丢失是预期行为：内存标记 + metadata 判据（上一轮 canonical
+#   mode）构成双保险，重启后最坏情况是延续消息回退 normal，且状态会被
+#   判据同步复位，不会悬挂；e2a 下游需要跨重启 plan 时应逐条消息携带
+#   ``plan_entry_source``。
+_plan_active_sessions: set[str] = set()
+
+# 上一轮写盘前的会话 canonical mode，由 ``_prepare_code_mode_chat_turn`` 在覆盖
+# metadata 之前捎带到 params 里，给 ``_ensure_code_mode_state`` 当跨重启判据。
+_SESSION_PREVIOUS_MODE_KEY = "_session_previous_mode"
 
 
 # Serialize plan-mode restore per session to avoid checkpoint races.
@@ -123,6 +174,7 @@ def resolve_agent_request_mode(
     raw_mode: Any,
     *,
     work_mode: Any = None,
+    allow_flash_default: bool = True,
 ) -> tuple[str, str | None, str]:
     """Resolve request params.mode into manager mode, sub_mode, and canonical value.
 
@@ -131,11 +183,13 @@ def resolve_agent_request_mode(
     ``fast``（无 ``agent.`` 前缀，如旧 cron job 存量数据）同样归一到 ``agent``，
     与 CLI ``MODE_ALIASES``、记忆配置 ``_resolve_mode_memory`` 的裸 token 处理保持一致。
 
-    ``flash.enabled`` 配置开关：置 true 时，普通 agent 对话请求被归到 ``flash``
+    ``flash.enabled`` 由配置加载层解析环境变量占位符；为 true 时，普通 agent
+    对话请求被归到 ``flash``
     mode（独立轻量 facade：单轮、裁 rail、无 task loop），配置即触发，无需前端发
     ``mode=flash``。注入由函数最前面的 guard 完成，只命中 agent 类请求（agent /
     plan / fast / 空，且 work_mode 非 code）；``code`` / ``team`` / 显式 flash 等
     其余路径不受影响，下面走原归一化逻辑。置 false（默认）时维持原 ``agent`` 行为。
+    OfficeClaw 前台入口传入 ``allow_flash_default=False``，仅接受显式选型。
 
     注：cron / heartbeat / proactive 等后台流水线若发 agent 类 mode，同样会被
     归到 flash——flash 保留 filesystem / bash / skill / 子代理能力，仅裁掉
@@ -151,12 +205,16 @@ def resolve_agent_request_mode(
     # 新增 agent.* 子模式自动覆盖，无需同步维护枚举（参见 PR6431 review 次要项）。
     # try/except 兜底：config 不可读时安全降级为不注入，保持原 agent 行为。
     _guard_head = mode_text.split(".", 1)[0] if mode_text else ""
-    if not mode_text or _guard_head in ("agent", "plan", "fast"):
+    is_agent_family = not mode_text or _guard_head in ("agent", "plan", "fast")
+    if allow_flash_default and is_agent_family:
         _wm = work_mode.strip().lower() if isinstance(work_mode, str) else ""
         if _wm != "code":
             try:
                 if bool((get_config() or {}).get("flash", {}).get("enabled", False)):
-                    return "flash", None, "flash"
+                    # Flash is an implementation choice.  Keep the business
+                    # canonical as normal agent so history / UI / plan checks
+                    # continue to see the same office mode.
+                    return "flash", None, "agent"
             except Exception:
                 logger.debug(
                     "[resolve_agent_request_mode] flash config read failed, not injecting",
@@ -210,17 +268,119 @@ def resolve_agent_request_mode(
     return mode, sub_mode, canonical_mode
 
 
+def _request_allows_plan_entry(request: AgentRequest, params: dict) -> bool:
+    """plan 类 mode token 是否允许原样生效。
+
+    三类放行：plan 能力渠道；本会话已处于 plan 中（非能力渠道显式进入后的
+    后续消息不带 ``plan_entry_source``，视同 plan 延续，与 Web/TUI 渠道白名单
+    语义对齐，评审 CR-8）；或带显式进入标记。
+    """
+    channel = str(request.channel_id or "").strip().lower()
+    if not channel:
+        # 无通道信息的内部 / 历史请求保持原行为；归一只针对已知的宿主渠道，
+        # 避免误伤 channel_id 缺省的 RPC 路径。
+        return True
+    if channel in PLAN_CAPABLE_CHANNELS:
+        return True
+    if request.session_id and request.session_id in _plan_active_sessions:
+        return True
+    if _uses_explicit_officeclaw_mode(request):
+        previous_mode = canonicalize_mode_text(params.get(_SESSION_PREVIOUS_MODE_KEY))
+        if previous_mode in _PLAN_MODE_TOKENS:
+            return True
+    source = str(params.get("plan_entry_source") or "").strip().lower()
+    return source in EXPLICIT_PLAN_ENTRY_SOURCES
+
+
+def _uses_explicit_officeclaw_mode(request: AgentRequest) -> bool:
+    """OfficeClaw 前台入口由 Relay 显式选型，后台与其它渠道保留旧策略。"""
+    if str(getattr(request, "channel_id", "") or "").strip().lower() != "officeclaw":
+        return False
+    if getattr(request, "req_method", None) not in _CODE_MODE_SYNC_METHODS | {ReqMethod.SESSION_CREATE}:
+        return False
+    metadata = getattr(request, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    source = str(metadata.get("source") or "").strip().lower()
+    return source not in {"cron", "heartbeat", "proactive"}
+
+
+def resolve_request_runtime_mode(
+    request: AgentRequest,
+    *,
+    work_mode: Any = None,
+) -> ResolvedMode:
+    """解析请求的运行模式（Web 组合 mode + work_mode；其余走历史解析）。
+
+    非 plan 能力渠道且未带显式进入标记的请求，plan 类 mode token 一律归一为
+    基础模式（``agent.plan`` → ``agent``），防止历史 token 误开 plan。
+    """
+    params = request.params if isinstance(request.params, dict) else {}
+    mode_text = canonicalize_mode_text(params.get("mode"))
+    explicit_officeclaw = _uses_explicit_officeclaw_mode(request)
+    if explicit_officeclaw and mode_text.startswith("flash."):
+        raise ValueError(f"unsupported OfficeClaw mode: {mode_text}")
+    if explicit_officeclaw and mode_text.startswith("code."):
+        # 审批恢复的具体 Code 模式不能被旧会话 work_mode=work 再次改成 Agent。
+        params = dict(params)
+        params.pop("work_mode", None)
+        work_mode = None
+    restoring_plan = False
+    if explicit_officeclaw and mode_text == "flash":
+        previous_mode = canonicalize_mode_text(params.get(_SESSION_PREVIOUS_MODE_KEY))
+        restoring_plan = previous_mode in _PLAN_MODE_TOKENS
+        if request.session_id in _plan_active_sessions:
+            restoring_plan = True
+        if restoring_plan:
+            mode_text = previous_mode if previous_mode in _PLAN_MODE_TOKENS else WEB_PLAN_AGENT
+            params = {**params, "mode": mode_text}
+    if mode_text in _PLAN_MODE_TOKENS and not restoring_plan:
+        if not _request_allows_plan_entry(request, params):
+            params = {**params, "mode": mode_text.split(".", 1)[0]}
+    legacy_resolver = partial(
+        resolve_agent_request_mode, allow_flash_default=not explicit_officeclaw,
+    )
+    resolved = resolve_request_mode(params, legacy_resolver, work_mode=work_mode)
+    # Web composition and new canonical modes bypass the legacy Flash guard.
+    # Apply the default only after resolving the profile, so Code, Team and
+    # explicit Plan requests retain their own routing and approval semantics.
+    if resolved.canonical_mode in {"agent", NEW_AGENT_WORK_NORMAL}:
+        default_mode, _, _ = resolve_agent_request_mode(
+            "agent", work_mode=resolved.work_mode,
+            allow_flash_default=not explicit_officeclaw,
+        )
+        if default_mode == "flash":
+            resolved = replace(
+                resolved,
+                manager_mode="flash",
+                sub_mode=None,
+                adapter_mode="flash",
+                adapter_source="flash_enabled_default",
+            )
+    return resolved
+
+
 def _apply_resolved_mode_to_request(
     request: AgentRequest,
     *,
     work_mode: Any = None,
 ) -> tuple[str, str | None]:
-    mode, sub_mode, canonical_mode = resolve_agent_request_mode(
-        request.params.get("mode", "agent"),
-        work_mode=work_mode,
-    )
-    request.params["mode"] = canonical_mode
-    return mode, sub_mode
+    resolved = resolve_request_runtime_mode(request, work_mode=work_mode)
+    request.resolved_adapter_mode = resolved.adapter_mode
+    request.resolved_adapter_source = resolved.adapter_source
+    if isinstance(request.params, dict):
+        request.params["mode"] = resolved.canonical_mode
+    try:
+        refresh_incoming_mode_binding(
+            resolved.canonical_mode,
+            resolved.adapter_mode,
+        )
+    except Exception as error:
+        logger.warning(
+            "[_apply_resolved_mode_to_request] refresh mode binding failed: %s",
+            error,
+            exc_info=True,
+        )
+    return resolved.manager_mode, resolved.sub_mode
 
 
 def _resolve_model(ctx, model_name: Optional[str] = None) -> Optional[Any]:
@@ -364,6 +524,7 @@ def _sync_chat_request_metadata(
     project_dir: str | None,
     mode: str,
     explicit_mode_provided: bool = False,
+    adapter_mode: str | None = None,
 ) -> str | None:
     """将本次 chat 请求的参数同步到会话元数据，返回生效的 project_dir。
 
@@ -441,6 +602,7 @@ def _sync_chat_request_metadata(
             explicit_mode_provided=explicit_mode_provided,
             explicit_model_provided=explicit_model_provided,
             work_mode=params.get("work_mode"),
+            adapter_mode=adapter_mode,
             sessions_root=_sessions_dir_for_request(request),
         )
     except (OSError, ValueError) as exc:
@@ -479,6 +641,8 @@ def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
     )
     if isinstance(request.params, dict):
         query = request.params.get("query") or ""
+        # 提醒只面向模型；把用户原文留一份，供会话历史与前端回显使用。
+        request.params[PLAN_REMINDER_ORIGINAL_QUERY_KEY] = query
         request.params["query"] = reminder + query
         logger.info(
             "[_ensure_code_mode_state] Injected plan mode activation reminder "

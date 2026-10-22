@@ -11,18 +11,25 @@ import shutil
 from typing import Any
 from weakref import WeakValueDictionary
 
+from openjiuwen.core.single_agent import create_agent_session
+
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    get_todo_generation_token,
+)
 from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.utils import get_agent_sessions_dir
+from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
+    _agent_workspace_dir_for_request,
     _background_session_kvc_tasks,
     _sessions_dir_for_request,
     _is_team_metadata_mode,
     _log_background_session_kvc_failure,
+    _plan_active_sessions,
     _plan_exited_sessions,
     send_error_wire,
 )
@@ -50,6 +57,46 @@ _LIMIT_MAX = 200
 _session_switch_locks: WeakValueDictionary[str, asyncio.Lock] = (
     WeakValueDictionary()
 )
+
+
+async def _todo_generation_token_for_history(
+    ctx: RequestContext,
+    session_id: str,
+) -> str | None:
+    """Restore the current todo generation from the session checkpoint."""
+    try:
+        resolved = await _resolve_rewind_agent(
+            ctx,
+            ctx.request.channel_id or "default",
+            session_id,
+        )
+        if resolved is None:
+            return None
+        deep_agent, _ = resolved
+        live_session = getattr(deep_agent, "_interaction_session", None)
+        if live_session is not None:
+            try:
+                live_session_id = str(live_session.get_session_id() or "").strip()
+            except Exception:  # noqa: BLE001 - tolerate session implementations
+                live_session_id = ""
+            if live_session_id == session_id:
+                token = get_todo_generation_token(live_session)
+                if token:
+                    return token
+
+        checkpoint_session = create_agent_session(
+            session_id=session_id,
+            card=deep_agent.card,
+        )
+        await checkpoint_session.pre_run(inputs=None)
+        return get_todo_generation_token(checkpoint_session)
+    except Exception:  # noqa: BLE001 - history restore must remain fail-open
+        logger.warning(
+            "[history.get] todo generation restore failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return None
 
 
 def _coerce_int(value: object, default: int) -> int:
@@ -81,13 +128,22 @@ async def _resolve_rewind_agent(
         user turn will read — updating them leaves the model still seeing
         rewound turns.
         """
-    agent = ctx.services.agent_manager.get_agent_nowait(
-        channel_id=channel_id or "default"
+    sid = str(session_id or "").strip()
+    agent = (
+        ctx.services.agent_manager.get_agent_for_session_nowait(
+            channel_id=channel_id or "default",
+            session_id=sid,
+        )
+        if sid
+        else None
     )
+    if agent is None:
+        agent = ctx.services.agent_manager.get_agent_nowait(
+            channel_id=channel_id or "default"
+        )
     if agent is None:
         return None
     deep_agent = None
-    sid = str(session_id or "").strip()
     if sid:
         adapter = ctx.services.resolve_adapter(agent)
         if adapter is not None:
@@ -394,14 +450,14 @@ async def handle_session_delete(ctx: RequestContext) -> None:
             target, sessions_root=sessions_root
         )
         if session_dir is not None:
-            # 合法的永久删除请求首先回收进程内授权。即使会话目录已被外部删除
+            # 合法的永久删除请求首先回收会话授权文件。即使会话目录已被外部删除
             # 或随后文件删除失败，也不能让 ACTIVE/PENDING Grant 继续存活。
             try:
                 from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.runtime import (
                     clear_deleted_session,
                 )
 
-                clear_deleted_session(target)
+                clear_deleted_session(target, sessions_root=sessions_root)
             except Exception:  # noqa: BLE001 — Grant 回收失败不掩盖原删除结果
                 logger.warning(
                     "[AgentWebSocketServer] session.delete skill grant cleanup failed: "
@@ -485,6 +541,7 @@ async def handle_session_delete(ctx: RequestContext) -> None:
                 else:
                     shutil.rmtree(session_dir)
                     _plan_exited_sessions.discard(target)
+                    _plan_active_sessions.discard(target)
                     remove_session_metadata_cache(
                         target,
                         sessions_root=sessions_root,
@@ -571,6 +628,14 @@ async def handle_session_rewind_full(ctx: RequestContext, restore_files: bool = 
             )
         else:
             rewind_result = rewind_session(session_id=target_sid, turn_index=turn_index)
+
+        # rewind 视同退出 plan（评审 CR-9）：rewind_session_context 会清零
+        # checkpointer 的 plan_mode（plan_slug 归 None），内存标记若保留，
+        # stale plan token 会被 CR-8 的延续放行命中并拉回 plan。两道标记
+        # 同步翻转，与 _ensure_code_mode_state 的同步退出路径同款；显式
+        # 进入（/plan、开关）会先 discard 退出标记，不受影响。
+        _plan_active_sessions.discard(target_sid)
+        _plan_exited_sessions.add(target_sid)
 
         # Step 3: Truncate context_engine in-place + persist to checkpointer.
         # rewind_session_context reads the already-truncated history.json and
@@ -765,6 +830,11 @@ async def handle_session_rewind_context(ctx: RequestContext) -> None:
         # correct truncated state (the new implementation rebuilds context
         # from history.json on disk).
         rewind_result = rewind_session(session_id=target_sid, turn_index=turn_index)
+        # rewind 视同退出 plan（评审 CR-9），理由同 session.rewind 主路径：
+        # rewind_session_context 清零 plan_mode 后，内存标记若保留会让
+        # stale plan token 经延续放行拉回 plan。
+        _plan_active_sessions.discard(target_sid)
+        _plan_exited_sessions.add(target_sid)
         context_ok = await rewind_session_context(
             deep_agent=deep_agent,
             session_id=target_sid,
@@ -888,6 +958,44 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
                 )
                 return
 
+    next_sequence = len(messages) if isinstance(messages, list) else 0
+    if page_idx == 1 and isinstance(session_id, str) and session_id.strip():
+        normalized_session_id = session_id.strip()
+        generation_token = await _todo_generation_token_for_history(
+            ctx,
+            normalized_session_id,
+        )
+        todo_root = _agent_workspace_dir_for_request(request) / "todo"
+        todos = load_todo_snapshot_for_frontend(
+            normalized_session_id,
+            todo_root=todo_root,
+            generation_token=generation_token,
+        )
+        todo_chunk = AgentResponseChunk(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload={
+                "event_type": "todo.updated",
+                "todos": todos,
+                "session_id": session_id.strip(),
+            },
+            is_complete=False,
+        )
+        wire_todo = encode_agent_chunk_for_wire(
+            todo_chunk,
+            response_id=request.request_id,
+            sequence=next_sequence,
+        )
+        if not await ctx.sink.send_wire(wire_todo):
+            logger.warning(
+                "[history.get] todo snapshot send failed: request_id=%s "
+                "session_id=%s todo_count=%s",
+                request.request_id,
+                session_id.strip(),
+                len(todos),
+            )
+        next_sequence += 1
+
     done_chunk = AgentResponseChunk(
         request_id=request.request_id,
         channel_id=request.channel_id,
@@ -900,10 +1008,9 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
         },
         is_complete=True,
     )
-    done_seq = len(messages) if isinstance(messages, list) else 0
     wire_done = encode_agent_chunk_for_wire(
         done_chunk,
         response_id=request.request_id,
-        sequence=done_seq,
+        sequence=next_sequence,
     )
     await ctx.sink.send_wire(wire_done)

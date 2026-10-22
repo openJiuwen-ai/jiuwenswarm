@@ -12,7 +12,7 @@ import time
 import uuid
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from openjiuwen.core.foundation.tool import tool
 
@@ -24,12 +24,17 @@ from jiuwenswarm.common.schema.ask_user import (
 )
 from jiuwenswarm.perf.context import DeepResearchReportType
 
-from .stream_router import _format_outline_card_markdown
+from .stream_router import _format_outline_card_markdown, stage_for_resume_node
 from .tools import (
     _call_deepresearch_stream_impl,
+    _deepresearch_stage_hint_ctx,
     _get_brief_upgrade_record,
+    _get_cached_outline_json,
     _get_route,
+    _probe_resumable_checkpoint,
     _report_title_from_file_name,
+    _scan_resumable_checkpoint_by_query,
+    salvage_deepresearch_report,
 )
 from .usage import normalize_workflow_llm_token_usage
 
@@ -37,7 +42,9 @@ logger = logging.getLogger(__name__)
 
 EXECUTION_SCHEMA = "openjiuwen.deepresearch.execute.v1"
 _STATE_SCHEMA_VERSION = 1
-_IN_FLIGHT_PHASES = frozenset({"starting", "resuming_feedback", "resuming_outline"})
+_IN_FLIGHT_PHASES = frozenset(
+    {"starting", "resuming_feedback", "resuming_outline", "resuming_stopped"}
+)
 _QUESTION_NUMBER_PREFIX = re.compile(r"^\s*\d+[.、)]\s*")
 _OUTLINE_SECTION = re.compile(r"^\s*###\s+P\d+\s*:\s*(.+?)\s*$", re.MULTILINE)
 _JSON_FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
@@ -717,6 +724,30 @@ def _validated_brief_report(value: object) -> dict[str, Any]:
     }
 
 
+def _outline_review_interaction(outline_text: str) -> dict[str, Any]:
+    """The outline review ask-user card shared by all entry paths."""
+    return {
+        "query": "请审阅生成的研究报告大纲",
+        "return_json": True,
+        "questions": [
+            {
+                "header": "研究报告大纲审阅",
+                "question": "请审阅生成的研究报告大纲，确认后将继续执行深度研究。",
+                "options": [
+                    {"label": "确认大纲，继续研究"},
+                    {"label": "需要修改"},
+                ],
+                "preview": {
+                    "title": "研究报告大纲",
+                    "text": outline_text,
+                    "format": "markdown",
+                    "editable": True,
+                },
+            }
+        ],
+    }
+
+
 def _completion_content(
     state: Mapping[str, Any],
     html_style_status: Any = None,
@@ -803,6 +834,41 @@ def _terminal_error(
         error_code=error_code,
         content=content,
         **diagnostics,
+    )
+
+
+def _stopped_result(
+    context: DeepResearchExecutionContext,
+    state: Mapping[str, Any],
+    conversation_id: str,
+) -> dict[str, Any]:
+    """优雅停止终态：phase 回落 new 并保留 conversation_id。
+
+    下一次调用可凭 probe/扫库认领停止快照直通 resume node='stopped'，
+    已完成节点不重跑。修复11：文案禁止模型在用户停止后自主重启
+    （仅用户明确要求继续时才重调，凭原主题 query 即可被修复9' 的
+    扫库认领接住）；content 不含 conversation_id（与 rail 改写口径
+    对齐——cid 是模型直通重启的最短路径，rail 挂载与否不应影响
+    该防线；认领与恢复靠 query + 归属守卫，cid 的功能载体是
+    state 而非 content 文本）。恢复入口给双指引：execute 优先，
+    其不可见时（停止后新请求 skill 激活态重置，execute 被
+    ProgressiveToolRail 过滤）回落 deepresearch_stream action='start'
+    ——stream 侧已同口径扫库认领（2026-10-15 19:52 回归实证：单
+    execute 指引是死信，模型绕行 stream 全新起跑丢快照）。
+    """
+    state = _persist(context, state, "new", conversation_id=conversation_id)
+    return _result(
+        "stopped",
+        state,
+        content=(
+            "DeepResearch 任务已被用户停止，执行进度已保存。"
+            "请勿代替用户决定继续，也不要自动重新调用本工具；仅当用户"
+            "明确要求继续该研究时才恢复执行：优先再次调用 "
+            "deepresearch_execute（传入原研究主题即可自动认领停止快照），"
+            "若该工具当前不可见则调用 deepresearch_stream（action='start'，"
+            "传入原研究主题，同样会自动认领）。届时将从停止处恢复，已完成"
+            "阶段不会重跑。"
+        ),
     )
 
 
@@ -896,26 +962,7 @@ async def _handle_outcome(
             return _result(
                 "interaction",
                 state,
-                interaction={
-                    "query": "请审阅生成的研究报告大纲",
-                    "return_json": True,
-                    "questions": [
-                        {
-                            "header": "研究报告大纲审阅",
-                            "question": "请审阅生成的研究报告大纲，确认后将继续执行深度研究。",
-                            "options": [
-                                {"label": "确认大纲，继续研究"},
-                                {"label": "需要修改"},
-                            ],
-                            "preview": {
-                                "title": "研究报告大纲",
-                                "text": outline_text,
-                                "format": "markdown",
-                                "editable": True,
-                            },
-                        }
-                    ],
-                },
+                interaction=_outline_review_interaction(outline_text),
             )
         return _terminal_error(
             context,
@@ -974,9 +1021,17 @@ async def _handle_outcome(
         if brief_report:
             result_fields["brief_report"] = brief_report
         return _result("completed", state, **result_fields)
-    if status == "cancelled":
-        state = _persist(context, state, "cancelled", conversation_id=conversation_id)
-        return _result("cancelled", state, content="DeepResearch 任务已取消。")
+    if status in {"cancelled", "stopped"}:
+        # 两种来源、同一处置——均按优雅停止口径收尾（phase 回落 new 并保留
+        # conversation_id，下一次调用可凭 probe 认领停止快照直通 resume
+        # node='stopped'，已完成节点不重跑）：
+        # - stopped：子进程优雅停止终态，checkpoint 已落盘；
+        # - cancelled：取消信号晚于子进程优雅退出的竞态变体（防御分支，
+        #   现网 runner 已不下发 cancelled 终态帧），同样意味着 checkpoint
+        #   已落盘，按可续跑处理可消除竞速路径产生歧义 cancelled 死终态的
+        #   源头。此后存续的 cancelled 终态只剩用户在交互卡上显式放弃一种
+        #   含义（走 phase 路径，不经过本分支）。
+        return _stopped_result(context, state, conversation_id)
     error_code = str(outcome.get("error_code") or "deepresearch_failed")
     error = str(outcome.get("error") or "DeepResearch 执行失败。")
     diagnostics: dict[str, Any] = {}
@@ -995,6 +1050,124 @@ async def _handle_outcome(
     )
 
 
+async def _resume_stopped_conversation(
+    context: DeepResearchExecutionContext,
+    state: dict[str, Any],
+    claimed_cid: str,
+    probe_node: str = "",
+) -> dict[str, Any]:
+    """认领优雅停止快照后直通续跑：不弹任何交互卡。
+
+    旧会话被用户停止时 checkpoint 已保留执行进度，resume node='stopped'
+    从被停止的节点继续，已完成的节点不重跑。probe_node 为被停止节点
+    (停止快照的 pending_node),据此推导前端进度条起始阶段,避免续跑时
+    进度列表回退到第一步误导用户以为从头重跑。
+    """
+    state = _persist(context, state, "resuming_stopped", conversation_id=claimed_cid)
+    stage_hint = stage_for_resume_node(probe_node) if probe_node else None
+    token = _deepresearch_stage_hint_ctx.set(stage_hint)
+    try:
+        outcome = await _call_sdk(
+            context,
+            action="resume",
+            conversation_id=claimed_cid,
+            node="stopped",
+            file_name=str(state.get("file_name") or ""),
+            report_type=state.get("requested_report_type"),
+        )
+    finally:
+        _deepresearch_stage_hint_ctx.reset(token)
+    return await _handle_outcome(
+        context,
+        state,
+        outcome,
+        action="resume",
+        node="stopped",
+    )
+
+
+async def _guard_user_stop(
+    context: DeepResearchExecutionContext,
+    state: Mapping[str, Any],
+    awaitable: Awaitable[Any],
+) -> Any:
+    """工具级用户停止守卫（修复点1b）。
+
+    外部 task.cancel() 在工具 await 点注入 CancelledError 时，转译为
+    stopped 业务终态（phase 回落 new 并保留 conversation_id）：历史中
+    呈现可续跑口径并保留 checkpoint 认领能力，而不是落入 ability_manager
+    的通用 [Interrupted] 分支（拿不到 conversation_id，模型无从引导用户
+    续跑）。CancelledError 被吞掉后 ReAct 循环正常收敛；会话级取消仍由
+    react_agent 的外部取消处理器兜底。
+    """
+    try:
+        return await awaitable
+    except asyncio.CancelledError:
+        conversation_id = str(state.get("conversation_id") or "")
+        logger.info(
+            "[deepresearch_execute] cancelled by user, translating to "
+            "stopped tool_call_id=%s conversation_id=%s",
+            context.tool_call_id,
+            conversation_id,
+        )
+        return _stopped_result(context, state, conversation_id)
+
+
+def _query_matches_stopped_claim(query: str, state: Mapping[str, Any]) -> bool:
+    """停止快照认领守卫：入参 query 为空或与原研究主题一致才续跑。
+
+    用户已换研究主题时不认领旧停止会话，由调用方走全新会话。
+    """
+    incoming = str(query or "").strip()
+    if not incoming:
+        return True
+    original = str(state.get("query") or "").strip()
+    if not original:
+        return True
+    return incoming == original
+
+
+def _is_claimable_stopped_probe(
+    probe: Mapping[str, Any] | None,
+    query: str,
+    state: Mapping[str, Any],
+) -> bool:
+    """停止快照可认领判定：probe 命中、处于 stopped、且研究主题未变。
+
+    in-flight 与 error 两个相位入口共用（G.CTL.03 收敛四条件表达式）。
+    """
+    return bool(
+        probe
+        and probe.get("stopped")
+        and _query_matches_stopped_claim(query, state)
+    )
+
+
+async def _run_sdk_step(
+    context: DeepResearchExecutionContext,
+    state: dict[str, Any],
+    *,
+    action: str,
+    node: str = "",
+    **sdk_kwargs: Any,
+) -> dict[str, Any]:
+    """SDK 调用 + 结果处理的组合协程（修复点3.1：单守卫结构）。
+
+    调用方只在外层包一层 _guard_user_stop：取消无论落在 _call_sdk 窗口
+    还是 _handle_outcome 内部的选项生成段（唯一 await 点），都由同一
+    守卫转译为 stopped 终态，转译结果直接作为工具返回值返回。旧的双
+    守卫串联结构中，守卫#1 转译出的 stopped dict 不带 status 字段，
+    会被守卫#2 内的 _handle_outcome 误判为无效 outcome 落 error 相位，
+    与同一 revision 上的 new 写入形成双写竞争（生产日志同毫秒出现
+    phase=new rev=4 与 phase=error rev=4 双写的根因）。
+    """
+    if node:
+        sdk_kwargs = dict(sdk_kwargs)
+        sdk_kwargs["node"] = node
+    outcome = await _call_sdk(context, action=action, **sdk_kwargs)
+    return await _handle_outcome(context, state, outcome, action=action, node=node)
+
+
 @tool(
     name="deepresearch_execute",
     description=(
@@ -1005,7 +1178,18 @@ async def _handle_outcome(
         "single-page concise reports; infer from the user's original wording. "
         "upgrade_from_brief: set true only when the user confirms expanding the "
         "just-delivered brief report in the same session into a full professional "
-        "report; it reuses the cached brief outline and skips intent recognition."
+        "report; it reuses the cached brief outline and skips intent recognition. "
+        "Optional conversation_id claims a previous DeepResearch conversation "
+        "that was interrupted while waiting for outline review: when its "
+        "generated outline is still cached, the outline review card is shown "
+        "immediately and the original conversation is resumed after the user "
+        "answers, instead of restarting the research from scratch. It also "
+        "claims a conversation the user gracefully stopped: the run resumes "
+        "from where it stopped without re-executing completed stages. After "
+        "a user stop, never restart or resume the research on your own "
+        "initiative; only call this tool again when the user explicitly "
+        "asks to continue that stopped research, passing the original "
+        "research query so the stopped snapshot is claimed automatically."
     ),
 )
 async def deepresearch_execute(
@@ -1013,6 +1197,7 @@ async def deepresearch_execute(
     file_name: str = "",
     report_type: DeepResearchReportType | None = None,
     upgrade_from_brief: bool = False,
+    conversation_id: str = "",
 ) -> dict[str, Any]:
     """Run the interactive workflow without Main Agent resume choreography."""
     context = _execution_context.get()
@@ -1031,7 +1216,10 @@ async def deepresearch_execute(
             "phase": "new",
             "query": query.strip(),
             "file_name": file_name.strip(),
-            "conversation_id": str(uuid.uuid4()),
+            # 传入 conversation_id 表示认领一个此前中断的旧会话（研究问题
+            # 确认或大纲确认阶段）；认领失败（checkpointer.db 与缓存均无可
+            # 恢复状态）时下面 start 分支会换成全新 id 重跑。
+            "conversation_id": conversation_id.strip() or str(uuid.uuid4()),
             # report_type 优先取 Main Agent 工具入参（从用户原话识别）；未传入时
             # 回退执行上下文（params 通道），最终兜底 brief。归一后写入 state，
             # resume 路径读此值不重新识别。deepresearch_stream:1918 据此写
@@ -1049,6 +1237,35 @@ async def deepresearch_execute(
         )
     phase = str(state.get("phase") or "new")
     if phase in _IN_FLIGHT_PHASES:
+        # 用户手动停止会使上次执行没有终态返回（CancelledError 直接冒泡，
+        # state 停留在 in-flight 相位）。checkpointer 存在优雅停止快照且本次
+        # 仍是同一研究主题时，认领直通续跑而不是报 execution_uncertain 拒绝。
+        in_flight_cid = str(state.get("conversation_id") or "").strip()
+        in_flight_probe = (
+            _probe_resumable_checkpoint(in_flight_cid)
+            if in_flight_cid
+            else None
+        )
+        if in_flight_cid and _is_claimable_stopped_probe(
+            in_flight_probe, query, state
+        ):
+            logger.info(
+                "[deepresearch_execute] claimed stopped conversation from "
+                "in-flight phase tool_call_id=%s phase=%s conversation_id=%s",
+                context.tool_call_id,
+                phase,
+                in_flight_cid,
+            )
+            return await _guard_user_stop(
+                context,
+                state,
+                _resume_stopped_conversation(
+                    context,
+                    state,
+                    in_flight_cid,
+                    probe_node=str(in_flight_probe.get("node") or ""),
+                ),
+            )
         return _terminal_error(
             context,
             state,
@@ -1058,84 +1275,398 @@ async def deepresearch_execute(
                 "本次未再次调用研究引擎。"
             ),
         )
-    if phase in {"completed", "cancelled", "error"}:
-        kind = phase if phase != "error" else "error"
-        return _result(kind, state, content="DeepResearch 任务已经结束。")
+    if phase in {"completed", "cancelled"}:
+        return _result(phase, state, content="DeepResearch 任务已经结束。")
+    if phase == "error":
+        # 修复点3.2：error 相位 claim-or-fresh。3.1 修复前取消转译的
+        # stopped 写入（phase=new）会被同一 revision 上的 error 覆盖写
+        # 吞掉，error 相位下可能实际存有可恢复的停止快照。带
+        # conversation_id 先 probe：有停止快照且研究主题未变则认领直通
+        # 续跑（已完成节点不重跑）；无快照才判死。completed/cancelled
+        # 保持死终态不认领。
+        error_cid = str(state.get("conversation_id") or "").strip()
+        error_probe = (
+            _probe_resumable_checkpoint(error_cid) if error_cid else None
+        )
+        if error_cid and _is_claimable_stopped_probe(error_probe, query, state):
+            logger.info(
+                "[deepresearch_execute] claimed stopped conversation from "
+                "error phase tool_call_id=%s conversation_id=%s",
+                context.tool_call_id,
+                error_cid,
+            )
+            return await _guard_user_stop(
+                context,
+                state,
+                _resume_stopped_conversation(
+                    context,
+                    state,
+                    error_cid,
+                    probe_node=str(error_probe.get("node") or ""),
+                ),
+            )
+        # 修复7：error 相位死路（无可恢复快照）同样先尝试止损交付已落盘
+        # 的报告（同主题追问场景），失败才判死。
+        if error_cid and _query_matches_stopped_claim(query, state):
+            salvage = await salvage_deepresearch_report(
+                conversation_id=error_cid,
+                file_name=str(state.get("file_name") or file_name),
+            )
+            if salvage is not None:
+                state = _persist(
+                    context, state, "completed", conversation_id=error_cid
+                )
+                logger.info(
+                    "[deepresearch_execute] salvaged completed report from "
+                    "error phase tool_call_id=%s conversation_id=%s",
+                    context.tool_call_id,
+                    error_cid,
+                )
+                return _result(
+                    "completed",
+                    state,
+                    content=_completion_content(
+                        state, salvage.get("html_style_status")
+                    ),
+                )
+        return _result(
+            "error",
+            state,
+            content="DeepResearch 任务已经结束，请重新发起。",
+        )
 
     if phase == "new":
-        # 升级来源统一解析（strict 结构化上下文与手动 upgrade_from_brief 共用）：
-        # query、文件名、metadata 必须出自同一份来源记录，避免模型自选 query
-        # 与缓存注入的 metadata 混源；结构化动作强制 professional。
-        followup = context.deepresearch_followup
-        upgrade_record: dict[str, Any] | None = None
-        if followup is not None or upgrade_from_brief:
-            upgrade_record = _get_brief_upgrade_record(_get_route())
-        if followup is not None:
-            # strict：来源必须与该会话最新登记的可用记录完全一致；不一致明确
-            # 失败，不静默降级为普通 professional（承诺复用大纲就必须复用）。
-            source_report_id = str(followup.get("source_report_id") or "").strip()
+        # A new brief upgrade must not claim a stopped run with the same topic.
+        # Existing upgrade workflows still use the normal resume branches below.
+        if context.deepresearch_followup is not None or upgrade_from_brief:
+            # 升级来源统一解析（strict 结构化上下文与手动 upgrade_from_brief 共用）：
+            # query、文件名、metadata 必须出自同一份来源记录，避免模型自选 query
+            # 与缓存注入的 metadata 混源；结构化动作强制 professional。
+            followup = context.deepresearch_followup
+            upgrade_record: dict[str, Any] | None = None
+            if followup is not None or upgrade_from_brief:
+                upgrade_record = _get_brief_upgrade_record(_get_route())
+            if followup is not None:
+                # strict：来源必须与该会话最新登记的可用记录完全一致；不一致明确
+                # 失败，不静默降级为普通 professional（承诺复用大纲就必须复用）。
+                source_report_id = str(followup.get("source_report_id") or "").strip()
+                if (
+                    upgrade_record is None
+                    or upgrade_record.get("upgrade_available") is not True
+                    or not str(upgrade_record.get("original_query") or "").strip()
+                ):
+                    return _terminal_error(
+                        context,
+                        state,
+                        error_code="brief_upgrade_unavailable",
+                        content=(
+                            "最新精简报告的升级上下文不完整或不可用，"
+                            "请重新生成精简报告后再发起升级。"
+                        ),
+                    )
+                if str(upgrade_record.get("report_id") or "") != source_report_id:
+                    return _terminal_error(
+                        context,
+                        state,
+                        error_code="brief_upgrade_target_changed",
+                        content=(
+                            "最新精简报告已变化，本次升级未执行；"
+                            "请刷新后基于最新报告重新发起。"
+                        ),
+                    )
             if (
-                upgrade_record is None
-                or upgrade_record.get("upgrade_available") is not True
-                or not str(upgrade_record.get("original_query") or "").strip()
+                upgrade_record is not None
+                and upgrade_record.get("upgrade_available") is True
+                and str(upgrade_record.get("original_query") or "").strip()
             ):
-                return _terminal_error(
+                # 快照同源覆盖（strict 与手动共用）：升级来源一旦在启动时确定，
+                # 本次任务持续使用同一份快照；附加要求由专业版大纲审阅编辑承载。
+                state = {
+                    **state,
+                    "query": str(upgrade_record["original_query"]),
+                    "file_name": _upgrade_file_name(
+                        str(upgrade_record.get("original_file_name") or "")
+                    ),
+                    "requested_report_type": "professional",
+                    "source_brief_report_id": str(
+                        upgrade_record.get("report_id") or ""
+                    ),
+                }
+                upgrade_from_brief = True
+            state = _persist(
+                context, state, "starting", conversation_id=str(uuid.uuid4())
+            )
+            upgrade_metadata: dict[str, Any] | None = None
+            if upgrade_from_brief and upgrade_record is not None:
+                candidate = upgrade_record.get("metadata")
+                upgrade_metadata = candidate if isinstance(candidate, dict) else None
+            return await _guard_user_stop(
+                context,
+                state,
+                _run_sdk_step(
                     context,
                     state,
-                    error_code="brief_upgrade_unavailable",
-                    content=(
-                        "最新精简报告的升级上下文不完整或不可用，"
-                        "请重新生成精简报告后再发起升级。"
-                    ),
-                )
-            if str(upgrade_record.get("report_id") or "") != source_report_id:
-                return _terminal_error(
-                    context,
-                    state,
-                    error_code="brief_upgrade_target_changed",
-                    content=(
-                        "最新精简报告已变化，本次升级未执行；"
-                        "请刷新后基于最新报告重新发起。"
-                    ),
-                )
-        if (
-            upgrade_record is not None
-            and upgrade_record.get("upgrade_available") is True
-            and str(upgrade_record.get("original_query") or "").strip()
-        ):
-            # 快照同源覆盖（strict 与手动共用）：升级来源一旦在启动时确定，
-            # 本次任务持续使用同一份快照；附加要求由专业版大纲审阅编辑承载。
-            state = {
-                **state,
-                "query": str(upgrade_record["original_query"]),
-                "file_name": _upgrade_file_name(
-                    str(upgrade_record.get("original_file_name") or "")
+                    action="start",
+                    query=str(state.get("query") or query),
+                    conversation_id=str(state.get("conversation_id") or ""),
+                    file_name=str(state.get("file_name") or file_name),
+                    report_type=state.get("requested_report_type"),
+                    upgrade_from_brief=upgrade_from_brief,
+                    _upgrade_brief_metadata=upgrade_metadata,
                 ),
-                "requested_report_type": "professional",
-                "source_brief_report_id": str(
-                    upgrade_record.get("report_id") or ""
-                ),
-            }
-            upgrade_from_brief = True
-        state = _persist(context, state, "starting")
-        upgrade_metadata: dict[str, Any] | None = None
-        if upgrade_from_brief and upgrade_record is not None:
-            candidate = upgrade_record.get("metadata")
-            upgrade_metadata = candidate if isinstance(candidate, dict) else None
-        outcome = await _call_sdk(
-            context,
-            action="start",
-            query=str(state.get("query") or query),
-            conversation_id=str(state.get("conversation_id") or ""),
-            file_name=str(state.get("file_name") or file_name),
-            report_type=state.get("requested_report_type"),
-            # upgrade_from_brief 不入 state：start 一次性语义，仅本次调用在
-            # tools.py 注入缓存大纲；resume 路径不透传（SDK checkpoint 续跑）。
-            upgrade_from_brief=upgrade_from_brief,
-            # 已校验的同源快照经私有通道下传，tools.py 注入时不再读缓存。
-            _upgrade_brief_metadata=upgrade_metadata,
+            )
+        claimed_cid = str(state.get("conversation_id") or "").strip()
+        probe = (
+            _probe_resumable_checkpoint(claimed_cid) if claimed_cid else None
         )
-        return await _handle_outcome(context, state, outcome, action="start")
+        if probe is None:
+            # 修复9'：LLM 传参 conversation_id 不可信（实机事故：两次幻觉
+            # id 均在认领入口失效，probe 落空后直接全新起跑，丢弃已停止
+            # 会话的全部研究成果）。cid 落空时不放弃认领——按本次研究
+            # 主题扫库兜底：以快照 search_context.original_query 与本次
+            # query 完全一致为认领条件（换主题不认领旧会话），rowid 倒序
+            # 最新会话优先。命中后以扫出的 cid 重走下方 probe 认领分支
+            # （含 stopped 直通续跑与交互卡重弹），认领仍失败时下方
+            # salvage 止损也改用扫出的 cid 定位报告。
+            scan_query = str(query or state.get("query") or "").strip()
+            # 同步 SQLite 扫库经 to_thread 卸载，避免阻塞事件循环
+            # （contextvar 经 copy_context 随线程传播，扫库内 _get_route
+            # 归属校验线程内安全）。
+            scan = (
+                await asyncio.to_thread(
+                    _scan_resumable_checkpoint_by_query, scan_query
+                )
+                if scan_query
+                else None
+            )
+            if scan is not None:
+                scanned_cid = str(scan.get("conversation_id") or "")
+                if scanned_cid and scanned_cid != claimed_cid:
+                    claimed_cid = scanned_cid
+                    probe = {
+                        key: value
+                        for key, value in scan.items()
+                        if key != "conversation_id"
+                    }
+                    incoming_query = str(query or "").strip()
+                    if incoming_query:
+                        # 扫库已确认快照主题与本次 query 完全一致；同步
+                        # 刷新 state.query，使下方认领分支的主题守卫
+                        # （_query_matches_stopped_claim）通过。
+                        state = dict(state, query=incoming_query)
+                    logger.info(
+                        "[deepresearch_execute] claimed conversation by "
+                        "query scan (llm conversation_id untrusted) "
+                        "tool_call_id=%s conversation_id=%s node=%s "
+                        "stopped=%s",
+                        context.tool_call_id,
+                        claimed_cid,
+                        probe.get("node"),
+                        bool(probe.get("stopped")),
+                    )
+        probe_node = str(probe.get("node") or "") if probe else ""
+        stopped_probe = bool(probe and probe.get("stopped"))
+        if (
+            claimed_cid
+            and stopped_probe
+            and _query_matches_stopped_claim(query, state)
+        ):
+            # 认领成功：旧会话被用户优雅停止（checkpoint 保留进度），不弹
+            # 交互卡直通 resume node='stopped'，从被停止节点继续，已完成
+            # 节点不重跑。
+            logger.info(
+                "[deepresearch_execute] claimed stopped conversation "
+                "tool_call_id=%s conversation_id=%s node=%s",
+                context.tool_call_id,
+                claimed_cid,
+                probe_node,
+            )
+            return await _guard_user_stop(
+                context,
+                state,
+                _resume_stopped_conversation(
+                    context,
+                    state,
+                    claimed_cid,
+                    probe_node=probe_node,
+                ),
+            )
+        if (
+            claimed_cid
+            and not stopped_probe
+            and probe_node == "feedback_handler"
+        ):
+            # 认领成功：旧会话停在研究问题确认阶段（含跨进程重启），从
+            # checkpointer.db 恢复问题清单出反馈卡；用户答复后从原会话 resume。
+            questions = _split_questions(probe.get("questions"))
+            if questions:
+                options = await _guard_user_stop(
+                    context,
+                    state,
+                    _generate_options(
+                        context,
+                        str(state.get("query") or ""),
+                        questions,
+                    ),
+                )
+                cards = [
+                    {
+                        "header": "研究方向反馈",
+                        "question": question,
+                        "options": options[index],
+                    }
+                    for index, question in enumerate(questions)
+                ]
+                state = _persist(
+                    context,
+                    state,
+                    "wait_feedback",
+                    conversation_id=claimed_cid,
+                    questions=questions,
+                )
+                logger.info(
+                    "[deepresearch_execute] claimed interrupted conversation "
+                    "tool_call_id=%s conversation_id=%s node=feedback_handler",
+                    context.tool_call_id,
+                    claimed_cid,
+                )
+                return _result(
+                    "interaction",
+                    state,
+                    interaction={
+                        "query": "请回答以下研究主题澄清问题",
+                        "return_json": True,
+                        "questions": cards,
+                    },
+                )
+        claimed_outline = (
+            probe.get("outline_json")
+            if probe_node == "outline_interaction"
+            and not stopped_probe
+            else None
+        )
+        claim_source = "db" if isinstance(claimed_outline, dict) else ""
+        if not isinstance(claimed_outline, dict):
+            # 修复5：缓存兜底仅在 DB 确认存在 outline_interaction 可恢复中断
+            # 时启用（probe 命中但快照缺 outline_json 的场景）。probe 未命中
+            # （会话已正常完结被清理/快照损坏/不存在）时一律不信内存缓存：
+            # 事故中 probe=None 却用残留缓存大纲弹卡，用户确认后 resume 无
+            # 快照可恢复而全新起跑，6 秒崩溃并删除该会话全部数据。
+            if (
+                claimed_cid
+                and probe_node == "outline_interaction"
+                and not stopped_probe
+            ):
+                cached_outline = _get_cached_outline_json(
+                    _get_route(), claimed_cid
+                )
+                if isinstance(cached_outline, dict):
+                    claimed_outline = cached_outline
+                    claim_source = "cache"
+            else:
+                # 停止快照未被认领（含换主题）时,缓存兜底同样不得复用旧会话
+                # 大纲,否则会把旧主题的大纲弹给新研究。
+                claimed_outline = {}
+        claimed_sections = claimed_outline.get("sections")
+        if claimed_cid and isinstance(claimed_sections, list) and claimed_sections:
+            # 认领成功：旧会话已生成大纲且停在大纲确认（DB 快照或其缓存
+            # 兜底），复用大纲出审阅卡片，跳过 start 重跑；用户答复后从原
+            # 会话 resume。
+            outline_text = (
+                _format_outline_card_markdown(claimed_outline)
+                or "大纲已生成，请确认是否继续研究。"
+            )
+            state = _persist(
+                context,
+                state,
+                "wait_outline",
+                conversation_id=claimed_cid,
+                outline_presented=True,
+                outline_sections=_outline_sections(outline_text),
+            )
+            logger.info(
+                "[deepresearch_execute] claimed interrupted conversation "
+                "tool_call_id=%s conversation_id=%s node=outline_interaction "
+                "source=%s",
+                context.tool_call_id,
+                claimed_cid,
+                claim_source or "db",
+            )
+            return _result(
+                "interaction",
+                state,
+                interaction=_outline_review_interaction(outline_text),
+            )
+        if claimed_cid:
+            # 修复7：认领失败先止损——报告若已随此前运行落盘（收尾阶段被
+            # 停/交付前崩溃后快照已清理），且用户仍在追问同一主题，直接
+            # 交付已有报告，不重跑研究。
+            if _query_matches_stopped_claim(query, state):
+                salvage = await salvage_deepresearch_report(
+                    conversation_id=claimed_cid,
+                    file_name=str(state.get("file_name") or file_name),
+                )
+                if salvage is not None:
+                    state = _persist(
+                        context, state, "completed", conversation_id=claimed_cid
+                    )
+                    logger.info(
+                        "[deepresearch_execute] salvaged completed report "
+                        "tool_call_id=%s conversation_id=%s",
+                        context.tool_call_id,
+                        claimed_cid,
+                    )
+                    return _result(
+                        "completed",
+                        state,
+                        content=_completion_content(
+                            state, salvage.get("html_style_status")
+                        ),
+                    )
+            # 认领失败：checkpointer.db 与内存缓存均无该会话可恢复的中断状态
+            # （已完结/已清理/不存在），或旧会话为停止快照但用户已更换主题；
+            # 绝不复用旧会话的 id 发起新跑，换成全新 id 从头执行。换主题时
+            # 同步刷新 state.query，确保新跑研究的是新主题而非旧主题。
+            if stopped_probe and not _query_matches_stopped_claim(query, state):
+                logger.info(
+                    "[deepresearch_execute] stopped snapshot not claimed: "
+                    "query changed, starting fresh conversation "
+                    "tool_call_id=%s conversation_id=%s",
+                    context.tool_call_id,
+                    claimed_cid,
+                )
+            else:
+                logger.warning(
+                    "[deepresearch_execute] claim failed, starting fresh "
+                    "conversation: no resumable checkpoint in checkpointer.db "
+                    "tool_call_id=%s conversation_id=%s probe=%s",
+                    context.tool_call_id,
+                    claimed_cid,
+                    f"node={probe_node}" if probe else "none",
+                )
+            state = _persist(
+                context,
+                state,
+                "starting",
+                conversation_id=str(uuid.uuid4()),
+                query=str(query or state.get("query") or "").strip(),
+            )
+        else:
+            state = _persist(context, state, "starting")
+        return await _guard_user_stop(
+            context,
+            state,
+            _run_sdk_step(
+                context,
+                state,
+                action="start",
+                query=str(state.get("query") or query),
+                conversation_id=str(state.get("conversation_id") or ""),
+                file_name=str(state.get("file_name") or file_name),
+                report_type=state.get("requested_report_type"),
+                upgrade_from_brief=False,
+            ),
+        )
     if phase == "wait_feedback":
         terminal_status = _terminal_interaction_status(context.user_input)
         if terminal_status:
@@ -1159,24 +1690,21 @@ async def deepresearch_execute(
                 content=f"研究方向反馈无效：{exc}",
             )
         state = _persist(context, state, "resuming_feedback")
-        outcome = await _call_sdk(
-            context,
-            action="resume",
-            # 完成时登记升级来源仍需原始主题；SDK resume 本身沿用 checkpoint。
-            query=str(state.get("query") or query),
-            conversation_id=str(state.get("conversation_id") or ""),
-            node="feedback_handler",
-            feedback=feedback,
-            interaction_result=interaction_result,
-            file_name=str(state.get("file_name") or file_name),
-            report_type=state.get("requested_report_type"),
-        )
-        return await _handle_outcome(
+        return await _guard_user_stop(
             context,
             state,
-            outcome,
-            action="resume",
-            node="feedback_handler",
+            _run_sdk_step(
+                context,
+                state,
+                action="resume",
+                query=str(state.get("query") or query),
+                node="feedback_handler",
+                conversation_id=str(state.get("conversation_id") or ""),
+                feedback=feedback,
+                interaction_result=interaction_result,
+                file_name=str(state.get("file_name") or file_name),
+                report_type=state.get("requested_report_type"),
+            ),
         )
     if phase == "wait_outline":
         terminal_status = _terminal_interaction_status(context.user_input)
@@ -1198,23 +1726,21 @@ async def deepresearch_execute(
                 content=f"大纲审阅结果无效：{exc}",
             )
         state = _persist(context, state, "resuming_outline")
-        outcome = await _call_sdk(
-            context,
-            action="resume",
-            query=str(state.get("query") or query),
-            conversation_id=str(state.get("conversation_id") or ""),
-            node="outline_interaction",
-            feedback=feedback,
-            interaction_result=interaction_result,
-            file_name=str(state.get("file_name") or file_name),
-            report_type=state.get("requested_report_type"),
-        )
-        return await _handle_outcome(
+        return await _guard_user_stop(
             context,
             state,
-            outcome,
-            action="resume",
-            node="outline_interaction",
+            _run_sdk_step(
+                context,
+                state,
+                action="resume",
+                query=str(state.get("query") or query),
+                node="outline_interaction",
+                conversation_id=str(state.get("conversation_id") or ""),
+                feedback=feedback,
+                interaction_result=interaction_result,
+                file_name=str(state.get("file_name") or file_name),
+                report_type=state.get("requested_report_type"),
+            ),
         )
     return _terminal_error(
         context,

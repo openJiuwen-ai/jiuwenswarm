@@ -52,6 +52,10 @@ class TuiChannel(BaseWsChannel):
     def on_message(self, callback: Callable[[Any], Any]) -> None:
         self._on_message_cb = callback
 
+    def _extract_ws_user_id(self, ws: Any) -> str:
+        """TuiChannel: 从 ws 提取 GatewayServer 设置的 user_id。"""
+        return str(getattr(ws, "_gateway_user_id", "") or "")
+
     # ── Channel 生命周期 ──
 
     async def start(self) -> None:

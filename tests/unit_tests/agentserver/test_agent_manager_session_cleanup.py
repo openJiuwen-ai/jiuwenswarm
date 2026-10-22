@@ -364,7 +364,6 @@ async def test_release_subagent_runtime_is_noop_without_existing_adapter() -> No
 
 @pytest.mark.asyncio
 async def test_create_session_cron_channel_uses_path_safe_prefix() -> None:
-    from jiuwenswarm.server.runtime.prompt_attachment_loader import sanitize_session_id
     from jiuwenswarm.server.runtime.session.session_metadata import resolve_session_subdir
 
     manager = AgentManager()
@@ -372,5 +371,4 @@ async def test_create_session_cron_channel_uses_path_safe_prefix() -> None:
 
     assert session_id.startswith("cron_")
     assert not session_id.startswith("__cron__")
-    assert sanitize_session_id(session_id) == session_id
     assert resolve_session_subdir(session_id) is not None

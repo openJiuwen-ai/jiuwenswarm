@@ -31,7 +31,6 @@ from openjiuwen.core.single_agent.rail.base import (
 )
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.rails.skills.skill_use_rail import get_current_skill_name
-from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.tools import TodoListTool
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
@@ -41,12 +40,13 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
     strip_image_content_from_model_context,
 )
-from jiuwenswarm.agents.harness.common.tools.todo_resume import (
-    filter_todos_by_generation,
-    get_todo_generation_token,
-)
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyToolStreamHandler,
+)
+from jiuwenswarm.agents.harness.common.rails.path_whitespace_fix import (
+    WHITESPACE_FIX_TOOL_NAMES,
+    build_whitespace_fix_notice,
+    fix_whitespace_path_arguments,
 )
 from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     extract_path_from_arguments,
@@ -56,18 +56,30 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
-    overlay_serial_todo_statuses,
+    SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY,
+    is_todo_close_nudge,
+)
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    filter_todos_for_display,
+    filter_todos_for_execution,
+    get_todo_generation_token,
+    snapshot_includes_persistent_todos,
 )
 from jiuwenswarm.common.tool_display import (
     build_tool_display_name,
     extract_call_goal,
     inject_call_goal_schema,
 )
+from jiuwenswarm.common.todo_snapshot import (
+    format_todos_for_frontend,
+    overlay_serial_todo_statuses,
+)
 from jiuwenswarm.common.utils import fix_json_arguments, logger
 
 # "todo"：flash 统一工具（单卡 action 分发，覆盖同一组引擎操作）
 _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify", "todo"])
 _EARLY_CHECKPOINT_EXTRA_KEY = "_jiuwenswarm_early_checkpoint_done"
+_WHITESPACE_PATH_FIXES_EXTRA_KEY = "_jiuwenswarm_whitespace_path_fixes"
 _EARLY_CHECKPOINT_ENV = "JIUWENCLAW_EARLY_CHECKPOINT"
 
 
@@ -308,7 +320,7 @@ def _infer_tool_result_error(value: Any) -> bool | None:
     return None
 
 
-# skill_turbo 专用 ContextVar 的绑定/复位收口（7 个 token 单一进出）。
+# skill_turbo 专用 ContextVar 的绑定/复位收口（8 个 token 单一进出）。
 # 详细机制与条件语义见 context_binding 模块；新增通道在该模块加一行即可。
 from jiuwenswarm.server.runtime.skill_turbo.context_binding import (  # noqa: E402
     bind_skill_turbo_context,
@@ -531,6 +543,55 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             return None
         return rebased
 
+    @staticmethod
+    def _fix_whitespace_path_args(tool_call: Any, tool_name: str) -> list[tuple[str, str]]:
+        try:
+            from openjiuwen.core.sys_operation.cwd import get_cwd
+
+            base_dir = get_cwd()
+        except Exception:  # noqa: BLE001 - cwd is optional, absolute paths still work
+            base_dir = None
+        try:
+            raw_args = getattr(tool_call, "arguments", None)
+            fixed = fix_whitespace_path_arguments(raw_args, str(base_dir) if base_dir else None)
+            if fixed is None:
+                return []
+            new_args, fixes = fixed
+            # ToolCall.arguments is a JSON string; keep the type it arrived with.
+            tool_call.arguments = (
+                json.dumps(new_args, ensure_ascii=False) if isinstance(raw_args, str) else new_args
+            )
+            for original, corrected in fixes:
+                logger.info(
+                    "[StreamEventRail] fixed whitespace in %s path: %s -> %s",
+                    tool_name,
+                    original,
+                    corrected,
+                )
+            return fixes
+        except (AttributeError, TypeError, OSError) as exc:
+            logger.warning(
+                "[StreamEventRail] failed to fix whitespace in %s path: %s",
+                tool_name,
+                exc,
+            )
+            return []
+
+    def _annotate_whitespace_path_fix(self, ctx: AgentCallbackContext) -> None:
+        extra = getattr(ctx, "extra", None)
+        fixes_by_call = extra.get(_WHITESPACE_PATH_FIXES_EXTRA_KEY) if isinstance(extra, dict) else None
+        if not isinstance(fixes_by_call, dict):
+            return
+        tool_call_id = str(getattr(getattr(ctx.inputs, "tool_call", None), "id", "") or "")
+        fixes = fixes_by_call.pop(tool_call_id, None)
+        if not fixes:
+            return
+        tool_msg = getattr(ctx.inputs, "tool_msg", None)
+        content = getattr(tool_msg, "content", None)
+        if not isinstance(content, str):
+            return
+        tool_msg.content = build_whitespace_fix_notice(fixes, self._get_prompt_language()) + "\n" + content
+
     def _rebase_user_artifact_path_args(self, tool_call: Any, tool_name: str) -> None:
         """Rewrite write/edit file_path when model hardcodes agent workspace."""
         args = getattr(tool_call, "arguments", None)
@@ -656,6 +717,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     ) -> bool:
         from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
             _SKILL_TURBO_HITL_PLACEHOLDER,
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY,
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2,
+        )
+        from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
+            DEEPRESEARCH_INTERACTION_PLACEHOLDER,
         )
 
         legacy_templates = [
@@ -663,9 +729,21 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             f"no result available.",
             f"[Tool interrupted] Tool {tool_name} was interrupted by the user and has no result.",
             f"[工具执行被中断] 工具 {tool_name} 执行过程中被用户打断，没有执行结果。",
-            # HITL 暂停 tool_msg（skill_acceleration_exec 专用文案）
+            # HITL 暂停 tool_msg（skill_acceleration_exec 专用文案，含历史版本）
             _SKILL_TURBO_HITL_PLACEHOLDER
             if tool_name == "skill_acceleration_exec"
+            else "",
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY
+            if tool_name == "skill_acceleration_exec"
+            else "",
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2
+            if tool_name == "skill_acceleration_exec"
+            else "",
+            # HITL 暂停 tool_msg（deepresearch_execute 专用文案）。注册后
+            # 孤儿清理把"占位 + resume 完成态同 id 两条消息"收敛为"占位被
+            # 真实结果替换"，而非 duplicate 规则保留占位删掉完成态。
+            DEEPRESEARCH_INTERACTION_PLACEHOLDER
+            if tool_name == "deepresearch_execute"
             else "",
         ]
         normalized_content = self._normalize_tool_interrupt_text(content)
@@ -1099,6 +1177,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             logger.warning("[StreamEventRail] inject call_goal prompt failed: %s", exc)
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        # Newer agent-core emits the complete context-usage.v1 snapshot itself.
+        # Skip the legacy three-field rail event only after that write succeeds.
+        # Do NOT key off ``context_usage_report``: core assigns the report before
+        # analyze/write_stream. If emit fails after that assignment, skipping here
+        # would drop both the v1 frame and the legacy fallback (zero context.usage).
+        extra = getattr(ctx, "extra", {})
+        if isinstance(extra, dict) and extra.get("_context_usage_event_emitted"):
+            return
         # [PERF] 轻量模式:context.usage 是信息性统计事件,高并发下
         # write_stream 背压会把本钩子拖到秒级(100 并发实测 ×12-26 次
         # >1s 慢回调)。改为后台发射,不阻塞回复路径;背压时晚到但不丢。
@@ -1137,6 +1223,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
             if tool_name in ("write_file", "edit_file"):
                 self._rebase_user_artifact_path_args(tc, tool_name)
+            if tool_name in WHITESPACE_FIX_TOOL_NAMES:
+                fixes = self._fix_whitespace_path_args(tc, tool_name)
+                tool_call_id = str(getattr(tc, "id", "") or "")
+                if fixes and tool_call_id and isinstance(getattr(ctx, "extra", None), dict):
+                    # ctx.extra is shared across all tool calls of the whole invoke;
+                    # entries are popped in after_tool_call keyed by tool_call_id.
+                    ctx.extra.setdefault(_WHITESPACE_PATH_FIXES_EXTRA_KEY, {})[tool_call_id] = fixes
             if is_read_file_tool(tool_name):
                 path = extract_path_from_arguments(getattr(tc, "arguments", {}))
                 if path:
@@ -1165,7 +1258,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 tool_name == "skill_acceleration_exec"
                 and extra.get(RESUME_USER_INPUT_KEY) is not None
             )
-            if not skip_resume_tool_call:
+            if not skip_resume_tool_call and not is_todo_close_nudge(tc):
                 await self._emit_tool_call(session, tc, model_display_name=model_display)
                 if not ctx.extra.get("_skip_tool"):
                     await self._emit_tool_update(session, tc, status="in_progress")
@@ -1180,8 +1273,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 }
 
         # SkillTurbo 专用 ContextVar 统一绑定（adapter / metadata / workspace /
-        # interactive_ask / outer_todo / subagent_parent / resume_answers 共 7 个，
-        # 条件语义与绑定实现见 context_binding.bind_skill_turbo_context）
+        # interactive_ask / outer_todo / outer_todo_pending / subagent_parent /
+        # resume_answers 共 8 个，条件语义与绑定实现见
+        # context_binding.bind_skill_turbo_context）
         try:
             _resume_answers = None
             extra = getattr(ctx, "extra", None)
@@ -1190,8 +1284,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
                 _resume_answers = extra.get(RESUME_USER_INPUT_KEY)
             _outer_todo_active = None
+            _outer_todo_pending = None
             if isinstance(extra, dict):
                 _outer_todo_active = extra.get(SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY)
+                _outer_todo_pending = extra.get(SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY)
             bind_skill_turbo_context(
                 ctx,
                 adapter=self._skill_turbo_adapter,
@@ -1199,6 +1295,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 parent_session=session,
                 resume_answers=_resume_answers,
                 outer_todo_active=_outer_todo_active,
+                outer_todo_pending=_outer_todo_pending,
             )
         except Exception:
             # metadata / resume_answers 绑定失败意味着 HITL 作答注入静默失效，
@@ -1344,8 +1441,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             and _extract_tool_interrupt(ctx.inputs.tool_result) is not None
         ):
             return
+        if is_todo_close_nudge(tc):
+            return
 
         normalize_read_file_tool_outcome(ctx)
+        self._annotate_whitespace_path_fix(ctx)
         # A call suspended for user input (approval card, ask_user) has no
         # result yet: ToolCallResilienceRail only left a failure placeholder
         # on ctx.inputs.tool_result.  Emitting it would show the tool as
@@ -1378,7 +1478,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 # The todo tool itself is loaded from the main workspace below, so
                 # this stays authoritative even when a resumed/supplement turn uses
                 # a different stream session object.
-                await self._emit_todo_updated(session, todo_sid)
+                await self._emit_todo_updated(
+                    session,
+                    todo_sid,
+                    tool_name=tool_name,
+                    arguments=getattr(tc, "arguments", None),
+                )
 
     # ------------------------------------------------------------------
     # on_model_exception: attempt context repair
@@ -1522,7 +1627,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         except Exception:
             logger.debug("tool_update emit failed", exc_info=True)
 
-    async def _emit_todo_updated(self, session: Session, session_id: str) -> None:
+    async def _emit_todo_updated(
+        self,
+        session: Session,
+        session_id: str,
+        *,
+        tool_name: str = "",
+        arguments: Any = None,
+    ) -> None:
         """Load the main agent's todo list and push a todo.updated event to the frontend."""
         todo_tool = self._get_todo_tool()
         if todo_tool is None:
@@ -1545,9 +1657,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             generation_token = get_todo_generation_token(session)
         except Exception:
             generation_token = None
-        if generation_token:
+        if generation_token or tool_name:
             before = len(todos_data)
-            todos_data = filter_todos_by_generation(todos_data, generation_token)
+            if snapshot_includes_persistent_todos(tool_name, arguments, todos_data):
+                todos_data = filter_todos_for_display(todos_data, generation_token)
+            else:
+                todos_data = filter_todos_for_execution(todos_data, generation_token)
             if len(todos_data) != before:
                 logger.info(
                     "[StreamEventRail] todo.updated filtered stale-generation "
@@ -1631,34 +1746,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     def _format_todos_for_frontend(
         todos_data: List[Any],
     ) -> List[dict[str, Any]]:
-        """Format todo items for frontend compatibility.
-
-        Maps internal TodoStatus values to frontend-compatible status strings.
-        Cancelled items are omitted because the frontend todo panel tracks
-        actionable or completed tasks only.
-
-        Args:
-            todos_data: List of TodoItem objects from TodoListTool.
-
-        Returns:
-            List of formatted todo dictionaries.
-        """
-        status_mapping = {
-            TodoStatus.PENDING: "pending",
-            TodoStatus.IN_PROGRESS: "in_progress",
-            TodoStatus.COMPLETED: "completed",
-        }
-
-        return [
-            {
-                "id": item.id,
-                "content": item.content,
-                "activeForm": item.activeForm,
-                "status": status_mapping.get(item.status, item.status.value),
-            }
-            for item in todos_data
-            if item.status != TodoStatus.CANCELLED
-        ]
+        """Use the same mapping for live events and history restoration."""
+        return format_todos_for_frontend(todos_data)
 
     @staticmethod
     async def _emit_context_usage(

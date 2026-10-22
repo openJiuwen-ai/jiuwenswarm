@@ -185,9 +185,10 @@ def _make_message_adapter(monkeypatch: pytest.MonkeyPatch) -> JiuWenSwarmDeepAda
     adapter = JiuWenSwarmDeepAdapter()
     adapter._instance = SimpleNamespace(get_context_usage=lambda **_kwargs: {})
     adapter._is_session_scoped_adapter = True
+    model = SimpleNamespace(model_config=SimpleNamespace(model_name="test-model"))
     monkeypatch.setattr(adapter, "_has_valid_model_config", lambda _model_name="": True)
     monkeypatch.setattr(adapter, "_handle_slash_command", AsyncMock(return_value=None))
-    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: None)
+    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: model)
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda _model: None)
     return adapter
 
@@ -208,7 +209,6 @@ async def test_team_stream_binds_a2a_resource_context(
     adapter._project_dir = None
     adapter._workspace_dir = None
     monkeypatch.setattr(adapter, "_inject_extension_config_into_inputs", lambda _inputs: None)
-    monkeypatch.setattr(adapter, "_try_skill_turbo_resume", AsyncMock(return_value=None))
     monkeypatch.setattr(adapter, "_deepresearch_artifact_output_dir", lambda _path: None)
     monkeypatch.setattr(
         adapter, "_prepare_multimodal_image_inputs", lambda _request, inputs: inputs

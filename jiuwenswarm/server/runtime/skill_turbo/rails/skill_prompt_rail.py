@@ -53,7 +53,7 @@ def _build_skill_turbo_guide_text(language: str, skill_names: list[str]) -> str:
 
 若你已先调用了 `skill_tool` 加载了对应技能正文（即**不属于**上述例外，只是误触），**仍须立即调用 `skill_acceleration_exec`**——不要因"已经加载了 SKILL.md"或"已经做了研究"而放弃加速通道。
 
-若 `skill_acceleration_exec` 返回成功（产物已生成），**禁止**再用 `skill_tool` 重复同一任务——直接向用户总结结果即可。若 `skill_acceleration_exec` 返回失败或未处理，**必须**继续用 `skill_tool` 加载对应技能走标准流程完成用户任务。
+若 `skill_acceleration_exec` 返回成功（产物已生成），**禁止**再用 `skill_tool` 重复同一任务。若待办仍有 `in_progress`，先单独调 `todo_modify` 把对应步骤标为 `completed`，再向用户总结结果。若 `skill_acceleration_exec` 返回失败或未处理，**必须**继续用 `skill_tool` 加载对应技能走标准流程完成用户任务。
 
 ⏸️ **暂停不是失败**：当 `skill_acceleration_exec` 暂停等待用户回答（返回"技能加速已暂停"类信息，或向用户弹出补充问题卡片，或返回结果中包含 `__skill_turbo_hitl__` 标记时）时，这是任务流的正常提问环节。**必须停止后续工具调用，等待用户回答**；用户回答后加速通道会自动从断点继续。**禁止**把暂停当成失败而改走 `skill_tool` 标准流程，那会丢弃已完成的阶段并从头重跑。
 
@@ -66,7 +66,7 @@ def _build_skill_turbo_guide_text(language: str, skill_names: list[str]) -> str:
 
 If you have already mistakenly called `skill_tool` to load the corresponding skill body (i.e. this does **NOT** fall under the exception above - it was just a misfire), **you MUST still call `skill_acceleration_exec` immediately** - do NOT abandon the acceleration channel because "SKILL.md is already loaded" or "research is already done."
 
-If `skill_acceleration_exec` returns success (the artifact is already generated), you are **forbidden** from calling `skill_tool` again for the same task — just summarize the result to the user. If `skill_acceleration_exec` returns failure or is not handled, you **MUST** fall back to `skill_tool` to load the corresponding skill and complete the user's task via the standard flow.
+If `skill_acceleration_exec` returns success (the artifact is already generated), you are **forbidden** from calling `skill_tool` again for the same task. If any todo is still `in_progress`, first call `todo_modify` alone to mark that step `completed`, then summarize the result to the user. If `skill_acceleration_exec` returns failure or is not handled, you **MUST** fall back to `skill_tool` to load the corresponding skill and complete the user's task via the standard flow.
 
 ⏸️ **Pause is NOT failure**: When `skill_acceleration_exec` pauses to wait for the user's answer (returning a "skill acceleration paused" style message, showing a follow-up question card to the user, or returning a result containing the `__skill_turbo_hitl__` marker), that is a normal clarification step of the pipeline. You **MUST stop making further tool calls and wait for the user's answer**; the acceleration channel will automatically resume from the breakpoint once answered. **DO NOT** treat the pause as a failure and switch to the `skill_tool` standard flow — that would discard completed stages and rerun from scratch.
 

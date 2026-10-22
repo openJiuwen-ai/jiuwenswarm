@@ -5,6 +5,7 @@ import {
   buildCronJobFingerprintMap,
   detectCronJobRunUpdates,
   fingerprintFromCronJob,
+  resolveOpenCronHistoryRefresh,
 } from '../node_modules/.cache/cron-job-sync/cronJobSync.mjs';
 
 test('fingerprintFromCronJob normalizes last_session_id (ignores last_run_at)', () => {
@@ -47,6 +48,45 @@ test('detectCronJobRunUpdates ignores last_run_at-only changes', () => {
     { id: 'job-1', last_run_at: 200, last_session_id: 'cron_a' },
   ]);
   assert.deepEqual(result.updatedJobIds, []);
+});
+
+test('resolveOpenCronHistoryRefresh reloads the open window of the same job', () => {
+  assert.equal(
+    resolveOpenCronHistoryRefresh({
+      jobId: 'job-1',
+      lastSessionId: 'cron_latest',
+      activeSessionId: 'cron_watching',
+      activeCronId: 'job-1',
+      rememberedRunSessionId: '',
+    }),
+    'cron_watching',
+  );
+});
+
+test('resolveOpenCronHistoryRefresh keeps the run-now window after a later run finishes', () => {
+  assert.equal(
+    resolveOpenCronHistoryRefresh({
+      jobId: 'job-1',
+      lastSessionId: 'cron_later',
+      activeSessionId: 'cron_clicked',
+      activeCronId: '',
+      rememberedRunSessionId: 'cron_clicked',
+    }),
+    'cron_clicked',
+  );
+});
+
+test('resolveOpenCronHistoryRefresh skips unrelated sessions', () => {
+  assert.equal(
+    resolveOpenCronHistoryRefresh({
+      jobId: 'job-1',
+      lastSessionId: 'cron_latest',
+      activeSessionId: 'sess_chat',
+      activeCronId: '',
+      rememberedRunSessionId: 'cron_other',
+    }),
+    '',
+  );
 });
 
 test('detectCronJobRunUpdates ignores unchanged snapshots', () => {

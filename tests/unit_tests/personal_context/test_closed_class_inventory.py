@@ -35,7 +35,8 @@ def test_embedded_personal_context_has_exactly_eighteen_production_classes() -> 
     core_rail = Path(rail_spec.origin)
     # dev-stable 基线 18 个生产类；hwlLab/avatar 配对下 Core 额外携带
     # IM 学习/检索子系统与蒸馏调度。检索工具类并入后合计 62（此前为 61）。
-    assert len(_classes(core) | _classes(core_rail) | _classes(HOST)) in {18, 61, 62}
+    # 蒸馏窗口新增 DistillCorpusBatch 后合计 63。
+    assert len(_classes(core) | _classes(core_rail) | _classes(HOST)) in {18, 61, 62, 63}
 
 
 def test_legacy_host_package_is_removed() -> None:

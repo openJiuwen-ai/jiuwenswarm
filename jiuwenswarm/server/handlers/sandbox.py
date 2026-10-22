@@ -45,6 +45,7 @@ _SANDBOX_FILES_PARAMS = frozenset(
         "project_dir",
         "cwd",
         "mode",  # injected by gateway for agent routing
+        "agent_type",  # injected by gateway for AgentOS routing
     }
 )
 

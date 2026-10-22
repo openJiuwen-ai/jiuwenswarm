@@ -165,11 +165,12 @@ class ReqMethod(Enum):
     SKILLS_ENTERPRISE_SOURCE_PROVIDERS = "skills.enterprise.source.providers"
     SKILLS_ENTERPRISE_SOURCE_SEARCH = "skills.enterprise.source.search"
 
-    SYMPHONY_BUILD_SCORE = "symphony.build_score"
-    SYMPHONY_PAUSE_BUILD = "symphony.pause_build"
-    SYMPHONY_SCORE_STATUS = "symphony.score_status"
-    SYMPHONY_GRAPH = "symphony.graph"
-    SYMPHONY_PLAN = "symphony.plan"
+    # Skill Graph Web panel transport. The implementation is provided by
+    # agent-core Symphony, while the public transport remains skill-domain API.
+    SKILLS_GRAPH_BUILD = "skills.graph.build"
+    SKILLS_GRAPH_STATUS = "skills.graph.status"
+    SKILLS_GRAPH_GET = "skills.graph.get"
+    SKILLS_GRAPH_CANCEL = "skills.graph.cancel"
 
     PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
     PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = (
@@ -210,6 +211,14 @@ class ReqMethod(Enum):
         "personal_context.im_learning.get_status"
     )
     PERSONAL_CONTEXT_IM_LEARNING_RUN_NOW = "personal_context.im_learning.run_now"
+    PERSONAL_CONTEXT_DISTILL_GET_CONFIG = "personal_context.distill.get_config"
+    PERSONAL_CONTEXT_DISTILL_PATCH_CONFIG = "personal_context.distill.patch_config"
+    PERSONAL_CONTEXT_DISTILL_GET_STATUS = "personal_context.distill.get_status"
+    PERSONAL_CONTEXT_DISTILL_RUN_NOW = "personal_context.distill.run_now"
+    PERSONAL_CONTEXT_PROFILES_LIST = "personal_context.profiles.list"
+    PERSONAL_CONTEXT_PROFILES_GET_CURRENT = "personal_context.profiles.get_current"
+    PERSONAL_CONTEXT_PROFILES_GET_VERSION = "personal_context.profiles.get_version"
+    PERSONAL_CONTEXT_PROFILES_ACTIVATE = "personal_context.profiles.activate"
 
     # Plugin management (reuses skills marketplace infrastructure)
     PLUGINS_LIST = "plugins.list"

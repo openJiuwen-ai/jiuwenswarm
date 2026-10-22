@@ -86,6 +86,7 @@ SYMPHONY_ORCHESTRATION_PROMPT = _member_rails.SYMPHONY_ORCHESTRATION_PROMPT
 A2A_OUTBOUND_TOOLKIT = _member_rails.A2A_OUTBOUND_TOOLKIT
 DISABLED_TOOLS = _member_rails.DISABLED_TOOLS
 REQUEST_SCOPED_MCP_TOOLS = _member_rails.REQUEST_SCOPED_MCP_TOOLS
+MODEL_ROUTING = _member_rails.MODEL_ROUTING
 TEAM_PERMISSION = _member_rails.TEAM_PERMISSION
 TEAM_PERMISSION_POLICY = _member_rails.TEAM_PERMISSION_POLICY
 TEAM_SKILL_EVOLUTION = _evolution_rails.TEAM_SKILL_EVOLUTION
@@ -120,11 +121,12 @@ DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS = (
 )
 STATUSLINE_SETUP_AGENT = _code_subagents.STATUSLINE_SETUP_AGENT
 
-# Swarm-owned no-parameter class rails declared in ``builtin_rails``.
+# Swarm-owned rails declared in ``builtin_rails``.
 RESPONSE_PROMPT = _builtin_rails.RESPONSE_PROMPT
 STREAM_EVENT = _builtin_rails.STREAM_EVENT
 AVATAR_PROMPT = _builtin_rails.AVATAR_PROMPT
 WORKSPACE_QUOTA = _builtin_rails.WORKSPACE_QUOTA
+TEAM_MEMBER_LLM_RETRY = _builtin_rails.TEAM_MEMBER_LLM_RETRY
 
 # Generic rails provided + registered by openjiuwen (referenced by bare name).
 SYS_OPERATION = _OJ_SYS_OPERATION
@@ -217,6 +219,7 @@ __all__ = [
     "SECURITY",
     "HEARTBEAT",
     "AVATAR_PROMPT",
+    "TEAM_MEMBER_LLM_RETRY",
     "CODE_EXTRA_TOOLS",
     "CODE_RUNTIME_PROMPT",
     "CODE_LSP",

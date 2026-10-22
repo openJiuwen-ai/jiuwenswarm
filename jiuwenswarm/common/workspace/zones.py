@@ -55,10 +55,20 @@ _PREFIX_RULES: Final[tuple[tuple[str, WorkspaceZone], ...]] = (
 
 
 def normalize_relative_path(relative_path: str | None) -> str:
-    """Normalize to posix relative path without leading ``./`` or trailing ``/`` (except root)."""
+    """Normalize to posix relative path without leading ``./`` or trailing ``/`` (except root).
+
+    Rejects ``..``, NUL, and absolute forms (POSIX ``/…``, UNC ``//…``, Windows ``C:/…``).
+    """
     raw = str(relative_path or "").strip().replace("\\", "/")
     if not raw or raw in {".", "./"}:
         return ""
+    if "\x00" in raw:
+        raise ValueError("path_traversal")
+    # Absolute / drive-qualified paths must not be silently coerced into relative ones.
+    if raw.startswith("/"):
+        raise ValueError("absolute_path")
+    if len(raw) >= 2 and raw[0].isalpha() and raw[1] == ":":
+        raise ValueError("absolute_path")
     parts: list[str] = []
     for part in raw.split("/"):
         if not part or part == ".":

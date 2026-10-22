@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from openjiuwen.core.common.exception.errors import BaseError
@@ -58,6 +59,14 @@ PERSONAL_CONTEXT_REQUEST_METHODS = frozenset(
         ReqMethod.PERSONAL_CONTEXT_CONTEXT_GET_SOURCE,
         ReqMethod.PERSONAL_CONTEXT_IM_LEARNING_GET_STATUS,
         ReqMethod.PERSONAL_CONTEXT_IM_LEARNING_RUN_NOW,
+        ReqMethod.PERSONAL_CONTEXT_DISTILL_GET_CONFIG,
+        ReqMethod.PERSONAL_CONTEXT_DISTILL_PATCH_CONFIG,
+        ReqMethod.PERSONAL_CONTEXT_DISTILL_GET_STATUS,
+        ReqMethod.PERSONAL_CONTEXT_DISTILL_RUN_NOW,
+        ReqMethod.PERSONAL_CONTEXT_PROFILES_LIST,
+        ReqMethod.PERSONAL_CONTEXT_PROFILES_GET_CURRENT,
+        ReqMethod.PERSONAL_CONTEXT_PROFILES_GET_VERSION,
+        ReqMethod.PERSONAL_CONTEXT_PROFILES_ACTIVATE,
     }
 )
 
@@ -67,6 +76,10 @@ def _payload(value: object) -> dict[str, object]:
         return {"ok": True}
     if isinstance(value, dict):
         return value
+    if is_dataclass(value) and not isinstance(value, type):
+        dumped = asdict(value)
+        if isinstance(dumped, dict):
+            return dumped
     if hasattr(value, "model_dump"):
         dumped = value.model_dump(mode="json")
         if isinstance(dumped, dict):
@@ -313,6 +326,25 @@ async def _execute(
         return _payload(await host.get_im_learning_status())
     if method == ReqMethod.PERSONAL_CONTEXT_IM_LEARNING_RUN_NOW:
         return {"triggered": await host.run_im_learning_now()}
+    if method == ReqMethod.PERSONAL_CONTEXT_DISTILL_GET_CONFIG:
+        return await host.get_distill_config()
+    if method == ReqMethod.PERSONAL_CONTEXT_DISTILL_PATCH_CONFIG:
+        patch = params.get("patch")
+        if not isinstance(patch, dict):
+            raise ValueError("patch must be an object")
+        return await host.patch_distill_config(cast(dict[str, object], patch))
+    if method == ReqMethod.PERSONAL_CONTEXT_DISTILL_GET_STATUS:
+        return await host.get_distill_status()
+    if method == ReqMethod.PERSONAL_CONTEXT_DISTILL_RUN_NOW:
+        return _payload(await host.run_distill_now())
+    if method == ReqMethod.PERSONAL_CONTEXT_PROFILES_LIST:
+        return await host.list_profiles()
+    if method == ReqMethod.PERSONAL_CONTEXT_PROFILES_GET_CURRENT:
+        return await host.get_current_profile_payload()
+    if method == ReqMethod.PERSONAL_CONTEXT_PROFILES_GET_VERSION:
+        return await host.get_profile_version_payload(_text(params, "job_id"))
+    if method == ReqMethod.PERSONAL_CONTEXT_PROFILES_ACTIVATE:
+        return await host.activate_profile_version_payload(_text(params, "job_id"))
     raise ValueError("unknown PersonalContext method")
 
 

@@ -342,6 +342,24 @@ class TestWorkflowRunStateSerialization:
         assert len(snapshot["phases"]) == 1
         assert len(snapshot["phases"][0]["agents"]) == 1
 
+    @staticmethod
+    def test_to_workflow_run_dict_preserves_budget_from_progress():
+        """Workflow snapshots expose the budget received from agent-core events."""
+        budget = {"spent": 2, "total": 5, "remaining": 3}
+        state = WorkflowRunState()
+        state.apply(
+            _make_progress(
+                "workflow_started",
+                workflow_name="budgeted-workflow",
+                budget=budget,
+            )
+        )
+
+        snapshot = state.to_workflow_run_dict()
+
+        assert state.budget == budget
+        assert snapshot["budget"] == budget
+
 
 class TestWorkflowRunStateTimestamps:
     """Verify timestamp and duration fields."""

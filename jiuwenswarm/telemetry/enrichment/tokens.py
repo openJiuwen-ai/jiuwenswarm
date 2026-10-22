@@ -51,6 +51,8 @@ class UsageBreakdown:
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
     reasoning_output_tokens: int = 0
+    uncached_input_tokens: int = 0
+    cache_usage_observed: bool = False
 
 
 _TOKEN_COUNTER_UNSET = object()
@@ -332,6 +334,14 @@ def _first_count(source: Any, *names: str) -> int:
     return 0
 
 
+def _first_present(source: Any, *names: str) -> Any:
+    for name in names:
+        value = _get_value(source, name)
+        if value is not None:
+            return value
+    return None
+
+
 def extract_usage(result: Any) -> UsageBreakdown:
     usage = _get_value(result, "usage_metadata")
     if usage is None:
@@ -344,15 +354,55 @@ def extract_usage(result: Any) -> UsageBreakdown:
     input_tokens = _first_count(usage, "input_tokens", "prompt_tokens")
     output_tokens = _first_count(usage, "output_tokens", "completion_tokens")
     prompt_details = _get_value(usage, "prompt_tokens_details")
-    cache_read = _first_count(prompt_details, "cached_tokens")
-    if not cache_read:
-        cache_read = _first_count(
-            usage,
-            "cache_read_input_tokens",
-            "cache_read_tokens",
-            "cache_tokens",
+
+    unified_read = _first_present(
+        usage,
+        "cache_read_tokens",
+        "cache_read_input_tokens",
+        "cache_tokens",
+    )
+    unified_creation = _first_present(
+        usage,
+        "cache_creation_input_tokens",
+        "cache_write_tokens",
+    )
+    unified_miss = _first_present(usage, "cache_miss_tokens")
+    cache_status = _get_value(usage, "cache_status")
+
+    prompt_cached = _first_present(
+        prompt_details,
+        "cached_tokens",
+        "cachedTokens",
+    )
+
+    # The unified SDK usage is authoritative: its input_tokens already contains
+    # cache reads and writes, so the cache components must not be added again.
+    if any(
+        value is not None
+        for value in (unified_read, unified_creation, unified_miss)
+    ) or cache_status is not None or prompt_cached is not None:
+        cache_read = _token_count(unified_read)
+        if not cache_read:
+            cache_read = _token_count(prompt_cached)
+        cache_creation = _token_count(unified_creation)
+        miss_value = _token_count(unified_miss)
+        uncached_input = (
+            miss_value
+            if unified_miss is not None
+            else max(input_tokens - cache_read - cache_creation, 0)
         )
-    cache_creation = _first_count(usage, "cache_creation_input_tokens")
+        cache_usage_observed = True
+    else:
+        # Legacy provider payloads may only expose OpenAI's nested details.
+        cache_read = _token_count(prompt_cached)
+        cache_creation = _first_count(usage, "cache_creation_input_tokens")
+        uncached_input = (
+            max(input_tokens - cache_read, 0)
+            if prompt_details is not None
+            else input_tokens
+        )
+        cache_usage_observed = prompt_details is not None
+
     completion_details = _get_value(usage, "completion_tokens_details")
     reasoning = _first_count(completion_details, "reasoning_tokens")
     if not reasoning:
@@ -365,6 +415,8 @@ def extract_usage(result: Any) -> UsageBreakdown:
         cache_read_input_tokens=cache_read,
         cache_creation_input_tokens=cache_creation,
         reasoning_output_tokens=reasoning,
+        uncached_input_tokens=uncached_input,
+        cache_usage_observed=cache_usage_observed,
     )
 
 

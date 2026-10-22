@@ -2,6 +2,7 @@
 
 """Regression tests for ToolCard-declared skill-gated tools."""
 
+from contextvars import ContextVar
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -522,15 +523,34 @@ async def test_matching_active_skill_allows_registered_direct_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_adapter_session_activation_exposes_tool_only_in_that_session() -> None:
+async def test_adapter_session_activation_exposes_tool_only_in_that_session(tmp_path, monkeypatch) -> None:
     pytest.importorskip("google.genai")
+    from openjiuwen.harness.security.skill_authorization import (
+        get_skill_grant_store,
+        set_skill_grant_store,
+    )
+
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization import (
+        file_store,
+    )
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
     )
 
     first_session = "required-skill-first"
     second_session = "required-skill-second"
-    active_state = SkillActiveStateRail(session_id=first_session)
+    sessions_root = tmp_path / "sessions"
+    for session_id in (first_session, second_session):
+        (sessions_root / session_id).mkdir(parents=True)
+    original_store = get_skill_grant_store()
+    store = file_store.FileSkillGrantStore(
+        sessions_root=lambda: sessions_root, data_root=lambda: tmp_path,
+    )
+    set_skill_grant_store(store)
+    monkeypatch.setattr(file_store, "_session_file_context", ContextVar("test_skill_files", default=None))
+    monkeypatch.setattr(skill_active_state, "_current_session_var", ContextVar("test_active_skill_session", default=None))
+    active_state = SkillActiveStateRail(session_id=first_session, sessions_root=sessions_root)
     activation_call = SimpleNamespace(
         id="call-skill",
         name="skill_tool",
@@ -589,3 +609,4 @@ async def test_adapter_session_activation_exposes_tool_only_in_that_session() ->
     finally:
         clear_session_skill_state(first_session)
         clear_session_skill_state(second_session)
+        set_skill_grant_store(original_store)

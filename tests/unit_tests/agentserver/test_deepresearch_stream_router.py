@@ -1953,7 +1953,11 @@ def test_brief_research_nodes_advance_stage_three_in_task_list(agent):
     assert all(frame["event_type"] != "chat.delta" for frame in frames)
 
 
-def test_brief_sub_reporter_completion_starts_stage_four_before_final_node_chunk():
+def test_brief_sub_reporter_legacy_no_total_starts_stage_four_on_first_done():
+    """旧生产端未透传 section_total 时退回旧口径:首个完成即开启 stage 4。
+
+    保证 jiuwenswarm 先于 deepsearch 合入时不把进度卡死在 stage 3。
+    """
     state = RouterState(current_stage=3)
 
     frames = route_chunk(
@@ -1974,6 +1978,77 @@ def test_brief_sub_reporter_completion_starts_stage_four_before_final_node_chunk
     stage_four = next(
         index
         for index, frame in enumerate(frames)
+        if frame["event_type"] == "task.update"
+        and frame["tasks"][3]["status"] == "in_progress"
+    )
+    assert node_complete < stage_four
+
+
+def test_brief_sub_reporter_first_section_done_keeps_stage_three():
+    """section_total 透传后对齐专业版口径:首个章节完成仍停留 stage 3。"""
+    state = RouterState(current_stage=3)
+
+    frames = route_chunk(
+        {
+            "agent": "brief_sub_reporter",
+            "event": "done",
+            "section_idx": "1",
+            "section_total": 3,
+            "content": "章节写作完成",
+        },
+        state,
+    )
+
+    assert state.final_report_started is False
+    assert state.expected_section_total == 3
+    assert state.completed_section_indices == {"1"}
+    assert _stage_update(frames) is None
+    assert all(
+        frame.get("task_id") != "deepresearch_stage_4" for frame in frames
+    )
+
+
+def test_brief_sub_reporter_all_sections_done_starts_stage_four():
+    """全部章节完成(最后一个 done)才开启 stage 4。"""
+    state = RouterState(current_stage=3)
+
+    def _route_section_done(section_idx: str) -> list[dict]:
+        return route_chunk(
+            {
+                "agent": "brief_sub_reporter",
+                "event": "done",
+                "section_idx": section_idx,
+                "section_total": 3,
+                "content": "章节写作完成",
+            },
+            state,
+        )
+
+    # 前两个章节完成:停留 stage 3。
+    for section_idx in ("1", "2"):
+        frames = _route_section_done(section_idx)
+        assert all(
+            frame.get("task_id") != "deepresearch_stage_4" for frame in frames
+        )
+    assert state.completed_section_indices == {"1", "2"}
+    assert state.final_report_started is False
+
+    # 第三个(最后一个)章节完成:开启 stage 4。
+    final_frames = _route_section_done("3")
+    assert state.completed_section_indices == {"1", "2", "3"}
+    assert state.final_report_started is True
+    _assert_stage(_stage_update(final_frames), 4)
+    node_complete = next(
+        index
+        for index, frame in enumerate(final_frames)
+        if frame["event_type"] == "chat.reasoning"
+        and frame.get("task_id") == "deepresearch_stage_3"
+        and frame.get("stream_source_id") == "dr_brief_sub_reporter"
+        and frame.get("content") == "精简章节撰写完成\n"
+    )
+    stage_four = next(
+        index
+        for index, frame in enumerate(final_frames)
         if frame["event_type"] == "task.update"
         and frame["tasks"][3]["status"] == "in_progress"
     )

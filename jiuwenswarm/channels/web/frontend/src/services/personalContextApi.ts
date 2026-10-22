@@ -221,6 +221,60 @@ export type ImLearningStatus = {
   last_error?: string | null;
 };
 
+// ── 画像蒸馏 / 画像版本（WEB-03；专用 distill.* / profiles.*，不进 runtime.patch）──
+export type DistillConfig = {
+  enabled: boolean;
+  interval_seconds: number;
+  message_threshold: number;
+  max_messages?: number;
+  learning_since_ms?: number | null;
+  lease_seconds?: number;
+  poll_seconds?: number;
+};
+
+export type DistillStatus = {
+  wired: boolean;
+  enabled: boolean;
+  scheduler_active: boolean;
+  collection_enabled: boolean;
+  last_attempt_at_ms: number;
+  cursor_ms: number;
+  last_success_job_id: string | null;
+  lease: Record<string, unknown> | null;
+  last_job: Record<string, unknown> | null;
+  last_error: string | null;
+};
+
+export type ProfileVersionItem = {
+  job_id: string;
+  is_current: boolean;
+  published_at_ms: number;
+  source: string;
+  meta_summary?: {
+    message_count?: number | null;
+    analyzer?: string | null;
+  };
+};
+
+export type ProfileVersionDetail = {
+  job_id: string;
+  persona_md: string;
+  work_md: string;
+  meta: Record<string, unknown>;
+  truncated: boolean;
+};
+
+export type ProfileCurrentPayload = {
+  current: {
+    job_id: string;
+    persona_md?: string;
+    work_md?: string;
+    meta?: Record<string, unknown>;
+    source?: string;
+    published_at_ms?: number;
+  } | null;
+};
+
 /** im.hosting.login.* 关联会话快照（两阶段：app_setup → user_auth）。 */
 export type ImLoginPhase = 'idle' | 'app_setup' | 'user_auth' | 'logged_in' | 'failed';
 
@@ -584,6 +638,41 @@ export const pcApi = {
       'personal_context.im_learning.run_now',
       {},
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
+
+  /** 蒸馏配置（专用 API；不走 runtime.patch_config）。 */
+  getDistillConfig: () =>
+    webRequest<DistillConfig>('personal_context.distill.get_config', {}),
+
+  patchDistillConfig: (patch: Partial<Pick<DistillConfig, 'enabled' | 'interval_seconds' | 'message_threshold'>>) =>
+    webRequest<DistillConfig>('personal_context.distill.patch_config', { patch }),
+
+  getDistillStatus: () =>
+    webRequest<DistillStatus>(
+      'personal_context.distill.get_status',
+      {},
+      { timeoutMs: FETCH_RUN_STATUS_TIMEOUT_MS },
+    ),
+
+  /** 后台启动一次手动蒸馏并立即返回；进度与结果经 getDistillStatus 轮询（lease / last_error）。 */
+  runDistillNow: () =>
+    webRequest<{ accepted: boolean }>('personal_context.distill.run_now', {}),
+
+  listProfiles: () =>
+    webRequest<{ versions: ProfileVersionItem[] }>('personal_context.profiles.list', {}),
+
+  getCurrentProfile: () =>
+    webRequest<ProfileCurrentPayload>('personal_context.profiles.get_current', {}),
+
+  getProfileVersion: (job_id: string) =>
+    webRequest<ProfileVersionDetail>('personal_context.profiles.get_version', {
+      job_id,
+    }),
+
+  activateProfile: (job_id: string) =>
+    webRequest<{ current: Record<string, unknown>; versions: ProfileVersionItem[] }>(
+      'personal_context.profiles.activate',
+      { job_id },
     ),
 
   /**

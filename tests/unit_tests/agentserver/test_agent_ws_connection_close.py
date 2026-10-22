@@ -17,7 +17,7 @@ from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
-from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer, _process_snapshot
 from jiuwenswarm.server.context import AgentServerServices as _services
 from jiuwenswarm.server.handlers import schedule as schedule_handlers
 
@@ -501,3 +501,116 @@ async def test_manual_cancel_keeps_session_runtime() -> None:
     )
 
     assert await _handle_cancel_cleanup_case(env) == []
+
+
+class _AbortingWebSocket:
+    """对端不发 close 帧就消失，对应日志里的 1006。"""
+
+    remote_address = ("127.0.0.1", 52095)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise ConnectionClosedError(None, None)
+
+    async def send(self, _payload: str) -> None:
+        return None
+
+
+async def _async_noop(*_args, **_kwargs) -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_abrupt_disconnect_preserves_shared_work_and_logs_cleanup(
+    monkeypatch, caplog,
+) -> None:
+    target_logger = logging.getLogger("jiuwenswarm.server.agent_ws_server")
+    target_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger=target_logger.name)
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._trigger_agent_server_started_hook = _async_noop
+    server._ping_interval = 30
+    server._ping_timeout = 300
+    server._server = None
+    server._session_stream_tasks = {}
+    server._acp_client_capabilities_by_ws = {}
+    cancelled: list[str] = []
+    scheduler_stops: list[str] = []
+
+    async def cancel_all(reason: str = "") -> None:
+        cancelled.append(reason)
+
+    async def stop_scheduler() -> None:
+        scheduler_stops.append("stop")
+
+    server._agent_manager = SimpleNamespace(cancel_all_inflight_work=cancel_all)
+    server._stop_scheduler = stop_scheduler
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.cancel_all_team_stream_tasks_across_managers",
+        _async_noop,
+    )
+
+    try:
+        await server._connection_handler(_AbortingWebSocket())
+    finally:
+        target_logger.removeHandler(caplog.handler)
+
+    assert cancelled == []
+    assert scheduler_stops == []
+    assert "step='stop_scheduler'" not in caplog.text
+    assert "连接关闭" in caplog.text
+    assert "进程快照" in caplog.text
+    assert "rss_mb=" in caplog.text
+    assert "threads=" in caplog.text
+    assert "handles=" in caplog.text
+    assert "sockets=" in caplog.text
+    assert "step='cancel_inflight'" not in caplog.text
+    assert "step='team_stream'" not in caplog.text
+    assert "step='join_tasks' phase='start'" in caplog.text
+    assert "step='join_tasks' phase='done'" in caplog.text
+    assert "连接清理完成" in caplog.text
+    assert "listener_present" in caplog.text
+    assert "pid=" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connection_cleanup_error_still_logs_completion(
+    monkeypatch, caplog,
+) -> None:
+    target_logger = logging.getLogger("jiuwenswarm.server.agent_ws_server")
+    target_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger=target_logger.name)
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._trigger_agent_server_started_hook = _async_noop
+    server._ping_interval = 30
+    server._ping_timeout = 300
+    server._server = None
+    server._session_stream_tasks = {}
+    server._acp_client_capabilities_by_ws = {}
+
+    async def fail_join(_tasks) -> None:
+        raise RuntimeError("join failed")
+
+    monkeypatch.setattr(agent_ws_server_module, "_join_connection_tasks", fail_join)
+
+    try:
+        await server._connection_handler(_AbortingWebSocket())
+    finally:
+        target_logger.removeHandler(caplog.handler)
+
+    assert "step='join_tasks' phase='error'" in caplog.text
+    assert "连接清理完成" in caplog.text
+
+
+def test_process_snapshot_keeps_other_fields_when_one_probe_fails(monkeypatch) -> None:
+    def _boom(_proc: object) -> float:
+        raise RuntimeError("rss")
+
+    monkeypatch.setattr(agent_ws_server_module, "_snapshot_rss_mb", _boom)
+    snapshot = _process_snapshot()
+    assert snapshot["rss_mb"] == "unavailable"
+    assert snapshot["threads"] != "unavailable"
+    assert "handles" in snapshot
+    assert "sockets" in snapshot

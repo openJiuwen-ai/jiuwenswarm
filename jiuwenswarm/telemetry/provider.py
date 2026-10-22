@@ -23,7 +23,7 @@ from opentelemetry.sdk.metrics.export import (
     PeriodicExportingMetricReader,
 )
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import SpanLimits, TracerProvider
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
     ConsoleSpanExporter,
@@ -204,7 +204,13 @@ def build_default_providers(cfg: TelemetryConfig) -> ProviderBundle:
 def _build_tracer_provider(
     cfg: TelemetryConfig, resource: Resource
 ) -> TracerProvider:
-    provider = TracerProvider(resource=resource)
+    # SDK default max_attributes=128 silently drops extra attribute entries;
+    # align the limit with TelemetryConfig (env OTEL_MAX_ATTRIBUTES). Value
+    # length is not truncated by default.
+    provider = TracerProvider(
+        resource=resource,
+        span_limits=SpanLimits(max_attributes=cfg.max_attributes),
+    )
     try:
         if cfg.traces_exporter == "none":
             return provider

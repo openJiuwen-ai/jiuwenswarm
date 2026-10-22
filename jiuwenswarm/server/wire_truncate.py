@@ -51,6 +51,7 @@ _TRUNCATE_SUFFIX = " [truncated]"
 _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
     {
         "chat.final",
+        "chat.error",
         "chat.tool_call",
         "chat.tool_result",
         "chat.usage_summary",
@@ -59,6 +60,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.ask_user_question_expired",
         "chat.ask_user_answered",
         "team.message",
+        "context.usage",
         "context.compact_boundary",
         "context.compact_summary",
         "context.rewind_summary",
@@ -120,6 +122,7 @@ _WORKFLOW_LIST_SUMMARY_KEEP_KEYS = (
     "duration_ms",
     "token_count",
     "estimated_token_count",
+    "budget",
 )
 
 
@@ -557,11 +560,15 @@ def _workflow_list_summary_phase(phase: dict[str, Any]) -> dict[str, Any]:
 
 def _workflow_list_summary_item(item: dict[str, Any]) -> dict[str, Any]:
     """Compact workflow row for ``command.workflows`` list — omits large text fields."""
-    summary: dict[str, Any] = {
-        key: _compact_wire_metadata_value(item.get(key))
-        for key in _WORKFLOW_LIST_SUMMARY_KEEP_KEYS
-        if item.get(key) is not None
-    }
+    summary: dict[str, Any] = {}
+    for key in _WORKFLOW_LIST_SUMMARY_KEEP_KEYS:
+        value = item.get(key)
+        if value is None:
+            continue
+        if key == "budget" and isinstance(value, dict):
+            summary[key] = value
+        else:
+            summary[key] = _compact_wire_metadata_value(value)
     for key in ("summary", "error", "result"):
         value = item.get(key)
         if isinstance(value, str) and value.strip():

@@ -82,6 +82,9 @@ SPAWN_ENV_KEYS: frozenset[str] = frozenset(
         "DISABLED_TOOLS",
         # Code-mode generated-code co-author header switch; process shared.
         "JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED",
+        # Flash 部署开关由 config.yaml 占位符读取，任务 overlay 不应屏蔽沙箱启动值。
+        "JIUWENSWARM_FLASH_ENABLED",
+        "JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED",
         # HTTP/SSE service-to-service mTLS.  These values are process-scoped;
         # certificate paths point to files mounted by the deployment layer.
         "JIUWENSWARM_LINK_MTLS_MODE",
@@ -195,6 +198,8 @@ BUSINESS_MIRROR_KEYS: frozenset[str] = frozenset(
         "BROWSER_DRIVER",
         "BROWSER_PROFILE_NAME",
         "BROWSER_MANAGED_BINARY",
+        "BROWSER_MANAGED_HOST",
+        "BROWSER_MANAGED_PORT",
         "BROWSER_TIMEOUT_S",
         "BROWSER_ALLOW_SHORT_TIMEOUT_OVERRIDE",
         "MEMORY_MODE",

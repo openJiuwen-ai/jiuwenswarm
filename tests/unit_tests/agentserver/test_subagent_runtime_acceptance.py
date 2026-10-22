@@ -35,6 +35,7 @@ from jiuwenswarm.server.runtime.session import session_history
 
 def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    state.setdefault("_sessions_awaiting_tool_permission", set())
     for name, value in state.items():
         setattr(adapter, name, value)
     return adapter

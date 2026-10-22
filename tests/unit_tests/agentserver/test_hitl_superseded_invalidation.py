@@ -19,9 +19,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
+)
+from jiuwenswarm.server.runtime.skill_turbo.hitl_dedup import (
+    OuterCallIDDeduplicator,
 )
 
 # ────────────────── P3-1: 被取代卡失效广播 ──────────────────
@@ -29,6 +34,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 
 def _make_adapter(**attrs) -> JiuWenSwarmDeepAdapter:
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._outer_call_dedup = OuterCallIDDeduplicator()
     adapter._hitl_card_instances = {}
     adapter._hitl_base_live_instance = {}
     adapter._hitl_base_live_questions = {}
@@ -148,6 +154,7 @@ def test_mark_round_end_invalidates_live_cards() -> None:
     assert adapter._hitl_base_live_instance["tc-3"] == "card-c"
 
 
+@pytest.mark.asyncio
 async def test_guard_rejects_answer_after_round_end() -> None:
     """轮次收尾后同卡再答：活性卡守卫回 True（拒绝），不再 fail-open 吞答案。"""
     adapter = _make_adapter(_instance=None)
@@ -365,6 +372,7 @@ def test_resume_batch_allow_keys_constant_matches_rail() -> None:
     assert tool_security_rail.RESUME_BATCH_ALLOW_KEYS is RESUME_BATCH_ALLOW_KEYS
 
 
+@pytest.mark.asyncio
 async def test_handle_resume_injects_and_clears_batch_allow_keys(monkeypatch) -> None:
     """handle_resume：重放前注入批内 allow 集，finally 清理（不泄漏到后续批次）。"""
     from openjiuwen.core.single_agent.interrupt.handler import ToolInterruptHandler

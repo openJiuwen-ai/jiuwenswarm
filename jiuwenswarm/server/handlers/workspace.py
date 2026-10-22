@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from typing import Any
@@ -12,6 +13,11 @@ from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_multi_tenant_user_workspace_dir
+from jiuwenswarm.common.workspace.quota import (
+    get_cached_used,
+    mark_usage_active,
+    measure_and_cache,
+)
 from jiuwenswarm.common.workspace.service import WorkspaceError, WorkspaceService
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.context import RequestContext
@@ -32,6 +38,32 @@ def _tenant_root_from_request(request: Any) -> Any:
         service_id=str(sid).strip() if sid else None,
         agent_id=str(aid).strip() if aid else None,
     )
+
+
+def _identity_from_params(params: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(params.get("user_id") or "").strip(),
+        str(params.get("group_id") or "").strip(),
+        str(params.get("bot_id") or "").strip(),
+    )
+
+
+def _force_refresh(params: dict[str, Any]) -> bool:
+    for key in ("force_refresh", "forceRefresh", "refresh"):
+        raw = params.get(key)
+        if raw is True:
+            return True
+        if isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"}:
+            return True
+    return False
+
+
+def _resolve_used_bytes(root: Any, params: dict[str, Any]) -> int:
+    uid, gid, bid = _identity_from_params(params)
+    if _force_refresh(params):
+        return measure_and_cache(root, user_id=uid, group_id=gid, bot_id=bid)
+    mark_usage_active(root, user_id=uid, group_id=gid, bot_id=bid)
+    return get_cached_used(root)
 
 
 def _error_response(request: Any, *, code: str, message: str) -> AgentResponse:
@@ -58,13 +90,15 @@ async def handle_workspace(ctx: RequestContext) -> None:
     method = request.req_method
     params = request.params if isinstance(request.params, dict) else {}
     try:
-        svc = WorkspaceService(tenant_root=_tenant_root_from_request(request))
+        root = _tenant_root_from_request(request)
+        svc = WorkspaceService(tenant_root=root)
         if method == ReqMethod.WORKSPACE_TREE:
             data = svc.list_tree(params.get("relative_path"))
-            data = {**data, "used_bytes": svc.measure_used_bytes()}
+            # 不再附带全量 du；用量由独立 usage 接口 / 后台校准提供。
             resp = _ok_response(request, data)
         elif method == ReqMethod.WORKSPACE_USAGE:
-            resp = _ok_response(request, {"used_bytes": svc.measure_used_bytes()})
+            used = await asyncio.to_thread(_resolve_used_bytes, root, params)
+            resp = _ok_response(request, {"used_bytes": used})
         elif method == ReqMethod.WORKSPACE_ENTRIES_DELETE:
             paths = params.get("relative_paths")
             if not isinstance(paths, list) or not paths:
@@ -73,7 +107,11 @@ async def handle_workspace(ctx: RequestContext) -> None:
                 )
             else:
                 data = svc.delete_entries([str(x) for x in paths])
-                data = {**data, "used_bytes": svc.measure_used_bytes()}
+                used = await asyncio.to_thread(_resolve_used_bytes, root, params)
+                data = {
+                    **data,
+                    "used_bytes": used,
+                }
                 resp = _ok_response(request, data)
         elif method == ReqMethod.WORKSPACE_PREVIEW:
             max_bytes = params.get("max_bytes")

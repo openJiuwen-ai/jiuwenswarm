@@ -11,8 +11,12 @@ from typing import Any, Mapping
 
 from jiuwenswarm.common.utils import logger
 
-# Public contract for spawn/fork tool parameter ``thinking``.
-THINKING_VALUES = frozenset({"", "default", "off", "on"})
+# Public contract for spawn/fork / depth parameter ``thinking``.
+# ``default`` is usually a no-op; GLM-5.3 family maps it to
+# :data:`DEFAULT_THINKING_DEPTH` at adapt time (temporary scope).
+# Depth tiers ``low|medium|high`` are product semantics (vendor-mapped).
+# Legacy toggle ``off|on`` remains for subagent / DisableThinkingMixin.
+THINKING_VALUES = frozenset({"", "default", "off", "on", "low", "medium", "high"})
 
 
 def _deep_freeze(obj: Any) -> Any:
@@ -77,7 +81,7 @@ class ThinkingProfile:
 
 
 def normalize_thinking(raw: Any) -> tuple[str, bool]:
-    """Normalize tool input to default|off|on.
+    """Normalize tool input to default|off|on|low|medium|high.
 
     Returns:
         (normalized_value, was_invalid)
@@ -94,7 +98,7 @@ def normalize_thinking(raw: Any) -> tuple[str, bool]:
     value = raw.strip().lower()
     if value in ("", "default"):
         return "default", False
-    if value in ("off", "on"):
+    if value in ("off", "on", "low", "medium", "high"):
         return value, False
     logger.warning(
         "[Thinking] invalid thinking=%r; treat as default",

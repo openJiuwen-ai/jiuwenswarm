@@ -1,18 +1,16 @@
 /**
  * PersonalContextImLearningPanel — 「IM 学习」子页（数字分身学习配置面）。
  *
- * 三区块（对齐迁移方案 §4.5）：
+ * 区块：
  * 1. 状态卡：host_active/running/enabled 徽标 + 总闸联动提示 + fetch 指标 +
- *    backfill 每目标三态（pending/truncated/complete）+ index 推进 + last_error +
- *    「立即学习一轮」。运行中 5s 轮询，未运行降频 30s（方案 D8）。
- * 2. 学习范围：渠道下拉 → im.hosting.discover 会话选择器（已在白名单的打
- *    「学习中」标记，前端按三元组 diff）+ 批量粘贴 external_id +
- *    时间范围 preset（近 30/90/180/365 天/不限 ↔ since_ms，非 preset 回显「自定义」）。
- * 3. 周期设置：fetch_interval_seconds / fetch_top_n；distill 只读降级展示（装配缺失）。
+ *    backfill 每目标三态 + index 推进 + last_error +「立即学习一轮」。
+ * 2. 学习范围：会话白名单 + 时间范围 preset。
+ * 3. 周期设置：仅 fetch_interval_seconds / fetch_top_n（IM 学习）。
+ * 4. 画像蒸馏（同级卡）：档位+秒数 / 立即蒸馏 / 画像版本；走 distill.* / profiles.*。
  *
- * 交互：本地草稿 + imLearningConfig 语义签名脏检查（title 不参与）→
- * 「保存学习配置」走 runtime.patch_config {im_learning} 整节提交；
- * 移除会话仅停止新增采集，已学语料保留（文案如实传达）。
+ * 交互：本地草稿 + imLearningConfig 语义签名脏检查 →「保存学习配置」走
+ * runtime.patch_config {im_learning}；蒸馏独立 dirty（只比 interval）→
+ * distill.patch_config {enabled:true, interval_seconds}（不传 message_threshold）。
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -21,6 +19,7 @@ import { Loader2, PlayCircle, Plus, X } from 'lucide-react';
 import { Switch } from '../Switch';
 import { usePersonalContextStore } from '../../stores';
 import {
+  type DistillConfig,
   type ImLearningBackfill,
   type ImLearningBackfillRow,
   type ImLearningChannelId,
@@ -28,11 +27,19 @@ import {
   type ImLearningDiscoverItem,
   type ImLearningTarget,
   type ImLearningTargetKind,
+  type ProfileVersionDetail,
   IM_LEARNING_CHANNELS,
   pcApi,
   webErrorCode,
 } from '../../services/personalContextApi';
 import { PersonalContextImAssociateDialog } from './ImAssociateDialog';
+import {
+  DEFAULT_DISTILL_CONFIG,
+  DISTILL_INTERVAL_PRESETS,
+  isDistillDirty,
+  matchDistillIntervalPreset,
+  validateDistillDraft,
+} from './distillConfig';
 import {
   SINCE_PRESET_DAYS,
   type SincePresetDays,
@@ -103,9 +110,17 @@ export function PersonalContextImLearningPanel({
   const {
     config,
     imLearningStatus,
+    distillConfig,
+    distillStatus,
+    profileVersions,
     pendingWrites,
     loadImLearningStatus,
     saveImLearning,
+    loadDistillConfig,
+    loadDistillStatus,
+    saveDistillConfig,
+    loadProfiles,
+    activateProfile,
     setInfoTab,
   } = usePersonalContextStore();
 
@@ -121,7 +136,24 @@ export function PersonalContextImLearningPanel({
     setDraft(savedIm);
   }, [savedSignature, savedIm]);
 
+  const [distillDraft, setDistillDraft] = useState<DistillConfig>(
+    distillConfig ?? DEFAULT_DISTILL_CONFIG,
+  );
+  const distillSavedSignature = useMemo(
+    () => JSON.stringify(distillConfig),
+    [distillConfig],
+  );
+  const distillSyncedRef = useRef(distillSavedSignature);
+  useEffect(() => {
+    if (distillSyncedRef.current === distillSavedSignature) return;
+    distillSyncedRef.current = distillSavedSignature;
+    setDistillDraft(distillConfig);
+  }, [distillSavedSignature, distillConfig]);
+
   const [notice, setNotice] = useState<PanelNotice | null>(null);
+  const [preview, setPreview] = useState<ProfileVersionDetail | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [distillRunning, setDistillRunning] = useState(false);
 
   // 会话发现（im.hosting.discover，与托管 UI 数据同源）
   const [discoverChannel, setDiscoverChannel] = useState<ImLearningChannelId>('feishu');
@@ -138,15 +170,44 @@ export function PersonalContextImLearningPanel({
   const [associateChannel, setAssociateChannel] = useState<ImLearningChannelId | null>(null);
 
   const running = imLearningStatus?.running ?? false;
+  // lease 非空 = 正在蒸馏（手动或自动）；distillRunning 仅覆盖 run_now 请求往返。
+  const distillLeaseHeld = !!distillStatus?.lease;
+  const distillBusy = distillRunning || distillLeaseHeld;
 
-  // 阶段状态轮询：运行中 5s，未运行降频 30s。
+  // 阶段状态轮询：运行中 5s，未运行降频 30s；并行刷 distill status。
   useEffect(() => {
     if (!isConnected || !isActive) return;
-    const load = () => void loadImLearningStatus().catch(() => {});
+    const load = () => {
+      void loadImLearningStatus().catch(() => {});
+      void loadDistillStatus().catch(() => {});
+    };
+    void loadDistillConfig().catch(() => {});
+    void loadProfiles().catch(() => {});
     load();
-    const interval = window.setInterval(load, running ? POLL_ACTIVE_MS : POLL_IDLE_MS);
+    const interval = window.setInterval(
+      load,
+      running || distillBusy ? POLL_ACTIVE_MS : POLL_IDLE_MS,
+    );
     return () => window.clearInterval(interval);
-  }, [isConnected, isActive, running, loadImLearningStatus]);
+  }, [
+    isConnected,
+    isActive,
+    running,
+    distillBusy,
+    loadImLearningStatus,
+    loadDistillStatus,
+    loadDistillConfig,
+    loadProfiles,
+  ]);
+
+  // 蒸馏 lease 由持有 → 释放：刷新画像版本列表（新版本 / 失败原因均经 status 可见）。
+  const prevLeaseHeldRef = useRef(distillLeaseHeld);
+  useEffect(() => {
+    if (prevLeaseHeldRef.current && !distillLeaseHeld) {
+      void loadProfiles().catch(() => {});
+    }
+    prevLeaseHeldRef.current = distillLeaseHeld;
+  }, [distillLeaseHeld, loadProfiles]);
 
   // 成功提示 5s 自动消失
   useEffect(() => {
@@ -163,6 +224,13 @@ export function PersonalContextImLearningPanel({
   const dirty = isImLearningDirty(savedIm, draft);
   const validationError = validateImLearningDraft(draft);
   const saving = !!pendingWrites.im_learning;
+  const distillDirty = isDistillDirty(
+    distillConfig ?? DEFAULT_DISTILL_CONFIG,
+    distillDraft,
+  );
+  const distillValidationError = validateDistillDraft(distillDraft);
+  const distillSaving = !!pendingWrites.distill;
+  const profileActivating = !!pendingWrites.profile_activate;
   const sincePreset = sinceMsToPreset(draft.since_ms);
 
   const handleSave = () => {
@@ -194,6 +262,68 @@ export function PersonalContextImLearningPanel({
       .catch((e: unknown) =>
         setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) }),
       );
+  };
+
+  const handleSaveDistill = () => {
+    setNotice(null);
+    const errorKey = validateDistillDraft(distillDraft);
+    if (errorKey) {
+      setNotice({
+        kind: 'error',
+        message: t(`personalContext.imLearning.distillErrors.${errorKey}`),
+      });
+      return;
+    }
+    void saveDistillConfig({
+      enabled: true,
+      interval_seconds: distillDraft.interval_seconds,
+    })
+      .then(() => setNotice({ kind: 'success', key: 'personalContext.imLearning.distillSaved' }))
+      .catch((e: unknown) =>
+        setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) }),
+      );
+  };
+
+  const handleDistillRunNow = () => {
+    setNotice(null);
+    setDistillRunning(true);
+    void pcApi
+      .runDistillNow()
+      .then(async () => {
+        setNotice({
+          kind: 'success',
+          key: 'personalContext.imLearning.distillRunSubmitted',
+        });
+        await loadDistillStatus().catch(() => {});
+      })
+      .catch((e: unknown) =>
+        setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) }),
+      )
+      .finally(() => setDistillRunning(false));
+  };
+
+  const handleActivateProfile = (jobId: string) => {
+    setNotice(null);
+    if (!window.confirm(t('personalContext.imLearning.profilesActivateConfirm'))) return;
+    void activateProfile(jobId)
+      .then(() =>
+        setNotice({ kind: 'success', key: 'personalContext.imLearning.profilesActivated' }),
+      )
+      .catch((e: unknown) =>
+        setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) }),
+      );
+  };
+
+  const handlePreviewProfile = (jobId: string) => {
+    setNotice(null);
+    setPreviewLoading(true);
+    void pcApi
+      .getProfileVersion(jobId)
+      .then((detail) => setPreview(detail))
+      .catch((e: unknown) =>
+        setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) }),
+      )
+      .finally(() => setPreviewLoading(false));
   };
 
   const handleDiscover = () => {
@@ -675,7 +805,7 @@ export function PersonalContextImLearningPanel({
         </div>
       </section>
 
-      {/* ── 区块 3：周期设置 ── */}
+      {/* ── 区块 3：周期设置（仅 IM 学习） ── */}
       <section className="pc-iml__card">
         <div className="pc-iml__card-head">
           <h4 className="pc-iml__card-title">{t('personalContext.imLearning.cycleTitle')}</h4>
@@ -722,11 +852,207 @@ export function PersonalContextImLearningPanel({
             <p className="pc-iml__hint">{t('personalContext.imLearning.topNHint')}</p>
           </div>
         </div>
-        <div className="pc-iml__distill">
-          <span className="pc-iml__distill-label">{t('personalContext.imLearning.distillLabel')}</span>
-          <span className="pc-iml__distill-value">
-            {t('personalContext.imLearning.distillDisabled')}
+      </section>
+
+      {/* ── 区块 4：画像蒸馏（与周期设置同级） ── */}
+      <section className="pc-iml__card">
+        <div className="pc-iml__card-head">
+          <h4 className="pc-iml__card-title">
+            {t('personalContext.imLearning.distillTitle')}
+          </h4>
+          <div className="pc-iml__distill-badges">
+            <span
+              className={`pc-iml__badge${distillStatus?.wired ? ' is-ok' : ' is-bad'}`}
+            >
+              {distillStatus?.wired
+                ? t('personalContext.imLearning.distillWired')
+                : t('personalContext.imLearning.distillNotWired')}
+            </span>
+            <span
+              className={`pc-iml__badge${distillStatus?.scheduler_active ? ' is-ok' : ''}`}
+            >
+              {distillStatus?.scheduler_active
+                ? t('personalContext.imLearning.distillSchedulerOn')
+                : t('personalContext.imLearning.distillSchedulerOff')}
+            </span>
+          </div>
+        </div>
+        {distillStatus && !distillStatus.enabled && (
+          <p className="pc-iml__gate">{t('personalContext.imLearning.distillSaveToEnableHint')}</p>
+        )}
+        {distillStatus?.enabled && !config.collection_enabled && (
+          <p className="pc-iml__gate">{t('personalContext.imLearning.distillGateHint')}</p>
+        )}
+        {!distillStatus?.wired && (
+          <p className="pc-iml__gate">{t('personalContext.imLearning.distillNotWiredHint')}</p>
+        )}
+        <div className="pc-iml__field">
+          <span className="pc-iml__label">{t('personalContext.imLearning.distillInterval')}</span>
+          <div className="pc-iml__distill-presets" role="group">
+            {DISTILL_INTERVAL_PRESETS.map((preset) => {
+              const active =
+                matchDistillIntervalPreset(distillDraft.interval_seconds) === preset.id;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={`pc-iml__since-btn${active ? ' is-active' : ''}`}
+                  onClick={() =>
+                    setDistillDraft((prev) => ({
+                      ...prev,
+                      interval_seconds: preset.seconds,
+                    }))
+                  }
+                  disabled={distillSaving}
+                >
+                  {t(`personalContext.imLearning.distillPreset.${preset.id}`)}
+                </button>
+              );
+            })}
+          </div>
+          <input
+            id="pc-iml-distill-interval"
+            className="pc-iml__input"
+            type="number"
+            min={60}
+            step={60}
+            value={distillDraft.interval_seconds}
+            onChange={(e) =>
+              setDistillDraft((prev) => ({
+                ...prev,
+                interval_seconds: Number(e.target.value),
+              }))
+            }
+            disabled={distillSaving}
+          />
+          <p className="pc-iml__hint">{t('personalContext.imLearning.distillIntervalHint')}</p>
+        </div>
+        {distillStatus?.last_error && (
+          <p className="pc-iml__last-error">
+            {t('personalContext.imLearning.distillLastError')}: {distillStatus.last_error}
+          </p>
+        )}
+        <div className="pc-iml__distill-actions">
+          <button
+            type="button"
+            className="pc-iml__btn"
+            onClick={handleDistillRunNow}
+            disabled={
+              !isConnected ||
+              distillBusy ||
+              distillSaving ||
+              !distillStatus?.wired
+            }
+          >
+            {distillBusy ? (
+              <>
+                <Loader2 className="spin" size={14} />
+                {t('personalContext.imLearning.distillRunning')}
+              </>
+            ) : (
+              <>
+                <PlayCircle size={14} />
+                {t('personalContext.imLearning.distillRunNow')}
+              </>
+            )}
+          </button>
+          <button
+            type="button"
+            className="pc-iml__save"
+            onClick={handleSaveDistill}
+            disabled={
+              !isConnected ||
+              !distillDirty ||
+              distillSaving ||
+              !!distillValidationError
+            }
+          >
+            {distillSaving
+              ? t('personalContext.imLearning.distillSaving')
+              : t('personalContext.imLearning.distillSave')}
+          </button>
+        </div>
+        {distillValidationError && (
+          <span className="pc-iml__save-error">
+            {t(`personalContext.imLearning.distillErrors.${distillValidationError}`)}
           </span>
+        )}
+        {!distillValidationError && distillDirty && (
+          <span className="pc-iml__save-hint">
+            {t('personalContext.imLearning.distillDirtyHint')}
+          </span>
+        )}
+
+        <div className="pc-iml__profiles-block">
+          <h5 className="pc-iml__distill-title">
+            {t('personalContext.imLearning.profilesTitle')}
+          </h5>
+          {profileVersions.length === 0 ? (
+            <p className="pc-iml__empty">{t('personalContext.imLearning.profilesEmpty')}</p>
+          ) : (
+            <ul className="pc-iml__profile-list">
+              {profileVersions.map((item) => (
+                <li key={item.job_id} className="pc-iml__profile-row">
+                  <div className="pc-iml__profile-meta">
+                    <span className="pc-iml__profile-id">{item.job_id}</span>
+                    {item.is_current && (
+                      <span className="pc-iml__badge is-ok">
+                        {t('personalContext.imLearning.profilesCurrent')}
+                      </span>
+                    )}
+                    <span className="pc-iml__profile-time">
+                      {formatMs(item.published_at_ms) || '—'}
+                    </span>
+                    <span className="pc-iml__profile-source">{item.source}</span>
+                  </div>
+                  <div className="pc-iml__profile-actions">
+                    <button
+                      type="button"
+                      className="pc-iml__btn"
+                      onClick={() => handlePreviewProfile(item.job_id)}
+                      disabled={previewLoading || !isConnected}
+                    >
+                      {t('personalContext.imLearning.profilesPreview')}
+                    </button>
+                    <button
+                      type="button"
+                      className="pc-iml__btn"
+                      onClick={() => handleActivateProfile(item.job_id)}
+                      disabled={item.is_current || profileActivating || !isConnected}
+                    >
+                      {t('personalContext.imLearning.profilesActivate')}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          {preview && (
+            <div className="pc-iml__preview">
+              <div className="pc-iml__preview-head">
+                <strong>
+                  {t('personalContext.imLearning.profilesPreview')} · {preview.job_id}
+                </strong>
+                <button
+                  type="button"
+                  className="pc-iml__icon-btn"
+                  onClick={() => setPreview(null)}
+                  aria-label={t('personalContext.imLearning.profilesPreviewClose')}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              {preview.truncated && (
+                <p className="pc-iml__hint">
+                  {t('personalContext.imLearning.profilesPreviewTruncated')}
+                </p>
+              )}
+              <h5 className="pc-iml__preview-section">Persona</h5>
+              <pre className="pc-iml__preview-body">{preview.persona_md}</pre>
+              <h5 className="pc-iml__preview-section">Work</h5>
+              <pre className="pc-iml__preview-body">{preview.work_md}</pre>
+            </div>
+          )}
         </div>
       </section>
 

@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 # ── 新三段命名：8 种 canonical 模式 ──
 # 提前到这里定义，因为下面的 WEB_COMPOSABLE_MODES 需要引用其中的两个
 # agent.work.* 串（P6.4：让组合分支接住 Web 前端 wireMode.ts 产出的新串）。
+NEW_AGENT_FLASH = "flash"
 NEW_AGENT_WORK_NORMAL = "agent.work.normal"
 NEW_AGENT_WORK_PLAN = "agent.work.plan"
 NEW_AGENT_CODE_NORMAL = "agent.code.normal"
@@ -114,6 +115,7 @@ TEAM_CANONICAL_MODES: frozenset[str] = frozenset(
 # instead of becoming readable merely because they are not known Team modes.
 SINGLE_AGENT_CANONICAL_MODES: frozenset[str] = frozenset(
     {
+        NEW_AGENT_FLASH,
         NEW_AGENT_WORK_NORMAL,
         NEW_AGENT_WORK_PLAN,
         NEW_AGENT_CODE_NORMAL,
@@ -196,6 +198,10 @@ class ResolvedMode:
         profile: 本次请求使用的 profile（``normal`` / ``code``）。
         normal_mode: 退出 plan 后应回到的 canonical 模式。
         from_web_composition: 是否由 Web 的 mode + work_mode 组合而来。
+        adapter_mode: 实现层 adapter 选择（``agent`` / ``code`` / ``flash``）。
+            它与业务 canonical 分离，避免把普通办公请求的 canonical 改写成
+            ``flash`` 后破坏轨迹、UI 与 Plan 状态判据。
+        adapter_source: adapter 选择的来源，主要用于观测和测试。
     """
 
     manager_mode: str
@@ -208,6 +214,22 @@ class ResolvedMode:
     profile: str
     normal_mode: str
     from_web_composition: bool
+    adapter_mode: str = "agent"
+    adapter_source: str = "default"
+
+
+def resolve_adapter_mode(manager_mode: str) -> str:
+    """把 AgentManager 一级模式映射为底层 adapter 实现选择。
+
+    ``manager_mode`` 描述 AgentManager/factory 使用哪套 facade；``adapter_mode``
+    只描述该 facade 内部应创建的 adapter。普通 team 仍复用 DeepAdapter，因此
+    映射为 ``agent``；code 保持 CodeAdapter；flash 保持 FlashAdapter。
+    """
+    if manager_mode == "code":
+        return "code"
+    if manager_mode == "flash":
+        return "flash"
+    return "agent"
 
 
 def normalize_mode_text(raw_mode: Any) -> str:
@@ -234,8 +256,11 @@ def normalize_work_mode(raw: Any) -> str | None:
 def read_request_work_mode(params: Mapping[str, Any] | None) -> str | None:
     """读取请求中显式携带的 ``work_mode``；缺失或非法时返回 None。
 
-    只有 Web 会携带该字段，因此它同时充当"这是 Web 组合模式请求"的判据。
-    TUI / CLI / IM / cron 都不发送 ``work_mode``，会走历史解析分支。
+    只有 Web 前端用 ``work_mode`` 表达 profile 选择，因此它同时充当"这是 Web
+    组合模式请求"的判据。cron 也会显式携带 ``work_mode``（``job.work_mode``，
+    gateway/cron/scheduler.py），但其 mode 在落库前已被 ``_CRON_JOB_MODE_ALIASES``
+    归一、恒为基础模式，组合结果不变。TUI / CLI / IM 都不发送 ``work_mode``，
+    会走历史解析分支。
     """
     if not isinstance(params, Mapping):
         return None
@@ -420,6 +445,7 @@ def resolve_request_mode(
                 profile="code" if work_mode == "code" else "normal",
                 normal_mode=base_mode_without_plan(canonical_mode),
                 from_web_composition=True,
+                adapter_mode=resolve_adapter_mode(manager_mode),
             )
 
     new_canonical = resolve_new_canonical_mode(mode_text)
@@ -437,6 +463,7 @@ def resolve_request_mode(
             profile="code" if canonical_work_mode == "code" else "normal",
             normal_mode=base_mode_without_plan(canonical_mode),
             from_web_composition=False,
+            adapter_mode=resolve_adapter_mode(manager_mode),
         )
 
     manager_mode, sub_mode, canonical_mode = legacy_resolver(
@@ -461,6 +488,7 @@ def resolve_request_mode(
         profile="code" if manager_mode == "code" else "normal",
         normal_mode=base_mode_without_plan(canonical_mode),
         from_web_composition=False,
+        adapter_mode=resolve_adapter_mode(manager_mode),
     )
 
 
@@ -490,5 +518,6 @@ __all__ = [
     "normalize_work_mode",
     "read_request_work_mode",
     "resolve_new_canonical_mode",
+    "resolve_adapter_mode",
     "resolve_request_mode",
 ]

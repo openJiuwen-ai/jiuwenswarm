@@ -2596,9 +2596,22 @@ class FeishuChannel(BaseChannel):
             options = question.get("options", [])
             if options:
                 actions = []
+                cron_exec_session_id = str(
+                    payload.get("exec_session_id") or payload.get("session_id") or ""
+                ).strip()
+                card_meta = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
                 for option in options:
                     label = option.get("label", "")
-                    # value = json.dumps({"label": label}, ensure_ascii=False)
+                    button_value = {"label": label, "request_id": request_id}
+                    # 只有定时任务卡片带回 cron_*，回调才改走 chat.send 续跑。
+                    if cron_exec_session_id.startswith("cron_"):
+                        button_value["exec_session_id"] = cron_exec_session_id
+                        feishu_chat_id = str(card_meta.get("feishu_chat_id") or "").strip()
+                        feishu_open_id = str(card_meta.get("feishu_open_id") or "").strip()
+                        if feishu_chat_id:
+                            button_value["feishu_chat_id"] = feishu_chat_id
+                        if feishu_open_id:
+                            button_value["feishu_open_id"] = feishu_open_id
                     button_element = {
                         "tag": "button",
                         "text": {
@@ -2606,7 +2619,7 @@ class FeishuChannel(BaseChannel):
                             "content": label
                         },
                         "type": "primary",
-                        "value": {"label": label, "request_id": request_id}
+                        "value": button_value
                     }
                     actions.append(button_element)
 
@@ -2989,15 +3002,58 @@ class FeishuChannel(BaseChannel):
             request_id = action_value.pop("request_id", "")
             if not request_id:
                 raise ValueError("missing request_id")
-            # 构建用户响应（符合 evolution service 期望的格式）
-            answers = [{"selected_options": list(action_value.values())}] if action_value else []
+            exec_session_id = str(action_value.pop("exec_session_id", "") or "").strip()
+            feishu_chat_id = str(action_value.pop("feishu_chat_id", "") or "").strip()
+            feishu_open_id = str(action_value.pop("feishu_open_id", "") or "").strip()
+            selected_label = str(action_value.get("label") or "").strip()
+            if selected_label:
+                answers = [{"selected_options": [selected_label]}]
+            elif action_value:
+                answers = [{"selected_options": list(action_value.values())}]
+            else:
+                answers = []
 
             logger.info(
                 "[FeishuChannel] 发送用户答案: token=%s, answer=%s",
                 token,
                 action_value,
             )
-            msg = Message(
+            if exec_session_id.startswith("cron_"):
+                resume_meta = {
+                    "request_id": token,
+                    "answers": answers,
+                }
+                if feishu_chat_id:
+                    resume_meta["feishu_chat_id"] = feishu_chat_id
+                if feishu_open_id or operator_id:
+                    resume_meta["feishu_open_id"] = feishu_open_id or operator_id
+                msg = Message(
+                    id=token,
+                    type="req",
+                    channel_id=self.channel_id,
+                    session_id=exec_session_id,
+                    params={
+                        "query": "",
+                        "content": "",
+                        "answers": answers,
+                        "request_id": request_id,
+                        "source": "permission_interrupt",
+                        "session_id": exec_session_id,
+                    },
+                    timestamp=time.time(),
+                    ok=True,
+                    req_method=ReqMethod.CHAT_SEND,
+                    is_stream=True,
+                    enable_streaming=True,
+                    provider=self.name,
+                    chat_id=feishu_chat_id or operator_id,
+                    user_id=operator_id,
+                    bot_id=self.config.app_id,
+                    event_type=None,
+                    metadata=resume_meta,
+                )
+            else:
+                msg = Message(
                     id=token,
                     type="event",
                     channel_id=self.channel_id,

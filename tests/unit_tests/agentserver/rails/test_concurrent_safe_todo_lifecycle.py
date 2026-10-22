@@ -138,6 +138,72 @@ async def test_after_task_iteration_persists_memory_completion_before_disk_refre
 
 
 @pytest.mark.asyncio
+async def test_persistent_reminder_stays_pending_outside_the_plan():
+    """A remembered todo must not be completed when the outer loop finishes."""
+    reminder = TodoItem(
+        id="submit_test_report",
+        content="明天下午2点提交测试报告",
+        status=TodoStatus.PENDING,
+        meta_data={"persistent": True},
+    )
+    step = TodoItem(id="slide", content="做一页", status=TodoStatus.PENDING)
+    disk = [reminder, step]
+    tool = SimpleNamespace(
+        load_todos=AsyncMock(return_value=disk),
+        save_todos=AsyncMock(),
+    )
+    rail = module.ConcurrentSafeTaskPlanningRail()
+    rail._find_todo_tool = lambda: tool
+    state = SimpleNamespace(task_plan=TaskPlan(tasks=[
+        TodoItem(
+            id="submit_test_report",
+            content="明天下午2点提交测试报告",
+            status=TodoStatus.COMPLETED,
+            meta_data={"persistent": True},
+        ),
+        TodoItem(id="slide", content="做一页", status=TodoStatus.COMPLETED),
+    ]))
+    agent = SimpleNamespace(load_state=lambda session: state, save_state=Mock())
+    ctx = AgentCallbackContext(
+        agent=agent,
+        session=SimpleNamespace(get_session_id=lambda: "s"),
+        inputs=SimpleNamespace(result={"result_type": "completed", "output": "ok"}),
+    )
+
+    await rail.after_task_iteration(ctx)
+
+    assert reminder.status == TodoStatus.PENDING
+    assert step.status == TodoStatus.COMPLETED
+    saved = tool.save_todos.await_args.args[1]
+    assert [todo.status for todo in saved] == [TodoStatus.PENDING, TodoStatus.COMPLETED]
+    assert [task.id for task in state.task_plan.tasks] == ["slide"]
+
+
+@pytest.mark.asyncio
+async def test_reminder_only_file_clears_the_execution_plan():
+    reminder = TodoItem(
+        id="submit_test_report",
+        content="明天下午2点提交测试报告",
+        status=TodoStatus.PENDING,
+        meta_data={"persistent": True},
+    )
+    tool = SimpleNamespace(load_todos=AsyncMock(return_value=[reminder]))
+    rail = module.ConcurrentSafeTaskPlanningRail()
+    rail._find_todo_tool = lambda: tool
+    state = SimpleNamespace(task_plan=TaskPlan(tasks=[reminder.model_copy(deep=True)]))
+    agent = SimpleNamespace(load_state=lambda session: state, save_state=Mock())
+    ctx = AgentCallbackContext(
+        agent=agent,
+        session=SimpleNamespace(get_session_id=lambda: "s"),
+    )
+
+    await rail._refresh_task_plan_from_todos(ctx)
+
+    assert state.task_plan is None
+    agent.save_state.assert_called()
+
+
+@pytest.mark.asyncio
 async def test_inner_callback_syncs_owner_plan_without_mutating_context():
     rail = module.ConcurrentSafeTaskPlanningRail()
     todo = TodoItem(id="task", content="Task", status=TodoStatus.COMPLETED)

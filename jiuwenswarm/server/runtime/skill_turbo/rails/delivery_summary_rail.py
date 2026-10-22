@@ -9,7 +9,7 @@ skill_acceleration_exec 的 after_tool_call 中、且晚于 StreamEventRail
 
 时序约束（openjiuwen：priority 越小越先执行）：
 StreamEventRail.priority=80 先发 tool_result；本 rail priority=90 后发骨架，
-才能落入 RelayClaw 的 pptTurboSummary 收集窗口。
+才能落入上层前端的 pptTurboSummary 收集窗口。
 """
 
 from __future__ import annotations

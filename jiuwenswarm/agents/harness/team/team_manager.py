@@ -295,6 +295,15 @@ class TeamManager:
         )
         # 当 cancel 请求到达时设置，通知正在执行的 pause 操作中止自身并让 cancel 执行
         self._cancel_requested: dict[str, bool] = {}
+        # session_id → 在途 cancel 拆除的剩余调用数与完成信号（方案 A 闭环缺口 3）。
+        # cancel_session_runtime 全程（含 settle/stop/finalize 慢 await）保持
+        # "拆除在途"：清理可达数十秒，期间到达的 follow-up 请求必须能识别该
+        # 状态并等待收尾（见 team_helpers 的 follow-up 归一化），不得 interact
+        # 进垂死旧回合——否则随后完成的拆除会把旧回合连同 follow-up waiter
+        # 一并带走（epoch 未递增 → 世代校验通过 → chat.error 误报"第一次
+        # 继续失败"）。
+        self._cancel_in_flight_counts: dict[str, int] = {}
+        self._cancel_in_flight_events: dict[str, asyncio.Event] = {}
         # session_id → 最近一次 runtime 被中断拆除的原因（"cancelled" / "paused"）。
         # 供 follow-up waiter 区分"流任务因中断拆除而退出"与"正常 team.completed"：
         # _cancel_requested 在 cancel_session_runtime 内即被 pop，活不到 waiter 醒来
@@ -393,6 +402,60 @@ class TeamManager:
     def _is_current_runtime_epoch(self, session_id: str, epoch: int) -> bool:
         """Return True when no new round has started since ``epoch`` was captured."""
         return self._session_runtime_epochs.get(session_id, 0) == epoch
+
+    def has_pending_cancel(self, session_id: str) -> bool:
+        """该 session 是否有 cancel 拆除尚未收尾（覆盖 settle/stop/finalize 全程）。"""
+        return self._cancel_in_flight_counts.get(session_id, 0) > 0
+
+    async def wait_for_cancel_settled(self, session_id: str, timeout_sec: float) -> bool:
+        """等待在途 cancel 拆除收尾。
+
+        Returns:
+            True: 无在途拆除，或已在时限内收尾。
+            False: 超时仍在途，或跟踪状态失配无法确认（调用方自行决定
+                兜底策略，如回退 interact 路径）。
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout_sec)
+        while self.has_pending_cancel(session_id):
+            event = self._cancel_in_flight_events.get(session_id)
+            if event is None:
+                # 防御：计数与信号失配（_begin/_end 同步成对维护，正常不可达）。
+                # 与超时分支同语义返回 False——无法确认收尾就不谎报已收尾，
+                # 调用方回退既有兜底链，日志/行为均如实反映"未收尾"。
+                logger.warning(
+                    "[TeamManager] cancel in-flight tracking mismatch "
+                    "(treated as unsettled): session_id=%s count=%s",
+                    session_id,
+                    self._cancel_in_flight_counts.get(session_id),
+                )
+                return False
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            try:
+                await asyncio.wait_for(event.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return False
+        return True
+
+    def _begin_cancel_in_flight(self, session_id: str) -> None:
+        """标记该 session 的 cancel 拆除在途（并发 cancel 计数累加）。"""
+        count = self._cancel_in_flight_counts.get(session_id, 0)
+        self._cancel_in_flight_counts[session_id] = count + 1
+        if count == 0:
+            self._cancel_in_flight_events[session_id] = asyncio.Event()
+
+    def _end_cancel_in_flight(self, session_id: str) -> None:
+        """收尾在途 cancel：最后一个调用结束时置位完成信号、清理跟踪状态。"""
+        count = self._cancel_in_flight_counts.get(session_id, 0)
+        if count <= 1:
+            self._cancel_in_flight_counts.pop(session_id, None)
+            event = self._cancel_in_flight_events.pop(session_id, None)
+            if event is not None:
+                event.set()
+        else:
+            self._cancel_in_flight_counts[session_id] = count - 1
 
     def is_session_initialized(self, session_id: str) -> bool:
         """Return whether the session has ever initialized a team runtime."""
@@ -2378,7 +2441,13 @@ class TeamManager:
             caller,
             session_id,
         )
+        cleanup_t0 = time.perf_counter()
         await self._cleanup_runtime_locals(session_id)
+        if caller == "cancel":
+            logger.info(
+                "[TeamManager] lifecycle_timing cancel cleanup_locals duration_ms=%.0f",
+                (time.perf_counter() - cleanup_t0) * 1000,
+            )
         logger.info(
             "[TeamManager] %s: cleanup done, clearing active, session_id=%s",
             caller,
@@ -2502,7 +2571,27 @@ class TeamManager:
         hitting "present in pool but missing from DB" reject_inconsistent errors.
 
         Used for team cancel intent where the session should not be resumed.
+
+        全程标记"拆除在途"（覆盖全部路径含异常）：清理可达数十秒，期间到达
+        的 follow-up 请求靠该状态识别清理窗口并等待收尾（见 team_helpers 的
+        follow-up 归一化），不得把新消息注入垂死旧回合。
         """
+        self._begin_cancel_in_flight(session_id)
+        cancel_t0 = time.perf_counter()
+        try:
+            return await self._cancel_session_runtime_impl(session_id, reason)
+        finally:
+            logger.info(
+                "[TeamManager] lifecycle_timing cancel cancel_total duration_ms=%.0f",
+                (time.perf_counter() - cancel_t0) * 1000,
+            )
+            # 兜底清除 cancel_requested：impl 异常退出也要解除对 pause 的
+            # 抑制，否则后续 pause 会被永久抢占
+            self._cancel_requested.pop(session_id, None)
+            self._end_cancel_in_flight(session_id)
+
+    async def _cancel_session_runtime_impl(self, session_id: str, reason: str = "") -> bool:
+        """cancel_session_runtime 的实现体（"拆除在途"跟踪由外层 wrapper 负责）。"""
         logger.info(
             "[TeamManager] cancel_session_runtime 入口: session_id=%s reason=%s",
             session_id, reason,
@@ -2530,11 +2619,18 @@ class TeamManager:
         )
 
         language = prompt_language_from_team_agent(team_agent)
+        settle_t0 = time.perf_counter() if team_agent is not None else None
         await self._settle_live_cancelled_permission_interrupt(
             session_id,
             team_agent,
             language=language,
         )
+        # Skip the no-agent instant path; HITL settle can be slow when live.
+        if settle_t0 is not None:
+            logger.info(
+                "[TeamManager] lifecycle_timing cancel permission_settle duration_ms=%.0f",
+                (time.perf_counter() - settle_t0) * 1000,
+            )
 
         # 世代校验点 1：上面的 settle 是慢 await（Runner 清理可达数十秒），
         # 期间新回合可能已注册。世代变了 → 本次 cancel 迟到：放弃一切拆除，
@@ -2555,8 +2651,13 @@ class TeamManager:
         if lock.locked():
             team_name = self._resolve_session_team_name(session_id)
             if team_name:
+                stop_t0 = time.perf_counter()
                 await self._stop_runner_team_runtime(
                     session_id, team_name, "cancel: forced"
+                )
+                logger.info(
+                    "[TeamManager] lifecycle_timing cancel stop_runner duration_ms=%.0f",
+                    (time.perf_counter() - stop_t0) * 1000,
                 )
 
 
@@ -2604,8 +2705,13 @@ class TeamManager:
                 # Stop Runner-owned runtime first before cancelling stream task
                 # to avoid gate/teardown races and ensure pool removal
                 if team_name:
+                    stop_t0 = time.perf_counter()
                     runner_stopped = await self._stop_runner_team_runtime(
                         session_id, team_name, "cancel"
+                    )
+                    logger.info(
+                        "[TeamManager] lifecycle_timing cancel stop_runner duration_ms=%.0f",
+                        (time.perf_counter() - stop_t0) * 1000,
                     )
                     await self._stop_runner_team_agent_transport(session_id)
 

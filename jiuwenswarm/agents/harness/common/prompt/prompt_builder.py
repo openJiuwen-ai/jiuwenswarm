@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 import sys
 from enum import IntEnum
-from pathlib import Path
 from typing import Optional
 
 from openjiuwen.harness.prompts import SystemPromptBuilder, PromptSection, resolve_language
@@ -9,16 +8,10 @@ from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_she
 from jiuwenswarm.common.config import get_sandbox_runtime
 from jiuwenswarm.common.utils import logger
 
-from jiuwenswarm.common.utils import (
-    get_user_workspace_dir,
-    get_agent_memory_dir,
-    get_agent_skills_dir,
-    get_agent_workspace_dir,
-    get_deepagent_todo_dir,
-)
+from jiuwenswarm.common.utils import get_user_workspace_dir
 
 
-def _get_config_dir() -> "Path":
+def _get_config_dir():
     return get_user_workspace_dir() / "config"
 
 
@@ -247,10 +240,6 @@ def _identity_prompt(
     language: str,
 ) -> PromptSection:
     config_dir = _get_config_dir()
-    agent_workspace_dir = get_agent_workspace_dir()
-    memory_dir = get_agent_memory_dir()
-    skills_dir = get_agent_skills_dir()
-    todo_dir = get_deepagent_todo_dir()
     os_type = sys.platform
     shell_env_prompt = build_shell_environment_prompt(language, os_type)
 
@@ -296,17 +285,17 @@ JiuwenSwarm 使用独立的内部数据目录保存启动配置、Agent 身份�
 
 这些内部数据目录不等于用户当前处理的项目目录，也不是用户任务中相对路径的默认含义。
 
-| 路径 | 类型 | 用途 | 操作建议 |
+| 逻辑路径 | 类型 | 用途 | 操作建议 |
 |------|------|------|----------|
-| `{config_dir}` | JiuwenSwarm 启动配置目录 | 保存 `config.yaml` 和 `.env` | 只有用户明确要求修改 JiuwenSwarm 自身配置时才访问 |
-| `{agent_workspace_dir}` | Agent 内部数据目录 | 保存身份、记忆、技能、待办和运行状态 | 不要在其中搜索或运行用户项目文件 |
-| `{memory_dir}` | Agent 记忆目录 | 保存持久化记忆 | 将其视为 Agent 记忆的一部分 |
-| `{skills_dir}` | Agent 技能目录 | 保存和读取技能 | 可以读取和调用，不要作为项目目录使用 |
-| `{todo_dir}` | Agent 待办目录 | 保存任务和待办状态 | 用于任务状态管理 |
+| JiuwenSwarm 启动配置目录 | JiuwenSwarm 启动配置目录 | 保存 `config.yaml` 和 `.env` | 只有用户明确要求修改 JiuwenSwarm 自身配置时才访问；绝对路径见「运行时目录上下文」 |
+| Agent 内部数据目录 | Agent 内部数据目录 | 保存身份、记忆、技能、待办和运行状态 | 不要在其中搜索或运行用户项目文件；绝对路径见「运行时目录上下文」 |
+| Agent 内部数据目录/memory | Agent 记忆目录 | 保存持久化记忆 | 将其视为 Agent 记忆的一部分 |
+| Agent 内部数据目录/skills | Agent 技能目录 | 保存和读取技能 | 可以读取和调用，不要作为项目目录使用 |
+| Agent 内部数据目录/todo | Agent 待办目录 | 保存任务和待办状态 | 用于任务状态管理 |
 
 ## 目录理解规则
 
-- 当前项目目录和当前工作目录由后面的“运行时目录上下文”提供。
+- 当前项目目录、当前工作目录以及 Agent 内部数据目录的**绝对路径**，由后面的「运行时目录上下文」提供；不要使用本节逻辑路径名去猜测或拼接盘符路径。
 - 当前项目目录是用户项目的根目录，也是本次任务的 workspace 操作边界。
 - 当前工作目录（cwd）是 Bash 默认执行目录，也是用户任务中相对路径的解析基准。
 - Agent 内部数据目录只保存 Agent 自身数据，不是用户项目。
@@ -378,7 +367,7 @@ JiuwenSwarm 使用独立的内部数据目录保存启动配置、Agent 身份�
 - 非项目型通用产物：当前未绑定项目时，报告、导出文件、图片、数据文件等非项目型产物应放在当前工作目录中的合理位置。
 - Agent 内部数据：Agent 身份、记忆、技能、待办和运行状态，只能保存在 Agent 内部数据目录的对应位置。
 - 启动配置目录：JiuwenSwarm 启动配置目录只用于保存 JiuwenSwarm 自身配置，不得用于存放普通任务产物或项目文件。
-- 不要仅因为 `{agent_workspace_dir}` 的物理目录名包含 `workspace`，就把它当作用户项目的输出目录。
+- 不要仅因为 Agent 内部数据目录的物理路径名包含 `workspace`，就把它当作用户项目的输出目录。
 
 ## 文件发送
 
@@ -412,17 +401,19 @@ Agent identity, memory, skills, todos, and runtime state.
 These internal data directories are not the project currently being handled for the user.
 They are not the default meaning of relative paths in user tasks.
 
-| Path | Type | Purpose | Guidance |
+| Logical path | Type | Purpose | Guidance |
 |------|------|---------|----------|
-| `{config_dir}` | Startup config | Stores `config.yaml` and `.env` | Access only for JiuwenSwarm config tasks |
-| `{agent_workspace_dir}` | Agent data | Stores identity, memory, skills, todos | Not for user project files |
-| `{memory_dir}` | Agent memory directory | Stores persistent memory | Treat it as part of the Agent's memory |
-| `{skills_dir}` | Agent skills | Stores and provides skills | May be read/invoked; not a project directory |
-| `{todo_dir}` | Agent todo directory | Stores tasks and todo state | Use it for task-state management |
+| Startup config directory | Startup config | `config.yaml` / `.env` | Config only; abs path in runtime context |
+| Agent internal data directory | Agent data | identity/memory/skills/todos | Not project files; see runtime context |
+| Agent internal data directory/memory | Agent memory | Persistent memory | Part of Agent memory |
+| Agent internal data directory/skills | Agent skills | Skill storage | Read/invoke; not a project dir |
+| Agent internal data directory/todo | Agent todo | Tasks and todo state | For task-state management |
 
 ## Directory Interpretation Rules
 
-- The current project directory and current working directory are provided later in the runtime directory context.
+- Absolute paths for the current project directory, current working directory, and Agent
+  internal data directory are provided later in the runtime directory context.
+  Do not invent absolute paths from the logical names in this section.
 - The current project directory is the root of the user's project and the workspace boundary for the current task.
 - The current working directory (`cwd`) is Bash's default execution directory
   and the base directory for resolving relative paths in user tasks.
@@ -513,8 +504,8 @@ If the user does not specify a location, follow these rules:
   in their designated locations inside the Agent internal data directory.
 - Startup configuration directory: The JiuwenSwarm startup configuration directory is reserved
   for JiuwenSwarm's own configuration, not ordinary task artifacts or project files.
-- Do not treat `{agent_workspace_dir}` as the user's project output directory merely because
-  its physical directory name contains the word `workspace`.
+- Do not treat the Agent internal data directory as the user's project output directory merely because
+  its physical path name contains the word `workspace`.
 
 ## Sending Files
 

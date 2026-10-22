@@ -43,6 +43,8 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     infer_multimodal_env_removals,
     sync_multimodal_env_omission_state,
 )
+from jiuwenswarm.server.runtime.session_owner_routing import bind_request_to_session_owner
+
 
 logger = logging.getLogger(__name__)
 
@@ -1031,12 +1033,166 @@ class TenantAgentPool:
                 cache_key,
             )
 
+    def find_agent_for_session_nowait(self, session_id: str) -> Any | None:
+        """Scan every cached tenant manager for the agent that owns ``session_id``."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        for manager in self.iter_agent_managers_nowait():
+            find = getattr(manager, "find_agent_for_session_nowait", None)
+            if not callable(find):
+                continue
+            try:
+                agent = find(sid)
+            except Exception:
+                logger.exception(
+                    "[TenantAgentPool] session owner scan failed session_id=%s",
+                    sid,
+                )
+                continue
+            if agent is not None:
+                return agent
+        return None
+
+    def find_agent_for_interrupt_resume_nowait(self, session_id: str) -> Any | None:
+        """Cross-tenant: the agent that still holds this pause, not any old owner."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        best: Any = None
+        best_rank: tuple[int, float] | None = None
+        for manager in self.iter_agent_managers_nowait():
+            scan = getattr(manager, "iter_interrupt_resume_candidates_nowait", None)
+            if not callable(scan):
+                continue
+            try:
+                candidates = scan(sid)
+            except Exception:
+                logger.exception(
+                    "[TenantAgentPool] interrupt resume scan failed session_id=%s",
+                    sid,
+                )
+                continue
+            for rank, agent in candidates:
+                if best_rank is None or rank > best_rank:
+                    best_rank = rank
+                    best = agent
+        return best
+
+    @staticmethod
+    def _is_cron_session_request(request: AgentRequest) -> bool:
+        """Whether this request targets a cron_* execution session."""
+        return str(getattr(request, "session_id", "") or "").strip().startswith("cron_")
+
+    _INTERRUPT_RESUME_SOURCES = frozenset(
+        {"permission_interrupt", "confirm_interrupt", "ask_user_interrupt"}
+    )
+
+    @staticmethod
+    def _is_interrupt_resume_request(request: AgentRequest) -> bool:
+        """HITL / permission resume — not a plain follow-up chat.send."""
+        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
+        source = str(params.get("source") or "").strip()
+        if source not in TenantAgentPool._INTERRUPT_RESUME_SOURCES:
+            return False
+        if not isinstance(params.get("answers"), list):
+            return False
+        return bool(str(params.get("request_id") or "").strip())
+
+    @staticmethod
+    def _is_cron_permission_resume(request: AgentRequest) -> bool:
+        """Legacy helper: cron_* + permission_interrupt (prefer interrupt-resume)."""
+        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
+        return (
+            TenantAgentPool._is_cron_session_request(request)
+            and str(params.get("source") or "") == "permission_interrupt"
+        )
+
+    @staticmethod
+    async def _cron_resume_session_allowed(request: AgentRequest, session_id: str) -> bool:
+        """Cross-tenant cron_* reuse must still pass session ownership (fail-closed)."""
+        try:
+            from jiuwenswarm.gateway.routing.session_index import is_remote_storage
+        except Exception:  # noqa: BLE001
+            return False
+        if not is_remote_storage():
+            return True
+        sid = str(session_id or "").strip()
+        if not sid:
+            return False
+        uid = str(getattr(request, "user_id", None) or "").strip() or "guest"
+        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
+        meta = getattr(request, "metadata", None)
+        meta_dict = meta if isinstance(meta, dict) else {}
+        group_id = (
+            str(meta_dict.get("group_id") or params.get("group_id") or "").strip() or None
+        )
+        bot_id = str(meta_dict.get("bot_id") or params.get("bot_id") or "").strip() or None
+        try:
+            from jiuwenswarm.channels.web.history_store.api import get_session_detail_sync
+
+            detail = await asyncio.to_thread(
+                get_session_detail_sync,
+                sid,
+                user=uid,
+                group_id=group_id,
+                bot_id=bot_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[TenantAgentPool] cron session ownership check failed session_id=%s",
+                sid,
+            )
+            return False
+        return detail is not None
+
+    _CRON_RESUME_FORBIDDEN_TEXT = (
+        "无权操作该定时任务会话，或会话不属于当前用户。"
+    )
+
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """处理非流式请求."""
         guard = self.require_officeclaw_agent(request)
         if guard is not None:
             return guard
+        # Scheme A: 仅审批/HITL 续跑跨租户找回挂着 interrupt 的 Agent；
+        # 普通 cron_* 续聊走本租户 web channel，不强制绑回 __cron__。
+        if self._is_interrupt_resume_request(request):
+            sid = str(request.session_id or "")
+            owned = self.find_agent_for_interrupt_resume_nowait(sid)
+            if owned is not None:
+                if self._is_cron_session_request(request) and (
+                    not await self._cron_resume_session_allowed(request, sid)
+                ):
+                    logger.warning(
+                        "[TenantAgentPool] interrupt resume denied by ownership: "
+                        "session_id=%s user_id=%s",
+                        sid,
+                        getattr(request, "user_id", None),
+                    )
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload={
+                            "event_type": "chat.error",
+                            "error": self._CRON_RESUME_FORBIDDEN_TEXT,
+                            "code": "FORBIDDEN",
+                        },
+                        metadata=getattr(request, "metadata", None),
+                    )
+                logger.info(
+                    "[TenantAgentPool] interrupt resume reuse cross-tenant owner: "
+                    "session_id=%s source=%s",
+                    request.session_id,
+                    (request.params or {}).get("source")
+                    if isinstance(request.params, dict)
+                    else None,
+                )
+                bind_request_to_session_owner(request, owned)
+                return await owned.process_message(request)
         agent_id, service_id, workspace_key = self.extract_ids(request)
+        await self.wait_for_session_prewarm(request.session_id)
         agent_id, service_id = self.resolve_control_rpc_tenant(request, agent_id, service_id)
         cache_key = self._build_cache_key(agent_id, service_id, workspace_key)
         agent_manager = await self._ensure_agent_manager(agent_id, service_id, workspace_key)
@@ -1045,7 +1201,26 @@ class TenantAgentPool:
         finally:
             await self._refresh_agent_manager_cache(cache_key, agent_manager)
 
-    _session_prewarm_tasks: ClassVar[set] = set()
+    _session_prewarm_tasks: ClassVar[dict[str, asyncio.Task[None]]] = {}
+
+    async def wait_for_session_prewarm(self, session_id: str | None) -> None:
+        """Wait for a session.create background prewarm before chat routing.
+
+        The prewarm task owns the first ``get_agent``/``prepare_session`` for
+        this session.  A chat that arrives while it is still running must join
+        that task instead of racing another adapter creation.  Failures are
+        already contained inside the prewarm task; chat then proceeds through
+        the normal get_agent path.
+        """
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        task = self._session_prewarm_tasks.get(sid)
+        if task is None or task.done():
+            return
+        # ``asyncio.wait`` joins without propagating the prewarm task's
+        # exception.  Cancellation of the waiting chat request still propagates.
+        await asyncio.wait({task})
 
     async def prewarm_session_in_background(
         self,
@@ -1054,12 +1229,13 @@ class TenantAgentPool:
         session_id: str | None,
         channel_id: str = "",
         mode: str = "agent",
+        adapter_mode: str | None = None,
         project_dir: str | None = None,
     ) -> None:
         """[PERF 优化③] session.create 成功后后台预热该会话(租户池路径)。
 
         企业版 warm pool 因预热路径缺请求身份而被强制关闭(见
-        agent_warm_pool._prewarm_enabled_by_env),每个新会话首条 chat 仍全额
+        agent_warm_pool.prewarm_enabled_by_env),每个新会话首条 chat 仍全额
         支付 agent 构建 + prepare_session(实测 ~10s)。本方法在 create 上下文
         (身份齐全)中按 process_message_stream 同款租户推导,后台完成同一套
         构建:**不含 LLM 轮次、不写对话历史**。get_agent 按 key 双检锁,与首条
@@ -1076,6 +1252,15 @@ class TenantAgentPool:
         if not session_id:
             return
 
+        sid = str(session_id)
+        existing_task = self._session_prewarm_tasks.get(sid)
+        if existing_task is not None and not existing_task.done():
+            logger.debug(
+                "[PERF] session prewarm already running: session_id=%s",
+                sid,
+            )
+            return
+
         async def _run() -> None:
             started = time.monotonic()
             try:
@@ -1086,9 +1271,12 @@ class TenantAgentPool:
                 manager = await self.get_agent_manager(
                     agent_id, service_id, workspace_key
                 )
+                selected_adapter_mode = adapter_mode or (
+                    "code" if str(mode).startswith("code") else "agent"
+                )
                 agent = await manager.get_agent(
                     channel_id=channel_id or "default",
-                    mode=mode,
+                    mode=selected_adapter_mode,
                     project_dir=project_dir,
                     sub_mode=None,
                     request=request,
@@ -1098,7 +1286,8 @@ class TenantAgentPool:
                 await agent.prepare_session(
                     session_id=session_id,
                     channel_id=channel_id or "default",
-                    mode=("code.normal" if str(mode).startswith("code") else "agent"),
+                    mode=mode,
+                    adapter_mode=selected_adapter_mode,
                     project_dir=project_dir,
                 )
                 logger.info(
@@ -1115,9 +1304,16 @@ class TenantAgentPool:
                 )
 
         try:
-            task = asyncio.create_task(_run(), name=f"session-prewarm-{session_id}")
-            self._session_prewarm_tasks.add(task)
-            task.add_done_callback(self._session_prewarm_tasks.discard)
+            task = asyncio.create_task(_run(), name=f"session-prewarm-{sid}")
+            self._session_prewarm_tasks[sid] = task
+
+            def _discard_session_prewarm(
+                completed: asyncio.Task[None], *, key: str = sid,
+            ) -> None:
+                if self._session_prewarm_tasks.get(key) is completed:
+                    self._session_prewarm_tasks.pop(key, None)
+
+            task.add_done_callback(_discard_session_prewarm)
         except RuntimeError:  # 无运行 loop(理论不可达)静默放弃
             pass
 
@@ -1138,7 +1334,52 @@ class TenantAgentPool:
                 is_complete=True,
             )
             return
+        # Scheme A: 审批/HITL 才跨租户找回挂 pause 的实例；普通续聊走本租户。
+        # 找回后仍须校验会话归属，防止仅凭 session_id 操作他人任务。
+        if self._is_interrupt_resume_request(request):
+            sid = str(request.session_id or "")
+            owned = self.find_agent_for_interrupt_resume_nowait(sid)
+            if owned is not None:
+                if self._is_cron_session_request(request) and (
+                    not await self._cron_resume_session_allowed(request, sid)
+                ):
+                    logger.warning(
+                        "[TenantAgentPool] interrupt resume denied by ownership: "
+                        "session_id=%s user_id=%s",
+                        sid,
+                        getattr(request, "user_id", None),
+                    )
+                    yield AgentResponseChunk(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        payload={
+                            "event_type": "chat.error",
+                            "error": self._CRON_RESUME_FORBIDDEN_TEXT,
+                            "code": "FORBIDDEN",
+                        },
+                        is_complete=True,
+                    )
+                    return
+                logger.info(
+                    "[TenantAgentPool] interrupt resume reuse cross-tenant owner: "
+                    "session_id=%s source=%s",
+                    request.session_id,
+                    (request.params or {}).get("source")
+                    if isinstance(request.params, dict)
+                    else None,
+                )
+                bind_request_to_session_owner(request, owned)
+                async for chunk in owned.process_message_stream(request):
+                    yield chunk
+                return
+            if self._is_cron_session_request(request):
+                logger.warning(
+                    "[TenantAgentPool] interrupt resume has no cross-tenant owner: "
+                    "session_id=%s",
+                    request.session_id,
+                )
         agent_id, service_id, workspace_key = self.extract_ids(request)
+        await self.wait_for_session_prewarm(request.session_id)
         agent_id, service_id = self.resolve_control_rpc_tenant(request, agent_id, service_id)
         cache_key = self._build_cache_key(agent_id, service_id, workspace_key)
         agent_manager = await self._ensure_agent_manager(agent_id, service_id, workspace_key)

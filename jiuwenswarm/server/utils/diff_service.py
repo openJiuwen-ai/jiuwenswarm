@@ -55,6 +55,73 @@ class DiffHistoryExpiredError(RuntimeError):
     """历史 diff 索引仍存在但详情已无法重建。"""
 
 
+def _load_file_ops_data(path: Path) -> dict[str, Any]:
+    """按扩展名加载 file_ops：``.json``（stock 整档 dict）或 ``.jsonl``（flash 追加账本）。
+
+    flash edit_file 的 JSONL 条目 schema 与 stock 一致，``load_flash_history``
+    聚合后即为 stock 的 ``{file_path: [entries]}`` 形状——上层合并/去重/软删
+    逻辑对两种来源无差别。
+    """
+    if path.name.endswith(".jsonl"):
+        try:
+            from jiuwenswarm.agents.harness.flash.tools.flash_file_history import (
+                load_flash_history,
+            )
+        except ImportError:
+            # flash 包被裁剪的发行版里残留的 .jsonl 账本：按空账本降级
+            # （与损坏 JSON 的容忍度对齐——warning + 跳过），不让 ImportError
+            # 穿透上层 ``except (json.JSONDecodeError, OSError)`` 打断整条
+            # diff / rewind 链；stock 账本照常可见（评审意见：懒 import 失败面）。
+            logger.warning(
+                "_load_file_ops_data: flash module unavailable, "
+                "skip jsonl ledger %s",
+                path,
+            )
+            return {}
+        return load_flash_history(path)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _save_file_ops_data(path: Path, data: dict[str, Any]) -> None:
+    """按扩展名写回 file_ops（截断/软删/恢复等低频重写路径专用）。
+
+    JSONL 走 flash 模块的原子重写（与 append 共用 per-path 锁，追加与重写
+    不交错）；JSON 维持 stock 的整文件写法。
+    """
+    if path.name.endswith(".jsonl"):
+        try:
+            from jiuwenswarm.agents.harness.flash.tools.flash_file_history import (
+                rewrite_flash_history,
+            )
+        except ImportError:
+            # 与 _load_file_ops_data 对称：flash 模块缺失时跳过重写并留痕，
+            # 残留账本保持原样（不写半截），调用方（truncate/restore）继续
+            # 处理其余账本。
+            logger.warning(
+                "_save_file_ops_data: flash module unavailable, "
+                "skip rewrite of %s",
+                path,
+            )
+            return
+        rewrite_flash_history(path, data)
+        return
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _entry_sort_ts(ts: Any) -> float:
+    """条目时间戳排序键：无法解析的排最后（稳定排序保留同刻原序）。"""
+    try:
+        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (ValueError, TypeError):
+        return float("inf")
+
+
 class DiffService:
     """提供 turn-based diff 查询服务."""
 
@@ -703,8 +770,12 @@ class DiffService:
         """检查文件名是否是有效的 file_ops 文件.
 
         文件名约定: ``file_ops_{agent_id}_{session_id}.json``,其中 session_id
-        始终是 ``.json`` 前的最后一段。使用 ``_{session_id}.json`` 后缀匹配替代
+        始终是扩展名前的最后一段。使用 ``_{session_id}.json`` 后缀匹配替代
         子串匹配,避免短 session_id 误匹配其他 agent 的 file_ops 文件。
+        flash edit_file 的追加账本 ``file_ops_flash_*_{session_id}.jsonl``
+        遵循同一命名骨架;匹配前先剥掉 ``flash_`` 段,使其与 stock 的
+        ``file_ops_{agent}_...`` 等价处理(否则子代理形态下 agent 段变成
+        ``flash_xxx`` 含下划线,会被 stock 的无下划线校验误拒)。
 
         当 session_id 对应的是父会话时,也接受子 agent 会话(后缀形如
         ``_sub_{type}_{suffix}``)的 file_ops 文件,使 diff 统计能覆盖子 agent
@@ -712,18 +783,23 @@ class DiffService:
         """
         if not name.startswith("file_ops_"):
             return False
-        if not name.endswith(".json"):
+        if name.endswith(".json"):
+            stem = name[: -len(".json")]
+        elif name.endswith(".jsonl"):
+            stem = name[: -len(".jsonl")]
+            if stem.startswith("file_ops_flash_"):
+                stem = "file_ops_" + stem[len("file_ops_flash_"):]
+        else:
             return False
         if not session_id:
             return not require_session
-        suffix = f"_{session_id}.json"
-        if name.endswith(suffix):
+        if stem.endswith(f"_{session_id}"):
             return True
         sub_marker = f"_{session_id}_sub_"
-        marker_pos = name.find(sub_marker, len("file_ops_"))
+        marker_pos = stem.find(sub_marker, len("file_ops_"))
         if marker_pos < 0:
             return False
-        agent_id = name[len("file_ops_"):marker_pos]
+        agent_id = stem[len("file_ops_"):marker_pos]
         return bool(agent_id) and "_" not in agent_id
 
     @staticmethod
@@ -978,7 +1054,7 @@ class DiffService:
         for history_file in paths:
             if history_file.exists():
                 try:
-                    data = json.loads(history_file.read_text(encoding="utf-8"))
+                    data = _load_file_ops_data(history_file)
                     history_priority = history_file_priorities.get(
                         path_key(history_file),
                         HISTORY_PRIORITY_UNKNOWN,
@@ -1040,6 +1116,13 @@ class DiffService:
                                 result_entry_priorities[normalized_path].append(history_priority)
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning("Failed to read agent history file %s: %s", history_file, e)
+
+        # 跨账本（stock JSON + flash JSONL）合并后，同一文件的条目按时间戳
+        # 稳定排序：``get_files_to_restore`` 等还原层取"第一条 >= 目标时间"
+        # 的条目，其正确性依赖时间序——文件扫描顺序（OS iterdir）不应影响
+        # 语义。单账本场景下条目本就按写入时序追加，排序为幂等操作。
+        for entries in result.values():
+            entries.sort(key=lambda e: _entry_sort_ts(e.get("timestamp", "")))
 
         return result
 
@@ -1161,7 +1244,6 @@ class DiffService:
             # First change of this hunk is at opcodes[i]; absorb following
             # changes whose separating equal run is short enough that their
             # context windows bridge the gap (run length <= 2*context_lines).
-            change_start = i
             o_lo = max(0, i1 - context_lines)
             n_lo = max(0, j1 - context_lines)
             last_i2 = i2
@@ -2235,7 +2317,7 @@ class DiffService:
 
         for file_ops_path in file_ops_paths:
             try:
-                data = json.loads(file_ops_path.read_text(encoding="utf-8"))
+                data = _load_file_ops_data(file_ops_path)
                 if not isinstance(data, dict):
                     continue
 
@@ -2267,10 +2349,7 @@ class DiffService:
                         new_data[file_path] = filtered
 
                 if truncated:
-                    file_ops_path.write_text(
-                        json.dumps(new_data, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
+                    _save_file_ops_data(file_ops_path, new_data)
                     logger.info(
                         "truncate_file_ops: cleaned %s (cutoff_ts=%s, soft=%s, marker=%s)",
                         file_ops_path.name, cutoff_ts, soft, marker,
@@ -2318,7 +2397,7 @@ class DiffService:
 
         for file_ops_path in file_ops_paths:
             try:
-                data = json.loads(file_ops_path.read_text(encoding="utf-8"))
+                data = _load_file_ops_data(file_ops_path)
                 if not isinstance(data, dict):
                     continue
 
@@ -2342,10 +2421,7 @@ class DiffService:
                         new_data[file_path] = filtered
 
                 if restored:
-                    file_ops_path.write_text(
-                        json.dumps(new_data, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
+                    _save_file_ops_data(file_ops_path, new_data)
                     logger.info(
                         "restore_rewound_entries: restored %s (cutoff_ts=%s, marker=%s)",
                         file_ops_path.name, cutoff_ts, marker,

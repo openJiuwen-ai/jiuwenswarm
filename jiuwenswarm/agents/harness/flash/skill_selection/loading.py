@@ -7,8 +7,11 @@ import json
 import logging
 import time
 
+from pydantic import ValidationError
 from openjiuwen.core.foundation.llm.schema.message import ToolMessage
 from openjiuwen.harness.rails.base import DeepAgentRail
+
+from jiuwenswarm.common.tool_display import extract_call_goal
 
 from .catalog import directory_id
 from .config import SelectionSettings
@@ -34,9 +37,19 @@ class SkillSelectionLoadRail(DeepAgentRail):
             return
         try:
             raw = ctx.inputs.tool_call.arguments
-            args = SkillSearchInput.model_validate(json.loads(raw) if isinstance(raw, str) else raw)
-            if args.action != 'load':
-                return
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, RecursionError):
+            # Tool dispatch owns malformed arguments; they are not load failures.
+            return
+        if not isinstance(payload, dict) or payload.get('action') != 'load':
+            return
+        try:
+            args = SkillSearchInput.model_validate(payload)
+        except ValidationError:
+            # Leave the call untouched so SkillSearchTool can report a retryable
+            # input error without discarding candidates or restoring the catalog.
+            return
+        try:
             state = ctx.extra.get(self.selection.REUSE)
             ticket = state.tickets.get(args.search_id) if state is not None else None
             if ticket is None:
@@ -58,7 +71,11 @@ class SkillSelectionLoadRail(DeepAgentRail):
             # be shared by parallel tool calls in the same request.
             ctx.flash_selection_load = dict(ticket=ticket, selected=selected,
                                             search_id=args.search_id, started=time.perf_counter())
-            native_args = json.dumps({'skill_name': selected.name, 'relative_file_path': 'SKILL.md'})
+            native_input = {'skill_name': selected.name, 'relative_file_path': 'SKILL.md'}
+            display, _ = extract_call_goal(payload)
+            if display:
+                native_input['call_goal'] = display
+            native_args = json.dumps(native_input)
             ctx.inputs.tool_call.name = 'skill_tool'
             ctx.inputs.tool_call.arguments = native_args
             ctx.inputs.tool_name = 'skill_tool'

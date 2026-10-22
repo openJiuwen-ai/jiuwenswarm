@@ -6,5 +6,14 @@ from jiuwenswarm.server.runtime.workspace.fs_quota_guard import install_write_qu
 from jiuwenswarm.server.runtime.workspace.policy_reload import (
     reload_quota_policies_from_gateway_db,
 )
+from jiuwenswarm.server.runtime.workspace.usage_reconciler import (
+    start_usage_reconciler,
+    stop_usage_reconciler,
+)
 
-__all__ = ["install_write_quota_guard", "reload_quota_policies_from_gateway_db"]
+__all__ = [
+    "install_write_quota_guard",
+    "reload_quota_policies_from_gateway_db",
+    "start_usage_reconciler",
+    "stop_usage_reconciler",
+]

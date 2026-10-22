@@ -6,7 +6,7 @@
 # 环境变量与 web.template.yaml 注入的同名 env 一致(必须全部提供):
 #   WEB_HTTP_PORT / GATEWAY_URL / GATEWAY_WEB_HTTP_URL /
 #   USER_WEB_IDP_TARGET / USER_WEB_MANAGER_TARGET /
-#   JIUWENSWARM_EDITION / LOGIN_AUTH_SIMULATE / WEB_TRANSPORT
+#   JIUWENSWARM_EDITION / LOGIN_AUTH_SIMULATE / WEB_TRANSPORT / WORKSPACE_QUOTA_ENABLED
 #
 # 语义对齐 jiuwenswarm/channels/web/app_web.py,已知差异:
 #   1) /api 分流:/api/sessions*、/api/v1* → Gateway Web HTTP;其余 /api/* →
@@ -48,6 +48,7 @@ server {
     sub_filter '__JIUWENSWARM_EDITION_VALUE__' '${JIUWENSWARM_EDITION}';
     sub_filter '__JIUWEN_LOGIN_AUTH_SIMULATE_VALUE__' '${LOGIN_AUTH_SIMULATE}';
     sub_filter '__JIUWEN_WEB_TRANSPORT_VALUE__' '${WEB_TRANSPORT}';
+    sub_filter '__WORKSPACE_QUOTA_ENABLED_VALUE__' '${WORKSPACE_QUOTA_ENABLED}';
     sub_filter_once on;
     sub_filter_types text/html;
 

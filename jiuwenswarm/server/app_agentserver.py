@@ -60,7 +60,7 @@ from jiuwenswarm.common.openjiuwen_logging import bootstrap_openjiuwen_logging
 _loaded_logging_yaml = bootstrap_openjiuwen_logging()
 
 # --- Now safe to import remaining jiuwenswarm modules ---
-from jiuwenswarm.common.debug_dump import install_async_dump_handler
+from jiuwenswarm.common.debug_dump import install_async_dump_handler, install_fault_log
 from jiuwenswarm.infrastructure.config import Settings
 
 if not _loaded_logging_yaml:
@@ -145,10 +145,12 @@ install_shell_tool_safety_hooks()
 
 # LLM 客户端补丁分两类：
 #   1) 与渠道无关：GLM XML 标签清洗、tip Authorization 保留（Huawei MaaS Basic）、
-#      华为 MaaS x-span-id 注入——OfficeClaw + Huawei MaaS 生产链路硬依赖，无条件应用；
+#      华为 MaaS x-span-id 注入、before_model_http 扩展埋点（模型 HTTP 出口的
+#      公共事件点，积分对账头等扩展字段经此注入）生产链路硬依赖，无条件应用；
 #   2) 仅对 SSE-only 网关有意义：非流式 invoke()（subagent / 心跳等）把
 #      text/event-stream 文本组装成 ChatCompletion——按渠道门控，见下方函数。
 from jiuwenswarm.llm_sse_patch import (
+    apply_before_model_http_hook_patch,
     apply_glm_tool_xml_sanitize_patch,
     apply_huawei_maas_span_id_patch,
     apply_openai_auth_header_patch,
@@ -159,6 +161,7 @@ from jiuwenswarm.llm_sse_patch import (
 apply_openai_auth_header_patch()
 apply_glm_tool_xml_sanitize_patch()
 apply_huawei_maas_span_id_patch()
+apply_before_model_http_hook_patch()
 
 
 def _should_apply_sse_invoke_patch() -> bool:
@@ -432,6 +435,18 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
                 exc_info=True,
             )
 
+    try:
+        from jiuwenswarm.server.runtime.workspace.usage_reconciler import (
+            start_usage_reconciler,
+        )
+
+        start_usage_reconciler()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] workspace usage reconciler start skipped",
+            exc_info=True,
+        )
+
     # 会话 metadata 的字段补全已改为惰性迁移:读取时按需推断并写回磁盘
     # (见 session_metadata._apply_metadata_defaults_with_inference),无需启动全量扫描。
 
@@ -526,12 +541,27 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
     except (NotImplementedError, OSError):
         pass
 
+    # 周期内存回收(gc.collect + malloc_trim):
+    # JIUWENSWARM_GC_RECLAIM_INTERVAL 秒门控,默认关闭。
+    from jiuwenswarm.server.runtime import mem_reclaimer
+    mem_reclaimer.setup()
+
     try:
         await stop_event.wait()
     except (asyncio.CancelledError, KeyboardInterrupt):
         pass
     finally:
         logger.info("[AgentServer] stopping…")
+        try:
+            from jiuwenswarm.server.runtime.workspace.usage_reconciler import (
+                stop_usage_reconciler,
+            )
+
+            await stop_usage_reconciler()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] workspace usage reconciler stop failed: %s", exc
+            )
         try:
             await stop_mcp_registry_runtime()
         except Exception as exc:
@@ -672,6 +702,7 @@ def main() -> None:
             port = 18092
 
     install_async_dump_handler("agentserver")
+    install_fault_log("agentserver")
     try:
         asyncio.run(_run(host=host, port=port))
         if _EXIT_REASON == "unknown":

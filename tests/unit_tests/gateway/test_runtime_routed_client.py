@@ -143,6 +143,13 @@ async def test_reverse_rpc_over_real_http_sse(monkeypatch, stream):
                 received.append(params["jsonrpc_id"])
                 assert output.complete_jsonrpc_response(params["jsonrpc_id"], params["response"])
                 return {"ok": True, "data": {}}, 200
+            # reverse_rpc_ready 在 push 流断开-重连的空窗内瞬态为 False
+            # （SSE EOF → 注销 → 重连 → 注册）。瞬时断言会把该罕见窗口放大成
+            # CI 并行负载下的 flaky；改为有界等待，仅当持续未注册才判定违反契约。
+            for _ in range(100):
+                if registry.reverse_rpc_ready():
+                    break
+                await asyncio.sleep(0.01)
             assert registry.reverse_rpc_ready(), "chat must not race subscriber registration"
             result = await GatewayA2AOutboundToolBackend().call(
                 A2A_TOOL_FIND_AGENTS,
@@ -221,11 +228,22 @@ async def test_reverse_rpc_over_real_http_sse(monkeypatch, stream):
         await chat()
         assert registry.subscriber_count() == 1
         # Force SSE EOF, then verify the next chat waits for re-registration.
+        push_eof = asyncio.Event()
+        push_ready = client._pod_clients[base]._push_ready
+        clear_push_ready = push_ready.clear
+
+        def on_push_eof():
+            clear_push_ready()
+            push_eof.set()
+
+        monkeypatch.setattr(push_ready, "clear", on_push_eof)
         old_subscriber = next(iter(registry._subscribers))
         await registry._subscribers[old_subscriber].sink.finish()
         async with asyncio.timeout(5):
             while old_subscriber in registry._subscribers:
                 await asyncio.sleep(0.01)
+            # Server unregistration can precede the client's receipt of EOF.
+            await push_eof.wait()
         assert (await asyncio.wait_for(chat(), 5)).payload["total"] == 1
         if not stream:
             from jiuwenswarm.gateway.a2a_manager.tool_rpc import A2A_TOOL_DISPATCH_TASK
@@ -1060,6 +1078,37 @@ async def test_create_rebind_failure_degrades_to_legacy_behavior() -> None:
     assert result.ok is True          # 降级：响应不受 rebind 失败影响
     assert len(route.rebinds) == 1    # 确实尝试过
     await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_release_session_evicts_real_id() -> None:
+    """跑完后的释放走 rebind(to=None)，目标是真实会话 id。"""
+    route = _FakeRoute()
+    client = RuntimeRoutedAgentClient(route_client=route, http_client=_FakeHttp())
+    action = await client.release_session("cron_real_1")
+    assert action == "rebound"
+    assert len(route.rebinds) == 1
+    assert route.rebinds[0]["from_session_id"] == "cron_real_1"
+    assert route.rebinds[0]["to_session_id"] is None
+    assert route.rebinds[0]["request_id"]
+
+
+@pytest.mark.asyncio
+async def test_release_session_empty_id_is_noop() -> None:
+    route = _FakeRoute()
+    client = RuntimeRoutedAgentClient(route_client=route, http_client=_FakeHttp())
+    assert await client.release_session("  ") is None
+    assert route.rebinds == []
+
+
+@pytest.mark.asyncio
+async def test_release_session_failure_does_not_raise() -> None:
+    """旧 runtime 无端点或超时时降级，不把调用方的任务打成失败。"""
+    route = _FakeRoute()
+    route.rebind_fail = FatalRouteError("not found", code="VALIDATION", status_code=404)
+    client = RuntimeRoutedAgentClient(route_client=route, http_client=_FakeHttp())
+    assert await client.release_session("cron_real_1") is None
+    assert len(route.rebinds) == 1
 
 
 @pytest.mark.asyncio

@@ -3,11 +3,13 @@
 """flash 工具面包的 rail 侧：统一工具的挂载/提示注入 rail 与精简文件系统 rail。"""
 
 from .flash_memory_rail import FlashMemoryRail
+from .flash_subagent_rail import FlashSubagentRail
 from .flash_todo_rail import FlashTodoRail
 from .slim_sys_operation_rail import SlimSysOperationRail
 
 __all__ = [
     "FlashMemoryRail",
+    "FlashSubagentRail",
     "FlashTodoRail",
     "SlimSysOperationRail",
 ]

@@ -465,17 +465,16 @@ def _adapter_ready_for_followup_execution(monkeypatch: pytest.MonkeyPatch) -> Ji
         get_context_usage=lambda **_kwargs: {},
     )
     adapter._is_session_scoped_adapter = True  # pylint: disable=protected-access
+    model = SimpleNamespace(model_config=SimpleNamespace(model_name="test-model"))
     monkeypatch.setattr(adapter, "_has_valid_model_config", lambda _model_name="": True)
     monkeypatch.setattr(adapter, "_bind_runtime_cron_context", lambda **_kwargs: None)
     monkeypatch.setattr(adapter, "_reset_runtime_cron_context", lambda _tokens: None)
-    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: None)
+    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: model)
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda _model: None)
     monkeypatch.setattr(adapter, "_mark_session_active", lambda _session_id: None)
     monkeypatch.setattr(adapter, "_register_session_agent_task", lambda _session_id: None)
     monkeypatch.setattr(adapter, "_unregister_session_agent_task", lambda _session_id: None)
     monkeypatch.setattr(adapter, "_unmark_session_active", lambda _session_id, **_kwargs: None)
-    monkeypatch.setattr(adapter, "_sync_prompt_attachments_for_request", AsyncMock())
-
     async def _noop_update_runtime_config(_runtime_config):
         return None
 
@@ -542,8 +541,14 @@ async def test_agent_non_stream_slash_followup_continues_into_runner(monkeypatch
         {"query": "/evolve code-runner"},
     )
 
+    # run.context.extra.request_id 由 adapter 逐请求注入，供 ModelRouting rail
+    # 重绑日志的 [req=] 标签（agent 跑在跨请求复用的 task 上，ContextVar 可能是陈旧值）。
     assert seen_inputs == [
-        {"query": "review and evolve code-runner", "_invoke_turn_id": "req-followup"}
+        {
+            "query": "review and evolve code-runner",
+            "run": {"context": {"extra": {"request_id": "req-followup"}}},
+            "_invoke_turn_id": "req-followup",
+        }
     ]
     assert response.ok is True
     assert response.payload == {"content": "agent completed"}
@@ -583,7 +588,11 @@ async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
         chunks.append(chunk)
 
     assert seen_inputs == [
-        {"query": "review and simplify code-runner", "_invoke_turn_id": "req-followup-stream"}
+        {
+            "query": "review and simplify code-runner",
+            "run": {"context": {"extra": {"request_id": "req-followup-stream"}}},
+            "_invoke_turn_id": "req-followup-stream",
+        }
     ]
     assert chunks[0].payload == {"event_type": "chat.delta", "content": "agent delta"}
     assert chunks[-1].is_complete is True
@@ -614,7 +623,13 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(adapter, "_has_valid_model_config", lambda _model_name="": True)
-    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_model_for_request",
+        lambda _request: SimpleNamespace(
+            model_config=SimpleNamespace(model_name="test-model")
+        ),
+    )
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda _model: None)
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
     monkeypatch.setattr(adapter, "_native_image_input_enabled", lambda *_args: False)

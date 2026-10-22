@@ -10,6 +10,7 @@ import {
   WsEvent,
 } from '../types';
 import { getGatewayHttpBase } from '../utils/env';
+import { getDefaultRequestTimeoutMs } from '../utils/requestTimeout';
 import { isEnterprise } from '../edition';
 import {
   getManagerAccessToken,
@@ -25,7 +26,6 @@ type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => v
 type StateHandler = (state: WebConnectionState) => void;
 
 const MAX_RECONNECT_ATTEMPTS = 5;
-const DEFAULT_TIMEOUT_MS = 15000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -656,7 +656,7 @@ export class WebHttpClient {
 
     const controller = new AbortController();
     this.inflight.set(requestId, controller);
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeoutMs = options.timeoutMs ?? getDefaultRequestTimeoutMs();
     const timeoutId = window.setTimeout(() => {
       controller.abort();
     }, timeoutMs);
@@ -1045,6 +1045,11 @@ export class WebHttpClient {
       return managerAuthenticatedFetch(input, init);
     }
     return fetch(input, init);
+  }
+
+  /** 把定时任务监听流上的帧送进现有 chat.* 处理。 */
+  injectEvent(event: WsEvent): void {
+    this.dispatchEvent(event);
   }
 
   private dispatchEvent(event: WsEvent): void {

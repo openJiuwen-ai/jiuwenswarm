@@ -426,12 +426,6 @@ ROUTES: list[RouteSpec] = [
     RouteSpec("POST", "/runtime/browser/actions/restart", ReqMethod.BROWSER_RUNTIME_RESTART.value),
     RouteSpec("POST", "/proactive/actions/tick", ReqMethod.PROACTIVE_TICK.value),
     RouteSpec("POST", "/acp/tool-responses", ReqMethod.ACP_TOOL_RESPONSE.value),
-    # --- Symphony（乐谱式编排）---
-    RouteSpec("POST", "/symphony/actions/plan", ReqMethod.SYMPHONY_PLAN.value),
-    RouteSpec("POST", "/symphony/actions/build-score", ReqMethod.SYMPHONY_BUILD_SCORE.value),
-    RouteSpec("POST", "/symphony/actions/pause-build", ReqMethod.SYMPHONY_PAUSE_BUILD.value),
-    RouteSpec("GET", "/symphony/score-status", ReqMethod.SYMPHONY_SCORE_STATUS.value),
-    RouteSpec("GET", "/symphony/graph", ReqMethod.SYMPHONY_GRAPH.value),
     # --- 渠道配置 ---
     RouteSpec("GET", "/channels/feishu/config", ReqMethod.CHANNEL_FEISHU_GET_CONF.value),
     RouteSpec("PUT", "/channels/feishu/config", ReqMethod.CHANNEL_FEISHU_SET_CONF.value),

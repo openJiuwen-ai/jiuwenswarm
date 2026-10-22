@@ -1279,6 +1279,74 @@ async def test_consume_stream_with_query_launches_watcher_after_runtime_ready(mo
     ]
 
 
+@pytest.mark.anyio
+async def test_consume_stream_clears_initialized_only_after_aclose_succeeds(monkeypatch):
+    """Paused-team follow-up depends on this marker surviving a failed aclose."""
+    cleared: list[str] = []
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            return None
+
+        @staticmethod
+        def clear_active_runtime(session_id: str) -> None:
+            return None
+
+        @staticmethod
+        def pop_stream_task(session_id: str):
+            return None
+
+        @staticmethod
+        def clear_session_initialized(session_id: str) -> None:
+            cleared.append(session_id)
+
+    class _ClosingStream:
+        def __init__(self, *, fail: bool) -> None:
+            self._fail = fail
+            self.aclose_calls = 0
+
+        def __aiter__(self):
+            return self
+
+        def __anext__(self):
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            self.aclose_calls += 1
+            if self._fail:
+                raise RuntimeError("aclose failed")
+
+    async def _release(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(team_helpers, "_await_runner_pool_release", _release)
+
+    ok_stream = _ClosingStream(fail=False)
+    monkeypatch.setattr(team_helpers, "_run_agent_team_streaming", lambda **kwargs: ok_stream)
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-aclose-ok",
+        SimpleNamespace(team_name="spec-team"),
+        "hello",
+    )
+    assert ok_stream.aclose_calls == 1
+    assert cleared == ["sess-aclose-ok"]
+
+    cleared.clear()
+    bad_stream = _ClosingStream(fail=True)
+    monkeypatch.setattr(team_helpers, "_run_agent_team_streaming", lambda **kwargs: bad_stream)
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-aclose-fail",
+        SimpleNamespace(team_name="spec-team"),
+        "hello",
+    )
+    assert bad_stream.aclose_calls == 1
+    assert cleared == []
+
+
 def test_sync_team_identity_metadata_persists_ready_team_for_any_activation(monkeypatch):
     updates: list[dict[str, object]] = []
 
@@ -3094,6 +3162,47 @@ async def test_team_round_settled_rejects_unread_messages(monkeypatch):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("relay_pending", [True, False])
+async def test_team_round_settled_honors_pending_relay_turn(monkeypatch, relay_pending):
+    """A pending relay turn blocks the edge settle; a resolved one lets it pass."""
+
+    class _FakeMessageManager:
+        @staticmethod
+        async def has_unread_messages(*, include_broadcast: bool) -> bool:
+            return False
+
+    class _FakeBackend:
+        message_manager = _FakeMessageManager()
+
+        # A SimpleNamespace backend without this attribute (older backend)
+        # still passes: the probe is hasattr/callable-guarded.
+        async def has_pending_relay_turn(self) -> bool:
+            return relay_pending
+
+    class _FakeMonitorHandler:
+        _monitor = SimpleNamespace(
+            _team_agent=SimpleNamespace(team_backend=_FakeBackend())
+        )
+
+        async def get_team_snapshot(self):
+            return {"members": [{"member_id": "leader", "status": "ready"}], "tasks": []}
+
+    class _FakeManager:
+        @staticmethod
+        def get_monitor_handler(session_id: str):
+            return _FakeMonitorHandler()
+
+        @staticmethod
+        def get_workflow_handler(session_id: str):
+            return None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    settled = await _TeamHelpersTestApi.team_round_settled("officeclaw", "sess-relay")
+    assert settled is (not relay_pending)
+
+
+@pytest.mark.anyio
 async def test_team_round_settled_rejects_active_workflow(monkeypatch):
     class _FakeMonitorHandler:
         async def get_team_snapshot(self):
@@ -3664,6 +3773,7 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
         },
         "session_id": "sess-leader-only",
         "rid": 1,
+        "role": TeamRole.LEADER.value,
     }
     assert not any(event["event_type"] == "chat.llm_usage" for event in broadcasted)
     reasoning_event = next(event for event in broadcasted if event["event_type"] == "chat.reasoning")
@@ -5518,3 +5628,77 @@ async def test_await_runner_pool_release_stops_entry_that_stays_running(monkeypa
     await team_helpers._await_runner_pool_release("oc_team", "sess")
 
     assert stopped == [{"team_name": "oc_team", "session_id": "sess"}]
+
+
+def test_truncate_team_tool_result_clips_nested_raw_output_strings() -> None:
+    limit = team_helpers._TEAM_TOOL_RESULT_TEXT_LIMIT
+    full_markdown = "x" * (limit + 100)
+    short_note = "ok"
+    raw_output = {"result": full_markdown, "note": short_note}
+    parsed = {
+        "event_type": "chat.tool_result",
+        "result": "y" * (limit + 10),
+        "raw_output": raw_output,
+        "tool_name": "read_file_content",
+    }
+
+    clipped = team_helpers._truncate_team_tool_result_event(parsed)
+
+    assert clipped["truncated"] is True
+    assert clipped["original_size"] == (limit + 10) + (limit + 100) + len(short_note)
+    assert clipped["result"] == "y" * limit
+    assert clipped["raw_output"]["result"] == "x" * limit
+    assert clipped["raw_output"]["note"] == short_note
+    assert clipped["tool_name"] == "read_file_content"
+    assert raw_output["result"] == full_markdown
+    assert parsed["raw_output"] is raw_output
+
+
+def test_truncate_team_tool_result_leaves_short_nested_text_untouched() -> None:
+    raw_output = {"result": "short", "rows": ["a", "b"]}
+    parsed = {
+        "event_type": "chat.tool_result",
+        "result": "preview",
+        "raw_output": raw_output,
+    }
+
+    clipped = team_helpers._truncate_team_tool_result_event(parsed)
+
+    assert "truncated" not in clipped
+    assert "original_size" not in clipped
+    assert clipped["raw_output"] is raw_output
+
+
+def test_truncate_team_tool_result_ignores_other_events() -> None:
+    parsed = {"event_type": "chat.delta", "result": "z" * 1000}
+
+    assert team_helpers._truncate_team_tool_result_event(parsed) is parsed
+
+
+def test_truncate_team_tool_result_clips_top_level_list_and_tuple() -> None:
+    limit = team_helpers._TEAM_TOOL_RESULT_TEXT_LIMIT
+    long_text = "x" * (limit + 20)
+    nested_text = "y" * (limit + 5)
+    raw_list = [long_text, "ok", {"note": nested_text}]
+    parsed = {"event_type": "chat.tool_result", "raw_output": raw_list}
+
+    clipped = team_helpers._truncate_team_tool_result_event(parsed)
+
+    assert isinstance(clipped["raw_output"], list)
+    assert clipped["truncated"] is True
+    assert clipped["original_size"] == (limit + 20) + len("ok") + (limit + 5)
+    assert clipped["raw_output"][0] == "x" * limit
+    assert clipped["raw_output"][1] == "ok"
+    assert clipped["raw_output"][2]["note"] == "y" * limit
+    assert raw_list[0] == long_text
+    assert parsed["raw_output"] is raw_list
+
+    raw_tuple = ("z" * (limit + 3), "ok")
+    parsed_tuple = {"event_type": "chat.tool_result", "raw_output": raw_tuple}
+    clipped_tuple = team_helpers._truncate_team_tool_result_event(parsed_tuple)
+
+    assert isinstance(clipped_tuple["raw_output"], tuple)
+    assert clipped_tuple["raw_output"][0] == "z" * limit
+    assert clipped_tuple["raw_output"][1] == "ok"
+    assert clipped_tuple["original_size"] == (limit + 3) + len("ok")
+    assert raw_tuple[0] == "z" * (limit + 3)

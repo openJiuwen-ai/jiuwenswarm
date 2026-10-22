@@ -419,6 +419,24 @@ def test_explicit_petal_snapshot_never_reads_bound_tenant_overlay():
     assert tenant_a_url not in repr((detected, loaded))
 
 
+def test_load_config_passes_model_name_through_unchanged():
+    """模型名原样透传给隔离子进程（不做任何翻译）。"""
+    from jiuwenswarm.agents.harness.common.tools.deepresearch_task_manager import (
+        load_deepresearch_config,
+    )
+
+    base = {"API_BASE": "https://maas.example/v2/", "API_KEY": "k"}
+
+    assert load_deepresearch_config({**base, "MODEL_NAME": "glm-5.2"})["LLM_MODEL_NAME"] == "glm-5.2"
+    assert load_deepresearch_config({**base, "MODEL_NAME": "deepseek-v4.1-flash"})["LLM_MODEL_NAME"] == (
+        "deepseek-v4.1-flash"
+    )
+    # 显式 LLM_MODEL_NAME 优先。
+    assert load_deepresearch_config({**base, "LLM_MODEL_NAME": "glm-5.2", "MODEL_NAME": "deepseek-v4.1-flash"})[
+        "LLM_MODEL_NAME"
+    ] == "glm-5.2"
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [

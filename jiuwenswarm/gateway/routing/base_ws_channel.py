@@ -15,7 +15,7 @@ import uuid
 from abc import abstractmethod
 from typing import Any
 
-from jiuwenswarm.gateway.channel_manager.base import BaseChannel
+from jiuwenswarm.gateway.channel_manager.base import BaseWebChannel
 from jiuwenswarm.gateway.routing.keys import DeliveryTarget, RoutingKey
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 _BROADCAST_FALLBACK_CHANNEL_IDS: frozenset[str] = frozenset()
 
 
-class BaseWsChannel(BaseChannel):
+class BaseWsChannel(BaseWebChannel):
     """WebSocket 通道共享基类。
 
     继承 BaseChannel，提供 _clients_by_key (5 维 RoutingKey → list[ws]) 双向索引，
@@ -53,6 +53,33 @@ class BaseWsChannel(BaseChannel):
         self._send_queues: dict[str, "asyncio.Queue[str | bytes | None]"] = {}
         self._writers: dict[str, asyncio.Task] = {}
         self._outbound_lock = asyncio.Lock()
+        # Channel 连接事件上报回调，由 ChannelManager 注入。
+        # 签名: (event_type: str, channel_type: str, user_id: str) -> None
+        self._channel_event_reporter: Any = None
+
+    # ── Channel 连接事件 ──
+
+    def set_channel_event_reporter(self, reporter: Any) -> None:
+        """注入连接事件上报回调（由 ChannelManager 调用）。"""
+        self._channel_event_reporter = reporter
+
+    def report_connect(self, ws: Any) -> None:
+        """上报连接建立事件。"""
+        if self._channel_event_reporter is None:
+            return
+        user_id = self._extract_ws_user_id(ws)
+        self._channel_event_reporter("connected", self.channel_id, user_id)
+
+    def report_disconnect(self, ws: Any) -> None:
+        """上报连接断开事件。"""
+        if self._channel_event_reporter is None:
+            return
+        user_id = self._extract_ws_user_id(ws)
+        self._channel_event_reporter("disconnected", self.channel_id, user_id)
+
+    def _extract_ws_user_id(self, ws: Any) -> str:
+        """从 ws 对象提取 user_id，子类覆写。"""
+        return ""
 
     # ── ws 池管理 ──
 

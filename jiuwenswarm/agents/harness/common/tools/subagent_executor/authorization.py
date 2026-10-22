@@ -246,6 +246,19 @@ def build_subagent_authorization_rails(
             workspace_root=workspace_root,
             config_provider=effective_config_provider,
         )
+        from openjiuwen.harness.security.skill_authorization import (
+            get_skill_grant_store,
+        )
+
+        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+            FileSkillGrantStore,
+        )
+
+        store = get_skill_grant_store()
+        if isinstance(store, FileSkillGrantStore):
+            sessions_root = store.sessions_root()
+            gate_rail.set_sessions_root(sessions_root)
+            permission_rail.set_sessions_root(sessions_root)
     except Exception:  # noqa: BLE001
         logger.warning(
             "[skill_authorization] subagent wiring rail pair build failed scope=%s",

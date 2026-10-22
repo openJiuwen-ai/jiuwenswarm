@@ -2974,7 +2974,7 @@ Gateway 转发 AgentServer。`skilldev.start`、`skilldev.respond` 为**流式**
 | ------------- | --- | ------ | ---------------------------- |
 | project_id    | 是   | string |                              |
 | branch        | 是   | string |                              |
-| require_clean | 否   | bool   | true 时工作区脏则 `WORKTREE_DIRTY` |
+| require_clean | 否   | bool   | true 时已跟踪文件存在未提交修改则 `WORKTREE_DIRTY`；未跟踪文件不阻止切换
 
 
 **出参**（`payload`，`ok=true`）：`switched`（true）、`previous_branch`、`current_branch`、`status`（Git 状态 payload）

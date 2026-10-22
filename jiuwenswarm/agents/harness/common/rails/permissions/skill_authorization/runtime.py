@@ -11,31 +11,56 @@ logger = logging.getLogger(__name__)
 
 
 def _enabled() -> bool:
-    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
-        get_effective_permissions_config,
-    )
-
     from openjiuwen.harness.security.skill_authorization import (
         is_skill_authorization_enabled,
+    )
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+        get_effective_permissions_config,
     )
 
     return is_skill_authorization_enabled(get_effective_permissions_config())
 
 
-def revoke_main_scope(session_id: str | None, *, reason: str) -> None:
+def _session_store(sessions_root=None):
+    from openjiuwen.harness.security.skill_authorization.grant_store import (
+        peek_skill_grant_store,
+    )
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+        FileSkillGrantStore,
+    )
+
+    store = peek_skill_grant_store()
+    if isinstance(store, FileSkillGrantStore) and sessions_root is not None:
+        return FileSkillGrantStore(
+            sessions_root=lambda: sessions_root, data_root=store.data_root
+        )
+    return store
+
+
+def revoke_main_scope(
+    session_id: str | None, *, reason: str, sessions_root=None
+) -> None:
     """Deactivate main-scope grants and delegated approvals, best-effort."""
     sid = str(session_id or "").strip()
     if not sid:
         return
     try:
-        if not _enabled():
-            return
-        from openjiuwen.harness.security.skill_authorization import get_skill_grant_store
         from openjiuwen.harness.security.skill_authorization.subagent_approval_registry import (
             get_subagent_approval_registry,
         )
 
-        get_skill_grant_store().revoke_grants(sid, "main", reason=reason)
+        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+            FileSkillGrantStore,
+        )
+
+        store = _session_store(sessions_root)
+        if store is None or (
+            not isinstance(store, FileSkillGrantStore) and not _enabled()
+        ):
+            return
+        store.revoke_grants(sid, "main", reason=reason)
         get_subagent_approval_registry().cancel_session(sid)
     except Exception as exc:  # noqa: BLE001 — never mask cancel/error handling
         logger.warning(
@@ -47,14 +72,11 @@ def revoke_main_scope(session_id: str | None, *, reason: str) -> None:
         )
 
 
-def clear_deleted_session(session_id: str) -> None:
-    """Clear existing in-memory state without initializing it while disabled."""
+def clear_deleted_session(session_id: str, *, sessions_root=None) -> None:
+    """Retire session files and cancel pending approvals without initializing a store."""
     sid = str(session_id or "").strip()
     if not sid:
         return
-    from openjiuwen.harness.security.skill_authorization.grant_store import (
-        peek_skill_grant_store,
-    )
     from openjiuwen.harness.security.skill_authorization.subagent_approval_registry import (
         SubagentApprovalRegistry,
     )
@@ -62,7 +84,7 @@ def clear_deleted_session(session_id: str) -> None:
     registry = SubagentApprovalRegistry.peek_instance()
     if registry is not None:
         registry.cancel_session(sid)
-    store = peek_skill_grant_store()
+    store = _session_store(sessions_root)
     if store is not None:
         store.clear_session(sid)
 
@@ -76,7 +98,9 @@ def revoke_deactivated_main_skill(session_id: str, skill_name: str) -> None:
     try:
         if not _enabled():
             return
-        from openjiuwen.harness.security.skill_authorization import get_skill_grant_store
+        from openjiuwen.harness.security.skill_authorization import (
+            get_skill_grant_store,
+        )
 
         store = get_skill_grant_store()
         active = store.get_active(sid, "main")
@@ -110,9 +134,8 @@ def resolve_subagent_approval(
 
     if source == "subagent_skill_load" or request_id.startswith("subagent_skill_load_"):
         kind = SubagentApprovalKind.SKILL_LOAD
-    elif (
-        source == "subagent_tool_permission"
-        or request_id.startswith("subagent_tool_permission_")
+    elif source == "subagent_tool_permission" or request_id.startswith(
+        "subagent_tool_permission_"
     ):
         kind = SubagentApprovalKind.TOOL_PERMISSION
     else:

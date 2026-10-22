@@ -1,14 +1,16 @@
 """model_routing.rail — ModelRoutingRail."""
 from __future__ import annotations
-from copy import deepcopy
+import os
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any, Optional
-from openjiuwen.core.context_engine import TiktokenCounter
+from typing import Any, Callable, Optional
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.common.utils import logger
 from .capability import ModelCapability
+from .classifier import CONTINUATION_CATEGORY, estimate_tokens, validate_score
+from .compressor_sync import sync_agent_compressor_models
 from .types import (
     PriorModelCall, TaskAnalysis, RoutingDecision,
     _agent_model_name, _extract_agent_info, _new_trace_id,
@@ -16,55 +18,60 @@ from .types import (
 )
 
 
-# 四档模式（先写死）：模式名 → 固定 (模型名, 思考深度)。
-#   fast      → deepseek-v4-flash-0731 关闭思考
-#   balanced  → deepseek-v4-flash-0731 中等思考
-#   extreme   → glm-5.2                深度思考
-#   auto      → deepseek-v4-flash-0731 中等思考
-# 具体模型名不在此表内（走 skip 分支，保留 adapter 已应用的具体/默认模型）。
-# 与 relay 前端 GEAR_MODEL_MAP 对齐市场 id（-0731）。
-_MODE_MODEL_MAP: dict[str, str] = {
-    "fast": "deepseek-v4-flash-0731",
-    "balanced": "deepseek-v4-flash-0731",
-    "extreme": "glm-5.2",
-    "auto": "deepseek-v4-flash-0731",
-}
+# auto 档（relay 下发 enable_routing=True）的分类器阈值与切换目标：
+# 分类器给任务打 0-100 分，大于等于 40 才把模型换成 glm-5.3，否则保留当前模型。
+_CLASSIFIER_SCORE_THRESHOLD: int = 40
+_CLASSIFIER_TARGET_MODEL: str = "glm-5.3"
 
-_MODE_THINKING_MAP: dict[str, str] = {
-    "fast": "off",      # 关闭思考
-    "balanced": "medium",  # 中等思考
-    "extreme": "deep",  # 深度思考
-    "auto": "medium",   # 中等思考
-}
+# ``classifier`` 未显式传入时的哨兵，与显式 ``None``（关闭 auto 档路由）区分开。
+_UNSET: Any = object()
 
-# 四档写死映射里的「官方模型」标记：relay 写 models.json 时给 maas binding 打
-# model_provider='huawei_maas'（config.yaml 手工配时也可在条目顶层写同名字段）。
-# 四档查找优先命中此标，避免撞到用户自定义的同名模型；无标则退回第一个同名。
-_MODE_PREFERRED_PROVIDER = "huawei_maas"
+# 懒加载的默认分类器缓存（``_UNSET`` 表示尚未装载）。
+_DEFAULT_CLASSIFIER: Any = _UNSET
 
-# 思考深度 → 直接注入的 llm_call_kwargs（不经 vendor 白名单 / 语义适配层，短路）。
-#   off    → extra_body.thinking.type=disabled（DeepSeek/GLM 通用“关闭思考”）
-#   medium → extra_body.thinking.type=enabled（开启思考，默认深度）
-#   deep   → extra_body.thinking.type=enabled + reasoning_effort=high（思考开到最高）
-# 核心 allowlist 直接透传 extra_body / reasoning_effort。
-_THINKING_KWARGS: dict[str, dict[str, Any]] = {
-    "off": {"extra_body": {"thinking": {"type": "disabled"}}},
-    "medium": {"extra_body": {"thinking": {"type": "enabled"}}},
-    "deep": {"extra_body": {"thinking": {"type": "enabled"}}, "reasoning_effort": "high"},
-}
+
+def model_routing_enabled(config: Any = None) -> bool:
+    """model_routing 总开关：config ``model_routing.enabled``（默认 false）+ env 覆盖。
+
+    单一事实来源：单 agent adapter（``interface_deep._model_routing_enabled``）与 swarm
+    成员 provider（``swarm.model_routing``）共用同一判定，避免两处各读一次开关而漂移。
+    relay 可经 spawn env 注入 ``JIUWENSWARM_MODEL_ROUTING_ENABLED``（进程级，仿
+    ``JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED``）；env 显式设置时优先于 config。
+    """
+    from jiuwenswarm.common.kv_cache_affinity_config import parse_bool
+
+    raw = config.get("model_routing") if isinstance(config, dict) else None
+    enabled = parse_bool(raw.get("enabled")) if isinstance(raw, dict) else False
+    env_val = os.getenv("JIUWENSWARM_MODEL_ROUTING_ENABLED")
+    if env_val is not None and env_val.strip():
+        enabled = parse_bool(env_val)
+    return enabled
+
+
+def _load_default_classifier() -> Optional[Any]:
+    """懒加载内置分类器（``.classifier.classify``），import 失败返回 ``None`` 降级。"""
+    global _DEFAULT_CLASSIFIER
+    if _DEFAULT_CLASSIFIER is _UNSET:
+        try:
+            from .classifier import classify
+
+            _DEFAULT_CLASSIFIER = classify
+        except Exception as exc:  # noqa: BLE001 - 装载失败必须降级而非冒泡
+            logger.warning("[ModelRouting] default classifier unavailable: %s", exc)
+            _DEFAULT_CLASSIFIER = None
+    return _DEFAULT_CLASSIFIER
 
 
 class ModelRoutingRail(DeepAgentRail):
-    """模型路由 Rail —— 产出推荐模型 + 任务分析；按请求的模型选择路由。
+    """模型路由 Rail —— auto 档跑分类器，超阈值时切换模型。
 
-    请求模型选择（前端下拉框，经 relay frame ``params.model_name`` → request.params →
-    ``run_context.extra["model_selection"]``）取值决定行为：
-    - "fast"/"balanced"/"extreme"/"auto" → 四档模式（写死）→ 固定 (模型, 思考深度)；
-    - 具体模型名（非关键字）→ 跳过路由，保留 adapter 已应用的具体/默认模型。
-    始终真切换（set_llm）；日志里体现所选模式（mode=…）。
+    auto 档（带 ``enable_routing`` 开关）跑分类器打分，score >= 40 换成 glm-5.3，
+    否则保留 adapter 已应用的模型；具体模型名 / 空选择走 skip 分支。
 
-    路由在 before_invoke 中执行（每个 invoke 一次）；before_model_call 用于按档位
-    注入思考深度（off/medium/deep）。
+    分类器与 Model 构造器都不需要 adapter 注入：未注入时懒加载内置
+    ``rails/model_routing/classifier.py``，构造器用 openjiuwen 直构兜底。
+
+    路由在 before_invoke 中执行（每个 invoke 一次）。
     """
 
     priority: int = 95  # 早于 TaskPlanningRail(90)，确保路由先生效
@@ -73,27 +80,28 @@ class ModelRoutingRail(DeepAgentRail):
         self,
         capability_table: Optional[list[ModelCapability]] = None,
         *,
+        classifier: Any = _UNSET,
+        model_builder: Optional[Callable[[dict, dict], Any]] = None,
         apply_routing: bool = True,
     ) -> None:
         super().__init__()
         self._capability_table: list[ModelCapability] = capability_table or []
+        # auto 档打分器：async (prompt_text) -> (score, category, difficulty)。
+        # 缺省（_UNSET）→ 懒加载内置实现；显式传 None → 关闭 auto 档路由。
+        self._classifier: Any = classifier
+        # 换 glm-5.3 用的 Model 构造器；不传则用 openjiuwen 直构。入参是当前已建好
+        # 模型的 client config 克隆，凭证（api_base / api_key / 鉴权头）已在其中。
+        self._model_builder: Optional[Callable[[dict, dict], Any]] = model_builder
         self._call_history: list[PriorModelCall] = []
-        self._token_counter = TiktokenCounter()
         self._apply_routing: bool = apply_routing
-        self._request_thinking: str = "default"
-        self._request_mode: str = ""
         self._trace_id: str = _new_trace_id()
 
     # ---- 路由 ---- #
 
     def _resolve_request_selection(self, ctx: AgentCallbackContext) -> str:
-        """每请求读取前端下拉选择值（经 relay frame params.model_name → run_context.extra 注入）。
+        """每请求读取前端下拉选择值（adapter 经 ``run_context.extra["model_selection"]`` 注入）。
 
-        - fast/balanced/extreme/auto → 四档模式（_MODE_MODEL_MAP 写死映射）；
-        - 其它（具体模型名 / 空）→ 跳过路由（返回 ""，before_invoke 走 skip 分支）。
-        注入链：adapter 把 request.params["model_name"] 写入
-        ``inputs["run"]["context"]["extra"]["model_selection"]``，DeepAgent
-        ``_normalize_inputs`` 再把它带进 ``InvokeInputs.run_context.extra``。
+        仅用于日志/决策留痕，不参与路由决策。
         """
         run_context = getattr(getattr(ctx, "inputs", None), "run_context", None)
         extra = getattr(run_context, "extra", None)
@@ -103,33 +111,64 @@ class ModelRoutingRail(DeepAgentRail):
                 return raw.strip()
         return ""
 
-    def _find_cap_by_name(
-        self, name: str, *, prefer_provider: Optional[str] = None
-    ) -> Optional[ModelCapability]:
-        """按 model_name（忽略大小写/空白）在能力表中查找。
+    def _resolve_request_routing_enabled(self, ctx: AgentCallbackContext) -> bool:
+        """每请求读取 auto 档开关（``enable_routing``），先 run_context、再 team 侧兜底。
 
-        ``prefer_provider`` 非空时，在所有同名 cap 里优先返回 ``model_provider``
-        匹配的条目（四档写死映射用，优先 maas 官方模型）；找不到标才退回第一个
-        同名（向后兼容：无标能力表行为不变）。
+        单 agent 走 ``run_context.extra``；team 成员拿不到 run_context，回落到成员
+        自身的 ``BuildContext.request_metadata``（见 :func:`_team_request_metadata`）。
+
+        严格判 ``is True``：任何非布尔真值（含字符串 "true"）都不算开启。
         """
+        run_context = getattr(getattr(ctx, "inputs", None), "run_context", None)
+        extra = getattr(run_context, "extra", None)
+        if isinstance(extra, dict) and extra.get("enable_routing") is True:
+            return True
+        return _team_request_metadata(ctx).get("enable_routing") is True
+
+    def _bind_request_id(self, ctx: AgentCallbackContext) -> None:
+        """把本请求的 request_id 重绑到日志 ContextVar，修正 ``[req=]`` 标签串号。
+
+        agent 执行跑在与 handler **不同的 task**（warm-pool / 长生命周期复用），日志
+        record factory 读到的 ContextVar 可能是**上一个请求**捕获的陈旧值。adapter 已把
+        ``request_id`` 经 ``run_context.extra`` 逐请求注入（与 enable_routing 同一通道，
+        已被证明逐请求正确），这里在 invoke 起点重新绑定，使 rail 及同 task 后续日志
+        带上正确的 ``[req=]`` 标签。
+
+        绑定失败（openjiuwen 未暴露该 API）只降级为 debug 日志，不影响路由决策。
+        """
+        run_context = getattr(getattr(ctx, "inputs", None), "run_context", None)
+        extra = getattr(run_context, "extra", None)
+        rid = extra.get("request_id") if isinstance(extra, dict) else None
+        if not rid:
+            return
+        try:
+            from openjiuwen.extensions.observability.span_context import (
+                set_current_request_id,
+            )
+
+            set_current_request_id(str(rid))
+        except Exception as exc:  # noqa: BLE001 - 重绑失败不影响路由
+            logger.debug("[ModelRouting] rebind request_id failed: %s", exc)
+
+    def _resolve_classifier(self) -> Optional[Any]:
+        """取本次打分用的分类器：显式注入优先，未注入（``_UNSET``）则懒加载内置实现。"""
+        if self._classifier is _UNSET:
+            return _load_default_classifier()
+        return self._classifier
+
+    def _find_cap_by_name(self, name: str) -> Optional[ModelCapability]:
+        """按 model_name（忽略大小写/空白）在能力表中查找，返回首个同名条目。"""
         key = (name or "").strip().lower()
-        preferred = (prefer_provider or "").strip().lower()
-        fallback: Optional[ModelCapability] = None
         for cap in self._capability_table:
-            if (cap.model_name or "").strip().lower() != key:
-                continue
-            if fallback is None:
-                fallback = cap
-            if preferred and (cap.model_provider or "").strip().lower() == preferred:
+            if (cap.model_name or "").strip().lower() == key:
                 return cap
-        return fallback
+        return None
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         """invoke 开始时：重置 trace_id / call_history，执行路由决策。"""
+        self._bind_request_id(ctx)
         self._trace_id = _new_trace_id()
         self._call_history = []
-        self._request_thinking = "default"
-        self._request_mode = ""
 
         try:
             # 从 ctx.inputs.query 提取用户查询文本（before_invoke 时无 messages 列表）
@@ -138,73 +177,18 @@ class ModelRoutingRail(DeepAgentRail):
             input_tokens = self._count_text_tokens(prompt_text)
             agent_info = _extract_agent_info(ctx)
 
-            # --- 四档模式（写死）→ 固定 (模型, 思考深度)；具体模型/空 → 跳过 ---
-            selection = self._resolve_request_selection(ctx)
-            mode_model = _MODE_MODEL_MAP.get(selection)
-            if mode_model is not None:
-                thinking = _MODE_THINKING_MAP.get(selection, "medium")
-                self._request_thinking = thinking
-                self._request_mode = selection
-                cap = self._find_cap_by_name(mode_model, prefer_provider=_MODE_PREFERRED_PROVIDER)
-                if cap is None:
-                    # keep current：不注入档位 thinking kwargs（当前模型 vendor 未知，
-                    # DeepSeek/GLM 风格 extra_body.thinking 对 OpenAI 官方端点会 400）
-                    self._request_thinking = "default"
-                    logger.warning(
-                        "[ModelRouting] mode=%s model=%s not in capability table (%d models); "
-                        "keep current model, thinking=%s",
-                        selection, mode_model, len(self._capability_table), thinking,
-                    )
-                    self._emit_decision(
-                        ctx,
-                        recommended_cap=None,
-                        category=selection,
-                        difficulty=thinking,
-                        input_tokens=input_tokens,
-                        agent_info=agent_info,
-                        reasoning=(
-                            f"mode={selection} model={mode_model} not found; "
-                            f"keep current model, thinking={thinking}"
-                        ),
-                    )
-                    return
-                if cap.model is None:
-                    # keep current（无 Model 对象可切）：同上，不注入 thinking kwargs
-                    self._request_thinking = "default"
-                    logger.warning(
-                        "[ModelRouting] mode=%s model=%s has no Model object (builder missing); "
-                        "cannot switch, thinking=%s",
-                        selection, mode_model, thinking,
-                    )
-                    self._emit_decision(
-                        ctx,
-                        recommended_cap=None,
-                        category=selection,
-                        difficulty=thinking,
-                        input_tokens=input_tokens,
-                        agent_info=agent_info,
-                        reasoning=(
-                            f"mode={selection} model={mode_model} has no Model object; "
-                            f"keep current, thinking={thinking}"
-                        ),
-                    )
-                    return
-                self._emit_decision(
+            # --- auto 档：分类器打分，超阈值才 set_llm 换模型 ---
+            if self._resolve_request_routing_enabled(ctx):
+                await self._route_by_classifier(
                     ctx,
-                    recommended_cap=cap,
-                    category=selection,
-                    difficulty=thinking,
+                    prompt_text=prompt_text,
                     input_tokens=input_tokens,
                     agent_info=agent_info,
-                    reasoning=f"mode={selection} -> model={cap.model_name} thinking={thinking}",
-                )
-                logger.info(
-                    "[ModelRouting] mode=%s -> model=%s thinking=%s",
-                    selection, cap.model_name, thinking,
                 )
                 return
 
-            # --- 具体模型 / 空：不路由，保留 adapter 已应用的具体/默认模型 ---
+            # --- 具体模型 / 空：不路由，保留 adapter 已应用的模型 ---
+            selection = self._resolve_request_selection(ctx)
             self._emit_decision(
                 ctx,
                 recommended_cap=None,
@@ -222,30 +206,185 @@ class ModelRoutingRail(DeepAgentRail):
             logger.warning("[ModelRouting] before_invoke failed: %s", exc, exc_info=True)
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
-        """按请求档位直接注入思考深度（fast=off / balanced=medium / extreme=deep / auto=medium）。
+        """按模型族注入思考参数（经 vendor_map）。
 
-        具体模型（skip 分支）时 ``_request_thinking`` 保持 default，本方法 no-op。
-        直接写 ``ctx.extra["llm_call_kwargs"]``，由 ReActAgent 每次 model call 消费
-        （pop 后合入调用 kwargs）。不经 vendor 白名单：off 用 DeepSeek/GLM 通用的
-        ``extra_body.thinking.type=disabled``，medium 用 ``thinking.type=enabled``，
-        deep 用 ``thinking.type=enabled`` + ``reasoning_effort=high``（核心 allowlist 直接透传）。
+        路由只选模型，不管思考深度：档位关键字已全部收回 relay 侧，这里只剩
+        「具体模型」一种输入 → 仅 GLM-5.3 族注入产品默认 depth（low），其余 no-op。
+        写 ``ctx.extra["llm_call_kwargs"]``，由 ReActAgent 每次 model call 消费。
+        不支持思考控制的模型：adapt 降级为空 kwargs，本方法不写入。
+        显式 ``reasoning_effort``（顶层或 ``extra_body`` 内）优先，default 只补空白。
         """
-        kwargs = _THINKING_KWARGS.get(self._request_thinking)
-        if kwargs is None:
-            return
+        from jiuwenswarm.common.thinking.adapter import adapt_thinking
+        from jiuwenswarm.common.thinking.types import thaw_llm_call_kwargs
+
+        model_name = _agent_model_name(ctx)
+        extra_probe = getattr(ctx, "extra", None)
+        used_cap = extra_probe.get("_model_routing_used_cap") if isinstance(extra_probe, dict) else None
+        if used_cap is not None:
+            cap_name = getattr(used_cap, "model_name", None)
+            if isinstance(cap_name, str) and cap_name.strip():
+                model_name = cap_name.strip()
         try:
             extra = getattr(ctx, "extra", None)
+            if isinstance(extra, dict) and _has_explicit_reasoning_effort(
+                extra.get("llm_call_kwargs")
+            ):
+                return
+            if _has_explicit_reasoning_effort(
+                _model_config_to_dict(_resolve_agent_model_config(ctx))
+            ):
+                return
+            profile = adapt_thinking("default", model_name=model_name)
+            if not profile.injected or not profile.llm_call_kwargs:
+                return
             if not isinstance(extra, dict):
                 return
-            extra["llm_call_kwargs"] = deepcopy(kwargs)
+            kwargs = thaw_llm_call_kwargs(profile.llm_call_kwargs)
+            extra["llm_call_kwargs"] = kwargs
             logger.info(
-                "[ModelRouting] thinking inject mode=%s thinking=%s kwargs=%r",
-                self._request_mode or "(none)",
-                self._request_thinking,
+                "[ModelRouting] thinking inject thinking=%s model=%r kwargs=%r",
+                profile.thinking,
+                model_name,
                 kwargs,
             )
         except Exception as exc:
             logger.debug("[ModelRouting] thinking inject failed: %s", exc)
+
+    async def _route_by_classifier(
+        self,
+        ctx: AgentCallbackContext,
+        *,
+        prompt_text: str,
+        input_tokens: int,
+        agent_info: dict[str, Any],
+    ) -> None:
+        """auto 档：跑分类器给任务打分，score >= 40 时把模型换成 glm-5.3。
+
+        分类器缺失/异常、续写指令（``CONTINUATION_CATEGORY``）、低分 → 保留当前模型。
+        切换时用**当前模型**的 client config 克隆出 glm-5.3（api_base / api_key /
+        鉴权头逐字不变，只换 model_name），经 ``_emit_decision`` 走 set_llm。
+        """
+        classifier = self._resolve_classifier()
+        if classifier is None:
+            logger.warning(
+                "[ModelRouting] enable_routing=true but classifier unavailable; keep current model"
+            )
+            return
+        try:
+            raw_score, category, difficulty = await classifier(prompt_text)
+        except Exception as exc:
+            logger.warning("[ModelRouting] classifier failed: %s", exc, exc_info=True)
+            return
+
+        if category == CONTINUATION_CATEGORY:
+            # 多轮对话里的「继续/同意」不能触发换模型
+            self._emit_decision(
+                ctx,
+                recommended_cap=None,
+                category="skipped",
+                difficulty="skipped",
+                input_tokens=input_tokens,
+                agent_info=agent_info,
+                reasoning="continuation utterance, keep current model",
+            )
+            logger.info("[ModelRouting] enable_routing: continuation, keep current model")
+            return
+
+        score = validate_score(raw_score)
+        if score < _CLASSIFIER_SCORE_THRESHOLD:
+            self._emit_decision(
+                ctx,
+                recommended_cap=None,
+                category=category,
+                difficulty=difficulty,
+                target_score=score,
+                input_tokens=input_tokens,
+                agent_info=agent_info,
+                reasoning=(
+                    f"classifier score={score} < {_CLASSIFIER_SCORE_THRESHOLD}, keep current model"
+                ),
+            )
+            logger.info(
+                "[ModelRouting] enable_routing: score=%d < %d (category=%s difficulty=%s), keep current model",
+                score, _CLASSIFIER_SCORE_THRESHOLD, category, difficulty,
+            )
+            return
+
+        cap = self._build_switch_cap(ctx, _CLASSIFIER_TARGET_MODEL)
+        if cap is None or cap.model is None:
+            self._emit_decision(
+                ctx,
+                recommended_cap=None,
+                category=category,
+                difficulty=difficulty,
+                target_score=score,
+                input_tokens=input_tokens,
+                agent_info=agent_info,
+                reasoning=(
+                    f"classifier score={score} but {_CLASSIFIER_TARGET_MODEL} model unavailable; "
+                    f"keep current"
+                ),
+            )
+            logger.warning(
+                "[ModelRouting] enable_routing: score=%d but cannot build %s; keep current model",
+                score, _CLASSIFIER_TARGET_MODEL,
+            )
+            return
+
+        self._emit_decision(
+            ctx,
+            recommended_cap=cap,
+            category=category,
+            difficulty=difficulty,
+            target_score=score,
+            input_tokens=input_tokens,
+            agent_info=agent_info,
+            reasoning=(
+                f"classifier score={score} >= {_CLASSIFIER_SCORE_THRESHOLD} "
+                f"-> switch to {_CLASSIFIER_TARGET_MODEL}"
+            ),
+        )
+        logger.info(
+            "[ModelRouting] enable_routing: score=%d >= %d (category=%s difficulty=%s) -> set_llm %s",
+            score, _CLASSIFIER_SCORE_THRESHOLD, category, difficulty, _CLASSIFIER_TARGET_MODEL,
+        )
+
+    def _build_switch_cap(
+        self, ctx: AgentCallbackContext, target_model: str
+    ) -> Optional[ModelCapability]:
+        """用**当前模型**的 client config 克隆出 ``target_model`` 的 cap（凭证不变）。
+
+        只换 ``model_name``，其余字段（api_base / api_key / client_provider /
+        Authorization 头 / 超时 / verify_ssl 等）逐字保留 —— 换模型不换 api/key。
+        取不到当前模型配置 → 返回 None，调用方保留当前模型。
+        """
+        try:
+            react_agent = _resolve_react_agent(ctx.agent)
+            cfg = getattr(react_agent, "_config", None) or getattr(react_agent, "config", None)
+            mcc = getattr(cfg, "model_client_config", None) if cfg is not None else None
+            mrc = getattr(cfg, "model_config_obj", None) if cfg is not None else None
+            if mcc is None:
+                # 回退：按当前 model_name 在能力表里找同款（同 api_base/api_key）的 Model
+                current_name = _agent_model_name(ctx)
+                cur_cap = self._find_cap_by_name(current_name) if current_name else None
+                if cur_cap is None or cur_cap.model is None:
+                    return None
+                mcc = cur_cap.model.model_client_config
+                mrc = cur_cap.model.model_config
+            new_mcc = _clone_cfg_with_model_name(mcc, target_model)
+            if new_mcc is None:
+                return None
+            new_mrc = _clone_cfg_with_model_name(mrc, target_model) or {}
+            builder = self._model_builder or _default_model_builder
+            model = builder(new_mcc, new_mrc)
+            if model is None:
+                return None
+            return ModelCapability(model_name=target_model, model_id=target_model, model=model)
+        except Exception as exc:
+            logger.warning(
+                "[ModelRouting] build %s model failed: %s", target_model, exc, exc_info=True
+            )
+            return None
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
         try:
@@ -255,7 +394,7 @@ class ModelRoutingRail(DeepAgentRail):
             output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
             model_name = _agent_model_name(ctx) or "unknown"
             end_time = datetime.now(tz=timezone.utc).isoformat()
-            # 1) 累积到本次 invoke 的前置调用链（完整 OTel span）
+            # 累积到本次 invoke 的前置调用链（完整 OTel span）
             self._call_history.append(
                 PriorModelCall(
                     model=model_name,
@@ -263,7 +402,7 @@ class ModelRoutingRail(DeepAgentRail):
                     output_tokens=output_tokens,
                     iteration=len(self._call_history),
                     trace_id=self._trace_id,
-                    start_time=end_time,  # before_model_call 已移除，无精确 start_time
+                    start_time=end_time,  # 无独立起始钩子，用 end_time 近似
                     end_time=end_time,
                 )
             )
@@ -298,6 +437,7 @@ class ModelRoutingRail(DeepAgentRail):
         ):
             try:
                 react_agent = _resolve_react_agent(ctx.agent)
+                previous_model = getattr(react_agent, "_llm", None)
                 react_agent.set_llm(recommended_cap.model)
                 # 记下实际切到的 cap（同模型多 API 场景靠 model_id 区分）
                 if isinstance(ctx.extra, dict):
@@ -307,14 +447,8 @@ class ModelRoutingRail(DeepAgentRail):
                     or recommended_cap.model_name
                 )
                 if mname:
-                    # 供 RuntimePromptRail 注入「当前模型」用：档位关键字（fast/balanced/
-                    # extreme/auto）是作为 model_name 下发的，runtime_state 与 agent.model_name
-                    # 记的都是路由前的取值，这里落一份路由后真正生效的模型名。
-                    # 必须落进按引用透传的 RunContext：本 rail 的 before_invoke 只注册在外层
-                    # DeepAgent 的 ctx 上，读取方 RuntimePromptRail.before_model_call 却跑在
-                    # 内层 ReActAgent 新建的 ctx 上（extra 是另一个 dict），外层 ctx.extra
-                    # 传不过去；RunContext 则经 effective_inputs 原样带进内层，内层可从
-                    # ctx.extra["run_context"].extra 读回。
+                    # 供 RuntimePromptRail 注入「当前模型」用。外层 rail 写、内层 rail 读，
+                    # 只能落进按引用透传的 run_context（ctx.extra 不跨层）。
                     run_context = getattr(getattr(ctx, "inputs", None), "run_context", None)
                     rc_extra = getattr(run_context, "extra", None)
                     if isinstance(rc_extra, dict):
@@ -352,7 +486,20 @@ class ModelRoutingRail(DeepAgentRail):
                             setattr(ctx.agent, "model_name", mname)
                     except Exception as exc:
                         logger.debug("[ModelRouting] setattr model_name failed: %s", exc)
-                logger.info("[ModelRouting] applied set_llm -> %s", mname or "unknown")
+                # 主对话换模后，同步已缓存的上下文压缩器 / 会话记忆的 Model。它们
+                # 在 agent 创建时把 model_config 烤了进去，不跟着换就会继续拿旧 id
+                # 调上游 → 模型无效、压缩 noop、上下文膨胀。
+                synced = sync_agent_compressor_models(
+                    react_agent,
+                    recommended_cap.model,
+                    host=ctx.agent,
+                    previous_model=previous_model,
+                )
+                logger.info(
+                    "[ModelRouting] applied set_llm -> %s compressor_synced=%s",
+                    mname or "unknown",
+                    synced,
+                )
             except Exception as exc:
                 logger.warning("[ModelRouting] set_llm failed: %s", exc)
         decision = RoutingDecision(
@@ -370,23 +517,117 @@ class ModelRoutingRail(DeepAgentRail):
         if isinstance(ctx.extra, dict):
             ctx.extra["model_routing_decision"] = asdict(decision)
 
-    def _count_text_tokens(self, text: str) -> int:
-        """独立计算文本 token（tiktoken），不依赖模型上报。"""
-        try:
-            return int(self._token_counter.count(text))
-        except Exception:
-            return max(0, len(text) // 4)
+    @staticmethod
+    def _count_text_tokens(text: str) -> int:
+        """粗估文本 token 数（CJK 加权），不依赖模型上报。
+
+        原先走 ``TiktokenCounter``（openjiuwen 内核），但它**在构造函数里**急切调用
+        ``tiktoken.get_encoding()``：缓存未命中（默认缓存目录是 ``%TEMP%/data-gym-cache``，
+        不随包分发）时会同步联网下载 BPE 词表，且 ``requests.get`` 未设超时。而该构造发生在
+        agent 构建路径上（``async create_instance`` 同步调 ``_build_agent_rails``），
+        冷缓存 + 无外网时会阻塞整个事件循环。
+
+        这个值只进决策留痕 ``predicted_input_tokens``（不参与路由判定），近似即可，
+        故直接用 :func:`classifier.estimate_tokens`，不再引入该依赖。
+        """
+        return estimate_tokens(text)
 
 
 # ---- Helpers ---- #
 
 
+def _model_config_to_dict(model_config_obj: Any) -> dict[str, Any]:
+    """Best-effort dict copy of a model request config without mutating it."""
+    if model_config_obj is None:
+        return {}
+    try:
+        if isinstance(model_config_obj, Mapping):
+            return dict(model_config_obj)
+        dump = getattr(model_config_obj, "model_dump", None)
+        if callable(dump):
+            result = dump(exclude_none=True)
+            return result if isinstance(result, dict) else {}
+    except Exception:
+        return {}
+    return {}
+
+
+def _has_explicit_reasoning_effort(kwargs: Any) -> bool:
+    """Return True when a caller explicitly supplied GLM-style effort."""
+    if not isinstance(kwargs, Mapping):
+        return False
+    if "reasoning_effort" in kwargs and kwargs["reasoning_effort"] is not None:
+        return True
+    extra_body = kwargs.get("extra_body")
+    return (
+        isinstance(extra_body, Mapping)
+        and "reasoning_effort" in extra_body
+        and extra_body["reasoning_effort"] is not None
+    )
+
+
+def _resolve_agent_model_config(ctx: AgentCallbackContext) -> Any:
+    """Read the effective inner ReActAgent model request config."""
+    try:
+        react_agent = _resolve_react_agent(getattr(ctx, "agent", None))
+        cfg = getattr(react_agent, "_config", None) or getattr(react_agent, "config", None)
+        return getattr(cfg, "model_config_obj", None)
+    except Exception:
+        return None
+
+
+def _clone_cfg_with_model_name(cfg_obj: Any, model_name: str) -> Optional[dict]:
+    """把 openjiuwen 配置对象（pydantic）或 dict 摊成 dict，只替换 ``model_name``。
+
+    其余字段原样保留，实现「换模型不换 api/key」。
+    既没有 ``model_dump`` 也不是 dict → 返回 None（调用方放弃切换）。
+    """
+    if cfg_obj is None:
+        return None
+    dump = getattr(cfg_obj, "model_dump", None)
+    if callable(dump):
+        try:
+            fields = dump()
+        except Exception:
+            return None
+        if not isinstance(fields, dict):
+            return None
+        return {**fields, "model_name": model_name}
+    if isinstance(cfg_obj, dict):
+        return {**cfg_obj, "model_name": model_name}
+    return None
+
+
+def _team_request_metadata(ctx: AgentCallbackContext) -> dict[str, Any]:
+    """从成员自身的 ``BuildContext`` 取 ``request_metadata``（team 成员拿不到 run_context）。
+
+    ``ctx.agent`` 就是成员的 ``NativeHarness``，其 ``build_context`` 是 jiuwenswarm 的
+    ``SwarmBuildContext``，``request_metadata`` 由 assembly 塞进 ``build_context_seed``
+    还原到成员侧。取不到（单 agent / 非 swarm）→ 空 dict。
+    """
+    build_context = getattr(getattr(ctx, "agent", None), "build_context", None)
+    metadata = getattr(build_context, "request_metadata", None)
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _default_model_builder(mcc_fields: dict, mco_fields: dict) -> Any:
+    """无注入 builder 时的兜底构造（openjiuwen 直构）。
+
+    入参是当前已建好模型的 client config 克隆，鉴权头已在其中，故直构也带得上凭证。
+    """
+    from openjiuwen.core.foundation.llm import Model, ModelClientConfig
+    from openjiuwen.core.foundation.llm.model_clients.base_model_client import ModelRequestConfig
+
+    return Model(
+        model_client_config=ModelClientConfig(**mcc_fields),
+        model_config=ModelRequestConfig(**mco_fields),
+    )
+
+
 def _resolve_react_agent(agent: Any) -> Any:
     """Return the inner ReActAgent if *agent* is a DeepAgent, else *agent* itself.
 
-    DeepAgent does not expose ``set_llm``; its inner ``_react_agent``
-    (a ReActAgent) does.  This mirrors the adapter-level pattern in
-    ``interface_deep._apply_model_to_react_agent``.
+    DeepAgent does not expose ``set_llm``; its inner ``_react_agent`` does.
     """
     if callable(getattr(agent, "set_llm", None)):
         return agent

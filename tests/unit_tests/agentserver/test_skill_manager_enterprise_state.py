@@ -254,6 +254,142 @@ def test_enterprise_uninstall_resolves_origin_kept_only_on_local_skills(tmp_path
     assert restored.get_local_skills() == []
 
 
+def test_enterprise_uninstall_falls_back_when_only_local_skills_exist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """半安装只写了 local_skills、installed_plugins 没有同名行时仍能卸载。"""
+    warnings: list[str] = []
+
+    def _capture_warning(message: str, *args: object, **_kwargs: object) -> None:
+        warnings.append(message % args if args else message)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skill_manager.logger.warning",
+        _capture_warning,
+    )
+    SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    skill_dir = _write_skill(tmp_path, "demo-skill")
+    state_file = tmp_path / "skills" / "skills_state.json"
+    state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {
+        "marketplaces": [],
+        "installed_plugins": [],
+        "local_skills": [],
+    }
+    state["installed_plugins"] = []
+    state["local_skills"] = [{
+        "name": "demo-skill",
+        "origin": "local:demo-skill",
+        "source": "local",
+    }]
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+
+    restored = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    result = asyncio.run(restored.handle_skills_web_uninstall({
+        "name": "demo-skill",
+        "origin": "local:demo-skill",
+    }))
+
+    assert result == {"success": True, "name": "demo-skill"}
+    assert any("only local_skills has skill" in item for item in warnings)
+    assert not skill_dir.exists()
+    assert restored.list_skill_installations() == []
+    assert restored.get_local_skills() == []
+
+
+def test_enterprise_uninstall_fallback_keeps_other_origin_plugin_row(
+    tmp_path: Path,
+) -> None:
+    """同名但 origin 不同时仍走兜底：清掉 local_skills，保留另一条插件记录。
+
+    磁盘按技能名只有一份目录，卸载会删掉这个目录。
+    """
+    manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    skill_dir = _write_skill(tmp_path, "demo-skill")
+    plugin = manager.record_skill_installation(
+        name="demo-skill",
+        source_type="user",
+        origin="clawhub:owner/slug",
+        source="clawhub",
+    )
+    state_file = tmp_path / "skills" / "skills_state.json"
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    state["local_skills"] = [{
+        "name": "demo-skill",
+        "origin": "local:demo-skill",
+        "source": "local",
+    }]
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+
+    restored = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    result = asyncio.run(restored.handle_skills_web_uninstall({
+        "name": "demo-skill",
+        "origin": "local:demo-skill",
+    }))
+
+    assert result == {"success": True, "name": "demo-skill"}
+    assert not skill_dir.exists()
+    assert restored.get_local_skills() == []
+    remaining = restored.list_skill_installations()
+    assert len(remaining) == 1
+    assert remaining[0]["origin"] == plugin["origin"]
+    assert remaining[0]["name"] == "demo-skill"
+
+
+def test_enterprise_uninstall_does_not_fallback_when_local_name_mismatches(
+    tmp_path: Path,
+) -> None:
+    SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    skill_dir = _write_skill(tmp_path, "demo-skill")
+    state_file = tmp_path / "skills" / "skills_state.json"
+    state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {
+        "marketplaces": [],
+        "installed_plugins": [],
+        "local_skills": [],
+    }
+    state["installed_plugins"] = []
+    state["local_skills"] = [{
+        "name": "other-skill",
+        "origin": "skillhub:8",
+        "source": "skillhub",
+    }]
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+
+    restored = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    result = asyncio.run(restored.handle_skills_web_uninstall({
+        "name": "demo-skill",
+        "origin": "skillhub:8",
+    }))
+
+    assert result["success"] is False
+    assert result["error_code"] == "not_found"
+    assert skill_dir.exists()
+
+
+def test_enterprise_web_uninstall_logs_when_skill_is_not_installed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[str] = []
+
+    def _capture_warning(message: str, *args: object, **_kwargs: object) -> None:
+        warnings.append(message % args if args else message)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skill_manager.logger.warning",
+        _capture_warning,
+    )
+    manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    result = asyncio.run(manager.handle_skills_web_uninstall({
+        "name": "missing-skill",
+        "origin": "local:missing-skill",
+    }))
+
+    assert result["success"] is False
+    assert result["error_code"] == "not_found"
+    assert any("web uninstall not found" in item and "missing-skill" in item for item in warnings)
+
+
 def test_enterprise_skills_list_does_not_wait_for_marketplace_sync(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

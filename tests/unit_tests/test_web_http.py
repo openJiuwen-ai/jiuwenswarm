@@ -105,6 +105,13 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
         "jiuwenswarm.gateway.channel_manager.web.trajectory_http",
         trajectory,
     )
+    diagnosis = ModuleType("jiuwenswarm.gateway.channel_manager.web.diagnose_http")
+    diagnosis.attach_diagnose_routes = lambda app, channel, **kwargs: None
+    monkeypatch.setitem(
+        sys.modules,
+        "jiuwenswarm.gateway.channel_manager.web.diagnose_http",
+        diagnosis,
+    )
 
     # web_http_app imports timeout helpers from web_http_server (stdlib-only).
     _load_module(
@@ -514,6 +521,25 @@ def test_history_json_collects_messages(app_with_mock):
     assert data["messages"][0]["content"] == "hi"
     assert data["page_idx"] == 1
     assert dispatch.await_args.kwargs["params"]["page_idx"] == 1
+
+
+def test_history_database_fallback_preserves_error_event_type(app_with_mock, monkeypatch):
+    from starlette.requests import Request
+
+    index = ModuleType("jiuwenswarm.gateway.routing.session_index")
+    index.is_remote_storage = lambda: True
+    monkeypatch.setitem(sys.modules, index.__name__, index)
+    history = ModuleType("jiuwenswarm.channels.web.history_store.api")
+    history.get_session_detail_strict_sync = lambda *args, **kwargs: {
+        "messages": [{"role": "assistant", "event_type": "chat.error",
+                      "content": "cron failed", "timestamp": 1}],
+    }
+    monkeypatch.setitem(sys.modules, history.__name__, history)
+    request = Request({"type": "http", "headers": [(b'x-user-id', b'user')]})
+    module = sys.modules["jw_web_http_app_under_test"]
+    page = asyncio.run(module._history_page_from_pg(request, {"session_id": "s1", "page_idx": 1}))
+    assert page["messages"][0]["event_type"] == "chat.error"
+    assert page["messages"][0]["content"] == "cron failed"
 
 
 def test_doc_ui_and_openapi(app_with_mock):
