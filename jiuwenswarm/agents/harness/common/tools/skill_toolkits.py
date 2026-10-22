@@ -370,6 +370,29 @@ class SkillToolkit:
             "skill_file": skill_file,
         }
 
+    def _resolve_installed_from_disk(self, skill_name: str) -> dict[str, Any] | None:
+        """内存列表未命中时，从 skills 目录解析已安装技能。
+
+        ``skills.import_local`` 由共享的 stateless facade 处理，可能在另一
+        SkillManager 实例上落盘；本实例的 ``_state`` 是构造时快照，因而看不到
+        刚导入的技能。WS 的 ``skills.uninstall`` 以磁盘目录为准，工具侧也须
+        如此，避免对仍然存在的目录误报「技能未安装」。
+        """
+        meta = self._get_skill_meta(skill_name)
+        if not meta:
+            return None
+        skill_dir = str(meta.get("skill_dir") or "").strip()
+        if not skill_dir:
+            return None
+        canonical_name = Path(skill_dir).name
+        if not canonical_name:
+            return None
+        return {
+            "name": canonical_name,
+            "display_name": canonical_name,
+            "source": "local",
+        }
+
     @staticmethod
     def _match_installed_item(
         items: list[dict[str, Any]], query: str
@@ -706,6 +729,9 @@ class SkillToolkit:
                     "detail": "Built-in skills cannot be uninstalled.",
                 }
 
+            # 技能可能由其它 facade 的 import_local 落盘，本实例内存 state 仍是
+            # 旧快照；先重载磁盘 state，再以目录真值兜底（见 _resolve_installed_from_disk）。
+            self._manager.reload_state()
             installed_payload = await self._list_installed_skills()
             if not installed_payload.get("success"):
                 return {
@@ -720,6 +746,8 @@ class SkillToolkit:
                 list(installed_payload.get("items") or []),
                 skill_name,
             )
+            if installed_item is None:
+                installed_item = self._resolve_installed_from_disk(skill_name)
             if installed_item is None:
                 return {
                     "success": False,
