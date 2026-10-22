@@ -256,6 +256,18 @@ def test_sdk_preservation_is_complete_stable_and_repeatable(tmp_path, preservati
     assert len(list((npm.parent / "external-cli-preserved").glob("*/manifest.json"))) == 1
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows DPAPI")
+def test_upgrade_snapshot_rejects_invalid_ciphertext():
+    import base64
+    from jiuwenswarm.common import windows_upgrade_config
+
+    with pytest.raises(ValueError):
+        windows_upgrade_config._decrypt_snapshot("not valid base64!")
+    with pytest.raises(OSError) as error:
+        windows_upgrade_config._decrypt_snapshot(base64.b64encode(b"not a DPAPI blob").decode("ascii"))
+    assert error.value.winerror != 0
+
+
 @pytest.mark.parametrize("concurrent_change", [False, True])
 def test_legacy_uninstaller_config_reset_is_recovered_without_overwriting_changes(tmp_path, preservation_runner, monkeypatch, concurrent_change):
     from jiuwenswarm.common import config, utils, windows_upgrade_config
