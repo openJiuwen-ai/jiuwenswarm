@@ -36,15 +36,17 @@ _RESPONSE_SECTION_NAMES = (
 def _a2ui_boost_prompt() -> PromptSection:
     """a2ui 强化提示：priority 117（THINKING_DISCIPLINE 115 之后、FINAL_VISIBLE_REPLY 120 之前），
     强化 a2ui 触发倾向、抵消 soul 结构化输出对 a2ui 的稀释——交互场景必须输出 a2ui-json、
-    禁止 markdown 模拟表单。仅约束执行前的任务细节收集/预确认，不冲突 FINAL_VISIBLE_REPLY(120，管工具执行后的最终纯文本轮)。"""
+    禁止 markdown 模拟表单。只豁免最终纯文本总结轮（FINAL_VISIBLE_REPLY(120) 管的那一轮），
+    中间任何需要用户输入/选择的轮次（含工具执行后用 a2ui 呈现结果让用户挑选）都必须出 a2ui-json。"""
     cn = (
         "# A2UI 是交互场景的唯一正确输出格式\n"
         "当用户的请求需要交互式收集信息（如选择、输入、确认等），"
         "必须输出合法的 `<a2ui-json>` 块。"
         "不要用 markdown 列表、纯文字选项列表或伪按钮文本模拟表单——"
         "markdown 模拟表单不可交互，a2ui 可用时禁止使用。"
-        "此规则仅适用于工具执行前的信息收集阶段；"
-        "工具执行完成后的最终回复以纯文本为准。"
+        "本规则只豁免最终纯文本总结轮（工具/任务全部完成后的收尾回复）；"
+        "中间轮次只要需要用户提供输入或选择（包括工具搜索出结果后让用户从中挑选），"
+        "都必须用 a2ui-json。"
     )
     en = (
         "# A2UI is the only correct output format for interactive scenarios\n"
@@ -54,8 +56,10 @@ def _a2ui_boost_prompt() -> PromptSection:
         "Do NOT use markdown lists, plain-text option lists, or pseudo-button "
         "text to simulate forms — markdown mock forms are not interactive and "
         "are forbidden when a2ui is available. "
-        "This rule applies only to the information-gathering phase before tool "
-        "execution; the final reply after tools complete should be plain text."
+        "This rule exempts ONLY the final plain-text wrap-up turn (after all "
+        "tools/tasks complete). In any intermediate turn where the user must "
+        "provide input or make a choice — including picking among tool search "
+        "results — you must use a2ui-json."
     )
     return PromptSection(
         name=LocalSectionName.A2UI_BOOST,
