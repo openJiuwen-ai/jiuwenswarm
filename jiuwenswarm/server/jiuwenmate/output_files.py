@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import HostWorkspaceAccess, WorkspaceStore
+from jiuwenswarm.server.jiuwenmate.presentation_package import normalize_presentation_package
 from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
 from openjiuwen.harness.persistent_agent import ExecutionContext, OutputPayload
 from openjiuwen.harness.persistent_agent.workspace import resolve_read_path, validate_read_scope
@@ -113,6 +114,7 @@ class OutputFileStore:
         target = self.path(execution.namespace_id, output)
         try:
             if target.stat().st_size == output.file_size:
+                normalize_presentation_package(target)
                 return
         except FileNotFoundError:
             pass
@@ -127,6 +129,7 @@ class OutputFileStore:
         private_dir(target.parent.parent)
         private_dir(target.parent)
         self._copy(Path(source), target, output.file_ref, output.file_size)
+        normalize_presentation_package(target)
 
     @staticmethod
     def _copy(source: Path, target: Path, file_ref: str, file_size: int) -> None:

@@ -11,6 +11,7 @@ import {
   isPending,
   mergeChatRequest,
   formatSharedFileSize,
+  latestSharedFiles,
   toActivity,
   toChatRequest,
   toColleague,
@@ -232,6 +233,7 @@ const wireConversation = {
   agent_id: 'agent-1',
   conversation_id: 'conv-1',
   title: '今天进展',
+  last_message: '继续查看昨天的进展',
   created_at: '2026-10-14T09:00:00+00:00',
   updated_at: '2026-10-14T09:00:00+00:00',
 };
@@ -249,7 +251,12 @@ test('chat calls send the agent, conversation, text and message id and read requ
   assert.equal(sent.request.status, 'queued');
   assert.equal(sent.request.conversationId, 'conv-1');
   assert.deepEqual(sent.request.replies, []);
-  assert.deepEqual(sent.conversation, { id: 'conv-1', title: '今天进展', updatedAt: '2026-10-14T09:00:00+00:00' });
+  assert.deepEqual(sent.conversation, {
+    id: 'conv-1',
+    title: '今天进展',
+    updatedAt: '2026-10-14T09:00:00+00:00',
+    lastMessage: '继续查看昨天的进展',
+  });
   assert.deepEqual((await api.history('agent-1', 'conv-1')).map((item) => item.text), ['今天进展']);
   assert.deepEqual((await api.getRequest('req-1')).replies, ['进展如下']);
   assert.deepEqual(calls, [
@@ -304,6 +311,7 @@ test('a handed-off file becomes a download card and ignores foreign links', () =
       {
         output_id: 'out-file',
         name: '周报.md',
+        path: 'reports/周报.md',
         size: 1280,
         caption: '本周周报',
         download_url: '/file-api/download?token=abc',
@@ -322,6 +330,7 @@ test('a handed-off file becomes a download card and ignores foreign links', () =
     {
       outputId: 'out-file',
       name: '周报.md',
+      path: 'reports/周报.md',
       size: 1280,
       caption: '本周周报',
       downloadUrl: '/file-api/download?token=abc',
@@ -329,6 +338,7 @@ test('a handed-off file becomes a download card and ignores foreign links', () =
     {
       outputId: 'out-bad',
       name: 'secret.md',
+      path: null,
       size: 8,
       caption: null,
       downloadUrl: null,
@@ -345,14 +355,19 @@ test('conversation calls list, rename and delete by agent and conversation id', 
   const { calls, api } = recorder({
     [JIUWENMATE_METHODS.conversationList]: { conversations: [wireConversation, { ...wireConversation, conversation_id: 'conv-0' }] },
     [JIUWENMATE_METHODS.conversationRename]: { conversation: { ...wireConversation, title: '周报' } },
+    [JIUWENMATE_METHODS.conversationPin]: { conversation: { ...wireConversation, pinned: true } },
     [JIUWENMATE_METHODS.conversationDelete]: { deleted: true },
   });
-  assert.deepEqual((await api.listConversations('agent-1')).map((item) => item.id), ['conv-1', 'conv-0']);
+  const conversations = await api.listConversations('agent-1');
+  assert.deepEqual(conversations.map((item) => item.id), ['conv-1', 'conv-0']);
+  assert.equal(conversations[0].lastMessage, '继续查看昨天的进展');
   assert.equal((await api.renameConversation('agent-1', 'conv-1', '周报')).title, '周报');
+  assert.equal((await api.setConversationPinned('agent-1', 'conv-1', true)).pinned, true);
   await api.deleteConversation('agent-1', 'conv-1');
   assert.deepEqual(calls, [
     [JIUWENMATE_METHODS.conversationList, { agent_id: 'agent-1' }],
     [JIUWENMATE_METHODS.conversationRename, { agent_id: 'agent-1', conversation_id: 'conv-1', title: '周报' }],
+    [JIUWENMATE_METHODS.conversationPin, { agent_id: 'agent-1', conversation_id: 'conv-1', pinned: true }],
     [JIUWENMATE_METHODS.conversationDelete, { agent_id: 'agent-1', conversation_id: 'conv-1' }],
   ]);
 });

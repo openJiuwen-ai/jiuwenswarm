@@ -1,17 +1,23 @@
 import { useTranslation } from 'react-i18next';
 import sleepingBee from '../../../assets/jiuwenmate/illustrations/sleeping-bee.png';
-import { ColleagueList, type ColleagueListHandlers } from '../components/ColleagueList';
 
-interface ColleagueEmptyPageProps extends ColleagueListHandlers {
+interface ColleagueEmptyPageProps {
   onCreate: () => void;
 }
 
-export function ColleagueEmptyPage({ onCreate, ...listHandlers }: ColleagueEmptyPageProps) {
+export function ColleagueEmptyPage({ onCreate }: ColleagueEmptyPageProps) {
   const { t } = useTranslation();
 
   return (
     <div className="jiuwenmate-workspace jiuwenmate-workspace--empty" data-testid="jiuwenmate-colleague-empty">
-      <ColleagueList colleagues={[]} selectedId={null} onSelect={() => undefined} {...listHandlers} />
+      <aside className="jiuwenmate-records" data-testid="jiuwenmate-chat-sidebar">
+        <header>
+          <h2>{t('jiuwenmate.workspace.tabs.conversations')}</h2>
+        </header>
+        <div className="jiuwenmate-records__section" data-testid="jiuwenmate-conversation-record-list">
+          <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noSessions')}</p>
+        </div>
+      </aside>
       <section className="jiuwenmate-colleague-empty">
         <header className="jiuwenmate-page-header">
           <div>
