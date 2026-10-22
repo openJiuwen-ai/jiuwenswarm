@@ -1,7 +1,7 @@
 import { ArrowLeft, ArrowRight, Globe2, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ElectronBrowserState } from '../../types/electron';
+import type { ElectronBrowserState, ElectronBubbleAnchorRect } from '../../types/electron';
 import './DesktopBrowserPane.css';
 
 const DEFAULT_BROWSER_URL = 'https://cn.bing.com/';
@@ -104,14 +104,19 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!desktop || !viewportRef.current) return;
-    const observer = new ResizeObserver(syncBounds);
-    const handleWindowResize = () => syncBounds();
+    // 视口尺寸变化(窗口 resize、侧栏折叠等)后气泡锚点失准，直接收起；
+    // 重新点击按钮会重新锚定。
+    const handleViewportResize = () => {
+      syncBounds();
+      void desktop.browser.hideDownloadBubble();
+    };
+    const observer = new ResizeObserver(handleViewportResize);
     observer.observe(viewportRef.current);
-    window.addEventListener('resize', handleWindowResize);
-    syncBounds();
+    window.addEventListener('resize', handleViewportResize);
+    handleViewportResize();
     return () => {
       observer.disconnect();
-      window.removeEventListener('resize', handleWindowResize);
+      window.removeEventListener('resize', handleViewportResize);
     };
   }, [desktop, syncBounds]);
 
@@ -124,7 +129,10 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
 
   // 原生 WebContentsView 永远盖在页面 DOM 之上（z-index 对其无效），aria-modal
   // 模态弹窗（删除确认等）会被它遮挡：弹窗挂载期间隐藏原生视图，关闭后恢复。
+  // 下载气泡是独立的原生 WebContentsView（悬浮在浏览器内容之上），不受此约束。
   const [modalOverlayOpen, setModalOverlayOpen] = useState(false);
+  const downloadButtonRef = useRef<HTMLButtonElement>(null);
+  const [downloadBubbleVisible, setDownloadBubbleVisible] = useState(false);
 
   useEffect(() => {
     if (!desktop) return;
@@ -150,6 +158,8 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     if (!desktop) return;
     if (modalOverlayOpen) {
+      // 模态弹窗挂载期间收起气泡，避免原生视图与气泡盖住弹窗。
+      void desktop.browser.hideDownloadBubble();
       void desktop.browser.setVisible(false, panelId);
       return;
     }
@@ -157,6 +167,45 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
     void desktop.browser.setVisible(true, panelId, false);
     window.requestAnimationFrame(syncBounds);
   }, [desktop, modalOverlayOpen, panelId, syncBounds]);
+
+  // 气泡可见状态由主进程回推（点击浏览器内容等外部关闭也在此同步）。
+  useEffect(() => {
+    if (!desktop) return;
+    return desktop.browser.onDownloadBubbleChanged(setDownloadBubbleVisible);
+  }, [desktop]);
+
+  // 面板卸载（如切换会话）时收起气泡：气泡状态不随面板实例保留。
+  useEffect(() => {
+    if (!desktop) return;
+    return () => {
+      void desktop.browser.hideDownloadBubble();
+    };
+  }, [desktop]);
+
+  // 点击工具栏其余 DOM 区域时收起气泡（浏览器内容区域的点击由主进程处理）。
+  useEffect(() => {
+    if (!desktop || !downloadBubbleVisible) return;
+    const handleMouseDown = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('[data-testid="desktop-browser-download"]')) return;
+      void desktop.browser.hideDownloadBubble();
+    };
+    document.addEventListener('mousedown', handleMouseDown, true);
+    return () => document.removeEventListener('mousedown', handleMouseDown, true);
+  }, [desktop, downloadBubbleVisible]);
+
+  const toggleDownloadBubble = useCallback(() => {
+    if (!desktop) return;
+    if (downloadBubbleVisible) {
+      void desktop.browser.hideDownloadBubble();
+      return;
+    }
+    const rect = downloadButtonRef.current?.getBoundingClientRect();
+    const anchor: ElectronBubbleAnchorRect | null = rect
+      ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height }
+      : null;
+    void desktop.browser.showDownloadBubble(anchor);
+  }, [desktop, downloadBubbleVisible]);
 
   if (!desktop) return null;
 
@@ -250,6 +299,24 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
             spellCheck={false}
           />
         </form>
+        <button
+          type="button"
+          className="desktop-browser-tool-button"
+          ref={downloadButtonRef}
+          onClick={toggleDownloadBubble}
+          data-testid="desktop-browser-download"
+          aria-expanded={downloadBubbleVisible}
+          title={t('browser.pane.downloadContent')}
+          aria-label={t('browser.pane.downloadContent')}
+        >
+          <svg aria-hidden fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} width={16} height={16}>
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+            />
+          </svg>
+        </button>
       </div>
       <div ref={viewportRef} className="desktop-browser-viewport" data-testid="desktop-browser-viewport">
         <span className="desktop-browser-placeholder" data-testid="desktop-browser-placeholder">

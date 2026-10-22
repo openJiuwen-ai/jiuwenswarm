@@ -13,6 +13,8 @@ const { pipeline } = require('node:stream/promises');
 const { createShareImageExporter } = require('./share_image_export.cjs');
 const { registerDisplayMediaHandler } = require('./display_media_picker.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
+const { createBrowserDownloadService } = require('./browser_downloads.cjs');
+const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
 let macUpdateInProgress = false;
 
 const BACKEND_HOST = '127.0.0.1';
@@ -193,10 +195,17 @@ const sessionLastUrls = new Map();
 const BROWSER_SESSION_URLS_FILENAME = 'browser-session-urls.json';
 const SESSION_URLS_SAVE_DEBOUNCE_MS = 2_000;
 let sessionUrlsSaveTimer = null;
+// 下载历史持久化（对齐 Chrome 的下载记录跨重启保留），存储于 userData。
+const BROWSER_DOWNLOADS_FILENAME = 'browser-downloads.json';
+const DOWNLOADS_SAVE_DEBOUNCE_MS = 2_000;
+let downloadsSaveTimer = null;
+let pendingDownloadsPayload = null;
 let activePaneSessionId = '';
 let lastBrowserBounds = null;
 let browserTargetResolver = null;
 let currentFrontendUrl = '';
+// 下载气泡（Chrome 式）：原生子视图悬浮在浏览器内容之上，懒创建、跨面板复用。
+let downloadBubble = null;
 let shuttingDown = false;
 let shutdownComplete = false;
 let shutdownPromise = null;
@@ -1217,6 +1226,51 @@ function scheduleSessionUrlsSave() {
   }, SESSION_URLS_SAVE_DEBOUNCE_MS);
 }
 
+// 下载历史：读写 userData/browser-downloads.json。服务每次变更传入最新快照，
+// 这里只负责防抖落盘与退出冲刷；记录的校验与状态迁移在 browser_downloads.cjs。
+function browserDownloadsStorePath() {
+  return path.join(app.getPath('userData'), BROWSER_DOWNLOADS_FILENAME);
+}
+
+function loadStoredDownloads() {
+  try {
+    const parsed = JSON.parse(fsSync.readFileSync(browserDownloadsStorePath(), 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    // 首次启动或文件损坏：从空历史开始，不影响任何启动路径。
+    return [];
+  }
+}
+
+function persistDownloadsRecords(records) {
+  pendingDownloadsPayload = records;
+  scheduleDownloadsSave();
+}
+
+function saveStoredDownloads() {
+  if (downloadsSaveTimer) {
+    clearTimeout(downloadsSaveTimer);
+    downloadsSaveTimer = null;
+  }
+  if (!pendingDownloadsPayload) return;
+  const payload = pendingDownloadsPayload;
+  pendingDownloadsPayload = null;
+  try {
+    fsSync.mkdirSync(app.getPath('userData'), { recursive: true });
+    fsSync.writeFileSync(browserDownloadsStorePath(), JSON.stringify(payload, null, 2), 'utf8');
+  } catch (error) {
+    console.warn('[electron] failed to persist browser download records', error);
+  }
+}
+
+function scheduleDownloadsSave() {
+  if (downloadsSaveTimer) return;
+  downloadsSaveTimer = setTimeout(() => {
+    downloadsSaveTimer = null;
+    saveStoredDownloads();
+  }, DOWNLOADS_SAVE_DEBOUNCE_MS);
+}
+
 function evictIdleBrowserViews(preserveSessionId) {
   // 上限保护：桌面长会话里视图不能无限累积；优先回收最久未用且未显示的。
   // 被回收视图的最后页面 URL 已由 recordLastUrl 记入 sessionLastUrls，
@@ -1266,6 +1320,8 @@ async function ensureBrowserView(sessionId, lease = null) {
     },
   });
   mainWindow.contentView.addChildView(view);
+  // 浏览器视图追加在 contentView 顶层，若下载气泡正显示会被盖住，重新置顶。
+  downloadBubble?.raise();
   const entry = {
     ...identity, view, targetId: '', crashCount: 0, lastActive: Date.now(), visible: false,
     creating: true, leases: new Map(), ready: null,
@@ -1307,6 +1363,10 @@ async function initializeBrowserView(entry) {
   for (const eventName of ['did-start-loading', 'did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated']) {
     view.webContents.on(eventName, () => emitBrowserState(entry));
   }
+  // 点击浏览器页面（气泡外区域）时收起下载气泡，对齐 Chrome 气泡的外点关闭。
+  view.webContents.on('input-event', (_event, input) => {
+    if (input.type === 'mouseDown' && downloadBubble?.isVisible()) downloadBubble.hide();
+  });
   // 记录最后浏览的页面：视图被 LRU 回收后重建时据此还原，而不是回到默认页。
   // 仅记录 http(s)；about:blank#jiuwen-session 标记页与空白态不入册。
   const recordLastUrl = () => {
@@ -1693,7 +1753,11 @@ async function showStartupFailure(error) {
 }
 
 function trustedSender(event) {
-  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents);
+  if (!(mainWindow && !mainWindow.isDestroyed())) return false;
+  if (event.sender === mainWindow.webContents) return true;
+  // 下载气泡是主窗口 contentView 上的原生子视图，复用同一套 browser IPC。
+  const bubbleWebContents = downloadBubble?.getWebContents();
+  return Boolean(bubbleWebContents && event.sender === bubbleWebContents);
 }
 
 function registerHandler(channel, handler) {
@@ -2817,6 +2881,69 @@ function registerIpcHandlers() {
     const entry = browserViews.get(normalizeBrowserSessionId(sessionId));
     return applyBrowserBounds(entry, bounds);
   });
+  // Shared-browser-partition download tracking: will-download is bound to the
+  // session (not a single view), so all browser panels share one history —
+  // the data source of the Chrome-style download bubble.
+  const browserDownloadService = createBrowserDownloadService({
+    openPath: target => shell.openPath(target),
+    getDownloadsPath: () => app.getPath('downloads'),
+    // 系统文件类型图标（与资源管理器一致）：按扩展名解析后转 data URL 下发。
+    getFileIcon: async filePath => {
+      const icon = await app.getFileIcon(filePath, { size: 'large' });
+      return icon.toDataURL();
+    },
+    showInFolder: filePath => shell.showItemInFolder(filePath),
+    // 已完成下载的文件存在性检查（Chrome 式"已删除"标记）；文件被移动/删除后
+    // 列表实时打标，打开与定位动作直接拒绝。
+    pathExists: filePath => fsSync.existsSync(filePath),
+    // 下载历史跨重启保留：启动时恢复，变更后防抖落盘，退出前冲刷。
+    storage: { load: loadStoredDownloads, save: persistDownloadsRecords },
+  });
+  // Only the download bubble consumes the list (DownloadPanel subscribes via
+  // onDownloadsChanged); the main window renderer has no subscriber, so it is
+  // not pushed — the payload carries icon data URLs and streams at notify
+  // cadence during active downloads.
+  const pushDownloads = downloads => {
+    const webContents = downloadBubble?.getWebContents();
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('browser:downloads-changed', downloads);
+    }
+  };
+  browserDownloadService.attach(session.fromPartition(SHARED_BROWSER_PARTITION), pushDownloads);
+  registerHandler('browser:list-downloads', () => browserDownloadService.list({ freshPresence: true }));
+  registerHandler('browser:download-action', (downloadId, requestedAction) =>
+    browserDownloadService.action(downloadId, requestedAction));
+  registerHandler('browser:open-download', downloadId => browserDownloadService.openDownload(downloadId));
+  registerHandler('browser:show-download-in-folder', downloadId => browserDownloadService.revealInFolder(downloadId));
+  registerHandler('browser:remove-download', downloadId => browserDownloadService.remove(downloadId));
+  registerHandler('browser:open-downloads-folder', () => browserDownloadService.openFolder());
+  // Chrome 式下载气泡：原生子视图悬浮在浏览器内容之上，浏览器页面无需隐藏。
+  downloadBubble = createDownloadBubbleController({
+    WebContentsView,
+    preloadPath: path.join(__dirname, 'preload.cjs'),
+    getWindow: () => mainWindow,
+    getFrontendOrigin: () => currentFrontendUrl,
+    getDesktopLockToken: () => (VITE_DEV_MODE ? '' : desktopLockToken),
+    getZoomFactor: () => mainWindow?.webContents.getZoomFactor() ?? 1,
+    getContentBounds: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.getContentBounds() : { x: 0, y: 0, width: 0, height: 0 }),
+    onVisibilityChanged: visible => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('browser:download-bubble-changed', visible);
+      }
+    },
+  });
+  registerHandler('browser:show-download-bubble', anchorRect => {
+    downloadBubble.show(anchorRect);
+    // The bubble view is reused across toggles (navigated only once), so its
+    // panel does not remount on reopen. Push a fresh list so records changed
+    // while hidden — e.g. a completed file deleted in Explorer showing Chrome's
+    // "已删除" marker — appear immediately on reopen.
+    pushDownloads(browserDownloadService.list({ freshPresence: true }));
+  });
+  registerHandler('browser:hide-download-bubble', () => {
+    downloadBubble.hide();
+    return true;
+  });
 }
 
 async function createMainWindow() {
@@ -2864,6 +2991,8 @@ async function createMainWindow() {
     setTimeout(emitLayoutInvalidated, 0);
   });
   mainWindow.on('closed', () => {
+    // 主窗口关闭即应用退出(单窗口):显式回收下载气泡视图,避免依赖退出兜底。
+    downloadBubble?.destroy();
     mainWindow = null;
   });
   mainWindow.webContents.on('before-input-event', (event, input) => {
@@ -3024,6 +3153,8 @@ app.on('before-quit', event => {
   event.preventDefault();
   // 冲刷待写的会话页面 URL（取消防抖定时器），保证重启还原不丢最后一次导航。
   saveSessionLastUrls();
+  // 冲刷下载历史，保证重启后下载记录完整。
+  saveStoredDownloads();
   void Promise.all([abortAllBlobSaves(), stopServices()]).finally(() => {
     shutdownComplete = true;
     destroyTray();
