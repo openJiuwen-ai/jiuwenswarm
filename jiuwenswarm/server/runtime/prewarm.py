@@ -14,6 +14,7 @@ import asyncio
 import logging
 import time
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -258,3 +259,83 @@ async def run_startup_warmup(
         timeout_s=timeout_s,
         mock_model=mock_model,
     )
+
+
+_LTM_PREWARM_MAX_DIRS = 20
+_LTM_PREWARM_TIMEOUT_S = 120.0
+
+
+async def warmup_ltm_vector_store() -> None:
+    """预热 LTM 向量库（chromadb PersistentClient）。
+
+    openjiuwen 的 ChromaVectorStore 首次使用才创建 PersistentClient，rust 扩展
+    加载 + sqlite 建库在事件循环线程上可达秒级停顿，曾触发网关 keepalive ping
+    timeout 主动断连（2026-10-20 E-1020-1017-1cb3）。启动期在后台线程预热已存在
+    的向量目录，chromadb 按 path 共享 system 缓存，运行期首建不再发生停顿。
+    失败仅告警，不影响启动。
+    """
+    started = time.monotonic()
+    try:
+        warmed = await asyncio.wait_for(
+            asyncio.to_thread(_prewarm_ltm_vector_store_sync),
+            timeout=_LTM_PREWARM_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Prewarm] stage=ltm name=chroma failed elapsed_ms=%.1f err=%s",
+                       (time.monotonic() - started) * 1000, exc)
+        return
+    if warmed:
+        logger.info(
+            "[Prewarm] stage=ltm name=chroma ok dirs=%s elapsed_ms=%.1f",
+            ",".join(warmed),
+            (time.monotonic() - started) * 1000,
+        )
+
+
+def _prewarm_ltm_vector_store_sync() -> list[str]:
+    """同步预热：import chromadb + 打开已存在的 LTM 向量目录。"""
+    import chromadb
+
+    warmed: list[str] = []
+    for vector_dir in _ltm_vector_dirs_for_prewarm():
+        try:
+            chromadb.PersistentClient(path=str(vector_dir))
+            warmed.append(str(vector_dir))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Prewarm] chroma warmup failed for %s: %s", vector_dir, exc)
+    return warmed
+
+
+def _ltm_vector_dirs_for_prewarm() -> list[Path]:
+    """收集需要预热的向量目录（仅已存在的目录，不为新用户凭空建库）。
+
+    覆盖默认租户 + 企业版 ``workspace_*`` 与个人版 ``service_*/agent_*`` 两种
+    多实例布局；目录布局不符时自然为空，无害跳过。
+    """
+    from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
+        resolve_openjiuwen_store_paths,
+    )
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+
+    dirs: list[Path] = []
+    _, vector_dir, _ = resolve_openjiuwen_store_paths()
+    default_dir = Path(vector_dir)
+    if default_dir.is_dir():
+        dirs.append(default_dir)
+    patterns = (
+        "workspace_*/agent/jiuwenclaw_workspace/memory/ltm/chroma",
+        "service_*/agent_*/agent/jiuwenclaw_workspace/memory/ltm/chroma",
+    )
+    candidates: list[Path] = []
+    try:
+        root = get_user_workspace_dir()
+        for pattern in patterns:
+            candidates.extend(sorted(root.glob(pattern)))
+    except Exception:  # noqa: BLE001
+        logger.warning("[Prewarm] chroma workspace scan failed", exc_info=True)
+    for candidate in candidates:
+        if len(dirs) >= _LTM_PREWARM_MAX_DIRS:
+            break
+        if candidate.is_dir() and candidate not in dirs:
+            dirs.append(candidate)
+    return dirs
