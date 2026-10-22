@@ -173,9 +173,11 @@ class _ExecutorWorker:
         return getattr(getattr(result, "data", None), "exit_code", -1)
 
     def kill(self):
+        if self.stopping:
+            return
         self.stopping = True
-        if self.job is not None:
-            self.job.terminate()
+        # Stop only the executor-owned worker. Native children must receive
+        # stdin EOF and release paired input before their Job is closed.
         self.task.cancel()
 
     async def _wait(self):
@@ -188,16 +190,20 @@ class _ExecutorWorker:
             except asyncio.CancelledError:
                 if not self.stopping:
                     raise
-            if self.lifetime is not None:
-                while await self.lifetime.read(65536):
-                    pass
-            if self.job is not None:
-                await self.job.wait_empty()
         finally:
-            if self.lifetime_writer is not None:
-                self.lifetime_writer.close()
-            if self.job is not None:
-                self.job.close()
+            try:
+                # Executor failure does not prove native retirement. Keep the
+                # existing reset barrier pending until descendants have exited.
+                if self.lifetime is not None:
+                    while await self.lifetime.read(65536):
+                        pass
+                if self.job is not None:
+                    await self.job.wait_empty()
+            finally:
+                if self.lifetime_writer is not None:
+                    self.lifetime_writer.close()
+                if self.job is not None:
+                    self.job.close()
 
     async def wait(self):
         if self.waiter is None:
