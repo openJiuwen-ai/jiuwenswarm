@@ -235,7 +235,6 @@ begin
     RaiseException('External CLI initialization failed. Preserved files remain in the user data directory.');
   if not RestoreWindowsCliConfiguration(ExpandConstant('{app}\{#MyAppExeName}')) then
     RaiseException('External CLI configuration recovery failed.');
-  FinishCliProgress;
 end;
 
 const
@@ -404,13 +403,11 @@ begin
   if not PreserveWindowsCli(ExpandConstant('{app}'), 'Preserve') then
   begin
     Result := 'External CLI preservation failed; installation stopped before cleanup.';
-    AbortCliProgress;
     exit;
   end;
   if not MigrateLegacyAdminInstall() then
   begin
     Result := 'Legacy administrator installation migration failed.';
-    AbortCliProgress;
     exit;
   end;
 

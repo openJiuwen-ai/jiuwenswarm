@@ -279,29 +279,26 @@ def activate_external_cli_runtime_paths() -> None:
         # the same manifest error to the user.
         logger.warning("Optional external CLI runtimes are unavailable: %s", exc)
         return
-    try:
-        for cli_agent in cli_agents:
-            site_packages = _runtime_site_packages(cli_agent)
-            # Preserved SDKs can belong to a different release. Never expose an
-            # incompatible or incomplete runtime to provider imports.
-            try:
-                if _is_frozen_windows() and get_external_cli_runtime_status(cli_agent)["runtime_state"] != "current":
-                    continue
-                site_packages.mkdir(parents=True, exist_ok=True)
-            except (OSError, RuntimeError) as exc:
-                logger.debug(
-                    "Failed to activate optional %s runtime directory %s: %s",
-                    cli_agent,
-                    site_packages,
-                    exc,
-                )
+    for cli_agent in cli_agents:
+        site_packages = _runtime_site_packages(cli_agent)
+        # Preserved SDKs can belong to a different release. Never expose an
+        # incompatible or incomplete runtime to provider imports.
+        try:
+            if _is_frozen_windows() and get_external_cli_runtime_status(cli_agent)["runtime_state"] != "current":
                 continue
-            site_packages_text = str(site_packages)
-            if site_packages_text not in sys.path:
-                sys.path.append(site_packages_text)
-        importlib.invalidate_caches()
-    except Exception:  # noqa: BLE001 - optional capability must not break the caller
-        logger.warning("Managed external CLI runtime activation failed", exc_info=True)
+            site_packages.mkdir(parents=True, exist_ok=True)
+        except (OSError, RuntimeError) as exc:
+            logger.debug(
+                "Failed to activate optional %s runtime directory %s: %s",
+                cli_agent,
+                site_packages,
+                exc,
+            )
+            continue
+        site_packages_text = str(site_packages)
+        if site_packages_text not in sys.path:
+            sys.path.append(site_packages_text)
+    importlib.invalidate_caches()
 
 
 def install_external_cli_runtime(

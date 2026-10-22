@@ -3,7 +3,6 @@
 import asyncio
 import importlib
 import json
-import os
 import sys
 import threading
 import time
@@ -173,7 +172,7 @@ async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
 async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
     monkeypatch, tmp_path, cli_agent, package, relative, runtime_state, platform_name
 ):
-    from agent_gateway.common import external_cli_runtime as runtime
+    from jiuwenswarm.common import external_cli_runtime as runtime
 
     site = tmp_path / cli_agent / "site-packages"
     suffix = ".exe" if platform_name == "nt" else ""
@@ -198,17 +197,17 @@ async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
     monkeypatch.setattr(runtime, "_runtime_site_packages", lambda _agent: site)
     monkeypatch.setattr(runtime, "get_external_cli_runtime_status", lambda _agent: {"runtime_state": runtime_state})
     # Replace only this module's reference, not the process-wide os.name.
-    monkeypatch.setattr(_gw_config_set_handlers, "os", SimpleNamespace(name=platform_name))
+    monkeypatch.setattr(config_set_handlers, "os", SimpleNamespace(name=platform_name))
     competing_cli = tmp_path / "path-bin" / (cli_agent + suffix)
     competing_cli.parent.mkdir()
     competing_cli.touch()
     monkeypatch.setattr(
-        _gw_config_set_handlers.shutil, "which",
+        config_set_handlers.shutil, "which",
         lambda name: str(competing_cli) if name == cli_agent and runtime_state == "current" else None,
     )
-    monkeypatch.setattr(_gw_config_set_handlers, "external_cli_reference_version", lambda _agent: "1.2.3")
-    monkeypatch.setattr(_gw_config_set_handlers, "run_external_cli_version_command", lambda *_args: ("1.2.3", ""))
-    assert _gw_config_set_handlers.external_cli_managed_cli_path(cli_agent) == ""
+    monkeypatch.setattr(config_set_handlers, "external_cli_reference_version", lambda _agent: "1.2.3")
+    monkeypatch.setattr(config_set_handlers, "run_external_cli_version_command", lambda *_args: ("1.2.3", ""))
+    assert config_set_handlers.external_cli_managed_cli_path(cli_agent) == ""
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True)))
 

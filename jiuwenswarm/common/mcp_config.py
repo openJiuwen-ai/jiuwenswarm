@@ -169,21 +169,20 @@ def build_mcp_server_config(
         command = str(entry.get("command", "")).strip()
         if not command:
             return None
-        command = resolve_preserved_cli_path(command) or command
-        args: list[str] = []
-        if isinstance(entry.get("args"), list):
+        params: dict[str, Any] = {"command": resolve_preserved_cli_path(command)}
+        args = entry.get("args")
+        if isinstance(args, list):
             # resolve ${VAR} placeholders via credential_resolver (same as env
             # below): stdio MCPs like ssh-mcp-server pass --host ${SSH_HOST}
             # in args, and the spawned process gets argv literally (no shell
             # expansion), so placeholders must be substituted here.
-            args = [
+            params["args"] = [
                 resolve_preserved_cli_path(_resolve_string(str(item), credential_resolver))
-                for item in entry["args"]
+                for item in args
             ]
-        # Default args to [] so a bare command (no args) still spawns cleanly.
-        if resolve_node_launcher:
-            command, args = resolve_node_package_runner(command, args)
-        params: dict[str, Any] = {"command": command, "args": args}
+        else:
+            # Default to [] so a bare command (no args) still spawns cleanly.
+            params["args"] = []
         cwd = entry.get("cwd")
         if isinstance(cwd, str) and cwd.strip():
             params["cwd"] = resolve_preserved_cli_path(cwd.strip(), directory=True)
