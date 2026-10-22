@@ -19849,7 +19849,7 @@ class JiuWenSwarmDeepAdapter:
             if context_window_tokens is not None:
                 payload["context_window_tokens"] = context_window_tokens
 
-            from jiuwenswarm.extensions_v2.events.context_usage import (
+            from jiuwenswarm.extensions_v2.event_types.context_usage import (
                 ContextUsageUpdate,
                 notify_context_usage,
             )

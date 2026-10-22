@@ -506,6 +506,8 @@ AgentServer 负责创建当前运行实例所需的 EventBus 和 Extension 管�
 ```python
 from openjiuwen.core.events import ExtensionEventBus
 
+from jiuwenswarm.extensions_v2 import bootstrap
+
 # AgentServer prepares Events infrastructure for this runtime.
 bus = ExtensionEventBus()
 
@@ -519,8 +521,8 @@ webui = WebUIRuntime(
 await manager.init(
     bus,
     host_version=host_version,
-    host_event_types=webui.register_event_types,
-    host_handlers=webui.register_handlers,
+    host_event_types=lambda bus: bootstrap.register_event_types(bus, webui),
+    host_handlers=lambda bus: bootstrap.register_handlers(bus, webui),
 )
 
 # Registry.init has already triggered ops.build once.
@@ -529,7 +531,7 @@ report = await manager.load_installed()
 
 产品注册和管理入口初始化只准备组件与注册关系，不读取用户 manifest、不加载用户代码。`ops.build` 由管理入口在宿主注册完成后触发一次；首次构建失败不提交包路径或开放业务，可修正定义后重试；首次成功后，同一 EventBus 保存该 Builder，不再触发 `ops.build` 或变更 Build Handler。普通事件只使用保存的 Builder 为每个实际进入的 Handler 创建独立 Ops。具体协议以 [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md#43-opsbuild)为准。
 
-装配可按四类逻辑职责组织：`bootstrap` 汇总产品注册并由 AgentServer 直接调用；`event_types` 提供事件定义、匹配函数和 Core Handler；`event_handlers` 提供 JiuwenSwarm 的 BUILTIN Handler；`handler_ops` 提供能力函数及 Ops Build Handler。它们尚非已建立目录或最终文件清单。
+代码按四类职责组织：`bootstrap.py` 汇总产品注册并由 AgentServer 直接调用；`event_types/` 提供事件定义、匹配函数和 Core Handler；`event_handlers/` 提供 JiuwenSwarm 的 BUILTIN Handler，目录已预留、当前无实现；`handler_ops/` 提供能力函数及 Ops Build Handler。依赖 WebUI 运行时的 Core Handler 归 `webui/core_handlers/`。
 
 **失败与资源责任。** 产品注册失败时，AgentServer 停止后续装配，核对并清理本次产品注册及自有资源。管理入口初始化失败时，只清理本次管理注册和自有资源，不清空 EventBus 或删除 JiuwenSwarm 已有注册；AgentServer 汇总错误、保留未清理项并协调退出。确认清理完成后再重建相关实例，不在有残留的 EventBus 上盲目重试，也不在初始化后替换 EventBus。公共约束见[Extension 第 4.1 节](../../../../../agent-core/openjiuwen/core/extension/docs/designs/extension-architecture.md#41-registry统一管理入口)。
 
