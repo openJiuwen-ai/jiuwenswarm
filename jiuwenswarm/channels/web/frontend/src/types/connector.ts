@@ -42,6 +42,7 @@ export interface ConnectorSummary {
   runtimePackageName: string;
   hubAssetId?: string;
   displayName: string;
+  searchNames?: string[];
   // mcp.list 现在直接下发简介（backend-requests.md 需求14已解决），恒为 string，不再是可选缺省。
   description: string;
   category: string;
@@ -128,6 +129,11 @@ export interface ConnectorConnectResponse {
   description?: string;
   docUrl?: string | null;
   docLabel?: string;
+  // 连接器声明了隐式授权能力时下发：oauthDocUrl 是含当前授权链接的厂商文档页
+  // （不硬编码直链，跟随官方密钥轮换），桌面端抓取该页提取直链后开窗自动截取 token
+  // （一键授权）；Web 端忽略这两个字段、保持手动粘贴
+  oauthDocUrl?: string;
+  oauthSuccessPrefix?: string;
   fields?: Record<string, ConnectorCredentialField>;
   // auth_required 分支专属字段
   stepIndex?: number;

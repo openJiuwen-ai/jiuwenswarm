@@ -19,7 +19,7 @@ import {
   normalizeSkillOption,
   normalizeTeamMarketplaceSkill,
 } from './adapter';
-import type { McpOption, SkillOption } from './types';
+import type { AgentDraft, McpOption, SkillOption } from './types';
 import type {
   RawAgentDetailPayload,
   RawAgentFileListPayload,
@@ -31,6 +31,22 @@ import type {
 
 export { AgentManagementError } from './port';
 export type { AgentCatalogListOptions, AgentInstallResult, AgentManagementClient, SkillListOptions } from './port';
+
+function agentTemplateWritePayload(draft: AgentDraft) {
+  return {
+    id: draft.id,
+    name: draft.name,
+    description: draft.description,
+    persona: draft.persona,
+    tags: resolveAgentTagPayload(draft.tagIds, draft.customTags),
+    skills: draft.skillRefs,
+    mcps: draft.useExternalHarness ? [] : draft.mcpRefs,
+    quickInputs: draft.suggestedPrompts.filter((prompt) => prompt.trim().length > 0),
+    ...(draft.useExternalHarness
+      ? { runtime: { provider_name: draft.externalHarnessProvider, config: {} } }
+      : {}),
+  };
+}
 
 function rethrowAgentError(error: unknown): never {
   if (error instanceof AgentManagementError) {
@@ -293,16 +309,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     },
     async createAgent(draft) {
       try {
-        await webRequest('agent_templates.create', {
-          id: draft.id,
-          name: draft.name,
-          description: draft.description,
-          persona: draft.persona,
-          tags: resolveAgentTagPayload(draft.tagIds, draft.customTags),
-          skills: draft.skillRefs,
-          mcps: draft.mcpRefs,
-          quickInputs: draft.suggestedPrompts.filter((prompt) => prompt.trim().length > 0),
-        });
+        await webRequest('agent_templates.create', agentTemplateWritePayload(draft));
         invalidateAgentCatalog();
       } catch (error) {
         return rethrowAgentError(error);
@@ -310,16 +317,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     },
     async updateAgent(draft) {
       try {
-        await webRequest('agent_templates.update', {
-          id: draft.id,
-          name: draft.name,
-          description: draft.description,
-          persona: draft.persona,
-          tags: resolveAgentTagPayload(draft.tagIds, draft.customTags),
-          skills: draft.skillRefs,
-          mcps: draft.mcpRefs,
-          quickInputs: draft.suggestedPrompts.filter((prompt) => prompt.trim().length > 0),
-        });
+        await webRequest('agent_templates.update', agentTemplateWritePayload(draft));
         invalidateAgentCatalog();
       } catch (error) {
         return rethrowAgentError(error);

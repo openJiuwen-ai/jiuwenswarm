@@ -8,7 +8,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Query, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.models.sandbox import (
@@ -24,6 +24,7 @@ from jiuwenbox.models.sandbox import (
     SandboxSpec,
 )
 from jiuwenbox.server.sandbox_manager import SandboxBackgroundExecRequest, SandboxExecRequest, SandboxListRequest
+from jiuwenbox.supervisor.daemon_ipc import SANDBOX_IP_ENV
 
 router = APIRouter(tags=["sandboxes"])
 configure_logging()
@@ -43,6 +44,13 @@ class CreateSandboxRequest(BaseModel):
     sandbox_id: str | None = None
     sandbox_runtime: str | None = None
 
+    @field_validator("env")
+    @classmethod
+    def reject_reserved_environment(cls, value: dict[str, str]) -> dict[str, str]:
+        if SANDBOX_IP_ENV in value:
+            raise ValueError(f"{SANDBOX_IP_ENV} is reserved by the sandbox runtime")
+        return value
+
 
 class ExecRequest(BaseModel):
     command: list[str]
@@ -50,6 +58,16 @@ class ExecRequest(BaseModel):
     env: dict[str, str] | None = None
     stdin: str | None = None
     timeout_seconds: int | None = None
+
+    @field_validator("env")
+    @classmethod
+    def reject_reserved_environment(
+        cls,
+        value: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        if value is not None and SANDBOX_IP_ENV in value:
+            raise ValueError(f"{SANDBOX_IP_ENV} is reserved by the sandbox runtime")
+        return value
 
 
 class ListFilesQuery(BaseModel):

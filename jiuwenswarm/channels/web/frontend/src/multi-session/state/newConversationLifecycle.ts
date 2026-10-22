@@ -7,7 +7,7 @@ import {
   useSessionStore,
   useTodoStore,
 } from '../../stores';
-import type { AgentMode, Session } from '../../types';
+import type { AgentMode, ModelSelection, Session } from '../../types';
 import { toDisplaySessionTitle } from '../../utils/documentMessage';
 
 export const NEW_CONVERSATION_ID = 'new';
@@ -15,11 +15,15 @@ export const NEW_CONVERSATION_ID = 'new';
 interface ConversationRuntimeSettings {
   mode: AgentMode;
   selectedModelName: string | null;
+  selectedModelSelection?: ModelSelection | null;
   projectDir?: string | null;
   persistSession?: boolean;
 }
 
-export type NewConversationEntrySettings = Pick<ConversationRuntimeSettings, 'mode' | 'selectedModelName'>;
+export type NewConversationEntrySettings = Pick<
+  ConversationRuntimeSettings,
+  'mode' | 'selectedModelName' | 'selectedModelSelection'
+>;
 
 export function resolveNewConversationEntrySettings(
   targetMode: AgentMode,
@@ -42,12 +46,17 @@ export function createConversationTitle(content: string): string {
 
 function applyRuntimeSettings(
   sessionId: string,
-  { mode, selectedModelName, projectDir, persistSession = false }: ConversationRuntimeSettings,
+  { mode, selectedModelName, selectedModelSelection, projectDir, persistSession = false }: ConversationRuntimeSettings,
 ): void {
   ensureSessionRuntimes(sessionId);
   useSessionStore.getState().setMode(sessionId, mode);
-  if (selectedModelName) {
+  // 新会话的模型由 sessionStore 按“上次稳定选择 -> 自定义 -> 免费 -> 空”初始化；
+  // 这里的旧名称只用于恢复已创建会话，避免再次覆盖稳定 ID 选择。
+  if (selectedModelName && sessionId !== NEW_CONVERSATION_ID) {
     useSessionStore.getState().setSelectedModelName(sessionId, selectedModelName);
+  }
+  if (selectedModelSelection !== undefined) {
+    useSessionStore.getState().setSelectedModelSelection(sessionId, selectedModelSelection);
   }
   if (projectDir) {
     useSessionStore.getState().setProjectDirectory(sessionId, projectDir);
@@ -65,6 +74,7 @@ export function resetNewConversationRuntime(settings: ConversationRuntimeSetting
     previousRuntime?.agentSelectionIntent.kind === 'select' ? previousRuntime.agentSelectionIntent : null;
   const preservedAgentGroupSelection =
     previousRuntime?.agentGroupSelectionIntent.kind === 'select' ? previousRuntime.agentGroupSelectionIntent : null;
+  const preservedTeamGroupIdentity = previousRuntime?.teamGroupIdentity ?? null;
   useChatStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   useTodoStore.getState().removeRuntime(NEW_CONVERSATION_ID);
@@ -77,6 +87,9 @@ export function resetNewConversationRuntime(settings: ConversationRuntimeSetting
   }
   if (preservedAgentGroupSelection) {
     useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, preservedAgentGroupSelection);
+  }
+  if (preservedTeamGroupIdentity) {
+    useSessionStore.getState().setTeamGroupIdentity(NEW_CONVERSATION_ID, preservedTeamGroupIdentity);
   }
   if (preservedDraft) {
     useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, preservedDraft);
@@ -103,6 +116,7 @@ export function registerCreatedConversation(
     persist_session: workContext.persist_session === true,
     work_mode: workContext.work_mode,
     mode: settings.mode,
+    model_selection: useSessionStore.getState().getRuntime(sessionId)?.selectedModelSelection ?? null,
     status: 'active',
     message_count: 0,
     created_at: timestamp,

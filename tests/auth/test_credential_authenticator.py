@@ -1,7 +1,7 @@
 """测试 credential_authenticator.py 的数据模型和抽象基类"""
 import pytest
 
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
+from jiuwenswarm.gateway.extensions.auth.credential_authenticator import (
     AuthContext,
     AuthResult,
     CredentialAuthenticator,

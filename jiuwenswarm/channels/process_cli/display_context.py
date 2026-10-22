@@ -229,7 +229,7 @@ def resolve_cli_work_mode(mode: object, work_mode: object) -> str:
     """Keep Process CLI work mode aligned with modes that encode a profile.
 
     Legacy composable values such as ``agent`` and ``team`` continue to honor
-    the separate ``--work-mode`` option.  New three-part modes and historical
+    internal session work-mode state. New three-part modes and historical
     code-profile modes are self-describing, so their embedded profile wins.
     """
     mode_text = canonicalize_mode_text(mode)

@@ -177,13 +177,15 @@ export function EntityHeader({
   const classes = ['entity-header', `entity-header--${variant}`];
   if (!hasTags) classes.push('entity-header--center');
   if (className) classes.push(className);
+  // Native tooltip for truncated titles (e.g. long skill card names on hover).
+  const titleText = typeof title === 'string' ? title : undefined;
   return (
     <div className={classes.join(' ')} data-testid={testId}>
       <div className="entity-header__identity">
         <div className="entity-header__avatar">{renderAvatarInner(avatar)}</div>
         <div className="entity-header__text">
           <div className="entity-header__title-row">
-            <div className="entity-header__title" data-testid={titleTestId}>
+            <div className="entity-header__title" data-testid={titleTestId} title={titleText}>
               {title}
             </div>
             {titleEnd ? (

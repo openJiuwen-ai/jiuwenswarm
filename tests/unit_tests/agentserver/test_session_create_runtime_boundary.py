@@ -303,6 +303,7 @@ async def test_success_preserves_claim_metadata_team_send_kvc_order() -> None:
         "projectDir": "/resolved/project",
         "workMode": "work",
         "persist_session": True,
+        "moa_enabled": False,
         "prewarm_hit": True,
         "prewarm_status": "ready",
     }

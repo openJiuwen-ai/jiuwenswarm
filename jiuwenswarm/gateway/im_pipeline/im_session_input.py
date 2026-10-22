@@ -16,7 +16,7 @@ from typing import Any
 
 from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.runtime.session_input import SessionInputMode, resolve_session_input_mode
+from jiuwenswarm.gateway.runtime.session_input import SessionInputMode, resolve_session_input_mode
 
 _SHARED_IM_CHANNELS = frozenset({
     "feishu",

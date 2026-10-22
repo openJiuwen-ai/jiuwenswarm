@@ -1,3 +1,4 @@
+import { matchesAssetName } from '../assetNameSearch';
 import type { AgentCatalogItem, AgentDetail, AgentGroupCatalogItem, AgentGroupDetail, DefinitionFileEntry } from './types';
 
 export type CatalogScope = 'catalog' | 'mine';
@@ -141,6 +142,7 @@ export function buildCatalogViewModel(
     if (!query) {
       return true;
     }
+    if (options.scope === 'mine') return matchesAssetName(query, item.searchNames ?? [item.displayName]);
     return `${item.displayName} ${item.description} ${item.category}`.toLocaleLowerCase().includes(query);
   });
   return {
@@ -166,6 +168,7 @@ export function buildGroupCatalogViewModel(
       && item.installed !== (options.installation === 'installed')) return false;
     if (options.scope === 'catalog' && !matchesGroupCategory(options.category, item.category)) return false;
     if (!query) return true;
+    if (options.scope === 'mine') return matchesAssetName(query, item.searchNames ?? [item.displayName]);
     const tags = item.tags.map(tag => tag.label).join(' ');
     return `${item.name} ${item.displayName} ${item.description} ${item.category} ${tags}`
       .toLocaleLowerCase()

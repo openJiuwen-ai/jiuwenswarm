@@ -39,7 +39,7 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.push i
 )
 from jiuwenswarm.gateway.routing.keys import XiaoyiDeliveryTarget
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
-from jiuwenswarm.runtime.host_services import (
+from jiuwenswarm.common.host_services import (
     install_runtime_xiaoyi_channel_provider,
     restore_runtime_xiaoyi_channel_provider,
 )

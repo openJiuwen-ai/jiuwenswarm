@@ -84,7 +84,12 @@ def _bare_handler(agent_client: object, controller: _CapturingCronController) ->
 
 
 @pytest.mark.asyncio
-async def test_single_user_cron_push_keeps_local_project_validation() -> None:
+async def test_single_user_cron_push_marks_project_binding_verified() -> None:
+    """A3g：agent 工具链路双模式统一打 marker。
+
+    server 侧 CronTools 在两种模式下都经
+    server.runtime.session.project_store.resolve_cron_project_binding 完成解析
+    （legacy 共享目录 / AgentOS 用户目录同源），gateway controller 不再本地反查。"""
     controller = _CapturingCronController()
     handler = _bare_handler(object(), controller)
 
@@ -97,7 +102,7 @@ async def test_single_user_cron_push_keeps_local_project_validation() -> None:
     )
 
     assert controller.create_params is not None
-    assert "_agentos_project_binding_verified" not in controller.create_params
+    assert controller.create_params["_agentos_project_binding_verified"] is True
 
 
 @pytest.mark.asyncio
@@ -332,7 +337,8 @@ async def test_cron_command_id_survives_wire_projection_for_gateway_ack() -> Non
         "metadata": {"_jiuwenswarm_cron_owner_user_id": "user-a"},
         "body": {"command_id": "cmd-1", "action": "list", "status": "ok", "data": {}},
     })
-    async def _list_jobs() -> list[dict]:
+    async def _list_jobs(user_id=None) -> list[dict]:
+        assert user_id == "user-a"
         return []
 
     controller.list_jobs = _list_jobs

@@ -274,6 +274,58 @@ def test_voice_never_accepts_approval(source):
         )
 
 
+def test_native_approval_accepts_authorization_prompt_answers():
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.interactions import (
+        validate_native_approval_answers,
+    )
+
+    interaction = native_approval_question({
+        "request_id": "core-approval",
+        "source": "permission_interrupt",
+        "questions": [{"question": "允许执行？", "card_id": "card-1"}],
+    })
+    resolved = validate_native_approval_answers(
+        interaction,
+        [{"selected_options": ["allow_once"], "card_id": "card-1"}],
+    )
+    assert resolved == [{
+        "question": "允许执行？",
+        "answer": "",
+        "selected_options": ["allow_once"],
+        "card_id": "card-1",
+    }]
+    with pytest.raises(ValueError, match="does not match"):
+        validate_native_approval_answers(
+            interaction,
+            [{"question": "别的问题", "selected_options": ["allow_once"]}],
+        )
+
+
+def test_answer_input_preserves_permission_card_id():
+    request = AgentTaskExecutor.answer_input({
+        "request_id": "video-core-1",
+        "core_session_id": "core-session",
+        "resume_answer": True,
+        "interaction": {
+            "request_id": "core-approval",
+            "source": "permission_interrupt",
+            "operation_id": "op-1",
+            "answers": [{
+                "question": "允许执行？",
+                "answer": "",
+                "selected_options": ["allow_once"],
+                "card_id": "card-1",
+            }],
+        },
+    })
+    assert request.answers == ({
+        "question": "允许执行？",
+        "custom_input": "",
+        "selected_options": ["allow_once"],
+        "card_id": "card-1",
+    },)
+
+
 async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path):
     store = TaskStore(tmp_path / "approval.sqlite")
     calls = []
@@ -312,6 +364,46 @@ async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path)
                              answers=answer, native_ui=True)
         await until(lambda: store.read(task["id"])["status"] == "completed")
         assert len(calls) == 2
+        assert store.read(task["id"])["result"]["answer"] == "approved"
+    finally:
+        await service.close()
+
+
+async def test_native_permission_accepts_option_only_authorization_answers(tmp_path):
+    store = TaskStore(tmp_path / "auth-prompt.sqlite")
+
+    class ApprovalExecutor:
+        async def run(self, task, progress):
+            if task.get("resume_answer"):
+                assert task["interaction"]["answers"] == [{
+                    "question": "允许执行？",
+                    "answer": "",
+                    "selected_options": ["allow_once"],
+                    "card_id": "card-1",
+                }]
+                return {"answer": "approved"}
+            await progress(dict(stage="interaction", interaction=native_approval_question({
+                "request_id": "core-approval", "source": "permission_interrupt",
+                "questions": [{"question": "允许执行？", "card_id": "card-1"}],
+            })))
+            store.update(task["id"], lambda row: row.update(execution_settled=True))
+            raise InteractionPending()
+
+    service = TaskService(store, ApprovalExecutor())
+    try:
+        task = submit(service, "auth-prompt")
+        await until(lambda: store.read(task["id"])["status"] == "waiting_user"
+                    and store.read(task["id"])["output_closed"])
+        await service.answer(
+            "user",
+            "voice",
+            task["id"],
+            "ui-answer",
+            token(service, task),
+            answers=[{"selected_options": ["allow_once"], "card_id": "card-1"}],
+            native_ui=True,
+        )
+        await until(lambda: store.read(task["id"])["status"] == "completed")
         assert store.read(task["id"])["result"]["answer"] == "approved"
     finally:
         await service.close()
@@ -549,6 +641,37 @@ async def test_restart_expires_questions_without_replaying_answers(system):
         assert len(executor.calls) == 1
     finally:
         await restarted.close()
+
+
+async def test_shared_adapter_forwards_managed_task_to_session_agent():
+    request = SimpleNamespace(
+        channel_id="video_tool",
+        session_id="managed-task-" + "a" * 32,
+        request_id="task-forward",
+        params={},
+    )
+    shared = SimpleNamespace(_is_session_scoped_adapter=False)
+    inputs = {"query": "weather"}
+    async with bind_task_execution(request, shared, inputs):
+        assert "run" not in inputs
+    assert inputs == {"query": "weather"}
+
+
+async def test_session_adapter_without_agent_still_rejects_managed_task():
+    request = SimpleNamespace(
+        channel_id="video_tool",
+        session_id="managed-task-" + "b" * 32,
+        request_id="task-missing-agent",
+        params={"managed_task_binding": {"endpoint": "checkpoint", "task_id": "task-1"}},
+        user_id="user",
+    )
+    adapter = SimpleNamespace(
+        _is_session_scoped_adapter=True,
+        task_execution_binding=(SimpleNamespace(_react_agent=None), SimpleNamespace(managed_tasks={})),
+    )
+    with pytest.raises(RuntimeError, match="session-owned Agent"):
+        async with bind_task_execution(request, adapter, {}):
+            pytest.fail("A session adapter without its Agent must not run the task")
 
 
 async def test_managed_execution_without_authoritative_record_is_rejected(tmp_path):

@@ -22,7 +22,7 @@ from jiuwenswarm.runtime.cron.models import (
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.common.utils import logger
-from jiuwenswarm.runtime.host_services import send_runtime_wake
+from jiuwenswarm.common.host_services import send_runtime_wake
 
 
 class _CronToolsCronBackend(CronToolBackend):

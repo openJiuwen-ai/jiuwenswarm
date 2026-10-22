@@ -7,8 +7,16 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import selectedInfoIcon from '../../../assets/rsi/rsi-icon.svg';
+import { CloseButton } from '../../../components/ui/CloseButton/CloseButton';
 import { useRsiStore } from '../rsiStore';
-import { formatArtifactScore, formatGain, nodeChangeDisplayLabel, nodeChangeGroup, nodeStageLocalizedLabel, presentRsiNode } from '../rsiPresentation';
+import {
+  formatArtifactScore,
+  formatGain,
+  nodeChangeDisplayLabel,
+  nodeChangeGroup,
+  nodeStageLocalizedLabel,
+  presentRsiNode,
+} from '../rsiPresentation';
 import { resolveRsiArtifactSource } from '../rsiArtifactFiles';
 import { RsiArtifactDetailDialog } from './RsiArtifactDetailDialog';
 
@@ -96,14 +104,12 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
               {presentation.runtimeLabel}
             </span>
           </div>
-          <button
-            type="button"
-            className="rsi-selected-info__close"
+          <CloseButton
+            size={16}
             onClick={() => setSelectedNode(null)}
-            aria-label={t('rsi.detail.close', { defaultValue: '关闭' })}
-          >
-            ×
-          </button>
+            ariaLabel={t('rsi.detail.close', { defaultValue: '关闭' })}
+            testId="rsi-selected-info-close"
+          />
         </div>
 
         <div className="rsi-selected-info__body">
@@ -179,7 +185,9 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
                   ? t('rsi.detail.failureReason', { defaultValue: '失败原因' })
                   : presentation.lifecycle === 'pruned'
                     ? t('rsi.detail.prunedReason', { defaultValue: '剪枝原因' })
-                  : t('rsi.detail.rejectionReason', { defaultValue: '未采用原因' })}
+                    : presentation.lifecycle === 'skipped'
+                      ? t('rsi.detail.skippedReason', { defaultValue: '跳过原因' })
+                      : t('rsi.detail.rejectionReason', { defaultValue: '未采用原因' })}
               </div>
               <div className="rsi-selected-info__reason-label">{presentation.reasonLabel}</div>
               {presentation.reasonDetail && (

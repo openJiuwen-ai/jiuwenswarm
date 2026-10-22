@@ -664,7 +664,7 @@ async def test_remote_show_reads_package_capabilities_from_zip(
         assert card["details"] == "包内 README\n"
     assert downloader.calls == 1
     assert hub.artifact_calls == 1
-    assert catalog.list_agent_templates() == []
+    assert await catalog.list_agent_templates() == []
     assert not (
         extension_workspace / "plugins" / collection / "hub_preview"
     ).exists()
@@ -691,7 +691,7 @@ async def test_remote_show_keeps_empty_avatar_when_hub_icon_missing(
     assert card is not None
     assert card["avatar"] == ""
     assert downloader.calls == 1
-    assert catalog.list_agent_templates() == []
+    assert await catalog.list_agent_templates() == []
 
 
 @pytest.mark.asyncio
@@ -715,7 +715,7 @@ async def test_hub_list_keeps_empty_avatar_when_icon_missing(
 
     assert card["avatar"] == ""
     assert downloader.calls == 0
-    assert catalog.list_agent_templates() == []
+    assert await catalog.list_agent_templates() == []
 
 
 @pytest.mark.asyncio
@@ -1028,7 +1028,7 @@ async def test_remote_hub_expert_files_preview_without_installing(
     assert preview["path"] == "manifest.json"
     assert downloader.calls == 1
     assert hub.artifact_calls == 1
-    assert catalog.list_agent_templates() == []
+    assert await catalog.list_agent_templates() == []
     local = extension_workspace / "plugins" / "agent_templates" / "local"
     assert not local.exists() or not any(local.iterdir())
     hub_preview = extension_workspace / "plugins" / "agent_templates" / "hub_preview"
@@ -1211,6 +1211,35 @@ async def test_hub_asset_uuid_remains_external_while_package_name_drives_runtime
     assert [(card["id"], card["installed"]) for card in cards] == [
         (asset_id, False)
     ]
+
+@pytest.mark.asyncio
+async def test_hub_install_replaces_built_in_copy_whose_shelf_package_was_removed(
+    extension_workspace: Path,
+) -> None:
+    asset_id = "8c5a4c8a1bf0484a8027af89e12d13d4"
+    hub = FakeHubAssetPort(
+        _item(asset_id, "agent_template", package_name="sales-expert")
+    )
+    root = extension_workspace / "plugins" / "agent_templates"
+    orphan = root / "built_in" / "sales-expert"
+    orphan.mkdir(parents=True)
+    (orphan / "manifest.json").write_text(
+        json.dumps({"package_type": "agent_template", "name": "sales-expert"}),
+        encoding="utf-8",
+    )
+
+    ok, payload = await catalog.install_equipment_from_hub_gated(
+        "agent_templates",
+        {"id": asset_id},
+        hub_port=hub,
+        downloader=FakeDownloader(),
+    )
+
+    assert (ok, payload) == (True, {})
+    assert not orphan.exists()
+    assert (root / "local" / "sales-expert").is_dir()
+    assert catalog.is_agent_template_installed("sales-expert") is True
+
 
 @pytest.mark.asyncio
 async def test_expert_catalog_keeps_hub_card_with_same_named_local_package(extension_workspace):

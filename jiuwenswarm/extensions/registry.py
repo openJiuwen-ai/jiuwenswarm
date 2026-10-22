@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 
@@ -164,7 +164,7 @@ class ExtensionRegistry:
         channel: Any,
         *,
         agent_client: Any = None,
-        media_attachment_normalizer: Callable[[dict[str, Any], str | None], None]
+        media_attachment_normalizer: Callable[[dict[str, Any], str | None], Awaitable[None]]
         | None = None,
     ) -> None:
         from jiuwenswarm.extensions.sdk.application_plugin import (

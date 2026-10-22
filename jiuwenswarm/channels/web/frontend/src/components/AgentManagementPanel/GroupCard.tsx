@@ -16,18 +16,12 @@ export function getAvatarTone(name: string): string {
   return ['variant-1', 'variant-2', 'variant-3', 'variant-4', 'variant-5', 'variant-6'][seed % 6];
 }
 
-function GroupAvatar({
-  item,
-  size = 'card',
-}: {
-  item: Pick<AgentGroupCatalogItem, 'displayName' | 'avatarUrl'>;
-  size?: 'card' | 'detail';
-}) {
+function GroupAvatar({ item }: { item: Pick<AgentGroupCatalogItem, 'displayName' | 'avatarUrl'> }) {
   const [imageFailed, setImageFailed] = useState(false);
   const avatarUrl = item.avatarUrl && !imageFailed ? item.avatarUrl : null;
   return (
     <span
-      className={`agent-management-avatar agent-group-avatar agent-group-avatar--${size} agent-group-avatar--${getAvatarTone(item.displayName)}`}
+      className={`agent-management-avatar agent-group-avatar agent-group-avatar--detail agent-group-avatar--${getAvatarTone(item.displayName)}`}
       aria-hidden="true"
     >
       {avatarUrl ? (

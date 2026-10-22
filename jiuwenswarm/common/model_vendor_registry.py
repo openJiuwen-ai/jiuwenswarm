@@ -92,6 +92,9 @@ class VendorPreset:
     # OpenAI 协议端点方言(deepseek/openrouter/siliconflow/dashscope/openai_compatible/...);
     # None=不写、走默认 openai;Anthropic 协议(client_provider=Anthropic)时此字段被 core 忽略
     endpoint_profile: str | None = None
+    # 仅用于图片/视频生成的厂商(如自部署 vLLM-Omni):不出现在对话模型选择中;
+    # 生成模型目录、可改地址、可空 key/模型见前端 generationModels.ts。
+    generation_only: bool = False
 
 
 # core 的 ProviderType.Anthropic 枚举值。当用户在前端选 "Anthropic 格式" 时,
@@ -457,6 +460,17 @@ _PRESETS: list[VendorPreset] = [
         models_needs_key=True,
         anthropic_base="https://api.xiaomimimo.com/anthropic",
     ),
+    # 自部署 vLLM-Omni 推理服务:没有固定地址,api_base 只是默认提示,由用户在设置里改。
+    VendorPreset(
+        vendor_key="vllm-omni", display_name="vLLM-Omni", plan=PlanKind.CUSTOM_API,
+        client_provider="OpenAI",
+        api_base="http://127.0.0.1:8091/v1",
+        default_model="",
+        model_options=(),
+        icon_key="vllm-omni",
+        models_needs_key=False,
+        generation_only=True,
+    ),
 ]
 
 
@@ -550,6 +564,7 @@ def to_frontend_payload() -> dict[str, Any]:
                 "icon_key": p.icon_key,
                 "models_endpoint": p.models_endpoint,
                 "models_needs_key": p.models_needs_key,
+                "generation_only": p.generation_only,
                 "reasoning_capabilities": _reasoning_capabilities(p),
                 # Provider-scoped pattern 规则：给 models_endpoint 拉取到的、
                 # 不在 model_options 精确表里的新模型用，避免前端退到跨厂商

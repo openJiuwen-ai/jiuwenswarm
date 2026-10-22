@@ -63,6 +63,7 @@ def shell_tool_names() -> list[str]:
 _CODE_TOOLS = {"code"}
 _PATH_TOOLS = {
     "apply_patch",
+    "lsp",
     "read_file",
     "read_pdf",
     "write_file",
@@ -148,6 +149,7 @@ _REVIEWED_MEMORY_READ_TOOLS = {
     "viking_search",
 }
 _FIXED_BROWSER_TOOLS = {
+    "browser_phase",
     "browser_probe_cards",
     "browser_probe_interactives",
     "browser_recall_offload",

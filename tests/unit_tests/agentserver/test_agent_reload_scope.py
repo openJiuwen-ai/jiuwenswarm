@@ -71,6 +71,12 @@ class FakeAgent:
     def restore_skill_retrieval_session(self, *args, **kwargs) -> None:
         """Match the child adapter's Skill retrieval restore hook."""
 
+    def configure_initial_execution(self, *, model_name, request=None, can_access=None) -> None:
+        """Accept the first-turn context through the child adapter's public API."""
+        self._initial_execution_model_name = str(model_name or "").strip()
+        self._initial_execution_request = request
+        self._model_selection_can_access = can_access
+
     def persist_skill_retrieval_session_profile(self) -> None:
         """Match the child adapter's public profile persistence hook."""
 
@@ -93,6 +99,14 @@ class FakeAgent:
 
     def _uses_smart_permission_lifecycle(self, _config_base=None) -> bool:
         """Keep the ordinary reload fixture outside Smart lifecycle admission."""
+        return False
+
+    def _is_session_live(self, session_id: str) -> bool:
+        """Model an idle session without an active invocation."""
+        return False
+
+    def _has_live_root_permission_owner(self, session_id: str) -> bool:
+        """Model an idle session without a suspended permission owner."""
         return False
 
 
@@ -590,7 +604,7 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_agent_reload_config_preserves_agent_owned_a4p_config(monkeypatch):
-    from jiuwenswarm.agents.harness.common import a4p_runtime
+    from jiuwenswarm.agents.harness.common.a4p import runtime as a4p_runtime
 
     server = agent_ws_server_module.AgentWebSocketServer()
     order = []
@@ -1157,6 +1171,9 @@ def test_deep_adapter_persisted_selection_overrides_last_resolved_model():
     with patch(
         "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
         return_value=ModelSelection(type="model_group", id="mgp_new"),
+    ), patch(
+        "jiuwenswarm.common.model_catalog.get_config",
+        return_value={"models": {"groups": [{"model_group_id": "mgp_new", "routes": []}]}},
     ):
         requested = adapter._requested_model_name(request)
 

@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from openjiuwen.agent_teams.monitor import TeamMonitor
@@ -29,8 +30,10 @@ logger = logging.getLogger(__name__)
 # directly and never re-derives it from the event type. Events that carry
 # their own status in the payload (created / plan_request / plan_response /
 # updated) override the table default via ``event.status or ...``. TASK_UPDATED
-# is intentionally absent: its status is purely payload-driven, so a missing
-# status must leave the task unchanged rather than reset it.
+# is intentionally absent: it must never reset the task to a table default. When
+# its payload carries no status, ``_handle_task`` falls back to the task's current
+# status re-queried from the DB (same source as the snapshot), so the frame still
+# carries ``status`` without changing the task.
 #
 # Adding a new task event is now a one-line entry here plus the SDK mapping in
 # ``event_types.py`` — no frontend change required.
@@ -133,6 +136,29 @@ def _task_text_field(name: str, value: str | None) -> dict[str, Any]:
     return field
 
 
+# 框架模板消息（SDK ``message_template``）的模板 key → 前端交接类型。
+# 模板 key 是 SDK ``prompts/<lang>/<key>.md`` 的文件名；未登记的模板退化为 ``other``，
+# 前端显示通用的「调度消息」文案，SDK 新增模板时在这里补一行即可。
+_HANDOFF_KIND_BY_TEMPLATE: dict[str, str] = {
+    "scheduler_task_start": "task_start",
+    "scheduler_task_start_plan": "task_start_plan",
+    "scheduler_review_request": "review_request",
+    "scheduler_review_renudge": "review_renudge",
+    "scheduler_rework": "rework",
+    "scheduler_rework_summary": "rework_summary",
+    "passive_task_assigned": "task_assigned",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _MessageDisplay:
+    """一条邮箱消息在前端事件上的展示字段."""
+
+    content: str = ""
+    protocol: str = "plain"
+    handoff: dict[str, Any] | None = None
+
+
 class TeamMonitorHandler(BaseMonitorHandler):
     """Team Monitor 处理器.
 
@@ -224,17 +250,19 @@ class TeamMonitorHandler(BaseMonitorHandler):
         base.update({
             "member_id": event.member_name,
             "force": event.force,
+            # 退场终态：shut_down 离队，dormant 休眠但仍在名册上，前端据此决定是否移除成员。
+            "target_status": event.target_status,
         })
         return base
 
-    async def _lookup_task_body(self, task_id: str) -> tuple[str, str] | None:
-        """Re-query the task's title/content via the monitor's public API.
+    async def _lookup_task_body(self, task_id: str) -> tuple[str, str, str | None] | None:
+        """Re-query the task's title/content/status via the monitor's public API.
 
         Args:
             task_id: The DB task id carried by the monitor event.
 
         Returns:
-            ``(title, content)`` when the task exists, else ``None``. On any
+            ``(title, content, status)`` when the task exists, else ``None``. On any
             exception (monitor None / query error) logs a warning and returns
             ``None`` so the caller can still emit the event with ``task_id`` +
             ``status`` (no body) — never blocks the event stream.
@@ -252,7 +280,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
             return None
         if task is None:
             return None
-        return task.title, task.content
+        return task.title, task.content, getattr(task, "status", None)
 
     async def _handle_task(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
         """Converge every task event into the frontend-ready task shape.
@@ -275,6 +303,10 @@ class TeamMonitorHandler(BaseMonitorHandler):
             base: Pre-filled event dict (type / team_id / member_id).
             event: Source monitor event.
 
+        A ``TASK_UPDATED`` whose payload carries no status (e.g. a title/content
+        edit) takes the task's current DB status, so the frame always carries
+        ``status`` when the task can be found, without resetting it.
+
         Returns:
             The event dict with ``task_id`` and, when known, the resolved ``status``
             and (for CREATED/UPDATED) the ``title`` / ``content`` body.
@@ -286,36 +318,41 @@ class TeamMonitorHandler(BaseMonitorHandler):
         if event.event_type in _TASK_BODY_EVENT_TYPES and event.task_id:
             body = await self._lookup_task_body(event.task_id)
             if body is not None:
-                title_field = _task_text_field("title", body[0])
-                content_field = _task_text_field("content", body[1])
-                base.update(title_field)
-                base.update(content_field)
+                title, content, db_status = body
+                base.update(_task_text_field("title", title))
+                base.update(_task_text_field("content", content))
+                if "status" not in base and db_status:
+                    base["status"] = db_status
         return base
 
     async def _handle_message(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
-        message_content, message_protocol = await self._get_message_display(event.message_id)
+        display = await self._get_message_display(event.message_id)
         base.update({
             "message_id": event.message_id,
             "from_member": event.from_member_name,
             "to_member": event.to_member_name,
-            "content": message_content,
-            "protocol": message_protocol,
+            "content": display.content,
+            "protocol": display.protocol,
         })
+        if display.handoff is not None:
+            base["handoff"] = display.handoff
         return base
 
     async def _handle_broadcast(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
-        message_content, message_protocol = await self._get_message_display(event.message_id)
+        display = await self._get_message_display(event.message_id)
         base.update({
             "message_id": event.message_id,
             "from_member": event.from_member_name,
-            "content": message_content,
-            "protocol": message_protocol,
+            "content": display.content,
+            "protocol": display.protocol,
         })
+        if display.handoff is not None:
+            base["handoff"] = display.handoff
         return base
 
-    async def _get_message_display(self, message_id: str | None) -> tuple[str, str]:
+    async def _get_message_display(self, message_id: str | None) -> _MessageDisplay:
         if not message_id or not self._monitor:
-            return "", "plain"
+            return _MessageDisplay()
         try:
             from openjiuwen.agent_teams.context import set_session_id, reset_session_id
             token = set_session_id(self._session_id)
@@ -325,8 +362,9 @@ class TeamMonitorHandler(BaseMonitorHandler):
                     if message.message_id == message_id:
                         protocol = self._normalize_message_protocol(message.protocol)
                         content = self._normalize_message_content(message.content or "", protocol)
-                        return content, protocol
-                return "", "plain"
+                        handoff = await self._build_handoff(getattr(message, "meta", None))
+                        return _MessageDisplay(content=content, protocol=protocol, handoff=handoff)
+                return _MessageDisplay()
             finally:
                 reset_session_id(token)
         except Exception as e:
@@ -335,7 +373,42 @@ class TeamMonitorHandler(BaseMonitorHandler):
                 message_id,
                 e,
             )
-            return "", "plain"
+            return _MessageDisplay()
+
+    async def _build_handoff(self, meta: Any) -> dict[str, Any] | None:
+        """把框架模板消息的 meta 转成前端展示用的交接描述.
+
+        模板消息（调度器开工 / 送审 / 返工 / 催办、被动成员派活）的 ``content`` 恒空，
+        正文要等收件人投递时才渲染，且是写给执行成员的完整任务简报，不适合放进群聊。
+        这里只给出交接类型与所绑定任务的标题，前端据此渲染一行调度系统消息。
+
+        Args:
+            meta: ``MessageInfo.meta``，即 ``{template, refs, params}``；非模板消息为 None。
+
+        Returns:
+            ``{kind, template, task_id?, task_title?, max_rounds?}``；非模板消息返回 None。
+        """
+        if not isinstance(meta, dict):
+            return None
+        template = meta.get("template")
+        if not isinstance(template, str) or not template:
+            return None
+        handoff: dict[str, Any] = {
+            "kind": _HANDOFF_KIND_BY_TEMPLATE.get(template, "other"),
+            "template": template,
+        }
+        refs = meta.get("refs") if isinstance(meta.get("refs"), dict) else {}
+        task_id = refs.get("task")
+        if isinstance(task_id, str) and task_id:
+            handoff["task_id"] = task_id
+            body = await self._lookup_task_body(task_id)
+            if body is not None and body[0]:
+                handoff.update(_task_text_field("task_title", body[0]))
+        params = meta.get("params") if isinstance(meta.get("params"), dict) else {}
+        max_rounds = params.get("max_rounds")
+        if isinstance(max_rounds, str) and max_rounds:
+            handoff["max_rounds"] = max_rounds
+        return handoff
 
     @staticmethod
     def _normalize_message_protocol(protocol: Any) -> str:

@@ -13,9 +13,6 @@ from jiuwenswarm.common.utils import logger
 from jiuwenswarm.gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
-from jiuwenswarm.gateway.embedded.runtime.attachments.upload_storage import (
-    atomic_write_unique,
-)
 
 # 类型别名，用于类型提示
 FeishuConfig = Any  # 避免循环导入
@@ -138,33 +135,13 @@ class FeishuFileService:
                 raise
             except Exception as exc:  # noqa: BLE001
                 raise AttachmentPersistError(str(exc)) from exc
-        download_dir = self._get_download_dir(category)
-        # 本地回落（仅测试 / 无 AgentServer 上下文）：用原子独占创建落盘，
-        # 同名文件自动取 stem-N 后缀，并发下载与既有文件均不会被覆盖
-        # （修复秒级时间戳重命名在同秒并发下仍会相互覆盖的 P1）。
-        # 经钩子落盘（AgentServer 注入目录）时由 AgentServer 侧去重
-        # （unique_upload_path），此处不重复处理。
-        path = atomic_write_unique(Path(download_dir) / local_name, content)
-        return {
-            "path": str(path),
-            "name": path.name,
-            "size": len(content),
-        }
+        raise AttachmentPersistError(
+            "IM 附件落盘钩子未注入（AgentServer 上下文缺失）"
+        )
 
     # ──────────────────────────────────────────────────────────────────────────
     # 工具方法
     # ──────────────────────────────────────────────────────────────────────────
-    @classmethod
-    def _ensure_dir(cls, path: str) -> None:
-        """确保目录存在。"""
-        os.makedirs(path, exist_ok=True)
-
-    def _get_download_dir(self, file_type: str) -> str:
-        """获取下载目录路径，并确保目录存在。"""
-        base_dir = os.path.join(self._workspace_dir, "feishu_files", "downloads", file_type)
-        self._ensure_dir(base_dir)
-        return base_dir
-
     @classmethod
     def _generate_local_filename(
         cls,

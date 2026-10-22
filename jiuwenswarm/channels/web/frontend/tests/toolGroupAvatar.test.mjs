@@ -1,9 +1,33 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { build } from 'esbuild';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { ToolGroupDisplay } from '../node_modules/.cache/tool-group-avatar/toolGroupAvatar.mjs';
+await build({
+  entryPoints: ['src/components/ChatPanel/ToolGroupDisplay.tsx'],
+  bundle: true,
+  packages: 'external',
+  platform: 'node',
+  format: 'esm',
+  outfile: 'node_modules/.cache/tool-group-avatar/toolGroupAvatar.mjs',
+  define: { 'import.meta.env.DEV': 'false' },
+  loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
+  plugins: [
+    {
+      name: 'ui-test-svg-components',
+      setup(builder) {
+        builder.onResolve({ filter: /\.svg\?react$/ }, ({ path }) => ({ path, namespace: 'svg-react-stub' }));
+        builder.onLoad({ filter: /.*/, namespace: 'svg-react-stub' }, () => ({
+          contents: 'export default function SvgStub() { return null; }',
+          loader: 'js',
+        }));
+      },
+    },
+  ],
+});
+
+const { ToolGroupDisplay } = await import('../node_modules/.cache/tool-group-avatar/toolGroupAvatar.mjs');
 
 test('tool group does not fall back to team leader when the turn has an Agent identity', () => {
   const markup = renderToStaticMarkup(

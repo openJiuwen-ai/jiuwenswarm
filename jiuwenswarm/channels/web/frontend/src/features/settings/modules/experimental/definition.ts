@@ -2,13 +2,15 @@ import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   A2UISetting,
-  ExternalCliSettingsItem,
+  ExternalCliCustomAgentsItem,
   ProactiveLimitsSetting,
   RSISetting,
   TaskAsrSetting,
   TaskFullDuplexSetting,
+  TrajectoryDiagnosisSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
+import { MultiModelVerificationSettings } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
@@ -28,9 +30,9 @@ export const experimentalModule: SettingsModuleDefinition = {
       items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
     },
     {
-      id: 'external-cli-agents',
+      id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
-      items: [{ id: 'external-cli-agents', component: 'custom', render: ExternalCliSettingsItem }],
+      items: [{ id: 'external-cli-custom-agents', component: 'custom', render: ExternalCliCustomAgentsItem }],
     },
     {
       id: 'rsi',
@@ -51,7 +53,10 @@ export const experimentalModule: SettingsModuleDefinition = {
     {
       id: 'trajectory-ui',
       titleKey: 'settingsPanel.experimental.trajectoryUi',
-      items: [{ id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting }],
+      items: [
+        { id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting },
+        { id: 'trajectory-diagnosis-enabled', component: 'custom', render: TrajectoryDiagnosisSetting },
+      ],
     },
     {
       id: 'skill-pack',
@@ -81,6 +86,26 @@ export const experimentalModule: SettingsModuleDefinition = {
       items: [{ id: 'team-organization-ui-enabled', component: 'switch', key: 'team_organization_ui_enabled' }],
     },
     {
+      id: 'team-scheduled-dispatch',
+      titleKey: 'settingsPanel.experimental.teamScheduledDispatch',
+      items: [
+        {
+          id: 'team-scheduled-dispatch-enabled',
+          component: 'switch',
+          key: 'team_scheduled_dispatch_enabled',
+          subItems: {
+            show: 'always',
+            disabled: 'when-parent-unchecked',
+            uncheckWithParent: true,
+            items: [
+              { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
+              { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
+            ],
+          },
+        },
+      ],
+    },
+    {
       id: 'proactive-recommendation',
       titleKey: 'settingsPanel.experimental.proactive',
       items: [
@@ -92,6 +117,22 @@ export const experimentalModule: SettingsModuleDefinition = {
             show: 'always',
             disabled: 'when-parent-unchecked',
             items: [{ id: 'proactive-limits', component: 'custom', render: ProactiveLimitsSetting }],
+          },
+        },
+      ],
+    },
+    {
+      id: 'multi-model-collaboration',
+      titleKey: 'settingsPanel.experimental.multiModelCollaboration',
+      items: [
+        {
+          id: 'multi-model-collaboration-enabled',
+          component: 'switch',
+          key: 'multi_model_collaboration_enabled',
+          subItems: {
+            show: 'when-parent-checked',
+            disabled: 'never',
+            items: [{ id: 'multi-model-verification', component: 'custom', render: MultiModelVerificationSettings }],
           },
         },
       ],

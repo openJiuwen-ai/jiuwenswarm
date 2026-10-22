@@ -29,3 +29,6 @@ from gateway_protocol.e2a.constants import (  # noqa: F401 — import * 不带�
     E2A_WIRE_LEGACY_AGENT_RESPONSE_KEY,
     E2A_WIRE_SERVER_PUSH_KEY,
 )
+
+# Host-owned (develop): not yet in gateway_protocol; Gateway writes, AgentServer ConfigAdapter reads.
+E2A_AUTH_SESSION_PARAM_KEY = "_jiuwen_auth_session"

@@ -390,6 +390,38 @@ def test_build_prompt_with_schema_attaches_doc_and_field_hints(tmp_path: Path) -
     assert "OPT" not in out.get("fields", {})
 
 
+def test_build_prompt_passes_through_oauth_implicit_grant_hints(tmp_path: Path) -> None:
+    """Schema oauthDocUrl/oauthSuccessPrefix surface as oauth_doc_url/oauth_success_prefix
+    so the desktop shell can offer one-click authorization (token capture). The doc URL is
+    a vendor documentation page (not a fixed authorize link) so the desktop shell can
+    re-extract the current link after the vendor rotates its personal-use client_id."""
+    pkg = _mk_pkg(tmp_path, "baidu-netdisk", mcp=None)
+    import json
+    (pkg / "token-schema.json").write_text(json.dumps({
+        "title": "百度网盘授权",
+        "oauthDocUrl": "https://pan.baidu.com/union/doc/mcp-server/custom-use/",
+        "oauthSuccessPrefix": "https://openapi.baidu.com/oauth/2.0/login_success",
+        "fields": [
+            {"key": "BAIDU_NETDISK_ACCESS_TOKEN", "label": "Access Token",
+             "type": "password", "required": True},
+        ],
+    }), encoding="utf-8")
+    with patch("jiuwenswarm.server.runtime.mcp.credential.get_workspace_dir", return_value=tmp_path):
+        out = cred.build_credentials_prompt("baidu-netdisk", ["BAIDU_NETDISK_ACCESS_TOKEN"])
+    assert out["oauth_doc_url"] == "https://pan.baidu.com/union/doc/mcp-server/custom-use/"
+    assert out["oauth_success_prefix"] == "https://openapi.baidu.com/oauth/2.0/login_success"
+
+    # Schemas without the hints must not emit the keys at all (web/other connectors unchanged).
+    pkg2 = _mk_pkg(tmp_path, "plain-oauth", mcp=None)
+    (pkg2 / "token-schema.json").write_text(json.dumps({
+        "fields": [{"key": "X", "required": True}],
+    }), encoding="utf-8")
+    with patch("jiuwenswarm.server.runtime.mcp.credential.get_workspace_dir", return_value=tmp_path):
+        out2 = cred.build_credentials_prompt("plain-oauth", ["X"])
+    assert "oauth_doc_url" not in out2
+    assert "oauth_success_prefix" not in out2
+
+
 def test_build_prompt_with_minimal_schema_keeps_bare_field_key(tmp_path: Path) -> None:
     """A minimal token schema still returns the required field key."""
     _mk_pkg(tmp_path, "plain", mcp={"mcpServers": {"plain": {

@@ -489,7 +489,20 @@ class RailManager:
         return self._load_rail_instance_impl(name, self._current_agent_state())
 
     def _load_rail_class(self, name: str) -> type:
-        """加载 Rail 类（不实例化，不缓存）."""
+        """Cache the immutable Rail recipe; each Agent constructs its own Rail."""
+        from jiuwenswarm.runtime.kernel import KernelIdentity, ResourceKey, identity_reference, process_kernel
+        folder = self._extensions_dir / name
+        # Local imports can change alongside rail.py. Fingerprint the package,
+        # not only the entrypoint, before sharing its class/factory.
+        sources = [(str(path.relative_to(folder)), path.read_bytes().hex())
+                   for path in sorted(folder.rglob("*.py"))]
+        identity = KernelIdentity.for_agent(project_dir=str(folder), work_mode="rail-recipe",
+            definition=self._extensions[name].to_dict(), capabilities="rail-class",
+            configuration=sources)
+        key = ResourceKey(identity, "rail-recipe", name, "", "", identity_reference(sources))
+        return process_kernel().recipe(key, lambda: self._load_rail_class_uncached(name, key.recipe))
+
+    def _load_rail_class_uncached(self, name: str, revision: str) -> type:
         extension = self._extensions[name]
 
         folder_path = self._extensions_dir / name
@@ -500,7 +513,7 @@ class RailManager:
         try:
             module: Any
             if (folder_path / "__init__.py").exists():
-                package_name = f"jiuwenswarm_rail_extension_{name}"
+                package_name = f"jiuwenswarm_rail_extension_{name}_{revision[:16]}"
                 package_spec = importlib.util.spec_from_file_location(
                     package_name,
                     folder_path / "__init__.py",
@@ -523,7 +536,7 @@ class RailManager:
                 rail_spec.loader.exec_module(module)
             else:
                 spec = importlib.util.spec_from_file_location(
-                    f"rail_extension_{name}", plugin_file
+                    f"rail_extension_{name}_{revision[:16]}", plugin_file
                 )
                 if spec is None or spec.loader is None:
                     raise ValueError(f"无法加载模块规范: {name}")

@@ -217,7 +217,12 @@ class FeishuStreamingSession:
         if self._flush_task is not None:
             await asyncio.shield(self._flush_task)
         try:
-            await self._write_snapshot(self._text)
+            if self._text.strip():
+                await self._write_snapshot(self._text)
+            # 无文字产出的回合（如仅工具调用 / ask_user 提问轮）：update_content
+            # 收到空 content 会被飞书以 400 field validation failed 拒绝，卡片
+            # 永远停在"正在生成回复…"。空摘要的 close_card 是允许的，直接关闭
+            # 流式状态即可（空快照无意义，跳过 update）。
             await self._cardkit.close_card(
                 self._card_id,
                 self._text,
@@ -241,6 +246,10 @@ class FeishuStreamingSession:
                 self._schedule_flush()
 
     async def _write_snapshot(self, text: str) -> None:
+        if not text.strip():
+            # 飞书对空 content 返回 400 (99992402 field validation failed)；
+            # 空快照没有可渲染内容，跳过即可（卡片保持创建时的占位文案）。
+            return
         async with self._write_lock:
             await self._cardkit.update_content(
                 self._card_id,

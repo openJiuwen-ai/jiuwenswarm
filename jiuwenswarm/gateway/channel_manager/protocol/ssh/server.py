@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from jiuwenswarm.extensions.agentos.auth.ssh_authenticator import SshPublicKeyAuthenticator
-from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import (
+from jiuwenswarm.gateway.extensions.auth.ssh_authenticator import SshPublicKeyAuthenticator
+from jiuwenswarm.gateway.extensions.auth.ssh_key_registry import (
     KeyRegistry,
     KeyRegistryEntry,
 )

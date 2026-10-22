@@ -11,11 +11,14 @@
  * - Esc / 点击遮罩关闭
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MarkdownRenderer } from '../MarkdownRenderer';
-import type { WorkflowAgent } from './workflowTypes';
-import { parseVerifyOutcome, verifyVoteText } from './workflowTypes';
+import { useSessionStore } from '../../stores/sessionStore';
+import type { WorkflowAgent, WorkflowAgentActivity, WorkflowRun } from './workflowTypes';
+import { findWorkflowAgent, parseVerifyOutcome, verifyVoteText } from './workflowTypes';
+import { buildProcessItems, Chevron } from './shared';
+import { ProcessListCard } from './ProcessListCard';
 
 // ── 字数格式化 ────────────────────────────────────────────
 
@@ -27,7 +30,7 @@ export function formatCharCount(s: string): string {
 
 // ── 详情 Section 类型 ─────────────────────────────────────
 
-export type DetailSectionKey = 'prompt' | 'human_prompt' | 'human_reply' | 'outcome' | 'error' | 'result';
+export type DetailSectionKey = 'prompt' | 'human_prompt' | 'human_reply' | 'outcome' | 'error' | 'result' | 'activity';
 export type DetailAccent = 'blue' | 'amber' | 'emerald' | 'red';
 export interface DetailSection {
   key: DetailSectionKey;
@@ -35,6 +38,8 @@ export interface DetailSection {
   icon: string;
   content: string;
   accent: DetailAccent;
+  /** Tool-activity rows; present only on the activity section (no text content). */
+  activity?: WorkflowAgentActivity[];
 }
 
 export interface AgentModalState {
@@ -74,6 +79,17 @@ export function buildDetailSections(
   if (agent.human_reply) secs.push({ key: 'human_reply', label: t('swarmflow.sectionHumanReply'), icon: '✓', content: agent.human_reply, accent: 'emerald' });
   if (agent.outcome) secs.push({ key: 'outcome', label: t('swarmflow.sectionOutput'), icon: '◀', content: agent.outcome, accent: 'emerald' });
   if (agent.error) secs.push({ key: 'error', label: t('swarmflow.sectionError'), icon: '✕', content: agent.error, accent: 'red' });
+  // 工具活动对：人类节点不产 activity，空列表不加 section。
+  if (agent.activity && agent.activity.length > 0) {
+    secs.push({
+      key: 'activity',
+      label: t('swarmflow.sectionCallRecords'),
+      icon: '⚙',
+      content: '',
+      accent: 'blue',
+      activity: agent.activity,
+    });
+  }
   return secs;
 }
 
@@ -209,18 +225,121 @@ function JsonTreeView({ data }: { data: unknown }) {
   );
 }
 
+// ── 调用记录（懒挂载成员调用列表同款卡片） ─────────────────
+
+export interface CallRecordsSource {
+  sessionId: string;
+  /** 镜像 worker 的成员 id（`run_id:agent_id`），与成员调用列表同源过滤执行事件。 */
+  memberId: string;
+}
+
+/**
+ * 与成员调用列表同一数据源：store 的 `teamMemberExecutionEvents` 按
+ * `member_id` 过滤，再复用 `buildProcessItems` + `ProcessListCard` 渲染路径，
+ * 保证数据与卡片呈现完全一致。默认折叠，展开才构造 `ProcessItem`
+ * （懒挂载——折叠时零卡片渲染，不与成员面板的调用列表永久重复）。
+ */
+function CallRecordsSection({ source }: { source: CallRecordsSource }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const executionEvents = useSessionStore(
+    (s) => s.runtimes[source.sessionId]?.teamMemberExecutionEvents ?? [],
+  );
+
+  const memberEvents = useMemo(
+    () => executionEvents.filter((e) => e.member_id === source.memberId),
+    [executionEvents, source.memberId],
+  );
+  // 徽章计数：调用记录 = 该成员的 tool_call 条数（折叠时也显示）。
+  const callCount = useMemo(
+    () => memberEvents.filter((e) => e.kind === 'tool_call').length,
+    [memberEvents],
+  );
+  // 懒挂载：仅展开时构造卡片数据（任务/消息源传空，只留执行项）。
+  const items = useMemo(
+    () =>
+      expanded ? buildProcessItems(source.memberId, [], [], [], memberEvents, t) : [],
+    [expanded, source.memberId, memberEvents, t],
+  );
+
+  const toggleItem = (itemId: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-2 rounded-md border border-border/40 bg-secondary/20 px-2 py-1.5 text-left hover:bg-secondary/40"
+        data-testid="team-area-swarmflow-detail-modal-call-records-header"
+      >
+        <Chevron expanded={expanded} />
+        {/* 区段标签保持通用的“活动”（chip/Tab 同键），折叠区头点名当前适配的
+            类型“工具调用”——后续扩展非工具活动时这里换成分组标题即可。 */}
+        <span className="text-xs font-medium text-text">{t('swarmflow.sectionToolCalls')}</span>
+        <span
+          className="ml-auto shrink-0 rounded bg-black/10 dark:bg-white/10 px-1 text-[10px] tabular-nums text-text-muted"
+          data-testid="team-area-swarmflow-detail-modal-call-records-count"
+        >
+          {callCount}
+        </span>
+      </button>
+      {expanded && (
+        <ProcessListCard
+          items={items}
+          expandedIds={expandedIds}
+          onToggle={toggleItem}
+          emptyText={t('team.noProcessData')}
+        />
+      )}
+    </div>
+  );
+}
+
 // ── 弹窗组件 ──────────────────────────────────────────────
+
+const EMPTY_WORKFLOW_RUNS: WorkflowRun[] = [];
 
 export interface AgentDetailModalProps {
   state: AgentModalState | null;
   agentName: string;
   onClose: () => void;
   onTabChange: (key: DetailSectionKey) => void;
+  /** swarmflow 节点身份（run + agent）：调用记录按 `member_id=run_id:agent_id` 过滤 store 执行事件。 */
+  callRecordsSource?: CallRecordsSource | null;
 }
 
-export function AgentDetailModal({ state, agentName, onClose, onTabChange }: AgentDetailModalProps) {
+export function AgentDetailModal({ state, agentName, onClose, onTabChange, callRecordsSource }: AgentDetailModalProps) {
   const { t } = useTranslation();
   const [rawMode, setRawMode] = useState(false);
+
+  // 弹窗开着时数据仍在流（运行中节点）：sections 若冻结在打开瞬间，Tab 上的
+  // 活动计数、后到的 outcome/error 都会陈旧。有 callRecordsSource（run:agent
+  // 身份）时按 store 里的活 agent 重建；合成 sections（verify 面板整体输入/
+  // 输出）无对应节点，退回打开时的快照。
+  const liveSessionId = callRecordsSource?.sessionId ?? '';
+  const liveMemberId = callRecordsSource?.memberId ?? '';
+  const liveRuns = useSessionStore((s) =>
+    liveSessionId ? s.runtimes[liveSessionId]?.workflowRuns ?? EMPTY_WORKFLOW_RUNS : EMPTY_WORKFLOW_RUNS,
+  );
+  const liveAgent = useMemo(() => {
+    if (!liveSessionId || !liveMemberId) return null;
+    const sep = liveMemberId.indexOf(':');
+    if (sep <= 0) return null;
+    const found = findWorkflowAgent(liveRuns, liveMemberId.slice(0, sep), liveMemberId.slice(sep + 1));
+    return found?.agent ?? null;
+  }, [liveRuns, liveSessionId, liveMemberId]);
+  const sections = useMemo(
+    () => (liveAgent ? buildDetailSections(t, liveAgent) : state?.sections ?? []),
+    [liveAgent, state?.sections, t],
+  );
 
   useEffect(() => {
     if (!state) return;
@@ -238,7 +357,7 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
 
   if (!state) return null;
 
-  const activeSection = state.sections.find((s) => s.key === state.activeKey);
+  const activeSection = sections.find((s) => s.key === state.activeKey);
   const content = activeSection?.content ?? '';
   // 仅对输入/输出尝试 JSON 渲染
   const isJsonSection = activeSection?.key === 'prompt' || activeSection?.key === 'outcome';
@@ -299,9 +418,9 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
         </div>
 
         {/* Tab 栏：可在输入/提问/回复/输出/错误间切换，无需反复开关 */}
-        {state.sections.length > 1 && (
+        {sections.length > 1 && (
           <div className="flex items-center gap-1 px-3 py-2 border-b border-border/60 bg-secondary/20 shrink-0 overflow-x-auto" data-testid="team-area-swarmflow-detail-modal-tabs">
-            {state.sections.map((sec) => {
+            {sections.map((sec) => {
               const active = sec.key === state.activeKey;
               return (
                 <button
@@ -318,7 +437,9 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
                 >
                   <span>{sec.icon}</span>
                   <span>{sec.label}</span>
-                  <span className="text-[9px] tabular-nums opacity-70">{formatCharCount(sec.content)}</span>
+                  <span className="text-[9px] tabular-nums opacity-70">
+                    {sec.activity ? sec.activity.length : formatCharCount(sec.content)}
+                  </span>
                 </button>
               );
             })}
@@ -357,7 +478,11 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
               </button>
             </div>
           )}
-          {rawMode ? (
+          {activeSection?.activity && callRecordsSource ? (
+            <CallRecordsSection source={callRecordsSource} />
+          ) : activeSection?.activity ? (
+            <p className="text-sm text-text-muted">{t('team.noProcessData')}</p>
+          ) : rawMode ? (
             <pre className="text-xs text-text whitespace-pre-wrap break-words font-mono">{content}</pre>
           ) : jsonData !== null ? (
             <JsonTreeView data={jsonData} />

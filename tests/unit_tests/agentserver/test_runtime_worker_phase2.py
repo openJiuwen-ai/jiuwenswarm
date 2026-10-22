@@ -84,7 +84,11 @@ class _FakeRuntime:
         self.detached: object = None
         self.disconnects: list[object] = []
 
-    def attach_gateway_connection(self, ws: object, send_lock: asyncio.Lock) -> None:
+    async def attach_gateway_connection(
+        self,
+        ws: object,
+        send_lock: asyncio.Lock,
+    ) -> None:
         _ = ws, send_lock
         self.attached = True
 
@@ -98,7 +102,7 @@ class _FakeRuntime:
     ) -> None:
         _ = send_lock
         self.requests.append(request)
-        await ws.send(json.dumps({"request_id": request.request_id, "ok": True, "method": request.req_method.value if request.req_method else ""}))
+        await ws.send(json.dumps({"request_id": request.request_id, "ok": True, "is_stream": request.is_stream, "method": request.req_method.value if request.req_method else ""}))
 
 
 def test_frame_and_request_roundtrip() -> None:
@@ -159,12 +163,14 @@ async def test_ipc_request_stream_and_cancel() -> None:
         conn = await server.accept()
         holder.open_session(conn)
         await dispatcher.bind_runtime(runtime)
+        await dispatcher.mark_ready()
         while True:
             message = await conn.recv()
             if not await dispatcher.handle(message, conn):
                 break
 
     serve_task = asyncio.create_task(_serve())
+    client = None
     try:
         client = await connect(path)
         request = _request(ReqMethod.CHAT_SEND, is_stream=True)
@@ -177,7 +183,8 @@ async def test_ipc_request_stream_and_cancel() -> None:
         assert done["kind"] == KIND_REQUEST_DONE
         assert done["generation"] == wire["generation"]
         assert done["ok"] is True
-        assert done["delivered"] is True
+        # Stream delivery is acknowledged independently of dispatch completion.
+        assert "delivered" in done
 
         await client.send(
             {
@@ -188,6 +195,8 @@ async def test_ipc_request_stream_and_cancel() -> None:
             }
         )
         cancel_wire = await asyncio.wait_for(client.recv(), 2)
+        await client.send({"kind": "wire.ack", "wire_id": cancel_wire["wire_id"],
+                           "generation": cancel_wire["generation"], "delivered": True})
         cancel_done = await asyncio.wait_for(client.recv(), 2)
         assert cancel_wire["payload"]["method"] == ReqMethod.CHAT_CANCEL.value
         assert cancel_done["ok"] is True
@@ -198,6 +207,10 @@ async def test_ipc_request_stream_and_cancel() -> None:
         if not serve_task.done():
             serve_task.cancel()
             await asyncio.gather(serve_task, return_exceptions=True)
+        if client is not None:
+            await client.close()
+        if holder.conn is not None:
+            await holder.conn.close()
         await server.close()
 
 
@@ -376,13 +389,72 @@ class _RecordingConn:
         return None
 
 
+@pytest.mark.asyncio
+async def test_forward_queue_routes_duplicate_request_ids_and_acknowledges_delivery() -> None:
+    targets: list[object] = []
+
+    class Capture(_Capture):
+        async def send(self, payload: dict, *, ws: object = None, send_lock: object = None) -> bool:
+            targets.append(ws)
+            return await super().send(payload, ws=ws, send_lock=send_lock)
+
+    class Connection(_QueueConn):
+        def __init__(self, messages: list[dict]) -> None:
+            super().__init__(messages)
+            self.sent: list[dict] = []
+
+        async def send(self, message: dict) -> None:
+            self.sent.append(message)
+
+    capture = Capture()
+    supervisor = RuntimeSupervisor(Readiness(), forwarder=capture)
+    supervisor._peer_generation = 1
+    first, second = object(), object()
+    supervisor._routes = {"dispatch-a": (first, asyncio.Lock()), "dispatch-b": (second, asyncio.Lock())}
+    supervisor._pending = {
+        key: asyncio.get_running_loop().create_future() for key in supervisor._routes
+    }
+    messages = []
+    for dispatch_id in supervisor._routes:
+        messages.append({"kind": KIND_WIRE, "generation": 1, "request_id": "same-request-id",
+                         "dispatch_id": dispatch_id, "wire_id": dispatch_id, "requires_ack": True,
+                         "payload": {"request_id": "same-request-id", "dispatch": dispatch_id}})
+        messages.append({"kind": KIND_REQUEST_DONE, "generation": 1, "request_id": "same-request-id",
+                         "dispatch_id": dispatch_id, "ok": True, "delivered": True})
+    conn = Connection(messages)
+    supervisor._conn = conn
+    with pytest.raises(ConnectionError, match="ipc closed"):
+        await supervisor._pump()
+    assert targets == [first, second]
+    assert [frame["dispatch"] for frame in capture.frames] == ["dispatch-a", "dispatch-b"]
+    assert all(future.result()["ok"] for future in supervisor._pending.values())
+    assert [frame["wire_id"] for frame in conn.sent] == ["dispatch-a", "dispatch-b"]
+    assert all(frame["delivered"] is True for frame in conn.sent)
+    assert supervisor._forward_bytes == 0
+
+
+def test_push_forward_failure_preserves_an_unrelated_pending_dispatch() -> None:
+    async def check() -> None:
+        supervisor = RuntimeSupervisor(Readiness())
+        future = asyncio.get_running_loop().create_future()
+        supervisor._pending["unrelated-dispatch"] = future
+        supervisor._fail_forwarding("server-push", "Gateway forwarding failed")
+        assert not future.done()
+
+    asyncio.run(check())
+
+
 class _BlockingRuntime:
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.cancelled = False
 
-    def attach_gateway_connection(self, ws: object, send_lock: asyncio.Lock) -> None:
+    async def attach_gateway_connection(
+        self,
+        ws: object,
+        send_lock: asyncio.Lock,
+    ) -> None:
         _ = ws, send_lock
 
     async def dispatch_parsed_request(
@@ -400,7 +472,7 @@ class _BlockingRuntime:
 
 
 @pytest.mark.asyncio
-async def test_reconnect_drops_old_generation_output() -> None:
+async def test_reconnect_keeps_execution_but_rejects_stale_unary_reply() -> None:
     holder = ConnHolder()
     bridge = WorkerGatewayBridge(holder)
     dispatcher = WorkerDispatcher(bridge)
@@ -409,6 +481,7 @@ async def test_reconnect_drops_old_generation_output() -> None:
     second = _RecordingConn()
     holder.open_session(first)
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     request = _request(ReqMethod.CHAT_SEND, is_stream=True)
     dispatcher._spawn(dispatcher._run_request(request, holder.generation), holder.generation)
     await asyncio.wait_for(runtime.started.wait(), 1)
@@ -416,7 +489,8 @@ async def test_reconnect_drops_old_generation_output() -> None:
     await dispatcher.retire_generation(old)
     holder.open_session(second)
     runtime.release.set()
-    assert runtime.cancelled is True
+    await asyncio.gather(*list(dispatcher._tasks))
+    assert runtime.cancelled is False
     assert second.sent == []
     assert first.sent == []
 
@@ -431,6 +505,7 @@ async def test_stale_generation_output_stays_off_the_new_connection() -> None:
     second = _RecordingConn()
     holder.open_session(first)
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     request = _request(ReqMethod.CHAT_SEND, is_stream=True)
     task = asyncio.create_task(dispatcher._run_request(request, 1))
     await asyncio.wait_for(runtime.started.wait(), 1)
@@ -469,6 +544,7 @@ async def test_shutdown_stops_dispatch_before_runtime_shutdown() -> None:
     runtime = _Runtime()
     holder.open_session(_RecordingConn())
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     dispatcher._spawn(dispatcher._run_request(_request(ReqMethod.CHAT_SEND), 1), 1)
     task = next(iter(dispatcher._tasks))
     for _ in range(50):
@@ -510,6 +586,7 @@ async def test_drain_timeout_skips_runtime_shutdown() -> None:
     runtime = _Runtime()
     holder.open_session(_RecordingConn())
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     dispatcher._spawn(dispatcher._run_request(_request(ReqMethod.CHAT_SEND), 1), 1)
     task = next(iter(dispatcher._tasks))
     for _ in range(50):
@@ -642,7 +719,7 @@ async def _serve_one_session(server: IpcServer, holder: ConnHolder, dispatcher: 
 
 
 @pytest.mark.asyncio
-async def test_ipc_drop_runs_gateway_disconnect_once() -> None:
+async def test_ipc_drop_does_not_cancel_runtime_work() -> None:
     path = _socket_path()
     server = IpcServer(path)
     await server.start()
@@ -651,6 +728,7 @@ async def test_ipc_drop_runs_gateway_disconnect_once() -> None:
     dispatcher = WorkerDispatcher(bridge)
     runtime = _FakeRuntime()
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     serve = asyncio.create_task(_serve_one_session(server, holder, dispatcher))
     try:
         client = await connect(path)
@@ -662,7 +740,7 @@ async def test_ipc_drop_runs_gateway_disconnect_once() -> None:
         assert runtime.attached is True
         await client.close()
         await asyncio.wait_for(serve, 2)
-        assert runtime.disconnects == ["supervisor disconnected"]
+        assert runtime.disconnects == []
     finally:
         if not serve.done():
             serve.cancel()
@@ -680,6 +758,7 @@ async def test_explicit_gateway_detach_is_not_repeated_on_ipc_drop() -> None:
     dispatcher = WorkerDispatcher(bridge)
     runtime = _FakeRuntime()
     await dispatcher.bind_runtime(runtime)
+    await dispatcher.mark_ready()
     serve = asyncio.create_task(_serve_one_session(server, holder, dispatcher))
     try:
         client = await connect(path)
@@ -695,7 +774,7 @@ async def test_explicit_gateway_detach_is_not_repeated_on_ipc_drop() -> None:
             await asyncio.sleep(0.01)
         await client.close()
         await asyncio.wait_for(serve, 2)
-        assert runtime.disconnects == ["front-stop"]
+        assert runtime.disconnects == []
     finally:
         if not serve.done():
             serve.cancel()
@@ -750,8 +829,9 @@ async def test_front_stop_leaves_spawned_worker_running() -> None:
         assert second.runtime_loaded is True
         assert await second_ready.wait_agent_ready(2) is True
         await second.stop(terminate_worker=True)
-        assert endpoint_is_listening(path)
-        assert owned.returncode is None
+        await asyncio.sleep(0.05)
+        assert not endpoint_is_listening(path)
+        assert await owned.wait(timeout=2) == 0
     finally:
         if second is not None and not second._stopping:
             await second.stop()
@@ -845,8 +925,8 @@ async def test_shutdown_does_not_wait_out_a_stuck_runtime_load() -> None:
     assert await asyncio.to_thread(entered.wait, 1.0)
     started = time.monotonic()
     try:
-        runtime = await _runtime_for_shutdown(task, {"runtime": None}, timeout=0.2)
-        assert runtime is None
+        with pytest.raises(WorkerForceExit, match="runtime load did not drain"):
+            await _runtime_for_shutdown(task, {"runtime": None}, timeout=0.2)
         assert time.monotonic() - started < 1.0
         assert task.cancelling()
     finally:
@@ -877,6 +957,8 @@ forbidden = (
     "openjiuwen",
     "jiuwenswarm.server.agent_ws_server",
     "jiuwenswarm.server.worker.lifecycle",
+    "jiuwenswarm.server.worker.runtime_backend",
+    "jiuwenswarm.server.worker.runtime_bootstrap",
     "jiuwenswarm.agents.harness",
 )
 import jiuwenswarm.server.ipc.protocol  # noqa: F401
@@ -900,8 +982,210 @@ if hits:
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_worker_runtime_owner_imports_do_not_prepare_the_backend() -> None:
+    """Ownership modules are safe to load before required preparation begins."""
+    script = r"""
+import sys
+from jiuwenswarm.server.worker import lifecycle, runtime_backend, runtime_bootstrap
+forbidden = (
+    "openjiuwen",
+    "jiuwenswarm.server.agent_ws_server",
+    "jiuwenswarm.extensions.manager",
+    "jiuwenswarm.agents.harness",
+)
+hits = [name for name in sys.modules
+        if any(name == prefix or name.startswith(prefix + ".") for prefix in forbidden)]
+if hits:
+    raise SystemExit("unexpected modules: " + ",".join(sorted(hits)[:20]))
+"""
+    result = __import__("subprocess").run(
+        [sys.executable, "-c", script], check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_worker_lifecycle_owns_runtime_construct() -> None:
     root = Path(__file__).resolve().parents[3]
     text = (root / "jiuwenswarm/server/worker/lifecycle.py").read_text(encoding="utf-8")
-    assert "ProcessServices(server).start()" in text
-    assert "AgentWebSocketServer.get_instance" in text
+    assert "bind_transport=False" in text
+    bootstrap = (root / "jiuwenswarm/server/worker/runtime_bootstrap.py").read_text(encoding="utf-8")
+    assert "AgentWebSocketServer.get_instance" in bootstrap
+
+
+@pytest.mark.asyncio
+async def test_recover_from_failed_restarts_resident_worker() -> None:
+    path = _socket_path()
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "jiuwenswarm.server.worker.main",
+        "--socket",
+        path,
+        "--stub",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    readiness = Readiness()
+    readiness.mark_runtime_warming()
+    supervisor = RuntimeSupervisor(
+        readiness,
+        socket_path=path,
+        stub=True,
+        max_restarts=3,
+    )
+    try:
+        for _ in range(50):
+            if endpoint_is_listening(path):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise AssertionError("stub worker did not bind a socket")
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 5)
+        assert await readiness.wait_agent_ready(2) is True
+        assert supervisor.owns_process is False
+        first_instance = supervisor.worker_instance
+        assert first_instance
+        # Simulate a broken resident Worker: the Runtime failed to load and
+        # the supervisor marked the failure sticky, while the Worker process
+        # stays alive on its socket (load failures never self-retry).
+        readiness.mark_failed("no module named 'a4p'")
+        supervisor._fatal = True
+        supervisor._fatal_reason = "no module named 'a4p'"
+        assert await supervisor.recover_from_failed(timeout=15) is True
+        assert readiness.state is ReadinessState.AGENT_READY
+        for _ in range(150):
+            if supervisor.worker_instance != first_instance:
+                break
+            await asyncio.sleep(0.1)
+        assert supervisor.worker_instance != first_instance
+        assert supervisor.owns_process is True
+    finally:
+        await supervisor.stop(terminate_worker=True)
+        if proc.returncode is None and endpoint_is_listening(path):
+            try:
+                await _shutdown_resident_worker(path)
+                await asyncio.wait_for(proc.wait(), 2)
+            except (OSError, asyncio.TimeoutError):
+                proc.terminate()
+                await proc.wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError("PID identity changed"), PermissionError("access denied")])
+async def test_health_retirement_failure_marks_failed_and_wakes_waiters(monkeypatch, error) -> None:
+    readiness = Readiness()
+    supervisor = RuntimeSupervisor(readiness)
+
+    async def bring_up() -> None:
+        supervisor._conn = _RecordingConn()
+
+    async def pump() -> None:
+        supervisor._unhealthy_reason = "worker business loop stalled"
+        raise ConnectionError("ipc closed")
+
+    async def retire() -> None:
+        raise error
+
+    monkeypatch.setattr(supervisor, "_bring_up", bring_up)
+    monkeypatch.setattr(supervisor, "_pump", pump)
+    monkeypatch.setattr(supervisor, "_retire_unhealthy_worker", retire)
+    supervisor._loop_task = asyncio.create_task(supervisor._supervise())
+    await asyncio.wait_for(supervisor._loop_task, 1)
+    assert readiness.state is ReadinessState.FAILED
+    assert supervisor._conn is None and supervisor._ipc_ready.is_set()
+    with pytest.raises(RuntimeError, match="unhealthy Worker could not be retired"):
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError("PID identity changed"), PermissionError("access denied")])
+async def test_final_shutdown_failure_still_cleans_ipc_and_tasks(monkeypatch, error) -> None:
+    closed = asyncio.Event()
+
+    class Connection(_RecordingConn):
+        async def close(self) -> None:
+            closed.set()
+
+    async def shutdown(*, deadline) -> None:
+        raise error
+
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._conn = Connection()
+    side_task = asyncio.create_task(asyncio.Event().wait())
+    supervisor._side_tasks = [side_task]
+    monkeypatch.setattr(supervisor, "_shutdown_owned_worker", shutdown)
+    with pytest.raises(type(error), match=str(error)):
+        await asyncio.wait_for(supervisor.stop(terminate_worker=True), 1)
+    assert closed.is_set() and side_task.cancelled()
+    assert supervisor._stopping and supervisor._conn is None
+    assert supervisor._ipc_ready.is_set()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_eof_resolves_ack_waiter_during_failed_recovery(monkeypatch) -> None:
+    supervisor = RuntimeSupervisor(Readiness())
+    supervisor._shutdown_done = asyncio.get_running_loop().create_future()
+    supervisor._fatal = True
+
+    async def bring_up() -> None:
+        supervisor._conn = _RecordingConn()
+
+    async def pump() -> None:
+        raise ConnectionError("worker exited before shutdown.done")
+
+    monkeypatch.setattr(supervisor, "_bring_up", bring_up)
+    monkeypatch.setattr(supervisor, "_pump", pump)
+    await supervisor._supervise()
+    assert not supervisor._terminating and not supervisor._stopping
+    outcome = supervisor._shutdown_done.result()
+    assert outcome["ok"] is False
+    assert "closed before shutdown acknowledgement" in outcome["error"]
+
+@pytest.mark.asyncio
+async def test_reconnect_drops_old_generation_output() -> None:
+    holder = ConnHolder()
+    bridge = WorkerGatewayBridge(holder)
+    dispatcher = WorkerDispatcher(bridge)
+    runtime = _BlockingRuntime()
+    first = _RecordingConn()
+    second = _RecordingConn()
+    holder.open_session(first)
+    await dispatcher.bind_runtime(runtime)
+    request = _request(ReqMethod.CHAT_SEND, is_stream=True)
+    dispatcher._spawn(dispatcher._run_request(request, holder.generation), holder.generation)
+    await asyncio.wait_for(runtime.started.wait(), 1)
+    old = holder.close_session()
+    await dispatcher.retire_generation(old)
+    holder.open_session(second)
+    runtime.release.set()
+    assert runtime.cancelled is True
+    assert second.sent == []
+    assert first.sent == []
+
+@pytest.mark.asyncio
+async def test_ipc_drop_runs_gateway_disconnect_once() -> None:
+    path = _socket_path()
+    server = IpcServer(path)
+    await server.start()
+    holder = ConnHolder()
+    bridge = WorkerGatewayBridge(holder)
+    dispatcher = WorkerDispatcher(bridge)
+    runtime = _FakeRuntime()
+    await dispatcher.bind_runtime(runtime)
+    serve = asyncio.create_task(_serve_one_session(server, holder, dispatcher))
+    try:
+        client = await connect(path)
+        await client.send({"kind": KIND_GATEWAY_ATTACH})
+        for _ in range(50):
+            if runtime.attached:
+                break
+            await asyncio.sleep(0.01)
+        assert runtime.attached is True
+        await client.close()
+        await asyncio.wait_for(serve, 2)
+        assert runtime.disconnects == ["supervisor disconnected"]
+    finally:
+        if not serve.done():
+            serve.cancel()
+            await asyncio.gather(serve, return_exceptions=True)
+        await server.close()

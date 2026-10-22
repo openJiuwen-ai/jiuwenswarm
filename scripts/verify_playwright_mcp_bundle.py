@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,6 @@ from jiuwenswarm.common.playwright_mcp_runtime import (
     materialize_bundled_runtime,
     resolve_node_executable,
 )
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,6 +29,9 @@ def verify_playwright_mcp_bundle() -> None:
             user_workspace_dir=Path(temp),
         )
         node = resolve_node_executable()
+        expected_node = os.environ.get("JIUWENSWARM_EXPECTED_NODE")
+        if expected_node and Path(node).resolve() != Path(expected_node).resolve():
+            raise RuntimeError(f"Frozen runtime selected external Node: {node}")
         result = subprocess.run(
             [node, str(cli), "--help"],
             capture_output=True,

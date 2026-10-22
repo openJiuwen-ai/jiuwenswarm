@@ -8,7 +8,9 @@ await build({
   entryPoints: [
     'src/hooks/useWebSocket.ts', 'src/stores/index.ts', 'src/i18n/index.ts',
     'src/components/InteractionSlot/AuthorizationPrompt.tsx', 'src/services/webClient.ts',
+    'src/components/ChatPanel/ToolCallDisplay.tsx', 'src/components/ChatPanel/ToolGroupDisplay.tsx',
     'src/features/planMode/planModeGate.ts',
+    'src/features/multiModelCollaboration/featureConfig.ts',
   ],
   outbase: 'src', outdir: 'node_modules/.cache/permission-answer-transport',
   bundle: true, splitting: true, packages: 'external', platform: 'node', format: 'esm',

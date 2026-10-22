@@ -10,9 +10,10 @@
  * 数据走 usePersonalContextStore；状态轮询 5s。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, PlayCircle, Plus, X } from 'lucide-react';
+import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import { Switch } from '../Switch';
 import { usePersonalContextStore } from '../../stores';
 import {
@@ -288,7 +289,7 @@ export function PersonalContextServicesPanel({
         <>
         <div className="pc-services__head">
           <button type="button" className="pc-services__back" onClick={onBackToGraph}>
-            <span className="pc-services__back-icon">&lt;</span>
+            <BackIcon aria-hidden="true" />
             <span>{t('personalContext.services.backToGraph')}</span>
           </button>
           <div className="pc-services__head-row">
@@ -305,6 +306,7 @@ export function PersonalContextServicesPanel({
           </div>
         </div>
 
+        <div className="pc-services__content">
         <div className="pc-services__stats">
           <div className="pc-services__stat-card">
             <span className="pc-services__stat-label">{t('personalContext.services.statSources')}</span>
@@ -408,6 +410,7 @@ export function PersonalContextServicesPanel({
                       !!pendingWrites[`stop:${s.service_id}`] ||
                       !!pendingWrites[`del:${s.service_id}`]
                     }
+                    delPending={!!pendingWrites[`del:${s.service_id}`]}
                     runPending={!!pendingWrites[`run:${s.service_id}`]}
                     stopping={!!pendingWrites[`stop:${s.service_id}`]}
                     runBlockedReason={runBlockedReason}
@@ -422,6 +425,7 @@ export function PersonalContextServicesPanel({
               </div>
             )}
           </section>
+        </div>
         </div>
         </>
       )}
@@ -504,14 +508,20 @@ function StatusIcon({ statusKey }: { statusKey: string }) {
   );
 }
 
-/** 单张内容卡片：名称 header + 左[频率+状态] + 右[启动/停止/编辑/删除 + 自动采集开关]。 */
-function ServiceCard({
+/**
+ * 单张内容卡片：名称 header + 左[频率+状态] + 右[启动/停止/编辑/删除 + 自动采集开关]。
+ *
+ * memo 化：开关切换/pending 写入会让整个 store 更新并触发面板重渲染，
+ * 未受影响的卡片靠 props 浅比较跳过(service/progress/lastRun 均为 store 内稳定引用)。
+ */
+const ServiceCard = memo(function ServiceCard({
   service,
   state,
   lastError,
   progress,
   lastRun,
   pending,
+  delPending,
   runPending,
   stopping,
   runBlockedReason,
@@ -528,6 +538,7 @@ function ServiceCard({
   progress?: FetchRunProgress;
   lastRun?: FetchRunRecord | null;
   pending: boolean;
+  delPending: boolean;
   runPending: boolean;
   stopping: boolean;
   runBlockedReason: string | null;
@@ -688,7 +699,7 @@ function ServiceCard({
         {/* 右：操作按钮 + 开关 */}
         <div className="pc-services__card-actions">
           {activeRun ? (
-            <button type="button" className="pc-services__action-link" data-testid="personal-context-service-stop" onClick={() => onStop(service.service_id)} disabled={pending || isStopping}>
+            <button type="button" className="pc-services__action-link" data-testid="personal-context-service-stop" onClick={() => onStop(service.service_id)} disabled={isStopping}>
               {t('personalContext.services.actionStop')}
             </button>
           ) : (
@@ -697,7 +708,7 @@ function ServiceCard({
               className="pc-services__action-link"
               data-testid="personal-context-service-run"
               onClick={() => onRun(service.service_id)}
-              disabled={pending || !isConnected || !!manualRunBlockedReason}
+              disabled={runPending || !isConnected || !!manualRunBlockedReason}
               title={manualRunBlockedReason ?? undefined}
               aria-describedby={manualRunBlockedReason ? runHintId : undefined}
             >
@@ -707,9 +718,10 @@ function ServiceCard({
           <button type="button" className="pc-services__action-link" onClick={() => onEdit(service)}>
             {t('personalContext.services.actionEdit')}
           </button>
-          <button type="button" className="pc-services__action-link pc-services__action-link--danger" onClick={() => onDelete(service.service_id, state)} disabled={pending}>
+          <button type="button" className="pc-services__action-link pc-services__action-link--danger" onClick={() => onDelete(service.service_id, state)} disabled={delPending}>
             {t('personalContext.services.actionDelete')}
           </button>
+          <span className="w-[1px] h-[10px] -translate-x-1/2 rounded-full bg-border" aria-hidden="true" />
           <Switch
             checked={service.enabled}
             onChange={(enabled: boolean) => onToggle(service.service_id, enabled)}
@@ -732,4 +744,4 @@ function ServiceCard({
       )}
     </div>
   );
-}
+});

@@ -428,6 +428,7 @@ export default function CronTaskDrawer({
                       testIdPrefix="cron-model-picker"
                       value={form.modelName}
                       onChange={(modelName) => setForm({ ...form, modelName })}
+                      includeModelGroups={false}
                       disabled={proactiveLocked}
                     />
                   </div>

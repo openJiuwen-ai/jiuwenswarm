@@ -1,6 +1,6 @@
 import pytest
 
-from jiuwenswarm.symphony import config as symphony_config
+from jiuwenswarm.common import symphony_config
 
 
 def test_symphony_config_defaults_paths(monkeypatch, tmp_path):

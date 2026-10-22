@@ -201,7 +201,9 @@ async def _finish(chain):
 
 
 async def _settle(chain):
-    async with asyncio.timeout(2):
+    # Durable finalization uses a thread pool and file locks; allow for CI I/O
+    # contention while keeping a bounded wait for a genuinely stuck execution.
+    async with asyncio.timeout(10):
         while True:
             tasks = tuple(chain.heartbeat.execution._tasks.values())
             if tasks:

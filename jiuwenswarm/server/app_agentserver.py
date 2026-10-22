@@ -78,7 +78,21 @@ async def _start_supervisor(front: object, host: str, port: int) -> object:
     return supervisor
 
 
+def _install_common_providers() -> None:
+    """装配 common 注入点的 server 侧实现（幂等）。
+
+    Front（主进程）的控制面直接处理 config.*（front/router →
+    control/config_service → config_panel handlers），其中 a2ui/team/
+    mcp_credential 域不经任何功能路径自然加载——不装配则 config.get
+    静默回退默认值、config.set 团队模板保存失败、MCP 凭证占位符不解析。
+    """
+    from jiuwenswarm.server.runtime.provider_setup import install_front
+
+    install_front()
+
+
 async def _run(host: str, port: int) -> None:
+    _install_common_providers()
     from jiuwenswarm.server.front.server import AgentServerFront
 
     startup_t0 = time.monotonic()
@@ -204,12 +218,30 @@ def _detect_sandbox_local_ip() -> str | None:
 
 
 def _resolve_bind_host() -> str:
-    """决定 agentserver 的 bind host,兼顾单机版与沙箱一体机模式。"""
+    """决定 agentserver 的 bind host,兼顾单机版与沙箱一体机模式。
+
+    优先级:
+    1. ``AGENT_SERVER_HOST`` 环境变量(显式指定,含 127.0.0.1)——保持单机版与显式配置兼容;
+    2. 沙箱环境(``JIUWENBOX_LISTEN`` 存在,表明处于 jiuwenbox 沙箱管控下)且 env 为空:
+       先读 ``SANDBOX_IP`` 快照(jiuwenbox runtime 在 create/start 时注入,与对外暴露的
+       ``ip_address`` 一致,免去运行时探测开销),缺失时再 ``_detect_sandbox_local_ip()``
+       探测沙箱本地非 loopback IP,ISOLATED 模式拿到 veth 地址,外部可达;
+    3. 其余(单机版 env 为空)回退 127.0.0.1,保持 ``os.getenv("AGENT_SERVER_HOST", "127.0.0.1")``
+       的单机默认语义不变。
+    """
     env_host = os.getenv("AGENT_SERVER_HOST", "").strip()
     if env_host:
         return env_host
 
     if os.getenv("JIUWENBOX_LISTEN"):
+        sandbox_ip = os.getenv("SANDBOX_IP", "").strip()
+        if sandbox_ip:
+            logger.info(
+                "[AgentServer] AGENT_SERVER_HOST unset in sandbox; "
+                "using SANDBOX_IP snapshot: %s",
+                sandbox_ip,
+            )
+            return sandbox_ip
         detected = _detect_sandbox_local_ip()
         if detected:
             logger.info(
