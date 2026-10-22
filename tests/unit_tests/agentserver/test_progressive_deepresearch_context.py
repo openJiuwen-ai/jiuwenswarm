@@ -124,6 +124,70 @@ async def test_report_type_uses_params_and_isolated_execution_contexts():
 
 
 @pytest.mark.asyncio
+async def test_deepresearch_followup_flows_to_execution_context():
+    """metadata.deepresearch_followup 经提取→请求上下文→rail 绑定到执行上下文。
+
+    结构不合法时按未携带处理（告警降级，不拒绝请求）。
+    """
+    valid_request = AgentRequest(
+        request_id="request-followup",
+        channel_id="officeclaw",
+        session_id="session-followup",
+        params={},
+        metadata={
+            "deepresearch_followup": {
+                "v": 1,
+                "action": "upgrade_latest_brief",
+                "source_report_id": "brief-conv-1",
+            }
+        },
+    )
+    invalid_request = AgentRequest(
+        request_id="request-invalid",
+        channel_id="officeclaw",
+        session_id="session-invalid",
+        params={},
+        metadata={"deepresearch_followup": {"v": 2, "action": "unknown"}},
+    )
+    plain_request = AgentRequest(
+        request_id="request-plain",
+        channel_id="officeclaw",
+        session_id="session-plain",
+    )
+
+    followup = interface_deep._extract_deepresearch_followup(valid_request)
+    assert followup == {
+        "v": 1,
+        "action": "upgrade_latest_brief",
+        "source_report_id": "brief-conv-1",
+    }
+    assert interface_deep._extract_deepresearch_followup(invalid_request) is None
+    assert interface_deep._extract_deepresearch_followup(plain_request) is None
+
+    set_request_context(
+        session_id="session-followup",
+        request_id="request-followup",
+        channel_id="officeclaw",
+        mode="agent",
+        deepresearch_followup=followup,
+    )
+    try:
+        rail = DeepResearchExecutionRail(model_provider=lambda: None)
+        ctx = _execution_rail_context("session-followup")
+        await rail.before_tool_call(ctx)
+        try:
+            execution_context = de._execution_context.get()
+            assert execution_context.deepresearch_followup == followup
+        finally:
+            await rail.after_tool_call(ctx)
+    finally:
+        clear_request_context(
+            session_id="session-followup",
+            request_id="request-followup",
+        )
+
+
+@pytest.mark.asyncio
 async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
     service_id = "progressive-test-service"
     agent_id = "office"

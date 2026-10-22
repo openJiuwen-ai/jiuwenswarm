@@ -720,6 +720,46 @@ def _extract_requested_report_type(request: AgentRequest) -> DeepResearchReportT
     if not isinstance(value, str) or value not in _DEEPRESEARCH_REPORT_TYPES:
         raise ValueError(_INVALID_DEEPRESEARCH_REPORT_TYPE_MESSAGE)
     return cast(DeepResearchReportType, value)
+
+
+_DEEPRESEARCH_FOLLOWUP_ACTIONS = frozenset({"upgrade_latest_brief"})
+
+
+def _extract_deepresearch_followup(request: AgentRequest) -> dict[str, Any] | None:
+    """Return the validated structured DeepResearch follow-up action, if any.
+
+    metadata 是服务端（relay）扩展通道：结构不合法时告警并按未携带处理
+    （请求继续，Main Agent 仍可走手动升级路径），不整体拒绝该消息。
+    """
+    metadata = request.metadata if isinstance(request.metadata, dict) else {}
+    value = metadata.get("deepresearch_followup")
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.get("v") != 1:
+        logger.warning(
+            "[interface_deep] ignore invalid deepresearch_followup structure "
+            "request_id=%s",
+            request.request_id,
+        )
+        return None
+    action = value.get("action")
+    source_report_id = value.get("source_report_id")
+    if (
+        action not in _DEEPRESEARCH_FOLLOWUP_ACTIONS
+        or not isinstance(source_report_id, str)
+        or not source_report_id.strip()
+    ):
+        logger.warning(
+            "[interface_deep] ignore invalid deepresearch_followup action "
+            "request_id=%s",
+            request.request_id,
+        )
+        return None
+    return {
+        "v": 1,
+        "action": "upgrade_latest_brief",
+        "source_report_id": source_report_id.strip(),
+    }
 TodoModifyTool = CompatibleTodoModifyTool
 install_todo_modify_compat_patch()
 install_evolution_rail_kwargs_compat()
@@ -18702,6 +18742,7 @@ class JiuWenSwarmDeepAdapter:
                 payload={"error_code": "invalid_request", "error": str(exc)},
                 metadata=request.metadata,
             )
+        deepresearch_followup = _extract_deepresearch_followup(request)
 
         if not self._is_session_scoped_adapter:
             # 提前绑定 LLM trace ContextVar，使 supervisor task（由
@@ -18980,6 +19021,7 @@ class JiuWenSwarmDeepAdapter:
                 request_id=request.request_id or "",
                 mode=mode,
                 requested_report_type=requested_report_type,
+                deepresearch_followup=deepresearch_followup,
             )
             perf_context_initialized = True
         except BaseException:
@@ -19444,6 +19486,7 @@ class JiuWenSwarmDeepAdapter:
                 metadata=request.metadata or {},
             )
             return
+        deepresearch_followup = _extract_deepresearch_followup(request)
 
         # Start of this adapter's own share of the turn; reported on the
         # "entering runner streaming" line so the pre-dispatch work is visible.
@@ -20124,6 +20167,7 @@ class JiuWenSwarmDeepAdapter:
                 request_id=request.request_id or "",
                 mode=mode,
                 requested_report_type=requested_report_type,
+                deepresearch_followup=deepresearch_followup,
             )
             perf_context_initialized = True
             initialization_complete = True

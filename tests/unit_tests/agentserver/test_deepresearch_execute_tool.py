@@ -20,6 +20,7 @@ from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch import execution as de
+from jiuwenswarm.agents.harness.common.tools.deepresearch import tools as dt
 
 
 class _Session:
@@ -70,6 +71,7 @@ async def _invoke(
     requested_report_type=None,
     report_type=None,
     upgrade_from_brief=False,
+    deepresearch_followup=None,
 ):
     saved: list[dict] = []
     token = de.bind_deepresearch_execution_context(
@@ -79,6 +81,7 @@ async def _invoke(
         model=model,
         save_state=lambda value: saved.append(dict(value)),
         requested_report_type=requested_report_type,
+        deepresearch_followup=deepresearch_followup,
     )
     try:
         result = await de.deepresearch_execute._func(
@@ -989,6 +992,289 @@ async def test_upgrade_from_brief_defaults_to_false_without_flag():
         await _invoke()
 
     assert stream.await_args.kwargs["upgrade_from_brief"] is False
+
+
+# ── 升级来源记录：strict 上下文与手动路径的同源快照绑定 ──────────────────────
+
+
+_UPGRADE_TEST_METADATA = {
+    "brief_outline": [{"title": "第一章"}],
+    "research_intent": "原始意图",
+    "language": "zh",
+}
+
+
+def _seed_upgrade_record(
+    *,
+    report_id: str = "brief-conv-1",
+    original_query: str = "原始研究查询",
+    original_file_name: str = "原报告.md",
+    metadata: dict | None = None,
+    available: bool = True,
+) -> None:
+    """按 execution.py 实际解析口径（默认路由）种入 brief 来源记录。"""
+    dt._BRIEF_UPGRADE_RECORDS[dt._outline_cache_key(dt._get_route())] = {
+        "report_id": report_id,
+        "original_query": original_query,
+        "original_file_name": original_file_name,
+        "metadata": metadata,
+        "upgrade_available": available,
+    }
+
+
+@pytest.mark.asyncio
+async def test_strict_followup_binds_latest_record_snapshot():
+    """strict 上下文：query/文件名/metadata 同源绑定，强制 professional。"""
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-2",
+        "report_delivered": True,
+    }
+    _seed_upgrade_record(
+        report_id="brief-conv-1",
+        original_query="原始研究查询",
+        original_file_name="原报告.md",
+        metadata=_UPGRADE_TEST_METADATA,
+    )
+    try:
+        with patch.object(
+            de,
+            "_call_deepresearch_stream_impl",
+            new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+        ) as stream:
+            result, saved = await _invoke(
+                query="模型自选的错 query",
+                file_name="模型自选.md",
+                report_type="brief",
+                upgrade_from_brief=False,
+                deepresearch_followup={
+                    "v": 1,
+                    "action": "upgrade_latest_brief",
+                    "source_report_id": "brief-conv-1",
+                },
+            )
+
+        assert result["kind"] == "completed"
+        kwargs = stream.await_args.kwargs
+        assert kwargs["query"] == "原始研究查询"
+        assert kwargs["file_name"] == "原报告完整版"
+        assert kwargs["report_type"] == "professional"
+        assert kwargs["upgrade_from_brief"] is True
+        assert kwargs["_upgrade_brief_metadata"] == _UPGRADE_TEST_METADATA
+        assert saved[0]["query"] == "原始研究查询"
+        assert saved[0]["requested_report_type"] == "professional"
+        assert saved[0]["source_brief_report_id"] == "brief-conv-1"
+        assert result["state"]["source_brief_report_id"] == "brief-conv-1"
+    finally:
+        dt._BRIEF_UPGRADE_RECORDS.clear()
+
+
+@pytest.mark.asyncio
+async def test_strict_followup_target_changed_errors_without_sdk_start():
+    """来源与最新记录不一致 → 明确失败，不静默降级、不启动 SDK。"""
+    _seed_upgrade_record(report_id="brief-B", metadata=_UPGRADE_TEST_METADATA)
+    try:
+        with patch.object(
+            de, "_call_deepresearch_stream_impl", new=AsyncMock()
+        ) as stream:
+            result, saved = await _invoke(
+                deepresearch_followup={
+                    "v": 1,
+                    "action": "upgrade_latest_brief",
+                    "source_report_id": "brief-C",
+                },
+            )
+
+        assert result["kind"] == "error"
+        assert result["error_code"] == "brief_upgrade_target_changed"
+        assert saved[-1]["phase"] == "error"
+        stream.assert_not_awaited()
+    finally:
+        dt._BRIEF_UPGRADE_RECORDS.clear()
+
+
+@pytest.mark.asyncio
+async def test_strict_followup_unavailable_record_errors_without_sdk_start():
+    """记录缺失或不可用（缓存失败登记）→ 明确失败，不启动 SDK。"""
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream:
+        result, saved = await _invoke(
+            deepresearch_followup={
+                "v": 1,
+                "action": "upgrade_latest_brief",
+                "source_report_id": "brief-conv-1",
+            },
+        )
+    assert result["kind"] == "error"
+    assert result["error_code"] == "brief_upgrade_unavailable"
+    assert saved[-1]["phase"] == "error"
+    stream.assert_not_awaited()
+
+    _seed_upgrade_record(report_id="brief-conv-1", metadata=None, available=False)
+    try:
+        with patch.object(
+            de, "_call_deepresearch_stream_impl", new=AsyncMock()
+        ) as stream:
+            result2, _ = await _invoke(
+                deepresearch_followup={
+                    "v": 1,
+                    "action": "upgrade_latest_brief",
+                    "source_report_id": "brief-conv-1",
+                },
+            )
+        assert result2["kind"] == "error"
+        assert result2["error_code"] == "brief_upgrade_unavailable"
+        stream.assert_not_awaited()
+    finally:
+        dt._BRIEF_UPGRADE_RECORDS.clear()
+
+
+@pytest.mark.asyncio
+async def test_manual_upgrade_overrides_query_from_record_snapshot():
+    """手动 upgrade_from_brief：同源覆盖模型自选 query/文件名（修混源缺陷）。"""
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-2",
+        "report_delivered": True,
+    }
+    _seed_upgrade_record(
+        report_id="brief-conv-1",
+        original_query="原始研究查询",
+        original_file_name="原报告.md",
+        metadata=_UPGRADE_TEST_METADATA,
+    )
+    try:
+        with patch.object(
+            de,
+            "_call_deepresearch_stream_impl",
+            new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+        ) as stream:
+            _, saved = await _invoke(
+                query="模型自选的错 query",
+                file_name="模型自选.md",
+                report_type="professional",
+                upgrade_from_brief=True,
+            )
+
+        kwargs = stream.await_args.kwargs
+        assert kwargs["query"] == "原始研究查询"
+        assert kwargs["file_name"] == "原报告完整版"
+        assert kwargs["_upgrade_brief_metadata"] == _UPGRADE_TEST_METADATA
+        assert saved[0]["source_brief_report_id"] == "brief-conv-1"
+    finally:
+        dt._BRIEF_UPGRADE_RECORDS.clear()
+
+
+@pytest.mark.asyncio
+async def test_manual_upgrade_without_record_keeps_model_query():
+    """无可用记录：保持 v2 降级语义——模型 query 保留、无快照、不报错。"""
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-2",
+        "report_delivered": True,
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ) as stream:
+        result, saved = await _invoke(
+            query="模型自选 query",
+            report_type="professional",
+            upgrade_from_brief=True,
+        )
+
+    assert result["kind"] == "completed"
+    kwargs = stream.await_args.kwargs
+    assert kwargs["query"] == "模型自选 query"
+    assert kwargs["upgrade_from_brief"] is True
+    assert kwargs["_upgrade_brief_metadata"] is None
+    assert "source_brief_report_id" not in saved[0]
+
+
+@pytest.mark.asyncio
+async def test_completed_result_carries_validated_brief_report():
+    """有效 brief_report 小描述随完成结果透传；无效时静默省略。"""
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+        "brief_report": {
+            "v": 1,
+            "report_id": "conversation-1",
+            "report_type": "brief",
+            "report_delivered": True,
+            "title": "智能家电报告",
+            "upgrade_available": True,
+        },
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ):
+        result, _ = await _invoke(requested_report_type="brief")
+
+    assert result["brief_report"] == completed["brief_report"]
+
+    invalid = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+        "brief_report": {"v": 1, "report_type": "brief"},  # 缺 report_id
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(invalid, ensure_ascii=False)),
+    ):
+        result2, _ = await _invoke(requested_report_type="brief")
+
+    assert result2["kind"] == "completed"
+    assert "brief_report" not in result2
+
+
+@pytest.mark.asyncio
+async def test_followup_ignored_for_existing_workflow_state():
+    """已有工作流状态（resume 轮）忽略 followup，按原恢复语义执行。"""
+    state = {
+        "schema_version": 1,
+        "phase": "wait_outline",
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "conversation-1",
+        "outline_presented": True,
+        "outline_sections": ["用户画像"],
+        "requested_report_type": "professional",
+        "revision": 3,
+    }
+    answer = {
+        "status": "answered",
+        "answers": [{"selected_options": ["确认大纲，继续研究"]}],
+    }
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ) as stream:
+        result, _ = await _invoke(
+            state=state,
+            user_input=answer,
+            deepresearch_followup={
+                "v": 1,
+                "action": "upgrade_latest_brief",
+                "source_report_id": "brief-conv-1",
+            },
+        )
+
+    assert result["kind"] == "completed"
+    assert stream.await_args.kwargs["action"] == "resume"
+    assert stream.await_args.kwargs["node"] == "outline_interaction"
+    assert "source_brief_report_id" not in result["state"]
 
 
 @pytest.mark.asyncio

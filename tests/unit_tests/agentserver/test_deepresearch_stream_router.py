@@ -1762,6 +1762,33 @@ def test_target_nodes_keep_incomplete_json_unchanged():
         assert reasoning[-1]["content"] == raw_content
 
 
+@pytest.mark.parametrize("fragmented", [False, True])
+def test_revised_outline_emits_complete_replacement_snapshot(fragmented):
+    state = RouterState()
+    route_chunk({"agent": "outline", "content": json.dumps({
+        "title": "报告", "thought": "旧规划",
+        "sections": [{"title": "证据对照", "description": "旧范围"}],
+    })}, state)
+    revised = json.dumps({
+        "title": "报告", "thought": "新增受众画像分析",
+        "sections": [{"title": "证据对照与受众群体", "description": "分析年龄与家庭结构"}],
+    }, ensure_ascii=False)
+    # A resume uses a fresh router state; the frontend still has the first draft.
+    if fragmented:
+        state = RouterState()
+    fragments = [revised[:50], revised[50:]] if fragmented else [revised]
+    frames = []
+    for fragment in fragments:
+        frames.extend(route_chunk({"agent": "outline", "content": fragment}, state))
+
+    snapshot = [f for f in frames if f.get("merge_strategy") == "replace"][-1]
+    assert snapshot["stream_source_id"] == "dr_outline"
+    assert "新增受众画像分析" in snapshot["content"]
+    assert "证据对照与受众群体" in snapshot["content"]
+    assert "旧规划" not in snapshot["content"]
+    assert json.loads("".join(state.outline_parts))["sections"][0]["title"] == "证据对照与受众群体"
+
+
 def test_outline_display_fields_cannot_create_links_or_raw_html():
     frames = route_chunk(
         {

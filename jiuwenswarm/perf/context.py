@@ -49,6 +49,7 @@ def set_request_context(
     service_id: str | None = None,
     agent_id: str | None = None,
     requested_report_type: DeepResearchReportType | None = None,
+    deepresearch_followup: dict[str, Any] | None = None,
     begin_perf_collection: bool = True,
 ) -> dict[str, Any]:
     started_at = time.time()
@@ -62,6 +63,7 @@ def set_request_context(
         "service_id": service_id,
         "agent_id": agent_id,
         "requested_report_type": requested_report_type,
+        "deepresearch_followup": deepresearch_followup,
     }
     _request_context.set(ctx)
     _request_wall_start.set(started_at)

@@ -149,6 +149,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
         )
         request_id = str((request_context or {}).get("request_id") or "").strip()
         requested_report_type = (request_context or {}).get("requested_report_type")
+        deepresearch_followup = (request_context or {}).get("deepresearch_followup")
         token = bind_deepresearch_execution_context(
             tool_call_id=workflow_id,
             state=states.get(workflow_id),
@@ -158,6 +159,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
             agent_id=self._agent_id,
             request_id=request_id,
             requested_report_type=requested_report_type,
+            deepresearch_followup=deepresearch_followup,
         )
         tokens = ctx.extra.setdefault(_TOKENS_KEY, {})
         tokens[tool_call_id] = token

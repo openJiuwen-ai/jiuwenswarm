@@ -1052,6 +1052,28 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
 
     # 大纲正文只读展示在思考过程；其他非并行节点维持 reasoning_content 通用透传。
     if agent in {"outline", "brief_outline"}:
+        if agent == "outline" and isinstance(content, str) and content:
+            # A complete outline is a current snapshot. The same stream id is
+            # reused after HITL; appending would leave the first draft on top.
+            for candidate in (content, "".join(state.outline_parts) + content):
+                data = _as_json_object(candidate)
+                snapshot = _format_outline_markdown(data) if data is not None else None
+                if snapshot is None:
+                    continue
+                previous_size = sum(len(part) for part in state.outline_parts)
+                _ensure_text_capacity(state, max(0, len(candidate) - previous_size))
+                state._accumulated_text_chars -= previous_size
+                state.outline_parts.clear()
+                _append_text_part(state, state.outline_parts, candidate)
+                frames.append({
+                    "event_type": "chat.reasoning",
+                    "task_id": "deepresearch_stage_2",
+                    "task_content": display[0],
+                    "stream_source_id": "dr_outline",
+                    "content": snapshot,
+                    "merge_strategy": "replace",
+                })
+                return frames
         if isinstance(content, str) and content:
             _append_text_part(state, state.outline_parts, content)
         task_content = display[0] + (f" - {display[1]}" if display[1] else "")
