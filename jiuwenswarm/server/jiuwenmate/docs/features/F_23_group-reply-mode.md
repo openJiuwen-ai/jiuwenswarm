@@ -5,14 +5,14 @@
 | 项 | 值 |
 | --- | --- |
 | 建档日期 | 2026-10-21 |
-| 范围 | 每位员工在飞书群中的被动 / 自适应回复；入站是否创建 Request；群执行前的职责与轻量交流说明 |
+| 范围 | 每位员工在飞书群中的被动 / 自适应回复；入站是否创建 Request；群执行前的职责与轻量交流说明；仅当参与判断认定任务需要思考时间时，投递其写入的等待提示 |
 | 方案成熟度 | 已确认（按当前实现与已拒绝方案记录；真实飞书群未验收） |
 | 计划条目 | [JM-23](../designs/jiuwenmate-development-plan.md) |
 | 负责人 | 常钰聪 |
 | 状态 | 待验收（宿主组件已有实现和定向测试；真实飞书与浏览器未验收） |
-| 设计依据 | [F_08 飞书接入与群内分发](F_08_feishu-group-fanout.md) 的入站受理；[F_02 同事定义与配置发布](F_02_colleague-management.md) 的当前设置；core `judge_participation` 在明确 @ 时直接 `respond` |
+| 设计依据 | [F_08 飞书接入与群内分发](F_08_feishu-group-fanout.md) 的入站受理；[F_02 同事定义与配置发布](F_02_colleague-management.md) 的当前设置；core `judge_participation` 在明确 @ 时仍记 `respond`，并判断是否需要等待提示 |
 | 关联 feature | 前置：[F_02](F_02_colleague-management.md)、[F_07](F_07_execution-driver.md)、[F_08](F_08_feishu-group-fanout.md)、[F_10](F_10_web-colleague-management.md)。群内交接仍由 [F_09](F_09_web-and-feishu-result-delivery.md) 负责 |
-| 验证摘要 | 回复模式、纯寒暄分流、职责附加说明和恢复路由的宿主测试已通过。真实飞书群与浏览器未执行。 |
+| 验证摘要 | 回复模式、纯寒暄分流、职责附加说明、等待提示和恢复路由的宿主测试已通过。真实飞书与其他渠道未执行。 |
 | Refs | 无独立 issue；需求来自飞书群需要按员工区分「仅被 @ 才回复」和「按职责判断是否参与」 |
 
 ## 2. 背景、目标与范围
@@ -21,11 +21,13 @@
 
 本次让每位员工单独保存群聊回复模式。被动员工只在飞书群里被明确 @ 时创建 Request。自适应员工继续进入参与判断：具体任务按职责决定，轻量日常交流从宽并简短回应，没有具体内容的寒暄只由一位自适应员工受理。
 
-本次不包含：切换模式后重放已经跳过的旧消息；私聊开关；按关键词表匹配用户原话；修改 core 的参与判断指令；把宿主测试写成真实飞书验收。
+参与判断决定回复，并且认定该任务需要一定思考时间时，才把一句固定等待提示写入 `participation.decided.notice`。明确 @ 也走这道判断：必须回复，复杂任务同样先写这句。可以马上简短回复的任务和 `ignore` 都不带这句。宿主在正式回答之前投递已有的 `notice`。提示不进入最终结果。
+
+本次不包含：切换模式后重放已经跳过的旧消息；私聊开关；按关键词表匹配用户原话；修改 core 的参与判断指令文本；由宿主另选等待文案；把宿主测试写成真实渠道验收。
 
 ## 3. 设计约束、假设与待决问题
 
-- 已确认约束与依赖：群公开记录仍按群隔离，见 [F_11](F_11_group-public-records.md)。同一条群消息仍按接收 Bot 逐员工处理，见 F_08。明确 @ 时 core 在调用模型前返回 `respond`。交接标记、公开消息接力及「由你判断」仍属于 F_09 的群内协作说明。
+- 已确认约束与依赖：群公开记录仍按群隔离，见 [F_11](F_11_group-public-records.md)。同一条群消息仍按接收 Bot 逐员工处理，见 F_08。明确 @ 时 core 仍记 `respond`，并同时判断任务是否需要思考时间。交接标记、公开消息接力及「由你判断」仍属于 F_09 的群内协作说明。
 - 关键假设：入站时 `read_settings` 读到的是该员工当前设置，而不是已发布 Spec 的指纹。设置尚未写入该字段时按 `adaptive`。
 - 待决问题：无。真实飞书上模型是否遵守职责说明，留到验收，不在本文改成硬过滤。
 
@@ -46,6 +48,10 @@ flowchart TD
     D -->|否，且先点到了其他员工| H
     D -->|应由本员工处理| R
     R --> P["参与判断阅读职责与轻量交流说明"]
+    P --> N{"需要回复，且任务需要思考时间"}
+    N -->|是| W["向该 Request 的渠道发送一条等待提示"]
+    N -->|简单任务或 ignore| S["不发送等待提示"]
+    W --> E["继续正式回复"]
 ```
 
 箭头表示一条群入站的判断顺序。被动分支不调用调度器受理。
@@ -61,7 +67,7 @@ flowchart TD
 
 #### D-02 被动是硬门闩，自适应仍由模型判断职责
 
-- 选择与依据：被动表示该员工不参与未被 @ 的群消息。自适应保留参与判断，避免用词表代替职责。明确 @ 不经过这道门闩，core 仍直接 `respond`。
+- 选择与依据：被动表示该员工不参与未被 @ 的群消息。自适应保留参与判断，避免用词表代替职责。明确 @ 不经过这道门闩；core 仍记 `respond`，并判断是否需要先发等待提示。
 - 代价与成立条件：自适应不保证每条群消息都有回复。模型可以不遵守附加说明。
 - 实现体现：`group_reply_mode == "passive"` 时返回已处理；`build_group_execution_guidance` 始终带上职责说明。
 - 相关候选：R-01。
@@ -80,6 +86,13 @@ flowchart TD
 - 实现体现：`group_collaboration.py` 的职责说明。
 - 相关候选：R-03。
 
+#### D-05 只有需要思考时间的回复才投递等待提示
+
+- 选择与依据：`respond` 与 `intervene` 只说明将要回复。可以马上简短回答的任务不先发等待提示。参与判断把 `effort` 标为 `extended` 时，才在 `participation.decided.notice` 上附带一句固定等待提示。明确 @ 同样只在 `extended` 时附带。`quick`、缺省和 `ignore` 都不附带。同一 Execution 的文案只依赖 `execution_id`。宿主只投递该字段，不另选文案，也不自行判断任务复杂度。
+- 代价与成立条件：等待提示不是最终答复。发送失败只记日志，不中断正式回复。Web 路由不发送。事件没有 `notice` 时宿主不补写。渠道已提供 `send_persistent_result` 时走该接口；否则走该渠道的普通 `send`。因此飞书与其他已连接的第三方使用同一条出站路径，不在飞书连接器里单独写提示。
+- 实现体现：五句文案在 core `participation.py` 的 `WAITING_REPLIES`；`AgentManager` 读取 `notice` 后调度；`ChannelManager.deliver_thinking_notice` 按路由中的渠道发送。
+- 相关候选：未另做按渠道改写文案。
+
 ### 4.3 替代方案与排除理由
 
 | 候选 / 关联决策 | 候选目的与关键差异 | 拒绝或暂缓原因 | 重新评估条件 |
@@ -97,6 +110,7 @@ flowchart TD
 - 飞书私聊不读取该字段。群消息没有飞书原生 @ 时，正文里的姓名不算被 @。
 - 纯寒暄的全匹配只覆盖没有后续要求的问候。带具体任务的句子即使以问候开头，也不走寒暄分流。
 - 参与说明要求具体任务与职责完全无关时 `ignore`，轻量日常交流从宽判断。这段说明附在群执行上；没有其他群成员时仍然保留职责说明，不附带交接规则。
+- 等待提示只有五句，写在 core `participation.py`：`好的，我先想想，马上回复你。`、`收到，稍等一下，我看完就回复。`、`我在想了，很快告诉你。`、`稍等片刻，整理好就回复你。`、`明白，我想一下，马上就来。` 只有 `effort` 为 `extended` 时才选取，选取只依赖 `execution_id`，结果放在 `participation.decided.notice`。宿主不改写，也不补判复杂度。它不写入最终结果账本。
 
 ### 5.7 正常执行流程
 
@@ -104,13 +118,13 @@ flowchart TD
 2. 飞书群消息归档。接收 Bot 被明确 @ 时，把该员工内部 ID 放入本次 Request 的提及名单并受理。
 3. 未被 @ 且当前设置为被动时结束。公开记录保留这条消息。
 4. 未被 @ 且为自适应时，纯寒暄只受理选定员工；用户先点名另一位在群员工时，其余员工等待该员工的公开回复。
-5. 已受理的群 Request 在参与判断中阅读职责与轻量交流说明。决定回答后，仍走原有执行和投递。
+5. 已受理的群 Request 在参与判断中阅读职责与轻量交流说明。明确 @ 也进入这道判断，且必须回复。`effort` 为 `extended` 时，core 把等待提示写入 `notice`；宿主先向该 Request 路由上的渠道投递这一句，再继续正式回复和终态投递。简单任务和 `ignore` 不带 `notice`，也不发送等待提示。
 
 切换模式不会为第 3 步已经结束的消息补建 Request。
 
 ### 5.8 异常、中断与重试处理
 
-设置取值非法时拒绝保存，不改变已保存的模式。参与判断忽略该消息时，Request 以 `ignored` 结束，不产生群回复。模型未遵守附加说明时，宿主不在投递前按关键词删掉回复。
+设置取值非法时拒绝保存，不改变已保存的模式。参与判断忽略该消息时，Request 以 `ignored` 结束，不产生群回复，也不发送等待提示。等待提示发送失败或回执超时只记日志，正式回复继续。模型未遵守附加说明时，宿主不在投递前按关键词删掉回复。
 
 ## 6. 影响面与实施设计
 
@@ -122,6 +136,7 @@ flowchart TD
 | I-02 | 员工详情页、`jiuwenmateApi.ts`、中英文文案 | 展示并保存两种模式 |
 | I-03 | `feishu_group_fanout.py` | 被动、纯寒暄和点名等待都发生在受理之前 |
 | I-04 | `group_collaboration.py`、`execution_driver.py` | 生成并附上职责与轻量交流说明 |
+| I-05 | core `participation.py`、`agent_manager.py`、`channel_manager.py` | 参与判断写入 `notice`；宿主按路由渠道投递，不另选文案 |
 
 飞书恢复按路由分开接手，避免 Web 运行时处理它无法核验群成员的飞书 Request。该修正属于 [F_13](F_13_recovery.md)，不改变本特性的入站规则。
 
@@ -136,6 +151,7 @@ flowchart TD
 | JM-23-V-03 | 自适应且问题与职责无关 | 创建 Request 后，参与说明要求 `ignore`；是否遵守由模型决定 |
 | JM-23-V-04 | 纯寒暄 | 只有一位自适应员工得到 Request；优先名称或职责说明含「生活」的员工 |
 | JM-23-V-05 | 被动期间跳过的消息随后改为自适应 | 不补建 Request；新消息才按自适应受理 |
+| JM-23-V-06 | 参与判断写入 `notice` | 向该 Request 的渠道投递这一句，且同一 Execution 只发送一次；简单任务、`ignore` 与 Web 不发送。明确 @ 的复杂任务同样发送 |
 
 ### 8.2 实际执行与证据
 
@@ -145,12 +161,13 @@ flowchart TD
 | --- | --- | --- |
 | `uv run pytest tests/unit_tests/server/jiuwenmate/test_group_collaboration.py tests/unit_tests/gateway/test_persistent_group_fanout.py::test_a_pure_greeting_is_accepted_only_for_one_daily_colleague tests/unit_tests/gateway/test_persistent_group_fanout.py::test_later_named_colleague_waits_for_the_first_public_reply tests/unit_tests/server/jiuwenmate/test_session_scheduler.py::test_group_execution_preserves_verified_bot_mention_after_trigger_refresh --no-cov -q` | 通过 | 职责说明、纯寒暄分流、点名等待和群执行附加说明 |
 | `uv run pytest tests/unit_tests/server/jiuwenmate/test_recovery_service.py::test_web_recovery_leaves_a_dispatched_feishu_request_for_the_feishu_runtime --no-cov -q` | 此前已通过 | Web 恢复不接手飞书 Request |
+| `uv run pytest tests/unit_tests/server/jiuwenmate/test_thinking_notice.py --no-cov -q` | 2026-10-22，7 passed | 宿主投递事件上的 `notice`：`respond` 与 `intervene` 各发送一次，`ignore`、没有 `notice` 与 Web 不发送；有持久发送接口的渠道与只有普通 `send` 的渠道都能收到 |
 
 前端 `tests/jiuwenmateProfile.test.mjs` 与 `tests/jiuwenmateApi.test.mjs` 已补充模式字段。本次建档未重跑浏览器。
 
 ### 8.3 验证结论
 
-宿主组件覆盖了被动门闩、纯寒暄只受理一位员工，以及职责说明会进入群执行。真实飞书群中的模型判断和页面切换尚未验收，JM-23 保持待验收。
+宿主组件覆盖了被动门闩、纯寒暄只受理一位员工、职责说明会进入群执行，以及把参与判断已经写入的 `notice` 投递到请求渠道。是否附带由 core 按 `effort=extended` 决定，明确 @ 的复杂任务同样写入。真实飞书和其他渠道中的模型判断、等待提示到达与页面切换尚未验收，JM-23 保持待验收。
 
 ## 9. 风险与已知遗留
 

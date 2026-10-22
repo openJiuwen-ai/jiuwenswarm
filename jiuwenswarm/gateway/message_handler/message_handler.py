@@ -418,6 +418,7 @@ class MessageHandler(ABC):
         self._persistent_group_fanout = None
         # JM-09 uses a separate server-push path and returns platform receipts over E2A.
         self._result_delivery_handler = None
+        self._thinking_notice_handler = None
 
         # 初始化 Gateway hooks handler
         try:
@@ -436,6 +437,10 @@ class MessageHandler(ABC):
     def set_persistent_group_fanout(self, fanout: Any | None) -> None:
         """Inject the optional JM-08 event router without changing personal mode."""
         self._persistent_group_fanout = fanout
+
+    def set_thinking_notice_handler(self, handler: Any | None) -> None:
+        """Register the channel-neutral sender for a participation waiting line."""
+        self._thinking_notice_handler = handler
 
     def set_result_delivery_handler(self, handler: Any | None) -> None:
         """Inject the Gateway's exact-app JM-09 delivery route."""
@@ -3357,6 +3362,12 @@ class MessageHandler(ABC):
             return
         if (
             isinstance(chunk.payload, dict)
+            and chunk.payload.get("event_type") == "jiuwenmate.thinking_notice"
+        ):
+            await self._handle_thinking_notice_push(chunk.payload)
+            return
+        if (
+            isinstance(chunk.payload, dict)
             and chunk.payload.get("event_type") == "jiuwenmate.delivery.send"
         ):
             if isinstance(chunk.payload.get("file"), dict):
@@ -3510,6 +3521,61 @@ class MessageHandler(ABC):
             ))
         except Exception:
             logger.warning("[JM-11] membership response unavailable")
+
+    async def _handle_thinking_notice_push(self, payload: dict[str, Any]) -> None:
+        """Send a waiting line on the route's channel and return the platform receipt."""
+        from uuid import uuid4
+
+        from jiuwenswarm.common.e2a.models import E2AEnvelope
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        idempotency_key = payload.get("idempotency_key")
+        channel = payload.get("channel")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            return
+        if not isinstance(channel, str) or not channel.strip():
+            return
+        handler = getattr(self, "_thinking_notice_handler", None)
+        if not callable(handler):
+            result: dict[str, Any] = {"outcome": "pending", "error_code": "CHANNEL_ROUTE_UNAVAILABLE"}
+        else:
+            try:
+                candidate = await handler(dict(payload))
+                result = candidate if isinstance(candidate, dict) else {}
+            except Exception as exc:
+                logger.warning(
+                    "[MessageHandler] thinking notice outcome unknown: key=%s error_type=%s",
+                    idempotency_key,
+                    type(exc).__name__,
+                )
+                result = {"outcome": "unknown", "error_code": "THINKING_NOTICE_ERROR"}
+        outcome = result.get("outcome")
+        if outcome not in {"delivered", "failed", "unknown", "pending"}:
+            outcome = "unknown"
+        external_message_id = result.get("external_message_id")
+        if outcome == "delivered" and not (isinstance(external_message_id, str) and external_message_id.strip()):
+            outcome = "unknown"
+        envelope = E2AEnvelope(
+            request_id=f"jm23_ack_{uuid4().hex}",
+            channel=channel,
+            method=ReqMethod.JIUWENMATE_THINKING_NOTICE_ACK.value,
+            params={
+                "idempotency_key": idempotency_key,
+                "outcome": outcome,
+                "external_message_id": external_message_id if outcome == "delivered" else None,
+                "error_code": result.get("error_code") if outcome != "delivered" else None,
+            },
+        )
+        try:
+            response = await self.agent_client.send_request(envelope)
+            if not getattr(response, "ok", False):
+                logger.warning("[MessageHandler] thinking notice ACK was not accepted: key=%s", idempotency_key)
+        except Exception as exc:
+            logger.warning(
+                "[MessageHandler] thinking notice ACK failed: key=%s error_type=%s",
+                idempotency_key,
+                type(exc).__name__,
+            )
 
     async def _handle_result_delivery_push(self, payload: dict[str, Any]) -> None:
         """Send a persistent result through Gateway and return its platform receipt over E2A."""
