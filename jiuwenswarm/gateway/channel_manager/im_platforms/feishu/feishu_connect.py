@@ -467,6 +467,11 @@ class FeishuChannel(BaseChannel):
 
         def collect(value: Any) -> None:
             if isinstance(value, dict):
+                if value.get("tag") == "at":
+                    mention = FeishuChannel._persistent_at_text(value)
+                    if mention:
+                        parts.append(mention)
+                    return
                 text = value.get("text")
                 if isinstance(text, str):
                     parts.append(text)
@@ -483,6 +488,20 @@ class FeishuChannel(BaseChannel):
         if isinstance(text, str):
             text = FeishuChannel._replace_persistent_mention_placeholders(text, message)
         return text
+
+    @staticmethod
+    def _persistent_at_text(node: dict[str, Any]) -> str | None:
+        """Keep a rich-text @ in reading order. Feishu stores it beside the text, not inside it."""
+        user_id = node.get("user_id")
+        token = user_id.strip() if isinstance(user_id, str) else ""
+        if token in {"@_all", "all"}:
+            return "@all"
+        name = node.get("user_name")
+        if isinstance(name, str) and name.strip():
+            return f"@{name.strip()}"
+        if token.startswith("@_"):
+            return token
+        return None
 
     @staticmethod
     def _replace_persistent_mention_placeholders(text: str, message: Any) -> str:

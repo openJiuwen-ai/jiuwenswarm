@@ -441,8 +441,6 @@ async def test_message_refresh_replaces_a_mention_placeholder_at_the_same_revisi
 async def test_message_refresh_still_rejects_a_different_body_at_the_same_revision(tmp_path):
     from openjiuwen.harness import persistent_agent as core
 
-    from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-
     lookup = AsyncMock(return_value={"status": "ok", "messages": {
         "m1": {"status": "normal", "text": "changed", "changed_at": NOW.isoformat(), "attachment_refs": ()},
     }})
@@ -455,10 +453,41 @@ async def test_message_refresh_still_rejects_a_different_body_at_the_same_revisi
                                 sender_kind="human", received_at=NOW, text="original")
     manager.group_archive.append("local", group.group_chat_id, message, source_ref="event:m1", changed_at=NOW)
     try:
-        with pytest.raises(PersistentAgentError, match="message content conflicts without a newer revision"):
-            await manager.refresh_group_messages(access, group, (message,))
+        refreshed = await manager.refresh_group_messages(access, group, (message,))
+        assert refreshed[0].text == "original"
         stored = manager.group_archive.current_messages("local", group.group_chat_id, ("m1",))[0]
         assert stored.text == "original"
+    finally:
+        await manager.aclose()
+
+
+@pytest.mark.asyncio
+async def test_message_refresh_restores_a_rich_text_mention_omitted_from_the_archive(tmp_path):
+    from openjiuwen.harness import persistent_agent as core
+
+    stored_text = " 请完成一次客服工单运营分析"
+    restored_text = "@ai员工生活小助手 请完成一次客服工单运营分析"
+    lookup = AsyncMock(return_value={"status": "ok", "messages": {
+        "m1": {
+            "status": "normal",
+            "text": restored_text,
+            "changed_at": NOW.isoformat(),
+            "attachment_refs": (),
+        },
+    }})
+    _fanout, manager = create_default_persistent_group_fanout(tmp_path / "jiuwenmate", verify_membership=lookup)
+    group = manager.group_chats.resolve("local", "feishu", "oc_group", now=NOW)
+    manager.group_chats.observe_access("local", "mate_1", group.group_chat_id, "cli_bound",
+                                       observed_at=NOW, source_ref="joined:1")
+    access = manager.group_chats.access_for("local", "mate_1", group.group_chat_id)
+    message = core.GroupMessage(message_id="m1", sender_id="ou_alice", sender_name="Alice",
+                                sender_kind="human", received_at=NOW, text=stored_text)
+    manager.group_archive.append("local", group.group_chat_id, message, source_ref="event:m1", changed_at=NOW)
+    try:
+        refreshed = await manager.refresh_group_messages(access, group, (message,))
+        assert refreshed[0].text == restored_text
+        stored = manager.group_archive.current_messages("local", group.group_chat_id, ("m1",))[0]
+        assert stored.text == restored_text
     finally:
         await manager.aclose()
 
