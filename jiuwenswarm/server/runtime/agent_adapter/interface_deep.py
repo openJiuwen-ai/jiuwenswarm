@@ -4279,11 +4279,11 @@ class JiuWenSwarmDeepAdapter:
                 and existing._tool_retrieval_enable_flip_pending()  # pylint: disable=protected-access
             )
             if _tool_retrieval_flip_pending:
-                # 优化开关与本会话冻结的披露画像已不一致（开↔关任一方向）：中途
-                # 状态手术无法在两套披露系统（我们的目录层 vs 引擎 bundled
-                # ProgressiveToolRail）之间保证干净交接，像上方 MoA 切换一样重建
-                # 会话 adapter——重建后整个会话只属于开关当前指向的一套系统，
-                # 重建路径会重读 config 并从磁盘恢复会话上下文。
+                # tool_search 渐进式披露在会话建实例时冻结了关闭态画像，而优化开关
+                # 此后已被打开：configure() 热更新无法接管已初始化的引擎自带
+                # ProgressiveToolRail（回调与元工具保持注册，两套披露并存），只能像
+                # 上方 MoA 切换一样重建会话 adapter——重建路径会重读 config 并从磁盘
+                # 恢复会话上下文。
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] rebuilding session adapter for tool "
                     "retrieval enable: session_id=%s",
@@ -7645,22 +7645,20 @@ class JiuWenSwarmDeepAdapter:
         self,
         config_base: dict[str, Any] | None = None,
     ) -> bool:
-        """Return True when the optimize switch no longer matches this session.
+        """Return True when the optimize switch turned on after this session froze.
 
-        The tool-retrieval session profile is frozen at instance build, and
-        the switch decides which disclosure system owns the session: on =
-        our catalogue layer, off = openjiuwen's bundled ProgressiveToolRail.
-        Mid-session state surgery (unmount/remount, instance vs by-name tool
-        cleanup) cannot guarantee a clean handover between the two — the
-        session-acquire path rebuilds the adapter whenever the frozen profile
-        disagrees with the live switch, in either direction, so every message
-        runs under exactly one system.
+        The tool-retrieval session profile is frozen at instance build. A
+        configure()-based reload cannot take over an already-initialized
+        bundled ProgressiveToolRail (its callbacks and meta tools stay
+        registered), so hot-enable is impossible; the session-acquire path
+        rebuilds the adapter instead. Frozen-on sessions keep running (the
+        live ``is_tool_retrieval_enabled`` AND already disables them hot).
         """
 
         frozen = self._tool_retrieval_session_enabled
-        if frozen is None:
+        if frozen is None or frozen:
             return False
-        return frozen != is_tool_retrieval_enabled(config_base or get_config())
+        return is_tool_retrieval_enabled(config_base or get_config())
 
     def _sync_tool_retrieval_tools_for_runtime(
         self,

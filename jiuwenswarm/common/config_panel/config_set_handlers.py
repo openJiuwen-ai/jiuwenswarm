@@ -1643,6 +1643,8 @@ def apply_config_payload(
                 update_trajectory_ui_in_config(parsed)
             elif param_key == "trajectory_ui_diagnosis_enabled":
                 update_trajectory_diagnosis_in_config(parsed)
+            elif param_key == "progressive_tool_optimize":
+                update_progressive_tool_optimize_in_config(parsed)
             elif param_key == "task_full_duplex_enabled":
                 update_task_full_duplex_in_config(parsed)
             elif param_key == "team_organization_ui_enabled":
@@ -1876,9 +1878,6 @@ async def config_get_handler(
         payload["team_organization_ui_enabled"] = (
             "true" if experimental_cfg.get("team_organization_ui_enabled", False) else "false"
         )
-        payload["comfyui_workflow_enabled"] = (
-            "true" if experimental_cfg.get("comfyui_workflow_enabled", False) else "false"
-        )
         payload["progressive_tool_optimize"] = (
             "true" if raw.get("progressive_tool_optimize", False) else "false"
         )
@@ -1940,7 +1939,6 @@ async def config_get_handler(
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
-        payload.setdefault("comfyui_workflow_enabled", "false")
         payload.setdefault("progressive_tool_optimize", "false")
         payload.setdefault("task_asr_enabled", "false")
         for key, (_, value_type, default) in {

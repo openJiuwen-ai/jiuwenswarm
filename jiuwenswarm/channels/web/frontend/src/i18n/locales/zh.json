@@ -807,8 +807,7 @@
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "multiModelCollaboration": "多模型协同",
-      "toolOptimize": "工具检索优化",
-      "designMode": "设计模式"
+      "toolOptimize": "工具检索优化"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -1022,6 +1021,10 @@
       "comfyui_workflow_enabled": {
         "title": "ComfyUI 工作流集成",
         "description": "目前支持将 ComfyUI 的 vLLM-Omni 节点和 Workflow 导入到设计画布中"
+      },
+      "progressive_tool_optimize": {
+        "title": "启用工具检索优化",
+        "description": "开启后模型通过 tool_search 分类目录按需检索工具。"
       },
       "progressive_tool_optimize": {
         "title": "启用工具检索优化",
