@@ -7,6 +7,7 @@ import pytest
 from jiuwenswarm.common.config import dump_yaml_round_trip, load_yaml_round_trip
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.security_config_service import SecurityConfigService
+from jiuwenswarm.common.utils import get_package_resources_dir
 from jiuwenswarm.server.security_config_rpc import (
     apply_trusted_cloud_policy,
     dispatch_managed_sandbox_request,
@@ -21,6 +22,10 @@ class Manager:
 
     async def reload_agents_config(self, config, env):
         self.configs.append(deepcopy(config))
+
+
+def _package_sandbox_limits():
+    return load_yaml_round_trip(get_package_resources_dir() / "config.yaml")["sandbox"]["limits"]
 
 
 @pytest.fixture
@@ -583,7 +588,7 @@ async def test_native_sandbox_facade_preserves_four_axes_and_reports_apply(servi
     )
     assert queried["config"] == {
         **config, "startup_mode": "internal",
-        "limits": {"max_file_mb": 100, "exec_timeout_seconds": 600},
+        "limits": _package_sandbox_limits(),
     }
     assert render.get_sandbox_files_axes() == files
     assert service.get_candidate()["apply"]["revision"] == source_revision
@@ -657,9 +662,7 @@ async def test_managed_legacy_sandbox_set_uses_native_facade(service, monkeypatc
         ReqMethod.SANDBOX_LIMITS_SET, {"limits": {"max_file_mb": 12}},
         restart_sandboxes=no_restart, service=service,
     )
-    assert limits["applied"] and limits["limits"] == {
-        "max_file_mb": 12, "exec_timeout_seconds": 600,
-    }
+    assert limits["applied"] and limits["limits"] == {**_package_sandbox_limits(), "max_file_mb": 12}
     queried_limits = await dispatch_managed_sandbox_request(
         ReqMethod.SANDBOX_LIMITS_GET, {}, restart_sandboxes=no_restart, service=service,
     )
