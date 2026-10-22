@@ -4347,6 +4347,23 @@ async def _finalize_org_bound_team_after_idle(
         )
 
 
+_TEAM_RESUME_FRAME_TIMEOUT_SECONDS = 30.0
+_TEAM_RESUME_TOTAL_TIMEOUT_SECONDS = 120.0
+
+
+def _is_team_recovered_chunk(chunk: Any) -> bool:
+    """Whether a raw runner chunk is the team.recovered interact gate.
+
+    The marker is enqueued at the tail of the leader's coordination start
+    (session state restored, bus subscribed, paused round resumed); reading
+    it means an interact can be submitted safely. Kept local instead of
+    importing the core helper so older installed openjiuwen versions do not
+    break at import time.
+    """
+    payload = getattr(chunk, "payload", None)
+    return isinstance(payload, dict) and payload.get("event_type") == "team.recovered"
+
+
 async def _consume_stream_with_query(
     channel_id: str | None,
     session_id: str,
@@ -4468,10 +4485,58 @@ async def _consume_stream_with_query(
             session_id=session_id,
             kv_cache_runtime=get_kv_cache_runtime(),
         )
+        # Interrupt-resume wait state: the no-input runtime stream is driven
+        # with a frame budget and an overall budget until the team.recovered
+        # marker is read, then the interrupt answer is submitted once via
+        # interact and the same loop keeps forwarding frames.
+        resume_pending = interrupt_input is not None
+        resume_deadline: float = (
+            (time.monotonic() + _TEAM_RESUME_TOTAL_TIMEOUT_SECONDS) if resume_pending else 0.0
+        )
+
+        async def _fail_resume_wait(error_msg: str) -> None:
+            """Report a failed interrupt-resume wait to the frontend."""
+            nonlocal terminal_broadcasted
+            logger.warning(
+                "[TeamHelpers] interrupt resume wait failed: "
+                "channel_id=%s session_id=%s error=%s",
+                _resolve_channel_id(channel_id),
+                session_id,
+                error_msg,
+            )
+            await _deliver(
+                {
+                    "event_type": "chat.error",
+                    "error": error_msg,
+                    "session_id": session_id,
+                    "rid": round_id,
+                },
+            )
+            await _deliver(
+                {
+                    "event_type": "chat.processing_status",
+                    "session_id": session_id,
+                    "rid": round_id,
+                    "is_processing": False,
+                    "is_complete": True,
+                },
+            )
+            terminal_broadcasted = True
+
+        async def _close_resume_stream() -> None:
+            """Close the runner stream after a failed resume wait."""
+            try:
+                await runner_stream.aclose()
+            except Exception:
+                logger.debug(
+                    "[TeamHelpers] closing runner stream after resume failure failed: "
+                    "session_id=%s",
+                    session_id,
+                )
+
         if interrupt_input is not None:
-            runner_stream = Runner.resume_agent_team_interrupt_streaming(
+            runner_stream = Runner.start_agent_team_streaming(
                 agent_team=team_spec,
-                user_input=interrupt_input,
                 session=team_session,
                 envs=envs,
                 stream_logger=lg,
@@ -4497,8 +4562,78 @@ async def _consume_stream_with_query(
                 background_task_controller=get_background_task_controller(session_id),
                 run_context=run_context,
             )
-        async for chunk in runner_stream:
+        while True:
+            if resume_pending:
+                # Interrupt-resume wait: no frame may arrive later than the
+                # frame budget after the previous one, and the whole wait for
+                # team.recovered may not exceed the total budget.
+                remaining = resume_deadline - time.monotonic()
+                if remaining <= 0:
+                    await _fail_resume_wait("Team recovery timed out before the runtime was ready")
+                    await _close_resume_stream()
+                    break
+                try:
+                    # asyncio.timeout (not wait_for): wait_for drives the
+                    # generator step inside an ephemeral task, which splits
+                    # the agent's execution-subject contextvar scope across
+                    # contexts ("Token was created in a different Context").
+                    async with asyncio.timeout(
+                        min(_TEAM_RESUME_FRAME_TIMEOUT_SECONDS, remaining)
+                    ):
+                        chunk = await runner_stream.__anext__()
+                except asyncio.TimeoutError:
+                    await _fail_resume_wait("Team recovery timed out waiting for the next frame")
+                    await _close_resume_stream()
+                    break
+                except StopAsyncIteration:
+                    await _fail_resume_wait("Team stream ended before the runtime was recovered")
+                    break
+            else:
+                try:
+                    chunk = await runner_stream.__anext__()
+                except StopAsyncIteration:
+                    break
             received_chunks += 1
+            if resume_pending and _is_team_recovered_chunk(chunk):
+                # The leader runtime is fully live; submit the interrupt
+                # answer once. A rejected delivery is reported to the
+                # frontend but the stream keeps running -- the runtime is
+                # recovered either way and may re-ask on its own.
+                resume_pending = False
+                result = await Runner.interact_agent_team(
+                    interrupt_input,
+                    team_name=team_spec.team_name,
+                    session_id=session_id,
+                    run_context=run_context,
+                )
+                if not result:
+                    reason = str(getattr(result, "reason", None) or "interrupt_resume_rejected")
+                    logger.warning(
+                        "[TeamHelpers] interrupt resume interact rejected: "
+                        "channel_id=%s session_id=%s reason=%s",
+                        _resolve_channel_id(channel_id),
+                        session_id,
+                        reason,
+                    )
+                    await _deliver(
+                        {
+                            "event_type": "chat.error",
+                            "error": "Failed to resume the pending question",
+                            "reason": reason,
+                            "session_id": session_id,
+                            "rid": round_id,
+                        },
+                    )
+                    await _deliver(
+                        {
+                            "event_type": "chat.processing_status",
+                            "session_id": session_id,
+                            "rid": round_id,
+                            "is_processing": False,
+                            "is_complete": True,
+                        },
+                    )
+                    terminal_broadcasted = True
             # First event of any kind from the runner — usually a framework
             # control event (team.runtime_ready and friends), not model output.
             # It marks how long team startup took before the stream came alive.

@@ -4840,6 +4840,361 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     )
 
 
+
+    def __bool__(self) -> bool:
+        return True
+
+
+class _DeliverFail:
+    ok = False
+    reason = "unsupported_interactive_input"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+def _resume_fake_manager(ready_calls: list) -> object:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def commit_runtime_ready(session_id: str, team_name: str) -> None:
+            ready_calls.append((session_id, team_name))
+
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
+            pass
+
+        @staticmethod
+        def get_monitor(session_id: str):
+            return None
+
+        @staticmethod
+        async def attach_distributed_hooks_for_runner_runtime(
+                team_name: str,
+                session_id: str,
+                channel_id: str,
+        ) -> None:
+            pass
+
+        @staticmethod
+        def resolve_team_agent(session_id: str):
+            return None
+
+        @staticmethod
+        def get_workflow_handler(session_id: str):
+            return None
+
+        @staticmethod
+        def register_workflow_handler(session_id: str, handler: object) -> None:
+            pass
+
+    return _FakeManager()
+
+
+def _patch_resume_env(monkeypatch, fake_runner, fake_mgr, broadcasted: list) -> None:
+    monkeypatch.setattr(team_helpers, "Runner", fake_runner)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "ensure_team_evolution_watcher", lambda *args, **kwargs: None)
+    monkeypatch.setattr(team_helpers, "get_session_metadata", lambda session_id: {})
+    monkeypatch.setattr(team_helpers, "update_session_metadata", lambda **kwargs: None)
+
+
+@pytest.mark.anyio
+async def test_consume_stream_with_query_cold_interrupt_resume_submits_after_recovered(monkeypatch):
+    broadcasted: list[dict] = []
+    ready_calls: list[tuple[str, str]] = []
+    start_calls: list[dict] = []
+    run_calls: list[dict] = []
+    interact_calls: list[tuple] = []
+    interrupt_input = object()
+
+    async def _fake_start_stream(**kwargs):
+        start_calls.append(kwargs)
+        yield SimpleNamespace(
+            type="team.runtime_ready",
+            payload={
+                "event_type": "team.runtime_ready",
+                "team_name": "demo-team",
+                "activation_kind": "cold_recover",
+            },
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="message",
+            payload={"event_type": "team.recovered"},
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="answer",
+            payload={"output": {"output": "leader answer"}, "result_type": "answer"},
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="team.completed",
+            payload={"event_type": "team.completed"},
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        start_agent_team_streaming = staticmethod(_fake_start_stream)
+
+        @staticmethod
+        async def run_agent_team_streaming(**kwargs):
+            run_calls.append(kwargs)
+            return
+            yield  # pragma: no cover - keeps this an async generator
+
+        @staticmethod
+        async def interact_agent_team(payload, *, team_name=None, session_id=None, run_context=None):
+            interact_calls.append((payload, team_name, session_id, run_context))
+            return _DeliverOk()
+
+        @staticmethod
+        async def get_agent_team_monitor(team_name: str, session_id: str, hide_dm: bool = False):
+            return None
+
+    fake_mgr = _resume_fake_manager(ready_calls)
+    _patch_resume_env(monkeypatch, _FakeRunner, fake_mgr, broadcasted)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-cold-resume",
+        SimpleNamespace(team_name="demo-team"),
+        "",
+        interrupt_input=interrupt_input,
+    )
+
+    # The no-input runtime start entry is used, never the normal run entry.
+    assert len(start_calls) == 1
+    assert "inputs" not in start_calls[0]
+    assert run_calls == []
+    # The interrupt answer is submitted exactly once, after team.recovered.
+    assert len(interact_calls) == 1
+    payload, team_name, session_id, run_context = interact_calls[0]
+    assert payload is interrupt_input
+    assert team_name == "demo-team"
+    assert session_id == "sess-cold-resume"
+    assert run_context is None
+    # No error surfaced; the round ends with the terminal processing status.
+    assert not any(event.get("event_type") == "chat.error" for event in broadcasted)
+    assert broadcasted[-1]["event_type"] == "chat.processing_status"
+    assert broadcasted[-1]["is_complete"] is True
+
+
+@pytest.mark.anyio
+async def test_consume_stream_with_query_reports_rejected_interrupt_resume_delivery(monkeypatch):
+    broadcasted: list[dict] = []
+    ready_calls: list[tuple[str, str]] = []
+    interact_calls: list[tuple] = []
+    interrupt_input = object()
+
+    async def _fake_start_stream(**kwargs):
+        yield SimpleNamespace(
+            type="message",
+            payload={"event_type": "team.recovered"},
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="team.completed",
+            payload={"event_type": "team.completed"},
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        start_agent_team_streaming = staticmethod(_fake_start_stream)
+
+        @staticmethod
+        async def interact_agent_team(payload, *, team_name=None, session_id=None, run_context=None):
+            interact_calls.append((payload, team_name, session_id, run_context))
+            return _DeliverFail()
+
+        @staticmethod
+        async def get_agent_team_monitor(team_name: str, session_id: str, hide_dm: bool = False):
+            return None
+
+    fake_mgr = _resume_fake_manager(ready_calls)
+    _patch_resume_env(monkeypatch, _FakeRunner, fake_mgr, broadcasted)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-resume-rejected",
+        SimpleNamespace(team_name="demo-team"),
+        "",
+        interrupt_input=interrupt_input,
+    )
+
+    assert len(interact_calls) == 1
+    error_events = [event for event in broadcasted if event.get("event_type") == "chat.error"]
+    assert len(error_events) == 1
+    assert error_events[0].get("reason") == "unsupported_interactive_input"
+    # The terminal processing status still closes the round for the frontend.
+    assert broadcasted[-1]["event_type"] == "chat.processing_status"
+    assert broadcasted[-1]["is_complete"] is True
+
+
+@pytest.mark.anyio
+async def test_consume_stream_with_query_interrupt_resume_frame_timeout(monkeypatch):
+    broadcasted: list[dict] = []
+    ready_calls: list[tuple[str, str]] = []
+    interact_calls: list[tuple] = []
+
+    async def _fake_start_stream(**kwargs):
+        yield SimpleNamespace(
+            type="message",
+            payload={"event_type": "team.runtime_ready"},
+            role=TeamRole.LEADER,
+        )
+        # Never emits team.recovered: the frame budget must fire.
+        await asyncio.Event().wait()
+        yield  # pragma: no cover
+
+    class _FakeRunner:
+        start_agent_team_streaming = staticmethod(_fake_start_stream)
+
+        @staticmethod
+        async def interact_agent_team(payload, *, team_name=None, session_id=None, run_context=None):
+            interact_calls.append((payload, team_name, session_id, run_context))
+            return _DeliverOk()
+
+        @staticmethod
+        async def get_agent_team_monitor(team_name: str, session_id: str, hide_dm: bool = False):
+            return None
+
+    fake_mgr = _resume_fake_manager(ready_calls)
+    _patch_resume_env(monkeypatch, _FakeRunner, fake_mgr, broadcasted)
+    monkeypatch.setattr(team_helpers, "_TEAM_RESUME_FRAME_TIMEOUT_SECONDS", 0.05)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-resume-timeout",
+        SimpleNamespace(team_name="demo-team"),
+        "",
+        interrupt_input=object(),
+    )
+
+    # The runtime never signalled recovery, so the answer must not be sent.
+    assert interact_calls == []
+    error_events = [event for event in broadcasted if event.get("event_type") == "chat.error"]
+    assert len(error_events) == 1
+    assert "timed out" in str(error_events[0].get("error"))
+    assert broadcasted[-1]["event_type"] == "chat.processing_status"
+    assert broadcasted[-1]["is_complete"] is True
+
+
+@pytest.mark.anyio
+async def test_consume_stream_with_query_interrupt_resume_stream_ended_before_recovered(monkeypatch):
+    broadcasted: list[dict] = []
+    ready_calls: list[tuple[str, str]] = []
+    interact_calls: list[tuple] = []
+
+    async def _fake_start_stream(**kwargs):
+        yield SimpleNamespace(
+            type="message",
+            payload={"event_type": "team.runtime_ready"},
+            role=TeamRole.LEADER,
+        )
+        # Ends quietly without the recovered marker.
+
+    class _FakeRunner:
+        start_agent_team_streaming = staticmethod(_fake_start_stream)
+
+        @staticmethod
+        async def interact_agent_team(payload, *, team_name=None, session_id=None, run_context=None):
+            interact_calls.append((payload, team_name, session_id, run_context))
+            return _DeliverOk()
+
+        @staticmethod
+        async def get_agent_team_monitor(team_name: str, session_id: str, hide_dm: bool = False):
+            return None
+
+    fake_mgr = _resume_fake_manager(ready_calls)
+    _patch_resume_env(monkeypatch, _FakeRunner, fake_mgr, broadcasted)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-resume-ended",
+        SimpleNamespace(team_name="demo-team"),
+        "",
+        interrupt_input=object(),
+    )
+
+    assert interact_calls == []
+    error_events = [event for event in broadcasted if event.get("event_type") == "chat.error"]
+    assert len(error_events) == 1
+    assert "ended before the runtime was recovered" in str(error_events[0].get("error"))
+    assert broadcasted[-1]["event_type"] == "chat.processing_status"
+    assert broadcasted[-1]["is_complete"] is True
+
+
+@pytest.mark.anyio
+async def test_consume_stream_with_query_resume_wait_keeps_one_execution_context(monkeypatch):
+    # Regression: the resume wait must not drive the runner stream inside
+    # asyncio.wait_for's ephemeral task. The agent generator binds an
+    # execution-subject contextvar around the whole stream; entering that
+    # scope in one task context and leaving it in another raises
+    # "Token was created in a different Context".
+    from contextvars import ContextVar
+
+    broadcasted: list[dict] = []
+    ready_calls: list[tuple[str, str]] = []
+    interact_calls: list[tuple] = []
+    subject_var: ContextVar[str | None] = ContextVar("test_exec_subject", default=None)
+
+    async def _fake_start_stream(**kwargs):
+        token = subject_var.set("leader")
+        try:
+            yield SimpleNamespace(
+                type="message",
+                payload={"event_type": "team.recovered"},
+                role=TeamRole.LEADER,
+            )
+            yield SimpleNamespace(
+                type="team.completed",
+                payload={"event_type": "team.completed"},
+                role=TeamRole.LEADER,
+            )
+        finally:
+            subject_var.reset(token)
+
+    class _FakeRunner:
+        start_agent_team_streaming = staticmethod(_fake_start_stream)
+
+        @staticmethod
+        async def interact_agent_team(payload, *, team_name=None, session_id=None, run_context=None):
+            interact_calls.append((payload, team_name, session_id, run_context))
+            return _DeliverOk()
+
+        @staticmethod
+        async def get_agent_team_monitor(team_name: str, session_id: str, hide_dm: bool = False):
+            return None
+
+    fake_mgr = _resume_fake_manager(ready_calls)
+    _patch_resume_env(monkeypatch, _FakeRunner, fake_mgr, broadcasted)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-resume-context",
+        SimpleNamespace(team_name="demo-team"),
+        "",
+        interrupt_input=object(),
+    )
+
+    assert len(interact_calls) == 1
+    assert not any(event.get("event_type") == "chat.error" for event in broadcasted)
+    assert broadcasted[-1]["event_type"] == "chat.processing_status"
+    assert broadcasted[-1]["is_complete"] is True
+    # The scope was left cleanly; the contextvar is back to its default.
+    assert subject_var.get() is None
+
+
 @pytest.mark.anyio
 async def test_finalize_org_bound_team_after_idle_calls_finalize(monkeypatch):
     from openjiuwen.agent_teams.runtime.pool import RuntimeState

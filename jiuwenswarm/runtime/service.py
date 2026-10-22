@@ -3017,14 +3017,17 @@ class AgentRuntime:
         return isinstance(answers, list) and bool(answers)
 
     def _defer_stale_ask_user_to_chat(self, request: AgentRequest) -> bool:
-        """Route a post-restart ask_user answer to a normal chat round.
+        """Route a stale ask_user answer to a normal chat round.
 
-        Defer only when the Runtime holds no record of the session at all
-        (e.g. after a service restart): a wrong or already-completed answer
-        on a live session must keep failing control delivery, while the cold
-        session re-enters through the regular chat path — the adapter
-        cold-starts, the checkpoint restores the pending interrupt, and the
-        InteractiveInput resumes it. Only ask_user answers take this path.
+        Defer when no execution is waiting for this control input and the
+        session holds no live work — no coordinator record at all, or every
+        execution settled (e.g. the service restarted and a heartbeat or
+        reconnect traffic re-registered the session). The answer re-enters
+        through the regular chat path: the adapter cold-starts, the
+        checkpoint restores the pending interrupt, and the InteractiveInput
+        resumes it. A session with a waiting interaction or a running turn
+        keeps the coordinator's control delivery and its rejection of
+        wrong-id answers.
         """
         if not self._is_stale_ask_user_answer(request.params):
             return False
@@ -3034,7 +3037,14 @@ class AgentRuntime:
             self._control_request_id(request),
         ):
             return False
-        return self._session_coordinator.snapshot_session(session_id) is None
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is None:
+            return True
+        return not any(
+            execution.state
+            in (SessionExecutionState.RUNNING, SessionExecutionState.WAITING_FOR_CONTROL)
+            for execution in snapshot.executions
+        )
 
     @staticmethod
     def _event_confirms_user_turn(event: RuntimeEvent) -> bool:
