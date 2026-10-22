@@ -69,10 +69,10 @@ from jiuwenswarm.common.ws_diagnostics import (
     format_ws_diagnostics,
 )
 from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
+from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import persist_cli_trusted_directory
-from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
+from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_CAPABILITIES
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.session_provisioner import (

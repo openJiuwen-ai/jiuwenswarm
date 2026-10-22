@@ -100,8 +100,8 @@ from jiuwenswarm.common.context_keys import (
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
-from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-from jiuwenswarm.extensions.hooks_context import MemoryHookContext
+from jiuwenswarm.common.hook_event import AgentServerHookEvents
+from jiuwenswarm.common.hooks_context import MemoryHookContext
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
