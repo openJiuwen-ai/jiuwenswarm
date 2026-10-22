@@ -1727,7 +1727,7 @@
     "videoGeneration": "Video generation",
     "modeAutoHarness": "Auto-Harness Mode",
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
-    "recording": "Recording... (click the microphone again to finish)",
+    "recording": "Recording... (click the stop button to finish)",
     "transcribing": "Transcribing speech...",
     "startRecording": "Voice input",
     "stopRecording": "Stop recording and transcribe",

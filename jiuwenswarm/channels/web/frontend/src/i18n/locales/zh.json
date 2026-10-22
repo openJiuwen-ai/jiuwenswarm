@@ -1711,7 +1711,7 @@
     "videoGeneration": "视频生成",
     "modeAutoHarness": "自优化模式",
     "modeAutoHarnessDesc": "自动分析并优化目标仓库",
-    "recording": "正在录音...（再次点击麦克风结束）",
+    "recording": "正在录音...（点击停止按钮结束）",
     "transcribing": "正在转写语音...",
     "startRecording": "语音输入",
     "stopRecording": "结束录音并转写",

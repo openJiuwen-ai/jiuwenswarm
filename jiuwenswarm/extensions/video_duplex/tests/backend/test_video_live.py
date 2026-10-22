@@ -24,6 +24,7 @@ from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support impor
     empty_task_file_query,  # noqa: F401 -- pytest fixture
 )
 
+from jiuwenswarm.common.asr_client import AsrError
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_provider,
     settings,
@@ -1333,6 +1334,73 @@ async def test_transcribe_audio_keeps_chat_endpoint_for_omni(monkeypatch) -> Non
     assert transcript == "测试语音"
     assert calls[0]["model"] == "Qwen/Qwen3-Omni-30B-A3B-Instruct"
     assert calls[0]["messages"][0]["content"][0]["type"] == "audio_url"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_reports_empty_chat_choices_as_invalid(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        async def create(self, **kwargs):
+            return SimpleNamespace(choices=[])
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", FakeClient)
+    monkeypatch.setattr(
+        video_voice, "asr_model_config", lambda: ("https://asr.example/v1/chat/completions", "key", "omni")
+    )
+
+    with pytest.raises(AsrError) as error:
+        await video_voice.transcribe_audio(
+            [("data:audio/wav;base64,ZmFrZQ==", "用户麦克风")], use_joyai_voice=False
+        )
+    assert error.value.code == "ASR_INVALID_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_uses_dashscope_run_task_for_wss_fallback(monkeypatch) -> None:
+    pcm = b"\x01\x00\xff\xff" * 1600
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(pcm)
+    seen: dict = {}
+
+    async def handler(conn):
+        seen["path"] = conn.request.path
+        seen["auth"] = conn.request.headers.get("Authorization")
+        await conn.recv()
+        await conn.send(json.dumps({"header": {"event": "task-started"}}))
+        audio = b""
+        while isinstance(message := await conn.recv(), bytes):
+            audio += message
+        seen["audio"] = audio
+        sentence = {"text": "<think>x</think>你好。", "sentence_end": True}
+        await conn.send(json.dumps({
+            "header": {"event": "result-generated"},
+            "payload": {"output": {"sentence": sentence}},
+        }))
+        await conn.send(json.dumps({"header": {"event": "task-finished"}}))
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", lambda **_: pytest.fail("wss must not use OpenAI"))
+    for name in ("VOICE_ASR_ENDPOINT", "VOICE_API_KEY", "VOICE_ASR_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        monkeypatch.setenv("ASR_API_BASE", f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}")
+        monkeypatch.setenv("ASR_API_KEY", "task-key")
+        monkeypatch.setenv("ASR_MODEL_NAME", "qwen-audio-3.0-asr-flash-streaming")
+        data_url = "data:audio/wav;base64," + base64.b64encode(buffer.getvalue()).decode()
+        transcript = await video_voice.transcribe_audio(
+            [(data_url, "用户麦克风")], use_joyai_voice=False
+        )
+
+    assert transcript == "你好。"
+    assert seen == {"path": "/api-ws/v1/inference", "auth": "Bearer task-key", "audio": pcm}
 
 
 def test_registers_only_realtime_support_methods() -> None:
