@@ -243,7 +243,7 @@ async def test_subagent_hook_keeps_root_owner_for_nested_async_children(monkeypa
     monkeypatch.setattr(DeepAgent, "create_subagent", lambda _self, *_args, **_kwargs: _Child())
     install_session_token_usage_subagent_hook()
     parent = SimpleNamespace(
-        _build_context=SimpleNamespace(session_id="root_usage") if has_build_context else None,
+        _usage_build_context=SimpleNamespace(session_id="root_usage") if has_build_context else None,
     )
     child = DeepAgent.create_subagent(parent, "general-purpose", "team/workflow/child")
     rail = child.rails[0]

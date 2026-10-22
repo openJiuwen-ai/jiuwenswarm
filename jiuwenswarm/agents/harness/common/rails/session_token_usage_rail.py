@@ -172,7 +172,7 @@ def install_session_token_usage_subagent_hook() -> None:
 
     def create_subagent_with_usage(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         subagent = original(self, *args, **kwargs)
-        product_id = getattr(getattr(self, "_build_context", None), "session_id", None)
+        product_id = getattr(getattr(self, "_usage_build_context", None), "session_id", None)
         if not product_id:
             invocation_id = current_usage_invocation_id()
             configured = self.configured_rails() if hasattr(self, "configured_rails") else []
