@@ -30,6 +30,20 @@ Then after the skill is done (but again, the order is flexible), you can also ru
 
 Cool? Cool.
 
+## Forced delivery rules (create and modify)
+
+These rules apply even when this skill is invoked **directly** (not only via the unified `skill-creator` entry):
+
+1. **Do not** install the finished Skill into the user's long-lived `workspace/skills/<name>` directory as the final step.
+2. Author under a **temp or draft directory** only:
+   - Prefer `<skill-name>-workspace/` (sibling draft tree) or `work_dir=$(mktemp -d)`.
+   - **Never** use `workspace/skills/<name>` (or any installed skills root) as the authoring directory.
+3. For **modifying an installed skill**: copy into a scratch/draft directory first (`cp -r` into `mktemp -d`); edit the copy; do not overwrite the installed tree and stop.
+4. Before finishing: validate → package to `.zip` / `.skill` → call **`send_file_to_user`** with the package absolute path. Telling the user a filesystem path is **not** delivery.
+5. Tell the user: on Web, click **Save** on the file card to install; you will not auto-install.
+
+Without `send_file_to_user`, the task is incomplete.
+
 ## Communicating with the user
 
 The skill creator is liable to be used by people across a wide range of familiarity with coding jargon. If you haven't heard (and how could you, it's only very recently that it started), there's a trend now where the power of Claude is inspiring plumbers to open up their terminals, parents and grandparents to google "how to install npm". On the other hand, the bulk of users are probably fairly computer-literate.
@@ -532,15 +546,27 @@ Take `best_description` from the JSON output and update the skill's SKILL.md fro
 
 ---
 
-### Package and Present (only if `present_files` tool is available)
+### Package and deliver (required)
 
-Check whether you have access to the `present_files` tool. If you don't, skip this step. If you do, package the skill and present the .skill file to the user:
+This skill owns delivery end-to-end. Do **not** depend on being nested under `skill-creator` for packaging.
+
+1. Confirm the Skill root is still under a temp/draft directory (not `workspace/skills/<name>`).
+2. Run validation:
+
+```bash
+python scripts/quick_validate.py <path/to/skill-folder>
+```
+
+3. Package the directory into a **`.zip` or `.skill`** (zip format). The package must **not** contain a root-level `.archive/`. Do not treat YAML `version` as a product version identity in create/modify output packages.
 
 ```bash
 python -m scripts.package_skill <path/to/skill-folder>
 ```
 
-After packaging, direct the user to the resulting `.skill` file path so they can install it.
+4. Call tool **`send_file_to_user`** with the package's **absolute path** so the chat shows a Skill file card with **Save**.
+5. Tell the user: clicking **Save** installs into workspace; you will not auto-install.
+
+Without `send_file_to_user`, the task is incomplete — even if a `.skill` file exists on disk.
 
 If you ran Reference Discovery earlier and haven't cleaned up yet, delete borrowed references now:
 ```bash
@@ -610,7 +636,7 @@ Repeating one more time the core loop here for emphasis:
   - Create benchmark.json and run `eval-viewer/generate_review.py` to help the user review them
   - Run quantitative evals
 - Repeat until you and the user are satisfied
-- Package the final skill and return it to the user.
+- Package the final skill and deliver it with `send_file_to_user` (user clicks Save to install).
 
 Please add steps to your TodoList, if you have such a thing, to make sure you don't forget. If you're in Cowork, please specifically put "Create evals JSON and run `eval-viewer/generate_review.py` so human can review test cases" in your TodoList to make sure it happens.
 

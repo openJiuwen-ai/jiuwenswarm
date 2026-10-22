@@ -23,14 +23,14 @@ Pick both before writing files. Output shape is a separate dimension, not an add
 
 | Mode | Trigger | Output |
 |---|---|---|
-| **CREATE** | User has a fresh need ("build a team for X") | New `<swarmskill-name>/` directory in the selected output shape |
-| **CONVERT** | User points at an existing single-agent skill | Transformed `<swarmskill-name>/` directory in the selected output shape + a delta report |
-| **MODIFY** | User edits an existing Swarm Skill (add/remove role, change workflow, adjust bind, fix validator errors) | Updated files in the existing `<swarmskill-name>/` directory |
+| **CREATE** | User has a fresh need ("build a team for X") | Full Skill in a **temp/draft** directory (selected output shape) → package → `send_file_to_user` |
+| **CONVERT** | User points at an existing single-agent skill | Transformed Skill in a **temp/draft** directory + delta report → package → `send_file_to_user` |
+| **MODIFY** | User edits an existing Swarm Skill (add/remove role, change workflow, adjust bind, fix validator errors) | Edits on a **temp/draft copy** of the installed Skill → package → `send_file_to_user` (user clicks Save to install) |
 
-Each operation mode maps to the staged pipeline defined below (see Stage 0–6). Quick routing:
+Each operation mode maps to the staged pipeline defined below (see Stage 0–7). Quick routing:
 
-- **CREATE / CONVERT** — share Stages 2–6; they differ only at Stage 1 (CREATE designs roles from scratch, CONVERT decomposes an existing skill).
-- **MODIFY** — skips Stage 0–1 *unless* the change alters the team pattern; edits only the affected files; **always re-runs Stage 6 (validator)**.
+- **CREATE / CONVERT** — share Stages 2–7; they differ only at Stage 1 (CREATE designs roles from scratch, CONVERT decomposes an existing skill).
+- **MODIFY** — skips Stage 0–1 *unless* the change alters the team pattern; edits only the affected files on a draft copy; **always re-runs Stage 6 (validator) and Stage 7 (package and deliver)**.
 - **Script-only output** — bypasses the role/workflow/bind/dependency stages entirely, since those files are intentionally absent.
 
 ### Output shape triage — Markdown, script-only SwarmFlow, or Markdown + SwarmFlow
@@ -56,9 +56,21 @@ Stage routing:
 
 | Output shape | Stage route |
 |---|---|
-| **Markdown spec (default)** | Run the normal full-spec stages: Stage 0 → 1 → 2 → 3 → 4 → 5 → 6 |
-| **Markdown spec + SwarmFlow script** | Run the normal full-spec stages, and add Stage 3b after `workflow.md`; revisit Stage 3b after `bind.md` if failure/retry behavior changes the script |
-| **Script-only SwarmFlow skill** | Write minimal `SKILL.md` + `scripts/workflow.py`, then run Stage 6. Do not fabricate role files, prompt files, or Markdown spec files just to satisfy the full-spec pipeline |
+| **Markdown spec (default)** | Run the normal full-spec stages: Stage 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 |
+| **Markdown spec + SwarmFlow script** | Run the normal full-spec stages (through Stage 7), and add Stage 3b after `workflow.md`; revisit Stage 3b after `bind.md` if failure/retry behavior changes the script |
+| **Script-only SwarmFlow skill** | Write minimal `SKILL.md` + `scripts/workflow.py` under a temp/draft directory, then run Stage 6 → Stage 7. Do not fabricate role files, prompt files, or Markdown spec files just to satisfy the full-spec pipeline |
+
+## Forced delivery rules (CREATE / CONVERT / MODIFY)
+
+These rules apply even when this skill is invoked **directly** (not only via `skill-creator`):
+
+1. **Do not** install the finished Skill into the user's long-lived `workspace/skills/<name>` directory as the final step.
+2. Author under a **temp or draft directory** only:
+   - Prefer `work_dir=$(mktemp -d)` or a session-local `<swarmskill-name>-workspace/` under the current working directory.
+   - **Never** use `workspace/skills/<name>` (or any installed skills root) as the authoring directory.
+3. For **MODIFY**: copy the installed Skill into the draft directory first; edit the copy; do not overwrite the installed tree and stop.
+4. After Stage 6 (validator) passes, run **Stage 7 (Package and deliver)** — packaging + `send_file_to_user` is mandatory. Telling the user a filesystem path is **not** delivery.
+5. Tell the user: on Web, click **Save** on the file card to install; you will not auto-install.
 
 ### Stage 0: Triage — is a Swarm Skill even justified?
 
@@ -230,9 +242,20 @@ The validator checks two output shapes:
 
 The full script authoring constraint list lives only in [templates/scripts/workflow.py.template](templates/scripts/workflow.py.template). The manual checklist (for design-time judgment calls the script cannot automate, like "is this content really redundant?") lives in [reference/compliance-checklist.md](reference/compliance-checklist.md). Read it before declaring the Swarm Skill done.
 
+### Stage 7: Package and deliver (required)
+
+Do **not** skip this stage. Validation alone is not completion.
+
+1. Confirm the Skill root is still under a temp/draft directory (not `workspace/skills/<name>`).
+2. Zip the Skill directory into a **`.zip` or `.skill`** (zip format) package. The package must **not** contain a root-level `.archive/`. Do not treat YAML `version` as a product version identity in create/modify output packages.
+3. Call tool **`send_file_to_user`** with the package's **absolute path** so the chat shows a Skill file card with **Save**.
+4. Tell the user: clicking **Save** installs into workspace; you will not auto-install.
+
+Without `send_file_to_user`, the task is incomplete — even if the directory validates.
+
 ### Post-generation: Creation Summary + Community Enrichment
 
-After Stage 6 passes, present a **creation summary** to the user. This is the natural point to assess capability coverage and offer community enrichment — the Swarm Skill is already complete and functional, so community search is a zero-risk enhancement.
+After Stage 6 passes and **Stage 7 delivers the package**, present a **creation summary** to the user. This is the natural point to assess capability coverage and offer community enrichment — the Swarm Skill package is ready for the user to Save, so community search is a zero-risk enhancement.
 
 **Summary format:**
 
@@ -346,36 +369,42 @@ The three most common **structural** mistakes (caught by the validator, but wort
 For a CREATE request:
 
 1. Confirm Stage 0 justification with the user (which failure mode does single-agent hit?)
-2. Read [reference/pattern-selection.md](reference/pattern-selection.md) and pick A / B / C / mixed
-3. Write all `roles/<id>.md` files (motto, boundary, schema, inline persona) + auto-match local skills/tools
-4. Write `workflow.md`; if output shape includes SwarmFlow, draft `scripts/workflow.py` topology from it
-5. Write `bind.md`; if output shape includes SwarmFlow, update `scripts/workflow.py` for executable retry/failure/degraded behavior
-6. Write `dependencies.yaml` → `SKILL.md` (each using its template)
-7. Run `python scripts/validate_swarmskill.py <swarmskill-name>/` until exit 0
-8. Present creation summary with per-role capability coverage → recommend community search for roles lacking **domain-specific** skills (default: recommend; generic utility skills do NOT satisfy the threshold)
-9. Manual review with [reference/compliance-checklist.md](reference/compliance-checklist.md)
+2. Create a temp/draft work directory (`mktemp -d` or `<name>-workspace/`); **do not** write under `workspace/skills/`
+3. Read [reference/pattern-selection.md](reference/pattern-selection.md) and pick A / B / C / mixed
+4. Write all `roles/<id>.md` files (motto, boundary, schema, inline persona) + auto-match local skills/tools
+5. Write `workflow.md`; if output shape includes SwarmFlow, draft `scripts/workflow.py` topology from it
+6. Write `bind.md`; if output shape includes SwarmFlow, update `scripts/workflow.py` for executable retry/failure/degraded behavior
+7. Write `dependencies.yaml` → `SKILL.md` (each using its template)
+8. Run `python scripts/validate_swarmskill.py <draft>/<swarmskill-name>/` until exit 0
+9. **Stage 7**: package → `send_file_to_user` → tell user to click Save
+10. Present creation summary with per-role capability coverage → recommend community search for roles lacking **domain-specific** skills (default: recommend; generic utility skills do NOT satisfy the threshold)
+11. Manual review with [reference/compliance-checklist.md](reference/compliance-checklist.md)
 
 For a script-only SwarmFlow CREATE request:
 
 1. Use this path when the request mentions 工作流 / workflow / SwarmFlow / `workflow.py` / executable orchestration / code orchestration / 可执行编排 / 编排脚本, unless the user also asks for a full team skill spec.
-2. Write a minimal `SKILL.md` with `kind: swarm-skill`, concise trigger description, no non-empty `roles:`, `## Workflow`, and `## Files`.
-3. Write `scripts/workflow.py` from [templates/scripts/workflow.py.template](templates/scripts/workflow.py.template), deleting placeholders and template notes. Inline every agent prompt in this script.
-4. Run `python scripts/validate_swarmskill.py <swarmskill-name>/` until exit 0.
-5. Present the script path and explain that this skill is optimized for SwarmFlow execution, not full-spec role evolution.
+2. Author under a temp/draft directory only.
+3. Write a minimal `SKILL.md` with `kind: swarm-skill`, concise trigger description, no non-empty `roles:`, `## Workflow`, and `## Files`.
+4. Write `scripts/workflow.py` from [templates/scripts/workflow.py.template](templates/scripts/workflow.py.template), deleting placeholders and template notes. Inline every agent prompt in this script.
+5. Run `python scripts/validate_swarmskill.py <draft>/<swarmskill-name>/` until exit 0.
+6. **Stage 7**: package → `send_file_to_user` → tell user to click Save. Explain that this skill is optimized for SwarmFlow execution, not full-spec role evolution.
 
 For a CONVERT request:
 
 1. Read the source single-agent SKILL.md
 2. Apply [reference/conversion-guide.md](reference/conversion-guide.md) decomposition checklist
 3. Articulate "what is lost in single-agent form" — this is the Stage 0 justification
-4. Continue from CREATE step 2 (pattern selection) onward
+4. Continue from CREATE step 2 (draft directory + pattern selection) onward
 5. Add a `MIGRATION.md` (optional) to the new Swarm Skill explaining the source skill, the decomposition rationale, and the team-vs-single delta
+6. Finish with Stage 7 delivery (`send_file_to_user`)
 
 For a MODIFY request:
 
-1. Identify the change type from the impact matrix below
-2. Re-run the indicated stages; apply edits honoring the section + structure rules (mottos, Forbidden+Mandatory, Inline Persona, gates, numeric bind constraints)
-3. Run `python scripts/validate_swarmskill.py <swarmskill-name>/` — **Stage 6 is mandatory regardless of edit size**
+1. Copy the installed Skill into a temp/draft directory; edit only that copy
+2. Identify the change type from the impact matrix below
+3. Re-run the indicated stages; apply edits honoring the section + structure rules (mottos, Forbidden+Mandatory, Inline Persona, gates, numeric bind constraints)
+4. Run `python scripts/validate_swarmskill.py <draft>/<swarmskill-name>/` — **Stage 6 is mandatory regardless of edit size**
+5. **Stage 7** package and `send_file_to_user` — overwrite install happens only when the user clicks Save
 
 #### MODIFY impact matrix
 
@@ -389,4 +418,4 @@ For a MODIFY request:
 | Edit SKILL.md description / purpose | Stage 5b | `SKILL.md` |
 | Add, remove, or change SwarmFlow code orchestration | Stage 3b + Stage 4 if failure behavior changes + 6 | `scripts/workflow.py` + `SKILL.md` `## Files` if needed |
 
-All rows require **Stage 6 (validator)** as the final step.
+All rows require **Stage 6 (validator)** and **Stage 7 (package and deliver)** as the final steps.
