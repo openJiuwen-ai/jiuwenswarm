@@ -53,6 +53,10 @@ Design uses several kinds of models. Check the following in the left navigation 
 
 > 💡 **Tip:** Video generation uses reference-image-to-video mode. The video models tested so far are MiniMax H3, the Seedance 2.5 series, and the Wan 3.0 series. Image generation currently supports MiniMax, Volcengine / BytePlus ModelArk, Alibaba Cloud Model Studio (DashScope, e.g. the Wan series), and self-hosted vLLM-Omni. Because a reference image has to be sent along, image and video models **relayed through OpenRouter are not supported for now**.
 
+For Volcengine, the image and video generation dropdowns fetch the complete matching generation catalogue from the configured official regional endpoint. You can also enter a model ID. The catalogue includes retiring or discontinued models; listing does not confirm account activation or access. Discovery, generation and video task queries stay on the configured region without automatic region switching. Coding Plan endpoints do not support these generation features.
+
+Image and video generation run through tools and do not use the conversation context window, so these two configuration dialogs omit the context window option.
+
 > ⚠️ **Note:** If a model is not configured, the corresponding node fails immediately during execution with a message like "Video generation is not configured". Fix the configuration, then click "Regenerate" on the node.
 
 For the meaning of each model configuration field, see [Configuration](Configuration.md).

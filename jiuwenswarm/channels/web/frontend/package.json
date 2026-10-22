@@ -11,6 +11,7 @@
     "test:team-organization": "esbuild tests/fixtures/teamOrganizationExports.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/team-organization/organization.mjs --define:import.meta.env={} && node --test tests/teamOrganization.test.mjs",
     "test:browser-agent-activity": "esbuild src/features/browserAgentActivity.ts src/stores/sessionStore.ts src/stores/subagentStore.ts --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/browser-agent-activity --define:import.meta.env={} && node --test tests/browserAgentActivity.test.mjs",
     "test:generation-models": "esbuild src/features/settings/modules/agent/generationModels.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/generation-models/generationModels.mjs && node --test tests/generationModels.test.mjs",
+    "test:generation-model-dialog": "node --test tests/generationModelDialog.test.mjs",
     "test:a4p-authorization": "node --test tests/a4pAuthorization.test.mjs",
     "test:a4p-settings": "node --test tests/a4pSettings.test.mjs",
     "test:secondary-sidebar": "esbuild src/hooks/useSecondarySidebar.ts src/hooks/useResponsive.ts --bundle --platform=node --format=esm --packages=external --out-extension:.js=.mjs --outdir=node_modules/.cache/secondary-sidebar && node --test tests/secondarySidebar.test.mjs",
