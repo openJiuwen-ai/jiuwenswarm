@@ -231,7 +231,7 @@ _TOOL_PARAM_BUILDERS: dict[name, (config) -> params]   # send_file / code_extra_
 1. `register_swarm_providers()`（幂等，把 manifest catalog 驱动注册进 openjiuwen 注册表）；
 2. 用 `get_config()` + 工作区路径 + 进程级 trajectory span processor 建 `SwarmBuildContext`；
 3. 对 `leader` / `teammate` 调 `build_member_deep_agent_spec`，把能力 spec（含烘焙好的 params）折叠到成员 `DeepAgentSpec`；再由组装好的 teammate spec 派生 `spec.reviewer_agent`（`build_reviewer_deep_agent_spec`）；
-4. 若指定 `agent_group_name`，加载 AgentGroup，为 Leader 写入模板快照、按通用 teammate spec 派生同名预定义成员，并设置 `team_mode="hybrid"`，保留运行时动态增加成员的能力；
+4. 若指定 `agent_group_name`，加载 AgentGroup，为 Leader 写入模板快照并按通用 teammate spec 派生成员；显式声明 `team_mode="predefined"` 的包使用 AgentGroup namespace 和固定审核成员，未声明该字段的旧包继续保持 `hybrid` 与本地成员 ID 兼容语义；
 5. `spec.build_context = base`；`spec.build_context_seed = base.to_seed()`（跨边界重建）。
 
 ---

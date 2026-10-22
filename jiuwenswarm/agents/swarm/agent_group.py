@@ -17,6 +17,9 @@ from openjiuwen.harness.schema.extension_spec import (
 )
 
 
+_AGENT_GROUP_TEAM_MODES = frozenset({"hybrid", "predefined"})
+
+
 @dataclass(frozen=True)
 class LoadedAgentGroupPackage:
     """One validated AgentGroup load, reusable within a single call chain."""
@@ -29,6 +32,18 @@ class LoadedAgentGroupPackage:
     def instruction(self) -> str:
         value = self.manifest.get("instruction", "")
         return value.strip() if isinstance(value, str) else ""
+
+    @property
+    def member_instruction(self) -> str:
+        """Return policy text shared by the leader and every member."""
+        value = self.manifest.get("member_instruction", "")
+        return value.strip() if isinstance(value, str) else ""
+
+    @property
+    def team_mode(self) -> str:
+        """Return the validated roster mode, preserving legacy hybrid behavior."""
+        value = self.manifest.get("team_mode", "hybrid")
+        return value if isinstance(value, str) else "hybrid"
 
     @property
     def capabilities(self) -> tuple[str, ...]:
@@ -297,6 +312,16 @@ def load_agent_group_package_bundle(path: Path) -> LoadedAgentGroupPackage:
     if not isinstance(instruction, str):
         raise ValueError("agent_group manifest instruction must be a string")
     instruction = instruction.strip()
+    member_instruction = payload.get("member_instruction", "")
+    if not isinstance(member_instruction, str):
+        raise ValueError("agent_group manifest member_instruction must be a string")
+    member_instruction = member_instruction.strip()
+    team_mode = payload.get("team_mode", "hybrid")
+    if not isinstance(team_mode, str) or team_mode not in _AGENT_GROUP_TEAM_MODES:
+        supported = ", ".join(sorted(_AGENT_GROUP_TEAM_MODES))
+        raise ValueError(
+            f"agent_group manifest team_mode must be one of: {supported}"
+        )
     shared_skills = _shared_skills(package_dir, payload)
 
     templates: dict[str, AgentTemplateSpec] = {}
@@ -305,7 +330,14 @@ def load_agent_group_package_bundle(path: Path) -> LoadedAgentGroupPackage:
         if agent_name == "leader" and template.runtime is not None:
             raise ValueError("AgentGroup leader does not support external runtime")
         prompt_sections = list(template.prompt_sections)
-        if instruction:
+        # New packages opt into split prompts by declaring
+        # ``member_instruction``: ``instruction`` then belongs to the leader,
+        # while the shared member policy is mounted on every template.  Legacy
+        # packages predate that field and historically mounted ``instruction``
+        # on every member, so preserve that behaviour instead of silently
+        # dropping their shared safety/domain rules.
+        split_member_instruction = "member_instruction" in payload
+        if instruction and (agent_name == "leader" or not split_member_instruction):
             if any(
                 section.name == "agent_group_instruction"
                 for section in prompt_sections
@@ -319,6 +351,22 @@ def load_agent_group_package_bundle(path: Path) -> LoadedAgentGroupPackage:
                     name="agent_group_instruction",
                     content={"cn": instruction, "en": instruction},
                     priority=20,
+                )
+            )
+        if member_instruction:
+            if any(
+                section.name == "agent_group_member_instruction"
+                for section in prompt_sections
+            ):
+                raise ValueError(
+                    f"AgentTemplate {agent_name!r} reserves prompt section name "
+                    "'agent_group_member_instruction'"
+                )
+            prompt_sections.append(
+                PromptSectionSpec(
+                    name="agent_group_member_instruction",
+                    content={"cn": member_instruction, "en": member_instruction},
+                    priority=21,
                 )
             )
 

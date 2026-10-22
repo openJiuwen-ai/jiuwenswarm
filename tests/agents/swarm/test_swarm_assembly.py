@@ -28,7 +28,7 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -84,6 +84,7 @@ from jiuwenswarm.agents.swarm import (
 from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
 
 from jiuwenswarm.agents.swarm import registry
+from jiuwenswarm.agents.swarm.assembly import _runtime_agent_group_member_name
 from jiuwenswarm.agents.swarm.config_specs import (
     build_member_capability_specs,
     build_member_deep_agent_spec,
@@ -1589,7 +1590,12 @@ def test_enriched_spec_serialization_round_trip() -> None:
     assert any(not name.startswith("swarm.") for name in rail_types)
 
 
-def _write_agent_group_assembly_fixture(root: Path) -> Path:
+def _write_agent_group_assembly_fixture(
+    root: Path,
+    *,
+    team_mode: str | None = None,
+    member_instruction: str | None = None,
+) -> Path:
     package_dir = root / "sample-expert-group"
     manifests = {
         "leader": ("专家团负责人", "负责人描述", "."),
@@ -1597,17 +1603,20 @@ def _write_agent_group_assembly_fixture(root: Path) -> Path:
         "member2": ("风险与质量复核专家", "风险复核描述", "./persona"),
     }
     (package_dir / "manifest.json").parent.mkdir(parents=True)
+    group_manifest = {
+        "name": "sample-expert-group",
+        "package_type": "agent_group",
+        "instruction": "Leader 负责理解用户目标",
+        "tags": [{"id": "analysis", "zh": "分析", "en": "Analysis"}],
+        "agents": list(manifests),
+        "skills": ["skill_name_1"],
+    }
+    if team_mode is not None:
+        group_manifest["team_mode"] = team_mode
+    if member_instruction is not None:
+        group_manifest["member_instruction"] = member_instruction
     (package_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "name": "sample-expert-group",
-                "package_type": "agent_group",
-                "instruction": "Leader 负责理解用户目标",
-                "tags": [{"id": "analysis", "zh": "分析", "en": "Analysis"}],
-                "agents": list(manifests),
-                "skills": ["skill_name_1"],
-            }
-        ),
+        json.dumps(group_manifest),
         encoding="utf-8",
     )
     headings = {
@@ -1643,13 +1652,17 @@ def _write_agent_group_assembly_fixture(root: Path) -> Path:
 
 
 @pytest.mark.parametrize("organization_enabled", [False, True])
-def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
+def test_enrich_applies_agent_group_as_fixed_namespaced_member_snapshots(
     monkeypatch, tmp_path: Path, organization_enabled: bool
 ) -> None:
     """AgentGroup prompts stay Team-owned while capabilities use snapshots."""
     from jiuwenswarm.server.runtime import extension_package_manager as package_manager
 
-    package_dir = _write_agent_group_assembly_fixture(tmp_path)
+    package_dir = _write_agent_group_assembly_fixture(
+        tmp_path,
+        team_mode="predefined",
+        member_instruction="所有成员必须保留来源和不确定性说明",
+    )
     monkeypatch.setattr(
         package_manager,
         "resolve_agent_group_dir",
@@ -1676,34 +1689,50 @@ def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
         agent_group_name="sample-expert-group",
     )
 
-    assert spec.team_mode == "hybrid"
+    member1 = _runtime_agent_group_member_name("sample-expert-group", "member1")
+    member2 = _runtime_agent_group_member_name("sample-expert-group", "member2")
+
+    assert spec.team_mode == "predefined"
     assert spec.metadata["agent_group_name"] == "sample-expert-group"
     assert spec.metadata["capabilities"] == ["analysis"]
     assert spec.enable_organization is organization_enabled
     assert [member.member_name for member in spec.predefined_members] == [
-        "member1",
-        "member2",
+        member1,
+        member2,
     ]
-    assert set(spec.agents) >= {"leader", "teammate", "member1", "member2"}
+    assert set(spec.agents) >= {"leader", "teammate", member1, member2}
+    assert spec.metadata["agent_group_member_names"] == {
+        "member1": member1,
+        "member2": member2,
+    }
 
     assert spec.leader.prompt.startswith("existing leader agreement\n\n")
     assert "# Expert Group Leader" in spec.leader.prompt
     assert "# 专家团负责人" in spec.leader.prompt
     assert "Leader 负责理解用户目标" in spec.leader.prompt
+    assert "所有成员必须保留来源和不确定性说明" in spec.leader.prompt
+    assert f'create_task.assignee="{member1}"' in spec.leader.prompt
+    assert f'create_task.assignee="{member2}"' in spec.leader.prompt
 
     predefined = {member.member_name: member for member in spec.predefined_members}
-    assert predefined["member1"].display_name == "方案分析专家（中文）"
-    assert predefined["member2"].display_name == "风险与质量复核专家（中文）"
-    assert "# 方案分析专家" in predefined["member1"].prompt
-    assert "# 风险与质量复核专家" in predefined["member2"].prompt
+    assert predefined[member1].display_name == "方案分析专家（中文）"
+    assert predefined[member2].display_name == "风险与质量复核专家（中文）"
+    assert "# 方案分析专家" in predefined[member1].prompt
+    assert "# 风险与质量复核专家" in predefined[member2].prompt
     for member in predefined.values():
-        assert "Leader 负责理解用户目标" in member.prompt
+        assert "Leader 负责理解用户目标" not in member.prompt
+        assert "所有成员必须保留来源和不确定性说明" in member.prompt
 
-    for name in ("leader", "member1", "member2"):
+    runtime_members = (
+        ("leader", "leader"),
+        (member1, "member1"),
+        (member2, "member2"),
+    )
+    for name, local_name in runtime_members:
         member_spec = spec.agents[name]
         snapshot = member_spec.agent_template_spec
         assert snapshot is not None
-        assert snapshot["agent_card"]["id"] == name
+        assert snapshot["agent_card"]["id"] == local_name
         assert snapshot["prompt_sections"] == []
         assert "skill_name_1" in (member_spec.skills or [])
 
@@ -1717,11 +1746,11 @@ def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
     # soon as that paired schema field is available.
     if "agent_template_spec" in DeepAgentSpec.model_fields:
         restored = TeamAgentSpec.model_validate_json(spec.model_dump_json())
-        assert restored.agents["member1"].agent_template_spec is not None
+        assert restored.agents[member1].agent_template_spec is not None
         restored_members = {
             member.member_name: member for member in restored.predefined_members
         }
-        assert restored_members["member1"].prompt == predefined["member1"].prompt
+        assert restored_members[member1].prompt == predefined[member1].prompt
         assert restored.leader.prompt == spec.leader.prompt
 
 
@@ -1731,7 +1760,10 @@ def test_enrich_agent_group_builds_predefined_external_member(
 ) -> None:
     from jiuwenswarm.server.runtime import extension_package_manager as package_manager
 
-    group = _write_agent_group_assembly_fixture(tmp_path)
+    group = _write_agent_group_assembly_fixture(
+        tmp_path,
+        team_mode="predefined",
+    )
     manifest_path = group / "agents" / "member1" / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["runtime"] = {
@@ -1752,13 +1784,109 @@ def test_enrich_agent_group_builds_predefined_external_member(
     )
 
     members = {member.member_name: member for member in spec.predefined_members}
-    member = members["member1"]
+    runtime_name = _runtime_agent_group_member_name(
+        "sample-expert-group", "member1"
+    )
+    member = members[runtime_name]
     assert isinstance(member, ExternalCliMemberSpec)
     assert member.external_cli.cli_agent == "codex"
     assert [Path(skill["dir"]).name for skill in member.external_cli.skills] == [
         "skill_name_1"
     ]
-    assert spec.agents["member1"].agent_template_spec is None
+    assert spec.agents[runtime_name].agent_template_spec is None
+
+
+def test_agent_group_without_team_mode_keeps_legacy_hybrid_local_ids(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jiuwenswarm.server.runtime import extension_package_manager as package_manager
+
+    package_dir = _write_agent_group_assembly_fixture(tmp_path)
+    monkeypatch.setattr(
+        package_manager,
+        "resolve_agent_group_dir",
+        lambda _name: package_dir,
+    )
+    spec = _make_team_spec()
+
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="s",
+        mode="team",
+        channel_id="web",
+        agent_group_name="sample-expert-group",
+    )
+
+    assert spec.team_mode == "hybrid"
+    assert [member.member_name for member in spec.predefined_members] == [
+        "member1",
+        "member2",
+    ]
+    assert spec.metadata["agent_group_member_names"] == {
+        "member1": "member1",
+        "member2": "member2",
+    }
+    assert 'create_task.assignee="member1"' in spec.leader.prompt
+    # Legacy packages predate ``member_instruction`` and historically shared
+    # the root instruction with every member. Preserve that safety/domain
+    # contract while keeping local IDs and hybrid dispatch semantics.
+    assert "Leader 负责理解用户目标" in spec.predefined_members[0].prompt
+
+
+@pytest.mark.asyncio
+async def test_predefined_dispatch_mapping_uses_create_task_accepted_ids(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from openjiuwen.agent_teams.tools.tool_task import _validate_assignees
+    from jiuwenswarm.server.runtime import extension_package_manager as package_manager
+
+    package_dir = _write_agent_group_assembly_fixture(
+        tmp_path,
+        team_mode="predefined",
+    )
+    monkeypatch.setattr(
+        package_manager,
+        "resolve_agent_group_dir",
+        lambda _name: package_dir,
+    )
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="s",
+        mode="team",
+        channel_id="web",
+        agent_group_name="sample-expert-group",
+    )
+    runtime_ids = {member.member_name for member in spec.predefined_members}
+    backend = SimpleNamespace(
+        resolve_leader_member_name=AsyncMock(return_value="leader"),
+        member_exists=AsyncMock(side_effect=lambda name: name in runtime_ids),
+    )
+    runtime_member1 = spec.metadata["agent_group_member_names"]["member1"]
+
+    assert await _validate_assignees(
+        backend,
+        [{"title": "analyze", "content": "analyze", "assignee": runtime_member1}],
+        required=True,
+    ) is None
+    error = await _validate_assignees(
+        backend,
+        [{"title": "analyze", "content": "analyze", "assignee": "member1"}],
+        required=True,
+    )
+    assert error == "Task 'analyze': member 'member1' not found in the team"
+
+
+def test_agent_group_runtime_member_names_are_group_scoped() -> None:
+    first = _runtime_agent_group_member_name("home-design", "visual")
+    second = _runtime_agent_group_member_name("personal-styling", "visual")
+
+    assert first != second
+    assert first.startswith("home-design-visual-")
+    assert second.startswith("personal-styling-visual-")
+    assert len(first) <= 64
 
 
 def test_send_file_returns_empty_without_request_id() -> None:

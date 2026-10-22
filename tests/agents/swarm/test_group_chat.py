@@ -43,6 +43,7 @@ def test_proxy_roster_is_lazy_and_survives_serialization(tmp_path, monkeypatch):
     tool = next(t for t in restored.agents["research"].tools if t.type == gc.RUN_TEAM)
     child = TeamAgentSpec.model_validate(tool.params["child_spec"])
     assert [m.member_name for m in child.predefined_members] == ["member1"]
+    assert child.team_mode == "hybrid"
     assert child.spawn_mode == "inprocess"
     assert not getattr(child, "enable_organization", False)
     assert "run_team" in restored.predefined_members[0].prompt

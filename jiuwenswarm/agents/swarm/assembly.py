@@ -24,6 +24,7 @@ purely from the config source plus provider name references.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -76,6 +77,8 @@ logger = logging.getLogger(__name__)
 # Member roles enriched in place, in deterministic order.
 _MEMBER_ROLES: tuple[str, ...] = ("leader", "teammate")
 _PROMPT_TEMPLATE_PATTERN = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
+_MEMBER_ID_COMPONENT_PATTERN = re.compile(r"[^a-z0-9]+")
+_MAX_RUNTIME_MEMBER_NAME = 64
 
 
 def _external_team_publish_url(channel_id: str | None) -> str:
@@ -217,12 +220,67 @@ def _with_agent_template(member_spec: Any, template: AgentTemplateSpec) -> Any:
     )
 
 
+def _runtime_agent_group_member_name(
+    agent_group_name: str,
+    local_member_name: str,
+) -> str:
+    """Build a filesystem-safe, group-scoped runtime member identity.
+
+    AgentGroup manifests intentionally use local IDs such as ``visual`` and
+    ``safety``.  OpenJiuwen, however, also reuses ``member_name`` as a global
+    independent-workspace path segment.  Keeping the local ID there lets two
+    installed groups silently share prompts, Skill visibility, and workspace
+    state.  The runtime ID therefore includes a readable group/member prefix
+    and a short digest; display names remain sourced from the member manifest.
+    """
+
+    def _slug(value: str, fallback: str) -> str:
+        slug = _MEMBER_ID_COMPONENT_PATTERN.sub("-", value.lower()).strip("-")
+        if not slug:
+            slug = fallback
+        if not slug[0].isalpha():
+            slug = f"{fallback}-{slug}"
+        return slug
+
+    group_slug = _slug(str(agent_group_name), "group")
+    member_slug = _slug(str(local_member_name), "member")
+    digest = hashlib.sha256(
+        f"{agent_group_name}\0{local_member_name}".encode("utf-8")
+    ).hexdigest()[:12]
+    suffix = f"-{digest}"
+    readable_budget = _MAX_RUNTIME_MEMBER_NAME - len(suffix)
+    readable = f"{group_slug}-{member_slug}"[:readable_budget].rstrip("-")
+    return f"{readable}{suffix}"
+
+
+def _agent_group_dispatch_prompt(runtime_member_names: dict[str, str]) -> str:
+    """Teach the leader the exact runtime IDs accepted by task tools."""
+    if not runtime_member_names:
+        return ""
+    lines = [
+        "## AgentGroup runtime dispatch IDs",
+        "For `create_task`, use the exact `assignee` value below. "
+        "Do not use a display name or an unlisted alias.",
+    ]
+    for local_name, runtime_name in runtime_member_names.items():
+        if local_name == runtime_name:
+            lines.append(
+                f'- member `{local_name}`: `create_task.assignee="{runtime_name}"`'
+            )
+        else:
+            lines.append(
+                f'- package member `{local_name}` -> '
+                f'`create_task.assignee="{runtime_name}"`'
+            )
+    return "\n".join(lines)
+
+
 def _apply_agent_group(
     spec: Any,
     agent_group_name: str,
     package: LoadedAgentGroupPackage | None = None,
 ) -> None:
-    """Seed a hybrid roster from one resolved AgentGroup package."""
+    """Seed an AgentGroup roster using its explicit runtime mode contract."""
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_member_display_name,
     )
@@ -251,8 +309,22 @@ def _apply_agent_group(
         raise ValueError(
             "AgentGroup assembly requires both base 'leader' and 'teammate' specs"
         )
+    team_mode = package.team_mode
+    runtime_member_names = {
+        agent_name: (
+            _runtime_agent_group_member_name(agent_group_name, agent_name)
+            if team_mode == "predefined"
+            else agent_name
+        )
+        for agent_name in templates
+        if agent_name != "leader"
+    }
+
     leader_template = templates["leader"]
-    leader_prompt = _template_team_prompt(leader_template, leader_base)
+    leader_prompt = _merge_team_prompt(
+        _template_team_prompt(leader_template, leader_base),
+        _agent_group_dispatch_prompt(runtime_member_names),
+    )
     spec.leader = spec.leader.model_copy(
         update={
             "prompt": _merge_team_prompt(spec.leader.prompt, leader_prompt),
@@ -267,15 +339,16 @@ def _apply_agent_group(
     for agent_name, template in templates.items():
         if agent_name == "leader":
             continue
+        runtime_member_name = runtime_member_names[agent_name]
         member_prompt = _template_team_prompt(template, teammate_base)
         external_config = external_cli_agent_spec_from_template(template)
         if external_config is None:
-            spec.agents[agent_name] = _with_agent_template(
+            spec.agents[runtime_member_name] = _with_agent_template(
                 teammate_base.model_copy(deep=True),
                 template,
             )
             member = TeamMemberSpec(
-                member_name=agent_name,
+                member_name=runtime_member_name,
                 display_name=resolve_agent_group_member_display_name(
                     package_dir,
                     agent_name,
@@ -286,9 +359,9 @@ def _apply_agent_group(
                 role_type=TeamRole.TEAMMATE,
             )
         else:
-            spec.agents[agent_name] = teammate_base.model_copy(deep=True)
+            spec.agents[runtime_member_name] = teammate_base.model_copy(deep=True)
             member = ExternalCliMemberSpec(
-                member_name=agent_name,
+                member_name=runtime_member_name,
                 display_name=resolve_agent_group_member_display_name(
                     package_dir,
                     agent_name,
@@ -301,7 +374,14 @@ def _apply_agent_group(
         predefined_members.append(member)
 
     spec.predefined_members = predefined_members
-    spec.team_mode = "hybrid"
+    spec.metadata = {
+        **(spec.metadata or {}),
+        "agent_group_member_names": runtime_member_names,
+    }
+    # Legacy packages omitted ``team_mode`` and ran as hybrid with their local
+    # IDs.  Only an explicit predefined contract opts into the namespaced,
+    # closed roster.
+    spec.team_mode = team_mode
 
 
 def _is_design_team_mode(mode: str) -> bool:
