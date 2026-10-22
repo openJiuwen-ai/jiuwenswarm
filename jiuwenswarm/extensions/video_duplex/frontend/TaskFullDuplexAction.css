@@ -14,20 +14,15 @@
   color: var(--color-text-inverse);
 }
 
-/* The orb takes its own row above the composer (#5284): the chat area gives up
-   that height instead of the orb floating over messages. */
-.chat-input-frame:has(> .task-full-duplex-orb) {
-  display: flex;
-  flex-direction: column;
-}
-
 .task-full-duplex-orb {
-  order: -1;
+  position: fixed;
+  bottom: 140px;
+  left: 50%;
+  z-index: 100;
   display: flex;
   align-items: center;
-  align-self: center;
   flex-direction: column;
-  padding: 12px 0 8px;
+  transform: translateX(-50%);
 }
 
 /* 视觉参数（尺寸、时长、缩放幅度）来源：实测截图调定。 */
@@ -93,14 +88,14 @@
 @keyframes task-full-duplex-orb-enter {
   from {
     opacity: 0;
-    transform: translateY(12px) scale(0.4);
+    scale: 0.4;
   }
 }
 
 @keyframes task-full-duplex-orb-leave {
   to {
     opacity: 0;
-    transform: translateY(8px) scale(0.6);
+    scale: 0.6;
   }
 }
 
@@ -118,11 +113,8 @@
 }
 
 .task-full-duplex-orb:hover .task-full-duplex-orb__controls,
-.task-full-duplex-orb:hover .task-full-duplex-sharing,
 .task-full-duplex-orb.is-dragging .task-full-duplex-orb__controls,
-.task-full-duplex-orb.is-dragging .task-full-duplex-sharing,
-.task-full-duplex-orb:focus-within .task-full-duplex-orb__controls,
-.task-full-duplex-orb:focus-within .task-full-duplex-sharing {
+.task-full-duplex-orb:focus-within .task-full-duplex-orb__controls {
   opacity: 1;
   pointer-events: auto;
 }
@@ -221,6 +213,23 @@
   color: inherit;
   background: var(--color-surface-card);
   cursor: pointer;
+}
+
+.task-full-duplex-sharing > span:not(.task-full-duplex-sharing__dot) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-full-duplex-orb__handle {
+  width: 80px;
+  height: 80px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.task-full-duplex-orb.is-dragging .task-full-duplex-orb__handle {
+  cursor: grabbing;
 }
 
 .task-full-duplex-sharing > span:not(.task-full-duplex-sharing__dot) {

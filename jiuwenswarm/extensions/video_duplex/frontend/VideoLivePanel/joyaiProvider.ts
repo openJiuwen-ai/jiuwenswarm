@@ -75,11 +75,7 @@ export class JoyAIProvider {
   private frameRequestIntervalMs = FRAME_POLL_INTERVAL_MS;
   private lastFrameRequestAt: number | null = null;
   private pendingToolContext: JoyAIToolContextEntry[] = [];
-  private deliveredSearchIds = new Set<string>();
   private restoreToken = '';
-  // Open approval cards (job:interaction -> header, same shape as Qwen). Their status is the
-  // last thing JoyAI reads on every user turn, so a spoken 同意/拒绝 can answer them.
-  private pendingApprovals = new Map<string, Record<string, unknown>>();
 
   constructor(callbacks: JoyAIProviderCallbacks, replyLanguage: ReplyLanguage = 'match') {
     this.callbacks = callbacks;
@@ -444,12 +440,10 @@ export class JoyAIProvider {
             search_session_id: searchSessionId,
             frame_time_range: frameTimeRange,
             ...(toolContext.text ? { tool_context: toolContext.text } : {}),
-            ...(approvalContext ? { approval_context: approvalContext } : {}),
             ...(requestKind === 'user' && this.restoreToken ? { restore_token: this.restoreToken } : {}),
           },
           { timeoutMs: requestKind === 'user' ? 90_000 : 60_000 },
         );
-        if (frameDataUrl) this.lastFrameRequestAt = Date.now();
         try {
           result = await send();
         } catch (error) {

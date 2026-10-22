@@ -37,9 +37,7 @@ async def configure(request):
 
     params = request.params or {}
     token, action = params.get("token"), params.get("action")
-    if not isinstance(token, str) or not token or len(token) > 128:
-        raise ValueError("Invalid Full-duplex subscription")
-    if action not in {"start", "renew", "stop"}:
+    if not isinstance(token, str) or not token or len(token) > 128 or action not in {"start", "renew", "stop"}:
         raise ValueError("Invalid Full-duplex subscription")
     metadata = await asyncio.to_thread(get_session_metadata, request.session_id,
                                        cache_bust=True, enable_writeback=False)
@@ -85,8 +83,6 @@ def prepare_request(request):
 
 def apply_summary_policy(builder, session_id, ctx=None):
     """Refresh the root model's policy even on native interaction resumes."""
-    if builder is None:
-        return
     name = "video_duplex.voice_receipt"
     builder.remove_section(name)
     if not session_id:
@@ -111,9 +107,7 @@ async def publish_result(request, event):
     final_answer = event.event_type == "chat.final" or (
         not event.event_type and event.is_complete and request.req_method in CHAT_TURN_METHODS
     )
-    if current is None or not final_answer:
-        return
-    if request.user_id is not None and current.owner != request.user_id:
+    if current is None or (request.user_id is not None and current.owner != request.user_id) or not final_answer:
         return
     role = str(payload.get("role") or "").lower()
     if role not in {"", "assistant", "leader"} or payload.get("is_subagent"):

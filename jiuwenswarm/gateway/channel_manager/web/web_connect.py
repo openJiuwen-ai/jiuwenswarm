@@ -854,7 +854,7 @@ class WebChannel(BaseWsChannel):
         """Keep structured Organization milestones available to the Web client."""
         return (
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
-            or event_name in {"chat.input_received", "chat.output_phase"}
+            or event_name in {"chat.input_received", "chat.output_phase", "video.core.result"}
             or event_name.startswith("a4p.")
             or event_name.startswith("team.")
             or event_name.startswith("harness.")

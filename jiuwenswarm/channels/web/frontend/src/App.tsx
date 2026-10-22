@@ -1,3 +1,4 @@
+import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
@@ -3317,6 +3318,7 @@ function AppContent({
       if (workContext.work_mode === 'design') {
         const created = await createDesignerConversation(initialTitle);
         pendingNewConversationRef.current = false;
+        newConversationProjectRef.current = null;
         newConversationPreviousSessionRef.current = null;
         sessionIdRef.current = created.sessionId;
         setSessionId(created.sessionId);

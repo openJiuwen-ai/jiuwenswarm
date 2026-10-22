@@ -30,7 +30,6 @@ MAX_DELEGATION_CONTEXT_ITEMS = 6
 MAX_DELEGATION_CONTEXT_CHARS = 8_000
 MAX_DELEGATION_RESULT_CHARS = 2_400
 
-
 def _normalized_task(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 

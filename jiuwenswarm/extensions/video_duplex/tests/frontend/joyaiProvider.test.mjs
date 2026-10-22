@@ -369,21 +369,6 @@ test('JoyAI restore errors do not loop, retry authorization failures, or replay 
   }
 });
 
-test('Core summary is displayed immediately and spoken once without repeating the full tool result', async () => {
-  const { provider, speech, summaries, payload } = setup();
-  provider.userSpeechActive = true;
-  provider.handleCompletedSearch(payload('a'), brief);
-  provider.handleCompletedSearch(payload('a'), brief);
-  assert.deepEqual(summaries, [{ text: brief.summary, jobId: 'a' }]);
-  assert.deepEqual(speech, []);
-  assert.doesNotMatch(summaries[0].text, /print\(1\)/);
-  provider.userSpeechActive = false;
-  await provider.searchDeliveryQueue;
-  assert.deepEqual(speech, [brief.summary]);
-  provider.stop();
-  assert.equal(provider.deliveredSearchIds.size, 0);
-});
-
 test('tool context is immediate; only the brief waits for speech, in task order', async () => {
   const { provider, speech, payload } = setup();
   provider.userSpeechActive = true;

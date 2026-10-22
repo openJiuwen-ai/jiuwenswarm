@@ -197,7 +197,6 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     duplexRef.current = null;
     joyaiProviderRef.current?.stop();
     joyaiProviderRef.current = null;
-    if (!renewing) approvalCardsRef.current.clear();
     if (!renewing) {
       microphoneMutedRef.current = false;
       speakerMutedRef.current = false;
@@ -924,8 +923,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           provider: config.provider || 'realtime',
         });
         setModel(config.model);
-        if (config.provider !== 'qwen_omni') {
-          throw new Error(t('videoLive.qwenOnly'));
+        if (config.provider === 'joyai') {
+          await getJoyAIProvider(config.reply_language).start(config.context_restore?.token);
+          return;
         }
         const videoFrames = new RealtimeVideoFrameScheduler(1_000);
         startupStage = 'realtime_session_create';

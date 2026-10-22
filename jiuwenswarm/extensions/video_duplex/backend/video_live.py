@@ -236,11 +236,7 @@ def register_video_live_handler(
         try:
             restored = await context_restorer.prepare(ws, str((params or {}).get("search_session_id") or "").strip())
         except Exception as exc:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error=duplex_failure(exc, stage="会话上下文恢复", request_id=req_id),
-                code="CONTEXT_RESTORE_FAILED",
-            )
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
             return
         context_payload = {"context_restore": restored} if restored else {}
         if _video_live_mode() == "joyai":
@@ -392,11 +388,7 @@ def register_video_live_handler(
                 await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_EXPIRED")
                 return
             except Exception as exc:
-                await channel.send_response(
-                    ws, req_id, ok=False,
-                    error=duplex_failure(exc, stage="会话上下文恢复", request_id=req_id),
-                    code="CONTEXT_RESTORE_FAILED",
-                )
+                await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
                 return
         request_log = {
             "request_id": str(req_id),
@@ -413,11 +405,9 @@ def register_video_live_handler(
         try:
             model_instruction = instruction
             if request_kind == "user":
-                extra = {"restore_instructions": restore_instructions} if restore_instructions else {}
-                if approval_context:
-                    extra["approval_context"] = approval_context
-                model_instruction = joyai_provider.ground_user_instruction(
-                    instruction, tool_context, reply_language, **extra
+                model_instruction = (
+                    joyai_provider.ground_user_instruction(instruction, tool_context, reply_language, restore_instructions=restore_instructions)
+                    if restore_instructions else joyai_provider.ground_user_instruction(instruction, tool_context, reply_language)
                 )
             request_args = [frame_data_url, model_instruction, upstream_session_id]
             if frame_time_range:
@@ -860,11 +850,7 @@ def register_video_live_handler(
                 scope.removeprefix("task-duplex:"), owner)
             await channel.send_response(ws, req_id, ok=True, payload=payload)
         except Exception as exc:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error=duplex_failure(exc, stage="Core 回执", request_id=req_id),
-                code="CORE_RECEIPT_REJECTED",
-            )
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CORE_RECEIPT_REJECTED")
 
     handlers = {
         "video.realtime.config": _realtime_config,

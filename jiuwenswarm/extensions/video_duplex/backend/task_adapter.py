@@ -20,7 +20,7 @@ from .tasks.prompts import (
     REVISION_CONFLICT_INSTRUCTIONS,
     task_query_instructions,
 )
-from .qwen_omni_tools import delegate_matches_input, parse_qwen_omni_tool_call
+from .qwen_omni_tools import parse_qwen_omni_tool_call
 from .core_receipts import receipt_payload
 
 logger = logging.getLogger(__name__)
@@ -286,7 +286,6 @@ class AgentTaskExecutor:
                 for a in interaction["answers"]
             ),
             source=interaction["source"],
-            interrupt_id=str(interaction.get("interrupt_id") or ""),
             mode=target["mode"],
             work_mode="" if target["mode"] == "team.design" else target.get("work_mode", "work"),
             project_dir=target.get("project_dir", ""),
@@ -305,11 +304,8 @@ class AgentTaskExecutor:
                 channel_id=request.channel_id,
                 session_id=request.session_id,
                 req_method=request.req_method,
-                params={
-                    **request.params,
-                    "managed_task_request": task["request_id"],
-                    "managed_task_binding": self.endpoint.binding(task),
-                },
+                params={**request.params, **({"managed_task_request": task["request_id"]}
+                                            if request.params.get("mode") == "team.design" else {})},
                 is_stream=False,
                 timestamp=time.time(),
                 user_id=task["owner"] or None,
@@ -408,10 +404,8 @@ class AgentTaskExecutor:
             session_id=task["core_session_id"],
             req_method=ReqMethod.CHAT_CANCEL,
             user_id=task["owner"] or None,
-            params={"intent": "cancel",
-                    **task["request"].get("execution_target", {"mode": "agent", "work_mode": "work"}),
-                    "managed_task_request": task["request_id"],
-                    **({"managed_task_probe": True} if probe else {})},
+            params={"intent": "cancel", **task["request"].get("execution_target", {"mode": "agent", "work_mode": "work"}),
+                    "managed_task_request": task["request_id"]},
             is_stream=False,
             timestamp=time.time(),
         )
@@ -492,13 +486,6 @@ class VideoSearchManager:
         self.subscribers = {}
         self._approval_cards = {}
         self._execution_targets = {}
-        # Typed chat cards the web channel pushed, by Core session (latest only).
-        self._chat_cards = {}
-        self._chat_resumed = {}
-        listen = getattr(channel, "add_session_event_listener", None)
-        if callable(listen):
-            listen(self._on_session_event)
-        self._queue_requests = {}
 
     @property
     def service(self):
@@ -842,9 +829,7 @@ class VideoSearchManager:
             task["session"].startswith("task-duplex:")
             and task["status"] == "waiting_user"
             and interaction.get("state") == "pending"
-            and interaction.get("source") in {
-                "permission_interrupt", "confirm_interrupt", "ask_user", "ask_user_interrupt", "",
-            }
+            and interaction.get("source") in {"permission_interrupt", "confirm_interrupt", "ask_user", "ask_user_interrupt", ""}
         )
         if pending:
             if self._approval_cards.get(card_key) == interaction["id"]:

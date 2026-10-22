@@ -2,7 +2,6 @@ import { useWorkspaceStore } from '../../stores';
 import { useChatStore } from '../../stores/chatStore';
 import { resolveChatModelSelection, useSessionStore } from '../../stores/sessionStore';
 import { webClient } from '../../services/webClient';
-import { buildConversationModelPayload } from '../../multi-session/state/conversationModelSelection';
 import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { useDesignerStore } from './designerStore';
 import { useDesignerChatStore, type DesignerChatMessage } from './designerChatStore';

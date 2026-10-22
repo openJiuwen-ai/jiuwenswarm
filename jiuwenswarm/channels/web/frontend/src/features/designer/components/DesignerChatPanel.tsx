@@ -7,9 +7,6 @@ import { InlineQuestionCard } from '../../../components/ChatPanel/InlineQuestion
 import { InteractionSlot } from '../../../components/InteractionSlot';
 import { webClient } from '../../../services/webClient';
 import { ApplicationPluginTaskInputActions } from '../../../applicationPlugins/ApplicationPluginOutlet';
-import { SETTINGS_CONFIG_CHANGED_EVENT } from '../../settings/services/settingsContract';
-import { requestSettingsModule } from '../../settings/settingsNavigation';
-import { toast } from '../../../components/ui';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSessionStore } from '../../../stores/sessionStore';
 import { buildConversationModelPayload } from '../../../multi-session/state/conversationModelSelection';
@@ -154,31 +151,6 @@ export function DesignerChatPanel() {
       return null;
     }
   }, [sessionId, domainGraph, t]);
-
-  // Design has no model switch: a missing chat model means no leader round can
-  // run at all, so warn here instead of failing only after the user sends
-  // (#5266). Re-checked when the model catalog size changes or a config change
-  // is pushed, since generation-slot switches never change the catalog.
-  const [blockedProblem, setBlockedProblem] = useState('');
-  const [configRevision, setConfigRevision] = useState(0);
-  useEffect(() => {
-    const onConfigChanged = () => setConfigRevision((value) => value + 1);
-    window.addEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
-    return () => window.removeEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
-  }, []);
-  useEffect(() => {
-    if (!sessionId) {
-      setBlockedProblem('');
-      return;
-    }
-    let cancelled = false;
-    void findDesignModelsProblem().then((problem) => {
-      if (!cancelled) setBlockedProblem(problem ?? '');
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, availableModelCount, configRevision]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -479,44 +451,16 @@ export function DesignerChatPanel() {
                 stop: t('chat.taskFullDuplexStop'),
               }}
               fallback={
-                <>
-            {isProcessing ? (
-              <button
-                type="button"
-                className="designer-chat-panel__send"
-                onClick={handleStop}
-                aria-label={t('designer.chat.stop')}
-                title={t('designer.chat.stop')}
-                data-testid="designer-chat-panel-stop"
-              >
-                <Square className="designer-chat-panel__stop-icon" fill="currentColor" aria-hidden />
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="designer-chat-panel__send"
-                disabled={chatBusy || !canSend}
-                onClick={handleSend}
-                aria-label={chatBusy ? t('designer.chat.running') : t('designer.chat.send')}
-                aria-busy={chatBusy}
-                title={blockedProblem || (chatBusy ? t('designer.chat.running') : undefined)}
-                data-testid="designer-chat-panel-send"
-                data-variant={chatBusy ? 'running' : 'idle'}
-              >
-                {/* A leader round can run for minutes (graph autorun); the button
-                    must read as "working", never as the idle send plane (#5410). */}
-                {chatBusy ? (
-                  <LoaderCircle
-                    className="designer-chat-panel__send-spinner animate-spin"
-                    size={18}
-                    aria-hidden
-                  />
-                ) : (
+                <button
+                  type="button"
+                  className="designer-chat-panel__send"
+                  disabled={chatBusy || !canSend}
+                  onClick={handleSend}
+                  aria-label={t('designer.chat.send')}
+                  data-testid="designer-chat-panel-send"
+                >
                   <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
-                )}
-              </button>
-            )}
-                </>
+                </button>
               }
             />
           </div>

@@ -1,8 +1,6 @@
 import { useCallback } from 'react';
 import { ApplicationPluginTaskRuntimes } from './ApplicationPluginOutlet';
 import { useChatStore } from '../stores/chatStore';
-import { useSessionAssetsStore } from '../features/sessionAssets/sessionAssets';
-import { resolveFilePath } from '../utils/fileDownloadDedup';
 import { generateUuidV4 } from '../utils/uuid';
 
 // App-owned runtimes keep media and conversation delivery alive across navigation.
@@ -87,12 +85,7 @@ export function ApplicationConversationRuntimes({ sessionId }: { sessionId: stri
       files: Parameters<ReturnType<typeof useChatStore.getState>['addFileItems']>[1],
       timestampIso?: string,
     ) => {
-      useChatStore.getState().ensureRuntime(sid);
       useChatStore.getState().addFileItems(sid, files, { timestampIso });
-      const paths = [...new Set(files.map(resolveFilePath).filter((path): path is string => Boolean(path)))];
-      void useSessionAssetsStore.getState()
-        .register(sid, paths.map(path => ({ path, source: 'generated' })))
-        .catch(error => console.warn('Failed to register Full-duplex session assets:', error));
     },
     [],
   );

@@ -21,7 +21,6 @@ await build({
       export { ApplicationConversationRuntimes } from './src/applicationPlugins/ApplicationConversationRuntimes.tsx';
       export { useSessionAssetsStore } from './src/features/sessionAssets/sessionAssets.ts';
       export { useChatStore } from './src/stores/chatStore.ts';
-      export { useSessionStore } from './src/stores/sessionStore.ts';
       export { toastStore } from './src/components/ui/Toast/toastStore.ts';
       export { buildArtifacts } from './src/components/ArtifactsPanel/artifactCollection.ts';
       export { parseHistoryJsonFileToPreviewMessages, parseHistoryJsonFileToTimelinePreview } from './src/features/historyRestore.ts';
@@ -71,9 +70,7 @@ await build({
               setSpeakerMuted(value) { globalThis.__duplexHarness.speaker.push(value); },
               stopScreenSharing() { props.onScreenSharingChange(false); },
               stop() { globalThis.__duplexHarness.stops += 1; props.onRuntimeState('idle'); },
-              deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); },
-              deliverQuestion(payload) { globalThis.__duplexHarness.mediaQuestions.push(payload); },
-              deliverTaskInteraction(payload) { globalThis.__duplexHarness.interactions.push(payload); }
+              deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); }
             }));
             return null;
           });`
@@ -96,8 +93,6 @@ const {
   TaskFullDuplexRuntime,
   flushConversationHistory,
   toastStore,
-  ApplicationConversationRuntimes,
-  useSessionAssetsStore,
   TaskFullDuplexAction,
   startTaskFullDuplex,
   stopTaskFullDuplex,
@@ -123,7 +118,7 @@ let timers;
 const previousGlobals = new Map();
 
 beforeEach(async () => {
-  dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/', pretendToBeVisual: true });
+  dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/' });
   dom.window.HTMLCanvasElement.prototype.getContext = () => null;
   for (const [name, value] of Object.entries({
     window: dom.window,

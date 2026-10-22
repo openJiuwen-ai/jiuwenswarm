@@ -106,8 +106,7 @@ async def test_imported_speech_survives_next_react_context_initialization(monkey
     monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: True)
     monkeypatch.setattr(sync.session_history, "load_history_records", lambda _: [
         dict(id="voice-name", channel_id="video_duplex", role="user", content="My project is Cedar"),
-        dict(id="voice-reply", channel_id="video_duplex", role="assistant",
-             event_type="chat.final", content="Cedar noted"),
+        dict(id="voice-reply", channel_id="video_duplex", role="assistant", event_type="chat.final", content="Cedar noted"),
     ])
     await sync.sync_conversation_context(agent, "web-chat")
     # ReAct calls create_context again before it reads the next typed query.

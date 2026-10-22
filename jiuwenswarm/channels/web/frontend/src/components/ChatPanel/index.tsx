@@ -6,6 +6,7 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { toast } from '../ui/Toast/toastStore';
 import {
   Activity,
   CheckCircle2,
@@ -1441,7 +1442,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     };
   }, []);
   // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
-  const heartbeatAvailable = !isEnterprise() && Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
+  const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const {
     turnsByMessageId: codeTurnsByMessageId,
     turnCardAnchors: codeTurnCardAnchors,
@@ -1839,30 +1840,18 @@ export const ChatPanel = React.memo(function ChatPanel({
   ]);
 
   // 包装发送消息函数，添加滚动逻辑
-  const sendTopicStarterEvent = useCallback(async (event: TopicStarterEvent) => {
-    const response = await webRequest<{ recorded?: boolean }>('topic_starters.event', { ...event });
-    if (response.recorded !== true) {
-      throw new Error(`topic_starters.event was not recorded: ${event.event_type}`);
-    }
-    return response;
-  }, []);
-
-  const ensureTopicStarterExposureAcknowledged = useCallback(
-    (slate: TopicStarterVisibleSlate) => {
-      const acknowledgements = topicStarterExposureAcknowledgementsRef.current;
-      const slateKey = `${slate.sessionId}\u0000${slate.slateId}`;
-      const existing = acknowledgements.get(slateKey);
-      if (existing) return existing;
-      const acknowledgement = sendTopicStarterEvent(buildExposureEvent(slate));
-      acknowledgements.set(slateKey, acknowledgement);
-      void acknowledgement.catch(() => {
-        if (acknowledgements.get(slateKey) === acknowledgement) {
-          acknowledgements.delete(slateKey);
-        }
-      });
-      return acknowledgement;
+  const handleSendMessage = useCallback(
+    async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
+      try {
+        if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
+      } catch (error) {
+        toast.open({ content: error instanceof Error ? error.message : t('network.requestFailed'), variant: 'error' });
+        return;
+      }
+      setIsSending(true);
+      onSendMessage(content, mediaItems, options);
     },
-    [sendTopicStarterEvent],
+    [activeSessionId, onSendMessage, t],
   );
 
   useEffect(() => useChatStore.subscribe((state, previous) => {

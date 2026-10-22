@@ -476,7 +476,9 @@ class RuntimePromptRail(DeepAgentRail):
             "trusted_dirs_policy"):
             self.system_prompt_builder.remove_section(name)
 
-        self._apply_voice_summary_policy(ctx)
+        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import apply_summary_policy
+
+        apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
 
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
 
@@ -838,7 +840,9 @@ class RuntimePromptRail(DeepAgentRail):
             or runtime_state.get("language")
             or "unknown"
         ).strip()
-        self._apply_voice_summary_policy(ctx)
+        from jiuwenswarm.extensions.video_duplex.backend.session_receipts import apply_summary_policy
+
+        apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
 
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
 

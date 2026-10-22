@@ -18,14 +18,7 @@ interface TaskFullDuplexRuntimeSnapshot {
 
 let controller: VideoLivePanelHandle | null = null;
 let bindSession: ((sessionId: string) => string | Promise<string>) | null = null;
-let cancelSessionTasks: ((sessionId: string) => Promise<void>) | null = null;
 let startGeneration = 0;
-// What the media panel last reported, and which start it belonged to. The panel
-// re-sends its state on every parent render, so only a change moves the run;
-// an idle that ends a run the store already stopped must not clear a newer
-// start and its sessionId (#5825).
-let panelState: TaskFullDuplexRuntimeState = "idle";
-let panelGeneration = 0;
 let snapshot: TaskFullDuplexRuntimeSnapshot = {
   state: "idle",
   sessionId: null,
@@ -73,7 +66,6 @@ function publish(update: Partial<TaskFullDuplexRuntimeSnapshot>): void {
 export function registerTaskFullDuplexController(
   next: VideoLivePanelHandle | null,
   nextBindSession?: ((sessionId: string) => string | Promise<string>) | null,
-  nextCancelSessionTasks?: ((sessionId: string) => Promise<void>) | null,
 ): void {
   controller = next;
   bindSession = next ? (nextBindSession ?? null) : null;
@@ -91,14 +83,17 @@ const IDLE_RUN = {
 export function setTaskFullDuplexRuntimeState(
   state: TaskFullDuplexRuntimeState,
 ): void {
-  if (state === panelState) return;
-  panelState = state;
-  if (state !== "idle") {
-    panelGeneration = startGeneration;
-    publish({ state });
-  } else if (panelGeneration === startGeneration) {
-    publish(IDLE_RUN);
-  }
+  publish(
+    state === "idle"
+      ? {
+          state,
+          sessionId: null,
+          microphoneMuted: false,
+          speakerMuted: false,
+          screenSharing: false,
+        }
+      : { state },
+  );
 }
 
 export function setTaskFullDuplexRuntimeError(error: string): void {
@@ -129,7 +124,7 @@ export async function startTaskFullDuplex(sessionId?: string, visualSource?: 'sc
       isTaskDuplexScreenSharingEnabled(),
     );
     if (generation !== startGeneration) return;
-    if (!started) publish(IDLE_RUN);
+    if (!started) setTaskFullDuplexRuntimeState("idle");
   } catch (error) {
     if (generation !== startGeneration) return;
     publish({
@@ -143,17 +138,13 @@ export async function startTaskFullDuplex(sessionId?: string, visualSource?: 'sc
 export function stopTaskFullDuplex(): void {
   startGeneration += 1;
   controller?.stop();
-  publish({ ...IDLE_RUN, error: "" });
-}
-
-// User exit also cancels this conversation's tasks; internal restarts use stopTaskFullDuplex (#5527).
-export function exitTaskFullDuplex(): void {
-  const sessionId = snapshot.sessionId;
-  const cancel = cancelSessionTasks;
-  stopTaskFullDuplex();
-  if (!sessionId || !cancel) return;
-  void cancel(sessionId).catch((error: unknown) => {
-    publish({ error: error instanceof Error ? error.message : "无法停止本会话的任务。" });
+  publish({
+    state: "idle",
+    sessionId: null,
+    error: "",
+    microphoneMuted: false,
+    speakerMuted: false,
+    screenSharing: false,
   });
 }
 

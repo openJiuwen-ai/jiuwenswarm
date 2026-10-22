@@ -19,11 +19,6 @@ import type {
   SearchProgressEntry,
 } from "./VideoLivePanel/types";
 import { TaskFullDuplexControls } from "./TaskFullDuplexAction";
-import {
-  normalizeToolCallPayload,
-  normalizeToolResultPayload,
-} from "../../../channels/web/frontend/src/features/tool-events/toolEventNormalizer";
-import { getFileIdentityKey } from "../../../channels/web/frontend/src/utils/fileDownloadDedup";
 import { TaskDuplexJobs } from "./taskDuplexJobs";
 import { describeDuplexError } from "./duplexErrorMessage";
 import { applyDuplexSubagentEvent } from "./duplexSubagentEvents";
@@ -694,8 +689,6 @@ export function TaskFullDuplexRuntime({
     panelRef.current = panel;
     registerTaskFullDuplexController(panel, async (targetSessionId) => {
       runtimeSessionIdRef.current = targetSessionId;
-      chatApprovalsRef.current = new Map();
-      syncChatApprovals();
       await flushConversationHistory(targetSessionId);
       return conversationJobsRef.current.bind(targetSessionId);
     }, cancelSessionTasks);

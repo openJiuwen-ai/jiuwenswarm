@@ -1,8 +1,7 @@
 """Resolve voice execution from authenticated session metadata, not model arguments."""
 
-from agent_gateway.common.mode_matrix import deprecate_mode, is_code_profile_mode, is_single_agent_mode
-
 from jiuwenswarm.runtime.request import resolve_agent_request_mode
+from jiuwenswarm.common.mode_matrix import deprecate_mode, is_code_profile_mode, is_single_agent_mode
 
 
 def execution_target(metadata: dict) -> dict:
