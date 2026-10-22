@@ -78,6 +78,18 @@ export function clearManagementChannel(state: JiuwenMateWorkspaceState): JiuwenM
   return state.managementChannelId ? { ...state, managementChannelId: null } : state;
 }
 
+export type ChannelRecordView = 'loading' | 'empty' | 'records';
+
+export function channelRecordView(
+  channelKey: string | null,
+  settledChannelKey: string | null,
+  messageCount: number,
+): ChannelRecordView {
+  if (channelKey && channelKey !== settledChannelKey) return 'loading';
+  if (messageCount === 0) return 'empty';
+  return 'records';
+}
+
 export function setRecordsCollapsed(state: JiuwenMateWorkspaceState, recordsCollapsed: boolean): JiuwenMateWorkspaceState {
   return { ...state, recordsCollapsed };
 }
