@@ -1908,13 +1908,16 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return job.get(name, default)
         return getattr(job, name, default)
 
-    async def _cron_job_list(ws, req_id, params, session_id):
+    async def _cron_job_list(ws, req_id, params, session_id, user_id=None):
         cc = _get_cron()
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
         try:
-            jobs = await cc.list_jobs()
+            # 连接带 user_id 时只列该用户的任务:过滤在 controller 内先于
+            # 准入闸门执行,既避免跨用户数据可见,也避免替别人的沙箱付超时。
+            uid = str(user_id or getattr(ws, "_gateway_user_id", None) or "").strip()
+            jobs = await cc.list_jobs(user_id=uid or None)
             await channel.send_response(ws, req_id, ok=True, payload={"jobs": jobs})
         except Exception as exc:
             logger.warning("[cron.job.list] %s", exc)
