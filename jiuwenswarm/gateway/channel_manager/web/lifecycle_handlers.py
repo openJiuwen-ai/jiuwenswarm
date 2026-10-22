@@ -151,6 +151,13 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                 if method.startswith(("session.", "project.sessions.")):
                     for item in payload.get("results", [payload]):
                         if item.get("ok", True) and item.get("session_id"):
+                            clear_expert = getattr(channel, "clear_expert_processing", None)
+                            session_closed = (
+                                event in {"session.archived", "session.deleted"}
+                                and "operation_id" not in payload
+                            )
+                            if callable(clear_expert) and session_closed:
+                                clear_expert(item["session_id"])
                             send_event = getattr(channel, "send_event", None)
                             if callable(send_event):
                                 await send_event(ws, event, item)
