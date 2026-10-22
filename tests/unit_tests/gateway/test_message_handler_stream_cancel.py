@@ -1527,3 +1527,21 @@ def test_client_tool_results_keep_the_existing_stream_and_an_empty_list_is_no_an
 
     msg.params["answers"] = []
     assert should_cancel(msg)
+
+
+@pytest.mark.parametrize("mode", ["", "agent.plan", "team"])
+async def test_group_chat_send_preserves_running_expert_stream(mode: str) -> None:
+    handler = _TestMessageHandler.create()
+    travel_task = _seed_stream_task(
+        handler, rid="rid-travel", channel_id="web", session_id="group-trip",
+    )
+    msg = _chat_send_message(channel_id="web", session_id="group-trip", mode=mode)
+    msg.params.update({"group_id": "group-trip", "mentions": ["essay-expert"]})
+
+    should_cancel = getattr(handler, "_should_cancel_existing_stream_before_chat_send")
+    if should_cancel(msg):
+        await handler.cancel_stream_tasks_for_channel(msg)
+
+    assert not travel_task.cancelled()
+    await asyncio.sleep(0)
+    assert not _FakeAgentClient.sent_requests
