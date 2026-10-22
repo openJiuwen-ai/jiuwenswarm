@@ -8,7 +8,7 @@ import { InteractionSlot } from '../../../components/InteractionSlot';
 import { webClient } from '../../../services/webClient';
 import { ApplicationPluginTaskInputActions } from '../../../applicationPlugins/ApplicationPluginOutlet';
 import { useChatStore } from '../../../stores/chatStore';
-import { useSessionStore } from '../../../stores/sessionStore';
+import { resolveChatModelSelection, useSessionStore } from '../../../stores/sessionStore';
 import { buildConversationModelPayload } from '../../../multi-session/state/conversationModelSelection';
 import type { Message, UserAnswer } from '../../../types';
 import {
@@ -118,12 +118,16 @@ export function DesignerChatPanel() {
   const [attachments, setAttachments] = useState<ComposerDraft[]>([]);
   const [attachError, setAttachError] = useState('');
   const [sending, setSending] = useState(false);
-  const stopRequestedRef = useRef(false);
-  // The canvas owns exactly one session: read and write the model against that
-  // session id. `activeSessionId` follows the app route and can point at
-  // another conversation while this panel stays mounted (#5394, #8995).
-  const selectedModelName = useSessionStore((state) =>
-    sessionId ? state.runtimes[sessionId]?.selectedModelName ?? null : null,
+  const activeSessionId = useChatStore((state) => state.activeSessionId);
+  // The canvas session owns the model the leader runs with; the binding above
+  // makes activeSessionId agree, but the graph's session id wins if they diverge.
+  const modelSessionId = sessionId ?? activeSessionId ?? '';
+  const chatAvailableModels = useSessionStore((state) => state.chatAvailableModels);
+  const selectedModelName = useSessionStore(
+    (state) => state.runtimes[modelSessionId]?.selectedModelName ?? null,
+  );
+  const selectedModelSelection = useSessionStore(
+    (state) => state.runtimes[modelSessionId]?.selectedModelSelection ?? null,
   );
   const selectedModelSelection = useSessionStore((state) =>
     sessionId ? state.runtimes[sessionId]?.selectedModelSelection ?? null : null,
