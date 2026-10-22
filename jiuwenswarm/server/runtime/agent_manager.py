@@ -14,6 +14,7 @@ from typing import Any, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
+
 from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.edition import is_enterprise
@@ -679,6 +680,10 @@ class AgentManager:
                 setter(self._personal_context_runtime_enabled)
             await agent.create_instance(
                 config,
+                # 传原始 manager 模式（含 'team'）：_ensure_adapter 的严格校验按
+                # resolve_adapter_mode 映射后的**实现**比较（team 与 agent 同为
+                # DeepAdapter → 放行），且 adapter 保留业务模式标签供无参重建复用
+                # （上游 !8472 preserve adapter identity 的设计）。
                 mode=mode_key,
                 sub_mode=sub_mode_key or None,
                 config_base=self._latest_config_base,
@@ -1926,7 +1931,7 @@ class AgentManager:
         """解析请求的 agent 模式.
 
         优先取 params["mode"]；interrupt resume 请求（权限审批/确认/ask_user）
-        未携带 mode 时，从 session metadata 读取原始请求的 mode，避免从
+        以及 OfficeClaw 续聊未携带 mode 时，从 session metadata 读取原始请求的 mode，避免从
         code.normal 降级为 agent，导致 adapter 实例不匹配、无法恢复原
         interaction；其余情况默认 "agent"。
 
@@ -1937,18 +1942,17 @@ class AgentManager:
         Returns:
             完整 mode 字符串（如 "code.normal"、"agent.plan"）
         """
+        from jiuwenswarm.server.handlers._shared import _uses_explicit_officeclaw_mode
+
         mode_full = params.get("mode")
-        if mode_full:
+        explicit_officeclaw = _uses_explicit_officeclaw_mode(request)
+        is_interrupt_continuation = _is_interrupt_resume_request(request)
+        keep_interrupted_mode = explicit_officeclaw and is_interrupt_continuation
+        if mode_full and not keep_interrupted_mode:
             return str(mode_full)
 
         source = str(params.get("source") or "").strip()
-        answers = params.get("answers")
-        req_id = str(params.get("request_id") or "").strip()
-        if (
-            source in {"permission_interrupt", "confirm_interrupt", "ask_user_interrupt"}
-            and isinstance(answers, list)
-            and bool(req_id)
-        ):
+        if is_interrupt_continuation or explicit_officeclaw:
             sid = getattr(request, "session_id", "") or ""
             if sid:
                 try:
@@ -1966,11 +1970,21 @@ class AgentManager:
                         sessions_root=sessions_root,
                     )
                     stored_mode = str(meta.get("mode") or "").strip()
+                    stored_adapter = str(meta.get("adapter_mode") or "").strip().lower()
+                    stored_work_mode = str(meta.get("work_mode") or "work").strip().lower()
+                    normal_flash_session = (
+                        stored_mode in {"agent", "agent.work.normal"}
+                        and stored_adapter == "flash"
+                    )
+                    if explicit_officeclaw and normal_flash_session:
+                        # 旧会话业务 mode 仍为 agent；审批恢复须保留已经选定的 Flash。
+                        if stored_work_mode == "work":
+                            stored_mode = "flash"
                     if stored_mode and stored_mode != "unknown":
                         # 回写 params，让下游 run_stream 等也能拿到正确 mode
                         params["mode"] = stored_mode
                         logger.info(
-                            "[AgentManager] interrupt resume mode resolved"
+                            "[AgentManager] session continuation mode resolved"
                             " from session metadata: session_id=%s"
                             " mode=%s source=%s",
                             sid, stored_mode, source,
@@ -1981,7 +1995,7 @@ class AgentManager:
                         "[AgentManager] resolve mode from session metadata failed",
                         exc_info=True,
                     )
-        return "agent"
+        return str(mode_full) if mode_full else "agent"
 
     def _agent_lookup_from_request(self, request: Any) -> tuple[str, str | None, str | None]:
         """Resolve get_agent keys from a chat request.

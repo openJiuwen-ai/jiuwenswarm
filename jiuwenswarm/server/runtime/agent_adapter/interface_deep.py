@@ -456,6 +456,7 @@ from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import (
 )
 from jiuwenswarm.server.utils.stream_utils import (
     build_tool_result_payload,
+    normalize_context_usage_payload,
     parse_ask_user_question_payload,
 )
 from jiuwenswarm.edition import is_enterprise
@@ -566,7 +567,7 @@ from jiuwenswarm.common.config import (
     get_ttse_enabled,
     is_subagent_mirror_child_stream_enabled,
     is_subagent_runtime_enabled,
-    resolve_env_vars,
+    resolve_config_env_vars,
     resolve_string_or_list_config,
 )
 from jiuwenswarm.common.mcp_config import (
@@ -1750,7 +1751,7 @@ def _resolve_instance_config_base(config_base: dict[str, Any] | None) -> dict[st
     # 合并：模板补全缺失键（如 react.ttse / react.subagents），外部显式键与独有
     # 键全部保留。create_instance 与 reload 共用，避免热更丢掉模板默认值。
     template = load_yaml_dict(resolve_shipped_template_config_path())
-    return resolve_env_vars(fill_template_defaults(config_base, template))
+    return resolve_config_env_vars(fill_template_defaults(config_base, template))
 
 
 def _deep_agent_context_engine_config(react_cfg: dict[str, Any] | None) -> ContextEngineConfig:
@@ -5414,15 +5415,55 @@ class JiuWenSwarmDeepAdapter:
         api_key = str(read_env("VISION_API_KEY", "")).strip()
         base_url = str(read_env("VISION_BASE_URL") or read_env("VISION_API_BASE") or "").strip()
         model_name = str(read_env("VISION_MODEL") or read_env("VISION_MODEL_NAME") or "").strip()
+        # Session-mode accounts authenticate via VISION_DEFAULT_HEADERS (e.g. Basic
+        # auth injected by the relay). The value lives in the namespaced env tip;
+        # parse it here and carry it inside VisionModelConfig — do NOT bridge it
+        # into os.environ (pop_track_b_bare_from_environ hygiene actively removes
+        # business keys from os.environ, so an os.environ bridge is unreliable).
+        vision_default_headers = str(read_env("VISION_DEFAULT_HEADERS") or "").strip()
+        vision_headers_dict: dict[str, str] | None = None
+        if vision_default_headers:
+            try:
+                parsed_headers = json.loads(vision_default_headers)
+                if isinstance(parsed_headers, dict) and parsed_headers:
+                    vision_headers_dict = {
+                        str(k): str(v) for k, v in parsed_headers.items()
+                    }
+            except (ValueError, TypeError) as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] VISION_DEFAULT_HEADERS is set but malformed "
+                    "(JSON parse failed: %s) — auth headers dropped; session-mode vision "
+                    "calls will likely 401",
+                    exc,
+                )
+                vision_headers_dict = None
         if not api_key or not base_url or not model_name:
             logger.info("[JiuWenSwarmDeepAdapter] vision tools skipped: incomplete config")
             return None
-        return VisionModelConfig(
-            api_key=api_key,
-            base_url=base_url,
-            model=model_name,
-            max_retries=parse_int(read_env("VISION_MAX_RETRIES"), 3),
-        )
+        # P2 兜底：依赖的 openjiuwen 版本若尚未包含 default_headers 字段（联动合并
+        # 顺序失控），退回不带 headers 的旧构造——宁可丢认证头也不能让 TypeError
+        # 阻断 agent 创建（_build_vision_model_config 无 try 包裹，异常会冒泡到
+        # AgentManager.create_agent 导致所有视觉 agent 创建失败）。
+        try:
+            return VisionModelConfig(
+                api_key=api_key,
+                base_url=base_url,
+                model=model_name,
+                max_retries=parse_int(read_env("VISION_MAX_RETRIES"), 3),
+                default_headers=vision_headers_dict,
+            )
+        except TypeError:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] VisionModelConfig does not accept "
+                "default_headers (openjiuwen version mismatch?) — falling back to "
+                "no-auth-headers construction"
+            )
+            return VisionModelConfig(
+                api_key=api_key,
+                base_url=base_url,
+                model=model_name,
+                max_retries=parse_int(read_env("VISION_MAX_RETRIES"), 3),
+            )
 
     @staticmethod
     def _build_audio_model_config(
@@ -10657,20 +10698,15 @@ class JiuWenSwarmDeepAdapter:
             self._permission_rail.update_config(permission_config)
             logger.info("[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated")
         elif permission_config.get("enabled", False):
-            self._permission_rail = build_permission_rail(
+            self._permission_rail = self._build_permission_rail_for_agent(
                 config=config_base or {},
-                options=PermissionRailBuildOptions(
-                    llm=self._model,
-                    model_name=config_base.get("models", {})
-                    .get("default", {})
-                    .get("model_client_config", {})
-                    .get("model_name", "gpt-4")
-                    if isinstance(config_base, dict)
-                    else "gpt-4",
-                    permission_config=self._agent_permissions_body,
-                    resolve_workspace_dir=self._permission_workspace_dir,
-                    persist_target_agent_id_provider=self._permissions_persist_target,
-                ),
+                llm=self._model,
+                model_name=config_base.get("models", {})
+                .get("default", {})
+                .get("model_client_config", {})
+                .get("model_name", "gpt-4")
+                if isinstance(config_base, dict)
+                else "gpt-4",
             )
             if self._permission_rail is not None:
                 logger.info("[JiuWenSwarmDeepAdapter] _permission_rail newly created on hot-reload")
@@ -22384,17 +22420,8 @@ class JiuWenSwarmDeepAdapter:
                     return parsed
 
                 if chunk_type == "context.usage":
-                    if isinstance(payload, dict):
-                        usage_payload = {
-                            "event_type": "context.usage",
-                            "rate": payload.get("rate", 0),
-                            "context_max": payload.get("context_max") or 0,
-                            "tokens_used": payload.get("tokens_used") or 0,
-                        }
-                        for key in ("role", "member_name"):
-                            value = payload.get(key)
-                            if value is not None:
-                                usage_payload[key] = value
+                    usage_payload = normalize_context_usage_payload(payload)
+                    if usage_payload is not None:
                         return usage_payload
                     return {"event_type": "context.usage", "rate": 0}
 

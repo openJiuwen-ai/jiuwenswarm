@@ -13,12 +13,12 @@ config.yaml。父类只提供通用工具工厂与生命周期扩展点，不感
 一致：CodeAdapter 把 ``_FIXED_RAIL_NAMES`` / ``_is_code_agent`` 等定义硬编码为
 类常量，flash 同样把行为开关、keep 白名单与工具面裁剪作为类常量/override。
 
-部署组合提示：``flash.enabled`` 是进程级开关，不区分 channel / 请求来源——
-officeclaw 对话与 cron / heartbeat / proactive 等后台流水线同样进入 flash。
-flash 白名单不含 ``_llm_retry_rail`` / ``_context_overflow_recovery_rail`` /
-``_deepresearch_execution_rail`` 等健壮性 rail，长文档 / 弱网任务的容错弱于
-normal；officeclaw 等部署开启 flash 前需评估此影响面，如需按来源豁免应在
-mode 解析 guard（``_shared.resolve_agent_request_mode``）增加 channel 过滤。
+部署组合提示：OfficeClaw 交互请求由 Relay 显式发送 ``mode=flash`` 选型，
+不再由 ``flash.enabled`` 将普通 Agent 请求自动转换为 Flash；其它渠道和后台
+来源沿用各自的既有路由策略。具体准入与会话续接由 ``_shared`` 的模式解析负责。
+flash 白名单不含 ``_llm_retry_rail`` / ``_context_overflow_recovery_rail``
+等健壮性 rail，长文档 / 弱网任务的容错弱于
+normal，部署时仍需评估所选 Flash profile 的能力边界。
 
 flash 行为由类常量定义：
 - :data:`_FLASH_REACT_OVERRIDE` — react/evolution 覆盖（``enable_task_loop=false``
@@ -73,6 +73,7 @@ skill_credential / skill_active_state / disabled_tools）全部在 keep 白名�
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 import os
 from contextlib import contextmanager
@@ -149,6 +150,10 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     wiki_ingest,
     wiki_lint,
     wiki_query,
+)
+from jiuwenswarm.telemetry.attributes import (
+    JIUWENCLAW_AGENT_PROFILE,
+    JIUWENCLAW_AGENT_RAILS,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
@@ -231,11 +236,19 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_runtime_prompt_rail",
         "_response_prompt_rail",
         "_stream_event_rail",
+        
+         # deepresearch_execute 依赖此 rail 绑定执行上下文并桥接原生 HITL。
+        "_deepresearch_execution_rail",
+        
         # 普通工具导出也需触发产物扩展（水印等），独立于 todo / TaskPlan。
         "_flash_artifact_post_process_rail",
         # Turbo 工具会缓存交付总结；保留发送组件，启用仍由父类 Turbo 开关控制。
         "_skill_turbo_delivery_summary_rail",
+        
         "_task_planning_rail",
+        # auto 档动态路由：请求级 enable_routing / 进程级 model_routing.enabled
+        # 均开启时，Flash 必须保留该 rail 才能执行分类器并真实 set_llm。
+        "_model_routing_rail",
         "_security_rail",
         "_heartbeat_rail",
         "_subagent_rail",
@@ -261,6 +274,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         #   动态挂载路径上，进 keep 才不会被 _drop_non_whitelist_dynamic_rails
         #   卸载；闸门是 modes.agent.memory.enabled（flash 记忆档归一 agent）。
         "_memory_rail",
+        "_external_memory_rail",
+        "_office_ace_user_profile_rail",
         # ask_user：交互请求动态挂载，留白名单避免 churn（见上方注释）。
         "_ask_user_rail",
     })
@@ -392,6 +407,37 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     def _cron_tool_names() -> frozenset[str]:
         """Use the Flash profile's merged cron card for lifecycle checks."""
         return frozenset({"cron_flash"})
+
+    def _build_permission_rail_for_agent(self, config=None, llm=None, model_name=None):
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            PermissionRailBuildOptions,
+            build_permission_rail,
+        )
+        from jiuwenswarm.agents.harness.flash.permissions.flash_permission_rail import (
+            FlashPermissionRail,
+        )
+
+        rail = build_permission_rail(
+            config=config or {},
+            options=PermissionRailBuildOptions(
+                llm=llm if llm is not None else self._model,
+                model_name=model_name,
+                permission_config=self._agent_permissions_body,
+                resolve_workspace_dir=self._permission_workspace_dir,
+                persist_target_agent_id_provider=self._permissions_persist_target,
+                rail_factory=FlashPermissionRail.create,
+            ),
+        )
+        if rail is None and self._resolve_permission_config_for_agent().get("enabled", False):
+            raise RuntimeError("Flash permission rail could not be built while permissions are enabled")
+        return rail
+
+    def _update_permission_rail(self, config_base, *, session_id=None):
+        super()._update_permission_rail(config_base, session_id=session_id)
+        if self._permission_rail is None and self._resolve_permission_config_for_agent(
+            session_id=session_id
+        ).get("enabled", False):
+            raise RuntimeError("Flash permission rail could not be enabled during reload")
 
     async def _get_tool_cards(self, agent_id: str):
         """Build flash tool cards.
@@ -863,7 +909,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         2. 记忆 rail：flash 的统一 memory 工具（FlashMemoryRail）走动态挂载路径，
            这里按归一后的 agent 档调 ``_handle_memory_rail_by_config``（闸门
            ``modes.agent.memory.enabled``，未开启则卸载）；``_memory_rail`` 在 keep
-           白名单内，不会被后续卸载步骤误删。
+           白名单内，不会被后续卸载步骤误删。外接记忆与云画像沿用父类的
+           engine/provider 配置入口，独立于内置 memory 的模式开关。
         3. 卸载白名单（``_FLASH_RAIL_KEEP`` ∪ ``_PROFILE_PROTECTED_RAILS``）外的、
            可能被父类/旧 reload 残留注册的动态 rail。
 
@@ -878,7 +925,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """
         self._last_mode = mode
         await self._handle_memory_rail_by_config("agent")
+        await self._handle_external_memory_rail_by_config()
+        await self._handle_office_ace_user_profile_rail_by_config()
         await self._drop_non_whitelist_dynamic_rails()
+        self._refresh_rail_observability_snapshot()
 
     async def try_start_dreaming(self, busy_checker=None) -> None:
         """no-op：flash 不启 memory dreaming.
@@ -1256,10 +1306,83 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         ("_context_processor_rail", "ContextProcessorRail"),
         ("_memory_rail", "MemoryRail"),
         ("_external_memory_rail", "ExternalMemoryRail"),
+        ("_office_ace_user_profile_rail", "OfficeAceUserProfileRail"),
         ("_skill_evolution_rail", "SkillEvolutionRail"),
         ("_evolution_interrupt_rail", "EvolutionInterruptRail"),
         ("_skill_create_rail", "SkillCreateRail"),
     )
+
+    def _rail_snapshot(self) -> str:
+        """Return the live rail names in stable adapter-attribute order."""
+        attrs = (
+            item[0]
+            for item in self._DYNAMIC_RAIL_ATTRS
+            if item[0] in self._FLASH_RAIL_KEEP
+        )
+        attrs = (
+            *attrs,
+            *sorted(
+                self._FLASH_RAIL_KEEP
+                - {item[0] for item in self._DYNAMIC_RAIL_ATTRS}
+            ),
+            *sorted(self._PROFILE_PROTECTED_RAILS),
+        )
+        names = [attr.lstrip("_") for attr in attrs if getattr(self, attr, None) is not None]
+        return ",".join(names)
+
+    def _profile_fingerprint(self) -> str:
+        """Return a stable hash of the profile-defining class constants."""
+        payload = "\n".join(
+            (
+                ",".join(sorted(self._FLASH_RAIL_KEEP)),
+                ",".join(sorted(self._PROFILE_PROTECTED_RAILS)),
+                ",".join(sorted(self._FLASH_TOOL_CARD_DROP_NAMES)),
+                ",".join(
+                    self._FLASH_REACT_OVERRIDE.get("tool_lazy_load", {}).get(
+                        "eager_tools", []
+                    )
+                ),
+            )
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+    def _rail_observability_snapshot(self) -> tuple[str, str]:
+        return self._rail_snapshot(), f"flash:{self._profile_fingerprint()}"
+
+    def _refresh_rail_observability_snapshot(self) -> None:
+        """Expose the flash rail set through trace-inherited attributes.
+
+        Rail updates happen before the run root span starts, so spans started
+        later inherit these values through the trace binding.
+        """
+        try:
+            from opentelemetry import trace
+
+            from jiuwenswarm.telemetry import get_telemetry_runtime
+
+            span_context = trace.get_current_span().get_span_context()
+            if not span_context.is_valid:
+                return
+            runtime = get_telemetry_runtime()
+            if not runtime.is_unified_active():
+                return
+            span_registry = runtime.span_registry
+            if span_registry is None:
+                return
+            names, profile = self._rail_observability_snapshot()
+            span_registry.bind_trace_attributes(
+                span_context.trace_id,
+                {
+                    JIUWENCLAW_AGENT_RAILS: names,
+                    JIUWENCLAW_AGENT_PROFILE: profile,
+                },
+            )
+        except Exception as error:
+            logger.debug(
+                "[JiuwenSwarmFlashAdapter] rail observability snapshot failed: %s",
+                error,
+                exc_info=True,
+            )
 
     async def _drop_non_whitelist_dynamic_rails(self) -> None:
         """Unregister any dynamically-registered rail outside the flash whitelist.

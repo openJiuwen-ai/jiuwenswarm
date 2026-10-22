@@ -20,6 +20,7 @@ from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
 )
+from jiuwenswarm.common.config import resolve_config_env_vars
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.runtime.session import project_store
 
@@ -298,7 +299,7 @@ class AgentWarmPool:
         )
         flash_enabled = False
         if isinstance(config, dict):
-            flash_config = config.get("flash")
+            flash_config = resolve_config_env_vars(config).get("flash")
             flash_enabled = bool(
                 flash_config.get("enabled", False)
                 if isinstance(flash_config, dict)
