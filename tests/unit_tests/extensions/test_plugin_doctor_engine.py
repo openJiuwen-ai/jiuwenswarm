@@ -574,6 +574,26 @@ def test_sibling_import_with_sys_path_is_not_pd023(tmp_path: Path) -> None:
     assert "PD013" not in ids_of(report)
 
 
+def test_sibling_import_loaded_by_path_is_not_pd023(tmp_path: Path) -> None:
+    """按文件路径加载同级模块也算处理了路径（PD023 不再只认改 sys.path）。"""
+
+    entry = (
+        "import importlib.util\n"
+        "import sibling_module\n"
+        "from pathlib import Path\n\n"
+        "_DIR = Path(__file__).resolve().parent\n"
+        "_spec = importlib.util.spec_from_file_location(\n"
+        "    'sibling_module', _DIR / 'sibling_module.py'\n"
+        ")\n\n\n"
+        "async def register_extensions(registry):\n"
+        "    return []\n"
+    )
+    root = make_plugin(tmp_path, entry=entry)
+    write(root, "sibling_module.py", "VALUE = 1\n")
+
+    assert "PD023" not in ids_of(doctor_engine.inspect_directory(root))
+
+
 # --------------------------------------------------------------------------
 # PD024-PD029：扫描深度、权限、动态前端、版本格式、无前端
 # --------------------------------------------------------------------------

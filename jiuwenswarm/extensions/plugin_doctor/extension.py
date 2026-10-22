@@ -1,13 +1,15 @@
 """plugin_doctor 的入口脚本：把体检引擎嫁接到宿主的本地 RPC 通道上。
 
 宿主以 ``spec_from_file_location`` 按**文件路径**加载本模块（``extensions/loader.py:146-164``），
-插件目录不在 ``sys.path`` 上，因此这里先把自己的目录插进去，再导入同级引擎模块——这样
-既能作为内置插件（包内绝对导入）工作，也能被拷到 ``<data-dir>/application_plugins/`` 下
-作为第三方插件工作。
+插件目录不在 ``sys.path`` 上。这里优先走包内绝对导入；只有第三方插件目录形态（被拷到
+``<data-dir>/application_plugins/`` 下）才回退到按文件路径加载同级引擎，
+**不修改 ``sys.path``**：既避免 ``insert(0, ...)`` 带来的模块重名风险（CodeCheck G.PSL.03），
+又让两种形态都能工作。
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -22,13 +24,18 @@ from jiuwenswarm.extensions.sdk import (
 )
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
-if str(_PLUGIN_DIR) not in sys.path:
-    sys.path.insert(0, str(_PLUGIN_DIR))
 
-try:  # noqa: E402 - 见模块 docstring：必须在 sys.path 处理之后
-    from jiuwenswarm.extensions.plugin_doctor import doctor_engine  # noqa: E402
+try:
+    from jiuwenswarm.extensions.plugin_doctor import doctor_engine
 except ImportError:  # 第三方插件目录形态（不在 jiuwenswarm 包内）
-    import doctor_engine  # type: ignore[no-redef]  # noqa: E402
+    _ENGINE_PATH = _PLUGIN_DIR / "doctor_engine.py"
+    _spec = importlib.util.spec_from_file_location("plugin_doctor_engine", _ENGINE_PATH)
+    if _spec is None or _spec.loader is None:  # pragma: no cover - 引擎文件必然存在
+        raise ImportError(f"无法加载体检引擎: {_ENGINE_PATH}") from None
+    doctor_engine = importlib.util.module_from_spec(_spec)
+    # 引擎里有 dataclass：importlib 解字符串注解要能在 sys.modules 里找到 cls.__module__。
+    sys.modules[_spec.name] = doctor_engine
+    _spec.loader.exec_module(doctor_engine)
 
 #: 本地 RPC 方法前缀（与前端页面里的 PREFIX 保持一致）。
 RPC_PREFIX = "plugin.doctor."

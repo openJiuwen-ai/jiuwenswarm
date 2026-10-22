@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -16,7 +18,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from jiuwenswarm.extensions.application_host import (
+from jiuwenswarm.gateway.extensions.application_host import (
     application_plugin_manifest,
     mount_application_plugin_http_routes,
 )
@@ -66,6 +68,45 @@ def test_discovery_finds_plugin_doctor_next_to_builtins() -> None:
     discovered = {root.name for root in loader.discover_extension_roots()}
 
     assert {"plugin_doctor", "agentos", "agent_client", "video_duplex"} <= discovered
+
+
+class _BlockedImport:
+    """拦截指定模块的导入，用来模拟「插件目录不在 jiuwenswarm 包内」的形态。"""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def find_spec(self, fullname, path=None, target=None):  # noqa: ANN001
+        if fullname == self.name:
+            raise ImportError(f"blocked: {fullname}")
+        return None
+
+
+def test_third_party_layout_loads_the_engine_without_touching_sys_path(
+    tmp_path: Path,
+) -> None:
+    """第三方目录形态：按文件路径加载同级引擎，且**不修改 sys.path**（CodeCheck G.PSL.03）。"""
+
+    probe = tmp_path / "plugin_doctor_probe"
+    probe.mkdir()
+    for name in ("extension.py", "doctor_engine.py"):
+        shutil.copy2(PLUGIN_ROOT / name, probe / name)
+
+    saved = sys.modules.pop("jiuwenswarm.extensions.plugin_doctor", None)
+    blocked = _BlockedImport("jiuwenswarm.extensions.plugin_doctor")
+    sys.meta_path.insert(0, blocked)
+    path_before = list(sys.path)
+    try:
+        module = ExtensionLoader._import_module(probe)
+    finally:
+        sys.meta_path.remove(blocked)
+        sys.modules.pop("plugin_doctor_engine", None)
+        if saved is not None:
+            sys.modules["jiuwenswarm.extensions.plugin_doctor"] = saved
+
+    assert Path(module.doctor_engine.__file__).resolve().parent == probe.resolve()
+    assert module.doctor_engine.ENTRY_FILENAME == "extension.py"
+    assert sys.path == path_before
 
 
 def test_engine_and_loader_agree_on_extension_root_detection() -> None:

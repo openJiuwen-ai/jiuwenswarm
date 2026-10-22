@@ -362,7 +362,7 @@ _RULE_DEFS: tuple[Rule, ...] = (
         SEVERITY_WARNING,
         "入口脚本的导入方式在按路径加载时会失败",
         "loader 用 spec_from_file_location 按文件加载，插件目录不在 sys.path "
-        "上，相对导入或导入同级模块都需要自己插入路径。",
+        "上：相对导入会失败，导入同级模块要自己处理加载路径（包内绝对导入或按文件路径加载）。",
         "jiuwenswarm/extensions/loader.py:146-164",
     ),
     Rule(
@@ -894,6 +894,11 @@ def _class_plugin_ids(tree: ast.AST) -> list[str]:
     return ids
 
 
+#: PD023 里判「已经自己处理了同级模块加载路径」的写法。
+#: 不把 ``sys.path`` 当唯一正解：CodeCheck G.PSL.03 会对 ``sys.path.insert(0, ...)`` 告警。
+_PATH_REMEDIES = ("sys.path", "spec_from_file_location", "SourceFileLoader")
+
+
 def _sibling_modules(root: Path) -> set[str]:
     names: set[str] = set()
     try:
@@ -966,28 +971,30 @@ def _validate_entry(
                         "PD023",
                         f"{entry_path}:{node.lineno}",
                         "使用了相对导入，但宿主是按文件路径加载入口脚本的，相对导入会失败",
-                        "改成绝对导入，或先把自己的目录插入 sys.path",
+                        "改成包内绝对导入，或按文件路径加载同级模块（不建议改 sys.path）",
                     )
                 )
             elif node.module and node.module.split(".")[0] in siblings:
-                if "sys.path" not in source:
+                if not any(marker in source for marker in _PATH_REMEDIES):
                     findings.append(
                         _finding(
                             "PD023",
                             f"{entry_path}:{node.lineno}",
-                            f"导入了同级模块 {node.module!r}，但脚本里没有插入 sys.path",
-                            "在文件开头把插件目录插入 sys.path（或用包内绝对导入）",
+                            f"导入了同级模块 {node.module!r}，但脚本里没有处理加载路径",
+                            "改用包内绝对导入，或 importlib 按文件路径加载（不建议改 sys.path）",
                         )
                     )
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.split(".")[0] in siblings and "sys.path" not in source:
+                if alias.name.split(".")[0] in siblings and not any(
+                    marker in source for marker in _PATH_REMEDIES
+                ):
                     findings.append(
                         _finding(
                             "PD023",
                             f"{entry_path}:{node.lineno}",
-                            f"导入了同级模块 {alias.name!r}，但脚本里没有插入 sys.path",
-                            "在文件开头把插件目录插入 sys.path（或用包内绝对导入）",
+                            f"导入了同级模块 {alias.name!r}，但脚本里没有处理加载路径",
+                            "改用包内绝对导入，或 importlib 按文件路径加载（不建议改 sys.path）",
                         )
                     )
 
