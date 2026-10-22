@@ -112,7 +112,7 @@ Tool & Execution 是 Harness 把模型意图落到真实环境的执行层。工
 
 当工具集很大时，`ProgressiveToolRail` 按 `react.tool_lazy_load` 配置渐进式暴露工具：模型默认只看到 eager 工具，再通过 `tools_search` 搜索工具、`invoke_tool` 按需调用，避免全量工具 schema 占满上下文。`enabled` 和 `enable_for_models` 分别控制总开关与模型白名单。
 
-code 模式从会话首次创建起即挂载该 rail，热重载沿用同一策略。LSP（`lsp`）、`coding_memory_read/write/edit`、`switch_mode`、`enter_plan_mode`、`exit_plan_mode` 在 code 中补入 eager 名单；最终可见性仍受模式、技能门控及禁用工具策略约束。非 eager 的请求级 MCP 工具进入延迟池，按当前请求的 allowlist 调用；子代理继续由 `tool_lazy_load.subagents` 独立控制。
+code.normal/code.plan 从会话首次创建起即挂载该 rail，热重载沿用同一策略；code.team 对齐普通 team，首建和热重载均不新增该 rail，历史误挂实例会在重载时注销，保留协作及工作区工具的直接可见性。LSP（`lsp`）、`coding_memory_read/write/edit`、`switch_mode`、`enter_plan_mode`、`exit_plan_mode` 在单 agent code 中补入 eager 名单；最终可见性仍受模式、技能门控及禁用工具策略约束。非 eager 的请求级 MCP 工具进入延迟池，按当前请求的 allowlist 调用；子代理继续由 `tool_lazy_load.subagents` 独立控制。普通 agent/team 的行为不变；team 成员携带大量 MCP schema 的上下文风险仍存在。
 
 权限治理由 `PermissionEngine` 和 `PermissionInterruptRail` 组成。`PermissionEngine` 负责 allow / ask / deny 策略评估，`PermissionInterruptRail` 负责在工具调用前拦截所有工具，执行直接放行、直接拒绝、HITL 确认、“允许一次”和“总是允许”等流程。Shell 命令会经过 AST 分析，外部路径检查会与当前决策取更严格结果。
 

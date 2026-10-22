@@ -827,15 +827,17 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 rail_name,
             )
 
-        # Filter MCP schemas on the first turn, just as the shared reload path
-        # does. Without this rail code sessions send the entire tool catalog.
-        rail_infos.append(
-            _RailBuildInfo(
-                "_progressive_tool_rail",
-                self._build_progressive_tool_rail,
-                {"config": config},
+        # Filter single-agent MCP schemas from the first turn. Team members
+        # need their collaboration/workspace tools directly visible; their
+        # tool policy belongs to the team assembly path.
+        if normalized_sub_mode in {"normal", "plan"}:
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_progressive_tool_rail",
+                    self._build_progressive_tool_rail,
+                    {"config": config},
+                )
             )
-        )
 
         # Keep the unified react.disabled_tools policy consistent with agent
         # mode. Its low priority makes it run after fixed and dynamic rails
@@ -854,6 +856,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self, config: dict[str, Any]
     ) -> ProgressiveToolRail | None:
         """Share lazy-loading policy while preserving code's direct tools."""
+        # Shared reloads call this builder without a sub_mode. Keep code team
+        # members aligned with ordinary team assembly; returning None also
+        # lets the parent reload retire a rail mounted by an older version.
+        if getattr(self._instance, "_jiuwenswarm_code_team_member", False) is True:
+            return None
         rail = super()._build_progressive_tool_rail(config)
         if rail is not None:
             rail.eager_tools = list(dict.fromkeys([*rail.eager_tools, *_CODE_EAGER_TOOLS]))
@@ -1392,6 +1399,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         CodeAgentRail 和 PlanApprovalInterruptRail 不在其中。覆盖此方法确保 config reload
         时这些 rail 被正确重新初始化。
         """
+        if (
+            getattr(self._instance, "_jiuwenswarm_code_team_member", False) is True
+            and "tool_lazy_load" not in config
+        ):
+            # Partial reloads normally preserve this rail. Code team members
+            # must still retire historical mis-mounts, without mutating config.
+            config = {**config, "tool_lazy_load": {}}
         rails_list, rails_to_unregister = super()._get_current_agent_rails(
             config, config_base
         )
