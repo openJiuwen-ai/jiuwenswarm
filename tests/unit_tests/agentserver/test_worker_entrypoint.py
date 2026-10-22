@@ -138,6 +138,12 @@ def test_worker_entry_activation_appends_managed_site_packages_when_frozen(
     monkeypatch.setattr(external_cli_runtime, "_is_frozen_windows", lambda: True)
     monkeypatch.setattr(external_cli_runtime, "_is_frozen_macos", lambda: False)
     monkeypatch.setattr(external_cli_runtime, "_runtime_site_packages", _site_packages)
+    # The upgrade-preservation check passes: the runtime is installed & current.
+    monkeypatch.setattr(
+        external_cli_runtime,
+        "get_external_cli_runtime_status",
+        lambda cli_agent: {"runtime_state": "current"},
+    )
     monkeypatch.setattr(external_cli_runtime.sys, "path", list(sys.path))
 
     worker_main._activate_managed_external_cli_paths()
