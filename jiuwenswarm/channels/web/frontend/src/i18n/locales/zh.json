@@ -936,6 +936,10 @@
         "title": "启用验证者",
         "description": "任务完成后由验证者进行验收，未通过验收的任务将退回返工。"
       },
+      "team_member_messaging_enabled": {
+        "title": "启用成员间通信",
+        "description": "允许成员之间直接发送消息（点对点、多播、广播），无需经 Leader 转达；任务指派与交接仍由 Leader 和调度框架负责。"
+      },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
         "description": "全双工仅在单 Agent 模式下生效，集群/团队模式下不显示入口。输入框为空时显示全双工按钮；启动后持续进行语音对话，屏幕共享由下方开关控制。"
@@ -1044,7 +1048,7 @@
         "starting": "启动中…",
         "summary": "已选择 {{count}} 个 Agent，{{nodes}} 个节点",
         "emptyNodes": "选中范围内没有完整可诊断的步骤（未完整覆盖的步骤已被剔除）",
-        "lastTurn": "选中轨迹包含主agent最后一轮，将尝试进行产物评估和过程异常诊断归因",
+        "lastTurn": "选中轨迹包含主agent最后一轮响应，将尝试进行产物评估和过程异常诊断归因",
         "nodeLimit": "选中轨迹超过 {{limit}} 个节点（当前 {{count}} 个），请缩小选择范围",
         "running": "已有诊断正在进行",
         "noData": "当前没有可诊断的轨迹"

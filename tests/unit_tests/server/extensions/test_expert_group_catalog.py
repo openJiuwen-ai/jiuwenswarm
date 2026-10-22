@@ -13,7 +13,7 @@ from jiuwenswarm.agents.harness.team.expert_org.catalog import (
     JiuwenExpertGroupCatalog,
     descriptor_from_agent_group_dir,
 )
-from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package_bundle
+from openjiuwen.agent_teams.experts import load_agent_group_package_bundle
 
 
 @pytest.mark.parametrize("with_resources", [False, True])

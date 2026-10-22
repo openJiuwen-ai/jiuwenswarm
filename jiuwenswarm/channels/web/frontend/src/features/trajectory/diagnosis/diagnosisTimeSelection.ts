@@ -88,11 +88,13 @@ export function timedNodeInterval(cell: WallClockSample): { startMs: number; end
 /** Every timed node on a lane, in snapshot order. */
 export function timedNodeIntervals(
   turns: readonly { groups: readonly { cells: readonly WallClockSample[] }[] }[],
+  kinds?: readonly string[],
 ): { startMs: number; endMs: number }[] {
   const intervals: { startMs: number; endMs: number }[] = [];
   for (const turn of turns) {
     for (const group of turn.groups) {
       for (const cell of group.cells) {
+        if (kinds !== undefined && !kinds.includes((cell as { kind?: string }).kind ?? '')) continue;
         const interval = timedNodeInterval(cell);
         if (interval !== null) intervals.push(interval);
       }
@@ -102,16 +104,25 @@ export function timedNodeIntervals(
 }
 
 /**
- * Start and end of the timed node that began last.
+ * Start and end of the main agent's last reply node.
  *
- * Order in the snapshot does not matter: the latest start is the last node.
+ * Only assistant reply cells (`kind: 'message'`) participate, mirroring the
+ * backend delivery node: the leader's last assistant reply, ordered by start
+ * and then end (`task_parse.py DeliveryRound.delivery_nodes`). User, system
+ * and context cells carry context-window commit replay times that can land
+ * after the reply's inference start, so they never claim "last".
  */
 export function lastTimedNodeInterval(
-  turns: readonly { groups: readonly { cells: readonly WallClockSample[] }[] }[],
+  turns: readonly { groups: readonly { cells: readonly (WallClockSample & { kind?: string })[] }[] }[],
 ): { startMs: number; endMs: number } | null {
   let found: { startMs: number; endMs: number } | null = null;
-  for (const interval of timedNodeIntervals(turns)) {
-    if (found !== null && interval.startMs < found.startMs) continue;
+  for (const interval of timedNodeIntervals(turns, ['message'])) {
+    if (found === null) {
+      found = interval;
+      continue;
+    }
+    if (interval.startMs < found.startMs) continue;
+    if (interval.startMs === found.startMs && interval.endMs <= found.endMs) continue;
     found = interval;
   }
   return found;

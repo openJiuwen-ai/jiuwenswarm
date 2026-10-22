@@ -190,7 +190,7 @@ def get_external_cli_runtime_status(cli_agent: str) -> dict[str, Any]:
     metadata_path = target / _INSTALL_METADATA_FILE
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         result["runtime_state"] = "invalid"
         return result
     if not isinstance(metadata, dict):
@@ -238,8 +238,10 @@ def external_cli_site_packages(cli_agent: str) -> Path:
 
 def _runtime_site_packages(cli_agent: str) -> Path:
     if _is_frozen_windows():
+        from jiuwenswarm.common.utils import get_user_workspace_dir
+
         return (
-            Path(sys.executable).resolve().parent
+            get_user_workspace_dir()
             / "runtime"
             / "external-cli"
             / cli_agent
@@ -274,15 +276,20 @@ def activate_external_cli_runtime_paths() -> None:
         return
     for cli_agent in cli_agents:
         site_packages = _runtime_site_packages(cli_agent)
+        # Preserved SDKs can belong to a different release. Never expose an
+        # incompatible or incomplete runtime to provider imports.
         try:
+            if _is_frozen_windows() and get_external_cli_runtime_status(cli_agent)["runtime_state"] != "current":
+                continue
             site_packages.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             logger.debug(
-                "Failed to create optional %s runtime directory %s: %s",
+                "Failed to activate optional %s runtime directory %s: %s",
                 cli_agent,
                 site_packages,
                 exc,
             )
+            continue
         site_packages_text = str(site_packages)
         if site_packages_text not in sys.path:
             sys.path.append(site_packages_text)
@@ -366,6 +373,7 @@ def install_external_cli_runtime(
             "eta_seconds": 0.0,
         },
     )
+    activate_external_cli_runtime_paths()
     _verify_installed_runtime(cli_agent)
     emit(f"{cli_agent} optional runtime installed successfully")
 
@@ -393,6 +401,7 @@ def install_external_cli_runtime_from_artifacts(
         artifacts,
         artifact_directory,
     )
+    activate_external_cli_runtime_paths()
     _verify_installed_runtime(cli_agent)
 
 

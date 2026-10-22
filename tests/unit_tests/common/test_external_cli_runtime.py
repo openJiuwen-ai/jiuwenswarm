@@ -186,6 +186,7 @@ def test_activate_runtime_paths_logs_directory_creation_failure_and_continues(
     monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
     monkeypatch.setattr(runtime, "_is_frozen_macos", lambda: False)
     monkeypatch.setattr(runtime, "_runtime_site_packages", _site_packages)
+    monkeypatch.setattr(runtime, "get_external_cli_runtime_status", lambda _agent: {"runtime_state": "current"})
     original_path = list(runtime.sys.path)
     monkeypatch.setattr(runtime.sys, "path", list(original_path))
     monkeypatch.setattr(runtime.logger, "debug", lambda *args: logged.append(args))
@@ -194,18 +195,74 @@ def test_activate_runtime_paths_logs_directory_creation_failure_and_continues(
 
     assert runtime.sys.path[: len(original_path)] == original_path
     cli_agents = runtime.external_cli_runtime_names()
-    assert runtime.sys.path[-len(cli_agents) :] == [
-        str(_site_packages(cli_agent)) for cli_agent in cli_agents
-    ]
+    assert runtime.sys.path == original_path
     for cli_agent in cli_agents:
         site_packages = str(_site_packages(cli_agent))
-        assert site_packages in runtime.sys.path
+        assert site_packages not in runtime.sys.path
         assert any(
             args[1] == cli_agent
             and str(args[2]) == site_packages
             and isinstance(args[3], OSError)
             for args in logged
         )
+
+
+def test_windows_sdk_path_is_independent_of_application_layout(monkeypatch, tmp_path):
+    from jiuwenswarm.common import utils
+
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: tmp_path / "data")
+    for executable in (tmp_path / "app" / "workswarm.exe", tmp_path / "app" / "resources" / "backend" / "workswarm.exe"):
+        monkeypatch.setattr(runtime.sys, "executable", str(executable))
+        assert runtime.external_cli_site_packages("claude") == tmp_path / "data/runtime/external-cli/claude/site-packages"
+
+
+def test_optional_runtime_unavailable_on_platform_does_not_block_startup(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(runtime, "_load_manifest", lambda: {"agents": {"claude": {"platforms": {}}}})
+    monkeypatch.setattr(runtime, "_runtime_site_packages", lambda _agent: tmp_path / "site-packages")
+    original_path = list(runtime.sys.path)
+    monkeypatch.setattr(runtime.sys, "path", list(original_path))
+    runtime.activate_external_cli_runtime_paths()
+    assert runtime.sys.path == original_path
+
+
+@pytest.mark.parametrize("state", ["current", "update_required", "invalid", "invalid_encoding"])
+def test_windows_activation_validates_preserved_sdk_before_import(monkeypatch, tmp_path, state):
+    target = tmp_path / "site-packages"
+    module = target / "example_sdk"
+    module.mkdir(parents=True)
+    executable = module / "cli.exe"
+    executable.write_bytes(b"fixture")
+    artifacts = [_artifact()]
+    entry = {"platforms": {"windows-x86_64": artifacts}, "required_modules": ["example_sdk"], "executables": {"windows-x86_64": "example_sdk/cli.exe"}}
+    metadata = {"agent": "claude", "platform": "windows-x86_64", "packages": runtime._runtime_package_versions(artifacts)}
+    if state == "update_required":
+        metadata["packages"][0]["version"] = "0.0.1"
+    if state == "invalid":
+        executable.unlink()
+    (target / runtime._INSTALL_METADATA_FILE).write_text(json.dumps(metadata))
+    if state == "invalid_encoding":
+        (target / runtime._INSTALL_METADATA_FILE).write_bytes(b"\xff\xfe\x80")
+    monkeypatch.setattr(runtime, "_load_manifest", lambda: {"agents": {"claude": entry}})
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(runtime, "_runtime_platform_key", lambda: "windows-x86_64")
+    monkeypatch.setattr(runtime, "_runtime_site_packages", lambda _agent: target)
+    monkeypatch.setattr(runtime.sys, "path", list(runtime.sys.path))
+    expected_state = "invalid" if state == "invalid_encoding" else state
+    assert runtime.get_external_cli_runtime_status("claude")["runtime_state"] == expected_state
+    runtime.activate_external_cli_runtime_paths()
+    assert (str(target) in runtime.sys.path) == (state == "current")
+    if state == "invalid_encoding":
+        # An invalid optional runtime must remain repairable by the normal
+        # staged install path, without importing its previous contents.
+        staging = tmp_path / "staged"
+        (staging / "example_sdk").mkdir(parents=True)
+        (staging / "example_sdk/cli.exe").write_bytes(b"replacement")
+        runtime._complete_staged_runtime_install("claude", "windows-x86_64", artifacts, target, staging)
+        runtime.activate_external_cli_runtime_paths()
+        assert runtime.get_external_cli_runtime_status("claude")["runtime_state"] == "current"
+        assert str(target) in runtime.sys.path
 
 
 def test_elevated_installer_timeout_terminates_started_process() -> None:

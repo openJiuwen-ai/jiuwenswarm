@@ -9,6 +9,6 @@ export { webClient } from '../../src/services/webClient';
 export { useOrganizationSnapshot } from '../../src/features/teamOrganization/useOrganizationSnapshot';
 export { OrgInfoPanel } from '../../src/components/teamArea/OrgInfoPanel';
 export { TeamSelector } from '../../src/components/ChatPanel/TeamSelector';
-export { resolveOrganizationTeamIdentity } from '../../src/features/teamOrganization/teamIdentity';
+export { resolveOrganizationTeamIdentity, resolveOrganizationTeamLabel } from '../../src/features/teamOrganization/teamIdentity';
 export { useSettingsConfig } from '../../src/features/settings/services/useSettingsConfig';
 export { SettingsServicesProvider } from '../../src/features/settings/services/SettingsServicesProvider';
