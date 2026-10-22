@@ -52,8 +52,13 @@ class TestRecentStallSeconds:
 
 class TestResolveKeepaliveTarget:
     BASE = 300.0
-    RELAXED = AgentWebSocketServer._KEEPALIVE_STALL_PING_TIMEOUT_S
+    RELAXED = AgentWebSocketServer._relaxed_ping_timeout(BASE)
     GRACE = AgentWebSocketServer._KEEPALIVE_GRACE_S
+
+    def test_relaxed_bound_is_bounded_minutes_not_hours(self):
+        """放宽上界必须为 base + 窗口 + 宽限（480s），保证死链检测分钟级。"""
+        assert self.RELAXED == 480.0
+        assert self.RELAXED < 600.0
 
     def test_no_stall_keeps_base_timeout(self):
         now = time.monotonic()
@@ -117,18 +122,20 @@ class TestResolveKeepaliveTarget:
 
 
 class TestGuardAppliesToProtocols:
+    @pytest.mark.asyncio
     async def test_relax_and_restore_applied_to_live_protocols(self):
         """决策结果按目标值落到存活协议对象上（放宽 + 复位两个方向）。"""
         now = time.monotonic()
         target, deadline = AgentWebSocketServer._resolve_keepalive_target(
             3.0, now, 0.0, 300.0
         )
-        assert target == AgentWebSocketServer._KEEPALIVE_STALL_PING_TIMEOUT_S
+        assert target == AgentWebSocketServer._relaxed_ping_timeout(300.0)
+        assert target == 480.0
 
         ws = _StubProtocol(ping_timeout=300.0)
         if getattr(ws, "ping_timeout", None) != target:
             ws.ping_timeout = target
-        assert ws.ping_timeout == AgentWebSocketServer._KEEPALIVE_STALL_PING_TIMEOUT_S
+        assert ws.ping_timeout == 480.0
 
         restore_target, _ = AgentWebSocketServer._resolve_keepalive_target(
             0.0, deadline + 1.0, deadline, 300.0
@@ -137,6 +144,7 @@ class TestGuardAppliesToProtocols:
         ws.ping_timeout = restore_target
         assert ws.ping_timeout == 300.0
 
+    @pytest.mark.asyncio
     async def test_websockets_legacy_reads_ping_timeout_dynamically(self):
         """websockets 15.0.1 legacy keepalive 每轮读取 self.ping_timeout（改值即生效的前提）。"""
         import inspect

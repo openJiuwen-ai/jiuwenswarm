@@ -414,11 +414,13 @@ class AgentWebSocketServer:
 
     # 停摆感知 keepalive：LoopMonitor 记账的停摆窗口内放宽 ping_timeout，
     # 防止"事件循环停顿 → ping/pong 处理延迟 → 服务端 keepalive 1011 主动断连"
-    # （websockets legacy keepalive_ping 每轮动态读取 self.ping_timeout）。
+    # （websockets legacy/asyncio keepalive 每轮动态读取 self.ping_timeout）。
+    # 注意：pong 等待的超时在发起时刻捕获，之后复位 ping_timeout 不缩短已进入
+    # 等待的那一次；因此放宽值必须有界（base + 窗口 + 宽限，默认 480s），
+    # 保证宽限窗口内对端死亡时的死链检测最坏延迟为分钟级而非小时级。
     _KEEPALIVE_GUARD_INTERVAL_S = 5.0
     _KEEPALIVE_STALL_WINDOW_S = 60.0
     _KEEPALIVE_GRACE_S = 120.0
-    _KEEPALIVE_STALL_PING_TIMEOUT_S = 3600.0
 
     def __init__(
             self,
@@ -662,9 +664,18 @@ class AgentWebSocketServer:
 
             asyncio.create_task(_phase3_after_phase12(), name="startup-warmup-query")
 
-            # LTM 向量库预热：chromadb PersistentClient 首建（rust 扩展加载 + 建库）
-            # 曾在会话恢复期造成秒级事件循环停顿并触发网关 keepalive 断连，
-            # 提前到启动期后台线程完成（失败仅告警）。
+        # LTM 向量库预热：chromadb PersistentClient 首建（rust 扩展加载 + 建库）
+        # 曾在会话恢复期造成秒级事件循环停顿并触发网关 keepalive 断连，
+        # 提前到启动期后台线程完成（失败仅告警）。
+        # 独立于 startup.warmup.enabled（那是 mock LLM 端到端预热开关）：
+        # 本预热是 keepalive 停摆防护的前置条件，仅受 startup.ltm_warmup.enabled
+        # 控制（默认开启）。
+        ltm_wm = (get_config().get("startup") or {}).get("ltm_warmup") or {}
+        if not ltm_wm.get("enabled", True):
+            logger.info(
+                "[AgentServer] startup.ltm_warmup.enabled=false，跳过 LTM 向量库预热"
+            )
+        else:
             async def _warmup_ltm_store() -> None:
                 from jiuwenswarm.server.runtime.prewarm import warmup_ltm_vector_store
 
@@ -744,6 +755,16 @@ class AgentWebSocketServer:
             )
 
     @classmethod
+    def _relaxed_ping_timeout(cls, base_timeout: float | None) -> float | None:
+        """放宽后的 ping_timeout 上界：base + 停摆窗口 + 宽限（有界）。
+
+        ``base_timeout=None`` 表示部署显式禁用 ping 判死，放宽不得反向引入。
+        """
+        if base_timeout is None:
+            return None
+        return base_timeout + cls._KEEPALIVE_STALL_WINDOW_S + cls._KEEPALIVE_GRACE_S
+
+    @classmethod
     def _resolve_keepalive_target(
         cls,
         stall_seconds: float,
@@ -761,7 +782,7 @@ class AgentWebSocketServer:
         if stall_seconds > 0:
             degraded_until = max(degraded_until, now + cls._KEEPALIVE_GRACE_S)
         target = (
-            cls._KEEPALIVE_STALL_PING_TIMEOUT_S
+            cls._relaxed_ping_timeout(base_timeout)
             if now < degraded_until
             else base_timeout
         )
@@ -770,8 +791,10 @@ class AgentWebSocketServer:
     async def _keepalive_guard_loop(self) -> None:
         """停摆感知 keepalive：窗口内有停摆则放宽 ping_timeout，恢复后复位。
 
-        websockets 的 keepalive_ping 每轮读取 ``ws.ping_timeout``，运行时改值
-        即生效；对端真正死亡时宽限结束后仍按原超时判死，不牺牲死链检测。
+        websockets 的 keepalive 每轮读取 ``ws.ping_timeout``，运行时改值从下一
+        轮 ping 生效；已进入等待的那一次 pong 超时在发起时刻已捕获，不会被
+        复位缩短。放宽值有界（base + 窗口 + 宽限），宽限窗口内对端死亡的死链
+        检测最坏延迟为分钟级，不牺牲死链检测。
         """
         while True:
             await asyncio.sleep(self._KEEPALIVE_GUARD_INTERVAL_S)
@@ -1437,13 +1460,15 @@ class AgentWebSocketServer:
         )
         self._live_protocols.add(ws)
         if self._keepalive_relaxed:
-            try:
-                ws.ping_timeout = self._KEEPALIVE_STALL_PING_TIMEOUT_S
-            except Exception:
-                logger.debug(
-                    "[AgentWebSocketServer] ping_timeout 调整失败: %s",
-                    type(ws).__name__,
-                )
+            target = self._relaxed_ping_timeout(self._ping_timeout)
+            if target is not None:
+                try:
+                    ws.ping_timeout = target
+                except Exception:
+                    logger.debug(
+                        "[AgentWebSocketServer] ping_timeout 调整失败: %s",
+                        type(ws).__name__,
+                    )
 
         # 触发身份获取（写入当前连接 context；无 provider 时身份为 null，连接继续）。
         # 其后 asyncio.create_task(_handle_message) 自动 copy_context，身份传播到各请求任务。

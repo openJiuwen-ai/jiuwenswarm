@@ -309,26 +309,33 @@ def _prewarm_ltm_vector_store_sync() -> list[str]:
 def _ltm_vector_dirs_for_prewarm() -> list[Path]:
     """收集需要预热的向量目录（仅已存在的目录，不为新用户凭空建库）。
 
-    覆盖默认租户 + 企业版 ``workspace_*`` 与个人版 ``service_*/agent_*`` 两种
-    多实例布局；目录布局不符时自然为空，无害跳过。
+    路径解析与运行期构建（external_memory_config.build_openjiuwen_provider_config）
+    完全一致：tip/env → config.yaml memory.external.openjiuwen.vector_persist_dir →
+    租户默认目录。多实例兄弟目录扫描的末级子路径从默认解析结果推导
+    （workspace_default → * 与 * /* 两级展开），不再硬编码 ltm/chroma。
     """
     from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
+        get_external_memory_config,
         resolve_openjiuwen_store_paths,
     )
     from jiuwenswarm.common.utils import get_user_workspace_dir
 
     dirs: list[Path] = []
-    _, vector_dir, _ = resolve_openjiuwen_store_paths()
+    oj_cfg = get_external_memory_config().get("openjiuwen") or {}
+    _, vector_dir, _ = resolve_openjiuwen_store_paths(oj_cfg)
     default_dir = Path(vector_dir)
     if default_dir.is_dir():
         dirs.append(default_dir)
-    patterns = (
-        "workspace_*/agent/jiuwenclaw_workspace/memory/ltm/chroma",
-        "service_*/agent_*/agent/jiuwenclaw_workspace/memory/ltm/chroma",
-    )
     candidates: list[Path] = []
     try:
         root = get_user_workspace_dir()
+        rel = default_dir.relative_to(root)
+        parts = rel.parts
+        patterns: list[str] = []
+        if len(parts) > 1:
+            tail = parts[1:]
+            patterns.append(str(Path("*").joinpath(*tail)))
+            patterns.append(str(Path("*").joinpath("*", *tail)))
         for pattern in patterns:
             candidates.extend(sorted(root.glob(pattern)))
     except Exception:  # noqa: BLE001
