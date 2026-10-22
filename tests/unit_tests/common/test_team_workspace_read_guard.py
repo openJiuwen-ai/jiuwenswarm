@@ -185,3 +185,70 @@ def test_bundled_fallback_uses_warmed_files_without_loop_filesystem_reads(monkey
     monkeypatch.setattr(Path, "read_text", unexpected_read)
     for language in ("cn", "en"):
         assert make_translator(language)("build_team")
+
+
+@pytest.mark.parametrize("attribute", ["_store", "_team_name", "_lang"])
+def test_incompatible_cache_uses_bundled_descriptions_once_per_run(
+    monkeypatch, guarded_cache, caplog, attribute,
+):
+    from openjiuwen.agent_teams.tools.locales import make_translator
+
+    monkeypatch.setattr(guard.logger, "handlers", [caplog.handler])
+    monkeypatch.setattr(guard.logger, "propagate", False)
+    reads = []
+
+    def read(snapshot):
+        reads.append(snapshot)
+        snapshot._tool_md_values["build_team"] = "RECOVERED"
+
+    monkeypatch.setattr(WorkspaceCache, "_load_tools", read)
+    monkeypatch.setattr(guard, "_FIRST_READ_WAIT", 1)
+    guard.preload_bundled_team_descriptions()
+    guard.install_team_workspace_read_guard()
+    cache = guarded_cache()
+    original_value = getattr(cache, attribute)
+    monkeypatch.delattr(cache, attribute)
+    translate = make_translator("cn", ws_cache=cache)
+    expected = make_translator("cn")("build_team")
+    for _ in range(3):
+        assert translate("build_team") == expected
+    warnings = [record for record in caplog.records if "incompatible" in record.message]
+    assert len(warnings) == 1
+    assert cache not in guard._states or guard._states[cache].future is None
+    assert not reads
+    cache.fill_tool_md("build_team", "ASSEMBLER VALUE")
+    assert translate("build_team") == "ASSEMBLER VALUE"
+    monkeypatch.setattr(cache, attribute, original_value, raising=False)
+    cache.invalidate()
+    assert cache.get_tool_md("build_team") == "RECOVERED"
+    assert len(reads) == 1
+
+
+def test_incompatible_snapshot_cannot_publish_partial_descriptions(monkeypatch, guarded_cache):
+    def read(snapshot):
+        snapshot._tool_md_values["build_team"] = "INCOMPATIBLE SNAPSHOT"
+        snapshot._tool_params = None
+
+    monkeypatch.setattr(WorkspaceCache, "_load_tools", read)
+    monkeypatch.setattr(guard, "_FIRST_READ_WAIT", 1)
+    guard.install_team_workspace_read_guard()
+    cache = guarded_cache()
+    assert cache.get_tool_md("build_team") is None
+    assert cache.get_tool_param("build_team", "title") is None
+
+
+def test_thread_start_failure_degrades_then_retries(monkeypatch, guarded_cache):
+    def read(snapshot):
+        snapshot._tool_md_values["build_team"] = "RECOVERED"
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("cannot start another thread")
+
+    monkeypatch.setattr(WorkspaceCache, "_load_tools", read)
+    monkeypatch.setattr(guard, "_BUSY_RETRY_DELAY", 0)
+    guard.install_team_workspace_read_guard()
+    cache = guarded_cache()
+    with monkeypatch.context() as patch:
+        patch.setattr(threading.Thread, "start", fail)
+        assert cache.get_tool_md("build_team") is None
+    _until(lambda: cache.get_tool_md("build_team") == "RECOVERED")

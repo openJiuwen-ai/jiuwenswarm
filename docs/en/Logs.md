@@ -259,6 +259,8 @@ Proactive session scans and recommendation-state reads run on an isolated backgr
 
 In the Worker, the first Team tool-description scan reads into an isolated snapshot, with an initial wait of at most 50 milliseconds. Slow reads use existing cached values or bundled descriptions until a complete snapshot is ready. Invalidated snapshots cannot overwrite a new run's cache. At most two Team document reads run concurrently, and failed reads retry after 30 seconds. Look for `[SituationReport]` and `[TeamWorkspace]` degradation warnings.
 
+If a background thread cannot start, the optional read degrades as it does when capacity is full and can retry later. Team guard installation and bundled-description preloading fail independently with warnings, allowing the remaining Worker startup patches to continue. An incompatible SDK cache skips custom document reads until invalidation and preserves existing values or bundled descriptions.
+
 On Windows, continuous named-pipe heartbeat reading and queued SDK log sinks remain independent of the business loop. The 30-second transport timeout and 180-second sustained business-stall restart remain active so the Supervisor can recover a permanently stuck Worker.
 
 ## 9. Best Practices

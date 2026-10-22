@@ -53,3 +53,37 @@ def test_context_and_failure_do_not_leak_a_capacity_slot():
     with pytest.raises(OSError, match="read failed"):
         work.submit(fail).result(1)
     assert work.submit(lambda: 42).result(1) == 42
+
+
+@pytest.mark.parametrize("stage", ["construct", "start"])
+@pytest.mark.parametrize("error_type", [RuntimeError, OSError])
+def test_thread_creation_failure_is_busy_and_releases_capacity(monkeypatch, stage, error_type):
+    work = BoundedBackgroundWork(max_workers=1, name="test-thread-failure")
+    error = error_type("cannot start another thread")
+
+    def fail(*args, **kwargs):
+        raise error
+
+    with monkeypatch.context() as patch:
+        if stage == "construct":
+            patch.setattr(threading, "Thread", fail)
+        else:
+            patch.setattr(threading.Thread, "start", fail)
+        with pytest.raises(BackgroundWorkBusy) as caught:
+            work.submit(lambda: pytest.fail("unstarted callback ran"))
+        assert caught.value.__cause__ is error
+    assert work.submit(lambda: "recovered").result(1) == "recovered"
+
+
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit])
+def test_thread_start_interrupt_propagates_and_releases_capacity(monkeypatch, error_type):
+    work = BoundedBackgroundWork(max_workers=1, name="test-thread-interrupt")
+
+    def interrupt(*args, **kwargs):
+        raise error_type()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(threading.Thread, "start", interrupt)
+        with pytest.raises(error_type):
+            work.submit(lambda: None)
+    assert work.submit(lambda: "recovered").result(1) == "recovered"

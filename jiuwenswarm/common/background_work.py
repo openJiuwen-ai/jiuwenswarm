@@ -14,7 +14,7 @@ T = TypeVar("T")
 
 
 class BackgroundWorkBusy(RuntimeError):
-    """All blocking-work slots are occupied; the caller must degrade."""
+    """Blocking-work capacity is unavailable; the caller must degrade."""
 
 
 class BoundedBackgroundWork:
@@ -54,6 +54,9 @@ class BoundedBackgroundWork:
 
         try:
             threading.Thread(target=run, name=self._name, daemon=True).start()
+        except Exception as exc:
+            self._slots.release()
+            raise BackgroundWorkBusy("optional background work could not start") from exc
         except BaseException:
             self._slots.release()
             raise

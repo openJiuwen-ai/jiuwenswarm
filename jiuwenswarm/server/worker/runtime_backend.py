@@ -144,8 +144,14 @@ def _apply_runtime_entry_patches() -> None:
     install_native_tokenizer_cache()
     install_shell_tool_safety_hooks()
     apply_provider_compat_patches()
-    install_team_workspace_read_guard()
-    preload_bundled_team_descriptions()
+    try:
+        install_team_workspace_read_guard()
+    except Exception:  # noqa: BLE001
+        logger.warning("[TeamWorkspace] optional tool read guard installation failed", exc_info=True)
+    try:
+        preload_bundled_team_descriptions()
+    except Exception:  # noqa: BLE001
+        logger.warning("[TeamWorkspace] optional bundled description preload failed", exc_info=True)
     try:
         from jiuwenswarm.common.auth.login_credentials import apply_login_credential_patch
 

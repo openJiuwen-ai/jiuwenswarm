@@ -21,7 +21,7 @@ def report_reads(monkeypatch, tmp_path):
     monkeypatch.setattr(report, "_read_future", None)
     monkeypatch.setattr(report, "_read_key", None)
     monkeypatch.setattr(report, "_local_reads", BoundedBackgroundWork(max_workers=1, name="test-report-read"))
-    monkeypatch.setattr(report, "_LOCAL_READ_TIMEOUT", 0.03)
+    monkeypatch.setattr(report, "_LOCAL_READ_TIMEOUT", 5.0)
     monkeypatch.setattr(calendar_source, "fetch_calendar_events", AsyncMock(return_value=[]))
     return tmp_path
 
@@ -79,6 +79,7 @@ async def test_slow_history_stat_keeps_loop_alive_and_repeated_ticks_share_one_r
     monkeypatch.setattr(report, "_compress_history_for_profile", lambda sid, max_rounds: "history")
     monkeypatch.setattr(profile_extractor, "load_recommendation_state",
                         lambda: SimpleNamespace(recommendation_history=[]))
+    monkeypatch.setattr(report, "_LOCAL_READ_TIMEOUT", 0.03)
     beats = []
 
     async def heartbeat():
@@ -87,9 +88,11 @@ async def test_slow_history_stat_keeps_loop_alive_and_repeated_ticks_share_one_r
             await asyncio.sleep(0.005)
 
     ticker = asyncio.create_task(heartbeat())
+    first_tick = asyncio.create_task(report.build_situation_report())
     try:
-        first = await report.build_situation_report()
-        assert first.is_empty() and entered.is_set()
+        assert await asyncio.to_thread(entered.wait, 2)
+        first = await first_tick
+        assert first.is_empty()
         beats_before = len(beats)
         others = await asyncio.gather(*(report.build_situation_report() for _ in range(20)))
         assert all(item.is_empty() for item in others)
@@ -99,7 +102,7 @@ async def test_slow_history_stat_keeps_loop_alive_and_repeated_ticks_share_one_r
     finally:
         release.set()
         ticker.cancel()
-        await asyncio.gather(ticker, return_exceptions=True)
+        await asyncio.gather(ticker, first_tick, return_exceptions=True)
     await asyncio.wrap_future(pending)
     monkeypatch.setattr(report, "_LOCAL_READ_TIMEOUT", 1)
     recovered = await report.build_situation_report()
@@ -175,6 +178,21 @@ async def test_local_read_failure_skips_tick_then_recovers(monkeypatch, report_r
 
     monkeypatch.setattr(report, "_read_local_report", read)
     assert (await report.build_situation_report()).is_empty()
+    assert (await report.build_situation_report()).sessions[0].session_id == "recovered"
+
+
+@pytest.mark.asyncio
+async def test_thread_start_failure_skips_tick_then_recovers(monkeypatch, report_reads):
+    def fail(*args, **kwargs):
+        raise RuntimeError("cannot start another thread")
+
+    monkeypatch.setattr(report, "_read_local_report",
+                        lambda max_rounds, mode_prefix: report.SituationReport(
+                            sessions=[report.SessionSummary("recovered")],
+                        ))
+    with monkeypatch.context() as patch:
+        patch.setattr(threading.Thread, "start", fail)
+        assert (await report.build_situation_report()).is_empty()
     assert (await report.build_situation_report()).sessions[0].session_id == "recovered"
 
 

@@ -30,6 +30,7 @@ class _ReadState:
     future: Future | None = None
     retry_at: float = 0.0
     warned: bool = False
+    disabled: bool = False
 
 
 def install_team_workspace_read_guard() -> None:
@@ -40,6 +41,9 @@ def install_team_workspace_read_guard() -> None:
     first wait preserves fast customized descriptions; a slow read uses the
     SDK's bundled descriptions until its complete snapshot can be published.
     """
+    # The pinned SDK exposes no public hook or snapshot API. Confine the
+    # required private access to this adapter, with per-cache degradation.
+    # pylint: disable=protected-access
     from openjiuwen.agent_teams.team_workspace.workspace_cache import WorkspaceCache
 
     with _lock:
@@ -47,15 +51,18 @@ def install_team_workspace_read_guard() -> None:
         if getattr(original, "jiuwen_background_read", False):
             return
         original_invalidate = WorkspaceCache.invalidate
+        if not callable(original) or not callable(original_invalidate):
+            raise TypeError("SDK Team cache methods are incompatible")
 
-        @functools.wraps(original)
-        def load_tools(cache: Any) -> None:
+        def read_tools(cache: Any, state: _ReadState) -> None:
             wait = False
             warning = False
             with _lock:
-                if cache._tools_loaded:
+                if _states.get(cache) is not state:
                     return
-                state = _states.setdefault(cache, _ReadState())
+                if cache._tools_loaded:
+                    _states.pop(cache, None)
+                    return
                 if state.future is None and time.monotonic() >= state.retry_at:
                     store, team_name, language = cache._store, cache._team_name, cache._lang
 
@@ -92,9 +99,11 @@ def install_team_workspace_read_guard() -> None:
                             state.warned = True
                         return
                     # The assembler can prime newer values during a slow read.
-                    # Its values win over the isolated disk snapshot.
-                    cache._tool_md_values = {**descriptions, **cache._tool_md_values}
-                    cache._tool_params = {**parameters, **cache._tool_params}
+                    # Validate both merges before publishing either value.
+                    descriptions = {**descriptions, **cache._tool_md_values}
+                    parameters = {**parameters, **cache._tool_params}
+                    cache._tool_md_values = descriptions
+                    cache._tool_params = parameters
                     cache._tools_loaded = True
                     _states.pop(cache, None)
                     return
@@ -104,6 +113,25 @@ def install_team_workspace_read_guard() -> None:
             if warning:
                 logger.warning("[TeamWorkspace] tool documents are still loading; "
                                "using bundled descriptions")
+
+        @functools.wraps(original)
+        def load_tools(cache: Any) -> None:
+            with _lock:
+                state = _states.setdefault(cache, _ReadState())
+                if state.disabled:
+                    return
+            try:
+                read_tools(cache, state)
+            except (AttributeError, TypeError):
+                with _lock:
+                    if _states.get(cache) is not state:
+                        return
+                    state.disabled = True
+                    if state.future is not None:
+                        state.future.cancel()
+                        state.future = None
+                logger.warning("[TeamWorkspace] incompatible SDK tool cache; "
+                               "using bundled descriptions", exc_info=True)
 
         @functools.wraps(original_invalidate)
         def invalidate(cache: Any) -> None:
@@ -122,6 +150,9 @@ def install_team_workspace_read_guard() -> None:
 
 def preload_bundled_team_descriptions() -> None:
     """Warm immutable SDK fallback files on the backend preparation thread."""
+    # The pinned SDK has no public eager-loading API; startup isolates errors
+    # from these optional internals so an SDK upgrade cannot prevent startup.
+    # pylint: disable=protected-access
     from openjiuwen.agent_teams.tools import locales
 
     for language in ("cn", "en"):
