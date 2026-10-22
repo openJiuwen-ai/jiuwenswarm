@@ -27,6 +27,7 @@ from jiuwenswarm.gateway.cron.models import (
     resolve_cron_model,
     validate_cron_model,
 )
+from jiuwenswarm.gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 
@@ -208,8 +209,25 @@ class CronController:
             return raw_s
         return raw_s
 
-    async def list_jobs(self) -> list[dict[str, Any]]:
+    async def list_jobs(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """List jobs, optionally scoped to one owner.
+
+        ``user_id`` is applied before admission is queried.  Admission is a
+        cross-process RPC routed by the job owner's ``user_id``, so querying it
+        for other owners both delays this caller and may cold-start (or abort
+        the cold start of) another user's sandbox.  ``None``/empty keeps the
+        legacy all-owner behavior for callers without an identity.
+        """
         jobs = await self._store.list_jobs()
+        owner = str(user_id or "").strip()
+        if owner:
+            # 先按属主过滤再打闸门:闸门按任务属主路由到其沙箱,过滤前全量
+            # 查询会让本请求替其他用户承担冷启动和 10s 超时。
+            jobs = [
+                job
+                for job in jobs
+                if str(getattr(job, "user_id", "") or "").strip() == owner
+            ]
         # project_execution_allowed 是一次跨进程 RPC。同项目多任务共享同一
         # (project_id, user_id) 判定:去重后并发查询,避免把一次列表请求
         # 放大成逐任务串行 N 次往返(每个 10s 超时)。
@@ -310,6 +328,16 @@ class CronController:
             mode = normalize_cron_job_mode(mode)
         else:
             mode = None
+        # proactive.tick 是主动推荐开关自动维护的内部模式（proactive_cron_sync
+        # 以固定 id 注册）：用户路径创建同模式任务会被后端 mode 保护拒绝启停/
+        # 删除，而前端只按固定 id 识别系统任务，导致任务永远停不掉（#5128）。
+        if (
+            mode == "proactive.tick"
+            and str(params.get("id") or "").strip() != PROACTIVE_JOB_ID
+        ):
+            raise ValueError(
+                "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动创建"
+            )
         model_name, model_source = resolve_cron_model(
             params.get("model_name"),
             zen_entries=await self._zen_entries(),
@@ -440,6 +468,12 @@ class CronController:
         auth_session = str(patch.pop("_auth_session", "") or "").strip()
         if "mode" in patch:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
+            # 同 create_job：内部模式只随 proactive_cron_sync 注册，不允许把
+            # 既有任务改写成 proactive.tick（#5128）。
+            if patch["mode"] == "proactive.tick":
+                raise ValueError(
+                    "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动修改"
+                )
         if "model_name" in patch:
             canonical, model_source = resolve_cron_model(
                 patch.get("model_name"),

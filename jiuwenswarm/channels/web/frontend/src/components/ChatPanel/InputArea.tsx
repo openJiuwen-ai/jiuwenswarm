@@ -149,6 +149,8 @@ import { TeamSelector } from './TeamSelector';
 import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import { resolveTeamDispatchMode, useTeamScheduledDispatchEnabled } from '../../features/teamDispatch/featureConfig';
 
 const MENU_GAP = 10;
@@ -979,10 +981,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const agentGroupLocked = Boolean(agentGroupBinding || agentGroupBindingPending);
   const selectedGroup = groupOptions.find((item) => item.name === selectedGroupId || item.id === selectedGroupId) ?? null;
   const displayedGroupId = organizationTeam ? organizationTeam.agent_group_name?.trim() || null : selectedGroupId;
-  const displayedGroup = useMemo(
+  const conversationId = useOrganizationConversationKey(activeSessionId);
+  const groupSnapshot = useSessionStore((s) => s.runtimes[conversationId]?.teamGroupIdentity ?? null);
+  const catalogGroup = useMemo(
     () => (organizationTeam ? resolveOrganizationTeamIdentity(organizationTeam, groupOptions) : selectedGroup),
     [organizationTeam, groupOptions, selectedGroup],
   );
+  const displayedGroup = catalogGroup ?? (
+    groupSnapshot && (groupSnapshot.name === displayedGroupId || groupSnapshot.id === displayedGroupId)
+      ? groupSnapshot
+      : null
+  );
+  const displayedGroupName = resolveTeamGroupDisplayName(displayedGroup, i18n.language) || displayedGroupId;
   const organizationGroupCatalogNeeded = Boolean(organizationTeam?.agent_group_name);
   const installedGroupOptions = useMemo(
     () => groupOptions.filter((item) => item.installed && item.capabilities.canUse),
@@ -1000,7 +1010,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   useEffect(() => {
     if (!onAgentGroupIdentityChange) return;
-    onAgentGroupIdentityChange(displayedGroupId && displayedGroup ? displayedGroup : null);
+    // 卸载后的已绑定专家团不再出现在本地目录，但历史消息仍需要使用
+    // 原来的本地化展示名；只有确实没有选中专家团时才清空会话身份。
+    if (displayedGroup) {
+      onAgentGroupIdentityChange(displayedGroup);
+    } else if (!displayedGroupId) {
+      onAgentGroupIdentityChange(null);
+    }
   }, [onAgentGroupIdentityChange, displayedGroup, displayedGroupId]);
 
   useEffect(() => {
@@ -4838,11 +4854,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           }
                         />
                       ) : (
-                        (displayedGroup?.displayName || displayedGroupId).trim().slice(0, 1).toUpperCase() || '?'
+                        displayedGroupName?.trim().slice(0, 1).toUpperCase() || '?'
                       )}
                     </span>
                     <span className="chat-agent-tag__label" data-testid="chat-panel-agent-group-tag-label">
-                      {displayedGroup?.displayName || displayedGroupId}
+                      {displayedGroupName}
                     </span>
                     {agentGroupLocked || existingTeamGroupSelectionDisabled ? (
                       <Lock className="chat-agent-tag__lock" size={12} strokeWidth={2} aria-hidden="true" />
@@ -5043,7 +5059,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 {micTooltipNode}
 
                 <ApplicationPluginTaskInputActions
-                  eligible={fullDuplexActionEligible && !isTeamMode}
+                  eligible={fullDuplexActionEligible && (!isTeamMode || isDesignLanding)}
                   hasTextDraft={hasTextDraft}
                   sessionId={activeSessionId}
                   ensureSession={onEnsureSession}

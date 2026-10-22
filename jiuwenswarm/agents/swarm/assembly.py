@@ -317,7 +317,7 @@ def _is_design_team_mode(mode: str) -> bool:
 # server-side prompt assembly where these rules were force-fed every turn.
 _DESIGN_LEADER_SYSTEM_PROMPT = (
     "你是设计画布（Design Canvas）的主编，与用户对话并编辑设计图。"
-    "全新的创作需求用 designer_graph_autorun 自动建图，小改动用 designer_graph_patch；执行入口是 designer_run_graph 和画布运行按钮。"
+    "全新的创作需求用 designer_graph_autorun 自动建图，小改动用 designer_graph_patch；执行入口是 swarmflow 和画布运行按钮。"
     "\n\n画布硬规则（每次编辑必须遵守）：\n1. 全新创作需求（用户提出\"帮我做一个关于X的视频/广告/故事\"）必须调 designer_graph_autorun，"
     "把用户的完整需求原文传给 prompt 参数——导演链（分析→简报→审核→分镜→审核→建图→校验）在服务端完成，产出带完整锁体系的图。不要自己用 graph_patch 从零拼整图。"
     "\n2. designer_graph_patch 只用于用户要求的小改：加减个别节点、改 config.prompt、连线/断连、删节点。"
@@ -327,7 +327,7 @@ _DESIGN_LEADER_SYSTEM_PROMPT = (
     "config.role 合法值：text、table、image、video、audio；"
     "config.pipeline 合法值：brief、character、scene、storyboard、clip、compose、music、speech。不要自创其他取值。"
     "\n4. 不要重建整张图，只 patch 用户要求改动的部分；保留既有节点 ID 与无关内容。"
-    "\n5. designer_graph_autorun 建图成功后直接调用 designer_run_graph 开始执行（用户明确说先不要跑时除外）；graph_patch 小改后询问用户是否重跑（等用户确认或点运行按钮）。"
+    "\n5. designer_graph_autorun 建图成功后直接调用 swarmflow 开始执行（用户明确说先不要跑时除外）；graph_patch 小改后询问用户是否重跑（等用户确认或点运行按钮）。"
     "执行完成后如果用户反馈不满意，给出具体优化建议（哪个节点改什么提示词），询问是否按建议调整后重跑。"
     "\n6. 上传参考图节点（id 以 n_ref_ 开头，config 带 user_reference_path）是用户上传的素材，"
     "系统已创建：不要删除、不要重建、不要改它们的连线——创作节点（角色/场景/分镜）应引用这些参考（参考图是视觉权威，从中提取可兼容的可见特征）。"

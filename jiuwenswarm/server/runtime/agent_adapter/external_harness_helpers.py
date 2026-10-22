@@ -349,6 +349,11 @@ def _merge_host_external_cli_config(
     cli_path = str(entry.get("cli_path") or "").strip()
     if cli_path:
         merged.setdefault("cli_path", cli_path)
+    from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+    for field in ("cli_path", "codex_bin") if provider_name == "codex" else ("cli_path",):
+        if merged.get(field):
+            merged[field] = resolve_preserved_cli_path(merged[field])
     return merged
 
 

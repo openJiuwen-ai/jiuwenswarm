@@ -46,6 +46,34 @@ test('long user instructions and their final constraints reach the RPC intact', 
   assert.equal(calls[0][1].question, instruction);
 });
 
+test('JoyAI attaches restored context only to actual user turns and clears it on stop', async (t) => {
+  const calls = [];
+  globalThis.joyaiTestRequest = async (method, params) => {
+    calls.push({ method, params });
+    return { response: '', search_job: null };
+  };
+  t.after(() => { delete globalThis.joyaiTestRequest; });
+  const provider = new JoyAIProvider({
+    getSearchSessionId: () => 'task-duplex:chat-a', rememberSearchJob() {}, report() {},
+  });
+  provider.sessionId = 'media-a';
+  provider.restoreToken = 'restore-a';
+  assert.deepEqual(calls, [], 'restoring memory must not synthesize a user request');
+  await provider.requestFrame('', '', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[0].params.request_kind, 'frame');
+  assert.equal(calls[0].params.restore_token, undefined);
+  await provider.requestFrame('What is my project codename?', 'What is my project codename?', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[1].params.restore_token, 'restore-a');
+  assert.equal(calls[1].params.search_session_id, 'task-duplex:chat-a');
+  await provider.requestFrame('What about its task?', 'What about its task?', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[2].params.restore_token, 'restore-a', 'each user turn receives fresh task state from the backend');
+  provider.stop();
+  assert.equal(provider.restoreToken, '');
+  provider.sessionId = 'media-b';
+  await provider.requestFrame('Hello', 'Hello', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[3].params.restore_token, undefined, 'a new media session must not reuse the old restore token');
+});
+
 function setup() {
   const speech = [];
   const provider = new JoyAIProvider({
@@ -58,6 +86,50 @@ function setup() {
   const payload = (id) => ({ job_id: id, question: `任务${id}`, result: '旧字段', display_result: '```python\nprint(1)\n```' });
   return { provider, speech, payload };
 }
+
+test('expired JoyAI context refreshes once in the same scope and retries the same command', async (t) => {
+  const calls = [];
+  const provider = new JoyAIProvider({ getSearchSessionId: () => 'task-duplex:chat-a', rememberSearchJob() {} });
+  provider.sessionId = 'media-a';
+  provider.restoreToken = 'expired';
+  globalThis.joyaiTestRequest = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'video.realtime.config') return { context_restore: { token: 'fresh' } };
+    if (params.restore_token === 'expired') throw Object.assign(new Error('expired'), { code: 'CONTEXT_RESTORE_EXPIRED' });
+    return { response: '', search_job: null };
+  };
+  t.after(() => { delete globalThis.joyaiTestRequest; });
+  await provider.requestFrame('Continue', 'Continue', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.deepEqual(calls.map(call => call.method), ['video.joyai.frame', 'video.realtime.config', 'video.joyai.frame']);
+  assert.equal(calls[1].params.search_session_id, 'task-duplex:chat-a');
+  assert.equal(calls[2].params.command_id, calls[0].params.command_id);
+  assert.equal(calls[2].params.restore_token, 'fresh');
+});
+
+test('JoyAI restore errors do not loop, retry authorization failures, or replay cancelled runs', async (t) => {
+  t.after(() => { delete globalThis.joyaiTestRequest; });
+  for (const mode of ['failed', 'expired-again', 'stop', 'replace', 'empty']) {
+    const calls = [];
+    const provider = new JoyAIProvider({ getSearchSessionId: () => 'task-duplex:chat-a', rememberSearchJob() {} });
+    provider.sessionId = 'media-a';
+    provider.restoreToken = 'expired';
+    globalThis.joyaiTestRequest = async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'video.realtime.config') {
+        if (mode === 'stop') provider.stop();
+        if (mode === 'replace') provider.sessionId = 'media-b';
+        return mode === 'empty' ? {} : { context_restore: { token: 'fresh' } };
+      }
+      if (mode === 'empty' && !params.restore_token) return { response: '', search_job: null };
+      throw Object.assign(new Error(mode), { code: mode === 'failed' ? 'CONTEXT_RESTORE_FAILED' : 'CONTEXT_RESTORE_EXPIRED' });
+    };
+    const request = provider.requestFrame('Continue', 'Continue', 'data:image/jpeg;base64,ZmFrZQ==');
+    if (mode === 'failed' || mode === 'expired-again') await assert.rejects(request);
+    else await request;
+    assert.equal(calls.length, mode === 'failed' ? 1 : ['stop', 'replace'].includes(mode) ? 2 : 3);
+    if (mode === 'empty') assert.equal(provider.restoreToken, '');
+  }
+});
 
 test('tool context is immediate; only the brief waits for speech, in task order', async () => {
   const { provider, speech, payload } = setup();

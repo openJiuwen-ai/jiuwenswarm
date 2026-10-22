@@ -4,7 +4,7 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -12,6 +12,21 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server import agent_ws_server
+
+
+@pytest.fixture(autouse=True)
+def isolate_historical_database(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_organization_history.get_config",
+        lambda: {"experimental": {"team_organization_ui_enabled": True}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_organization_identity_store.load_organization_team_identity",
+        lambda _: {},
+    )
+    monkeypatch.setattr(
+        AgentWebSocketServer, "_load_persisted_organization", AsyncMock(return_value=None)
+    )
 
 
 def request(method=ReqMethod.CHAT_SEND, team="expert"):
@@ -225,8 +240,190 @@ async def test_team_list_without_owner_binding_marks_no_owner(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_team_list_returns_expert_snapshot_from_spec_without_package(monkeypatch):
+    server = object.__new__(AgentWebSocketServer)
+    identity = {"id": "asset", "name": "expert-group", "display_name": "专家团"}
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda _: team_manager_marker(),
+    )
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    entry = SimpleNamespace(
+        team_name="expert", state=SimpleNamespace(value="paused"),
+        agent=SimpleNamespace(
+            team_backend=SimpleNamespace(is_leader=True),
+            spec=SimpleNamespace(metadata={
+                "agent_group_name": "expert-group", "team_group_identity": identity,
+            }),
+        ),
+    )
+    pool = SimpleNamespace(teams_for_session=AsyncMock(return_value=[entry]))
+    monkeypatch.setattr("openjiuwen.core.runner.runner.GLOBAL_RUNNER", SimpleNamespace(
+        _team_runtime_manager=SimpleNamespace(pool=pool),
+    ))
+
+    teams = await server._team_list_entries("session", "web")
+
+    expert = next(team for team in teams if team["team_id"] == "expert")
+    assert expert["team_group_identity"] == identity
+    assert expert["is_owner"] is False
+    assert "team_group_identity" not in next(team for team in teams if team["is_owner"])
+
+
+
+@pytest.mark.asyncio
+async def test_team_list_merges_history_without_downgrading_live_team(monkeypatch):
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager", lambda _: team_manager_marker()
+    )
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    live = SimpleNamespace(
+        team_name="expert", state=SimpleNamespace(value="running"),
+        agent=SimpleNamespace(
+            team_backend=SimpleNamespace(is_leader=True, leader_member_name="live-leader"),
+            card=SimpleNamespace(name="Live expert"), spec=SimpleNamespace(metadata={}),
+        ),
+    )
+    pool = SimpleNamespace(teams_for_session=AsyncMock(return_value=[live]))
+    monkeypatch.setattr(
+        "openjiuwen.core.runner.runner.GLOBAL_RUNNER",
+        SimpleNamespace(_team_runtime_manager=SimpleNamespace(pool=pool)),
+    )
+    organization = SimpleNamespace(
+        organization_id="org",
+        leaders=[SimpleNamespace(team_id=name, leader_id=f"leader-{name}", capabilities=["analysis"])
+                 for name in ("owner", "expert", "summary")],
+    )
+    db = SimpleNamespace(team=SimpleNamespace(get_team=AsyncMock(return_value=None)))
+    monkeypatch.setattr(server, "_load_persisted_organization", AsyncMock(return_value=(db, organization)))
+    teams = {team["team_id"]: team for team in await server._team_list_entries("session", "web")}
+    assert set(teams) == {"owner", "expert", "summary"}
+    assert teams["owner"]["is_owner"] is True
+    assert teams["summary"]["state"] == "configured"
+    assert teams["expert"]["state"] == "running"
+    assert teams["expert"]["display_name"] == "Live expert"
+    assert teams["expert"]["source"] == "pool"
+    assert teams["expert"]["organization_id"] == "org"
+
+
+@pytest.mark.asyncio
+async def test_history_failure_keeps_live_team_list(monkeypatch):
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager", lambda _: team_manager_marker()
+    )
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr("openjiuwen.core.runner.runner.GLOBAL_RUNNER", None)
+    monkeypatch.setattr(server, "_load_persisted_organization", AsyncMock(side_effect=OSError("unavailable")))
+    teams = await server._team_list_entries("session", "web")
+    assert [team["team_id"] for team in teams] == ["owner"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage,broken", [
+    (stage, name) for stage in ("database", "identity") for name in ("owner", "expert", "summary")
+] + [("import", "")])
+async def test_optional_history_failure_preserves_all_members(monkeypatch, stage, broken):
+    import builtins
+
+    warnings = Mock(wraps=agent_ws_server.logger.warning)
+    monkeypatch.setattr(agent_ws_server.logger, "warning", warnings)
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr("jiuwenswarm.agents.harness.team.get_team_manager", lambda _: team_manager_marker())
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr("openjiuwen.core.runner.runner.GLOBAL_RUNNER", None)
+    names = ("owner", "expert", "summary")
+    organization = SimpleNamespace(
+        organization_id="org", leaders=[
+            SimpleNamespace(team_id=name, leader_id=f"leader-{name}", capabilities=["analysis"])
+            for name in names
+        ],
+    )
+    reads = []
+
+    async def get_team(name):
+        reads.append(name)
+        if stage == "database" and name == broken:
+            raise OSError("database read failed")
+        return SimpleNamespace(display_name=f"Display {name}")
+
+    def identity(name):
+        if stage == "identity" and name == broken:
+            raise RuntimeError("unexpected identity failure")
+        return {}
+
+    module = "jiuwenswarm.server.runtime.team_organization_identity_store"
+    monkeypatch.setattr(module + ".load_organization_team_identity", identity)
+    if stage == "import":
+        original_import = builtins.__import__
+
+        def unavailable(name, *args, **kwargs):
+            if name == module:
+                raise ImportError("identity loader is unavailable")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", unavailable)
+    db = SimpleNamespace(team=SimpleNamespace(get_team=get_team))
+    monkeypatch.setattr(server, "_load_persisted_organization", AsyncMock(return_value=(db, organization)))
+    teams = {team["team_id"]: team for team in await server._team_list_entries("session", "web")}
+    assert set(teams) == set(names)
+    assert reads == list(names)
+    assert all(team["organization_id"] == "org" for team in teams.values())
+    assert all(team["capabilities"] == ["analysis"] for team in teams.values())
+    for name in names:
+        if stage != "database" or name != broken:
+            assert teams[name]["display_name"] == f"Display {name}"
+    assert any("unavailable" in call.args[0] for call in warnings.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_cold_expert_request_recovers_target_without_running_owner(monkeypatch):
+    from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
+
+    server = object.__new__(AgentWebSocketServer)
+    organization = SimpleNamespace(organization_id="org")
+    db = object()
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(server, "_resolve_team_backend", lambda *args: None)
+    history_lookup = AsyncMock(return_value=(db, organization))
+    monkeypatch.setattr(server, "_load_persisted_organization", history_lookup)
+    restore = AsyncMock(return_value=backend("org"))
+    run = AsyncMock(return_value=True)
+    monkeypatch.setattr(JiuwenExpertTeamLauncher, "restore", restore)
+    monkeypatch.setattr(JiuwenExpertTeamLauncher, "run_organization_turn", run)
+    monkeypatch.setattr(agent_ws_server, "append_history_record", lambda **kwargs: None)
+    chunks = [chunk async for chunk in server._targeted_expert_response_stream(request())]
+    history_lookup.assert_awaited_once_with("session", "expert")
+    restore.assert_awaited_once_with(
+        team_id="expert", session_id="session", organization=organization, db=db, channel_id="web"
+    )
+    assert run.await_args.args[:2] == ("expert", "session")
+    assert chunks[-1].payload["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_cold_expert_recovery_error_returns_terminal_status(monkeypatch):
+    from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
+
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(server, "_resolve_team_backend", lambda *args: None)
+    monkeypatch.setattr(server, "_load_persisted_organization", AsyncMock(return_value=(object(), SimpleNamespace(organization_id="org"))))
+    monkeypatch.setattr(JiuwenExpertTeamLauncher, "restore", AsyncMock(side_effect=ValueError("package unavailable")))
+    run = AsyncMock()
+    monkeypatch.setattr(JiuwenExpertTeamLauncher, "run_organization_turn", run)
+    chunks = [chunk async for chunk in server._targeted_expert_response_stream(request())]
+    assert "package unavailable" in chunks[0].payload["error"]
+    assert chunks[-1].payload["is_processing"] is False
+    assert chunks[-1].payload["success"] is False
+    run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("description", [None, "", "short description", "x" * 400])
 async def test_org_snapshot_handles_empty_description(monkeypatch, description):
+    from openjiuwen.agent_teams.organization import manager as org_manager
     from openjiuwen.agent_teams.organization import pool
 
     server = object.__new__(AgentWebSocketServer)
@@ -253,13 +450,19 @@ async def test_org_snapshot_handles_empty_description(monkeypatch, description):
             list_pending_reviews=AsyncMock(return_value=[]),
         ),
     )
-    monkeypatch.setattr(pool, "get_process_org_manager", lambda **kwargs: manager)
+    reader = Mock(return_value=manager)
+    monkeypatch.setattr(org_manager, "TeamOrganizationManager", reader)
+    monkeypatch.setattr(
+        pool, "get_process_org_manager", Mock(side_effect=AssertionError("snapshot accessed runtime registry"))
+    )
+    db = object()
     snapshot = await server._build_org_snapshot(
         session_id="session",
         team_id="owner",
         organization_id="org",
-        backend=SimpleNamespace(db=object()),
+        backend=SimpleNamespace(db=db, messager=object()),
     )
+    reader.assert_called_once_with(organization_id="org", db=db, session_id="session")
     assert snapshot["tasks"] == [
         {"task_id": "task", "description": (description or "")[:280]}
     ]

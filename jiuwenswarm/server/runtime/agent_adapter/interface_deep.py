@@ -21,7 +21,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Mapping
-from contextlib import aclosing, asynccontextmanager, contextmanager
+from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -110,7 +110,7 @@ except ImportError:
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
-from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config
+from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
 from openjiuwen.harness.subagent_runtime import (
     SUBAGENT_ACTIVITY_EVENT_TYPE,
@@ -391,6 +391,9 @@ from jiuwenswarm.agents.harness.common.rails import (
     RuntimePromptRail,
     StructuredAskUserRail,
     SymphonyOrchestrationRail,
+)
+from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import (
+    SubagentToolActivityRail,
 )
 from jiuwenswarm.agents.harness.common.rails.eternal_conversation import (
     EternalConversationRail,
@@ -2082,6 +2085,7 @@ class JiuWenSwarmDeepAdapter:
         self._session_instance_agent_definition: dict[str, Any] | None = None
         self._is_session_scoped_adapter: bool = False
         self._parent_session_id: str | None = None
+        self._cron_web_context_refreshed: bool = False
         # Trajectory turn identity for this session. A turn spans every trace
         # a HITL resume adds to the ReAct loop already running, so it cannot
         # live on a single root span — see ``_resolve_trajectory_turn``.
@@ -3872,6 +3876,33 @@ class JiuWenSwarmDeepAdapter:
                     sid, remove_lock=False, remove_runtime_state=False,
                 )
                 existing = None
+            _tool_retrieval_flip_pending = (
+                existing is not None
+                and not is_external_harness
+                and not busy
+                and callable(
+                    getattr(
+                        existing,
+                        "_tool_retrieval_enable_flip_pending",
+                        None,
+                    )
+                )
+                and existing._tool_retrieval_enable_flip_pending()  # pylint: disable=protected-access
+            )
+            if _tool_retrieval_flip_pending:
+                # tool_search 渐进式披露在会话建实例时冻结了关闭态画像，而优化开关
+                # 此后已被打开：configure() 热更新无法接管已初始化的引擎自带
+                # ProgressiveToolRail（回调与元工具保持注册，两套披露并存），只能像
+                # 上方 MoA 切换一样重建会话 adapter——重建路径会重读 config 并从磁盘
+                # 恢复会话上下文。
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] rebuilding session adapter for tool "
+                    "retrieval enable: session_id=%s",
+                    sid,
+                )
+                await existing.cleanup()
+                self._drop_session_adapter_cache_entry(sid, remove_lock=False)
+                existing = None
             if existing is not None:
                 first_mcp_reconcile = requested_mcp_scan_names is not None and not bool(
                     getattr(
@@ -5268,6 +5299,8 @@ class JiuWenSwarmDeepAdapter:
                     ),
                     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                 ),
+                # Feeds the Web subagent panel's tool activity (issue #8637).
+                rails=[SubagentToolActivityRail()],
             )
             from jiuwenswarm.agents.harness.common.browser_config import (
                 apply_browser_decision_config,
@@ -5320,6 +5353,7 @@ class JiuWenSwarmDeepAdapter:
                         cua_agent_cfg.get("max_iterations"),
                         DEFAULT_CUA_AGENT_MAX_ITERATIONS,
                     ),
+                    rails=[SubagentToolActivityRail()],
                     **resolve_cua_factory_options(cua_agent_cfg),
                 )
             )
@@ -6773,12 +6807,32 @@ class JiuWenSwarmDeepAdapter:
             config_base
         )
 
+    def _tool_retrieval_enable_flip_pending(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return True when the optimize switch turned on after this session froze.
+
+        The tool-retrieval session profile is frozen at instance build. A
+        configure()-based reload cannot take over an already-initialized
+        bundled ProgressiveToolRail (its callbacks and meta tools stay
+        registered), so hot-enable is impossible; the session-acquire path
+        rebuilds the adapter instead. Frozen-on sessions keep running (the
+        live ``is_tool_retrieval_enabled`` AND already disables them hot).
+        """
+
+        frozen = self._tool_retrieval_session_enabled
+        if frozen is None or frozen:
+            return False
+        return is_tool_retrieval_enabled(config_base or get_config())
+
     def _sync_tool_retrieval_tools_for_runtime(
         self,
         config_base: dict[str, Any] | None = None,
     ) -> None:
         """Sync progressive tool retrieval registration after config reload."""
         enabled = self._tool_retrieval_tools_enabled_for_runtime(config_base)
+        was_registered = self._tool_retrieval_tools_registered
         tools, registered = self._sync_tool_group(
             current_tools=self._tool_retrieval_tools,
             registered=self._tool_retrieval_tools_registered,
@@ -6790,7 +6844,13 @@ class JiuWenSwarmDeepAdapter:
         self._tool_retrieval_tools_registered = registered
         if not enabled:
             self._tool_retrieval_toolkit = None
-            self._drop_tool_names_from_runtime(_TOOL_RETRIEVAL_TOOL_NAMES)
+            # Clean the meta-tool names only when this layer owned them. With
+            # the optimize switch off from session start, ``tool_search`` /
+            # ``tool_call`` belong to the engine's bundled ProgressiveToolRail
+            # (the pre-optimize behavior) — a by-name drop here would strip
+            # the bundled rail's meta tools on every config reload.
+            if was_registered:
+                self._drop_tool_names_from_runtime(_TOOL_RETRIEVAL_TOOL_NAMES)
 
     async def _sync_skill_retrieval_prompt_rail_for_runtime(
         self,
@@ -14589,6 +14649,23 @@ class JiuWenSwarmDeepAdapter:
         )
 
 
+    def _should_refresh_cron_web_context(
+        self, request: AgentRequest, *, send_without_output: bool,
+    ) -> bool:
+        """Check whether the first Web follow-up can refresh an idle cron context."""
+        if send_without_output or request.channel_id != "web":
+            return False
+        if not request.session_id or getattr(self, "_cron_web_context_refreshed", False):
+            return False
+        session_id = request.session_id
+        if not self._is_cron_execution_session(session_id):
+            return False
+        if self._session_has_other_running_agent_tasks(session_id):
+            return False
+        if self._is_deep_agent_executing_for_session(session_id):
+            return False
+        return getattr(self._instance, "active_round", None) is None
+
     async def _attach_and_send_inputs(
         self,
         request: AgentRequest,
@@ -14621,6 +14698,32 @@ class JiuWenSwarmDeepAdapter:
                 if answer is not None:
                     raise RootPermissionQueueError("permission_queue_output_unavailable")
                 return None, False
+            if (
+                stream is not None
+                and answer is None
+                and self._should_refresh_cron_web_context(request, send_without_output=send_without_output)
+            ):
+                # Web may have cached this session before its cron run completed.
+                # Restore that run once before accepting the first Web follow-up.
+                try:
+                    from jiuwenswarm.agents.harness.common.session_ops_service import (
+                        warmup_session_context,
+                    )
+
+                    self._cron_web_context_refreshed = await warmup_session_context(
+                        deep_agent=self._instance,
+                        session_id=request.session_id,
+                        history_before_request_id=request.request_id,
+                        refresh_existing=True,
+                    )
+                    if not self._cron_web_context_refreshed:
+                        raise RuntimeError("定时任务历史恢复失败，请重试。")
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] cron Web context refresh failed: "
+                        "session_id=%s error=%s", request.session_id, exc,
+                    )
+                    raise
             if stream is not None:
                 from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
 
@@ -16551,6 +16654,7 @@ class JiuWenSwarmDeepAdapter:
         """Bind Host request identity for streaming and non-streaming execution."""
         request_params = request.params if isinstance(request.params, dict) else {}
         from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
+        from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT, RunContext
         run_permissions = (
             request_params.get("run_permissions")
             if request.channel_id == "process_cli" else None
@@ -16559,48 +16663,62 @@ class JiuWenSwarmDeepAdapter:
         if (tool_levels is not None and self._permission_rail is None
                 and self._is_session_scoped_adapter):
             raise ValueError("run permissions require an enabled Runtime permission rail")
+        context = RunContext(
+            supports_permission_approval=(
+                request_params.get("supports_permission_approval",
+                                   request_params.get("supports_user_interaction", True)) is True
+            ),
+        )
         permission_rail = self._permission_rail
+        approval_rail = (
+            getattr(permission_rail, "base_rail", permission_rail)
+            if request.channel_id == "process_cli" else None
+        )
+        previous_approval_support = getattr(approval_rail, "supports_permission_approval", None)
         previous_rail_levels = (
             getattr(permission_rail, "run_permission_levels", None)
             if permission_rail is not None else None
         )
-        if permission_rail is not None:
-            permission_rail.run_permission_levels = tool_levels
-        run_permissions_token = RUN_PERMISSIONS.set(tool_levels)
-        runtime_mode = str(request_params.get("mode") or "agent").strip().lower()
-        root_invocation_token = bind_root_permission_request(
-            root_session_id=self._resolve_interrupt_session_id(request.session_id),
-            request_id=str(request.request_id or "").strip(),
-            enabled=self._enable_auto_permission and not is_team_params(request_params)
-            and runtime_mode != "auto_harness",
-            queue=self._root_permission_queue,
-        )
-        channel_token = TOOL_PERMISSION_CHANNEL_ID.set(
-            (request.channel_id or "").strip()
-        )
-        request_token = TOOL_PERMISSION_REQUEST_ID.set(
-            (request.request_id or "").strip()
-        )
-        command_token = None
-        if self._is_session_scoped_adapter and self._sys_operation is not None:
-            command_token = bind_command_execution(
-                self._sys_operation,
-                sandboxed=(
-                    getattr(self._sys_operation_card, "mode", None)
-                    == OperationMode.SANDBOX
-                ),
-            )
-        try:
-            yield
-        finally:
+        with ExitStack() as cleanup:
+            if approval_rail is not None:
+                # SDK tool callbacks can run in tasks created before this request's
+                # ContextVars. Bind this restriction to the session's rail as well.
+                cleanup.callback(setattr, approval_rail, "supports_permission_approval", previous_approval_support)
+                approval_rail.supports_permission_approval = context.supports_permission_approval
             if permission_rail is not None:
-                permission_rail.run_permission_levels = previous_rail_levels
-            RUN_PERMISSIONS.reset(run_permissions_token)
-            reset_root_permission_request(root_invocation_token)
-            if command_token is not None:
-                reset_command_execution(command_token)
-            TOOL_PERMISSION_REQUEST_ID.reset(request_token)
-            TOOL_PERMISSION_CHANNEL_ID.reset(channel_token)
+                cleanup.callback(setattr, permission_rail, "run_permission_levels", previous_rail_levels)
+                permission_rail.run_permission_levels = tool_levels
+            context_token = CURRENT_RUN_CONTEXT.set(context)
+            cleanup.callback(CURRENT_RUN_CONTEXT.reset, context_token)
+            run_permissions_token = RUN_PERMISSIONS.set(tool_levels)
+            cleanup.callback(RUN_PERMISSIONS.reset, run_permissions_token)
+            runtime_mode = str(request_params.get("mode") or "agent").strip().lower()
+            root_invocation_token = bind_root_permission_request(
+                root_session_id=self._resolve_interrupt_session_id(request.session_id),
+                request_id=str(request.request_id or "").strip(),
+                enabled=self._enable_auto_permission and not is_team_params(request_params)
+                and runtime_mode != "auto_harness",
+                queue=self._root_permission_queue,
+            )
+            cleanup.callback(reset_root_permission_request, root_invocation_token)
+            channel_token = TOOL_PERMISSION_CHANNEL_ID.set(
+                (request.channel_id or "").strip()
+            )
+            cleanup.callback(TOOL_PERMISSION_CHANNEL_ID.reset, channel_token)
+            request_token = TOOL_PERMISSION_REQUEST_ID.set(
+                (request.request_id or "").strip()
+            )
+            cleanup.callback(TOOL_PERMISSION_REQUEST_ID.reset, request_token)
+            if self._is_session_scoped_adapter and self._sys_operation is not None:
+                command_token = bind_command_execution(
+                    self._sys_operation,
+                    sandboxed=(
+                        getattr(self._sys_operation_card, "mode", None)
+                        == OperationMode.SANDBOX
+                    ),
+                )
+                cleanup.callback(reset_command_execution, command_token)
+            yield
 
     async def process_message_impl(
         self, request: AgentRequest, inputs: dict[str, Any]

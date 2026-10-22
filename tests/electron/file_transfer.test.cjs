@@ -19,7 +19,7 @@ async function fixture(t, response = () => new Response('complete')) {
   const calls = { fetched: [], revealed: [], dialogs: [] };
   let choice = { canceled: false, filePath: target };
   const context = vm.createContext({
-    fs, path, randomUUID, Readable, pipeline, URL, Date, console,
+    fs, path, randomUUID, Readable, pipeline, URL, Date, console, Buffer, decodeURIComponent,
     process: { env: { JIUWENSWARM_DATA_DIR: root } },
     app: { getPath: () => root }, mainWindow: {}, currentFrontendUrl: 'http://127.0.0.1:5173',
     net: { fetch: async url => { calls.fetched.push(url.toString()); return response(); } },
@@ -72,6 +72,59 @@ test('HTTP failure leaves no output and local protocols are rejected before the 
   assert.equal(f.calls.dialogs.length, 0);
   await assert.rejects(f.save('/artifact', 'file.txt'), /HTTP 503/);
   assert.deepEqual(await fs.readdir(f.root), []);
+});
+
+test('file-preview text downloads can save FileReader data URLs without net.fetch', async t => {
+  const f = await fixture(t);
+  const payload = Buffer.from('{"name":"demo"}', 'utf8').toString('base64');
+  const result = await f.save(`data:text/plain;charset=utf-8;base64,${payload}`, 'manifest.json');
+  assert.equal(result.ok, true);
+  assert.equal(await fs.readFile(f.target, 'utf8'), '{"name":"demo"}');
+  assert.deepEqual(f.calls.fetched, []);
+  assert.deepEqual(f.calls.revealed, [f.target]);
+});
+
+test('data URL write failure removes the leftover .part and preserves the target', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'electron-transfer-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const target = path.join(root, 'chosen.txt');
+  await fs.writeFile(target, 'original');
+  const calls = { fetched: [], revealed: [], dialogs: [] };
+  const realOpen = fs.open.bind(fs);
+  const context = vm.createContext({
+    fs: {
+      ...fs,
+      open: async (filePath, flags) => {
+        const handle = await realOpen(filePath, flags);
+        if (!String(filePath).endsWith('.part')) return handle;
+        return {
+          writeFile: async () => { throw new Error('ENOSPC'); },
+          createWriteStream: handle.createWriteStream.bind(handle),
+          close: () => handle.close(),
+        };
+      },
+    },
+    path, randomUUID, Readable, pipeline, URL, Date, console, Buffer, decodeURIComponent,
+    process: { env: { JIUWENSWARM_DATA_DIR: root } },
+    app: { getPath: () => root }, mainWindow: {}, currentFrontendUrl: 'http://127.0.0.1:5173',
+    net: { fetch: async url => { calls.fetched.push(url.toString()); return new Response('complete'); } },
+    dialog: {
+      showSaveDialog: async (_window, options) => {
+        calls.dialogs.push(options);
+        return { canceled: false, filePath: target };
+      },
+    },
+    shell: { showItemInFolder: file => calls.revealed.push(file) },
+  });
+  vm.runInContext(helpers, context);
+  const payload = Buffer.from('{"name":"demo"}', 'utf8').toString('base64');
+  await assert.rejects(
+    context.saveDownloadedFile(`data:text/plain;base64,${payload}`, 'manifest.json'),
+    /ENOSPC/,
+  );
+  assert.equal(await fs.readFile(target, 'utf8'), 'original');
+  assert.deepEqual(await fs.readdir(root), ['chosen.txt']);
+  assert.deepEqual(calls.revealed, []);
 });
 
 test('rename failure removes only this download temporary file', async t => {

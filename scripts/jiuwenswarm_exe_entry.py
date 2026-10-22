@@ -103,6 +103,10 @@ if getattr(sys, "frozen", False):
                 else str(_uv_runtime)
             )
 
+        from jiuwenswarm.common.windows_cli_paths import configure_windows_npm_environment
+
+        configure_windows_npm_environment()
+
     # Windows: 防止 subprocess 弹出控制台窗口（console=False 编译时 git 等命令会弹出黑框）
     # Monkey-patch asyncio.create_subprocess_exec 和 subprocess.Popen，
     # 自动添加 CREATE_NO_WINDOW 标志
@@ -575,6 +579,13 @@ def _dispatch() -> int | None:
         from jiuwenswarm.common.config import reset_external_cli_agents_in_config
 
         reset_external_cli_agents_in_config()
+        return 0
+    if _pop_flag("--desktop-restore-upgrade-config"):
+        if len(sys.argv) != 1:
+            raise ValueError("upgrade configuration restore does not accept arguments")
+        from jiuwenswarm.common.windows_upgrade_config import restore_legacy_upgrade_config
+
+        restore_legacy_upgrade_config()
         return 0
     # 已知子命令分发（不检查单实例锁）
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "init":

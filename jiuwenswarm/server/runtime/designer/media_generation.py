@@ -45,6 +45,8 @@ _VIDEO_TIMEOUT_SECONDS = 1800.0
 _VIDEO_TOOL_TIMEOUT_SECONDS = 1500.0
 # A 50-step MiniMax-H3 render on a self-deployed server can take far longer.
 _VLLM_OMNI_VIDEO_TIMEOUT_SECONDS = 7200.0
+# Design image generate wait (handlers.common wraps generate_image with this).
+_IMAGE_TOOL_TIMEOUT_SECONDS = 1200.0
 _SAVED_TO = re.compile(r"^Saved to: (.+)$", re.MULTILINE)
 _PENDING_JOB = re.compile(r"^Video job (\S+) (?:submitted and still|is still) ")
 
@@ -90,6 +92,15 @@ def video_tool_timeout_seconds() -> float:
     if slot_settings("video").backend == gen_toolkits.VLLM_OMNI:
         return _VLLM_OMNI_VIDEO_TIMEOUT_SECONDS
     return _VIDEO_TOOL_TIMEOUT_SECONDS
+
+
+def image_tool_timeout_seconds() -> float:
+    """How long one design image generate call may run.
+
+    Matches the ``asyncio.wait_for`` around ``generate_image`` in
+    ``handlers.common``.
+    """
+    return _IMAGE_TOOL_TIMEOUT_SECONDS
 
 
 def generation_enabled(kind: Kind) -> bool:
@@ -247,7 +258,9 @@ async def generate_video(request: DesignerVideoRequest, *, save_dir: str | None 
         result = await gen_toolkits.check_video(target, pending.group(1), save_dir)
         pending = _PENDING_JOB.match(result)
     if pending:
-        return {"error": f"[ERROR]: video job {pending.group(1)} did not finish within {int(timeout)}s."}
+        return {
+            "error": f"[ERROR]: video job {pending.group(1)} did not finish within {int(timeout)}s; last={result}"
+        }
     path = None if result.startswith("[ERROR]") else _saved_path(result)
     return {"video_path": path} if path else {"error": result}
 

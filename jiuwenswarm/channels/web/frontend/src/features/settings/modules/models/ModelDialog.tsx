@@ -113,7 +113,10 @@ export function ModelDialog({
   });
   const values = form.getValues();
   const hasUnchangedApiKey = model?.has_api_key === true && !connectionChanged.current;
-  const errors = validateModelDraft(values, models, model?.origin_index, catalog, t, hasUnchangedApiKey);
+  const editingSelf = model
+    ? { model_id: model.model_id, origin_index: model.origin_index }
+    : undefined;
+  const errors = validateModelDraft(values, models, editingSelf, catalog, t, hasUnchangedApiKey);
   const account = values.vendor_selection === OPENAI_ACCOUNT_SELECTION;
   const preset = findVendorPreset(catalog, values.vendor_selection);
   const custom = values.vendor_selection === CUSTOM_VENDOR_SELECTION;
@@ -583,7 +586,7 @@ export function ModelDialog({
               {
                 trigger: ['change', 'blur'],
                 validator: (_alias, currentValues) =>
-                  validateModelDraft({ ...currentValues }, models, model?.origin_index, catalog, t).alias,
+                  validateModelDraft({ ...currentValues }, models, editingSelf, catalog, t).alias,
               },
             ],
             protocol: [{ validator: () => errors.protocol }],

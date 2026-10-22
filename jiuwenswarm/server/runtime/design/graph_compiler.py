@@ -305,12 +305,14 @@ class GraphScriptCompiler:
             # a produced output has nothing to inline, so refuse instead of
             # silently rerunning the ancestor chain. Uploaded handler nodes
             # are always inline-able literals.
-            not_ready = sorted(
-                nid
-                for nid in scope.difference(forced)
-                if node_uses_agent_runtime(nodes_by_id[nid])
-                and _frozen_text(run_outputs.get(nid)) is None
-            )
+            not_ready: list[str] = []
+            for nid in scope.difference(forced):
+                if (
+                    node_uses_agent_runtime(nodes_by_id[nid])
+                    and _frozen_text(run_outputs.get(nid)) is None
+                ):
+                    not_ready.append(nid)
+            not_ready.sort()
             if not_ready:
                 raise ValueError(
                     "upstream not ready: " + ", ".join(not_ready)

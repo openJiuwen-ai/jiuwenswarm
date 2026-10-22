@@ -61,6 +61,8 @@ export interface Session {
   agent_group_name?: string | null;
   /** 首次 AgentGroup 绑定时锁定的 leader 身份；旧 session 可能没有该字段。 */
   team_leader_identity?: unknown;
+  /** 首次 AgentGroup 绑定时锁定的展示身份；旧 session 会在包仍存在时补齐。 */
+  team_group_identity?: unknown;
   // ---- session.list 扩展字段 ----
   channel_id?: string; // 渠道ID
   user_id?: string; // 创建人ID
@@ -177,6 +179,8 @@ export type ModelGroup = {
 export type ModelSelectionReference = {
   scope: string;
   scope_id?: string;
+  /** User-facing label when the backend resolved a display name (#5477). */
+  label?: string;
 };
 
 export interface VendorPreset {

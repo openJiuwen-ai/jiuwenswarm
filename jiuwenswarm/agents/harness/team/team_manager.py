@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import math
 import re
 import time
 import weakref
@@ -1312,7 +1313,8 @@ class TeamManager:
         )
 
         try:
-            resolved = ModelSelectionResolver().resolve(
+            resolver = ModelSelectionResolver()
+            resolved = resolver.resolve(
                 SwarmModelSelection(
                     type=selection.type,
                     id=selection.id,
@@ -1320,17 +1322,35 @@ class TeamManager:
                 )
             )
             # Team routes across the whole group. Groups saved from the UI
-            # carry no routing strategy, which would compile to the first
-            # route only; default them to ordered failover. A manually
+            # carry no routing settings, which would compile to the first
+            # route only or use IntelliRouter's 30-second timeout. A manually
             # selected route keeps compiling to that single model.
-            if (
-                isinstance(resolved, ResolvedModelGroup)
-                and selection.route_id is None
-                and not (resolved.routing or {}).get("strategy")
-            ):
-                resolved = resolved.model_copy(
-                    update={"routing": {**(resolved.routing or {}), "strategy": "ordered-failover"}}
-                )
+            if isinstance(resolved, ResolvedModelGroup) and selection.route_id is None:
+                routing = dict(resolved.routing or {})
+                if not routing.get("strategy"):
+                    routing["strategy"] = "ordered-failover"
+                catalog_config = getattr(getattr(resolver, "catalog", None), "config", {}) or {}
+                models_config = catalog_config.get("models") or {}
+                for key, config_key, default in (
+                    ("timeout_seconds", "group_routing_timeout_seconds", 360),
+                    ("stream_first_chunk_timeout", "group_stream_first_chunk_timeout_seconds", 300),
+                    ("stream_idle_timeout", "group_stream_idle_timeout_seconds", 120),
+                ):
+                    raw_timeout = routing.get(key)
+                    if raw_timeout is None:
+                        raw_timeout = models_config.get(config_key, default)
+                    try:
+                        timeout = float(raw_timeout)
+                        if not math.isfinite(timeout) or timeout <= 0:
+                            raise ValueError("timeout must be positive and finite")
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Invalid model group %s value %r; using %s seconds",
+                            key, raw_timeout, default,
+                        )
+                        timeout = float(default)
+                    routing[key] = timeout
+                resolved = resolved.model_copy(update={"routing": routing})
             compiled = compile_model_selection(resolved)
         except ModelSelectionError:
             # Stable catalog / permission failures are meaningful to callers.

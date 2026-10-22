@@ -5,6 +5,7 @@ import {
   ExternalCliCustomAgentsItem,
   ProactiveLimitsSetting,
   RSISetting,
+  TrajectoryDiagnosisSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
 import { MultiModelVerificationSettings } from './MultiModelCollaborationSettings';
@@ -40,7 +41,10 @@ export const experimentalModule: SettingsModuleDefinition = {
     {
       id: 'trajectory-ui',
       titleKey: 'settingsPanel.experimental.trajectoryUi',
-      items: [{ id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting }],
+      items: [
+        { id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting },
+        { id: 'trajectory-diagnosis-enabled', component: 'custom', render: TrajectoryDiagnosisSetting },
+      ],
     },
     {
       id: 'skill-pack',
@@ -117,6 +121,17 @@ export const experimentalModule: SettingsModuleDefinition = {
             disabled: 'never',
             items: [{ id: 'multi-model-verification', component: 'custom', render: MultiModelVerificationSettings }],
           },
+        },
+      ],
+    },
+    {
+      id: 'tool-optimize',
+      titleKey: 'settingsPanel.experimental.toolOptimize',
+      items: [
+        {
+          id: 'progressive-tool-optimize-enabled',
+          component: 'switch',
+          key: 'progressive_tool_optimize',
         },
       ],
     },

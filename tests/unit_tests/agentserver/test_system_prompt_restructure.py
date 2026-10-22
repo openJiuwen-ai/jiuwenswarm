@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 
@@ -2388,6 +2388,7 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
         sys_operation=None,
         language="cn",
         max_iterations=7,
+        rails=[ANY],
     )
 
 
@@ -2425,6 +2426,7 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
         sys_operation=None,
         language="cn",
         max_iterations=DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+        rails=[ANY],
     )
 
 

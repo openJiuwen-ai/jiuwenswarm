@@ -41,8 +41,8 @@ async def wait_for(predicate):
             await asyncio.sleep(0.005)
 
 
-@pytest.mark.parametrize("scope", ["voice", "task-duplex:web-native"])
-async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_path, monkeypatch, scope):
+@pytest.mark.parametrize("scope,work_mode", [("voice", "work"), ("task-duplex:web-native", "work"), ("task-duplex:code-native", "code")])
+async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_path, monkeypatch, scope, work_mode):
     from jiuwenswarm.server.runtime.agent_adapter import interface
 
     store = TaskStore(tmp_path / "native.sqlite")
@@ -85,6 +85,8 @@ async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_p
 
     class LocalAgentTransport:
         async def send_request(self, env):
+            if env.method == ReqMethod.SESSION_GET_METADATA.value:
+                return SimpleNamespace(ok=True, payload={"user_id": "user", "mode": "agent", "work_mode": work_mode})
             return SimpleNamespace(ok=True, payload={"files": []})
 
         async def send_request_stream(self, env):
@@ -151,11 +153,12 @@ async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_p
         assert store.read(task["id"])["result"] == final["result"]
         assert (calls[-1].session_id == task["core_session_id"]) == scope.startswith("task-duplex:")
         if scope.startswith("task-duplex:"):
-            assert calls[-1].session_id == "web-native"
+            assert calls[-1].session_id == scope.removeprefix("task-duplex:")
+            assert calls[-1].params["work_mode"] == work_mode
             assert "5000" in str(model_inputs[-1])
             # Switch to an ordinary text turn on the same Core Agent/session.
             result = await agent.invoke(
-                {"query": "刚才任务确定的预算是多少？"}, session=sessions["web-native"],
+                {"query": "刚才任务确定的预算是多少？"}, session=sessions[scope.removeprefix("task-duplex:")],
             )
             assert "改为66元" in str(model_inputs[-1])
             assert result["output"] == "预算66元"

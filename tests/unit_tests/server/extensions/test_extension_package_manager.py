@@ -29,6 +29,30 @@ from tests.unit_tests.server.extensions.conftest import (
 _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
 
 
+def test_normalize_agent_group_display_identity_preserves_binding_and_asset_id():
+    identity = catalog.normalize_agent_group_display_identity(
+        {
+            "id": "hub-asset-123",
+            "name": "group-a",
+            "display_name": {"zh": "中文专家团", "en": "Expert Team"},
+            "avatar": "https://example.test/group.png",
+        },
+        binding_name="group-a",
+    )
+
+    assert identity == {
+        "id": "hub-asset-123",
+        "name": "group-a",
+        "display_name": "中文专家团",
+        "display_name_i18n": {"zh": "中文专家团", "en": "Expert Team"},
+        "avatar": "https://example.test/group.png",
+    }
+    assert catalog.normalize_agent_group_display_identity(
+        {"id": "hub-asset-123", "name": "other", "display_name": "Other"},
+        binding_name="group-a",
+    ) is None
+
+
 def test_packaged_agent_group_resources_exclude_sample_group():
     resources = catalog.get_equipment_resources_agent_groups_dir()
 
@@ -166,6 +190,35 @@ def _seed_valid_agent_group(
         encoding="utf-8",
     )
     return package
+
+
+def test_uninstall_snapshot_survives_previously_queued_metadata(
+    extension_workspace: Path,
+) -> None:
+    from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+    group_name = "queued-display-group"
+    _seed_valid_agent_group(extension_workspace, group_name, under="local")
+    catalog.install_agent_group({"id": group_name})
+    sid = "queued-legacy-group"
+    queued = {
+        "session_id": sid,
+        "agent_group_name": group_name,
+        "message_count": 7,
+    }
+    metadata._write_metadata_sync(sid, queued)
+    identity = catalog.resolve_agent_group_display_identity(group_name)
+
+    catalog.uninstall_agent_group({"id": group_name})
+    metadata._write_metadata_sync(
+        sid,
+        {**queued, "message_count": 8},
+        metadata._MetadataWriteOptions(preserve_pin_fields=True),
+    )
+
+    restored = metadata.get_session_metadata(sid, cache_bust=True)
+    assert restored["team_group_identity"] == identity
+    assert restored["message_count"] == 8
 
 
 class TestPrepareWorkspaceAndMarketplace:
@@ -635,6 +688,118 @@ class TestAgentGroupLifecycle:
         catalog.uninstall_agent_group({"id": "delivery-review-team"})
         assert catalog.show_agent_group("delivery-review-team") is None
         assert catalog.is_agent_group_installed("delivery-review-team") is False
+
+    def test_uninstall_preserves_legacy_session_group_identity(
+        self, extension_workspace: Path
+    ) -> None:
+        from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+        self._create_group()
+        catalog.install_agent_group({"id": "delivery-review-team"})
+        identity = catalog.resolve_agent_group_display_identity("delivery-review-team")
+        original = {
+            "session_id": "legacy-bound",
+            "agent_group_name": "delivery-review-team",
+            "message_count": 7,
+            "last_message_at": 1234.0,
+            "pinned": True,
+        }
+        saved = {
+            **original,
+            "session_id": "already-saved",
+            "team_group_identity": {**identity, "display_name": "Historical name"},
+        }
+        other = {**original, "session_id": "other-group", "agent_group_name": "other"}
+        for value in (original, saved, other):
+            metadata._write_metadata_sync(value["session_id"], value)
+
+        catalog.uninstall_agent_group({"id": "delivery-review-team"})
+
+        sessions = utils.get_agent_sessions_dir()
+        def read(sid):
+            return json.loads((sessions / sid / "metadata.json").read_text())
+        assert read("legacy-bound") == {**original, "team_group_identity": identity}
+        assert read("already-saved") == saved
+        assert read("other-group") == other
+        assert catalog.show_agent_group("delivery-review-team") is None
+
+    def test_uninstall_preserves_archived_identity_without_relaxing_fences(
+        self, extension_workspace: Path
+    ) -> None:
+        from jiuwenswarm.server.runtime.session import lifecycle as lc
+        from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+        self._create_group()
+        catalog.install_agent_group({"id": "delivery-review-team"})
+        identity = catalog.resolve_agent_group_display_identity("delivery-review-team")
+        sid = "archived-legacy-group"
+        original = {
+            "session_id": sid,
+            "agent_group_name": "delivery-review-team",
+            "archived": True,
+            "archived_at": 1234.0,
+            "message_count": 7,
+        }
+        metadata._write_metadata_sync(sid, original)
+        active, archived = lc.session_paths(sid)
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        lc.begin("session", sid, "archive")
+        active.rename(archived)
+        lc.complete("session", sid, archived=True)
+        fence = lc.state("session", sid)
+
+        catalog.uninstall_agent_group({"id": "delivery-review-team"})
+
+        assert lc.raw_metadata(sid) == {**original, "team_group_identity": identity}
+        assert lc.state("session", sid) == fence
+        assert not active.exists()
+        with pytest.raises(lc.LifecycleError, match="writes are isolated"):
+            metadata.update_session_metadata(session_id=sid, title="forbidden", sync_write=True)
+
+    def test_uninstall_keeps_package_during_archived_lifecycle_operation(
+        self, extension_workspace: Path
+    ) -> None:
+        from jiuwenswarm.server.runtime.session import lifecycle as lc
+        from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+        self._create_group()
+        catalog.install_agent_group({"id": "delivery-review-team"})
+        sid = "restoring-legacy-group"
+        metadata._write_metadata_sync(sid, {
+            "session_id": sid,
+            "agent_group_name": "delivery-review-team",
+        })
+        active, archived = lc.session_paths(sid)
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        lc.begin("session", sid, "archive")
+        active.rename(archived)
+        lc.complete("session", sid, archived=True)
+        lc.begin("session", sid, "unarchive")
+
+        with pytest.raises(lc.LifecycleError, match="lifecycle operation in progress"):
+            catalog.uninstall_agent_group({"id": "delivery-review-team"})
+        assert "team_group_identity" not in lc.raw_metadata(sid)
+        assert catalog.resolve_agent_group_dir("delivery-review-team").is_dir()
+
+    def test_uninstall_keeps_package_if_snapshot_write_fails(
+        self, extension_workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+        self._create_group()
+        catalog.install_agent_group({"id": "delivery-review-team"})
+        metadata._write_metadata_sync("legacy-write-failure", {
+            "session_id": "legacy-write-failure",
+            "agent_group_name": "delivery-review-team",
+        })
+
+        def fail_write(*_args):
+            raise OSError("snapshot write failed")
+
+        monkeypatch.setattr(metadata, "_write_metadata_sync", fail_write)
+        with pytest.raises(OSError, match="snapshot write failed"):
+            catalog.uninstall_agent_group({"id": "delivery-review-team"})
+        assert catalog.resolve_agent_group_dir("delivery-review-team").is_dir()
 
     def test_create_rejects_invalid_member_without_partial_package(
         self, extension_workspace: Path
@@ -1984,3 +2149,39 @@ class TestUpdateAndDeleteAgentTemplate:
         catalog.uninstall_agent_template({"id": "mine"})
         assert not pkg.exists()
         assert all(e["id"] != "mine" for e in marketplace_entries(AGENT_TEMPLATES))
+
+
+@pytest.mark.parametrize("as_archive", [False, True])
+@pytest.mark.parametrize("as_mapping", [False, True])
+@pytest.mark.parametrize("skill_path", [
+    "/tmp/docx-pro",
+    r"C:\Users\Administrator\skills\docx-pro",
+    r"\\server\share\docx-pro",
+])
+def test_import_group_rejects_absolute_skill_paths(
+    extension_workspace: Path, tmp_path: Path,
+    skill_path: str, as_mapping: bool, as_archive: bool,
+) -> None:
+    source = _seed_valid_agent_group(
+        tmp_path / "source-home" / "agent" / "workspace",
+        "invalid-skills", under="local",
+    )
+    manifest_path = source / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["skills"] = [{"dir": skill_path}] if as_mapping else [skill_path]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    upload = source
+    if as_archive:
+        upload = tmp_path / "invalid-skills.zip"
+        with zipfile.ZipFile(upload, "w") as archive:
+            for path in source.rglob("*"):
+                if path.is_file():
+                    archive.write(path, Path(source.name) / path.relative_to(source))
+    with pytest.raises(ValueError, match="skill"):
+        catalog.import_agent_group({"path": str(upload)})
+    destination = (
+        extension_workspace.parent.parent / ".agent_teams"
+        / AGENT_GROUPS / "local" / "invalid-skills"
+    )
+    assert not destination.exists()
+    assert not catalog.is_agent_group_installed("invalid-skills")

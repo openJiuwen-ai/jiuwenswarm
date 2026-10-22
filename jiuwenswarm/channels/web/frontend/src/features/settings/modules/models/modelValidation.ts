@@ -5,12 +5,39 @@ import { isReasoningLevelSupported, resolveModelReasoning } from './modelReasoni
 
 export type ModelDraftErrors = Partial<Record<keyof ModelDraft, string>>;
 
+/** Identity of the model being edited; prefer model_id (upsert path), fall back to origin_index. */
+export type EditingModelIdentity = {
+  model_id?: string;
+  origin_index?: number;
+};
+
 const MAX_API_KEY_LENGTH = 2048;
+
+function normalizeEditingIdentity(
+  editingSelf: EditingModelIdentity | number | undefined,
+): EditingModelIdentity | undefined {
+  if (editingSelf === undefined) return undefined;
+  if (typeof editingSelf === 'number') return { origin_index: editingSelf };
+  return editingSelf;
+}
+
+function isEditingSelf(model: ModelEntry, editingSelf: EditingModelIdentity | undefined): boolean {
+  if (!editingSelf) return false;
+  if (editingSelf.model_id && model.model_id === editingSelf.model_id) return true;
+  if (
+    editingSelf.origin_index !== undefined &&
+    model.origin_index !== undefined &&
+    model.origin_index === editingSelf.origin_index
+  ) {
+    return true;
+  }
+  return false;
+}
 
 export function validateModelDraft(
   value: ModelDraft,
   models: ModelEntry[],
-  editingOriginIndex: number | undefined,
+  editingSelf: EditingModelIdentity | number | undefined,
   catalog: VendorPresetMap,
   t: (key: string, values?: Record<string, unknown>) => string,
   hasUnchangedApiKey = false,
@@ -62,10 +89,8 @@ export function validateModelDraft(
     });
   }
 
-  const others = models.filter(
-    (model) =>
-      model.is_agentos !== true && (editingOriginIndex === undefined || model.origin_index !== editingOriginIndex),
-  );
+  const identity = normalizeEditingIdentity(editingSelf);
+  const others = models.filter((model) => model.is_agentos !== true && !isEditingSelf(model, identity));
   if (
     alias &&
     !errors.alias &&

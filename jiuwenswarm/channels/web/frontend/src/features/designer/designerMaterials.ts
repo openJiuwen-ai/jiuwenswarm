@@ -42,6 +42,43 @@ export function isDesignerTableMaterial(material: Pick<DesignerMaterial, 'kind' 
   return material.kind === 'table' || material.role === 'storyboard';
 }
 
+const MIME_EXTENSIONS: Readonly<Record<string, string>> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'video/mp4': 'mp4',
+  'video/webm': 'webm',
+  'video/quicktime': 'mov',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/ogg': 'ogg',
+  'text/markdown': 'md',
+  'text/plain': 'txt',
+  'text/csv': 'csv',
+  'application/json': 'json',
+};
+
+function fileExtension(name: string): string {
+  const base = name.split(/[\\/]/).pop() || '';
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
+}
+
+/** Download name for a material: its label, with the stored file's extension. */
+export function designerMaterialFilename(
+  material: Pick<DesignerMaterial, 'label' | 'uri' | 'mimeType'>,
+  fallback: string,
+): string {
+  const path = material.uri.split(/[?#]/)[0];
+  const mime = (material.mimeType || '').split(';')[0].trim().toLowerCase();
+  const extension = fileExtension(path) || MIME_EXTENSIONS[mime] || '';
+  const name = material.label?.trim() || path.split(/[\\/]/).pop() || fallback;
+  if (!extension || fileExtension(name) === extension) return name;
+  return `${name}.${extension}`;
+}
+
 export function classifyDesignerOutput(input: {
   kind?: string;
   mimeType?: string;

@@ -210,6 +210,7 @@ class ReqMethod(Enum):
     # Gateway owns voice task records; AgentServer returns execution facts/files.
     VOICE_TASK_CHECKPOINT_ACK = "voice.task.checkpoint.ack"
     VOICE_TASK_FILES = "voice.task.files"
+    VOICE_SESSION_RECEIPTS = "voice.session.receipts"
 
     # HarmonyOS TUI DevEco bootstrap（Phase 3：用户态在目标 AgentServer 注入目录执行）
     HARMONYOS_PROJECT_INIT = "harmonyos.project_init"
@@ -503,6 +504,14 @@ class ReqMethod(Enum):
     RSI_HARNESS_INSTALL = "rsi.harness.install"
     RSI_HARNESS_VERSIONS_LIST = "rsi.harness.versions.list"
     RSI_HARNESS_ROLLBACK = "rsi.harness.rollback"
+
+    # Trajectory diagnosis: the Gateway proxies these to the Worker-hosted service
+    DIAGNOSIS_RUN = "diagnosis.run"
+    DIAGNOSIS_LIST = "diagnosis.list"
+    DIAGNOSIS_GET = "diagnosis.get"
+    DIAGNOSIS_CANCEL = "diagnosis.cancel"
+    DIAGNOSIS_DELETE = "diagnosis.delete"
+    DIAGNOSIS_TTSE_TRIGGER = "diagnosis.ttse.trigger"
 
     # Schedule task management
     SCHEDULE_CHECK_CONFIG = "schedule.check_config"

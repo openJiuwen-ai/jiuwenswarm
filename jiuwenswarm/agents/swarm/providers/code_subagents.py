@@ -40,7 +40,7 @@ from openjiuwen.agent_teams.harness.manifest import (
 from openjiuwen.harness.schema.build_context import parent_sys_operation
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
-from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config
+from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,

@@ -80,6 +80,20 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 版本号硬编码位置已全部消除：ps1/iss/组装 package.json 均来自 `build_config.py`（即 pyproject.toml）。
 
+### Windows 升级时保全用户安装的 CLI 和 SDK
+
+两套 Windows 安装器在清理安装目录或调用旧管理员版卸载器前，使用内嵌的 `preserve-windows-cli.ps1` 保全旧 `runtime/node-runtime` 和 `resources/backend/runtime/node-runtime`。整个 Node 前缀连同依赖、入口和未知文件进行离线复制与 SHA256 校验；源文件变化、运行中的 CLI、链接目录或复制失败会停止后续清理。恢复副本位于用户数据目录的 `runtime/npm/preserved`，运行副本位于 `runtime/npm/installed`，二者均不随应用卸载删除，也不会自动清除。完整复制会增加磁盘占用，空间不足会报错并保留原文件。
+
+安装后初始化独立的 `runtime/npm/global` 前缀，冻结进程中的 npm/npx 使用该前缀及固定的 Node。该前缀在保全副本之前查找命令，避免安装新版后仍运行旧版；浏览器工具继续优先使用随应用交付的 Node，现有外部自定义 npm prefix 保持不变。源内容变化会创建新的运行副本，并在已有迁移路径前加入新入口；旧运行副本保留作为独立安装及自更新包的后备。用户 PATH 的其他项目及顺序保持不变，缺失的旧 `cli_path` 和 Codex manifest 的 `codex_bin` 在使用时映射到运行副本。固定 Node 不随应用升级自动替换，需单独维护；安装器不会联网重装包或执行包脚本。
+
+“使用内置 CLI”安装的 SDK 属于另一条链路：安装器同时保全两种旧布局的 `runtime/external-cli/<name>/site-packages`，完整复制包、dist-info、原生 CLI 和安装元数据。恢复副本位于用户数据目录的 `runtime/external-cli-preserved`，工作目录固定为 `runtime/external-cli/<name>/site-packages`；已有用户目录安装保持不变。冻结应用只有在平台、版本清单和必需文件均匹配时才加载 SDK；不兼容或不完整的包保留供恢复，设置页仍需更新安装。SDK 通过 Python 路径加载，无需加入 PATH。迁移的 npm 本地 `.bin` 入口使用自身前缀的 Node，避免误用新版应用的 Node ABI。
+
+MCP 的独立 `command`、路径参数和 `cwd` 也在使用时解析已迁移的绝对路径，原配置保持不变；已有外部文件路径继续生效，任意 shell 脚本或混合命令字符串不会自动改写。早期管理员版卸载会重置三方 agent 配置，升级时额外使用当前 Windows 用户的 DPAPI 临时加密保全；新后端仅在文件校验及重置内容匹配时恢复 `external_cli_agents` / `external_transport`，成功后消费快照。并发修改或异常内容会报错并保留加密快照。普通卸载仍按原行为重置配置。
+
+Windows SDK migration: both old layouts' complete optional SDK trees are copied offline into the stable user-data `runtime/external-cli/<name>/site-packages` location, with independent recovery snapshots in `runtime/external-cli-preserved`. Existing user-data installations are retained. Only runtimes matching the new platform, package pins and required files are exposed to Python imports; incompatible or incomplete runtimes require an explicit update. SDKs need no PATH entries. Migrated npm local `.bin` shims retain their own Node interpreter. MCP commands, standalone path arguments and working directories resolve missing preserved paths without editing stored configuration; arbitrary shell strings are not rewritten. For legacy administrator upgrades only, a temporary user-bound DPAPI snapshot protects settings reset by the old uninstaller. The new backend restores only the two external-agent configuration fields after verifying the snapshot hash and exact reset operation; concurrent changes stop recovery and retain the encrypted snapshot. Normal uninstall behavior is unchanged.
+
+Windows upgrade preservation: both installers copy and hash complete old Node prefixes before cleanup or legacy-admin uninstall. Recovery copies (`runtime/npm/preserved`) are separate from working copies (`runtime/npm/installed`); neither is removed with the application. Busy CLIs, source changes, links or copy failures stop cleanup. Changed sources get separate working generations; earlier working copies remain command fallbacks. Copies consume additional disk space and are retained for manual recovery. Frozen npm/npx installs use the independent `runtime/npm/global` prefix and its pinned Node, maintained separately from application upgrades. Managed global commands precede preserved copies; application browser tools retain bundled Node priority. Existing external custom prefixes and unrelated PATH entries are preserved. Missing configured CLI paths, including native Codex manifest `codex_bin`, resolve to the preserved working copy. No network reinstall or package lifecycle scripts run during migration.
+
 ## 4. Electron 运行时（main.cjs）
 
 ### 启动流程（顺序有意为之，有源码断言测试保护）

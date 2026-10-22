@@ -1,3 +1,4 @@
+import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import {
   applyMultiModelCollaborationSnapshot,
@@ -48,7 +49,7 @@ import {
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
 import { DesignerPage } from './features/designer/components/DesignerPage';
-import { submitDesignComposer } from './features/designer/designerEntry';
+import { createDesignerConversation, submitDesignComposer } from './features/designer/designerEntry';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -77,6 +78,7 @@ import {
 } from './features/tool-events/toolEventNormalizer';
 import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from './features/teamGroupIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webRequest } from './services/webClient';
 import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
@@ -92,9 +94,11 @@ import {
   UserAnswer,
   ModelEntry,
   type MessageForkPoint,
+  type ModelSelection,
   type Session,
 } from './types';
 import { parseModelGroups, parseModelSelection } from './features/settings/modules/models/modelGroupAdapters';
+import { resolveAvailableModelSelection } from './stores/sessionStore';
 import type { WorkMode } from './features/workspace/projectTypes';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
@@ -198,6 +202,11 @@ import {
   setTrajectoryUiEnabled,
   useTrajectoryUiEnabled,
 } from './features/trajectory/featureConfig';
+import {
+  normalizeTrajectoryDiagnosisEnabled,
+  setTrajectoryDiagnosisEnabled,
+  useTrajectoryDiagnosisEnabled,
+} from './features/trajectory/diagnosis/diagnosisFeatureConfig';
 import './App.css';
 import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
 import {
@@ -209,6 +218,10 @@ import {
 const LazyTrajectoryPanel = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryPanel');
   return { default: module.TrajectoryPanel };
+});
+const LazyTrajectoryAnalysisPage = lazy(async () => {
+  const module = await import('./features/trajectory/TrajectoryAnalysisPage');
+  return { default: module.TrajectoryAnalysisPage };
 });
 const CHAT_PANEL_DEFAULT_WIDTH_PCT = 33.33;
 const CHAT_PANEL_MIN_WIDTH_PCT = 20;
@@ -246,6 +259,46 @@ type LoadedHistoryBatch = {
   hasMore: boolean;
   result: FetchHistoryCursorBatchResult;
 };
+
+function isSameModelSelection(left: ModelSelection, right: ModelSelection): boolean {
+  return left.type === right.type
+    && left.id === right.id
+    && (left.type !== 'model_group' || left.route_id === right.route_id);
+}
+
+/** Restore session model_selection; replace deleted groups with the catalog fallback (#5424). */
+function restoreSessionModelSelection(
+  sessionId: string,
+  modelSelection: unknown,
+  modelName?: string | null,
+): void {
+  const store = useSessionStore.getState();
+  const restoredSelection = parseModelSelection(modelSelection);
+  if (restoredSelection) {
+    const resolved = resolveAvailableModelSelection(
+      restoredSelection,
+      store.chatAvailableModels,
+      store.availableModelGroups,
+    );
+    if (!resolved) {
+      store.setSelectedModelSelection(sessionId, null);
+      return;
+    }
+    store.setSelectedModelSelection(sessionId, resolved);
+    if (!isSameModelSelection(restoredSelection, resolved)) {
+      void webRequest('session.selection.set', {
+        session_id: sessionId,
+        model_selection: resolved,
+      }).catch(() => {
+        // ChatModelSelector will retry when the session is active.
+      });
+    }
+    return;
+  }
+  if (modelName) {
+    store.setSelectedModelName(sessionId, modelName);
+  }
+}
 
 function getWorkContextForSession(sessionId: string): {
   project_id?: string;
@@ -424,6 +477,7 @@ function AppContent({
   const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
   const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
+  const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
   // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
@@ -434,6 +488,7 @@ function AppContent({
   const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const trajectoryUiEnabled = useTrajectoryUiEnabled();
+  const trajectoryDiagnosisEnabled = useTrajectoryDiagnosisEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
   const [restartModalOpen, setRestartModalOpen] = useState(false);
@@ -483,6 +538,7 @@ function AppContent({
     close: closeSidebarPeek,
     surfaceProps: peekSurfaceProps,
   } = useSecondarySidebarPeek();
+  const isSettingsNarrowViewport = useMediaQuery('(max-width: 640px)');
   const isRsiNarrowViewport = useMediaQuery('(max-width: 1250px)');
   const rsiHasExperiments = useRsiStore((s) => s.list.length > 0);
   const rsiListKnownEmpty = useRsiStore((s) => s.listLoadedOnce && s.list.length === 0);
@@ -754,19 +810,35 @@ function AppContent({
     )) ?? null;
   }, [currentSession, projects, sessions, sessionId]);
   const mode = useSessionStore((s) => s.runtimes[sessionId]?.mode ?? 'agent');
-  const chatSurfaceView: ChatSurfaceView = trajectoryUiEnabled
-    && (mode === 'agent' || mode === 'team')
+  const surfaceModeSupported = mode === 'agent' || mode === 'team';
+  // The diagnosis view has its own switch: it needs an Agent or Team session that exists, but not the trajectory UI.
+  const diagnosisEntryAvailable = trajectoryDiagnosisEnabled
+    && surfaceModeSupported
+    && sessionId !== NEW_CONVERSATION_ID;
+  const requestedChatSurfaceView: ChatSurfaceView = surfaceModeSupported
     ? (chatSurfaceViews[sessionId] ?? 'chat')
     : 'chat';
+  const chatSurfaceView: ChatSurfaceView = (requestedChatSurfaceView === 'trajectory' && !trajectoryUiEnabled)
+    || (requestedChatSurfaceView === 'diagnosis' && !diagnosisEntryAvailable)
+    ? 'chat'
+    : requestedChatSurfaceView;
   const selectChatSurfaceView = useCallback((nextView: ChatSurfaceView) => {
     if (nextView === 'trajectory') setTrajectoryUiRequested(true);
+    if (nextView === 'diagnosis') setDiagnosisUiRequested(true);
     setChatSurfaceViews((current) => (
       current[sessionId] === nextView
         ? current
         : { ...current, [sessionId]: nextView }
     ));
   }, [sessionId]);
-  const composerDocked = chatSurfaceView === 'trajectory';
+  // The chat header entry opens the diagnosis view, and leaves it for the chat.
+  const toggleDiagnosisView = useCallback(() => {
+    selectChatSurfaceView(chatSurfaceView === 'diagnosis' ? 'chat' : 'diagnosis');
+  }, [chatSurfaceView, selectChatSurfaceView]);
+  const leaveDiagnosisView = useCallback(() => {
+    selectChatSurfaceView('chat');
+  }, [selectChatSurfaceView]);
+  const composerDocked = chatSurfaceView === 'trajectory' || chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
   const toggleTrajectoryComposer = useCallback(() => {
     setTrajectoryComposerCollapsed((current) => ({
@@ -1064,8 +1136,8 @@ function AppContent({
     (activeNav === 'experiments' && rsiHasExperiments && !rsiSidebarCollapsed);
 
   useEffect(() => {
-    if (hasFixedSecondarySidebar) closeSidebarPeek();
-  }, [hasFixedSecondarySidebar, closeSidebarPeek]);
+    if (hasFixedSecondarySidebar || (sidebarPeek === 'settings' && !isSettingsNarrowViewport)) closeSidebarPeek();
+  }, [hasFixedSecondarySidebar, sidebarPeek, isSettingsNarrowViewport, closeSidebarPeek]);
 
   const trajectoryTaskPanelAvailable = toolPanelHasContent || isRestoringTeamHistory;
   const effectiveTeamAreaExpanded = isTeamAreaExpanded;
@@ -1761,16 +1833,17 @@ function AppContent({
             ? normalizeTeamLeaderIdentity(session.team_leader_identity)
             : null,
         );
+        useSessionStore.getState().setTeamGroupIdentity(
+          targetSessionId,
+          sessionGroupId && Object.prototype.hasOwnProperty.call(session, 'team_group_identity')
+            ? normalizeTeamGroupIdentity(session.team_group_identity)
+            : null,
+        );
         // 同 handleRestoreSession：拿到后端 metadata 里的 model 后还原 selectedModelName，
         // 覆盖"targetSession 为空、走 loadSessionMetadata"这条恢复路径（如从 cron 触发
         // 会话列表点进来的占位 session 之后补全元数据的场景，bug002）。
         // Prefer stable model_selection when present; never restore a group from active_model/model name.
-        const restoredSelection = parseModelSelection(session?.model_selection);
-        if (restoredSelection) {
-          useSessionStore.getState().setSelectedModelSelection(targetSessionId, restoredSelection);
-        } else if (session?.model) {
-          useSessionStore.getState().setSelectedModelName(targetSessionId, session.model);
-        }
+        restoreSessionModelSelection(targetSessionId, session?.model_selection, session?.model);
         // 恢复会话时同步 swarmflow 开关 + budget：后端 metadata 里的
         // session_swarmflow_config 是上次会话持久化的配置，刷新/重进后读回。
         const sfConfig = (session as unknown as Record<string, unknown> | null)?.session_swarmflow_config;
@@ -1834,6 +1907,7 @@ function AppContent({
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
+      setTrajectoryDiagnosisEnabled(normalizeTrajectoryDiagnosisEnabled(config.trajectory_ui_diagnosis_enabled));
       setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
       setTeamScheduledDispatchEnabled(config.team_scheduled_dispatch_enabled);
       const collaborationSnapshotApplied = applyMultiModelCollaborationSnapshot(
@@ -2943,6 +3017,17 @@ function AppContent({
     };
 
     try {
+      if (workContext.work_mode === 'design') {
+        const created = await createDesignerConversation(initialTitle);
+        pendingNewConversationRef.current = false;
+        newConversationProjectRef.current = null;
+        newConversationPreviousSessionRef.current = null;
+        sessionIdRef.current = created.sessionId;
+        setSessionId(created.sessionId);
+        useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+        navigate({ kind: 'design-project', projectId: created.projectId, sessionId: created.sessionId });
+        return created.sessionId;
+      }
       const createParams: Record<string, unknown> = {
         create_token: generateUuidV4(),
         mode: resolvePlanWireMode(
@@ -2984,6 +3069,9 @@ function AppContent({
       (pendingRuntime?.enabledPlugins ?? []).forEach((id) => sessionStore.addEnabledPlugin(newSid, id));
       (pendingRuntime?.enabledMcps ?? []).forEach((name) => sessionStore.addEnabledMcp(newSid, name));
       if (pendingRuntime?.metadata) sessionStore.setSessionMetadata(newSid, pendingRuntime.metadata);
+      if (pendingRuntime?.teamGroupIdentity) {
+        sessionStore.setTeamGroupIdentity(newSid, pendingRuntime.teamGroupIdentity);
+      }
       if (pendingRuntime?.selectedModelSelection) {
         sessionStore.setSelectedModelSelection(newSid, pendingRuntime.selectedModelSelection);
         void request('session.selection.set', {
@@ -3229,6 +3317,11 @@ function AppContent({
         const pendingAgentGroupBinding = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.agentGroupBindingPending;
         if (pendingAgentGroupBinding) {
           useSessionStore.getState().setAgentGroupBindingPending(newSid, pendingAgentGroupBinding);
+        }
+        const pendingTeamGroupIdentity = useSessionStore.getState()
+          .getRuntime(NEW_CONVERSATION_ID)?.teamGroupIdentity;
+        if (pendingTeamGroupIdentity) {
+          useSessionStore.getState().setTeamGroupIdentity(newSid, pendingTeamGroupIdentity);
         }
         useSessionStore.getState().clearAgentGroupSelectionIntent(NEW_CONVERSATION_ID);
         // Swarmflow 开关同样按 session 存，必须在 removeRuntime('new') 之前搬到真实会话，
@@ -3510,12 +3603,7 @@ function AppContent({
         // 由后端落盘），写进 runtime.selectedModelName——单 Agent 与集群（team）会话
         // 同样恢复，保证刷新页面后模型选择不回退到默认模型。
         // Prefer stable model_selection when present; never restore a group from active_model/model name.
-        const restoredSelection = parseModelSelection(targetSession.model_selection);
-        if (restoredSelection) {
-          useSessionStore.getState().setSelectedModelSelection(targetSessionId, restoredSelection);
-        } else if (targetSession.model) {
-          useSessionStore.getState().setSelectedModelName(targetSessionId, targetSession.model);
-        }
+        restoreSessionModelSelection(targetSessionId, targetSession.model_selection, targetSession.model);
       } else {
         setCurrentSession(null);
       }
@@ -3767,7 +3855,8 @@ function AppContent({
   const handleNavItemClick = (nav: MainNavKey) => {
     const peekTarget = (
       (nav === 'chat' && conversationSidebarCollapsed) ||
-      (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed)
+      (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed) ||
+      (nav === 'settings' && isSettingsNarrowViewport)
     ) ? nav : null;
     handleNavigate(nav, peekTarget);
   };
@@ -4110,6 +4199,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       data-testid="app-shell"
       data-session-id={sessionId}
     >
+      <ApplicationConversationRuntimes sessionId={sessionId} />
       {/* Navigation Sidebar */}
       <SessionSidebar
         activeNav={activeNav}
@@ -4119,7 +4209,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         hiddenNavItems={hiddenNavItems}
         applicationPlugins={visibleApplicationPlugins}
         onNavItemHover={(key) => {
-          const target = key === 'chat' || (key === 'experiments' && !rsiListKnownEmpty) ? key : null;
+          const target = (
+            key === 'chat' ||
+            (key === 'settings' && isSettingsNarrowViewport) ||
+            (key === 'experiments' && !rsiListKnownEmpty)
+          ) ? key : null;
           hoverSidebarPeek(!hasFixedSecondarySidebar ? target : null);
         }}
         onNavItemPointerDownCapture={(key) => {
@@ -4149,7 +4243,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         )}
 
-        {sidebarPeek && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
+        {sidebarPeek && sidebarPeek !== 'settings' && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
           <div className="chat-layout--peek-host" {...peekSurfaceProps}>
             {sidebarPeek === 'chat' ? (
               <ConversationSidebar
@@ -4300,9 +4394,30 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onToggleComposerCollapsed={toggleTrajectoryComposer}
                         onComposerHeightChange={setTrajectoryComposerHeight}
                         onContinueQueuedSessionMessages={handleContinueQueuedSessionMessages}
+                        diagnosisEntryAvailable={diagnosisEntryAvailable}
+                        diagnosisActive={chatSurfaceView === 'diagnosis'}
+                        onToggleDiagnosis={toggleDiagnosisView}
                       />
                     )}
                     chatLabel={t('nav.chat')}
+                    diagnosis={(
+                      <Suspense
+                        fallback={(
+                          <div className="trajectory-view-loading">
+                            {t('trajectory.loading')}
+                          </div>
+                        )}
+                      >
+                        <LazyTrajectoryAnalysisPage
+                          active={chatSurfaceView === 'diagnosis'}
+                          mode={mode}
+                          sessionId={sessionId}
+                          onBack={leaveDiagnosisView}
+                        />
+                      </Suspense>
+                    )}
+                    diagnosisEnabled={diagnosisEntryAvailable}
+                    diagnosisRequested={diagnosisUiRequested}
                     mode={mode}
                     onViewChange={selectChatSurfaceView}
                     tabListLabel={t('trajectory.tabs.aria')}
@@ -4472,8 +4587,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             </div>
           </div>
         )}
-        {activeNav === 'settings' && (
-          <div className="app-section">
+        {(activeNav === 'settings' || (isSettingsNarrowViewport && sidebarPeek === 'settings' && !hasFixedSecondarySidebar)) && (
+          <div className={activeNav === 'settings' ? 'app-section' : 'app-section--peek-only'}>
             <SettingsPage
               definition={settingsPageDefinition}
               isConnected={isConnected}
@@ -4491,6 +4606,13 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               externalCliDetectResults={externalCliDetectResults}
               onExternalCliDetectResultsChange={setExternalCliDetectResults}
               initialModuleId={requestedSettingsModuleId ?? undefined}
+              sidebar={{
+                isActive: activeNav === 'settings',
+                collapsed: isSettingsNarrowViewport,
+                peek: isSettingsNarrowViewport && sidebarPeek === 'settings' && !hasFixedSecondarySidebar,
+                surfaceProps: peekSurfaceProps,
+                onNavigate: () => { handleNavigate('settings'); },
+              }}
             />
           </div>
         )}

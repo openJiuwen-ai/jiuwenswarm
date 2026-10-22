@@ -99,6 +99,7 @@ export interface AgentAction {
 }
 
 export interface VideoSessionConfig {
+  context_restore?: { token: string; instructions: string };
   provider?: 'joyai' | 'qwen_omni';
   url?: string;
   model: string;

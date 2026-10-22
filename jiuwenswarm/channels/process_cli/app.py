@@ -98,10 +98,8 @@ def _build_request(
         "cwd": cwd,
         "project_dir": project_dir,
         "trusted_dirs": trusted_dirs,
-        "supports_user_interaction": (
-            bool(getattr(args, "_interactive_worker", False))
-            or (args.output == "human" and sys.stdin.isatty())
-        ),
+        "supports_user_interaction": bool(getattr(args, "_interactive_worker", False)),
+        "supports_permission_approval": bool(getattr(args, "_interactive_worker", False)),
     }
     model_selection = str(getattr(args, "model_selection", "") or "").strip()
     if model_selection:
@@ -563,7 +561,8 @@ def _answer_request(
         "project_dir": original.params.get("project_dir"),
         "cwd": original.params.get("cwd"),
         "trusted_dirs": original.params.get("trusted_dirs", []),
-        "supports_user_interaction": True,
+        "supports_user_interaction": original.params.get("supports_user_interaction", True),
+        "supports_permission_approval": original.params.get("supports_permission_approval", True),
         "query": "" if resume else None,
     }
     return (
@@ -836,9 +835,7 @@ async def run(
             request_id=request_id,
         )
         renderer.working()
-        interactive = bool(getattr(args, "_interactive_worker", False)) or (
-            args.output == "human" and sys.stdin.isatty()
-        )
+        interactive = request.params["supports_user_interaction"]
         live_input = None
         if supports_live_session_input(
             args,

@@ -117,6 +117,14 @@ _CONNECT_WARMUP_CHANNELS = frozenset(
 _WS_CONNECT_READY_TIMEOUT_SECONDS = 60.0
 _WS_CONNECT_RETRY_INTERVAL_SECONDS = 1.0
 _WS_CONNECT_RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
+
+
+def _consume_inflight_exception(fut: asyncio.Future[Any]) -> None:
+    """Mark a failed inflight Future as observed when no follower is waiting."""
+    if not fut.cancelled():
+        fut.exception()
+
+
 _WS_CONNECT_RETRYABLE_TEXT_TOKENS = (
     "http 502",
     "http 503",
@@ -847,6 +855,13 @@ class AgentOSRouterClient(AgentServerClient):
             return
         existing = self._warmup_tasks.get(user_id)
         if existing is not None and not existing.done():
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "warmup.skip.pending",
+                user_id=user_id,
+                task=existing.get_name(),
+            )
             return
         task = asyncio.create_task(
             self._warmup_user_agent(user_id),
@@ -1312,6 +1327,22 @@ class AgentOSRouterClient(AgentServerClient):
                     attempt=attempt,
                 )
                 return client
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(client.disconnect())
+                except BaseException:
+                    logger.warning(
+                        "[AgentOS] agent.ws.cleanup.cancelled user_id=%s sandbox_id=%s attempt=%s",
+                        user_id,
+                        instance_id,
+                        attempt,
+                        extra=agentos_extra(
+                            session_id=session_id,
+                            sandbox_id=instance_id,
+                        ),
+                        exc_info=True,
+                    )
+                raise
             except Exception as exc:
                 try:
                     await client.disconnect()
@@ -1405,6 +1436,35 @@ class AgentOSRouterClient(AgentServerClient):
             info = await waiter(instance_id)
         return info if isinstance(info, dict) else {}
 
+    async def _abort_ws_connect(
+        self,
+        *,
+        instance_id: str,
+        inflight: asyncio.Future[Any],
+        exc: BaseException,
+        client: WebSocketAgentServerClient | None,
+    ) -> None:
+        """Settle a failed leader and wake any followers waiting on inflight."""
+        if client is not None:
+            try:
+                await asyncio.shield(client.disconnect())
+            except BaseException:
+                logger.warning(
+                    "[AgentOS] agent.ws.leader.cleanup_fail sandbox_id=%s",
+                    instance_id,
+                    exc_info=True,
+                )
+
+        async with self._ws_clients_lock:
+            if self._ws_connecting.get(instance_id) is inflight:
+                self._ws_connecting.pop(instance_id, None)
+            if not inflight.done():
+                inflight.set_exception(
+                    RuntimeError("ws connect leader cancelled")
+                    if isinstance(exc, asyncio.CancelledError)
+                    else exc
+                )
+
     async def _get_ws_client(self, runtime: AgentRuntime) -> WebSocketAgentServerClient:
         """获取（或建立）到该 agent instance 的 WS 直连，不走 invoke 链路.
 
@@ -1435,6 +1495,7 @@ class AgentOSRouterClient(AgentServerClient):
             inflight = self._ws_connecting.get(instance_id)
             if inflight is None:
                 inflight = asyncio.get_running_loop().create_future()
+                inflight.add_done_callback(_consume_inflight_exception)
                 self._ws_connecting[instance_id] = inflight
                 is_leader = True
             else:
@@ -1443,6 +1504,8 @@ class AgentOSRouterClient(AgentServerClient):
         if not is_leader:
             return await asyncio.shield(inflight)
 
+        leader_started = time.monotonic()
+        client = None
         try:
             await self._wait_yuanrong_running(
                 instance_id,
@@ -1457,19 +1520,40 @@ class AgentOSRouterClient(AgentServerClient):
                 session_id=str(info.metadata.get("session_id") or ""),
                 agent_type=str(info.agent_type or ""),
             )
-        except Exception as exc:
             async with self._ws_clients_lock:
+                self._ws_clients[instance_id] = client
                 self._ws_connecting.pop(instance_id, None)
                 if not inflight.done():
-                    inflight.set_exception(exc)
+                    inflight.set_result(client)
+            return client
+        except asyncio.CancelledError as exc:
+            await self._abort_ws_connect(
+                instance_id=instance_id,
+                inflight=inflight,
+                exc=exc,
+                client=client,
+            )
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "agent.ws.leader.cancelled",
+                user_id=str(info.user_id or ""),
+                session_id=str(info.metadata.get("session_id") or ""),
+                sandbox_id=instance_id,
+                agent_type=str(info.agent_type or ""),
+                instance=instance_id,
+                error=type(exc).__name__,
+                latency_ms=int((time.monotonic() - leader_started) * 1000),
+            )
             raise
-
-        async with self._ws_clients_lock:
-            self._ws_clients[instance_id] = client
-            self._ws_connecting.pop(instance_id, None)
-            if not inflight.done():
-                inflight.set_result(client)
-        return client
+        except Exception as exc:
+            await self._abort_ws_connect(
+                instance_id=instance_id,
+                inflight=inflight,
+                exc=exc,
+                client=client,
+            )
+            raise
 
     async def _close_ws_client(self, instance_id: str | None) -> None:
         if not instance_id:

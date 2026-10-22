@@ -528,6 +528,17 @@ if (-not $FrontendOnly) {
         throw "Frozen RSI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
     }
 
+    $CuaVerifier = Join-Path $ProjectRoot "scripts\verify_computer_use_bundle.py"
+    $CuaVerifyProcess = Start-Process `
+        -FilePath $FrozenExe `
+        -ArgumentList @("`"$CuaVerifier`"") `
+        -Wait `
+        -PassThru `
+        -NoNewWindow
+    if ($CuaVerifyProcess.ExitCode -ne 0) {
+        throw "Frozen Computer Use bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+    }
+
     # The PyInstaller spec intentionally allows platforms for which gitcode-cli
     # publishes no native binary (currently including Windows) and falls back to
     # the connector's pip-based initialization. Only run the frozen CLI verifier

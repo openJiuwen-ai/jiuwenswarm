@@ -19,10 +19,40 @@ export interface ElectronBrowserBounds {
   height: number;
 }
 
+export type ElectronDownloadState = 'downloading' | 'paused' | 'completed' | 'cancelled' | 'interrupted';
+
+export interface ElectronDownloadRecord {
+  id: string;
+  filename: string;
+  url: string;
+  /** 本地保存路径；完成（completed）后可用于打开文件 */
+  path: string;
+  receivedBytes: number;
+  totalBytes: number;
+  state: ElectronDownloadState;
+  /** 系统文件类型图标（data URL，与资源管理器一致）；解析失败时缺省走通用 SVG */
+  icon?: string;
+  /** 开始时间（毫秒时间戳） */
+  startTime: number;
+  endTime: number;
+  /** 仅 completed 态：文件已不在记录的保存路径（被移动/删除），面板显示"已删除" */
+  fileMissing?: boolean;
+}
+
 export interface ElectronShareImageExportProgress {
   sessionId: string;
   phase: 'loading_snapshot' | 'rendering' | 'saving';
   progress: number | null;
+}
+
+/** 下载气泡锚点矩形：主窗口内容区坐标系（CSS px），来自 getBoundingClientRect */
+export interface ElectronBubbleAnchorRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
 }
 
 export interface JiuwenElectronDesktopApi {
@@ -83,6 +113,19 @@ export interface JiuwenElectronDesktopApi {
     setBounds: (bounds: ElectronBrowserBounds, sessionId: string) => Promise<ElectronBrowserBounds>;
     /** focus=false：恢复显示时不抢主窗口焦点（模态弹窗关闭后的恢复路径） */
     setVisible: (visible: boolean, sessionId: string, focus?: boolean) => Promise<boolean>;
+    listDownloads: () => Promise<ElectronDownloadRecord[]>;
+    downloadAction: (downloadId: string, action: 'pause' | 'resume' | 'cancel') => Promise<boolean>;
+    openDownload: (downloadId: string) => Promise<boolean>;
+    /** 在系统文件管理器中显示已完成的下载文件 */
+    showDownloadInFolder: (downloadId: string) => Promise<boolean>;
+    /** 从下载记录列表中移除一条记录（仅限无活跃 DownloadItem 的记录） */
+    removeDownload: (downloadId: string) => Promise<boolean>;
+    openDownloadsFolder: () => Promise<boolean>;
+    onDownloadsChanged: (callback: (downloads: ElectronDownloadRecord[]) => void) => () => void;
+    /** Chrome 式下载气泡：锚定在下载按钮下方（CSS px，相对窗口内容区），悬浮于浏览器内容之上 */
+    showDownloadBubble: (anchorRect: ElectronBubbleAnchorRect | null) => Promise<boolean>;
+    hideDownloadBubble: () => Promise<boolean>;
+    onDownloadBubbleChanged: (callback: (visible: boolean) => void) => () => void;
     getState: (sessionId: string) => Promise<ElectronBrowserState>;
     listPanels: (sessionId: string) => Promise<ElectronBrowserState[]>;
     onPanelsChanged: (callback: (panels: ElectronBrowserState[]) => void) => () => void;

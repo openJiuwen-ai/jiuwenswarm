@@ -18,6 +18,10 @@
   display: none;
 }
 
+.app-section--peek-only {
+  display: contents;
+}
+
 .chat-layout {
   position: relative;
   background: var(--color-surface-shell);
@@ -42,7 +46,8 @@
 }
 
 .chat-layout--peek-host .conversation-sidebar,
-.chat-layout--peek-host .rsi-rail {
+.chat-layout--peek-host .rsi-rail,
+.chat-layout--peek-host .settings-page__nav {
   pointer-events: auto;
 }
 
@@ -100,21 +105,26 @@
   margin-bottom: 40px;
 }
 
-.single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-chat-view'] {
+/* The diagnosis view shares every rule below with the trajectory view. */
+.single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-chat-view'],
+.single-agent-surface--diagnosis .chat-surface-view[data-testid='single-agent-chat-view'] {
   display: flex;
   position: absolute;
   inset: 0;
 }
 
-.single-agent-surface--trajectory .chat-panel-shell {
+.single-agent-surface--trajectory .chat-panel-shell,
+.single-agent-surface--diagnosis .chat-panel-shell {
   height: 100%;
 }
 
-.single-agent-surface--trajectory .chat-panel-header {
+.single-agent-surface--trajectory .chat-panel-header,
+.single-agent-surface--diagnosis .chat-panel-header {
   height: 48px;
 }
 
-.single-agent-surface--trajectory .chat-panel-shell> :not(.chat-panel-header) {
+.single-agent-surface--trajectory .chat-panel-shell> :not(.chat-panel-header),
+.single-agent-surface--diagnosis .chat-panel-shell> :not(.chat-panel-header) {
   visibility: hidden;
   pointer-events: none;
 }
@@ -124,7 +134,8 @@
  * an approval or send a message without switching back to the chat. Its own
  * padding is the gap between the trajectory's bottom edge and the input frame.
  */
-.single-agent-surface--trajectory .chat-panel-shell--composer-docked:not(.chat-panel-shell--composer-collapsed)>.chat-compose {
+.single-agent-surface--trajectory .chat-panel-shell--composer-docked:not(.chat-panel-shell--composer-collapsed)>.chat-compose,
+.single-agent-surface--diagnosis .chat-panel-shell--composer-docked:not(.chat-panel-shell--composer-collapsed)>.chat-compose {
   visibility: visible;
   pointer-events: auto;
   z-index: 11;
@@ -134,7 +145,8 @@
 
 /* The docked composer sits at the bottom; the chat disclaimer belongs to the
    reading surface behind it and gives its space back. */
-.single-agent-surface--trajectory .chat-panel-shell--composer-docked>.chat-ai-disclaimer {
+.single-agent-surface--trajectory .chat-panel-shell--composer-docked>.chat-ai-disclaimer,
+.single-agent-surface--diagnosis .chat-panel-shell--composer-docked>.chat-ai-disclaimer {
   display: none;
 }
 
@@ -149,7 +161,8 @@
    under it, so its footer and raw-record panel stay inside the visible area.
    `--trajectory-composer-clearance` is the composer's measured height, or 0
    when it is collapsed or absent. */
-.single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-trajectory-view'] {
+.single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-trajectory-view'],
+.single-agent-surface--diagnosis .chat-surface-view[data-testid='single-agent-diagnosis-view'] {
   position: absolute;
   z-index: 10;
   top: 88px;
@@ -159,7 +172,13 @@
   background: var(--color-surface-card);
 }
 
-.chat-workspace--trajectory-floating-tools .single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-trajectory-view'] {
+/* The diagnosis view has no 对话/轨迹 tab bar, so it starts right under the header. */
+.single-agent-surface--diagnosis .chat-surface-view[data-testid='single-agent-diagnosis-view'] {
+  top: 48px;
+}
+
+.chat-workspace--trajectory-floating-tools .single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-trajectory-view'],
+.chat-workspace--trajectory-floating-tools .single-agent-surface--diagnosis .chat-surface-view[data-testid='single-agent-diagnosis-view'] {
   right: 364px;
 }
 

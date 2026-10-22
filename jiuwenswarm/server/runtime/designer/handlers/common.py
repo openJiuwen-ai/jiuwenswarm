@@ -863,9 +863,6 @@ def _is_rate_limit_error(text: str) -> bool:
     return any(token in low for token in _RATE_LIMIT_TOKENS)
 
 
-_IMAGE_GEN_TIMEOUT_SECONDS = 1200
-
-
 async def generate_designer_image(
     prompt: str,
     size: str = "1K",
@@ -919,6 +916,7 @@ async def generate_designer_image(
                     phase="tool",
                     detail={"attempt": attempt, "input": tool_input},
                 ):
+                    image_timeout = media_generation.image_tool_timeout_seconds()
                     result = await asyncio.wait_for(
                         media_generation.generate_image(
                             prompt,
@@ -926,10 +924,13 @@ async def generate_designer_image(
                             reference_images=refs or None,
                             save_dir=save_dir,
                         ),
-                        timeout=_IMAGE_GEN_TIMEOUT_SECONDS,
+                        timeout=image_timeout,
                     )
             except asyncio.TimeoutError:
-                last_error = f"image generation timed out after {_IMAGE_GEN_TIMEOUT_SECONDS}s"
+                last_error = (
+                    "image generation timed out after "
+                    f"{int(media_generation.image_tool_timeout_seconds())}s"
+                )
                 logger.info("Designer image generation timed out (attempt %s/%s)", attempt, attempts)
                 result = {"error": last_error}
             except Exception as exc:  # noqa: BLE001

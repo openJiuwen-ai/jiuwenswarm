@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -119,6 +120,71 @@ async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
     )
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "A4P_WEB_SESSION_REQUIRED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cli_agent", "package", "relative"),
+    [("claude", "claude_agent_sdk", "_bundled/claude"),
+     ("codex", "codex_cli_bin", "bin/codex")],
+)
+@pytest.mark.parametrize("runtime_state", ["current", "update_required"])
+@pytest.mark.parametrize("platform_name", ["nt", "posix"])
+async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
+    monkeypatch, tmp_path, cli_agent, package, relative, runtime_state, platform_name
+):
+    from jiuwenswarm.common import external_cli_runtime as runtime
+
+    site = tmp_path / cli_agent / "site-packages"
+    suffix = ".exe" if platform_name == "nt" else ""
+    executable = site / package / (relative + suffix)
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    (site / package / "__init__.py").touch()
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    original_find_spec = importlib.util.find_spec
+
+    def find_spec(name, *args, **kwargs):
+        if name == package:
+            if str(site) not in sys.path:
+                return None
+            return importlib.util.spec_from_file_location(name, site / package / "__init__.py")
+        return original_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: True)
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(runtime, "external_cli_runtime_names", lambda: [cli_agent])
+    monkeypatch.setattr(runtime, "_runtime_site_packages", lambda _agent: site)
+    monkeypatch.setattr(runtime, "get_external_cli_runtime_status", lambda _agent: {"runtime_state": runtime_state})
+    # Replace only this module's reference, not the process-wide os.name.
+    monkeypatch.setattr(config_set_handlers, "os", SimpleNamespace(name=platform_name))
+    competing_cli = tmp_path / "path-bin" / (cli_agent + suffix)
+    competing_cli.parent.mkdir()
+    competing_cli.touch()
+    monkeypatch.setattr(
+        config_set_handlers.shutil, "which",
+        lambda name: str(competing_cli) if name == cli_agent and runtime_state == "current" else None,
+    )
+    monkeypatch.setattr(config_set_handlers, "external_cli_reference_version", lambda _agent: "1.2.3")
+    monkeypatch.setattr(config_set_handlers, "run_external_cli_version_command", lambda *_args: ("1.2.3", ""))
+    assert config_set_handlers.external_cli_managed_cli_path(cli_agent) == ""
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True)))
+
+    await channel.methods["external_cli.detect"](
+        object(), "detect-cold", {"cli_agent": cli_agent, "use_builtin": True}, "session"
+    )
+
+    result = channel.responses[-1]
+    assert result["ok"] is True
+    if runtime_state == "current":
+        assert result["payload"]["status"] == "ok"
+        assert Path(result["payload"]["path"]) == executable
+        assert result["payload"]["version"] == "1.2.3"
+    else:
+        assert result["payload"]["status"] == "missing"
+        assert str(site) not in sys.path
 
 
 class FakeAgentClient:
@@ -1566,6 +1632,10 @@ async def test_trajectory_ui_switch_round_trips_through_config_rpc(monkeypatch):
     assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_enabled"]
     change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_enabled"])
     assert change_set.reload_scopes == {"agent_runtime", "web_ui"}
+    # Diagnosis switches the trajectory data plane on too, so it needs the same
+    # runtime sync as the trajectory view switch.
+    diagnosis_change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_diagnosis_enabled"])
+    assert diagnosis_change_set.reload_scopes == {"agent_runtime", "web_ui"}
 
 
 @pytest.mark.asyncio
@@ -1598,6 +1668,38 @@ async def test_task_full_duplex_switch_round_trips_through_config_rpc(monkeypatc
     assert channel.responses[-1]["payload"]["updated"] == ["task_full_duplex_enabled"]
     change_set = app_web_handlers._ConfigChangeSet({}, ["task_full_duplex_enabled"])
     assert change_set.reload_scopes == {"web_ui"}
+
+
+@pytest.mark.asyncio
+async def test_progressive_tool_optimize_switch_round_trips_through_config_rpc(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    raw_config = {"progressive_tool_enabled": True, "progressive_tool_optimize": False}
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
+    # config.set 路径实现已下沉 config_set_handlers，config.get 仍读 gateway 侧，双patch
+    monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(config_set_handlers, "get_config", lambda: raw_config)
+    monkeypatch.setattr(
+        config_set_handlers,
+        "update_progressive_tool_optimize_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.get"](object(), "req-tool-optimize-get", {}, "session")
+    assert channel.responses[-1]["payload"]["progressive_tool_optimize"] == "false"
+
+    await channel.methods["config.set"](
+        object(),
+        "req-tool-optimize-set",
+        {"progressive_tool_optimize": "true"},
+        "session",
+    )
+    assert persisted == [True]
+    assert channel.responses[-1]["payload"]["updated"] == ["progressive_tool_optimize"]
+    change_set = app_web_handlers._ConfigChangeSet({}, ["progressive_tool_optimize"])
+    assert change_set.reload_scopes == {"agent_runtime"}
 
 
 @pytest.mark.asyncio

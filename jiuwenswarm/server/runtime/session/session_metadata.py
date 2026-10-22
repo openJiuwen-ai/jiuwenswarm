@@ -334,6 +334,31 @@ def _apply_metadata_defaults_with_inference(
         changed = True
         changed_fields.add("mode")
 
+    # Sessions created before the display snapshot field existed can be
+    # migrated while their bound package is still installed. Keep this out of
+    # bulk session-list scans: the full identity is only needed when opening a
+    # session, and resolving every package during a list operation is costly.
+    agent_group_name = str(metadata.get("agent_group_name") or "").strip()
+    if (
+        agent_group_name
+        and "team_group_identity" not in metadata
+        and not background_writeback
+    ):
+        try:
+            from jiuwenswarm.server.runtime.extension_package_manager import (
+                resolve_agent_group_display_identity,
+            )
+
+            team_group_identity = resolve_agent_group_display_identity(
+                agent_group_name
+            )
+        except (OSError, ValueError):
+            team_group_identity = None
+        if team_group_identity is not None:
+            metadata["team_group_identity"] = team_group_identity
+            changed = True
+            changed_fields.add("team_group_identity")
+
     # project_id: 缺失时尝试按 work_mode 反查唯一真实 Project
     if not str(metadata.get("project_id") or "").strip():
         if dir_to_projects is None or id_to_work_mode is None:
@@ -605,6 +630,12 @@ def _write_metadata_unfenced(
                 "has no session_id, restored %d field(s) from disk: %s",
                 session_id, len(recovered), sorted(recovered),
             )
+
+        # The display snapshot is frozen at first binding. Queued metadata
+        # captured before uninstall must not remove the persisted identity.
+        if current is not None and isinstance(current.get("team_group_identity"), dict):
+            to_write = to_write.copy()
+            to_write["team_group_identity"] = copy.deepcopy(current["team_group_identity"])
 
         # External Harness runtime selection is a first-binding field. Preserve
         # the authoritative on-disk value against stale queued snapshots and
@@ -997,6 +1028,7 @@ def update_session_metadata(
     team_template_id: str | None = None,
     agent_group_name: str | None = None,
     team_leader_identity: dict[str, Any] | None = None,
+    team_group_identity: dict[str, Any] | None = None,
     accent_color: str | None = None,
     project_dir: str | None = None,
     project_id: str | None = None,
@@ -1106,6 +1138,8 @@ def update_session_metadata(
             )
         if isinstance(team_leader_identity, dict):
             metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
+        if isinstance(team_group_identity, dict):
+            metadata["team_group_identity"] = copy.deepcopy(team_group_identity)
     else:
         # 更新现有元数据
         # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
@@ -1132,6 +1166,11 @@ def update_session_metadata(
         # a changed package definition.
         if isinstance(team_leader_identity, dict) and "team_leader_identity" not in metadata:
             metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
+        # AgentGroup display identity follows the same first-binding snapshot
+        # contract as the leader identity. Package removal or later catalog
+        # edits must not rewrite how an existing conversation is displayed.
+        if isinstance(team_group_identity, dict) and "team_group_identity" not in metadata:
+            metadata["team_group_identity"] = copy.deepcopy(team_group_identity)
         if accent_color is not None:
             metadata["accent_color"] = accent_color
         # model：覆盖式——每次请求更新为本次模型
@@ -1436,6 +1475,54 @@ def sync_session_request_metadata(
 
     _enqueue_write(session_id, metadata, preserve_pin_fields=True)
     return effective_project_dir
+
+
+def preserve_agent_group_display_identity(
+    agent_group_name: str, identity: dict[str, Any]
+) -> None:
+    """Persist missing legacy snapshots before uninstall removes their source."""
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    sessions_dir = get_agent_sessions_dir()
+    archived_dir = sessions_dir.parent / "sessions_archived"
+    session_ids: set[str] = set()
+    for root in (sessions_dir, archived_dir):
+        if not root.is_dir():
+            continue
+        for directory in root.iterdir():
+            if directory.is_dir():
+                session_ids.add(directory.name)
+    for session_id in sorted(session_ids):
+        with lc.resource_lock("session", session_id):
+            session_dir = lc.resolve_session(
+                session_id, must_exist=False, sessions_root=sessions_dir
+            )
+            metadata = _read_metadata_file_in(session_dir)
+            if (
+                metadata.get("agent_group_name") != agent_group_name
+                or "team_group_identity" in metadata
+            ):
+                continue
+            if session_dir.parent == archived_dir:
+                operation = lc.state("session", session_id).get("operation")
+                if operation and operation.get("status") != "completed":
+                    raise lc.LifecycleError(
+                        "OPERATION_IN_PROGRESS", "session lifecycle operation in progress"
+                    )
+                # Archived metadata maintenance follows archive_time's locked
+                # atomic write; runtime write fences remain unchanged.
+                metadata["team_group_identity"] = copy.deepcopy(identity)
+                lc.atomic_json(session_dir / "metadata.json", metadata)
+                remove_session_metadata_cache(session_id)
+                continue
+        metadata["team_group_identity"] = copy.deepcopy(identity)
+        options = _MetadataWriteOptions(
+            merge_fields=frozenset({"team_group_identity"}),
+            expected_fields={"team_group_identity": (False, None)},
+        )
+        written = _write_metadata_sync(session_id, metadata, options)
+        with _CACHE_LOCK:
+            _METADATA_CACHE[session_id] = written.copy()
 
 
 def get_session_metadata(

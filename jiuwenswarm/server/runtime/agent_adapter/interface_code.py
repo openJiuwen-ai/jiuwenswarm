@@ -45,7 +45,7 @@ from openjiuwen.harness.schema.deep_agent_spec import (
     WorkspaceSpec,
 )
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
-from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config
+from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
@@ -111,6 +111,9 @@ from jiuwenswarm.agents.harness.common.rails import (
 )
 from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
     SkillRetrievalPromptRail,
+)
+from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import (
+    SubagentToolActivityRail,
 )
 from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
 from jiuwenswarm.agents.harness.common.tools import (
@@ -440,7 +443,6 @@ _TOOL_BUILD_NAMES: dict[str, str] = {
     "user_todos": "_build_user_todos_tool",
     "skill_toolkit": "_build_skill_toolkit",
     "skill_retrieval": "_build_skill_retrieval_toolkit",
-    "tool_retrieval": "_build_tool_retrieval_toolkit",
     "acp_chat": "_build_acp_chat_tool",
     "request_a4p_intent_authorization": "_build_a4p_tools",
 }
@@ -1182,6 +1184,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         if spec is None:
             self._sync_symphony_tools_for_runtime(config_base)
 
+        # Mirror the deep adapter's progressive-disclosure takeover: the spec's
+        # ProgressiveToolSpec armed AbilityManager's deferred assignment and
+        # queued openjiuwen's bundled ProgressiveToolRail; swap it for our
+        # ToolRetrievalPromptRail before ensure_initialized consumes the
+        # pending queue. Both calls no-op unless the top-level switches pass
+        # (progressive_tool_enabled AND progressive_tool_optimize), the same
+        # gate as agent mode.
+        self._drop_pending_progressive_tool_rail()
+        self._register_tool_retrieval_prompt_rail()
+
         # 改动3：让 agent 初始化（ensure_initialized）在独立线程 + 独立事件循环里跑，
         # 主事件循环在初始化的十几秒里保持响应，esc 的 cancel 不再堵队列、后端能尽快停。
         #
@@ -1823,6 +1835,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._sync_symphony_tools_for_runtime(config_base)
             self._sync_skill_retrieval_tools_for_runtime(config_base)
             await self._sync_skill_retrieval_prompt_rail_for_runtime(config_base)
+            self._sync_tool_retrieval_tools_for_runtime(config_base)
 
         new_spec_tool_cards = [
             tool.card
@@ -2642,6 +2655,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         browser_agent_cfg.get("max_iterations") if isinstance(browser_agent_cfg, dict) else None,
                         DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                     ),
+                    # Feeds the Web subagent panel's tool activity (issue #8637).
+                    rails=[SubagentToolActivityRail()],
                 )
                 from jiuwenswarm.agents.harness.common.browser_config import (
                     apply_browser_decision_config,
@@ -2684,6 +2699,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         cua_agent_cfg.get("max_iterations"),
                         DEFAULT_CUA_AGENT_MAX_ITERATIONS,
                     ),
+                    rails=[SubagentToolActivityRail()],
                     **resolve_cua_factory_options(cua_agent_cfg),
                 )
                 cua_spec.factory_kwargs["auto_create_workspace"] = False
@@ -3218,38 +3234,42 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             logger.warning("[JiuwenSwarmCodeAdapter] skill_retrieval build failed: %s", exc)
             return None
 
-    def _resolve_tool_retrieval_session_enabled(
+    def _materialize_tool_retrieval_spec_tools(
         self,
+        agent_id: str,
+        tools: list[Any],
         config_base: dict[str, Any] | None = None,
-    ) -> bool:
-        """Respect code-mode configured tools during tool retrieval sync."""
-        config = (
-            config_base
-            if isinstance(config_base, dict)
-            else self._active_code_config()
-        )
-        if not super()._resolve_tool_retrieval_session_enabled(config):
-            return False
-        configured_tools = config.get("modes", {}).get("code", {}).get("tools") or []
-        return "tool_retrieval" in configured_tools
+    ) -> None:
+        """Register tool_search for the code spec bundle, gate-driven.
 
-    def _build_tool_retrieval_toolkit(self, agent_id: str) -> list[Any] | None:
-        """构建 ToolRetrievalToolkit 工具（不注册到 Runner，由 _get_tool_cards 统一注册）."""
-        if not self._tool_retrieval_tools_enabled_for_runtime():
-            logger.info("[JiuwenSwarmCodeAdapter] ToolRetrievalToolkit skipped: disabled")
-            return None
+        NOT list-driven (unlike ``_get_tool_build_func`` dispatch): the
+        retrieval layer follows the same top-level switches as agent mode —
+        mirror of the deep adapter's ``_get_tool_cards`` tail. Called by
+        ``harness/code/spec.py::_build_code_tool_bundle`` (the code-mode card
+        path; this adapter's create_instance never calls ``_get_tool_cards``).
+        Extends ``tools`` in place so the cards ride the standard spec like
+        every configured tool.
+        """
+        if not self._tool_retrieval_tools_enabled_for_runtime(config_base):
+            return
         try:
-            tools = self._create_tool_retrieval_tools()
-            self._tool_retrieval_tools = tools
-            self._tool_retrieval_tools_registered = bool(tools)
+            cards = [
+                tool.card for tool in tools if getattr(tool, "card", None) is not None
+            ]
+            self._tool_retrieval_tools = self._create_tool_retrieval_tools(cards)
+            for tool in self._tool_retrieval_tools:
+                register_tool(tool, agent_id)
+            tools.extend(self._tool_retrieval_tools)
+            self._tool_retrieval_tools_registered = bool(self._tool_retrieval_tools)
             logger.info(
-                "[JiuwenSwarmCodeAdapter] ToolRetrievalToolkit built: tools=%s",
-                [tool.card.name for tool in tools],
+                "[JiuwenSwarmCodeAdapter] ToolRetrievalToolkit registered: tools=%s",
+                [tool.card.name for tool in self._tool_retrieval_tools],
             )
-            return tools
-        except Exception as exc:
-            logger.warning("[JiuwenSwarmCodeAdapter] tool_retrieval build failed: %s", exc)
-            return None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] tool_retrieval registration failed: %s",
+                exc,
+            )
 
     def _build_acp_chat_tool(self, agent_id: str) -> Any | None:
         """Register acp_chat when at least one external ACP profile is configured."""

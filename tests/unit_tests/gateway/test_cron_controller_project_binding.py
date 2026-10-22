@@ -125,6 +125,63 @@ async def test_list_jobs_checks_gate_once_per_project() -> None:
     assert sorted(gate_calls) == [("proj_1", "alice"), ("proj_1", "bob"), ("proj_2", "alice")]
 
 
+@pytest.mark.asyncio
+async def test_list_jobs_filters_owner_before_admission_gate() -> None:
+    """传 user_id 时先按属主过滤:只为自己的项目打闸门,不替其他用户付超时。"""
+    jobs = [
+        SimpleNamespace(id="job_a", project_id="proj_alice", user_id="alice",
+                        to_dict=lambda: {"id": "job_a", "user_id": "alice"}),
+        SimpleNamespace(id="job_b", project_id="proj_bob", user_id="bob",
+                        to_dict=lambda: {"id": "job_b", "user_id": "bob"}),
+        # 无属主的历史任务在带 user_id 的查询下不可见(与 Web 列表语义一致)。
+        SimpleNamespace(id="job_c", project_id="proj_legacy", user_id="",
+                        to_dict=lambda: {"id": "job_c", "user_id": ""}),
+    ]
+    gate_calls: list[tuple[str | None, str | None]] = []
+
+    async def list_jobs():
+        return list(jobs)
+
+    async def project_execution_allowed(project_id, user_id=None):
+        gate_calls.append((project_id, user_id))
+        return True
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs),
+        scheduler=SimpleNamespace(project_execution_allowed=project_execution_allowed),
+    )
+
+    result = await controller.list_jobs(user_id="alice")
+
+    assert [job["id"] for job in result] == ["job_a"]
+    assert gate_calls == [("proj_alice", "alice")]
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_owner_without_jobs_issues_no_gate_rpc() -> None:
+    """用户 0 任务时不得为 store 里其他用户的任务发起任何准入查询。"""
+    jobs = [
+        SimpleNamespace(id="job_b", project_id="proj_bob", user_id="bob",
+                        to_dict=lambda: {"id": "job_b"}),
+    ]
+    gate_calls: list[tuple[str | None, str | None]] = []
+
+    async def list_jobs():
+        return list(jobs)
+
+    async def project_execution_allowed(project_id, user_id=None):
+        gate_calls.append((project_id, user_id))
+        return True
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs),
+        scheduler=SimpleNamespace(project_execution_allowed=project_execution_allowed),
+    )
+
+    assert await controller.list_jobs(user_id="alice") == []
+    assert gate_calls == []
+
+
 class _RecordingStore:
     def __init__(self) -> None:
         self.create_calls: list[dict] = []

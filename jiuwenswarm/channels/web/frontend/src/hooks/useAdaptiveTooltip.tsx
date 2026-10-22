@@ -37,6 +37,9 @@ interface UseAdaptiveTooltipOptions {
    *  典型场景：hover 子元素（被截断的标题 span）时，tooltip 相对于稳定行容器定位。
    *  data-tooltip 文本仍然从事件触发元素读取。 */
   anchorRef?: RefObject<HTMLElement | null>;
+  /** portal 挂载容器，默认 document.body。触发元素位于 top layer 弹窗（showModal 打开的 <dialog>）内时
+   *  必须传该 dialog 元素：普通 DOM 无论 z-index 多高都会被 top layer 整体盖住。 */
+  containerRef?: RefObject<HTMLElement | null>;
 }
 
 /**
@@ -57,6 +60,9 @@ interface UseAdaptiveTooltipOptions {
  *   const { tooltip, handlers } = useAdaptiveTooltip({ maxWidth: 400 });
  *   <button data-tooltip="提示" {...handlers}>...</button>
  *   {tooltip}
+ *
+ * 触发元素在 top layer 弹窗（showModal 的 <dialog>）内时传 containerRef 指向该 dialog，
+ * 否则 tooltip portal 到 body 会被弹窗整体盖住。
  */
 export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { tooltip: ReactNode; handlers: TooltipHandlers } {
   const offsetPct = options?.offsetX ?? 0;
@@ -65,6 +71,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
   const placement = options?.placement ?? 'bottom';
   const maxWidth = options?.maxWidth;
   const anchorRef = options?.anchorRef;
+  const containerRef = options?.containerRef;
   const [state, setState] = useState<TooltipState | null>(null);
   const [position, setPosition] = useState<{ top: number; left: number; visible: boolean } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -208,7 +215,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
         >
           {state.text}
         </div>,
-        document.body
+        containerRef?.current ?? document.body
       )
     : null;
 
