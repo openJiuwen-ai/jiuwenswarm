@@ -54,6 +54,15 @@ export function DownloadPanel({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const desktop = window.jiuwenDesktop;
   const [downloads, setDownloads] = useState<ElectronDownloadRecord[]>([]);
+  // Relative times ("just now" / "N minutes ago") only recompute on renders,
+  // and an idle list receives no pushes — nudge a re-render on a slow tick so
+  // they age forward without waiting for the next downloads-changed event.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!desktop) return;
+    const timer = window.setInterval(() => setTick(value => value + 1), 30_000);
+    return () => window.clearInterval(timer);
+  }, [desktop]);
 
   useEffect(() => {
     if (!desktop) return;
