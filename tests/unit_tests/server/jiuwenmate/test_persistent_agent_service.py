@@ -134,6 +134,133 @@ def request_for(snapshot: ConfigSnapshot, request_id: str) -> RequestRecord:
     )
 
 
+def test_model_refresh_updates_new_requests_but_keeps_the_previous_snapshot(tmp_path):
+    models = FakeModels(window=1048576)
+    service = make_service(tmp_path, models)
+    colleague = service.create_colleague(NS, settings())
+    original = service.current_snapshot(NS, colleague.agent_id)
+    accepted = request_for(original, "accepted-before-model-save")
+
+    models.window = 131072
+    assert service.refresh_published(NS) is True
+    current = service.current_snapshot(NS, colleague.agent_id)
+    assert current.config_version == "v2"
+    assert current.load_spec().model.model_request_config.context_window == 131072
+    retained = service.snapshot(NS, colleague.agent_id, accepted.config_version)
+    assert retained.fingerprint == accepted.config_fingerprint
+    assert retained.load_spec().model.model_request_config.context_window == 1048576
+    assert request_for(current, "accepted-after-model-save").config_version == "v2"
+    assert service.refresh_published(NS) is True
+    assert service.current_snapshot(NS, colleague.agent_id).config_version == "v2"
+
+
+def test_model_refresh_preserves_drafts_and_reports_partial_application(tmp_path):
+    models = FakeModels(window=1048576)
+    service = make_service(tmp_path, models)
+    clean = service.create_colleague(NS, settings(name="Clean"))
+    draft = service.create_colleague(NS, settings(name="Published"))
+    service.update_settings(NS, draft.agent_id, settings(name="Unpublished"))
+
+    models.window = 131072
+    assert service.refresh_published(NS) is False
+    refreshed = service.current_snapshot(NS, clean.agent_id).load_spec()
+    assert refreshed.model.model_request_config.context_window == 131072
+    assert service.current_snapshot(NS, draft.agent_id).config_version == "v1"
+    assert service.current_snapshot(NS, draft.agent_id).load_spec().card.name == "Published"
+    assert service.get_colleague(NS, draft.agent_id).name == "Unpublished"
+    assert service.get_colleague(NS, draft.agent_id).has_unpublished_changes
+
+
+def test_model_refresh_reports_a_missing_model_without_losing_other_updates(tmp_path):
+    models = FakeModels(window=1048576)
+    service = make_service(tmp_path, models)
+    missing = service.create_colleague(NS, settings())
+    available = service.create_colleague(NS, settings(capabilities=CapabilitySelection(model="kimi#1")))
+    models.selections.remove("deepseek#0")
+    models.window = 131072
+
+    assert service.refresh_published(NS) is False
+    assert service.current_snapshot(NS, missing.agent_id).config_version == "v1"
+    refreshed = service.current_snapshot(NS, available.agent_id).load_spec()
+    assert refreshed.model.model_request_config.context_window == 131072
+
+
+def test_model_refresh_continues_after_an_unexpected_colleague_failure(tmp_path, monkeypatch):
+    models = FakeModels(window=1048576)
+    service = make_service(tmp_path, models)
+    failed = service.create_colleague(NS, settings(name="Failed"))
+    available = service.create_colleague(NS, settings(name="Available"))
+    read_persona = service._templates.read_persona
+
+    def unreadable_persona(agent_id):
+        if agent_id == failed.agent_id:
+            raise PermissionError("persona unavailable")
+        return read_persona(agent_id)
+
+    monkeypatch.setattr(service._templates, "read_persona", unreadable_persona)
+    models.window = 131072
+    assert service.refresh_published(NS) is False
+    assert service.current_snapshot(NS, failed.agent_id).config_version == "v1"
+    assert service.current_snapshot(NS, available.agent_id).config_version == "v2"
+
+
+def test_model_refresh_does_not_publish_a_draft_saved_during_the_refresh(tmp_path, monkeypatch):
+    models = FakeModels(window=1048576)
+    service = make_service(tmp_path, models)
+    colleague = service.create_colleague(NS, settings(name="Published"))
+    publish = service.publish
+
+    def save_draft_before_publish(namespace_id, agent_id, **kwargs):
+        service.update_settings(namespace_id, agent_id, settings(name="Concurrent draft"))
+        return publish(namespace_id, agent_id, **kwargs)
+
+    monkeypatch.setattr(service, "publish", save_draft_before_publish)
+    models.window = 131072
+    assert service.refresh_published(NS) is False
+    assert service.current_snapshot(NS, colleague.agent_id).config_version == "v1"
+    assert service.get_colleague(NS, colleague.agent_id).has_unpublished_changes
+
+
+def test_model_refresh_waits_for_a_persona_save_before_publishing(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from threading import Event
+
+    models = FakeModels(window=1048576)
+    service = make_service(tmp_path, models)
+    colleague = service.create_colleague(NS, settings())
+    editor = make_service(tmp_path, models)
+    saving, reading, release = Event(), Event(), Event()
+    update = editor._repository.update_settings
+    read = service._templates.read_persona
+
+    def pause_after_template_replacement(*args, **kwargs):
+        saving.set()
+        assert release.wait(5)
+        return update(*args, **kwargs)
+
+    def observe_persona_read(agent_id):
+        reading.set()
+        return read(agent_id)
+
+    monkeypatch.setattr(editor._repository, "update_settings", pause_after_template_replacement)
+    monkeypatch.setattr(service._templates, "read_persona", observe_persona_read)
+    models.window = 131072
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        saved = pool.submit(editor.update_settings, NS, colleague.agent_id, settings(persona="Unpublished persona"))
+        try:
+            assert saving.wait(5)
+            refreshed = pool.submit(service.refresh_published, NS)
+            assert reading.wait(5)
+            with pytest.raises(TimeoutError):
+                refreshed.result(timeout=0.1)
+        finally:
+            release.set()
+        saved.result(timeout=5)
+        assert refreshed.result(timeout=5) is False
+    assert service.current_snapshot(NS, colleague.agent_id).config_version == "v1"
+    assert service.get_colleague(NS, colleague.agent_id).has_unpublished_changes
+
+
 class FakePorts:
     async def record(self, execution, event):
         return None

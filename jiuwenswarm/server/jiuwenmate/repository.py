@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
+from threading import RLock
 
 from jiuwenswarm.server.jiuwenmate.models import (
     ColleagueDefinition,
@@ -59,6 +60,9 @@ CREATE TABLE IF NOT EXISTS namespace_defaults (
 """
 
 _TEMPLATE_DIR_NAME = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+# Web and Feishu services share these files in the owner process. Do not read a
+# replacement persona before its settings revision is committed or rolled back.
+_TEMPLATE_SAVE_LOCK = RLock()
 
 
 class PersistentAgentRepository(SQLiteStore):
@@ -346,25 +350,27 @@ class TemplateStore:
         target = self.path(agent_id)
         staged = self._stage(agent_id, settings, source_template_id)
         backup = self._root / f".backup-{agent_id}-{uuid.uuid4().hex}"
-        had_previous = target.exists()
-        if had_previous:
-            target.rename(backup)
-        staged.rename(target)
-        try:
-            yield target
-        except BaseException:
-            shutil.rmtree(target, ignore_errors=True)
+        with _TEMPLATE_SAVE_LOCK:
+            had_previous = target.exists()
             if had_previous:
-                backup.rename(target)
-            raise
-        if had_previous:
-            shutil.rmtree(backup, ignore_errors=True)
+                target.rename(backup)
+            staged.rename(target)
+            try:
+                yield target
+            except BaseException:
+                shutil.rmtree(target, ignore_errors=True)
+                if had_previous:
+                    backup.rename(target)
+                raise
+            if had_previous:
+                shutil.rmtree(backup, ignore_errors=True)
 
     def read_persona(self, agent_id: str) -> str:
-        persona = self.path(agent_id) / "persona" / f"{agent_id}.md"
-        if not persona.is_file():
-            raise PersistentAgentError("Template persona is missing", code="TEMPLATE_INVALID")
-        return persona.read_text(encoding="utf-8")
+        with _TEMPLATE_SAVE_LOCK:
+            persona = self.path(agent_id) / "persona" / f"{agent_id}.md"
+            if not persona.is_file():
+                raise PersistentAgentError("Template persona is missing", code="TEMPLATE_INVALID")
+            return persona.read_text(encoding="utf-8")
 
     def remove(self, agent_id: str) -> None:
         shutil.rmtree(self.path(agent_id), ignore_errors=True)
