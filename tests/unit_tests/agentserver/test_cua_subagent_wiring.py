@@ -39,6 +39,9 @@ from jiuwenswarm.agents.harness.common.cua_defaults import (
 from jiuwenswarm.agents.harness.common.prompt.cua_task_prompt import (
     build_cua_task_prompt,
 )
+from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import (
+    SubagentToolActivityRail,
+)
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
 )
@@ -94,6 +97,8 @@ def test_single_agent_mounts_cua_agent_only_when_explicitly_enabled(
     # Shares the parent's filesystem boundary like every other built-in spec.
     assert spec.sys_operation is adapter._sys_operation
     assert spec.workspace == str(tmp_path)
+    # Without it the subagent panel shows only thinking (issue #8637).
+    assert any(isinstance(rail, SubagentToolActivityRail) for rail in spec.rails)
 
 
 def test_single_agent_skips_cua_agent_when_absent_or_disabled(monkeypatch, tmp_path):
@@ -147,6 +152,8 @@ def test_code_mode_mounts_cua_agent_when_enabled(monkeypatch, tmp_path):
     assert spec.sys_operation is adapter._sys_operation
     # Code mode never lets sub-agents create their own workspace.
     assert spec.factory_kwargs["auto_create_workspace"] is False
+    # Without it the subagent panel shows only thinking (issue #8637).
+    assert any(isinstance(rail, SubagentToolActivityRail) for rail in spec.rails)
 
 
 def test_code_mode_skips_cua_agent_when_absent(monkeypatch, tmp_path):
@@ -639,3 +646,50 @@ def test_no_unavailable_notice_when_cua_is_mounted_or_not_enabled():
         )
         is None
     )
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+def test_cua_factory_keeps_caller_rails_in_both_builds(monkeypatch, frozen):
+    # The panel's tool activity rail is passed in by the adapters; the desktop
+    # installer build must keep it next to its own CuaExtensionRail, not drop either.
+    from jiuwenswarm.agents.harness.common import cua_factory
+    from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
+
+    captured = {}
+
+    def _fake_core(model, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(cua_factory, "build_core_cua_config", _fake_core)
+    monkeypatch.setattr(cua_factory, "build_system_prompt", lambda language, **_: "prompt")
+    monkeypatch.setattr(cua_factory.sys, "frozen", frozen, raising=False)
+    monkeypatch.setattr(cua_factory.sys, "platform", "win32")
+    caller_rail = object()
+
+    cua_factory.build_cua_agent_config(MagicMock(), card=AgentCard(name="cua_agent"), rails=[caller_rail])
+
+    rails = captured["rails"]
+    assert rails[0] is caller_rail
+    assert any(isinstance(rail, CuaExtensionRail) for rail in rails) is frozen
+
+
+def test_panel_rail_is_added_to_the_cua_default_rails_not_replacing_them(monkeypatch, tmp_path):
+    # The adapter puts the panel rail on the spec; agent-core's factory must
+    # append its own desktop rails after it. If it ever switched to replacing
+    # them, the subagent would lose its desktop runtime and context window.
+    from openjiuwen.harness.subagents import cua_agent as core_cua_agent
+    from openjiuwen.harness.tools.cua.rails import CuaRuntimeRail
+
+    adapter = _deep_adapter(monkeypatch, tmp_path)
+    subagents, _ = adapter._build_configured_subagents(
+        MagicMock(), {"subagents": {"cua_agent": {"enabled": True}}}, {}
+    )
+    captured = {}
+    monkeypatch.setattr(core_cua_agent, "create_deep_agent", lambda **kwargs: captured.update(kwargs))
+
+    create_cua_agent(MagicMock(), rails=list(_cua_spec(subagents).rails))
+
+    rails = captured["rails"]
+    assert isinstance(rails[0], SubagentToolActivityRail)
+    assert any(isinstance(rail, CuaRuntimeRail) for rail in rails)

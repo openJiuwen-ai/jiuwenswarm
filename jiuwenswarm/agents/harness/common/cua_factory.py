@@ -18,6 +18,7 @@ def build_cua_agent_config(
     max_iterations=100,
     cua_snapshot_keep_last_k=3,
     cua_pause_on_user_input=False,
+    rails=None,
 ):
     """Extend desktop installers; preserve the core factory for Python installs."""
     if not getattr(sys, "frozen", False) or sys.platform not in ("darwin", "win32"):
@@ -30,6 +31,7 @@ def build_cua_agent_config(
             max_iterations=max_iterations,
             cua_snapshot_keep_last_k=cua_snapshot_keep_last_k,
             cua_pause_on_user_input=cua_pause_on_user_input,
+            rails=rails,
         )
 
     from .rails.cua_extension_rail import CuaExtensionRail
@@ -44,7 +46,7 @@ def build_cua_agent_config(
         max_iterations=max_iterations,
         cua_snapshot_keep_last_k=cua_snapshot_keep_last_k,
         cua_pause_on_user_input=cua_pause_on_user_input,
-        rails=[CuaExtensionRail(pause_on_user_input=cua_pause_on_user_input)],
+        rails=[*(rails or []), CuaExtensionRail(pause_on_user_input=cua_pause_on_user_input)],
     )
     spec.parallel_tool_calls = False
     return spec
