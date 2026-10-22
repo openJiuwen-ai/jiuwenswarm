@@ -912,6 +912,47 @@ def test_reviewer_ui_metadata_removes_manual_only_fields_from_approved(
     assert "user_authorization" not in metadata
 
 
+@pytest.mark.parametrize("language,expected", [
+    ("zh", "当前权限规则已允许此操作，无需再次审批。"),
+    ("en", "Your permission settings already allow this action. No approval needed."),
+])
+def test_reviewer_ui_metadata_localizes_policy_allow(tmp_path, monkeypatch, language, expected):
+    descriptor, _ = _candidate(tmp_path)
+    monkeypatch.setattr(reviewer_metadata_module, "_configured_reviewer_display_language", lambda: language)
+    metadata = reviewer_metadata_module._reviewer_ui_metadata(
+        descriptor,
+        reason="policy_allow",
+        metadata={
+            "decision_source": "policy_evaluator",
+            "final_reviewer_status": "approved",
+            "evidence_summary": "untrusted rule /private/path or command",
+        },
+    )
+    assert metadata["evidence_summary"] == expected
+    assert metadata["reviewer_status"] == metadata["final_reviewer_status"] == "approved"
+    assert "manual_reason_summary" not in metadata
+    assert "user_review_hint" not in metadata
+
+
+@pytest.mark.parametrize("source,reason,status", [
+    ("policy_evaluator", "policy_allow", "denied"),
+    ("policy_evaluator", "policy_allow", "manual"),
+    ("policy_evaluator", "other_reason", "approved"),
+    ("manual_approval", "policy_allow", "approved"),
+    ("auto_reviewer", "policy_allow", "approved"),
+])
+def test_policy_allow_reason_requires_matching_source_reason_and_status(tmp_path, monkeypatch, source, reason, status):
+    descriptor, _ = _candidate(tmp_path)
+    monkeypatch.setattr(reviewer_metadata_module, "_configured_reviewer_display_language", lambda: "en")
+    metadata = reviewer_metadata_module._reviewer_ui_metadata(
+        descriptor, reason=reason,
+        metadata={"decision_source": source, "final_reviewer_status": status},
+    )
+    assert metadata["evidence_summary"] != (
+        "Your permission settings already allow this action. No approval needed."
+    )
+
+
 def test_reviewer_ui_metadata_localizes_unverified_execution_provider(
     tmp_path: Path,
     monkeypatch: Any,
