@@ -386,12 +386,16 @@ class OAuthFlowManager:
             for flow_id, flow in self._flows.items():
                 if hmac.compare_digest(flow.state, state):
                     return flow_id, flow
-        self._load_flows()
-        with self._lock:
+            self._load_flows()
+            self._prune_locked()
             for flow_id, flow in self._flows.items():
                 if hmac.compare_digest(flow.state, state):
+                    if self._time_fn() - flow.created_at > _FLOW_TTL_S:
+                        self._flows.pop(flow_id, None)
+                        self._save_flows()
+                        return None
                     return flow_id, flow
-        return None
+            return None
 
     def _fail_flow(self, flow_id: str) -> None:
         with self._lock:
@@ -422,7 +426,7 @@ class OAuthFlowManager:
                 raise McpOAuthError("OAuth state mismatch; retry the connection")
             error = str(query.get("error") or "")
             if error:
-                raise McpOAuthError(f"Canva authorization failed: {error}")
+                raise McpOAuthError(f"MCP '{flow.name}' authorization failed: {error}")
             code = str(query.get("code") or "")
             if not code:
                 raise McpOAuthError("OAuth callback is missing the authorization code")

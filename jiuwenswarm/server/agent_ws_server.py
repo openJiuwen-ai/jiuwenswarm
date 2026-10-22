@@ -10201,7 +10201,7 @@ class AgentWebSocketServer:
                     return {
                         "type": "auth_failed",
                         "name": name,
-                        "error": "Canva MCP rejected the authorization token",
+                        "error": f"MCP '{name}' rejected the authorization token",
                     }
                 try:
                     from jiuwenswarm.server.runtime.mcp.state_store import (

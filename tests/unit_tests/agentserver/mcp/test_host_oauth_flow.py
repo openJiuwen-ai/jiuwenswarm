@@ -11,7 +11,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwenswarm.server.runtime.mcp.oauth_flow import McpOAuthError, OAuthFlowManager, _parse_callback_url
+from jiuwenswarm.server.runtime.mcp.oauth_flow import (
+    _FLOW_TTL_S,
+    McpOAuthError,
+    OAuthFlowManager,
+    _parse_callback_url,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -171,6 +176,65 @@ def test_oauth_flow_can_be_found_by_state_when_flow_id_missing(workspace: Path):
 
     restarted = OAuthFlowManager(workspace_dir=workspace, http_client=lambda: _FakeClient(calls, routes))
     assert restarted.complete({"state": state, "code": "code-1"}) is True
+
+
+def test_expired_persisted_flow_cannot_complete_by_state(workspace: Path):
+    calls: list[tuple[str, str, dict]] = []
+    routes = {
+        "https://mcp.canva.cn/.well-known/oauth-protected-resource": _FakeResponse(200, {
+            "authorization_servers": ["https://mcp.canva.cn"],
+        }),
+        "https://mcp.canva.cn/.well-known/oauth-authorization-server": _FakeResponse(200, {
+            "authorization_endpoint": "https://mcp.canva.cn/authorize",
+            "token_endpoint": "https://mcp.canva.cn/token",
+            "registration_endpoint": "https://mcp.canva.cn/register",
+            "response_types_supported": ["code"],
+            "token_endpoint_auth_methods_supported": ["none"],
+        }),
+        "https://mcp.canva.cn/register": _FakeResponse(201, {"client_id": "client-1"}),
+        "https://mcp.canva.cn/token": _FakeResponse(200, {"access_token": "access-1"}),
+    }
+    now = [0.0]
+    manager = OAuthFlowManager(
+        workspace_dir=workspace,
+        http_client=lambda: _FakeClient(calls, routes),
+        time_fn=lambda: now[0],
+    )
+    started = manager.start("canva", "http://127.0.0.1:19000/")
+    state = started["auth_url"].split("state=")[1].split("&")[0]
+
+    now[0] = _FLOW_TTL_S + 1
+    restarted = OAuthFlowManager(
+        workspace_dir=workspace,
+        http_client=lambda: _FakeClient(calls, routes),
+        time_fn=lambda: now[0],
+    )
+    with pytest.raises(McpOAuthError, match="OAuth flow is unknown or expired"):
+        restarted.complete({"state": state, "code": "code-1"})
+    assert not [call for call in calls if call[0] == "POST" and call[1] == "https://mcp.canva.cn/token"]
+
+
+def test_provider_error_message_names_the_connector(workspace: Path):
+    routes = {
+        "https://mcp.canva.cn/.well-known/oauth-protected-resource": _FakeResponse(200, {
+            "authorization_servers": ["https://mcp.canva.cn"],
+        }),
+        "https://mcp.canva.cn/.well-known/oauth-authorization-server": _FakeResponse(200, {
+            "authorization_endpoint": "https://mcp.canva.cn/authorize",
+            "token_endpoint": "https://mcp.canva.cn/token",
+            "registration_endpoint": "https://mcp.canva.cn/register",
+            "response_types_supported": ["code"],
+            "token_endpoint_auth_methods_supported": ["none"],
+        }),
+        "https://mcp.canva.cn/register": _FakeResponse(201, {"client_id": "client-1"}),
+        "https://mcp.canva.cn/token": _FakeResponse(200, {"access_token": "access-1"}),
+    }
+    manager = OAuthFlowManager(workspace_dir=workspace, http_client=lambda: _FakeClient([], routes))
+    started = manager.start("canva", "http://127.0.0.1:19000/")
+    state = started["auth_url"].split("state=")[1].split("&")[0]
+
+    with pytest.raises(McpOAuthError, match=r"MCP 'canva' authorization failed: access_denied"):
+        manager.complete({"state": state, "error": "access_denied"})
 
 
 def test_complete_host_oauth_auth_writes_connecting_record(workspace: Path):
