@@ -24,13 +24,7 @@ from openjiuwen.core.context_engine.processor.forked.compressor.recall.bm25 impo
     tokenize as _bm25_tokenize,
 )
 from openjiuwen.core.foundation.tool import LocalFunction, ToolCard, ToolInfo
-from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.tools.tool_discovery.bm25 import BM25ToolIndex
-
-from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
-    discovery_description,
-    discovery_search_text,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +332,9 @@ def _tool_index_tool_id(session_scope: str) -> str:
 
 
 _TOOL_SEARCH_CARD_DESCRIPTION = (
-    "Deferred-tool catalogue, read-only. list: tools under [category]. "
+    "Deferred-tool catalogue, read-only. list: tools under [category]; "
+    "add [keyword] to BM25-search within the category or, with no "
+    "category, across all tools. "
     "get_schema: the {name, description, schema} of the tool named in "
     "[tool]; results execute via the fixed tool_call tool. "
     "Never executes tools."
@@ -419,14 +415,27 @@ def _tool_search_input_params() -> dict[str, Any]:
                 "type": "string",
                 "enum": ["list", "get_schema"],
                 "description": (
-                    "list: tools under [category]. "
-                    "get_schema: the schema of the tool named in [tool]."
+                    "list: tools under [category], optionally filtered by "
+                    "[keyword]. get_schema: the schema of the tool named "
+                    "in [tool]."
                 ),
             },
             "category": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Exact category name. Omit for root.",
+                "description": (
+                    "Exact category name. Omit only for a keyword-only "
+                    "global search."
+                ),
+            },
+            "keyword": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": (
+                    "list only. BM25 keyword search: within [category], or "
+                    "across all tools when category is omitted."
+                ),
             },
             "tool": {
                 "type": "string",
@@ -692,19 +701,6 @@ class ToolRetrievalToolkit:
             # retired from the card; an empty operation (direct callers only
             # — the card requires it) degrades to a plain listing too.
             category = str(kwargs.get("category") or "").strip()
-            if not category and not keyword:
-                # Bare list (and a stale keyword-era snapshot whose ``query``
-                # was dropped) teaches the valid call shapes; a bare legacy
-                # "search" degrades to the root category listing instead.
-                if operation == "list" or had_retired_query:
-                    raise ValueError(
-                        'list needs "category" or "keyword": pick a category '
-                        "from the catalogue in your system prompt, or pass "
-                        'keyword for a global search. e.g. '
-                        '{"operation":"list","category":"cron"} or '
-                        '{"operation":"list","keyword":"图片"}'
-                    )
-                return self._render_root_listing()
             return self._render_listing(category, keyword=keyword)
 
         raise ValueError(
@@ -737,47 +733,6 @@ class ToolRetrievalToolkit:
             return self._render_connector_listing(connector_server, keyword=keyword)
         return self._render_category_listing(category, keyword=keyword)
 
-    def _render_root_listing(self) -> str:
-        """Root category listing for retired bare ``search`` spellings.
-
-        Mirrors the prompt directory's collapse semantics — multi-member
-        categories render ``[category]`` lines, single-member ones fold
-        into ``[tool]`` lines — plus the MCP connector virtual branches
-        (connecters never fold: the server description carries its own
-        routing signal). Bare ``list`` never gets here: the catalogue
-        already sits in the system prompt, so re-dumping it would only
-        waste a call.
-        """
-
-        lines = [
-            "## Tool categories",
-            ("See the system prompt for the full catalogue; this listing supports legacy calls."
-             if self._language == "en" else "完整目录见 system prompt；本列表仅为旧拼写降级渲染。"),
-            "",
-        ]
-        for category in self._live_categories():
-            description = " ".join(category.description_for(self._language).split())
-            if len(category.tools) >= 2:
-                lines.append(f"- [category] {category.path}: {description}")
-                continue
-            name = category.tools[0]
-            tool = self._tool_by_name.get(name)
-            tool_description = (
-                discovery_description(tool, self._language) if tool else ""
-            )
-            lines.append(
-                f"- [tool] {name}: "
-                f"{_compact_schema_description(tool_description)}"
-            )
-        for server, group in self.mcp_connector_groups().items():
-            description = str(
-                group.get("description_en" if self._language == "en" else "description_zh")
-                or group.get("description_zh" if self._language == "en" else "description_en")
-                or ""
-            ).strip() or f"Tools from MCP connector {server}."
-            lines.append(f"- [category] mcp_{server}: {description}")
-        return "\n".join(lines)
-
     def _rank_tools_by_query(
         self, names: tuple[str, ...] | list[str], keyword: str
     ) -> list[str]:
@@ -792,34 +747,21 @@ class ToolRetrievalToolkit:
         BM25's positive IDF cannot zero out.
         """
 
-        documents: list[ToolInfo] = []
-        extra_search_texts: list[str] = []
-        for name in names:
-            tool = self._tool_by_name.get(name)
-            if tool is None:
-                continue
-            documents.append(tool)
-            extra_search_texts.append(discovery_search_text(tool))
+        documents = [
+            self._tool_by_name[name] for name in names if name in self._tool_by_name
+        ]
         if not documents:
             return []
-        ranked = BM25ToolIndex.build(
-            documents,
-            extra_search_texts=extra_search_texts,
-        ).search(keyword, limit=len(documents))
+        ranked = BM25ToolIndex.build(documents).search(keyword, limit=len(documents))
         multi_char = {
             token for token in _bm25_tokenize(keyword) if len(token) > 1
         }
-        selected: list[str] = []
-        for tool in ranked:
-            tokens = set(
-                _bm25_tokenize(
-                    f"{tool.name or ''} {tool.description or ''} "
-                    f"{discovery_search_text(tool)}"
-                )
-            )
-            if multi_char & tokens:
-                selected.append(tool.name)
-        return selected
+        return [
+            tool.name
+            for tool in ranked
+            if multi_char
+            & set(_bm25_tokenize(f"{tool.name or ''} {tool.description or ''}"))
+        ]
 
     def _live_categories(self) -> tuple[ToolCategory, ...]:
         """Static categories whose membership intersects the live registry."""
@@ -852,16 +794,17 @@ class ToolRetrievalToolkit:
         lines = [header, ""]
         lines.extend(
             f"- [tool] {name}: "
-            f"{_compact_schema_description(discovery_description(self._tool_by_name[name], self._language))}"
+            f"{_compact_schema_description(self._tool_by_name[name].description)}"
             for name in ranked
         )
         return "\n".join(lines)
 
-    def _render_category_listing(self, category: str) -> str:
+    def _render_category_listing(self, category: str, keyword: str = "") -> str:
         """Render one category's member tools.
 
-        A name match lists the category's tools; anything else raises with
-        the valid names so the model can retry without probing.
+        A name match lists the category's tools, BM25-ranked against
+        ``keyword`` when given; anything else raises with the valid names
+        so the model can retry without probing.
         """
 
         requested = _category_key(category)
@@ -888,7 +831,7 @@ class ToolRetrievalToolkit:
             lines.extend(
                 f"- [tool] {name}: "
                 f"{_compact_schema_description(self._tool_by_name[name].description)}"
-                for name in matched.tools
+                for name in names
             )
             return "\n".join(lines)
 

@@ -127,15 +127,10 @@ def test_bare_list_errors_with_call_shapes() -> None:
     toolkit = _build_toolkit()
     tool = toolkit.get_tools()[0]
 
-    listing = asyncio.run(tool.invoke({"operation": "list"}))
-
-    assert "[category] cron:" in listing
-    assert "[category] heartbeat:" in listing
-    # Categorized tools are NOT listed at the root: their names are
-    # discovered through the category listing, not a flat dump.
-    assert "cron_create_job" not in listing
-    # No pagination footer — listings are served whole.
-    assert "[next]" not in listing
+    with pytest.raises(
+        ValueError, match='list needs "category" or "keyword"'
+    ):
+        asyncio.run(tool.invoke({"operation": "list"}))
 
 
 def test_category_list_serves_tools_schema_free() -> None:
@@ -186,26 +181,6 @@ def test_unknown_category_error_lists_valid_names() -> None:
     except ValueError as exc:
         # The error carries the valid names so the model can retry directly.
         assert "cron, heartbeat" in str(exc)
-
-
-def test_uncategorized_and_connector_tools_at_root() -> None:
-    """Static-table misses surface at the root; MCP tools group by connector."""
-
-    tools = _deferred_tools() + [
-        ToolInfo(name="pdf_read", description="Read text from a PDF file"),
-        ToolInfo(name="mcp_amap_maps_geo", description="将地址转换为经纬度坐标"),
-        ToolInfo(name="mcp_amap_maps_text_search", description="关键词搜POI"),
-    ]
-    toolkit = _build_toolkit(
-        tools,
-        mcp_servers_provider=lambda: {"amap": {"zh": "高德地图位置服务。", "en": ""}},
-    )
-    listing = asyncio.run(toolkit.tool_search(operation="list"))
-
-    assert "- [tool] pdf_read: Read text from a PDF file" in listing
-    assert "[category] mcp_amap: 高德地图位置服务。" in listing
-    # Connector tools ride their virtual branch, not [tool] lines.
-    assert "mcp_amap_maps_geo: " not in listing
 
 
 def test_list_get_schema_roundtrip() -> None:
@@ -265,10 +240,10 @@ def test_retired_fields_degrade_instead_of_erroring() -> None:
 
     toolkit = _build_toolkit()
 
-    legacy = asyncio.run(
-        toolkit.tool_search(operation="search", query=["cron"])
-    )
-    assert "[category] cron:" in legacy
+    with pytest.raises(
+        ValueError, match='list needs "category" or "keyword"'
+    ):
+        asyncio.run(toolkit.tool_search(operation="search", query=["cron"]))
 
     degraded = asyncio.run(
         toolkit.tool_search(
