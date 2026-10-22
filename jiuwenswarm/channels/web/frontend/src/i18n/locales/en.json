@@ -1053,7 +1053,7 @@
         "starting": "Starting…",
         "summary": "{{count}} agent(s) selected, {{nodes}} node(s)",
         "emptyNodes": "The selection has no complete step to diagnose. Steps that are not fully covered were left out.",
-        "lastTurn": "The selection includes the main agent's last turn. Artifact evaluation and process-anomaly diagnosis will be attempted.",
+        "lastTurn": "The selection includes the main agent's last response. Artifact evaluation and process-anomaly diagnosis will be attempted.",
         "nodeLimit": "The selection contains {{count}} nodes, over the limit of {{limit}}. Narrow the range.",
         "running": "A diagnosis is already in progress",
         "noData": "There is no trajectory to diagnose yet"

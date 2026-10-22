@@ -1037,7 +1037,7 @@
         "starting": "启动中…",
         "summary": "已选择 {{count}} 个 Agent，{{nodes}} 个节点",
         "emptyNodes": "选中范围内没有完整可诊断的步骤（未完整覆盖的步骤已被剔除）",
-        "lastTurn": "选中轨迹包含主agent最后一轮，将尝试进行产物评估和过程异常诊断归因",
+        "lastTurn": "选中轨迹包含主agent最后一轮响应，将尝试进行产物评估和过程异常诊断归因",
         "nodeLimit": "选中轨迹超过 {{limit}} 个节点（当前 {{count}} 个），请缩小选择范围",
         "running": "已有诊断正在进行",
         "noData": "当前没有可诊断的轨迹"
