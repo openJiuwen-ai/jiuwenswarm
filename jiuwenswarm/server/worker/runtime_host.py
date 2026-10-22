@@ -47,6 +47,15 @@ class WorkerRuntime:
 
     async def shutdown(self) -> None:
         """Drain resources within the enclosing Worker service's deadline."""
+        try:
+            await self._shutdown_owned_resources()
+        finally:
+            registry_owner = getattr(self.server, "worker_callback_registry_owner", None)
+            if registry_owner is not None:
+                await registry_owner.aclose()
+
+    async def _shutdown_owned_resources(self) -> None:
+        """Keep registry dispatch available until SDK teardown has settled."""
         self.stop_event.set()
         owned = (self.image_task, self.proactive_task, self.teammate_task, self.zen_task, *self.background_tasks)
         tasks = list(dict.fromkeys(task for task in owned if task is not None))

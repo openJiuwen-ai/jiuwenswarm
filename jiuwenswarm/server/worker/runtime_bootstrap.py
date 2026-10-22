@@ -22,6 +22,38 @@ async def construct_runtime_server(
     on_constructed: Callable[[Any], Awaitable[None]] | None = None,
     telemetry: Any,
 ) -> Any:
+    """Bind SDK registry ownership before concurrent Runtime construction."""
+    from openjiuwen.core.runner import Runner
+    from jiuwenswarm.server.worker.callback_registry import bind_callback_registry_owner
+
+    registry_owner = bind_callback_registry_owner(Runner.callback_framework)
+    published = False
+
+    async def publish(server: Any) -> None:
+        nonlocal published
+        server.worker_callback_registry_owner = registry_owner
+        if on_constructed is not None:
+            # The receiver owns cleanup even if its bind operation then fails.
+            published = True
+            await on_constructed(server)
+
+    try:
+        return await _construct_runtime_server(
+            host, port, on_constructed=publish, telemetry=telemetry,
+        )
+    except BaseException:
+        if not published:
+            await registry_owner.aclose()
+        raise
+
+
+async def _construct_runtime_server(
+    host: str,
+    port: int,
+    *,
+    on_constructed: Callable[[Any], Awaitable[None]] | None,
+    telemetry: Any,
+) -> Any:
     """Join construction, execution definitions and extension registration.
 
     Call only after backend preparation. A constructed server is published to

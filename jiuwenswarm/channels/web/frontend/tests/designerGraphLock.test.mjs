@@ -102,6 +102,37 @@ test('nodes added after a completed run keep the graph editable', () => {
       nodeStates: { ...finished, n3: { status: 'pending' } },
       runStatus: 'completed',
     }),
+    false,
+  );
+});
+
+test('a single-node rerun after a failed run keeps the graph editable', () => {
+  const nodeStates = { n1: { status: 'completed' }, n2: { status: 'failed' } };
+  assert.equal(
+    isDesignerGraphEditingLocked({
+      bootstrapInProgress: false,
+      graph: promptGraph,
+      nodeStates,
+      runStatus: 'running',
+    }),
     true,
+  );
+  assert.equal(
+    isDesignerGraphEditingLocked({
+      bootstrapInProgress: false,
+      graph: promptGraph,
+      nodeStates,
+      runStatus: 'completed',
+    }),
+    false,
+  );
+  assert.equal(
+    isDesignerGraphEditingLocked({
+      bootstrapInProgress: false,
+      graph: promptGraph,
+      nodeStates: { n1: { status: 'completed' }, n2: { status: 'cancelled' } },
+      runStatus: 'completed',
+    }),
+    false,
   );
 });

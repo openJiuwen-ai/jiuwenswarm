@@ -472,7 +472,8 @@ def test_cold_restore_wraps_non_business_failures_as_stale_selection(
 class _Catalog:
     """Minimal catalog double for resolver boundary tests."""
 
-    def __init__(self, *, groups=None, models=None):
+    def __init__(self, *, groups=None, models=None, config=None):
+        self.config = config or {}
         self.snapshot = {"groups": groups or []}
         self._groups = {g["model_group_id"]: g for g in self.snapshot["groups"]}
         self._models = {m["model_id"]: {"entry": {"model_client_config": {
@@ -572,7 +573,7 @@ def test_swarm_compiler_adapter_preserves_group_identity_and_route_fields():
     assert compiled.model_client_config.intelli_router.deployments[0].request_defaults == {"max_tokens": 128}
 
 
-def _two_route_resolver(monkeypatch: pytest.MonkeyPatch, routing: dict | None) -> None:
+def _two_route_resolver(monkeypatch: pytest.MonkeyPatch, routing: dict | None, *, config=None) -> None:
     """Route TeamManager through the real resolver over a two-model group."""
     group = {
         "model_group_id": "g1", "enabled": True, "is_default": True,
@@ -588,7 +589,7 @@ def _two_route_resolver(monkeypatch: pytest.MonkeyPatch, routing: dict | None) -
          "api_base": "https://one.test", "api_key": "mock-key-one"},
         {"model_id": "m2", "model_name": "model-two", "provider": "OpenAI",
          "api_base": "https://two.test", "api_key": "mock-key-two"},
-    ])
+    ], config=config)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.model_routing_registry.ModelSelectionResolver",
         lambda: ModelSelectionResolver(catalog),
@@ -604,17 +605,56 @@ def test_team_group_without_routing_defaults_to_ordered_failover(monkeypatch: py
     router = compiled.model_client_config.intelli_router
     assert router is not None
     assert router.strategy == "ordered-failover"
+    assert router.timeout == 360
     assert [item.model_name for item in router.deployments] == ["model-one", "model-two"]
 
 
 def test_team_group_keeps_its_own_routing_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
-    _two_route_resolver(monkeypatch, routing={"strategy": "tag-filtered", "num_retries": 1})
+    _two_route_resolver(monkeypatch, routing={"strategy": "tag-filtered", "num_retries": 1, "timeout_seconds": 90})
 
     compiled = TeamManager._resolve_and_compile_team_selection(ModelSelection(type="model_group", id="g1"))
 
     router = compiled.model_client_config.intelli_router
     assert router.strategy == "tag-filtered"
     assert router.num_retries == 1
+    assert router.timeout == 90
+
+
+def test_team_group_timeout_uses_config_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    _two_route_resolver(
+        monkeypatch, routing=None,
+        config={"models": {"group_routing_timeout_seconds": "420"}},
+    )
+
+    compiled = TeamManager._resolve_and_compile_team_selection(ModelSelection(type="model_group", id="g1"))
+
+    assert compiled.model_client_config.intelli_router.timeout == 420
+
+
+def test_team_group_timeout_override_is_independent_of_global_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _two_route_resolver(
+        monkeypatch,
+        routing={"timeout_seconds": 75, "stream_first_chunk_timeout": 55, "stream_idle_timeout": 20},
+        config={"models": {"group_routing_timeout_seconds": 420}},
+    )
+
+    compiled = TeamManager._resolve_and_compile_team_selection(ModelSelection(type="model_group", id="g1"))
+
+    assert compiled.model_client_config.intelli_router.timeout == 75
+
+
+@pytest.mark.parametrize("value", ["5m", "", None, 0, -1, "nan", "inf"])
+def test_team_group_invalid_config_timeout_uses_default(
+    monkeypatch: pytest.MonkeyPatch, value: object,
+) -> None:
+    _two_route_resolver(
+        monkeypatch, routing=None,
+        config={"models": {"group_routing_timeout_seconds": value}},
+    )
+
+    compiled = TeamManager._resolve_and_compile_team_selection(ModelSelection(type="model_group", id="g1"))
+
+    assert compiled.model_client_config.intelli_router.timeout == 360
 
 
 def test_team_manual_route_without_routing_stays_a_single_model(monkeypatch: pytest.MonkeyPatch) -> None:

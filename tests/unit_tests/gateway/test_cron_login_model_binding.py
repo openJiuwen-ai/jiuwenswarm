@@ -92,17 +92,11 @@ def _patch_login_session(
 
 
 def _patch_project_binding(monkeypatch: pytest.MonkeyPatch) -> None:
-    """项目绑定解析桩：create/update 不依赖 Gateway 本地项目表。"""
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.project_store.resolve_cron_project_binding",
-        lambda raw_pid, project_dir, work_mode: SimpleNamespace(
-            project_id="p1", work_mode="work", error=None
-        ),
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.project_store.resolve_cron_job_patch",
-        lambda patch, **kwargs: None,
-    )
+    """项目绑定桩：模拟入口已在目标 AgentServer 完成解析并打 marker。
+
+    A3g 后 controller 不再本地反查项目表；无项目字段的请求本就无需 marker，
+    保留该 helper 以最小改动既有用例。"""
+    del monkeypatch
 
 
 def _make_controller(tmp_path) -> tuple[CronController, CronJobStore]:

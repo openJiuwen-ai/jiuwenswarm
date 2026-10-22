@@ -14,12 +14,13 @@ surface is a single-repo change.
 Tools kept (card names as registered by ability_manager.add_ability):
 
 * the design canvas toolset — designer_graph_* (design profile), the
-  authoring/execution tools (designer_graph_autorun / designer_run_graph),
+  authoring/execution tools (designer_graph_autorun / swarmflow),
   and the picked model/media tools (call_model / read_upstream /
   call_image_model / call_video_model / ffmpeg_compose / mix_audio).
 * ``ask_user`` — the structured-question contract with the user.
 * vision / audio tools (image_ocr / visual_question_answering /
   audio_transcription / audio_question_answering / audio_metadata).
+* web tools (free_search / fetch_webpage / paid_search).
 * base sys_operation support (list_files / glob / bash / grep / read_file —
   kept per user decision 2026-10-10; the skill rail reads SKILL.md front
   matter through the sys_operation engine).
@@ -68,7 +69,7 @@ _KEEP_TOOL_NAMES: frozenset[str] = frozenset({
     "designer_node_run",
     "designer_node_complete",
     "designer_graph_autorun",
-    "designer_run_graph",
+    "swarmflow",
     "call_model",
     "read_upstream",
     "call_image_model",
@@ -83,6 +84,10 @@ _KEEP_TOOL_NAMES: frozenset[str] = frozenset({
     "audio_transcription",
     "audio_question_answering",
     "audio_metadata",
+    # Web search / fetch (design leader tool group).
+    "free_search",
+    "fetch_webpage",
+    "paid_search",
     # Base sys_operation support (user decision 2026-10-10).
     "list_files",
     "glob",

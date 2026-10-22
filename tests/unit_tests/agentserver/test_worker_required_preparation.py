@@ -55,7 +55,9 @@ async def test_required_preparation_failure_prevents_runtime_consumers(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_successful_construction_retains_cleanup_owner_when_parallel_extensions_fail(monkeypatch):
+async def test_successful_construction_retains_cleanup_owner_when_parallel_extensions_fail(
+    monkeypatch, worker_callback_framework,
+):
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
@@ -105,7 +107,7 @@ async def _raise(error):
 
 @pytest.mark.asyncio
 async def test_execution_code_overlaps_construction_and_failure_retains_owner(
-    monkeypatch,
+    monkeypatch, worker_callback_framework,
 ):
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
@@ -141,7 +143,9 @@ async def test_execution_code_overlaps_construction_and_failure_retains_owner(
 
 
 @pytest.mark.asyncio
-async def test_extensions_observe_execution_patches_after_parallel_server_construction(monkeypatch):
+async def test_extensions_observe_execution_patches_after_parallel_server_construction(
+    monkeypatch, worker_callback_framework,
+):
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer

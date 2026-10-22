@@ -24,6 +24,7 @@ returns a result dict and never raises.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -63,6 +64,20 @@ _STAGE_BY_KIND = {
 #: Text is one cheap chat call; image/video generations are paid and are
 #: never repeated by the tool.
 _GENERATE_ATTEMPTS_BY_KIND = {"text": 2}
+
+
+def image_generate_timeout_seconds() -> float:
+    """AbilityManager budget for character / scene generate tools."""
+    from jiuwenswarm.server.runtime.designer.media_generation import image_tool_timeout_seconds
+
+    return image_tool_timeout_seconds()
+
+
+def video_generate_timeout_seconds() -> float:
+    """AbilityManager budget for clip / compose generate tools."""
+    from jiuwenswarm.server.runtime.designer.media_generation import video_tool_timeout_seconds
+
+    return video_tool_timeout_seconds()
 
 
 class _ToolError(Exception):
@@ -137,6 +152,29 @@ def _note_member_error(
     note(node_id, error)
 
 
+def note_rejection(shot_ticket: Any, member: str, tool: str, error: str) -> None:
+    """Record why ``tool`` refused the member's call on its node.
+
+    A member stops without ``structured_output`` once a tool fails, so this
+    note is the only reason the node can show. An earlier, more specific error
+    stays, and a refusal after the node already generated explains nothing.
+    """
+    try:
+        env, node = _resolve(shot_ticket, member)
+    except _ToolError as exc:
+        _warn_unresolved(tool, shot_ticket, f"{error} ({exc.code})")
+        return
+    node_id = str(node.get("id") or "")
+    if node_id in env["generations"]:
+        return
+    _note_member_error(env, node_id, f"{tool} rejected: {error}", keep_existing=True)
+
+
+def _warn_unresolved(tool: str, shot_ticket: Any, error: str) -> None:
+    """A refusal no node can carry; the worker log is the only trace."""
+    logger.warning("[design-tools] %s rejected: error=%s ticket=%s", tool, error, shot_ticket)
+
+
 def _same_file(left: str, right: str) -> bool:
     from jiuwenswarm.server.runtime.designer.handlers.common import path_from_uri
 
@@ -157,6 +195,7 @@ async def read_node_context(shot_ticket: Any) -> dict[str, Any]:
     try:
         env, node = _resolve(shot_ticket)
     except _ToolError as exc:
+        _warn_unresolved("read_node_context", shot_ticket, exc.code)
         return {"error": exc.code}
     try:
         return _context_packet(env, node)
@@ -361,6 +400,7 @@ async def generate_node_output(
     try:
         env, node = _resolve(shot_ticket, member)
     except _ToolError as exc:
+        _warn_unresolved(f"{member} generate", shot_ticket, exc.code)
         return failure(exc.code)
     node_id = str(node.get("id") or "")
     focused = prompt.strip()
@@ -378,6 +418,19 @@ async def generate_node_output(
         try:
             result, sent_prompt = await _run_handler(env, node, injected, kind)
             break
+        except asyncio.CancelledError:
+            # CancelledError is shared by tool fail_after, the node wall-clock
+            # cap, and user/session stop — we cannot tell which here, so keep
+            # the note neutral. Without it the node only shows the engine's
+            # "no structured_output" mask.
+            message = f"{member} generation cancelled or timed out"
+            _note_member_error(env, node_id, message)
+            logger.warning(
+                "[design-tools] generate cancelled or timed out: node=%s member=%s",
+                node_id,
+                member,
+            )
+            raise
         except Exception as exc:  # noqa: BLE001 — a failed generation is an answer
             last_error = exc
             logger.warning(
@@ -483,6 +536,7 @@ async def submit_node_output(
     try:
         env, node = _resolve(shot_ticket)
     except _ToolError as exc:
+        _warn_unresolved("submit_node_output", shot_ticket, exc.code)
         return rejected(exc.code)
     node_id = str(node.get("id") or "")
     result = _submit(env, node, node_id, uri=uri, extra_uris=extra_uris, text=text, label=label)
@@ -569,6 +623,9 @@ def _read_text(ref: dict[str, Any]) -> str:
 __all__ = [
     "MEMBER_OUTPUT_KIND",
     "generate_node_output",
+    "image_generate_timeout_seconds",
+    "note_rejection",
     "read_node_context",
     "submit_node_output",
+    "video_generate_timeout_seconds",
 ]

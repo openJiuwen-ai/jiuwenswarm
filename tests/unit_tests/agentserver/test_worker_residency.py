@@ -426,7 +426,10 @@ async def test_runtime_failure_completes_accepted_warming_requests():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("first_hello_fails", [False, True])
-async def test_resident_service_pins_identity_even_after_failed_first_hello(monkeypatch, first_hello_fails):
+@pytest.mark.parametrize("disconnect_error", [OSError, service.IpcError])
+async def test_resident_service_pins_identity_even_after_failed_first_hello(
+    monkeypatch, first_hello_fails, disconnect_error,
+):
     disk = {"identity": "launch-code"}
     hash_current_disk = Mock(side_effect=lambda: disk["identity"])
     runtime_started = asyncio.Event()
@@ -446,7 +449,7 @@ async def test_resident_service_pins_identity_even_after_failed_first_hello(monk
         async def recv(self):
             await runtime_started.wait()
             if self.index == 0:
-                raise OSError("Front restarted after Runtime loaded")
+                raise disconnect_error("Front restarted or sent a malformed frame after Runtime loaded")
             return {"kind": KIND_SHUTDOWN}
 
         async def close(self):
@@ -522,6 +525,7 @@ async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
     disk = {"identity": "stub-launch-code"}
     hash_current_disk = Mock(side_effect=lambda: disk["identity"])
     frames = [[], []]
+    closed = []
     index = 0
 
     class Connection:
@@ -536,6 +540,9 @@ async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
                 disk["identity"] = "stub-new-disk-code"
                 raise OSError("Front detached")
             return {"kind": KIND_SHUTDOWN}
+
+        async def close(self):
+            closed.append(self.position)
 
     async def accept():
         nonlocal index
@@ -555,6 +562,7 @@ async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
     assert hellos[0]["instance"] == hellos[1]["instance"]
     hash_current_disk.assert_called_once_with()
     server.close.assert_awaited_once()
+    assert closed == [0, 1]
 
 
 @pytest.mark.asyncio

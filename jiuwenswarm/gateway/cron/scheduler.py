@@ -812,11 +812,13 @@ class CronSchedulerService:
         self._hiding_projects.discard(project_id)
 
     async def project_execution_allowed(self, project_id: str | None, user_id: str | None = None) -> bool:
+        if not project_id or project_id in {"default", "default_code"}:
+            return True
+        # 默认项目没有可恢复的生命周期资源,不必为它做文件锁 + 读盘的属主
+        # 登记;真实项目仍在准入查询前登记,保证重启后能路由回属主。
         self.remember_lifecycle_owner(user_id)
         if project_id in self._hiding_projects:
             return False
-        if not project_id or project_id in {"default", "default_code"}:
-            return True
         from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
         revision = self._project_admission_revisions.get(project_id, 0)
         _t0 = time.monotonic()
@@ -1497,7 +1499,7 @@ class CronSchedulerService:
                 # Phase 4：project_id → project_dir 归属解析不在 Gateway 本地项目表执行。
                 # 目录分离后 Gateway 反查会得到空值或错误归属；改为只传 project_id，
                 # 由目标 AgentServer 在其注入目录内按 project_id 解析 project_dir
-                # （resolve_session_project_binding 规则2：仅传 project_id → 自动补齐）。
+                # （server 侧 resolve_session_project_binding 规则2：仅传 project_id → 自动补齐）。
                 # 取消路径仍保存 Runtime agent cache 所需的 work_mode；project_dir
                 # 由 AgentServer 依据 project_id/session 解析，Gateway 不跨目录反查。
                 state.exec_work_mode = job.work_mode or DEFAULT_WEB_WORK_MODE

@@ -393,6 +393,40 @@ function deriveTimedTimeline(
 }
 
 /**
+ * Place a lane on a shared domain.
+ *
+ * Without `mapTime`, span coordinates stay absolute and only the domain ends
+ * change. With `mapTime`, spans move onto that domain (used to drop idle gaps
+ * that no agent occupies) so every lane shares one ruler.
+ */
+export function withSharedWallClockDomain(
+  model: TrajectoryTimelineModel | null,
+  domain: TrajectoryTimeRange | null,
+  mapTime?: (time: number) => number,
+): TrajectoryTimelineModel | null {
+  if (model === null || domain === null || !(domain.end > domain.start)) return model
+  if (mapTime === undefined) return { ...model, start: domain.start, end: domain.end }
+  const map = (time: number) => {
+    const mapped = mapTime(time)
+    return Number.isFinite(mapped) ? mapped : time
+  }
+  return {
+    ...model,
+    start: domain.start,
+    end: domain.end,
+    spans: model.spans.map((span) => {
+      const start = map(span.start)
+      const end = map(span.end)
+      return { ...span, start: Math.min(start, end), end: Math.max(start, end) }
+    }),
+    turnBoundaries: model.turnBoundaries.map(boundary => ({
+      ...boundary,
+      time: map(boundary.time),
+    })),
+  }
+}
+
+/**
  * Identify records active at any point inside an inclusive selected interval.
  * @param turns - Unfiltered trajectory layout.
  * @param range - Selected interval in the active projection.

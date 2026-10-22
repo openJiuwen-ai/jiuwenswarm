@@ -71,7 +71,11 @@ function ModelRouteMultiSelect({
   const [menuPosition, setMenuPosition] = useState<CSSProperties | null>(null);
   const [submenuPosition, setSubmenuPosition] = useState<{ top: number; left: number } | null>(null);
   const optionByKey = new Map(options.map((option) => [option.key, option]));
-  const addableOption = options[0];
+  const usedModelIds = new Set(value.map((route) => route.model_id));
+  const addableOption = options.find((option) => !usedModelIds.has(option.key));
+  const isUnavailableModel = (modelId: string, currentId: string) => (
+    modelId !== currentId && usedModelIds.has(modelId)
+  );
   const planGroups = useMemo(() => {
     const groups = new Map<string, { key: string; label: string; options: ModelRouteOption[] }>();
     options.filter(isPlanOption).forEach((option) => {
@@ -93,7 +97,9 @@ function ModelRouteMultiSelect({
   const flatOptions = options.filter((option) => !isPlanOption(option));
 
   const replaceModel = (routeKey: string, nextId: string) => {
-    if (!nextId) return;
+    const currentRoute = value.find((route) => route._key === routeKey);
+    if (disabled || !nextId || !currentRoute) return;
+    if (isUnavailableModel(nextId, currentRoute.model_id)) return;
     onChange(value.map((route) => route._key === routeKey ? { ...route, model_id: nextId } : route));
     setOpenRouteKey(null);
     setActivePlanKey(null);
@@ -218,8 +224,11 @@ function ModelRouteMultiSelect({
                               type="button"
                               role="menuitemradio"
                               aria-checked={candidate.key === route.model_id}
+                              disabled={disabled || isUnavailableModel(candidate.key, route.model_id)}
                               className="settings-model-group-route-picker__option"
                               onClick={() => replaceModel(route._key, candidate.key)}
+                              data-testid="settings-model-group-dialog-model-option"
+                              data-variant={candidate.key}
                             >
                               <span>{candidate.label}</span>
                               {candidate.key === route.model_id && <span aria-hidden>✓</span>}
@@ -265,9 +274,11 @@ function ModelRouteMultiSelect({
                                         type="button"
                                         role="menuitemradio"
                                         aria-checked={candidate.key === route.model_id}
+                                        disabled={disabled || isUnavailableModel(candidate.key, route.model_id)}
                                         className="settings-model-group-route-picker__option"
                                         onClick={() => replaceModel(route._key, candidate.key)}
                                         data-testid="settings-model-group-dialog-plan-model-option"
+                                        data-variant={candidate.key}
                                       >
                                         <span className="settings-model-group-route-picker__option-main">
                                           <span className="settings-model-group-route-picker__icon" aria-hidden="true">

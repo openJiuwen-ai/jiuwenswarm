@@ -83,10 +83,6 @@ async def test_tui_session_create_leaves_project_resolution_to_agentserver(
     project_dir = str(tmp_path / "workspace")
     agent_client = _SuccessfulAgentClient("tui_project_bound")
     channel = _TuiChannel()
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.project_store.find_or_create_code_project_for_tui_params",
-        lambda _params: pytest.fail("Gateway must not own non-explicit project binding"),
-    )
     register_cli_handlers(
         CliHandlersBindParams(channel=channel, agent_client=agent_client, path="/tui")
     )
@@ -111,10 +107,6 @@ async def test_tui_explicit_session_create_leaves_project_resolution_to_agentser
     project_dir = str(tmp_path / "different-workspace")
     channel = _TuiChannel()
     agent_client = _SuccessfulAgentClient("tui_existing")
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.project_store.find_or_create_code_project_for_tui_params",
-        lambda _params: pytest.fail("Gateway must not own explicit-ID project binding"),
-    )
     register_cli_handlers(
         CliHandlersBindParams(channel=channel, agent_client=agent_client, path="/tui")
     )
@@ -156,11 +148,11 @@ async def test_session_create_forwards_previous_plan_root_to_agentserver(
 
     monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root)
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
         lambda session_id: {"mode": "agent.plan"},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.init_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.init_session_metadata",
         lambda **kwargs: None,
     )
     monkeypatch.setattr(
@@ -207,11 +199,11 @@ async def test_session_create_does_not_apply_plan_root_action_to_team_owner(
 
     monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root)
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
         lambda session_id: {"mode": "team"},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.init_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.init_session_metadata",
         lambda **kwargs: None,
     )
     monkeypatch.setattr(
@@ -255,11 +247,11 @@ async def test_session_create_skips_kvc_metadata_when_affinity_disabled(
 
     monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root)
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.init_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.init_session_metadata",
         lambda **kwargs: None,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
         lambda session_id: pytest.fail("disabled affinity must not read previous metadata"),
     )
     monkeypatch.setattr(
@@ -301,11 +293,11 @@ async def test_session_create_contains_kvc_metadata_failure(
 
     monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root)
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.init_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.init_session_metadata",
         lambda **kwargs: None,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
         lambda session_id: (_ for _ in ()).throw(RuntimeError("metadata broken")),
     )
     monkeypatch.setattr(
@@ -343,7 +335,7 @@ async def test_session_create_prefers_canonical_switch_owner_dispatch(
 
     monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root)
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.init_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.init_session_metadata",
         lambda **kwargs: None,
     )
     monkeypatch.setattr(

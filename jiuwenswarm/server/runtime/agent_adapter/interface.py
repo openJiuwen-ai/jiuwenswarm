@@ -100,8 +100,8 @@ from jiuwenswarm.common.context_keys import (
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
-from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-from jiuwenswarm.extensions.hooks_context import MemoryHookContext
+from jiuwenswarm.common.hook_event import AgentServerHookEvents
+from jiuwenswarm.common.hooks_context import MemoryHookContext
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
@@ -2859,6 +2859,21 @@ class JiuWenSwarm:
         if intent in {"pause", "cancel"}:
             if intent == "pause":
                 paused = await team_manager.pause_session_runtime(session_id, reason=reason)
+                if paused:
+                    # The persistent foreground stream survives pause, so the
+                    # gateway's stream-exit fallback never fires.  Emit the
+                    # terminal frame explicitly; shape matches the old
+                    # gateway fallback exactly.
+                    await team_manager.broadcast_event(
+                        session_id,
+                        {
+                            "event_type": "chat.processing_status",
+                            "session_id": session_id,
+                            "is_processing": False,
+                            "is_complete": True,
+                        },
+                        channel_id=request.channel_id,
+                    )
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,
@@ -3145,7 +3160,7 @@ class JiuWenSwarm:
         # empty clears selection when neither side contributes names.
         params = request.params if isinstance(request.params, dict) else {}
         try:
-            runtime_binding = self._resolve_runtime_binding_for_request(
+            runtime_binding = await self._resolve_runtime_binding_for_request(
                 adapter,
                 request,
                 session_id,
@@ -3769,7 +3784,7 @@ class JiuWenSwarm:
         # empty clears selection when neither side contributes names.
         params = request.params if isinstance(request.params, dict) else {}
         try:
-            runtime_binding = self._resolve_runtime_binding_for_request(
+            runtime_binding = await self._resolve_runtime_binding_for_request(
                 adapter,
                 request,
                 session_id,
@@ -5241,7 +5256,7 @@ class JiuWenSwarm:
         await reconcile(session_id, needed, **supported_kwargs)
 
     @staticmethod
-    def _resolve_runtime_binding_for_request(
+    async def _resolve_runtime_binding_for_request(
         adapter: AgentAdapter,
         request: AgentRequest,
         session_id: str,
@@ -5254,6 +5269,8 @@ class JiuWenSwarm:
             return None
         params = request.params if isinstance(request.params, dict) else {}
         runtime_binding = resolver(session_id, params)
+        if inspect.isawaitable(runtime_binding):
+            runtime_binding = await runtime_binding
         request.trusted_runtime_binding = runtime_binding
         return runtime_binding
 

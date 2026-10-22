@@ -39,7 +39,7 @@ def _zombie_run() -> dict[str, Any]:
 
 def test_cancel_ends_a_run_left_running_by_a_dead_process():
     store = _Store(_zombie_run())
-    coordinator = RunCoordinator(store, "g_z", spawner=None)
+    coordinator = RunCoordinator(store, "g_z")
 
     result = coordinator.cancel("run_z")
 
@@ -53,7 +53,7 @@ def test_cancel_ends_a_run_left_running_by_a_dead_process():
 
 async def test_cancel_leaves_a_live_trigger_to_the_abort_signal():
     store = _Store(_zombie_run())
-    coordinator = RunCoordinator(store, "g_z", spawner=None)
+    coordinator = RunCoordinator(store, "g_z")
 
     async with coordinator._lock:
         result = coordinator.cancel("run_z")
@@ -102,7 +102,7 @@ async def test_refused_rerun_writes_failed_instead_of_staying_running():
     re-seeded the same zombie.
     """
     store = _Store(_failed_run())
-    coordinator = RunCoordinator(store, "g_refused", spawner=None)
+    coordinator = RunCoordinator(store, "g_refused")
     updates: list[dict[str, Any]] = []
 
     result = await coordinator.start(

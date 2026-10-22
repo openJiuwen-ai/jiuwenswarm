@@ -14,7 +14,7 @@ import os
 import time
 from typing import Any
 
-from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN_DONE, PROTOCOL_VERSION
+from jiuwenswarm.server.ipc.protocol import IpcError, KIND_HELLO, KIND_SHUTDOWN_DONE, PROTOCOL_VERSION
 from jiuwenswarm.server.ipc.server import IpcServer
 from jiuwenswarm.server.ipc.stream import IpcConnection
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
@@ -54,6 +54,7 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
     runtime_task: asyncio.Task | None = None
     beat_task = asyncio.create_task(_beat_loop(beat), name="worker-loop-beat")
     instance = bridge.events.instance
+    conn: IpcConnection | None = None
     shutdown_conn: IpcConnection | None = None
     # WorkerForceExit means the process must die hard (main logs + os._exit).
     # Capture it so finally does not run graceful `_close_worker` and replace it
@@ -96,8 +97,8 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
             except WorkerForceExit as exc:
                 fatal = exc
                 break
-            except (OSError, asyncio.IncompleteReadError):
-                logger.info("[Worker] supervisor disconnected; runtime stays resident")
+            except (OSError, asyncio.IncompleteReadError, IpcError) as exc:
+                logger.info("[Worker] supervisor disconnected; runtime stays resident: %r", exc)
                 await _retire_session(holder, dispatcher)
                 await conn.close()
                 continue
@@ -129,8 +130,8 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
             if shutdown_conn is not None and fatal is None:
                 await shutdown_conn.send({"kind": KIND_SHUTDOWN_DONE, "ok": True})
         finally:
-            if shutdown_conn is not None:
-                await shutdown_conn.close()
+            if conn is not None:
+                await conn.close()
     if fatal is not None:
         raise fatal
 
@@ -152,8 +153,9 @@ def _install_heartbeat_fast_path(conn: IpcConnection, beat: LoopBeat) -> None:
         return
 
     def respond(message: dict[str, Any]) -> None:
-        arm_stall_dump()
-        conn.send_direct(heartbeat_reply(beat.age))
+        age = beat.age
+        arm_stall_dump(beat_age=age)
+        conn.send_direct(heartbeat_reply(age))
 
     set_responder(respond)
 

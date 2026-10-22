@@ -9,7 +9,7 @@ import pytest
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
 
-from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package_bundle
+from openjiuwen.agent_teams.experts import load_agent_group_package_bundle
 from jiuwenswarm.agents.swarm.assembly import _apply_agent_group
 
 FIXTURE = (

@@ -22,3 +22,7 @@ def configure_agent_teams_home() -> None:
 
     register_expert_adapter_installer()
     register_summary_adapter_installer()
+    # Team leaders browse and spawn installed experts through this catalog.
+    from jiuwenswarm.agents.harness.team.experts import install_expert_catalog
+
+    install_expert_catalog()

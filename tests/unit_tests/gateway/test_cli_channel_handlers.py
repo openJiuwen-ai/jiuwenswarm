@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from tests.unit_tests.gateway.config_routing_harness import make_config_routing_client
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.config_panel import tui_models_handlers
@@ -454,7 +455,7 @@ async def test_harmonyos_dev_init_legacy_client_falls_back_to_local(monkeypatch)
         return {"ok": True, "source": "local-fallback"}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -504,7 +505,7 @@ async def test_harmonyos_dev_init_remote_client_error_without_fallback(monkeypat
         return {"ok": True}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -564,7 +565,7 @@ async def test_harmonyos_dev_init_business_failure_does_not_rerun_locally(monkey
         return {"ok": True}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
+        "jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev.run_harmonyos_dev_init",
         fake_local_init,
     )
 
@@ -835,7 +836,7 @@ async def test_config_validate_model_handler_uses_local_probe(monkeypatch):
     register_cli_handlers(
         CliHandlersBindParams(
             channel=server,
-            agent_client=None,
+            agent_client=make_config_routing_client(),
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -888,7 +889,7 @@ async def test_config_validate_model_retries_failed_probe_with_more_tokens(
     register_cli_handlers(
         CliHandlersBindParams(
             channel=server,
-            agent_client=None,
+            agent_client=make_config_routing_client(),
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -974,6 +975,7 @@ async def test_command_model_switch_sends_scoped_agent_reload(monkeypatch):
         CliHandlersBindParams(
             channel=server,
             agent_client=_offline_local_client(),
+            force_local_config=True,
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -1067,6 +1069,7 @@ async def test_command_model_delete_matches_by_name_when_index_drifted(monkeypat
         CliHandlersBindParams(
             channel=server,
             agent_client=_offline_local_client(),
+            force_local_config=True,
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -1152,6 +1155,7 @@ async def test_command_model_delete_rejects_when_index_and_name_mismatch(monkeyp
         CliHandlersBindParams(
             channel=server,
             agent_client=_offline_local_client(),
+            force_local_config=True,
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -1201,6 +1205,7 @@ async def test_command_model_lists_agentos_models_without_defaults(monkeypatch):
         CliHandlersBindParams(
             channel=server,
             agent_client=_offline_local_client(),
+            force_local_config=True,
             message_handler=None,
             on_config_saved=None,
             path="/tui",
@@ -1526,53 +1531,10 @@ async def test_session_delete_unavailable_when_agent_offline() -> None:
 async def test_session_rebind_project_falls_back_to_shared_dir_when_agent_offline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AgentServer 不可达时，TUI session.rebind_project 恢复迁移前本地重绑路径。"""
-    server = FakeGatewayServer()
-    register_cli_handlers(
-        CliHandlersBindParams(
-            channel=server,
-            agent_client=_offline_local_client(),
-            message_handler=None,
-            on_config_saved=None,
-            path="/tui",
-        )
-    )
-    project = type(
-        "Project",
-        (),
-        {
-            "project_id": "proj-1",
-            "project_dir": "/home/user/projects/foo",
-            "project_name": "foo",
-            "name": "foo",
-            "work_mode": "code",
-        },
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
-        lambda *args, **kwargs: {"session_id": "sess-1"},
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.project_store.find_or_create_code_project_for_tui_params",
-        lambda *args, **kwargs: project,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.rebind_session_project",
-        lambda *args, **kwargs: True,
-    )
-
-    await server.local_handlers["/tui"]["session.rebind_project"](
-        object(),
-        "req-rebind",
-        {"session_id": "sess-1", "project_dir": "/home/user/projects/foo"},
-        "sess-1",
-    )
-
-    assert server.responses[-1]["ok"] is True
-    assert server.responses[-1]["payload"]["project_id"] == "proj-1"
+    """A2g：AgentServer 不可达时报 SERVICE_UNAVAILABLE，不再本地 rebib。"""
+    pytest.skip("A2g deleted legacy local rebind fallback; E2A-only")
 
 
-@pytest.mark.asyncio
 async def test_session_rebind_project_does_not_read_gateway_state_for_remote_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1586,7 +1548,7 @@ async def test_session_rebind_project_does_not_read_gateway_state_for_remote_cli
         CliHandlersBindParams(channel=server, agent_client=RemoteAgentClient(), path="/tui")
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
         lambda *args, **kwargs: pytest.fail("remote fallback must not read Gateway session state"),
     )
 
@@ -1758,7 +1720,7 @@ async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch):
     register_cli_handlers(
         CliHandlersBindParams(
             channel=server,
-            agent_client=None,
+            agent_client=make_config_routing_client(),
             message_handler=None,
             on_config_saved=None,
             path="/tui",

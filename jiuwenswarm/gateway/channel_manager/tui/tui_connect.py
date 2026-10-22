@@ -513,27 +513,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     third_agent = bind.third_agent if bind.third_agent is not None else get_unsupported_third_agent()
     harmonyos_dev_init_tasks: dict[tuple[int, str], asyncio.Task[Any]] = {}
 
-    async def _config_get(ws, req_id, params, session_id):
-        """config.get 实现已下沉 ``common.config_panel.tui_models_handlers``。"""
-        await tui_models_handlers.config_get_handler(
-            channel, ws, req_id, params, session_id
-        )
-
-    async def _config_set(ws, req_id, params, session_id):
-        """config.set 实现已下沉 ``common.config_panel.tui_models_handlers``。"""
-        await tui_models_handlers.config_set_handler(
-            channel, ws, req_id, params, session_id,
-            on_config_saved=on_config_saved,
-            agent_client=agent_client,
-            send_request=_tui_config_send_request,
-        )
-
-    async def _config_validate_model(ws, req_id, params, session_id):
-        """config.validate_model 实现已下沉（TUI 契约与 Web 侧分模块保留）。"""
-        await tui_models_handlers.config_validate_model_handler(
-            channel, ws, req_id, params
-        )
-
     async def _session_list(ws, req_id, params, session_id, user_id=None):
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
@@ -742,74 +721,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         # A remote non-AgentOS extension (for example YuanRong) also has an
         # isolated user directory.  Only the stock local WebSocket client may
         # use the historical shared-directory fallback.
-        legacy_shared_dir = is_legacy_shared_directory_client(real_client)
-
-        async def _rebind_from_shared_dir() -> None:
-            """Pre-AgentOS behavior, valid only when both processes share one dir."""
-            from jiuwenswarm.gateway.embedded.runtime.session.project_store import (
-                find_or_create_code_project_for_tui_params,
-            )
-            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import (
-                get_session_metadata,
-                rebind_session_project,
-            )
-
-            if not get_session_metadata(target):
-                await channel.send_response(
-                    ws, req_id, ok=False, error="session not found", code="NOT_FOUND"
-                )
-                return
-            try:
-                project = find_or_create_code_project_for_tui_params(
-                    {"project_dir": candidate_dir}
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[tui] session.rebind_project: resolve project failed: %s", exc
-                )
-                await channel.send_response(
-                    ws, req_id, ok=False, error=str(exc), code="PROJECT_RESOLVE_FAILED"
-                )
-                return
-            if project is None:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="project_dir must be a non-empty absolute path",
-                    code="BAD_REQUEST",
-                )
-                return
-            updated = rebind_session_project(
-                session_id=target,
-                project_id=project.project_id,
-                project_dir=project.project_dir,
-                work_mode=project.work_mode,
-            )
-            if not updated:
-                await channel.send_response(
-                    ws, req_id, ok=False, error="session not found", code="NOT_FOUND"
-                )
-                return
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=True,
-                payload={
-                    "session_id": target,
-                    "project_id": project.project_id,
-                    "project_dir": project.project_dir,
-                    "project_name": project.name,
-                    "work_mode": project.work_mode,
-                },
-            )
+        # A2g：legacy 本地 rebib 删除，统一走 E2A。
 
         # 与 e2a_proxy 的判定语义对齐：兼容/扩展 client 可能不暴露
         # ``server_ready``，缺省视为可达，只有显式 False 才视为不可达。
         if real_client is None or getattr(real_client, "server_ready", True) is False:
-            if legacy_shared_dir:
-                await _rebind_from_shared_dir()
-                return
             await channel.send_response(
                 ws, req_id, ok=False,
                 error="AgentServer is unavailable", code="SERVICE_UNAVAILABLE",
@@ -833,9 +749,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             logger.warning(
                 "[tui] session.rebind_project forward to agent failed: %s", exc
             )
-            if legacy_shared_dir:
-                await _rebind_from_shared_dir()
-                return
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code="SERVICE_UNAVAILABLE",
             )
@@ -1504,7 +1417,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         "execution: %s",
                         exc,
                     )
-                    from jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev import (
+                    from jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev import (
                         run_harmonyos_dev_init,
                     )
 
@@ -1632,21 +1545,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         )
 
     async def _command_model(ws, req_id, params, session_id, user_id=None):
-        # The legacy implementation reads/writes config.yaml directly.
-        # Any remote AgentServer has its own user directory.  Only the default
-        # local WebSocket client shares Gateway's directory and can use the
-        # legacy implementation (sunk to common.config_panel.tui_models_handlers).
-        from jiuwenswarm.gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
+        # A4g：command.model 统一经目标 AgentServer 执行（与 config.* 同语义），
+        # 删除共享目录单用户的本地读写回落。``force_local_config`` 保留——
+        # 它是 ConfigAdapter 复用防二次代理的语义，与 legacy 回落无关。
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve_agent_client(agent_client)
-        if (
-            not force_local_config
-            and resolved_client is not None
-            and not is_legacy_shared_directory_client(resolved_client)
-        ):
+        if not force_local_config and resolved_client is not None:
             from jiuwenswarm.common.schema.message import ReqMethod
 
             await proxy_unary_request(
@@ -1664,12 +1569,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             on_config_saved=on_config_saved,
             send_request=_tui_config_send_request,
             user_id=user_id,
-        )
-
-    async def _models_list(ws, req_id, params, session_id):
-        """models.list 实现已下沉（TUI 契约与 Web 侧分模块保留）。"""
-        await tui_models_handlers.models_list_handler(
-            channel, ws, req_id, params, session_id
         )
 
     async def _3rdagent_list(ws, req_id, params, session_id, user_id=None):
@@ -1763,26 +1662,24 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             label="config",
         )
 
-    def _register_config_proxy(method_name, req_method, local_handler):
-        async def _handler(ws, req_id, params, session_id, user_id=None):
-            # 单用户共享目录：本地执行（保留 on_config_saved 热更新与 TUI 专用键语义）。
-            # AgentOS 多用户：经 E2A 在目标 AgentServer 注入目录执行（与 command.model 同模式）。
-            from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
+    def _register_config_proxy(method_name, req_method, local_handler=None):
+        # A4g：配置读写统一经目标 AgentServer 执行（ConfigAdapter 在注入目录
+        # 本地执行，自带 in-process reload 等后置行为），删除 legacy 单用户的
+        # gateway 本地执行回落。TUI 无外部 CLI 依赖安装门控（tui_models_handlers
+        # 无 ensure 回调）。local_handler 参数保留为兼容签名，不再使用。
+        del local_handler
 
-            resolved_client = _resolve_agent_client(agent_client)
-            if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-                await local_handler(ws, req_id, params, session_id)
-                return
+        async def _handler(ws, req_id, params, session_id, user_id=None):
             await _proxy_config_request(
                 ws, req_id, params, session_id, user_id, req_method=req_method
             )
         channel.register_local_handler(path, method_name, _handler)
 
     from jiuwenswarm.common.schema.message import ReqMethod as _ConfigReq
-    _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
-    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
-    _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
-    _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
+    _register_config_proxy("config.get", _ConfigReq.CONFIG_GET)
+    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET)
+    _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL)
+    _register_config_proxy("models.list", _ConfigReq.MODELS_LIST)
     channel.register_local_handler(path, "3rdagent.list", _3rdagent_list)
     channel.register_local_handler(path, "3rdagent.switch", _3rdagent_switch)
     channel.register_local_handler(path, "session.list", _session_list)
@@ -1908,13 +1805,16 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return job.get(name, default)
         return getattr(job, name, default)
 
-    async def _cron_job_list(ws, req_id, params, session_id):
+    async def _cron_job_list(ws, req_id, params, session_id, user_id=None):
         cc = _get_cron()
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
         try:
-            jobs = await cc.list_jobs()
+            # 连接带 user_id 时只列该用户的任务:过滤在 controller 内先于
+            # 准入闸门执行,既避免跨用户数据可见,也避免替别人的沙箱付超时。
+            uid = str(user_id or getattr(ws, "_gateway_user_id", None) or "").strip()
+            jobs = await cc.list_jobs(user_id=uid or None)
             await channel.send_response(ws, req_id, ok=True, payload={"jobs": jobs})
         except Exception as exc:
             logger.warning("[cron.job.list] %s", exc)
@@ -1962,69 +1862,63 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         try:
-            from jiuwenswarm.gateway.routing.e2a_proxy import (
-                is_agentos_routing_client,
-                is_legacy_shared_directory_client,
-            )
-
             if session_id:
                 params["session_id"] = session_id
             # 与 Web _cron_job_create 对齐：写入创建者，执行时透传 AgentOS X-Session-Context。
             uid = str(user_id or getattr(ws, "_gateway_user_id", None) or "").strip()
             if uid:
                 params["user_id"] = uid
-            is_agentos = is_agentos_routing_client(_resolve_agent_client(agent_client))
             # 共享目录单用户才可在 Gateway 读取 session metadata 补齐项目目录。
             # AgentOS 用户 session 不在 Gateway 部署目录，不能在这里作本地反查。
-            if (
-                is_legacy_shared_directory_client(_resolve_agent_client(agent_client))
-                and "project_dir" not in params
-                and session_id
-            ):
+            if "project_dir" not in params and session_id:
                 try:
-                    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
-                    meta = get_session_metadata(session_id, cache_bust=True)
+                    from jiuwenswarm.common.external_providers import provider
+
+                    meta = provider("session_metadata").get_session_metadata(
+                        session_id, cache_bust=True
+                    )
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
                         if isinstance(pd, str) and pd.strip():
                             params["project_dir"] = pd.strip()
                 except Exception:  # noqa: BLE001
                     pass
-            if is_agentos:
-                from jiuwenswarm.gateway.routing.e2a_proxy import (
-                    resolve_agent_cron_project_binding,
-                )
+            # A3g：项目绑定统一经目标 AgentServer 解析（legacy 单用户的本地
+            # AgentServer 同样服务该方法，注入目录=共享目录）。
+            from jiuwenswarm.gateway.routing.e2a_proxy import (
+                resolve_agent_cron_project_binding,
+            )
 
-                bound, binding = await resolve_agent_cron_project_binding(
-                    agent_client=_resolve_agent_client(agent_client), params=params,
-                    user_id=uid or None, channel_id="tui", session_id=session_id,
+            bound, binding = await resolve_agent_cron_project_binding(
+                agent_client=_resolve_agent_client(agent_client), params=params,
+                user_id=uid or None, channel_id="tui", session_id=session_id,
+            )
+            if not bound:
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error=str(binding.get("error") or "cron project binding failed"),
+                    code=str(binding.get("code") or "SERVICE_UNAVAILABLE"),
                 )
-                if not bound:
-                    await channel.send_response(
-                        ws, req_id, ok=False,
-                        error=str(binding.get("error") or "cron project binding failed"),
-                        code=str(binding.get("code") or "SERVICE_UNAVAILABLE"),
-                    )
-                    return
-                resolved_project_id = binding.get("project_id")
-                resolved_work_mode = binding.get("work_mode")
-                if (
-                    not isinstance(resolved_project_id, str)
-                    or not isinstance(resolved_work_mode, str)
-                    or not resolved_work_mode.strip()
-                ):
-                    await channel.send_response(
-                        ws, req_id, ok=False,
-                        error="invalid cron project binding",
-                        code="BAD_REQUEST",
-                    )
-                    return
-                params.update({
-                    "project_id": resolved_project_id,
-                    "work_mode": resolved_work_mode,
-                })
-                params.pop("project_dir", None)
-                params["_agentos_project_binding_verified"] = True
+                return
+            resolved_project_id = binding.get("project_id")
+            resolved_work_mode = binding.get("work_mode")
+            if (
+                not isinstance(resolved_project_id, str)
+                or not isinstance(resolved_work_mode, str)
+                or not resolved_work_mode.strip()
+            ):
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error="invalid cron project binding",
+                    code="BAD_REQUEST",
+                )
+                return
+            params.update({
+                "project_id": resolved_project_id,
+                "work_mode": resolved_work_mode,
+            })
+            params.pop("project_dir", None)
+            params["_agentos_project_binding_verified"] = True
             job = await cc.create_job(params)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except Exception as exc:
@@ -2048,8 +1942,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="patch must be object", code="BAD_REQUEST")
             return
         try:
-            from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-
             patch = dict(patch)
             # 归属校验：与 Web _get_owned_cron_job 语义一致（空 user_id 保持单用户旧行为；
             # 带 user_id 时禁止跨用户读取/更新，包括归属为空的历史 job）。
@@ -2068,10 +1960,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             # 仅当 patch 涉及 project 字段时才解析项目绑定（避免非项目字段的
             # update 因用户侧项目解析失败而被整体拒绝；单用户不 resolve）。
             has_project_fields = "project_id" in patch or "project_dir" in patch
-            if (
-                is_agentos_routing_client(_resolve_agent_client(agent_client))
-                and has_project_fields
-            ):
+            if has_project_fields:
                 from jiuwenswarm.gateway.routing.e2a_proxy import (
                     resolve_agent_cron_project_binding,
                 )
@@ -2147,7 +2036,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 return
             await channel.send_response(ws, req_id, ok=True, payload={"deleted": True})
         except Exception as exc:
-            from jiuwenswarm.gateway.embedded.runtime.session.lifecycle import LifecycleError
+            from jiuwenswarm.common.lifecycle_errors import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "INTERNAL_ERROR")
             logger.warning("[cron.job.delete] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=code)
