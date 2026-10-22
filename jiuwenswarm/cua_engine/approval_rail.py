@@ -36,6 +36,8 @@ class CuaCodeApprovalRail(CuaDelegationApprovalRail):
         if card is None:
             return
         original = Runner.resource_mgr.get_tool(card.id)
+        if original is None:
+            return
         wrapped = CuaApprovalTool(original, card.id)
         agent.ability_manager.remove_ability("task_tool")
         agent.ability_manager.add_ability(wrapped.card, wrapped)
