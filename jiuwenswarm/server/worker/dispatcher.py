@@ -421,8 +421,6 @@ class WorkerDispatcher:
             )
             self._bridge.events.complete(dispatch_id, state="failed", error=self._failure or "worker queue is full")
             return
-        if request.req_method == ReqMethod.CHAT_CANCEL:
-            await self._cancel_target_dispatch(request)
         # A resident worker outlives SDK installs made from the settings panel
         # (the gateway process), so refresh the managed paths before this turn;
         # team members backed by external CLIs probe and import them here.

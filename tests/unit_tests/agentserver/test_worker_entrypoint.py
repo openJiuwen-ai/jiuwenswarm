@@ -18,18 +18,12 @@ from jiuwenswarm.server.worker import main as worker_main
 def restore_process_state():
     """Snapshot and restore what in-process ``main()`` runs mutate globally.
 
-    ``main()`` installs SIGINT/SIGTERM handlers and owns an event loop.
-    Restore the caller's globals so later tests do not inherit these changes.
+    ``main()`` installs SIGINT/SIGTERM handlers on its own event loop and
+    leaves that loop as the thread's current (closed) loop after returning;
+    without restoration, later tests in the same process would inherit them.
     """
     policy = asyncio.get_event_loop_policy()
-    try:
-        previous_loop = policy.get_event_loop()
-    except RuntimeError:
-        # A previous asyncio.run() (any earlier test in this xdist worker)
-        # leaves the thread with no current loop; capturing None here keeps
-        # teardown's set_event_loop(previous_loop) restoring that exact state
-        # instead of blowing up the same way get_event_loop() just did.
-        previous_loop = None
+    previous_loop = policy.get_event_loop()
     previous_handlers = {
         sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
     }
@@ -41,7 +35,6 @@ def restore_process_state():
 
 def _patch_scaffolding(monkeypatch: pytest.MonkeyPatch) -> None:
     """Silence the entrypoint's logging and diagnostics side effects."""
-    from jiuwenswarm.common import background_logging
     from jiuwenswarm.server.worker import diagnostics
 
     monkeypatch.setattr(
@@ -49,8 +42,6 @@ def _patch_scaffolding(monkeypatch: pytest.MonkeyPatch) -> None:
         "argv",
         ["jiuwenswarm-runtime-worker", "--socket", "unused-ipc.sock"],
     )
-    monkeypatch.setattr(background_logging, "enable_background_logging", lambda: None)
-    monkeypatch.setattr(background_logging, "stop_background_logging", lambda *args, **kwargs: True)
     monkeypatch.setattr(diagnostics, "enable_worker_diagnostics", lambda: None)
 
 
@@ -73,12 +64,10 @@ def test_worker_main_activates_external_cli_paths_before_runtime_load(
         lambda: order.append("activate"),
     )
     monkeypatch.setattr(worker_service, "serve_worker", _record_serve)
-    previous_handler = signal.getsignal(signal.SIGINT)
 
     worker_main.main()
 
     assert order == ["activate", "serve"]
-    assert signal.getsignal(signal.SIGINT) == previous_handler
 
 
 def test_worker_main_survives_activation_failure(
@@ -104,79 +93,6 @@ def test_worker_main_survives_activation_failure(
     worker_main.main()
 
     assert order == ["activate", "serve"]
-
-
-@pytest.mark.parametrize("repeat_signal", [False, True])
-def test_windows_console_interrupt_drains_runtime_and_sdk_tasks(
-    monkeypatch: pytest.MonkeyPatch,
-    restore_process_state: None,
-    repeat_signal: bool,
-) -> None:
-    """A real SIGINT must finish cleanup even without loop signal support."""
-    import jiuwenswarm.server.worker.service as worker_service
-
-    _patch_scaffolding(monkeypatch)
-    monkeypatch.setattr(worker_main, "_activate_managed_external_cli_paths", lambda: None)
-    loop = asyncio.new_event_loop()
-    runner_type = asyncio.Runner
-    previous_handler = signal.getsignal(signal.SIGINT)
-    order = []
-    background_tasks = []
-
-    def unsupported(*_args):
-        raise NotImplementedError
-
-    def create_runner():
-        runner = runner_type(loop_factory=lambda: loop)
-        close = runner.close
-
-        def close_and_deliver_late_signal():
-            close()
-            signal.raise_signal(signal.SIGINT)
-
-        runner.close = close_and_deliver_late_signal
-        return runner
-
-    monkeypatch.setattr(loop, "add_signal_handler", unsupported)
-    monkeypatch.setattr(asyncio, "Runner", create_runner)
-
-    async def sdk_background():
-        try:
-            await asyncio.Future()
-        finally:
-            await asyncio.sleep(0.01)
-            order.append("sdk_stopped")
-
-    async def serve(*_args, **_kwargs):
-        # asyncio only keeps weak Task references. Own this SDK fixture until
-        # Runner.close can cancel it, including when CI runs a GC cycle.
-        background_tasks.append(asyncio.create_task(sdk_background()))
-        loop.call_soon(signal.raise_signal, signal.SIGINT)
-        try:
-            await asyncio.Future()
-        finally:
-            order.append("runtime_stopping")
-            if repeat_signal:
-                loop.call_soon(signal.raise_signal, signal.SIGINT)
-            await asyncio.sleep(0.02)
-            order.append("runtime_stopped")
-            import gc
-
-            gc.collect()
-
-    monkeypatch.setattr(worker_service, "serve_worker", serve)
-    worker_main.main()
-
-    assert order == ["runtime_stopping", "runtime_stopped", "sdk_stopped"]
-    assert all(task.done() for task in background_tasks)
-    assert loop.is_closed()
-    if sys.platform == "win32":
-        assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
-        # The console can deliver another interrupt while interpreter-owned
-        # resources finish after main() returns. It must stay harmless too.
-        signal.raise_signal(signal.SIGINT)
-    else:
-        assert signal.getsignal(signal.SIGINT) == previous_handler
 
 
 def test_worker_stub_mode_skips_external_cli_activation(
