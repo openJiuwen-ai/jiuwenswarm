@@ -51,45 +51,10 @@ from jiuwenswarm.common.config import (
     update_preferred_language_in_config,
     update_updater_in_config,
 )
-from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
 from jiuwenswarm.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
-    ASR_ENV_KEYS as _ASR_ENV_KEYS,
-    CONFIG_KEYS,
-    CONFIG_SET_ENV_MAP as _CONFIG_SET_ENV_MAP,
-    CONFIG_YAML_KEYS as _CONFIG_YAML_KEYS,
-    ConfigApplyResult as _ConfigApplyResult,
-    ConfigChangeSet as _ConfigChangeSet,
-    EXTERNAL_CLI_AGENT_CONFIG_KEYS as _EXTERNAL_CLI_AGENT_CONFIG_KEYS,
-    EXTERNAL_CLI_AGENT_KINDS as _EXTERNAL_CLI_AGENT_KINDS,
-    MODEL_RELOAD_ENV_KEYS as _MODEL_RELOAD_ENV_KEYS,
-    MULTIMODAL_RELOAD_ENV_KEYS as _MULTIMODAL_RELOAD_ENV_KEYS,
-    PERMISSIONS_PROFILES as _PERMISSIONS_PROFILES,
-    SEARCH_RELOAD_ENV_KEYS as _SEARCH_RELOAD_ENV_KEYS,
-    SKILL_RETRIEVAL_CONFIG_KEYS as _SKILL_RETRIEVAL_CONFIG_KEYS,
-    SKILL_RETRIEVAL_CONFIG_SPECS as _SKILL_RETRIEVAL_CONFIG_SPECS,
-    SYMPHONY_CONFIG_KEYS as _SYMPHONY_CONFIG_KEYS,
-    SYMPHONY_CONFIG_SPECS as _SYMPHONY_CONFIG_SPECS,
     build_external_cli_publish_url as _build_external_cli_publish_url,
-    canonical_permission_facade as _canonical_permission_facade,
     detect_external_cli_agent as _detect_external_cli_agent,
-    external_cli_agent_effective_state as _external_cli_agent_effective_state,
-    external_cli_agents_from_switches as _external_cli_agents_from_switches,
     external_cli_managed_cli_path as _external_cli_managed_cli_path,
-    flatten_external_cli_agents_for_config_panel as _flatten_external_cli_agents_for_config_panel,
-    flatten_modes_team_for_config_panel as _flatten_modes_team_for_config_panel,
-    flatten_skill_retrieval_for_config_panel as _flatten_skill_retrieval_for_config_panel,
-    flatten_swarmflow_for_config_panel as _flatten_swarmflow_for_config_panel,
-    flatten_symphony_for_config_panel as _flatten_symphony_for_config_panel,
-    inject_external_cli_publish_url as _inject_external_cli_publish_url,
-    parse_config_switch_bool as _parse_config_switch_bool,
-    permission_profile as _permission_profile,
-    team_item_requests_codex as _team_item_requests_codex,
-    team_payload_requests_codex as _team_payload_requests_codex,
-)
-from jiuwenswarm.common.config_panel.models_handlers import (  # noqa: F401  — 兼容别名
-    reasoning_level_display as _reasoning_level_display,
-    normalize_provider_value as _normalize_provider_value,
-    resolve_model_config_obj_for_validate as _resolve_model_config_obj_for_validate,
 )
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
@@ -4647,13 +4612,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
-        jobs = await cc.list_jobs()
         # 按 web 连接 user_id 过滤:只返回该用户创建的定时任务(隔离)。
-        # user_id 为空(连接未带)时维持原行为(返回全部);agent 内部创建的 cron
-        # (user_id 空串)在带 user_id 的连接下被过滤掉(对人类用户不可见)。
+        # 过滤在 controller 内进行,先于按属主路由的准入闸门,避免为其他
+        # 用户的沙箱冷启动/超时买单。user_id 为空(连接未带)时维持原行为
+        # (返回全部);agent 内部创建的 cron(user_id 空串)在带 user_id 的
+        # 连接下被过滤掉(对人类用户不可见)。
         uid_str = str(user_id or "").strip()
-        if uid_str:
-            jobs = [j for j in jobs if str(j.get("user_id") or "").strip() == uid_str]
+        jobs = await cc.list_jobs(user_id=uid_str or None)
         # 可选按 project_id 过滤(支持 default/default_code 虚拟项目)
         if isinstance(params, dict):
             raw_pid = params.get("project_id")

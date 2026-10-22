@@ -2907,7 +2907,7 @@ class AgentOSRouterClient(AgentServerClient):
                 "JIUWENSWARM_RUNTIME_PROFILE": "agentos",
                 **self._tool_sandbox_env(),
             }
-            from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+            from jiuwenswarm.gateway.runtime.cron.factory import load_cron_store_settings
             import json
 
             endpoints = load_cron_store_settings(self._server_config).endpoints
