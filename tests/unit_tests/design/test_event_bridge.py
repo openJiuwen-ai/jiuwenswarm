@@ -58,6 +58,7 @@ def test_node_failure_is_persisted_with_its_error():
     assert state["error"] == "model timeout"
 
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("event", ["designer.graph.updated", "designer.run.updated", "designer.node.updated", "designer.leader.activity"])
 @pytest.mark.parametrize("channel", ["video_tool", "web"])
@@ -74,6 +75,34 @@ async def test_voice_design_canvas_events_reach_web_session(monkeypatch, event, 
     assert frame["session_id"] == "design-chat"
     assert frame["request_id"] == "original-turn"
     assert frame["payload"] is payload
+
+
+def test_success_clears_stale_error():
+    bridge, store, _pushed = _bridge()
+
+    bridge.emit(WorkflowProgressEvent(kind=ProgressKind.AGENT_STARTED, label="n_brief"))
+    bridge.emit(
+        WorkflowProgressEvent(kind=ProgressKind.AGENT_FAILED, label="n_brief", message="model timeout")
+    )
+    bridge.on_node_result("n_brief", {"text": "v2"})
+
+    state = store.saved[-1]["node_states"]["n_brief"]
+    assert state["status"] == "completed"
+    assert "error" not in state
+
+
+def test_restart_clears_stale_error():
+    bridge, store, _pushed = _bridge()
+
+    bridge.emit(WorkflowProgressEvent(kind=ProgressKind.AGENT_STARTED, label="n_brief"))
+    bridge.emit(
+        WorkflowProgressEvent(kind=ProgressKind.AGENT_FAILED, label="n_brief", message="model timeout")
+    )
+    bridge.emit(WorkflowProgressEvent(kind=ProgressKind.AGENT_STARTED, label="n_brief"))
+
+    state = store.saved[-1]["node_states"]["n_brief"]
+    assert state["status"] == "running"
+    assert "error" not in state
 
 
 def test_first_result_writes_current_slots_and_double_writes_refs():
