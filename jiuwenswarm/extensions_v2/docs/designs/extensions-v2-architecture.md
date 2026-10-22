@@ -3,15 +3,15 @@
 | 项 | 内容 |
 | --- | --- |
 | 文档类型 | 设计基线；产品侧实现与未决协议仍待确认和验证 |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-22 |
 | 维护责任 | Extensions V2 模块维护者；与 agent-core 相关维护者共同确认跨模块约定 |
-| 所属模块 | `jiuwenswarm/jiuwenswarm/extensions_v2/` |
+| 所属模块 | `jiuwenswarm/extensions_v2/` |
 | 配套文档 | [设计概览](extensions-v2-overview.md)、[模块维护规范](../../AGENTS.md)、[架构模板](../../../docs/templates/architecture-template.md) |
 | 协作模块设计 | agent-core [Events 概览](../../../../../agent-core/openjiuwen/core/events/docs/designs/events-overview.md)、[Events 架构](../../../../../agent-core/openjiuwen/core/events/docs/designs/events-architecture.md)、[Extension 概览](../../../../../agent-core/openjiuwen/core/extension/docs/designs/extension-overview.md)、[Extension 架构](../../../../../agent-core/openjiuwen/core/extension/docs/designs/extension-architecture.md) |
 
 本文承接[设计概览](extensions-v2-overview.md)，解释 JiuwenSwarm 如何把 agent-core 的包管理与事件机制接到具体业务流程：由谁装配和触发，Handler（事件处理函数）如何调用产品能力，业务结果怎样交给UI界面或渠道，以及失败后由谁处理。
 
-**实现状态：** agent-core `core/events/` 已实现 EventBus、Builder、Ops 和执行链；`core/extension/` 已实现 manifest、安装目录、依赖排序、Plan、candidate 和生效记录，Registry、管理事件及 candidate 发布仍待交付。`extensions_v2/` 尚无运行实现或 V2 集成验收记录，当前 WebUI 穿刺使用 `LocalEventBus`，接入时替换为 `openjiuwen.core.events.ExtensionEventBus`。本文的产品 API、事件名及状态仍用于解释目标设计。已有基础见第 3.4 节，开放条件见第 10.1 节。
+**实现状态：** agent-core `core/events/` 已实现 EventBus、Builder、Ops 和执行链；`core/extension/` 已实现 Registry、九类管理事件、manifest、安装目录、依赖排序、Plan、candidate、发布和生效记录。`extensions_v2/` 已实现 Registry 门面、安装存储接入、AgentServer 装配、WebUI 事件与渲染运行时，以及 Token Weather 示例包，并有本地单元验证；重连重发、会话删除清理、真实业务触发、Gateway/WebClient 跨进程联调及产品化 UI 验收仍待开展。本文的产品 API、事件名及状态用于解释目标设计，已实现范围以特性方案和门面规约为准。已有基础见第 3.4 节，开放条件见第 10.1 节。
 
 **依据与分工：** 产品范围由概览维护，事件和扩展的通用机制由 agent-core 文档维护。本文以 Extension 管理入口、EventBus 和 Ops 为集成依赖，重点说明 JiuwenSwarm 在哪里装配、如何开放业务处理点与能力、怎样把扩展结果交给业务和UI界面。公共机制只保留接入所需的约束，其内部模型、调度算法、构建协议和包管理实现通过链接查阅；完整产品字段、代码修改和验证步骤进入后续特性方案（feature），定稿契约进入规约（spec）。参考材料的适用边界见第 12.3 节。
 
@@ -259,7 +259,7 @@ AgentServer 的扩展接入分为两个阶段：**启动时注册事件、能力
 
 两张图按职责分区：黄色表示注册内容，蓝色表示事件处理，紫色表示 Ops，绿色表示 Handler 和产品服务，青绿色表示直接查询，橙色表示触发新事件。**实线表示注册、调用或消息发送，虚线表示结果返回。** 节点文字说明具体职责，颜色作为辅助。
 
-**启动装配：AgentServer 先创建 EventBus，注册 JiuwenSwarm 的事件和处理器，再将这个 EventBus 交给 Extension 管理入口；初始化成功后显式触发 `ops.build`，能力目录构建成功后再加载扩展包。**
+**启动装配：AgentServer 先创建 EventBus，注册 JiuwenSwarm 的事件和处理器，再将这个 EventBus 交给 Extension 管理入口；宿主注册完成后由 Registry 触发一次 `ops.build`，能力目录构建成功后再加载扩展包。**
 
 ```mermaid
 %%{init: {"theme":"base","htmlLabels":false,"themeVariables":{"fontFamily":"Microsoft YaHei, Noto Sans CJK SC, Arial, sans-serif","fontSize":"14px","lineColor":"#64748b","textColor":"#1e293b","primaryTextColor":"#1e293b","edgeLabelBackground":"#ffffff","clusterBkg":"#f8fafc","clusterBorder":"#cbd5e1"},"flowchart":{"htmlLabels":false,"curve":"linear","nodeSpacing":32,"rankSpacing":34,"padding":22,"useMaxWidth":true,"wrappingWidth":280,"subGraphTitleMargin":{"top":12,"bottom":22}},"fontSize":14}}%%
@@ -271,7 +271,7 @@ flowchart TB
 
     BUS["EventBus（事件总线）<br/>已准备公共事件，如 ops.build<br/>保存 JiuwenSwarm 事件与处理器"]
     REGISTRY["Extension 管理入口<br/>当前适配控制面，目标对接 Registry<br/>使用传入的 EventBus<br/>注册包管理事件及其 Core Handler"]
-    BUILD["AgentServer 显式触发 ops.build<br/>Build Handler 收集能力定义<br/>EventBus 校验并保存 Builder"]
+    BUILD["Registry 初始化触发一次 ops.build<br/>Build Handler 收集能力定义<br/>EventBus 校验并保存 Builder"]
 
     subgraph LOAD["加载扩展包并确认可用范围"]
         EXTENSION["扩展包中的后端扩展<br/>为已有事件注册处理器（USER Handler）"]
@@ -314,7 +314,7 @@ flowchart TB
 
 按图从上向下阅读：AgentServer 创建 EventBus，调用 Extensions V2 汇总的 JiuwenSwarm 注册函数，完成两类注册：**注册业务事件类型**，同时传入该类型的匹配函数和唯一 Core Handler；**为已有事件注册内置 EventHandler**，即 BUILTIN 层处理器，其中包括用于构建 Ops 的 `ops.build` Handler。`ops.build` 事件本身由 Events 提供，JiuwenSwarm 只为它增加内置 Handler。
 
-随后，AgentServer 将这个 EventBus 交给 Extension 管理入口，由其补充包管理事件及其 Core Handler。初始化成功后，AgentServer 显式触发 `ops.build`，由 Build Handler 收集能力定义，EventBus 校验并保存首次成功构建的 Builder。构建成功后才提交本地包路径，管理入口加载包中的后端扩展，扩展通过受限入口为已有事件注册 USER Handler。AgentServer 最后核对每个包的实际生效与清理结果，决定开放哪些业务入口和UI界面项。
+随后，AgentServer 将这个 EventBus 交给 Extension 管理入口。包管理事件及其 Core Handler 由 Events 内置模块在 EventBus 构造时登记。宿主注册完成后，`Registry.init` 触发一次 `ops.build`，由 Build Handler 收集能力定义，EventBus 校验并保存首次成功构建的 Builder。构建成功后才提交本地包路径，管理入口加载包中的后端扩展，扩展通过受限入口为已有事件注册 USER Handler。AgentServer 最后核对每个包的实际生效与清理结果，决定开放哪些业务入口和UI界面项。
 
 图中的两处 EventBus 表示同一个实例：上方展示 JiuwenSwarm 注册事件和处理器后，将它交给 Extension 管理入口；下方展示扩展包将 USER Handler 注册到同一个 EventBus。右侧虚线表示管理入口将各包的处理结果交回 AgentServer。初始化和加载的具体约束见第 4.1 节。
 
@@ -403,9 +403,9 @@ AgentServer 组织启动并判断哪些能力可以开放，Extensions V2 装配
 
 | 模块 | 主要职责 | 与其他模块的交接 |
 | --- | --- | --- |
-| AgentServer 生命周期 | 准备 EventBus、Extension 管理入口和包来源，协调业务准入，跟踪并等待自身业务调用结束 | 先调用产品注册函数，再将同一 EventBus 交给管理入口初始化；初始化成功后显式触发 `ops.build`，能力目录构建成功后提交包路径；核对 Report 与查询结果后开放对应入口；退出时完成自身调用收尾并核对包清理结果 |
+| AgentServer 生命周期 | 准备 EventBus、Extension 管理入口和包来源，协调业务准入，跟踪并等待自身业务调用结束 | 先调用产品注册函数，再将同一 EventBus 交给管理入口初始化；初始化时由 Registry 触发一次 `ops.build`，能力目录构建成功后提交包路径；核对 Report 与查询结果后开放对应入口；退出时完成自身调用收尾并核对包清理结果 |
 | Extensions V2 装配目录 | 汇总各业务模块提供的事件类型、匹配函数、Core Handler、BUILTIN Handler 和 Ops Build Handler，提供产品注册函数 | 由 AgentServer 直接调用，通过 EventBus 公共接口完成产品注册；具体业务定义和实现由所属模块维护 |
-| agent-core Extension / Registry（集成依赖） | 在传入的 EventBus 上装配管理事件，提供包加载、卸载、可信包归属及其 Ops 绑定适配和管理结果 | agent-core 的 Registry 尚未交付，当前由 JiuwenSwarm 管理门面适配 `PackageManager`、`Orchestrator` 和 `Runtime`；包身份适配分工见第 4.3.1 节；AgentServer 通过公共入口取得逐包结果、查询记录及包退出结果，据此协调产品侧启停 |
+| agent-core Extension / Registry（集成依赖） | 在传入的 EventBus 上装配管理事件，提供包加载、卸载、可信包归属及其 Ops 绑定适配和管理结果 | JiuwenSwarm 门面直接持有 `Registry`；包身份由 `Runtime.publish` 写入注册记录，分工见第 4.3.1 节；AgentServer 通过公共入口取得逐包结果、查询记录及包退出结果，据此协调产品侧启停 |
 | agent-core Events / EventBus（集成依赖） | 提供事件注册、触发、Handler 调用以及当前 Ops 的构建与绑定 | JiuwenSwarm 提供事件定义、处理器、能力定义与调用上下文；Events 执行调用链，将结果或异常交回触发方，不负责可信包身份认证或宿主在途调用等待 |
 
 这里的注册使事件和 Handler 可被使用。扩展何时真正参与业务，仍由业务逻辑中的事件触发位置决定。装配方式见第 4.1 节，事件接入见第 4.2 节；公共机制的内部设计由 agent-core 文档维护。
@@ -417,7 +417,7 @@ AgentServer 组织启动并判断哪些能力可以开放，Extensions V2 装配
 | 模块或角色 | 主要职责 | 与其他模块的交接 |
 | --- | --- | --- |
 | 业务逻辑中的扩展点 | 核对原请求授权，准备 Event 和可信 SessionContext，调用 EventBus 并等待、使用合法结果 | 把预定处理点开放给 Handler；默认动作交给事件的 Core Handler 调用服务执行，原业务逻辑按事件契约使用结果 |
-| 平台 Build Handler | 在能力构建时向本次 Builder 补充产品能力定义 | 由 AgentServer 在 Extension 管理入口初始化前注册到同一 EventBus，启动时显式触发 `ops.build` 后由 Events 调用；能力定义引用所属模块提供的能力函数 |
+| 平台 Build Handler | 在能力构建时向本次 Builder 补充产品能力定义 | 由 AgentServer 在 Extension 管理入口初始化前注册到同一 EventBus，由 Registry 初始化触发 `ops.build` 后交给 Events 调用；能力定义引用所属模块提供的能力函数 |
 | Ops 能力函数 | 读取当前包和会话绑定，校验参数、目标与权限，转换调用结果和错误 | 查询类方法直接访问服务；动词类方法触发新事件，处理继续到该事件的 Core Handler 时，再调用服务或受控代理 |
 | 所属业务服务 | 执行工具、会话、文件等实际操作，维护业务状态和结果，承担资源权限检查与业务幂等 | 由 Core Handler 或查询类 Ops 调用；实际操作是否完成，以服务记录或外部回执为准 |
 | AgentServer WebUI 服务 | 从有效包派生可用UI界面目录，维护视图绑定；校验交互输入、渲染树和目标，管理服务端 revision | 上行接收 Front 请求，校验后触发 UI 事件；下行由 `ui.render` 的 Core Handler 调用，校验后交 Front 定向发送 |
@@ -469,6 +469,7 @@ Front、Gateway 和 WebClient 负责请求、响应及主动消息的交接；V2
 | [旧应用插件声明解析](../../../channels/web/frontend/src/applicationPlugins/manifest.ts)、[呈现入口](../../../channels/web/frontend/src/applicationPlugins/ApplicationPluginOutlet.tsx) | bundled / iframe / none 解析与展示 | V2 UI界面项、`webui-tree`、绑定、Schema 和交互；不默认沿用旧 `/api/application-plugins` 格式 |
 | [渠道配置](../../../resources/config.yaml)、[路由键与地址](../../../gateway/routing/keys.py)、[分发](../../../gateway/routing/session_sharing.py)、[IM 入站](../../../gateway/im_pipeline/im_inbound.py)与[出站](../../../gateway/im_pipeline/im_outbound.py) | 配置模板、消息归一化与渠道寻址 | 新渠道配置由 Gateway 的 `_apply_channel_config` 等入口装配；同时核对 ChannelType 消费方及地址解析 |
 | agent-core [Events 公开导出](../../../../../agent-core/openjiuwen/core/events/__init__.py)、[Protocol](../../../../../agent-core/openjiuwen/core/events/protocol.py)、[契约测试](../../../../../agent-core/tests/unit_tests/core/events/test_events_contract.py)及 Events / Extension 设计 | Events 的 EventBus、Builder、Ops 和执行链已实现；Extension 控制面已实现 manifest、安装目录、依赖排序、Plan、candidate 和生效记录 | Registry、管理事件、candidate 发布及跨仓集成；`ui` 段由 JiuwenSwarm 从包根原始 manifest 读取 |
+| V2 [包管理门面](../../management/registry.py)、[安装目录配置](../../config.py)、[装配入口](../../assembly.py) | 安装、启动加载、卸载、重载、查询与停机；宿主事件注册、失败副本补偿和停机编排 | 跨进程安装目录串行化、重连重发与真实业务触发 |
 
 现有 Channel 接入还需注意：`register_channel` 注册实例并接入默认入站；自定义入站使用 `register_channel_with_inbound`，外部已完成接线时可用 `register_external_channel`。这些入口不替代认证、启动、去重或关闭资源；同键注册存在覆盖行为。`BaseChannel.send` 也没有统一投递回执模型，正常返回不能证明平台已接受或用户已读。Gateway Ops 的跨进程适配要求见第 4.3.5 节。
 
@@ -487,7 +488,7 @@ Front、Gateway 和 WebClient 负责请求、响应及主动消息的交接；V2
 
 ### 4.1 AgentServer 装配与管理接入
 
-AgentServer 负责创建当前运行实例所需的 EventBus 和 Extension 管理入口，并根据初始化、包加载和退出的实际结果控制业务准入。当前管理入口由 JiuwenSwarm 门面适配 agent-core 的包加载控制面；agent-core Registry 交付后替换实现，调用方不变。产品注册、包加载和在线管理分别说明如下。
+AgentServer 负责创建当前运行实例所需的 EventBus 和 Extension 管理入口，并根据初始化、包加载和退出的实际结果控制业务准入。管理入口是 JiuwenSwarm 对 agent-core `Registry` 的门面，调用方只依赖门面方法。产品注册、包加载和在线管理分别说明如下。
 
 <a id="411-装配方式与配置来源"></a>
 
@@ -497,32 +498,36 @@ AgentServer 负责创建当前运行实例所需的 EventBus 和 Extension 管�
 
 1. **准备 EventBus。** AgentServer 按 Events 公共约定，为当前业务运行实例创建并准备 EventBus。`ops.build` 等公共基础定义由 Events 提供，JiuwenSwarm 不重复注册。
 2. **直接执行 JiuwenSwarm 产品注册。** AgentServer 调用 `extensions_v2` 汇总的产品注册函数，向 EventBus 注册产品事件类型、匹配函数及唯一 Core Handler，再注册 BUILTIN Handler 和 Ops Build Handler。业务定义、处理器及能力函数仍由所属模块提供，注册函数负责汇总接入。
-3. **传入 EventBus 初始化管理入口。** AgentServer 创建管理入口并将上述实例交给它。管理入口补充 Extension 管理事件及其 Core Handler，不接收或调用 JiuwenSwarm 注册回调，也不另建 EventBus。agent-core Registry 交付前，JiuwenSwarm 门面负责适配 `PackageManager`、`Orchestrator` 和 `Runtime`。
-4. **构建能力目录。** AgentServer 在产品注册和管理入口初始化完成后，显式触发 `ops.build`。Events 执行 Build Handler，校验并保存首次成功构建的 Builder；构建成功后才按第 4.1.2 节提交包路径。管理入口初始化成功不代表能力目录已构建、用户包已生效或具体业务能力已经可用。
+3. **传入 EventBus 初始化管理入口。** AgentServer 创建管理入口并将上述实例交给它。包管理事件及其 Core Handler 由 Events 内置模块在 EventBus 构造时登记；管理入口只登记宿主回调，不接收或调用 JiuwenSwarm 注册回调，也不另建 EventBus。
+4. **构建能力目录。** 管理入口在宿主注册完成后触发一次 `ops.build`。Events 执行 Build Handler，校验并保存首次成功构建的 Builder；构建成功后才按第 4.1.2 节提交包路径。管理入口初始化成功不代表能力目录已构建、用户包已生效或具体业务能力已经可用。
 
-下面的代码表达 AgentServer 的装配顺序。管理入口当前是本地门面，参数以其后适配 agent-core Registry 时保持稳定为目标；Events 调用遵循公共契约：
+下面的代码表达 AgentServer 的装配顺序；Events 调用遵循公共契约：
 
 ```python
-from openjiuwen.core.events import Event, ExtensionEventBus, OPS_BUILD_EVENT_TYPE
+from openjiuwen.core.events import ExtensionEventBus
 
 # AgentServer prepares Events infrastructure for this runtime.
 bus = ExtensionEventBus()
 
-# JiuwenSwarm registers its event types and Handlers before management-entry init.
-register_jiuwenswarm_events_and_handlers(bus)
+# The facade delegates to agent-core Registry; host callbacks run inside init.
+manager = ExtensionManager(resolve_install_dir())
+webui = WebUIRuntime(
+    bus=bus,
+    transport=transport,
+    catalog=WebUICatalogService(manager.active_packages),
+)
+await manager.init(
+    bus,
+    host_version=host_version,
+    host_event_types=webui.register_event_types,
+    host_handlers=webui.register_handlers,
+)
 
-# The local facade adapts PackageManager/Orchestrator/Runtime until Registry is delivered.
-manager = ExtensionManager()
-await manager.init(event_bus=bus)
-
-# Build the capability catalog once before ordinary business events.
-await bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None), None)
-
-# Submit package paths only after initialization and capability build succeed.
-report = await manager.install(local_package_paths)
+# Registry.init has already triggered ops.build once.
+report = await manager.load_installed()
 ```
 
-产品注册和管理入口初始化只准备组件与注册关系，不读取用户 manifest、不加载用户代码，也不自动触发 `ops.build`；能力目录由 AgentServer 随后显式构建。首次构建失败不提交包路径或开放业务，可修正定义后重试；首次成功后，同一 EventBus 保存该 Builder，不再触发 `ops.build` 或变更 Build Handler。普通事件只使用保存的 Builder 为每个实际进入的 Handler 创建独立 Ops。具体协议以 [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md#43-opsbuild)为准。
+产品注册和管理入口初始化只准备组件与注册关系，不读取用户 manifest、不加载用户代码。`ops.build` 由管理入口在宿主注册完成后触发一次；首次构建失败不提交包路径或开放业务，可修正定义后重试；首次成功后，同一 EventBus 保存该 Builder，不再触发 `ops.build` 或变更 Build Handler。普通事件只使用保存的 Builder 为每个实际进入的 Handler 创建独立 Ops。具体协议以 [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md#43-opsbuild)为准。
 
 装配可按四类逻辑职责组织：`bootstrap` 汇总产品注册并由 AgentServer 直接调用；`event_types` 提供事件定义、匹配函数和 Core Handler；`event_handlers` 提供 JiuwenSwarm 的 BUILTIN Handler；`handler_ops` 提供能力函数及 Ops Build Handler。它们尚非已建立目录或最终文件清单。
 
@@ -530,13 +535,13 @@ report = await manager.install(local_package_paths)
 
 #### 4.1.2 包来源配置与加载准入
 
-产品注册、Extension 管理入口初始化及能力目录构建均确认完成后，AgentServer 从默认安装目录 `~/.jiuwenswarm/extensions_v2/`（配置键 `extensions.install_dir`）及配置路径收集来源，保留来源类别和原路径，再提交管理入口。来源解析、声明校验、依赖排序和计划执行归 agent-core；管理事件交付前，由 JiuwenSwarm 门面直接调用控制面 API。
+产品注册、Extension 管理入口初始化及能力目录构建均确认完成后，AgentServer 从默认安装目录 `~/.jiuwenswarm/extension_pkgs/`（配置键 `extensions.install_dir`）及配置路径收集来源，保留来源类别和原路径，再提交管理入口。来源解析、声明校验、依赖排序和计划执行归 agent-core；管理事件交付前，由 JiuwenSwarm 门面直接调用控制面 API。
 
 | 配置主题 | 当前要求 | 待确定的来源与启动规则 |
 | --- | --- | --- |
 | 路径 | AgentServer 提交明确候选来源，由对端校验 | V2 配置键、扫描层级、相对路径基准和目录缺失行为 |
 | 重复与冲突 | 不按收集顺序隐式替换同 ID 包 | 同根去重和多根同 ID 策略；对端目前建议冲突报错 |
-| 启动失败 | 保留逐包失败、依赖跳过和残留 | 必需 / 可选包、整服务失败或局部降级 |
+| 启动失败 | 保留逐包失败、依赖未满足和残留 | 必需 / 可选包、整服务失败或局部降级 |
 | 生效时机 | 配置对应当前 Registry，修改配置不自动重载 | 在线加载入口及配置更新何时应用 |
 
 AgentServer 核对管理入口返回的逐包结果与实际生效、残留后，再开放相应业务和UI界面项。初始化完成、包加载完成与具体能力可用分别确认，完成依据见第 6.3 节，开放条件见第 10.1 节。
@@ -654,7 +659,7 @@ Gateway 无需另建 V2 EventBus。[GatewayHookEvents](../../../extensions/hook_
 | 平台 Build Handler | 初始化时注册为 `ops.build` 的 BUILTIN，启动时显式构建能力目录，向同一个 Builder 添加 namespace / method，只组装能力 |
 | 扩展业务 Handler | 包加载后注册为 USER，在业务调用中通过自己的 Ops 使用能力、处理结果与失败 |
 
-agent-core Extension Runtime 负责核实包身份，Events 负责按注册记录和本次 SessionContext 构建独立 Ops。宿主发布 USER/BUILTIN Handler 时，通过 `register_event_handler(..., package_metadata=PackageMetadata(...))` 将包身份写入注册记录；Events 不从 EventInput 或 SessionContext 推断包身份。扩展的受限注册入口只收集 Handler 声明，不接收包身份；实际发布由宿主管理门面填入。agent-core 的 candidate 发布接口尚未交付，当前由 JiuwenSwarm 发布适配器直接写入 EventBus，EX-04 交付后替换。依据见[Events 公共契约第 1.1、4.4 节](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md#11-责任范围)。
+agent-core Extension Runtime 负责核实包身份，Events 负责按注册记录和本次 SessionContext 构建独立 Ops。`Runtime.publish` 在登记每条声明时写入 `PackageMetadata(package_id, version, root)`；Events 不从 EventInput 或 SessionContext 推断包身份。扩展的受限注册入口只收集 Handler 声明，不接收包身份。依据见[Events 公共契约第 1.1、4.4 节](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md#11-责任范围)。
 
 上述身份适配是基础业务接入的必要前提。JiuwenSwarm 的能力函数使用当前 Ops 中的包信息检查授权，接入验证需证明其与本次 Handler 的归属一致；不从 Event 或 SessionContext 自报字段补造身份。用户包增加 manifest 字段或自行注册 USER，都不能替代平台能力注册。
 
@@ -665,7 +670,7 @@ JiuwenSwarm 在接入侧完成会话适配、能力注册和服务连接三项�
 | 工作 | 产品侧处理与交接 |
 | --- | --- |
 | 注册能力 | AgentServer 在 Extension 管理入口初始化前，通过产品注册函数将各领域 Build Handler 注册到同一 EventBus 的 `ops.build` |
-| 构建能力目录 | AgentServer 在包加载前显式触发 `ops.build`；Build Handler 向同一个 Builder（能力定义收集对象）补充 namespace / method，Events 校验并保存首次成功构建的 Builder；构建不创建用户会话或执行实际操作 |
+| 构建能力目录 | `Registry` 在宿主注册完成后、包加载前触发一次 `ops.build`；Build Handler 向同一个 Builder（能力定义收集对象）补充 namespace / method，Events 校验并保存首次成功构建的 Builder；构建不创建用户会话或执行实际操作 |
 | 连接服务 | 能力函数在普通 Handler 调用 Ops 时读取当前可信绑定，执行目标校验和授权，再访问业务服务或受控代理 |
 
 能力目录构建成功后，Events 使用保存的 Builder 为每个实际进入的普通 Handler 创建独立 Ops，产品侧直接使用该绑定。普通事件不再触发 `ops.build`；本次 Ops 创建失败按事件调用失败交给触发事件的业务逻辑处理，不转为直接执行业务。能力收集与构建链遵循 [Events 公共契约第 4.3 节](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md#43-opsbuild)，逐 Handler Ops 创建与绑定遵循[第 4.4 节](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md#44-普通-trigger)。连接池等共享资源由平台独立管理，不在每次创建 Ops 时重复创建。
@@ -820,7 +825,7 @@ Web前端在修改画面前整体校验 Schema、当前绑定与 revision；无�
 
 | 阶段 | 负责方与交接结果 | 详细说明 |
 | --- | --- | --- |
-| 装配 | AgentServer 准备 EventBus，先注册产品事件和 Handler，再将同一实例交给 Extension 管理入口装配管理事件；显式触发 `ops.build`，保存能力目录后进入包加载；业务 Ops 在进入普通 Handler 时分别创建 | 第 4.1 节 |
+| 装配 | AgentServer 准备 EventBus，先注册产品事件和 Handler，再将同一实例交给 Extension 管理入口；初始化时触发一次 `ops.build`，保存能力目录后进入包加载；业务 Ops 在进入普通 Handler 时分别创建 | 第 4.1 节 |
 | 加载 | AgentServer 提交本地包路径，agent-core 经管理事件返回逐包 Report；核对后开放对应业务和UI界面项 | 第 4.1、6.1 节 |
 | 执行业务 | 业务逻辑在预定扩展点调用 EventBus 触发事件，传入 Event 与 SessionContext；扩展参与调用链，调用链进入事件的 Core Handler 时执行底层业务，结果返回触发事件的业务逻辑 | 第 5.2.1 节 |
 | 展示与交互 | Web前端发现UI界面项并申请绑定；扩展生成树，经定向发送后由Web前端应用 | 第 5.2.2～5.2.3 节 |
@@ -1018,7 +1023,7 @@ sequenceDiagram
 | 关闭视图 / 会话切换 | Web前端释放订阅与实例，拟议上报 `ui.unmount`；AgentServer WebUI 服务使对应绑定失效，包注册不变 |
 | Web前端断线 | Gateway、Front 将断线信息交给 AgentServer WebUI 服务，使旧连接的绑定失效；不依赖Web前端退出通知 |
 | 包卸载 | 权限与依赖准入后停止该包新交互 / 渲染，失效绑定并定向 clear；Registry 撤销注册、等待使用结束、释放资源并返回结果 |
-| 包重载 | 同一管理关联中，卸载完整成功后安装；旧视图不因同包 ID 自动复活，新版失败不自动恢复旧实例 |
+| 包重载 | 新 candidate 准备并发布成功后提交，提交前旧实例保持生效；旧视图不因同包 ID 自动复活，新版失败不自动恢复旧实例 |
 | AgentServer 停止 | 拒绝外部新业务和管理操作，跟踪并等待自身已接收业务调用及相关任务结束；保留必要子操作、回滚与传输，随后核对包清理，再关闭共享资源及传输 |
 
 ```mermaid
@@ -1100,7 +1105,7 @@ revision 在实例内单调递增，跨包排序由前端槽位模式处理；�
 | 确认点 | 谁依据什么确认 | 不能据此推断什么 |
 | --- | --- | --- |
 | 初始化完成 | AgentServer 核对产品注册完成，Extension 管理入口确认传入的同一 EventBus 上管理组件及事件就绪 | 能力目录已构建、用户包已生效或所有业务及传输能力均已可用 |
-| 能力目录构建成功 | AgentServer 显式触发 `ops.build` 并取得成功结果，Events 校验并保存首次成功构建的 Builder | 用户包已生效、具体业务操作已获授权或外部服务可用 |
+| 能力目录构建成功 | `Registry` 初始化触发一次 `ops.build` 并取得成功结果，Events 校验并保存首次成功构建的 Builder | 用户包已生效、具体业务操作已获授权或外部服务可用 |
 | 包安装成功 | AgentServer 核对 agent-core 生效记录与逐包 Report | Handler 已在真实业务中执行 |
 | Handler 可进入 | Events 完整构建并绑定 Ops | 能力已获授权、外部服务可用 |
 | 事件正常返回 | 调用方取得合法输出或允许的 None | Core Handler 已执行、工具成功或帧已发送 |
@@ -1253,7 +1258,7 @@ USER 可以跳过 BUILTIN，强制授权和必要生命周期校验须在受控�
 
 | 能力范围 | 开放前必须确认什么 |
 | --- | --- |
-| 启动加载 | 产品注册先于 Extension 管理入口初始化，业务及管理使用同一 EventBus；包加载前显式触发 `ops.build` 并保存首次成功构建的 Builder；初始化失败清理归属、来源与启动失败策略明确，Report 与实际生效、残留一致 |
+| 启动加载 | 产品注册先于 Extension 管理入口初始化，业务及管理使用同一 EventBus；包加载前由 Registry 触发一次 `ops.build` 并保存首次成功构建的 Builder；初始化失败清理归属、来源与启动失败策略明确，Report 与实际生效、残留一致 |
 | 业务扩展 | 选定业务流程在预定扩展点触发事件并使用处理结果，Extension 到 Ops 构建过程的可信包身份适配已接通；控制路径、Ops、授权、返回与取消符合契约 |
 | Web 传输 | 可信身份、实例路由、请求响应及独立主动推送完成真实联调 |
 | WebUI 挂载 | UI界面项可追溯到有效包，兼容筛选、绑定与首帧交接可核对 |
@@ -1306,7 +1311,7 @@ USER 可以跳过 BUILTIN，强制授权和必要生命周期校验须在受控�
 
 #### 11.1.1 报告包启动加载、回合准备与首次面板展示
 
-1. **准备。** AgentServer 准备 EventBus 并完成产品注册，将同一实例交给 Extension 管理入口；初始化成功后显式触发 `ops.build`，能力目录构建成功后加载报告包并核对 Report，开放对应业务。
+1. **准备。** AgentServer 准备 EventBus 并完成产品注册，将同一实例交给 Extension 管理入口；初始化时由 Registry 触发一次 `ops.build`，能力目录构建成功后加载报告包并核对 Report，开放对应业务。
 2. **执行业务。** AgentServer 的回合处理逻辑到达准备步骤时，调用 EventBus 触发产品定义的回合准备事件，并传入根据服务端会话记录构造的 SessionContext。报告 Handler 读取本次会话，用 next 继续；处理到该事件的 Core Handler 时，调用底层准备服务，结果返回后由扩展保存准备报告。
 3. **呈现。** 用户打开面板，Web前端发现UI界面项、订阅并申请挂载；WebUI 建立绑定后触发首帧生成，Web前端校验并应用。
 
@@ -1363,7 +1368,7 @@ sequenceDiagram
 
 #### 11.1.5 部分加载失败与未知管理结果
 
-A 失败，依赖 A 的 B 被跳过，独立 C 可能成功。AgentServer 按来源与启动规则决定开放范围，不发布 A／B UI界面项；独立包能否降级运行仍待确定。若包安装管理事件的 Core Handler 已完成安装而外层 Handler 抛错，按第 8.1 节查询实际生效与残留，不重装整批。
+A 失败，依赖 A 的 B 未加载，独立 C 可能成功。AgentServer 按来源与启动规则决定开放范围，不发布 A／B UI界面项；独立包能否降级运行仍待确定。若包安装管理事件的 Core Handler 已完成安装而外层 Handler 抛错，按第 8.1 节查询实际生效与残留，不重装整批。
 
 ### 11.2 架构要求与验证归属
 
@@ -1371,7 +1376,7 @@ A 失败，依赖 A 的 B 被跳过，独立 C 可能成功。AgentServer 按来
 
 | 主题 | 要证明的关键性质 | 依据及负责方 |
 | --- | --- | --- |
-| 启动与来源 | 先产品注册、后传入同一 EventBus 初始化 Extension 管理入口；上述两步不加载用户代码；随后显式构建并保存能力目录，失败时不加载包或开放业务；重复初始化、注册冲突及部分失败的清理归属明确；加载后的依赖跳过、Report、残留与准入一致 | A01；第 4.1、6.1 节；AgentServer / Extension / Events |
+| 启动与来源 | 先产品注册、后传入同一 EventBus 初始化 Extension 管理入口；上述两步不加载用户代码；随后显式构建并保存能力目录，失败时不加载包或开放业务；重复初始化、注册冲突及部分失败的清理归属明确；加载后的依赖未满足、Report、残留与准入一致 | A01；第 4.1、6.1 节；AgentServer / Extension / Events |
 | 业务事件接入 | JiuwenSwarm 选定业务流程的无扩展、加工、短路和跳层行为正确，实际执行次数和新旧入口可核对 | A02、A04；第 4.2、5.2.1 节；各业务入口 / 能力提供方 |
 | 会话与 Ops | 业务逻辑触发事件时传入根据服务端会话记录构造的 SessionContext，Extension 的受信适配将当前 Handler 的包身份交给 Ops 构建过程，产品能力读到对应包与会话；cwd 缺失、并发隔离与过期使用处理正确 | A03、A05；第 4.2.3、4.3 节；Extension / Events / 会话 / 能力方 / AgentServer |
 | 授权 | 跳过 BUILTIN、新事件、未关联扩展包的 Core Handler 及旧调用撤权均不扩大原权限 | A05、A10；第 9.1 节；安全 / 能力方 |
@@ -1417,7 +1422,7 @@ bus.register_event_handler(
 )
 ```
 
-这段关系伪代码展示产品如何注册能力；`next_handler(event)` 直接返回 Builder，Build Handler 补充定义后返回同一个 Builder。已有 `agent` namespace 时，方法加入原主责 Build Handler。AgentServer 随后按第 4.1.1 节显式触发 `ops.build`，首次成功构建并保存能力目录后，普通 Handler 才能调用 `await ops.agent.status(request)`。
+这段关系伪代码展示产品如何注册能力；`next_handler(event)` 直接返回 Builder，Build Handler 补充定义后返回同一个 Builder。已有 `agent` namespace 时，方法加入原主责 Build Handler。`Registry` 初始化随后按第 4.1.1 节触发一次 `ops.build`，首次成功构建并保存能力目录后，普通 Handler 才能调用 `await ops.agent.status(request)`。
 
 **验证重点。** 正常查询、目标越权、无会话、服务不可用、并发隔离和退出失效；不从全局“当前 Agent”读取状态。
 
@@ -1516,7 +1521,7 @@ prepared = await bus.trigger(
 
 | 前提 | 已有依据与缺口 | 不成立的影响及验证方 |
 | --- | --- | --- |
-| Extension 的可信包身份可进入 Ops 构建 | `register_event_handler` 已支持 `package_metadata` 并由注册记录注入 Ops；Extension 的 candidate 发布接口仍未交付，当前由 JiuwenSwarm 发布适配器直接写入 EventBus | 发布适配需保证包身份来自 manifest/Plan，不从事件输入自报；EX-04 交付后替换发布入口并复核 |
+| Extension 的可信包身份可进入 Ops 构建 | `Runtime.publish` 以 manifest/Plan 生成 `PackageMetadata` 并随注册记录注入 Ops | 扩展代码无权传入包身份；复核发布入口与撤销路径 |
 | 宿主业务收尾与包资源清理可以衔接 | Events 明确不提供调用跟踪或 drain；AgentServer 业务调用等待与 Extension 包清理尚缺接入验证 | 安全停机受阻；AgentServer / Extension；在线单包卸载另行验证后开放 |
 | JiuwenSwarm 各业务流程能在预定扩展点触发事件并保留授权 | 有现有回合、UI 交互和渠道消息入口，缺 V2 事件触发与执行证据 | 可能绕过或重复执行；各业务入口 / 能力提供方 |
 | 可信会话投影和共享能力支持并发 | 有会话记录，缺投影与并发验证 | 上下文或状态可能串用；会话 / 能力方 |
@@ -1529,7 +1534,7 @@ prepared = await bus.trigger(
 
 | 主题 | 需要确定什么 | 责任与后续维护位置 | 确认前的影响 |
 | --- | --- | --- | --- |
-| 公共入口接入 | Extension 管理入口的初始化、安装、卸载、重载、查询与失败清理接口；agent-core Registry 交付后与本地面保持同形 | agent-core Events / Extension spec 维护接口；两侧接入 feature 维护门面映射 | 当前可用 `PackageManager`、`Orchestrator`、`Runtime` 实现本地门面；不把未交付的 Registry 当作现有 API |
+| 公共入口接入 | Extension 管理入口的初始化、安装、卸载、重载、查询与失败清理接口 | agent-core Events / Extension spec 维护接口；两侧接入 feature 维护门面映射 | `Registry`、九类管理事件与 candidate 发布已可用，门面直接委托；宿主不自建控制面 |
 | 来源与启动 | V2 配置键、相对路径、扫描、缺失目录、冲突、必需 / 可选包和降级 | AgentServer / V2 配置与启动规约，对齐对端来源规则 | 不假定覆盖默认来源或部分失败仍全量可用 |
 | 事件与能力 | AgentServer、WebUI、Gateway 的首版事件与 Ops 目录；业务流程中的事件触发位置、匹配字段、校验、None、namespace、能力函数绑定与缺失值 | 业务 / V2 / Events；具体事件类型由对应特性设计文档定义，已确认的接口和约束由事件与 Ops 规约维护 | 本文候选方法和类型不作为最终 SDK，不泛化工具、流式和 Harness 支持 |
 | UI界面项与 slot | 目录查询更新、支持集合、同槽位多包的排序与冲突 | WebUI / 包接入 / Web前端；UI界面项规约 | 声明形式已定；不发布无有效包的UI界面项 |
@@ -1554,6 +1559,6 @@ prepared = await bus.trigger(
 | [Events 架构](../../../../../agent-core/openjiuwen/core/events/docs/designs/events-architecture.md) | 通用事件、匹配、推进、会话、Ops、快照与退出协作 |
 | [Extension 架构](../../../../../agent-core/openjiuwen/core/extension/docs/designs/extension-architecture.md) | 包来源、独立管理事件、可信计划、归属、查询和清理 |
 
-参考冲突按文首依据优先级处理：包入口采用 `manifest.yaml`；AgentServer 启动时显式触发 `ops.build`，首次成功后保存并共享 Builder，进入每个普通 Handler 时创建独立 Ops；来源优先级保持待定；网络由 AgentServer Front、Gateway 和 WebClient 适配；独立管理操作经过对端事件；资源释放遵守使用结束和文件所有权。旧示例中的 `delivered`、`handler_error` 或简化 revision 键不直接成为产品契约，分别按第 6.3、8.1、6.2 节解释。
+参考冲突按文首依据优先级处理：包入口采用 `manifest.yaml`；AgentServer 启动时由 Registry 触发一次 `ops.build`，首次成功后保存并共享 Builder，进入每个普通 Handler 时创建独立 Ops；来源优先级保持待定；网络由 AgentServer Front、Gateway 和 WebClient 适配；独立管理操作经过对端事件；资源释放遵守使用结束和文件所有权。旧示例中的 `delivered`、`handler_error` 或简化 revision 键不直接成为产品契约，分别按第 6.3、8.1、6.2 节解释。
 
-概览维护整体说明，本架构维护模块协作；后续 spec 维护定稿契约，feature 维护具体方案与证据，开发计划维护执行进度。当前 spec 与 feature 尚未建立，开发计划见[特性开发计划](extensions-v2-development-plan.md)；不复制完整公共模型、manifest Schema 或 WebUI 帧结构，也不为填满目录创建空文档。
+概览维护整体说明，本架构维护模块协作；spec 维护定稿契约，feature 维护具体方案与证据，开发计划维护执行进度。包管理门面契约见[门面规约](../specs/S_01_extension-management-facade.md)，包管理与 WebUI 方案见[F_02](../features/F_02_control-plane.md)至[F_08](../features/F_08_frontend-render.md)，开发计划见[特性开发计划](extensions-v2-development-plan.md)；不复制完整公共模型、manifest Schema 或 WebUI 帧结构，也不为填满目录创建空文档。

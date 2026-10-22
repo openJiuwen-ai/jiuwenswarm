@@ -11,7 +11,7 @@
 - 设计依据：[设计概览](extensions-v2-overview.md)、[详细架构](extensions-v2-architecture.md)、agent-core [扩展包加载规约](../../../../../agent-core/openjiuwen/core/extension/docs/specs/S_01_package-loading.md)、agent-core [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md)。
 - 关键口径与待确认项：见第 1.2、1.3 节；未确认前，受影响的工作项不标注完成。
 - 术语与全局约束：见第 1.1 节。
-- 进度摘要：本轮尚未开工，不统计。开工后按第 4 节维护，状态、负责人、关联 PR 与进展说明只在该节登记。
+- 进度摘要：按第 4 节维护；状态、负责人、关联 PR 与进展说明只在该节登记。
 
 先读本节确认范围和完成口径，再到第 2 节了解特性与验收要求，第 3 节判断开工条件和并行机会，第 4 节确认安排、认领和进度。
 
@@ -28,8 +28,8 @@
 | 扩展包 / 包根 | 含 `manifest.yaml` 的目录；V2 安装副本位于 `<install_dir>/<package.id>/<version>/` |
 | 扩展单元 | `manifest.extensions` 的一项，指向包根下的一个 `.py` 入口文件 |
 | 生效记录 | agent-core 控制面中该包已生效的事实，含版本、包根与 generation |
-| Report | 一次管理操作的逐包结果，区分成功、失败与跳过 |
-| EX-03 / EX-04 | agent-core Extension 计划项：Registry 管理入口；把 candidate 的 Handler 发布到 EventBus |
+| Report | 一次管理操作的逐包结果，区分成功、失败与依赖未满足 |
+| EX-03 / EX-04 | agent-core Extension 已交付项：Registry 管理入口；整包 Handler 发布与撤销 |
 | 事件与 Handler | 一次处理中按 USER、BUILTIN、CORE 顺序执行的处理器链 |
 | Ops | Handler 使用平台能力的入口，按命名空间与方法组织，例如 `ops.ui.render` |
 | 扩展UI界面项 | 包向平台声明的一项界面内容，含标识、标题与允许挂载的 slot |
@@ -49,7 +49,7 @@
 | 主题 | 结论 | 影响条目 |
 | --- | --- | --- |
 | WebUI 渲染服务归属 | 迁入 `extensions_v2/webui/`，由 V2 模块提供，运行在 AgentServer 进程内 | EXTV2-06、EXTV2-07 |
-| 包管理注册表 | 先以本地门面加本地后端过渡，对外签名与 agent-core Registry 对齐 | EXTV2-03、EXTV2-04 |
+| 包管理注册表 | 门面直接委托 agent-core `Registry`；控制面与发布不在宿主重建 | EXTV2-03、EXTV2-04 |
 | 包身份 | 归属事实以 agent-core 生效记录为准；发布 Handler 时通过 `register_event_handler(..., package_metadata=...)` 写入注册记录，由 Events 在构建 Ops 时注入，不从事件输入或会话上下文读取；扩展的受限注册入口不接收包身份 | EXTV2-04 |
 | 清理帧 | 独立下行事件 `webui.render.clear`，只携带目标与原因，不复用带 `mode` 的渲染帧 | EXTV2-06 |
 | 界面项声明 | 写在 `manifest.yaml` 的 `ui` 段，字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构；`renderer.kind` 在本方案中新增 `webui-tree`，前端需支持该渲染模式；agent-core 只解析已知字段，JiuwenSwarm 从生效记录的包根读取原始 `manifest.yaml` 并完成内容校验 | EXTV2-07 |
@@ -68,10 +68,10 @@
 
 ### EXTV2-01 启动装配与包来源
 
-- **目标与范围：** AgentServer 启动时按固定顺序完成装配：准备事件总线、注册产品事件与 Handler、初始化包管理、显式触发一次 `ops.build` 并保存首次成功构建的能力目录、收集安装目录与候选来源并批量安装。同时保证与旧 `jiuwenswarm/extensions/` 机制互不扫描、互不共用配置。不包含具体事件定义、包管理门面实现与 UI 渲染。
-- **责任与契约：** `extensions_v2/assembly.py` 提供唯一入口 `install_extensions(server)`，由 `jiuwenswarm/server/worker/lifecycle.py` 在装配屏障内调用。`extensions_v2/config.py` 读取配置键 `extensions.install_dir`（缺省 `~/.jiuwenswarm/extensions_v2`），与旧机制的 `extensions.extension_dirs` 分离。装配失败不阻断运行时启动，扩展能力标记为不可用并记录原因。
+- **目标与范围：** AgentServer 启动时按固定顺序完成装配：准备事件总线、注册产品事件与 Handler、初始化包管理（由其触发一次 `ops.build`）并保存首次成功构建的能力目录、收集安装目录与候选来源并批量安装。同时保证与旧 `jiuwenswarm/extensions/` 机制互不扫描、互不共用配置。不包含具体事件定义、包管理门面实现与 UI 渲染。
+- **责任与契约：** `extensions_v2/assembly.py` 提供唯一入口 `install_extensions(server)`，由 `jiuwenswarm/server/worker/lifecycle.py` 在装配屏障内调用。`extensions_v2/config.py` 读取配置键 `extensions.install_dir`（缺省 `~/.jiuwenswarm/extension_pkgs`），与旧机制的 `extensions.extension_dirs` 分离。装配失败不阻断运行时启动，扩展能力标记为不可用并记录原因。
 - **开工硬前置：** 无。包管理门面由替身注入，`openjiuwen.core.events.ExtensionEventBus` 已可用。
-- **独立验证入口：** `tests/unit_tests/extensions_v2/test_assembly.py`、`tests/unit_tests/extensions_v2/test_coexistence.py`。
+- **独立验证入口：** `tests/unit_tests/extensions_v2/test_assembly.py`；旧机制共存扫描用例待补。
 - **独立验证条件：** `ExtensionEventBus` 与门面替身即可，不需要 Gateway 与前端。
 - **验收标准：**
   1. EXTV2-01-V-01：装配顺序为事件注册先于包管理初始化、`ops.build` 先于任何包安装，替身记录的调用序列符合该顺序。
@@ -81,14 +81,14 @@
 - **前端独立验证：** 不适用。
 - **联合交付与开放条件：** 作为 EXTV2-M1 的装配前提，不单独开放业务能力。
 - **设计索引：** [详细架构](extensions-v2-architecture.md) 第 4.1.1、4.1.2、10.3 节；`jiuwenswarm/server/worker/lifecycle.py`、`jiuwenswarm/resources/config.yaml`。
-- **特性文档：** `../features/F_01_assembly-and-source.md`，开工时建档。
+- **特性文档：** `../features/F_01_assembly-and-source.md`。
 
 ### EXTV2-02 包声明与加载控制面接入
 
 - **目标与范围：** 接入 agent-core 包加载控制面：读取并校验 `manifest.yaml`、写入安装副本、按依赖定序执行单包计划、创建候选模块、写入生效记录、判断卸载条件。JiuwenSwarm 不自建 manifest Schema、依赖排序或版本规则。不包含管理门面、总线发布与界面项。
-- **责任与契约：** `extensions_v2/management/control_plane.py` 适配 `openjiuwen.core.extension` 的 `load_manifest`、`resolve_install_set`、`ExtensionPackageManager`、`ExtensionRuntime`。错误沿用 `EXTENSION_*` 号段，对上层返回逐包结果；来源解析与声明校验以对端规约为准。
-- **开工硬前置：** EXTV2-01（安装目录与来源收集结果）。
-- **独立验证入口：** `tests/unit_tests/extensions_v2/management/test_control_plane.py`。
+- **责任与契约：** `ExtensionManager` 触发 agent-core 的 `package.install` 管理事件，解析、依赖定序、复制与加载全部由对端完成；宿主只读取 `PackageManager.list_installed()` 并补偿 prepare 失败留下的新副本。错误沿用 `EXTENSION_*` 号段，对上层返回逐包 `ActivationReport`。
+- **开工硬前置：** 安装目录解析 `extensions_v2/config.py`（EXTV2-01 的配置子项，已提供）。
+- **独立验证入口：** `tests/unit_tests/extensions_v2/management/test_registry_facade.py`。
 - **独立验证条件：** 覆盖合法、依赖、冲突与入口逃逸的样例包；不需要总线与前端。
 - **验收标准：**
   1. EXTV2-02-V-01：非法 manifest（`schemaVersion`、包标识、版本、入口逃逸、`runtime` 非 `backend`）整包拒绝，不产生安装副本。
@@ -96,50 +96,50 @@
   3. EXTV2-02-V-03：安装副本写入 `<install_dir>/<package.id>/<version>/`，已存在的版本目录拒绝覆盖；卸载判断覆盖被依赖（`PACKAGE_IN_USE`）与存在在途调用（`PACKAGE_BUSY`）两种拒绝。
 - **来源验证点与共享场景：** agent-core [包加载规约](../../../../../agent-core/openjiuwen/core/extension/docs/specs/S_01_package-loading.md) 第 3、4 节；架构第 4.1.2 节；主责 EXTV2-02，参与 EXTV2-M1。
 - **前端独立验证：** 不适用。
-- **联合交付与开放条件：** 参与 EXTV2-M1；对端 EX-03 交付后复核门面替换点。
+- **联合交付与开放条件：** 参与 EXTV2-M1；门面已对接 EX-03 交付的 `Registry`。
 - **设计索引：** agent-core `openjiuwen/core/extension/{manifest,selection,ordering,orchestrator,runtime}.py`；架构第 4.1.2 节。
-- **特性文档：** `../features/F_02_control-plane.md`，开工时建档。
+- **特性文档：** `../features/F_02_control-plane.md`。
 
 ### EXTV2-03 包管理门面与生命周期
 
-- **目标与范围：** 提供与 agent-core Registry 同形的管理门面，覆盖初始化、安装、卸载、重载与查询，返回逐包 Report；在真实 Registry 交付前由本地后端实现。包含依赖与在途判断、错误码映射与并发串行。不包含事件定义与 UI 渲染。
-- **责任与契约：** `extensions_v2/management/registry.py` 为门面，方法为 `init(event_bus)`、`install(paths)`、`uninstall(package_id)`、`reload(package_id)`、`query()`；`extensions_v2/management/local_backend.py` 为本地实现，只使用 EXTV2-02 的适配层，不暴露本地特有字段。门面签名与返回结构对齐 agent-core EX-03。
+- **目标与范围：** 提供 agent-core `Registry` 上的宿主门面，覆盖初始化、安装、卸载、重载、查询与停机，返回 agent-core 的 `ActivationReport` 与 `QueryResult`。包含安装目录配置、启动选版、失败副本补偿与停机顺序。不包含事件定义与 UI 渲染。
+- **责任与契约：** `extensions_v2/management/registry.py` 为门面，方法为 `init(event_bus, *, host_version, host_event_types, host_handlers)`、`install(paths)`、`load_installed()`、`uninstall(package_id)`、`reload(package_id)`、`query(package_id=None)`、`shutdown()`；内部只持有 `Registry`，不缓存 manifest、Handler 或生效记录。
 - **开工硬前置：** EXTV2-02。
 - **独立验证入口：** `tests/unit_tests/extensions_v2/management/test_registry_facade.py`。
-- **独立验证条件：** 本地后端与样例包；真实 Registry 到位后同一套用例切换实现。
+- **独立验证条件：** `ExtensionEventBus`、agent-core `Registry` 与样例包；不需要网络与前端。
 - **验收标准：**
-  1. EXTV2-03-V-01：五类操作返回逐包结果，成功、失败与跳过可区分，单个包失败不影响同批独立包。
+  1. EXTV2-03-V-01：五类操作返回逐包结果，成功、失败与依赖未满足可区分，单个包失败不影响同批独立包。
   2. EXTV2-03-V-02：未初始化时拒绝安装并返回可区分错误；卸载被依赖或存在在途调用时立即失败，不等待。
-  3. EXTV2-03-V-03：以真实 Registry 替换本地后端时，调用方与结果消费代码不变。
+  3. EXTV2-03-V-03：包未生效但存在副本时，卸载删除全部版本目录并返回成功；既无生效记录也无副本时返回 `EXTENSION_PACKAGE_NOT_INSTALLED`。
 - **来源验证点与共享场景：** 架构 EXTV2-A01、EXTV2-A09 与第 4.1.3、5.2.4、8.3 节；主责 EXTV2-03，参与 EXTV2-M1、M2。
 - **前端独立验证：** 不适用。
-- **联合交付与开放条件：** 参与 EXTV2-M1 与 M2；对端 EX-03 交付后完成替换验证。
+- **联合交付与开放条件：** 参与 EXTV2-M1 与 M2；门面生命周期已按 EX-03 交付实现验证。
 - **设计索引：** 架构第 4.1.3、5.2.4 节；agent-core `openjiuwen/core/extension/runtime.py`。
-- **特性文档：** `../features/F_03_registry-facade.md`，开工时建档。
+- **特性文档：** `../features/F_03_registry-facade.md`。
 
 ### EXTV2-04 包归属与 Handler 发布
 
 - **目标与范围：** 候选加载成功后集中登记整包 Handler，登记完成后向业务入口开放；限制包只能登记 `user` 与 `builtin`；发布时把包身份写入 Handler 注册记录，由 Events 在构建 Ops 时注入。包含登记失败时注销本次已登记项。不包含包加载本身。
-- **责任与契约：** `extensions_v2/management/registrar.py` 承担登记与发布。归属事实以 agent-core 生效记录为准；发布时由宿主将 `PackageMetadata` 作为 `register_event_handler` 的 `package_metadata` 参数写入注册记录，受限注册入口只收集 Handler 声明，不接收包身份。EX-04 交付后改用官方 candidate 发布入口，调用点不变。
+- **责任与契约：** agent-core `Runtime.prepare` 加载候选，`Runtime.publish` / `replace_published` / `unpublish` 完成整包登记与撤销。扩展入口只接收 `ExtensionRegistrar`，只收集 Handler 声明；`PackageMetadata` 由 `Runtime` 在登记时写入，不由扩展自报。
 - **开工硬前置：** EXTV2-03。
 - **独立验证入口：** `tests/unit_tests/extensions_v2/management/test_activation_publish.py`。
 - **独立验证条件：** `ExtensionEventBus`；样例包分别含合法登记与越级登记。
 - **验收标准：**
-  1. EXTV2-04-V-01：登记完成后新调用可见本包 Handler，登记前不可见；每次调用使用固定注册快照，重载不混用同一次调用中的新旧 Handler。
+  1. EXTV2-04-V-01：登记完成后新调用可见本包 Handler，登记前不可见；每次调用使用固定注册快照，重载失败不撤销旧 Handler。
   2. EXTV2-04-V-02：包内登记 `core` 被拒（`EXTENSION_HANDLER_LEVEL_FORBIDDEN`）；登记失败时注销本次已登记项，不残留半套 Handler。
   3. EXTV2-04-V-03：Ops 构建能读到当前 Handler 的包信息，且不采信事件输入或会话上下文中的自报字段。
 - **来源验证点与共享场景：** 架构 EXTV2-A03、EXTV2-A05 与第 4.3.1 节；主责 EXTV2-04，参与 EXTV2-M1。
 - **前端独立验证：** 不适用。
-- **联合交付与开放条件：** 参与 EXTV2-M1；对端 EX-04 交付后以官方 candidate 发布替换本地发布适配。
+- **联合交付与开放条件：** 参与 EXTV2-M1；在途计数接入后复核 `PACKAGE_BUSY` 场景。
 - **设计索引：** agent-core [包加载规约](../../../../../agent-core/openjiuwen/core/extension/docs/specs/S_01_package-loading.md) 第 4.2 节；架构第 4.3.1 节。
-- **特性文档：** `../features/F_04_activation-and-attribution.md`，开工时建档。
+- **特性文档：** `../features/F_04_activation-and-attribution.md`。
 
 ### EXTV2-05 平台事件、能力注册与业务触发
 
 - **目标与范围：** 把 `ui.render` 与全部上行 `ui.*` 的事件类型、匹配函数与 CORE Handler 归入 `extensions_v2/events/webui.py`；把 `ops.build` 的 BUILTIN Handler 与 `ops.ui.render` 归入 `extensions_v2/handler_ops/ui.py`；在真实业务链路接入触发点，验证 Handler 内和 AgentServer 业务逻辑都能主动更新界面。不包含渲染服务与上行入口实现。
 - **责任与契约：** `register_webui_events(bus)` 注册 WebUI 事件，由产品注册函数在装配时调用；`bus` 为 `openjiuwen.core.events.ExtensionEventBus`，每个事件类型有且仅有一个 CORE Handler。Handler 内通过 `ops.ui.render(...)` 发起渲染；AgentServer 业务逻辑在核对上下文和目标后直接构造并触发 `ui.render` 事件。触发方不拼装渲染树、不直接下发消息；触发失败不影响业务主流程。业务触发位置见第 1.3 节。
 - **开工硬前置：** EXTV2-01。
-- **独立验证入口：** `tests/unit_tests/extensions_v2/test_platform_events.py`、`tests/unit_tests/extensions_v2/test_business_trigger.py`。
+- **独立验证入口：** `tests/unit_tests/extensions_v2/webui/test_webui_runtime.py`；真实业务触发用例待补。
 - **独立验证条件：** `ExtensionEventBus` 即可验证注册与能力；真实触发需要可运行会话。
 - **验收标准：**
   1. EXTV2-05-V-01：注册后事件类型清单包含 `ui.render` 与全部上行事件，每个类型有且仅有一个 CORE Handler。
@@ -148,15 +148,15 @@
 - **来源验证点与共享场景：** 架构 EXTV2-A02、EXTV2-A03 与第 4.2、4.3、5.2.1 节；主责 EXTV2-05，参与 EXTV2-M1、M3。
 - **前端独立验证：** 不适用。
 - **联合交付与开放条件：** 参与 EXTV2-M1；真实业务触发范围由 EXTV2-M3 单独确认。
-- **设计索引：** 架构第 4.2、4.3、5.2.1 节；现状代码 `jiuwenswarm/server/runtime/webui/event_bus.py`、`handlers/`。
-- **特性文档：** `../features/F_05_platform-events.md`，开工时建档。
+- **设计索引：** 架构第 4.2、4.3、5.2.1 节；`extensions_v2/events/webui.py`、`extensions_v2/handler_ops/ui.py`、`extensions_v2/webui/runtime.py`。
+- **特性文档：** `../features/F_05_platform-events.md`。
 
 ### EXTV2-06 渲染服务与下行帧
 
 - **目标与范围：** 在 `extensions_v2/webui/` 提供渲染请求校验、视图绑定与 revision 分配、容量淘汰、下行发送，以及实例清理与重连重发。不包含界面项发现与上行交互入口。
 - **责任与契约：** `extensions_v2/webui/` 下的 `models`、`schema`、`constants`、`view_registry`、`transport`。下行分为 `webui.render`、独立的 `webui.render.clear` 与 `webui.render.error`；clear 帧只携带目标与原因。视图绑定由会话、slot、包与实例标识定位，revision 在实例内单调。
 - **开工硬前置：** EXTV2-05。
-- **独立验证入口：** `tests/unit_tests/extensions_v2/webui/test_render_service.py`、`tests/unit_tests/extensions_v2/webui/test_lifecycle_cleanup.py`。
+- **独立验证入口：** `tests/unit_tests/extensions_v2/webui/test_webui_runtime.py`；重连重发用例待补。
 - **独立验证条件：** 传输层使用替身；不需要真实 WebSocket 与前端。
 - **验收标准：**
   1. EXTV2-06-V-01：白名单之外的组件、props、token 或超出规模上限的树被整体拒绝，不下发部分内容。
@@ -166,15 +166,15 @@
 - **来源验证点与共享场景：** 架构 EXTV2-A06、EXTV2-A07、EXTV2-A09 与第 4.4、5.2.4、8.3 节；主责 EXTV2-06，参与 EXTV2-M1、M2。
 - **前端独立验证：** 不适用（前端解析逻辑归 EXTV2-08）。
 - **联合交付与开放条件：** 参与 EXTV2-M1、M2。
-- **设计索引：** 架构第 4.4、5.2.4、8.3 节；现状代码 `jiuwenswarm/server/runtime/webui/`。
-- **特性文档：** `../features/F_06_render-service.md`，开工时建档。
+- **设计索引：** 架构第 4.4、5.2.4、8.3 节；`extensions_v2/webui/`。
+- **特性文档：** `../features/F_06_render-service.md`。
 
 ### EXTV2-07 界面项声明、挂载与上行交互
 
 - **目标与范围：** 从生效包派生可用的扩展UI界面项与允许槽位供前端发现；挂载上报按该目录校验，未声明的包或槽位被拒，没有界面贡献时不占位；上行交互进入事件链并返回可区分回执。
 - **责任与契约：** `extensions_v2/webui/contributions.py` 从生效记录的包根读取 `manifest.yaml` 的 `ui` 段（`apiVersion` 加 `items`；字段与 `web.slot.contribution` 的 `UiEntryDeclaration` 同构，`renderer.kind` 新增 `webui-tree`），校验 `type`、`id`、`slot`、`order`、`panel`、`localeId`、`renderer` 与 `web.locale` 资源路径，产出可用界面项目录；语义校验全部在本模块完成，不依赖 agent-core 返回该段。`extensions_v2/webui/adapter.py` 是唯一上行入口，回执沿用 `event`、`accepted`、`status`、`code` 字段。
 - **开工硬前置：** EXTV2-04、EXTV2-06。
-- **独立验证入口：** `tests/unit_tests/extensions_v2/webui/test_contributions.py`、`tests/unit_tests/extensions_v2/webui/test_upstream_dispatch.py` 与页面路径。
+- **独立验证入口：** `tests/unit_tests/extensions_v2/webui/test_webui_adapter.py`、`tests/unit_tests/extensions_v2/webui/test_webui_runtime.py` 与页面路径。
 - **独立验证条件：** 至少一个含界面声明的样例包与一个纯后端包。
 - **验收标准：**
   1. EXTV2-07-V-01：只有生效包声明的界面项可以挂载；未声明、包已停用或槽位不在声明内均被拒绝。
@@ -184,15 +184,15 @@
 - **来源验证点与共享场景：** 架构 EXTV2-A06 与第 4.4.1、4.4.2、5.2.2 节；主责 EXTV2-07，参与 EXTV2-M1、M2。
 - **前端独立验证：** 槽位宿主在没有可用界面项时不渲染容器。
 - **联合交付与开放条件：** 参与 EXTV2-M1、M2；声明来源固定为生效记录的包根，不依赖 agent-core 返回 `ui` 段。
-- **设计索引：** 架构第 4.4.1、4.4.2 节；现状代码 `jiuwenswarm/server/runtime/webui/adapter.py`。
-- **特性文档：** `../features/F_07_ui-contributions.md`，开工时建档。
+- **设计索引：** 架构第 4.4.1、4.4.2 节；`extensions_v2/webui/contributions.py`、`extensions_v2/webui/adapter.py`。
+- **特性文档：** `../features/F_07_ui-contributions.md`。
 
 ### EXTV2-08 前端槽位渲染与复杂面板
 
 - **目标与范围：** 前端按界面项与渲染树渲染内容，样式只取平台 token，覆盖加载、空、成功、失败与重复操作状态；同一界面项支持多实例并存、按交互切换详情，内容由 Handler 在运行时生成。不包含服务端校验与下行发送。
 - **责任与契约：** `jiuwenswarm/channels/web/frontend/src/features/webui/`。组件、props、action 与样式 token 白名单由服务端与前端共同维护同一份契约，字段保持一致；多实例使用会话、slot、包与实例标识四元组定位。
 - **开工硬前置：** EXTV2-07。
-- **独立验证入口：** 前端用例命令与页面路径。
+- **独立验证入口：** `npm run test:webui-store`（`channels/web/frontend/tests/webuiStore.test.mjs`）与页面路径。
 - **独立验证条件：** 使用模拟帧即可验证；真实后端可选。
 - **验收标准：**
   1. EXTV2-08-V-01：加载、空、成功、失败与重复操作五种状态都有明确呈现。
@@ -202,7 +202,7 @@
 - **前端独立验证：** 本项即前端特性，使用模拟帧完成交互验收。
 - **联合交付与开放条件：** 参与 EXTV2-M1、M2。
 - **设计索引：** 架构第 4.6、6.2 节；现状代码 `jiuwenswarm/channels/web/frontend/src/features/webui/`。
-- **特性文档：** `../features/F_08_frontend-render.md`，开工时建档。
+- **特性文档：** `../features/F_08_frontend-render.md`。
 
 ## 3. 特性依赖关系与并行开发
 
@@ -269,19 +269,19 @@ flowchart TB
 
 | 条目 | 类型 / 分类 | 本轮安排 | 验收范围 | 优先级 / 批次 | 工作线 / 节点 | 计划时间 | 状态 | 负责人 | 关联 PR | 进展说明 | 最近更新 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| EXTV2-01 启动装配与包来源 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | A / M1 | 未排期 | 待开始 | 李雷 | — | — | — |
-| EXTV2-02 包声明与加载控制面接入 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | A / M1 | 未排期 | 待开始 | 李雷 | — | — | — |
-| EXTV2-03 包管理门面与生命周期 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | A / M1、M2 | 未排期 | 待开始 | 李雷 | — | — | — |
-| EXTV2-04 包归属与 Handler 发布 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | A / M1 | 未排期 | 待开始 | 李雷 | — | — | — |
-| EXTV2-05 平台事件、能力注册与业务触发 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | B / M1、M3 | 未排期 | 待开始 | 李雷 | — | — | — |
-| EXTV2-06 渲染服务与下行帧 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | B / M1、M2 | 未排期 | 待开始 | 李雷 | — | — | — |
-| EXTV2-07 界面项声明、挂载与上行交互 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | B / M1、M2 | 未排期 | 待开始 | 李雷 | — | — | — |
-| EXTV2-08 前端槽位渲染与复杂面板 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | C / M1、M2 | 未排期 | 待开始 | 李雷 | — | — | — |
+| EXTV2-01 启动装配与包来源 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | A / M1 | 未排期 | 进行中 | 李雷 | — | 装配与示例加载已实现，2 项单测通过；旧机制共存扫描待补 | 2026-10-22 |
+| EXTV2-02 包声明与安装存储 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | A / M1 | 未排期 | 待验收 | 李雷 | — | 管理事件复用与失败副本补偿已实现，单元验证通过 | 2026-10-22 |
+| EXTV2-03 包管理门面与生命周期 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | A / M1、M2 | 未排期 | 待验收 | 李雷 | — | Registry 门面与生命周期已实现，单元验证通过 | 2026-10-22 |
+| EXTV2-04 包归属与 Handler 发布 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | A / M1 | 未排期 | 待验收 | 李雷 | — | 整包发布与可信包身份已实现，7 项单测通过；在途计数待对端接线 | 2026-10-22 |
+| EXTV2-05 平台事件、能力注册与业务触发 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | B / M1、M3 | 未排期 | 进行中 | 李雷 | — | 事件注册与 ops.ui.render 已实现；真实业务触发待接入 | 2026-10-22 |
+| EXTV2-06 渲染服务与下行帧 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | B / M1、M2 | 未排期 | 进行中 | 李雷 | — | 校验、实例登记与下发已实现，6 项运行时用例通过；重连重发待补 | 2026-10-22 |
+| EXTV2-07 界面项声明、挂载与上行交互 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | B / M1、M2 | 未排期 | 待验收 | 李雷 | — | 目录、槽位校验与上行入口已实现，2 项适配用例通过 | 2026-10-22 |
+| EXTV2-08 前端槽位渲染与复杂面板 | 特性 / 本期 | 纳入 | 第 2 节范围 | 高 | C / M1、M2 | 未排期 | 进行中 | 李雷 | — | 槽位渲染、组件映射与交互回传已实现，10 项 store 用例通过；加载态待补 | 2026-10-22 |
 | EXTV2-M1 最小真实闭环 | 节点 / 本期 | 纳入 | EXTV2-04、06、07、08 的约定子范围 | 高 | A、B、C | 未排期 | 待开始 | 李雷 | — | — | — |
 | EXTV2-M2 生命周期与恢复闭环 | 节点 / 本期 | 纳入 | EXTV2-03、06、07、08 的约定子范围 | 中 | A、B、C | 未排期 | 待开始 | 李雷 | — | — | — |
 | EXTV2-M3 真实业务触发 | 节点 / 本期 | 纳入 | EXTV2-05 的触发子范围 | 中 | B | 未排期 | 待开始 | 李雷 | — | — | — |
 
-节点不计入本期特性分母。子范围或模拟验证通过只记录为对应验收 ID 的证据，不代表整项完成；跨仓替换验证（真实 Registry、包身份发布）在对端交付后单独登记。
+节点不计入本期特性分母。子范围或模拟验证通过只记录为对应验收 ID 的证据，不代表整项完成；在途计数与跨进程联调在对端交付后单独登记。
 
 ## 附录 A. 迁移与接入安排
 
@@ -289,7 +289,7 @@ flowchart TB
 
 | 现有位置 | 目标位置 | 改造动作 | 关联条目 |
 | --- | --- | --- | --- |
-| `server/runtime/webui/bootstrap.py` | `extensions_v2/assembly.py` 与 `management/registrar.py` | 拆分职责：装配编排归装配入口，事件注册归事件目录，发布与归属归发布模块；移除演示任务与 WebUI 模块内的包登记表 | EXTV2-01、04 |
+| `server/runtime/webui/bootstrap.py` | `extensions_v2/assembly.py` 与 `management/registry.py` | 拆分职责：装配编排归装配入口，事件注册归事件目录，发布与归属归 agent-core `Runtime`；移除演示任务与 WebUI 模块内的包登记表 | EXTV2-01、04 |
 | `server/runtime/webui/event_bus.py` | 删除 | 改用 agent-core `ExtensionEventBus`；只保留事件目录与注册函数 | EXTV2-05 |
 | `server/runtime/webui/handlers/` | `extensions_v2/events/webui.py` 与 `handler_ops/ui.py` | 事件定义、匹配与 CORE Handler 归事件目录；Build Handler 归能力目录，从 `ops.session_context` 读取会话 | EXTV2-05 |
 | `server/runtime/webui/` 的模型、校验、常量、实例登记与传输模块 | `extensions_v2/webui/` | 搬迁；实例登记更名视图绑定；清理改为独立 `webui.render.clear` | EXTV2-06 |
@@ -299,6 +299,6 @@ flowchart TB
 | `gateway/channel_manager/web/webui_handlers.py`、`common/schema/message.py`、`gateway/channel_manager/web/web_connect.py` | 保持现状 | 传输层只做白名单转发与负载透传，不新增职责 | — |
 | `channels/web/frontend/src/features/webui/` 与页面中的槽位宿主 | 保持现状并增强 | 增加界面项驱动的挂载、状态呈现与样式 token 落地 | EXTV2-08 |
 | `jiuwenswarm/extensions/` 旧机制 | 保持现状 | 不迁移、不改配置键、不共用安装目录 | EXTV2-01 |
-| 新增 `extensions_v2/config.py`、`management/{registry,local_backend,control_plane,registrar}.py`、`webui/contributions.py` | 新建 | 承载安装目录、门面、控制面、发布与界面项目录 | EXTV2-01 至 04、07 |
+| 新增 `extensions_v2/config.py`、`management/registry.py`、`webui/contributions.py` | 新建 | 承载安装目录、Registry 门面与界面项目录 | EXTV2-01 至 04、07 |
 
-安装目录约定：配置键 `extensions.install_dir`，缺省 `~/.jiuwenswarm/extensions_v2`，与旧机制的 `extensions.extension_dirs`（缺省 `jiuwenswarm/extensions`）区分使用。
+安装目录约定：配置键 `extensions.install_dir`，缺省 `~/.jiuwenswarm/extension_pkgs`，与旧机制的 `extensions.extension_dirs`（缺省 `jiuwenswarm/extensions`）区分使用。

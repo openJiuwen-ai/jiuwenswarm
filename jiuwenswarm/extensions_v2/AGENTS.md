@@ -12,9 +12,11 @@
   同时遵守适用的 `AGENTS.local.md`。
 - 本模块关注 V2 扩展机制的公共抽象、装配与生命周期，以及同宿主和业务扩展的职责边界。
   具体能力、代码归属与依赖方向须经设计明确；业务模块负责所属业务逻辑，不将业务实现直接耦合进扩展基础设施。
-- 当前目录已建立分类目录、[设计概览](docs/designs/extensions-v2-overview.md)及
-  [详细架构](docs/designs/extensions-v2-architecture.md)，尚无实现和正式规约。
-  特性方案及开发计划仍待按实际需要建立，不将目标设计或目录存在视为能力已落地。
+- 当前目录已建立分类目录、[设计概览](docs/designs/extensions-v2-overview.md)、
+  [详细架构](docs/designs/extensions-v2-architecture.md)、包管理与 WebUI 特性方案及
+  [门面规约](docs/specs/S_01_extension-management-facade.md)。Registry 门面、AgentServer
+  装配、WebUI 本地渲染链路及 Token Weather 示例包已实现并通过单元验证；Gateway/WebClient 跨进程联调、
+  产品化 UI 验收及在途计数接入仍待开展，不将目标设计或目录存在视为能力已全部落地。
 - 已有扩展实现在 [extensions/](../extensions/)。V2 与已有扩展的共存、复用、适配或替代关系须在设计中明确，
   不以目录名称推断兼容关系，不直接将旧机制的接口、默认行为或限制认定为 V2 契约。
 - 修改前阅读已有实现、公开导出、调用方、相关测试和模块设计。跨模块修改核对提供方与消费方，
@@ -38,9 +40,27 @@
 - [设计概览](docs/designs/extensions-v2-overview.md)：整体定位、适用范围、宿主装配、业务与 WebUI 流程、职责边界及落地条件。
 - [详细架构](docs/designs/extensions-v2-architecture.md)：公共抽象、依赖方向、装配与生命周期、状态隔离、故障责任及待确认事项。
 - [特性开发计划](docs/designs/extensions-v2-development-plan.md)：本期特性的拆分、开工条件、依赖、验收要求与进度台账。
+- [新增事件指南](docs/designs/extensions-v2-add-event-guide.md)：事件契约、CORE Handler、装配接入、触发与前端交互的最小流程。
+- [启动装配与来源](docs/features/F_01_assembly-and-source.md)：单例装配顺序、宿主注册回调、启动激活与停机。
+- [包加载与安装存储](docs/features/F_02_control-plane.md)：管理事件复用、安装副本、失败副本补偿与启动选版。
+- [包管理门面](docs/features/F_03_registry-facade.md)：Registry 门面、安装、启动加载、卸载、重载、查询与停机。
+- [发布与归属](docs/features/F_04_activation-and-attribution.md)：整包发布、可信包身份、重载与在途计数限制。
+- [平台事件](docs/features/F_05_platform-events.md)：`ui.render`、上行 `ui.*`、`ops.build` 与 `ops.ui.render`。
+- [渲染服务](docs/features/F_06_render-service.md)：校验、revision、实例登记、容量淘汰与下行帧。
+- [界面项与交互](docs/features/F_07_ui-contributions.md)：`manifest.yaml ui` 段、槽位目录与 `webui.dispatch`。
+- [前端渲染](docs/features/F_08_frontend-render.md)：槽位宿主、组件映射、store 与交互回传。
+- [门面规约](docs/specs/S_01_extension-management-facade.md)：当前对外契约、不变量、错误码与验证索引。
 
 已确认契约在主责 spec 中唯一维护，概览与架构引用该位置；具体方案与历史决策在 feature 中维护。
 区分目标方案、已确认待实现契约、已实现行为和待验证前提，设计中的示意代码不代表最终接口或已实现能力。
+
+### 代码入口
+
+- [assembly.py](assembly.py)：AgentServer 进程内唯一装配入口，负责 EventBus、管理门面、WebUI 运行时、启动加载与退出顺序。
+- [management/](management/)：包管理门面与本地后端；调用方只依赖 `ExtensionManager`。
+- [webui/](webui/)：WebUI 事件、渲染校验、实例登记、下行传输与上行适配。
+- [examples/token_weather/](examples/token_weather/)：端到端示例包，验证槽位声明、事件 Handler、运行时渲染树和
+  `ui.ready` 恢复；不作为产品内置包。
 
 ## 命名与编号
 
