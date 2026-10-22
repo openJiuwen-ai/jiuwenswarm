@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from functools import partial
 import sys
 from uuid import uuid4
 
@@ -16,7 +15,6 @@ from openjiuwen.harness.tools.cua.rails import CuaProgressRail, CuaRuntimeRail
 
 from jiuwenswarm.cua_engine.runtime import ReplRuntime, desktop_lane
 from jiuwenswarm.cua_engine.execution import LocalCodeSession
-from jiuwenswarm.cua_engine.approval import request_code_permission
 
 from ..tools.cua_macos_backend import MacOSBackend, MacOSLaunchTool, install_macos_backend
 from ..tools.cua_repl import CuaReplTool, NativeTool
@@ -41,9 +39,7 @@ class CuaExtensionRail(DeepAgentRail):
                                 pause_on_user_input=self.pause_on_user_input)
 
     def init(self, agent):
-        self.execution_backend = LocalCodeSession(
-            self.sys_operation, self.owner_id, authorize_cell=request_code_permission,
-        )
+        self.execution_backend = LocalCodeSession(self.sys_operation, self.owner_id)
         self.runtime = ReplRuntime(execution_backend=self.execution_backend)
         self.native_rail, = agent.find_rails_by_type((CuaRuntimeRail,))
         self.progress, = agent.find_rails_by_type((CuaProgressRail,))
@@ -87,11 +83,6 @@ class CuaExtensionRail(DeepAgentRail):
                 self.repl.runtime = self.runtime
                 self.repl.last_failed_code, self.repl.same_failures = None, 0
         self.session_id = session_id
-        self.execution_backend.session_id = session_id
-
-    async def before_tool_call(self, ctx):
-        if isinstance(ctx.inputs, ToolCallInputs) and ctx.inputs.tool_name == "cua_repl":
-            self.execution_backend.authorize_cell = partial(request_code_permission, context=ctx)
 
     async def after_tool_call(self, ctx):
         inputs = ctx.inputs

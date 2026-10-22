@@ -51,9 +51,6 @@ class ReplRuntime:
                 raise RuntimeError("The previous REPL was closed; recreate variables in a fresh delegation.")
             if self.execution_backend is None:
                 raise RuntimeError("No host code executor is bound. No code was sent.")
-            # Authorization rejects a cell before the worker is started or
-            # written to. A rejection must not reset an existing namespace.
-            await self.execution_backend.authorize(code, title)
             try:
                 if self.session is None:
                     prepare_native()

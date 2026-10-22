@@ -11,7 +11,6 @@ from pathlib import Path
 import secrets
 import sys
 import tempfile
-from collections.abc import Awaitable, Callable
 
 from openjiuwen.core.sys_operation import SysOperation
 from openjiuwen.core.sys_operation.base import OperationMode
@@ -32,13 +31,10 @@ class LocalCodeSession:
         owner: str,
         *,
         session_timeout: int = 3600,
-        authorize_cell: Callable[[str, str], Awaitable[None]] | None = None,
     ):
         self.operation = sys_operation
         self.owner = owner
-        self.session_id = None
         self.session_timeout = session_timeout
-        self.authorize_cell = authorize_cell
         # Referencing the original implementation also lets frozen builds
         # discover its registration without scanning source directories.
         self.code_operation: CodeOperation | None = None
@@ -50,24 +46,6 @@ class LocalCodeSession:
                 "No code was sent; a sandbox was not replaced by host execution."
             )
         return self.operation
-
-    async def authorize(self, code: str, title: str) -> None:
-        """Apply the normal code permission policy on every cell, before dispatch."""
-        self._require_local()
-        if self.session_id is None:
-            raise RuntimeError("The CUA execution session is not bound. No code was sent.")
-        if self.authorize_cell is None:
-            raise PermissionError("No host code authorization is bound. No code was sent; variables are unchanged.")
-        try:
-            await self.authorize_cell(code, title)
-        except PermissionError:
-            raise
-        except Exception as error:
-            raise PermissionError(
-                "The host code permission check failed. No code was sent; existing variables are unchanged. "
-                + str(error)
-            ) from error
-        LOGGER.info("CUA LOCAL cell authorized owner=%s session=%s title=%s", self.owner, self.session_id, title)
 
     async def start(self, environment: dict[str, str]) -> tuple[_LocalWorker, asyncio.StreamReader, asyncio.StreamWriter]:
         """Keep execute_code alive as the worker's owner, including cancellation."""
