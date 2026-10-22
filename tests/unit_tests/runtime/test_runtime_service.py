@@ -1731,10 +1731,6 @@ async def test_wrong_ask_user_answer_rejected_while_interaction_waits() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("action", ["set", "resume"])
 async def test_goal_start_waits_for_active_session_message(streaming, action) -> None:
     admission = SessionRunAdmission()
