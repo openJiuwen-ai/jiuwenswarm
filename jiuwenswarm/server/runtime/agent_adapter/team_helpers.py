@@ -2124,7 +2124,6 @@ _ROSTER_MUTATING_TOOLS = frozenset({
     "spawn_teammate",
     "spawn_human_agent",
     "spawn_bridge_agent",
-    "spawn_external_cli",
     "spawn_expert",
 })
 
