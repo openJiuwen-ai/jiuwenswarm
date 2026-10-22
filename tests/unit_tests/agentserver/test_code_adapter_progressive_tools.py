@@ -2,6 +2,8 @@
 
 """Code sessions must filter large tool catalogs from their first model call."""
 
+import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,9 +26,14 @@ CODE_TOOLS = [
     "exit_plan_mode",
 ]
 
+SINGLE_SUB_MODES = [None, "", " \t ", "normal", "plan"]
+TEAM_SUB_MODES = ["team", "TEAM", " team "]
 
-def _tool_policy_rails(monkeypatch, config, sub_mode):
-    adapter = JiuwenSwarmCodeAdapter()
+
+def _tool_policy_rails(monkeypatch, config, sub_mode, adapter=None):
+    if adapter is None:
+        adapter = JiuwenSwarmCodeAdapter()
+        adapter._session_instance_sub_mode = sub_mode
     instantiate = adapter._instantiate_rails
 
     def build_tool_policy(infos, base):
@@ -42,6 +49,117 @@ def _tool_policy_rails(monkeypatch, config, sub_mode):
     monkeypatch.setattr(adapter, "_bind_checkpointer_to_rails", lambda: None)
     rails = adapter._build_agent_rails(config, {}, sub_mode=sub_mode)
     return adapter, rails
+
+
+def _profile_adapter(monkeypatch):
+    adapter = JiuwenSwarmCodeAdapter()
+    monkeypatch.setattr(adapter, "set_checkpoint", AsyncMock())
+    monkeypatch.setattr(adapter, "_refresh_multimodal_configs", MagicMock())
+    monkeypatch.setattr(adapter, "_skip_own_instance_build", lambda: True)
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sub_mode", SINGLE_SUB_MODES + TEAM_SUB_MODES)
+async def test_facade_parameterless_rebuild_preserves_profile_and_child_create_args(monkeypatch, sub_mode):
+    from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+
+    adapter = _profile_adapter(monkeypatch)
+    base = {"react": {"tool_lazy_load": {"enabled": True, "eager_tools": ["read_file"]}}}
+    await adapter.create_instance(sub_mode=sub_mode, config_base=base)
+    facade = object.__new__(JiuWenSwarm)
+    facade._adapter_mode = "code"
+    facade._sdk_name = "test"
+    facade._session_manager = SimpleNamespace(has_active_tasks=lambda: False)
+    monkeypatch.setattr(facade, "_ensure_adapter", lambda **kwargs: adapter)
+    monkeypatch.setattr(adapter, "try_start_dreaming", AsyncMock())
+    # Covers the real no-argument call used by skill/plugin installation.
+    for _ in range(2):
+        await facade.create_instance()
+        await asyncio.sleep(0)
+        assert adapter._session_instance_sub_mode == sub_mode
+        _, rails = _tool_policy_rails(monkeypatch, base["react"], sub_mode, adapter)
+        assert sum(isinstance(rail, ProgressiveToolRail) for rail in rails) == int(sub_mode in SINGLE_SUB_MODES)
+
+    child = SimpleNamespace(create_instance=AsyncMock(side_effect=RuntimeError("captured child create")))
+    monkeypatch.setattr(adapter, "_new_session_scoped_adapter", lambda *args, **kwargs: child)
+    with pytest.raises(RuntimeError, match="captured child create"):
+        await adapter._get_or_create_session_adapter("after-rebuild")
+    assert child.create_instance.call_args.kwargs["sub_mode"] == sub_mode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sub_mode", ["normal", "plan", "team"])
+async def test_rebuild_passes_retained_profile_to_initial_rail_plan(monkeypatch, sub_mode):
+    adapter = _profile_adapter(monkeypatch)
+    await adapter.create_instance(sub_mode=sub_mode, config_base={"react": {}})
+    monkeypatch.setattr(adapter, "_skip_own_instance_build", lambda: False)
+    monkeypatch.setattr(adapter, "_create_model", lambda *args: object())
+    monkeypatch.setattr(adapter, "_get_tool_cards", AsyncMock(return_value=[]))
+    assembly = MagicMock(side_effect=RuntimeError("captured rail assembly"))
+    monkeypatch.setattr(adapter, "_build_agent_rails", assembly)
+    with pytest.raises(RuntimeError, match="captured rail assembly"):
+        await adapter.create_instance(config_base={"react": {}})
+    assert adapter._session_instance_sub_mode == sub_mode
+    assert assembly.call_args.kwargs["sub_mode"] == sub_mode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sub_mode", ["normal", "plan", "", " \t "])
+async def test_explicit_profile_overrides_saved_team_on_rebuild(monkeypatch, sub_mode):
+    adapter = _profile_adapter(monkeypatch)
+    await adapter.create_instance(sub_mode="team", config_base={"react": {}})
+    await adapter.create_instance(sub_mode=sub_mode, config_base={"react": {}})
+    assert adapter._session_instance_sub_mode == sub_mode
+    _, rails = _tool_policy_rails(monkeypatch, {"tool_lazy_load": {"enabled": True}}, sub_mode, adapter)
+    assert sum(isinstance(rail, ProgressiveToolRail) for rail in rails) == 1
+
+
+@pytest.mark.parametrize("requested_mode", ["normal", "plan"])
+def test_initial_rail_plan_uses_explicit_profile_when_saved_profile_differs(monkeypatch, requested_mode):
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._session_instance_sub_mode = "team"
+    _, rails = _tool_policy_rails(
+        monkeypatch, {"tool_lazy_load": {"enabled": True}}, requested_mode, adapter,
+    )
+    assert sum(isinstance(rail, ProgressiveToolRail) for rail in rails) == 1
+    assert adapter._session_instance_sub_mode == "team"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sub_mode", SINGLE_SUB_MODES + TEAM_SUB_MODES)
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_create_instance_records_profile_and_builds_matching_policy(
+    monkeypatch, caplog, sub_mode, enabled,
+):
+    config = {"tool_lazy_load": {"enabled": enabled, "enable_for_models": ["glm"]}}
+    adapter = JiuwenSwarmCodeAdapter()
+    monkeypatch.setattr(adapter, "set_checkpoint", AsyncMock())
+    monkeypatch.setattr(adapter, "_refresh_multimodal_configs", MagicMock())
+    # Exercise the real create-instance state setup without starting services.
+    monkeypatch.setattr(adapter, "_skip_own_instance_build", lambda: True)
+    await adapter.create_instance(mode="code", sub_mode=sub_mode, config_base={"react": config})
+    assert adapter._session_instance_sub_mode == sub_mode
+    assert adapter._instance is None
+
+    with caplog.at_level(logging.INFO):
+        adapter, rails = _tool_policy_rails(monkeypatch, config, sub_mode, adapter)
+    single = sub_mode in SINGLE_SUB_MODES
+    assert sum(isinstance(rail, ProgressiveToolRail) for rail in rails) == int(single)
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "ProgressiveToolRail mounted" in record.getMessage()
+    ]
+    if single:
+        assert adapter._progressive_tool_rail.enabled is enabled
+        assert len(messages) == 1
+        assert "[JiuwenSwarmCodeAdapter]" in messages[0]
+        assert f"mode={'progressive' if enabled else 'skill-gate-only'}" in messages[0]
+        assert f"sub_mode={'plan' if sub_mode == 'plan' else 'normal'}" in messages[0]
+    else:
+        assert adapter._progressive_tool_rail is None
+        assert messages == []
 
 
 def _initial_rail(monkeypatch, config, sub_mode="normal"):
@@ -96,13 +214,17 @@ async def test_team_profile_keeps_collaboration_and_workspace_tools_direct(monke
 
 @pytest.mark.parametrize("enabled", [None, False, True])
 @pytest.mark.parametrize("has_stale_rail", [False, True])
-def test_team_reload_plan_does_not_mount_progressive_rail(monkeypatch, enabled, has_stale_rail):
+@pytest.mark.parametrize("sub_mode", TEAM_SUB_MODES)
+def test_team_reload_plan_does_not_mount_progressive_rail(
+    monkeypatch, enabled, has_stale_rail, sub_mode,
+):
     config = (
         {"tool_lazy_load": {"enabled": enabled, "enable_for_models": ["glm"]}}
         if enabled is not None else {}
     )
     adapter = JiuwenSwarmCodeAdapter()
-    adapter._instance = SimpleNamespace(_jiuwenswarm_code_team_member=True)
+    adapter._session_instance_sub_mode = sub_mode
+    adapter._instance = SimpleNamespace()
     adapter._code_agent_rail = None
     adapter._code_plan_approval_rail = None
     old = ProgressiveToolRail(eager_tools=["read_file"]) if has_stale_rail else None
@@ -123,19 +245,21 @@ def test_team_reload_plan_does_not_mount_progressive_rail(monkeypatch, enabled, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("has_stale_rail", [False, True])
-@pytest.mark.parametrize("partial_reload", [False, True])
-async def test_team_config_reload_clears_stale_rail_and_keeps_tools_direct(
-    monkeypatch, has_stale_rail, partial_reload,
+@pytest.mark.parametrize("enabled", [None, False, True])
+@pytest.mark.parametrize("sub_mode", SINGLE_SUB_MODES + TEAM_SUB_MODES)
+async def test_config_reload_matches_profile_and_cleans_historical_team_rail(
+    monkeypatch, has_stale_rail, enabled, sub_mode,
 ):
     config = (
-        {} if partial_reload else
-        {"tool_lazy_load": {"enabled": True, "enable_for_models": ["glm"]}}
+        {} if enabled is None else
+        {"tool_lazy_load": {"enabled": enabled, "enable_for_models": ["glm"],
+                            "eager_tools": ["read_file"]}}
     )
     adapter = JiuwenSwarmCodeAdapter()
+    adapter._session_instance_sub_mode = sub_mode
     adapter._code_agent_rail = None
     adapter._code_plan_approval_rail = None
     instance = SimpleNamespace(
-        _jiuwenswarm_code_team_member=True,
         configure=MagicMock(), ensure_initialized=AsyncMock(), unregister_rail=AsyncMock(),
     )
     adapter._instance = instance
@@ -169,19 +293,34 @@ async def test_team_config_reload_clears_stale_rail_and_keeps_tools_direct(
     ):
         monkeypatch.setattr(adapter, name, AsyncMock())
 
-    # A second reload must not resurrect a rail removed by the first one.
+    single = sub_mode in SINGLE_SUB_MODES
+    # A second reload must preserve the profile, including after stale cleanup.
     for _ in range(2):
         result = await adapter.reload_agent_config({"react": config})
         assert result.applied is True
-        assert adapter._progressive_tool_rail is None
         rails = instance.configure.call_args.args[0].rails
-        assert not any(isinstance(rail, ProgressiveToolRail) for rail in rails)
-        cards = [_card(name) for name in ("read_file", "send_message", "web_fetch_webpage")]
-        ctx = SimpleNamespace(inputs=SimpleNamespace(tools=list(cards)))
-        for rail in rails:
-            await rail.before_model_call(ctx)
-        assert ctx.inputs.tools == cards
-    if old is not None:
+        policies = [rail for rail in rails if isinstance(rail, ProgressiveToolRail)]
+        if single:
+            if enabled is None:
+                assert adapter._progressive_tool_rail is old
+                assert policies == []
+                assert config == {}  # Partial reload input remains untouched.
+            else:
+                assert policies == [adapter._progressive_tool_rail]
+                assert adapter._progressive_tool_rail is not old
+                assert adapter._progressive_tool_rail.enabled is enabled
+                assert set(CODE_TOOLS) <= set(adapter._progressive_tool_rail.eager_tools)
+        else:
+            assert adapter._progressive_tool_rail is None
+            assert policies == []
+        if not single:
+            cards = [_card(name) for name in ("read_file", "send_message", "web_fetch_webpage")]
+            ctx = SimpleNamespace(inputs=SimpleNamespace(tools=list(cards)))
+            for rail in rails:
+                await rail.before_model_call(ctx)
+            assert ctx.inputs.tools == cards
+        assert adapter._session_instance_sub_mode == sub_mode
+    if old is not None and not single:
         instance.unregister_rail.assert_awaited_once_with(old)
     else:
         instance.unregister_rail.assert_not_awaited()

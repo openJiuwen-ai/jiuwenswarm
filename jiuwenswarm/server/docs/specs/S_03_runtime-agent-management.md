@@ -45,7 +45,7 @@
 8. **skilldev 流水线 11 阶段顺序固定**：init → plan → generate → desc_optimize → test_design → test_run → evaluate → improve → package → validate。pipeline.py 是编排真源，不要在 service.py 里硬改顺序。
 9. **AgentManager 单进程单默认实例**：非 enterprise 进程内至多一个裸 AgentManager（由 AgentWebSocketServer 构造），不要在其他模块私自 AgentManager()。
 10. **企业版冷加载 best-effort**：每个 `reload_*_from_gateway_db` 调用失败只记 warning，不阻断 AgentServer 启动——用户配置 PVC 缺表或缺字段不应让进程起不来。
-11. **code.normal/plan 首建与重载共享工具懒加载策略**：`interface_code._build_agent_rails` 仅在 normal/plan profile 装配 `ProgressiveToolRail`；code.team 对齐普通 team，首建和重载均不新增该 rail，重载会注销历史误挂实例，保留协作及工作区工具的直接可见性。单 agent 复用 `react.tool_lazy_load` 的开关、模型白名单及请求级 MCP allowlist；编码记忆、LSP、模式切换与计划审批工具保持 eager。模型最终可见工具仍受模式、技能门控及 `disabled_tools` 约束；其余工具通过 `tools_search` / `invoke_tool` 按需调用。普通 agent/team 的装配和重载策略不因此改变。
+11. **code.normal/plan 首建与重载共享工具懒加载策略**：首次创建的 None/空白 sub_mode 默认 normal；后续 `create_instance(sub_mode=None)` 沿用保存的 profile，并把有效 sub_mode 传入 rail 装配及后续 session 子 adapter，显式 normal/空白可切回 normal。首建按入参规范化后的 sub_mode 排队并显式传给 builder，配置热重载未传该参数时使用 `_session_instance_sub_mode`；仅 normal/plan 装配 `ProgressiveToolRail`。code.team 对齐普通 team，首建和完整/部分重载均不新增该 rail；历史误挂实例在 configure 成功后注销。单 agent 复用 `react.tool_lazy_load` 的开关、模型白名单及请求级 MCP allowlist，配置缺省重载保持既有 rail；编码记忆、LSP、模式切换与计划审批工具保持 eager，最终可见性仍受模式、技能门控及 `disabled_tools` 约束。一次 code 挂载仅记录一条带 `[JiuwenSwarmCodeAdapter]` 和规范化 sub_mode 的适配器日志。普通 agent/team 的装配、日志及重载策略不因此改变。
 
 ## 接口契约
 
