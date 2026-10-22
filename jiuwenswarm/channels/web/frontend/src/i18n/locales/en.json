@@ -451,6 +451,8 @@
       "resume": "Enable",
       "more": "More",
       "basic": "Details",
+      "back": "Back",
+      "historyExecutor": "Executor",
       "historyTitle": "Run history ({{count}})",
       "historyHeading": "Run history ({{count}})",
       "runAt": "Run time",

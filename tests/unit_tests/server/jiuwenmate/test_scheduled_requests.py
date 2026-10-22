@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from jiuwenswarm.server.jiuwenmate.execution_models import ConversationRef
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-from jiuwenswarm.server.jiuwenmate.scheduled_requests import conversation_of
+from jiuwenswarm.server.jiuwenmate.scheduled_requests import employee_conversation_id
+from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
 from test_session_scheduler import NS, Host
 
 START = datetime(2026, 10, 14, 7, 30, tzinfo=timezone.utc)
@@ -32,9 +34,16 @@ async def host(tmp_path):
         await opened.manager.aclose()
 
 
+def _chat_id(host: Host, agent_id: str = "mate_dev") -> str:
+    listed = WebConversationStore(host.sessions.db_path).list(NS, agent_id)
+    assert listed
+    return listed[0].conversation_id
+
+
 def _requests(host: Host, plan_id: str):
-    session = host.sessions.find_session(NS, "mate_dev", conversation_of(plan_id))
+    session = host.sessions.find_session(NS, "mate_dev", ConversationRef.web(_chat_id(host)))
     assert session is not None
+    assert host.sessions.find_session(NS, "mate_dev", ConversationRef.web(f"schedule:{plan_id}")) is None
     return host.sessions.session_requests(NS, session.session_id)
 
 
@@ -84,7 +93,8 @@ async def test_a_disabled_plan_does_not_backfill_occurrences_from_the_pause(host
     opened.manager.schedules.set_enabled(NS, plan.plan_id, enabled=False)
     clock.now = START + timedelta(hours=5)
     assert await opened.manager.schedules.sweep() == 0
-    assert opened.sessions.find_session(NS, "mate_dev", conversation_of(plan.plan_id)) is None
+    assert opened.sessions.find_session(NS, "mate_dev", ConversationRef.web(f"schedule:{plan.plan_id}")) is None
+    assert WebConversationStore(opened.sessions.db_path).list(NS, "mate_dev") == []
 
     resumed = opened.manager.schedules.set_enabled(NS, plan.plan_id, enabled=True)
     assert resumed.next_fire_at > clock.now
@@ -98,7 +108,7 @@ async def test_a_disabled_colleague_skips_due_plans_and_refuses_a_manual_run(hos
     clock.now = datetime(2026, 10, 14, 10, 30, tzinfo=timezone.utc)
 
     assert await opened.manager.schedules.sweep() == 0
-    assert opened.sessions.find_session(NS, "mate_dev", conversation_of(plan.plan_id)) is None
+    assert opened.sessions.find_session(NS, "mate_dev", ConversationRef.web(employee_conversation_id("mate_dev"))) is None
     assert opened.manager.schedules.list(NS, "mate_dev")[0].next_fire_at == datetime(
         2026, 10, 14, 11, 0, tzinfo=timezone.utc
     )
@@ -173,3 +183,34 @@ async def test_update_keeps_identity_history_and_uses_new_prompt(host):
     history = service.history(NS, plan.plan_id)
     assert history["runs"][0]["status"] == "failed"
     assert history["runs"][0]["description"] == "failed"
+
+
+async def test_a_due_plan_lands_in_each_colleagues_chat(host):
+    opened, clock = host
+    chats = WebConversationStore(opened.sessions.db_path)
+    chats.touch(NS, "mate_dev", "chat-dev", text="你好", now=START)
+    chats.touch(NS, "mate_other", "chat-other", text="你好", now=START)
+    service = opened.manager.schedules
+    dev = service.create(NS, "mate_dev", name="喝水", prompt="提醒喝水", cron_expr=HOURLY)
+    other = service.create(NS, "mate_other", name="起身", prompt="提醒起身", cron_expr=HOURLY)
+    assert dev.to_dict()["conversation_id"] == "chat-dev"
+    assert other.to_dict()["conversation_id"] == "chat-other"
+
+    clock.now = datetime(2026, 10, 14, 8, 30, tzinfo=timezone.utc)
+    assert await service.sweep() == 2
+
+    def texts(agent_id: str, conversation_id: str) -> list[str]:
+        session = opened.sessions.find_session(NS, agent_id, ConversationRef.web(conversation_id))
+        assert session is not None
+        states = opened.sessions.session_requests(NS, session.session_id)
+        assert states[0].record.route_snapshot is not None
+        assert states[0].record.route_snapshot.target_id == conversation_id
+        assert states[0].record.request_input.reply_target == conversation_id
+        return [state.record.request_input.text for state in states]
+
+    assert texts("mate_dev", "chat-dev") == ["提醒喝水"]
+    assert texts("mate_other", "chat-other") == ["提醒起身"]
+    assert chats.list(NS, "mate_dev")[0].updated_at == clock.now
+    assert chats.list(NS, "mate_other")[0].updated_at == clock.now
+    assert opened.sessions.find_session(NS, "mate_dev", ConversationRef.web(f"schedule:{dev.plan_id}")) is None
+    assert opened.sessions.find_session(NS, "mate_other", ConversationRef.web(f"schedule:{other.plan_id}")) is None

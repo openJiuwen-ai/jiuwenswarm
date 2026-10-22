@@ -451,6 +451,8 @@
       "resume": "启用",
       "more": "更多",
       "basic": "基本信息",
+      "back": "返回",
+      "historyExecutor": "执行人",
       "historyTitle": "运行历史（{{count}}）",
       "historyHeading": "运行历史（{{count}}）",
       "runAt": "运行时间",

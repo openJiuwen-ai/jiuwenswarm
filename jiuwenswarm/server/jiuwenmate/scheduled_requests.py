@@ -2,9 +2,9 @@
 
 A plan lives in the colleague database, not in the personal-edition cron store.
 Time arithmetic reuses the shared cron expression helper. A due trigger becomes
-one ordinary Request on the stable Session of that plan, so budget, execution
-and delivery stay on the path used by a private message. The same occurrence
-is identified by ``schedule:{plan_id}:{scheduled_for}`` and is accepted only once.
+one ordinary Request in that colleague's Web chat, so the reminder shows in the
+same window as a private message. The same occurrence is identified by
+``schedule:{plan_id}:{scheduled_for}`` and is accepted only once.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ,
 from jiuwenswarm.server.jiuwenmate.session_scheduler import SessionScheduler
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
+from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
 from openjiuwen.harness import persistent_agent as core
 
 CATCH_UP_LIMIT = 48
@@ -69,9 +70,9 @@ def occurrence_after(cron_expr: str, moment: datetime, timezone_name: str) -> da
     return _utc(upcoming)
 
 
-def conversation_of(plan_id: str) -> ConversationRef:
-    """One plan keeps one Web conversation, so later triggers share its Session."""
-    return ConversationRef.web(f"schedule:{plan_id}")
+def employee_conversation_id(agent_id: str) -> str:
+    """Chat created for reminders when the colleague has no listed Web conversation yet."""
+    return f"employee:{agent_id}"
 
 
 def source_of(plan_id: str, scheduled_for: datetime) -> str:
@@ -100,6 +101,7 @@ class ScheduledPlan:
     ends_at: datetime | None = None
     run_count: int = 0
     last_status: str = "running"
+    chat_conversation_id: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -116,7 +118,7 @@ class ScheduledPlan:
             "run_at": _stamp(self.run_at) if self.run_at else None,
             "starts_at": _stamp(self.starts_at) if self.starts_at else None,
             "ends_at": _stamp(self.ends_at) if self.ends_at else None,
-            "conversation_id": f"schedule:{self.plan_id}",
+            "conversation_id": self.chat_conversation_id or employee_conversation_id(self.agent_id),
             "run_count": self.run_count,
             "last_status": self.last_status,
             "created_at": _stamp(self.created_at),
@@ -341,6 +343,7 @@ class ScheduleService:
         self._colleagues = colleagues
         self._clock = clock
         self._store = store or ScheduleStore(sessions.db_path)
+        self._chats = WebConversationStore(sessions.db_path)
         self._ids = ids
         self._guard = threading.RLock()
         self._busy: set[tuple[str, str]] = set()
@@ -367,7 +370,31 @@ class ScheduleService:
             status = "running"
         elif runs and runs[0]["status"] == "failed":
             status = "failed"
-        return replace(plan, run_count=len(runs), last_status=status)
+        return replace(
+            plan,
+            run_count=len(runs),
+            last_status=status,
+            chat_conversation_id=self._window_id(plan.namespace_id, plan.agent_id),
+        )
+
+    def _window_id(self, namespace_id: str, agent_id: str) -> str:
+        """The colleague's current chat: a pinned one, otherwise the latest, otherwise a stable new id."""
+        listed = self._chats.list(namespace_id, agent_id)
+        if listed:
+            return listed[0].conversation_id
+        return employee_conversation_id(agent_id)
+
+    def _open_chat(self, plan: ScheduledPlan, now: datetime) -> ConversationRef:
+        """List the colleague's chat and return it so the reminder is visible in that window."""
+        conversation_id = self._window_id(plan.namespace_id, plan.agent_id)
+        self._chats.touch(
+            plan.namespace_id,
+            plan.agent_id,
+            conversation_id,
+            text=plan.name,
+            now=now,
+        )
+        return ConversationRef.web(conversation_id)
 
     def list(self, namespace_id: str, agent_id: str | None = None) -> list[ScheduledPlan]:
         if agent_id is not None:
@@ -422,7 +449,7 @@ class ScheduleService:
                            run_at=run_at, starts_at=starts_at, ends_at=ends_at)
         self._store.insert(plan)
         self._store.save(plan)
-        return plan
+        return self._describe(plan)
 
     def update(self, namespace_id: str, plan_id: str, *, name: str, prompt: str, cron_expr: str = "",
                timezone_name: str = DEFAULT_TIMEZONE, schedule_kind: str = "cron",
@@ -533,7 +560,7 @@ class ScheduleService:
 
     async def _accept(self, plan: ScheduledPlan, scheduled_for: datetime, *, manual: bool = False) -> str:
         snapshot = self._snapshots(plan.namespace_id, plan.agent_id)
-        conversation = conversation_of(plan.plan_id)
+        conversation = self._open_chat(plan, _utc(self._clock()))
         source_ref = source_of(plan.plan_id, scheduled_for)
         if manual:
             source_ref += f":manual:{uuid.uuid4().hex}"

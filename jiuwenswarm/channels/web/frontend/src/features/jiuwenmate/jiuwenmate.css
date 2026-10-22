@@ -1581,8 +1581,13 @@
   cursor: pointer;
 }
 
-.jiuwenmate-chat-sidebar-actions button:hover {
-  background: var(--jm-muted);
+.jiuwenmate-chat-sidebar-actions button:hover,
+.jiuwenmate-chat-sidebar-actions button[aria-pressed='true'] {
+  background: var(--jm-hover);
+}
+
+.jiuwenmate-chat-sidebar-actions button[aria-pressed='true'] {
+  font-weight: 600;
 }
 
 .jiuwenmate-chat-sidebar-actions button svg {
@@ -2690,8 +2695,20 @@
 }
 
 .jiuwenmate-schedule-board__summary em[data-tone='failed'] i,
-.jiuwenmate-schedule-board__status[data-tone='failed'] i {
+.jiuwenmate-schedule-board__status[data-tone='failed'] i,
+.jiuwenmate-schedule-history__status[data-tone='failed'] i {
   background: var(--jm-danger);
+}
+
+.jiuwenmate-schedule-board__summary em[data-tone='paused'] i,
+.jiuwenmate-schedule-board__status[data-tone='paused'] i,
+.jiuwenmate-schedule-history__status[data-tone='stopped'] i {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.2px #c5c5c5;
+}
+
+.jiuwenmate-schedule-history__status[data-tone='success'] i {
+  background: #2fbe6a;
 }
 
 .jiuwenmate-schedule-board__filters {
@@ -2710,7 +2727,7 @@
 
 .jiuwenmate-schedule-board__search {
   display: flex;
-  width: 220px;
+  width: 280px;
   height: 32px;
   align-items: center;
   gap: 6px;
@@ -2815,10 +2832,99 @@
   min-width: 96px;
 }
 
-.jiuwenmate-schedule-history dl {
+.jiuwenmate-schedule-history__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 18px;
+  padding: 0;
+  border: 0;
+  color: var(--jm-text-2);
+  background: none;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.jiuwenmate-schedule-history__back svg {
+  width: 16px;
+  height: 16px;
+}
+
+.jiuwenmate-schedule-history h3 {
+  margin-top: 22px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.jiuwenmate-schedule-history h3:first-of-type {
+  margin-top: 0;
+}
+
+.jiuwenmate-schedule-history__facts {
   display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: 8px 16px;
+  grid-template-columns: minmax(140px, 1fr) minmax(220px, 1.6fr) minmax(140px, 1fr);
+  gap: 22px 40px;
+  margin-top: 16px;
+}
+
+.jiuwenmate-schedule-history__facts > div {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.jiuwenmate-schedule-history__facts dt {
+  color: var(--jm-text-3);
+  font-size: 12px;
+}
+
+.jiuwenmate-schedule-history__facts dd {
+  margin: 0;
+  font-size: 13px;
+}
+
+.jiuwenmate-schedule-history__executor {
+  grid-column: 1;
+}
+
+.jiuwenmate-schedule-history__executor dd,
+.jiuwenmate-schedule-history__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.jiuwenmate-schedule-history__status i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #c8c8c8;
+}
+
+.jiuwenmate-schedule-history__table {
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+}
+
+.jiuwenmate-schedule-history th {
+  background: #f7f8fa;
+  color: var(--jm-text-3);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.jiuwenmate-schedule-history th:first-child {
+  border-top-left-radius: 8px;
+}
+
+.jiuwenmate-schedule-history th:last-child {
+  border-top-right-radius: 8px;
+}
+
+.jiuwenmate-schedule-history tbody tr:last-child td {
+  border-bottom: 0;
 }
 
 .jiuwenmate-schedule-list {

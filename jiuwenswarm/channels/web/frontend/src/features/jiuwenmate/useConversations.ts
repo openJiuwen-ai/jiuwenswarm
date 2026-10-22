@@ -100,5 +100,18 @@ export function useConversations(api: JiuwenMateChatApi, agentId: string, connec
     [api, agentId],
   );
 
-  return { conversations, loaded: loadedFor === agentId, error, upsert, rename, remove, setPinned };
+  const reload = useCallback(async () => {
+    if (!agentId) return;
+    try {
+      const listed = await api.listConversations(agentId);
+      if (agentRef.current !== agentId) return;
+      setConversations(listed);
+      setLoadedFor(agentId);
+      setError(null);
+    } catch (reason) {
+      if (agentRef.current === agentId) setError(errorMessage(reason));
+    }
+  }, [api, agentId]);
+
+  return { conversations, loaded: loadedFor === agentId, error, upsert, rename, remove, setPinned, reload };
 }
