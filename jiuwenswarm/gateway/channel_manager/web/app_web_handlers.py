@@ -2236,6 +2236,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         cli_path = str(params.get("cli_path") or "").strip()
         raw_use_builtin = params.get("use_builtin")
         use_builtin = raw_use_builtin is True or str(raw_use_builtin).strip().lower() == "true"
+        _activate_managed_external_cli_paths_if_needed()
         result = _detect_external_cli_agent(cli_agent, cli_path, use_builtin)
         await channel.send_response(ws, req_id, ok=True, payload=result)
 
