@@ -473,6 +473,16 @@ def is_tool_retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
     return get_progressive_tool_enabled(config) and get_progressive_tool_optimize(config)
 
 
+def update_progressive_tool_optimize_in_config(enabled: bool) -> None:
+    """Atomically update the top-level ``progressive_tool_optimize`` switch."""
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        data["progressive_tool_optimize"] = bool(enabled)
+        return data
+
+    update_config(mutator)
+
+
 def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict[str, str]:
     """Return the user-configured ``api_base host -> endpoint_profile`` map.
 

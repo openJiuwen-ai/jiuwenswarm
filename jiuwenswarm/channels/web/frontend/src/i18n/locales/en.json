@@ -806,7 +806,8 @@
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
-      "multiModelCollaboration": "Multi-model collaboration"
+      "multiModelCollaboration": "Multi-model collaboration",
+      "toolOptimize": "Tool retrieval optimization"
     },
     "taskAsr": {
       "dialogTitle": "Configure speech transcription model",
@@ -994,6 +995,10 @@
       "team_organization_ui_enabled": {
         "title": "Enable Team Organization",
         "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
+      },
+      "progressive_tool_optimize": {
+        "title": "Enable tool retrieval optimization",
+        "description": "When enabled, the model discovers tools on demand via the tool_search catalogue."
       },
       "team_scheduled_dispatch_enabled": {
         "title": "Enable scheduled dispatch",
