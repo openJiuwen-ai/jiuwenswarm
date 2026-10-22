@@ -334,6 +334,46 @@ async def test_vendors_fetch_models_requires_key_without_generation_preset_fallb
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 403])
+@pytest.mark.parametrize("modality", ["image", "video"])
+async def test_vendors_fetch_models_rejects_key_not_accepted_by_configured_ark_region(
+    monkeypatch, status_code, modality,
+):
+    requested = []
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = status_code
+
+    def fake_get(url, **kwargs):
+        requested.append((url, kwargs["headers"]["Authorization"]))
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-region-auth",
+        {
+            "vendor_key": "volcengine", "plan": "custom_api", "api_key": "region-key",
+            "api_base": "https://ark.cn-beijing.volces.com/api/v3", "modality": modality,
+        },
+        "sess-1",
+    )
+
+    assert requested == [("https://ark.cn-beijing.volces.com/api/v3/models", "Bearer region-key")]
+    assert channel.responses[-1]["payload"] == {
+        "models": [],
+        "source": "unavailable",
+        "reason": (
+            "Ark rejected the API key on the configured regional address "
+            f"(HTTP {status_code}); check the key and API address"
+        ),
+    }
+
+
+@pytest.mark.asyncio
 async def test_vendors_fetch_models_does_not_show_single_preset_when_ark_generation_catalog_is_empty(monkeypatch):
     monkeypatch.setattr("httpx.get", lambda *args, **kwargs: _FakeModelsResponse(["doubao-text-only"]))
     channel = FakeWebChannel()
