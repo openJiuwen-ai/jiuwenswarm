@@ -62,7 +62,7 @@ def _write_native_sandbox_state(service: SecurityConfigService, state: dict[str,
 
 
 def _check_sandbox_coverage(permissions: dict[str, Any], live: dict[str, Any]) -> None:
-    """Reject unrepresentable changes before publishing only one enforcement plane."""
+    """Protect independently managed sandbox rules and non-equivalent projections."""
     from jiuwenswarm.common.behavior_security import runtime_permission_config
     from jiuwenswarm.common.file_guard_config import project_file_guard_to_sandbox, sandbox_file_buckets
     from jiuwenswarm.common.net_guard_config import project_net_guard_to_sandbox
@@ -93,19 +93,20 @@ def _check_sandbox_coverage(permissions: dict[str, Any], live: dict[str, Any]) -
             raise ValueError(f"UNSUPPORTED_COVERAGE file: {skipped}")
         sandbox_file_buckets(files)
     if net_changed:
-        previous_network, previous_skipped = project_net_guard_to_sandbox(previous.get("net_guard") or {})
+        previous_network, _ = project_net_guard_to_sandbox(previous.get("net_guard") or {})
         previous_urls = {domain: "allow" for domain in previous_network["allow_domains"]}
         previous_urls.update({domain: "deny" for domain in previous_network["deny_domains"]})
-        if previous_skipped or (sandbox.get("urls") or {}) != previous_urls:
+        # The existing network sync has always omitted rules the sandbox cannot
+        # express. Compare only its actual projection before replacing it.
+        if (sandbox.get("urls") or {}) != previous_urls:
             raise ValueError("UNSUPPORTED_COVERAGE existing sandbox URLs are independently managed")
         guard = permissions.get("net_guard") or {}
         if guard.get("enabled") is False:
             raise ValueError("UNSUPPORTED_COVERAGE disabled NetGuard cannot replace sandbox rules")
-        if any("*" in pattern or "?" in pattern for pattern in (guard.get("urls") or {})):
+        projected, _ = project_net_guard_to_sandbox(guard)
+        projected_domains = (*projected["allow_domains"], *projected["deny_domains"])
+        if any("*" in domain or "?" in domain for domain in projected_domains):
             raise ValueError("UNSUPPORTED_COVERAGE wildcard domains differ between Rail and sandbox")
-        _, skipped = project_net_guard_to_sandbox(guard)
-        if skipped:
-            raise ValueError(f"UNSUPPORTED_COVERAGE network: {skipped}")
 
 
 def _sandbox_rule_fields_changed(before: dict[str, Any], after: dict[str, Any], module: str, field: str) -> bool:
@@ -348,6 +349,7 @@ async def dispatch_security_config_request(
     sandbox = config.get("sandbox") or {}
     file_changed = _sandbox_rule_fields_changed(before, after, "file_guard", "paths")
     net_changed = _sandbox_rule_fields_changed(before, after, "net_guard", "urls")
+    sandbox_network_skipped = []
 
     from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
         publish_host_exit_policy_from_config,
@@ -380,8 +382,10 @@ async def dispatch_security_config_request(
                 from jiuwenswarm.common.net_guard_config import sync_net_guard_to_sandbox
 
                 net_result = sync_net_guard_to_sandbox()
-                if net_result["skipped"]:
-                    raise ValueError(f"UNSUPPORTED_COVERAGE network: {net_result['skipped']}")
+                # The sandbox applies the domain projection; NetGuard still owns
+                # entries that the sandbox cannot express. Preserve the omitted
+                # entries in the apply receipt instead of failing the projection.
+                sandbox_network_skipped = net_result["skipped"]
             restarted = await restart_sandboxes({})
             if restarted.get("network_status") == "externally_managed" and net_changed:
                 targets["sandbox"] = "external_pending"
@@ -390,7 +394,7 @@ async def dispatch_security_config_request(
         except Exception as exc:
             targets["sandbox"] = f"failed: {exc}"
 
-    result = service.record_apply(revision, targets)
+    result = service.record_apply(revision, targets, sandbox_network_skipped=sandbox_network_skipped)
     return {"saved": True, "applied": result["applied"], "apply": result}
 
 

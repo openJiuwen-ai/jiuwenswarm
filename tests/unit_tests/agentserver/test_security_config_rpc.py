@@ -274,8 +274,7 @@ async def test_old_core_reports_saved_but_not_published(service, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pattern", ["https://example.org/path", "*.example.org"])
-async def test_unrepresentable_sandbox_rule_is_not_published(service, monkeypatch, pattern):
+async def test_non_equivalent_sandbox_wildcard_is_not_published(service, monkeypatch):
     manager = Manager()
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
@@ -295,11 +294,11 @@ async def test_unrepresentable_sandbox_rule_is_not_published(service, monkeypatc
     before = service.config_path.read_bytes()
     result = await dispatch_security_config_request(
         ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
-        {"module": "network", "value": {pattern: "deny"}},
+        {"module": "network", "value": {"*.example.org": "deny"}},
         agent_manager=manager, restart_sandboxes=unexpected_restart, service=service,
     )
     assert result["saved"] and not result["applied"]
-    assert "UNSUPPORTED_COVERAGE" in result["apply"]["targets"]["sandbox"]
+    assert "wildcard domains differ" in result["apply"]["targets"]["sandbox"]
     assert service.config_path.read_bytes() == before
     assert len(manager.configs) == 1
 
@@ -490,6 +489,105 @@ async def test_network_source_uses_native_sandbox_sync(service, monkeypatch):
     assert live["permissions"]["net_guard"]["urls"] == {"example.org": "deny"}
     assert live["sandbox"]["urls"] == {"example.org": "deny"}
     assert restarts
+
+
+@pytest.mark.asyncio
+async def test_unprojectable_network_rules_do_not_block_domain_updates(service, monkeypatch):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.net_guard_config import sync_net_guard_to_sandbox
+
+    builtin = {
+        "169.254.169.254": "deny",
+        "metadata.google.internal": "deny",
+        "localhost": "deny",
+        "127.0.0.1": "deny",
+    }
+    service._builtin_reader = lambda: {"permissions": {"net_guard": {"urls": builtin}}}
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+    restarts = []
+
+    async def restart(_params):
+        restarts.append(True)
+        return {"status": "applied"}
+
+    manager = Manager()
+    initialized = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=manager,
+        restart_sandboxes=restart, service=service,
+    )
+    assert initialized["applied"]
+    enabled = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_MODULE_UPDATE,
+        {"module": "network", "patch": {"enabled": True}},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert enabled["applied"]
+    seeded = sync_net_guard_to_sandbox()
+    assert seeded["urls"] == {"metadata.google.internal": "deny"}
+    assert {item["pattern"] for item in seeded["skipped"]} == {
+        "169.254.169.254", "localhost", "127.0.0.1",
+    }
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+
+    updated = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "network", "value": {
+            "example.org": "deny", "192.0.2.10": "deny",
+            "https://example.org/path?token=1": "deny",
+            "ask.example.org": "ask",
+        }},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert updated["applied"]
+    assert updated["apply"]["targets"]["sandbox"] == "applied"
+    assert {item["pattern"] for item in updated["apply"]["sandbox_network_skipped"]} == {
+        "169.254.169.254", "localhost", "127.0.0.1", "192.0.2.10",
+        "https://example.org/path?token=1", "ask.example.org",
+    }
+    live = load_yaml_round_trip(service.config_path)
+    assert live["sandbox"]["urls"] == {
+        "metadata.google.internal": "deny", "example.org": "deny",
+    }
+    assert live["permissions"]["net_guard"]["urls"]["192.0.2.10"] == "deny"
+    assert restarts == [True]
+
+    builtin["198.51.100.9"] = "deny"
+    pending = service.get_candidate()["apply"]
+    assert pending["applied"] is False
+    reapplied = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_APPLY, {"expected_revision": pending["revision"]},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert reapplied["applied"]
+    assert {item["pattern"] for item in reapplied["apply"]["sandbox_network_skipped"]} == {
+        "169.254.169.254", "localhost", "127.0.0.1", "192.0.2.10", "198.51.100.9",
+        "https://example.org/path?token=1", "ask.example.org",
+    }
+    assert load_yaml_round_trip(service.config_path)["sandbox"]["urls"] == {
+        "metadata.google.internal": "deny", "example.org": "deny",
+    }
+    assert restarts == [True, True]
+
+    del builtin["127.0.0.1"]
+    builtin["127.0.0.2"] = "deny"
+    pending = service.get_candidate()["apply"]
+    replaced = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_APPLY, {"expected_revision": pending["revision"]},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert replaced["applied"]
+    skipped_patterns = {item["pattern"] for item in replaced["apply"]["sandbox_network_skipped"]}
+    assert "127.0.0.2" in skipped_patterns and "127.0.0.1" not in skipped_patterns
+    assert load_yaml_round_trip(service.config_path)["sandbox"]["urls"] == {
+        "metadata.google.internal": "deny", "example.org": "deny",
+    }
+    assert restarts == [True, True, True]
 
 
 @pytest.mark.asyncio
