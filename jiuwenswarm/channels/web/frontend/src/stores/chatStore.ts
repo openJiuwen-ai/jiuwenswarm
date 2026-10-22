@@ -221,6 +221,7 @@ export interface ChatRuntime {
   };
   taskQueue: TaskItem[];
   queuedSessionMessages: QueuedSessionMessage[];
+  canContinueQueuedSessionMessages: boolean;
   queuedSessionMessageSnapshotGeneration: number;
   /** A mailbox item cannot return to queued after it starts. */
   settledQueuedSessionMessageIds: Set<string>;
@@ -280,6 +281,7 @@ function createEmptyRuntime(): ChatRuntime {
     },
     taskQueue: [],
     queuedSessionMessages: [],
+    canContinueQueuedSessionMessages: false,
     queuedSessionMessageSnapshotGeneration: 0,
     settledQueuedSessionMessageIds: new Set(),
     taskInputRequests: {},
@@ -382,6 +384,7 @@ interface ChatState {
   setEvolutionStatus: (sessionId: string, status: EvolutionStatusPayload | null) => void;
   setPaused: (sessionId: string, paused: boolean, task?: string | null) => void;
   setQueuePaused: (sessionId: string, paused: boolean) => void;
+  setCanContinueQueuedSessionMessages: (sessionId: string, canContinue: boolean) => void;
   upsertQueuedSessionMessage: (sessionId: string, message: QueuedSessionMessage) => void;
   removeQueuedSessionMessage: (sessionId: string, messageId: string) => void;
   beginQueuedSessionMessageSnapshot: (sessionId: string) => QueuedSessionMessageSnapshot;
@@ -1164,6 +1167,18 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, queuePaused: paused },
+        },
+      };
+    });
+  },
+
+  setCanContinueQueuedSessionMessages: (sessionId, canContinue) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, canContinueQueuedSessionMessages: canContinue },
         },
       };
     });

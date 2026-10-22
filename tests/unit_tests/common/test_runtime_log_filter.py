@@ -19,6 +19,22 @@ def _record(message, *, name="team", level=logging.ERROR, line=10, exc_info=None
 _POOL_ERROR = "QueuePool limit of size 8 overflow 0 reached, connection timed out, timeout 10.00"
 
 
+def test_stream_callback_timings_are_sampled_without_hiding_warnings(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(runtime_log_filter.time, "monotonic", lambda: now[0])
+    limiter = runtime_log_filter.RuntimeLogFilter()
+    message = "[RailChain] _framework:llm_stream_output callbacks=12 total_ms=75.0"
+    assert limiter.filter(_record(message, name="runner", level=logging.INFO))
+    for _ in range(100):
+        assert not limiter.filter(_record(message, name="runner", level=logging.INFO))
+    assert limiter.filter(_record(message, name="runner", level=logging.WARNING))
+    assert limiter.filter(_record(message, name="runner", level=logging.DEBUG))
+    now[0] = 60.0
+    summary = _record(message, name="runner", level=logging.INFO)
+    assert limiter.filter(summary)
+    assert "suppressed=100" in summary.getMessage()
+
+
 def test_first_traceback_and_periodic_counts_are_preserved(monkeypatch):
     now = [0.0]
     monkeypatch.setattr(runtime_log_filter.time, "monotonic", lambda: now[0])

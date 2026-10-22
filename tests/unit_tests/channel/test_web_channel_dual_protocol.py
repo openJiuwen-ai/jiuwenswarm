@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthResult
+from jiuwenswarm.gateway.extensions.auth.credential_authenticator import AuthResult
 from jiuwenswarm.gateway.channel_manager.web.web_channel_app import (
     _reject_disallowed_origin,
     _serve_channel_websocket,

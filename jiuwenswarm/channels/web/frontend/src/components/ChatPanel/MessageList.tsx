@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
+import { yieldBrowserTask } from '../../utils/yieldBrowserTask';
 import { LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Message, ToolExecution } from '../../types';
@@ -14,6 +15,7 @@ import { useChatStore, useSessionStore } from '../../stores';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import type { TeamLeaderIdentity } from '../../features/teamLeaderIdentity';
+import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import type { ReasoningSegment } from '../../stores/chatStore';
 import { filterPublishedHistoryBatch } from '../../features/historyPagination';
 import { projectTimelineItems, type TimelineDisplayItem } from '../../features/chatTimeline/projectTimelineItems';
@@ -47,6 +49,8 @@ interface MessageListProps {
   teamLeaderIdentityOverride?: TeamLeaderIdentity | null;
   teamGroupIdentityOverride?: AgentGroupIdentity | null;
   onForkFromMessage?: (message: Message) => Promise<void>;
+  /** The designer dock is narrow; render in normal flow so expanding content reflows. */
+  virtualized?: boolean;
 }
 
 interface ChatTimelineListProps {
@@ -150,12 +154,13 @@ function TeamGroupDisplay({
   leaderIdentity?: TeamLeaderIdentity | null;
   className?: string;
 }) {
+  const { i18n } = useTranslation();
   if (identity) {
     return (
       <AgentAvatar
         identityOverride={{
           agentTemplateId: identity.id,
-          displayName: identity.displayName,
+          displayName: resolveTeamGroupDisplayName(identity, i18n.language),
           ...(identity.avatarUrl ? { avatar: identity.avatarUrl } : {}),
         }}
         alt=""
@@ -665,10 +670,12 @@ export function ChatTimelineList({
 
   useEffect(() => {
     if (!incrementallyRenderItems || staticRenderComplete) return;
-    const timer = window.setTimeout(() => {
+    let cancelled = false;
+    void yieldBrowserTask().then(() => {
+      if (cancelled) return;
       setStaticRenderItemCount((count) => Math.min(count + 1, displayItems.length));
-    }, 0);
-    return () => window.clearTimeout(timer);
+    });
+    return () => { cancelled = true; };
   }, [incrementallyRenderItems, displayItems.length, staticRenderComplete, visibleRenderItemCount]);
 
   useEffect(() => {
@@ -932,6 +939,7 @@ export function MessageList({
   teamLeaderIdentityOverride,
   teamGroupIdentityOverride,
   onForkFromMessage,
+  virtualized,
 }: MessageListProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const conversationId = useOrganizationConversationKey(activeSessionId);
@@ -955,6 +963,7 @@ export function MessageList({
       teamLeaderIdentityOverride={teamLeaderIdentityOverride}
       teamGroupIdentityOverride={teamGroupIdentityOverride}
       onForkFromMessage={onForkFromMessage}
+      virtualized={virtualized}
     />
   );
 }

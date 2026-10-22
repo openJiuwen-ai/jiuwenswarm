@@ -18,6 +18,8 @@ import {
   webClient,
   OrgInfoPanel,
   TeamSelector,
+  resolveOrganizationTeamIdentity,
+  resolveOrganizationTeamLabel,
   useTeamOrganizationUiEnabled,
   useSettingsConfig,
   SettingsServicesProvider,
@@ -289,6 +291,207 @@ test('disabled organization panel issues no requests or subscriptions', async ()
       assert.equal(listeners.size, 0);
     },
     { enabled: false },
+  );
+});
+
+const groupIdentities = [
+  { id: 'business-planning', name: 'business-planning', displayName: '商业策划专家团', avatarUrl: 'http://localhost/business.png' },
+  { id: 'technology-insight', name: 'technology-insight', displayName: '技术洞察专家团', avatarUrl: 'http://localhost/technology.png' },
+  { id: 'software-architecture-design', name: 'software-architecture-design', displayName: '代码架构设计专家团', avatarUrl: 'http://localhost/architecture.png' },
+];
+const organizationTeams = {
+  teams: groupIdentities.map((group, index) => ({
+    team_id: index === 0 ? 'owner' : `expert-${index}`,
+    team_name: index === 0 ? 'owner' : `expert-${index}`,
+    organization_id: 'org',
+    agent_group_name: group.name,
+    is_owner: index === 0,
+    state: 'paused',
+  })),
+  default_team_id: 'owner',
+};
+
+test('restarted Teams display saved names instead of generated IDs, including legacy records', () => {
+  const modern = { team_id: 'org-expert-971a1cd81c04', agent_group_name: 'technology-insight', display_name: 'tech' };
+  const legacy = { team_id: 'org-expert-f03138fc21f4', display_name: '代码架构设计专家团' };
+  assert.equal(resolveOrganizationTeamLabel(modern, groupIdentities, '-'), '技术洞察专家团');
+  assert.equal(resolveOrganizationTeamLabel(legacy, groupIdentities, '-'), '代码架构设计专家团');
+  assert.equal(resolveOrganizationTeamIdentity(legacy, groupIdentities).id, 'software-architecture-design');
+  assert.equal(resolveOrganizationTeamLabel(legacy, [], '-'), '代码架构设计专家团');
+  assert.equal(resolveOrganizationTeamLabel({ team_id: 'summary', display_name: 'Organization Summary Team' }, [], '-'), 'Organization Summary Team');
+  assert.equal(resolveOrganizationTeamLabel({ team_id: 'unknown' }, [], '-'), 'unknown');
+  assert.equal(resolveOrganizationTeamLabel(null, [], '-'), '-');
+});
+
+test('legacy names with ambiguous catalog matches do not invent a package identity', () => {
+  const team = { team_id: 'org-expert-old', display_name: '重复名称' };
+  const groups = groupIdentities.map((group) => ({ ...group, displayName: '重复名称' }));
+  assert.equal(resolveOrganizationTeamIdentity(team, groups), null);
+  assert.equal(resolveOrganizationTeamLabel(team, groups, '-'), '重复名称');
+});
+
+test('persisted expert identity and legacy name fallback coexist after restart', () => {
+  const saved = {
+    id: 'saved-tech', name: 'technology-insight', display_name: 'Saved technology team', avatar: null,
+  };
+  const team = { agent_group_name: saved.name, team_group_identity: saved };
+  const identity = resolveOrganizationTeamIdentity(team, []);
+  assert.equal(identity.name, saved.name);
+  assert.equal(identity.displayName, saved.display_name);
+  assert.equal(resolveOrganizationTeamLabel(team, [], '-'), saved.display_name);
+  assert.equal(resolveOrganizationTeamIdentity(team, groupIdentities).id, groupIdentities[1].id);
+  assert.equal(
+    resolveOrganizationTeamIdentity({ ...team, agent_group_name: 'different-package' }, []),
+    null,
+  );
+  const legacy = { display_name: groupIdentities[2].displayName };
+  assert.equal(resolveOrganizationTeamIdentity(legacy, groupIdentities).id, groupIdentities[2].id);
+});
+
+test('historical database names render in both the organization panel and selector without a catalog', async () => {
+  const teams = organizationTeams.teams.map((team, index) => ({
+    ...team, agent_group_name: null, display_name: groupIdentities[index].displayName, state: 'configured',
+  }));
+  await withOrganizationPanel(
+    (method, params) => method === 'team.list' ? { teams, default_team_id: 'owner' }
+      : method === 'agent_groups.list' ? { agentGroups: [] }
+      : method === 'org.snapshot' ? { organization: { ...boundSnapshot.organization, owner_team_id: 'owner', leaders: teams }, tasks: [] }
+      : { team_id: params.team_id, members: [], tasks: [] },
+    async ({ root }) => {
+      for (const [index, team] of teams.entries()) {
+        assert.equal(
+          document.querySelector(`[data-testid="team-area-org-info-team-name"][data-variant="${team.team_id}"]`).textContent,
+          groupIdentities[index].displayName,
+        );
+      }
+      await act(async () => root.render(React.createElement(TeamSelector, { sessionId: 'session', groups: [] })));
+      await act(async () => document.querySelector('[data-testid="chat-panel-team-select-trigger"]').click());
+      for (const [index, team] of teams.entries()) {
+        assert.match(document.querySelector(`[data-team-id="${team.team_id}"]`).textContent, new RegExp(groupIdentities[index].displayName));
+      }
+    },
+  );
+});
+
+test('organization identity uses the selected Team package, preserving the session binding', () => {
+  seed();
+  useSessionStore.getState().setAgentGroupBinding('session', 'business-planning');
+  for (const [index, team] of organizationTeams.teams.entries()) {
+    assert.deepEqual(resolveOrganizationTeamIdentity(team, groupIdentities), {
+      id: groupIdentities[index].id,
+      name: groupIdentities[index].name,
+      displayName: groupIdentities[index].displayName,
+      avatarUrl: groupIdentities[index].avatarUrl,
+    });
+    assert.equal(useSessionStore.getState().runtimes.session.agentGroupBinding, 'business-planning');
+  }
+  assert.equal(resolveOrganizationTeamIdentity({ team_id: 'summary' }, groupIdentities), null);
+});
+
+test('Team selector shows all group logos and names, switches identity, and hides when disabled', async () => {
+  await withOrganizationPanel(
+    (method, params) => method === 'team.list' ? organizationTeams
+      : method === 'org.snapshot' ? boundSnapshot
+      : method === 'agent_groups.list' ? { agentGroups: [] }
+      : { team_id: params.team_id, members: [], tasks: [] },
+    async ({ root, calls }) => {
+      await act(async () => root.render(React.createElement(TeamSelector, {
+        sessionId: 'session', groups: groupIdentities,
+      })));
+      assert.match(document.querySelector('[data-testid="chat-panel-team-select-value"]').textContent, /商业策划专家团/);
+      assert.equal(document.querySelector('[data-testid="chat-panel-team-select-avatar"]').getAttribute('src'), 'http://localhost/business.png');
+      for (const [index, team] of organizationTeams.teams.entries()) {
+        await act(async () => document.querySelector('[data-testid="chat-panel-team-select-trigger"]').click());
+        const option = document.querySelector(`[data-team-id="${team.team_id}"]`);
+        assert.match(option.textContent, new RegExp(groupIdentities[index].displayName));
+        assert.equal(option.querySelector('img').getAttribute('src'), groupIdentities[index].avatarUrl);
+        await act(async () => option.click());
+        assert.match(document.querySelector('[data-testid="chat-panel-team-select-value"]').textContent, new RegExp(groupIdentities[index].displayName));
+        assert.equal(document.querySelector('[data-testid="chat-panel-team-select-avatar"]').getAttribute('src'), groupIdentities[index].avatarUrl);
+      }
+      await act(async () => setTeamOrganizationUiEnabled(false));
+      assert.equal(document.querySelector('[data-testid="chat-panel-team-select"]'), null);
+      const count = calls.length;
+      await act(async () => root.render(React.createElement(TeamSelector, { sessionId: 'another', groups: groupIdentities })));
+      assert.equal(calls.length, count);
+    },
+  );
+});
+
+test('uninstalled Team labels recover from server facts with empty conversation caches', async () => {
+  const restoredTeams = {
+    ...organizationTeams,
+    teams: organizationTeams.teams.map((team, index) => ({
+      ...team,
+      team_group_identity: {
+        id: groupIdentities[index].id,
+        name: groupIdentities[index].name,
+        display_name: groupIdentities[index].displayName,
+        avatar: groupIdentities[index].avatarUrl,
+      },
+    })),
+  };
+  await withOrganizationPanel(
+    (method, params) => method === 'team.list' ? restoredTeams
+      : method === 'org.snapshot' ? boundSnapshot
+      : { team_id: params.team_id, members: [], tasks: [] },
+    async ({ root }) => {
+      for (const team of organizationTeams.teams) {
+        useSessionStore.getState().removeRuntime(team.is_owner ? 'session' : `session::${team.team_id}`);
+      }
+      useSessionStore.getState().ensureRuntime('session');
+      const ownerRuntime = useSessionStore.getState().runtimes.session;
+      await act(async () => root.render(React.createElement(TeamSelector, { sessionId: 'session', groups: [] })));
+      for (const [index, team] of organizationTeams.teams.entries()) {
+        await act(async () => document.querySelector('[data-testid="chat-panel-team-select-trigger"]').click());
+        const option = document.querySelector(`[data-team-id="${team.team_id}"]`);
+        assert.match(option.textContent, new RegExp(groupIdentities[index].displayName));
+        await act(async () => option.click());
+        assert.match(document.querySelector('[data-testid="chat-panel-team-select-value"]').textContent,
+          new RegExp(groupIdentities[index].displayName));
+        if (!team.is_owner) {
+          const runtime = useSessionStore.getState().runtimes[`session::${team.team_id}`];
+          assert.equal(runtime.agentGroupBinding, null);
+          assert.equal(runtime.teamGroupIdentity.displayName, groupIdentities[index].displayName);
+        }
+      }
+      assert.equal(useSessionStore.getState().runtimes.session.teamGroupIdentity, ownerRuntime.teamGroupIdentity);
+      assert.equal(resolveOrganizationTeamIdentity({
+        ...restoredTeams.teams[1], team_group_identity: restoredTeams.teams[0].team_group_identity,
+      }, []), null);
+      assert.equal(resolveOrganizationTeamIdentity(organizationTeams.teams[1], [], groupIdentities[0]), null);
+      assert.equal(resolveOrganizationTeamIdentity({ team_id: 'summary' }, [], groupIdentities[0]), null);
+      for (const team of organizationTeams.teams) {
+        useSessionStore.getState().setTeamGroupIdentity(team.is_owner ? 'session' : `session::${team.team_id}`, null);
+      }
+    },
+  );
+});
+
+test('organization panel resolves Owner and team names from installed groups and removes statistics', async () => {
+  await withOrganizationPanel(
+    (method) => method === 'team.list' ? organizationTeams : method === 'agent_groups.list'
+      ? { agentGroups: groupIdentities.map((group) => ({
+          id: group.id, name: group.name, displayName: group.displayName, avatar: group.avatarUrl, installed: true,
+        })) }
+      : { organization: { ...boundSnapshot.organization, owner_team_id: 'owner', leaders: organizationTeams.teams },
+          tasks: [{ task_id: 'root', status: 'COMPLETED' }], stats: { total: 4, open: 0, unclaimed: 1 } },
+    async () => {
+      const organization = document.querySelector('[data-testid="team-area-org-info-organization"]');
+      assert.match(organization.textContent, /商业策划专家团/);
+      const ownerRow = document.querySelector('[data-testid="team-area-org-info-owner-team"]');
+      assert.match(ownerRow.textContent, /商业策划专家团/);
+      assert.equal(ownerRow.querySelector('[title="owner"]').textContent, '商业策划专家团');
+      for (const [index, team] of organizationTeams.teams.entries()) {
+        assert.equal(document.querySelector(`[data-testid="team-area-org-info-team-name"][data-variant="${team.team_id}"]`).textContent, groupIdentities[index].displayName);
+        assert.equal(document.querySelector(`[data-testid="team-area-org-info-team-avatar"][data-variant="${team.team_id}"]`).getAttribute('src'), groupIdentities[index].avatarUrl);
+      }
+      assert.equal(document.querySelector('[data-testid="team-area-org-info-stats"]'), null);
+      assert.equal(document.querySelector('[data-testid="team-area-org-info-stat-card"]'), null);
+      assert.ok(document.querySelector('[data-testid="team-area-org-info-task-row"]'));
+      await act(async () => setTeamOrganizationUiEnabled(false));
+      assert.equal(document.querySelector('[data-testid="team-area-org-info-panel"]'), null);
+    },
   );
 });
 

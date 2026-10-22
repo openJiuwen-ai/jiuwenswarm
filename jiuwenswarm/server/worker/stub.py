@@ -20,10 +20,12 @@ from jiuwenswarm.server.ipc.protocol import (
     KIND_REQUEST,
     KIND_REQUEST_DONE,
     KIND_SHUTDOWN,
+    KIND_SHUTDOWN_DONE,
     KIND_WIRE,
     PROTOCOL_VERSION,
 )
 from jiuwenswarm.server.ipc.server import IpcServer
+from jiuwenswarm.server.worker.diagnostics import arm_stall_dump, cancel_stall_dump
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,7 @@ async def serve_stub(
     *,
     ready_delay: float = 0.0,
     exit_on_request: bool = False,
+    code_identity_value: str | None = None,
 ) -> None:
     server = IpcServer(socket_path)
     await server.start()
@@ -45,6 +48,13 @@ async def serve_stub(
     runtime_loaded = False
     instance = uuid.uuid4().hex
     try:
+        # Match the resident service: identity belongs to this process, even
+        # when a Front reconnects after the source checkout has changed.
+        from jiuwenswarm.server.supervisor.identity import code_identity
+
+        worker_code_identity = (
+            code_identity_value if code_identity_value is not None else await asyncio.to_thread(code_identity)
+        )
         while True:
             conn = await server.accept()
             generation += 1
@@ -56,10 +66,14 @@ async def serve_stub(
                     exit_on_request=exit_on_request,
                     runtime_loaded=runtime_loaded,
                     instance=instance,
+                    code_identity_value=worker_code_identity,
                 )
             except (OSError, asyncio.IncompleteReadError):
                 runtime_loaded = True
                 continue
+            finally:
+                cancel_stall_dump()
+                await conn.close()
             runtime_loaded = True
             if closed:
                 return
@@ -75,7 +89,10 @@ async def _serve_one(
     exit_on_request: bool,
     runtime_loaded: bool,
     instance: str,
+    code_identity_value: str | None = None,
 ) -> bool:
+    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
+
     send = getattr(conn, "send")
     recv = getattr(conn, "recv")
     await send(
@@ -87,15 +104,20 @@ async def _serve_one(
             "stub": True,
             "runtime_loaded": runtime_loaded,
             "generation": generation,
+            "data_scope": data_scope(),
+            "code_identity": code_identity_value if code_identity_value is not None else code_identity(),
         }
     )
     if ready_delay > 0:
         await asyncio.sleep(ready_delay)
     await send({"kind": KIND_READINESS, "state": "AGENT_READY", "reason": ""})
+    arm_stall_dump()
     while True:
         message = await recv()
+        arm_stall_dump()
         kind = str(message.get("kind") or "")
         if kind == KIND_SHUTDOWN:
+            await send({"kind": KIND_SHUTDOWN_DONE, "ok": True})
             return True
         if kind == KIND_HEARTBEAT:
             await send({"kind": KIND_HEARTBEAT, "pid": os.getpid()})
@@ -108,13 +130,20 @@ async def _serve_one(
                 continue
             if exit_on_request:
                 raise StubExit("stub exit on request")
-            payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
-            request_id = str(payload.get("request_id") or message.get("request_id") or "")
+            payload = (
+                message.get("payload")
+                if isinstance(message.get("payload"), dict)
+                else {}
+            )
+            request_id = str(
+                payload.get("request_id") or message.get("request_id") or ""
+            )
             frame_generation = incoming if isinstance(incoming, int) else generation
             await send(
                 {
                     "kind": KIND_WIRE,
                     "request_id": request_id,
+                    "dispatch_id": message.get("dispatch_id"),
                     "generation": frame_generation,
                     "payload": {
                         "request_id": request_id,
@@ -127,6 +156,7 @@ async def _serve_one(
                 {
                     "kind": KIND_REQUEST_DONE,
                     "request_id": request_id,
+                    "dispatch_id": message.get("dispatch_id"),
                     "generation": frame_generation,
                     "ok": True,
                     "delivered": True,

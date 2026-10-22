@@ -16,6 +16,12 @@ import { RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import { useChatStore, useTeamSelectorStore } from '../../stores';
 import { useOrganizationSnapshot } from '../../features/teamOrganization/useOrganizationSnapshot';
+import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import {
+  resolveOrganizationTeamIdentity,
+  resolveOrganizationTeamLabel,
+  useOrganizationGroupCatalog,
+} from '../../features/teamOrganization/teamIdentity';
 
 interface OrgTeamHandle {
   organization_id?: string | null;
@@ -99,12 +105,12 @@ function formatUpdatedAt(value: number | string | null | undefined): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
-function InfoRow({ label, value }: { label: string; value?: string | null }) {
+function InfoRow({ label, value, title, testId }: { label: string; value?: string | null; title?: string; testId?: string }) {
   if (!value) return null;
   return (
-    <div className="flex min-w-0 items-baseline gap-2 text-xs">
+    <div className="flex min-w-0 items-baseline gap-2 text-xs" data-testid={testId}>
       <span className="shrink-0 text-text-muted">{label}</span>
-      <span className="min-w-0 break-all font-medium text-text" title={value}>
+      <span className="min-w-0 break-all font-medium text-text" title={title || value}>
         {value}
       </span>
     </div>
@@ -117,12 +123,14 @@ export interface OrgInfoPanelProps {
 
 export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
   const { t } = useTranslation();
+  const organizationUiEnabled = useTeamOrganizationUiEnabled();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const runtimeTeams = useTeamSelectorStore((s) => (activeSessionId ? s.runtimes[activeSessionId]?.teams : undefined));
 
   const { snapshot, loading, error, noTeam, refresh } = useOrganizationSnapshot<OrgSnapshotPayload>(activeSessionId);
 
   const organization = snapshot?.organization ?? null;
+  const groups = useOrganizationGroupCatalog(organizationUiEnabled && Boolean(organization));
   const tasks = snapshot?.tasks ?? [];
   const reviews = snapshot?.pending_reviews ?? [];
   const stats = snapshot?.stats ?? {};
@@ -141,7 +149,10 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
     [reviews.length, stats.open, stats.pending_reviews, stats.total, stats.unclaimed, t, tasks.length],
   );
 
-  if (!activeSessionId) return null;
+  const ownerTeam = organization?.owner_team_id ? runtimeTeamById.get(organization.owner_team_id) : undefined;
+  const ownerName = resolveOrganizationTeamLabel(ownerTeam, groups, organization?.owner_team_id || '-');
+
+  if (!organizationUiEnabled || !activeSessionId) return null;
 
   return (
     <div
@@ -208,7 +219,12 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
           <section className="mb-4 space-y-1.5" data-testid="team-area-org-info-organization">
             <InfoRow label={t('team.org.organizationId')} value={organization.organization_id} />
             <InfoRow label={t('team.org.displayName')} value={organization.display_name} />
-            <InfoRow label={t('team.org.ownerTeam')} value={organization.owner_team_id} />
+            <InfoRow
+              label={t('team.org.ownerTeam')}
+              value={ownerName}
+              title={organization.owner_team_id || undefined}
+              testId="team-area-org-info-owner-team"
+            />
             {organization.description?.trim() && (
               <div className="pt-1 text-xs leading-relaxed text-text-muted">{organization.description.trim()}</div>
             )}
@@ -220,7 +236,8 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
                   {organization.leaders!.map((team, index) => {
                     const runtimeTeam = team.team_id ? runtimeTeamById.get(team.team_id) : undefined;
                     const teamId = team.team_id || runtimeTeam?.team_name?.trim() || '-';
-                    const teamName = runtimeTeam?.agent_group_name?.trim() || teamId;
+                    const identity = resolveOrganizationTeamIdentity(runtimeTeam, groups);
+                    const teamName = resolveOrganizationTeamLabel(runtimeTeam, groups, teamId);
                     const capabilities = team.capabilities?.length
                       ? team.capabilities
                       : (runtimeTeam?.capabilities ?? []);
@@ -230,8 +247,19 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
                         className="rounded border border-border bg-secondary/40 px-2 py-1.5"
                         data-testid="team-area-org-info-team-row"
                       >
-                        <div className="truncate text-xs font-medium text-text" title={teamName}>
-                          {teamName}
+                        <div className="flex items-center gap-2 text-xs font-medium text-text" title={teamName}>
+                          {identity?.avatarUrl && (
+                            <img
+                              src={identity.avatarUrl}
+                              alt=""
+                              className="h-5 w-5 shrink-0 rounded object-contain"
+                              data-testid="team-area-org-info-team-avatar"
+                              data-variant={teamId}
+                            />
+                          )}
+                          <span className="truncate" data-testid="team-area-org-info-team-name" data-variant={teamId}>
+                            {teamName}
+                          </span>
                         </div>
                         {teamName !== teamId && (
                           <div className="truncate text-[10px] text-text-muted" title={teamId}>

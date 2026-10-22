@@ -452,6 +452,84 @@ def test_global_permission_switch_controls_team_runtime(
     assert spec["enable_permissions"] is expected
 
 
+def _organization_switch_config(experimental: dict | None, team_extra: dict) -> dict:
+    config = {
+        "models": {
+            "default": {
+                "model_client_config": {
+                    "model_name": "gpt-test",
+                    "client_provider": "openai",
+                },
+                "model_config_obj": {},
+            }
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}},
+                    **team_extra,
+                }
+            }
+        ),
+    }
+    if experimental is not None:
+        config["experimental"] = experimental
+    return config
+
+
+@pytest.mark.parametrize(
+    ("ui_enabled", "expected"),
+    [
+        (True, True),
+        (False, False),
+    ],
+)
+def test_experimental_switch_controls_team_organization_tools(ui_enabled, expected):
+    """The experimental UI switch alone decides whether the team mounts org tools."""
+    spec = load_team_spec_dict(
+        config_base=_organization_switch_config(
+            {"team_organization_ui_enabled": ui_enabled}, {}
+        )
+    )
+
+    assert spec["enable_organization"] is expected
+
+
+@pytest.mark.parametrize(
+    "experimental",
+    [None, {}, {"team_organization_ui_enabled": None}],
+)
+def test_team_organization_defaults_off_without_switch(experimental):
+    """A missing or empty experimental section must not enable org tools."""
+    spec = load_team_spec_dict(
+        config_base=_organization_switch_config(experimental, {})
+    )
+
+    assert spec["enable_organization"] is False
+
+
+@pytest.mark.parametrize(("team_value", "expected"), [(True, True), (False, False), (None, False)])
+def test_member_messaging_flag_reaches_team_spec(team_value, expected):
+    """``modes.team.jiuwen_team.enable_member_messaging`` becomes the spec field (core F_126)."""
+    team_extra = {} if team_value is None else {"enable_member_messaging": team_value}
+    spec = load_team_spec_dict(config_base=_organization_switch_config({}, team_extra))
+
+    assert spec["enable_member_messaging"] is expected
+
+
+def test_legacy_template_enable_organization_cannot_override_switch():
+    """A stale template value must not re-enable org tools once the switch is off."""
+    spec = load_team_spec_dict(
+        config_base=_organization_switch_config(
+            {"team_organization_ui_enabled": False},
+            {"enable_organization": True},
+        )
+    )
+
+    assert spec["enable_organization"] is False
+
+
 def test_load_team_spec_dict_reads_models_defaults_from_repository_config(monkeypatch):
     """Repository config template should provide the default team model from models.defaults."""
     repo_config = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "resources" / "config.yaml"
@@ -1502,3 +1580,89 @@ def test_load_team_spec_dict_preserves_arbitrary_team_top_level_fields(monkeypat
         "retry_limit": 5,
     }
     assert spec["custom_labels"] == ["a", "b"]
+
+
+def _progressive_tool_config(team_extra: dict) -> dict:
+    return {
+        "models": {
+            "default": {
+                "model_client_config": {
+                    "model_name": "gpt-progressive",
+                    "client_provider": "openai",
+                },
+                "model_config_obj": {},
+            }
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "enable_swarmflow": True,
+                    "agents": {"leader": {}},
+                    **team_extra,
+                }
+            }
+        ),
+    }
+
+
+def test_load_team_spec_dict_maps_swarmflow_progressive_tool(monkeypatch, tmp_path):
+    """config.yaml swarmflow_progressive_tool: true becomes spec progressive_tool=True."""
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_config",
+        lambda: _progressive_tool_config({"swarmflow_progressive_tool": True}),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_agent_teams_home",
+        lambda: tmp_path / ".agent_teams",
+    )
+
+    spec = load_team_spec_dict()
+
+    assert spec["progressive_tool"] is True
+    assert "swarmflow_progressive_tool" not in spec
+
+
+def test_load_team_spec_dict_progressive_tool_defaults_false(monkeypatch, tmp_path):
+    """Missing key → False; the single-agent global switch is never consulted."""
+    config = _progressive_tool_config({})
+    config["progressive_tool_enabled"] = True
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_config",
+        lambda: config,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_agent_teams_home",
+        lambda: tmp_path / ".agent_teams",
+    )
+
+    spec = load_team_spec_dict()
+
+    assert spec["progressive_tool"] is False
+
+
+@pytest.mark.parametrize(
+    "leader_config",
+    [{}, {"max_iterations": 200, "completion_timeout": 6000.0}],
+)
+def test_leader_run_budget_is_unbounded_even_when_configured(leader_config):
+    """A long-horizon leader's ReAct loop is never capped, while teammates keep their budget."""
+    spec = load_team_spec_dict(
+        config_base=_config_with_team({"leader": leader_config, "teammate": {"max_iterations": 80}}),
+    )
+    leader = spec["agents"]["leader"]
+    assert leader["max_iterations"] is None
+    assert leader["completion_timeout"] == leader_config.get("completion_timeout", 600.0)
+    teammate = spec["agents"]["teammate"]
+    assert teammate["max_iterations"] == 80
+    assert teammate["completion_timeout"] == 600.0
+
+
+def test_leader_from_top_level_reference_is_unbounded():
+    """``$agent_leader`` references resolve to an unbounded leader too."""
+    config = _config_with_team({"leader": "$agent_leader"})
+    config["agents"] = {"agent_leader": {"max_iterations": 200, "completion_timeout": 6000.0}}
+    spec = load_team_spec_dict(config_base=config)
+    assert spec["agents"]["leader"]["max_iterations"] is None
+    assert spec["agents"]["leader"]["completion_timeout"] == 6000.0
+    assert config["agents"]["agent_leader"]["max_iterations"] == 200

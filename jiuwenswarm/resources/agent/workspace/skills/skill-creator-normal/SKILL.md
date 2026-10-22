@@ -30,6 +30,20 @@ Then after the skill is done (but again, the order is flexible), you can also ru
 
 Cool? Cool.
 
+## Forced delivery rules (create and modify)
+
+These rules apply even when this skill is invoked **directly** (not only via the unified `skill-creator` entry):
+
+1. **Do not** install the finished Skill into the user's long-lived `workspace/skills/<name>` directory as the final step.
+2. Author under a **temp or draft directory** only:
+   - Prefer `<skill-name>-workspace/` (sibling draft tree) or `work_dir=$(mktemp -d)`.
+   - **Never** use `workspace/skills/<name>` (or any installed skills root) as the authoring directory.
+3. For **modifying an installed skill**: copy into a scratch/draft directory first (`cp -r` into `mktemp -d`); edit the copy; do not overwrite the installed tree and stop.
+4. Before finishing: validate → package to `.zip` / `.skill` → call **`send_file_to_user`** with the package absolute path. Telling the user a filesystem path is **not** delivery.
+5. Tell the user: on Web, click **Save** on the file card to install; you will not auto-install.
+
+Without `send_file_to_user`, the task is incomplete.
+
 ## Communicating with the user
 
 The skill creator is liable to be used by people across a wide range of familiarity with coding jargon. If you haven't heard (and how could you, it's only very recently that it started), there's a trend now where the power of Claude is inspiring plumbers to open up their terminals, parents and grandparents to google "how to install npm". On the other hand, the bulk of users are probably fairly computer-literate.
@@ -177,13 +191,27 @@ Cross-check against what you found in Reference Discovery: if the highest-instal
 
 **Write out the planned structure as a directory tree before coding anything.** Show it to the user: "Here's the structure I'm planning — [tree]. Does this look right?" This takes 30 seconds and prevents throwing away hours of work.
 
-Once the structure is agreed, create all directories and populate them in parallel with writing SKILL.md. SKILL.md should always include clear `references/` pointers with "when to read this" guidance for every bundled file, so the model using the skill knows what to load and when.
+Once the structure is agreed, create all directories and populate them in parallel with writing SKILL.md **and** `skill_display.md`. SKILL.md should always include clear `references/` pointers with "when to read this" guidance for every bundled file, so the model using the skill knows what to load and when.
 
 Based on the user interview and insights from the reference skills above, fill in these components:
 
-- **name**: Skill identifier
+- **name**: Skill identifier (kebab-case; used for Agent triggering and directory name)
 - **description**: When to trigger, what it does. This is the primary triggering mechanism - include both what the skill does AND specific contexts for when to use it. All "when to use" info goes here, not in the body. Note: currently Claude has a tendency to "undertrigger" skills -- to not use them when they'd be useful. To combat this, please make the skill descriptions a little bit "pushy". So for instance, instead of "How to build a simple fast dashboard to display internal Anthropic data.", you might write "How to build a simple fast dashboard to display internal Anthropic data. Make sure to use this skill whenever the user mentions dashboards, data visualization, internal metrics, or wants to display any kind of company data, even if they don't explicitly ask for a 'dashboard.'"
 - **compatibility**: Required tools, dependencies (optional, rarely needed)
+- **skill_display.md** (required for every new skill): UI display metadata, sibling of SKILL.md. YAML frontmatter only:
+
+```yaml
+---
+display_name_zh: <中文展示名>
+description_zh: <中文简短描述，给人看，不是 Agent 触发词>
+display_name_en: <English display name>
+description_en: <English short description for UI>
+---
+```
+
+  - `display_name_*` / `description_*` are for the client UI only.
+  - Keep SKILL.md `name` / `description` as the Agent trigger surface (English trigger wording is fine).
+  - All four fields must be non-empty before packaging.
 - **the rest of the skill :)**
 
 ### Skill Writing Guide
@@ -195,6 +223,7 @@ skill-name/
 ├── SKILL.md (required)
 │   ├── YAML frontmatter (name, description required)
 │   └── Markdown instructions + pointers to bundled resources
+├── skill_display.md (required) — UI display names/descriptions (zh + en)
 └── Bundled Resources (create proactively for non-trivial skills)
     ├── scripts/    - Executable code for deterministic/repetitive tasks
     ├── references/ - Domain knowledge, SOPs, schemas, API docs
@@ -532,15 +561,30 @@ Take `best_description` from the JSON output and update the skill's SKILL.md fro
 
 ---
 
-### Package and Present (only if `present_files` tool is available)
+### Package and deliver (required)
 
-Check whether you have access to the `present_files` tool. If you don't, skip this step. If you do, package the skill and present the .skill file to the user:
+This skill owns delivery end-to-end. Do **not** depend on being nested under `skill-creator` for packaging.
+
+1. Confirm the Skill root is still under a temp/draft directory (not `workspace/skills/<name>`).
+2. Confirm `skill_display.md` exists next to SKILL.md with non-empty
+   `display_name_zh`, `description_zh`, `display_name_en`, and `description_en`.
+   If any are missing, write or fix `skill_display.md` first — do not ship a locally authored skill without it.
+3. Run validation:
+
+```bash
+python scripts/quick_validate.py <path/to/skill-folder>
+```
+
+4. Package the directory into a **`.zip` or `.skill`** (zip format). The package must **not** contain a root-level `.archive/`. Do not treat YAML `version` as a product version identity in create/modify output packages.
 
 ```bash
 python -m scripts.package_skill <path/to/skill-folder>
 ```
 
-After packaging, direct the user to the resulting `.skill` file path so they can install it.
+5. Call tool **`send_file_to_user`** with the package's **absolute path** so the chat shows a Skill file card with **Save**.
+6. Tell the user: clicking **Save** installs into workspace; you will not auto-install.
+
+Without `send_file_to_user`, the task is incomplete — even if a `.skill` file exists on disk.
 
 If you ran Reference Discovery earlier and haven't cleaned up yet, delete borrowed references now:
 ```bash
@@ -610,7 +654,7 @@ Repeating one more time the core loop here for emphasis:
   - Create benchmark.json and run `eval-viewer/generate_review.py` to help the user review them
   - Run quantitative evals
 - Repeat until you and the user are satisfied
-- Package the final skill and return it to the user.
+- Package the final skill and deliver it with `send_file_to_user` (user clicks Save to install).
 
 Please add steps to your TodoList, if you have such a thing, to make sure you don't forget. If you're in Cowork, please specifically put "Create evals JSON and run `eval-viewer/generate_review.py` so human can review test cases" in your TodoList to make sure it happens.
 

@@ -23,6 +23,7 @@ from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     ERROR_SKILL_INVALID_PACKAGE,
     ERROR_SKILL_KNOWLEDGE_INPUT_CONFLICT,
@@ -165,12 +166,18 @@ class _AgentServerSkillWsClient:
         self._ws: Any = None
 
     async def connect(self, uri: str) -> None:
+        # 声明为一次性 RPC 连接：AgentServer 不会把它当作 server push 通道，
+        # 断开时也不会清掉 Gateway 主连接的推送通道。
+        role_headers = {CONNECTION_ROLE_HEADER: CONNECTION_ROLE_RPC}
         try:
             from websockets.legacy.client import connect as connect_fn
+
+            header_kwargs: dict[str, Any] = {"extra_headers": list(role_headers.items())}
         except ImportError:
             import websockets
 
             connect_fn = websockets.connect
+            header_kwargs = {"additional_headers": role_headers}
         self._ws = await connect_fn(
             uri,
             origin=_build_ws_origin(uri),
@@ -178,6 +185,7 @@ class _AgentServerSkillWsClient:
             ping_timeout=None,
             close_timeout=5.0,
             max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+            **header_kwargs,
         )
         # AgentServer 建连后必发 connection.ack 事件帧；须先消费掉，
         # 否则会被当作首个响应而错位。

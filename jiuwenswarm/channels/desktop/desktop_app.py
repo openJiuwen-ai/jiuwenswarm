@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import ctypes
 import http.client
@@ -164,6 +165,18 @@ DATA_URL_EXPORT_SPECS = {
         allowed_suffixes=frozenset({".json"}),
         allowed_parameters=frozenset({"charset=utf-8"}),
         file_types=("JSON Archive (*.json)",),
+    ),
+    # Trajectory panel exports (.trajectory.zip / .trajectory.jsonl). Keep in
+    # sync with BLOB_EXPORT_SPECS in electron/main.cjs (contract test).
+    "application/zip": _DataUrlExportSpec(
+        allowed_suffixes=frozenset({".zip"}),
+        allowed_parameters=frozenset(),
+        file_types=("ZIP Archive (*.zip)",),
+    ),
+    "application/jsonl": _DataUrlExportSpec(
+        allowed_suffixes=frozenset({".jsonl"}),
+        allowed_parameters=frozenset({"charset=utf-8"}),
+        file_types=("JSONL Archive (*.jsonl)",),
     ),
 }
 DesktopSaveResult = dict[str, bool]
@@ -759,6 +772,88 @@ class _WindowApi:
         }:
             return False
         return bool(webbrowser.open(url))
+
+    @staticmethod
+    def capture_oauth_token(options: dict) -> dict | None:
+        """隐式授权一键授权（对齐 Electron 的 desktop:capture-oauth-token）。
+
+        部分远程 MCP（如百度网盘）官方只提供隐式授权：授权成功 302 到厂商的
+        login_success 静态页，access_token 放在 URL # 片段里。授权直链不硬编码
+        （百度个人体验密钥会不定期变更，设计文档风险 #1），而是实时抓取厂商文档页
+        HTML 提取当前链接。随后开一个 pywebview 子窗加载授权页，轮询地址栏 URL
+        截取成功页片段里的 access_token。抓取失败、用户关窗或超时返回 None，
+        前端保持手动粘贴。
+        """
+        import html as html_module
+        import re
+        import urllib.request
+        from urllib.parse import parse_qs, urlsplit
+
+        if not isinstance(options, dict):
+            return None
+        doc_url = str(options.get("docPageUrl") or "").strip()
+        success_prefix = str(options.get("successUrlPrefix") or "").strip()
+        title = str(options.get("title") or "").strip()[:64] or "授权"
+        try:
+            doc_parts = urlsplit(doc_url)
+            success_parts = urlsplit(success_prefix)
+        except ValueError:
+            return None
+        success_origin = f"{success_parts.scheme}://{success_parts.netloc}"
+        # 校验：仅 https、不带内嵌凭据；成功页前缀必须是该 origin 下的路径。
+        if doc_parts.scheme != "https" or "@" in doc_parts.netloc:
+            return None
+        if success_parts.scheme != "https" or not success_prefix.startswith(f"{success_origin}/"):
+            return None
+
+        # 从文档页 HTML 提取当前授权直链：必须落在成功页同源、路径含 authorize。
+        try:
+            with urllib.request.urlopen(doc_url, timeout=10) as resp:  # noqa: S310 已校验 https
+                page = resp.read(2 * 1024 * 1024).decode("utf-8", errors="replace")
+        except (OSError, ValueError) as exc:
+            logger.warning("[desktop] fetch oauth doc page failed: %s", exc)
+            return None
+        pattern = re.escape(success_origin) + r"/[\w./-]*authorize\?[^\"'<>\s]+"
+        match = re.search(pattern, page)
+        if not match:
+            return None
+        authorize_url = html_module.unescape(match.group(0))
+        try:
+            auth_parts = urlsplit(authorize_url)
+        except ValueError:
+            return None
+        if f"{auth_parts.scheme}://{auth_parts.netloc}" != success_origin:
+            return None
+
+        state = {"closed": False, "token": None}
+        win = webview.create_window(title, url=authorize_url, width=480, height=720)
+        if win is None:
+            return None
+
+        def _on_closed() -> None:
+            state["closed"] = True
+
+        win.events.closed += _on_closed
+        # js_api 在独立线程执行，阻塞轮询不会卡住 UI；JS 侧 promise 一直等到返回。
+        deadline = time.monotonic() + 300
+        while not state["closed"] and time.monotonic() < deadline:
+            try:
+                current = win.get_current_url() or ""
+            except Exception:  # noqa: BLE001 窗口中途销毁
+                break
+            if current.startswith(success_prefix):
+                params = parse_qs(urlsplit(current).fragment)
+                token = (params.get("access_token") or [""])[0].strip()
+                if token:
+                    state["token"] = token
+                    break
+            time.sleep(0.3)
+        if not state["closed"]:
+            try:
+                win.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+        return {"accessToken": state["token"]} if state["token"] else None
 
     def install_update(self, installer_path: str) -> bool:
         return self._runtime.install_update(installer_path)
@@ -1836,6 +1931,21 @@ class DesktopRuntime:
             self.window.minimize()
         return False
 
+    @staticmethod
+    def _bytes_from_download_data_url(url: str) -> bytes:
+        """Decode a FileReader-style data URL used by file-preview text downloads."""
+        if not isinstance(url, str) or not url.startswith("data:"):
+            raise ValueError("not_data_url")
+        _header, separator, payload = url.partition(",")
+        if not separator:
+            raise ValueError("invalid_data_url")
+        metadata = _header[5:].split(";")
+        if metadata and metadata[-1].lower() == "base64":
+            return base64.b64decode(payload, validate=True)
+        from urllib.parse import unquote_to_bytes
+
+        return unquote_to_bytes(payload)
+
     def download_file(self, url: str, filename: str) -> DesktopSaveResult:
         """选择保存位置并在实际写入完成后返回结果。"""
         try:
@@ -1859,7 +1969,11 @@ class DesktopRuntime:
             )
             os.close(temp_fd)
             temp_path = Path(temp_name)
-            urllib.request.urlretrieve(url, temp_path)
+            # File-preview text downloads (e.g. manifest.json) pass a data: URL.
+            if isinstance(url, str) and url.startswith("data:"):
+                temp_path.write_bytes(self._bytes_from_download_data_url(url))
+            else:
+                urllib.request.urlretrieve(url, temp_path)
             os.replace(temp_path, target_path)
             temp_path = None
             logger.info("[desktop] file downloaded to: %s", target_path)
@@ -3046,12 +3160,21 @@ nohup {q_executable} >/dev/null 2>&1 &
             processes = list(self.processes.values())
 
         self._abort_all_blob_saves()
-        deadline = time.monotonic() + 8.0
+        deadline = time.monotonic() + 30.0
         logger.info("[desktop] shutting down child processes")
 
         for process in processes:
             if process.poll() is None:
                 _terminate_process_tree(process)
+
+        if processes:
+            # Front restarts detach. The desktop application owns final exit
+            # and upgrade, so it explicitly drains the resident Worker here.
+            from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
+            try:
+                asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic())))
+            except Exception:
+                logger.exception("[desktop] resident Worker final shutdown incomplete")
 
         while time.monotonic() < deadline:
             if all(process.poll() is not None for process in processes):
@@ -3474,9 +3597,32 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
         parent = psutil.Process(pid)
         # 获取所有子孙进程（在杀父进程之前先拿到完整列表）
         children = parent.children(recursive=True)
+        # Runtime lives in a separate process session on POSIX. On Windows a
+        # recursive psutil termination must similarly preserve that subtree
+        # during Front/Gateway restart; final exit uses explicit Worker IPC.
+        retained = set()
+        by_pid = {child.pid: child for child in children}
+        for child in children:
+            try:
+                argv = child.cmdline()
+                if "-m" in argv and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
+                    retained.add(child.pid)
+            except psutil.NoSuchProcess:
+                pass
+        for child in children:
+            try:
+                ancestor = child.ppid()
+                while ancestor in by_pid and ancestor not in retained:
+                    ancestor = by_pid[ancestor].ppid()
+                if ancestor in retained:
+                    retained.add(child.pid)
+            except psutil.NoSuchProcess:
+                pass
         kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
         # 先杀子孙，再杀父进程，避免子孙变成孤儿
         for child in reversed(children):
+            if child.pid in retained:
+                continue
             try:
                 kill_fn(child)
             except psutil.NoSuchProcess:

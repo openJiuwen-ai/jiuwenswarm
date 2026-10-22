@@ -26,12 +26,12 @@ from jiuwenswarm.gateway.cron.models import (
 )
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
-from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES
+from jiuwenswarm.gateway.runtime.events import TERMINAL_ERROR_EVENT_TYPES
 from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
-from jiuwenswarm.runtime.cron.cron_expr import next_cron_datetime
+from jiuwenswarm.gateway.runtime.cron.cron_expr import next_cron_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,29 @@ CRON_INTERRUPT_RESULT_TEXT = "[cron] 任务执行遇到审批中断，未返回�
 def _is_cron_interrupt_event(event_type: str) -> bool:
     """Whether *event_type* parks the turn waiting for a human answer."""
     return str(event_type or "").strip() in CRON_INTERRUPT_EVENT_TYPES
+
+
+
+async def _safe_aclose(stream_gen: Any, request_id: str = "") -> None:
+    """Best-effort close of a stream generator; log failures instead of swallowing them.
+
+    ``aclose()`` can raise when generator cleanup or the underlying connection fails.
+    Cron jobs must still finish, but silent ``except Exception: pass`` leaves no trail
+    when sessions linger or resources leak.
+    """
+    if stream_gen is None:
+        return
+    closer = getattr(stream_gen, "aclose", None)
+    if closer is None:
+        return
+    try:
+        await closer()
+    except Exception:  # noqa: BLE001 — best-effort cleanup
+        logger.warning(
+            "[Cron] stream_gen.aclose failed request_id=%s",
+            request_id,
+            exc_info=True,
+        )
 
 
 def _now_utc_ts() -> float:
@@ -789,11 +812,13 @@ class CronSchedulerService:
         self._hiding_projects.discard(project_id)
 
     async def project_execution_allowed(self, project_id: str | None, user_id: str | None = None) -> bool:
+        if not project_id or project_id in {"default", "default_code"}:
+            return True
+        # 默认项目没有可恢复的生命周期资源,不必为它做文件锁 + 读盘的属主
+        # 登记;真实项目仍在准入查询前登记,保证重启后能路由回属主。
         self.remember_lifecycle_owner(user_id)
         if project_id in self._hiding_projects:
             return False
-        if not project_id or project_id in {"default", "default_code"}:
-            return True
         from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
         revision = self._project_admission_revisions.get(project_id, 0)
         _t0 = time.monotonic()
@@ -1474,7 +1499,7 @@ class CronSchedulerService:
                 # Phase 4：project_id → project_dir 归属解析不在 Gateway 本地项目表执行。
                 # 目录分离后 Gateway 反查会得到空值或错误归属；改为只传 project_id，
                 # 由目标 AgentServer 在其注入目录内按 project_id 解析 project_dir
-                # （resolve_session_project_binding 规则2：仅传 project_id → 自动补齐）。
+                # （server 侧 resolve_session_project_binding 规则2：仅传 project_id → 自动补齐）。
                 # 取消路径仍保存 Runtime agent cache 所需的 work_mode；project_dir
                 # 由 AgentServer 依据 project_id/session 解析，Gateway 不跨目录反查。
                 state.exec_work_mode = job.work_mode or DEFAULT_WEB_WORK_MODE
@@ -1577,6 +1602,7 @@ class CronSchedulerService:
                         mode=mode,
                         timeout_seconds=timeout_seconds,
                     )
+                    stream_completed = ok
                 else:
                     timeout_seconds = resolve_cron_job_timeout_seconds(job)
                     # Some model adapters acknowledge a unary request with an
@@ -1586,16 +1612,13 @@ class CronSchedulerService:
                     # result.  Keep normal user chats unchanged; only cron
                     # execution uses the stream completion signal.
                     envelope.is_stream = True
-                    text, ok = await self._run_stream_cron_job(
+                    text, ok, stream_completed = await self._run_stream_cron_job(
                         envelope=envelope,
                         timeout_seconds=timeout_seconds,
                         state=state,
                     )
-                # 仅当 agent 请求成功时才把执行会话记为 last_session_id：
-                # last_session_id 表示『最近一次成功执行的会话』，用于后续续跑
-                # （老会话的 chat_final 是已推送的结果）。请求失败/超时不更新，
-                # 避免把一次失败的执行会话误当作可续跑的最近成功会话。
-                if ok:
+                # #4980：回写与文本产出解耦；失败、超时或中断不覆盖成功会话。
+                if stream_completed:
                     await self._mark_last_session_ready(job, exec_session_id)
                 state.result_text = text
                 state.status = "succeeded" if ok else "failed"
@@ -1835,17 +1858,20 @@ class CronSchedulerService:
         envelope: Any,
         timeout_seconds: float,
         state: CronRunState,
-    ) -> tuple[str, bool]:
-        """Run a single-agent cron turn until its terminal stream result."""
+    ) -> tuple[str, bool, bool]:
+        """Return ``(text, ok, completed)``; completion does not require text."""
         stream_gen = self._agent_client.send_request_stream(envelope)
         interrupted = False
 
-        async def _consume() -> tuple[str, bool]:
+        async def _consume() -> tuple[str, bool, bool]:
             nonlocal interrupted
             result_text = ""
             error_text = ""
+            saw_complete = False
             try:
                 async for chunk in stream_gen:
+                    # Terminal markers can have no payload; EOF alone is insufficient.
+                    saw_complete = saw_complete or bool(chunk.is_complete)
                     payload = chunk.payload if isinstance(chunk.payload, dict) else None
                     if not payload:
                         continue
@@ -1853,6 +1879,8 @@ class CronSchedulerService:
                     text = _extract_text_from_stream_payload(payload)
                     if event_type == "chat.error":
                         error_text = text or "任务执行失败"
+                    elif event_type in TERMINAL_ERROR_EVENT_TYPES or (not event_type and "error" in payload):
+                        error_text = str(payload.get("error") or payload.get("message") or "").strip() or "任务执行失败"
                     elif text:
                         result_text = text
                     if _is_cron_interrupt_event(event_type):
@@ -1861,10 +1889,9 @@ class CronSchedulerService:
                         interrupted = True
                         break
             finally:
-                try:
-                    await stream_gen.aclose()
-                except Exception:
-                    pass
+                await _safe_aclose(
+                    stream_gen, getattr(envelope, "request_id", "")
+                )
 
             if interrupted:
                 logger.warning(
@@ -1872,12 +1899,15 @@ class CronSchedulerService:
                     "request_id=%s",
                     getattr(envelope, "request_id", ""),
                 )
-                return CRON_INTERRUPT_RESULT_TEXT, False
+                return CRON_INTERRUPT_RESULT_TEXT, False, False
             if error_text:
-                return error_text, False
+                return error_text, False, False
+            if not saw_complete:
+                return "[cron] 任务执行流提前结束，未收到完成信号", False, False
             if result_text:
-                return result_text, True
-            return "[cron] 任务执行完成但未返回结果内容", False
+                return result_text, True, True
+            # #4980：无文本完成也回写，保留原有无结果状态和推送文案。
+            return "[cron] 任务执行完成但未返回结果内容", False, True
 
         try:
             result = await asyncio.wait_for(_consume(), timeout=timeout_seconds)
@@ -1894,7 +1924,7 @@ class CronSchedulerService:
                 getattr(envelope, "request_id", ""),
             )
             await self._cancel_agent_session(state, reason="timeout")
-            return f"[cron] 任务执行超时（>{timeout_min}min）", False
+            return f"[cron] 任务执行超时（>{timeout_min}min）", False, False
 
     async def _run_team_stream_job(
         self,
@@ -2005,10 +2035,9 @@ class CronSchedulerService:
                         consume_meta["ended_early"] = not chunk.is_complete
                         break
             finally:
-                try:
-                    await stream_gen.aclose()
-                except Exception:
-                    pass
+                await _safe_aclose(
+                    stream_gen, getattr(envelope, "request_id", "")
+                )
 
             if consume_meta.get("interrupted"):
                 # 中断意味着本轮已停在等人回答的点上，leader/workflow 的部分输出
@@ -2055,10 +2084,9 @@ class CronSchedulerService:
                 timeout_seconds,
                 getattr(envelope, "request_id", ""),
             )
-            try:
-                await stream_gen.aclose()
-            except Exception:
-                pass
+            await _safe_aclose(
+                stream_gen, getattr(envelope, "request_id", "")
+            )
             await self._cancel_cron_team_agent_session(
                 envelope=envelope,
                 exec_session_id=exec_session_id,
@@ -2077,10 +2105,9 @@ class CronSchedulerService:
                 getattr(envelope, "request_id", ""),
                 exc_info=True,
             )
-            try:
-                await stream_gen.aclose()
-            except Exception:
-                pass
+            await _safe_aclose(
+                stream_gen, getattr(envelope, "request_id", "")
+            )
             await self._cancel_cron_team_agent_session(
                 envelope=envelope,
                 exec_session_id=exec_session_id,

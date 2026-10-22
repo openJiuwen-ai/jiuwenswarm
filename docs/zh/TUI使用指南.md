@@ -526,6 +526,7 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
   - **Hook 详情卡片**：每个 hook 按 Type、Command/Prompt、Timeout、Shell、Status 展示。
 - 无配置时：显示 `No hooks configured.`，提示通过 `/config edit` 编辑配置。
 - Hooks 概念：
+  - 用户配置的工具 hooks 也适用于子 Agent 和 swarm 成员的工具调用。此时 hook 输入包含子 Agent 的 `session_id` 和 `subagent_type`（未命名的 swarm 成员使用 `"swarm_member"`）。
   - **17 种触发事件**：Agent Rail 层（`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop`、`PermissionRequest`、`PermissionDenied`、`SubagentStart`、`SubagentStop`、`BeforeModelCall`、`AfterModelCall`）和 Gateway 层（`UserPromptSubmit`、`SessionStart`、`SessionEnd`、`Notification`、`ConfigChange`、`InstructionsLoaded`、`Setup`）。
   - **2 种 Hook 类型**：`command`（执行 shell 命令，退出码 0 = 成功、2 = 阻断）和 `prompt`（LLM 审查，响应 JSON `decision: "block"` 阻断）。
   - **阻断行为**：PreToolUse 阻断会跳过该工具及同批尚未执行的工具（包括审批恢复后的调用），将原因保留在工具消息并作为最终响应返回，结束当前 Agent 执行及任务循环，不再自动重试。Goal 轮次（包括其审批恢复）被阻断时，会将原 Goal 标记为 `blocked` 并清除其排队的续跑任务，需解决 Hook 限制后显式恢复；用户可发起新的请求。

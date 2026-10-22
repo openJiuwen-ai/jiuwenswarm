@@ -53,8 +53,6 @@ import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
-import { isEnterprise } from '../../edition';
-import { fileDownloadHead, prepareFileDownload } from '../../services/fileDownload';
 import skillPackageIcon from '../../assets/skill.svg';
 import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
@@ -1080,14 +1078,14 @@ function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
-      fileDownloadHead(file.download_url)
+      fetch(file.download_url, { method: 'HEAD' })
         .then((res) => {
-          if (!cancelled && !res.ok && (!isEnterprise() || [403, 404, 410].includes(res.status))) {
+          if (!cancelled && !res.ok) {
             setExpiredSet((prev) => new Set(prev).add(index));
           }
         })
         .catch(() => {
-          if (!cancelled && !isEnterprise()) {
+          if (!cancelled) {
             setExpiredSet((prev) => new Set(prev).add(index));
           }
         });
@@ -1109,10 +1107,6 @@ function FileDownloadList({
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
     if (expiredSet.has(index) || !file.download_url) return;
-    if (isEnterprise() && !(await prepareFileDownload(file.download_url))) {
-      window.alert(t('artifacts.downloadFailed', { name: file.name }));
-      return;
-    }
 
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {

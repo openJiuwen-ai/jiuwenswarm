@@ -295,16 +295,19 @@ class AssetPublishService:
                     except Exception:
                         pass  # Durable Hub outcome must survive local cache failures.
         except PublishUploadError as exc:
+            error = {
+                "code": exc.code,
+                "http_status": exc.http_status,
+                "outcome_unknown": exc.outcome_unknown,
+                "retry_after": exc.retry_after,
+            }
+            if exc.message:
+                error["message"] = exc.message
             self._store.finish(
                 scope,
                 operation_id,
                 execution_status="unknown" if exc.outcome_unknown else "failed",
-                error={
-                    "code": exc.code,
-                    "http_status": exc.http_status,
-                    "outcome_unknown": exc.outcome_unknown,
-                    "retry_after": exc.retry_after,
-                },
+                error=error,
             )
         except asyncio.CancelledError:
             self._store.finish(

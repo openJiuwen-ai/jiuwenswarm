@@ -19,7 +19,7 @@ import {
   resolveTeamLeaderDisplayName,
   type TeamLeaderIdentity,
 } from '../../features/teamLeaderIdentity';
-import { AutoReviewerDetails, AutoReviewerStatusBadge } from './AutoReviewerStatus';
+import { AutoReviewerDetails } from './AutoReviewerStatus';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
@@ -490,12 +490,6 @@ export function ToolGroupDisplay({
                         </span>
                       ) : null}
                     </span>
-                    <AutoReviewerStatusBadge
-                      reviewer={
-                        line.executions[0]?.result?.reviewer ??
-                        line.executions[0]?.toolCall.reviewer
-                      }
-                    />
                     <span
                       className={clsx('tool-tree-item__disclosure', open && 'is-open')}
                       aria-hidden="true"

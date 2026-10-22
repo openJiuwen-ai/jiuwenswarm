@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import pytest
 
-from jiuwenswarm.runtime import host_services
+from jiuwenswarm.common import host_services
 
 
 @pytest.mark.asyncio

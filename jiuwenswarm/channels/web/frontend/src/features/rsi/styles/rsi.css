@@ -5,40 +5,142 @@
   width: 100%;
   height: 100%;
   min-height: 0;
+  /* 窄屏悬浮实验栏（.rsi-rail.is-floating）与蒙层的定位上下文 */
+  position: relative;
   background: var(--color-rsi-page-bg);
   overflow: hidden;
+  /* 详情区背景图上移到页面容器铺满整个内容区：详情 margin 收进后空隙不再露出页面底色。
+     实验栏自带不透明底色遮住自己那一条（内联/收起/悬浮三态自动适配）；
+     介绍页 --intro 用 shorthand 白底重置掉图片 */
+  background-image: url('../../../assets/rsi/rsi-background.svg');
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: cover;
 }
+
 .rsi-page--intro {
   background: #ffffff;
 }
 
 /* ── 左侧：实验管理栏 ── */
+/* 宽度适配对齐 .conversation-sidebar：默认 240px，≥1441px 大屏 296px；
+   min-width:0 + overflow:hidden 压掉 flex 项自动最小宽度，
+   防止创建按钮/长任务名的 min-content 撑破 flex-basis（名称由省略号收敛） */
 .rsi-rail {
-  flex: 0 0 296px;
+  --rsi-rail-width: 240px;
+
+  flex: 0 0 var(--rsi-rail-width);
   display: flex;
   flex-direction: column;
   background: #f5f5f5;
-  border-right: 1px solid var(--color-rsi-border);
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  /* 收起动画对齐 .conversation-sidebar（0.25s ease）；visibility 延迟到收起完成后翻转，
+     避免收起后内部元素仍可 Tab 聚焦（React 18 无 inert） */
+  transition:
+    flex-basis 0.25s ease,
+    width 0.25s ease,
+    transform 0.25s ease,
+    border-right-width 0.25s ease,
+    visibility 0s;
 }
+
+@media (min-width: 1441px) {
+  .rsi-rail {
+    --rsi-rail-width: 296px;
+  }
+}
+
+/* 收起过渡期间子元素锁定栏宽，内容不重排、由 overflow 裁切（同 sidebar__inner 的 min-width） */
+.rsi-rail__header,
+.rsi-rail__create,
+.rsi-rail__body {
+  min-width: var(--rsi-rail-width);
+}
+
+/* 收起态：栏宽过渡到 0、右边框同步消失（否则 0 宽残留 1px 竖线） */
+.rsi-rail.is-collapsed {
+  flex-basis: 0px;
+  border-right-width: 0;
+  visibility: hidden;
+  transition:
+    flex-basis 0.25s ease,
+    width 0.25s ease,
+    transform 0.25s ease,
+    border-right-width 0.25s ease,
+    visibility 0s linear 0.25s;
+}
+
+/* 窄屏（≤1250px）悬浮模式（对齐 .conversation-sidebar.is-floating）：
+   展开时脱离 flex 流覆盖在详情区上（详情不收窄），蒙层兜底点击收起。
+   脱离 flex 流后失去 align-items: stretch 的父级拉伸，需显式 height: 100% 撑满定位上下文 */
+.rsi-rail.is-floating {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  z-index: 30;
+  flex-basis: auto;
+  width: var(--rsi-rail-width);
+  box-shadow: var(--color-sidebar-shadow);
+}
+
+.rsi-rail__overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  background: var(--color-overlay-rsi-rail);
+  cursor: pointer;
+}
+
+.rsi-rail.is-floating.is-collapsed {
+  width: 0;
+  transform: translateX(-100%);
+  box-shadow: none;
+}
+
 .rsi-rail__header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 16px 20px;
 }
+
+.rsi-rail__collapse {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.rsi-rail__collapse:hover {
+  background: var(--color-sidebar-action-hover);
+}
+
 .rsi-rail__title {
   font-size: 16px;
   font-weight: 600;
   color: var(--color-text-primary);
 }
+
 .rsi-rail__create {
   padding: 0 20px 12px;
 }
+
 .rsi-rail__create-btn {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 248px;
+  width: 100%;
   height: 32px;
   border: none;
   border-radius: 0;
@@ -51,20 +153,24 @@
   white-space: nowrap;
   text-align: left;
 }
+
 .rsi-rail__create-btn:hover {
   opacity: 0.7;
 }
+
 .rsi-rail__body {
   flex: 1;
   overflow-y: auto;
   padding: 4px 8px 12px;
   min-height: 0;
 }
+
 .rsi-rail__body-header {
   font-size: 12px;
   color: #777777;
   padding: 8px 4px 12px;
 }
+
 .rsi-rail__item {
   display: flex;
   align-items: center;
@@ -75,12 +181,15 @@
   color: var(--color-text-primary);
   transition: background 0.12s ease;
 }
+
 .rsi-rail__item:hover {
   background: var(--color-rsi-rail-selected);
 }
+
 .rsi-rail__item--active {
   background: var(--color-rsi-rail-selected);
 }
+
 .rsi-rail__item-name {
   flex: 1;
   font-size: 14px;
@@ -88,6 +197,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .rsi-rail__running-dot {
   width: 8px;
   height: 8px;
@@ -95,11 +205,14 @@
   background: var(--color-feedback-success);
   animation: rsi-breath 1.4s ease-in-out infinite;
 }
+
 @keyframes rsi-breath {
+
   0%,
   100% {
     opacity: 1;
   }
+
   50% {
     opacity: 0.35;
   }
@@ -112,31 +225,44 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  padding: 24px 48px 24px 48px;
-  background-image: url('../../../assets/rsi/rsi-background.svg');
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: cover;
+  margin-top: 32px;
+  margin-bottom: 16px;
+  /* 背景图已上移 .rsi-page 铺满整个内容区（margin 空隙不再露底色），详情区自身保持透明 */
 }
+
 .rsi-detail--intro {
-  padding: 0;
+  margin: 0;
   overflow: hidden;
-  background: none;
 }
+
+/* 工作台状态：详情区不设最大宽度。收缩顺序＝margin 先行：1920px 取 176 封顶，向下每侧按 0.5 斜率收缩（两侧合计 1:1 吸收全部收缩量），到 1616px 钉住 24px 下限——1616~1920 区间详情区宽度恒定，低于 1616px 后 margin 不再变、由详情区自行收缩；两侧等宽天然居中。介绍页 --intro 全宽自有体系（margin: 0） */
+.rsi-detail:not(.rsi-detail--intro) {
+  margin-left: clamp(24px, calc(24px + (100vw - 1616px) / 2), 176px);
+  margin-right: clamp(24px, calc(24px + (100vw - 1616px) / 2), 176px);
+}
+
+/* 详情头：纵向两行——标题行（名称居左、操作区居右）+ 标签行独立成行铺满整行 */
 .rsi-detail__header {
   display: flex;
+  flex-direction: column;
+}
+
+/* 标题行：名称居左、操作区居右。不用 space-between：收起态会在最左插入展开按钮（三元素会被
+   space-between 推到中间），改为名称 margin-right: auto 吸收富余——两元素时与 space-between 等效 */
+.rsi-detail__title-row {
+  display: flex;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 16px;
 }
-.rsi-detail__title-block {
-  min-width: 0;
-}
+
 .rsi-detail__name {
+  min-width: 0;
+  margin-right: auto;
   font-size: 20px;
   font-weight: 600;
   color: var(--color-text-primary);
 }
+
 .rsi-detail__tags {
   display: flex;
   align-items: center;
@@ -146,23 +272,28 @@
   font-size: 14px;
   line-height: 22px;
 }
+
 .rsi-detail__tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   white-space: nowrap;
 }
+
 .rsi-detail__tag--status {
   color: var(--color-text-primary);
 }
+
 .rsi-detail__tag--meta {
   color: var(--color-text-placeholder);
 }
+
 .rsi-detail__failure-anchor {
   position: relative;
   display: inline-flex;
   align-items: center;
 }
+
 .rsi-detail__failure-trigger {
   display: inline-flex;
   align-items: center;
@@ -173,11 +304,13 @@
   background: transparent;
   cursor: pointer;
 }
+
 .rsi-detail__failure-trigger:hover,
 .rsi-detail__failure-trigger:focus-visible {
   outline: 2px solid rgb(239, 68, 68, 0.35);
   outline-offset: 2px;
 }
+
 .rsi-detail__failure-popover {
   position: absolute;
   z-index: 30;
@@ -196,25 +329,30 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
 .rsi-detail__tag svg {
   flex-shrink: 0;
 }
+
 .rsi-detail__status-icon {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
 }
+
 .rsi-detail__divider {
   width: 1px;
   height: 12px;
   background: var(--color-rsi-divider);
   flex-shrink: 0;
 }
+
 .rsi-detail__actions {
   display: flex;
   gap: 10px;
   flex-shrink: 0;
 }
+
 .rsi-detail__header-actions {
   display: flex;
   flex-direction: column;
@@ -222,6 +360,7 @@
   gap: 8px;
   flex-shrink: 0;
 }
+
 .rsi-detail__action-error {
   max-width: 420px;
   font-size: 12px;
@@ -229,6 +368,7 @@
   color: #d92d20;
   text-align: right;
 }
+
 .rsi-detail__action-success {
   display: flex;
   align-items: center;
@@ -237,18 +377,20 @@
   max-width: 420px;
   padding: 8px 12px;
   border-radius: 8px;
-  background: #E6F2D5;
-  border: 1px solid #E6F2D5;
+  background: #e6f2d5;
+  border: 1px solid #e6f2d5;
   box-shadow: -2px 0px 12px 0px #00000028;
   font-size: 12px;
   line-height: 18px;
   color: #191919;
 }
+
 .rsi-detail__action-success-icon {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
 }
+
 .rsi-detail__action-success-text {
   flex: 1;
   min-width: 0;
@@ -256,6 +398,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .rsi-detail__action-success-close {
   display: inline-flex;
   align-items: center;
@@ -269,24 +412,29 @@
   cursor: pointer;
   flex-shrink: 0;
 }
+
 .rsi-detail__actions .rsi-btn {
   height: 32px;
   padding: 0;
   border-radius: 9999px;
   padding: 0px 14px;
 }
+
 .rsi-detail__actions .rsi-btn--ghost {
   background: #ffffff;
 }
+
 .rsi-detail__actions .rsi-btn--primary {
   background: #191919;
   color: #ffffff;
 }
+
 .rsi-detail__actions .rsi-detail__action--delete {
   background: transparent;
   border-color: transparent;
   color: #191919;
 }
+
 .rsi-detail__action-icon {
   width: 52px;
   height: 22px;
@@ -309,6 +457,7 @@
   display: flex;
   flex-direction: column;
 }
+
 .rsi-result__header {
   height: 24px;
   font-size: 16px;
@@ -316,31 +465,45 @@
   line-height: 24px;
   color: var(--color-text-primary);
 }
+
 .rsi-result__body {
   display: flex;
   align-items: center;
-  gap: 16px;
+  /* 区块间距（overview↔分割线↔metrics 左右两侧一致）：<1920px 固定 24px，≥1920px 由媒体查询提到 40px（无平滑过渡） */
+  gap: 24px;
   height: 100px;
   margin-top: 16px;
-  padding: 17.5px 24px;
+  /* 左右 padding：<1920px 固定 16px，≥1920px 由媒体查询提到 24px；上下固定 18px */
+  padding: 18px 16px;
   border-radius: 16px;
   background: linear-gradient(90deg, var(--color-rsi-result-grad-from), var(--color-rsi-result-grad-to));
 }
+
+/* 缩略图 + 分数/最优产物 组：独立 flex 容器，组内间距 <1920px 固定 16px、≥1920px 由媒体查询提到 24px（无平滑过渡），不影响右侧 metric 间距 */
+.rsi-result__overview {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .rsi-result__thumb {
   flex: 0 0 64px;
   width: 64px;
   height: 64px;
   border-radius: 8px;
-  margin: 0px 24px 0px 16px;
   object-fit: contain;
 }
+
+/* 分数 + 最优产物 列：宽度由内容自适应（原 180px 固定宽移除），max-width 随视口变化（937px 取 184、1110px 到 265 并封顶，更窄钉在 184）；最优产物行超宽时省略号截断 */
 .rsi-result__score-best {
-  flex: 0 0 180px;
+  min-width: 0;
+  max-width: clamp(184px, calc(184px + (100vw - 937px) * 81 / 173), 265px);
   display: flex;
-  margin-right: 48px;
   flex-direction: column;
   justify-content: center;
 }
+
 /* 分数 / 提升幅度 / 当前最优产物（rsi-score 仅在摘要条使用） */
 .rsi-score {
   display: flex;
@@ -351,6 +514,7 @@
   line-height: 48px;
   color: var(--color-text-primary);
 }
+
 .rsi-score__delta {
   flex-shrink: 0;
   display: flex;
@@ -363,58 +527,138 @@
   font-weight: 700;
   line-height: 18px;
 }
+
 .rsi-score__delta--up {
   color: var(--color-rsi-delta-up);
   background: var(--color-rsi-delta-up-bg);
 }
+
 .rsi-score__delta--down {
   color: var(--color-rsi-delta-down);
   background: var(--color-rsi-delta-down-bg);
 }
+
+/* 最优产物行：flex 拆分前缀与产物名——前缀永不收缩，省略只发生在名称节点自身（button 是原子内联，靠父级 text-overflow 截断会整体消失变省略号） */
 .rsi-best {
   margin-top: 0;
+  display: flex;
+  align-items: baseline;
+  overflow: hidden;
   font-size: 14px;
   font-weight: 400;
   line-height: 22px;
+  white-space: nowrap;
   color: #191919;
 }
-.rsi-result__paper-button {
-  margin-left: 8px;
+
+/* 前缀标签：flex 项固定不收缩 */
+.rsi-best__label {
+  flex-shrink: 0;
+}
+
+/* 产物名即链接：沿用原"查看产物"按钮的链接色与悬停下划线；作为可收缩 flex 项，超宽时自身省略（按钮不继承 white-space，须显式 nowrap；text-align 抵消按钮默认居中） */
+.rsi-best__link {
+  min-width: 0;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--color-text-link, #2563eb);
   font: inherit;
   cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: left;
+  text-overflow: ellipsis;
 }
-.rsi-result__paper-button:hover {
+
+/* 暂无产物时的纯文本分支：与链接分支同槽，同样省略 */
+.rsi-best__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rsi-best__link:hover {
   text-decoration: underline;
 }
-.rsi-result__metric {
+
+/* 区块分割线：竖向虚线，align-self: stretch 撑满 body 内容区高度 */
+.rsi-result__divider {
+  align-self: stretch;
+  width: 0;
+  border-left: 1px dashed var(--color-rsi-result-divider);
+}
+
+/* 指标组：占 body 剩余宽度；指标按内容宽排版，间距 = gap 下限 40px + space-between 均分的富余（1920 稿实测约 74px，屏越宽越大）。宽度不足时容器内横向滚动（space-between 无富余时退化为 start 排布、末端溢出，滚动可达全部指标） */
+.rsi-result__metrics {
   flex: 1 1 0;
   min-width: 0;
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 40px;
+  overflow-x: auto;
+  /* 横向滚动条出现时会压矮内容区，禁掉纵向滚动（overflow-y 计算值不再落到 auto）：
+     屏宽 >937px 时不允许摘要条出现纵向滚动条 */
+  overflow-y: hidden;
+}
+
+/* 细横向滚动条：6px 占用的高度落在指标列上方 20px margin 与标签行内留白里，不裁到文字 */
+.rsi-result__metrics::-webkit-scrollbar {
+  height: 6px;
+}
+
+/* 宽度由内容决定（原 1 1 0 等分拉伸及 usage 1.4 倍变体已随新版设计移除）；不收缩 + nowrap：文字完整展示，不截断省略、不换行 */
+.rsi-result__metric {
+  flex: 0 0 auto;
+  display: flex;
   flex-direction: column;
   margin-top: 20px;
+  white-space: nowrap;
 }
-.rsi-result__metric--usage {
-  flex: 1.4 1 0;
-}
+
 .rsi-result__metric-value {
   font-size: 20px;
   font-weight: 600;
   line-height: 28px;
   color: var(--color-text-primary);
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
+
+/* 单位/分母（tokens、/40 等）：14px 小字，inline 布局天然与数值基线对齐；与数值间的空隙由 unit 字符串自带（如 ' tokens' 带前导空格，'/40' 紧贴） */
+.rsi-result__metric-value-unit {
+  font-size: 14px;
+}
+
 .rsi-result__metric-label {
   font-size: 14px;
   font-weight: 400;
   line-height: 22px;
   color: var(--color-text-placeholder);
+}
+
+/* ≥1600px：末位指标固定 100px 宽（值为短数字，足以完整容纳） */
+@media (min-width: 1600px) {
+  .rsi-result__metric:last-child {
+    flex: 0 0 100px;
+  }
+}
+
+/* ≥1920px：全套间距切换到大档（其余宽度用各规则里的紧凑固定值，无平滑过渡）。
+   .rsi-detail 上下 margin 须带 :not(--intro)——否则会覆盖介绍页的 margin: 0 重置 */
+@media (min-width: 1920px) {
+  .rsi-detail:not(.rsi-detail--intro) {
+    margin-top: 24px;
+    margin-bottom: 24px;
+  }
+
+  .rsi-result__body {
+    gap: 40px;
+    padding: 18px 24px;
+  }
+
+  .rsi-result__overview {
+    gap: 24px;
+  }
 }
 
 /* ── 主展示框·画布区（rsi-stage 下半区） ── */
@@ -427,6 +671,7 @@
   background: var(--color-rsi-page-bg);
   overflow: hidden;
 }
+
 .rsi-canvas-area__subheader {
   display: flex;
   align-items: center;
@@ -434,12 +679,14 @@
   padding: 16px 0px 0;
   gap: 12px;
 }
+
 .rsi-canvas-area__title {
   font-size: 16px;
   font-weight: 600;
   line-height: 24px;
   color: var(--color-text-primary);
 }
+
 .rsi-canvas-area__expand {
   display: inline-flex;
   align-items: center;
@@ -452,19 +699,23 @@
   font-size: 12px;
   cursor: pointer;
 }
+
 .rsi-canvas-area__expand-icon {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
 }
+
 .rsi-canvas-area__expand:hover {
   background: var(--color-rsi-rail-selected);
 }
+
 .rsi-canvas-area__hint {
   padding: 6px 0px 0;
   font-size: 12px;
   color: var(--color-rsi-text-muted);
 }
+
 .rsi-canvas-area__cost {
   display: inline-flex;
   align-items: center;
@@ -488,6 +739,7 @@
   overflow: hidden;
   min-height: 0;
 }
+
 /* 画布状态条：左运行状态/成本/进度，右图例 */
 .rsi-canvas-statusbar {
   display: flex;
@@ -500,6 +752,7 @@
   border-bottom: 1px solid var(--color-rsi-canvas-border);
   flex-shrink: 0;
 }
+
 .rsi-canvas-statusbar__left {
   display: flex;
   align-items: center;
@@ -508,24 +761,28 @@
   color: var(--color-text-primary);
   min-width: 0;
 }
+
 .rsi-canvas-statusbar__main {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
+
 .rsi-canvas-statusbar__item {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   white-space: nowrap;
 }
+
 .rsi-canvas-statusbar__icon {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
   cursor: pointer;
 }
+
 .rsi-canvas-statusbar__running {
   display: block;
   width: 24px;
@@ -533,20 +790,24 @@
   flex-shrink: 0;
   cursor: pointer;
 }
+
 .rsi-canvas-statusbar__strong {
   font-weight: 600;
   font-size: 14px;
 }
+
 .rsi-canvas-statusbar__weak {
   font-weight: 400;
   font-size: 14px;
 }
+
 .rsi-canvas-statusbar__divider {
   width: 1px;
   height: 12px;
   background: var(--color-rsi-divider);
   flex-shrink: 0;
 }
+
 .rsi-canvas-statusbar__progress {
   position: relative;
   display: block;
@@ -556,16 +817,19 @@
   background: var(--color-rsi-progress-track);
   overflow: hidden;
 }
+
 .rsi-canvas-statusbar__progress-fill {
   display: block;
   height: 100%;
   border-radius: 122.67px;
   background: var(--color-rsi-delta-up);
 }
+
 .rsi-canvas-statusbar--fullscreen {
   height: var(--rsi-canvas-statusbar-h);
   padding: 0 24px;
 }
+
 .rsi-canvas-statusbar__back {
   width: 32px;
   height: 32px;
@@ -580,9 +844,11 @@
   color: var(--color-text-primary);
   cursor: pointer;
 }
+
 .rsi-canvas-statusbar__back:hover {
   background: var(--color-rsi-rail-selected);
 }
+
 .rsi-canvas {
   flex: 1;
   position: relative;
@@ -590,13 +856,16 @@
   cursor: grab;
   min-height: 0;
 }
+
 .rsi-canvas--dragging {
   cursor: grabbing;
 }
+
 .rsi-canvas--dragging .rsi-canvas__inner {
   /* 拖拽时提升为合成层，避免高频 transform 更新引发整块重绘 */
   will-change: transform;
 }
+
 .rsi-canvas__inner {
   position: relative;
   transform-origin: 0 0;
@@ -616,25 +885,30 @@
   color: var(--color-rsi-text-muted);
   text-align: center;
 }
+
 .rsi-canvas-queued__icon {
   width: 80px;
   height: 80px;
   margin-bottom: 4px;
 }
+
 .rsi-canvas-queued__text {
   font-size: 16px;
   color: var(--color-text-primary);
   line-height: 24px;
 }
+
 .rsi-canvas-queued__strong {
   font-weight: 600;
   color: var(--color-text-primary);
 }
+
 .rsi-canvas-queued__sub {
   font-size: 13px;
   color: var(--color-rsi-text-muted);
   line-height: 20px;
 }
+
 /* 节点 */
 .rsi-node {
   position: absolute;
@@ -647,12 +921,14 @@
     transform 0.06s ease;
   user-select: none;
 }
+
 .rsi-node:hover {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
 }
+
 .rsi-node--selected {
   outline: 2px solid var(--color-rsi-node-selected-ring);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 /* 节点展开/收起按钮：默认隐藏，hover 节点/选中/悬浮连线时浮现 */
@@ -686,18 +962,21 @@
     box-shadow 0.12s ease;
   pointer-events: none;
 }
+
 .rsi-node:hover .rsi-node__toggle,
 .rsi-node--selected .rsi-node__toggle,
 .rsi-node--edge-hover .rsi-node__toggle {
   opacity: 1;
   pointer-events: auto;
 }
+
 .rsi-node__toggle:hover {
   color: var(--color-text-primary);
   box-shadow:
     0 0 0 1.5px var(--color-rsi-node-selected-ring),
     0 2px 6px rgba(0, 0, 0, 0.16);
 }
+
 .rsi-node__toggle--collapsed {
   opacity: 1;
   pointer-events: auto;
@@ -707,15 +986,19 @@
 .rsi-node__bar--best-path {
   background: var(--color-rsi-node-best-path);
 }
+
 .rsi-node__bar--evaluated {
   background: var(--color-rsi-node-evaluated);
 }
+
 .rsi-node__bar--pending {
   background: var(--color-rsi-node-pending);
 }
+
 .rsi-node__bar--failed {
-  background: var(--color-rsi-node-failed, #ffd9d9);
+  background: var(--color-rsi-node-failed);
 }
+
 .rsi-node__bar--pruned {
   background: var(--color-rsi-node-pruned);
 }
@@ -732,12 +1015,14 @@
   gap: 6px;
   border-radius: 9px 9px 0 0;
 }
+
 .rsi-node__bar-left {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
+
 .rsi-node__icon {
   flex-shrink: 0;
   width: 16px;
@@ -745,6 +1030,7 @@
   color: var(--color-rsi-node-icon);
   fill: currentColor;
 }
+
 .rsi-node__name {
   font-size: 12px;
   font-weight: 600;
@@ -755,6 +1041,7 @@
   text-overflow: ellipsis;
   min-width: 0;
 }
+
 .rsi-node__status {
   font-size: 10px;
   font-weight: 400;
@@ -776,6 +1063,7 @@
   line-height: 1.35;
   border-radius: 0 0 9px 9px;
 }
+
 /* 黑色圆形徽章（白色状态图标） */
 .rsi-node__badge {
   flex-shrink: 0;
@@ -787,11 +1075,13 @@
   align-items: center;
   justify-content: center;
 }
+
 /* 最优路径：无圆形黑底，皇冠本身黑色填充 */
 .rsi-node__badge--plain {
   background: transparent;
   border-radius: 0;
 }
+
 /* 分数行：大数字 + 小标签 */
 .rsi-node__score-line {
   display: flex;
@@ -799,18 +1089,21 @@
   gap: 4px;
   line-height: 14px;
 }
+
 .rsi-node__score-num {
   font-weight: 600;
   font-size: 18px;
   line-height: 26px;
   color: var(--color-text-primary);
 }
+
 .rsi-node__score-label {
   font-weight: 400;
   font-size: 12px;
   line-height: 14px;
   color: var(--color-rsi-text-muted);
 }
+
 /* 评测中/剪枝·结果不通过 的多行文本 */
 .rsi-node__eval-text {
   font-weight: 400;
@@ -821,6 +1114,7 @@
   max-height: 96px;
   overflow-y: auto;
 }
+
 .rsi-node__stage {
   font-size: 11px;
   line-height: 16px;
@@ -830,6 +1124,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
 .rsi-node__summary,
 .rsi-node__reason {
   font-size: 12px;
@@ -840,18 +1135,22 @@
   -webkit-line-clamp: 2;
   overflow: hidden;
 }
+
 .rsi-node__summary {
   color: var(--color-rsi-text-muted);
 }
+
 .rsi-node__reason {
   color: var(--color-text-primary);
   font-weight: 600;
 }
+
 /* 分数展开/收起：虚线分隔符 + 按钮 */
 .rsi-node__score-sep {
   border-top: 1px dashed var(--color-rsi-border);
   margin: 4px 0 2px;
 }
+
 .rsi-node__score-toggle {
   display: flex;
   align-items: center;
@@ -877,14 +1176,17 @@
   overflow: visible;
   z-index: 2;
 }
+
 .rsi-tree-edge {
   stroke: var(--color-rsi-node-border);
   stroke-width: 1.5;
   fill: none;
 }
+
 .rsi-tree-edge-dot {
   fill: var(--color-rsi-node-border);
 }
+
 .rsi-tree-edge-arrow {
   fill: var(--color-rsi-node-border);
 }
@@ -899,11 +1201,13 @@
   color: var(--color-text-primary);
   flex-shrink: 0;
 }
+
 .rsi-legend__row {
   display: flex;
   align-items: center;
   gap: 6px;
 }
+
 .rsi-legend__dot {
   width: 10px;
   height: 10px;
@@ -915,10 +1219,12 @@
 .rsi-canvas-statusbar[data-queued] .rsi-canvas-statusbar__weak {
   color: var(--color-rsi-text-muted);
 }
+
 .rsi-legend[data-queued] {
   opacity: 0.45;
   filter: grayscale(0.3);
 }
+
 .rsi-canvas-statusbar[data-queued] .rsi-canvas-statusbar__progress-fill {
   background: var(--color-rsi-canvas-border);
 }
@@ -935,6 +1241,7 @@
   border: 1px solid var(--color-rsi-canvas-border);
   overflow: hidden;
 }
+
 .rsi-zoom__btn {
   width: 32px;
   height: 28px;
@@ -947,9 +1254,11 @@
   border: none;
   border-bottom: 1px solid var(--color-rsi-canvas-border);
 }
+
 .rsi-zoom__btn:last-child {
   border-bottom: none;
 }
+
 .rsi-zoom__btn:hover {
   background: var(--color-rsi-rail-selected);
 }
@@ -966,7 +1275,7 @@
   max-height: none;
   padding: 24px;
   box-sizing: border-box;
-  background-image: url("../../../assets/rsi/rsi-background2.svg");
+  background-image: url('../../../assets/rsi/rsi-background2.svg');
   background-repeat: no-repeat;
   background-position: center;
   background-origin: border-box;
@@ -979,20 +1288,26 @@
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   overflow: hidden;
 }
+
 .rsi-selected-info__header {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
 }
+
 .rsi-selected-info__icon {
   width: 32px;
   height: 32px;
   flex-shrink: 0;
 }
+
 .rsi-selected-info__title {
   flex: 1 1 auto;
   min-width: 0;
+  /* 父级 align-items: flex-start 使条目按 fit-content 取宽，nowrap 文本的 min-content=全文宽，
+     收缩不下去、省略号永不触发；title 单独 stretch 拉满行宽，min-width:0 + overflow 链才生效 */
+  align-self: stretch;
   font-size: 16px;
   font-weight: 600;
   line-height: 24px;
@@ -1000,6 +1315,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .rsi-selected-info__title-wrap {
   flex: 1 1 auto;
   min-width: 0;
@@ -1008,6 +1324,7 @@
   align-items: flex-start;
   gap: 4px;
 }
+
 .rsi-selected-info__status {
   display: inline-flex;
   align-items: center;
@@ -1018,34 +1335,32 @@
   line-height: 18px;
   white-space: nowrap;
 }
+
 .rsi-selected-info__status--best-path {
   background: #d9f5df;
   color: #176b31;
 }
+
 .rsi-selected-info__status--pending {
   background: #fff0bd;
   color: #805b00;
 }
+
 .rsi-selected-info__status--evaluated {
   background: #e7edf7;
   color: #4c5d77;
 }
+
 .rsi-selected-info__status--failed {
   background: #ffe0e0;
   color: #9a3131;
 }
+
 .rsi-selected-info__status--pruned {
   background: #ececec;
   color: #666666;
 }
-.rsi-selected-info__close {
-  border: none;
-  background: transparent;
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 4px;
-}
+
 .rsi-selected-info__body {
   flex: 1;
   overflow-y: auto;
@@ -1054,6 +1369,7 @@
   flex-direction: column;
   gap: 16px;
 }
+
 .rsi-selected-info__context {
   display: flex;
   flex-direction: column;
@@ -1062,6 +1378,7 @@
   line-height: 18px;
   color: var(--color-rsi-text-muted);
 }
+
 .rsi-selected-info__stage {
   display: inline-flex;
   align-items: center;
@@ -1075,20 +1392,24 @@
   font-size: 12px;
   font-weight: 600;
 }
+
 .rsi-selected-info__stage-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: currentColor;
 }
+
 .rsi-selected-info__section {
   padding-top: 1px;
 }
+
 .rsi-selected-info__empty {
   font-size: 13px;
   line-height: 20px;
   color: var(--color-rsi-text-muted);
 }
+
 .rsi-selected-info__section-label {
   font-size: 14px;
   font-weight: 400;
@@ -1096,11 +1417,13 @@
   margin-bottom: 8px;
   color: #808080;
 }
+
 .rsi-selected-info__chips {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
+
 .rsi-selected-info__chip {
   display: inline-flex;
   align-items: center;
@@ -1118,11 +1441,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
 .rsi-selected-info__chip--inherited {
   border-style: dashed;
   background: transparent;
   color: var(--color-rsi-text-muted);
 }
+
 .rsi-selected-info__desc {
   font-size: 14px;
   line-height: 22px;
@@ -1131,12 +1456,14 @@
   margin-top: 8px;
   color: var(--color-text-primary);
 }
+
 .rsi-selected-info__metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
-.rsi-selected-info__metrics > div {
+
+.rsi-selected-info__metrics>div {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1145,31 +1472,37 @@
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.65);
 }
+
 .rsi-selected-info__metrics span {
   font-size: 11px;
   line-height: 16px;
   color: var(--color-rsi-text-muted);
 }
+
 .rsi-selected-info__metrics strong {
   font-size: 16px;
   line-height: 22px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
 .rsi-selected-info__metric-down {
   color: #b83d3d;
 }
+
 .rsi-selected-info__reason-section {
   padding: 10px 11px;
   border-radius: 8px;
   background: rgba(255, 240, 240, 0.78);
 }
+
 .rsi-selected-info__reason-label {
   font-size: 13px;
   line-height: 20px;
   font-weight: 600;
   color: #8f3535;
 }
+
 .rsi-selected-info__reason-detail {
   margin-top: 4px;
   font-size: 12px;
@@ -1177,12 +1510,14 @@
   color: #6e5252;
   word-break: break-word;
 }
+
 .rsi-selected-info__artifact-row {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
+
 .rsi-selected-info__artifact-row code {
   flex: 1 1 auto;
   min-width: 0;
@@ -1190,23 +1525,27 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .rsi-selected-info__technical {
   border-top: 1px solid var(--color-rsi-divider);
   padding-top: 10px;
   color: var(--color-rsi-text-muted);
   font-size: 12px;
 }
+
 .rsi-selected-info__technical summary {
   cursor: pointer;
   color: var(--color-rsi-text-muted);
 }
-.rsi-selected-info__technical > div {
+
+.rsi-selected-info__technical>div {
   display: flex;
   align-items: baseline;
   gap: 8px;
   margin-top: 8px;
   min-width: 0;
 }
+
 .rsi-selected-info__technical code {
   min-width: 0;
   overflow: hidden;
@@ -1214,12 +1553,14 @@
   white-space: nowrap;
   color: var(--color-text-primary);
 }
+
 .rsi-selected-info__footer {
   display: flex;
   justify-content: flex-end;
   margin-top: 12px;
   flex-shrink: 0;
 }
+
 .rsi-selected-info__detail-btn {
   height: 28px;
   padding: 0 14px;
@@ -1230,6 +1571,7 @@
   font-weight: 400;
   cursor: pointer;
 }
+
 /* 「查看详情」中间产物预览弹窗 */
 .rsi-artifact-dialog {
   position: fixed;
@@ -1240,6 +1582,7 @@
   justify-content: center;
   background: rgba(0, 0, 0, 0.32);
 }
+
 .rsi-artifact-dialog__panel {
   width: min(1100px, 92vw);
   height: min(800px, 92vh);
@@ -1252,6 +1595,7 @@
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16);
   color: #191919;
 }
+
 .rsi-artifact-dialog__header {
   height: 28px;
   display: flex;
@@ -1259,12 +1603,14 @@
   justify-content: space-between;
   flex-shrink: 0;
 }
+
 .rsi-artifact-dialog__title {
   font-size: 18px;
   line-height: 28px;
   font-weight: 600;
   color: #191919;
 }
+
 .rsi-artifact-dialog__close {
   width: 28px;
   height: 28px;
@@ -1277,10 +1623,12 @@
   color: #595959;
   cursor: pointer;
 }
+
 .rsi-artifact-dialog__close:hover {
   background: #f5f5f5;
   color: #191919;
 }
+
 .rsi-artifact-dialog__body {
   height: calc(100% - 44px);
   margin-top: 16px;
@@ -1291,6 +1639,7 @@
   background: #ffffff;
   overflow: hidden;
 }
+
 .rsi-artifact-dialog__tree {
   width: 264px;
   min-width: 264px;
@@ -1300,6 +1649,7 @@
   overflow: auto;
   border-right: 1px solid #e8e8e8;
 }
+
 .rsi-artifact-dialog__folder,
 .rsi-artifact-dialog__file {
   width: 100%;
@@ -1313,26 +1663,32 @@
   cursor: pointer;
   text-align: left;
 }
+
 .rsi-artifact-dialog__folder {
   font-size: 16px;
   line-height: 24px;
   font-weight: 400;
 }
+
 .rsi-artifact-dialog__file {
   height: 40px;
   border-radius: 8px;
   font-size: 14px;
   line-height: 20px;
 }
+
 .rsi-artifact-dialog__file:hover {
   background: #fafafa;
 }
+
 .rsi-artifact-dialog__file--selected {
   background: #f5f5f5;
 }
+
 .rsi-artifact-dialog__chevron--expanded {
   transform: rotate(90deg);
 }
+
 .rsi-artifact-dialog__preview {
   flex: 1;
   min-width: 0;
@@ -1342,6 +1698,7 @@
   display: flex;
   flex-direction: column;
 }
+
 .rsi-artifact-dialog__preview-header {
   height: 40px;
   display: flex;
@@ -1350,6 +1707,7 @@
   gap: 16px;
   flex-shrink: 0;
 }
+
 .rsi-artifact-dialog__filename {
   min-width: 0;
   overflow: hidden;
@@ -1360,11 +1718,13 @@
   font-weight: 500;
   color: #191919;
 }
+
 .rsi-artifact-dialog__actions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
+
 .rsi-artifact-dialog__action {
   width: 28px;
   height: 28px;
@@ -1377,27 +1737,32 @@
   color: #595959;
   cursor: pointer;
 }
+
 .rsi-artifact-dialog__action:hover {
   background: #f5f5f5;
   color: #191919;
 }
+
 .rsi-artifact-dialog__divider {
   height: 1px;
   margin: 16px 0;
   background: #e8e8e8;
   flex-shrink: 0;
 }
+
 .rsi-artifact-dialog__preview-content {
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
+
 .rsi-latex-preview {
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
+
 .rsi-latex-preview__toolbar {
   display: flex;
   justify-content: flex-end;
@@ -1405,6 +1770,7 @@
   padding-bottom: 12px;
   flex-shrink: 0;
 }
+
 .rsi-latex-preview__tab {
   height: 26px;
   padding: 0 12px;
@@ -1416,11 +1782,13 @@
   line-height: 24px;
   cursor: pointer;
 }
+
 .rsi-latex-preview__tab--active {
   border-color: #191919;
   color: #191919;
   font-weight: 600;
 }
+
 .rsi-latex-preview__markdown,
 .rsi-latex-preview__source {
   flex: 1;
@@ -1428,10 +1796,12 @@
   overflow: auto;
   border-radius: 8px;
 }
+
 .rsi-latex-preview__markdown {
   padding: 24px 32px;
   background: #ffffff;
 }
+
 .rsi-latex-preview__source {
   margin: 0;
   padding: 16px;
@@ -1442,6 +1812,7 @@
   line-height: 20px;
   white-space: pre;
 }
+
 .rsi-latex-preview__status {
   height: 100%;
   min-height: 160px;
@@ -1453,6 +1824,7 @@
   font-size: 14px;
   line-height: 22px;
 }
+
 .rsi-artifact-dialog__loading,
 .rsi-artifact-dialog__preview-empty {
   height: 100%;
@@ -1465,12 +1837,14 @@
   font-size: 14px;
   line-height: 22px;
 }
+
 .rsi-artifact-dialog__error {
   color: #d92d20;
   font-size: 14px;
   line-height: 22px;
   word-break: break-word;
 }
+
 .rsi-artifact-dialog__copy-state {
   margin-top: 8px;
   color: #595959;
@@ -1478,124 +1852,182 @@
   line-height: 18px;
 }
 
-/* 无实验时的 RSI 介绍页 */
-.rsi-intro-scaler {
-  width: 100%;
-  overflow: hidden;
-}
+/* 无实验时的 RSI 首页（布局对齐 personal-context-intro：文档流 + 居中限宽 + 响应式） */
 .rsi-intro {
-  width: 1592px;
-  min-height: 844px;
-  margin: 0;
-  padding: 120px 96px 96px 96px;
-  background: #ffffff;
-  box-sizing: border-box;
-  color: #191919;
-  transform-origin: 0 0;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  background: var(--color-rsi-page-bg);
+  color: var(--color-text-primary);
 }
+
+.rsi-intro__scroll {
+  width: 100%;
+  max-width: min(1400px, 100% - 96px);
+  margin: 0 auto;
+  padding-top: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 48px;
+}
+
 .rsi-intro__header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 24px;
 }
+
 .rsi-intro__title {
   margin: 0;
   font-size: 24px;
   line-height: 36px;
   font-weight: 600;
-  color: #191919;
+  color: var(--color-text-primary);
 }
+
 .rsi-intro__lead {
-  margin: 0;
+  margin-top: 8px;
   font-size: 14px;
   line-height: 22px;
   font-weight: 400;
-  color: #191919;
+  color: var(--color-text-primary);
 }
+
 .rsi-intro__create {
+  flex-shrink: 0;
   height: 32px;
   border: none;
-  border-radius: 8px;
+  border-radius: 999px;
   background: #000000;
   color: #ffffff;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 22px;
   font-weight: 400;
   cursor: pointer;
-  padding: 0px 14px;
+  padding: 0px 24px;
 }
+
 .rsi-intro__create:hover {
   opacity: 0.85;
 }
+
 .rsi-intro__section {
-  width: 1400px;
-  margin-top: 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
+
 .rsi-intro__section-label {
   margin: 0;
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
-  color: #191919;
+  color: var(--color-text-primary);
 }
+
 .rsi-intro__steps {
   display: grid;
-  grid-template-columns: repeat(3, 456px);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
-  margin-top: 16px;
+  align-items: stretch;
 }
+
 .rsi-intro__step {
-  width: 456px;
-  height: 382px;
-  background-repeat: no-repeat;
-  background-size: 456px 382px;
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 456 / 382;
+  padding: 24px 24px 0;
+  box-sizing: border-box;
 }
+
+.rsi-intro__step-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .rsi-intro__step-text {
-  width: 408px;
-  min-height: 76px;
-  margin: 24px 0 0 24px;
+  position: relative;
+  min-width: 0;
 }
+
 .rsi-intro__step-text h3,
 .rsi-intro__feature-text h3 {
   margin: 0;
   font-size: 18px;
   line-height: 28px;
   font-weight: 600;
-  color: #191919;
+  color: var(--color-text-primary);
 }
+
 .rsi-intro__step-text p,
 .rsi-intro__feature-text p {
   margin: 0;
   font-size: 14px;
   line-height: 22px;
   font-weight: 400;
-  color: #808080;
+  color: var(--color-text-meta);
 }
+
 .rsi-intro__features {
   display: grid;
-  grid-template-columns: repeat(2, 692px);
+  grid-template-columns: repeat(2, 1fr);
   gap: 16px;
-  margin-top: 16px;
+  align-items: stretch;
 }
+
 .rsi-intro__feature {
-  width: 692px;
   min-height: 220px;
-  border: 1px solid #dbdbdb;
+  border: 1px solid var(--color-text-divider);
   border-radius: 16px;
-  background: #ffffff;
+  background: var(--color-rsi-page-bg);
   box-sizing: border-box;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  transition:
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
 }
+
+.rsi-intro__feature:hover {
+  box-shadow: var(--effect-shadow-md);
+  transform: translateY(-2px);
+}
+
 .rsi-intro__feature-icon {
   display: block;
   width: 80px;
   height: 80px;
-  margin: 24px 0 0 24px;
+  flex-shrink: 0;
 }
+
 .rsi-intro__feature-text {
-  width: 644px;
-  min-height: 76px;
-  margin: 16px 0 0 24px;
+  min-width: 0;
+}
+
+/* 介绍页响应式：步骤 3 列放不下 → 2+1（第二行那张落在第一列、半宽左对齐、不占满整行），880 以下每行一张；功能特点 2→1 列（对齐 pc-intro 断点策略） */
+@media (max-width: 1100px) {
+  .rsi-intro__steps {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 880px) {
+  .rsi-intro__steps {
+    grid-template-columns: 1fr;
+  }
+
+  .rsi-intro__features {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* 通用按钮 */
@@ -1604,29 +2036,34 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 32px;
-  padding: 0 14px;
+  height: 28px;
+  padding: 0 30px;
   border-radius: 8px;
   font-size: 13px;
   cursor: pointer;
   border: 1px solid transparent;
   white-space: nowrap;
 }
+
 .rsi-btn--primary {
   background: var(--color-rsi-primary-btn-bg);
   color: var(--color-rsi-primary-btn-text);
 }
+
 .rsi-btn--primary:hover {
   opacity: 0.9;
 }
+
 .rsi-btn--ghost {
   background: transparent;
   color: var(--color-text-primary);
   border-color: #595959;
 }
+
 .rsi-btn--ghost:hover {
   background: var(--color-rsi-rail-selected);
 }
+
 .rsi-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -1641,6 +2078,7 @@
   height: 100%;
   font-size: 14px;
 }
+
 .rsi-error {
   color: var(--color-feedback-danger);
 }
@@ -1657,12 +2095,14 @@
   color: var(--color-text-primary);
   font-size: 13px;
 }
+
 textarea.rsi-input {
   height: auto;
   padding: 8px 10px;
   resize: vertical;
   line-height: 1.4;
 }
+
 select.rsi-input {
   cursor: pointer;
 }
@@ -1670,14 +2110,88 @@ select.rsi-input {
 .rsi-create-dialog__select--rounded {
   border-radius: 8px;
 }
+
+/* 弹窗内下拉统一走 ui/Select：占满整行；带图标的选项文案做溢出省略 */
+.rsi-create-dialog__inner .ui-select {
+  width: 100%;
+}
+
+.rsi-create-dialog__inner .ui-select .rsi-model-select__value {
+  max-width: 100%;
+}
+
+/* 弹窗内 ui/Select 下拉对齐旧版 chat-mode-select 菜单观感：
+   面板 10px 圆角、全向 8px 内边距、240px 最大高（--color-surface-card 底）；
+   选项为内缩 7px 圆角行、悬停淡主色底、选中浅灰底常规字重、禁用不降透明度。
+   下拉面板 portal 在 dialog 根下（不在 __inner 内），故作用域挂 dialog；
+   各选择器特异性均高于共享规则，不依赖样式表加载顺序 */
+dialog.rsi-config-dialog.rsi-create-drawer .ui-dropdown-menu.ui-select__panel {
+  padding: 8px;
+  border-radius: 10px;
+  max-height: 240px;
+  background: var(--color-surface-card);
+}
+
+dialog.rsi-config-dialog.rsi-create-drawer .ui-dropdown-menu__item.ui-select__option {
+  height: auto;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 8px;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+dialog.rsi-config-dialog.rsi-create-drawer .ui-dropdown-menu__item.ui-select__option:hover:not(:disabled):not(.ui-select__option--selected),
+dialog.rsi-config-dialog.rsi-create-drawer .ui-dropdown-menu__item.ui-select__option:focus-visible:not(:disabled):not(.ui-select__option--selected) {
+  background: rgba(var(--color-action-primary-rgb), 0.05);
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+dialog.rsi-config-dialog.rsi-create-drawer .ui-dropdown-menu__item.ui-select__option--selected {
+  background: rgba(var(--color-text-primary-rgb), 0.08);
+  color: var(--color-text-primary);
+  font-weight: 400;
+}
+
+dialog.rsi-config-dialog.rsi-create-drawer .ui-dropdown-menu__item.ui-select__option--selected:hover:not(:disabled),
+dialog.rsi-config-dialog.rsi-create-drawer .ui-dropdown-menu__item.ui-select__option--selected:focus-visible:not(:disabled) {
+  background: rgba(var(--color-text-primary-rgb), 0.12);
+  color: var(--color-text-primary);
+}
+
+dialog.rsi-config-dialog.rsi-create-drawer .ui-dropdown-menu__item.ui-select__option:disabled {
+  opacity: 1;
+  color: var(--color-text-placeholder);
+}
+
+/* 模型分组头：样式同旧版 model-select__section-header（11px 次要文字色、无背景、不可选中） */
+dialog.rsi-config-dialog.rsi-create-drawer .rsi-create-dialog__group-header {
+  display: block;
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+/* 选中项行尾对勾颜色与旧版一致（text-strong） */
+dialog.rsi-config-dialog.rsi-create-drawer .ui-select__option--selected .ui-select__option-check {
+  color: var(--color-text-strong);
+}
+
 .rsi-select {
   position: relative;
 }
+
 .rsi-select__badge {
   flex: 0 0 auto;
   font-size: 12px;
   color: #808080;
 }
+
 .rsi-input:focus {
   outline: 2px solid var(--color-border-focus);
   outline-offset: 1px;
@@ -1687,6 +2201,7 @@ select.rsi-input {
 dialog.rsi-config-dialog::backdrop {
   background: var(--color-backdrop);
 }
+
 dialog.rsi-config-dialog {
   border: none;
   padding: 0;
@@ -1694,6 +2209,7 @@ dialog.rsi-config-dialog {
   max-width: none;
   max-height: none;
 }
+
 .rsi-config-dialog__inner {
   width: 550px;
   height: 700px;
@@ -1706,6 +2222,7 @@ dialog.rsi-config-dialog {
   background: var(--color-rsi-page-bg);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16);
 }
+
 .rsi-config-dialog__header {
   display: flex;
   align-items: center;
@@ -1713,6 +2230,7 @@ dialog.rsi-config-dialog {
   margin-bottom: 20px;
   flex-shrink: 0;
 }
+
 .rsi-config-dialog__header h2 {
   margin: 0;
   font-size: 18px;
@@ -1720,6 +2238,7 @@ dialog.rsi-config-dialog {
   line-height: 28px;
   color: #191919;
 }
+
 .rsi-config-dialog__close {
   width: 28px;
   height: 28px;
@@ -1734,9 +2253,11 @@ dialog.rsi-config-dialog {
   line-height: 1;
   cursor: pointer;
 }
+
 .rsi-config-dialog__close:hover {
   background: var(--color-rsi-rail-selected);
 }
+
 .rsi-config-dialog__body {
   flex: 1;
   min-height: 0;
@@ -1745,17 +2266,20 @@ dialog.rsi-config-dialog {
   flex-direction: column;
   gap: 18px;
 }
+
 .rsi-config-dialog__field {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
+
 .rsi-config-dialog__label {
   font-size: 14px;
   font-weight: 400;
   line-height: 22px;
   color: #808080;
 }
+
 .rsi-config-dialog__value {
   font-size: 14px;
   font-weight: 400;
@@ -1763,6 +2287,7 @@ dialog.rsi-config-dialog {
   color: #191919;
   word-break: break-all;
 }
+
 /* 创建实验：右侧抽屉 */
 dialog.rsi-config-dialog.rsi-create-drawer {
   margin: 0;
@@ -1772,9 +2297,11 @@ dialog.rsi-config-dialog.rsi-create-drawer {
   height: 100vh;
   max-height: none;
 }
+
 dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   background: var(--color-backdrop);
 }
+
 .rsi-create-dialog__inner {
   height: 100%;
   min-height: 0;
@@ -1786,12 +2313,14 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   display: flex;
   flex-direction: column;
 }
+
 .rsi-create-dialog__header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
 }
+
 .rsi-create-dialog__close {
   display: inline-flex;
   align-items: center;
@@ -1807,9 +2336,11 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   line-height: 1;
   cursor: pointer;
 }
+
 .rsi-create-dialog__close:hover {
   background: var(--color-rsi-rail-selected);
 }
+
 .rsi-create-dialog__info-bar {
   display: flex;
   align-items: flex-start;
@@ -1821,14 +2352,17 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   margin-bottom: 16px;
   color: var(--color-text-secondary);
 }
+
 .rsi-create-dialog__info-bar span {
-  color: #191919; /* 替换为你想要的颜色值 */
+  color: #191919;
+  /* 替换为你想要的颜色值 */
 }
+
 /* 底部按钮：两个都圆角 999px、宽 84px */
 .rsi-create-dialog__actions .rsi-btn {
   border-radius: 999px;
-  width: 84px;
 }
+
 /* 底部按钮组：固定在抽屉右下角，距底 24px、距右 24px */
 .rsi-create-dialog__actions {
   position: fixed;
@@ -1857,9 +2391,11 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   background-color: var(--color-rsi-page-bg);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
 }
+
 .rsi-fullscreen-canvas::backdrop {
   background: var(--color-backdrop);
 }
+
 .rsi-fullscreen-canvas__inner {
   --rsi-canvas-statusbar-h: 72px;
   position: relative;
@@ -1868,12 +2404,14 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   display: flex;
   flex-direction: column;
 }
+
 .rsi-fullscreen-canvas__content {
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
 }
+
 .rsi-canvas-wrap--fullscreen {
   flex: 1;
   min-width: 0;
@@ -1881,7 +2419,8 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   border: none;
   border-radius: 0;
 }
-.rsi-fullscreen-canvas__content > .rsi-selected-info {
+
+.rsi-fullscreen-canvas__content>.rsi-selected-info {
   position: relative;
   top: auto;
   right: auto;
@@ -1894,23 +2433,24 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
 }
 
 @media (max-width: 900px) {
-  .rsi-detail {
-    padding: 16px 20px;
-  }
   .rsi-canvas-statusbar {
     padding: 0 12px;
   }
+
   .rsi-canvas-statusbar__left {
     gap: 8px;
     overflow-x: auto;
     scrollbar-width: none;
   }
+
   .rsi-canvas-statusbar__left::-webkit-scrollbar {
     display: none;
   }
+
   .rsi-legend {
     display: none;
   }
+
   .rsi-selected-info {
     width: min(320px, calc(100% - 12px));
     padding: 18px;
@@ -1918,31 +2458,30 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
 }
 
 @media (max-width: 620px) {
-  .rsi-detail {
-    padding: 14px;
-  }
-  .rsi-detail__header {
-    flex-direction: column;
-  }
   .rsi-detail__actions {
     width: 100%;
     justify-content: flex-end;
   }
+
   .rsi-detail__tags {
     gap: 7px;
   }
+
   .rsi-detail__tags .rsi-detail__divider,
   .rsi-detail__tags .rsi-detail__tag--meta:nth-of-type(n + 4) {
     display: none;
   }
+
   .rsi-selected-info {
     width: min(340px, calc(100% - 8px));
     padding: 16px;
   }
+
   .rsi-selected-info__metrics {
     gap: 5px;
   }
-  .rsi-selected-info__metrics > div {
+
+  .rsi-selected-info__metrics>div {
     padding: 7px;
   }
 }
@@ -1955,6 +2494,7 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   gap: 2px;
   width: 300px;
 }
+
 .rsi-create-dialog__branch-btn {
   flex: 1;
   height: 36px;
@@ -1971,11 +2511,13 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
     background 0.12s ease,
     color 0.12s ease;
 }
+
 .rsi-create-dialog__branch-btn--active {
   border-color: #1476ff;
   background: #1476ff;
   color: #fff;
 }
+
 .rsi-create-dialog__branch-btn:hover:not(.rsi-create-dialog__branch-btn--active) {
   border-color: #1476ff;
   color: #1476ff;
@@ -1985,9 +2527,11 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
 .rsi-create-dialog__path-input {
   position: relative;
 }
-.rsi-create-dialog__path-input .rsi-input {
+
+.rsi-create-dialog__path-input .ui-input {
   padding-right: 36px;
 }
+
 .rsi-create-dialog__path-btn {
   position: absolute;
   right: 4px;
@@ -2006,6 +2550,7 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   padding: 0;
   transition: color 0.12s ease;
 }
+
 .rsi-create-dialog__path-btn:hover {
   color: #1476ff;
 }
@@ -2098,6 +2643,7 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
 .rsi-segmented-slider {
   width: 100%;
 }
+
 .rsi-segmented-slider__input {
   width: 100%;
   height: 20px;
@@ -2112,12 +2658,11 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
 .rsi-segmented-slider__input::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 3px;
-  background-image: linear-gradient(
-    to right,
-    #1476ff var(--rsi-slider-pct, 0%),
-    var(--color-rsi-canvas-border, #e0e0e0) var(--rsi-slider-pct, 0%)
-  );
+  background-image: linear-gradient(to right,
+      #1476ff var(--rsi-slider-pct, 0%),
+      var(--color-rsi-canvas-border) var(--rsi-slider-pct, 0%));
 }
+
 .rsi-segmented-slider__input::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -2125,12 +2670,13 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   height: 16px;
   border-radius: 50%;
   background: #fff;
-  border: 2px solid var(--color-rsi-canvas-border, #e0e0e0);
+  border: 2px solid var(--color-rsi-canvas-border);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
   cursor: grab;
   margin-top: -5px;
   transition: transform 0.1s ease;
 }
+
 .rsi-segmented-slider__input:active::-webkit-slider-thumb {
   cursor: grabbing;
   transform: scale(1.15);
@@ -2140,31 +2686,33 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
 .rsi-segmented-slider__input::-moz-range-track {
   height: 6px;
   border-radius: 3px;
-  background-image: linear-gradient(
-    to right,
-    #1476ff var(--rsi-slider-pct, 0%),
-    var(--color-rsi-canvas-border, #e0e0e0) var(--rsi-slider-pct, 0%)
-  );
+  background-image: linear-gradient(to right,
+      #1476ff var(--rsi-slider-pct, 0%),
+      var(--color-rsi-canvas-border) var(--rsi-slider-pct, 0%));
 }
+
 .rsi-segmented-slider__input::-moz-range-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
   background: #fff;
-  border: 2px solid var(--color-rsi-canvas-border, #e0e0e0);
+  border: 2px solid var(--color-rsi-canvas-border);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
   cursor: grab;
 }
+
 .rsi-segmented-slider__input:active::-moz-range-thumb {
   cursor: grabbing;
   transform: scale(1.15);
 }
+
 .rsi-segmented-slider__labels {
   display: flex;
   justify-content: space-between;
   margin-top: 8px;
   padding: 0 1px;
 }
+
 .rsi-segmented-slider__label {
   text-align: center;
   font-size: 12px;
@@ -2172,6 +2720,7 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   color: var(--color-rsi-text-muted, #999);
   transition: color 0.15s ease;
 }
+
 .rsi-segmented-slider__label--active {
   color: #1476ff;
   font-weight: 600;
@@ -2181,6 +2730,7 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
 .rsi-model-select {
   position: relative;
 }
+
 .rsi-model-select__trigger {
   display: flex;
   align-items: center;
@@ -2196,23 +2746,28 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   font-size: 13px;
   cursor: pointer;
 }
+
 .rsi-model-select__trigger:hover {
   border-color: var(--color-border-focus);
 }
+
 .rsi-model-select__value {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
+
 .rsi-model-select__label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .rsi-model-select__placeholder {
   color: var(--color-rsi-text-muted);
 }
+
 .rsi-model-select__chevron {
   flex-shrink: 0;
   width: 16px;
@@ -2220,6 +2775,7 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   color: var(--color-rsi-text-muted);
   transition: transform 0.15s ease;
 }
+
 .rsi-model-select__menu {
   position: absolute;
   top: calc(100% + 4px);
@@ -2241,6 +2797,7 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   justify-content: center;
   background: rgba(0, 0, 0, 0.28);
 }
+
 .rsi-confirm {
   width: 360px;
   padding: 24px;
@@ -2248,24 +2805,28 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   background: #ffffff;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16);
 }
+
 .rsi-confirm__title {
   font-size: 16px;
   font-weight: 600;
   line-height: 24px;
   color: #191919;
 }
+
 .rsi-confirm__body {
   margin-top: 8px;
   font-size: 14px;
   line-height: 22px;
   color: #595959;
 }
+
 .rsi-confirm__actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 24px;
 }
+
 .rsi-confirm__btn {
   min-width: 84px;
   border-radius: 999px;

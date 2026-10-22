@@ -14,7 +14,7 @@ import {
   isSymphonyCommandTool,
 } from '../../utils/symphonyCommandDisplay';
 import { describeToolCall } from './toolCategory';
-import { AutoReviewerDetails, AutoReviewerStatusBadge } from './AutoReviewerStatus';
+import { AutoReviewerDetails } from './AutoReviewerStatus';
 
 interface ToolCallDisplayProps {
   toolCall?: ToolCall;
@@ -68,7 +68,6 @@ export function ToolCallDisplay({ toolCall, toolResult }: ToolCallDisplayProps) 
                 </span>
               ) : null}
             </span>
-            <AutoReviewerStatusBadge reviewer={toolCall.reviewer} />
             <DisclosureChevron open={isExpanded} />
           </div>
           {displaySubtitle && (
@@ -141,7 +140,6 @@ export function ToolCallDisplay({ toolCall, toolResult }: ToolCallDisplayProps) 
             )} data-testid="chat-panel-tool-call-card-summary">
               {displaySummary}
             </span>
-            <AutoReviewerStatusBadge reviewer={toolResult.reviewer} />
             <DisclosureChevron open={isExpanded} />
           </div>
         </div>

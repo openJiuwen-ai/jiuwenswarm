@@ -2,6 +2,6 @@
 
 import sys
 
-from jiuwenswarm.runtime.cron import dingtalk_routing as _implementation
+from jiuwenswarm.gateway.runtime.cron import dingtalk_routing as _implementation
 
 sys.modules[__name__] = _implementation

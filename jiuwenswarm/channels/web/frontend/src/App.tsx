@@ -15,6 +15,10 @@ import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
 import { RsiPage } from './features/rsi/RsiPage';
+import { RsiRailPeek } from './features/rsi/components/RsiRailPeek';
+import { useRsiStore } from './features/rsi/rsiStore';
+import { useMediaQuery } from './hooks/useResponsive';
+import { useSecondarySidebarPeek, useSecondarySidebarPreference, type SecondarySidebar } from './hooks/useSecondarySidebar';
 import {
   normalizeRSIEnabled,
   setRSIFeatureEnabled,
@@ -79,6 +83,7 @@ import {
   UserAnswer,
   ModelEntry,
   type MessageForkPoint,
+  type ProjectInfo,
   type Session,
 } from './types';
 import type { WorkMode } from './features/workspace/projectTypes';
@@ -92,7 +97,7 @@ import {
 import {
   loadExternalCliPendingChoices,
   persistExternalCliPendingChoices,
-} from './features/settings/modules/experimental/externalCliInstallState';
+} from './features/settings/modules/agent/externalCliInstallState';
 import {
   ensureSessionRuntimes,
   useSessionStore,
@@ -179,12 +184,21 @@ import {
   setTrajectoryUiEnabled,
   useTrajectoryUiEnabled,
 } from './features/trajectory/featureConfig';
+import {
+  normalizeTrajectoryDiagnosisEnabled,
+  setTrajectoryDiagnosisEnabled,
+  useTrajectoryDiagnosisEnabled,
+} from './features/trajectory/diagnosis/diagnosisFeatureConfig';
 import './App.css';
 import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
 
 const LazyTrajectoryPanel = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryPanel');
   return { default: module.TrajectoryPanel };
+});
+const LazyTrajectoryAnalysisPage = lazy(async () => {
+  const module = await import('./features/trajectory/TrajectoryAnalysisPage');
+  return { default: module.TrajectoryAnalysisPage };
 });
 const CHAT_PANEL_DEFAULT_WIDTH_PCT = 33.33;
 const CHAT_PANEL_MIN_WIDTH_PCT = 20;
@@ -394,6 +408,7 @@ function AppContent({
   const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
   const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
+  const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
   const masterEnabled = usePersonalContextStore(
@@ -402,6 +417,7 @@ function AppContent({
   const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const trajectoryUiEnabled = useTrajectoryUiEnabled();
+  const trajectoryDiagnosisEnabled = useTrajectoryDiagnosisEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
   const [restartModalOpen, setRestartModalOpen] = useState(false);
@@ -436,14 +452,25 @@ function AppContent({
   const {
     isMobile,
     isToolPanelAutoHideViewport,
-    conversationSidebarCollapsed,
-    setConversationSidebarCollapsed,
-    conversationSidebarFloating,
     toolPanelHidden,
     setToolPanelHidden,
   } = useResponsiveLayout();
 
+  const [secondarySidebarCollapsed, setSecondarySidebarCollapsed] = useSecondarySidebarPreference();
+  const {
+    target: sidebarPeek,
+    open: openSidebarPeek,
+    hover: hoverSidebarPeek,
+    close: closeSidebarPeek,
+    surfaceProps: peekSurfaceProps,
+  } = useSecondarySidebarPeek();
+  const isSettingsNarrowViewport = useMediaQuery('(max-width: 640px)');
+  const isRsiNarrowViewport = useMediaQuery('(max-width: 1250px)');
+  const rsiHasExperiments = useRsiStore((s) => s.list.length > 0);
+  const rsiListKnownEmpty = useRsiStore((s) => s.listLoadedOnce && s.list.length === 0);
+
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
+  const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
   const [composerFocusNonce, setComposerFocusNonce] = useState(0);
   const [missingSessionId, setMissingSessionId] = useState<string | null>(null);
   const startupUpdateCheckRef = useRef(false);
@@ -687,19 +714,35 @@ function AppContent({
     )) ?? null;
   }, [currentSession, projects, sessions, sessionId]);
   const mode = useSessionStore((s) => s.runtimes[sessionId]?.mode ?? 'agent');
-  const chatSurfaceView: ChatSurfaceView = trajectoryUiEnabled
-    && (mode === 'agent' || mode === 'team')
+  const surfaceModeSupported = mode === 'agent' || mode === 'team';
+  // The diagnosis view has its own switch: it needs an Agent or Team session that exists, but not the trajectory UI.
+  const diagnosisEntryAvailable = trajectoryDiagnosisEnabled
+    && surfaceModeSupported
+    && sessionId !== NEW_CONVERSATION_ID;
+  const requestedChatSurfaceView: ChatSurfaceView = surfaceModeSupported
     ? (chatSurfaceViews[sessionId] ?? 'chat')
     : 'chat';
+  const chatSurfaceView: ChatSurfaceView = (requestedChatSurfaceView === 'trajectory' && !trajectoryUiEnabled)
+    || (requestedChatSurfaceView === 'diagnosis' && !diagnosisEntryAvailable)
+    ? 'chat'
+    : requestedChatSurfaceView;
   const selectChatSurfaceView = useCallback((nextView: ChatSurfaceView) => {
     if (nextView === 'trajectory') setTrajectoryUiRequested(true);
+    if (nextView === 'diagnosis') setDiagnosisUiRequested(true);
     setChatSurfaceViews((current) => (
       current[sessionId] === nextView
         ? current
         : { ...current, [sessionId]: nextView }
     ));
   }, [sessionId]);
-  const composerDocked = chatSurfaceView === 'trajectory';
+  // The chat header entry opens the diagnosis view, and leaves it for the chat.
+  const toggleDiagnosisView = useCallback(() => {
+    selectChatSurfaceView(chatSurfaceView === 'diagnosis' ? 'chat' : 'diagnosis');
+  }, [chatSurfaceView, selectChatSurfaceView]);
+  const leaveDiagnosisView = useCallback(() => {
+    selectChatSurfaceView('chat');
+  }, [selectChatSurfaceView]);
+  const composerDocked = chatSurfaceView === 'trajectory' || chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
   const toggleTrajectoryComposer = useCallback(() => {
     setTrajectoryComposerCollapsed((current) => ({
@@ -992,14 +1035,23 @@ function AppContent({
     }
   }, [panelExpanded, toolPanelHidden, setToolPanelHidden]);
 
-  const { shouldFullscreen } = useResponsivePanelResize({
+  const { shouldFullscreen, sidebarAutoCollapsed } = useResponsivePanelResize({
     isTeamAreaExpanded,
-    conversationSidebarCollapsed,
-    setConversationSidebarCollapsed,
+    conversationSidebarCollapsed: secondarySidebarCollapsed,
     setSingleAgentPanelExpanded,
     setTeamAreaExpanded,
     mode,
   });
+  const conversationSidebarCollapsed = secondarySidebarCollapsed || isMobile || sidebarAutoCollapsed;
+  const rsiSidebarCollapsed = secondarySidebarCollapsed || isRsiNarrowViewport;
+  const hasFixedSecondarySidebar =
+    ((activeNav === 'chat' || activeNav === 'cron') && !conversationSidebarCollapsed) ||
+    (activeNav === 'experiments' && rsiHasExperiments && !rsiSidebarCollapsed);
+
+  useEffect(() => {
+    if (hasFixedSecondarySidebar || (sidebarPeek === 'settings' && !isSettingsNarrowViewport)) closeSidebarPeek();
+  }, [hasFixedSecondarySidebar, sidebarPeek, isSettingsNarrowViewport, closeSidebarPeek]);
+
   const trajectoryTaskPanelAvailable = toolPanelHasContent || isRestoringTeamHistory;
   const effectiveTeamAreaExpanded = isTeamAreaExpanded;
   const insetTrajectoryFloatingTasks = shouldInsetTrajectoryForFloatingTasks(
@@ -1731,12 +1783,13 @@ function AppContent({
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
+      setTrajectoryDiagnosisEnabled(normalizeTrajectoryDiagnosisEnabled(config.trajectory_ui_diagnosis_enabled));
       setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
       setServerConfig(config);
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {
         modelSetupGuideEvaluatedRef.current = true;
-        if (!isEnterprise() && (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled))) {
+        if (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled)) {
           setActiveNav('chat');
           setModelSetupGuideStep(1);
         }
@@ -1758,7 +1811,7 @@ function AppContent({
   }, [request, t, setAvailableModels]);
 
   useEffect(() => {
-    if (isEnterprise() || !FEATURE_APP_UPDATER_UI || !isConnected || startupUpdateCheckRef.current) {
+    if (!FEATURE_APP_UPDATER_UI || !isConnected || startupUpdateCheckRef.current) {
       return;
     }
     startupUpdateCheckRef.current = true;
@@ -3454,20 +3507,60 @@ function AppContent({
     void handleRestoreSession(target.session_id, target.mode, target);
   }, [enterNewConversation, handleRestoreSession, isToolPanelAutoHideViewport, mode, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
 
+  const handleSelectDesignSession = useCallback((project: ProjectInfo, nextSessionId: string) => {
+    if (isToolPanelAutoHideViewport) {
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
+      setToolPanelHidden(true);
+    }
+    setSelectedProject(project.is_default ? null : project);
+    navigate({
+      kind: 'design-project',
+      projectId: project.project_id,
+      sessionId: nextSessionId,
+    });
+    void handleRestoreSession(nextSessionId);
+  }, [
+    handleRestoreSession,
+    isToolPanelAutoHideViewport,
+    navigate,
+    setSelectedProject,
+    setSingleAgentPanelExpanded,
+    setTeamAreaExpanded,
+    setToolPanelHidden,
+  ]);
+
+  const handleProjectRemoved = useCallback((projectId: string, _removedWorkMode: WorkMode) => {
+    void _removedWorkMode;
+    const selected = useWorkspaceStore.getState().selectedProject;
+    if (selected?.project_id === projectId) {
+      setSelectedProject(null);
+    }
+    if (route.kind === 'design-project' && route.projectId === projectId) {
+      navigate({ kind: 'chat-new' });
+      enterNewConversation(mode, undefined, { clearPreviousSession: true });
+    }
+  }, [enterNewConversation, mode, navigate, route, setSelectedProject]);
+
+  const confirmLeaveSettings = useCallback((): boolean => {
+    if (activeNav !== 'settings' || !settingsHasChangesRef.current) {
+      return true;
+    }
+    return window.confirm(t('settingsPanel.dialog.discardConfirm'));
+  }, [activeNav, t]);
+
   const handleNavigate = useCallback(
-    (nav: MainNavKey) => {
-      if (
-        activeNav === 'settings' &&
-        nav !== 'settings' &&
-        settingsHasChangesRef.current &&
-        !window.confirm(t('settingsPanel.dialog.discardConfirm'))
-      ) {
-        return;
+    (nav: MainNavKey, peekTarget: SecondarySidebar | null = null): boolean => {
+      if (nav !== 'settings' && !confirmLeaveSettings()) {
+        return false;
       }
+      if (peekTarget) openSidebarPeek(peekTarget);
+      else closeSidebarPeek();
+      // 创建对话框信号一次性消费：归零避免携带旧 nonce 重进实验页时误开对话框
+      setRsiOpenCreateNonce(0);
       if (nav !== 'settings') setRequestedSettingsModuleId(null);
       setActiveNav(nav);
       if (nav === 'chat') {
-        setConversationSidebarCollapsed(false);
         if (isMobile) {
           setTeamAreaExpanded(false);
           setSingleAgentPanelExpanded(false);
@@ -3481,9 +3574,43 @@ function AppContent({
       if (nav === 'agents') setHasVisitedAgents(true);
       if (nav === 'skills') setHasVisitedSkills(true);
       if (nav === 'personalContext') setHasVisitedPersonalContext(true);
+      if (nav === 'design') {
+        setTeamAreaExpanded(false);
+        setToolPanelHidden(true);
+      }
+      return true;
     },
-    [activeNav, isMobile, modelSetupGuideStep, setSingleAgentPanelExpanded, setHasVisitedPersonalContext, setRequestedSettingsModuleId, setTeamAreaExpanded, setToolPanelHidden, t],
+    [
+      closeSidebarPeek,
+      openSidebarPeek,
+      confirmLeaveSettings,
+      isMobile,
+      modelSetupGuideStep,
+      setSingleAgentPanelExpanded,
+      setHasVisitedPersonalContext,
+      setRequestedSettingsModuleId,
+      setTeamAreaExpanded,
+      setToolPanelHidden,
+    ],
   );
+
+  const handleNavItemClick = (nav: MainNavKey) => {
+    const peekTarget = (
+      (nav === 'chat' && conversationSidebarCollapsed) ||
+      (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed) ||
+      (nav === 'settings' && isSettingsNarrowViewport)
+    ) ? nav : null;
+    handleNavigate(nav, peekTarget);
+  };
+
+  const pinSecondarySidebar = (target: SecondarySidebar) => {
+    if (!handleNavigate(target === 'chat' && activeNav === 'cron' ? 'cron' : target)) return;
+    setSecondarySidebarCollapsed(false);
+    if (target === 'chat' && sidebarAutoCollapsed) {
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
+    }
+  };
 
   const handleNavigateToAgentManagement = useCallback(
     (target: 'agent' | 'group' = 'agent') => {
@@ -3681,11 +3808,22 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       {/* Navigation Sidebar */}
       <SessionSidebar
         activeNav={activeNav}
-        onNavigate={handleNavigate}
+        onNavigate={handleNavItemClick}
         onNewSession={handleNewSession}
         showNewSession={false}
         hiddenNavItems={hiddenNavItems}
         applicationPlugins={isEnterprise() ? [] : visibleApplicationPlugins}
+        onNavItemHover={(key) => {
+          const target = (
+            key === 'chat' ||
+            (key === 'settings' && isSettingsNarrowViewport) ||
+            (key === 'experiments' && !rsiListKnownEmpty)
+          ) ? key : null;
+          hoverSidebarPeek(!hasFixedSecondarySidebar ? target : null);
+        }}
+        onNavItemPointerDownCapture={(key) => {
+          if (key === sidebarPeek) peekSurfaceProps.onPointerDownCapture();
+        }}
       />
 
       {modelSetupGuideStep !== null ? (
@@ -3710,6 +3848,35 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         )}
 
+        {sidebarPeek && sidebarPeek !== 'settings' && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
+          <div className="chat-layout--peek-host" {...peekSurfaceProps}>
+            {sidebarPeek === 'chat' ? (
+              <ConversationSidebar
+                activeSessionId={activeNav === 'cron' || sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                onNew={(options) => requestSessionNavigation('new', options)}
+                onSelect={requestSessionNavigation}
+                onSelectDesignSession={handleSelectDesignSession}
+                activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
+                onProjectRemoved={handleProjectRemoved}
+                onOpenCron={() => handleNavigate('cron')}
+                isCronActive={activeNav === 'cron'}
+                collapsed={false}
+                floating
+                peek
+                onToggleCollapse={isMobile ? undefined : () => pinSecondarySidebar('chat')}
+              />
+            ) : (
+              <RsiRailPeek
+                onOpenExperiments={() => handleNavigate('experiments')}
+                onCreate={() => {
+                  if (handleNavigate('experiments')) setRsiOpenCreateNonce((n) => n + 1);
+                }}
+                onPin={isRsiNarrowViewport ? undefined : () => pinSecondarySidebar('experiments')}
+              />
+            )}
+          </div>
+        )}
+
         {activeNav === 'chat' && (
           <>
             <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
@@ -3717,11 +3884,13 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
+                onSelectDesignSession={handleSelectDesignSession}
+                activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
+                onProjectRemoved={handleProjectRemoved}
                 onOpenCron={() => handleNavigate('cron')}
                 isCronActive={false}
                 collapsed={conversationSidebarCollapsed}
-                floating={conversationSidebarFloating}
-                onToggleCollapse={() => setConversationSidebarCollapsed((v) => !v)}
+                onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed((v) => !v); }}
               />
               <div
                 className={`chat-workspace flex-1 flex min-h-0 overflow-hidden ${insetTrajectoryFloatingTasks ? 'chat-workspace--trajectory-floating-tools' : ''}`}
@@ -3803,9 +3972,30 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onToggleComposerCollapsed={toggleTrajectoryComposer}
                         onComposerHeightChange={setTrajectoryComposerHeight}
                         onContinueQueuedSessionMessages={handleContinueQueuedSessionMessages}
+                        diagnosisEntryAvailable={diagnosisEntryAvailable}
+                        diagnosisActive={chatSurfaceView === 'diagnosis'}
+                        onToggleDiagnosis={toggleDiagnosisView}
                       />
                     )}
                     chatLabel={t('nav.chat')}
+                    diagnosis={(
+                      <Suspense
+                        fallback={(
+                          <div className="trajectory-view-loading">
+                            {t('trajectory.loading')}
+                          </div>
+                        )}
+                      >
+                        <LazyTrajectoryAnalysisPage
+                          active={chatSurfaceView === 'diagnosis'}
+                          mode={mode}
+                          sessionId={sessionId}
+                          onBack={leaveDiagnosisView}
+                        />
+                      </Suspense>
+                    )}
+                    diagnosisEnabled={diagnosisEntryAvailable}
+                    diagnosisRequested={diagnosisUiRequested}
                     mode={mode}
                     onViewChange={selectChatSurfaceView}
                     tabListLabel={t('trajectory.tabs.aria')}
@@ -3889,7 +4079,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         )}
         {activeNav === 'experiments' && (
           <div className="app-section">
-            <RsiPage />
+            <RsiPage
+              collapsed={rsiSidebarCollapsed}
+              onCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed((v) => !v); }}
+              openCreateNonce={rsiOpenCreateNonce}
+            />
           </div>
         )}
         {hasVisitedAgents && (
@@ -3936,8 +4130,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onOpenCron={() => handleNavigate('cron')}
               isCronActive
               collapsed={conversationSidebarCollapsed}
-              floating={conversationSidebarFloating}
-              onToggleCollapse={() => setConversationSidebarCollapsed((v) => !v)}
+              onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed((v) => !v); }}
             />
             <div className="chat-workspace flex-1 flex min-h-0 overflow-hidden">
               <CronPanel
@@ -3970,8 +4163,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             </div>
           </div>
         )}
-        {activeNav === 'settings' && (
-          <div className="app-section">
+        {(activeNav === 'settings' || (isSettingsNarrowViewport && sidebarPeek === 'settings' && !hasFixedSecondarySidebar)) && (
+          <div className={activeNav === 'settings' ? 'app-section' : 'app-section--peek-only'}>
             <SettingsPage
               definition={settingsPageDefinition}
               appVersion={typeof serverConfig?.app_version === 'string' ? serverConfig.app_version : undefined}
@@ -3983,15 +4176,18 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onSelectExternalCliPath={selectExternalCliPath}
               onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
               externalCliInstallStatuses={externalCliInstallStatuses}
-              externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
-                (status) => status?.status === 'running',
-              )}
-              onOpenExternalCliInstallDialog={() => setExternalCliInstallDialogOpen(true)}
               externalCliPendingChoices={externalCliPendingChoices}
               onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
               externalCliDetectResults={externalCliDetectResults}
               onExternalCliDetectResultsChange={setExternalCliDetectResults}
               initialModuleId={requestedSettingsModuleId ?? undefined}
+              sidebar={{
+                isActive: activeNav === 'settings',
+                collapsed: isSettingsNarrowViewport,
+                peek: isSettingsNarrowViewport && sidebarPeek === 'settings' && !hasFixedSecondarySidebar,
+                surfaceProps: peekSurfaceProps,
+                onNavigate: () => { handleNavigate('settings'); },
+              }}
             />
           </div>
         )}

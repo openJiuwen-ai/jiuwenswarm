@@ -17,9 +17,9 @@ from typing import Any, Callable
 
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel, RobotMessageRouter
-from jiuwenswarm.extensions.agentos.auth.ssh_authenticator import SshPublicKeyAuthenticator
-from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import AgentOSSshKeyIssuer, SshKeyIssuer
-from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import KeyRegistry
+from jiuwenswarm.gateway.extensions.auth.ssh_authenticator import SshPublicKeyAuthenticator
+from jiuwenswarm.gateway.extensions.auth.ssh_key_issuer import AgentOSSshKeyIssuer, SshKeyIssuer
+from jiuwenswarm.gateway.extensions.auth.ssh_key_registry import KeyRegistry
 from jiuwenswarm.gateway.channel_manager.protocol.ssh.config import proxy_config_from_dict
 from jiuwenswarm.gateway.channel_manager.protocol.ssh.server import SSHAgentHooks, SSHProxy
 

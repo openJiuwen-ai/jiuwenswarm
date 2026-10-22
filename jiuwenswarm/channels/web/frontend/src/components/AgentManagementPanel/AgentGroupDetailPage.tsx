@@ -8,7 +8,6 @@ import type {
   DefinitionFileEntry,
   RequestStatus,
 } from '../../features/agentManagement';
-import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
 import { GroupAvatar } from './GroupCard';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
@@ -80,7 +79,7 @@ export function AgentGroupDetailPage({
             <>
               <EntityHeader
                 testId="agent-management-detail-header"
-                avatar={<GroupAvatar item={loadingSummary} size="detail" />}
+                avatar={<GroupAvatar item={loadingSummary} />}
                 title={loadingSummary.displayName}
                 titleTestId="agent-management-detail-name"
                 tags={[
@@ -146,10 +145,9 @@ export function AgentGroupDetailPage({
         {t('agentManagement.actions.back')}
       </button>
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
-        <PublicationDetailStatus kind="agent_group" localId={detail.id} />
         <EntityHeader
           testId="agent-management-detail-header"
-          avatar={<GroupAvatar item={detail} size="detail" />}
+          avatar={<GroupAvatar item={detail} />}
           title={detail.displayName}
           titleTestId="agent-management-detail-name"
           tags={[

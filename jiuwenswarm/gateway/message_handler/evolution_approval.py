@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from jiuwenswarm.common.schema.message import Message, ReqMethod
-from jiuwenswarm.runtime.evolution import (
+from jiuwenswarm.gateway.runtime.evolution import (
     SKILL_EVOLUTION_APPROVAL_SCHEMA as SKILL_EVOLUTION_APPROVAL_SCHEMA,
     SKILL_EVOLUTION_APPROVAL_SOURCE as SKILL_EVOLUTION_APPROVAL_SOURCE,
     ensure_regular_evolution_approval_metadata,

@@ -133,3 +133,36 @@ async def test_trajectory_bridge_retries_through_front_after_reconnect() -> None
     finally:
         await bridge.unbind()
     test_logger.info("Front reconnect delivered the retained trajectory watermark")
+
+
+def test_runtime_send_push_without_gateway_warning_is_rate_limited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server import agent_ws_server
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    now = [100.0]
+    monkeypatch.setattr(agent_ws_server.time, "monotonic", lambda: now[0])
+    messages: list[str] = []
+
+    class _RecordingLogger:
+        def warning(self, msg: str, *args: object) -> None:
+            messages.append(msg % args if args else msg)
+
+        info = warning
+
+    monkeypatch.setattr(agent_ws_server, "logger", _RecordingLogger())
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+
+    for _ in range(5):
+        server._warn_push_without_gateway()  # pylint: disable=protected-access
+    now[0] += agent_ws_server._PUSH_NO_GATEWAY_WARN_INTERVAL_S + 1  # pylint: disable=protected-access
+    server._warn_push_without_gateway()  # pylint: disable=protected-access
+    server._warn_push_without_gateway()  # pylint: disable=protected-access
+    server._reset_push_no_gateway_warning()  # pylint: disable=protected-access
+
+    warnings = [message for message in messages if "无活跃 Gateway 连接" in message]
+    assert len(warnings) == 2
+    assert "另有 4 条" in warnings[1]
+    assert any("此前 1 条" in message for message in messages)
+    test_logger.info("missing-Gateway push warnings were summarized per window")

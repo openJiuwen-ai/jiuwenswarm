@@ -784,9 +784,9 @@ def attach_trajectory_routes(
 
 
 def _load_session_metadata(session_id: str) -> Mapping[str, Any]:
-    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
+    from jiuwenswarm.common.external_providers import provider
 
-    return get_session_metadata(
+    return provider("session_metadata").get_session_metadata(
         session_id,
         cache_bust=True,
         enable_writeback=False,
@@ -962,9 +962,21 @@ def _error_response(error: str, code: str, status_code: int) -> JSONResponse:
     )
 
 
+def validate_http_origin(request: Request) -> Response | None:
+    """Apply the shared browser-origin gate; ``None`` means the request may proceed."""
+    return _validate_http_origin(request)
+
+
+def load_session_metadata(session_id: str) -> Mapping[str, Any]:
+    """Load persisted session metadata without writing back."""
+    return _load_session_metadata(session_id)
+
+
 __all__ = [
     "TRAJECTORY_API_PREFIX",
     "TRAJECTORY_ARCHIVE_ENTRY_NAME",
     "TrajectoryHttpService",
     "attach_trajectory_routes",
+    "load_session_metadata",
+    "validate_http_origin",
 ]

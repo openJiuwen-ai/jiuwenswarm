@@ -15,9 +15,13 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import { Users } from 'lucide-react';
-import { useTeamSelectorStore, type RuntimeTeamInfo } from '../../stores';
+import { conversationKey, useSessionStore, useTeamSelectorStore, type RuntimeTeamInfo } from '../../stores';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import { webClient } from '../../services/webClient';
+import type { AgentGroupCatalogItem, AgentGroupIdentity } from '../../features/agentManagement/types';
+import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
+import { resolveOrganizationTeamIdentity, resolveOrganizationTeamLabel } from '../../features/teamOrganization/teamIdentity';
+import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
 const MENU_GAP = 10;
 const MENU_MAX_HEIGHT = 260;
@@ -42,22 +46,22 @@ function stateTone(state: string): 'running' | 'idle' | 'unknown' {
   return 'unknown';
 }
 
-/** 下拉优先显示 AgentGroup 名称；旧会话没有该字段时回退到运行时 Team ID。 */
-function teamLabel(team: RuntimeTeamInfo, fallback: string): string {
-  const agentGroupName = team.agent_group_name?.trim();
-  if (agentGroupName) return agentGroupName;
-  const id = (team.team_id || team.team_name || '').trim();
-  return id || team.display_name?.trim() || fallback;
+/** 下拉显示专家团目录中的名称；未绑定模板的 Team 保留运行时名称。 */
+function teamLabel(team: RuntimeTeamInfo, identity: AgentGroupIdentity | null, language: string, fallback: string): string {
+  if (identity) return resolveTeamGroupDisplayName(identity, language);
+  return resolveOrganizationTeamLabel(team, [], fallback);
 }
 
 export interface TeamSelectorProps {
   sessionId: string | null;
+  groups?: AgentGroupCatalogItem[];
   /** 当前 session 是否正在跑一轮。运行中会周期性重拉 team 列表：team 是这一轮里由 org 工具现建的。 */
   isProcessing?: boolean;
 }
 
-export function TeamSelector({ sessionId, isProcessing = false }: TeamSelectorProps) {
-  const { t } = useTranslation();
+export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: TeamSelectorProps) {
+  const { t, i18n } = useTranslation();
+  const organizationUiEnabled = useTeamOrganizationUiEnabled();
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [direction, setDirection] = useState<'up' | 'down'>('up');
@@ -65,12 +69,22 @@ export function TeamSelector({ sessionId, isProcessing = false }: TeamSelectorPr
   const portalRef = useRef<HTMLDivElement>(null);
 
   const runtime = useTeamSelectorStore((s) => (sessionId ? s.runtimes[sessionId] : undefined));
+  const sessionRuntimes = useSessionStore((s) => s.runtimes);
+  const resolveIdentity = (team: RuntimeTeamInfo | null) => resolveOrganizationTeamIdentity(
+    team,
+    groups,
+    team && sessionId
+      ? sessionRuntimes[conversationKey(sessionId, team.is_owner ? null : team.team_id)]?.teamGroupIdentity
+      : null,
+  );
   const teamCount = runtime?.teams.length ?? 0;
   const fetchTeams = useTeamSelectorStore((s) => s.fetchTeams);
   const selectTeam = useTeamSelectorStore((s) => s.selectTeam);
 
   // 只有真正的会话才去问后端；新会话（NEW_CONVERSATION_ID）与空态直接跳过。
-  const isRealSession = Boolean(sessionId && sessionId !== 'new' && sessionId !== NEW_CONVERSATION_ID);
+  const isRealSession = Boolean(
+    organizationUiEnabled && sessionId && sessionId !== 'new' && sessionId !== NEW_CONVERSATION_ID,
+  );
 
   // 首次拿到 team 列表后，把默认项也真正"选中"一次：store 里 fetchTeams 已经根据
   // 列表把 selectedTeamId 定下来了，但那只影响事件过滤，视图数据还得靠 team.snapshot
@@ -195,9 +209,12 @@ export function TeamSelector({ sessionId, isProcessing = false }: TeamSelectorPr
   const teams = runtime?.teams ?? [];
   const loading = runtime?.loading ?? false;
   // 没拉到 team 时整体不渲染：集群模式的老会话/未启用 team 的场景不该多出一个空下拉。
-  if (!loading && teams.length === 0) return null;
+  if (!organizationUiEnabled || (!loading && teams.length === 0)) return null;
 
-  const label = selected ? teamLabel(selected, t('chat.teamSelect.fallbackLabel')) : t('chat.teamSelect.loadingLabel');
+  const identity = resolveIdentity(selected);
+  const label = selected
+    ? teamLabel(selected, identity, i18n.language, t('chat.teamSelect.fallbackLabel'))
+    : t('chat.teamSelect.loadingLabel');
 
   return (
     <div
@@ -219,6 +236,14 @@ export function TeamSelector({ sessionId, isProcessing = false }: TeamSelectorPr
           <span className="chat-mode-select__icon" aria-hidden="true">
             <TeamStateDot state={String(selected?.state ?? '')} />
           </span>
+          {identity?.avatarUrl && (
+            <img
+              src={identity.avatarUrl}
+              alt=""
+              className="h-5 w-5 shrink-0 rounded object-contain"
+              data-testid="chat-panel-team-select-avatar"
+            />
+          )}
           <span className="chat-mode-select__label">{label}</span>
         </span>
         <svg
@@ -265,6 +290,7 @@ export function TeamSelector({ sessionId, isProcessing = false }: TeamSelectorPr
           >
             {teams.map((team) => {
               const isActive = selected?.team_id === team.team_id;
+              const teamIdentity = resolveIdentity(team);
               return (
                 <button
                   type="button"
@@ -289,7 +315,22 @@ export function TeamSelector({ sessionId, isProcessing = false }: TeamSelectorPr
                     <span className="chat-mode-select__icon" aria-hidden="true">
                       <TeamStateDot state={String(team.state ?? '')} />
                     </span>
-                    <span className="chat-mode-select__label">{teamLabel(team, team.team_id)}</span>
+                    {teamIdentity?.avatarUrl && (
+                      <img
+                        src={teamIdentity.avatarUrl}
+                        alt=""
+                        className="h-5 w-5 shrink-0 rounded object-contain"
+                        data-testid="chat-panel-team-select-option-avatar"
+                        data-variant={team.team_id}
+                      />
+                    )}
+                    <span
+                      className="chat-mode-select__label"
+                      data-testid="chat-panel-team-select-option-label"
+                      data-variant={team.team_id}
+                    >
+                      {teamLabel(team, teamIdentity, i18n.language, team.team_id)}
+                    </span>
                   </span>
                   {isActive && (
                     <svg

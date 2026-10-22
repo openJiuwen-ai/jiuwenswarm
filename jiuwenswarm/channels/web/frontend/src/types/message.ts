@@ -19,6 +19,9 @@ export interface MediaItem {
   mimeType: string;
   mime_type?: string;
   filename: string;
+  /** 展示用的名字（比如任务素材被改过名）；不影响 filename 承担的扩展名识别/下载文件名。
+   *  没有的话渲染时回退到 filename。 */
+  displayName?: string;
   base64Data?: string;
   base64_data?: string;
   url?: string;

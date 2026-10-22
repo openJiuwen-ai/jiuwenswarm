@@ -31,6 +31,7 @@ from typing import Final
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_root_dir
+from jiuwenswarm.common.work_mode import SUPPORTED_WORK_MODES
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
     GatewayAdapter,
     build_error_response,
@@ -79,6 +80,8 @@ def _is_previewable(item: object) -> bool:
     content = item.get("content")
     has_content = isinstance(content, str) and bool(content.strip())
     if role == "user":
+        if str(item.get("event_type") or "").startswith("design."):
+            return False
         return has_content
     # 非 user 记录只放行白名单内的对话类型（兼容团队成员回复的 teammate 等 role）
     return item.get("event_type") in _PREVIEW_CHAT_EVENT_TYPES and has_content
@@ -236,7 +239,28 @@ class SessionAdapter(GatewayAdapter):
             offset = parse_int_param(
                 params, "offset", 0, minimum=0, maximum=10**9
             )
-            sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
+            raw_work_mode = params.get("work_mode")
+            if isinstance(raw_work_mode, str) and raw_work_mode.strip():
+                work_mode = raw_work_mode.strip().lower()
+                if work_mode not in SUPPORTED_WORK_MODES:
+                    return build_error_response(
+                        request, f"invalid work_mode: {work_mode!r}", code="BAD_REQUEST"
+                    )
+                # Filtering must happen before pagination. Reload the complete
+                # metadata set so totals and offsets remain mode-local.
+                all_sessions, _ = get_all_sessions_metadata(
+                    limit=10**9,
+                    offset=0,
+                )
+                matching = [
+                    session
+                    for session in all_sessions
+                    if str(session.get("work_mode") or "").strip().lower() == work_mode
+                ]
+                total = len(matching)
+                sessions = matching[offset: offset + limit]
+            else:
+                sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[SessionAdapter] session.list failed: %s", exc)
             # 按通道保持迁移前的失败契约：

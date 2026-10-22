@@ -496,6 +496,10 @@ _WORKFLOW_AGENT_SUMMARY_KEEP_KEYS = (
     "started_at", "completed_at", "duration_ms", "token_count",
     "input_token_count", "output_token_count", "cache_token_count",
     "correlation_id", "member_name", "parent_session_id",
+    # Node identity the tree renders the avatar / subtitle from; a cold restore
+    # rebuilds every row from this summary, so losing them repaints experts and
+    # third-party nodes as plain workers.
+    "agent_type", "agent_template", "display_name",
 )
 _WORKFLOW_AGENT_SUMMARY_PREVIEW_CHARS = 200
 

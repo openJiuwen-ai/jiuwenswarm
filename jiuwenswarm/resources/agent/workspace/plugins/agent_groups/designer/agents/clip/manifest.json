@@ -1,0 +1,42 @@
+{
+  "package_type": "agent_template",
+  "name": "clip",
+  "display_name": {
+    "zh": "视频镜头师",
+    "en": "Shot Video Artist"
+  },
+  "description": "按分镜行用角色设定和场景图生成一个镜头视频，并交回视频产物。",
+  "persona": {
+    "dir": "persona"
+  },
+  "tools": [
+    {
+      "file": "tools/read_node_context.py",
+      "class": "ReadNodeContext"
+    },
+    {
+      "file": "tools/generate_shot_video.py",
+      "class": "GenerateShotVideo"
+    },
+    {
+      "file": "tools/submit_node_output.py",
+      "class": "SubmitNodeOutput"
+    }
+  ],
+  "rails": [
+    {
+      "file": "rails/node_guard.py",
+      "class": "NodeGuardRail"
+    }
+  ],
+  "skills": [
+    {
+      "dir": "skills/clip",
+      "mode": "all"
+    }
+  ],
+  "metadata": {
+    "node_type": "clip",
+    "output_kind": "video"
+  }
+}

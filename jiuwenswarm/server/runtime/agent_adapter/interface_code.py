@@ -20,6 +20,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from openjiuwen.core.foundation.llm import Model
@@ -44,6 +45,7 @@ from openjiuwen.harness.schema.deep_agent_spec import (
     WorkspaceSpec,
 )
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
+from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
@@ -57,7 +59,7 @@ from openjiuwen.harness.tools import (
 )
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -89,6 +91,12 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
 from jiuwenswarm.agents.harness.common.electron_sideview import apply_session_sideview_target
+from jiuwenswarm.agents.harness.common.cua_defaults import (
+    DEFAULT_CUA_AGENT_MAX_ITERATIONS,
+    build_cua_agent_card,
+    cua_model_rejects_images,
+    resolve_cua_factory_options,
+)
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
 )
@@ -123,7 +131,13 @@ from jiuwenswarm.server.runtime.agent_adapter.code_agent_rail import CodeAgentRa
 from jiuwenswarm.common.task_loop_config import (
     resolve_task_loop_completion_timeout,
 )
-from jiuwenswarm.common.runtime_workspace import resolve_runtime_workspace_paths
+from jiuwenswarm.common.runtime_workspace import (
+    resolve_runtime_workspace_paths, resolve_bound_runtime_workspace_paths,
+)
+from jiuwenswarm.common.mode_matrix import supports_single_agent_permission_profile
+from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
+    PERMISSION_GROUP_TYPES, PermissionRailGroup,
+)
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
 )
@@ -426,6 +440,7 @@ _TOOL_BUILD_NAMES: dict[str, str] = {
     "user_todos": "_build_user_todos_tool",
     "skill_toolkit": "_build_skill_toolkit",
     "skill_retrieval": "_build_skill_retrieval_toolkit",
+    "tool_retrieval": "_build_tool_retrieval_toolkit",
     "acp_chat": "_build_acp_chat_tool",
     "request_a4p_intent_authorization": "_build_a4p_tools",
 }
@@ -599,6 +614,43 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._code_graph_warmup_task.cancel()
         await super().cleanup()
 
+    def _auto_permission_profile_supported(self) -> bool:
+        if self._is_cron_execution or not supports_single_agent_permission_profile(
+            self._session_instance_mode, self._session_instance_sub_mode,
+        ):
+            return False
+        spec = getattr(self, "_session_instance_spec", None)
+        return spec is None or any(
+            rail.type == code_agent_spec.CODE_RAIL_BUNDLE for rail in (spec.rails or [])
+        )
+
+    def _prepare_general_purpose_permission_update(self, expected, *, smart):
+        # Code children own their definitions and resources; F01 updates only root rails.
+        return self._instance.deep_config.subagents, self._general_purpose_rail_snapshot
+
+    async def _isolate_permission_instance(self) -> None:
+        self._permission_state.begin_permission_isolation()
+        cleanup_failed = False
+        # Providers can register owned tools before Spec.build returns an instance.
+        artifacts = getattr(self._code_build_context, "artifacts", None)
+        for tool in getattr(artifacts, "tools", ()):
+            try:
+                unregister_tool(tool)
+            except BaseException as exc:
+                cleanup_failed = True
+                logger.error("[JiuwenSwarmCodeAdapter] isolated Spec tool cleanup failed: %s", exc)
+        await super()._isolate_permission_instance()
+        if cleanup_failed:
+            self._permission_state.finish_cleanup(complete=False)
+
+    async def _replace_permission_group(self, config_base, *, snapshot=None):
+        previous = {id(rail) for rail in self._code_spec_rails}
+        await super()._replace_permission_group(config_base, snapshot=snapshot)
+        self._code_spec_rails = [
+            rail for rail in self._instance.configured_rails()
+            if id(rail) in previous or isinstance(rail, PERMISSION_GROUP_TYPES)
+        ]
+
     # ─── Language override ────────────────────────
 
     @staticmethod
@@ -755,6 +807,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
         self._default_model_name = model_name
         self._model_cache.clear()
+        self._model_recipes = {}
+        self._model_alias_to_key = {}
         self._model_cache[model_name] = model
         self._model_name_to_keys.clear()
         self._model_name_to_keys[model_name] = [model_name]
@@ -867,7 +921,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             system_prompt=build_code_system_prompt(
                 code_graph_profile=self._code_graph_flags(config_base).root_prompt_profile,
             ),
-            workspace_root=self._agent_workspace_dir,
+            workspace_root=(
+                str(self._permission_workspace_root)
+                if self._auto_permission_enabled_for_config(
+                    config_base.get("permissions"), composition_scope="single_agent",
+                ) else self._agent_workspace_dir
+            ),
             project_dir=self._project_dir,
             sys_operation=self._sys_operation,
             language=self._resolve_runtime_language(),
@@ -887,6 +946,28 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     # ─── 初始化 ──────────────────────────────
 
     async def create_instance(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        mode: str = "code",
+        sub_mode: str = None,
+        spec: DeepAgentSpec | None = None,
+        build_context: BuildContext | None = None,
+        agent_definition: dict[str, Any] | None = None,
+    ) -> None:
+        if self._permission_state.permission_isolated:
+            raise RuntimeError("permission_session_isolated")
+        try:
+            await self._create_instance(
+                config, mode=mode, sub_mode=sub_mode, spec=spec,
+                build_context=build_context, agent_definition=agent_definition,
+            )
+        except BaseException:
+            if self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
+                await self._isolate_permission_instance()
+            raise
+
+    async def _create_instance(
         self,
         config: dict[str, Any] | None = None,
         *,
@@ -944,9 +1025,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             or ""
         ).strip() or getattr(self, "_channel_id", "")
 
+        self._is_cron_execution = self._channel_id == "__cron__"
+
         await self.set_checkpoint()
 
         self._instance_overrides = dict(config or {}) if isinstance(config, dict) else {}
+        if "moa_enabled" in self._instance_overrides and not isinstance(self._instance_overrides["moa_enabled"], bool):
+            raise ValueError("moa_enabled must be a boolean")
         config_base = get_config()
         if self._instance_overrides.get("run_permissions_enabled"):
             config_base = deepcopy(config_base)
@@ -980,6 +1065,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # 用于 coding_memory、todo文件等不应写入用户项目目录的数据。
         self._agent_workspace_dir = str(get_agent_workspace_dir())
         self._runtime_workspace_dir = self._project_dir
+        if self._uses_smart_permission_lifecycle(config_base):
+            self._prepare_permission_workspace_binding()
+        self._permission_workspace_root = self._resolve_permission_workspace_root()
+        self._platform_trusted_root = Path(get_agent_workspace_dir()).resolve(strict=False)
 
         self._dreaming_mode = "code"
 
@@ -995,8 +1084,21 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             return
 
         model: Model | None = None
-        if spec is None or spec.model is None:
-            model = self._create_model(config_base)
+        from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled
+
+        if effective_moa_enabled(
+            self._instance_overrides.get("moa_config_snapshot") or config_base,
+            self._instance_overrides.get("moa_model_selection"),
+            mode=self._session_instance_mode,
+            is_cron=self._is_cron_execution_session(self._parent_session_id),
+        ):
+            model = self._prepare_moa_for_build(config_base)
+        else:
+            self._moa_enabled = False
+            self._moa_runtime = None
+            self._moa_fingerprint = None
+            if spec is None or spec.model is None:
+                model = self._create_model(config_base)
 
         # 权限护栏由 openjiuwen PermissionInterruptRail + ToolPermissionHost 接管；
         # 无需初始化 jiuwenswarm 内置 PermissionEngine（已弃用）。
@@ -1010,6 +1112,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     "sys_operation is not available, maybe task is not running"
                 )
             self._sys_operation = sys_operation
+
+        if self._uses_smart_permission_lifecycle(config_base):
+            epoch, global_layer, effective = self._capture_permission_version()
+            config_base = {**config_base, "permissions": global_layer}
+            self._config_base_cache = config_base.copy()
+            self._permission_state.stage_pending_permission_capture(epoch, effective)
 
         if spec is None:
             if model is None:
@@ -1034,8 +1142,18 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 model=model,
                 build_context=self._code_build_context,
             )
+        self._code_build_context.moa = self._moa_runtime.config if self._moa_runtime is not None else None
+        if self._moa_runtime is not None:
+            # A custom Spec remains serializable; its model must use the
+            # selected aggregator for this session's enhanced execution.
+            self._code_agent_spec = self._code_agent_spec.model_copy(update={"model": ModelSpec(
+                model_client_config=model.model_client_config,
+                model_request_config=model.model_config,
+            )})
         self._instance = self._code_agent_spec.build(self._code_build_context)
-        if spec is not None:
+        if self._moa_runtime is not None:
+            self._apply_model_to_react_agent(model, session_id=self._parent_session_id)
+        if spec is not None and self._moa_runtime is None:
             built_model = getattr(self._instance.deep_config, "model", None)
             if built_model is not None:
                 self._adopt_code_spec_model(built_model)
@@ -1090,10 +1208,30 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
             install_tool_allowlist(self._instance.ability_manager, agent_definition["tools"])
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None,
-            lambda: asyncio.run(self._instance.ensure_initialized()),
+        instance = self._instance
+        initialization = loop.run_in_executor(
+            None, lambda: asyncio.run(instance.ensure_initialized()),
         )
+        if not self._enable_auto_permission:
+            await initialization
+        else:
+            try:
+                await asyncio.shield(initialization)
+            except BaseException:
+                # Cancelling the await cannot stop the SDK's initialization thread.
+                # Close admission now, then settle it before shared isolation tears
+                # down callbacks/tools, so no late registration follows cleanup.
+                self._permission_state.begin_permission_isolation()
+                while not initialization.done():
+                    try:
+                        await asyncio.shield(initialization)
+                    except asyncio.CancelledError:
+                        continue
+                    except BaseException:
+                        break
+                if not initialization.cancelled():
+                    initialization.exception()
+                raise
         # 修正 .agent_history 写入路径：openjiuwen 文件工具默认将
         # .agent_history 写到 Workspace.root_path（即项目目录），
         # 这里覆写为 agent 系统 workspace，避免污染用户项目目录。
@@ -1102,7 +1240,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 if hasattr(tool, '_workspace_path'):
                     setattr(tool, '_workspace_path', self._agent_workspace_dir)
         initial_workspace = self._project_dir or self._agent_workspace_dir
-        self._seed_runtime_cwd(initial_workspace, workspace=initial_workspace)
+        if self._enable_auto_permission:
+            paths = self._require_permission_workspace_binding()
+            initial_workspace = str(paths.runtime_workspace_root)
+            self._instance.deep_config.cwd = str(paths.cwd)
+            self._instance.deep_config.project_root = initial_workspace
+        self._seed_runtime_cwd(
+            str(self._require_permission_workspace_binding().cwd)
+            if self._enable_auto_permission else initial_workspace,
+            workspace=initial_workspace,
+        )
 
         setattr(self._instance, "_jiuwenswarm_adapter_mode", "code")
         setattr(
@@ -1137,6 +1284,21 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         await self._load_active_packages()
         await self.load_user_rails()
         await self._sync_code_graph(config_base)
+        if self._enable_auto_permission:
+            await self._instance.ensure_initialized()
+            expected = PermissionRailGroup(
+                self._permission_rail, self._root_permission_queue_rail,
+                self._root_context_rail, self._root_permission_completion_rail,
+                self._stream_event_rail, self._code_ask_user_rail,
+            )
+            expected.verify(
+                self._instance, smart=True, queue=self._root_permission_queue,
+                sys_operation=self._sys_operation,
+            )
+            self._permission_state.publish(self._permission_state.pending_permission_epoch)
+            if self._capture_permission_version()[0] != self._permission_state.permission_epoch:
+                await self.reload_agent_config(config_base, reload_scopes={"permissions"})
+        self._permission_state.clear_pending_permission()
 
     def _capture_code_spec_rail_attributes(
         self,
@@ -1193,6 +1355,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 # participate in DeepAgent's full-replacement branch.
                 rollback_config.rails = []
                 self._instance.configure(rollback_config)
+                # configure() re-queues the bundled ProgressiveToolRail
+                # whenever progressive_tool_enabled is True; re-drop so the
+                # rollback does not resurrect the engine disclosure.
+                self._drop_pending_progressive_tool_rail()
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[JiuwenSwarmCodeAdapter] rollback config restore failed: %s",
@@ -1387,21 +1553,100 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
         self._align_code_multimodal_tool_records()
 
-    async def reload_agent_config(
+    def _sync_multimodal_tools_for_runtime(self) -> None:
+        """Sync only the multimodal tools explicitly configured for Code mode."""
+        if self._custom_code_spec_active:
+            return
+
+        configured = set(self._configured_code_tool_names())
+        agent_id = self._tool_owner_id()
+
+        desired_vision_names = {
+            name
+            for name in ("visual_question_answering", "image_ocr")
+            if name in configured and self._vision_model_config is not None
+        }
+        current_vision_names = {tool.card.name for tool in self._vision_tools}
+        if (
+            self._vision_tools_registered
+            and current_vision_names != desired_vision_names
+        ):
+            self._remove_registered_tools(self._vision_tools)
+            self._prune_tool_cards(current_vision_names)
+            self._vision_tools = []
+            self._vision_tools_registered = False
+
+        def _create_vision_tools() -> list[Any]:
+            created: list[Any] = []
+            for name in ("visual_question_answering", "image_ocr"):
+                if name not in desired_vision_names:
+                    continue
+                tool = self._get_tool_build_func(name, agent_id)
+                if tool is not None:
+                    created.append(tool)
+            return created
+
+        self._vision_tools, self._vision_tools_registered = self._sync_tool_group(
+            current_tools=self._vision_tools,
+            registered=self._vision_tools_registered,
+            enabled=bool(desired_vision_names),
+            create_fn=_create_vision_tools,
+            warn_label="Code vision tools",
+        )
+
+        desired_audio_names = (
+            {"audio_transcription"}
+            if "audio_transcription" in configured
+            and self._audio_model_config is not None
+            else set()
+        )
+        current_audio_names = {tool.card.name for tool in self._audio_tools}
+        if self._audio_tools_registered and current_audio_names != desired_audio_names:
+            self._remove_registered_tools(self._audio_tools)
+            self._prune_tool_cards(current_audio_names)
+            self._audio_tools = []
+            self._audio_tools_registered = False
+        self._audio_tools, self._audio_tools_registered = self._sync_tool_group(
+            current_tools=self._audio_tools,
+            registered=self._audio_tools_registered,
+            enabled=bool(desired_audio_names),
+            create_fn=lambda: [
+                tool
+                for tool in [self._get_tool_build_func("audio_transcription", agent_id)]
+                if tool is not None
+            ],
+            warn_label="Code audio transcription tool",
+        )
+
+        _, self._video_tool_registered = self._sync_tool_group(
+            current_tools=mark_stateless([video_understanding]),
+            registered=self._video_tool_registered,
+            enabled=(
+                "video_understanding" in configured and bool(self._video_model_config)
+            ),
+            create_fn=lambda: mark_stateless([video_understanding]),
+            warn_label="Code video understanding tool",
+        )
+        self._align_code_multimodal_tool_records()
+
+    async def _reload_agent_config(
         self,
         config_base: dict[str, Any] | None = None,
         env_overrides: dict[str, Any] | None = None,
         target_session_id: str | None = None,
         reload_scopes: set[str] | None = None,
+        *,
+        permission_notification: bool = False,
     ) -> None:
         """Hot-apply a newly generated DeepAgentSpec to the existing code agent."""
         scope_set = set(reload_scopes) if reload_scopes else set()
         if scope_set == {"multimodal"}:
-            await super().reload_agent_config(
+            await super()._reload_agent_config(
                 config_base,
                 env_overrides,
                 target_session_id=target_session_id,
                 reload_scopes=scope_set,
+                permission_notification=permission_notification,
             )
             return
         target_sid = str(target_session_id or "").strip() or None
@@ -1429,6 +1674,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 config_base,
                 env_overrides,
                 target_sid,
+                permission_notification=permission_notification,
             )
             logger.info(
                 "[JiuwenSwarmCodeAdapter] config reload kept caller-supplied "
@@ -1437,11 +1683,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             return
 
         if self._instance is None:
-            await super().reload_agent_config(
+            await super()._reload_agent_config(
                 config_base,
                 env_overrides,
                 target_session_id=target_sid,
                 reload_scopes=scope_set,
+                permission_notification=permission_notification,
             )
             return
 
@@ -1451,6 +1698,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
         previous_agent_name = self._agent_name
         previous_model_state = {
+            "_model_recipes": dict(getattr(self, "_model_recipes", {}) or {}),
+            "_model_alias_to_key": dict(getattr(self, "_model_alias_to_key", {}) or {}),
+            "_global_index_to_cache_key": dict(getattr(self, "_global_index_to_cache_key", {}) or {}),
+            "_model_id_to_key": dict(getattr(self, "_model_id_to_key", {}) or {}),
+            "_model_group_cache": dict(getattr(self, "_model_group_cache", {}) or {}),
+            "_kernel_identity": getattr(self, "_kernel_identity", None),
             "_model": self._model,
             "_model_client_config": self._model_client_config,
             "_model_request_config": self._model_request_config,
@@ -1500,6 +1753,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 env_overrides,
             )
             config = self._config_cache.copy()
+            if self._uses_smart_permission_lifecycle(config_base):
+                self._prepare_permission_workspace_binding()
+                self._permission_workspace_root = self._require_permission_workspace_binding().runtime_workspace_root
             model = self._create_model(config_base)
             if self._is_session_scoped_adapter:
                 await self._try_init_a2x_client(config_base, reload=True)
@@ -1514,12 +1770,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 config,
                 model,
             )
+            if self._moa_runtime is not None:
+                new_context.moa = self._moa_runtime.config
             parts = new_spec.resolve_parts(new_context)
             candidate_rails = list(parts.rails)
             parts.config.tool_owner_id = new_context.tool_owner_id
             # DeepAgentSpec necessarily materializes its serializable ModelSpec;
             # apply the adapter-selected cached Model to preserve the existing
             # model lifecycle and fingerprint optimization.
+            if self._enable_auto_permission:
+                model = self._model
             parts.config.model = model
             omitted_fields, reload_fingerprints = (
                 self._omit_unchanged_reload_fields(parts.config)
@@ -1679,6 +1939,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             config_base,
             env_overrides,
             target_sid,
+            permission_notification=permission_notification,
         )
         try:
             await self._handle_memory_rail_by_config(self._last_mode or "code")
@@ -1707,7 +1968,26 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         Code 模式固定包含 LspRail、ProjectMemoryRail、CodingMemoryRail。plan 相关
         的 rails 同样固定挂载，不按子模式分叉。
         """
-        # 固定 Rails — code 模式特有
+        from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.code_tool_bindings import (
+            register_lsp_read_semantics,
+        )
+        register_lsp_read_semantics()
+        self._enable_auto_permission = self._auto_permission_enabled_for_config(
+            config_base.get("permissions", {}), composition_scope="single_agent",
+        )
+        group = None
+        if self._enable_auto_permission:
+            group = self._permission_group_bindings(self._build_session_permission_group(
+                config_base, smart=True,
+                installed_permissions=self._permission_state.pending_installed_permissions,
+                model_name=self._default_model_name,
+                workspace_root=self._permission_workspace_root,
+            ))
+        else:
+            self._root_permission_queue_rail = None
+            self._root_context_rail = None
+            self._root_permission_completion_rail = None
+        # Fixed Code rails retain their existing ownership and order.
         rail_infos = [
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
@@ -1725,7 +2005,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             ),
             _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
-            *self._permission_interrupt_rail_infos(config_base),
+            *([_RailBuildInfo("_permission_rail", lambda: group["_permission_rail"])]
+              if group is not None else self._permission_interrupt_rail_infos(config_base)),
             _RailBuildInfo("_code_filesystem_rail", self._build_filesystem_rail),
             _RailBuildInfo("_agent_md_prompt_rail", self._build_agent_md_prompt_rail),
             _RailBuildInfo("_coding_memory_rail", self._build_coding_memory_rail),
@@ -1735,6 +2016,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 self._build_agent_mode_rail,
                 {"config_base": config_base},
             ),
+            _RailBuildInfo("_code_plan_pre_permission_rail", self._build_plan_pre_permission_rail),
             _RailBuildInfo("_code_ask_user_rail", self._build_structured_ask_user_rail),
             _RailBuildInfo(
                 "_code_confirm_interrupt_rail",
@@ -1795,7 +2077,28 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 rail_name,
             )
 
+        if group is not None:
+            rail_infos = [
+                _RailBuildInfo(info.attr_name, lambda rail=group[info.attr_name]: rail)
+                if info.attr_name in group else info for info in rail_infos
+            ]
+            rail_infos[:0] = [
+                _RailBuildInfo("_root_permission_queue_rail", lambda: group["_root_permission_queue_rail"]),
+                _RailBuildInfo("_root_context_rail", lambda: group["_root_context_rail"]),
+            ]
+            index = next(i for i, info in enumerate(rail_infos) if info.attr_name == "_permission_rail")
+            rail_infos.insert(index + 1, _RailBuildInfo(
+                "_root_permission_completion_rail", lambda: group["_root_permission_completion_rail"],
+            ))
         rails = self._instantiate_rails(rail_infos, config_base)
+        if group is not None:
+            self._validate_required_agent_rails(
+                rails, queue_rail=group["_root_permission_queue_rail"],
+                completion_rail=group["_root_permission_completion_rail"],
+                root_context_rail=group["_root_context_rail"],
+                stream_event_rail=group["_stream_event_rail"],
+                permission_rail=group["_permission_rail"],
+            )
         if self._code_graph_flags(config_base).on_root:
             self._code_graph_profile_rail = self._build_code_graph_profile_rail(config_base)
             rails.append(self._code_graph_profile_rail)
@@ -1936,6 +2239,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         except Exception as exc:
             logger.warning("[JiuwenSwarmCodeAdapter] SysOperationRail create failed: %s", exc)
             return None
+
+    def _build_plan_pre_permission_rail(self):
+        from jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail import (
+            CodePlanPrePermissionGuardRail,
+        )
+        return CodePlanPrePermissionGuardRail(self._code_agent_mode_rail)
 
     def _build_agent_mode_rail(
         self,
@@ -2157,7 +2466,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """
         try:
             import jiuwenswarm.agents.harness.code.rails.sdd.design_rail as _dr_pkg
-            from pathlib import Path
 
             from jiuwenswarm.agents.harness.code.rails.sdd.design_rail import (
                 DesignRail as _DesignRail,
@@ -2275,7 +2583,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """Build subagents for code mode, including the built-in status-line setup agent.
 
         explore_agent / plan_agent 固定挂载（Code 模式核心子代理）。
-        code_agent / browser_agent 按配置启用。
+        code_agent / browser_agent / cua_agent 按配置启用。
 
         每个 spec 都带上主 Agent 的 ``sys_operation``：子 Agent 必须和父 Agent 处在
         同一个文件系统边界里。若留空，``DeepAgent.create_subagent`` 会给子 Agent
@@ -2417,6 +2725,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                     ),
                 )
+                from jiuwenswarm.agents.harness.common.browser_config import (
+                    apply_browser_decision_config,
+                )
+
+                apply_browser_decision_config(browser_spec, config_base)
                 self._prepare_browser_runtime_security(browser_spec)
                 # Electron 每会话隔离：把本会话 sideview 的 CDP TargetID 注入
                 # browser subagent 的 MCP env（与 swarm.browser_agent 同一契约；
@@ -2434,6 +2747,29 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     )
                 browser_spec.factory_kwargs["auto_create_workspace"] = False
                 subagents.append(browser_spec)
+
+            # cua_agent (desktop automation via screenshots + real input) — 按配置启用
+            cua_agent_cfg = subagents_cfg.get("cua_agent")
+            if self._is_subagent_enabled(cua_agent_cfg) and cua_model_rejects_images(model):
+                logger.warning(
+                    "[JiuwenSwarmCodeAdapter] cua_agent skipped: the model rejects image input "
+                    "and cua_agent sees the screen only through screenshots"
+                )
+            elif self._is_subagent_enabled(cua_agent_cfg):
+                cua_spec = build_cua_agent_config(
+                    model,
+                    card=build_cua_agent_card(resolved_language),
+                    workspace=workspace,
+                    sys_operation=sys_operation,
+                    language=resolved_language,
+                    max_iterations=parse_int(
+                        cua_agent_cfg.get("max_iterations"),
+                        DEFAULT_CUA_AGENT_MAX_ITERATIONS,
+                    ),
+                    **resolve_cua_factory_options(cua_agent_cfg),
+                )
+                cua_spec.factory_kwargs["auto_create_workspace"] = False
+                subagents.append(cua_spec)
 
         # ── 自定义 agent 不加入 deep_config.subagents ──
         # Code 模式下，自定义 agent 由 CodeAgentRail 的 Agent 工具管理，
@@ -2554,15 +2890,23 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         if self._instance is None:
             raise RuntimeError("JiuwenSwarmCodeAdapter 未初始化，请先调用 create_instance()")
 
-        runtime_paths = resolve_runtime_workspace_paths(
-            internal_workspace_dir=self._agent_workspace_dir,
-            project_dir=runtime_config.project_dir or self._project_dir,
-            workspace_dir=runtime_config.workspace,
-            cwd=runtime_config.cwd,
-            session_id=runtime_config.session_id,
-            task_name=runtime_config.task_name,
-            bind_request=True,
-        )
+        if self._enable_auto_permission:
+            runtime_paths = resolve_bound_runtime_workspace_paths(
+                self._require_permission_workspace_binding(),
+                project_dir=runtime_config.project_dir,
+                workspace_dir=runtime_config.workspace,
+                cwd=runtime_config.cwd,
+            )
+        else:
+            runtime_paths = resolve_runtime_workspace_paths(
+                internal_workspace_dir=self._agent_workspace_dir,
+                project_dir=runtime_config.project_dir or self._project_dir,
+                workspace_dir=runtime_config.workspace,
+                cwd=runtime_config.cwd,
+                session_id=runtime_config.session_id,
+                task_name=runtime_config.task_name,
+                bind_request=True,
+            )
         project_workspace = str(runtime_paths.runtime_workspace_root)
         task_cwd = str(runtime_paths.cwd)
         self._runtime_workspace_dir = project_workspace
@@ -2954,6 +3298,39 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             return tools
         except Exception as exc:
             logger.warning("[JiuwenSwarmCodeAdapter] skill_retrieval build failed: %s", exc)
+            return None
+
+    def _resolve_tool_retrieval_session_enabled(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> bool:
+        """Respect code-mode configured tools during tool retrieval sync."""
+        config = (
+            config_base
+            if isinstance(config_base, dict)
+            else self._active_code_config()
+        )
+        if not super()._resolve_tool_retrieval_session_enabled(config):
+            return False
+        configured_tools = config.get("modes", {}).get("code", {}).get("tools") or []
+        return "tool_retrieval" in configured_tools
+
+    def _build_tool_retrieval_toolkit(self, agent_id: str) -> list[Any] | None:
+        """构建 ToolRetrievalToolkit 工具（不注册到 Runner，由 _get_tool_cards 统一注册）."""
+        if not self._tool_retrieval_tools_enabled_for_runtime():
+            logger.info("[JiuwenSwarmCodeAdapter] ToolRetrievalToolkit skipped: disabled")
+            return None
+        try:
+            tools = self._create_tool_retrieval_tools()
+            self._tool_retrieval_tools = tools
+            self._tool_retrieval_tools_registered = bool(tools)
+            logger.info(
+                "[JiuwenSwarmCodeAdapter] ToolRetrievalToolkit built: tools=%s",
+                [tool.card.name for tool in tools],
+            )
+            return tools
+        except Exception as exc:
+            logger.warning("[JiuwenSwarmCodeAdapter] tool_retrieval build failed: %s", exc)
             return None
 
     def _build_acp_chat_tool(self, agent_id: str) -> Any | None:

@@ -26,6 +26,11 @@ from jiuwenswarm.common.schema.message import ReqMethod
 
 logger = logging.getLogger(__name__)
 
+#: Handshake header a client sets to describe what its connection is for.
+CONNECTION_ROLE_HEADER = "X-Jiuwen-Connection-Role"
+#: One-shot request/response client. It never owns the server-push channel.
+CONNECTION_ROLE_RPC = "rpc"
+
 
 def payload_to_request(data: dict[str, Any]) -> AgentRequest:
     """Parse a legacy JSON payload into ``AgentRequest``."""

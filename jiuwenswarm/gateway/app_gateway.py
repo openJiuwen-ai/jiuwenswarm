@@ -90,7 +90,7 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod, Message, Mode
-from jiuwenswarm.gateway.embedded.runtime.attachments.media_attachments import (
+from jiuwenswarm.gateway.channel_manager.web.media import (
     normalize_chat_media_attachments,
 )
 _mark_startup_import_phase("gateway_core_imports_loaded")
@@ -125,7 +125,7 @@ def _agent_prewarm_enabled() -> bool:
     Prewarming is opt-in via JIUWENSWARM_AGENT_PREWARM; when off the Gateway
     must not emit agent.prewarm.sync requests or related log noise.
     """
-    from jiuwenswarm.gateway.embedded.runtime.agent_prewarm import prewarm_enabled_by_env
+    from jiuwenswarm.gateway.runtime.agent_prewarm import prewarm_enabled_by_env
 
     return prewarm_enabled_by_env()
 
@@ -367,7 +367,7 @@ def _inject_session_work_mode(msg: Message) -> None:
         return
     channel_id = getattr(msg, "channel_id", None)
     try:
-        from jiuwenswarm.gateway.embedded.runtime.session.work_mode import resolve_session_work_mode_params
+        from jiuwenswarm.gateway.runtime.work_mode import resolve_session_work_mode_params
         binding = resolve_session_work_mode_params(params, channel_id=channel_id)
     except Exception:  # noqa: BLE001
         # 归一化异常时不写回,保留原始 params 由后续处理
@@ -1791,11 +1791,6 @@ async def _run(
     from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.cleanup import start_background_cleanup
-    from jiuwenswarm.gateway.agent_client_mode import (
-        AgentClientModeError,
-        read_agent_client_mode,
-        resolve_agent_server_client,
-    )
     from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
     from jiuwenswarm.gateway.cron import (
@@ -1812,13 +1807,14 @@ async def _run(
     from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _DummyBus,
-        _CONFIG_SET_ENV_MAP,
         _FORWARD_NO_LOCAL_HANDLER_METHODS,
         _FORWARD_REQ_METHODS,
         _normalize_feishu_conf,
         _normalize_xiaoyi_conf,
         _register_web_handlers,
     )
+    # M0-a：app_web_handlers 的兼容别名已删，直连 common 源
+    from jiuwenswarm.common.config_panel.config_set_handlers import CONFIG_SET_ENV_MAP
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
     from jiuwenswarm.common.updater import UpdaterService
@@ -1884,25 +1880,13 @@ async def _run(
     max_retries = int(os.getenv("AGENT_CONNECT_RETRY", "20"))
     retry_interval = float(os.getenv("AGENT_CONNECT_RETRY_INTERVAL", "3"))
 
-    # 环境变量决定用 WebSocket 还是 runtime。扩展仍可以提供 yuanrong 等别的客户端。
+    # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
     agent_server_ext = extension_registry.get_agent_server_client_extension()
-    mode = read_agent_client_mode()
-    if agent_server_ext is not None and mode not in {"runtime", "http"}:
+    if agent_server_ext is not None:
         logger.info("[App] using extension AgentServerClient: %s", agent_server_ext.metadata.name)
-    try:
-        client = resolve_agent_server_client(
-            agent_server_ext,
-            mode=mode,
-            websocket_factory=lambda: WebSocketAgentServerClient(
-                ping_interval=20.0,
-                ping_timeout=600.0,
-            ),
-        )
-    except AgentClientModeError as exc:
-        logger.error("[App] %s", exc)
-        raise
-    if mode == "runtime":
-        logger.info("[App] using runtime AgentServerClient")
+        client = agent_server_ext.get_client()
+    else:
+        client = WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
 
     from jiuwenswarm.gateway.routing.third_agent import get_unsupported_third_agent
 
@@ -1913,7 +1897,7 @@ async def _run(
     else:
         third_agent = get_unsupported_third_agent()
 
-    # WebSocket 客户端按现有重试去连 ws 地址。runtime 和 yuanrong 调用 connect("")。
+    # 如果是 WebSocket 客户端，需要连接；如果是 YuanrongFrontendAgentClient，无需连接
     if isinstance(client, WebSocketAgentServerClient):
         await _connect_with_retry(
             client,
@@ -1922,6 +1906,7 @@ async def _run(
             interval=retry_interval,
         )
     else:
+        # YuanrongFrontendAgentClient 是 HTTP 客户端，无需连接
         await client.connect("")
     log_startup_stage("agent_server_connected")
 
@@ -1957,18 +1942,17 @@ async def _run(
 
     client.set_or_update_server_config(
         config=dict(full_cfg or {}),
-        env={env_key: (os.getenv(env_key) or "") for env_key in _CONFIG_SET_ENV_MAP.values()},
+        env={env_key: (os.getenv(env_key) or "") for env_key in CONFIG_SET_ENV_MAP.values()},
     )
 
     # Data-plane settings are AgentOS-only. A personal Gateway using etcd for
     # cron must not start this service. Only agent_sandbox.idle_timeout is
     # managed, so no user reload/fanout is needed.
     config_updater = None
-    config_poll_scheduler = None
     from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
     if is_agentos_routing_client(client):
         from jiuwenswarm.extensions.agentos.config_updater.service import ConfigUpdaterService
-        from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+        from jiuwenswarm.gateway.runtime.cron.factory import load_cron_store_settings
 
         config_updater = ConfigUpdaterService(
             etcd_endpoints=list(load_cron_store_settings(full_cfg).endpoints),
@@ -2226,7 +2210,7 @@ async def _run(
     # 注入 Git diff 监控注册表(设计文档阶段10):
     # 1. 让 ``_mark_git_watcher_dirty`` 能通过 ``channel.git_watcher_registry`` 唤醒轮询
     # 2. 通过 ``set_channel`` 让 registry 拿到 send_event 的发送句柄
-    from jiuwenswarm.gateway.embedded.runtime.session.git_diff_watcher import (
+    from jiuwenswarm.gateway.channel_manager.web.git_diff_watcher import (
         get_git_diff_watcher_registry,
     )
     _git_watcher_registry = get_git_diff_watcher_registry()
@@ -2330,15 +2314,6 @@ async def _run(
 
     await channel_manager.start_dispatch()
     log_startup_stage("message_dispatch_started")
-
-    try:
-        from jiuwenswarm.gateway.config_poll import get_config_poll_scheduler
-
-        config_poll_scheduler = get_config_poll_scheduler()
-        await config_poll_scheduler.start()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[App] gateway config poll scheduler failed to start: %s", exc)
-
     await cron_scheduler.start()
     if config_updater is not None:
         await config_updater.start()
@@ -3366,11 +3341,6 @@ async def _run(
     except asyncio.CancelledError:
         pass
     finally:
-        if config_poll_scheduler is not None:
-            try:
-                await config_poll_scheduler.stop()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[App] gateway config poll scheduler stop failed: %s", exc)
         if config_updater is not None:
             await config_updater.stop()
         if not channel_config_task.done():
@@ -3598,6 +3568,12 @@ def main() -> None:
             # Early parsing failed - instance not found or workspace missing
             # Error was already printed by parse_dotenv_early()
             raise SystemExit(1)
+
+    # 过渡装配：注册 server 侧存储实现供 common 注入点取用
+    # （gateway 独立成仓时删除，见 gateway/server_store_bridge.py）
+    from jiuwenswarm.gateway.server_store_bridge import install as _install_server_stores
+
+    _install_server_stores()
 
     default_host = os.getenv("AGENT_SERVER_HOST", "127.0.0.1")
     default_port = os.getenv("AGENT_SERVER_PORT") or os.getenv("AGENT_PORT", "18092")
