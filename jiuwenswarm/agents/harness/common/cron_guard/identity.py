@@ -25,7 +25,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from jiuwenswarm.common.utils import logger
 

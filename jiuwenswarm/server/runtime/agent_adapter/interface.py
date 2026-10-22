@@ -4181,7 +4181,7 @@ class JiuWenSwarm:
                 # its finally block.  Do not enqueue into a potentially full
                 # bounded queue after that consumer has gone away.
                 raise
-            except (TimeoutError, asyncio.TimeoutError) as dl_exc:
+            except (TimeoutError, asyncio.TimeoutError):
                 # asyncio.timeout_at fired: cron hard deadline (issue #5018).
                 if cron_ctx is None:
                     raise
