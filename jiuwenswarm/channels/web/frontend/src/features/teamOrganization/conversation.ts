@@ -4,6 +4,7 @@ import { conversationKey, useChatStore, useSessionStore, useTeamSelectorStore } 
 import { isTeamOrganizationUiEnabled, useTeamOrganizationUiEnabled } from './featureConfig';
 import { generateUuidV4 } from '../../utils/uuid';
 import type { MediaItem } from '../../types';
+import { finishExpertRequest, startExpertRequest } from './processing';
 
 export function ownerTeamId(sessionId: string): string | undefined {
   const state = useSessionStore.getState();
@@ -61,17 +62,29 @@ export async function sendExpertMessage(
     timestamp: new Date().toISOString(),
     teamId,
   });
-  chat.setProcessing(key, true);
+  let requestId = generateUuidV4();
+  startExpertRequest(key, requestId);
   try {
-    await webClient.request('chat.send', {
-      ...attachments,
-      session_id: sessionId,
-      mode: 'team',
-      content,
-      target_team_id: teamId,
-    });
+    await webClient.request(
+      'chat.send',
+      {
+        ...attachments,
+        session_id: sessionId,
+        mode: 'team',
+        content,
+        target_team_id: teamId,
+      },
+      {
+        onRequestId: (id) => {
+          startExpertRequest(key, id);
+          finishExpertRequest(key, requestId);
+          requestId = id;
+        },
+      },
+    );
     return true;
-  } finally {
-    chat.setProcessing(key, false);
+  } catch (error) {
+    finishExpertRequest(key, requestId);
+    throw error;
   }
 }

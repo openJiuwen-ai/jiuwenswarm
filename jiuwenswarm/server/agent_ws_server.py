@@ -1214,6 +1214,7 @@ class AgentWebSocketServer:
         # for interrupt/connection cleanup only; it never decides interaction
         # output ownership.
         self._session_stream_tasks: dict[str, dict[asyncio.Task, asyncio.Event]] = {}
+        self._expert_stream_requests: dict[asyncio.Task, AgentRequest] = {}
         # Scheduler service instance (for scheduled auto_harness tasks)
         self._scheduler_service: Optional[AutoHarnessService] = None
         self._scheduler_agent: Any = None
@@ -1456,6 +1457,7 @@ class AgentWebSocketServer:
             await self._stop_scheduler()
         except Exception:
             logger.exception("[AgentWebSocketServer] scheduler stop failed")
+        await self._stop_expert_streams()
         self._session_stream_tasks.clear()
 
     async def start(self, *, bind_transport: bool = False) -> None:
@@ -2252,6 +2254,7 @@ class AgentWebSocketServer:
             if connection_tasks:
                 await asyncio.gather(*connection_tasks, return_exceptions=True)
             if owns_current_connection:
+                await self._stop_expert_streams()
                 self._session_stream_tasks.clear()
 
     async def _dispatch_gateway_adapter_request(
@@ -2827,7 +2830,7 @@ class AgentWebSocketServer:
                 await self._handle_agents_tools_list(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
-                if isinstance(request.params, dict) and request.params.get("target_team_id"):
+                if self._is_targeted_expert_request(request):
                     await self._handle_cancel(ws, request, send_lock)
                     return
                 if isinstance(request.params, dict) and request.params.get("wait_for_stop"):
@@ -3143,7 +3146,7 @@ class AgentWebSocketServer:
     ) -> AgentResponse:
         """Cancel through the transport-independent Runtime operation."""
         params = request.params if isinstance(request.params, dict) else {}
-        if params.get("target_team_id"):
+        if self._is_targeted_expert_request(request):
             resp = await self._cancel_targeted_expert(request)
         else:
             resp = await self._execution_runtime().cancel_request(
@@ -4170,14 +4173,19 @@ class AgentWebSocketServer:
     ) -> None:
         """流式处理：调用 process_message_stream，逐条发送 E2AResponse 线 JSON。"""
         session_id = self._organization_stream_key(request)
-        resume_state = await self._open_session_message_resume(request)
+        targeted_expert = self._is_targeted_expert_chat(request)
+        resume_state = None if targeted_expert else await self._open_session_message_resume(request)
         resume_outcome = "unknown"
         resume_error = "resumed turn ended before its outcome was confirmed"
         current_task = asyncio.current_task()
         stream_stop_event = asyncio.Event()
         uses_session_runtime = AgentRuntime.uses_session_runtime(request)
-        if current_task is not None and not uses_session_runtime:
+        if current_task is not None and (targeted_expert or not uses_session_runtime):
             self._session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event
+            if targeted_expert:
+                if not hasattr(self, "_expert_stream_requests"):
+                    self._expert_stream_requests = {}
+                self._expert_stream_requests[current_task] = request
 
         chunk_count = 0
         outcome_tracker = _TurnOutcomeTracker()
@@ -4197,7 +4205,7 @@ class AgentWebSocketServer:
                 sequence=chunk_count,
             )
         try:
-            if self._is_targeted_expert_chat(request):
+            if targeted_expert:
                 runtime_stream = self._targeted_expert_runtime_stream(request)
             else:
                 runtime_stream = self._execution_runtime().stream(
@@ -4275,6 +4283,7 @@ class AgentWebSocketServer:
                     finally:
                         # 清除自身的宿主生命周期记录；同 session 的其它请求不受影响。
                         entries = self._session_stream_tasks.get(session_id)
+                        getattr(self, "_expert_stream_requests", {}).pop(current_task, None)
                         if entries is not None and current_task is not None:
                             entries.pop(current_task, None)
                             if not entries:
@@ -6323,7 +6332,10 @@ class AgentWebSocketServer:
         params = request.params if isinstance(request.params, dict) else {}
         session_id = request.session_id or "default"
         team_id = str(params.get("target_team_id") or "").strip()
-        return f"{session_id}::organization::{team_id}" if team_id else session_id
+        return (
+            f"{session_id}::organization::{team_id}"
+            if AgentWebSocketServer._is_targeted_expert_request(request) else session_id
+        )
 
     async def _cancel_targeted_expert(self, request: AgentRequest) -> AgentResponse:
         """Cancel only a same-organization expert stream, never the owner turn."""
@@ -6335,17 +6347,50 @@ class AgentWebSocketServer:
         target = self._resolve_team_backend(session_id, team_id)
         owner_org = getattr(getattr(owner, "org_task_manager", None), "organization_id", None)
         target_org = getattr(getattr(target, "org_task_manager", None), "organization_id", None)
+        recovery_error = ""
+        if not owner_org and target_org:
+            try:
+                persisted = await self._load_persisted_organization(session_id, team_id)
+                if persisted is not None:
+                    owner_org = persisted[1].organization_id
+            except Exception as exc:
+                logger.exception(
+                    "[AgentWebSocketServer] expert cancel lookup failed: session=%s team=%s",
+                    session_id,
+                    team_id,
+                )
+                recovery_error = f"expert organization lookup failed: {exc}"
         intent = str(params.get("intent") or "cancel")
-        success = bool(owner_org and owner_org == target_org and team_id != owner_id and intent == "cancel")
+        success = bool(
+            self._is_targeted_expert_request(request)
+            and owner_org and owner_org == target_org and intent == "cancel"
+        )
+        cancelled_requests = []
         if success:
             tasks = []
             for task, stop in list(self._session_stream_tasks.get(self._organization_stream_key(request), {}).items()):
                 if not task.done():
+                    active_request = getattr(self, "_expert_stream_requests", {}).get(task)
+                    if active_request is not None:
+                        cancelled_requests.append(active_request)
                     stop.set()
                     task.cancel()
                     tasks.append(task)
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            for active_request in cancelled_requests:
+                await self.send_push({
+                    "request_id": active_request.request_id,
+                    "channel_id": request.channel_id,
+                    "session_id": session_id,
+                    "payload": {
+                        "event_type": "chat.processing_status", "session_id": session_id,
+                        "team_id": team_id, "source": "org_expert_direct",
+                        "request_id": active_request.request_id, "is_processing": False,
+                        "is_complete": True,
+                    },
+                    "metadata": request.metadata,
+                })
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -6355,7 +6400,11 @@ class AgentWebSocketServer:
                 "success": success,
                 "team_id": team_id,
                 "source": "org_expert_direct",
-                **({"error": "expert target is invalid or intent is unsupported"} if not success else {}),
+                "cancelled_request_ids": [item.request_id for item in cancelled_requests],
+                **(
+                    {"error": recovery_error or "expert target is invalid or intent is unsupported"}
+                    if not success else {}
+                ),
             },
         )
 
@@ -6363,6 +6412,13 @@ class AgentWebSocketServer:
     def _is_targeted_expert_chat(request: AgentRequest) -> bool:
         """Return whether chat.send explicitly targets a non-owner Team."""
         if request.req_method != ReqMethod.CHAT_SEND:
+            return False
+        return AgentWebSocketServer._is_targeted_expert_request(request)
+
+    @staticmethod
+    def _is_targeted_expert_request(request: AgentRequest) -> bool:
+        """Recognize a Team target only when the durable owner is known."""
+        if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_CANCEL):
             return False
         params = request.params if isinstance(request.params, dict) else {}
         if not is_team_mode(params.get("mode")):
@@ -6375,7 +6431,23 @@ class AgentWebSocketServer:
         owner_team_id = str(
             (get_session_metadata(session_id) or {}).get("team_name") or ""
         ).strip()
-        return team_id != owner_team_id
+        return bool(owner_team_id and team_id != owner_team_id)
+
+    def _expert_request_snapshot(self, session_id: str) -> list[dict[str, str]]:
+        return [
+            {"team_id": str(request.params["target_team_id"]), "request_id": request.request_id}
+            for task, request in getattr(self, "_expert_stream_requests", {}).items()
+            if not task.done() and request.session_id == session_id
+        ]
+
+    async def _stop_expert_streams(self) -> None:
+        requests = getattr(self, "_expert_stream_requests", {})
+        tasks = [task for task in requests if not task.done() and task is not asyncio.current_task()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        requests.clear()
 
     async def _targeted_expert_runtime_stream(self, request: AgentRequest) -> Any:
         """Adapt organization output to the existing Runtime wire/keepalive path."""
@@ -6939,7 +7011,10 @@ class AgentWebSocketServer:
             request_id=request.request_id,
             channel_id=channel_id,
             ok=True,
-            payload={"session_id": session_id, "teams": teams, "default_team_id": default_team_id},
+            payload={
+                "session_id": session_id, "teams": teams, "default_team_id": default_team_id,
+                "expert_requests": self._expert_request_snapshot(session_id),
+            },
         )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:

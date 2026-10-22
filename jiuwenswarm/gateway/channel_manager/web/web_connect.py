@@ -209,6 +209,7 @@ class WebChannel(BaseWsChannel):
         # 供 /ws/git 写操作(如 discard_turn_changes)查询 agent 是否正在执行。
         # 未跟踪的 session 默认返回 False(不忙碌)。
         self._session_busy: dict[str, bool] = {}
+        self._expert_processing_requests: dict[str, set[tuple[str, str]]] = {}
         # Git diff 监控注册表(设计文档阶段10):由 app_gateway 在启动期注入,
         # handler 通过 ``getattr(channel, "git_watcher_registry", None)`` 防御性读取。
         self.git_watcher_registry: Any = None
@@ -726,6 +727,7 @@ class WebChannel(BaseWsChannel):
         if close_tasks:
             await asyncio.gather(*close_tasks, return_exceptions=True)
         self._clients_by_key.clear()
+        self._expert_processing_requests.clear()
 
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
@@ -1252,7 +1254,7 @@ class WebChannel(BaseWsChannel):
         # 广播 processing_status{is_processing:false, paused:true}, 此处合成
         # true 会在服务端权威帧前后到达, 把帧式消费方的状态翻回 true.
         # pause 失败时也不合成 false — 状态未变, 合成会误报.
-        if event_name == "chat.interrupt_result":
+        if event_name == "chat.interrupt_result" and payload.get("source") != "org_expert_direct":
             intent = payload.get("intent", "cancel") if isinstance(payload, dict) else "cancel"
             if intent == "pause":
                 return
@@ -1328,6 +1330,24 @@ class WebChannel(BaseWsChannel):
             event_name = event_type.value
         else:
             event_name = str(payload.get("event_type") or "") if payload is not None else ""
+        if payload is not None and payload.get("source") == "org_expert_direct":
+            # Expert terminals cannot clear the owner's busy flag. Keep the
+            # aggregate for Git write guards until every expert request exits.
+            sid = payload.get("session_id") or msg.session_id
+            team_id = str(payload.get("team_id") or payload.get("team_name") or "")
+            if sid and team_id and event_name in {"chat.processing_status", "org.turn_completed", "chat.error"}:
+                request_id = payload.get("request_id")
+                if not isinstance(request_id, str) or not request_id.strip():
+                    return
+                request = (team_id, request_id)
+                requests = self._expert_processing_requests.setdefault(sid, set())
+                if payload.get("is_processing") is True:
+                    requests.add(request)
+                else:
+                    requests.discard(request)
+                if not requests:
+                    self._expert_processing_requests.pop(sid, None)
+            return
         if event_name == "chat.processing_status" and payload is not None:
             sid = payload.get("session_id") or msg.session_id
             if sid:
@@ -1346,7 +1366,50 @@ class WebChannel(BaseWsChannel):
         供 /ws/git 写操作(如 ``project.git.discard_turn_changes``)在执行前
         校验会话非忙碌,避免与正在进行的 agent 文件写入冲突。
         """
-        return self._session_busy.get(session_id, False)
+        return self._session_busy.get(session_id, False) or bool(self._expert_processing_requests.get(session_id))
+
+    def clear_expert_processing(self, session_id: str) -> None:
+        """Release expert request records after a session is closed."""
+        self._expert_processing_requests.pop(session_id, None)
+
+    async def reconcile_expert_processing(self, session_id: str, user_id: str | None) -> None:
+        """Reconcile disconnects with live tasks without declaring running work idle."""
+        baseline = set(self._expert_processing_requests.get(session_id, set()))
+        if not baseline or self.agent_client is None:
+            return
+        from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
+
+        try:
+            ok, payload = await fetch_agent_unary(
+                agent_client=self.agent_client, req_method=ReqMethod.TEAM_LIST,
+                params={"session_id": session_id}, session_id=session_id,
+                user_id=user_id, channel_id=self.channel_id, timeout_seconds=2,
+            )
+            if not ok or not isinstance(payload.get("expert_requests"), list):
+                return
+            live = set()
+            for item in payload["expert_requests"]:
+                if not isinstance(item, dict):
+                    continue
+                team_id = item.get("team_id")
+                request_id = item.get("request_id")
+                if not isinstance(team_id, str):
+                    continue
+                if not isinstance(request_id, str) or not request_id:
+                    continue
+                live.add((team_id, request_id))
+            current = self._expert_processing_requests.get(session_id, set())
+            remaining = (current - baseline) | (current & live)
+            if remaining:
+                self._expert_processing_requests[session_id] = remaining
+            else:
+                self.clear_expert_processing(session_id)
+        except Exception:
+            logger.warning(
+                "[WebChannel] expert processing reconciliation failed: session=%s",
+                session_id,
+                exc_info=True,
+            )
 
     def get_metadata(self) -> ChannelMetadata:
         """获取 Channel 元数据."""
@@ -1517,6 +1580,10 @@ class WebChannel(BaseWsChannel):
             # 取出该 ws 关联的 session_ids，清理映射
             ws_id = id(ws)
             disconnected_sessions = self._ws_sessions.pop(ws_id, set())
+            await asyncio.gather(*(
+                self.reconcile_expert_processing(sid, self.connection_user_id(ws))
+                for sid in disconnected_sessions
+            ))
             logger.info(
                 "WebChannel 连接关闭: remote=%s sessions=%s",
                 remote,
