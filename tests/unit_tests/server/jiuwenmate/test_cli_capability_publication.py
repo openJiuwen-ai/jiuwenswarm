@@ -44,6 +44,49 @@ def test_identical_cli_assets_do_not_create_another_version(tmp_path):
     assert first.config_version == second.config_version
 
 
+@pytest.mark.parametrize("nested", [True, False])
+def test_refresh_removes_retired_calendar_without_publishing_draft(tmp_path, nested):
+    from jiuwenswarm.server.jiuwenmate.bash_runtime import BASH_PROMPT
+
+    host, skill = prepare(tmp_path)
+    repo = host._repository
+    current = host.current_snapshot("local", "agent-a")
+    fields = json.loads(current.spec_json)
+    retired = {"type": "jiuwenmate.personal_calendar", "params": {}}
+    plugin = {"type": "test.selected_plugin", "params": {"selection": "keep"}}
+    fields["tools"][0]["params"]["tools"].append(plugin)
+    if nested:
+        fields["tools"][0]["params"]["tools"].append(retired)
+    else:
+        fields["tools"].append(retired)
+    fields["system_prompt"] = fields["system_prompt"].replace(
+        BASH_PROMPT,
+        "\n\n## 命令使用约定（非技术隔离）\n\n旧版只能调用 query_my_calendar。"
+        "\n\n## 用户补充约定\n\n保留这个用户提示段。",
+    )
+    legacy = publish_spec("agent-a", repo.next_version("local", "agent-a"), fields)
+    repo.save_capability_version("local", legacy, previous_version=current.config_version, published_at=host._clock())
+    draft = replace(host.read_settings("local", "agent-a"), name="未发布的名字", persona="未发布的人设")
+    host.update_settings("local", "agent-a", draft)
+
+    refreshed = refresh(host, skill)
+
+    snapshot = host.current_snapshot("local", "agent-a")
+    spec = snapshot.load_spec()
+    assert snapshot.config_version != legacy.config_version
+    assert [tool.type for tool in spec.tools] == ["jiuwenmate.bash"]
+    assert spec.tools[0].params["tools"] == [{"type": "core.web_fetch"}, plugin]
+    assert "query_my_calendar" not in spec.system_prompt
+    assert "保留这个用户提示段。" in spec.system_prompt
+    assert "未发布的人设" not in spec.system_prompt
+    assert spec.card.name != draft.name
+    assert "lark-doc" in spec.skills
+    assert host.read_settings("local", "agent-a").name == draft.name
+    assert host.get_colleague("local", "agent-a").has_unpublished_changes
+    assert host.snapshot("local", "agent-a", legacy.config_version) == legacy
+    assert refresh(host, skill).config_version == refreshed.config_version
+
+
 def test_concurrent_capability_refresh_conflicts_atomically(tmp_path):
     host, skill = prepare(tmp_path)
     repo = host._repository
