@@ -656,3 +656,24 @@ async def test_group_policy_replaces_core_message_schema_and_allows_explicit_fin
         assert ctx.extra["_skip_tool"]
     finally:
         abilities.remove_ability("group_send_message")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("member_name", ["advisor", "host"])
+async def test_group_policy_requires_archived_history_on_every_query(service, member_name):
+    from jiuwenswarm.agents.swarm.group_execution import GroupTaskPolicyRail
+
+    group = await make_group(service)
+    builder = Mock()
+    ctx = SimpleNamespace(agent=SimpleNamespace(system_prompt_builder=builder))
+    rail = GroupTaskPolicyRail(SimpleNamespace(session_id=group["group_id"], member_name=member_name))
+    for _ in range(2):
+        await rail.before_invoke(ctx)
+        content = builder.add_section.call_args.args[0].content
+        assert content["en"] == content["cn"]
+        assert "first use read_file to read the archived history.jsonl" in content["en"]
+        assert "at the file path supplied in that query" in content["en"]
+        assert "even to greetings and brief follow-ups" in content["en"]
+        assert "continue reading until the archived history is complete" in content["en"]
+        assert '"active_execution_id"' not in content["en"]
+    assert builder.remove_section.call_count == 2
