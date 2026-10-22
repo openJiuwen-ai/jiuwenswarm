@@ -14,7 +14,6 @@ from jiuwenswarm.server.worker import main as worker_main
 
 def _patch_scaffolding(monkeypatch: pytest.MonkeyPatch) -> None:
     """Silence the entrypoint's logging and diagnostics side effects."""
-    from jiuwenswarm.common import background_logging
     from jiuwenswarm.server.worker import diagnostics
 
     monkeypatch.setattr(
@@ -22,8 +21,6 @@ def _patch_scaffolding(monkeypatch: pytest.MonkeyPatch) -> None:
         "argv",
         ["jiuwenswarm-runtime-worker", "--socket", "unused-ipc.sock"],
     )
-    monkeypatch.setattr(background_logging, "enable_background_logging", lambda: None)
-    monkeypatch.setattr(background_logging, "stop_background_logging", lambda *args, **kwargs: True)
     monkeypatch.setattr(diagnostics, "enable_worker_diagnostics", lambda: None)
 
 
@@ -49,6 +46,55 @@ def test_worker_main_activates_external_cli_paths_before_runtime_load(
     worker_main.main()
 
     assert order == ["activate", "serve"]
+
+
+def test_worker_main_survives_activation_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An optional SDK problem must not take the whole worker down."""
+    import jiuwenswarm.server.worker.service as worker_service
+
+    order: list[str] = []
+
+    async def _record_serve(*args: object, **kwargs: object) -> None:
+        order.append("serve")
+
+    def _raise_activation() -> None:
+        order.append("activate")
+        raise RuntimeError("broken managed runtime layout")
+
+    _patch_scaffolding(monkeypatch)
+    monkeypatch.setattr(external_cli_runtime, "activate_external_cli_runtime_paths", _raise_activation)
+    monkeypatch.setattr(worker_service, "serve_worker", _record_serve)
+
+    worker_main.main()
+
+    assert order == ["activate", "serve"]
+
+
+def test_worker_stub_mode_skips_external_cli_activation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stub speaks IPC without loading the Runtime, so it skips activation."""
+    from jiuwenswarm.server.worker import stub as worker_stub
+
+    order: list[str] = []
+
+    async def _record_stub(*args: object, **kwargs: object) -> None:
+        order.append("stub")
+
+    _patch_scaffolding(monkeypatch)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["jiuwenswarm-runtime-worker", "--socket", "unused-ipc.sock", "--stub"],
+    )
+    monkeypatch.setattr(
+        external_cli_runtime,
+        "activate_external_cli_runtime_paths",
+        lambda: order.append("activate"),
+    )
+    monkeypatch.setattr(worker_stub, "serve_stub", _record_stub)
+
+    worker_main.main()
+
+    assert order == ["stub"]
 
 
 def test_worker_entry_activation_appends_managed_site_packages_when_frozen(
