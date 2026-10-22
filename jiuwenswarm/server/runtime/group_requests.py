@@ -91,6 +91,12 @@ async def dispatch_group_request(server, ws, request, send_lock) -> bool:
                         "BAD_REQUEST", "group_id and session_id must match"
                     )
                 group = service.owned(group_id, user_id, channel_id)
+                if method == "chat.send" and params.get("source") == "ask_user_interrupt":
+                    from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+                    payload = await GroupQuestions(group_id).answer(params.get("request_id"), params.get("answers"))
+                    await reply(payload)
+                    return True
                 if params.get("mode") and (
                     not isinstance(params["mode"], str)
                     or not is_team_mode(params["mode"])

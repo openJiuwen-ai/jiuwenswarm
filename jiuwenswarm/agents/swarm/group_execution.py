@@ -22,11 +22,12 @@ TASK_RULES = (
     "For an assigned direct answer, use group_send_message with its execution_id without starting a task. "
     "Do not publish progress, reasoning or intermediate results to the group. "
     "Use group_send_message with execution_id, content and attachments for the final task result. "
-    "An expert-team proxy may do the work directly and submit the result itself. "
+    "An expert-team proxy delegates substantive team work through run_team. "
     "Call run_team to consult the private team context. It does not create a card until actual work starts. "
     "run_team returns immediately after accepting background work. Do not submit its result yourself. "
     "Stay available for ordinary chat. Use run_team action=update or cancel on its execution_id for changes. "
     "A follow-up after completion is run_team action=continue with a new run_id and the old execution_id. "
+    "If important requirements are missing, ask_user before work; do not invent user preferences. "
     "For ambiguous references ask which task; do not guess."
 )
 
@@ -40,7 +41,9 @@ def install_execution_policy(agent, *, include_tools=True):
         if tool_type not in known:
             tools.append(BuiltinToolSpec(type=tool_type))
     agent.tools = tools
-    rails = list(agent.rails or [])
+    rails = [rail for rail in (agent.rails or []) if getattr(rail, "type", None) != "swarm.structured_ask_user"]
+    if not any(getattr(rail, "type", None) == GROUP_ASK_USER for rail in rails):
+        rails.append(RailSpec(type=GROUP_ASK_USER))
     if not any(getattr(rail, "type", None) == TASK_POLICY for rail in rails):
         rails.append(RailSpec(type=TASK_POLICY))
     agent.rails = rails
@@ -253,6 +256,10 @@ class GroupTaskPolicyRail(DeepAgentRail):
             return
         store = GroupExecutions(self.context.session_id)
         active = store.active(self.context.member_name)
+        from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+        if GroupQuestions(self.context.session_id).pending(self.context.member_name):
+            return
         if active is not None and active["phase"] != "publishing" and not active.get("background"):
             await store.update(active["execution_id"], status="interrupted", phase="result_not_submitted")
 
@@ -272,3 +279,16 @@ def _backend(context):
 @harness_element(kind=ElementKind.RAIL, name=TASK_POLICY, description="Separate group tasks from public conversation.")
 def build_group_task_policy(params, context):
     return GroupTaskPolicyRail(context)
+
+
+GROUP_ASK_USER = "swarm.group_ask_user"
+
+
+@harness_element(
+    kind=ElementKind.RAIL, name=GROUP_ASK_USER,
+    description="Native ask-user interactions in a public group.",
+)
+def build_group_ask_user(params, context):
+    from jiuwenswarm.agents.swarm.group_questions import GroupAskUserRail
+
+    return GroupAskUserRail(context, params)

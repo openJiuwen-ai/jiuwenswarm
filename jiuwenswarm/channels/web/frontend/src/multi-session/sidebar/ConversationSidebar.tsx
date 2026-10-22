@@ -298,7 +298,7 @@ function ConversationListItem({
           {status}
         </span>
       </button>
-      <SidebarMenu
+      {session.type !== 'group_chat' && <SidebarMenu
         type="session"
         session={session}
         scope={menuScope}
@@ -306,7 +306,7 @@ function ConversationListItem({
         onLeaveActiveSession={onLeaveActiveSession}
         onOpenChange={setMenuOpen}
         triggerTooltipHandlers={itemTooltipHandlers}
-      />
+      />}
       <button
         type="button"
         className="conversation-list-item__pin-action"
@@ -915,7 +915,7 @@ export function ConversationSidebar({
   const sortedProjectSessions = useMemo(() => {
     const sorted: Record<string, Session[]> = {};
     for (const [projectId, list] of Object.entries(projectSessions)) {
-      sorted[projectId] = sortSessionsForSidebar(list);
+      sorted[projectId] = sortSessionsForSidebar(list.filter((session) => session.type !== 'group_chat'));
     }
     return sorted;
   }, [projectSessions]);
@@ -923,7 +923,10 @@ export function ConversationSidebar({
     if (defaultProject) return sortedProjectSessions[defaultProject.project_id] || [];
     return [];
   }, [defaultProject, sortedProjectSessions]);
-  const orderedPinnedSessions = useMemo(() => sortSessionsForSidebar(pinnedSessions), [pinnedSessions]);
+  const orderedPinnedSessions = useMemo(
+    () => sortSessionsForSidebar(pinnedSessions.filter((session) => session.type !== 'group_chat')),
+    [pinnedSessions],
+  );
   const observedSidebarSessions = useMemo(() => {
     const byId = new Map<string, Session>();
     for (const session of orderedPinnedSessions) {

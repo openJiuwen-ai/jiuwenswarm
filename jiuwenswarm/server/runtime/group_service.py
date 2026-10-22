@@ -285,9 +285,9 @@ class GroupService:
             raise GroupError("BAD_REQUEST", "configs must be an object")
         configs = copy.deepcopy(configs)
         members = params.get("members", [])
-        if not isinstance(members, list) or len(members) > 100:
+        if not isinstance(members, list):
             raise GroupError(
-                "BAD_REQUEST", "members must be an array of at most 100 entries"
+                "BAD_REQUEST", "members must be an array"
             )
         await self.runtime.start()
         prepared = await self.runtime.prepare_session_create(
@@ -365,7 +365,10 @@ class GroupService:
             raise
 
     def get(self, group_id, *, user_id, channel_id):
-        return _public(self.owned(group_id, user_id, channel_id))
+        from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+        return {**_public(self.owned(group_id, user_id, channel_id)),
+                "pending_questions": GroupQuestions(group_id).pending()}
 
     def list(self, params, *, user_id, channel_id):
         limit, offset = _page(params)
@@ -430,8 +433,6 @@ class GroupService:
                     )
                 names = [item["member_name"] for item in state["members"]]
                 if previous is None:
-                    if len(names) >= 100:
-                        raise GroupError("GROUP_FULL", "group member limit reached")
                     if isinstance(member, dict) and member.get("member_name") in names:
                         raise GroupError("ALREADY_EXISTS", "member_name already exists")
                     proposed = [*state["members"], member]

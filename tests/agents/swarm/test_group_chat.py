@@ -3,7 +3,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -19,6 +19,47 @@ def spec():
         team_name="public-group",
         leader=LeaderSpec(member_name="host"),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("already_attached", [False, True])
+async def test_completion_attaches_final_outputs_and_excludes_outside_links(tmp_path, monkeypatch, already_attached):
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    guide = outputs / "guide.md"
+    guide.write_text("Full guide", encoding="utf-8")
+    secret = tmp_path / "outside.txt"
+    secret.write_text("Not a deliverable", encoding="utf-8")
+    (outputs / "outside-link.txt").symlink_to(secret)
+    future = asyncio.get_running_loop().create_future()
+    monkeypatch.setitem(gc._results, "outputs-test", future)
+    monkeypatch.setitem(gc._private_runs, "outputs-test", {"outputs_dir": str(outputs)})
+    attachment = {"name": "guide.md", "path": str(guide)}
+    attachments = [attachment] if already_attached else []
+    result = await gc.CompleteTeamRun("outputs-test").invoke({"result": "Summary", "attachments": attachments})
+    assert result.success
+    assert future.result() == {"result": "Summary", "attachments": [attachment]}
+
+
+@pytest.mark.asyncio
+async def test_private_policy_preserves_normal_team_collaboration(monkeypatch):
+    monkeypatch.setitem(gc._private_runs, "policy-test", {"execution_id": "execution-one"})
+    builder = Mock()
+    ctx = SimpleNamespace(agent=SimpleNamespace(system_prompt_builder=builder))
+    await gc.PrivateTaskPolicy(SimpleNamespace(), "policy-test").before_invoke(ctx)
+
+    section = builder.add_section.call_args.args[0]
+    for content in section.content.values():
+        assert "execution-one" in content
+        assert "start_group_task" in content
+        assert "complete_team_run" in content
+        assert "normal team collaboration rules" in content
+        assert "build_team is optional" not in content
+        assert "do a task yourself" not in content
+
+    from jiuwenswarm.agents.swarm.group_execution import TASK_RULES
+
+    assert "do the work directly" not in TASK_RULES
 
 
 def test_proxy_roster_is_lazy_and_survives_serialization(tmp_path, monkeypatch):

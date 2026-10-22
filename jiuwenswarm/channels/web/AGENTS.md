@@ -156,3 +156,5 @@
 | `features/designer` | `designer` | 设计功能页;工作流画布与节点;Director 对话;运行控制;素材与分镜 |
 
 | `features/A4PAuthorizationModal` | `a4p-authorization` | A4P 授权卡片及范围选择 |
+
+| `features/groupChat` | `group-chat` | 群聊创建、成员、公开消息、任务卡片与产物 |

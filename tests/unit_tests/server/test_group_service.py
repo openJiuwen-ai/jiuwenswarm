@@ -608,3 +608,21 @@ async def test_group_rejects_invalid_avatar(service, avatar):
     with pytest.raises(gs.GroupError, match="invalid avatar"):
         await service.update(group["group_id"], {"avatar": avatar}, user_id="owner", channel_id="web")
     assert service.get(group["group_id"], user_id="owner", channel_id="web")["avatar"] == ""
+
+
+@pytest.mark.asyncio
+async def test_create_and_add_members_without_count_limit(service):
+    members = [
+        {"kind": "agent_template", "id": "group", "member_name": f"expert-{index}"}
+        for index in range(101)
+    ]
+    group = await create(service, members=members)
+    assert len(group["members"]) == 101
+    await service.add_member(
+        group["group_id"],
+        {"member": {"kind": "agent_template", "id": "group", "member_name": "another"}},
+        user_id="owner",
+        channel_id="web",
+        request_id="add-over-limit",
+    )
+    assert len(service.get(group["group_id"], user_id="owner", channel_id="web")["members"]) == 102

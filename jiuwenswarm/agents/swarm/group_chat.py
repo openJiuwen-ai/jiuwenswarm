@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from pathlib import Path
 from weakref import WeakValueDictionary
 
 from openjiuwen.agent_teams.harness.manifest import ElementKind, harness_element
@@ -187,6 +188,8 @@ class CompleteTeamRun(_GroupTool):
                 description=(
                     "Complete this private-team run with its final result; the host publishes it to the group. "
                     "Direct answers need no task card; call start_group_task before doing substantive work."
+                    " Final files in the team's outputs directory are attached automatically. "
+                    "Include the complete answer in result when no file was produced."
                 ),
                 input_params={
                     "type": "object",
@@ -221,6 +224,19 @@ class CompleteTeamRun(_GroupTool):
         if current is not None and current.get("execution_id"):
             if inputs.get("execution_id") != current["execution_id"]:
                 return ToolOutput(success=False, error="execution_id must match the active private-team task")
+        attachments = list(attachments)
+        outputs_dir = current.get("outputs_dir") if current is not None else None
+        if outputs_dir:
+            root = Path(outputs_dir).resolve()
+            paths = {item.get("path") for item in attachments if isinstance(item.get("path"), str)}
+            for file in sorted(root.rglob("*")):
+                resolved = file.resolve()
+                if not file.is_file() or not resolved.is_relative_to(root):
+                    continue
+                path = str(resolved)
+                if path not in paths:
+                    attachments.append({"name": file.name, "path": path})
+                    paths.add(path)
         submission = {"result": result, "attachments": attachments} if attachments else result
         future.set_result(submission)
         return ToolOutput(success=True, data={"submitted": True})
@@ -511,7 +527,16 @@ class RunTeam(_GroupTool):
             ]
             if execution is not None:
                 child.agents["leader"].tools.append(BuiltinToolSpec(type=BEGIN_TEAM_TASK, params={"key": team_key}))
+                from jiuwenswarm.agents.swarm.group_execution import GROUP_ASK_USER
+
                 leader_agent = child.agents["leader"]
+                leader_agent.rails = [
+                    rail for rail in (leader_agent.rails or []) if rail.type != "swarm.structured_ask_user"
+                ]
+                leader_agent.rails.append(RailSpec(type=GROUP_ASK_USER, params={
+                    "group_id": self.context.session_id, "member_name": self.backend.member_name,
+                    "execution_id": execution["execution_id"],
+                }))
                 leader_agent.rails = [*(leader_agent.rails or []), RailSpec(
                     type=PRIVATE_TASK_POLICY, params={"key": team_key},
                 )]
@@ -519,6 +544,7 @@ class RunTeam(_GroupTool):
                 "member_name": self.backend.member_name,
                 "execution_id": execution["execution_id"] if execution is not None else None,
                 "group_id": self.context.session_id if execution is not None else None,
+                "outputs_dir": getattr(child.build_context, "team_outputs_dir", None),
             }
             child.leader = child.leader.model_copy(
                 update={
@@ -582,6 +608,13 @@ class RunTeam(_GroupTool):
                         if event_type in {"team.interact.failed", "team.error"}:
                             raise RuntimeError("expert-team execution failed")
                         if event_type in {"team.idle", "team.completed"} and not future.done():
+                            from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+                            if execution is not None:
+                                pending = GroupQuestions(self.context.session_id).pending(self.backend.member_name)
+                                waiting = any(item["execution_id"] == execution["execution_id"] for item in pending)
+                                if waiting:
+                                    continue
                             raise RuntimeError("expert team became idle without submitting a result")
                 finally:
                     if progress_worker is not None:
@@ -699,8 +732,10 @@ class PrivateTaskPolicy(DeepAgentRail):
             "Current execution_id: " + current["execution_id"]
             + ". If you can answer directly, call complete_team_run with this ID; do not start a task. "
             "Before substantive work or using other tools, call start_group_task with this ID. "
-            "Then perform the work and submit the final result with complete_team_run. "
-            "You can do a task yourself; build_team is optional. Never reuse an earlier execution_id."
+            "Follow the normal team collaboration rules for planning, delegation and task execution. "
+            "Submit the final result with complete_team_run. "
+            "Ask the user with ask_user if important requirements are unclear, before substantive work. "
+            "Never reuse an earlier execution_id."
         )
         builder = ctx.agent.system_prompt_builder
         builder.remove_section("group_private_execution")
@@ -712,7 +747,7 @@ class PrivateTaskPolicy(DeepAgentRail):
         from jiuwenswarm.server.runtime.group_execution import GroupExecutions
         from openjiuwen.core.foundation.llm import ToolMessage
 
-        if ctx.inputs.tool_name in {"start_group_task", "complete_team_run"}:
+        if ctx.inputs.tool_name in {"start_group_task", "complete_team_run", "ask_user"}:
             return
         current = _private_runs.get(self.key)
         if current is None:
