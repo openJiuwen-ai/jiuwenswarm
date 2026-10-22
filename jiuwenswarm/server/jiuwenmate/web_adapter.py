@@ -26,6 +26,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.jiuwenmate.activity_query import ActivityQuery
 from jiuwenswarm.server.jiuwenmate.channel_records import ChannelRecords
+from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import configured_feishu_bindings, feishu_member_names
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef, PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import ColleagueSettings, PersistentAgentError
@@ -250,6 +251,19 @@ class StreamPublisher:
             logger.warning("[JiuwenMate] stream push failed: request=%s error=%s", frame["request_id"], exc)
 
 
+def _channel_records(manager: AgentManager) -> ChannelRecords:
+    """Group records for the page, with colleague names and Feishu member names."""
+    colleagues = manager._service.list_colleagues("local")
+    return ChannelRecords(
+        manager.group_chats,
+        manager.group_archive,
+        manager.sessions,
+        agent_names={item.agent_id: item.name for item in colleagues},
+        app_agents={item.app_id: item.agent_id for item in configured_feishu_bindings()},
+        member_names=feishu_member_names,
+    )
+
+
 class JiuwenMateWebAdapter(GatewayAdapter):
     methods = _COLLEAGUE_METHODS | _RUNTIME_METHODS | {ReqMethod.JIUWENMATE_MODELS_LIST.value}
 
@@ -356,17 +370,17 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             pages = await asyncio.to_thread(InstalledResourceCatalog().list_knowledge)
             return {"pages": [{"name": page.name, "label": page.name} for page in pages]}
         if method == ReqMethod.JIUWENMATE_CHANNEL_LIST.value:
-            records = ChannelRecords(manager.group_chats, manager.group_archive, manager.sessions)
+            records = _channel_records(manager)
             channels = await asyncio.to_thread(records.list_channels, WEB_NAMESPACE, _text_param(params, "agent_id"))
             return {"channels": channels}
         if method == ReqMethod.JIUWENMATE_CHANNEL_MESSAGES.value:
-            records = ChannelRecords(manager.group_chats, manager.group_archive, manager.sessions)
+            records = _channel_records(manager)
             report = await asyncio.to_thread(
                 records.messages, WEB_NAMESPACE, _text_param(params, "agent_id"), _text_param(params, "group_id"),
             )
             return report
         if method == ReqMethod.JIUWENMATE_CHANNEL_TRACE.value:
-            records = ChannelRecords(manager.group_chats, manager.group_archive, manager.sessions)
+            records = _channel_records(manager)
             report = await asyncio.to_thread(
                 records.trace, WEB_NAMESPACE, _text_param(params, "agent_id"), _text_param(params, "group_id"),
             )

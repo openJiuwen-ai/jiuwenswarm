@@ -540,11 +540,17 @@ class FeishuChannel(BaseChannel):
 
         sender_id_value = self._persistent_event_value(sender, "sender_id")
         sender_id = self._persistent_platform_id(sender_id_value)
-        sender_name = (
+        explicit_name = (
             self._persistent_event_value(sender, "name")
             or self._persistent_event_value(sender, "sender_name")
-            or sender_id
         )
+        explicit_name = explicit_name.strip() if isinstance(explicit_name, str) and explicit_name.strip() else None
+        sender_type_value = self._persistent_event_value(sender, "sender_type")
+        sender_type_value = sender_type_value.strip().lower() if isinstance(sender_type_value, str) else ""
+        resolved_name = ""
+        if sender_id and sender_type_value in {"user", "human"} and explicit_name in {None, sender_id}:
+            resolved_name = self._resolve_user_display_name(sender_id, "")
+        sender_name = explicit_name if explicit_name not in {None, sender_id} else (resolved_name or sender_id)
         sender_name = sender_name.strip() if isinstance(sender_name, str) and sender_name.strip() else None
 
         mentions: list[str] = []

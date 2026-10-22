@@ -233,6 +233,8 @@
       "hint": "将员工接入渠道，通过 @ 分派任务",
       "updateHint": "可以更换已绑定的 API ID 和 Secret。Secret 不会回显，保存前需要重新填写。",
       "feishu": "飞书",
+      "welink": "WeLink",
+      "dingtalk": "钉钉",
       "appId": "API ID",
       "appIdPlaceholder": "请输入API ID",
       "secret": "API Secret",

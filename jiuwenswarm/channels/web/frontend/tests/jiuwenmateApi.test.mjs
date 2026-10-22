@@ -13,6 +13,7 @@ import {
   formatSharedFileSize,
   latestSharedFiles,
   toActivity,
+  toChannelMessage,
   toChatRequest,
   toColleague,
   toModelCatalog,
@@ -595,6 +596,8 @@ test('channel records map public messages and execution trace rows', async () =>
   const messages = await api.channelMessages('mate_1', 'grp_1');
   assert.equal(messages[0].status, 'recalled');
   assert.equal(messages[0].fromColleague, false);
+  assert.equal(toChannelMessage({ id: 'm2', sender: '小九', sender_kind: 'agent', own: true, text: '我来处理' }).fromColleague, true);
+  assert.equal(toChannelMessage({ id: 'm3', sender: '小八', sender_kind: 'agent', own: false, text: '我是另一位' }).fromColleague, false);
   const trace = await api.channelTrace('mate_1', 'grp_1');
   assert.equal(trace.rows[0].role, 'tool');
   assert.equal(trace.rows[0].lane, 'tools');

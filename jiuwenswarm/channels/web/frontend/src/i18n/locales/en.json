@@ -233,6 +233,8 @@
       "hint": "Connect the employee to a channel and assign tasks with @",
       "updateHint": "Replace the bound API ID and Secret. The Secret is not shown again and must be entered before saving.",
       "feishu": "Feishu",
+      "welink": "WeLink",
+      "dingtalk": "DingTalk",
       "appId": "API ID",
       "appIdPlaceholder": "Enter API ID",
       "secret": "API Secret",
