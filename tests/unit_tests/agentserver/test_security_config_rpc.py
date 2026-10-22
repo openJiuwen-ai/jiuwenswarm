@@ -681,7 +681,7 @@ async def test_native_sandbox_facade_preserves_four_axes_and_reports_apply(servi
     )
     assert queried["config"] == {
         **config, "startup_mode": "internal",
-        "limits": {"max_file_mb": 100, "exec_timeout_seconds": 600},
+        "limits": {"max_file_mb": 1024, "exec_timeout_seconds": 3600},
     }
     assert render.get_sandbox_files_axes() == files
     assert service.get_candidate()["apply"]["revision"] == source_revision
@@ -756,7 +756,7 @@ async def test_managed_legacy_sandbox_set_uses_native_facade(service, monkeypatc
         restart_sandboxes=no_restart, service=service,
     )
     assert limits["applied"] and limits["limits"] == {
-        "max_file_mb": 12, "exec_timeout_seconds": 600,
+        "max_file_mb": 12, "exec_timeout_seconds": 3600,
     }
     queried_limits = await dispatch_managed_sandbox_request(
         ReqMethod.SANDBOX_LIMITS_GET, {}, restart_sandboxes=no_restart, service=service,

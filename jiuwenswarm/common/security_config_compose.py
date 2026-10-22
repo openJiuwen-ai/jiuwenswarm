@@ -19,7 +19,7 @@ from jiuwenswarm.common.file_guard_config import validate_paths
 
 DEFAULT_SOURCES = DEFAULT_SOURCE_ORDER
 _LEVELS = frozenset({"allow", "ask", "deny"})
-_RULE_FIELDS = frozenset({"id", "tools", "pattern", "severity", "action", "description", "match_type"})
+_RULE_FIELDS = frozenset({"id", "tools", "pattern", "severity", "action", "description", "match_type", "profile_actions"})
 
 
 def validate_settings(settings: Any) -> dict[str, Any]:
@@ -62,6 +62,14 @@ def validate_source(source: Any, *, cloud: bool = False) -> dict[str, Any]:
         for rule in perms["rules"]:
             if not isinstance(rule, dict) or set(rule) - _RULE_FIELDS or "layer" in rule:
                 raise ValueError("invalid rule fields")
+            actions = rule.get("profile_actions")
+            if actions is not None and (
+                not isinstance(actions, dict)
+                or any(not isinstance(profile, str) or not profile
+                       or not isinstance(action, str) or action not in _LEVELS
+                       for profile, action in actions.items())
+            ):
+                raise ValueError("invalid profile_actions")
             rid = rule.get("id")
             if not isinstance(rid, str) or not rid.strip() or rid in ids:
                 raise ValueError("rule id must be unique and non-empty")
