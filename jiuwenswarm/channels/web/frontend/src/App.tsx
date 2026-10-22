@@ -1793,19 +1793,12 @@ function AppContent({
           const cfg = sfConfig as {
             enable_swarmflow?: boolean;
             swarmflow_budget?: number | null;
-            swarmflow_worktree?: boolean;
           };
           if (cfg.enable_swarmflow) {
             useSessionStore.getState().setSwarmflowActive(
               targetSessionId,
               true,
               cfg.swarmflow_budget ?? undefined,
-            );
-          }
-          if (cfg.swarmflow_worktree !== undefined) {
-            useSessionStore.getState().setSwarmflowWorktree(
-              targetSessionId,
-              cfg.swarmflow_worktree,
             );
           }
         }
@@ -3031,9 +3024,6 @@ function AppContent({
       if (pendingRuntime?.enableSwarmflow) {
         sessionStore.setSwarmflowActive(newSid, true, pendingRuntime.swarmflowBudget);
       }
-      if (pendingRuntime?.swarmflowWorktree !== undefined) {
-        sessionStore.setSwarmflowWorktree(newSid, pendingRuntime.swarmflowWorktree);
-      }
       const pendingDispatchMode = resolveNewSessionDispatchMode(pendingRuntime?.teamDispatchMode);
       if (pendingDispatchMode) {
         sessionStore.setTeamDispatchMode(newSid, pendingDispatchMode);
@@ -3285,12 +3275,6 @@ function AppContent({
         const newConvSwarmflow = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
         if (newConvSwarmflow?.enableSwarmflow) {
           useSessionStore.getState().setSwarmflowActive(newSid, true, newConvSwarmflow.swarmflowBudget);
-        }
-        if (newConvSwarmflow?.swarmflowWorktree !== undefined) {
-          useSessionStore.getState().setSwarmflowWorktree(
-            newSid,
-            newConvSwarmflow.swarmflowWorktree,
-          );
         }
         // 调度模式同理，且在这里落成显式值：团队按首条消息建好后就不能再改。
         const newConvDispatchMode = resolveNewSessionDispatchMode(newConvSwarmflow?.teamDispatchMode);

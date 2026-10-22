@@ -4840,6 +4840,8 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     )
 
 
+class _DeliverOk:
+    ok = True
 
     def __bool__(self) -> bool:
         return True
@@ -8331,7 +8333,7 @@ def test_resolve_session_swarmflow_config_request_overrides_config() -> None:
     assert _resolve_session_swarmflow_config(params, config_base, session_id="s1") == {
         "enable_swarmflow": True,
         "swarmflow_budget": 50000,
-        "swarmflow_worktree": None,
+        "swarmflow_worktree": False,
     }
 
 
@@ -8348,7 +8350,7 @@ def test_resolve_session_swarmflow_config_falls_back_to_config() -> None:
     assert _resolve_session_swarmflow_config(params, config_base, session_id="s1") == {
         "enable_swarmflow": True,
         "swarmflow_budget": 200000,
-        "swarmflow_worktree": None,
+        "swarmflow_worktree": False,
     }
 
 
@@ -8390,14 +8392,39 @@ def test_resolve_session_swarmflow_config_falls_back_to_metadata(
     assert _resolve_session_swarmflow_config({}, config_base, session_id="sess-resolve-meta") == {
         "enable_swarmflow": True,
         "swarmflow_budget": 30000,
-        "swarmflow_worktree": None,
+        "swarmflow_worktree": False,
     }
 
 
-def test_resolve_session_swarmflow_config_worktree_param_overrides_persisted(
+def test_resolve_session_swarmflow_config_worktree_follows_project_dir() -> None:
+    """worktree follows the project directory: selected → True, absent → False."""
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+        _resolve_session_swarmflow_config,
+    )
+
+    params = {"enable_swarmflow": True}
+    config_base = {"modes": {"team": {"jiuwen_team": {"enable_swarmflow": False}}}}
+
+    result = _resolve_session_swarmflow_config(
+        params, config_base, session_id="s1", project_dir="/repo/project-a",
+    )
+    assert result["swarmflow_worktree"] is True
+
+    result = _resolve_session_swarmflow_config(
+        params, config_base, session_id="s1", project_dir=None,
+    )
+    assert result["swarmflow_worktree"] is False
+
+    result = _resolve_session_swarmflow_config(
+        params, config_base, session_id="s1", project_dir="   ",
+    )
+    assert result["swarmflow_worktree"] is False
+
+
+def test_resolve_session_swarmflow_config_worktree_ignores_persisted_and_params(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """explicit worktree param wins over the session's persisted sticky value."""
+    """stale persisted/param worktree values are ignored — only project_dir decides."""
     from jiuwenswarm.server.runtime.agent_adapter import team_helpers
     from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
         _resolve_session_swarmflow_config,
@@ -8406,55 +8433,13 @@ def test_resolve_session_swarmflow_config_worktree_param_overrides_persisted(
     monkeypatch.setattr(
         team_helpers,
         "restore_session_swarmflow_config",
-        lambda session_id: {"enable_swarmflow": True, "swarmflow_worktree": False},
+        lambda session_id: {"enable_swarmflow": True, "swarmflow_worktree": True},
     )
 
     params = {"enable_swarmflow": True, "swarmflow_worktree": True}
     config_base = {"modes": {"team": {"jiuwen_team": {"enable_swarmflow": False}}}}
     result = _resolve_session_swarmflow_config(params, config_base, session_id="s1")
-    assert result["swarmflow_worktree"] is True
-
-
-def test_resolve_session_swarmflow_config_worktree_sticky_when_param_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """a client omitting the worktree key keeps the session's persisted value."""
-    from jiuwenswarm.server.runtime.agent_adapter import team_helpers
-    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
-        _resolve_session_swarmflow_config,
-    )
-
-    monkeypatch.setattr(
-        team_helpers,
-        "restore_session_swarmflow_config",
-        lambda session_id: {"enable_swarmflow": True, "swarmflow_worktree": False},
-    )
-
-    params = {"enable_swarmflow": True}
-    config_base = {"modes": {"team": {"jiuwen_team": {"enable_swarmflow": False}}}}
-    result = _resolve_session_swarmflow_config(params, config_base, session_id="s1")
     assert result["swarmflow_worktree"] is False
-
-
-def test_resolve_session_swarmflow_config_worktree_none_when_unset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """no param and no persisted value → None (team config's worktree stands)."""
-    from jiuwenswarm.server.runtime.agent_adapter import team_helpers
-    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
-        _resolve_session_swarmflow_config,
-    )
-
-    monkeypatch.setattr(
-        team_helpers,
-        "restore_session_swarmflow_config",
-        lambda session_id: None,
-    )
-
-    params = {"enable_swarmflow": True}
-    config_base = {"modes": {"team": {"jiuwen_team": {"enable_swarmflow": False}}}}
-    result = _resolve_session_swarmflow_config(params, config_base, session_id="s1")
-    assert result["swarmflow_worktree"] is None
 
 
 def _wf_run_with_agents(*agent_statuses: str) -> WorkflowRunState:
