@@ -15,8 +15,8 @@ from openjiuwen.core.foundation.llm import OpenAIModelClient
 def get_rits_response(*args, **kwargs):
     try:
         return rits_response(*args, **kwargs)
-    except Exception as e:
-        return {'error': f"Cannot complete LLM call. Error: {e}"}
+    except Exception:
+        return {'error': "Cannot complete LLM call."}
 
 
 @retry(wait=wait_random_exponential(min=1, max=5), stop=stop_after_attempt(2), reraise=True)

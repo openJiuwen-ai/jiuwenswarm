@@ -12,6 +12,7 @@ from openjiuwen.agent_evolving.optimizer.tool.utils.beam_search import BeamSearc
 from openjiuwen.agent_evolving.optimizer.tool.utils.customized_api import SimpleAPIWrapperFromCallable
 from openjiuwen.agent_evolving.optimizer.tool.utils.customized_eval import SimpleEval
 from openjiuwen.agent_evolving.optimizer.tool.utils.description_example_method import ToolDescriptionMethod
+from openjiuwen.agent_evolving.optimizer.tool.utils.sensitive_data import credential_values, redact
 from openjiuwen.agent_evolving.optimizer.tool.utils.toolcall_example_method import APICallToExampleMethod
 from openjiuwen.core.common.logging import logger
 
@@ -43,6 +44,8 @@ def customized_pipeline(stage, tool, config, tool_callable=None):
         raise ValueError(f"wrong stage: {stage}")
     
     logger.info("=== Starting SingleRoundSearch ===")
+    # Tool documentation is also included in later LLM prompts and saved results.
+    safe_tool = redact(tool, credential_values(tool))
     single_search = BeamSearch(
         method=method,
         beam_width=config["beam_width"],
@@ -55,7 +58,7 @@ def customized_pipeline(stage, tool, config, tool_callable=None):
         max_score=3.0,
         top_k=config["top_k"],
     )
-    result = single_search.search(tool)
+    result = single_search.search(safe_tool)
 
     
     # save results
@@ -67,6 +70,7 @@ def customized_pipeline(stage, tool, config, tool_callable=None):
     if Path(save_path).exists():
         with open(save_path, "r", encoding="utf-8") as f:
             result = json.load(f) + result
+    result = redact(result, credential_values(result))
     with open(save_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
     return result

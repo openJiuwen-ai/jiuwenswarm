@@ -7,6 +7,7 @@ from typing import List, Dict, Tuple, Any, Optional, Union
 
 from openjiuwen.agent_evolving.optimizer.tool.utils.base_method import BaseMethod
 from openjiuwen.agent_evolving.optimizer.tool.utils.rits import get_rits_response
+from openjiuwen.agent_evolving.optimizer.tool.utils.sensitive_data import credential_values, redact
 from openjiuwen.agent_evolving.optimizer.tool.utils.format import format_prompt_llama, parse_json
 from openjiuwen.core.common.logging import logger
 
@@ -32,7 +33,7 @@ class ToolDescriptionMethod(BaseMethod):
             description = self.get_original_description(tool) 
             # TOOL IS openai tool format, may change to improve it directly, not just desc part
             output = {'description': description, 'iteration': 0}
-            logger.info(f"Current description - original description: {output}")
+            logger.info("Current description - original description ready")
         else:
             # load negative ex
             function_name = tool['name']
@@ -40,7 +41,7 @@ class ToolDescriptionMethod(BaseMethod):
             examples_obtained = {"neg_examples": neg_examples, "examples": examples}
             # improve with neg ex
             output = self.generate(tool, examples_obtained, prev_outputs, it)
-            logger.info(f"Current description - generated description: {output}")
+            logger.info("Current description - generated description ready")
 
         # eval with pos ex
         results = self.eval_loop(tool, output['description'], examples, runs=1)
@@ -505,7 +506,8 @@ Return JSON following this exact schema structure (modify only description texts
                 else:
                     pass
 
-        return selected_examples[:max_num_examples]
+        selected_examples = selected_examples[:max_num_examples]
+        return redact(selected_examples, credential_values(selected_examples))
     
     def get_negative_examples(self, function_name):
         examples_path = self.config["neg_ex_input_path"]
@@ -541,7 +543,8 @@ Return JSON following this exact schema structure (modify only description texts
                         selected_examples.append((inst.strip(), fn_call, fn_output, ans.strip()))
                 else:
                     selected_examples.append((inst.strip(), fn_call, fn_output, ans.strip()))
-        return selected_examples[:max_num_examples]
+        selected_examples = selected_examples[:max_num_examples]
+        return redact(selected_examples, credential_values(selected_examples))
     
     def get_original_description(self, tool: Dict[str, Any]):
         description = tool['description']
@@ -559,5 +562,5 @@ Return JSON following this exact schema structure (modify only description texts
                 function_name,
                 self.config['num_examples_for_desc'],
             )
-        logger.info(f"{len(examples)} Examples loaded for tool: {function_name}: {examples}")
+        logger.info(f"{len(examples)} examples loaded")
         return examples

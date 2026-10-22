@@ -70,7 +70,7 @@ class SimpleAPIWrapper:
             Tuple of (json_response_string, status_code)
         """
         tool_name = tool['name']
-        logger.info(f"=== Trying to execute tool: {tool}, tool_input: {tool_input} ===")
+        logger.info("Trying to execute tool")
 
         params = tool_input
         fn = self.functions.get(self.fn_call_name)
@@ -86,10 +86,10 @@ class SimpleAPIWrapper:
         try:
             output = fn(params)
             return json.dumps({'response': output}, ensure_ascii=False), 0
-        except Exception as e:
-            logger.error(f"request invalid, error: {str(e)}")
+        except Exception:
+            logger.error("Tool execution failed")
             return json.dumps({
-                "error": f"request invalid, error: {str(e)}", 
+                "error": "request invalid, tool execution failed",
                 "response": ""
             }), 12
 
@@ -124,7 +124,7 @@ class SimpleAPIWrapperFromCallable:
             Tuple of (json_response_string, status_code)
         """
         tool_name = tool['name']
-        logger.info(f"=== Trying to execute tool: {tool}, tool_input: {tool_input} ===")
+        logger.info("Trying to execute tool")
 
         params = tool_input
         fn = self.functions.get(self.fn_call_name)
@@ -140,10 +140,10 @@ class SimpleAPIWrapperFromCallable:
         try:
             output = fn(params)
             return json.dumps({'response': output}, ensure_ascii=False), 0
-        except Exception as e:
-            logger.error(f"request invalid, error: {str(e)}")
+        except Exception:
+            logger.error("Tool execution failed")
             return json.dumps({
-                "error": f"request invalid, error: {str(e)}", 
+                "error": "request invalid, tool execution failed",
                 "response": ""
             }), 12
         """
@@ -195,7 +195,7 @@ class SimpleAPIWrapperFromCallable:
             Tuple of (json_response_string, status_code)
         """
         tool_name = tool['name']
-        logger.info(f"=== Trying to execute tool: {tool}, tool_input: {tool_input} ===")
+        logger.info("Trying to execute tool")
 
         params = tool_input
         fn = self.functions.get(self.fn_call_name)
@@ -211,10 +211,10 @@ class SimpleAPIWrapperFromCallable:
         try:
             output = fn(params)
             return json.dumps({'response': output}, ensure_ascii=False), 0
-        except Exception as e:
-            logger.error(f"request invalid, error: {str(e)}")
+        except Exception:
+            logger.error("Tool execution failed")
             return json.dumps({
-                "error": f"request invalid, error: {str(e)}", 
+                "error": "request invalid, tool execution failed",
                 "response": ""
             }), 12
 
