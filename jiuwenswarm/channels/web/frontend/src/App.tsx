@@ -110,6 +110,8 @@ import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { useDesktopBrowserAutoOpen } from './features/desktopBrowserFile';
 import { useBrowserAgentActivity } from './features/browserAgentActivity';
+import { WebUISlotHost } from './features/webui/WebUISlotHost';
+import { useWebUIRender } from './features/webui/useWebUIRender';
 import {
   applyBrowserDisplaySettings,
   browserDisplayRevision,
@@ -1039,6 +1041,8 @@ function AppContent({
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
   const browserAgentActive = useBrowserAgentActivity(sessionId);
   const browserHeadless = useDesktopBrowserHeadless();
+  // WebUI 扩展：订阅下行渲染帧（webui.render / webui.render.error）
+  useWebUIRender();
   const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
   const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
@@ -5293,6 +5297,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 )}
 
                 {/* Tool Panel / Expanded Team Panel */}
+                {/* WebUI 扩展：会话右侧附加面板，无插件内容时不占位 */}
+                <WebUISlotHost
+                  slotId="conversation.panel.right"
+                  className="w-[420px] max-w-full shrink-0 overflow-y-auto border-l border-border bg-bg p-2"
+                />
                 {!toolPanelHidden && trajectoryTaskPanelAvailable && !showConversationNotFound && !heartbeatPanelOpen && (
                   <ToolPanel
                     sessionId={sessionId}

@@ -48,6 +48,7 @@ import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { activeMoaPhase, MoaProgress } from './MoaProgress';
 import { InputArea, type InputAreaHandle } from './InputArea';
+import { WebUISlotHost } from '../../features/webui/WebUISlotHost';
 import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import lineUpIcon from '../../assets/lineUp.svg';
@@ -2494,6 +2495,10 @@ export const ChatPanel = React.memo(function ChatPanel({
                     teamGroupIdentityOverride={teamGroupIdentity}
                     onForkFromMessage={handleForkFromMessage}
                   />
+                  <WebUISlotHost
+                    slotId="conversation.input.above"
+                    className="mt-2 w-full"
+                  />
                   {shouldShowHumanShare && (
                     <HumanShareCard commands={teamHumanShareCommands} onShare={() => setHumanShareOpen(true)} />
                   )}
@@ -2740,6 +2745,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />
+          <WebUISlotHost slotId="conversation.input.below" className="mt-1 px-1" />
         </div>
       )}
       <div className="chat-ai-disclaimer" data-testid="chat-panel-ai-disclaimer">
