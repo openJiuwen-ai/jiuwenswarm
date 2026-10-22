@@ -300,7 +300,7 @@ async def main():
         if admission and await reader.readline() != b"ready\n":
             writer.close()
             await writer.wait_closed()
-            raise RuntimeError("The host did not admit this LOCAL worker. No user code was executed.")
+            raise RuntimeError("The host did not admit this code worker. No user code was executed.")
     else:
         ipc = socket.socket(fileno=3)
         try:

@@ -14,7 +14,7 @@ from openjiuwen.harness.tools.cua.desktop_tools import CuaDesktopTool
 from openjiuwen.harness.tools.cua.rails import CuaProgressRail, CuaRuntimeRail
 
 from jiuwenswarm.cua_engine.runtime import ReplRuntime, desktop_lane
-from jiuwenswarm.cua_engine.execution import LocalCodeSession
+from jiuwenswarm.cua_engine.execution import CodeExecutionSession
 
 from ..tools.cua_macos_backend import MacOSBackend, MacOSLaunchTool, install_macos_backend
 from ..tools.cua_repl import CuaReplTool, NativeTool
@@ -39,7 +39,7 @@ class CuaExtensionRail(DeepAgentRail):
                                 pause_on_user_input=self.pause_on_user_input)
 
     def init(self, agent):
-        self.execution_backend = LocalCodeSession(self.sys_operation, self.owner_id)
+        self.execution_backend = CodeExecutionSession(self.sys_operation, self.owner_id)
         self.runtime = ReplRuntime(execution_backend=self.execution_backend)
         self.native_rail, = agent.find_rails_by_type((CuaRuntimeRail,))
         self.progress, = agent.find_rails_by_type((CuaProgressRail,))

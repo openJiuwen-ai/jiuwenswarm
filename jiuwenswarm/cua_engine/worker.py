@@ -1,4 +1,4 @@
-"""Bootstrap the persistent engine worker inside a managed LOCAL execution."""
+"""Bootstrap the persistent engine worker inside the configured executor."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import sys
 
 
 def main() -> None:
-    configuration = Path(os.environ.pop("JIUWENSWARM_LOCAL_CODE_CONFIG"))
+    configuration = Path(os.environ.pop("JIUWENSWARM_CODE_WORKER_CONFIG"))
     settings = json.loads(configuration.read_text(encoding="utf-8"))
     port, token = settings["port"], settings["token"]
     lifetime = socket.create_connection(("127.0.0.1", port), timeout=30)
