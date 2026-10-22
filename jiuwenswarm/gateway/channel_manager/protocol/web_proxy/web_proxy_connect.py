@@ -377,6 +377,11 @@ def new_web_proxy_client_session(*, force_close: bool = False) -> aiohttp.Client
         cookie_jar=aiohttp.DummyCookieJar(),
         connector=connector,
         auto_decompress=False,
+        timeout=aiohttp.ClientTimeout(
+            total=None,
+            connect=30,
+            sock_connect=30,
+        ),
     )
 
 
