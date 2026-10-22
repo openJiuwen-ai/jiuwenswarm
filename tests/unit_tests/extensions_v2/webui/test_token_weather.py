@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
 
-from jiuwenswarm.extensions_v2.events.context_usage import (
+from jiuwenswarm.extensions_v2.event_types.context_usage import (
     CONTEXT_USAGE_EVENT,
     ContextUsageUpdate,
     register_context_usage_events,

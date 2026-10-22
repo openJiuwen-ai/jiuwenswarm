@@ -16,7 +16,7 @@ from openjiuwen.core.events import (
     SessionContext,
 )
 
-from jiuwenswarm.extensions_v2.events.matching import match_pattern_subset
+from jiuwenswarm.extensions_v2.event_types.matching import match_pattern_subset
 
 logger = logging.getLogger(__name__)
 

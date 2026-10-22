@@ -8,7 +8,7 @@ from openjiuwen.core.events import Event, SessionContext
 import jiuwenswarm.extensions_v2.assembly as assembly
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.extensions_v2.events.context_usage import CONTEXT_USAGE_EVENT, ContextUsageUpdate
+from jiuwenswarm.extensions_v2.event_types.context_usage import CONTEXT_USAGE_EVENT, ContextUsageUpdate
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
 from jiuwenswarm.extensions_v2.webui.constants import CODE_SESSION_MISMATCH, CODE_TARGET_INACTIVE
 

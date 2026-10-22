@@ -7,7 +7,7 @@
 | 类型 | feature |
 | 编号 / slug | `F_06 / render-service` |
 | 关联计划 | EXTV2-06 渲染服务与下行帧 |
-| 所属模块 | `jiuwenswarm/extensions_v2/webui/{models,schema,constants,registry,transport}.py`、`webui/handlers/render_core.py` |
+| 所属模块 | `jiuwenswarm/extensions_v2/webui/{models,schema,constants,registry,transport}.py`、`webui/core_handlers/render_core.py` |
 | 设计依据 | [F_05 平台事件](F_05_platform-events.md)、[详细架构](../designs/extensions-v2-architecture.md) |
 | 最近一次修订日期 | 2026-10-22 |
 | 方案状态 | 已实现；重连重发未实现 |

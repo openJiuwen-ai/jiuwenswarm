@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from jiuwenswarm.extensions_v2.events.context_usage import ContextUsageUpdate
+from jiuwenswarm.extensions_v2.event_types.context_usage import ContextUsageUpdate
 
 MAX_ROUNDS = 200
 

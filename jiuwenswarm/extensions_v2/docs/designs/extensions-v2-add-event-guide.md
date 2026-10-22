@@ -12,6 +12,22 @@
 
 ## 1. 先确定事件契约
 
+事件是平台侧提供给插件订阅的运行时契约：事件名、输入输出、匹配函数、唯一 CORE 和触发点共同决定它能否工作。插件只能订阅事件，不能通过 `manifest.yaml` 声明新事件。
+
+| 层级 | 谁登记 | 职责 |
+| --- | --- | --- |
+| `CORE` | 平台侧 `register_event_type()` | 校验输入并执行最终动作或触发下游事件 |
+| `BUILTIN` | 平台侧 `ops.build` 等装配事件 | 向插件提供能力或处理业务事件 |
+| `USER` | 插件 `registrar.register_event_handler()` | 订阅事件并执行插件逻辑 |
+
+```mermaid
+flowchart LR
+    T["业务触发点 / 前端请求"] --> B["ExtensionEventBus"]
+    B --> H["匹配到的 USER / BUILTIN Handler"]
+    H --> C["唯一 CORE Handler"]
+    C --> O["EventOutput 或下游帧"]
+```
+
 新增事件前先写清楚六件事，避免实现阶段反复改接口：
 
 | 项 | 示例值 | 约束 |
@@ -29,18 +45,23 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `extensions_v2/events/<name>.py` | 事件名常量、输入输出类型、匹配函数、CORE Handler、注册函数 |
+| `extensions_v2/event_types/<name>.py` | 事件名常量、输入输出类型、匹配函数、CORE Handler、注册函数；不依赖 WebUI 运行时 |
+| `extensions_v2/webui/core_handlers/<name>.py` | 依赖 WebUI 运行时（传输、实例登记等）的 CORE Handler |
+| `extensions_v2/event_handlers/<name>.py` | JiuwenSwarm 自己的 BUILTIN Handler；目录已预留，当前无实现 |
 | `extensions_v2/handler_ops/<namespace>.py` | 需要暴露给插件时，注册 Ops 命名空间与方法 |
-| `extensions_v2/assembly.py` | 把注册函数组合进 `host_event_types` / `host_handlers` |
+| `extensions_v2/bootstrap.py` | 汇总平台事件类型、CORE Handler 与 BUILTIN Handler 的注册 |
+| `extensions_v2/assembly.py` | 创建运行时单例，把 `bootstrap` 的注册函数交给 `Registry.init` |
 | `extensions_v2/webui/models.py` | 复用 `RenderTarget`、`UiRenderInput` 等既有模型 |
 | `tests/unit_tests/extensions_v2/` | 事件注册、触发、校验与失败隔离 |
+
+`event_types/` 与 agent-core `core/events/builtins/` 的职责一致：放事件契约、匹配函数与 CORE Handler。需要访问 WebUI 传输或活跃实例的 CORE 放在 `webui/core_handlers/`，避免事件目录反向依赖渲染服务。`event_handlers/` 只放 JiuwenSwarm 平台侧的 BUILTIN Handler，不登记 CORE；目录已预留，出现真实实现时再放入模块。
 
 ## 3. 示例：`tool.progress`
 
 ### 3.1 定义输入输出
 
 ```python
-# extensions_v2/events/tool_progress.py
+# extensions_v2/event_types/tool_progress.py
 from dataclasses import dataclass
 
 TOOL_PROGRESS_EVENT = "tool.progress"
@@ -140,20 +161,17 @@ def register_tool_progress_events(bus: ExtensionEventBus) -> None:
 
 ### 3.5 接入装配
 
-`assembly.py` 目前把 `webui.register_event_types` 直接传给 `Registry.init`。新增第二个事件模块后，需要组合成一个宿主注册函数：
+`bootstrap.py` 是平台注册的唯一汇总点。新增事件模块后把注册函数加入 `bootstrap`，`assembly.py` 不需要改动：
 
 ```python
-def register_host_events(bus):
+def register_event_types(bus, webui):
     webui.register_event_types(bus)
+    register_context_usage_events(bus)
     register_tool_progress_events(bus)
 
 
-await manager.init(
-    bus,
-    host_version=_host_version(),
-    host_event_types=register_host_events,
-    host_handlers=webui.register_handlers,
-)
+def register_handlers(bus, webui):
+    webui.register_handlers(bus)
 ```
 
 顺序要求：先注册事件类型，再由 `Registry.init` 触发一次 `ops.build`。
@@ -181,6 +199,17 @@ await bus.trigger(
 ```
 
 触发失败不应中断工具主流程；调用方记录错误后继续执行。
+
+常见触发点：
+
+| 事件 | 触发位置 | 触发方式 |
+| --- | --- | --- |
+| `tool.progress` | 工具执行流程 | `bus.trigger(...)` |
+| `ui.render` | 插件 Handler 或平台业务代码 | `ops.ui.render(...)` 或 `bus.trigger(...)` |
+| `context.usage.updated` | 一轮对话结束 | `notify_context_usage(...)` |
+| `ui.*` 上行事件 | 前端交互 | `webui.dispatch` |
+
+注意区分事件与传输帧：`ui.render` 是 EventBus 事件；`webui.render`、`webui.render.clear`、`webui.render.error` 是下行帧，不是事件。
 
 ### 3.7 如果插件也要触发
 
@@ -279,6 +308,7 @@ sequenceDiagram
 - 触发前 `ops.build` 已成功（装配路径由 `Registry.init` 保证）。
 - 会话与实例标识来自输入或 `ops.session_context`，不读全局变量。
 - 更新界面统一走 `ui.render`，不直接调用 WebSocket。
+- 需要平台内置处理时，Handler 放 `event_handlers/` 并登记 `builtin`，不登记 `core`。
 - 单元测试覆盖成功、非法输入和失败隔离。
 
 ## 7. 常见错误
