@@ -112,6 +112,7 @@ class WindowsJob:
         handle, uint, boolean, pointer = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_void_p
         declarations = {
             "CreateJobObjectW": ([pointer, ctypes.c_wchar_p], handle),
+            "TerminateJobObject": ([handle, uint], boolean),
             "SetInformationJobObject": ([handle, ctypes.c_int, pointer, uint], boolean),
             "QueryInformationJobObject": ([handle, ctypes.c_int, pointer, uint, pointer], boolean),
             "AssignProcessToJobObject": ([handle, handle], boolean),
@@ -163,6 +164,10 @@ class WindowsJob:
             if state.activeProcesses == 0:
                 return
             await asyncio.sleep(.025)
+
+    def terminate(self):
+        if self.handle and not self.kernel.TerminateJobObject(self.handle, 1):
+            raise ctypes.WinError(ctypes.get_last_error())
 
     def close(self):
         handle, self.handle = self.handle, None

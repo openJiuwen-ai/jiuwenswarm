@@ -23,7 +23,9 @@ REPL_DESCRIPTION = (
     "sequentially. Reads present text; printImage delivers screenshots; actions return receipts "
     "only, so explicitly read to verify. Finish a call and inspect a new screenshot before "
     "choosing coordinates. Never mix this tool's references or pixels with the old tools. "
-    "Execution uses the host user's permissions, not a security sandbox. Timeout or cancellation "
+    "Execution uses the host LOCAL code executor and its code permission policy, with the host user's "
+    "permissions, not a security sandbox. Permission rejection sends no code and retains variables. "
+    "Timeout or cancellation "
     "may clear state after actions already executed; never replay uncertain input."
 )
 
@@ -77,6 +79,8 @@ class CuaReplTool(Tool):
         except asyncio.CancelledError:
             await asyncio.shield(self.runtime.close())
             raise
+        except PermissionError as error:
+            return self._error(str(error))
         except Exception as error:
             result = self._error(
                 str(error) + " Earlier actions may have executed; observe before continuing. No automatic retry."

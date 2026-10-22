@@ -1064,6 +1064,10 @@ def _read_interrupt_fields(value_obj: Any) -> tuple[str, str, dict | None]:
 
 def _is_permission_interrupt_message(message: str, tool_name: str) -> bool:
     """Heuristic: PermissionInterruptRail copy vs ConfirmInterruptRail copy."""
+    from ...tools.cua_code_approval import CODE_APPROVAL_LEAD
+
+    if message.strip().startswith(CODE_APPROVAL_LEAD):
+        return False
     normalized = message.strip()
     if any(marker in normalized for marker in _PERMISSION_INTERRUPT_MARKERS):
         return True

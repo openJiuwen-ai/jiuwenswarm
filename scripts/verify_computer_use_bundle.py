@@ -11,9 +11,13 @@ from pathlib import Path
 import sys
 import tempfile
 
+from openjiuwen.core.sys_operation import SysOperation, SysOperationCard
+from openjiuwen.core.sys_operation.cwd import init_cwd
+
 from jiuwenswarm.agents.harness.common.cua_defaults import build_cua_agent_card
 from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
+from jiuwenswarm.agents.harness.common.tools.local_code_session import LocalCodeSession
 from jiuwenswarm.cua_engine.hosting import engine_root, prepare_native
 from jiuwenswarm.cua_engine.runtime import ReplRuntime
 
@@ -55,7 +59,18 @@ async def verify_computer_use_bundle() -> None:
         previous_env = dict(os.environ)
         os.environ.clear()
         os.environ.update(env)
-        runtime = ReplRuntime()
+        init_cwd(temporary)
+        async def authorize_probe(code, title):
+            # This installer self-check executes only the fixed probes below;
+            # normal model cells must use the root's interactive approval host.
+            if code not in (PROBE, "print(packaged_value + 1)"):
+                raise PermissionError("Unexpected bundle verification code")
+
+        backend = LocalCodeSession(
+            SysOperation(SysOperationCard()), "bundle-verification", authorize_cell=authorize_probe,
+        )
+        backend.session_id = "bundle-verification"
+        runtime = ReplRuntime(execution_backend=backend)
         try:
             result = await runtime.execute(PROBE)
             if result.isError:

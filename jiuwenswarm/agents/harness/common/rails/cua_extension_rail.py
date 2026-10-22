@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import sys
 from uuid import uuid4
 
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.foundation.tool import ToolCard
-from openjiuwen.core.single_agent.rail.base import AgentRail, ToolCallInputs
+from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.tools.cua.desktop_tools import CuaDesktopTool
 from openjiuwen.harness.tools.cua.rails import CuaProgressRail, CuaRuntimeRail
 
@@ -16,12 +18,15 @@ from jiuwenswarm.cua_engine.runtime import ReplRuntime, desktop_lane
 
 from ..tools.cua_macos_backend import MacOSBackend, MacOSLaunchTool, install_macos_backend
 from ..tools.cua_repl import CuaReplTool, NativeTool
+from ..tools.local_code_session import LocalCodeSession
+from ..tools.cua_code_approval import request_code_permission
 
 
-class CuaExtensionRail(AgentRail):
+class CuaExtensionRail(DeepAgentRail):
     priority = 90
 
     def __init__(self, *, repl_enabled=True, pause_on_user_input=False):
+        super().__init__()
         self.repl_enabled = repl_enabled
         self.pause_on_user_input = pause_on_user_input
         self.owner_id = "cua_" + uuid4().hex
@@ -29,12 +34,15 @@ class CuaExtensionRail(AgentRail):
         self.desktop = self.native_rail = self.progress = self.repl = None
         self.session_id = None
         self.tools = []
+        self.execution_backend = None
 
     def fork_for_agent(self):
         return CuaExtensionRail(repl_enabled=self.repl_enabled,
                                 pause_on_user_input=self.pause_on_user_input)
 
     def init(self, agent):
+        self.execution_backend = LocalCodeSession(self.sys_operation, self.owner_id)
+        self.runtime = ReplRuntime(execution_backend=self.execution_backend)
         self.native_rail, = agent.find_rails_by_type((CuaRuntimeRail,))
         self.progress, = agent.find_rails_by_type((CuaProgressRail,))
         # Core pins CuaDesktop inside its factory. Adapt only that instance;
@@ -72,11 +80,16 @@ class CuaExtensionRail(AgentRail):
         session_id = ctx.session.get_session_id() if ctx.session is not None else self.owner_id
         if self.runtime.closing or self.session_id is not None and self.session_id != session_id:
             await self.close()
-            self.runtime = ReplRuntime()
+            self.runtime = ReplRuntime(execution_backend=self.execution_backend)
             if self.repl is not None:
                 self.repl.runtime = self.runtime
                 self.repl.last_failed_code, self.repl.same_failures = None, 0
         self.session_id = session_id
+        self.execution_backend.session_id = session_id
+
+    async def before_tool_call(self, ctx):
+        if isinstance(ctx.inputs, ToolCallInputs) and ctx.inputs.tool_name == "cua_repl":
+            self.execution_backend.authorize_cell = partial(request_code_permission, context=ctx)
 
     async def after_tool_call(self, ctx):
         inputs = ctx.inputs

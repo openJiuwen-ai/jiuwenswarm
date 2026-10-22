@@ -13,11 +13,15 @@ interrupt / resume flow works; once approved, that delegation runs as is.
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any, Optional
 
 from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
 from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
-from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+from openjiuwen.core.session import InteractiveInput
+from openjiuwen.core.runner import Runner
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentCallbackEvent
 from openjiuwen.harness.rails.interrupt.confirm_rail import ConfirmInterruptRail
 from openjiuwen.harness.subagents.cua_agent import CUA_PERMISSION_RULES
 from openjiuwen.harness.tools.cua.cua_capabilities import (
@@ -110,6 +114,75 @@ class CuaDelegationApprovalRail(ConfirmInterruptRail):
     def __init__(self, language: str = "cn") -> None:
         super().__init__(tool_names=["task_tool"])
         self._language = "en" if language == "en" else "cn"
+        self._code_approvals = None
+
+    def fork_for_agent(self):
+        return CuaDelegationApprovalRail(language=self._language)
+
+    def callback_priority(self, event):
+        # Capture a CUA continuation's response before generic permissions can
+        # mistake it for a new approval of task_tool. Python installs are unchanged.
+        if (event == AgentCallbackEvent.BEFORE_TOOL_CALL
+                and getattr(sys, "frozen", False) and sys.platform in ("darwin", "win32")):
+            return 91
+        return super().callback_priority(event)
+
+    def init(self, agent):
+        if not getattr(sys, "frozen", False) or sys.platform not in ("darwin", "win32"):
+            return
+        from ..tools.cua_code_approval import CuaApprovalTool, CuaCodeApprovals
+
+        card = agent.ability_manager.get("task_tool")
+        if card is None:
+            return
+        original = Runner.resource_mgr.get_tool(card.id)
+        wrapped = CuaApprovalTool(original, card.id)
+        agent.ability_manager.remove_ability("task_tool")
+        agent.ability_manager.add_ability(wrapped.card, wrapped)
+        self._code_approvals = CuaCodeApprovals()
+        agent.register_task_resource_cleanup(self._code_approvals.close)
+
+    async def before_invoke(self, ctx):
+        # Fresh user input supersedes a suspended task. Approval resumes retain
+        # its original child and Python process rather than delegating again.
+        if self._code_approvals is not None and not isinstance(ctx.inputs.query, InteractiveInput):
+            await self._code_approvals.close()
+
+    async def before_tool_call(self, ctx):
+        if ctx.inputs.tool_name != "task_tool" or self._code_approvals is None:
+            await super().before_tool_call(ctx)
+            return
+        user_input = None
+        if self._code_approvals.is_pending(ctx):
+            from .permissions.root_permission_queue_rail import (
+                ROOT_NON_PERMISSION_RESUME_ATTRIBUTE,
+                RootNonPermissionResume,
+            )
+
+            user_input = self._get_user_input(ctx, ctx.inputs.tool_call.id)
+            ctx.extra.pop(RESUME_USER_INPUT_KEY, None)
+            setattr(ctx, ROOT_NON_PERMISSION_RESUME_ATTRIBUTE, RootNonPermissionResume(
+                ctx.session.get_session_id(), ctx.inputs.tool_call.id, "task_tool",
+            ))
+        else:
+            await super().before_tool_call(ctx)
+        if not ctx.extra.get("_skip_tool"):
+            ctx.extra["_cua_approval_binding"] = self._code_approvals.bind(ctx, user_input)
+
+    async def after_tool_call(self, ctx):
+        self._reset_code_binding(ctx)
+
+    async def on_tool_exception(self, ctx):
+        self._reset_code_binding(ctx)
+
+    def _reset_code_binding(self, ctx):
+        token = ctx.extra.pop("_cua_approval_binding", None)
+        if token is not None:
+            self._code_approvals.reset(token)
+
+    def uninit(self, agent):
+        if self._code_approvals is not None:
+            self._code_approvals.cancel()
 
     def _get_auto_confirm_key(self, tool_call: ToolCall) -> str:
         return CUA_DELEGATION_AUTO_CONFIRM_KEY
