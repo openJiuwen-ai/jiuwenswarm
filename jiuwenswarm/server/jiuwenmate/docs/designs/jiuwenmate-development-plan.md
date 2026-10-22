@@ -429,10 +429,10 @@
 
 ### JM-23 员工群聊回复模式
 
-- **目标与范围：** 每位员工可在被动与自适应之间选择飞书群回复方式。被动仅在被飞书明确 @ 时创建 Request。自适应按职责判断具体任务，对轻量日常交流从宽并简短回应，没有具体内容的寒暄只由一位自适应员工受理。切换模式不重放已经跳过的消息。私聊不使用该开关。
+- **目标与范围：** 每位员工可在被动与自适应之间选择飞书群回复方式。被动仅在被飞书明确 @ 时创建 Request。自适应按职责判断具体任务，对轻量日常交流从宽并简短回应，没有具体内容的寒暄只由一位自适应员工受理。切换模式不重放已经跳过的消息。私聊不使用该开关。参与判断决定回复且认定任务需要一定思考时间时，才把固定等待提示写入 `participation.decided.notice`；简单任务不写。明确 @ 也走这道判断，复杂任务同样写入。宿主按该 Request 的渠道投递这一句，不另选文案，也不自行判断复杂度。飞书与其他已连接渠道共用这条出站路径。
 - **责任与契约：** `ColleagueSettings.group_reply_mode` 只取 `passive` 或 `adaptive`，缺省 `adaptive`，入站读取当前设置。`PersistentGroupFanout` 在受理前执行被动门闩、纯寒暄分流和点名等待。`build_group_execution_guidance` 为群执行附加职责与轻量交流说明。明确 @ 仍创建 Request，并由 core 在模型判断前返回 `respond`。
 - **开工硬前置：** JM-02 的员工设置；JM-07 的群执行入口；JM-08 的飞书群入站；JM-10 的员工详情页。
-- **独立验证入口：** `tests/unit_tests/server/jiuwenmate/test_group_collaboration.py`、`tests/unit_tests/gateway/test_persistent_group_fanout.py`、`tests/unit_tests/server/jiuwenmate/test_session_scheduler.py`；前端 `npm run test:jiuwenmate-profile`、`npm run test:jiuwenmate-api`。
+- **独立验证入口：** `tests/unit_tests/server/jiuwenmate/test_group_collaboration.py`、`tests/unit_tests/server/jiuwenmate/test_thinking_notice.py`、`tests/unit_tests/gateway/test_persistent_group_fanout.py`、`tests/unit_tests/server/jiuwenmate/test_session_scheduler.py`；前端 `npm run test:jiuwenmate-profile`、`npm run test:jiuwenmate-api`。
 - **独立验证条件：** 用临时 SQLite 和可控入站事件验证被动、寒暄分流与职责说明；真实飞书群和浏览器未执行。
 - **验收标准：**
   1. JM-23-V-01：被动且未被 @ 时，群消息只归档，不创建 Request。
@@ -440,6 +440,7 @@
   3. JM-23-V-03：自适应员工收到与职责无关的具体任务时，参与说明要求 `ignore`。
   4. JM-23-V-04：没有具体内容的寒暄只由一位自适应员工受理，优先名称或职责说明含「生活」的员工。
   5. JM-23-V-05：被动期间跳过的消息，在改为自适应后不补建 Request。
+  6. JM-23-V-06：参与判断写入 `notice` 时，向该 Request 的渠道投递这一句，同一 Execution 只发送一次；简单任务、`ignore` 与 Web 不发送。明确 @ 的复杂任务同样发送。
 - **来源验证点与共享场景：** 多 Bot 收到同一消息时的受理仍由 JM-08 主责；本条目只增加每位员工自己的回复模式。
 - **前端独立验证：** 员工详情「群聊回复模式」保存被动或自适应，并显示对应说明。
 - **联合交付与开放条件：** 参与 S2a。真实飞书群中的模型判断待联合验收。
@@ -621,7 +622,7 @@ flowchart LR
 | JM-18 新版联合验收 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S3 | E / S3 | 未排期 | 待开始 | 常钰聪 | — | 未执行；开工限制为 S2a、S2b、S2c 通过 | 2026-10-13；编号更名 |
 | JM-19 定时任务 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2b | D / S2b | 未排期 | 进行中 | 常钰聪 | — | JM-19-V-01、V-03 → 可控时钟与真实 SQLite → `test_scheduled_requests.py` 4 passed；前端详情页可保存计划。浏览器与真实模型未执行。见 [F_19](../features/F_19_scheduled-requests.md) | 2026-10-17；接入计划与扫描 |
 | JM-22 员工知识选择 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2b | D / S2b | 未排期 | 进行中 | 常钰聪 | — | 所选页面复制到员工办公目录，未选页面和越界路径不进入；飞书私聊仅能读取所接受版本选定的知识副本，群聊及其他办公文件不可读；兼容旧发布 Spec 与既有私聊请求。6 个回归测试文件排除 2 项既有失败用例后 167 项通过；真实飞书与模型未执行。见 [F_22](../features/F_22_employee-knowledge.md)、[F_14](../features/F_14_workspace-read.md) | 2026-10-20；修复 Feishu DM 知识只读范围兼容 |
-| JM-23 员工群聊回复模式 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2a | C / S2a | 未排期 | 待验收 | 常钰聪 | — | JM-23-V-01～V-05 的宿主部分 → 真实 SQLite 与可控入站，core 参与判断未用真实模型 → 协作、寒暄分流和群执行附加说明定向测试通过，记录见 [F_23](../features/F_23_group-reply-mode.md) → 未提交；真实飞书群与浏览器未验收 | 2026-10-21；建档并记录当前实现 |
+| JM-23 员工群聊回复模式 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2a | C / S2a | 未排期 | 待验收 | 常钰聪 | — | JM-23-V-01～V-06 的宿主部分 → 真实 SQLite 与可控入站，core 参与判断未用真实模型 → 协作、寒暄分流、群执行附加说明和等待提示投递定向测试通过，记录见 [F_23](../features/F_23_group-reply-mode.md) → 未提交；真实飞书与其他渠道未验收 | 2026-10-22；明确 @ 也做 `effort` 判断，仅 `extended` 写入 `notice`，宿主只投递 |
 | JM-21 跨群搜索与 IM 扩展 | 特性 / 扩展 | 未排期 | 跨群搜索宿主子范围已实现；其他 IM 扩展仍未设计 | 未评估 / — | 扩展 / — | 未排期 | 进行中 | 常钰聪 | — | 跨群授权、群名精确解析、稳定合并／分页、逐页重授权及 direct-message／group-message PA-23 接线 → 真实 SQLite、真实 core 与模型／成员服务替身；跨群、3 个执行链测试和真实 core 集成共 26 passed，JM-11 `test_group_chat_port.py` 回归 17 passed；JiuwenMate 全目录回归 345 passed、14 failed（5 项既有 Windows／本地 core 基线失败，9 项本地 agent-core PA-18 capacity 配置缺口），详见 [F_21](../features/F_21_cross-group-search.md) §8。真实飞书成员核验／Gateway 联调和其他 IM 扩展待验证／设计；未调整负责人、扩展分类或纳入本期节点 | 2026-10-17；宿主跨群子范围实现 |
 | S0 契约与宿主基线 | 节点 / 本期 | 纳入 | JM-01～JM-06 组件验证；对端 PA-04 当前契约 | 顺序 1 | A、B / — | 未排期 | 进行中 | 常钰聪 | — | JM-01～JM-06 宿主组件均已通过，见各行证据 → 节点验收待核对替身清单与 PA-04 当前契约 | 2026-10-13 |
 | S1 私聊闭环 | 节点 / 本期 | 纳入 | JM-07、JM-10、JM-12；JM-09 Web 投递；JM-14 最小只读配置 | 顺序 2 | A、B、C、D / — | 未排期 | 待开始 | 常钰聪 | — | JM-07、JM-10、JM-12 已接入，并在 core `9eb336b4` 下以模型替身跑通收消息、回复、停止与取消；JM-14 最小只读配置已在工作区实现，Web 请求可读取同事办公目录；JM-09 Web 投递未开始；浏览器验收与节点联合验收未完成 | 2026-10-15 |
@@ -761,6 +762,7 @@ python -m pytest tests/integration_tests/jiuwenmate -q
 
 | 日期 | 条目 / 当时编号 | 变更或阶段产物 | 适用架构 / 验证范围 | 证据、当时遗留及当前替代关系 |
 | --- | --- | --- | --- | --- |
+| 2026-10-22 | JM-23 | 明确 @ 与其他群消息都由 core 参与判断给出 `effort`；只有需要回复且为 `extended` 时写入 `notice`。宿主只投递已有 `notice` | 宿主投递与 core 参与判断单测；真实渠道未执行 | `test_thinking_notice.py` 与 core `test_entries.py` 的参与判断用例，见 [F_23](../features/F_23_group-reply-mode.md)；状态仍为待验收；未提交 |
 | 2026-10-21 | JM-23 | 新增员工群聊回复模式：被动仅在被 @ 时受理，自适应按职责判断并放宽轻量交流，纯寒暄只由一位自适应员工受理；切换模式不重放旧消息 | 宿主组件；真实飞书与浏览器未执行 | 定向测试通过，见 [F_23](../features/F_23_group-reply-mode.md)；状态待验收；未提交 |
 | 2026-10-20 | JM-14 | 用户确认开放本地 Bash，以提示词约定工作范围；新增私有 lark-cli 运行资料、绑定后后台准备、独立认证、自动 Skill 发布和重启恢复，保留未发布草稿 | 不改个人版、agent-core 或总体架构；真实 core 与 SQLite，外部平台替身 | 新增 27 项测试通过；尚未真实安装 / 认证或创建飞书文档；详细边界及回归记录见 [F_14 §12](../features/F_14_workspace-read.md#12-bash-与飞书-cli-自动装配2026-10-20方案已确认)，未提交 |
 | 2026-10-21 | JM-14 | 独立审查后采用私有文件 SecretRef，避免 CLI 共享凭据库；补齐换绑重跑、配置变更新旧 Agent 通知、解绑启动核对、二进制版本核验和旧 Spec 保留草稿升级 | 真实本地 core / SQLite / Windows 受控 CLI，外部市场与飞书 API 替身 | 新增 41 passed；相关回归 686 passed、11 failed，失败分类及完整命令见 [F_14 §12.6](../features/F_14_workspace-read.md#126-验证与遗留)；真实安装 / 认证、文档权限与投递未验收，未提交 |
