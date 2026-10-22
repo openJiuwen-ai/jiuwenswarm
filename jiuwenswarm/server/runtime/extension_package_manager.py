@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -21,6 +22,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import urlsplit
 
+import aiofiles.os
 import yaml
 
 from jiuwenswarm.common.utils import (
@@ -52,7 +54,7 @@ from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
 )
 
 if TYPE_CHECKING:
-    from openjiuwen.harness.resources import AgentTemplateSpec, RuntimeSpec
+    from openjiuwen.harness.resources import AgentTemplateCard, AgentTemplateSpec, RuntimeSpec
 
 logger = logging.getLogger(__name__)
 
@@ -240,13 +242,26 @@ def _read_package_manifest(pkg_dir: Path) -> dict | None:
 
 
 def agent_template_runtime(
-    manifest: AgentTemplateSpec | dict[str, Any],
+    manifest: AgentTemplateSpec | AgentTemplateCard | dict[str, Any],
 ) -> RuntimeSpec | None:
-    """Return one normalized, installable External Harness runtime declaration."""
-    from openjiuwen.harness.resources import AgentTemplateSpec, RuntimeSpec
+    """Return one normalized, installable External Harness runtime declaration.
+
+    Accepts the loaded spec, openjiuwen's manifest card (provider name and
+    ``runtime.config`` only — no full package load), or a raw manifest dict.
+    Which providers this host runs is host policy, checked here.
+    """
+    from openjiuwen.harness.resources import AgentTemplateCard, AgentTemplateSpec, RuntimeSpec
 
     if isinstance(manifest, AgentTemplateSpec):
         runtime = manifest.runtime
+    elif isinstance(manifest, AgentTemplateCard):
+        runtime = (
+            None
+            if manifest.runtime == "native"
+            else RuntimeSpec.model_validate(
+                {"provider_name": manifest.runtime_provider or "", "config": manifest.runtime_config}
+            )
+        )
     elif isinstance(manifest, dict):
         raw_runtime = manifest.get("runtime")
         if (
@@ -327,14 +342,28 @@ def _resolve_agent_group_member_display_name_i18n(
     ``display_name``.  Prefer the latter while retaining the legacy ``name``
     fallback used by older groups.
     """
-    member_manifest = _read_package_manifest(package_dir / "agents" / member_id) or {}
-    raw_display_name = member_manifest.get("display_name")
-    if raw_display_name in (None, "", {}):
-        raw_display_name = member_manifest.get("name")
-    if raw_display_name in (None, "", {}):
+    member_card = _agent_group_member_card(package_dir, member_id)
+    raw_display_name = member_card.display_name if member_card is not None else ""
+    if raw_display_name in ("", {}):
+        raw_display_name = member_card.name if member_card is not None else ""
+    if raw_display_name in ("", {}):
         raw_display_name = fallback
     fallback_text = fallback if isinstance(fallback, str) else ""
     return _i18n(raw_display_name, fallback_text)
+
+
+def _agent_group_member_card(package_dir: Path, member_id: str) -> AgentTemplateCard | None:
+    """openjiuwen's manifest card of one AgentGroup member; ``None`` when unreadable.
+
+    Read synchronously: Team assembly and the group catalog that need it run
+    synchronously. The manifest rules are openjiuwen's either way.
+    """
+    from openjiuwen.harness.resources.template_card import load_agent_template_card
+
+    try:
+        return load_agent_template_card(package_dir / "agents" / member_id / "manifest.json")
+    except ValueError:
+        return None
 
 
 def resolve_agent_group_member_display_name(
@@ -637,13 +666,17 @@ def _connector_names_from_manifest(manifest: dict) -> list[str]:
 
 
 def _package_connection_state(manifest: dict, *, installed: bool) -> str:
-    """Aggregate package-level MCP connection_state for list/show cards.
+    """Aggregate package-level MCP connection_state for list/show cards."""
+    return _connection_state(_connector_names_from_manifest(manifest), installed=installed)
+
+
+def _connection_state(names: list[str] | tuple[str, ...], *, installed: bool) -> str:
+    """Aggregate MCP connection_state over a package's connector names.
 
     No connectors → mirrors ``installed`` (connected if installed else disconnected).
     With connectors → AND over ``get_mcp_record`` states: any ``connecting`` wins;
     all ``connected`` → connected; otherwise disconnected.
     """
-    names = _connector_names_from_manifest(manifest)
     if not names:
         return "connected" if installed else "disconnected"
     any_connecting = False
@@ -698,7 +731,11 @@ def _build_list_card(
     installed: bool | None = None,
     include_team_compatibility: bool = False,
 ) -> dict | None:
-    """Build one list card with marketplace status overlay."""
+    """Build one plugin list card with marketplace status overlay.
+
+    AgentTemplate cards come from openjiuwen's manifest card instead
+    (``_build_agent_template_list_card``).
+    """
     manifest = _read_package_manifest(pkg_dir)
     if manifest is None or manifest.get("package_type") != package_type:
         return None
@@ -721,28 +758,52 @@ def _build_list_card(
     card["connection_state"] = _package_connection_state(
         manifest, installed=bool(card["installed"])
     )
-    if package_type == "agent_template":
-        if include_team_compatibility:
-            card["teamCompatible"] = _agent_template_team_compatibility(pkg_dir)
-        raw_runtime = manifest.get("runtime")
-        if isinstance(raw_runtime, dict):
-            provider_name = raw_runtime.get("provider_name")
-            if isinstance(provider_name, str) and provider_name.strip():
-                card["runtime"] = {"provider_name": provider_name.strip()}
     return card
 
 
-def _agent_template_team_compatibility(pkg_dir: Path) -> dict[str, bool]:
+async def _build_agent_template_list_card(
+    pkg_dir: Path,
+    *,
+    source: str,
+    marketplace: dict | None,
+    include_team_compatibility: bool = False,
+) -> dict | None:
+    """Build one expert list card from openjiuwen's manifest card (display fields only)."""
+    from openjiuwen.harness.resources import read_agent_template_card
+
+    try:
+        manifest_card = await read_agent_template_card(pkg_dir / "manifest.json")
+    except ValueError:
+        return None
+    card: dict[str, Any] = {
+        "id": pkg_dir.name,
+        "displayName": manifest_card.display_name or pkg_dir.name,
+        "displayDescription": manifest_card.display_description or {},
+        "category": manifest_card.category,
+        "tags": list(manifest_card.tags),
+        "source": source,
+        "avatar": _resolve_package_avatar(pkg_dir, {"avatar": manifest_card.avatar}),
+    }
+    card["installed"] = bool(marketplace.get("installed", False)) if marketplace is not None else False
+    card["connection_state"] = _connection_state(manifest_card.connectors, installed=bool(card["installed"]))
+    if include_team_compatibility:
+        card["teamCompatible"] = await _agent_template_team_compatibility(pkg_dir)
+    if manifest_card.runtime_provider:
+        card["runtime"] = {"provider_name": manifest_card.runtime_provider}
+    return card
+
+
+async def _agent_template_team_compatibility(pkg_dir: Path) -> dict[str, bool]:
     """Expose the same Team compatibility checks used during group creation."""
     try:
-        from openjiuwen.harness.resources import load_agent_template_package
+        from openjiuwen.harness.resources import aload_agent_template_package
 
-        load_agent_template_package(pkg_dir / "manifest.json")
+        await aload_agent_template_package(pkg_dir / "manifest.json")
     except (OSError, TypeError, ValueError):
         return {"leader": False, "member": False}
     return {
         "leader": True,
-        "member": not (pkg_dir / "AGENT.md").is_file(),
+        "member": not await aiofiles.os.path.isfile(pkg_dir / "AGENT.md"),
     }
 
 
@@ -845,31 +906,17 @@ def _iter_local_package_dirs(local_root: Path) -> list[Path]:
     ]
 
 
-def _list_equipment_cards(
+def _equipment_package_dirs(
     *,
     kind: str,
     package_type: str,
     local_root: Path,
     built_in_root: Path,
-    marketplace_by_id: dict[str, dict],
-    include_team_compatibility: bool = False,
-) -> list[dict]:
-    """List cards from resources shelf + local/; marketplace provides state."""
+) -> list[tuple[Path, str]]:
+    """``(package dir, source)`` from resources shelf + local/; conflicts raise."""
     resource_dirs = _iter_resource_package_dirs(kind)
     resource_ids = {pkg.name for pkg in resource_dirs}
-    cards: list[dict] = []
-
-    for pkg_dir in resource_dirs:
-        card = _build_list_card(
-            pkg_dir,
-            package_type=package_type,
-            source="builtin",
-            marketplace=marketplace_by_id.get(pkg_dir.name),
-            include_team_compatibility=include_team_compatibility,
-        )
-        if card is not None:
-            cards.append(card)
-
+    found = [(pkg_dir, "builtin") for pkg_dir in resource_dirs]
     for pkg_dir in _iter_local_package_dirs(local_root):
         if pkg_dir.name in resource_ids:
             raise ValueError(
@@ -881,12 +928,28 @@ def _list_equipment_cards(
                 f"{package_type} package conflict: {pkg_dir.name} exists in both "
                 "local and built_in"
             )
+        found.append((pkg_dir, "local"))
+    return found
+
+
+def _list_equipment_cards(
+    *,
+    kind: str,
+    package_type: str,
+    local_root: Path,
+    built_in_root: Path,
+    marketplace_by_id: dict[str, dict],
+) -> list[dict]:
+    """List plugin cards from resources shelf + local/; marketplace provides state."""
+    cards: list[dict] = []
+    for pkg_dir, source in _equipment_package_dirs(
+        kind=kind, package_type=package_type, local_root=local_root, built_in_root=built_in_root
+    ):
         card = _build_list_card(
             pkg_dir,
             package_type=package_type,
-            source="local",
+            source=source,
             marketplace=marketplace_by_id.get(pkg_dir.name),
-            include_team_compatibility=include_team_compatibility,
         )
         if card is not None:
             cards.append(card)
@@ -946,6 +1009,16 @@ def _kind_root(kind: str, *, agent_workspace: Path | None = None) -> Path:
             home = get_user_workspace_dir()
         return home / ".agent_teams" / _AGENT_GROUP_KIND
     return _equipment_workspace(agent_workspace) / "plugins" / kind
+
+
+def expert_package_roots(package_type: str) -> tuple[Path, Path, Path]:
+    """Return ``(marketplace.json, local/, built_in/)`` for installed expert packages.
+
+    ``package_type`` is ``"agent_template"`` or ``"agent_group"``. Only path
+    computation — callers read these locations themselves (asynchronously).
+    """
+    kind = {"agent_template": _AGENT_TEMPLATE_KIND, "agent_group": _AGENT_GROUP_KIND}[package_type]
+    return _marketplace_path(kind), _local_root(kind), _built_in_root(kind)
 
 
 def _built_in_root(kind: str, *, agent_workspace: Path | None = None) -> Path:
@@ -1449,7 +1522,7 @@ def normalize_agent_group_leader_identity(value: Any) -> dict[str, Any] | None:
 
 def resolve_agent_group_leader_identity(name: Any) -> dict[str, Any] | None:
     """Read the installed AgentGroup leader identity from its parsed member package."""
-    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+    from openjiuwen.agent_teams.experts import load_agent_group_package
 
     package_dir = resolve_agent_group_dir(name)
     manifest = _read_package_manifest(package_dir)
@@ -1478,13 +1551,13 @@ def resolve_agent_group_leader_identity(name: Any) -> dict[str, Any] | None:
     display_name = display_name_i18n.get("zh", "")
     if not display_name:
         return None
-    member_manifest = _read_package_manifest(package_dir / "agents" / "leader") or {}
+    leader_card = _agent_group_member_card(package_dir, "leader")
     identity = {
         "agent_template_id": agent_template_id,
         "display_name": display_name,
         "display_name_i18n": display_name_i18n,
         "avatar": _safe_avatar_reference(
-            member_manifest.get("avatar"),
+            leader_card.avatar if leader_card is not None else None,
             package_dir=package_dir / "agents" / "leader",
         ),
     }
@@ -1814,6 +1887,25 @@ def _assert_package_id_available(
         raise ValueError(message)
 
 
+def _discard_orphaned_built_in_copy(kind: str, package_id: str) -> None:
+    """Drop a built_in/ install copy whose resources shelf package was removed.
+
+    built_in/ only holds installed copies of shelf packages, and listing only
+    reads the shelf, so once a package moves from the shelf to the Hub its old
+    copy is invisible yet still blocks installing the Hub package of that id.
+    Removing it is the uninstall the user can no longer reach from the UI.
+    """
+    built_in_dir = _built_in_root(kind) / package_id
+    resources_root = _resources_root(kind)
+    if not built_in_dir.is_dir():
+        return
+    if resources_root is not None and (resources_root / package_id).is_dir():
+        return
+    logger.info("discarding orphaned built_in %s package before Hub install: %s", kind, package_id)
+    _rmtree(built_in_dir)
+    _remove_marketplace_entry(kind, package_id)
+
+
 def _assert_agent_group_name_available(name: str) -> None:
     """Reject create/import when an AgentGroup has the same display name."""
     normalized_name = name.casefold()
@@ -1955,21 +2047,34 @@ def _apply_list_source_filter(
     return filtered
 
 
-def list_agent_templates(params: dict | None = None) -> list[dict]:
-    """List agent_template cards from resources shelf + user local/."""
+async def list_agent_templates(params: dict | None = None) -> list[dict]:
+    """List agent_template cards from resources shelf + user local/.
+
+    Display fields come from openjiuwen's manifest cards, read concurrently.
+    """
     market = _marketplace_index(read_agent_template_marketplace_entries())
     include_team_compatibility = (
         isinstance(params, dict)
         and params.get("include_team_compatibility") is True
     )
-    cards = _list_equipment_cards(
+    package_dirs = _equipment_package_dirs(
         kind=_AGENT_TEMPLATE_KIND,
         package_type="agent_template",
         local_root=_local_root(_AGENT_TEMPLATE_KIND),
         built_in_root=_built_in_root(_AGENT_TEMPLATE_KIND),
-        marketplace_by_id=market,
-        include_team_compatibility=include_team_compatibility,
     )
+    built = await asyncio.gather(
+        *(
+            _build_agent_template_list_card(
+                pkg_dir,
+                source=source,
+                marketplace=market.get(pkg_dir.name),
+                include_team_compatibility=include_team_compatibility,
+            )
+            for pkg_dir, source in package_dirs
+        )
+    )
+    cards = [card for card in built if card is not None]
     return _apply_list_source_filter(cards, params)
 
 
@@ -2042,7 +2147,7 @@ async def _list_equipment_with_hub(
     local_cards = (
         # Resolve Hub provenance before source filtering: local directories can
         # contain installed Hub assets whose display source is assigned below.
-        list_agent_templates({k: v for k, v in (params or {}).items() if k != "filter"})
+        await list_agent_templates({k: v for k, v in (params or {}).items() if k != "filter"})
         if kind == _AGENT_TEMPLATE_KIND
         else list_plugin_packages(None)
     )
@@ -2192,7 +2297,7 @@ async def list_plugin_packages_with_hub(
 
 def list_agent_groups(params: dict | None = None) -> list[dict]:
     """List AgentGroup definitions from resources shelf and user storage."""
-    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+    from openjiuwen.agent_teams.experts import load_agent_group_package
 
     resources = {path.name: path for path in _iter_resource_package_dirs(_AGENT_GROUP_KIND)}
     local = {
@@ -2372,16 +2477,16 @@ def _build_agent_group_card(
     member_templates = member_templates if isinstance(member_templates, dict) else {}
     members: list[dict[str, Any]] = []
     for member_id, template in templates.items():
-        member_manifest = _read_package_manifest(package_dir / "agents" / member_id) or {}
+        member_card = _agent_group_member_card(package_dir, member_id)
         raw_template_id = member_templates.get(member_id)
         agent_template_id = (
             raw_template_id.strip()
             if isinstance(raw_template_id, str) and raw_template_id.strip()
             else member_id
         )
-        raw_display_name = member_manifest.get("display_name")
-        if raw_display_name in (None, "", {}):
-            raw_display_name = member_manifest.get("name")
+        raw_display_name = member_card.display_name if member_card is not None else ""
+        if raw_display_name in ("", {}):
+            raw_display_name = member_card.name if member_card is not None else ""
         display_name_fallback = str(getattr(template.agent_card, "name", "") or member_id)
         members.append(
             {
@@ -2391,7 +2496,7 @@ def _build_agent_group_card(
                 "displayDescription": _i18n(template.agent_card.description),
                 "role": "leader" if member_id == "leader" else "member",
                 "avatar": _safe_avatar_reference(
-                    member_manifest.get("avatar"),
+                    member_card.avatar if member_card is not None else None,
                     package_dir=package_dir / "agents" / member_id,
                 ),
             }
@@ -2470,7 +2575,7 @@ def _build_agent_group_card(
 
 def show_agent_group(name: str) -> dict | None:
     """Return one valid AgentGroup detail card, or ``None`` when absent."""
-    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+    from openjiuwen.agent_teams.experts import load_agent_group_package
 
     resolved = _resolve_agent_group_definition_dir(name)
     if resolved is None:
@@ -2935,6 +3040,7 @@ async def _prepare_hub_equipment(
             )
 
     def reject_conflict(runtime_package_id: str) -> None:
+        _discard_orphaned_built_in_copy(kind, runtime_package_id)
         _assert_package_id_available(
             runtime_package_id,
             local_root=_local_root(kind),
@@ -3695,7 +3801,7 @@ def _agent_template_source(package_id: str, *, role: str) -> Path:
 
 def create_agent_group(params: dict) -> dict:
     """Create an uninstalled AgentGroup definition under .agent_teams."""
-    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+    from openjiuwen.agent_teams.experts import load_agent_group_package
 
     if not isinstance(params, dict):
         raise ValueError("invalid params")
@@ -4010,7 +4116,7 @@ def _commit_imported_package(
     if kind == _AGENT_TEMPLATE_KIND:
         _validate_agent_template_import_layout(pkg_root, manifest)
     if kind == _AGENT_GROUP_KIND:
-        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+        from openjiuwen.agent_teams.experts import load_agent_group_package
 
         for display_name in dict.fromkeys(
             _i18n(manifest.get("display_name"), package_id).values()
@@ -4205,7 +4311,7 @@ def install_agent_template(params: dict) -> None:
 
 def install_agent_group(params: dict) -> None:
     """Install a validated AgentGroup definition."""
-    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+    from openjiuwen.agent_teams.experts import load_agent_group_package
 
     package_id = _lifecycle_package_id(params, "agent_group")
     resolved = _resolve_agent_group_definition_dir(package_id)
@@ -4263,7 +4369,7 @@ async def install_agent_group_with_hub(
     params: dict, *, hub_port: HubAssetPort | None = None, downloader: Any = None
 ) -> None:
     """Acquire a Hub group by its asset ID, then install its local runtime package."""
-    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+    from openjiuwen.agent_teams.experts import load_agent_group_package
 
     requested_id = _lifecycle_package_id(params, "agent_group")
     store = _hub_install_state_store(_AGENT_GROUP_KIND)
@@ -4280,6 +4386,14 @@ async def install_agent_group_with_hub(
                 raise ValueError("Hub agent_group package name mismatch")
             load_agent_group_package(package_root)
 
+        def reject_conflict(value: str) -> None:
+            _discard_orphaned_built_in_copy(_AGENT_GROUP_KIND, value)
+            _assert_package_id_available(
+                value, local_root=_local_root(_AGENT_GROUP_KIND),
+                built_in_root=_built_in_root(_AGENT_GROUP_KIND),
+                resources_root=_resources_root(_AGENT_GROUP_KIND), kind="agent_group"
+            )
+
         result = await install_hub_asset_package(
             kind="agent_group",
             asset_id=requested_id,
@@ -4287,11 +4401,7 @@ async def install_agent_group_with_hub(
             state_store=store,
             package_name_validator=lambda value: _reject_package_name(value, "agent_group"),
             package_validator=validate,
-            conflict_validator=lambda value: _assert_package_id_available(
-                value, local_root=_local_root(_AGENT_GROUP_KIND),
-                built_in_root=_built_in_root(_AGENT_GROUP_KIND),
-                resources_root=_resources_root(_AGENT_GROUP_KIND), kind="agent_group"
-            ),
+            conflict_validator=reject_conflict,
             on_committed=lambda value: upsert_agent_group_marketplace_entry(
                 value.package_id, installed=False, source="hub"
             ),

@@ -612,6 +612,7 @@ def load_team_spec_dict(
     # "framework" and pass through from the raw section unchanged.
     spec_dict["bootstrap_mode"] = team_raw.get("bootstrap_mode", "leader")
     spec_dict["enable_task_verification"] = team_raw.get("enable_task_verification", False)
+    spec_dict["enable_member_messaging"] = team_raw.get("enable_member_messaging", False)
     spec_dict["enable_hitt"] = team_raw.get("enable_hitt", True)
     spec_dict["enable_permissions"] = _resolve_enable_permissions(config_base)
     # Experimental switch drives both frontend UI and backend org tools.

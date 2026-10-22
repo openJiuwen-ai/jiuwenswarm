@@ -419,10 +419,7 @@ def parse_agent_template_ref(ref: str) -> tuple[str | None, str]:
 
 
 def flatten_template_prompt(template: Any, *, language: str = "cn") -> str:
-    from jiuwenswarm.agents.swarm.assembly import (
-        _render_prompt_text,
-        _select_prompt_content,
-    )
+    from openjiuwen.harness.resources import render_prompt_content
 
     sections = list(getattr(template, "prompt_sections", None) or [])
     rendered: list[str] = []
@@ -436,10 +433,7 @@ def flatten_template_prompt(template: Any, *, language: str = "cn") -> str:
             "workspace": workspace,
             **dict(getattr(section, "render_params", None) or {}),
         }
-        text = _render_prompt_text(
-            _select_prompt_content(content, language),
-            params,
-        ).strip()
+        text = render_prompt_content(content, language=language, params=params).strip()
         if text:
             rendered.append(text)
     return "\n\n".join(rendered)
@@ -481,7 +475,7 @@ def load_node_agent_template(node: DesignerGraphNode) -> Any | None:
     if group_name is None and member_id in _DESIGNER_MEMBERS:
         group_name = DESIGNER_AGENT_GROUP_NAME
     if group_name:
-        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+        from openjiuwen.agent_teams.experts import load_agent_group_package
 
         package_dir = _resolve_group_package_dir(group_name)
         if package_dir is None:

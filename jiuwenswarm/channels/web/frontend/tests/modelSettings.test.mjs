@@ -293,7 +293,7 @@ test('custom models never submit vendor metadata and legacy connection fields re
   assert.equal('endpoint_profile' in edited, false);
 });
 
-test('alias validation is optional, global, exact, and excludes the edited row only by origin_index', () => {
+test('alias validation is optional, global, exact, and excludes the edited row by model_id or origin_index', () => {
   const models = [
     {
       model_name: 'same-model',
@@ -339,6 +339,47 @@ test('alias validation is optional, global, exact, and excludes the edited row o
     validateModelDraft({ ...baseDraft, alias: 'unique', model_name: 'second' }, models, undefined, catalog, t)
       .model_name,
     /modelNameConflict/,
+  );
+
+  // Upsert edit path: entries use model_id without origin_index. Alias equal to own
+  // model_name must not be treated as a conflict with self.
+  const upsertModels = [
+    {
+      model_id: 'mdl_self',
+      model_name: 'GLM-5.3-Flash',
+      alias: 'GLM-5.3-Flash',
+      api_base: 'https://custom.example/v1',
+      api_key: 'secret',
+      model_provider: 'OpenAI',
+    },
+    {
+      model_id: 'mdl_other',
+      model_name: 'other-model',
+      alias: 'other-alias',
+      api_base: 'https://two.example/v1',
+      api_key: 'two',
+      model_provider: 'OpenAI',
+    },
+  ];
+  const upsertDraft = {
+    ...baseDraft,
+    alias: 'GLM-5.3-Flash',
+    model_name: 'GLM-5.3-Flash',
+  };
+  assert.match(validateModelDraft(upsertDraft, upsertModels, undefined, catalog, t).alias, /aliasConflict/);
+  assert.equal(
+    validateModelDraft(upsertDraft, upsertModels, { model_id: 'mdl_self' }, catalog, t).alias,
+    undefined,
+  );
+  assert.match(
+    validateModelDraft(
+      { ...upsertDraft, alias: 'other-alias' },
+      upsertModels,
+      { model_id: 'mdl_self' },
+      catalog,
+      t,
+    ).alias,
+    /aliasConflict/,
   );
 });
 

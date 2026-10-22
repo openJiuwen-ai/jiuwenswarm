@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Design-only execution rail: the leader's ``designer_run_graph`` tool.
+"""Design-only execution rail: the leader's ``swarmflow`` tool.
 
 Mounts exactly one capability — triggering the canvas execution (graph →
 swarmflow compilation → run) from the conversation — together with the system
@@ -35,7 +35,8 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 
 logger = logging.getLogger(__name__)
 
-TOOL_NAME = "designer_run_graph"
+
+TOOL_NAME = "swarmflow"
 SECTION_NAME = "designer_execution"
 # Per-node text preview cap in the tool result: enough for the leader to
 # report outcomes, never a full document dump.
@@ -49,7 +50,7 @@ REPORT_ONLY_REFUSAL = (
     "是否重跑由用户下一条消息决定。"
 )
 
-_PROMPT_CN = """# 画布执行（designer_run_graph）
+_PROMPT_CN = """# 画布执行（swarmflow）
 
 征得用户同意后，你可以直接触发设计画布的执行（与画布上的运行按钮完全等价）：
 
@@ -59,13 +60,13 @@ _PROMPT_CN = """# 画布执行（designer_run_graph）
 
 调用约定：
 - 工具调用**立即返回**（执行在后台进行），进度实时推送到画布；执行结束后你会收到一条运行摘要消息，届时用一两句话如实向用户汇报各节点的结果与状态，不要粘贴全文。
-- 收到运行摘要的这一轮**只汇报**：不论成功、部分失败还是全部失败，跑完了就是跑完了。不要再次调用 designer_run_graph / designer_graph_autorun，也不要为了"修复"而改图；等用户下一条消息再决定。
+- 收到运行摘要的这一轮**只汇报**：不论成功、部分失败还是全部失败，跑完了就是跑完了。不要再次调用 swarmflow / designer_graph_autorun，也不要为了"修复"而改图；等用户下一条消息再决定。
 - 同一时刻只允许一个执行；执行中再次调用会被拒绝，此时告诉用户稍候。
 - 节点失败时摘要里会带 error，向用户说明失败节点与原因，可以给出建议（改提示词重跑该节点 / 从该节点续跑），但不要自行执行。
 - 调用后先告诉用户"已开始执行，画布可看进度"，不要在原地等待结果。
 """
 
-_PROMPT_EN = """# Canvas execution (designer_run_graph)
+_PROMPT_EN = """# Canvas execution (swarmflow)
 
 After the user agrees, you may trigger the canvas execution directly (same
 semantics as the canvas run button):
@@ -86,7 +87,7 @@ Conventions:
   in a sentence or two then, never paste full texts.
 - The round that receives the run summary is REPORT-ONLY: succeeded,
   partially failed or failed, the run is over. Do not call
-  designer_run_graph / designer_graph_autorun again and do not edit the
+  swarmflow / designer_graph_autorun again and do not edit the
   graph to "fix" it; wait for the user's next message.
 - Only one execution at a time; a second call while one runs is rejected —
   tell the user to wait.
@@ -168,7 +169,7 @@ class DesignerExecutionRail(DeepAgentRail):
             mode = "单点重跑" if node_id and not cascade else (
                 "从该节点续跑" if node_id else "全量运行"
             )
-            task_id = f"designer_run_graph_{node_id or 'full'}_{id(_run_graph):x}"
+            task_id = f"swarmflow_{node_id or 'full'}_{id(_run_graph):x}"
             try:
                 # Async-tool contract (mirrors swarmflow()): launch on the
                 # harness's runtime, return immediately; the summary is

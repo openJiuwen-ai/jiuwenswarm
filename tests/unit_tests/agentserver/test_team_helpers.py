@@ -7162,14 +7162,15 @@ async def test_announce_team_roster_broadcasts_created_members_once(monkeypatch)
 
 
 @pytest.mark.anyio
-async def test_consume_stream_with_query_announces_roster_after_member_tool(monkeypatch):
+@pytest.mark.parametrize("tool_name", ["spawn_teammate", "spawn_expert"])
+async def test_consume_stream_with_query_announces_roster_after_member_tool(monkeypatch, tool_name):
     """A roster-mutating leader tool triggers a roster announcement."""
     broadcasted: list[dict] = []
 
     async def _fake_stream(**kwargs):
         yield SimpleNamespace(
             type="tool_result",
-            payload={"tool_result": {"tool_name": "spawn_teammate", "result": "ok"}},
+            payload={"tool_result": {"tool_name": tool_name, "result": "ok"}},
             role=TeamRole.LEADER,
         )
 
@@ -7249,7 +7250,7 @@ async def test_consume_stream_with_query_announces_roster_after_member_tool(monk
     # The tool result still reaches clients, followed by the roster.
     tool_results = [e for e in broadcasted if e.get("event_type") == "chat.tool_result"]
     assert len(tool_results) == 1
-    assert tool_results[0]["tool_name"] == "spawn_teammate"
+    assert tool_results[0]["tool_name"] == tool_name
     member_events = [e for e in broadcasted if e.get("event_type") == "team.member"]
     assert len(member_events) == 1
     assert member_events[0]["event"]["type"] == "team.member.registered"

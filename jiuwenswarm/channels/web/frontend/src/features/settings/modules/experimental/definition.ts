@@ -87,6 +87,7 @@ export const experimentalModule: SettingsModuleDefinition = {
             uncheckWithParent: true,
             items: [
               { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
+              { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
             ],
           },
         },
