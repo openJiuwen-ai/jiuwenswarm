@@ -239,7 +239,9 @@ def validate_models_config(models: dict[str, Any]) -> list[str]:
                         errors.append(f"{source}[{index}].model_client_config.{key} must be a string")
                 headers = client.get("custom_headers")
                 if headers is not None and not isinstance(headers, (str, dict)):
-                    errors.append(f"{source}[{index}].model_client_config.custom_headers must be an object or JSON string")
+                    errors.append(
+                        f"{source}[{index}].model_client_config.custom_headers must be an object or JSON string"
+                    )
             _validate_model_detail(entry, f"{source}[{index}]", errors)
 
     group_ids: set[str] = set()
