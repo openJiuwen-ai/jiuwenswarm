@@ -1081,6 +1081,7 @@ def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
     workspace_dir: Optional[Path] = None,
+    migrate_config: bool = True,
 ) -> CopyDiffResult:
     package_root = _find_package_root()
     if not package_root:
@@ -1273,7 +1274,8 @@ def prepare_workspace(
 
     from jiuwenswarm.common.config import migrate_config_from_template, set_preferred_language_in_config_file
 
-    migrate_config_from_template(config_yaml_src, config_yaml_dest)
+    if migrate_config:
+        migrate_config_from_template(config_yaml_src, config_yaml_dest)
     # Runtime MCP repairs must leave an existing AgentOS deployment config intact.
     # Fresh initialization and an explicit language choice can still set the language.
     if config_initialized or preferred_language is not None or not is_agentos_runtime():
@@ -1556,7 +1558,7 @@ def prepare_runtime_workspace(
         )
     )
     if workspace_preparation_needed:
-        prepare_workspace(overwrite=False, workspace_dir=workspace_dir)
+        prepare_workspace(overwrite=False, workspace_dir=workspace_dir, migrate_config=False)
 
     if migrate_config:
         ensure_config_migrated_from_template(workspace_dir)
