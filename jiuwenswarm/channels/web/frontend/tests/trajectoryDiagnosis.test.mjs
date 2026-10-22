@@ -273,10 +273,10 @@ test('a zero-width domain stays selectable', () => {
   );
 });
 
-test('mainAgentLastNode is the last timed node of the main agent', () => {
+test('mainAgentLastNode is the last assistant reply of the main agent', () => {
   const turns = [
-    { groups: [{ cells: [{ startedAt: 1_000, timeSeconds: 1 }, { requestOnly: true, startedAt: 9_000 }] }] },
-    { groups: [{ cells: [{ startedAt: 4_000, timeSeconds: 2 }, { startedAt: 500 }] }] },
+    { groups: [{ cells: [{ kind: 'message', startedAt: 1_000, timeSeconds: 1 }, { requestOnly: true, startedAt: 9_000 }] }] },
+    { groups: [{ cells: [{ kind: 'message', startedAt: 4_000, timeSeconds: 2 }, { startedAt: 500 }] }] },
   ];
   assert.deepEqual(mainAgentLastNode([
     { subjectId: 'member', kind: 'team_member', turns },
@@ -287,6 +287,32 @@ test('mainAgentLastNode is the last timed node of the main agent', () => {
     { subjectId: 'leader', kind: 'team_leader', turns },
     { subjectId: 'member', kind: 'team_member', turns: [{ groups: [{ cells: [{ startedAt: 8_000 }] }] }] },
   ]), { subjectId: 'leader', startMs: 4_000, endMs: 6_000 });
+});
+
+test('mainAgentLastNode ignores a user cell whose commit replay time outlasts the reply start', () => {
+  // The user row starts 6ms after the reply's inference began (commit replay
+  // time), yet the reply interval [10_000, 14_000] is the delivery node.
+  const turns = [
+    { groups: [{ cells: [
+      { kind: 'message', startedAt: 10_000, timeSeconds: 4 },
+      { kind: 'user', startedAt: 10_006 },
+    ] }] },
+  ];
+  assert.deepEqual(mainAgentLastNode([
+    { subjectId: 'main', kind: 'main_agent', turns },
+  ]), { subjectId: 'main', startMs: 10_000, endMs: 14_000 });
+});
+
+test('mainAgentLastNode breaks equal reply starts by their end', () => {
+  const turns = [
+    { groups: [{ cells: [
+      { kind: 'message', startedAt: 10_000, timeSeconds: 2 },
+      { kind: 'message', startedAt: 10_000, timeSeconds: 4 },
+    ] }] },
+  ];
+  assert.deepEqual(mainAgentLastNode([
+    { subjectId: 'main', kind: 'main_agent', turns },
+  ]), { subjectId: 'main', startMs: 10_000, endMs: 14_000 });
 });
 
 test('collectWallClockSamples keeps every cell in order', () => {
