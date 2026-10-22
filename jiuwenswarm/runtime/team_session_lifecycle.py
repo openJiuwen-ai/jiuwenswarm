@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -11,6 +12,8 @@ from jiuwenswarm.runtime.session.model import (
     ExecutionLifecycleContext,
     SessionLifecycleContext,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _TeamLifecycleManager(Protocol):
@@ -146,16 +149,26 @@ class TeamSessionLifecycleAdapter:
             # frame.  Emit it here, otherwise a round with no surviving
             # foreground stream (e.g. an ask_user resume) never reports
             # is_processing=false and the session keeps spinning.
-            await self._team_manager.broadcast_event(
-                context.session_id,
-                {
-                    "event_type": "chat.processing_status",
-                    "session_id": context.session_id,
-                    "is_processing": False,
-                    "is_complete": True,
-                },
-                channel_id=channel_id,
-            )
+            # Delivery failure must not abort the caller's remaining
+            # interrupt and coordinator cleanup.
+            try:
+                await self._team_manager.broadcast_event(
+                    context.session_id,
+                    {
+                        "event_type": "chat.processing_status",
+                        "session_id": context.session_id,
+                        "is_processing": False,
+                        "is_complete": True,
+                    },
+                    channel_id=channel_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[TeamSessionLifecycle] pause terminal frame delivery failed: "
+                    "session_id=%s error=%s",
+                    context.session_id,
+                    exc,
+                )
 
     async def stop_session(
         self,

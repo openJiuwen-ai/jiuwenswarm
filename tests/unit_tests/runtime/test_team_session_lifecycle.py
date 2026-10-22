@@ -16,9 +16,10 @@ from jiuwenswarm.runtime.team_session_lifecycle import TeamSessionLifecycleAdapt
 class _RecordingTeamManager:
     """Record the round reporter registered by the lifecycle adapter."""
 
-    def __init__(self, *, paused: bool = True) -> None:
+    def __init__(self, *, paused: bool = True, broadcast_error: Exception | None = None) -> None:
         self.reporter: Callable[[str, int, bool], None] | None = None
         self.paused = paused
+        self.broadcast_error = broadcast_error
         self.broadcast_events: list[tuple[str, dict[str, Any], str | None]] = []
 
     def set_round_state_reporter(
@@ -54,6 +55,8 @@ class _RecordingTeamManager:
         channel_id: str | None = None,
     ) -> bool:
         self.broadcast_events.append((session_id, event, channel_id))
+        if self.broadcast_error is not None:
+            raise self.broadcast_error
         return True
 
     async def stop_session_runtime(
@@ -160,3 +163,20 @@ async def test_pause_session_skips_terminal_frame_when_nothing_paused() -> None:
     )
 
     assert manager.broadcast_events == []
+
+
+@pytest.mark.asyncio
+async def test_pause_session_swallows_terminal_frame_delivery_failure() -> None:
+    manager = _RecordingTeamManager(paused=True, broadcast_error=RuntimeError("push failed"))
+    adapter = TeamSessionLifecycleAdapter(
+        coordinator=_RecordingCoordinator(),
+        team_manager=manager,
+    )
+
+    await adapter.pause_session(
+        SessionLifecycleContext(session_id="session-a", generation=2),
+        reason="user_pause",
+        channel_id="web",
+    )
+
+    assert len(manager.broadcast_events) == 1
