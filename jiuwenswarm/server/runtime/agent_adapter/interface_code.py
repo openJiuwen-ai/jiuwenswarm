@@ -450,6 +450,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     # 固定 Rails 名字集合 — 用于动态 Rails 去重
     _FIXED_RAIL_NAMES = frozenset({
+        "RequestIdentityRail",
         "RequestSummaryRail",
         "RuntimePromptRail", "ResponsePromptRail",
         "JiuSwarmStreamEventRail", "SecurityRail",
@@ -699,6 +700,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
         # 固定 Rails — code 模式特有
         rail_infos = [
+            # 请求身份重绑：无条件常挂（与 deep 基类表首位一致）。code 模式请求
+            # 经继承的 process_message_impl / _process_message_stream_impl 注入
+            # run_context.extra["request_id"]，warm-pool worker 上的陈旧
+            # ContextVar 靠本 rail 在 invoke 起点重绑（计费/归因不系于路由开关）。
+            _RailBuildInfo(
+                "_request_identity_rail", self._build_request_identity_rail
+            ),
             _RailBuildInfo("_request_summary_rail", self._build_request_summary_rail),
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),

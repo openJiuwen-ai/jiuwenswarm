@@ -33,6 +33,7 @@ import importlib
 import json
 import logging
 import re
+import sys
 import time
 import uuid
 from typing import Any, Optional
@@ -701,6 +702,93 @@ def _merge_model_http_hook_ctx(ctx: Any, kwargs: dict) -> None:
         kwargs["extra_body"] = merged_body
 
 
+def _resolve_model_http_request_identity() -> tuple[str, str]:
+    """解析本次模型 HTTP 调用所属的 ``request_id`` / ``session_id``（fail-open）。
+
+    模型客户端方法本身不携带请求对象（只收 messages / 请求参数），身份只能
+    取调用点的请求作用域 ContextVar——并发下各 task 上下文天然隔离，逐调用
+    读取即逐请求取值。jiuwenswarm 并发是常态（每条 WS 消息一个独立 task、
+    HTTP 路径同样并发），因此这里绝不能用进程级全局变量暂存身份：
+
+    - ``request_id``：openjiuwen span_context 优先。handler 入口
+      （``bind_incoming_request`` / ``wire_parse``）与 agent 执行 task
+      （``ModelRoutingRail.before_invoke`` 从 ``run_context.extra`` 重绑）都会
+      设置，是长生命周期 agent task（warm-pool / DeepAgent supervisor 复用）
+      上唯一逐请求准确的通道；兜底读 interface_deep 的
+      ``_LLM_TRACE_REQUEST_ID``（handler 侧每请求绑定，但 supervisor task
+      只继承创建时的冻结值，仅作下限）。
+    - ``session_id``：``common.log_context.log_session_id`` 优先。
+      ``start_interaction`` 在创建 supervisor task 前绑定（一个 supervisor
+      只服务一个 session，继承值永不陈旧），handler 入口每请求重绑；兜底
+      openjiuwen span_context。
+
+    interface_deep 经 ``sys.modules`` 探测而非 import：llm_sse_patch 在进程
+    启动极早期加载，直接 import 重模块有循环导入风险；模型调用发生时该模块
+    必然已加载，未加载则本进程没有该路径，取空串即可。两者都取不到（子进程 /
+    后台任务等脱离请求上下文的调用）返回空串，扩展按空串自行降级。
+    """
+    request_id = ""
+    rid_source = "none"
+    try:
+        from openjiuwen.extensions.observability.span_context import (
+            get_current_request_id,
+        )
+
+        request_id = str(get_current_request_id() or "")
+        if request_id:
+            rid_source = "openjiuwen"
+    except Exception:  # noqa: BLE001 - 身份解析失败不影响请求路径
+        request_id = ""
+    if not request_id:
+        trace_rid = getattr(
+            sys.modules.get(
+                "jiuwenswarm.server.runtime.agent_adapter.interface_deep"
+            ),
+            "_LLM_TRACE_REQUEST_ID",
+            None,
+        )
+        if trace_rid is not None:
+            try:
+                request_id = str(trace_rid.get() or "")
+                if request_id:
+                    rid_source = "llm_trace"
+            except Exception:  # noqa: BLE001 - 同上
+                request_id = ""
+
+    session_id = ""
+    sid_source = "none"
+    try:
+        from jiuwenswarm.common.log_context import log_session_id
+
+        session_id = str(log_session_id.get() or "")
+        if session_id:
+            sid_source = "log_session"
+    except Exception:  # noqa: BLE001 - 同上
+        session_id = ""
+    if not session_id:
+        try:
+            from openjiuwen.extensions.observability.span_context import (
+                get_current_session_id,
+            )
+
+            session_id = str(get_current_session_id() or "")
+            if session_id:
+                sid_source = "openjiuwen"
+        except Exception:  # noqa: BLE001 - 同上
+            session_id = ""
+    # 调试观测：逐调用记录身份与来源通道。排查归因问题（空值/串号）时开
+    # debug 即可判断「值来自哪个通道、rail 是否重绑过」——source=none 即
+    # 脱离请求上下文的调用（子进程/后台任务），扩展按空串降级。
+    logger.debug(
+        "[before_model_http] request identity: request_id=%s (%s), session_id=%s (%s)",
+        request_id,
+        rid_source,
+        session_id,
+        sid_source,
+    )
+    return request_id, session_id
+
+
 async def _trigger_before_model_http(client: Any, kwargs: dict) -> None:
     """触发 ``before_model_http`` 埋点并把扩展口袋合并进本次调用。
 
@@ -708,7 +796,9 @@ async def _trigger_before_model_http(client: Any, kwargs: dict) -> None:
       返回 False）：零副作用跳过；
     - handler 异常只记日志，本次请求不带扩展字段照常发出——积分参数失败
       不能变成用户可见的对话失败；
-    - 无人登记该事件时 callback 框架空转，请求与现状完全一致。
+    - 无人登记该事件时 callback 框架空转，请求与现状完全一致；
+    - ctx 携带本次调用所属的 ``request_id`` / ``session_id``，供扩展做
+      请求级归因（并发下逐调用取值，互不串扰）。
     """
     # 惰性导入：llm_sse_patch 在进程启动极早期被加载，此时扩展框架尚未
     # 初始化；且 extensions.registry 会拉起 gateway 一大片依赖，避免循环导入。
@@ -722,11 +812,15 @@ async def _trigger_before_model_http(client: Any, kwargs: dict) -> None:
 
     mcc = getattr(client, "model_client_config", None)
     mc = getattr(client, "model_config", None)
+    # 请求身份逐调用解析（fail-open）：扩展据此做请求级归因，并发下互不串扰
+    request_id, session_id = _resolve_model_http_request_identity()
     ctx = ModelHttpHookContext(
         # api_base 来自 ModelClientConfig（与 x-span-id 补丁同源）；
         # model_name 来自 ModelRequestConfig（base 客户端组参同源）
         api_base=str(getattr(mcc, "api_base", "") or ""),
         model_name=str(getattr(mc, "model_name", "") or ""),
+        request_id=request_id,
+        session_id=session_id,
     )
     try:
         triggered = await ExtensionRegistry.trigger_if_initialized(

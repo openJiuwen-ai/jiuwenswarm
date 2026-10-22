@@ -249,6 +249,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         # auto 档动态路由：请求级 enable_routing / 进程级 model_routing.enabled
         # 均开启时，Flash 必须保留该 rail 才能执行分类器并真实 set_llm。
         "_model_routing_rail",
+        # 请求身份重绑：round task 上从 run_context.extra 重绑 request_id，修
+        # 埋点/llm_io_trace 归因串号（不系于 model_routing 开关）；无状态
+        # fail-open，与精简 profile 不冲突。
+        "_request_identity_rail",
         "_security_rail",
         "_heartbeat_rail",
         "_subagent_rail",
