@@ -1550,6 +1550,7 @@ async def _await_runner_pool_release(team_name: str, session_id: str) -> None:
     A paused entry is left alone so the next stream can resume it.
     """
     deadline = time.monotonic() + _POOL_RELEASE_TIMEOUT_S
+    wait_t0: float | None = None
     while True:
         try:
             infos = await Runner.list_active_teams()
@@ -1561,7 +1562,16 @@ async def _await_runner_pool_release(team_name: str, session_id: str) -> None:
             )
             return
         if not any(_pool_entry_running(info, team_name, session_id) for info in infos):
+            # Pure poll wait only — do not fold force-stop into this label.
+            if wait_t0 is not None:
+                logger.info(
+                    "[TeamHelpers] lifecycle_timing start await_pool_release "
+                    "outcome=released duration_ms=%.0f",
+                    (time.perf_counter() - wait_t0) * 1000,
+                )
             return
+        if wait_t0 is None:
+            wait_t0 = time.perf_counter()
         if time.monotonic() >= deadline:
             logger.warning(
                 "[TeamHelpers] runner pool still running before first stream; stopping: "
@@ -1569,6 +1579,14 @@ async def _await_runner_pool_release(team_name: str, session_id: str) -> None:
                 session_id,
                 team_name,
             )
+            # Emit wait duration before force-stop so the two costs stay comparable
+            # to the released path (same label = poll wait only).
+            logger.info(
+                "[TeamHelpers] lifecycle_timing start await_pool_release "
+                "outcome=timeout duration_ms=%.0f",
+                (time.perf_counter() - wait_t0) * 1000,
+            )
+            stop_t0 = time.perf_counter()
             try:
                 await Runner.stop_agent_team(team_name=team_name, session_id=session_id)
             except Exception as exc:
@@ -1577,6 +1595,10 @@ async def _await_runner_pool_release(team_name: str, session_id: str) -> None:
                     session_id,
                     exc,
                 )
+            logger.info(
+                "[TeamHelpers] lifecycle_timing start await_pool_force_stop duration_ms=%.0f",
+                (time.perf_counter() - stop_t0) * 1000,
+            )
             return
         await asyncio.sleep(_POOL_RELEASE_POLL_S)
 
@@ -1602,6 +1624,38 @@ async def _team_has_unread_messages(session_id: str, handler: Any) -> bool:
     token = set_session_id(session_id)
     try:
         return bool(await message_manager.has_unread_messages(include_broadcast=True))
+    finally:
+        reset_session_id(token)
+
+
+async def _team_has_pending_relay_turn(session_id: str, handler: Any) -> bool:
+    """True when a member still owes a relay turn (@-mentioned/invited, no output).
+
+    Consults the leader's agent-core ``TeamBackend.has_pending_relay_turn`` —
+    the single source of truth shared with the POLL_TASK completion path via
+    ``is_team_completed``. The backend delivers the bounded wake nudge itself,
+    so a ``True`` here also unblocks the round without any jiuwenswarm-side
+    mailbox writes.
+    """
+    monitor = getattr(handler, "_monitor", None)
+    team_agent = getattr(monitor, "_team_agent", None)
+    backend = getattr(team_agent, "team_backend", None) if team_agent is not None else None
+    if backend is None:
+        return False
+    probe = getattr(backend, "has_pending_relay_turn", None)
+    if not callable(probe):
+        return False
+
+    token = set_session_id(session_id)
+    try:
+        return bool(await probe())
+    except Exception:
+        logger.debug(
+            "[TeamHelpers] pending relay check failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return False
     finally:
         reset_session_id(token)
 
@@ -1674,6 +1728,13 @@ async def _team_round_settled(channel_id: str | None, session_id: str) -> bool:
             return False
 
         if await _team_has_unread_messages(session_id, handler):
+            return False
+
+        # Relay-turn guard: a member @-mentioned/invited in the
+        # mailbox that never spoke afterwards still owes a turn. Blocks the
+        # edge settle and lets the backend's bounded wake nudge restart the
+        # relay — mirrors the POLL_TASK gate inside is_team_completed.
+        if await _team_has_pending_relay_turn(session_id, handler):
             return False
 
         get_workflow_handler = getattr(team_manager, "get_workflow_handler", None)
@@ -2491,7 +2552,12 @@ async def process_team_message_stream(
                     session_id,
                     rid,
                 )
+                wait_t0 = time.perf_counter()
                 settled = await _wait_team_cancel_settled(team_manager, session_id)
+                logger.info(
+                    "[TeamHelpers] lifecycle_timing followup wait_cancel_settled duration_ms=%.0f",
+                    (time.perf_counter() - wait_t0) * 1000,
+                )
                 logger.info(
                     "[TeamHelpers] follow-up resume after cancel teardown wait: "
                     "channel_id=%s session_id=%s request_id=%s settled=%s",
@@ -3308,7 +3374,12 @@ async def _consume_stream_with_query(
             stream_aclose = getattr(team_stream, "aclose", None)
             if callable(stream_aclose):
                 try:
+                    aclose_t0 = time.perf_counter()
                     await stream_aclose()
+                    logger.info(
+                        "[TeamHelpers] lifecycle_timing finalize stream_aclose duration_ms=%.0f",
+                        (time.perf_counter() - aclose_t0) * 1000,
+                    )
                     aclose_ok = True
                 except Exception:
                     logger.debug(
