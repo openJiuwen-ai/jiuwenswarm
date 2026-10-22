@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session import InteractiveInput
 from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
@@ -14,6 +16,13 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
 )
 
 from .approval import CuaApprovalTool, CuaCodeApprovals
+
+
+def build_cua_delegation_approval_rail(language="cn"):
+    """Extend only desktop installers; Python installs keep the stock rail."""
+    if getattr(sys, "frozen", False) and sys.platform in ("darwin", "win32"):
+        return CuaCodeApprovalRail(language=language)
+    return CuaDelegationApprovalRail(language=language)
 
 
 class CuaCodeApprovalRail(CuaDelegationApprovalRail):

@@ -8,17 +8,6 @@ from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config as build_core_cua_config
 
 
-def build_cua_delegation_approval_rail(language="cn"):
-    """Select the installer extension without changing the stock permission rail."""
-    from .rails.cua_delegation_approval_rail import CuaDelegationApprovalRail
-
-    if getattr(sys, "frozen", False) and sys.platform in ("darwin", "win32"):
-        from jiuwenswarm.cua_engine.approval_rail import CuaCodeApprovalRail
-
-        return CuaCodeApprovalRail(language=language)
-    return CuaDelegationApprovalRail(language=language)
-
-
 def build_cua_agent_config(
     model,
     *,
@@ -96,7 +85,5 @@ def build_system_prompt(language: str, *, repl_enabled: bool = True) -> str:
         "not JavaScript. Variables persist only within this delegated task; the host owns cleanup. "
         "Reads present text, printImage presents screenshots, and actions require explicit reads to verify. "
         "Never reuse old-tool references or coordinates in the REPL, or vice versa. REPL input follows "
-        "its own host shared/exclusive policy. Each code call follows the host's code permission policy. "
-        "It uses the LOCAL executor with host permissions, not a security sandbox; a sandbox-bound "
-        "executor is never silently replaced with LOCAL.\n\n"
+        "its own host shared/exclusive policy. It runs with host permissions, not in a security sandbox.\n\n"
     ) + base.replace("computer_use({", "cua_repl({")

@@ -10256,7 +10256,7 @@ class JiuWenSwarmDeepAdapter:
         if self._is_cron_execution:
             return None
         try:
-            from jiuwenswarm.agents.harness.common.cua_factory import (
+            from jiuwenswarm.cua_engine.approval_rail import (
                 build_cua_delegation_approval_rail,
             )
 

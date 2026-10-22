@@ -16,7 +16,7 @@ from openjiuwen.core.sys_operation.cwd import init_cwd
 
 from jiuwenswarm.agents.harness.common.cua_defaults import build_cua_agent_card
 from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
-from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
+from jiuwenswarm.cua_engine.extension import CuaExtensionRail
 from jiuwenswarm.cua_engine.execution import LocalCodeSession
 from jiuwenswarm.cua_engine.hosting import engine_root, prepare_native
 from jiuwenswarm.cua_engine.runtime import ReplRuntime
