@@ -16,6 +16,8 @@ import {
   vendorSelectionKey,
 } from '../models/modelAdapters';
 import {
+  ARK_REGIONS,
+  arkRegionForApiBase,
   catalogProtocols,
   credentialsOptional,
   defaultGeneration,
@@ -30,6 +32,7 @@ import {
   regionalHintKey,
   VLLM_OMNI_PROTOCOL,
   withCurrentOption,
+  type ArkRegion,
   type GenerationSlot,
 } from './generationModels';
 
@@ -55,6 +58,7 @@ type GenerationDraft = {
   vendor_selection: string;
   protocol: string;
   api_base: string;
+  ark_region: ArkRegion;
   api_key: string;
   model_name: string;
 };
@@ -110,6 +114,7 @@ function createDraft(config: Readonly<Record<string, unknown>>, slot: Generation
     vendor_selection: hasConfig ? CUSTOM_VENDOR_SELECTION : '',
     protocol: readConfig(config, slot, 'protocol') || modelProtocol(slot, undefined, true, model),
     api_base: apiBase,
+    ark_region: arkRegionForApiBase(apiBase),
     api_key: apiKey,
     model_name: model,
   };
@@ -278,6 +283,7 @@ export function GenerationModelConfigDialog({
       form.setValues({
         vendor_selection: selection,
         api_base: '',
+        ark_region: 'custom',
         api_key: '',
         model_name: '',
         protocol: defaultGeneration(slot, undefined).protocol,
@@ -295,6 +301,7 @@ export function GenerationModelConfigDialog({
     form.setValues({
       vendor_selection: selection,
       api_base: generationApiBase(nextPreset.vendor_key, nextPreset.api_base),
+      ark_region: arkRegionForApiBase(generationApiBase(nextPreset.vendor_key, nextPreset.api_base)),
       api_key: '',
       protocol: nextVendor ? defaults.protocol : OPENAI_PROTOCOL,
       model_name: nextVendor === 'modelark' ? '' : defaults.model,
@@ -382,11 +389,32 @@ export function GenerationModelConfigDialog({
   ];
 
   if (showApiBase) {
+    if (arkSelection) {
+      formItems.push({
+        name: 'ark_region',
+        label: t('settingsPanel.agent.arkRegion'),
+        component: 'select',
+        options: [
+          { value: 'cn-beijing', label: t('settingsPanel.agent.arkRegions.cnBeijing') },
+          { value: 'ap-southeast-1', label: t('settingsPanel.agent.arkRegions.apSoutheast') },
+          { value: 'eu-west-1', label: t('settingsPanel.agent.arkRegions.euWest') },
+          { value: 'custom', label: t('settingsPanel.agent.arkRegions.custom') },
+        ],
+        onChange: (region) => {
+          form.setValues({
+            api_base: region === 'custom' ? '' : ARK_REGIONS[region as keyof typeof ARK_REGIONS],
+            model_name: '',
+          });
+          form.clearValidate(['api_base', 'model_name']);
+        },
+      });
+    }
     formItems.push({
       name: 'api_base',
       label: t('settingsPanel.fields.api_base.title'),
       component: 'input',
       required: true,
+      disabled: arkSelection && values.ark_region !== 'custom',
       placeholder: t('settingsPanel.fields.api_base.placeholder'),
       helpTips: isEditableBaseVendor(preset?.vendor_key) ? t(regionalHintKey(preset?.vendor_key)) : undefined,
     });
