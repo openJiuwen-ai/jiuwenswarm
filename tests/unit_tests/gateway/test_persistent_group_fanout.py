@@ -437,19 +437,20 @@ async def test_delivered_handoff_starts_only_the_named_colleague(host):
     study = host.colleague("agent学习小助手")
     fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
 
-    await fanout.continue_handoff(
-        {
-            "namespace_id": NS,
-            "agent_id": life,
-            "is_direct_message": False,
-            "target_id": "oc_project",
-            "app_id": "app-life",
-            "source_message_id": "om_user",
-            "text": f"到期日记不住，交给你 [[agent:{study}]]",
-        },
-        [{"agent_id": study, "name": "agent学习小助手", "app_ids": ["app-study"]}],
-        "om_reply",
-    )
+    for _ in range(2):
+        await fanout.continue_handoff(
+            {
+                "namespace_id": NS,
+                "agent_id": life,
+                "is_direct_message": False,
+                "target_id": "oc_project",
+                "app_id": "app-life",
+                "source_message_id": "om_user",
+                "text": f"到期日记不住，交给你 [[agent:{study}]]",
+            },
+            [{"agent_id": study, "name": "agent学习小助手", "app_ids": ["app-study"]}],
+            "om_reply",
+        )
 
     reply = _event(receiving_app_id="app-study", message_id="om_reply", chat_id="oc_project")
     states = host.request_states(study, reply)
@@ -651,23 +652,59 @@ async def test_malformed_bound_events_are_rejected_without_persisting_state(host
 
 
 @pytest.mark.asyncio
-async def test_current_bot_echo_is_suppressed_but_unidentified_bot_is_not_guessed_to_be_self(host):
+@pytest.mark.parametrize("mentioned", [False, True])
+async def test_current_bot_echo_is_suppressed_but_unidentified_bot_is_not_guessed_to_be_self(host, mentioned):
     agent_id = host.colleague("研发同事")
     fanout = host.fanout([_binding("app-dev", agent_id)])
 
     own_echo = await fanout.handle(
-        _event(sender_type="bot", sender_id="ou_own_bot", sender_app_id="app-dev")
+        _event(sender_type="bot", sender_id="ou_own_bot", sender_app_id="app-dev", receiver_bot_mentioned=mentioned)
     )
     unidentified_bot = await fanout.handle(
-        _event(message_id="om_other_bot", sender_type="bot", sender_id="ou_other_bot", sender_app_id=None)
+        _event(message_id="om_other_bot", sender_type="bot", sender_id="ou_other_bot", sender_app_id=None,
+               receiver_bot_mentioned=mentioned)
     )
 
     assert own_echo is InboundDisposition.HANDLED
     assert unidentified_bot is InboundDisposition.HANDLED
-    request = host.request_states(agent_id, _event(message_id="om_other_bot"))[0].record.request_input
-    assert request.source.sender_kind == "agent"
-    assert len(host.request_states(agent_id, _event(message_id="om_other_bot"))) == 1
-    assert host.row_counts() == (1, 1, 1)
+    assert host.row_counts() == (1, int(mentioned), int(mentioned))
+    if mentioned:
+        requests = host.request_states(agent_id, _event(message_id="om_other_bot"))
+        assert len(requests) == 1
+        assert requests[0].record.request_input.source.sender_kind == "agent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sender_type,sender_app_id,text,mention_ids,reply_to", [
+    ("bot", "app-other", "收到，等你有需要再找我", (), None),
+    ("bot", None, "收到，等你有需要再找我", (), None),
+    ("app", "app-other", "大家好", (), None),
+    ("agent", "app-other", "任务已完成", (), None),
+    ("bot", "app-other", "@研发同事 请继续", (), None),
+    ("bot", "app-other", "@另一位同事 请继续", ("ou_other",), None),
+    ("bot", "app-other", "这是一条引用回复", (), "om_parent"),
+])
+async def test_unmentioned_bot_group_message_is_archived_without_request(
+    host, sender_type, sender_app_id, text, mention_ids, reply_to,
+):
+    agent_id = host.colleague("研发同事")
+    fanout = host.fanout([_binding("app-dev", agent_id)])
+    event = _event(sender_type=sender_type, sender_id="ou_other_bot", sender_name="其他助手",
+                   sender_app_id=sender_app_id, text=text, mention_ids=mention_ids, reply_to=reply_to)
+
+    for _ in range(2):
+        assert await fanout.handle(event) is InboundDisposition.HANDLED
+
+    assert host.row_counts() == (1, 0, 0), "ordinary Bot messages must not create Sessions or Requests"
+    group = host.groups.resolve(NS, "feishu", event.chat_id, now=NOW)
+    page = host.manager.group_archive.recent(NS, group.group_chat_id, cursor=None, limit=20, visible_from=NOW)
+    assert len(page.messages) == 1
+    message = page.messages[0]
+    assert message.message_id == event.message_id
+    assert message.sender_kind == "agent"
+    assert message.text == text
+    assert message.mention_ids == mention_ids
+    assert message.reply_to == reply_to
 
 
 def _feishu_channel(app_id="app-dev", agent_id="") -> FeishuChannel:
@@ -1051,13 +1088,20 @@ async def test_message_handler_delegates_to_configured_fanout():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode,mentioned,chat_type,expected", [
-    ("passive", False, "group", 0),
-    ("passive", True, "group", 1),
-    ("adaptive", False, "group", 1),
-    ("passive", False, "p2p", 1),
+@pytest.mark.parametrize("mode,mentioned,chat_type,sender_type,expected", [
+    ("passive", False, "group", "user", 0),
+    ("passive", True, "group", "user", 1),
+    ("adaptive", False, "group", "user", 1),
+    ("passive", False, "p2p", "user", 1),
+    ("passive", False, "group", "bot", 0),
+    ("adaptive", False, "group", "bot", 0),
+    ("passive", True, "group", "bot", 1),
+    ("adaptive", True, "group", "bot", 1),
+    ("passive", False, "p2p", "bot", 1),
 ])
-async def test_group_reply_mode_controls_requests_and_preserves_context(host, mode, mentioned, chat_type, expected):
+async def test_group_reply_mode_controls_requests_and_preserves_context(
+    host, mode, mentioned, chat_type, sender_type, expected,
+):
     from dataclasses import replace
 
     agent_id = host.colleague("研发同事")
@@ -1066,7 +1110,7 @@ async def test_group_reply_mode_controls_requests_and_preserves_context(host, mo
     assert host.service.read_settings(NS, agent_id).group_reply_mode == mode
     assert host.service.get_colleague(NS, agent_id).to_dict()["group_reply_mode"] == mode
     fanout = host.fanout([_binding("app-dev", agent_id)])
-    event = _event(chat_type=chat_type, receiver_bot_mentioned=mentioned)
+    event = _event(chat_type=chat_type, receiver_bot_mentioned=mentioned, sender_type=sender_type)
 
     assert await fanout.handle(event) is InboundDisposition.HANDLED
     assert len(host.request_states(agent_id, event)) == expected

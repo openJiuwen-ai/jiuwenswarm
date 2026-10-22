@@ -224,7 +224,7 @@
 - **验收标准：**
   1. JM-08-V-01：绑定 app_id 后正确定位新版 Agent；群聊 / 私聊来源，以及 @、回复、发送者和附件信息完整传入。
   2. JM-08-V-02：重复事件不重复派发，同一平台事件的 `source_ref` 保持不变；多个目标 Agent 之间不互相去重；绑定 Bot 收到经校验的群事件即允许其 Agent 接入，不新增群白名单或工作空间权限。
-  3. JM-08-V-03：人类与 Agent 的消息都进入 core 判断；个人版飞书路由不变。
+  3. JM-08-V-03：人类消息按既有回复模式受理；普通 Bot 群消息只归档、不创建 Session / Request，明确 @ 当前接收 Bot 或有效目标交接才继续；自身回声仍不执行，个人版飞书路由和私聊不变。
 - **来源验证点与共享场景：** “多 Bot 收到同一消息时遗漏某个同事或重复执行” → JM-08-V-02 → 主责 JM-08，协同 JM-03 → S2a。
 - **前端独立验证：** 不适用。
 - **联合交付与开放条件：** 参与 S2a；PA-07 就绪后才放行群执行。
@@ -835,4 +835,5 @@ python -m pytest tests/integration_tests/jiuwenmate -q
 | 2026-10-16 | JM-16 | 新增 `activity_query.py` 与 `jiuwenmate.activity.get`：已开始且非 ignored 的 Request 计入任务，已结算调用计入次数和 Token，文件投递计入群产物；活跃数据页签改为读取该查询 | 真实 SQLite；前端接口映射 | `test_management_query.py` 4 passed；前端办公室 7 项、接口 19 项通过；任务中心未接入；状态改为进行中 |
 | 2026-10-22 | JM-10（会话管理与聊天侧栏） | 为会话增加持久置顶状态及旧数据库迁移；前端按置顶分组，行尾三点菜单提供重命名、置顶切换和删除；修复选中背景宽度受 Grid 隐式最小尺寸影响的问题 | SQLite 置顶与迁移测试、前端 API / workspace / 设计稿测试、生产构建与临时浏览器核对 | 3 项后端定向测试、25 项 API、7 项 workspace、5 项设计稿测试通过；生产构建通过；见 [F_10_02](../features/F_10_02_web-private-chat.md) |
 | 2026-10-17 | JM-19 | 新增 `scheduled_requests.py` 与四个 `jiuwenmate.schedule.*` 方法：计划写入同事库，到期后转为一条 `kind=scheduled` 的 Request，固定会话并去重；详情页可保存、启停和删除 | 可控时钟与真实 SQLite；前端静态渲染 | `test_scheduled_requests.py` 4 passed；浏览器与真实模型未执行；状态改为进行中，见 [F_19](../features/F_19_scheduled-requests.md) |
+| 2026-10-22 | JM-08（普通 Bot 群消息防循环） | 群消息先归档，普通 Bot 未明确 @ 当前接收者时不创建 Session / Request；明确 @ 或有效目标交接继续；同步 F_08、F_09、F_23，不改人类消息、私聊和个人版路径 | 真实 SQLite 与平台事件 / 执行替身；明确 @、交接去重及个人版回归 | 聚焦回归 161 passed、1 deselected（既有未发布同事断言差异）；个人版模式与附件 63 passed；真实飞书待验，状态不变；见 [F_08 第 8.2 节](../features/F_08_feishu-group-fanout.md#82-实际执行与证据) |
 | 2026-10-21 | JM-14（Session 路径安全复核） | 工作空间目录创建逐级检查真实目录与规范路径；拒绝符号链接 / Windows reparse point；读写 scope 暴露当前 Session 根前重复核验，防止草稿目录重定向到工作空间外 | reparse-point 回归；JM-08/09/14 聚焦测试；个人版消息 / 附件回归 | 新增安全回归 2 项通过；聚焦文件组 135 passed、1 skipped（Windows symlink 权限）；较大回归 512 passed、6 failed、1 skipped（Windows 文件模式、3 项旧 symlink 创建、1 项知识页断言）；个人版 63 passed；未提交，真实 Feishu 文件交付仍待验收，详见 [F_14](../features/F_14_workspace-read.md) |

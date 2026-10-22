@@ -524,6 +524,10 @@ class PersistentGroupFanout:
                 request_input = request_input.model_copy(update={"source": source,
                     "text": text,
                     "attachment_refs": current.attachment_refs})
+                # Keep Bot messages searchable without triggering a reply loop.
+                # Verified mentions and delivered handoffs use the same flag.
+                if sender_kind == "agent" and not event.receiver_bot_mentioned:
+                    return InboundDisposition.HANDLED
                 if event.receiver_bot_mentioned:
                     # Keep the shared archive's Feishu open_id intact. PA-07 consumes the
                     # receiving Agent's internal ID only on this request-specific copy.
