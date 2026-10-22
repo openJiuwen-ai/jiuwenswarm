@@ -7,7 +7,7 @@
 | 类型 | feature |
 | 编号 / slug | `F_05 / platform-events` |
 | 关联计划 | EXTV2-05 平台事件、能力注册与业务触发 |
-| 所属模块 | `jiuwenswarm/extensions_v2/events/webui.py`、`handler_ops/ui.py`、`webui/runtime.py` |
+| 所属模块 | `jiuwenswarm/extensions_v2/event_types/webui.py`、`handler_ops/ui.py`、`webui/runtime.py`、`bootstrap.py` |
 | 设计依据 | agent-core [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md)、[详细架构](../designs/extensions-v2-architecture.md) |
 | 最近一次修订日期 | 2026-10-22 |
 | 方案状态 | 事件类型与 `ops.ui.render` 已实现；`context.usage.updated` 已接入回合用量；工具调用等业务触发点待接入 |
@@ -69,6 +69,8 @@ register_webui_events(
 )
 ```
 
+`bootstrap.register_event_types` 汇总 WebUI 事件与其他平台事件的注册；`assembly.py` 只引用该函数，不直接拼装各事件模块。
+
 注册结果是：
 
 | 事件 | 匹配函数 | CORE Handler |
@@ -84,7 +86,7 @@ CORE Handler 由平台注册，插件不能通过 `register_event_handler` 登�
 
 ### 3.3 `ops.build` 与 `ops.ui.render`
 
-`WebUIRuntime.register_event_types` 登记 `ui.*` 事件类型与 CORE Handler；`register_handlers` 单独登记 `ops.build` 的 BUILTIN Handler。装配时两者分别作为 `host_event_types` 与 `host_handlers` 传给 `Registry.init`。该 Handler 在链尾拿到 `EventHandlerOpsBuilder`，加入 `ui` 命名空间和 `render` 方法：
+`WebUIRuntime.register_event_types` 登记 `ui.*` 事件类型与 CORE Handler；`register_handlers` 单独登记 `ops.build` 的 BUILTIN Handler。装配时由 `bootstrap.register_event_types` 与 `bootstrap.register_handlers` 汇总，分别作为 `host_event_types` 与 `host_handlers` 传给 `Registry.init`。该 Handler 在链尾拿到 `EventHandlerOpsBuilder`，加入 `ui` 命名空间和 `render` 方法：
 
 ```python
 builder.add_namespace("ui")
@@ -180,7 +182,8 @@ sequenceDiagram
 
 ## 7. 实施影响
 
-- 新增 `extensions_v2/events/webui.py`、`extensions_v2/events/context_usage.py`、`extensions_v2/handler_ops/ui.py`。
+- 新增 `extensions_v2/event_types/webui.py`、`extensions_v2/event_types/context_usage.py`、`extensions_v2/handler_ops/ui.py`。
+- 新增 `extensions_v2/bootstrap.py`，集中汇总平台事件与 BUILTIN Handler 的注册。
 - `interface_deep.py` 在 `chat.usage_summary` 生成后异步触发 `context.usage.updated`，不阻塞对话流。
 - `WebUIRuntime` 负责注册事件和构建能力目录；`assembly.py` 在包安装前调用。
 - `ops.build` 必须先于任何包安装，否则插件 Handler 拿不到 `ops.ui.render`。

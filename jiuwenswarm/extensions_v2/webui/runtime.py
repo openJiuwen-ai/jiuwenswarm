@@ -14,12 +14,12 @@ from openjiuwen.core.events import (
     SessionContext,
 )
 
-from jiuwenswarm.extensions_v2.events.webui import register_webui_events
+from jiuwenswarm.extensions_v2.event_types.webui import register_webui_events
 from jiuwenswarm.extensions_v2.handler_ops.ui import build_webui_ops_build_handler
 from jiuwenswarm.extensions_v2.webui.constants import WebUIEvent
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
-from jiuwenswarm.extensions_v2.webui.handlers.action_core import build_action_core_handler
-from jiuwenswarm.extensions_v2.webui.handlers.render_core import build_render_core_handler, clear_frame
+from jiuwenswarm.extensions_v2.webui.core_handlers.action_core import build_action_core_handler
+from jiuwenswarm.extensions_v2.webui.core_handlers.render_core import build_render_core_handler, clear_frame
 from jiuwenswarm.extensions_v2.webui.models import (
     UiActionInput,
     UiActionOutput,

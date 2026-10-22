@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from openjiuwen.core.events import EventHandler, ExtensionEventBus
 
-from jiuwenswarm.extensions_v2.events.matching import match_pattern_subset
+from jiuwenswarm.extensions_v2.event_types.matching import match_pattern_subset
 from jiuwenswarm.extensions_v2.webui.constants import UPSTREAM_EVENTS, WebUIEvent
 
 

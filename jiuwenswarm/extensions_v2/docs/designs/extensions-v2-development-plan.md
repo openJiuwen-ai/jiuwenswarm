@@ -136,7 +136,7 @@
 
 ### EXTV2-05 平台事件、能力注册与业务触发
 
-- **目标与范围：** 把 `ui.render` 与全部上行 `ui.*` 的事件类型、匹配函数与 CORE Handler 归入 `extensions_v2/events/webui.py`；把 `ops.build` 的 BUILTIN Handler 与 `ops.ui.render` 归入 `extensions_v2/handler_ops/ui.py`；在真实业务链路接入触发点，验证 Handler 内和 AgentServer 业务逻辑都能主动更新界面。不包含渲染服务与上行入口实现。
+- **目标与范围：** 把 `ui.render` 与全部上行 `ui.*` 的事件类型、匹配函数与注册函数归入 `extensions_v2/event_types/webui.py`，渲染帧构造与下发 CORE 归入 `extensions_v2/webui/core_handlers/`；把 `ops.build` 的 BUILTIN Handler 与 `ops.ui.render` 归入 `extensions_v2/handler_ops/ui.py`；在真实业务链路接入触发点，验证 Handler 内和 AgentServer 业务逻辑都能主动更新界面。不包含渲染服务与上行入口实现。
 - **责任与契约：** `register_webui_events(bus)` 注册 WebUI 事件，由产品注册函数在装配时调用；`bus` 为 `openjiuwen.core.events.ExtensionEventBus`，每个事件类型有且仅有一个 CORE Handler。Handler 内通过 `ops.ui.render(...)` 发起渲染；AgentServer 业务逻辑在核对上下文和目标后直接构造并触发 `ui.render` 事件。触发方不拼装渲染树、不直接下发消息；触发失败不影响业务主流程。业务触发位置见第 1.3 节。
 - **开工硬前置：** EXTV2-01。
 - **独立验证入口：** `tests/unit_tests/extensions_v2/webui/test_webui_runtime.py`；真实业务触发用例待补。
@@ -148,7 +148,7 @@
 - **来源验证点与共享场景：** 架构 EXTV2-A02、EXTV2-A03 与第 4.2、4.3、5.2.1 节；主责 EXTV2-05，参与 EXTV2-M1、M3。
 - **前端独立验证：** 不适用。
 - **联合交付与开放条件：** 参与 EXTV2-M1；真实业务触发范围由 EXTV2-M3 单独确认。
-- **设计索引：** 架构第 4.2、4.3、5.2.1 节；`extensions_v2/events/webui.py`、`extensions_v2/handler_ops/ui.py`、`extensions_v2/webui/runtime.py`。
+- **设计索引：** 架构第 4.2、4.3、5.2.1 节；`extensions_v2/event_types/webui.py`、`extensions_v2/webui/core_handlers/`、`extensions_v2/handler_ops/ui.py`、`extensions_v2/webui/runtime.py`。
 - **特性文档：** `../features/F_05_platform-events.md`。
 
 ### EXTV2-06 渲染服务与下行帧
@@ -291,7 +291,7 @@ flowchart TB
 | --- | --- | --- | --- |
 | `server/runtime/webui/bootstrap.py` | `extensions_v2/assembly.py` 与 `management/registry.py` | 拆分职责：装配编排归装配入口，事件注册归事件目录，发布与归属归 agent-core `Runtime`；移除演示任务与 WebUI 模块内的包登记表 | EXTV2-01、04 |
 | `server/runtime/webui/event_bus.py` | 删除 | 改用 agent-core `ExtensionEventBus`；只保留事件目录与注册函数 | EXTV2-05 |
-| `server/runtime/webui/handlers/` | `extensions_v2/events/webui.py` 与 `handler_ops/ui.py` | 事件定义、匹配与 CORE Handler 归事件目录；Build Handler 归能力目录，从 `ops.session_context` 读取会话 | EXTV2-05 |
+| `server/runtime/webui/handlers/` | `extensions_v2/event_types/webui.py`、`extensions_v2/webui/core_handlers/` 与 `handler_ops/ui.py` | 事件定义与匹配归事件目录；依赖 WebUI 运行时的 CORE 归渲染服务；Build Handler 归能力目录，从 `ops.session_context` 读取会话 | EXTV2-05 |
 | `server/runtime/webui/` 的模型、校验、常量、实例登记与传输模块 | `extensions_v2/webui/` | 搬迁；实例登记更名视图绑定；清理改为独立 `webui.render.clear` | EXTV2-06 |
 | `server/runtime/webui/adapter.py` | `extensions_v2/webui/adapter.py` | 搬迁并补齐挂载校验与回执语义；注册点仍在 `server/agent_ws_server.py` | EXTV2-07 |
 | `server/runtime/webui/demo.py` | 删除 | 由样例包与真实触发点替代 | EXTV2-05、08 |
