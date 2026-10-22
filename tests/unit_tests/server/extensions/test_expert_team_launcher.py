@@ -405,6 +405,38 @@ async def test_identity_write_failure_does_not_rollback_activated_team(monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error", [PermissionError("read only"), OSError("disk full"), ValueError("invalid identity"), RuntimeError("unexpected sidecar failure")])
+async def test_identity_write_failure_does_not_rollback_activated_team(monkeypatch, error):
+    from jiuwenswarm.agents.harness.team.expert_org import launcher as launcher_module
+
+    warnings = Mock(wraps=launcher_module.logger.warning)
+    monkeypatch.setattr(launcher_module.logger, "warning", warnings)
+    runtime = _FakeRuntime(_FakeDb())
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def build(**kwargs):
+        return _FakeSpec(kwargs["team_id"])
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", build)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.expert_org.launcher.save_organization_team_identity", fail
+    )
+    launched = await launcher.launch(
+        organization_id="org", agent_group_name="sample-expert-group", session_id="session"
+    )
+    assert await runtime.pool.get(launched.team_id) is not None
+    assert runtime.pause_calls == [(launched.team_id, "session")]
+    assert runtime.stop_calls == []
+    assert any(
+        "identity persistence failed" in call.args[0] and launched.team_id in call.args[1:]
+        for call in warnings.call_args_list
+    )
+
+
+@pytest.mark.asyncio
 async def test_launch_with_owner_uses_shared_db_for_task_and_message_managers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

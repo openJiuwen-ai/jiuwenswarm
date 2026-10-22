@@ -302,9 +302,6 @@ async def test_disabled_switch_hides_live_organization_snapshot(restarted_server
 
 async def test_restart_direct_expert_chat_restores_backend_and_reuses_membership(restarted_server, monkeypatch):
     from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-    from jiuwenswarm.common.schema.message import Message, ReqMethod
-    from agent_gateway.message_handler.message_handler import MessageHandler
 
     server, _, runtime, _ = restarted_server
     db, organization = await server._load_persisted_organization("session", "tech")
@@ -334,7 +331,7 @@ async def test_restart_direct_expert_chat_restores_backend_and_reuses_membership
         JiuwenExpertTeamLauncher, "_build_enriched_spec", AsyncMock(return_value=SimpleNamespace(team_name="tech"))
     )
     monkeypatch.setattr("jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir", lambda name: name)
-    monkeypatch.setattr("openjiuwen.agent_teams.experts.load_agent_group_package_bundle", lambda path: object())
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.agent_group.load_agent_group_package_bundle", lambda path: object())
     records = []
     monkeypatch.setattr(agent_ws_server, "append_history_record", lambda **kwargs: records.append(kwargs))
 
@@ -345,34 +342,10 @@ async def test_restart_direct_expert_chat_restores_backend_and_reuses_membership
         return True
 
     monkeypatch.setattr(JiuwenExpertTeamLauncher, "run_organization_turn", run)
-    direct_request = query("chat.send", "tech", target_team_id="tech", query="What work did you do?", mode="team")
-
-    class Client:
-        async def send_request_stream(self, env):
-            async for chunk in server._targeted_expert_response_stream(direct_request):
-                yield chunk
-
-    monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(Client())
-    message = Message(
-        id=direct_request.request_id, type="req", channel_id="web", session_id="session",
-        params=direct_request.params, req_method=ReqMethod.CHAT_SEND, is_stream=True, timestamp=0, ok=True,
-    )
-    env = e2a_from_agent_fields(
-        request_id=message.id, channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
-        params=message.params, is_stream=True, timestamp=0,
-    )
-    await handler._start_stream_task(message, env, message.id)
-    await handler._stream_tasks[message.id]
-    statuses = []
-    while not handler._robot_messages.empty():
-        output = await handler.consume_robot_messages(timeout=0.01)
-        if output.payload.get("event_type") == "chat.processing_status":
-            statuses.append(output.payload)
-    assert [payload["is_processing"] for payload in statuses] == [True, False]
-    assert statuses[-1]["success"] is True
-    assert all(payload["team_id"] == "tech" and payload["source"] == "org_expert_direct" for payload in statuses)
-    assert all(payload["request_id"] == message.id for payload in statuses)
+    chunks = [chunk async for chunk in server._targeted_expert_response_stream(
+        query("chat.send", "tech", target_team_id="tech", query="What work did you do?")
+    )]
+    assert chunks[-1].payload["success"] is True
     assert set(runtime.pool._teams) == {"tech"}
     runtime.activate.assert_awaited_once()
     assert records[0]["extra"]["team_id"] == "tech"

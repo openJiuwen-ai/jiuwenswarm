@@ -20,7 +20,7 @@ import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLi
 import { webClient } from '../../services/webClient';
 import type { AgentGroupCatalogItem, AgentGroupIdentity } from '../../features/agentManagement/types';
 import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
-import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
+import { resolveOrganizationTeamIdentity, resolveOrganizationTeamLabel } from '../../features/teamOrganization/teamIdentity';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 
 const MENU_GAP = 10;
@@ -49,10 +49,7 @@ function stateTone(state: string): 'running' | 'idle' | 'unknown' {
 /** 下拉显示专家团目录中的名称；未绑定模板的 Team 保留运行时名称。 */
 function teamLabel(team: RuntimeTeamInfo, identity: AgentGroupIdentity | null, language: string, fallback: string): string {
   if (identity) return resolveTeamGroupDisplayName(identity, language);
-  const agentGroupName = team.agent_group_name?.trim();
-  if (agentGroupName) return agentGroupName;
-  const id = (team.team_id || team.team_name || '').trim();
-  return id || team.display_name?.trim() || fallback;
+  return resolveOrganizationTeamLabel(team, [], fallback);
 }
 
 export interface TeamSelectorProps {

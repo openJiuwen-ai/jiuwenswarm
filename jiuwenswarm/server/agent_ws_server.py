@@ -7171,9 +7171,7 @@ class AgentWebSocketServer:
 
     async def _targeted_expert_response_stream(self, request: AgentRequest) -> Any:
         """Run one selected expert as a normal cancellable AgentServer stream."""
-        from jiuwenswarm.server.runtime.team_organization_history import (
-            organization_enabled,
-        )
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(request.session_id or "").strip()
         team_id = str(params.get("target_team_id") or "").strip()
@@ -7207,25 +7205,15 @@ class AgentWebSocketServer:
         has_team_target = bool(session_id and team_id)
         has_organization_binding = bool(owner_org_id and target_org_id)
         needs_recovery = target_backend is None or not has_organization_binding
-        from jiuwenswarm.server.runtime.organization_packages import (
-            team_package_availability,
-        )
-
-        availability = team_package_availability(team_id) if has_team_target else {}
         if not organization_enabled():
             error = "Team Organization is disabled"
-        elif availability.get("available") is False:
-            error = "The expert AgentGroup is uninstalled or unavailable; reinstall it to resume this Team."
-            error_code = availability["unavailable_reason"]
         elif has_team_target and needs_recovery:
             try:
                 persisted = await self._load_persisted_organization(session_id, team_id)
                 if persisted is None:
                     error = "target expert team does not belong to the owner's organization"
                 else:
-                    from jiuwenswarm.agents.harness.team.expert_org.launcher import (
-                        JiuwenExpertTeamLauncher,
-                    )
+                    from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
 
                     db, organization = persisted
                     owner_org_id = organization.organization_id
@@ -7243,7 +7231,6 @@ class AgentWebSocketServer:
                     team_id,
                 )
                 error = f"target expert team could not be restored: {exc}"
-                error_code = str(getattr(exc, "code", ""))
         if not error and (not session_id or target_backend is None):
             error = "target expert team is not bound to this session"
         elif not error and (not owner_org_id or target_org_id != owner_org_id):
@@ -7681,6 +7668,63 @@ class AgentWebSocketServer:
                         session_id, leader.team_id, exc_info=True,
                     )
 
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+
+        try:
+            persisted = await self._load_persisted_organization(session_id) if organization_enabled() else None
+        except Exception:
+            persisted = None
+            logger.exception("[AgentWebSocketServer] historical team.list failed: session_id=%s", session_id)
+
+        if persisted is not None:
+            db, organization = persisted
+            # Membership is authoritative; optional labels must never remove a Team.
+            for leader in organization.leaders:
+                _upsert(
+                    leader.team_id,
+                    state="configured",
+                    leader_id=leader.leader_id,
+                    organization_id=organization.organization_id,
+                    capabilities=list(leader.capabilities or []),
+                    source="database",
+                )
+            try:
+                from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
+            except ImportError:
+                load_organization_team_identity = None
+                logger.warning("[AgentWebSocketServer] historical Team identity loader unavailable", exc_info=True)
+
+            for leader in organization.leaders:
+                team = None
+                identity = {}
+                try:
+                    team = await db.team.get_team(leader.team_id)
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team details unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+                try:
+                    if load_organization_team_identity is not None:
+                        identity = load_organization_team_identity(leader.team_id)
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team identity unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+                try:
+                    _upsert(
+                        leader.team_id,
+                        state="configured",
+                        display_name=getattr(team, "display_name", None) or identity.get("display_name"),
+                        agent_group_name=identity.get("agent_group_name"),
+                    )
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team labels unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+
         # ``team_name`` reaches session metadata only when the team runtime
         # becomes ready (sync_team_identity_metadata). During the first-turn
         # assembly window the session's own team is already listed via the
@@ -7814,9 +7858,7 @@ class AgentWebSocketServer:
         to the session's owner. A caller-supplied ``organization_id`` is only
         a consistency check and never selects the organization to query.
         """
-        from jiuwenswarm.server.runtime.team_organization_history import (
-            organization_enabled,
-        )
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
 
         enabled = organization_enabled()
         params = request.params if isinstance(request.params, dict) else {}

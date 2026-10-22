@@ -6,17 +6,13 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import time
 import uuid
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from weakref import WeakValueDictionary
 
-from jiuwenswarm.agents.harness.common.rails.permissions.root_context import HOST_USER_ORIGIN_INTERNAL
 from jiuwenswarm.server.runtime.team_organization_identity_store import save_organization_team_identity
-
-if TYPE_CHECKING:
-    from openjiuwen.agent_teams.interaction import DeliverResult
-    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _UnattendedTeamRoundHistoryWriter
 
 logger = logging.getLogger(__name__)
 _recovery_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -950,7 +946,7 @@ class JiuwenExpertTeamLauncher:
         """Cold-recover an invited Team under its original ID, without an LLM turn."""
         from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
         from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
-        from openjiuwen.agent_teams.experts import load_agent_group_package_bundle
+        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package_bundle
         from jiuwenswarm.server.runtime.extension_package_manager import resolve_agent_group_dir
 
         if not organization_enabled():
@@ -964,26 +960,10 @@ class JiuwenExpertTeamLauncher:
             if not organization_enabled():
                 raise ValueError("Team Organization is disabled")
             runtime = self._get_runtime()
-            from jiuwenswarm.server.runtime.organization_packages import team_package_availability
-            from jiuwenswarm.server.runtime.extension_package_manager import AgentGroupPackageError
-
-            availability = team_package_availability(team_id)
-            if availability.get("available") is False:
-                raise AgentGroupPackageError(
-                    "The expert AgentGroup is not installed or unavailable; reinstall it to resume this Team.",
-                    availability["unavailable_reason"],
-                )
             entry = await runtime.pool.get(team_id)
             if entry is not None:
                 if entry.current_session_id != session_id:
                     raise ValueError("target expert team is bound to another session")
-                metadata = getattr(getattr(entry.agent, "spec", None), "metadata", None) or {}
-                status = team_package_availability(team_id, str(metadata.get("agent_group_name") or ""))
-                if status.get("available") is False:
-                    raise AgentGroupPackageError(
-                        "Expert package is not installed; reinstall it first.",
-                        status["unavailable_reason"],
-                    )
                 backend = getattr(entry.agent, "team_backend", None)
                 if (
                     backend is None or backend.db is not db
@@ -1018,7 +998,6 @@ class JiuwenExpertTeamLauncher:
                 raise ValueError("Team Organization is disabled")
             try:
                 activation = await runtime.activate(spec, session_id)
-                resolve_agent_group_dir(group_name)
                 agent = getattr(activation, "agent", None)
                 backend = getattr(agent, "team_backend", None)
                 if (

@@ -163,46 +163,146 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
   const leaders = [...(organization?.leaders ?? [])].sort((a, b) =>
     Number(b.team_id === organization?.owner_team_id) - Number(a.team_id === organization?.owner_team_id));
   const reviews = snapshot?.pending_reviews ?? [];
-  const teamTree = buildOrganizationTeamTree(leaders, organization?.owner_team_id);
-  const renderTeam = (leader: OrgTeamHandle, id: string) => {
-    const runtime = byTeam.get(id);
-    const identity = resolveOrganizationTeamIdentity(runtime, groups);
-    const ownTasks = (tasks ?? []).filter((task) => task.assignment?.team_id === id);
-    return <details className="organization-tree__node" data-testid="team-area-org-info-team-row" data-variant={organization?.owner_team_id === id ? 'owner' : 'sub'}>
-      <summary className="organization-tree__row" data-testid="team-area-org-team-toggle" data-variant={id}>
-        <ChevronRight size={16} className="organization-tree__chevron" aria-hidden="true" />
-        {identity?.avatarUrl ? <img src={identity.avatarUrl} alt="" className="h-5 w-5 shrink-0 rounded-full object-contain" data-testid="team-area-org-info-team-avatar" data-variant={id} /> : <Users size={16} className="shrink-0 text-text-muted" aria-hidden="true" />}
-        <span className="min-w-0 flex-1 text-sm text-text" data-testid="team-area-org-info-team-name" data-variant={id}>{teamLabel(id)}</span>
-        {(leader.available === false || runtime?.available === false) && <span className="text-xs text-danger" data-testid="team-area-org-info-team-unavailable" data-variant={id}>{t('chat.teamSelect.unavailable')}</span>}
-        <span className="text-xs tabular-nums text-text-muted">{ownTasks.length} {t('team.org.taskPool')}</span>
-      </summary>
-      <div className="organization-tree__fields">
-        <InfoRow label={t('team.org.leadMember')} value={leader.leader_member_name || leader.leader_id || runtime?.leader_id} />
-        <InfoRow label={t('team.org.capabilities')} value={(leader.capabilities?.length ? leader.capabilities : runtime?.capabilities)?.join(' · ')} />
-        <InfoRow label={t('team.org.executionModel')} value={runtime?.execution_model_name} />
-        <InfoRow label={t('team.org.taskTitle')} value={ownTasks.map((task) => task.title || task.task_id).join('\n')} />
-        <InfoRow label={t('team.org.taskTeam')} value={leader.team_id} />
-      </div>
-    </details>;
-  };
-  if (!enabled || !sessionId) return null;
+  const runtimeTeamById = useMemo(
+    () => new Map((runtimeTeams ?? []).map((team) => [team.team_id, team])),
+    [runtimeTeams],
+  );
+
+  const ownerTeam = organization?.owner_team_id ? runtimeTeamById.get(organization.owner_team_id) : undefined;
+  const ownerName = resolveOrganizationTeamLabel(ownerTeam, groups, organization?.owner_team_id || '-');
+
+  if (!organizationUiEnabled || !activeSessionId) return null;
+
   return (
-    <div className={clsx('flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-card', className)} data-testid="team-area-org-info-panel">
-      <div className="organization-tree min-h-0 flex-1 overflow-y-auto px-6 pb-6" data-testid="team-area-org-info-body" key={`${sessionId}:${organization?.organization_id ?? ''}`}>
-        {(loading || noTeam) && !snapshot && !error && <div className="py-6 text-center text-xs text-text-muted"
-          data-testid="team-area-org-info-status" data-variant={noTeam ? 'no-team' : 'loading'}>{t(noTeam ? 'team.org.noTeam' : 'team.org.loading')}</div>}
-        {!organization && snapshot && !loading && !error && <div className="py-6 text-center text-xs text-text-muted" data-testid="team-area-org-info-empty">{t('team.org.empty')}</div>}
-        {error && <div className="my-3 rounded border border-danger/30 bg-danger-subtle p-2 text-xs text-danger" data-testid="team-area-org-info-error">{error}</div>}
-        {snapshot && <>
-          <section data-testid="team-area-org-info-task-pool">
-            <div className="my-6 flex h-8 items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold leading-5 text-text-strong" data-testid="team-area-org-task-heading">{t('team.org.taskTree')}</h2>
-              <span className="text-xs tabular-nums text-text-muted" data-testid="team-area-org-task-count">{t('team.org.treeProgress', {
-                completed: (tasks ?? []).filter((task) => task.status?.toUpperCase() === 'COMPLETED').length, total: tasks?.length ?? 0,
-              })}</span>
-            </div>
-            {forest.length ? <div className="space-y-3">{forest.map((node) => <TaskNode key={node.key} node={node} teamLabel={teamLabel} teamAvatar={teamAvatar} taskLabel={taskLabel} root />)}</div>
-              : <div className="py-6 text-center text-xs text-text-muted" data-testid="team-area-org-info-task-pool-empty"><FileText size={24} className="mx-auto mb-2" aria-hidden="true" />{t('team.org.taskPoolEmpty')}</div>}
+    <div
+      className={clsx('flex h-full min-h-0 flex-col overflow-hidden bg-card', className)}
+      data-testid="team-area-org-info-panel"
+    >
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium text-text" data-testid="team-area-org-info-title">
+            {t('team.org.title')}
+          </div>
+          <div className="truncate text-xs text-text-muted" data-testid="team-area-org-info-org-name">
+            {organization?.display_name?.trim() ||
+              organization?.organization_id ||
+              (error
+                ? t('team.org.loadFailed')
+                : loading
+                  ? t('team.org.loading')
+                  : noTeam
+                    ? t('team.org.noTeam')
+                    : snapshot
+                      ? t('team.org.noOrganization')
+                      : t('team.org.loading'))}
+          </div>
+        </div>
+        <button
+          type="button"
+          className="shrink-0 rounded p-1.5 text-text-muted hover:bg-secondary hover:text-text disabled:opacity-50"
+          data-testid="team-area-org-info-refresh"
+          title={t('team.org.refresh')}
+          disabled={loading}
+          onClick={() => void refresh()}
+        >
+          <RefreshCw size={13} className={loading ? 'animate-spin' : undefined} />
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" data-testid="team-area-org-info-body">
+        {(loading || noTeam) && !snapshot && !error && (
+          <div
+            className="py-6 text-center text-xs text-text-muted"
+            data-testid="team-area-org-info-status"
+            data-variant={noTeam ? 'no-team' : 'loading'}
+          >
+            {t(noTeam ? 'team.org.noTeam' : 'team.org.loading')}
+          </div>
+        )}
+        {!organization && snapshot && !loading && !error && (
+          <div className="py-6 text-center text-xs text-text-muted" data-testid="team-area-org-info-empty">
+            {t('team.org.empty')}
+          </div>
+        )}
+
+        {error && (
+          <div
+            className="mb-3 rounded border border-danger/30 bg-danger-subtle px-2 py-1.5 text-xs text-danger"
+            data-testid="team-area-org-info-error"
+          >
+            {error}
+          </div>
+        )}
+
+        {organization && (
+          <section className="mb-4 space-y-1.5" data-testid="team-area-org-info-organization">
+            <InfoRow label={t('team.org.organizationId')} value={organization.organization_id} />
+            <InfoRow label={t('team.org.displayName')} value={organization.display_name} />
+            <InfoRow
+              label={t('team.org.ownerTeam')}
+              value={ownerName}
+              title={organization.owner_team_id || undefined}
+              testId="team-area-org-info-owner-team"
+            />
+            {organization.description?.trim() && (
+              <div className="pt-1 text-xs leading-relaxed text-text-muted">{organization.description.trim()}</div>
+            )}
+
+            {(organization.leaders?.length ?? 0) > 0 && (
+              <div className="pt-2" data-testid="team-area-org-info-teams">
+                <div className="mb-1.5 text-xs font-medium text-text-muted">{t('team.org.teams')}</div>
+                <div className="space-y-1">
+                  {organization.leaders!.map((team, index) => {
+                    const runtimeTeam = team.team_id ? runtimeTeamById.get(team.team_id) : undefined;
+                    const teamId = team.team_id || runtimeTeam?.team_name?.trim() || '-';
+                    const identity = resolveOrganizationTeamIdentity(runtimeTeam, groups);
+                    const teamName = resolveOrganizationTeamLabel(runtimeTeam, groups, teamId);
+                    const capabilities = team.capabilities?.length
+                      ? team.capabilities
+                      : (runtimeTeam?.capabilities ?? []);
+                    return (
+                      <div
+                        key={team.team_id ?? index}
+                        className="rounded border border-border bg-secondary/40 px-2 py-1.5"
+                        data-testid="team-area-org-info-team-row"
+                      >
+                        <div className="flex items-center gap-2 text-xs font-medium text-text" title={teamName}>
+                          {identity?.avatarUrl && (
+                            <img
+                              src={identity.avatarUrl}
+                              alt=""
+                              className="h-5 w-5 shrink-0 rounded object-contain"
+                              data-testid="team-area-org-info-team-avatar"
+                              data-variant={teamId}
+                            />
+                          )}
+                          <span className="truncate" data-testid="team-area-org-info-team-name" data-variant={teamId}>
+                            {teamName}
+                          </span>
+                        </div>
+                        {teamName !== teamId && (
+                          <div className="truncate text-[10px] text-text-muted" title={teamId}>
+                            {teamId}
+                          </div>
+                        )}
+                        {capabilities.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {capabilities.map((capability) => (
+                              <span
+                                key={capability}
+                                className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-text-muted"
+                              >
+                                {capability}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </section>
           <section className="mt-6" data-testid="team-area-org-info-pending-reviews">
             <h3 className="mb-2 flex items-center gap-2 text-xs font-medium text-text-muted" data-testid="team-area-org-review-heading"><Clock3 size={14} aria-hidden="true" />{t('team.org.pendingReviews')}<span>{reviews.length}</span></h3>

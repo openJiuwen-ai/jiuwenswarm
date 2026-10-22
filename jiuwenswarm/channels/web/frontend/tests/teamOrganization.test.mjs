@@ -1344,59 +1344,6 @@ test('historical database names render in both the organization panel and select
   );
 });
 
-for (const { ownerIdentity, catalogAvailable } of [
-  ...groupIdentities,
-  { id: 'custom-asset', name: 'custom-package', displayName: 'Custom research team', avatarUrl: 'http://localhost/custom.png' },
-].flatMap((ownerIdentity) => [true, false].map((catalogAvailable) => ({ ownerIdentity, catalogAvailable })))) {
-  test(`owner identity renders independently of the group catalog, package=${ownerIdentity.name}, available=${catalogAvailable}`, async () => {
-    const identities = [ownerIdentity, ...groupIdentities.filter((group) => group.name !== ownerIdentity.name)];
-    const teams = organizationTeams.teams.map((team, index) => ({
-      ...team,
-      agent_group_name: identities[index].name,
-      display_name: '团队领导',
-      team_group_identity: {
-        id: identities[index].id,
-        name: identities[index].name,
-        display_name: identities[index].displayName,
-        avatar: identities[index].avatarUrl,
-      },
-    }));
-    await withOrganizationPanel(
-      (method, params) => {
-        if (method === 'team.list') return { teams, default_team_id: 'owner' };
-        if (method === 'agent_groups.list') {
-          if (!catalogAvailable) {
-            throw Object.assign(new Error('AgentServer response exceeds WebSocket send budget'), {
-              code: 'response_too_large',
-            });
-          }
-          return { agentGroups: [] };
-        }
-        if (method === 'org.snapshot') return {
-          organization: { ...boundSnapshot.organization, owner_team_id: 'owner', leaders: teams }, tasks: [],
-        };
-        return { team_id: params.team_id, members: [], tasks: [] };
-      },
-      async () => {
-        assert.equal(
-          document.querySelector('[data-testid="team-area-org-info-owner-team"]').lastElementChild.textContent,
-          ownerIdentity.displayName,
-        );
-        for (const [index, team] of teams.entries()) {
-          assert.equal(
-            document.querySelector(`[data-testid="team-area-org-info-team-name"][data-variant="${team.team_id}"]`).textContent,
-            identities[index].displayName,
-          );
-          assert.equal(
-            document.querySelector(`[data-testid="team-area-org-info-team-avatar"][data-variant="${team.team_id}"]`).getAttribute('src'),
-            identities[index].avatarUrl,
-          );
-        }
-      },
-    );
-  });
-}
-
 test('organization identity uses the selected Team package, preserving the session binding', () => {
   seed();
   useSessionStore.getState().setAgentGroupBinding('session', 'business-planning');
