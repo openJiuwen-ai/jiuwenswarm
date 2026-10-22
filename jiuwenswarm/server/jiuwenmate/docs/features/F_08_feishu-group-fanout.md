@@ -20,7 +20,7 @@
 
 JiuwenSwarm 已有飞书连接、事件解析和通用 `MessageHandler`。新版 AI 同事需要使用这些平台能力，但消息必须进入独立的 JiuwenMate 请求链：由实际接收事件的飞书应用 `app_id` 找到配置中的 `persistent_agent_id`，并映射为运行时绑定 `agent_id`，保留群聊上下文后交给 JM-03 持久受理。不能因为同一条群消息被多个 Bot 收到，就在全局按消息 ID 只保留一份；也不能让新版消息误进个人版的 AgentServer 路由。
 
-当前飞书入口在 `FeishuChannel._on_message` 中会跳过 `sender_type == "bot"` 的消息；这是个人版既有行为。新版还需要把其他 Agent 发出的消息交给 core 的群参与判断，因此接入时必须为新版绑定通道建立有边界的处理路径，而不是全局取消个人版的过滤。
+当前飞书入口在 `FeishuChannel._on_message` 中会跳过 `sender_type == "bot"` 的消息；这是个人版既有行为。新版需要归档其他 Agent 的公开发言，但普通 Bot 群消息不自动触发另一个 Agent；仅明确 @ 当前接收 Bot 或经校验的目标交接继续受理。因此接入时必须为新版绑定通道建立有边界的处理路径，而不是全局取消个人版的过滤。
 
 ### 2.2 目标与关键场景
 
@@ -28,8 +28,8 @@ JiuwenSwarm 已有飞书连接、事件解析和通用 `MessageHandler`。新版
 | --- | --- |
 | 新版已绑定的飞书应用收到群消息 | 以接收通道实例的 `app_id` 查绑定，定位唯一 namespace / Agent；群、发送者、正文、@、回复和附件引用按 core 契约传入 |
 | 同一飞书事件被平台重投 | 生成稳定的 `source_ref`；JM-03 按 `(namespace_id, agent_id, source_ref)` 幂等受理，同一 Agent 不产生第二条 Request |
-| 多个 Bot 收到同一群消息 | 每个 Bot 只把自己收到的事件交给自己绑定的 Agent；不同 Agent 各有独立 Request / Session，不用全局事件去重互相吞消息 |
-| 另一位 Agent 在群内发言 | 新版入口保留 `sender_kind="agent"` 并交给 core 判断；只有能可靠识别为当前接收 Bot 自己的回声时才抑制，避免自循环 |
+| 多个 Bot 收到同一群消息 | 每个 Bot 只处理自己收到的事件；符合触发条件的消息按 Agent 独立受理，不用全局事件去重互相吞消息 |
+| 另一位 Agent 在群内发言 | 保留 `sender_kind="agent"` 并归档；未明确 @ 当前接收 Bot 的普通消息不创建 Session / Request；明确 @ 或有效交接才继续，当前 Bot 自身回声仍不执行 |
 | 个人版飞书应用收到消息 | 沿用原有解析、Bot 消息过滤和 `MessageHandler` 路由；不进入 JiuwenMate 请求链 |
 | 新版 Agent 的飞书私聊 | 转成独立的 `direct_message` Request，不与群 Session 或个人版私聊混用 |
 
@@ -74,7 +74,7 @@ JiuwenSwarm 已有飞书连接、事件解析和通用 `MessageHandler`。新版
 
 ### 4.1 方案概览
 
-先按接收飞书应用身份判断是否属于新版绑定，再决定走 JiuwenMate 还是原有个人版路径。新版事件在进入个人版的 Bot 过滤和 `_user_messages` 队列前被识别；只有匹配唯一有效绑定的事件进入新路由。群聊中，绑定 Bot 被加入该群即视为允许该 Agent 接入；由飞书投递给该 Bot 的已校验群事件证明当前接入事实，不再检查独立群白名单。随后经 JM-03 的群映射定位 Session；私聊使用飞书私聊 `ConversationRef`。再从 JM-02 读取当前配置快照，构造 core `RequestInput`，经 JM-07 的 Scheduler 调用 JM-03 幂等保存并排队。
+先按接收飞书应用身份判断是否属于新版绑定，再决定走 JiuwenMate 还是原有个人版路径。新版事件在进入个人版的 Bot 过滤和 `_user_messages` 队列前被识别；只有匹配唯一有效绑定的事件进入新路由。群聊中，绑定 Bot 被加入该群即视为允许该 Agent 接入；由飞书投递给该 Bot 的已校验群事件证明当前接入事实，不再检查独立群白名单。群消息先归档，普通 Bot 未明确 @ 当前接收者时结束；其余消息通过既有回复模式等入站检查后，才经 JM-03 定位 Session 并由 JM-07 幂等受理。私聊使用飞书私聊 `ConversationRef`，沿用原流程。请求使用 JM-02 当前配置快照和标准化 core `RequestInput`。
 
 ```mermaid
 flowchart LR
@@ -84,7 +84,10 @@ flowchart LR
     N --> G{接收 Bot 已绑定且群事件通过飞书校验?}
     G -->|否| X[拒绝新版受理<br/>记录原因，不回落个人版]
     G -->|是| C[解析 ConversationRef<br/>JM-03 群映射 / 私聊键]
-    C --> R[JM-03 定位 Session<br/>JM-02 读取当前配置快照]
+    C --> A[群消息先归档<br/>私聊沿用原流程]
+    A --> M{群 Bot 消息且未明确 @ 当前接收者?}
+    M -->|是| H[结束，不创建 Session / Request]
+    M -->|否| R[JM-03 定位 Session<br/>JM-02 读取当前配置快照]
     R --> S[JM-07 Scheduler.accept]
     S --> D[JM-03 持久幂等受理<br/>namespace + agent + source_ref]
     D -->|新 Request| Q[排队 / 执行<br/>PA-07 判断群消息参与]
@@ -112,10 +115,11 @@ flowchart LR
 - 建议：对当前 `im.message.receive_v1` 事件使用稳定消息 ID 生成 `feishu:message:<message_id>`；不拼接接收 `app_id`，以便同一消息被多个 Bot 收到时仍有一致来源标识。若事件样本表明重投语义需要使用平台 event ID，应先与 JM-03 的 `RequestInput.source.message_id` 对齐后再调整。
 - 依据：JM-03 的唯一键为 `(namespace_id, agent_id, source_ref)`。不做全局 `(platform, message_id)` Request 去重；全局公开群记录的归档去重归 JM-11。
 
-#### D-04 保留 Agent 来源类型，只有可确认的自身回声才过滤
+#### D-04 保留 Agent 来源，普通 Bot 群消息只归档
 
-- 依据：计划 JM-08-V-03 要求人类与 Agent 消息都进入 core 判断；当前个人版“丢弃全部 Bot 消息”的规则不能直接沿用到新版。对其他 Agent 的消息，使用 `GroupMessage.sender_kind="agent"` 交由 PA-07 判断。
-- 结果：若事件中能可靠核对发送者 app 身份与接收绑定相同，则过滤自身回声；无法确认时按待决问题处理，不扩大过滤为所有 Bot 消息。
+- 依据：普通 Bot 公开回复若无条件触发其他 Agent，即使只是结束语也可能形成互相回复的循环。2026-10-22 确认以确定性入站规则取代原先所有 Bot 消息都交给 core 判断的规则；不改变群消息归档和人类消息的参与判断。
+- 结果：平台发送方类型 `bot`、`app`、`agent` 统一保留为 `sender_kind="agent"`。群消息归档后，若 `receiver_bot_mentioned=False`，立即返回已处理，不创建 Session / Request，不读取回复模式或调用参与判断。只有平台确认 @ 当前接收 Bot，或已投递且校验通过的目标交接，才继续走既有受理链。
+- 边界：正文手写 `@名称`、@ 其他 Bot、仅引用或回复另一位 Bot 都不算交接。有效交接复用 `continue_handoff` 的目标校验与 `receiver_bot_mentioned=True`，不增加字段或工具；重复平台消息仍按 Agent 幂等。能可靠核对发送方应用与接收绑定相同的自身回声即使带 @ 也不执行。私聊和个人版路径不变。
 
 #### D-05 只标准化和传递附件引用
 
@@ -201,9 +205,9 @@ Feishu 入站绑定校验成功后，JM-08 在调用 JM-07 受理 Request 时同
 
 1. 解析有效绑定并读取 JM-02 当前发布快照；同事不存在、已删除或无当前配置时拒绝受理。
 2. 对群消息核验 Feishu 事件与接收 Bot 绑定；Bot 收到该群事件即符合已确认的群接入规则。随后标准化群 / 私聊来源和 `RequestInput`，按上述契约构造 `AccessSnapshot`：私聊、群聊均授予 `workspace_read`，私聊保留 `workspace_knowledge_read`，不授予 `workspace_write`。该快照不决定群准入。
-3. 群聊通过 `GroupChatRepository.resolve(namespace_id, "feishu", chat_id, now=...)` 取得稳定 `group_chat_id`；随后由 JM-03 `ExecutionRepository.resolve_session` 按 namespace、Agent 和 `ConversationRef` 定位 Session。私聊直接使用飞书私聊 `ConversationRef`。
+3. 群聊通过 `GroupChatRepository.resolve(namespace_id, "feishu", chat_id, now=...)` 取得稳定 `group_chat_id` 并归档消息。普通 Bot 未明确 @ 当前接收者时到此结束；明确 @ 或有效目标交接继续。人类未明确 @ 时，再按 [JM-23](F_23_group-reply-mode.md) 检查被动模式、纯寒暄与点名等待。通过后才由 JM-03 `ExecutionRepository.resolve_session` 定位 Session；私聊直接使用飞书私聊 `ConversationRef`，不受群 Bot 门闩影响。自身 Bot 回声仍在 Session 定位前结束。
 4. 调用 JM-07 `AgentManager.scheduler.accept(session, snapshot=..., source_ref=..., access=..., request_input=..., received_at=...)`。该入口内部调用 JM-03 `accept_request`：数据库唯一约束是 Request 幂等的权威事实，`is_new=False` 表示来源已受理。
-5. 未被飞书明确 @ 时，先按 [JM-23](F_23_group-reply-mode.md) 决定是否受理：被动模式只保留归档，不创建 Request；没有具体内容的寒暄只受理一位自适应员工。通过后，新 Request 进入 JM-07 的 Session 排队与调度。是否回应由 PA-07 判断，并阅读 JM-23 附加的职责与轻量交流说明。决定回复且认定任务需要一定思考时间时，PA-07 把等待提示写入 `participation.decided.notice`，宿主按 JM-23 向该 Request 的渠道投递这一句，再继续正式回复。简单任务不写这句。飞书明确 @ 不经过该模式门闩，但仍进入 PA-07：必须回复，复杂任务同样附带等待提示。
+5. 新 Request 进入 JM-07 的 Session 排队与调度。是否回应由 PA-07 判断，并阅读 JM-23 附加的职责与轻量交流说明。决定回复且认定任务需要一定思考时间时，PA-07 把等待提示写入 `participation.decided.notice`，宿主按 JM-23 向该 Request 的渠道投递这一句，再继续正式回复。简单任务不写这句。飞书明确 @ 不经过回复模式门闩，但仍进入 PA-07：必须回复，复杂任务同样附带等待提示。
 
 并发与隔离不变量：
 
@@ -256,8 +260,8 @@ Feishu 入站绑定校验成功后，JM-08 在调用 JM-07 受理 Request 时同
 | 验证 ID | 场景 | 验证入口 | 预期结果 | 层级 |
 | --- | --- | --- | --- | --- |
 | JM-08-V-01 | `app_id` 绑定与消息字段映射 | `test_persistent_group_fanout.py`；构造群 / 私聊及含 @、回复、附件的 Feishu 事件 | 路由到绑定 Agent；RequestInput 类型、发送者、时间、正文、@、回复和附件引用与原事件一致 | 单测 + JM-02 / JM-03 / JM-07 组件集成 |
-| JM-08-V-02 | 重放、多 Bot 与群准入 | 以同一 `message_id` 经不同 Bot 绑定重复提交；并发重放同一 Agent 来源；未绑定 / 冲突 `app_id` 或未通过 Feishu 事件校验 | 同 Agent 只存在一条 Request；不同 Agent 各自有 Request；绑定 Bot 收到经校验的群事件即受理，不再检查额外群白名单；队列满重放行为符合 JM-07 确认后的语义 | 真实 SQLite、并发测试；绑定与事件校验用例；真机群补充验证 |
-| JM-08-V-03 | 人类 / Agent 来源及个人版回归 | 以 `sender_type=user`、其他 Bot、当前 Bot 自身回声、未绑定个人版 app 发送事件 | 人类与其他 Agent 消息到新版 core 决策入口；可确认自身回声不循环；个人版旧过滤及路由不变；任何事件不同时进入两条执行链 | 单测；真实飞书测试应用和测试群 |
+| JM-08-V-02 | 重放、多 Bot 与群准入 | 以同一 `message_id` 经不同 Bot 绑定重复提交；并发重放同一 Agent 来源；未绑定 / 冲突 `app_id` 或未通过 Feishu 事件校验 | 符合触发条件时同 Agent 只存在一条 Request，不同 Agent 独立受理；绑定 Bot 收到经校验的群事件即允许接入，不再检查额外群白名单；队列满重放行为符合 JM-07 确认后的语义 | 真实 SQLite、并发测试；绑定与事件校验用例；真机群补充验证 |
+| JM-08-V-03 | 人类 / Agent 来源及个人版回归 | 以 `sender_type=user`、其他 Bot、当前 Bot 自身回声、未绑定个人版 app 发送事件；覆盖明确 @、正文名称、引用回复与交接重投 | 人类消息沿用回复模式；普通 Bot 群消息保留归档但不创建 Session / Request；明确 @ 当前接收者或有效交接才继续且幂等；自身回声不执行；私聊、个人版旧过滤及路由不变 | 单测；真实飞书测试应用和测试群 |
 
 ### 8.2 实际执行与证据
 
@@ -270,6 +274,12 @@ Feishu 入站绑定校验成功后，JM-08 在调用 JM-07 受理 Request 时同
 | 2026-10-20 / 明确 @ 当前 Bot 映射 | Python 3.12.12；真实 SQLite JM-02/03/07、core 执行入口替身、Feishu SDK 事件与 bot 查询为替身 | `uv run pytest -W 'ignore:invalid escape sequence:SyntaxWarning' --no-cov -q -o log_cli=false --tb=short tests/unit_tests/gateway/test_persistent_group_fanout.py tests/unit_tests/server/jiuwenmate/test_feishu_group_production_wiring.py -k 'receiver_bot_mention or persistent_route_resolves_bot_open_id or mention_of_another_bot or payload_round_trip or bound_attachment_event'`；Ruff `--ignore E402,F821,F841` 检查改动 Python 文件 | 5 项 @ 映射 / 归档隔离相关测试通过；Ruff 检查通过。两测试文件全量运行 61 项通过、1 项失败：既有用例期待未发布同事返回 `REJECTED`，当前实现返回 `HANDLED`，本次未改该无关处理语义 | 未调用真实 Feishu API 或测试租户；未验证应用启动配置持久化到实际用户目录；全量测试中上述既有断言差异仍待单独处理 |
 
 2026-10-21 / JM-14 授权增量：`uv run pytest --no-cov -q -o log_cli=false --tb=short tests/unit_tests/server/jiuwenmate/test_feishu_group_production_wiring.py -k feishu_access_snapshot`，2 passed。验证 Feishu 私聊与群聊的 `startup_scope` / `source_scope` 均包含 `workspace_read` 且不包含 `workspace_write`，私聊仍保留 `workspace_knowledge_read`。这是自动化 scope 断言，不是 Feishu 真机联调或 JM-08 整体验收。
+
+2026-10-22 / 普通 Bot 群消息防循环：先补充测试，确认原实现会为未被 @ 的 Bot 消息创建 Session / Request（9 failed、10 passed），再在群消息归档后增加触发门闩。
+
+- 使用仓库现有 `.venv`，执行 `.\.venv\Scripts\python.exe -m pytest -q -o addopts='--asyncio-mode=auto --strict-markers --tb=short' -o log_cli=false tests/unit_tests/gateway/test_persistent_group_fanout.py tests/unit_tests/server/jiuwenmate/test_feishu_group_production_wiring.py tests/unit_tests/server/jiuwenmate/test_group_collaboration.py tests/unit_tests/server/jiuwenmate/test_thinking_notice.py tests/unit_tests/server/jiuwenmate/test_output_files.py tests/unit_tests/gateway/test_feishu_streaming_card.py tests/unit_tests/channel/test_feishu_upload.py -k 'not test_missing_published_configuration_rejects_before_group_or_session_creation'`，结果 **161 passed、1 deselected**。覆盖普通 Bot / app / agent 消息只归档、未知发送方 app、手写 @ / @ 其他 Bot / 引用回复不放行、明确 @、交接重投去重、人类回复模式、私聊、生产接线及卡片 / 文件回归。
+- 使用相同 pytest 参数，执行 `tests/unit_tests/gateway/test_message_handler_mode.py tests/unit_tests/channel/test_attachment_persist.py`，结果 **63 passed**，补验个人版模式路由和附件持久化。
+- 排除项为既有「未发布同事处置」断言差异（历史执行记录已列明）；单独重跑该用例仍为 1 failed，预期 `REJECTED`、实际 `HANDLED`，不属于本次 Bot 门闩修改。真实飞书未在本次验证；需重启服务后实测普通 Bot 回复不再触发另一位员工、明确 @ 和交接仍能继续。
 
 ### 8.3 验证结论
 
@@ -303,5 +313,6 @@ Feishu 入站绑定校验成功后，JM-08 在调用 JM-07 受理 Request 时同
 | 2026-10-20 | 修复明确 @ 当前接收 Bot 的身份映射：在 JM-08 入站回调前自动解析/加载 Bot `open_id`，将命中的 Feishu `open_id` 映射为当前绑定 Agent 的内部 ID，仅追加到本次 Request 来源；公共群归档保持平台原始 @ 标识 | Feishu `app_id` / `app_secret` 查询 Bot 信息；PA-07 明确 @ 的确定性 `respond` 契约；5 项定向测试通过。两测试文件全量 61 项通过，1 项未发布同事处置预期差异未在本次修改 |
 | 2026-10-21 | 群消息在受理前增加 JM-23 回复模式。被动且未被明确 @ 时不创建 Request；纯寒暄只受理一位自适应员工。第 5.4 节第 5 步改按该规则描述 | [F_23](F_23_group-reply-mode.md)；真实飞书仍待验收 |
 | 2026-10-21 | 同步 JM-14 工作空间授权规则：Feishu 私聊和群聊的 `startup_scope`、`source_scope` 均包含 `workspace_read`；私聊保留 `workspace_knowledge_read`；二者均不含 `workspace_write`。群准入仍只按绑定 Bot 收到经校验事件判断，未绑定个人版路由不变 | 已确认的工作空间目录与访问决策；实现与测试结果见本次变更及 F_14 |
+| 2026-10-22 | 普通 Bot 群消息归档后结束，不创建 Session / Request；仅明确 @ 当前接收者或有效目标交接继续；保留自身回声抑制、人类消息、私聊和个人版路径 | 用户确认的防互相回复规则；验证见第 8 节 |
 
 生产装配已接入；待使用真实 Feishu 测试应用和测试群确认事件身份字段、SDK 重投行为及 JM-09 文本回执。JM-08 不决定工作空间路径检查策略；Feishu `workspace_read` scope 按 F_14/JM-14 执行。群接入仍以绑定 Bot 收到经校验的群事件为准；PA-07 群执行、PA-08 文件投递和 PA-15 中途协作不属于 JM-08 闭环。

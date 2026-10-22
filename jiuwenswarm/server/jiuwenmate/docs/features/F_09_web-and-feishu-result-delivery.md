@@ -317,6 +317,8 @@ Persistent Agent 工作空间的最终文件源路径遵循 F_14/JM-14：Agent �
 
 解析必须 fail closed：不在当前群名单、多个同名候选、发送者自身、私聊、缺少 Bot `open_id` 或无有效群绑定时不构造原生 @；不根据近似匹配猜测目标。消息仍按 JM-09 原有 app / chat / source-message 快照发送并回 ACK。目标 Bot 收到群消息后按 JM-08 事件归档、@ 映射及 PA-07 自身响应路径继续执行，随后可用同一机制接力给下一位动态成员。目标不可用时由飞书发送或目标入站链路体现失败，不由后台绕过消息再次调用。
 
+普通 Bot 公开消息只归档，不自动触发其他 Agent。只有飞书原生 @ 当前目标 Bot，或 `continue_handoff` 校验已投递消息及指定接收者后构造的明确 @ 事件，才继续 JM-08 受理；引用回复、正文提及名称不等于交接。交接重投仍按目标 Agent 与平台消息 ID 幂等，不为普通结束语新增后台调用。
+
 #### 旧版实现取舍
 
 旧版参考仓 `C:\yzj\files\cyc_jiuwenswarm\jiuwenswarm\server\runtime\persistent_agents` 中的 `execution_result_handler.py`、`conversation_archive.py`、`agent_manager.py`、`group_collaboration_tools.py` 及 Gateway 文件 ACK 路径，结论如下：
