@@ -472,6 +472,54 @@ test('persisted Hub MCP rejection shows a package error in both languages withou
   await act(async () => i18next.changeLanguage('en'));
 });
 
+test('signing out clears the stored Hub authorization and returns to the sign-in state', async () => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'sign-out-token');
+  sessionStorage.setItem('marketplace_oauth_provider', 'gitcode');
+  sessionStorage.setItem(
+    'marketplace_oauth_user',
+    JSON.stringify({ id: 'user-1', name: 'Alice', login: 'alice', avatar_url: '', is_market_moderation_admin: false }),
+  );
+  assetPublishApi.describe = async () => description;
+  const originalConfirm = dom.window.confirm;
+  dom.window.confirm = () => true;
+  await act(async () => root.render(React.createElement(AssetPublishHost)));
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'sign-out-demo' }));
+  await tick();
+
+  assert.ok(find('asset-publish-account-card'));
+  await act(async () => find('asset-publish-sign-out').click());
+  await tick();
+
+  assert.equal(sessionStorage.getItem('marketplace_oauth_access_token'), null);
+  assert.equal(sessionStorage.getItem('marketplace_oauth_provider'), null);
+  assert.equal(sessionStorage.getItem('marketplace_oauth_user'), null);
+  assert.equal(find('asset-publish-account-card'), null);
+  assert.ok(find('asset-publish-login'));
+
+  dom.window.confirm = originalConfirm;
+  await act(async () => find('asset-publish-close').click());
+});
+test('cancelling sign-out keeps the stored Hub authorization', async () => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'keep-token');
+  sessionStorage.setItem('marketplace_oauth_provider', 'github');
+  assetPublishApi.describe = async () => description;
+  const originalConfirm = dom.window.confirm;
+  dom.window.confirm = () => false;
+  await act(async () => root.render(React.createElement(AssetPublishHost)));
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'keep-demo' }));
+  await tick();
+
+  await act(async () => find('asset-publish-sign-out').click());
+  await tick();
+
+  assert.equal(sessionStorage.getItem('marketplace_oauth_access_token'), 'keep-token');
+  assert.ok(find('asset-publish-account-card'));
+
+  dom.window.confirm = originalConfirm;
+  await act(async () => find('asset-publish-close').click());
+  sessionStorage.removeItem('marketplace_oauth_access_token');
+  sessionStorage.removeItem('marketplace_oauth_provider');
+});
 test('OAuth restore contains metadata and does not auto prepare or commit', async () => {
   assetPublishApi.describe = async () => description;
   let called = 0;

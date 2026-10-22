@@ -55,6 +55,17 @@ export function getStoredOAuthUser(): OAuthUser | null {
   }
 }
 
+/** Clear the stored Hub authorization used by the publishing drawer. */
+export function clearHubOAuthSession(): void {
+  try {
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(PROVIDER_KEY);
+    sessionStorage.removeItem(USER_KEY);
+  } catch {
+    // sessionStorage unavailable: nothing to clear
+  }
+}
+
 export async function beginHubOAuth(provider: OAuthProvider): Promise<HubOAuthAttempt> {
   const response = await fetch('/marketplace-oauth/hub/start', {
     method: 'POST',
