@@ -1,6 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import build_code_system_prompt
+from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
+    build_code_system_prompt,
+)
 from jiuwenswarm.agents.harness.code.prompt.code_todo_tool_prompts import (
     CODE_TODO_CREATE_DESCRIPTION_EN,
     CODE_TODO_MODIFY_DESCRIPTION_EN,
@@ -34,8 +36,10 @@ def test_todo_create_schema_describes_outcome_milestones():
 def test_code_system_prompt_has_task_planning_section():
     text = build_code_system_prompt()
     assert "## Task planning (todos)" in text
-    assert "2–3 outcome-based milestones" in text
-    assert "4–6 milestones max" in text
+    # Sizing rules (2–3 / 4–6 milestones, when to skip) live in the todo_create
+    # tool description only; the prompt defers to it instead of repeating them.
+    assert "todo_create tool description says when to skip" in text
+    assert "2–3 outcome-based milestones" not in text
     assert "avoid todo-only rounds" in text
     assert "don't batch" not in text.lower()
 

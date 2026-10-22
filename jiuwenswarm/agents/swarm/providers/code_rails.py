@@ -52,6 +52,10 @@ CODE_CODING_MEMORY = "swarm.code_coding_memory"
 CODE_AGENT_MODE = "swarm.code_agent_mode"
 TEAM_PLAN_APPROVAL = "swarm.team_plan_approval"
 STRUCTURED_ASK_USER = "swarm.structured_ask_user"
+IMPLEMENT_COMPLETENESS = "swarm.implement_completeness"
+CODE_COMPLETION_GATE = "swarm.code_completion_gate"
+REPO_MAP = "swarm.repo_map"
+CODE_READ_RESTORE = "swarm.code_read_restore"
 CODE_TASK_PLANNING = "swarm.code_task_planning"
 CODE_AGENT_RAIL = "swarm.code_agent_rail"
 USER_HOOKS = "swarm.user_hooks"
@@ -436,9 +440,7 @@ def build_code_agent_mode(params: dict[str, Any], ctx: SwarmBuildContext) -> Any
         )
 
         exit_notification = (
-            _TEAM_PLAN_EXIT_NOTIFICATION_EN
-            if _is_team_plan_leader(ctx)
-            else None
+            _TEAM_PLAN_EXIT_NOTIFICATION_EN if _is_team_plan_leader(ctx) else None
         )
         return CodeAgentModeRail(
             allowed_tools=list(_CODE_PLAN_ALLOWED_TOOLS),
@@ -498,6 +500,100 @@ def build_structured_ask_user(params: dict[str, Any], ctx: SwarmBuildContext) ->
         return StructuredAskUserRail(language=inp.language)
     except Exception as exc:
         logger.warning("[swarm.structured_ask_user] create failed: %s", exc)
+        return None
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=IMPLEMENT_COMPLETENESS,
+    description="Evidence-backed code mutation and verification completeness rail.",
+)
+def build_implement_completeness(
+    params: dict[str, Any],
+    ctx: SwarmBuildContext,
+) -> Any:
+    try:
+        from jiuwenswarm.agents.harness.code.rails import ImplementCompletenessRail
+
+        return ImplementCompletenessRail()
+    except Exception as exc:
+        logger.warning("[swarm.implement_completeness] create failed: %s", exc)
+        return None
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=CODE_COMPLETION_GATE,
+    description="Continue Code turns until mutation and verification evidence is complete.",
+)
+def build_code_completion_gate(
+    params: dict[str, Any],
+    ctx: SwarmBuildContext,
+) -> Any:
+    try:
+        from jiuwenswarm.agents.harness.code.rails import CodeCompletionGateRail
+
+        return CodeCompletionGateRail()
+    except Exception as exc:
+        logger.warning("[swarm.code_completion_gate] create failed: %s", exc)
+        return None
+
+
+class RepoMapInput(ConstructionInput):
+    """Construction inputs for the session repo map rail."""
+
+    enabled: bool = param_field(default=True, description="modes.code.repo_map.enabled")
+    depth: int = param_field(default=2, description="Directory tree depth (1-4).")
+    max_chars: int = param_field(default=6000, description="Upper bound of the injected text.")
+    ignored_dirs: list[str] | None = param_field(
+        default=None,
+        description="modes.code.repo_tools.ignored_dirs, pruned from the map (None = built-in list).",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=REPO_MAP,
+    description="Inject one bounded repository map into the Code-mode system prompt per workspace.",
+    input_model=RepoMapInput,
+)
+def build_repo_map_rail(
+    params: dict[str, Any],
+    ctx: SwarmBuildContext,
+) -> Any:
+    """Build the RepoMapRail from ``modes.code.repo_map`` (None when disabled)."""
+    inp = RepoMapInput.resolve(params, ctx)
+    if not inp.enabled:
+        return None
+    try:
+        from jiuwenswarm.agents.harness.code.repo_tools import RepoMapRail
+        from jiuwenswarm.agents.swarm.providers.tools import _repo_read_policy_factory
+
+        return RepoMapRail(
+            depth=inp.depth,
+            max_chars=inp.max_chars,
+            ignored_dirs=inp.ignored_dirs,
+            read_policy_factory=_repo_read_policy_factory(ctx),
+        )
+    except Exception as exc:  # noqa: BLE001 - a rail must never abort assembly
+        logger.warning("[swarm.repo_map] create failed: %s", exc)
+        return None
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=CODE_READ_RESTORE,
+    description="Re-register reads a Code session made in an earlier process before an edit.",
+)
+def build_code_read_restore(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
+    """Build ReadRestoreRail; reads ``modes.code.read_restore`` from the build config."""
+    try:
+        from jiuwenswarm.agents.harness.code.rails import ReadRestoreRail
+
+        config = dict(ctx.config or {})
+        return ReadRestoreRail(config_getter=lambda: config)
+    except Exception as exc:  # noqa: BLE001 - same contract as the sibling builders
+        logger.warning("[swarm.code_read_restore] create failed: %s", exc)
         return None
 
 
@@ -587,6 +683,10 @@ __all__ = [
     "CODE_AGENT_MODE",
     "TEAM_PLAN_APPROVAL",
     "STRUCTURED_ASK_USER",
+    "IMPLEMENT_COMPLETENESS",
+    "CODE_COMPLETION_GATE",
+    "REPO_MAP",
+    "CODE_READ_RESTORE",
     "CODE_TASK_PLANNING",
     "CODE_AGENT_RAIL",
     "USER_HOOKS",

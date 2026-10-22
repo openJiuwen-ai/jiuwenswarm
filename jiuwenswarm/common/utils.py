@@ -953,6 +953,33 @@ def ensure_config_migrated_from_template(
     return True
 
 
+def ensure_new_code_tools_offered(
+    workspace_dir: Path | None = None,
+) -> list[str]:
+    """为已有 config.yaml 的 ``modes.code.tools`` 补充新的默认 Code 工具（每个只补一次）。
+
+    模板合并只补缺失的键、从不扩展用户已有的列表，因此新加入模板的 Code 工具
+    到不了已有安装。本函数每次启动调用，不受 config_version 短路影响；
+    用户删除过的工具不会再被加回。任何错误只记日志，不影响启动。
+
+    Appends new default Code tools (see
+    ``jiuwenswarm.common.config.CODE_TOOLS_INTRODUCED_SINCE_TEMPLATE``) to an
+    existing ``modes.code.tools`` list once each. Never raises.
+
+    Returns:
+        The tool names appended (empty when none or on error).
+    """
+    root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
+    config_path = root / "config" / "config.yaml"
+    try:
+        from jiuwenswarm.common.config import offer_new_code_tools
+
+        return offer_new_code_tools(_find_config_template_path(), config_path)
+    except Exception as e:  # noqa: BLE001 - startup must not fail on this step
+        logger.warning(f"跳过新增 Code 工具补充 / skipped new Code tools step: {e}")
+        return []
+
+
 def cleanup_team_files(workspace_dir: Path) -> None:
     """清理 Team 旧版本遗留的文件和目录.
 
@@ -1571,6 +1598,7 @@ def prepare_runtime_workspace(
 
     if migrate_config:
         ensure_config_migrated_from_template(workspace_dir)
+        ensure_new_code_tools_offered(workspace_dir)
     ensure_default_builtin_skills()
 
 

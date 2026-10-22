@@ -3242,6 +3242,7 @@ nohup {q_executable} >/dev/null 2>&1 &
                 logger.info("[desktop] cleared webview cache: %s", cache_dir)
 
     def run(self, window_title: str, width: int, height: int, debug: bool) -> None:
+        _apply_macos_dev_dock_branding()
         self._clear_wkwebview_system_cache()
 
         storage_path = get_user_workspace_dir() / "tmp" / "webview"
@@ -3706,6 +3707,40 @@ def _setup_tui_path() -> None:
         logger.info("[desktop] added TUI to PATH in ~/.zshrc")
     except OSError as exc:
         logger.warning("[desktop] failed to update ~/.zshrc: %s", exc)
+
+
+def _apply_macos_dev_dock_branding() -> None:
+    """Give a source (non-frozen) run the product icon and name in the macOS Dock.
+
+    When launched from a venv, macOS shows the interpreter's empty icon and
+    the name ``python3``. The packaged .app gets both from its bundle; here we
+    set them at runtime through AppKit. Best effort: never raises.
+    """
+    if sys.platform != "darwin" or getattr(sys, "frozen", False):
+        return
+    try:
+        from AppKit import NSApplication, NSImage
+        from Foundation import NSBundle
+
+        app = NSApplication.sharedApplication()
+        pkg_dir = Path(__file__).resolve().parent
+        for candidate in (
+            pkg_dir.parent / "web" / "frontend" / "dist" / "logo.icns",
+            pkg_dir.parent / "web" / "frontend" / "public" / "logo.icns",
+        ):
+            if candidate.is_file():
+                image = NSImage.alloc().initWithContentsOfFile_(str(candidate))
+                if image is not None:
+                    app.setApplicationIconImage_(image)
+                break
+        bundle = NSBundle.mainBundle()
+        info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+        if info is not None:
+            info["CFBundleName"] = DISPLAY_NAME
+            info["CFBundleDisplayName"] = DISPLAY_NAME
+        logger.info("[desktop] applied dev-run Dock branding (%s)", DISPLAY_NAME)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[desktop] dev-run Dock branding skipped: %s", exc)
 
 
 def main() -> None:

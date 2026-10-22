@@ -327,7 +327,7 @@ execution_guard:
     repeat_min_total_chars: 160
     repeat_window_chars: 1024
     single_char_repeat_count: 90
-    # 连续相同工具名+入参+返回值时，折叠重复轮次；第 N 次命中时兜底中止
+    # 连续相同工具名+入参（不比较返回值）时，折叠重复轮次；第 N 次命中时兜底中止
     tool_loop_compact:
       enabled: true
       consecutive_threshold: 4
@@ -492,6 +492,9 @@ permissions:
 
   tools:
     bash: allow
+    # run_tests 在宿主机上执行项目代码（测试），风险同本地 bash；沙箱模式下不注册；严格部署请设为 ask
+    # run_tests executes project code on the host, like local bash; not registered in sandbox mode; set to ask in strict deployments
+    run_tests: allow
     powershell: allow
     mcp_exec_command: allow
     create_terminal: allow
@@ -833,12 +836,31 @@ modes:
     rails:
     tools:
   code:
+    # 编码执行策略（移植自 iCode）— 详见 docs/zh/编码执行策略.md、docs/en/CodingPolicy.md
+    # enabled: 通用规则（扩展结构体只增不删、探针机械判定、不重复跑已通过的套件、
+    #          规范值从仓库推导、parser 非法输入矩阵、不为掩盖无关失败改测试配置），默认开
+    # headless: 无人值守规则（整条消息即任务、不凭记忆复刻上游修复、执行交付命令、
+    #           CLI 空结果仍输出合法格式、monorepo 跑消费方测试），默认关；
+    #           无头评测用 --set modes.code.policy.headless=true 开启
+    # 空失败诊断（移植自 iCode）：工具失败且无错误文本/输出时改写为带工具名和下一步建议的提示；默认开启
+    # 编码遥测 — CodeTelemetryRail（见 docs/zh/编码遥测.md、docs/en/CodeTelemetry.md）
+    # 每次模型调用 / 工具调用写一条紧凑记录到 <logs>/code_telemetry.jsonl（按大小轮转）
+    # stream_events: auto = 仅 process CLI（--run-jsonl）通道发送 telemetry.* 事件；true/false 强制
+    # 读取状态恢复（ReadRestoreRail）：agent-core 要求同一进程内先 read_file 才能 edit_file/write_file。
+    # 会话在新进程中继续（无头驱动的每轮续跑、AgentServer/桌面端重启后恢复会话）时，
+    # 若本会话此前读过/改过该文件且文件内容未变，则在编辑前通过 agent 自己的 read_file 重新登记读取；
+    # 文件已变、会话从未读过、或读取策略拒绝/需询问时不恢复。记录保存在 agent 数据目录，不写入项目。
+    # Read restore: re-register a read this session made in an earlier process when the file is unchanged.
+    read_restore:
+      enabled: true
+
     # 动态 Rails — 列表中出现的 = 启用；不出现的 = 不启用
     # 固定 Rails（以下 Rails 已在代码中固定挂载，无需在此配置）：
     #   RuntimePromptRail, ResponsePromptRail, JiuSwarmStreamEventRail, SecurityRail,
     #   PermissionInterruptRail, SysOperationRail(FileSystemRail), LspRail,
     #   ProjectMemoryRail, CodingMemoryRail, AgentModeRail, StructuredAskUserRail,
     #   ConfirmInterruptRail, ContextProcessorRail
+
     rails:
       - FileSystemRail
       - SkillUseRail
@@ -851,6 +873,67 @@ modes:
       - web_fetch_webpage
       - web_paid_search
       - user_todos
+      - run_tests
+      - code_search
+      - find_symbol
+      - symbol_outline
+
+    # run_tests 工具（验证闭环）：在 tools 中列出 run_tests 即启用；结果计入实现门控的验证证据。
+    # run_tests tool (verification loop): enabled by listing run_tests under tools;
+    # its results count as verification evidence for the implementation gate.
+    run_tests:
+      timeout: 600               # 单次运行超时（秒）/ per-run timeout, seconds
+      max_summary_chars: 6000    # 返回给模型的摘要上限（约 1.5k token）/ summary cap shown to the model
+      spill: true                # 完整输出写入 agent workspace 下的 run_tests/ / full output to <agent workspace>/run_tests/
+      spill_dir: ""              # 为空时使用默认位置（Code 模式沙箱可读）/ empty = default, readable in the Code sandbox
+      spill_max_bytes: 52428800  # 单个文件与目录上限，超出删除最旧文件；0 = 不限 / per-file and directory cap, oldest deleted first; 0 = none
+      # 解释器：<项目>/.venv → <项目>/venv → $VIRTUAL_ENV → PATH；可在此指定 / interpreter order, or set a path here
+      python: ""
+      # 改动文件未映射到测试时是否跑全量；false 时返回 no_tests 并提示显式传 tests / whole-suite fallback when nothing maps
+      fallback_whole_suite: false
+      # 是否把 PYTEST_ADDOPTS / NODE_OPTIONS / GOFLAGS / RUSTC_WRAPPER 等运行器变量传给测试进程 / pass runner option variables through
+      inherit_runner_env: false
+
+    # 仓库感知工具（docs/zh/仓库感知工具.md）。开关 = 是否出现在上面的 tools 列表中；
+    # 这里只放调优参数。
+    repo_tools:
+      code_search:
+        max_results: 40          # 单次调用返回的匹配上限（1–200）
+        context: 3               # 每个匹配前后各带几行上下文（0–10）
+        rg_path: null            # 指定 ripgrep 路径；null = 用 OPENJIUWEN_RG / 内置 / PATH
+      symbols:
+        max_results: 20          # find_symbol 每一节（定义/引用）返回的上限
+        max_outline_symbols: 200 # symbol_outline 列出的符号上限
+        lsp_timeout: 10.0        # 探测/调用语言服务器的超时（秒），超时即退回正则启发式
+      # 在任意深度都跳过的目录名（三个工具与仓库地图共用）。默认只含版本控制与缓存目录；
+      # dist/build/target/logs 等构建产物交给 .gitignore（无 .git 时同样生效），
+      # 因为真实项目会用这些名字放源码。写成完整列表即覆盖默认值。
+      ignored_dirs:
+        - .git
+        - .hg
+        - .svn
+        - .jj
+        - node_modules
+        - __pycache__
+        - .venv
+        - venv
+        - .tox
+        - .nox
+        - .mypy_cache
+        - .pytest_cache
+        - .ruff_cache
+        - .next
+        - .cache
+        - .idea
+        - .vscode
+        - .jiuwenswarm
+
+    # 会话级仓库地图（docs/zh/仓库感知工具.md）：首次模型调用前注入一次「目录树 + 包 +
+    # 测试目录 + 检测到的构建/测试命令」，之后保持不变；工作区切换时重建。
+    repo_map:
+      enabled: true
+      depth: 2                   # 目录树深度（1–4）
+      max_chars: 6000            # 注入文本上限（字符，约 1.5k token）
 
     embedding_config:
       model_name:
@@ -912,3 +995,10 @@ modes:
         shared_memory: true
         member_memory_prompt_mode: "proactive"
         timezone_offset_hours: 8.0
+
+# 用户 hooks（详见主配置 config.yaml 的 hooks 段与 docs/zh/用户钩子.md）
+hooks:
+  disable_all_hooks: false
+  max_output_chars: 4000
+  scrub_secret_env: true
+  env_passthrough: []

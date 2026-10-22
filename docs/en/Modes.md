@@ -198,6 +198,17 @@ modes:
 | `modes.code.embedding_config` | Code-mode-specific embedding config (empty = use global) |
 | `modes.team.<name>` | Team mode definition: team name, lifecycle, leader/agents config |
 
+#### New default Code tools in an existing config
+
+Upgrading merges new template keys into your `config.yaml`, but it never extends a list you already have. So a tool added to the template's `modes.code.tools` would not reach an existing install. On every start, jiuwenswarm therefore appends each new default Code tool to your existing `modes.code.tools` once:
+
+- Only tools that the shipped template itself lists are added. If the project removes a tool from the template default, it is not added.
+- Each tool is added at most once. The record is kept in `.code_tools_offered.json` next to `config.yaml`. If you remove a tool from `modes.code.tools`, it stays removed.
+- If your config has no `modes.code.tools` list, nothing is added. The normal template merge handles a missing key.
+- The log shows each addition, with the file to edit to opt out.
+
+The tools this covers are listed in `CODE_TOOLS_INTRODUCED_SINCE_TEMPLATE` in `jiuwenswarm/common/config.py`: `git_prepare`, `code_search`, `find_symbol`, `symbol_outline`, `run_tests`. Opt-in tools such as `git_publish` and `git_review` are never added. Delete `.code_tools_offered.json` to have the tools offered again.
+
 ### Channel Default Mode
 
 Each channel can specify a default mode via `channels.<channel>.default_mode` in `config.yaml`:

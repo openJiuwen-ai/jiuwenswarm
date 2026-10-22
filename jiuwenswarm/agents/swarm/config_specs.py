@@ -39,7 +39,6 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
 from openjiuwen.agent_teams.agent.scheduling.reviewer_spec import build_reviewer_agent_spec
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
 from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
-from openjiuwen.core.kv_cache import KVCacheAffinityConfig
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.prompts import resolve_language
@@ -170,6 +169,10 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.STRUCTURED_ASK_USER,
     registry.CONTEXT_PROCESSOR,
     registry.PERSONAL_CONTEXT,
+    registry.IMPLEMENT_COMPLETENESS,
+    registry.CODE_COMPLETION_GATE,
+    registry.REPO_MAP,
+    registry.CODE_READ_RESTORE,
     registry.CODE_TASK_PLANNING,
     registry.CODE_AGENT_RAIL,
     registry.USER_HOOKS,
@@ -203,6 +206,8 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     registry.VISUAL_GEN,
     registry.XIAOYI_PHONE,
     registry.CODE_EXTRA_TOOLS,
+    registry.RUN_TESTS,
+    registry.REPO_TOOLS,
     registry.CRON_TOOLS,
     registry.SEND_FILE,
 )
@@ -593,6 +598,52 @@ def _member_evolution_rail_params(config: dict[str, Any]) -> dict[str, Any]:
 
 
 # Per-element attribute params, keyed by provider name; empty for parameterless.
+def _code_mode_section(config: dict[str, Any], key: str) -> dict[str, Any]:
+    """Return ``modes.code.<key>`` as a dict (empty when absent or malformed)."""
+    modes = config.get("modes") if isinstance(config, dict) else None
+    code = modes.get("code") if isinstance(modes, dict) else None
+    value = code.get(key) if isinstance(code, dict) else None
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _repo_tools_ignored_dirs(config: dict[str, Any]) -> list[str] | None:
+    """``modes.code.repo_tools.ignored_dirs`` as a list of names, or None when unset."""
+    value = _code_mode_section(config, "repo_tools").get("ignored_dirs")
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return None
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _repo_map_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Bake ``modes.code.repo_map`` into the swarm.repo_map rail inputs."""
+    section = _code_mode_section(config, "repo_map")
+    return {
+        "enabled": bool(section.get("enabled", True)),
+        "depth": int(section.get("depth", 2) or 2),
+        "max_chars": int(section.get("max_chars", 6000) or 6000),
+        "ignored_dirs": _repo_tools_ignored_dirs(config),
+    }
+
+
+def _repo_tools_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Bake ``modes.code.tools`` membership and ``modes.code.repo_tools`` tuning."""
+    modes = config.get("modes") if isinstance(config, dict) else None
+    code = modes.get("code") if isinstance(modes, dict) else None
+    listed = code.get("tools") if isinstance(code, dict) else None
+    listed = [str(t) for t in listed] if isinstance(listed, list) else []
+    names = [t for t in ("code_search", "find_symbol", "symbol_outline") if t in listed]
+    tuning = _code_mode_section(config, "repo_tools")
+    return {
+        "enabled": bool(names),
+        "tool_names": names,
+        "code_search": tuning.get("code_search") if isinstance(tuning.get("code_search"), dict) else {},
+        "symbols": tuning.get("symbols") if isinstance(tuning.get("symbols"), dict) else {},
+        "ignored_dirs": _repo_tools_ignored_dirs(config),
+    }
+
+
 _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     registry.CONTEXT_PROCESSOR: _context_processor_params,
     registry.MODEL_ANOMALY_DETECTION: _model_anomaly_detection_params,
@@ -611,6 +662,7 @@ _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     },
     registry.USER_HOOKS: lambda c: {"hooks_section": _config_section(c, "hooks")},
     registry.CODE_WORKTREE: lambda c: {"enabled": True},
+    registry.REPO_MAP: _repo_map_params,
 }
 
 
@@ -627,11 +679,26 @@ def _audio_tool_params(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_tests_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Bake ``modes.code.tools`` membership and ``modes.code.run_tests`` settings."""
+    modes = config.get("modes") if isinstance(config, dict) else None
+    code = modes.get("code") if isinstance(modes, dict) else None
+    listed = code.get("tools") if isinstance(code, dict) else None
+    listed = [str(t) for t in listed] if isinstance(listed, list) else []
+    settings = code.get("run_tests") if isinstance(code, dict) else None
+    return {
+        "enabled": "run_tests" in listed,
+        "settings": dict(settings) if isinstance(settings, dict) else {},
+    }
+
+
 _TOOL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    registry.REPO_TOOLS: _repo_tools_params,
     registry.SEND_FILE: lambda c: {"channels_config": _config_section(c, "channels")},
     registry.CODE_EXTRA_TOOLS: lambda c: {"acp_enabled": _acp_enabled(c)},
     registry.VISION: _vision_tool_params,
     registry.AUDIO: _audio_tool_params,
+    registry.RUN_TESTS: _run_tests_params,
 }
 
 
@@ -1168,9 +1235,17 @@ def build_member_deep_agent_spec(
     if _is_code_mode(mode):
         from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
             build_code_system_prompt,
+            code_policy_flags,
         )
 
-        update["system_prompt"] = build_code_system_prompt()
+        code_cfg = ((config or {}).get("modes") or {}).get("code") or {}
+        policy_enabled, policy_headless = code_policy_flags(config)
+        update["system_prompt"] = build_code_system_prompt(
+            profile="default",
+            tool_names=code_cfg.get("tools") if isinstance(code_cfg, dict) else None,
+            policy_enabled=policy_enabled,
+            policy_headless=policy_headless,
+        )
 
     return base_spec.model_copy(update=update)
 

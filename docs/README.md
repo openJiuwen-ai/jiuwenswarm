@@ -169,6 +169,11 @@
       <td width="50%">超长上下文处理、会话压缩与上下文卸载机制。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>验证闭环</strong></td>
+      <td width="28%"><a href="zh/验证闭环.md">验证闭环</a></td>
+      <td width="50%">Code 模式 <code>run_tests</code>：按修改文件运行相关测试、精简结果、计入完成度门控的验证证据。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>单机多实例运行</strong></td>
       <td width="28%"><a href="zh/单机多实例运行.md">单机多实例运行</a></td>
       <td width="50%">在同一台机器上运行多个 JiuwenSwarm 实例的部署场景与配置。</td>
@@ -210,7 +215,7 @@
     </tr>
     <tr>
       <td width="22%"><strong>记忆</strong></td>
-      <td width="28%"><a href="zh/记忆.md">记忆</a> / <a href="zh/自动记忆.md">自动记忆</a> / <a href="zh/编码记忆.md">编码记忆</a> / <a href="zh/经验记忆.md">经验记忆</a> / <a href="zh/JiuwenMemory-SDK接入.md">JiuwenMemory SDK</a></td>
+      <td width="28%"><a href="zh/记忆.md">记忆</a> / <a href="zh/自动记忆.md">自动记忆</a> / <a href="zh/编码记忆.md">编码记忆</a> / <a href="zh/仓库感知工具.md">仓库感知工具</a> / <a href="zh/经验记忆.md">经验记忆</a> / <a href="zh/JiuwenMemory-SDK接入.md">JiuwenMemory SDK</a></td>
       <td width="50%">支持长短期记忆管理、对话后自动提取记忆、编码场景下的专属记忆沉淀，任务经验的检索、复用与持续积累，以及以 SDK 模式接入 agent-memory 记忆引擎。</td>
     </tr>
     <tr>
