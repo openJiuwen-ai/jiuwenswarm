@@ -248,6 +248,7 @@ def create_default_persistent_group_fanout(
     data_dir: Path | None = None,
     *,
     send_delivery: Callable[[dict[str, object]], Awaitable[Mapping[str, Any] | None]] | None = None,
+    thinking_notice_sender: Callable[[dict[str, object]], Awaitable[None]] | None = None,
     verify_membership=None,
 ) -> tuple[PersistentGroupFanout, AgentManager]:
     """Build JM-08 on the owner's private JiuwenMate SQLite store and JM-07 manager."""
@@ -278,7 +279,14 @@ def create_default_persistent_group_fanout(
         if send_delivery is not None
         else None
     )
-    manager = AgentManager(service, sessions, windows, budgets, delivery_service=delivery_service)
+    manager = AgentManager(
+        service,
+        sessions,
+        windows,
+        budgets,
+        delivery_service=delivery_service,
+        thinking_notice_sender=thinking_notice_sender,
+    )
     if verify_membership is not None:
         async def verify(access, group):
             bindings = resolve_configured_feishu_bindings("feishu", access.app_id)

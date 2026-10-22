@@ -2141,6 +2141,7 @@ class AgentWebSocketServer:
                 return None
             fanout, manager = create_default_persistent_group_fanout(
                 send_delivery=self._send_result_delivery,
+                thinking_notice_sender=self._send_thinking_notice,
                 verify_membership=self._inspect_feishu_group,
             )
             try:
@@ -2204,6 +2205,78 @@ class AgentWebSocketServer:
             pending[0].set_result(dict(params))
         response = AgentResponse(request_id=request.request_id, channel_id=request.channel_id, ok=ok,
                                  payload={"accepted": ok})
+        async with send_lock:
+            await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
+
+    async def _send_thinking_notice(self, job: dict[str, object]) -> None:
+        """Ask Gateway to show one waiting line on the request's own channel."""
+        idempotency_key = job.get("idempotency_key")
+        channel = job.get("channel")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            return
+        if not isinstance(channel, str) or not channel.strip() or channel == "web":
+            return
+        waiters = getattr(self, "_thinking_notice_waiters", None)
+        if waiters is None:
+            waiters = self._thinking_notice_waiters = {}
+        if idempotency_key in waiters:
+            return
+        waiter = asyncio.get_running_loop().create_future()
+        waiters[idempotency_key] = waiter
+        push = {
+            "request_id": f"jm23_{idempotency_key}",
+            "channel_id": channel,
+            "payload": {
+                "event_type": "jiuwenmate.thinking_notice",
+                "channel": channel,
+                "app_id": job.get("app_id"),
+                "chat_id": job.get("chat_id"),
+                "source_message_id": job.get("source_message_id"),
+                "idempotency_key": idempotency_key,
+                "text": job.get("text"),
+            },
+        }
+        from jiuwenswarm.server.jiuwenmate.delivery_service import GATEWAY_ACK_TIMEOUT
+
+        try:
+            if not await self.send_push(push):
+                logger.warning("[JiuwenMate] thinking notice was not pushed: key=%s", idempotency_key)
+                return
+            try:
+                result = await asyncio.wait_for(asyncio.shield(waiter), timeout=GATEWAY_ACK_TIMEOUT)
+            except TimeoutError:
+                logger.warning("[JiuwenMate] thinking notice ACK timed out: key=%s", idempotency_key)
+                return
+            if result.get("outcome") != "delivered":
+                logger.warning(
+                    "[JiuwenMate] thinking notice was not delivered: key=%s outcome=%s",
+                    idempotency_key,
+                    result.get("outcome"),
+                )
+        finally:
+            if waiters.get(idempotency_key) is waiter:
+                waiters.pop(idempotency_key, None)
+
+    async def _handle_thinking_notice_ack(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Resolve the in-flight waiting line. It is not a final result delivery."""
+        params = request.params if isinstance(request.params, dict) else {}
+        key = params.get("idempotency_key")
+        waiters = getattr(self, "_thinking_notice_waiters", {})
+        waiter = waiters.get(key) if isinstance(key, str) else None
+        if waiter is not None and not waiter.done():
+            waiter.set_result(dict(params))
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=waiter is not None,
+            payload={"accepted": waiter is not None},
+            metadata=request.metadata,
+        )
         async with send_lock:
             await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
 
@@ -2677,6 +2750,9 @@ class AgentWebSocketServer:
             return
         if request.req_method == ReqMethod.JIUWENMATE_DELIVERY_ACK:
             await self._handle_result_delivery_ack(ws, request, send_lock)
+            return
+        if request.req_method == ReqMethod.JIUWENMATE_THINKING_NOTICE_ACK:
+            await self._handle_thinking_notice_ack(ws, request, send_lock)
             return
         if request.req_method == ReqMethod.JIUWENMATE_FEISHU_INBOUND:
             await self._handle_feishu_inbound(ws, request, send_lock)

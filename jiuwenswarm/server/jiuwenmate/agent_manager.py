@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -66,6 +66,14 @@ _TERMINAL_EVENTS = frozenset({core.EventType.EXECUTION_FINAL, core.EventType.EXE
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _log_thinking_notice(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("[JiuwenMate] thinking notice failed: %s", type(exc).__name__)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -167,6 +175,7 @@ class AgentManager:
         clock: Callable[[], datetime] = _utc_now,
         on_event: Callable[[core.AgentEvent], None] | None = None,
         delivery_service: ResultDeliveryService | None = None,
+        thinking_notice_sender: Callable[[dict[str, object]], Awaitable[None]] | None = None,
         files: WorkspaceOutputFiles | None = None,
         schedule_interval: timedelta = DEFAULT_SCHEDULE_INTERVAL,
         cli: FeishuCliRuntime | None = None,
@@ -189,6 +198,8 @@ class AgentManager:
         self._clock = clock
         self._external_event_observer = on_event
         self._delivery_service = delivery_service
+        self._thinking_notice_sender = thinking_notice_sender
+        self._thinking_notices_sent: set[str] = set()
         self.group_chats = GroupChatRepository(sessions.db_path)
         self.group_archive = ConversationArchive(sessions.db_path.parent / "group_messages", self.group_chats)
         if self._delivery_service is not None:
@@ -538,6 +549,43 @@ class AgentManager:
         finally:
             if self._delivery_service is not None:
                 self._delivery_service.observe(event)
+            self._schedule_thinking_notice(event)
+
+    def _schedule_thinking_notice(self, event: core.AgentEvent) -> None:
+        """Forward the waiting line participation already wrote. Ignore and a missing notice stay silent."""
+        if self._thinking_notice_sender is None or event.event_type != core.EventType.PARTICIPATION_DECIDED:
+            return
+        if getattr(event.payload, "decision", None) not in ("respond", "intervene"):
+            return
+        notice = getattr(event.payload, "notice", None)
+        if not isinstance(notice, str) or not notice.strip():
+            return
+        if event.execution_id in self._thinking_notices_sent:
+            return
+        self._thinking_notices_sent.add(event.execution_id)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._send_thinking_notice(event), name="jiuwenmate-thinking-notice")
+        task.add_done_callback(_log_thinking_notice)
+
+    async def _send_thinking_notice(self, event: core.AgentEvent) -> None:
+        """Deliver the waiting line already chosen by participation. The host does not pick the words."""
+        notice = getattr(event.payload, "notice", None)
+        state = await asyncio.to_thread(self._sessions.get_request, event.namespace_id, event.request_id)
+        route = state.record.route_snapshot
+        sender = self._thinking_notice_sender
+        if not isinstance(notice, str) or route is None or route.channel == "web" or sender is None:
+            return
+        await sender({
+            "channel": route.channel,
+            "app_id": route.app_id,
+            "chat_id": route.target_id,
+            "source_message_id": route.source_message_id,
+            "text": notice,
+            "idempotency_key": f"thinking:{event.execution_id}",
+        })
 
     def _result(
         self, state: RequestState

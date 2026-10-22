@@ -24,6 +24,33 @@ if TYPE_CHECKING:
     from jiuwenswarm.common.schema.message import Message
 
 
+def _thinking_notice_message(
+    channel_id: str,
+    app_id: str | None,
+    chat_id: str,
+    source_message_id: str | None,
+    text: str,
+    idempotency_key: str,
+):
+    """A completed chat event any channel can send without a persistent-result method."""
+    from jiuwenswarm.common.schema.message import EventType, Message
+
+    return Message(
+        id=idempotency_key,
+        type="event",
+        channel_id=channel_id,
+        session_id=None,
+        params={},
+        timestamp=time.time(),
+        ok=True,
+        payload={"content": text, "is_complete": True},
+        event_type=EventType.CHAT_FINAL,
+        metadata={"chat_id": chat_id, "source_message_id": source_message_id},
+        app_id=app_id,
+        chat_id=chat_id,
+    )
+
+
 @dataclass
 class ChannelEvent:
     """Channel 连接事件."""
@@ -61,6 +88,9 @@ class ChannelManager(ABC):
         set_delivery_handler = getattr(message_handler, "set_result_delivery_handler", None)
         if callable(set_delivery_handler):
             set_delivery_handler(self.deliver_persistent_result)
+        set_notice_handler = getattr(message_handler, "set_thinking_notice_handler", None)
+        if callable(set_notice_handler):
+            set_notice_handler(self.deliver_thinking_notice)
         set_group_handler = getattr(message_handler, "set_feishu_group_handler", None)
         if callable(set_group_handler):
             set_group_handler(self.inspect_feishu_group)
@@ -164,6 +194,69 @@ class ChannelManager(ABC):
                 type(exc).__name__,
             )
             return {"outcome": "unknown", "error_code": "FEISHU_SEND_ERROR"}
+
+    async def deliver_thinking_notice(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Send one waiting line through the channel named by the request route.
+
+        A channel that already sends persistent results uses that method. Every
+        other connected channel receives the same text through its ordinary send.
+        """
+        channel_id = payload.get("channel")
+        app_id = payload.get("app_id")
+        chat_id = payload.get("chat_id")
+        text = payload.get("text")
+        idempotency_key = payload.get("idempotency_key")
+        required = (channel_id, chat_id, text, idempotency_key)
+        if not all(isinstance(value, str) and value.strip() for value in required):
+            return {"outcome": "failed", "error_code": "INVALID_THINKING_NOTICE"}
+        if app_id is not None and not (isinstance(app_id, str) and app_id.strip()):
+            return {"outcome": "failed", "error_code": "INVALID_THINKING_NOTICE"}
+        matches = [
+            channel
+            for key, channel in self._channels.items()
+            if key.channel_id == channel_id and (app_id is None or key.app_id == app_id)
+        ]
+        if not matches:
+            return {"outcome": "pending", "error_code": "CHANNEL_NOT_CONNECTED"}
+        if len(matches) != 1:
+            return {"outcome": "failed", "error_code": "CHANNEL_AMBIGUOUS"}
+        channel = matches[0]
+        source_message_id = payload.get("source_message_id")
+        if source_message_id is not None and not isinstance(source_message_id, str):
+            return {"outcome": "failed", "error_code": "INVALID_THINKING_NOTICE"}
+        persistent = getattr(channel, "send_persistent_result", None)
+        if callable(persistent):
+            try:
+                result = await persistent(
+                    chat_id=chat_id,
+                    text=text,
+                    source_message_id=source_message_id,
+                    idempotency_key=idempotency_key,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[ChannelManager] thinking notice outcome unknown: channel=%s error_type=%s",
+                    channel_id,
+                    type(exc).__name__,
+                )
+                return {"outcome": "unknown", "error_code": "THINKING_NOTICE_SEND_ERROR"}
+            return result if isinstance(result, dict) else {
+                "outcome": "delivered",
+                "external_message_id": idempotency_key,
+            }
+        try:
+            await channel.send(_thinking_notice_message(
+                channel_id, app_id if isinstance(app_id, str) else None, chat_id, source_message_id,
+                text, idempotency_key,
+            ))
+        except Exception as exc:
+            logger.warning(
+                "[ChannelManager] thinking notice outcome unknown: channel=%s error_type=%s",
+                channel_id,
+                type(exc).__name__,
+            )
+            return {"outcome": "unknown", "error_code": "THINKING_NOTICE_SEND_ERROR"}
+        return {"outcome": "delivered", "external_message_id": idempotency_key}
 
     async def _feishu_mention_targets(self, value: Any, sender_channel: Any) -> list[dict[str, Any]]:
         """Map validated employee IDs to one connected Bot identity without guessing."""

@@ -203,7 +203,7 @@ Feishu 入站绑定校验成功后，JM-08 在调用 JM-07 受理 Request 时同
 2. 对群消息核验 Feishu 事件与接收 Bot 绑定；Bot 收到该群事件即符合已确认的群接入规则。随后标准化群 / 私聊来源和 `RequestInput`，按上述契约构造 `AccessSnapshot`：私聊、群聊均授予 `workspace_read`，私聊保留 `workspace_knowledge_read`，不授予 `workspace_write`。该快照不决定群准入。
 3. 群聊通过 `GroupChatRepository.resolve(namespace_id, "feishu", chat_id, now=...)` 取得稳定 `group_chat_id`；随后由 JM-03 `ExecutionRepository.resolve_session` 按 namespace、Agent 和 `ConversationRef` 定位 Session。私聊直接使用飞书私聊 `ConversationRef`。
 4. 调用 JM-07 `AgentManager.scheduler.accept(session, snapshot=..., source_ref=..., access=..., request_input=..., received_at=...)`。该入口内部调用 JM-03 `accept_request`：数据库唯一约束是 Request 幂等的权威事实，`is_new=False` 表示来源已受理。
-5. 未被飞书明确 @ 时，先按 [JM-23](F_23_group-reply-mode.md) 决定是否受理：被动模式只保留归档，不创建 Request；没有具体内容的寒暄只受理一位自适应员工。通过后，新 Request 进入 JM-07 的 Session 排队与调度。是否回应由 PA-07 判断，并阅读 JM-23 附加的职责与轻量交流说明。飞书明确 @ 不经过该模式门闩。
+5. 未被飞书明确 @ 时，先按 [JM-23](F_23_group-reply-mode.md) 决定是否受理：被动模式只保留归档，不创建 Request；没有具体内容的寒暄只受理一位自适应员工。通过后，新 Request 进入 JM-07 的 Session 排队与调度。是否回应由 PA-07 判断，并阅读 JM-23 附加的职责与轻量交流说明。决定回复且认定任务需要一定思考时间时，PA-07 把等待提示写入 `participation.decided.notice`，宿主按 JM-23 向该 Request 的渠道投递这一句，再继续正式回复。简单任务不写这句。飞书明确 @ 不经过该模式门闩，但仍进入 PA-07：必须回复，复杂任务同样附带等待提示。
 
 并发与隔离不变量：
 
