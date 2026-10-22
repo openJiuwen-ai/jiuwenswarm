@@ -2146,6 +2146,10 @@ async def _run(
                     reload_ok = True
                     break
                 err_payload = getattr(reload_resp, "payload", None) or {}
+                if isinstance(err_payload, dict) and err_payload.get("code") == "PERSISTENT_MODELS_NOT_APPLIED":
+                    # Published drafts or an unavailable model cannot be fixed by restarting Gateway.
+                    logger.warning("[App] model settings saved; Persistent Agent refresh remains incomplete")
+                    return False
                 err_msg = (
                     err_payload.get("error")
                     if isinstance(err_payload, dict)

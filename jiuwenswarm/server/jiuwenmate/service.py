@@ -421,20 +421,30 @@ class PersistentAgentService:
             raise
         return self.get_colleague(namespace_id, definition.agent_id)
 
-    def refresh_published(self, namespace_id: str) -> None:
+    def refresh_published(self, namespace_id: str, *, models: ModelProvider | None = None) -> bool:
         """Republish colleagues without pending edits, so versions from an older host gain what it now opens.
 
-        Unchanged settings keep their version, and a colleague that fails is left on the version it has.
+        Unchanged settings keep their version. Return false if a published colleague
+        has pending edits or could not be refreshed; its existing version stays intact.
         """
+        if models is not None:
+            self._models = models
+        applied = True
         for definition in self._repository.list(namespace_id):
-            if definition.current_version is None or definition.has_unpublished_changes:
+            if definition.current_version is None:
+                continue
+            if definition.has_unpublished_changes:
+                applied = False
                 continue
             try:
-                self.publish(namespace_id, definition.agent_id)
-            except PersistentAgentError as exc:
+                self.publish(namespace_id, definition.agent_id, expected_revision=definition.revision, models=models)
+            except Exception as exc:
+                applied = False
+                code = exc.code if isinstance(exc, PersistentAgentError) else type(exc).__name__
                 logger.warning(
-                    "[JiuwenMate] colleague kept its version: agent=%s code=%s", definition.agent_id, exc.code
+                    "[JiuwenMate] colleague kept its version: agent=%s code=%s", definition.agent_id, code
                 )
+        return applied
 
     def list_colleagues(self, namespace_id: str) -> list[ColleagueView]:
         require_identifier("namespace_id", namespace_id)
@@ -469,16 +479,21 @@ class PersistentAgentService:
         updated = self._repository.set_enabled(namespace_id, agent_id, enabled=enabled, updated_at=self._clock())
         return self._view(updated)
 
-    def publish(self, namespace_id: str, agent_id: str) -> ConfigVersionView:
+    def publish(
+        self, namespace_id: str, agent_id: str, *,
+        expected_revision: int | None = None, models: ModelProvider | None = None,
+    ) -> ConfigVersionView:
         """Freeze the current settings as the version new Requests use; unchanged settings keep the version."""
         definition = self._require(namespace_id, agent_id)
+        if expected_revision is not None and definition.revision != expected_revision:
+            raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
         settings = definition.settings
         if settings.capabilities.model is None:
             raise PersistentAgentError("choose a model before publishing", code="MODEL_NOT_CONFIGURED")
         office = self._workspaces.ensure(namespace_id, agent_id)
         assembled = assemble_resources(agent_id, settings.capabilities, office, self._resource_catalog())
         model, input_limit, margin = formal_model_capacity(
-            self._models.resolve(settings.capabilities.model, client_id=f"jiuwenmate:{agent_id}")
+            (models or self._models).resolve(settings.capabilities.model, client_id=f"jiuwenmate:{agent_id}")
         )
         context_engine = formal_context_engine(model)
         if context_engine is not None:

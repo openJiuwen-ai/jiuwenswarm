@@ -310,6 +310,24 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                 self._manager = manager
             return self._manager
 
+    async def refresh_models(self, config_payload: dict[str, Any] | None = None) -> bool:
+        """Refresh published models for future Web and Feishu Requests, without starting either runtime."""
+        from jiuwenswarm.common.config import get_default_models
+        from jiuwenswarm.server.jiuwenmate.service import ConfiguredModelProvider, default_data_dir
+
+        if self._service is None and not (default_data_dir() / "agents.sqlite3").is_file():
+            return True
+        try:
+            service = await asyncio.to_thread(self._colleagues)
+            models = (
+                ConfiguredModelProvider(lambda: get_default_models(config_payload))
+                if isinstance(config_payload, dict) and "models" in config_payload else None
+            )
+            return await asyncio.to_thread(service.refresh_published, WEB_NAMESPACE, models=models)
+        except Exception as exc:
+            logger.warning("[JiuwenMate] model refresh failed: error_type=%s", type(exc).__name__)
+            return False
+
     async def prepare_feishu_cli(self, agent_id: str) -> dict[str, object]:
         manager = await self._runtime()
         return manager.schedule_feishu_cli(WEB_NAMESPACE, agent_id)

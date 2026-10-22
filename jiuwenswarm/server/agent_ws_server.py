@@ -11740,13 +11740,17 @@ class AgentWebSocketServer:
         reload_options: dict[str, Any] | None = None,
     ) -> bool:
         """Apply a ConfigAdapter save to the agents in this process."""
-        return await reload_runtime_after_config_save(
+        applied = await reload_runtime_after_config_save(
             self._agent_manager,
             updated_keys,
             env_updates=env_updates,
             config_payload=config_payload,
             reload_options=reload_options,
         )
+        scopes = (reload_options or {}).get("reload_scopes") or []
+        if applied and (not scopes or "model" in scopes):
+            return await self._jiuwenmate_web.refresh_models(config_payload)
+        return applied
 
     async def _handle_agent_reload_config(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         try:
@@ -11863,11 +11867,21 @@ class AgentWebSocketServer:
                 except Exception as exc:
                     logger.warning("[AgentWebSocketServer] proactive agent rebuild failed: %s", exc)
 
+            persistent_applied = True
+            if should_warm_tokenizers:
+                persistent_applied = await self._jiuwenmate_web.refresh_models(config_payload)
+            payload = {"reloaded": True}
+            if not persistent_applied:
+                payload.update({
+                    "code": "PERSISTENT_MODELS_NOT_APPLIED",
+                    "error": "Model settings were saved, but some Persistent Agent configurations could not be "
+                             "applied; check unpublished edits or model availability.",
+                })
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
-                ok=True,
-                payload={"reloaded": True},
+                ok=persistent_applied,
+                payload=payload,
             )
         except Exception as e:
             logger.exception("[AgentWebSocketServer] agent.reload_config failed: %s", e)
