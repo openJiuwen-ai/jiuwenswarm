@@ -23,21 +23,24 @@ def _decrypt_snapshot(encrypted: str) -> bytes:
     buffer = ctypes.create_string_buffer(value)
     source = DataBlob(len(value), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
     result = DataBlob()
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    crypt32.CryptUnprotectData.argtypes = [
+    # Bind typed stdcall functions directly; retain the Windows error for failures.
+    # API contract: https://learn.microsoft.com/windows/win32/api/dpapi/nf-dpapi-cryptunprotectdata
+    unprotect = ctypes.WINFUNCTYPE(
+        wintypes.BOOL,
         ctypes.POINTER(DataBlob), ctypes.c_void_p, ctypes.c_void_p,
         ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(DataBlob),
-    ]
-    crypt32.CryptUnprotectData.restype = wintypes.BOOL
-    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel32.LocalFree.restype = ctypes.c_void_p
-    if not crypt32.CryptUnprotectData(ctypes.byref(source), None, None, None, None, 1, ctypes.byref(result)):
+        use_last_error=True,
+    )(("CryptUnprotectData", ctypes.WinDLL("crypt32")))
+    free_result = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p)(
+        ("LocalFree", ctypes.WinDLL("kernel32")),
+    )
+    cryptprotect_ui_forbidden = 0x1
+    if not unprotect(ctypes.byref(source), None, None, None, None, cryptprotect_ui_forbidden, ctypes.byref(result)):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         return ctypes.string_at(result.data, result.size)
     finally:
-        kernel32.LocalFree(result.data)
+        free_result(result.data)
 
 
 def restore_legacy_upgrade_config() -> None:
