@@ -80,6 +80,10 @@ enabled, the main agent:
 - delegates desktop work through the synchronous `task_tool` with `subagent_type`
   `"cua_agent"`, keeping your full objective in `task_description` rather than reducing it
   to steps;
+- shows an "操作确认: cua_agent" card before each delegation, with the task and a note that
+  the subagent may start apps (`launch_app`) and type text (`type_text`). The options are
+  Allow once, Session allow, Always allow, and Reject; Always allow sets
+  `require_approval` to `false`, so no session asks again (see section 5);
 - asks you to confirm irreversible actions (sending messages, deleting files, submitting
   forms, payments) before they happen;
 - does not script the GUI itself via Bash, PowerShell, pyautogui, AutoHotkey, etc.; if
@@ -119,6 +123,7 @@ force-kill applications.
 | `react.subagents.cua_agent.max_iterations` | int | `100` | Subagent iteration cap. The capture-act-verify loop uses many iterations; avoid setting it too low. |
 | `react.subagents.cua_agent.snapshot_keep_last_k` | int ≥ 1 | `3` | Number of recent screenshots kept in full in context. 3 suits tasks that move between two windows; `1` cuts context considerably for single-window tasks. Invalid values are ignored with a warning and the default applies. |
 | `react.subagents.cua_agent.pause_on_user_input` | boolean | `false` | Hold desktop actions while you use the mouse/keyboard and resume after about 5 s idle. If you keep using the machine for about 60 s, the subagent ends the task and reports what it completed. Detection works on Windows and Linux X11 only; elsewhere the option has no effect. |
+| `react.subagents.cua_agent.require_approval` | boolean | `true` | Show a confirmation card each time the main agent hands a task to `cua_agent` (also in full-access mode). Choosing "Always allow" on the card writes `false`, so no session asks again; set it back to `true` to be asked again. |
 
 Environment variable:
 
@@ -137,6 +142,9 @@ Environment variable:
 - The subagent can start local programs with `launch_app` and type into any focused window
   with `type_text`. Enable it only for trusted tasks and models.
 - Check carefully when the main agent asks you to confirm an irreversible action.
+- The delegation card is the last check before the subagent takes over your desktop. After
+  Always allow, no session asks again; set `react.subagents.cua_agent.require_approval` back
+  to `true` to restore it.
 
 ## 7. Troubleshooting
 

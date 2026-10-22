@@ -8,11 +8,15 @@ the child's ``answer`` chunks. Its own ASK rules (``launch_app``,
 ``type_text``) therefore cannot prompt the user. The approval is taken here
 instead, on the root's ``task_tool`` call, where the ordinary confirm
 interrupt / resume flow works; once approved, that delegation runs as is.
+
+"Always allow" has no permission rule to persist into, so it is kept as
+``react.subagents.cua_agent.require_approval: false`` in config.yaml.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Optional
 
 from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
@@ -27,9 +31,12 @@ from openjiuwen.harness.tools.cua.cua_capabilities import (
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import (
     ALLOW_ONCE,
+    ALWAYS_ALLOW,
     REJECT,
     SESSION_ALLOW,
 )
+
+logger = logging.getLogger(__name__)
 
 CUA_SUBAGENT_TYPE = "cua_agent"
 # Distinct from the generic ``task_tool`` key so "remember for this session"
@@ -81,15 +88,16 @@ cua_agent uses real mouse and keyboard input and starts only after you approve."
 
 # Labels stay within the ``permission_options`` aliases: the TUI answers with
 # the label, web / CLI with the value, and both must resolve to one action.
-# No "always allow": a confirm rail has nothing to persist it to.
 _OPTIONS_CN = [
     {"value": ALLOW_ONCE, "label": "本次允许", "description": "仅允许这一次桌面任务"},
     {"value": SESSION_ALLOW, "label": "会话内记住", "description": "本次会话内不再询问 cua_agent 任务"},
+    {"value": ALWAYS_ALLOW, "label": "永久记住", "description": "写回配置，所有会话均不再询问 cua_agent 任务"},
     {"value": REJECT, "label": "拒绝", "description": "不执行此桌面任务"},
 ]
 _OPTIONS_EN = [
     {"value": ALLOW_ONCE, "label": "Allow once", "description": "Allow this desktop task only"},
     {"value": SESSION_ALLOW, "label": "Session allow", "description": "Do not ask again for cua_agent tasks this session"},
+    {"value": ALWAYS_ALLOW, "label": "Always allow", "description": "Save to config; never ask again for cua_agent tasks"},
     {"value": REJECT, "label": "Reject", "description": "Do not run this desktop task"},
 ]
 
@@ -126,6 +134,8 @@ class CuaDelegationApprovalRail(ConfirmInterruptRail):
             return self.approve()
 
         if user_input is None:
+            if not _approval_required():
+                return self.approve()
             if self._is_auto_confirmed(auto_confirm_config, CUA_DELEGATION_AUTO_CONFIRM_KEY):
                 return self.approve()
             return self.interrupt(
@@ -136,6 +146,9 @@ class CuaDelegationApprovalRail(ConfirmInterruptRail):
                     ui_options=_OPTIONS_EN if self._language == "en" else _OPTIONS_CN,
                 )
             )
+        if _wants_always_allow(user_input):
+            # A failed write still runs this approved task; the user is just asked again later.
+            _persist_always_allow()
         return await super().resolve_interrupt(ctx, tool_call, user_input, auto_confirm_config)
 
     def _build_message(self, task_description: Any) -> str:
@@ -149,6 +162,52 @@ class CuaDelegationApprovalRail(ConfirmInterruptRail):
             actions = "mouse and keyboard input" if self._language == "en" else "鼠标键盘操作"
         template = _MESSAGE_EN if self._language == "en" else _MESSAGE_CN
         return template.format(actions=actions, task=task)
+
+
+def _cua_agent_config(config: Any) -> Any:
+    react = config.get("react") if isinstance(config, dict) else None
+    subagents = react.get("subagents") if isinstance(react, dict) else None
+    return subagents.get(CUA_SUBAGENT_TYPE) if isinstance(subagents, dict) else None
+
+
+def _approval_required() -> bool:
+    """Return False only once "always allow" was saved (``require_approval: false``)."""
+    from jiuwenswarm.common.config import get_config
+
+    try:
+        cua_cfg = _cua_agent_config(get_config())
+    except Exception as exc:
+        logger.warning("[cua_agent] reading require_approval failed, asking: %s", exc)
+        return True
+    return not (isinstance(cua_cfg, dict) and cua_cfg.get("require_approval") is False)
+
+
+def _wants_always_allow(user_input: Any) -> bool:
+    if isinstance(user_input, dict):
+        approved, persist = user_input.get("approved"), user_input.get("persist_allow")
+    else:
+        approved = getattr(user_input, "approved", None)
+        persist = getattr(user_input, "persist_allow", None)
+    return approved is True and persist is True
+
+
+def _persist_always_allow() -> None:
+    from jiuwenswarm.common.config import update_config
+
+    def _mutate(data: Any) -> Any:
+        cua_cfg = _cua_agent_config(data)
+        # Only reachable with cua_agent mounted, so its block exists; creating
+        # one here could change what ``enabled`` resolves to.
+        if not isinstance(cua_cfg, dict):
+            logger.warning("[cua_agent] no react.subagents.cua_agent block; always-allow not saved")
+            return None
+        cua_cfg["require_approval"] = False
+        return data
+
+    try:
+        update_config(_mutate)
+    except Exception as exc:
+        logger.warning("[cua_agent] saving always-allow failed: %s", exc)
 
 
 def _parse_tool_args(tool_call: Optional[ToolCall]) -> dict[str, Any]:
