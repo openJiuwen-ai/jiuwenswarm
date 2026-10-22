@@ -30,6 +30,13 @@ _FILE_LOCK_TIMEOUT_SEC = 10.0
 _UNSAFE_PATH = re.compile(r"[\\/]|\.\.")
 
 
+def _without_expected_revision(updates: dict[str, Any]) -> dict[str, Any]:
+    """乐观锁条件只给数据库用，不写进 YAML / JSON。"""
+    if getattr(updates.get("revision"), "expected_revision", None) is None:
+        return updates
+    return {key: value for key, value in updates.items() if key != "revision"}
+
+
 def _plain(value: Any) -> Any:
     """把 YAML/JSON 节点收成普通 dict/list，去掉 ruamel 包装。"""
     if isinstance(value, dict):
@@ -515,6 +522,7 @@ class FilePersistentBackend:
     ) -> dict[str, Any] | None:
         """按主键浅合并 ``updates``；找不到记录返回 None。不删字段。"""
         _, file_layout = self._layout(name)
+        updates = _without_expected_revision(updates)
         values = {**dict(key), **dict(updates)}
 
         def _body() -> dict[str, Any] | None:

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
+
+from jiuwenswarm.gateway.config.enterprise.tables.application_config_models import (
+    POLL_REVISION_TABLES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +17,11 @@ POLL_TABLES: tuple[str, ...] = (
     "log_masking_rule",
     "audit_log_config",
 )
+if frozenset(POLL_TABLES) != POLL_REVISION_TABLES:
+    raise RuntimeError(
+        f"[ConfigPoll] POLL_TABLES {list(POLL_TABLES)} != "
+        f"POLL_REVISION_TABLES {sorted(POLL_REVISION_TABLES)}"
+    )
 _POLL_TABLES = frozenset(POLL_TABLES)
 # 本进程 DB handler 未注册的表：只告警一次，避免每轮刷屏
 _skipped_uninitialized: set[str] = set()
@@ -22,25 +30,6 @@ _warned_no_store = False
 
 class ConfigPollReadError(Exception):
     """读库失败：本轮不得当作空表 apply，也不得更新 snapshot。"""
-
-
-def _normalize_updated_at(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        dt = value
-    else:
-        text = str(value).strip()
-        if not text:
-            return None
-        normalized = text.replace("Z", "+00:00")
-        try:
-            dt = datetime.fromisoformat(normalized)
-        except ValueError:
-            return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 def row_key(table: str, row: dict[str, Any]) -> str:
@@ -53,8 +42,18 @@ def row_key(table: str, row: dict[str, Any]) -> str:
 
 
 def row_stamp(row: dict[str, Any]) -> str:
-    ts = _normalize_updated_at(row.get("updated_at"))
-    return ts.isoformat() if ts is not None else ""
+    """``自增 id:revision``。
+
+    比较的是字符串是否变化，不要求新号更大：同一业务键删掉再建时，
+    revision 可能从 1 重新开始，但 ``id`` 变了，快照仍然不同。
+    """
+    raw_id = row.get("id")
+    id_part = "" if raw_id is None else str(raw_id).strip()
+    try:
+        revision = int(row.get("revision"))
+    except (TypeError, ValueError):
+        revision = 0
+    return f"{id_part}:{revision}"
 
 
 def row_snapshot(table: str, rows: list[dict[str, Any]]) -> dict[str, str]:

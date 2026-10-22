@@ -26,6 +26,8 @@ class ChannelConfig:
     channel_type: str = ""
     bot_id: str = ""
     status: str = "active"
+    # 读到的行版本。企业库更新时放进 WHERE，不写进 body。
+    revision: int | None = None
 
     def to_map_entry(self) -> dict[str, Any]:
         """还原 ChannelManager / ``get_config()['channels'][id]`` 的那份 dict。"""

@@ -12,6 +12,7 @@ from jiuwenswarm.gateway.config.channel.models import (
     channels_map,
 )
 from jiuwenswarm.gateway.storage.protocols.persistent import PersistentStore
+from jiuwenswarm.gateway.storage.revision import retry_on_revision_conflict
 
 
 def _with_body(
@@ -29,6 +30,7 @@ def _with_body(
         channel_type=existing.channel_type,
         bot_id=existing.bot_id,
         status=existing.status,
+        revision=existing.revision,
     )
 
 
@@ -131,10 +133,14 @@ class ChannelConfigRepository:
         self, channel_id: str, updates: dict[str, Any]
     ) -> ChannelConfig:
         """浅合并顶层字段，对应原来的 ``update_channel_in_config``。"""
-        existing = await self.get(channel_id)
-        body = dict(existing.body) if existing else {}
-        body.update(updates)
-        return await self.upsert(_with_body(existing, channel_id, body))
+
+        async def once() -> ChannelConfig:
+            existing = await self.get(channel_id)
+            body = dict(existing.body) if existing else {}
+            body.update(updates)
+            return await self.upsert(_with_body(existing, channel_id, body))
+
+        return await retry_on_revision_conflict(once)
 
     async def replace_subsection_with_cleanup(
         self,
@@ -145,20 +151,25 @@ class ChannelConfigRepository:
     ) -> ChannelConfig:
         """整段替换 subsection，并丢掉不在 ``keep_keys`` 里的字段。
 
-        ``store.update`` 浅合并不删键；有多余字段时先 delete 再 create。
+        ``store.update`` 浅合并不删键；YAML 有多余字段时先 delete 再 create。
+        企业库整段替换 ``config`` JSON，并按读到的 revision 做乐观锁。
         """
-        existing = await self.get(channel_id)
-        body = dict(existing.body) if existing else {}
-        body[subsection_id] = conf
-        extra = set(body) - keep_keys
-        cleaned = {key: value for key, value in body.items() if key in keep_keys}
-        config = _with_body(existing, channel_id, cleaned)
-        if existing is None:
-            return await self.create(config)
-        if extra:
-            await self.delete(channel_id)
-            return await self.create(config)
-        return await self.upsert(config)
+
+        async def once() -> ChannelConfig:
+            existing = await self.get(channel_id)
+            body = dict(existing.body) if existing else {}
+            body[subsection_id] = conf
+            extra = set(body) - keep_keys
+            cleaned = {key: value for key, value in body.items() if key in keep_keys}
+            config = _with_body(existing, channel_id, cleaned)
+            if existing is None:
+                return await self.create(config)
+            if extra and existing.revision is None:
+                await self.delete(channel_id)
+                return await self.create(config)
+            return await self.upsert(config)
+
+        return await retry_on_revision_conflict(once)
 
     async def merge_or_replace_subsection(
         self,
@@ -167,16 +178,20 @@ class ChannelConfigRepository:
         conf: dict[str, Any] | list[Any] | Any,
     ) -> ChannelConfig:
         """dict 合并进 subsection，其它类型整段替换。"""
-        existing = await self.get(channel_id)
-        body = dict(existing.body) if existing else {}
-        if isinstance(conf, dict):
-            current = body.get(subsection_id)
-            nested = dict(current) if isinstance(current, dict) else {}
-            nested.update(conf)
-            body[subsection_id] = nested
-        else:
-            body[subsection_id] = conf
-        return await self.upsert(_with_body(existing, channel_id, body))
+
+        async def once() -> ChannelConfig:
+            existing = await self.get(channel_id)
+            body = dict(existing.body) if existing else {}
+            if isinstance(conf, dict):
+                current = body.get(subsection_id)
+                nested = dict(current) if isinstance(current, dict) else {}
+                nested.update(conf)
+                body[subsection_id] = nested
+            else:
+                body[subsection_id] = conf
+            return await self.upsert(_with_body(existing, channel_id, body))
+
+        return await retry_on_revision_conflict(once)
 
     async def update_app_fields(
         self,
@@ -187,26 +202,30 @@ class ChannelConfigRepository:
         app_id_key: str = "app_id",
     ) -> bool:
         """按 ``app_id`` 改 ``apps[]`` 里一项。找不到返回 False。"""
-        existing = await self.get(channel_id)
-        if existing is None:
-            return False
-        apps = existing.body.get("apps")
-        if not isinstance(apps, list):
-            return False
-        found = False
-        new_apps: list[Any] = []
-        for app in apps:
-            if isinstance(app, dict) and app.get(app_id_key) == app_identifier:
-                new_apps.append({**app, **field_values})
-                found = True
-            else:
-                new_apps.append(app)
-        if not found:
-            return False
-        body = dict(existing.body)
-        body["apps"] = new_apps
-        await self.upsert(_with_body(existing, channel_id, body))
-        return True
+
+        async def once() -> bool:
+            existing = await self.get(channel_id)
+            if existing is None:
+                return False
+            apps = existing.body.get("apps")
+            if not isinstance(apps, list):
+                return False
+            found = False
+            new_apps: list[Any] = []
+            for app in apps:
+                if isinstance(app, dict) and app.get(app_id_key) == app_identifier:
+                    new_apps.append({**app, **field_values})
+                    found = True
+                else:
+                    new_apps.append(app)
+            if not found:
+                return False
+            body = dict(existing.body)
+            body["apps"] = new_apps
+            await self.upsert(_with_body(existing, channel_id, body))
+            return True
+
+        return await retry_on_revision_conflict(once)
 
     async def update_xiaoyi_runtime(
         self,
@@ -216,17 +235,21 @@ class ChannelConfigRepository:
         agent_id: str = "",
     ) -> ChannelConfig:
         """合并小艺运行时字段；有 ``push_id`` 时同步到匹配的 ``apps[]``。"""
-        existing = await self.get("xiaoyi")
-        body = dict(existing.body) if existing else {}
-        body.update(conf)
-        push_id = conf.get("push_id")
-        if push_id:
-            apps = body.get("apps")
-            if isinstance(apps, list) and apps:
-                target = _find_xiaoyi_app(apps, api_id, agent_id)
-                if target is not None:
-                    target["push_id"] = str(push_id)
-        return await self.upsert(_with_body(existing, "xiaoyi", body))
+
+        async def once() -> ChannelConfig:
+            existing = await self.get("xiaoyi")
+            body = dict(existing.body) if existing else {}
+            body.update(conf)
+            push_id = conf.get("push_id")
+            if push_id:
+                apps = body.get("apps")
+                if isinstance(apps, list) and apps:
+                    target = _find_xiaoyi_app(apps, api_id, agent_id)
+                    if target is not None:
+                        target["push_id"] = str(push_id)
+            return await self.upsert(_with_body(existing, "xiaoyi", body))
+
+        return await retry_on_revision_conflict(once)
 
 
 __all__ = ["ChannelConfigRepository"]

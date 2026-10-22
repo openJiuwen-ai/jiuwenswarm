@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from jiuwenswarm.gateway.config.channel.models import ChannelConfig
+from jiuwenswarm.gateway.storage.revision import ExpectedRevision, revision_of
 
 
 class ChannelConfigCodec(Protocol):
@@ -98,6 +99,7 @@ class DbRowChannelCodec:
             channel_type=str(record.get("channel_type") or ""),
             bot_id=str(record.get("bot_id") or ""),
             status=str(record.get("status") or "active"),
+            revision=revision_of(record),
         )
 
     @staticmethod
@@ -115,6 +117,8 @@ class DbRowChannelCodec:
     def to_updates(self, config: ChannelConfig) -> dict[str, Any]:
         record = self.to_record(config)
         record.pop("channel_id", None)
+        if config.revision is not None:
+            record["revision"] = ExpectedRevision(config.revision)
         return record
 
 

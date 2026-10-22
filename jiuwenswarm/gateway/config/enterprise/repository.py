@@ -9,7 +9,11 @@ from jiuwenswarm.gateway.config.enterprise.catalog import (
     EnterpriseRecordSpec,
     get_enterprise_record_spec,
 )
+from jiuwenswarm.gateway.config.enterprise.tables.application_config_models import (
+    POLL_REVISION_TABLES,
+)
 from jiuwenswarm.gateway.storage.protocols.persistent import PersistentStore
+from jiuwenswarm.gateway.storage.revision import revision_of
 
 _LIST_ALL_CAP = 10_000
 
@@ -137,7 +141,13 @@ class EnterpriseRecordRepository:
         )
 
     async def upsert(self, record: dict[str, Any]) -> dict[str, Any]:
-        """按业务主键有则浅合并更新，无则插入。"""
+        """按业务主键有则浅合并更新，无则插入。
+
+        轮询表带上刚读到的 revision。版本不符时失败，不覆盖已提交的行。
+        """
+        return await self._upsert_once(record)
+
+    async def _upsert_once(self, record: dict[str, Any]) -> dict[str, Any]:
         row = self._with_scope(record)
         key = self._identity_from_record(row)
         existing = await self._store.get(self._store_name, key)
@@ -146,10 +156,24 @@ class EnterpriseRecordRepository:
         updates = {
             key_: value
             for key_, value in row.items()
-            if key_ not in key and key_ != "id"
+            if key_ not in key and key_ != "id" and key_ != "revision"
         }
+        if self._store_name in POLL_REVISION_TABLES:
+            expected = revision_of(existing)
+            if expected is None:
+                raise ValueError(
+                    f"{self._store_name} update requires the revision read with this change"
+                )
+            updates["revision"] = expected
         updated = await self._store.update(self._store_name, key, updates)
-        return updated if updated is not None else row
+        if updated is not None:
+            return updated
+        # 读到之后行被删掉。不能把未落库的请求体当成保存结果。
+        recreate = dict(row)
+        recreate.pop("id", None)
+        if self._store_name in POLL_REVISION_TABLES:
+            recreate.pop("revision", None)
+        return await self._store.create(self._store_name, recreate)
 
     async def delete(
         self,
