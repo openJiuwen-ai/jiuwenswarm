@@ -7,6 +7,7 @@ import pytest
 from jiuwenswarm.common.config import dump_yaml_round_trip, load_yaml_round_trip
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.security_config_service import SecurityConfigService
+from jiuwenswarm.common.utils import get_package_resources_dir
 from jiuwenswarm.server.security_config_rpc import (
     apply_trusted_cloud_policy,
     dispatch_managed_sandbox_request,
@@ -21,6 +22,10 @@ class Manager:
 
     async def reload_agents_config(self, config, env):
         self.configs.append(deepcopy(config))
+
+
+def _package_sandbox_limits():
+    return load_yaml_round_trip(get_package_resources_dir() / "config.yaml")["sandbox"]["limits"]
 
 
 @pytest.fixture
@@ -122,27 +127,36 @@ async def test_profile_defaults_change_does_not_restart_sandbox(service, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_initialization_keeps_existing_sandbox_when_builtin_paths_cannot_project(service):
+async def test_initialization_reports_unprojectable_builtin_paths_without_blocking(service, monkeypatch):
+    from jiuwenswarm.common import config as config_module
+
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
     service._builtin_reader = lambda: {"permissions": {"file_guard": {"paths": [
         {"path": "**/.ssh/**", "match": "glob", "read": "deny", "write": "deny", "exec": "deny"},
     ]}}}
     live = load_yaml_round_trip(service.config_path)
     live["sandbox"].update(enabled=True, files=[])
     live["permissions"]["file_guard"] = {"enabled": True, "paths": []}
+    live["permissions"]["net_guard"] = {"enabled": True, "defaults": "allow", "urls": {}}
     dump_yaml_round_trip(service.config_path, live)
     manager = Manager()
 
-    async def unexpected_restart(_params):
-        pytest.fail("unrepresentable builtins must not restart the sandbox")
+    async def restart(_params):
+        return {"status": "applied"}
 
     result = await dispatch_security_config_request(
         ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=manager,
-        restart_sandboxes=unexpected_restart, service=service,
+        restart_sandboxes=restart, service=service,
     )
-    assert result["saved"] and not result["applied"]
-    assert "UNSUPPORTED_COVERAGE" in result["apply"]["targets"]["sandbox"]
-    assert load_yaml_round_trip(service.config_path) == live
-    assert not manager.configs
+    assert result["saved"] and result["applied"], result["apply"]["targets"]
+    assert result["apply"]["targets"]["sandbox"] == "applied"
+    assert result["apply"]["sandbox_file_skipped"][0]["path"] == "**/.ssh/**"
+    assert load_yaml_round_trip(service.config_path)["sandbox"]["files"] == []
+    assert manager.configs
 
 
 @pytest.mark.asyncio
@@ -544,7 +558,7 @@ async def test_unprojectable_network_rules_do_not_block_domain_updates(service, 
         }},
         agent_manager=manager, restart_sandboxes=restart, service=service,
     )
-    assert updated["applied"]
+    assert updated["applied"], updated["apply"]["targets"]
     assert updated["apply"]["targets"]["sandbox"] == "applied"
     assert {item["pattern"] for item in updated["apply"]["sandbox_network_skipped"]} == {
         "169.254.169.254", "localhost", "127.0.0.1", "192.0.2.10",
@@ -588,6 +602,145 @@ async def test_unprojectable_network_rules_do_not_block_domain_updates(service, 
         "metadata.google.internal": "deny", "example.org": "deny",
     }
     assert restarts == [True, True, True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled_before_initialize", [False, True])
+async def test_default_builtin_network_updates_after_enabling_empty_sandbox(
+    service, monkeypatch, tmp_path, enabled_before_initialize,
+):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.security_config_service import read_builtin_source
+    from jiuwenswarm.server import sandbox_policy_render as render
+
+    service._builtin_reader = read_builtin_source
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(render, "_config_dir", lambda: tmp_path)
+    service.config_path.write_bytes((get_package_resources_dir() / "config.yaml").read_bytes())
+    if enabled_before_initialize:
+        live = load_yaml_round_trip(service.config_path)
+        live["sandbox"].update(enabled=True, files=[], urls={})
+        dump_yaml_round_trip(service.config_path, live)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+
+    async def restart(_params):
+        return {"status": "applied"}
+
+    async def enabled_change(_kind, *, strict=False):
+        assert strict
+
+    monkeypatch.setattr("jiuwenswarm.server.sandbox_config_rpc._apply_sandbox_change", enabled_change)
+    manager = Manager()
+    initialized = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=manager,
+        restart_sandboxes=restart, service=service,
+    )
+    assert initialized["applied"]
+    if not enabled_before_initialize:
+        enabled = await dispatch_security_config_request(
+            ReqMethod.SECURITY_CONFIG_SANDBOX_UPDATE,
+            {"config": {
+                "enabled": True,
+                "filesystem": {key: [] for key in ("allow_read", "allow_write", "deny_read", "deny_write")},
+                "network": {"disable_all": False, "allow_domains": [], "deny_domains": []},
+            }},
+            agent_manager=manager, restart_sandboxes=restart, service=service,
+        )
+        assert enabled["applied"]
+    initial_urls = load_yaml_round_trip(service.config_path)["sandbox"].get("urls", {})
+    assert initial_urls == ({"metadata.google.internal": "deny"} if enabled_before_initialize else {})
+
+    updated = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "network", "value": {"sync.example": "deny"}},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert updated["applied"], updated["apply"]["targets"]
+    assert updated["apply"]["targets"]["sandbox"] == "applied"
+    assert {item["pattern"] for item in updated["apply"]["sandbox_network_skipped"]} == {
+        "169.254.169.254", "localhost", "127.0.0.1",
+    }
+    live = load_yaml_round_trip(service.config_path)
+    assert live["sandbox"]["urls"] == {
+        "metadata.google.internal": "deny", "sync.example": "deny",
+    }
+    assert live["permissions"]["net_guard"]["urls"]["localhost"] == "deny"
+    reapplied = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_APPLY,
+        {"expected_revision": updated["apply"]["revision"]},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert reapplied["applied"], reapplied["apply"]["targets"]
+    assert load_yaml_round_trip(service.config_path)["sandbox"]["urls"] == live["sandbox"]["urls"]
+
+    # The builtin IP skips no longer mask the distinct wildcard incompatibility.
+    before_wildcard = service.config_path.read_bytes()
+    wildcard = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "network", "value": {"*.sync.example": "deny"}},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert wildcard["saved"] and not wildcard["applied"]
+    assert "wildcard domains differ" in wildcard["apply"]["targets"]["sandbox"]
+    assert service.config_path.read_bytes() == before_wildcard
+
+
+@pytest.mark.asyncio
+async def test_default_builtin_file_updates_after_enabling_empty_sandbox(service, monkeypatch, tmp_path):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.security_config_service import read_builtin_source
+    from jiuwenswarm.server import sandbox_policy_render as render
+
+    service._builtin_reader = read_builtin_source
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(render, "_config_dir", lambda: tmp_path)
+    service.config_path.write_bytes((get_package_resources_dir() / "config.yaml").read_bytes())
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+
+    async def restart(_params):
+        return {"status": "applied"}
+
+    async def enabled_change(_kind, *, strict=False):
+        assert strict
+
+    monkeypatch.setattr("jiuwenswarm.server.sandbox_config_rpc._apply_sandbox_change", enabled_change)
+    manager = Manager()
+    initialized = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=manager,
+        restart_sandboxes=restart, service=service,
+    )
+    assert initialized["applied"]
+    enabled = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_SANDBOX_UPDATE,
+        {"config": {
+            "enabled": True,
+            "filesystem": {key: [] for key in ("allow_read", "allow_write", "deny_read", "deny_write")},
+            "network": {"disable_all": False, "allow_domains": [], "deny_domains": []},
+        }},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert enabled["applied"]
+    assert load_yaml_round_trip(service.config_path)["sandbox"].get("files", []) == []
+
+    target = tmp_path / "blocked"
+    target.mkdir()
+    updated = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "file", "value": [{"path": str(target), "read": "deny"}]},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert updated["applied"], updated["apply"]["targets"]
+    assert updated["apply"]["targets"]["sandbox"] == "applied"
+    assert updated["apply"]["sandbox_file_skipped"]
+    live = load_yaml_round_trip(service.config_path)
+    assert any(item["path"] == str(target) for item in live["sandbox"]["files"])
+    assert any(item["path"] == str(target) for item in live["permissions"]["file_guard"]["paths"])
 
 
 @pytest.mark.asyncio
@@ -681,7 +834,7 @@ async def test_native_sandbox_facade_preserves_four_axes_and_reports_apply(servi
     )
     assert queried["config"] == {
         **config, "startup_mode": "internal",
-        "limits": {"max_file_mb": 1024, "exec_timeout_seconds": 3600},
+        "limits": _package_sandbox_limits(),
     }
     assert render.get_sandbox_files_axes() == files
     assert service.get_candidate()["apply"]["revision"] == source_revision
@@ -756,7 +909,7 @@ async def test_managed_legacy_sandbox_set_uses_native_facade(service, monkeypatc
         restart_sandboxes=no_restart, service=service,
     )
     assert limits["applied"] and limits["limits"] == {
-        "max_file_mb": 12, "exec_timeout_seconds": 3600,
+        "max_file_mb": 12, "exec_timeout_seconds": _package_sandbox_limits()["exec_timeout_seconds"],
     }
     queried_limits = await dispatch_managed_sandbox_request(
         ReqMethod.SANDBOX_LIMITS_GET, {}, restart_sandboxes=no_restart, service=service,
@@ -926,6 +1079,31 @@ async def test_independent_sandbox_urls_are_not_overwritten(service, monkeypatch
         agent_manager=Manager(), restart_sandboxes=unexpected_restart, service=service,
     )
     assert not result["applied"]
+    assert "independently managed" in result["apply"]["targets"]["sandbox"]
+    assert service.config_path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_independent_sandbox_files_are_not_overwritten(service, tmp_path):
+    async def unexpected_restart(_params):
+        pytest.fail("independently managed sandbox files must not be replaced")
+
+    await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
+        restart_sandboxes=unexpected_restart, service=service,
+    )
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"].update(enabled=True, files=[{
+        "path": str(tmp_path / "manual"), "read": "deny", "write": "deny",
+    }])
+    dump_yaml_round_trip(service.config_path, live)
+    before = service.config_path.read_bytes()
+    result = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "file", "value": [{"path": str(tmp_path / "new"), "read": "deny"}]},
+        agent_manager=Manager(), restart_sandboxes=unexpected_restart, service=service,
+    )
+    assert result["saved"] and not result["applied"]
     assert "independently managed" in result["apply"]["targets"]["sandbox"]
     assert service.config_path.read_bytes() == before
 

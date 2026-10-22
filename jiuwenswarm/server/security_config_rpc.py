@@ -79,26 +79,26 @@ def _check_sandbox_coverage(permissions: dict[str, Any], live: dict[str, Any]) -
     if not runtime.get("enabled"):
         raise ValueError("UNSUPPORTED_COVERAGE permissions disabled for sandbox sync")
     if file_changed:
-        previous_files, previous_skipped = project_file_guard_to_sandbox(previous.get("file_guard") or {})
-        if previous_skipped or (sandbox.get("files") or []) != previous_files:
+        previous_files, _ = project_file_guard_to_sandbox(previous.get("file_guard") or {})
+        sandbox_files = sandbox.get("files") or []
+        # An empty native list can be seeded by the next managed projection.
+        if sandbox_files and sandbox_files != previous_files:
             raise ValueError("UNSUPPORTED_COVERAGE existing sandbox files are independently managed")
         guard = permissions.get("file_guard") or {}
         if guard.get("enabled") is False:
             raise ValueError("UNSUPPORTED_COVERAGE disabled FileGuard cannot replace sandbox rules")
         try:
-            files, skipped = project_file_guard_to_sandbox(guard)
+            files, _ = project_file_guard_to_sandbox(guard)
         except NotImplementedError as exc:
             raise ValueError(f"UNSUPPORTED_COVERAGE file: {exc}") from exc
-        if skipped:
-            raise ValueError(f"UNSUPPORTED_COVERAGE file: {skipped}")
         sandbox_file_buckets(files)
     if net_changed:
         previous_network, _ = project_net_guard_to_sandbox(previous.get("net_guard") or {})
         previous_urls = {domain: "allow" for domain in previous_network["allow_domains"]}
         previous_urls.update({domain: "deny" for domain in previous_network["deny_domains"]})
-        # The existing network sync has always omitted rules the sandbox cannot
-        # express. Compare only its actual projection before replacing it.
-        if (sandbox.get("urls") or {}) != previous_urls:
+        # Legacy sync omits unrepresentable rules; an empty native list can be seeded.
+        sandbox_urls = sandbox.get("urls") or {}
+        if sandbox_urls and sandbox_urls != previous_urls:
             raise ValueError("UNSUPPORTED_COVERAGE existing sandbox URLs are independently managed")
         guard = permissions.get("net_guard") or {}
         if guard.get("enabled") is False:
@@ -349,6 +349,7 @@ async def dispatch_security_config_request(
     sandbox = config.get("sandbox") or {}
     file_changed = _sandbox_rule_fields_changed(before, after, "file_guard", "paths")
     net_changed = _sandbox_rule_fields_changed(before, after, "net_guard", "urls")
+    sandbox_file_skipped = []
     sandbox_network_skipped = []
 
     from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
@@ -376,8 +377,7 @@ async def dispatch_security_config_request(
                 from jiuwenswarm.common.file_guard_config import sync_file_guard_to_sandbox
 
                 file_result = sync_file_guard_to_sandbox()
-                if file_result["skipped"]:
-                    raise ValueError(f"UNSUPPORTED_COVERAGE file: {file_result['skipped']}")
+                sandbox_file_skipped = file_result["skipped"]
             if net_changed:
                 from jiuwenswarm.common.net_guard_config import sync_net_guard_to_sandbox
 
@@ -394,7 +394,11 @@ async def dispatch_security_config_request(
         except Exception as exc:
             targets["sandbox"] = f"failed: {exc}"
 
-    result = service.record_apply(revision, targets, sandbox_network_skipped=sandbox_network_skipped)
+    result = service.record_apply(
+        revision, targets,
+        sandbox_file_skipped=sandbox_file_skipped,
+        sandbox_network_skipped=sandbox_network_skipped,
+    )
     return {"saved": True, "applied": result["applied"], "apply": result}
 
 

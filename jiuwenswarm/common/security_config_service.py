@@ -296,6 +296,7 @@ class SecurityConfigService:
                     dump_yaml_round_trip(self.config_path, published)
             state.update(status="applying", saved=True, applied=False)
             state["targets"] = {"rail": "pending", "host_exit": "pending", "sandbox": "pending"}
+            state.pop("sandbox_file_skipped", None)
             state.pop("sandbox_network_skipped", None)
             state["effective_hash"] = self._effective_hash(published)
             self._write_state(state)
@@ -303,7 +304,8 @@ class SecurityConfigService:
 
     def record_apply(
         self, revision: str, targets: dict[str, str],
-        *, sandbox_network_skipped: list[dict[str, str]] | None = None,
+        *, sandbox_file_skipped: list[dict[str, str]] | None = None,
+        sandbox_network_skipped: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Record acknowledgements for one revision; a newer save cannot be overwritten."""
         with self._thread_lock, self._locked():
@@ -313,6 +315,7 @@ class SecurityConfigService:
             if set(targets) != {"rail", "host_exit", "sandbox"}:
                 raise ValueError("all apply targets must be reported")
             state["targets"] = deepcopy(targets)
+            state["sandbox_file_skipped"] = deepcopy(sandbox_file_skipped or [])
             state["sandbox_network_skipped"] = deepcopy(sandbox_network_skipped or [])
             state["applied"] = all(value in {"applied", "not_required"} for value in targets.values())
             state["status"] = "applied" if state["applied"] else "failed"

@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 
 from jiuwenswarm.common.config import dump_yaml_round_trip, load_yaml_round_trip
+from jiuwenswarm.common.security_config_compose import validate_source
 from jiuwenswarm.common.security_config_service import SecurityConfigService
 
 
@@ -303,6 +304,17 @@ def test_profile_actions_are_preserved_and_validated(service):
             "id": "invalid-profile", "tools": ["bash"], "pattern": "bad *",
             "action": "ask", "profile_actions": {"full_access": []},
         }])
+
+
+def test_profile_actions_preserve_template_rule_and_reject_invalid_overrides():
+    rule = {
+        "id": "delete-files", "tools": ["shell"], "pattern": "rm *",
+        "action": "ask", "profile_actions": {"full_access": "allow"},
+    }
+    source = validate_source({"permissions": {"rules": [rule]}})
+    assert source["permissions"]["rules"][0]["profile_actions"] == {"full_access": "allow"}
+    with pytest.raises(ValueError, match="invalid profile_actions"):
+        validate_source({"permissions": {"rules": [{**rule, "profile_actions": {"full_access": "skip"}}]}})
 
 
 def test_lost_state_and_interrupted_source_write_get_fresh_revision(service):

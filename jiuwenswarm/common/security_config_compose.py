@@ -62,14 +62,12 @@ def validate_source(source: Any, *, cloud: bool = False) -> dict[str, Any]:
         for rule in perms["rules"]:
             if not isinstance(rule, dict) or set(rule) - _RULE_FIELDS or "layer" in rule:
                 raise ValueError("invalid rule fields")
-            actions = rule.get("profile_actions")
-            if actions is not None and (
-                not isinstance(actions, dict)
-                or any(not isinstance(profile, str) or not profile
-                       or not isinstance(action, str) or action not in _LEVELS
-                       for profile, action in actions.items())
-            ):
-                raise ValueError("invalid profile_actions")
+            if "profile_actions" in rule:
+                actions = rule["profile_actions"]
+                if not isinstance(actions, dict) or not actions or set(actions) - {"default", "full_access"} or any(
+                    not isinstance(action, str) or action not in _LEVELS for action in actions.values()
+                ):
+                    raise ValueError("invalid profile_actions")
             rid = rule.get("id")
             if not isinstance(rid, str) or not rid.strip() or rid in ids:
                 raise ValueError("rule id must be unique and non-empty")
