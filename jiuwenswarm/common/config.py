@@ -596,7 +596,8 @@ def _atomic_replace(src: Path, dst: Path, max_attempts: int = 10) -> None:
 
 
 # 进程内不可重入锁。portalocker 文件锁同样不可同进程重入，
-# 因此 update_config 的 mutator 内禁止再调用任何走 update_config 的函数
+# update_config 和 migrate_config_from_template 均会获取此锁。持锁期间
+# （包括 update_config 的 mutator）不得调用它们，或任何再次获取此锁的函数
 # （如 ensure_defaults_list_in_config / update_default_models_in_config），
 # 否则同进程二次获取锁会死锁。展示用数据请在事务外、另起独立事务读取。
 _CONFIG_WRITE_LOCK = threading.Lock()

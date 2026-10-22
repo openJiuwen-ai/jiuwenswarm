@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional
 import logging
 from logging.handlers import BaseRotatingHandler
+import portalocker
 from ruamel.yaml import YAML
 
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
@@ -914,7 +915,12 @@ def ensure_config_migrated_from_template(
         return False
 
     # The migration skips a missing config file and writes only on change.
-    if not migrate_config_from_template(template_path, config_path):
+    try:
+        migrated = migrate_config_from_template(template_path, config_path)
+    except (TimeoutError, portalocker.exceptions.LockException) as exc:
+        logger.warning("跳过配置迁移，获取配置写锁失败: %s", exc)
+        return False
+    if not migrated:
         return False
 
     logger.info(f"已同步配置模板: {config_path} (config_version = {VERSION})")
