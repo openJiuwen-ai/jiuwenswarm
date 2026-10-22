@@ -209,8 +209,25 @@ class CronController:
             return raw_s
         return raw_s
 
-    async def list_jobs(self) -> list[dict[str, Any]]:
+    async def list_jobs(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """List jobs, optionally scoped to one owner.
+
+        ``user_id`` is applied before admission is queried.  Admission is a
+        cross-process RPC routed by the job owner's ``user_id``, so querying it
+        for other owners both delays this caller and may cold-start (or abort
+        the cold start of) another user's sandbox.  ``None``/empty keeps the
+        legacy all-owner behavior for callers without an identity.
+        """
         jobs = await self._store.list_jobs()
+        owner = str(user_id or "").strip()
+        if owner:
+            # 先按属主过滤再打闸门:闸门按任务属主路由到其沙箱,过滤前全量
+            # 查询会让本请求替其他用户承担冷启动和 10s 超时。
+            jobs = [
+                job
+                for job in jobs
+                if str(getattr(job, "user_id", "") or "").strip() == owner
+            ]
         # project_execution_allowed 是一次跨进程 RPC。同项目多任务共享同一
         # (project_id, user_id) 判定:去重后并发查询,避免把一次列表请求
         # 放大成逐任务串行 N 次往返(每个 10s 超时)。

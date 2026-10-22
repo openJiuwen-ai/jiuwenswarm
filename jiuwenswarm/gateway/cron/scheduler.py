@@ -812,11 +812,13 @@ class CronSchedulerService:
         self._hiding_projects.discard(project_id)
 
     async def project_execution_allowed(self, project_id: str | None, user_id: str | None = None) -> bool:
+        if not project_id or project_id in {"default", "default_code"}:
+            return True
+        # 默认项目没有可恢复的生命周期资源,不必为它做文件锁 + 读盘的属主
+        # 登记;真实项目仍在准入查询前登记,保证重启后能路由回属主。
         self.remember_lifecycle_owner(user_id)
         if project_id in self._hiding_projects:
             return False
-        if not project_id or project_id in {"default", "default_code"}:
-            return True
         from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
         revision = self._project_admission_revisions.get(project_id, 0)
         _t0 = time.monotonic()
