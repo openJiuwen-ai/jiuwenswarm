@@ -37,6 +37,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.models import (
     ImageInfo,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
+    LaunchSpec,
     RegistryConflictError,
     RegistryConnectionError,
     RegistryValidationError,
@@ -3832,3 +3833,24 @@ async def test_resolve_web_endpoint_waits_for_running_after_create() -> None:
         yuanrong.release()
         await _drain_tasks(tasks)
         await client.shutdown()
+
+
+def test_launch_spec_uses_version_when_framework_version_missing() -> None:
+    spec = LaunchSpec.from_dict(
+        {
+            "framework": "dsh",
+            "version": "0.2.0-rc.2-20261013T091246Z",
+        }
+    )
+    assert spec.framework_version == "0.2.0-rc.2-20261013T091246Z"
+
+
+def test_launch_spec_prefers_framework_version() -> None:
+    spec = LaunchSpec.from_dict(
+        {
+            "framework": "dsh",
+            "version": "registry-version",
+            "framework_version": "card-version",
+        }
+    )
+    assert spec.framework_version == "card-version"
