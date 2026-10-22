@@ -12,6 +12,7 @@ from typing import Any
 # TEST ONLY: new URL fixtures use RFC-reserved domains; provider URLs are compared
 # only as configuration strings. These tests do not open sockets.
 
+import portalocker
 import pytest
 import yaml
 
@@ -1211,6 +1212,50 @@ react:
         assert migrated["react"]["subagent_runtime"]["enabled"] is True
 
         assert ensure_config_migrated_from_template(workspace_dir) is False
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        "lock_error",
+        [TimeoutError("config write lock timed out"), portalocker.exceptions.LockException("lock busy")],
+    )
+    def test_ensure_config_migrated_from_template_skips_lock_timeout(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        lock_error: Exception,
+    ):
+        from jiuwenswarm.common.utils import ensure_config_migrated_from_template
+
+        template_path = tmp_path / "template.yaml"
+        template_path.write_text("new_option: true\n", encoding="utf-8")
+        workspace_dir = tmp_path / "workspace"
+        config_path = workspace_dir / "config" / "config.yaml"
+        config_path.parent.mkdir(parents=True)
+        original_config = "user_value: keep\n"
+        config_path.write_text(original_config, encoding="utf-8")
+        monkeypatch.setattr(
+            "jiuwenswarm.common.utils._find_config_template_path",
+            lambda: template_path,
+        )
+
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            "jiuwenswarm.common.utils.logger.warning",
+            lambda message, error: warnings.append(message % error),
+        )
+
+        def raise_lock_error(*_args: Path) -> bool:
+            raise lock_error
+
+        monkeypatch.setattr(config_module, "migrate_config_from_template", raise_lock_error)
+        assert ensure_config_migrated_from_template(workspace_dir) is False
+        assert config_path.read_text(encoding="utf-8") == original_config
+        assert len(warnings) == 1
+        assert "获取配置写锁失败" in warnings[0]
+        monkeypatch.setattr(config_module, "migrate_config_from_template", migrate_config_from_template)
+        assert ensure_config_migrated_from_template(workspace_dir) is True
+        migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert migrated["user_value"] == "keep"
+        assert migrated["new_option"] is True
 
     @staticmethod
     def test_ensure_config_migrated_from_template_checks_current_version(
