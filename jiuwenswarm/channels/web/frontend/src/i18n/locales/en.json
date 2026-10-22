@@ -2519,7 +2519,31 @@
       "reload": "Reload",
       "stop": "Stop",
       "addressPlaceholder": "Enter URL or search",
-      "unavailable": "Built-in browser unavailable"
+      "unavailable": "Built-in browser unavailable",
+      "downloadContent": "Downloads"
+    },
+    "downloads": {
+      "recentTitle": "Recent downloads",
+      "empty": "No downloads yet",
+      "downloading": "Downloading",
+      "paused": "Paused",
+      "cancelled": "Cancelled",
+      "failed": "Failed",
+      "justNow": "Just now",
+      "minutesAgo_one": "{{count}} minute ago",
+      "minutesAgo_other": "{{count}} minutes ago",
+      "hoursAgo_one": "{{count}} hour ago",
+      "hoursAgo_other": "{{count}} hours ago",
+      "daysAgo_one": "{{count}} day ago",
+      "daysAgo_other": "{{count}} days ago",
+      "close": "Close downloads",
+      "openFile": "Open",
+      "showInFolder": "Show in folder",
+      "fileDeleted": "Deleted",
+      "removeRecord": "Remove from list",
+      "pauseDownload": "Pause download",
+      "resumeDownload": "Resume download",
+      "cancelDownload": "Cancel download"
     }
   },
   "logsPanel": {

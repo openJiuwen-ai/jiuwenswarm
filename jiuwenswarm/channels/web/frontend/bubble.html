@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="default" data-color-mode="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WorkSwarm Downloads</title>
+    <style>
+      /* 气泡宿主页：透明背景，由 DownloadPanel 自绘圆角与阴影。 */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        overflow: hidden;
+      }
+      #root {
+        width: 100vw;
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      (function () {
+        if (!Object.hasOwn) {
+          Object.hasOwn = function (obj, prop) {
+            if (obj == null) {
+              throw new TypeError('Cannot convert undefined or null to object');
+            }
+            return Object.prototype.hasOwnProperty.call(Object(obj), prop);
+          };
+        }
+        if (typeof structuredClone !== 'function') {
+          window.structuredClone = function (value) {
+            return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+          };
+        }
+        if (!Array.prototype.at) {
+          Array.prototype.at = function (index) {
+            var len = this.length >>> 0;
+            if (index == null) index = 0;
+            if (index < 0) index += len;
+            if (index < 0 || index >= len) return undefined;
+            return this[index];
+          };
+        }
+      })();
+    </script>
+    <script type="module" src="/src/bubble/main.tsx"></script>
+  </body>
+</html>

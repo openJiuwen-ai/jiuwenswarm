@@ -2503,7 +2503,28 @@
       "reload": "刷新",
       "stop": "停止",
       "addressPlaceholder": "输入网址或搜索",
-      "unavailable": "内置浏览器不可用"
+      "unavailable": "内置浏览器不可用",
+      "downloadContent": "下载内容"
+    },
+    "downloads": {
+      "recentTitle": "最近的下载记录",
+      "empty": "暂无下载记录",
+      "downloading": "正在下载",
+      "paused": "已暂停",
+      "cancelled": "已取消",
+      "failed": "下载失败",
+      "justNow": "刚刚",
+      "minutesAgo": "{{count}} 分钟前",
+      "hoursAgo": "{{count}} 小时前",
+      "daysAgo": "{{count}} 天前",
+      "close": "关闭下载记录",
+      "openFile": "打开",
+      "showInFolder": "在文件夹中显示",
+      "fileDeleted": "已删除",
+      "removeRecord": "从列表中移除",
+      "pauseDownload": "暂停下载",
+      "resumeDownload": "继续下载",
+      "cancelDownload": "取消下载"
     }
   },
   "logsPanel": {
