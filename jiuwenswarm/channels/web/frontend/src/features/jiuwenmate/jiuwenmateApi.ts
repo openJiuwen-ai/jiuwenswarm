@@ -1,4 +1,5 @@
 import { avatarHueToken, readAvatarHue } from './avatarHue';
+import { isColleagueTeamSkill } from './colleagueCapabilities';
 import type { Schedule, ScheduleDraft, ScheduleRun } from './schedules/types';
 import type {
   JiuwenMateActivity,
@@ -229,14 +230,27 @@ export interface ColleagueResourceOption {
   updatedAt?: string;
   /** Marketplace asset id, when the saved name must stay the package directory. */
   alias?: string;
+  /** Local skill classification. Team skills stay out of single-employee recommendations. */
+  skillType?: string;
 }
 
 const SELECTABLE_SKILL_TYPES = new Set(['skill', 'swarm_skill', 'multimodal_skill']);
 
-function resourceOption(name: string, label: string, description = ''): ColleagueResourceOption | null {
+function resourceOption(
+  name: string,
+  label: string,
+  description = '',
+  skillType = '',
+): ColleagueResourceOption | null {
   const trimmed = name.trim();
   if (!trimmed) return null;
-  return { name: trimmed, label: label.trim() || trimmed, description: description.trim() };
+  const type = skillType.trim();
+  return {
+    name: trimmed,
+    label: label.trim() || trimmed,
+    description: description.trim(),
+    ...(type ? { skillType: type } : {}),
+  };
 }
 
 function uniqueOptions(options: readonly ColleagueResourceOption[]): ColleagueResourceOption[] {
@@ -260,9 +274,11 @@ export function selectableColleagueResources(
     rows(record(skillsPayload).skills).flatMap((item: unknown) => {
       const row = record(item);
       const skillType = text(row.skill_type);
+      const kind = text(row.kind);
       if (row.source === 'mcp' || row.installed === false || row.enabled === false) return [];
       if (skillType && !SELECTABLE_SKILL_TYPES.has(skillType)) return [];
-      const option = resourceOption(text(row.name), text(row.display_name), text(row.description));
+      const recordedType = isColleagueTeamSkill({ skillType, kind }) ? skillType || kind : skillType;
+      const option = resourceOption(text(row.name), text(row.display_name), text(row.description), recordedType);
       return option ? [option] : [];
     }),
   );
@@ -392,6 +408,7 @@ export function toColleague(value: unknown): JiuwenMateColleague {
     ...(typeof wire.persona === 'string' ? { persona: wire.persona } : {}),
     tags: texts(wire.tags),
     category: CATEGORIES.includes(category) ? category : 'custom',
+    ...(text(wire.source_template_id) ? { sourceTemplateId: text(wire.source_template_id) } : {}),
     ...(avatarHue !== null ? { avatarHue } : {}),
     ...(avatarHue === null && avatarUrl ? { avatarUrl } : {}),
     capabilities: {
@@ -866,7 +883,16 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     },
     getColleague: (agentId: string) => colleague(JIUWENMATE_METHODS.get, { agent_id: agentId }),
     createColleague: (draft: JiuwenMateColleagueDraft, models: readonly JiuwenMateModelOption[]) =>
-      colleague(JIUWENMATE_METHODS.create, { settings: toWireSettings(draft, models) }),
+      colleague(JIUWENMATE_METHODS.create, {
+        settings: toWireSettings(draft, models),
+        ...(draft.sourceTemplateId
+          ? {
+              source_template_id: draft.sourceTemplateId,
+              unique_source: true,
+              ...(draft.installedPackageName ? { template_id: draft.installedPackageName } : {}),
+            }
+          : {}),
+      }),
     async readSettings(agentId: string): Promise<JiuwenMateWireSettings> {
       return record(await request(JIUWENMATE_METHODS.settingsGet, { agent_id: agentId })).settings as JiuwenMateWireSettings;
     },

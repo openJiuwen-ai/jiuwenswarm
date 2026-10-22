@@ -188,6 +188,7 @@
       "skillRecommendationsLoading": "正在查找适合此模板的技能…",
       "skillSearchFailed": "技能广场搜索失败，请稍后重试。",
       "skillSearchNoResults": "技能广场暂未找到匹配的技能。",
+      "employeeExists": "该员工已存在",
       "addRecommendedSkill": "添加",
       "skillAdded": "已添加",
       "installRecommendedSkill": "安装并添加",

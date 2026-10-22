@@ -1,7 +1,7 @@
 /** Shifts of the light-blue custom portrait. Zero stays with the default colleague. */
-export const CUSTOM_AVATAR_HUES = [55, 110, 155, 190, 230, 280] as const;
+export const CUSTOM_AVATAR_HUES = [55, 110, 155, 190, 230, 280, 20, 85, 132, 172, 210, 255, 310, 340] as const;
 
-const HUE_TOKEN = /^hue:(55|110|155|190|230|280)$/;
+const HUE_TOKEN = new RegExp(`^hue:(${CUSTOM_AVATAR_HUES.join('|')})$`);
 
 export function readAvatarHue(avatarUrl?: string): number | null {
   const match = HUE_TOKEN.exec(avatarUrl ?? '');

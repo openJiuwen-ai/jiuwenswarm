@@ -54,6 +54,7 @@ export interface ColleagueCreatePageProps {
   onOpenTemplateDetail: (id: string) => void;
   onCloseTemplateDetail: () => void;
   onChooseTemplate: (template: JiuwenMateTemplate) => void;
+  installedExperts?: readonly JiuwenMateTemplate[];
   onOpenCustom: () => void;
   onCloseCustom: () => void;
   onConfirmCustom: (basics: { name: string; description: string; avatarHue: number }) => void;
@@ -66,7 +67,8 @@ export interface ColleagueCreatePageProps {
 export function ColleagueCreatePage(props: ColleagueCreatePageProps) {
   const { t } = useTranslation();
   const { step, source, draft } = props;
-  const detailTemplate = JIUWENMATE_TEMPLATES.find((item) => item.id === props.detailTemplateId) ?? null;
+  const templates = [...JIUWENMATE_TEMPLATES, ...(props.installedExperts ?? [])];
+  const detailTemplate = templates.find((item) => item.id === props.detailTemplateId) ?? null;
 
   if (step === 'refine' && draft) {
     return (
@@ -107,7 +109,7 @@ export function ColleagueCreatePage(props: ColleagueCreatePageProps) {
         </button>
       </header>
       <div className="jiuwenmate-create__select" data-testid="jiuwenmate-template-selection">
-        {JIUWENMATE_TEMPLATES.map((template) => (
+        {templates.map((template) => (
           <ColleagueCard
             key={template.id}
             colleague={template}
@@ -364,7 +366,10 @@ function ColleagueRefineForm({
                 )}
               </section>
             ) : null}
-            {source === 'template' ? (
+            {source === 'template' &&
+            (skillRecommendations.status === 'loading' ||
+              skillRecommendations.local.length > 0 ||
+              skillRecommendations.plaza.length > 0) ? (
               <section
                 className="jiuwenmate-create__skill-recommendations"
                 data-testid="jiuwenmate-template-skill-recommendations"

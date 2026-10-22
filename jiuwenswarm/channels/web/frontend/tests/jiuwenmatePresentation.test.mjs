@@ -37,7 +37,9 @@ test('templates follow the eight designed roles with their category art', () => 
     ['英语表达教练', '系统架构工程师', '基本面研究员', '连载故事策划', '个人理财专家', '案件整理顾问', '视频分镜师', '研究写作顾问'],
   );
   assert.equal(new Set(JIUWENMATE_TEMPLATES.map((item) => item.category)).size, JIUWENMATE_TEMPLATES.length);
-  assert.ok(JIUWENMATE_TEMPLATES.every((item) => item.coreAbilities.length === 3));
+  assert.ok(JIUWENMATE_TEMPLATES.every((item) => item.persona.trim().length > 0 && item.skills.length === 3));
+  assert.ok(JIUWENMATE_TEMPLATES.every((item) => item.tools.length === 0 && item.rails.length === 0 && item.mcps.length === 0));
+  assert.ok(JIUWENMATE_TEMPLATES.every((item) => item.capabilities.connectors.length === 0 && item.capabilities.plugins.length === 0));
 });
 
 test('template skills are discovered from installed skills and the plaza instead of placeholder IDs', () => {

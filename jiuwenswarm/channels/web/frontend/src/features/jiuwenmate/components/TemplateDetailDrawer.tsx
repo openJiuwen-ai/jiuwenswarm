@@ -1,8 +1,7 @@
-import { Puzzle, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import skillIcon from '../../../assets/jiuwenmate/icons/skill.svg';
-import type { JiuwenMateTemplate } from '../types';
+import type { JiuwenMateBoundItem, JiuwenMateTemplate } from '../types';
 import { ColleagueAvatar } from './ColleagueAvatar';
 
 interface TemplateDetailDrawerProps {
@@ -22,10 +21,11 @@ export function TemplateDetailDrawer({ template, onClose, onChoose }: TemplateDe
     return () => document.removeEventListener('keydown', escape);
   }, [onClose]);
 
-  const groups = [
-    { key: 'skills', title: t('jiuwenmate.create.detail.skills', { count: template.capabilities.skills.length }), items: template.capabilities.skills, icon: 'skill' },
-    { key: 'connectors', title: t('jiuwenmate.create.detail.connectors', { count: template.capabilities.connectors.length }), items: template.capabilities.connectors, icon: 'puzzle' },
-    { key: 'plugins', title: t('jiuwenmate.create.detail.plugins', { count: template.capabilities.plugins.length }), items: template.capabilities.plugins, icon: 'puzzle' },
+  const groups: { key: string; title: string; items: readonly JiuwenMateBoundItem[] }[] = [
+    { key: 'skills', title: t('agentManagement.detail.skills'), items: template.skills },
+    { key: 'tools', title: t('agentManagement.detail.tools'), items: template.tools },
+    { key: 'rails', title: t('agentManagement.detail.rails'), items: template.rails },
+    { key: 'mcps', title: t('agentManagement.detail.mcps'), items: template.mcps },
   ];
 
   return (
@@ -48,37 +48,47 @@ export function TemplateDetailDrawer({ template, onClose, onChoose }: TemplateDe
             <p>{template.description}</p>
           </header>
           <section>
-            <h3>{t('jiuwenmate.create.detail.coreAbilities')}</h3>
-            <div className="jiuwenmate-drawer__abilities">
-              {template.coreAbilities.map((ability) => (
-                <article key={ability.title}>
-                  <strong>{ability.title}</strong>
-                  <p>{ability.description}</p>
-                </article>
-              ))}
-            </div>
+            <h3>{t('agentManagement.detail.ability')}</h3>
+            <p>{template.description}</p>
           </section>
-          <section>
-            <h3>{t('jiuwenmate.create.role')}</h3>
-            <div className="jiuwenmate-drawer__domains">
-              {template.tags.map((tag) => (
-                <span key={tag}>{tag}</span>
-              ))}
-            </div>
-          </section>
-          {groups.map((group) => (
+          {template.tags.length > 0 ? (
+            <section>
+              <h3>{t('agentManagement.detail.tags')}</h3>
+              <div className="jiuwenmate-drawer__domains">
+                {template.tags.map((tag) => (
+                  <span key={tag}>{tag}</span>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {groups.filter((group) => group.items.length > 0).map((group) => (
             <section key={group.key}>
               <h3>{group.title}</h3>
               <div className="jiuwenmate-capability-grid">
                 {group.items.map((item) => (
-                  <span key={item} className="jiuwenmate-capability-chip">
-                    {group.icon === 'skill' ? <img src={skillIcon} alt="" aria-hidden /> : <Puzzle aria-hidden />}
-                    <span>{item}</span>
+                  <span key={item.id} className="jiuwenmate-capability-chip" title={item.description}>
+                    <span>{item.name}</span>
                   </span>
                 ))}
               </div>
             </section>
           ))}
+          {template.capabilities.starterPrompts.length > 0 ? (
+            <section>
+              <h3>{t('agentManagement.detail.quickInputs')}</h3>
+              <div className="jiuwenmate-drawer__abilities">
+                {template.capabilities.starterPrompts.map((prompt) => (
+                  <p key={prompt}>{prompt}</p>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {template.persona.trim() ? (
+            <section>
+              <h3>{t('agentManagement.detail.contentTab')}</h3>
+              <p>{template.persona}</p>
+            </section>
+          ) : null}
         </div>
         <footer className="jiuwenmate-drawer__footer">
           <button type="button" className="jiuwenmate-outline-button" onClick={onClose}>

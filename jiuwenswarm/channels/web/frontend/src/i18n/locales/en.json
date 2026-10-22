@@ -188,6 +188,7 @@
       "skillRecommendationsLoading": "Finding skills for this template…",
       "skillSearchFailed": "Skills Plaza search failed. Please try again later.",
       "skillSearchNoResults": "No matching skills were found in Skills Plaza.",
+      "employeeExists": "This employee already exists",
       "addRecommendedSkill": "Add",
       "skillAdded": "Added",
       "installRecommendedSkill": "Install and add",

@@ -320,3 +320,63 @@ test('template plaza lookup failures appear in a dialog, not beside recommendati
   await act(async () => root.unmount());
   dom.window.close();
 });
+
+test('an empty keyword recommendation stays hidden and does not open an error dialog', async () => {
+  const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', { pretendToBeVisual: true });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
+  Object.defineProperty(globalThis, 'HTMLElement', { configurable: true, value: dom.window.HTMLElement });
+  Object.defineProperty(globalThis, 'Node', { configurable: true, value: dom.window.Node });
+  Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true });
+
+  const container = dom.window.document.createElement('div');
+  dom.window.document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(
+      React.createElement(
+        I18nextProvider,
+        { i18n },
+        React.createElement(ColleagueCreatePage, {
+          step: 'refine',
+          source: 'template',
+          detailTemplateId: null,
+          customDialogOpen: false,
+          draft: {
+            name: '英语表达教练',
+            description: '改进英文表达。',
+            tags: [],
+            category: 'education',
+            capabilities: { model: '', skills: [], connectors: [], plugins: [], knowledge: [], starterPrompts: [] },
+          },
+          modelCatalog: { models: [], defaultModelId: '' },
+          resourceCatalog: { skills: [], connectors: [], plugins: [], knowledge: [] },
+          resourceCatalogReady: true,
+          missingTemplateCapabilities: { skills: [], connectors: [], plugins: [], knowledge: [] },
+          skillRecommendations: { status: 'ready', local: [], plaza: [], error: null },
+          onDismissSkillRecommendationError() {},
+          onInstallSkill: async () => 'unused',
+          submitting: false,
+          onOpenTemplateDetail() {},
+          onCloseTemplateDetail() {},
+          onChooseTemplate() {},
+          onOpenCustom() {},
+          onCloseCustom() {},
+          onConfirmCustom() {},
+          onOpenPlaza() {},
+          onDraftChange() {},
+          onCancel() {},
+          onComplete() {},
+        }),
+      ),
+    );
+  });
+
+  assert.equal(container.querySelector('[role="dialog"]'), null);
+  assert.equal(container.querySelector('[data-testid="jiuwenmate-template-skill-recommendations"]'), null);
+  assert.equal(container.textContent.includes('技能广场暂未找到匹配的技能'), false);
+
+  await act(async () => root.unmount());
+  dom.window.close();
+});

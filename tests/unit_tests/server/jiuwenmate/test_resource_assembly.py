@@ -399,6 +399,20 @@ def test_installed_catalog_reads_a_plugin_from_the_skill_library(tmp_path):
     assert catalog.plugin_skills("absent") is None
 
 
+def test_installed_catalog_reads_a_skill_shipped_with_an_expert(tmp_path):
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    package = tmp_path / "plugins" / "agent_templates" / "local" / "quality-advisor"
+    write_skill(package / "skills" / "risk-based-code-review", "risk-based-code-review", "按风险评审代码。")
+    catalog = InstalledResourceCatalog(skills_dir=skills, builtin_dir=tmp_path / "missing-builtin")
+
+    source = catalog.skill("risk-based-code-review")
+
+    assert source is not None
+    assert source.directory == (package / "skills" / "risk-based-code-review").resolve()
+    assert catalog.skill("absent") is None
+
+
 def test_installed_catalog_reads_skills_bundled_in_a_plugin_package(tmp_path):
     skills = tmp_path / "skills"
     skills.mkdir()
