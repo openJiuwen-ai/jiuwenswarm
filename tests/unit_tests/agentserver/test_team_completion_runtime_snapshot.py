@@ -4,7 +4,7 @@
 
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -221,3 +221,81 @@ async def test_team_recovery_does_not_clear_another_callers_execution_state():
     assert snapshot["is_processing"] is False
     assert other_record.is_processing is True
     assert [item["dispatch_id"] for item in snapshot["dispatches"]] == [own_record.dispatch_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("snapshot_available", [True, False])
+@pytest.mark.parametrize(
+    "method, params",
+    [
+        (ReqMethod.SESSION_SWITCH, {}),
+        (ReqMethod.SESSION_PLAN_STATUS, {}),
+        (ReqMethod.HISTORY_GET, {}),
+        (ReqMethod.COMMAND_WORKFLOWS, {"action": "list"}),
+        (ReqMethod.COMMAND_GOAL, {"action": "get"}),
+        (ReqMethod.CHAT_SEND, {"attach_goal": True}),
+    ],
+)
+async def test_concurrent_page_restore_requests_do_not_make_completed_team_busy(method, params, snapshot_available):
+    bridge = WorkerGatewayBridge(ConnHolder())
+    dispatcher = WorkerDispatcher(bridge)
+    request = team_request()
+    reading = replace(request, request_id="page-restore", req_method=method, params=params)
+    record = bridge.events.register(reading, "page-restore-dispatch")
+    record.is_processing = True
+    if snapshot_available:
+        dispatcher._runtime = SimpleNamespace(
+            get_session_snapshot=lambda _: SimpleNamespace(executions=()),
+        )
+
+    snapshot = await recovery_snapshot(dispatcher, request)
+
+    assert snapshot["is_processing"] is False
+    assert record.active is True
+    assert snapshot["dispatches"][0]["request_id"] == reading.request_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method, params",
+    [
+        (ReqMethod.CHAT_RESUME, {}),
+        (ReqMethod.CHAT_ANSWER, {}),
+        (ReqMethod.CHAT_SWARMFLOW_REPLY, {}),
+        (ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED, {}),
+        (ReqMethod.COMMAND_GOAL, {"action": "set"}),
+        (ReqMethod.COMMAND_GOAL, {"action": "resume"}),
+    ],
+)
+async def test_admitted_continuations_and_goal_work_remain_busy_before_runtime_entry(method, params):
+    bridge = WorkerGatewayBridge(ConnHolder())
+    dispatcher = WorkerDispatcher(bridge)
+    request = team_request()
+    pending = replace(request, req_method=method, params=params)
+    bridge.events.register(pending, "pending-session-work")
+
+    assert (await recovery_snapshot(dispatcher, request))["is_processing"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("team_running", [True, False])
+async def test_actual_team_activity_is_visible_when_only_passive_response_owner_remains(team_running):
+    bridge = WorkerGatewayBridge(ConnHolder())
+    dispatcher = WorkerDispatcher(bridge)
+    request = team_request()
+    observer = replace(team_request("team-observer"), params={"mode": "team", "attach_only": True})
+    bridge.events.register(observer, "observer-only")
+    execution = team_execution(observer.request_id, "running")
+    lifecycle = SimpleNamespace(is_running=Mock(return_value=team_running))
+    runtime = SimpleNamespace(
+        get_session_snapshot=lambda _: SimpleNamespace(generation=1, executions=(execution,)),
+        _session_runtime_lifecycle=lifecycle,
+    )
+    dispatcher._runtime = SimpleNamespace(_execution_runtime=lambda: runtime)
+
+    snapshot = await recovery_snapshot(dispatcher, request)
+
+    assert snapshot["is_processing"] is team_running
+    context = lifecycle.is_running.call_args.args[0]
+    assert context.session_id == request.session_id
+    assert context.generation == 1

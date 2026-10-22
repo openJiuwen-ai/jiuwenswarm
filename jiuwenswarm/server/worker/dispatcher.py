@@ -18,7 +18,11 @@ from typing import Any
 from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.runtime.session.model import SessionExecutionSnapshot, SessionExecutionState
+from jiuwenswarm.runtime.session.model import (
+    SessionExecutionSnapshot,
+    SessionExecutionState,
+    SessionLifecycleContext,
+)
 from jiuwenswarm.server.ipc.protocol import (
     KIND_CANCEL,
     KIND_DELIVERY_ACK,
@@ -540,6 +544,15 @@ class WorkerDispatcher:
         after = max(0, int(message.get("after") or 0))
         state = self._reconcile_execution_state(request)
         snapshot = self._bridge.events.snapshot(request, after=after)
+        work_records = [
+            record for record in self._bridge.events.records.values()
+            if record.scope == request_scope(request)
+            and not record.is_passive_subscription
+            and _is_session_work_request(record.request)
+        ]
+        # Navigation/history RPCs may overlap this query when the page reloads.
+        # Their accepted handlers do not represent conversation execution.
+        snapshot["is_processing"] = any(record.active or record.is_processing for record in work_records)
         if message.get("worker_instance") not in {None, "", self._bridge.events.instance}:
             snapshot["history_required"] = True
             snapshot["interrupted"] = True
@@ -557,15 +570,24 @@ class WorkerDispatcher:
             # persistent Team handlers remain attached while waiting for
             # input. Preserve active dispatches without an execution yet
             # so warming/queued work still appears busy.
-            work_records = [
-                record for record in self._bridge.events.records.values()
-                if record.scope == request_scope(request) and not record.is_passive_subscription
-            ]
             snapshot["is_processing"] = any(
                 record.is_processing
                 or (record.active and not self._record_executions(record, state.executions))
                 for record in work_records
             )
+            # The only remaining response owner may be a passive observer
+            # while teammates execute. Read generation-scoped Team activity
+            # without treating the observer's lifetime as conversation work.
+            runtime_getter = getattr(self._runtime, "_execution_runtime", None)
+            runtime = runtime_getter() if callable(runtime_getter) else self._runtime
+            team_lifecycle = getattr(runtime, "_session_runtime_lifecycle", None)
+            if team_lifecycle is not None:
+                snapshot["is_processing"] = snapshot["is_processing"] or team_lifecycle.is_running(
+                    SessionLifecycleContext(
+                        session_id=request.params.get("session_id") or request.session_id or "",
+                        generation=state.generation,
+                    )
+                )
             waiting = {item.waiting_control_id for item in state.executions
                        if not item.state.terminal and item.waiting_control_id}
             for record in self._bridge.events.records.values():
@@ -580,6 +602,21 @@ class WorkerDispatcher:
         await conn.send({"kind": KIND_SNAPSHOT, "query_id": message.get("query_id"),
                          "generation": generation, "payload": snapshot})
         await self._bridge.replay(frames, generation)
+
+
+def _is_session_work_request(request: AgentRequest) -> bool:
+    """Keep page restoration and passive Goal subscriptions out of busy state."""
+    if request.params.get("attach_goal") is True:
+        return False
+    if request.req_method == ReqMethod.COMMAND_GOAL:
+        return str(request.params.get("action", "get")).strip().lower() in {"set", "resume"}
+    return request.req_method in {
+        ReqMethod.CHAT_SEND,
+        ReqMethod.CHAT_RESUME,
+        ReqMethod.CHAT_ANSWER,
+        ReqMethod.CHAT_SWARMFLOW_REPLY,
+        ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
+    }
 
 
 def _frame_matches_session(message: dict[str, Any], generation: int) -> bool:
