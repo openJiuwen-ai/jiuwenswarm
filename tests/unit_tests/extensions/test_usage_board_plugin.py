@@ -24,6 +24,7 @@ from jiuwenswarm.extensions.usage_board.extension import (
     INTERNAL_ERROR,
     RPC_PREFIX,
     UsageBoardApplicationPlugin,
+    _cache_is_fresh,
     register_extensions,
 )
 
@@ -602,6 +603,18 @@ async def test_overview_cache_expires_after_ttl(
     assert still_cached["payload"]["cached"] is True
     assert expired["payload"]["cached"] is False
     assert len(scans) == 2
+
+
+def test_cache_helper_contract() -> None:
+    """缓存命中的三个分支：无缓存 / 参数不同 / 超过 TTL。"""
+
+    key = (30, 50, 200)
+    fresh = (1000.0, key, {})
+
+    assert _cache_is_fresh(None, key, 1000.0) is False
+    assert _cache_is_fresh(fresh, (7, 50, 200), 1000.0) is False
+    assert _cache_is_fresh(fresh, key, 1000.0 + CACHE_TTL_SECONDS) is True
+    assert _cache_is_fresh(fresh, key, 1000.0 + CACHE_TTL_SECONDS + 0.5) is False
 
 
 @pytest.mark.asyncio

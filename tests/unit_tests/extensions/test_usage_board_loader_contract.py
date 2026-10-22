@@ -172,6 +172,45 @@ def test_usage_board_root_is_recognised_by_the_loader() -> None:
     assert PLUGIN_ROOT.name.isidentifier()
 
 
+class _BlockedImport:
+    """拦截指定模块的导入，用来模拟「插件目录不在 jiuwenswarm 包内」的形态。"""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def find_spec(self, fullname, path=None, target=None):  # noqa: ANN001
+        if fullname == self.name:
+            raise ImportError(f"blocked: {fullname}")
+        return None
+
+
+def test_third_party_layout_loads_the_engine_without_touching_sys_path(
+    tmp_path: Path,
+) -> None:
+    """第三方目录形态：按文件路径加载同级引擎，且**不修改 sys.path**（CodeCheck G.PSL.03）。"""
+
+    probe = tmp_path / "usage_board_probe"
+    probe.mkdir()
+    for name in ("extension.py", "usage_engine.py"):
+        shutil.copy2(PLUGIN_ROOT / name, probe / name)
+
+    saved = sys.modules.pop("jiuwenswarm.extensions.usage_board", None)
+    blocked = _BlockedImport("jiuwenswarm.extensions.usage_board")
+    sys.meta_path.insert(0, blocked)
+    path_before = list(sys.path)
+    try:
+        module = ExtensionLoader._import_module(probe)
+    finally:
+        sys.meta_path.remove(blocked)
+        sys.modules.pop("usage_board_usage_engine", None)
+        if saved is not None:
+            sys.modules["jiuwenswarm.extensions.usage_board"] = saved
+
+    assert Path(module.usage_engine.__file__).resolve().parent == probe.resolve()
+    assert module.usage_engine.HISTORY_FILENAME == "history.jsonl"
+    assert sys.path == path_before
+
+
 def test_manifest_is_readable_without_importing_the_entry(tmp_path: Path) -> None:
     probe = tmp_path / "usage_board_probe"
     probe.mkdir()

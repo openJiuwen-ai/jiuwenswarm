@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -974,7 +975,7 @@ def scan_sessions(
         }
     return {
         "schema_version": SCHEMA_VERSION,
-        "generated_at": _iso(moment if moment is not None else datetime.now().timestamp()),
+        "generated_at": _iso(moment if moment is not None else time.time()),
         "data_dir": str(sessions_dir.parent.parent) if sessions_dir.name == "sessions" else "",
         "sessions_dir": str(sessions_dir),
         "days": days,
