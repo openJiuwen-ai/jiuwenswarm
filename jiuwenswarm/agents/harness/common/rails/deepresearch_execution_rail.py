@@ -538,6 +538,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
                     content=content.strip(),
                     tool_call_id=tool_call_id,
                 )
+                ctx.inputs.tool_result = content.strip()
                 ctx.request_force_finish(
                     {"output": content.strip(), "result_type": "answer"}
                 )

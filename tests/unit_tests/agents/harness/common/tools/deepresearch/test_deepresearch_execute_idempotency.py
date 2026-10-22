@@ -162,3 +162,43 @@ def test_terminal_completed_updates_tool_msg_to_completion_content():
     assert "已完成" in ctx.inputs.tool_msg.content
     assert "暂停" not in ctx.inputs.tool_msg.content
     assert len(ctx.force_finish_requests) == 1
+
+
+def test_terminal_completed_rewrites_tool_result_to_completion_content():
+    """终态完成时 tool_result 改写为精简完成文案，使 history 记录与下一轮 LLM 上下文重建看到「已完成」。
+
+    修复前：terminal 分支不改写 tool_result，StreamEventRail(priority=80) emit
+    原始 16KB Python dict（含 workflow_llm_token_usage / timing_windows 等）到
+    history.json 的 chat.tool_result 记录。下一轮 LLM 重建上下文时从 history
+    读这个巨大 result dict，被 ask_user_question 卡片误导，忽略 kind=completed。
+    修复后：terminal 分支把 ctx.inputs.tool_result 改写为精简完成文案字符串，
+    StreamEventRail emit 的是精简文案，history 记录精简文案，LLM 看到「已完成」。
+    """
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
+        EXECUTION_SCHEMA,
+    )
+
+    sess = _fake_session()
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_done2", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
+    completion_content = "✅ 深度研究已完成！\n\nai_chip_report已成功生成并交付。"
+    ctx.inputs.tool_result = {
+        "schema_version": EXECUTION_SCHEMA,
+        "kind": "completed",
+        "content": completion_content,
+        "workflow_llm_token_usage": {"input_tokens": 999999, "output_tokens": 99999},
+        "state": {
+            "schema_version": 1,
+            "phase": "completed",
+            "query": "深度研究AI芯片行业",
+            "file_name": "ai_chip_report",
+            "conversation_id": "test-cid-2",
+            "requested_report_type": "brief",
+            "revision": 4,
+        },
+    }
+    r = rail.DeepResearchExecutionRail(model_provider=lambda: None)
+    asyncio.run(r.after_tool_call(ctx))
+    assert ctx.inputs.tool_result == completion_content
+    assert "999999" not in str(ctx.inputs.tool_result)
+    assert "workflow_llm_token_usage" not in str(ctx.inputs.tool_result)
