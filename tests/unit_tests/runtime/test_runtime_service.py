@@ -1613,6 +1613,128 @@ async def test_stale_permission_answer_still_requires_active_execution(streaming
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
+async def test_stale_ask_user_answer_resumes_on_idle_reregistered_session(streaming: bool) -> None:
+    """A re-registered idle session (heartbeat/reconnect after restart) still recovers.
+
+    The post-restart session record exists, so the cold-session probe alone
+    would fail; with every execution settled the stale answer must still be
+    routed to the chat round.
+    """
+    admission = SessionRunAdmission()
+
+    class InteractionManager(FakeAgentManager):
+        def get_agent_for_session_nowait(self, channel_id: str, session_id: str) -> object:
+            return self.agent
+
+    session_id = f"ask-user-reregistered-session-{streaming}"
+    manager = InteractionManager()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+        admission_controller=admission,
+    )
+    # First a plain turn: registers the session and settles.
+    manager.agent = FakeAgent()
+    first = AgentRequest(
+        request_id="reregister-first-turn",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "hello", "mode": "agent", "work_mode": "work"},
+        is_stream=True,
+    )
+    await _collect_events(runtime.stream(first, trigger_hook=False))
+
+    # Then the stale ask_user answer on the now-idle session.
+    manager.agent = ResumingAskUserAgent()
+    answer = AgentRequest(
+        request_id="reregister-stale-answer",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "",
+            "request_id": "call_ask_user",
+            "answers": [{"question": "choose", "selected_options": ["A"]}],
+            "source": "ask_user_interrupt",
+            "mode": "agent",
+            "work_mode": "work",
+        },
+        is_stream=streaming,
+    )
+
+    try:
+        if streaming:
+            events = [event async for event in runtime.stream(answer, trigger_hook=False)]
+        else:
+            events = await runtime.invoke(answer, trigger_hook=False)
+        assert [event.event_type for event in events] == ["chat.final"]
+        assert admission.has_pending_interaction(session_id) is False
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_wrong_ask_user_answer_rejected_while_interaction_waits() -> None:
+    """A wrong-id answer must not reach the agent while another interaction waits."""
+    admission = SessionRunAdmission()
+
+    class InteractionManager(FakeAgentManager):
+        def get_agent_for_session_nowait(self, channel_id: str, session_id: str) -> object:
+            return self.agent
+
+    session_id = "ask-user-wrong-id-session"
+    manager = InteractionManager()
+    manager.agent = AskUserAgent()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+        admission_controller=admission,
+    )
+    original = AgentRequest(
+        request_id="wrong-id-original",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "ask", "mode": "agent", "work_mode": "work"},
+        is_stream=True,
+    )
+    events = [event async for event in runtime.stream(original, trigger_hook=False)]
+    assert [event.event_type for event in events] == ["chat.ask_user_question"]
+    assert admission.has_pending_interaction(session_id) is True
+
+    wrong = AgentRequest(
+        request_id="wrong-id-answer",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "",
+            "request_id": "some-other-question",
+            "answers": [{"question": "choose", "selected_options": ["A"]}],
+            "source": "ask_user_interrupt",
+            "mode": "agent",
+            "work_mode": "work",
+        },
+        is_stream=True,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="session has no active execution"):
+            async for _event in runtime.stream(wrong, trigger_hook=False):
+                pass
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("action", ["set", "resume"])
 async def test_goal_start_waits_for_active_session_message(streaming, action) -> None:
     admission = SessionRunAdmission()
