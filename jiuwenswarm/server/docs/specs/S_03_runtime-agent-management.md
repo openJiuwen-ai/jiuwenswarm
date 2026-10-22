@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / runtime-agent-management |
 | 关联模块 | jiuwenswarm/server/runtime/{agent_manager.py, tenant_agent_pool.py, agent_warm_pool.py, agent_adapter/, a2ui/, debug_trace/, session/, skill/, workspace/, agent_config_service.py, prewarm.py, proactive_adapter.py, team_binding_store.py, team_entity_store.py, team_snapshot_refresh.py} |
-| 最近一次修订日期 | 2026-10-15 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -45,6 +45,7 @@
 8. **skilldev 流水线 11 阶段顺序固定**：init → plan → generate → desc_optimize → test_design → test_run → evaluate → improve → package → validate。pipeline.py 是编排真源，不要在 service.py 里硬改顺序。
 9. **AgentManager 单进程单默认实例**：非 enterprise 进程内至多一个裸 AgentManager（由 AgentWebSocketServer 构造），不要在其他模块私自 AgentManager()。
 10. **企业版冷加载 best-effort**：每个 `reload_*_from_gateway_db` 调用失败只记 warning，不阻断 AgentServer 启动——用户配置 PVC 缺表或缺字段不应让进程起不来。
+11. **code 首建与重载共享工具懒加载策略**：`interface_code._build_agent_rails` 固定装配 `ProgressiveToolRail`，复用 `react.tool_lazy_load` 的开关、模型白名单及请求级 MCP allowlist；编码记忆、LSP、模式切换与计划审批工具保持 eager。模型最终可见工具仍受模式、技能门控及 `disabled_tools` 约束；其余工具通过 `tools_search` / `invoke_tool` 按需调用。
 
 ## 接口契约
 
@@ -165,6 +166,7 @@ UsageReconciler:    start_usage_reconciler()（启动周期回收）
 ## 修改检查单
 
 - **新增 agent_adapter 接口** → 确认归哪一路（deep/code/flash）→ AgentWebSocketServer._resolve_adapter 里加分支 → 默认路径 fallback 里跑双接口一致性测试。
+- **改 code 工具装配或懒加载策略** → 验证首次模型调用已过滤大量 MCP schema、编码工具仍可见、deferred 工具可搜索调用；确认关闭开关、模型白名单、禁用工具及热重载替换行为。
 - **改 AgentWarmPool WarmKey 结构** → 同步 sync() 里的重建条件 → 排除 acp/a2a 分支不被意外打破 → 跑预热池一致性测试。
 - **改 prewarm 阶段** → 确认阶段 3 仍是独立 fire-and-forget，不被阶段 1/2 兜底 await 阻塞 → mock_model 默认 True 不消耗 token。
 - **增删 skilldev 阶段** → pipeline.py 编排顺序同步 → service.py 的 stage 实例化清单同步 → 阶段 base.py 接口签名不变。

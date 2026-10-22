@@ -74,6 +74,7 @@ from jiuwenswarm.agents.harness.common.rails import (
     StructuredAskUserRail,
 )
 from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
+from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import ProgressiveToolRail
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
     get_office_ace_user_profile_config,
 )
@@ -281,6 +282,19 @@ whether to begin — the user has already read and approved it. This turn's outp
 should be the work itself and its results. Use ask_user only if execution is
 genuinely blocked.
 </system-reminder>"""
+
+
+# Code prompts refer to these tools directly. Keep their schemas available
+# without requiring discovery, including after the shared config reload path.
+_CODE_EAGER_TOOLS = (
+    "lsp",
+    "coding_memory_read",
+    "coding_memory_write",
+    "coding_memory_edit",
+    "switch_mode",
+    "enter_plan_mode",
+    "exit_plan_mode",
+)
 
 
 # 名字 → 构建方法映射（rail/tool 名字与类方法名对照）
@@ -813,6 +827,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 rail_name,
             )
 
+        # Filter MCP schemas on the first turn, just as the shared reload path
+        # does. Without this rail code sessions send the entire tool catalog.
+        rail_infos.append(
+            _RailBuildInfo(
+                "_progressive_tool_rail",
+                self._build_progressive_tool_rail,
+                {"config": config},
+            )
+        )
+
         # Keep the unified react.disabled_tools policy consistent with agent
         # mode. Its low priority makes it run after fixed and dynamic rails
         # have registered their tools.
@@ -825,6 +849,15 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
 
         return self._instantiate_rails(rail_infos, config_base)
+
+    def _build_progressive_tool_rail(
+        self, config: dict[str, Any]
+    ) -> ProgressiveToolRail | None:
+        """Share lazy-loading policy while preserving code's direct tools."""
+        rail = super()._build_progressive_tool_rail(config)
+        if rail is not None:
+            rail.eager_tools = list(dict.fromkeys([*rail.eager_tools, *_CODE_EAGER_TOOLS]))
+        return rail
 
     # ─── Code 专属 Rail 构建 ────────────────
 

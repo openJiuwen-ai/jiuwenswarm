@@ -109,7 +109,9 @@ For the full built-in tool index, see [3.12 Built-in Capabilities Index](#312-bu
 
 `SysOperationRail` registers file, shell, and optional code tools. All system operations execute through a shared `SysOperation`, so local execution, sandboxing, working-directory restriction, and permission control are handled consistently.
 
-When the tool set is large, `ProgressiveToolRail` provides progressive tool disclosure: the model sees only meta tools and basic tools by default, then uses `tool_search` to search for tools and `load_tools` to load the tools needed for the current session. This reduces context noise and lowers the chance of misusing high-risk tools.
+When the tool set is large, `ProgressiveToolRail` follows `react.tool_lazy_load`: the model sees eager tools, discovers deferred tools through `tools_search`, and calls them through `invoke_tool`. This keeps full tool schemas out of the initial context. `enabled` controls the switch; `enable_for_models` controls the model whitelist.
+
+Code mode mounts this rail when the session is first created and preserves the same policy on config reload. It adds `lsp`, `coding_memory_read/write/edit`, `switch_mode`, `enter_plan_mode`, and `exit_plan_mode` to its eager list. Mode filtering, skill gates, and disabled-tool policy still control final visibility. Non-eager request-scoped MCP tools remain deferred and use the current request's allowlist when invoked. Subagent behavior remains separately controlled by `tool_lazy_load.subagents`.
 
 Permission governance is composed of `PermissionEngine` and `PermissionInterruptRail`. `PermissionEngine` evaluates allow / ask / deny policies, while `PermissionInterruptRail` intercepts every tool call before execution and handles direct allow, direct deny, HITL confirmation, "allow once", and "always allow" flows. Shell commands go through AST analysis, and external path checks are combined with the current decision using the stricter result.
 
