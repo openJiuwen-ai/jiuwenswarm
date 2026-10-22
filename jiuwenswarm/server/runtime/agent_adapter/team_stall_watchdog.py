@@ -131,13 +131,17 @@ async def team_progress_snapshot_db(
     DAO 直写点（recovery/restart 等路径）不经事件，live 内存视图可能滞后于
     DB；两队任一显示在途都按"不停摆"。team_name 解析链与
     agent_ws_server._handle_team_snapshot 一致；解析不到/读取失败返回 None。
-    """
-    try:
-        from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
-            TeamMonitorHandler,
-        )
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
+    例外：`TeamNotEstablishedError`（团队从未建立=确定性终结）原样上抛——
+    settle 复核要靠它立即收口而不是续窗重试；瞬态失败才归 None。
+    """
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamMonitorHandler,
+        TeamNotEstablishedError,
+    )
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    try:
         tm = get_team_manager(channel_id)
         team_name = str(tm.get_active_team_name(session_id) or "").strip()
         if not team_name:
@@ -147,6 +151,8 @@ async def team_progress_snapshot_db(
         return _read_progress(
             await TeamMonitorHandler.get_team_snapshot_from_db(session_id, team_name)
         )
+    except TeamNotEstablishedError:
+        raise
     except Exception:
         logger.debug(
             "[TeamStallWatchdog] team progress snapshot (db) failed: session_id=%s",
@@ -220,6 +226,10 @@ def schedule_team_stall_watchdog(
     """
 
     async def _watchdog() -> None:
+        from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+            TeamNotEstablishedError,
+        )
+
         stall_windows = 0
         last_chunks = liveness()
         last_signals = completion_signals()
@@ -262,7 +272,22 @@ def schedule_team_stall_watchdog(
                 # live 判零在途：DB 对照复核（live 内存视图滞后于 DAO 直写的
                 # 盲区兜底）；对照不可用退回 live-only 判定（保留击杀能力——
                 # 误杀主场景已由在途口径扩展+任务判活覆盖，不依赖对照）
-                db_progress = await team_progress_snapshot_db(channel_id, session_id)
+                try:
+                    db_progress = await team_progress_snapshot_db(channel_id, session_id)
+                except TeamNotEstablishedError:
+                    # 团队行已不存在但 live 视图仍有 pending（团队被删/DB 重建
+                    # 后 monitor 内存滞后）：settle 复核只在 final/静默窗/流末
+                    # 触发，本分支要处理的恰恰是"leader 不再产出 final"的形态——
+                    # 停守=零收口。退回对照不可用
+                    # （=live-only 判定），由 stall_windows 计数决定是否按既有
+                    # 路径击杀收口。
+                    logger.info(
+                        "[TeamStallWatchdog] db cross-check reports team not "
+                        "established; falling back to live-only judgement: "
+                        "session_id=%s",
+                        session_id,
+                    )
+                    db_progress = None
                 if db_progress is not None:
                     db_in_flight, db_pending, db_recent = db_progress
                     if db_in_flight > 0 or db_recent:

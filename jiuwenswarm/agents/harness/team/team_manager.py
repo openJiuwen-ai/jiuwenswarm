@@ -482,6 +482,18 @@ class TeamManager(metaclass=_TeamManagerMeta):
         # 下一条用户消息应按新流首请求处理而非 follow-up 复用旧流（否则回答帧
         # 带旧 request_id，前端归属/归组断链）。新一轮内容帧到达时清除。
         self._stream_round_terminal: dict[str, bool] = {}
+        # session_id → 降级告警详情：本会话见过 degraded chat.error（build_team
+        # 熔断转降级的告警帧）。寿命=「会话存续 且 运行时在册」——
+        # _clear_terminal_session_markers（stop/terminate/cancel/delete 的
+        # 运行时拆除路径）统一释放；**pause（可恢复停止）不清**（其正常路径
+        # 不过 _clear_terminal_session_markers）；fresh-start 由
+        # _fresh_start_if_round_terminal 显式 capture/restore 跨过去；
+        # 团队真建成（本轮见到团队事件帧）时由 team_helpers 主动清除。
+        # 拆除后被清除的兜底：下一轮冷恢复 leader 重试 build_team 失败会经
+        # latch 重新置位；若 leader 不重试则该轮无 build_team 调用 → settle
+        # 走 solo 分支干净收口，不会误判死。
+        # 详情文本供「零产出降级轮」收口时作 error 文案（空回合不得记已完成）。
+        self._degraded_sessions: dict[str, str] = {}
 
     def mark_stream_round_terminal(self, session_id: str) -> None:
         """标记会话长寿命流的最近回合已终态收尾。"""
@@ -598,6 +610,22 @@ class TeamManager(metaclass=_TeamManagerMeta):
     def reset_seen_team_events(self, session_id: str) -> None:
         """Reset the flag at the start of a new conversation round."""
         self._seen_team_events.pop(session_id, None)
+
+    def mark_session_degraded(self, session_id: str, detail: str = "") -> None:
+        """Record that this session has seen a degraded build_team warning."""
+        self._degraded_sessions[session_id] = detail
+
+    def has_session_degraded(self, session_id: str) -> bool:
+        """Return whether this session has seen a degraded build_team warning."""
+        return session_id in self._degraded_sessions
+
+    def session_degraded_detail(self, session_id: str) -> str | None:
+        """Return the degraded warning text for the session, if any."""
+        return self._degraded_sessions.get(session_id)
+
+    def clear_session_degraded(self, session_id: str) -> None:
+        """Clear the degraded marker (team successfully established later)."""
+        self._degraded_sessions.pop(session_id, None)
 
     def mark_workflow_completed(self, session_id: str) -> None:
         """Mark that the workflow has reached a terminal status."""
@@ -1889,7 +1917,11 @@ class TeamManager(metaclass=_TeamManagerMeta):
         self.reset_seen_team_events(session_id)
         self.reset_workflow_completed(session_id)
         self.pop_cron_completion(session_id)
+        self._degraded_sessions.pop(session_id, None)
         self._pending_team_evolution_watcher_sessions.discard(session_id)
+        # 注意：fresh-start（回合终态后追问收旧流起新流）也走本路径——
+        # 降级标记的跨 fresh-start 存活由 _fresh_start_if_round_terminal
+        # 显式 capture/restore 保证，这里与其余会话标记统一释放。
 
     async def _cancel_team_evolution_watcher(self, session_id: str) -> None:
         watcher_task = self._team_evolution_watchers.pop(session_id, None)
@@ -2856,6 +2888,7 @@ class TeamManager(metaclass=_TeamManagerMeta):
         releasing only the session checkpoint.
         """
         team_name = self._resolve_delete_session_team_name(session_id)
+        self._degraded_sessions.pop(session_id, None)
         await kv_cache_hooks.stop_runtime_before_terminal_delete(
             self.stop_session_runtime,
             session_id=session_id,

@@ -35,8 +35,8 @@ def _broadcast_recorder(events: list[dict], manager=None):
     async def _record(_channel_id, session_id: str, event: dict) -> None:
         events.append(event)
         if (
-            manager is not None
-            and event.get("event_type") in team_helpers._TEAM_BUILDING_EVENT_TYPES
+                manager is not None
+                and event.get("event_type") in team_helpers._TEAM_BUILDING_EVENT_TYPES
         ):
             manager.mark_seen_team_events(session_id)
 
@@ -117,7 +117,7 @@ def test_build_team_request_metadata_names_desktop_exporter_for_desktop_trace() 
 
 
 def test_persist_team_history_event_keeps_human_spawn_details(
-    monkeypatch: pytest.MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     persisted: list[dict[str, Any]] = []
     monkeypatch.setattr(
@@ -165,6 +165,19 @@ class _InactiveTeamRuntimeManagerMixin:
         self._seen_team_events: dict[str, bool] = {}
         self._workflow_completed: dict[str, bool] = {}
         self._stream_round_terminal: dict[str, bool] = {}
+        self._degraded_sessions: dict[str, str] = {}
+
+    def mark_session_degraded(self, session_id: str, detail: str = "") -> None:
+        self._degraded_sessions[session_id] = detail
+
+    def has_session_degraded(self, session_id: str) -> bool:
+        return session_id in self._degraded_sessions
+
+    def session_degraded_detail(self, session_id: str) -> str | None:
+        return self._degraded_sessions.get(session_id)
+
+    def clear_session_degraded(self, session_id: str) -> None:
+        self._degraded_sessions.pop(session_id, None)
 
     def mark_stream_round_terminal(self, session_id: str) -> None:
         self._stream_round_terminal[session_id] = True
@@ -1578,9 +1591,9 @@ async def test_process_team_message_stream_emits_deferred_marker_for_followup(mo
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        inputs,
-        object(),
+            request,
+            inputs,
+            object(),
     ):
         chunks.append(chunk)
 
@@ -1644,7 +1657,7 @@ async def test_start_team_stream_round_refreshes_active_team_trace(monkeypatch):
 
         @staticmethod
         async def refresh_active_team_trace_for_round(
-            session_id: str, team_name: str, request_metadata: dict | None
+                session_id: str, team_name: str, request_metadata: dict | None
         ) -> None:
             # 刷新必须先于流任务起跑（register_stream_task 时刷新已完成）
             assert "registered" not in calls, "trace refresh must run before stream task starts"
@@ -1683,7 +1696,7 @@ async def test_start_team_stream_round_refreshes_active_team_trace(monkeypatch):
 
 @pytest.mark.anyio
 async def test_start_team_stream_round_skips_trace_refresh_without_manager_support(
-    monkeypatch,
+        monkeypatch,
 ) -> None:
     """老形态/假 manager 无 refresh_active_team_trace_for_round 时静默跳过（兼容兜底）。"""
 
@@ -1742,11 +1755,11 @@ async def test_process_team_message_stream_retries_followup_while_native_starts(
             )
 
     async def _fake_retry(
-        team_manager: object,
-        session_id: str,
-        query: str,
-        *,
-        initial_reason: str | None = None,
+            team_manager: object,
+            session_id: str,
+            query: str,
+            *,
+            initial_reason: str | None = None,
     ):
         assert team_manager is not None
         assert initial_reason == (
@@ -1773,9 +1786,9 @@ async def test_process_team_message_stream_retries_followup_while_native_starts(
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        {"query": "启动中追问"},
-        object(),
+            request,
+            {"query": "启动中追问"},
+            object(),
     ):
         chunks.append(chunk)
 
@@ -1834,11 +1847,11 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
             captured["registered"] = session_id
 
     async def _fake_retry(
-        team_manager: object,
-        session_id: str,
-        query: str,
-        *,
-        initial_reason: str | None = None,
+            team_manager: object,
+            session_id: str,
+            query: str,
+            *,
+            initial_reason: str | None = None,
     ):
         assert team_manager is not None
         assert session_id == "sess-team-followup-stopped"
@@ -1855,13 +1868,13 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
         )
 
     async def _fake_consume_stream_with_query(
-        channel_id: str | None,
-        session_id: str,
-        spec: object,
-        query: str,
-        *,
-        round_id: int,
-        envs: dict | None = None,
+            channel_id: str | None,
+            session_id: str,
+            spec: object,
+            query: str,
+            *,
+            round_id: int,
+            envs: dict | None = None,
     ) -> None:
         _ = channel_id, spec, envs
         captured["consumed"] = (session_id, query, round_id)
@@ -1881,9 +1894,9 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        {"query": "查询杭州天气"},
-        object(),
+            request,
+            {"query": "查询杭州天气"},
+            object(),
     ):
         chunks.append(chunk)
     await asyncio.sleep(0)
@@ -1936,11 +1949,11 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
             captured["registered"] = session_id
 
     async def _fake_retry(
-        team_manager: object,
-        session_id: str,
-        query: str,
-        *,
-        initial_reason: str | None = None,
+            team_manager: object,
+            session_id: str,
+            query: str,
+            *,
+            initial_reason: str | None = None,
     ):
         assert team_manager is not None
         assert session_id == "sess-team-followup-directives"
@@ -1954,13 +1967,13 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
         )
 
     async def _fake_consume_stream_with_query(
-        channel_id: str | None,
-        session_id: str,
-        spec: object,
-        query: str,
-        *,
-        round_id: int,
-        envs: dict | None = None,
+            channel_id: str | None,
+            session_id: str,
+            spec: object,
+            query: str,
+            *,
+            round_id: int,
+            envs: dict | None = None,
     ) -> None:
         _ = channel_id, spec
         captured["consumed"] = (session_id, query, round_id, envs)
@@ -1980,9 +1993,9 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        {"query": "/hide_dm /debug weather"},
-        object(),
+            request,
+            {"query": "/hide_dm /debug weather"},
+            object(),
     ):
         chunks.append(chunk)
     await asyncio.sleep(0)
@@ -2022,11 +2035,11 @@ async def test_process_team_message_stream_gate_closed_reports_error_when_shutdo
             raise AssertionError("timed-out shutdown race should not start a new stream")
 
     async def _fake_retry(
-        team_manager: object,
-        session_id: str,
-        query: str,
-        *,
-        initial_reason: str | None = None,
+            team_manager: object,
+            session_id: str,
+            query: str,
+            *,
+            initial_reason: str | None = None,
     ):
         assert team_manager is not None
         assert session_id == "sess-team-followup-timeout"
@@ -2051,9 +2064,9 @@ async def test_process_team_message_stream_gate_closed_reports_error_when_shutdo
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        {"query": "还在收尾"},
-        object(),
+            request,
+            {"query": "还在收尾"},
+            object(),
     ):
         chunks.append(chunk)
 
@@ -2131,9 +2144,9 @@ async def test_gate_closed_stale_entry_terminated_then_cold_rebuild(monkeypatch)
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        {"query": "再问一次"},
-        object(),
+            request,
+            {"query": "再问一次"},
+            object(),
     ):
         chunks.append(chunk)
 
@@ -2187,9 +2200,9 @@ async def test_process_team_message_stream_passes_interactive_input_to_followup(
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        inputs,
-        object(),
+            request,
+            inputs,
+            object(),
     ):
         chunks.append(chunk)
 
@@ -2198,7 +2211,7 @@ async def test_process_team_message_stream_passes_interactive_input_to_followup(
     ]
     # 2026-10-08 起 follow-up 短流不再自发 is_complete 终帧（终止帧由外层 facade
     # interface.py 消费循环结尾统一补发），双终止帧会穿透桌面端 deferred 守卫
-    #（专家团 HITL 续跑计费提前收口事故）
+    # （专家团 HITL 续跑计费提前收口事故）
     assert chunks[-1].is_complete is False
 
 
@@ -2263,9 +2276,9 @@ async def test_process_team_message_stream_resumes_active_session_without_stream
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        inputs,
-        object(),
+            request,
+            inputs,
+            object(),
     ):
         chunks.append(chunk)
 
@@ -2274,7 +2287,7 @@ async def test_process_team_message_stream_resumes_active_session_without_stream
     ]
     # 2026-10-08 起 follow-up 短流不再自发 is_complete 终帧（终止帧由外层 facade
     # interface.py 消费循环结尾统一补发），双终止帧会穿透桌面端 deferred 守卫
-    #（专家团 HITL 续跑计费提前收口事故）
+    # （专家团 HITL 续跑计费提前收口事故）
     assert chunks[-1].is_complete is False
 
 
@@ -2339,9 +2352,9 @@ async def test_process_team_message_stream_routes_evolution_interrupt_to_active_
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        {"query": approval_input},
-        object(),
+            request,
+            {"query": approval_input},
+            object(),
     ):
         chunks.append(chunk)
 
@@ -2355,7 +2368,7 @@ async def test_process_team_message_stream_routes_evolution_interrupt_to_active_
     )
     # 2026-10-08 起 follow-up 短流不再自发 is_complete 终帧（终止帧由外层 facade
     # interface.py 消费循环结尾统一补发），双终止帧会穿透桌面端 deferred 守卫
-    #（专家团 HITL 续跑计费提前收口事故）
+    # （专家团 HITL 续跑计费提前收口事故）
     assert chunks[-1].is_complete is False
 
 
@@ -2442,9 +2455,9 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        inputs,
-        object(),
+            request,
+            inputs,
+            object(),
     ):
         chunks.append(chunk)
 
@@ -2456,7 +2469,7 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
     assert "skills_ready" not in captured
     # 2026-10-08 起 follow-up 短流不再自发 is_complete 终帧（终止帧由外层 facade
     # interface.py 消费循环结尾统一补发），双终止帧会穿透桌面端 deferred 守卫
-    #（专家团 HITL 续跑计费提前收口事故）
+    # （专家团 HITL 续跑计费提前收口事故）
     assert chunks[-1].is_complete is False
 
 
@@ -2517,9 +2530,9 @@ async def test_process_team_message_stream_rejects_orphaned_interactive_input(mo
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        {"query": ask_answer_input},
-        object(),
+            request,
+            {"query": ask_answer_input},
+            object(),
     ):
         chunks.append(chunk)
 
@@ -2591,9 +2604,9 @@ async def test_process_team_message_stream_recovers_paused_runtime_for_interacti
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        {"query": approval_input},
-        object(),
+            request,
+            {"query": approval_input},
+            object(),
     ):
         chunks.append(chunk)
 
@@ -2610,7 +2623,7 @@ async def test_process_team_message_stream_recovers_paused_runtime_for_interacti
     }
     # 2026-10-08 起 follow-up 短流不再自发 is_complete 终帧（终止帧由外层 facade
     # interface.py 消费循环结尾统一补发），双终止帧会穿透桌面端 deferred 守卫
-    #（专家团 HITL 续跑计费提前收口事故）
+    # （专家团 HITL 续跑计费提前收口事故）
     assert chunks[-1].is_complete is False
 
 
@@ -2660,13 +2673,13 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
             raise AssertionError("plain text query after round end should start a new team round")
 
     async def _fake_consume_stream_with_query(
-        channel_id: str | None,
-        session_id: str,
-        spec: object,
-        query: str,
-        *,
-        round_id: int,
-        envs: dict | None = None,
+            channel_id: str | None,
+            session_id: str,
+            spec: object,
+            query: str,
+            *,
+            round_id: int,
+            envs: dict | None = None,
     ) -> None:
         _ = channel_id, spec, envs
         captured["consumed"] = (session_id, query, round_id)
@@ -2685,9 +2698,9 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        {"query": "你好"},
-        object(),
+            request,
+            {"query": "你好"},
+            object(),
     ):
         chunks.append(chunk)
     await asyncio.sleep(0)
@@ -2746,9 +2759,9 @@ async def test_process_team_message_stream_converts_a2ui_followup_event(monkeypa
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-        request,
-        inputs,
-        object(),
+            request,
+            inputs,
+            object(),
     ):
         chunks.append(chunk)
 
@@ -2769,7 +2782,7 @@ async def test_process_team_message_stream_converts_a2ui_followup_event(monkeypa
     }
     # 2026-10-08 起 follow-up 短流不再自发 is_complete 终帧（终止帧由外层 facade
     # interface.py 消费循环结尾统一补发），双终止帧会穿透桌面端 deferred 守卫
-    #（专家团 HITL 续跑计费提前收口事故）
+    # （专家团 HITL 续跑计费提前收口事故）
     assert chunks[-1].is_complete is False
 
 
@@ -2804,13 +2817,13 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
             return None
 
     async def _fake_consume_stream_with_query(
-        channel_id: str | None,
-        session_id: str,
-        spec: object,
-        query: str,
-        *,
-        round_id: int,
-        envs: dict | None = None,
+            channel_id: str | None,
+            session_id: str,
+            spec: object,
+            query: str,
+            *,
+            round_id: int,
+            envs: dict | None = None,
     ) -> None:
         captured_queries.append(query)
 
@@ -2873,13 +2886,13 @@ async def test_process_team_message_stream_syncs_team_skills_before_evolve_slash
             return None
 
     async def _fake_consume_stream_with_query(
-        channel_id: str | None,
-        session_id: str,
-        spec: object,
-        query: str,
-        *,
-        round_id: int,
-        envs: dict | None = None,
+            channel_id: str | None,
+            session_id: str,
+            spec: object,
+            query: str,
+            *,
+            round_id: int,
+            envs: dict | None = None,
     ) -> None:
         captured_queries.append(query)
 
@@ -2945,13 +2958,13 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
     monkeypatch.setattr(team_helpers, "increment_session_round_count", lambda session_id: 1)
 
     async def _fake_consume_stream_with_query(
-        channel_id: str | None,
-        session_id: str,
-        spec: object,
-        query: str,
-        *,
-        round_id: int,
-        envs: dict | None = None,
+            channel_id: str | None,
+            session_id: str,
+            spec: object,
+            query: str,
+            *,
+            round_id: int,
+            envs: dict | None = None,
     ) -> None:
         captured_queries.append(query)
 
@@ -3326,7 +3339,7 @@ async def test_team_completed_carries_unrecovered_leader_error(monkeypatch):
             },
             role=TeamRole.LEADER,
         )
-        # 零成员/零任务时 team.completed 空虚成立（OPT-26 触发形态）
+        # 零成员/零任务时 team.completed 空虚成立
         yield SimpleNamespace(
             type="team.completed",
             payload={"member_count": 0, "task_count": 0},
@@ -3372,6 +3385,970 @@ async def test_team_completed_carries_unrecovered_leader_error(monkeypatch):
     assert completion["is_processing"] is False
     assert "181001" in completion["error"]
     assert "invalid proxy key" in completion["error"]
+
+
+@pytest.mark.anyio
+async def test_degraded_chat_error_stays_warning_and_completion_clean(monkeypatch):
+    """degraded 标记的 chat.error（build_team 熔断降级）只广播+落盘告警：
+
+    不进 leader 错误史、不补空 chat.final、不挂死亡探针；且 leader final 后
+    settle 复核撞"团队从未建立"（TeamNotEstablishedError）时按「完成+告警」
+    干净收口——不被判死、不级联收流（检视意见：降级轮被第四态误杀回归钉）。
+    """
+    broadcasted: list[dict] = []
+    persisted: list[dict] = []
+    cascaded: list[dict] = []
+    detail = "[132001] build_team failed: RuntimeError: Failed to create team t"
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
+    async def _fake_stream(**kwargs):
+        # 成员状态帧：非干净纯文本轮 → chat.final 触发 settle 复核
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        yield SimpleNamespace(
+            type="controller_output",
+            payload={
+                "type": "task_failed",
+                "data": [{"type": "text", "text": detail}],
+                "metadata": {"degraded": True},
+            },
+            role=TeamRole.LEADER,
+        )
+        # leader 降级单干产出实质正文 + 原生 final 帧（生产形态）
+        yield SimpleNamespace(
+            type="llm_output",
+            payload={"content": "已降级由主理人完成"},
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="answer",
+            payload={"output": "已降级由主理人完成", "result_type": "answer"},
+            role=TeamRole.LEADER,
+        )
+        # 流保持足够久让 settle 静默窗到点
+        await asyncio.sleep(0.05)
+
+    async def _raise_not_established(_cid, _sid):
+        raise TeamNotEstablishedError("team_info has no row for team 'demo-team'")
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            # 静默窗/兜底补帧以“流任务在册”为前提（与生产一致）
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: persisted.append(kw))
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise_not_established)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+    monkeypatch.setattr(
+        team_helpers,
+        "_cascade_park_runtime_after_terminal",
+        lambda *a, **k: cascaded.append({"a": a, "k": k}),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    event_types = [event["event_type"] for event in broadcasted]
+    # 告警广播照发且带 degraded 透传标记
+    error_events = [e for e in broadcasted if e["event_type"] == "chat.error"]
+    assert len(error_events) == 1
+    assert error_events[0].get("degraded") is True
+    assert "132001" in error_events[0]["error"]
+    # 降级轮判死回归钉：settle 补的终态不得带 error、不得级联收流；
+    # 无探针补帧用的空 chat.final（leader 原生 final 有正文，不算）
+    terminals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals, "settle 静默窗应补终态"
+    assert all("error" not in t for t in terminals)
+    assert cascaded == []
+    empty_finals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.final" and not str(e.get("content") or "").strip()
+    ]
+    assert empty_finals == []
+    # 落盘留痕仍是 warning 级
+    assert len(persisted) == 1
+    assert persisted[0]["extra"]["warning"] is True
+
+
+@pytest.mark.anyio
+async def test_degraded_session_flag_survives_fresh_start_round(monkeypatch):
+    """第二轮追问形态：
+
+    首轮降级收官后 fresh-start 起新流实例（流内局部标记随旧实例销毁），
+    追问轮 leader 遵守首轮降级指令不再调 build_team → 本轮无 degraded 帧。
+    会话级标记（TeamManager）存活 → settle 撞「团队未建立」仍按
+    「完成+告警」干净收口——不带 error、不级联收流。
+    """
+    broadcasted: list[dict] = []
+    cascaded: list[dict] = []
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
+    async def _fake_stream(**kwargs):
+        # 无 degraded 帧、无 build_team：leader 直接单干（有工具调用 →
+        # 非干净纯文本轮，final 才走 settle 复核）+ 原生 final
+        yield SimpleNamespace(type="tool", payload={}, role=TeamRole.LEADER)
+        yield SimpleNamespace(
+            type="answer",
+            payload="追问轮仍由主理人单干完成",
+            role=TeamRole.LEADER,
+        )
+        # 流保持足够久让 settle 静默窗到点
+        await asyncio.sleep(0.05)
+
+    def _fake_parse(chunk):
+        ctype = getattr(chunk, "type", None)
+        if ctype == "tool":
+            return {
+                "event_type": "chat.tool_call",
+                "tool_call": {"name": "write_file", "tool_call_id": "c1"},
+            }
+        if ctype == "answer":
+            return {"event_type": "chat.final", "content": chunk.payload}
+        return None
+
+    async def _raise_not_established(_cid, _sid):
+        raise TeamNotEstablishedError("team_info has no row for team 'demo-team'")
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+    fake_mgr = _FakeManager()
+    # 首轮（旧流实例）留下的会话级降级标记——fresh-start 后仍然存活
+    fake_mgr.mark_session_degraded("sess")
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise_not_established)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+    monkeypatch.setattr(
+        team_helpers,
+        "_cascade_park_runtime_after_terminal",
+        lambda *a, **k: cascaded.append({"a": a, "k": k}),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "follow up",
+    )
+
+    terminals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals, "settle 静默窗应补终态"
+    assert all("error" not in t for t in terminals), "追问降级轮不得判死"
+    assert cascaded == [], "追问降级轮不得级联收流"
+
+
+@pytest.mark.anyio
+async def test_degraded_settle_terminal_carries_unrecovered_error(monkeypatch):
+    """降级轮的 settle 收口不得丢弃 leader 未恢复错误史。
+
+    降级会话（标记已在）内 leader 模型错误后只产出空 final（
+    不清错误史）→ settle 撞「团队未建立」走降级分支——终态仍须携带 error
+    （与 team.completed 分支同口径），否则实际失败的轮次被记成「已完成」。
+    降级语义其余不变：不级联收流。
+    """
+    broadcasted: list[dict] = []
+    cascaded: list[dict] = []
+    detail = "[181001] model call failed, reason: exhausted"
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
+    async def _fake_stream(**kwargs):
+        # leader 模型重试耗尽（非 degraded 的 chat.error → 记错误史+挂探针）
+        yield SimpleNamespace(
+            type="controller_output",
+            payload={
+                "type": "task_failed",
+                "data": [{"type": "text", "text": detail}],
+            },
+            role=TeamRole.LEADER,
+        )
+        # 空 final（无实质正文 → 错误史不清除；final 帧活性让探针收敛）
+        yield SimpleNamespace(
+            type="answer",
+            payload={"output": "", "result_type": "answer"},
+            role=TeamRole.LEADER,
+        )
+        # 流保持足够久让 settle 静默窗到点
+        await asyncio.sleep(0.05)
+
+    async def _raise_not_established(_cid, _sid):
+        raise TeamNotEstablishedError("team_info has no row for team 'demo-team'")
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    # 本会话此前已降级（首轮熔断降级告警）——settle 应走降级分支
+    fake_mgr.mark_session_degraded("sess")
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise_not_established)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+    monkeypatch.setattr(
+        team_helpers,
+        "_cascade_park_runtime_after_terminal",
+        lambda *a, **k: cascaded.append({"a": a, "k": k}),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    terminals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals, "settle 静默窗应补终态"
+    assert any(t.get("error") and "181001" in t["error"] for t in terminals), (
+        "降级轮挂着未恢复错误史时终态必须携带 error"
+    )
+    assert cascaded == [], "降级分支不级联收流"
+
+
+@pytest.mark.anyio
+async def test_degraded_zero_content_round_not_marked_completed(monkeypatch):
+    """检视意见（第四轮）回归钉：零正文产出的降级轮不得记为已完成。
+
+    降级告警帧（degraded=True，跳过错误史/探针/空 final 补发）后 leader
+    只产出空 final（残余形态：空+有用量不触发 181001）→ settle 撞
+    「团队未建立」走降级分支——终态必须携带 error（复用降级告警详情），
+    否则空回合被前端记成「已完成」。仍不级联收流（运行时存活可追问）。
+    """
+    broadcasted: list[dict] = []
+    cascaded: list[dict] = []
+    detail = "[132001] build_team failed: RuntimeError: Failed to create team t"
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
+    async def _fake_stream(**kwargs):
+        # 降级告警帧（置位会话级标记+详情；不进错误史、不挂探针）
+        yield SimpleNamespace(
+            type="controller_output",
+            payload={
+                "type": "task_failed",
+                "data": [{"type": "text", "text": detail}],
+                "metadata": {"degraded": True},
+            },
+            role=TeamRole.LEADER,
+        )
+        # 零正文产出：空 final（不清错误史、也不算内容判据）
+        yield SimpleNamespace(
+            type="answer",
+            payload={"output": "", "result_type": "answer"},
+            role=TeamRole.LEADER,
+        )
+        # 流保持足够久让 settle 静默窗到点
+        await asyncio.sleep(0.05)
+
+    async def _raise_not_established(_cid, _sid):
+        raise TeamNotEstablishedError("team_info has no row for team 'demo-team'")
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise_not_established)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+    monkeypatch.setattr(
+        team_helpers,
+        "_cascade_park_runtime_after_terminal",
+        lambda *a, **k: cascaded.append({"a": a, "k": k}),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    terminals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals, "settle 静默窗应补终态"
+    assert any(t.get("error") and "132001" in t["error"] for t in terminals), (
+        "零产出降级轮的终态必须携带 error（降级告警详情），空回合不得记已完成"
+    )
+    assert cascaded == [], "零产出降级轮仍不级联收流（运行时可追问）"
+
+
+@pytest.mark.anyio
+async def test_runtime_ready_clears_degraded_marker(monkeypatch):
+    """检视第七轮④回归钉：runtime_ready ≠ 团队建成。
+
+    runtime_ready 在 activation 时即发（先于 build_team，建团失败轮/resume
+    轮都有）——它不得清除会话级降级标记（否则追问轮标记被抹、settle 撞
+    未建立误判死），也不得计入 dissolved 判据。清除点=真实团队事件
+    （team.member 等，见 test_dissolved_team_settles_clean_not_killed）。
+
+    流形：degraded 告警（置位标记）→ runtime_ready（不得清除）→
+    工具调用+正文 final → settle 撞「团队未建立」→ 标记存活 → 降级分支
+    干净收口（不判死、不级联）。
+    """
+    broadcasted: list[dict] = []
+    cascaded: list[dict] = []
+    detail = "[132001] build_team failed: RuntimeError: Failed to create team t"
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(
+            type="controller_output",
+            payload={
+                "type": "task_failed",
+                "data": [{"type": "text", "text": detail}],
+                "metadata": {"degraded": True},
+            },
+            role=TeamRole.LEADER,
+        )
+        # 团队随后真建成（如锁释放后重试成功）
+        yield SimpleNamespace(type="runtime_ready", payload={}, role=TeamRole.LEADER)
+        yield SimpleNamespace(type="tool", payload={}, role=TeamRole.LEADER)
+        yield SimpleNamespace(type="answer", payload="正文", role=TeamRole.LEADER)
+        await asyncio.sleep(0.05)
+
+    def _fake_parse(chunk):
+        ctype = getattr(chunk, "type", None)
+        if ctype == "controller_output":
+            return {
+                "event_type": "chat.error",
+                "error": detail,
+                "degraded": True,
+            }
+        if ctype == "runtime_ready":
+            return {"event_type": "team.runtime_ready", "team_name": "demo-team"}
+        if ctype == "tool":
+            return {
+                "event_type": "chat.tool_call",
+                "tool_call": {"name": "bash", "tool_call_id": "c1"},
+            }
+        if ctype == "answer":
+            return {"event_type": "chat.final", "content": chunk.payload}
+        return None
+
+    async def _raise_not_established(_cid, _sid):
+        raise TeamNotEstablishedError("team_info has no row for team 'demo-team'")
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+    monkeypatch.setattr(
+        team_helpers, "sync_team_identity_metadata", lambda **kw: None
+    )
+
+    async def _noop_ensure(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr(
+        team_helpers, "ensure_monitor_handlers_for_active_runtime", _noop_ensure
+    )
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise_not_established)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+    monkeypatch.setattr(
+        team_helpers,
+        "_cascade_park_runtime_after_terminal",
+        lambda *a, **k: cascaded.append({"a": a, "k": k}),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    # runtime_ready 不得清除降级标记（清除点=真实团队事件）
+    assert fake_mgr.has_session_degraded("sess"), (
+        "runtime_ready 不等于团队建成，不得清除降级标记"
+    )
+    terminals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals, "settle 静默窗应补终态"
+    # 标记存活 → 降级分支干净收口（有正文、无错误史 → 不带 error）
+    assert all("error" not in t for t in terminals), "降级轮按「完成+告警」干净收口"
+    assert cascaded == [], "降级轮不级联收流"
+
+
+@pytest.mark.anyio
+async def test_degraded_silent_death_stream_end_forced_terminal(monkeypatch):
+    """降级告警后零产出且流直接结束（无 final、无 settle
+    调度）——流末 finally 的强制兜底是唯一收口，必须带 error（降级告警详情），
+    不得补干净终态把空回合记成「已完成」。"""
+    broadcasted: list[dict] = []
+    detail = "[132001] build_team failed: RuntimeError: Failed to create team t"
+
+    async def _fake_stream(**kwargs):
+        # 只有降级告警帧，随后流直接结束（无 final）
+        yield SimpleNamespace(
+            type="controller_output",
+            payload={
+                "type": "task_failed",
+                "data": [{"type": "text", "text": detail}],
+                "metadata": {"degraded": True},
+            },
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+
+    async def _raise_not_established(_cid, _sid):
+        from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+            TeamNotEstablishedError,
+        )
+        raise TeamNotEstablishedError("team_info has no row for team 'demo-team'")
+
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise_not_established)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    terminals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert len(terminals) == 1, "流末强制兜底应补且仅补一条终态"
+    assert "132001" in (terminals[0].get("error") or ""), (
+        "降级静默死亡（零产出）的流末兜底终态必须携带 error"
+    )
+
+
+@pytest.mark.anyio
+async def test_fresh_start_preserves_degraded_marker(monkeypatch):
+    """fresh-start 的 cancel 会统一释放会话标记
+    （_clear_terminal_session_markers 已含 _degraded_sessions）——
+    _fresh_start_if_round_terminal 必须 capture/restore 降级标记。"""
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancelled: list[str] = []
+
+        def has_stream_task(self, session_id: str) -> bool:
+            return True
+
+        def is_stream_round_terminal(self, session_id: str) -> bool:
+            return True
+
+        async def cancel_session_runtime(self, session_id: str, reason: str = ""):
+            self.cancelled.append(reason)
+            # 模拟生产行为：cancel 的 finalize 统一释放会话标记
+            self._degraded_sessions.pop(session_id, None)
+
+        @staticmethod
+        def clear_session_initialized(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def clear_waiters(session_id: str) -> None:
+            pass
+
+    fake_mgr = _FakeManager()
+    fake_mgr.mark_session_degraded("sess", "[132001] build_team failed: db locked")
+
+    result = await team_helpers._fresh_start_if_round_terminal(fake_mgr, "sess", "追问")
+
+    assert result is True
+    assert fake_mgr.cancelled == ["round-terminal fresh start"]
+    assert fake_mgr.session_degraded_detail("sess") == (
+        "[132001] build_team failed: db locked"
+    ), "fresh-start 后降级标记（含详情）必须存活"
+
+
+@pytest.mark.anyio
+async def test_dissolved_team_settles_clean_not_killed(monkeypatch):
+    """clean_team 主动解散（删 team_info 行）不得误判死。
+
+    本会话广播过团队事件（team.member 帧）= 团队真实存在过 → settle 撞
+    「team_info 无行」是解散而非建团失败：干净收口（不带 error）、不级联
+    收流（leader 运行时存活可追问）。从未见过团队事件的形态仍判死
+    （由 test_team_round_settle 的集成用例兜底）。
+    """
+    broadcasted: list[dict] = []
+    cascaded: list[dict] = []
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
+    async def _fake_stream(**kwargs):
+        # 团队事件帧（成员关停广播）→ 本会话见过团队活动
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        # leader 汇报解散完成 + 原生 final
+        yield SimpleNamespace(
+            type="answer",
+            payload={"output": "团队已解散", "result_type": "answer"},
+            role=TeamRole.LEADER,
+        )
+        # 流保持足够久让 settle 静默窗到点
+        await asyncio.sleep(0.05)
+
+    async def _raise_not_established(_cid, _sid):
+        raise TeamNotEstablishedError(
+            "team_info has no row for team 'demo-team' (team never built or already deleted)"
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    # 预置降级标记：团队事件（team.member）到达时必须清除——团队真建成/
+    # 存在过的实证帧才是合法的清除点
+    fake_mgr.mark_session_degraded("sess", "[132001] build_team failed: earlier")
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise_not_established)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+    monkeypatch.setattr(
+        team_helpers,
+        "_cascade_park_runtime_after_terminal",
+        lambda *a, **k: cascaded.append({"a": a, "k": k}),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "解散团队",
+    )
+
+    # 团队事件帧到达 → 降级标记已清除
+    assert not fake_mgr.has_session_degraded("sess"), "团队事件必须清除降级标记"
+    terminals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals, "settle 静默窗应补终态"
+    assert all("error" not in t for t in terminals), "主动解散的回合不得判死"
+    assert cascaded == [], "主动解散不得级联收流（leader 运行时存活可追问）"
+
+
+@pytest.mark.anyio
+async def test_solo_round_without_build_attempt_settles_clean(monkeypatch):
+    """纯单干轮（主理人从未调 build_team）撞「团队未
+    建立」不得判死——团队本来就不必要，「未建立」是正常形态。
+
+    流形：非 build_team 工具调用 + 正文 final → settle 撞 TeamNotEstablishedError
+    → 干净收口（不带 error）、不级联收流（运行时健康、可追问）。
+    对照：build_team 尝试过的真·建团失败仍判死（test_team_round_settle 的
+    集成用例兜底）。
+    """
+    broadcasted: list[dict] = []
+    cascaded: list[dict] = []
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
+    async def _fake_stream(**kwargs):
+        # 单干：只用了普通工具，没碰 build_team
+        yield SimpleNamespace(type="tool", payload={}, role=TeamRole.LEADER)
+        yield SimpleNamespace(type="answer", payload="直接回答完毕", role=TeamRole.LEADER)
+        await asyncio.sleep(0.05)
+
+    def _fake_parse(chunk):
+        ctype = getattr(chunk, "type", None)
+        if ctype == "tool":
+            return {
+                "event_type": "chat.tool_call",
+                "tool_call": {"name": "write_file", "tool_call_id": "c1"},
+            }
+        if ctype == "answer":
+            return {"event_type": "chat.final", "content": chunk.payload}
+        return None
+
+    async def _raise_not_established(_cid, _sid):
+        raise TeamNotEstablishedError("team_info has no row for team 'demo-team'")
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise_not_established)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+    monkeypatch.setattr(
+        team_helpers,
+        "_cascade_park_runtime_after_terminal",
+        lambda *a, **k: cascaded.append({"a": a, "k": k}),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "一个不需要团队的小问题",
+    )
+
+    terminals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals, "settle 静默窗应补终态"
+    assert all("error" not in t for t in terminals), "纯单干轮不得判死"
+    assert cascaded == [], "纯单干轮不得级联收流（运行时健康、可追问）"
+
+
+@pytest.mark.anyio
+async def test_settle_terminal_skipped_when_pause_in_progress(monkeypatch):
+    """settle 静默窗到点时 pause 进行中（用户已停止）
+    → 不得补终态（否则「已停止」被翻成「失败/完成」）。
+
+    流形：工具帧 + final → settle 撞「团队未建立」→ 静默窗到点时
+    is_pause_in_progress=True → 零终态帧、零级联。
+    """
+    broadcasted: list[dict] = []
+    cascaded: list[dict] = []
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="tool", payload={}, role=TeamRole.LEADER)
+        yield SimpleNamespace(type="answer", payload="正文", role=TeamRole.LEADER)
+        # 流保持足够久让静默窗到点
+        await asyncio.sleep(0.05)
+
+    def _fake_parse(chunk):
+        ctype = getattr(chunk, "type", None)
+        if ctype == "tool":
+            return {
+                "event_type": "chat.tool_call",
+                "tool_call": {"name": "build_team", "tool_call_id": "c1"},
+            }
+        if ctype == "answer":
+            return {"event_type": "chat.final", "content": chunk.payload}
+        return None
+
+    async def _raise_not_established(_cid, _sid):
+        raise TeamNotEstablishedError("team_info has no row for team 'demo-team'")
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+        @staticmethod
+        def is_pause_in_progress(session_id: str) -> bool:
+            # 用户在静默窗期间点了停止
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise_not_established)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+    monkeypatch.setattr(
+        team_helpers,
+        "_cascade_park_runtime_after_terminal",
+        lambda *a, **k: cascaded.append({"a": a, "k": k}),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "问",
+    )
+
+    terminals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals == [], "pause 进行中 settle 不得补任何终态"
+    assert cascaded == [], "pause 进行中不得级联收流"
+
+
+@pytest.mark.anyio
+async def test_settle_not_blocked_after_hitl_answered(monkeypatch):
+    """HITL 挂起标记是轮级语义——答案到达恢复产出后
+    必须清除，否则同流后续轮的 settle 补终态被永久拦死（流永挂）。
+
+    流形：ask_user_question（置位）→ 答案到达后恢复产出（delta 清除标记）
+    → final → settle 落定 → 终态正常补发。
+    """
+    broadcasted: list[dict] = []
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(type="ask", payload={}, role=TeamRole.LEADER)
+        # 用户作答后恢复产出
+        yield SimpleNamespace(type="delta", payload="继续", role=TeamRole.LEADER)
+        yield SimpleNamespace(type="tool", payload={}, role=TeamRole.LEADER)
+        yield SimpleNamespace(type="answer", payload="正文", role=TeamRole.LEADER)
+        await asyncio.sleep(0.05)
+
+    def _fake_parse(chunk):
+        ctype = getattr(chunk, "type", None)
+        if ctype == "ask":
+            return {
+                "event_type": "chat.ask_user_question",
+                "request_id": "q1",
+                "questions": [{"question": "继续吗？"}],
+            }
+        if ctype == "delta":
+            return {"event_type": "chat.delta", "content": chunk.payload}
+        if ctype == "tool":
+            return {
+                "event_type": "chat.tool_call",
+                "tool_call": {"name": "write_file", "tool_call_id": "c1"},
+            }
+        if ctype == "answer":
+            return {"event_type": "chat.final", "content": chunk.payload}
+        return None
+
+    async def _settled_true(_cid, _sid):
+        return True
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return True
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: None)
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _settled_true)
+    monkeypatch.setattr(team_helpers, "_SETTLE_TERMINAL_QUIET_SEC", 0.01)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "问",
+    )
+
+    terminals = [
+        e for e in broadcasted
+        if e["event_type"] == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert terminals, "HITL 作答恢复后 settle 必须能补终态（挂起标记已随恢复产出清除）"
 
 
 @pytest.mark.anyio
@@ -3433,7 +4410,7 @@ async def test_team_completed_clean_when_leader_recovered_after_error(monkeypatc
         event
         for event in broadcasted
         if event.get("event_type") == "chat.processing_status"
-        and event.get("is_complete") is True
+           and event.get("is_complete") is True
     ]
     assert len(completions) == 1
     assert "error" not in completions[0]
@@ -4698,7 +5675,7 @@ def test_persist_team_file_monitor_roots_replaces_stale_roots(monkeypatch: pytes
         }
 
     def _fake_enqueue_write(
-        session_id: str, metadata: dict[str, Any], **kwargs: Any
+            session_id: str, metadata: dict[str, Any], **kwargs: Any
     ) -> None:
         written.append(metadata)
         write_kwargs.append(kwargs)
@@ -4772,7 +5749,7 @@ def test_persist_team_file_monitor_roots_noop_when_unchanged(monkeypatch: pytest
         }
 
     def _fake_enqueue_write(
-        session_id: str, metadata: dict[str, Any], **kwargs: Any
+            session_id: str, metadata: dict[str, Any], **kwargs: Any
     ) -> None:
         written.append(metadata)
 
@@ -4882,7 +5859,7 @@ def test_persist_team_history_event_rejects_non_whitelisted_message_types(
 
 
 def test_persist_member_tool_event_writes_attributed_history(
-    monkeypatch: pytest.MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """成员工具事件按 member_name 归因落盘；结果超 512 截断；无归属不落。"""
     persisted: list[dict[str, Any]] = []
@@ -4930,7 +5907,7 @@ def test_persist_member_tool_event_writes_attributed_history(
 
 
 def test_persist_member_tool_event_extracts_tool_paths(
-    monkeypatch: pytest.MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """路径字段在 content 截断前提取入 extra.tool_paths（不截断）。
 
@@ -5667,6 +6644,7 @@ async def test_process_team_message_stream_create_failure_terminal_error(monkeyp
     is_complete 帧——gateway_normalize 将其转换为 failed 终帧。
     旧实现：错误帧非终态 + 补 payload=None 空终帧 → e2a.complete succeeded，
     前端把建立失败的回合记成"已完成"。"""
+
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def has_stream_task(session_id: str) -> bool:

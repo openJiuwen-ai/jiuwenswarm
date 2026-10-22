@@ -212,6 +212,12 @@ class _FreshStartFakeManager:
         self._stream_alive = False
         return True
 
+    def session_degraded_detail(self, _session_id: str) -> str | None:
+        return None
+
+    def mark_session_degraded(self, _session_id: str, detail: str = "") -> None:
+        pass
+
     def clear_session_initialized(self, _session_id: str) -> None:
         self.cleared.append("initialized")
 
@@ -267,3 +273,61 @@ async def test_no_fresh_start_for_interactive_input() -> None:
     )
     assert result is False
     assert manager.stop_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_not_established_falls_back_and_still_kills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DB 对照抛 TeamNotEstablishedError（live 视图仍有 pending 的滞后形态）：
+    退回 live-only 判定并保留击杀能力——不得静默停守（静默停守=零收口，
+    settle 复核在"leader 不再产出 final"的形态下不会被调度）。
+    """
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
+    monkeypatch.setattr(team_stall_watchdog, "TEAM_STALL_WATCHDOG_SEC", 0.02)
+    monkeypatch.setattr(team_stall_watchdog, "TEAM_STALL_CONFIRM_WINDOWS", 1)
+    monkeypatch.setattr(
+        team_stall_watchdog,
+        "get_team_manager",
+        lambda _cid: _ProbeFakeManager(),
+    )
+
+    async def _progress(_cid, _sid):
+        return (0, 1, False)  # live 视图：零在途 + 有 pending + 无流转
+
+    async def _liveness(_cid, _sid):
+        return False
+
+    async def _db_not_established(_cid, _sid):
+        raise TeamNotEstablishedError("team_info has no row")
+
+    monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot", _progress)
+    monkeypatch.setattr(team_stall_watchdog, "team_runtime_liveness", _liveness)
+    monkeypatch.setattr(
+        team_stall_watchdog, "team_progress_snapshot_db", _db_not_established
+    )
+
+    broadcasted: list[dict] = []
+
+    async def _broadcast(_cid, _sid, event):
+        broadcasted.append(event)
+
+    terminal_calls: list[str] = []
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "desktop",
+        "s1",
+        1,
+        liveness=lambda: 5,
+        completion_signals=lambda: 0,
+        broadcast=_broadcast,
+        on_terminal=lambda: terminal_calls.append("fired"),
+    )
+    await task
+    # 退回 live-only 后按既有路径击杀：广播失败终态 + on_terminal 级联
+    assert len(broadcasted) == 1
+    assert broadcasted[0]["event_type"] == "chat.processing_status"
+    assert broadcasted[0].get("error")
+    assert terminal_calls == ["fired"]
