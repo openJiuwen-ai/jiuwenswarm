@@ -2464,14 +2464,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     entries = payload_json.get("data")
                     if not isinstance(entries, list):
                         return [], "remote returned unexpected body shape"
-                    ids = list(dict.fromkeys(
-                        item["id"].strip()
-                        for item in entries
-                        if isinstance(item, dict)
-                        and item.get("domain") == model_domain
-                        and isinstance(item.get("id"), str)
-                        and item["id"].strip()
-                    ))
+                    ids: list[str] = []
+                    seen: set[str] = set()
+                    for item in entries:
+                        if not isinstance(item, dict) or item.get("domain") != model_domain:
+                            continue
+                        model_id = item.get("id")
+                        if not isinstance(model_id, str):
+                            continue
+                        model_id = model_id.strip()
+                        if model_id and model_id not in seen:
+                            seen.add(model_id)
+                            ids.append(model_id)
                     return ids, "" if ids else "remote returned empty generation model list"
                 try:
                     ids = parse_openai_account_model_ids(payload_json)

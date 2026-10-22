@@ -105,7 +105,7 @@ function get(testId) {
   return node;
 }
 
-async function mountDialog(t, slot, apiBase, fetchResult = async () => remoteResult()) {
+async function mountDialog(t, slot, apiBase, fetchResult = async () => remoteResult(), configOverrides = {}) {
   const requests = [];
   const saved = [];
   const config = {
@@ -115,6 +115,7 @@ async function mountDialog(t, slot, apiBase, fetchResult = async () => remoteRes
     [`${slot}_api_key`]: 'test-key',
     [`${slot}_model`]: 'saved-model',
     [`${slot}_context_window_tokens`]: 'not-used-by-generation',
+    ...configOverrides,
   };
   const request = async (method, params) => {
     requests.push({ method, params });
@@ -142,6 +143,17 @@ async function mountDialog(t, slot, apiBase, fetchResult = async () => remoteRes
 }
 
 for (const slot of ['visual_gen', 'video_gen']) {
+  test(`${slot} rejects a custom modelark proxy before saving`, async (t) => {
+    const proxy = 'https://my-proxy.example/api/v3';
+    const { saved } = await mountDialog(t, slot, proxy, async () => remoteResult(), {
+      [`${slot}_provider`]: 'My proxy',
+    });
+    assert.ok(get('settings-model-provider-select-value').textContent.includes(i18n.t('settingsPanel.models.customVendor')));
+    await act(async () => get('settings-agent-config-dialog-save-btn').click());
+    assert.equal(saved.length, 0);
+    assert.ok(document.body.textContent.includes(i18n.t('settingsPanel.agent.arkGenerationBaseInvalid')));
+  });
+
   for (const apiBase of [base, 'https://ark.ap-southeast.bytepluses.com/api/v3', 'https://ark.cn-beijing.volces.com']) {
     test(`${slot} restores ${apiBase} with full discovery and preserves saved credentials`, async (t) => {
       const { requests, saved } = await mountDialog(t, slot, apiBase);
@@ -195,3 +207,25 @@ for (const slot of ['visual_gen', 'video_gen']) {
     });
   }
 }
+
+test('failed Ark discovery waits for an explicit refresh or changed credentials', async (t) => {
+  const { requests } = await mountDialog(t, 'visual_gen', base, async () => {
+    throw new Error('discovery unavailable');
+  });
+  const input = get('settings-model-name-field-input');
+  await act(async () => input.focus());
+  assert.equal(requests.filter((entry) => entry.method === 'vendors.fetch_models').length, 1);
+  await act(async () => { input.blur(); input.focus(); });
+  assert.equal(requests.filter((entry) => entry.method === 'vendors.fetch_models').length, 1);
+  await act(async () => get('settings-model-name-field-refresh-btn').click());
+  assert.equal(requests.filter((entry) => entry.method === 'vendors.fetch_models').length, 2);
+  const apiKey = document.querySelector('[data-variant="api_key"] input');
+  await act(async () => {
+    const setValue = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
+    setValue.call(apiKey, 'updated-key');
+    apiKey.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  });
+  await act(async () => { input.blur(); input.focus(); });
+  assert.equal(requests.filter((entry) => entry.method === 'vendors.fetch_models').length, 3);
+  assert.equal(requests.at(-1).params.api_key, 'updated-key');
+});
