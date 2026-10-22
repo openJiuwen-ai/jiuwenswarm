@@ -33,15 +33,16 @@ F_10 完成后，同事页可以管理同事，但发送按钮不可用：AgentS
 | 模型正在生成回复 | 不适用 | 页面逐段显示模型当前输出的文字（草稿），final 后改为显示采纳的回复（JM-10-V-04） |
 | 回复含 Markdown | 不适用 | 加粗、列表、代码块等按 Markdown 渲染，不显示原始符号（JM-10-V-04） |
 | 重复提交同一条消息 | 不适用 | 返回同一个 Request，不重复执行 |
+| 管理聊天侧栏中的会话 | 会话列表状态未持久化，缺少完整行内操作 | 每个会话显示员工名和最近一条消息；置顶会话单独分组；每行菜单支持重命名、置顶 / 取消置顶和删除；刷新后置顶状态保留（JM-10-V-05） |
 
 ### 2.3 本次范围与非目标
 
-- 本次包含：`AgentManager` 接入 AgentServer 生命周期；三个新接口；删除同事改为经由 `AgentManager`；前端私聊区的发送、历史、轮询与重连重查；回复文字的流式推送与 Markdown 渲染（D-05、D-06，2026-10-14 补充）。
+- 本次包含：`AgentManager` 接入 AgentServer 生命周期；私聊、历史、状态与会话管理接口；删除同事改为经由 `AgentManager`；前端私聊区的发送、历史、轮询与重连重查；回复文字的流式推送与 Markdown 渲染（D-05、D-06，2026-10-14 补充）；会话的重命名、置顶、取消置顶和删除。
 - 本次不包含：
   - 个人版 `chat.*` 事件与 `chatStore`（不变）；
   - 投递记录：本文只读取已保存的候选输出，不写入投递事实（JM-09）；
   - 停止 / 取消按钮（由 JM-12 接入，见 [F_12](F_12_execution-control.md)）；
-  - 每个同事多条 Web 会话（页面的会话记录列表仍为页面内状态，见 9.2）；
+  - 群聊记录与执行轨迹（由其他 JM 条目负责）；
   - IM 渠道与群记录（JM-08、S2a）。
 
 ## 3. 设计约束、假设与待决问题
@@ -124,6 +125,11 @@ sequenceDiagram
 - 选择与依据：模型输出为 Markdown。回复与草稿使用前端已有的 `MarkdownRenderer`，样式类与个人版消息相同（`chat-text chat-markdown`），草稿传入 `isStreaming`，以便未闭合的代码块正常显示。用户消息仍按纯文本显示。
 - 实现体现：`pages/ColleagueWorkspacePage.tsx`、`jiuwenmate.css`；验证见 JM-10-V-04。
 
+#### D-07 会话管理状态由服务端持久化（2026-10-22 补充）
+
+- 选择与依据：每个同事可有多条独立 Web 会话，聊天侧栏显示员工名及最近一条消息，并按置顶状态分组。头像与标题组垂直居中于会话行，选中背景在行内居中；每行的三点菜单提供重命名、置顶 / 取消置顶和删除。置顶状态写入 Web 会话 SQLite 表，刷新或重启后仍保持；旧数据库通过增加带默认值的 `pinned` 列迁移。
+- 实现体现：`web_conversations.py` 的 `WebConversationStore` 与 `set_pinned`、`web_adapter.py` 的 `jiuwenmate.conversation.pin`、前端 `jiuwenmateApi.ts` 和 `ColleagueWorkspacePage.tsx`；验证见 JM-10-V-05。
+
 ### 4.3 替代方案与排除理由
 
 | 候选 / 关联决策 | 关键差异 | 拒绝原因 | 重新评估条件 |
@@ -154,6 +160,7 @@ sequenceDiagram
 | `jiuwenmate.chat.send` | `agent_id`、`text`、`message_id` | `{request: RequestView}` |
 | `jiuwenmate.chat.history` | `agent_id` | `{requests: RequestView[]}`，按接收顺序 |
 | `jiuwenmate.request.get` | `request_id` | `{request: RequestView}` |
+| `jiuwenmate.conversation.pin` | `agent_id`、`conversation_id`、`pinned` | `{conversation: WebConversation}`；`pinned` 必须为布尔值 |
 
 `RequestView` 字段：`request_id`、`session_id`、`agent_id`、`message_id`、`text`、`received_at`、`status`（`queued` / `dispatched` / `ended`）、`outcome`（结束后为 `completed`、`ignored`、`paused`、`stopped`、`cancelled`、`failed`）、`running`（是否在本进程执行）、`replies`、`reason`、`draft`、`updated_at`。
 
@@ -162,6 +169,8 @@ sequenceDiagram
 推送事件 `jiuwenmate.chat.stream` 的 payload：`event_type`、`kind`（`delta` / `segment` / `ended`）、`agent_id`、`request_id`、`execution_id`、`seq`、`text`（仅 `delta` 非空）。
 
 Web 会话固定为 `ConversationRef.web("local")`；访问快照的主体为 `local`，范围为 `direct_message`；发送者名称为“用户”。
+
+`WebConversation` 包含 `conversation_id`、`agent_id`、`title`、`created_at`、`updated_at`、`pinned`。会话列表先按 `pinned` 降序，再按更新时间倒序；前端分为“置顶”和“会话”两组。会话行的三点菜单分别调用重命名、置顶切换与删除操作。
 
 ### 5.3 页面状态
 
@@ -188,7 +197,7 @@ Web 会话固定为 `ConversationRef.web("local")`；访问快照的主体为 `l
 | --- | --- | --- | --- |
 | I-01 | `execution_repository.py` | 新增 `find_session` | JM-10-V-01 |
 | I-02 | `agent_manager.py` | `create_default`、`submit_direct_message`、`conversation_requests`、`request_view`、`RequestView` | JM-10-V-01、V-03 |
-| I-03 | `web_adapter.py` | 运行时启动与关闭；三个新方法；删除经由 `AgentManager` | JM-10-V-01、V-02 |
+| I-03 | `web_adapter.py` | 运行时启动与关闭；私聊、历史、状态、会话列表与管理方法；删除同事经由 `AgentManager` | JM-10-V-01、V-02、V-05 |
 | I-04 | `agent_ws_server.py` | 保存适配器实例并在两处注册；停止服务时调用 `aclose()` | JM-10-V-02 |
 | I-05 | `message.py`、`app_web_handlers.py` | 三个 `ReqMethod`；加入两个转发集合 | JM-10-V-01 |
 | I-06 | 前端 `jiuwenmateApi.ts`、`usePrivateChat.ts`（新增）、`JiuwenMateApp.tsx`、`pages/ColleagueWorkspacePage.tsx`、`components/ConversationComposer.tsx`、`jiuwenmate.css`、中英文文案 | 私聊区接入 | JM-10-V-01 |
@@ -196,6 +205,7 @@ Web 会话固定为 `ConversationRef.web("local")`；访问快照的主体为 `l
 | I-08 | [`test_web_real_core.py`](../../../../../tests/integration_tests/jiuwenmate/test_web_real_core.py)（新增）；`test_core_contract.py` 删除“core 执行尚未开放”的 canary；`test_core_contract.py`、`test_budget_port.py` 的 core 端口导入改为 `openjiuwen.harness.persistent_agent.ports`（core 已移除内层 `persistent_agent.persistent_agent` 包） | core 接通后的正式执行验收 | JM-10-V-01～V-03 |
 
 | I-09 | `ports/commit.py`、`agent_manager.py`、`web_adapter.py`、`agent_ws_server.py`、`web_connect.py`；前端 `jiuwenmateApi.ts`、`usePrivateChat.ts`、`JiuwenMateApp.tsx`、`pages/ColleagueWorkspacePage.tsx`、`jiuwenmate.css`；测试 `test_commit_port.py`、`test_web_private_chat.py`、`test_web_real_core.py`、[`test_web_channel_jiuwenmate_stream.py`](../../../../../tests/unit_tests/channel/test_web_channel_jiuwenmate_stream.py)（新增）、`tests/jiuwenmateApi.test.mjs` | 流式推送与 Markdown 渲染（D-05、D-06） | JM-10-V-04 |
+| I-10 | `web_conversations.py`、`web_adapter.py`、`message.py`；前端 `jiuwenmateApi.ts`、`useConversations.ts`、`workspaceState.ts`、`pages/ColleagueWorkspacePage.tsx`、`jiuwenmate.css`、中英文文案；置顶持久化、迁移、列表分组和行内菜单测试 | 会话置顶管理与选中背景稿件对齐（D-07） | JM-10-V-05 |
 
 兼容核对：个人版方法与事件不变；新增方法与推送事件均以 `jiuwenmate.` 开头。`_WEB_FULL_PAYLOAD_EVENT_TYPES` 只增加一项，不影响其他事件的裁剪。
 
@@ -210,6 +220,7 @@ Web 会话固定为 `ConversationRef.web("local")`；访问快照的主体为 `l
 | JM-10-V-03 | 候选输出不冒充回复 | `test_web_private_chat.py` | final 之前回复为空；final 未引用的候选不显示；`ignored` 与 `failed` 无回复 | 单测 |
 | JM-10-V-01、V-02（正式执行） | 经 core 正式执行入口私聊 | `tests/integration_tests/jiuwenmate/test_web_real_core.py` | 小九回复显示为 final 采纳的输出；第二条消息的模型输入包含第一轮问答；AgentServer 重启后窗口仍在 | 集成测试（真实同事服务、`AgentManager`、宿主端口与 core PA-10、PA-06，模型为本地替身） |
 | JM-10-V-04 | 流式推送与 Markdown | `test_commit_port.py`、`test_web_private_chat.py`、`test_web_real_core.py`、`test_web_channel_jiuwenmate_stream.py`、`npm run test:jiuwenmate-api`；浏览器人工确认 | 观察者看到被接受的事件且异常不影响落库；执行中查询返回当前模型调用的草稿；片段按顺序推送到发起连接，拼接结果等于最终回复；无连接时不推送；Gateway 保留完整 payload 且只投递到指定连接；前端按 `seq` 合并且不被滞后的查询覆盖；浏览器中文字逐段出现，加粗等格式被渲染 | 单测、集成测试（真实 core，模型分两段输出）、前端单测、人工 |
+| JM-10-V-05 | 会话行操作、持久置顶及选中态排版 | `test_web_private_chat.py`；`npm run test:jiuwenmate-api`、`npm run test:jiuwenmate-workspace`、`npm run test:chat-layout-reference`；浏览器人工检查 | 会话可重命名、置顶 / 取消置顶和删除；置顶跨重启保存并优先分组；选中背景与会话列表对齐，菜单含三项操作 | SQLite 单测、前端单测、浏览器人工检查 |
 
 ### 8.2 实际执行与证据
 
@@ -242,6 +253,14 @@ core 升级到 `9eb336b4` 后补充执行（同日）：
 | — | `ruff check`、`ruff format`（改动的后端文件）；`eslint src/features/jiuwenmate`；`npm run build`（含 `tsc`） | 通过 | — |
 | JM-10-V-04（浏览器） | 重启 AgentServer、Gateway 并刷新页面后私聊 | 待执行 | 文字逐段出现；Markdown 被渲染 |
 
+会话侧栏管理补充执行（2026-10-22）：
+
+| 验证 ID | 命令 / 操作 | 结果 | 覆盖内容 |
+| --- | --- | --- | --- |
+| JM-10-V-05 | `pytest tests/unit_tests/server/jiuwenmate/test_web_private_chat.py -k 'conversation_pin_state_persists_and_changes_list_order or existing_conversation_database_migrates_pin_state or each_conversation_keeps_its_own_history_and_is_listed_latest_first' --no-cov -q` | 3 passed | 置顶与取消置顶持久化、排序及旧数据库迁移 |
+| JM-10-V-05 | `npm run test:jiuwenmate-api`、`npm run test:jiuwenmate-workspace`、`npm run test:chat-layout-reference`、`npm run build` | 分别 25、7、5 项通过；生产构建通过 | API 映射、列表分组、稿件尺寸及菜单文案 |
+| JM-10-V-05 | 临时 Vite 开发页检查 | 通过 | 头像和标题组中心与选中灰底中心同为 y=267；选中灰底左右居中；行尾菜单可打开并显示重命名、置顶、删除；置顶态的取消文案由条件映射与本地化断言覆盖 |
+
 ### 8.3 验证结论
 
 宿主组件验证通过：私聊、历史、状态、去重、断线续跑与重启恢复均符合 8.1 的预期。core 接通后，正式执行入口在宿主侧跑通：回复来自 final 采纳的输出，会话窗口在请求之间和 AgentServer 重启之后均得到保留。尚未执行的是真实模型的浏览器验收，需要重启 AgentServer 后在同事页人工确认，并计入 S1 私聊闭环。
@@ -261,7 +280,6 @@ core 升级到 `9eb336b4` 后补充执行（同日）：
 | 遗留项 | 性质 | 影响与现有处置 | 后续入口 |
 | --- | --- | --- | --- |
 | 失败原因不可见 | 已知限制 | 执行驱动不保存异常原因，页面只显示“处理失败”；原因见 AgentServer 日志 | JM-07 后续 |
-| 每个同事只有一条 Web 会话 | 未实施 | 页面的“会话记录”列表仍为页面内状态，所有记录显示同一私聊历史 | 待 UCD 与会话设计 |
 | 投递记录 | 未实施 | 回复读取候选输出，不写投递事实 | JM-09 |
 | 停止 / 取消按钮 | 已由 JM-12 实施 | 见 [F_12](F_12_execution-control.md) | — |
 | 真实模型浏览器验收 | 未执行 | 正式执行入口已以模型替身验证；流式与 Markdown 待人工确认 | S1 |
@@ -270,3 +288,4 @@ core 升级到 `9eb336b4` 后补充执行（同日）：
 
 - 2026-10-14：core 在 `9eb336b4` 接通 PA-10、PA-06。宿主代码无需修改；补充正式执行验收（I-08），删除已失效的 canary，并按 core 新的包结构调整两处测试导入。
 - 2026-10-14：负责人在浏览器试用后要求回复流式输出并渲染 Markdown。按变更闸门提交分析与方案，经确认采用推送加查询补齐（D-05）与 `MarkdownRenderer`（D-06）；D-04 修订为轮询兜底；新增 I-09 与 JM-10-V-04。改动跨 AgentServer、Gateway 与前端，未修改 agent-core。
+- 2026-10-22：补齐多会话侧栏的行内管理行为及选中背景尺寸。`WebConversationStore` 持久化置顶状态并迁移既有 SQLite 表，`jiuwenmate.conversation.pin` 提供前端操作；会话按置顶与最近更新时间分组排序。前端修复 Grid 隐式最小尺寸导致会话行超宽的问题，并将头像、标题组与选中背景垂直居中（D-07、JM-10-V-05）。

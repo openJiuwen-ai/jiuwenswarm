@@ -53,7 +53,9 @@ export function useConversations(api: JiuwenMateChatApi, agentId: string, connec
       try {
         const renamed = await api.renameConversation(agentId, conversationId, title);
         if (agentRef.current !== agentId) return;
-        setConversations((current) => current.map((item) => (item.id === renamed.id ? renamed : item)));
+        setConversations((current) =>
+          current.map((item) => (item.id === renamed.id ? { ...renamed, lastMessage: item.lastMessage } : item)),
+        );
       } catch (reason) {
         if (agentRef.current === agentId) setError(errorMessage(reason));
       }
@@ -78,5 +80,25 @@ export function useConversations(api: JiuwenMateChatApi, agentId: string, connec
     [api, agentId],
   );
 
-  return { conversations, loaded: loadedFor === agentId, error, upsert, rename, remove };
+  const setPinned = useCallback(
+    async (conversationId: string, pinned: boolean): Promise<JiuwenMateConversation | null> => {
+      setError(null);
+      try {
+        const updated = await api.setConversationPinned(agentId, conversationId, pinned);
+        if (agentRef.current !== agentId) return null;
+        setConversations((current) =>
+          current.map((item) =>
+            item.id === updated.id ? { ...updated, lastMessage: item.lastMessage } : item,
+          ),
+        );
+        return updated;
+      } catch (reason) {
+        if (agentRef.current === agentId) setError(errorMessage(reason));
+        return null;
+      }
+    },
+    [api, agentId],
+  );
+
+  return { conversations, loaded: loadedFor === agentId, error, upsert, rename, remove, setPinned };
 }

@@ -1347,22 +1347,32 @@
   object-position: center bottom;
 }
 
-/* Colleague list (workspace column 1) */
+/* Conversation list and chat (workspace columns 1 and 2) */
 .jiuwenmate-workspace {
   display: grid;
-  grid-template-columns: 220px 300px minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 368px) minmax(0, 1fr);
   height: 100%;
   min-width: 0;
   min-height: 0;
   background: #fff;
 }
 
+.jiuwenmate-workspace--panel-open:not(.jiuwenmate-workspace--collapsed) {
+  grid-template-columns: minmax(320px, 368px) minmax(0, 1fr) minmax(320px, 368px);
+}
+
 .jiuwenmate-workspace--collapsed,
 .jiuwenmate-workspace--empty {
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.jiuwenmate-workspace--collapsed .jiuwenmate-workspace__main {
+  grid-column: 1;
 }
 
 .jiuwenmate-colleague-list {
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   min-height: 0;
   flex-direction: column;
@@ -1520,9 +1530,13 @@
   height: auto;
 }
 
-/* Records panel (workspace column 2) */
+/* Records panel (workspace column 3) */
 .jiuwenmate-records {
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
   flex-direction: column;
   gap: 12px;
@@ -1547,6 +1561,35 @@
   white-space: nowrap;
 }
 
+.jiuwenmate-chat-sidebar-actions {
+  display: grid;
+  gap: 4px;
+}
+
+.jiuwenmate-chat-sidebar-actions button {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--jm-text);
+  background: transparent;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jiuwenmate-chat-sidebar-actions button:hover {
+  background: var(--jm-muted);
+}
+
+.jiuwenmate-chat-sidebar-actions button svg {
+  width: 16px;
+  height: 16px;
+}
+
 .jiuwenmate-records .jiuwenmate-segmented-tabs {
   display: flex;
 }
@@ -1557,6 +1600,8 @@
 
 .jiuwenmate-records__section {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 4px;
 }
 
@@ -1591,24 +1636,87 @@
   border-radius: 8px;
 }
 
-.jiuwenmate-records__item:hover,
-.jiuwenmate-records__item[aria-current='true'] {
+.jiuwenmate-records__item:not(.jiuwenmate-records__item--conversation):hover,
+.jiuwenmate-records__item:not(.jiuwenmate-records__item--conversation)[aria-current='true'] {
+  background: var(--jm-muted);
+}
+
+.jiuwenmate-records__item--conversation::before {
+  position: absolute;
+  z-index: 0;
+  inset: 2px 6px 2px 1px;
+  border-radius: 8px;
+  content: '';
+  pointer-events: none;
+}
+
+.jiuwenmate-records__item--conversation {
+  width: calc(100% + 14px);
+  min-width: 0;
+}
+
+.jiuwenmate-records__item--conversation:hover::before,
+.jiuwenmate-records__item--conversation[aria-current='true']::before {
   background: var(--jm-muted);
 }
 
 .jiuwenmate-records__item > button {
   display: flex;
   min-width: 0;
-  min-height: 34px;
+  min-height: 48px;
   flex: 1;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
   padding: 0 32px 0 8px;
   border: 0;
   background: transparent;
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+}
+
+.jiuwenmate-records__item > button small {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--jm-text-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-records__item--conversation > button {
+  position: relative;
+  z-index: 1;
+  min-height: 60px;
+  align-items: center;
+  flex-direction: row;
+  gap: 10px;
+}
+
+.jiuwenmate-records__conversation-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.jiuwenmate-records__conversation-copy strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-records__item--conversation > button time {
+  align-self: flex-start;
+  margin-top: 12px;
+  color: var(--jm-text-3);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .jiuwenmate-records__item--channel > button {
@@ -1630,7 +1738,46 @@
   border-radius: 50%;
 }
 
+.jiuwenmate-records__item--conversation > .jiuwenmate-records__conversation {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 60px;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  padding: 0 32px 0 8px;
+}
+
+.jiuwenmate-records__item--conversation > .jiuwenmate-records__conversation time {
+  align-self: flex-start;
+  margin-top: 12px;
+  color: var(--jm-text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.jiuwenmate-records__conversation input {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--jm-border-strong);
+  border-radius: 6px;
+  outline: 0;
+  color: var(--jm-text);
+  background: #fff;
+  color-scheme: light;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .jiuwenmate-records__item > input {
+  position: relative;
+  z-index: 1;
   min-width: 0;
   height: 30px;
   flex: 1;
@@ -1639,21 +1786,28 @@
   border: 1px solid var(--jm-text-2);
   border-radius: 6px;
   outline: 0;
+  color: var(--jm-text);
+  background: #fff;
+  color-scheme: light;
 }
 
 .jiuwenmate-records__item > .jiuwenmate-menu {
   position: absolute;
+  z-index: 2;
   right: 4px;
   opacity: 0;
 }
 
 .jiuwenmate-records__item:hover > .jiuwenmate-menu,
+.jiuwenmate-records__item[aria-current='true'] > .jiuwenmate-menu,
 .jiuwenmate-records__item > .jiuwenmate-menu--open {
   opacity: 1;
 }
 
 /* Workspace main */
 .jiuwenmate-workspace__main {
+  grid-column: 2;
+  grid-row: 1;
   position: relative;
   display: flex;
   min-width: 0;
@@ -1676,6 +1830,206 @@
   justify-content: space-between;
   gap: 12px;
   padding: 0 24px;
+}
+
+.jiuwenmate-main-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.jiuwenmate-chat-welcome__header {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  right: 0;
+  left: 0;
+}
+
+.jiuwenmate-main-header__actions .jiuwenmate-icon-button {
+  width: 32px;
+  height: 32px;
+}
+
+.jiuwenmate-main-header__actions .jiuwenmate-icon-button[aria-pressed='true'] {
+  color: var(--jm-blue);
+  background: var(--jm-muted-2);
+}
+
+.jiuwenmate-side-panel {
+  grid-column: 3;
+  grid-row: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid var(--jm-border);
+  background: var(--jm-surface);
+}
+
+.jiuwenmate-side-panel__header {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--jm-border);
+}
+
+.jiuwenmate-side-panel__header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.jiuwenmate-side-panel__tabs {
+  display: flex;
+  gap: 18px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--jm-border);
+}
+
+.jiuwenmate-side-panel__tabs button {
+  min-height: 42px;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--jm-text-2);
+  background: transparent;
+  cursor: pointer;
+}
+
+.jiuwenmate-side-panel__tabs button[aria-selected='true'] {
+  border-bottom-color: var(--jm-blue);
+  color: var(--jm-blue);
+}
+
+.jiuwenmate-side-panel__body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  overflow: auto;
+  padding: 12px;
+}
+
+.jiuwenmate-side-panel__body--preview {
+  overflow: hidden;
+  padding: 0;
+}
+
+.jiuwenmate-side-panel__search {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--jm-border-strong);
+  border-radius: 6px;
+  color: var(--jm-text);
+  background: var(--jm-surface);
+  font-size: 12px;
+}
+
+.jiuwenmate-side-panel__count {
+  padding: 4px 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.jiuwenmate-side-panel__item,
+.jiuwenmate-side-panel__add {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--jm-text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jiuwenmate-side-panel__item:hover,
+.jiuwenmate-side-panel__item[aria-current='true'] {
+  background: var(--jm-muted-2);
+}
+
+.jiuwenmate-side-panel__item > span:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-side-panel__item .jiuwenmate-platform-badge {
+  margin-left: auto;
+}
+
+.jiuwenmate-side-panel__add {
+  color: var(--jm-blue);
+}
+
+.jiuwenmate-side-panel__artifact {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--jm-text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jiuwenmate-side-panel__artifact:hover {
+  background: var(--jm-muted-2);
+}
+
+.jiuwenmate-side-panel__artifact > span {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.jiuwenmate-side-panel__artifact strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-side-panel__artifact small {
+  color: var(--jm-text-2);
+}
+
+.jiuwenmate-side-panel__artifact a {
+  color: var(--jm-blue);
+  text-decoration: none;
+}
+
+.jiuwenmate-side-panel__preview-header {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--jm-border);
+}
+
+.jiuwenmate-side-panel__preview-header strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .jiuwenmate-workspace--collapsed .jiuwenmate-main-header {
@@ -1909,6 +2263,13 @@
 .jiuwenmate-chat-messages > li {
   display: grid;
   gap: 10px;
+}
+
+.jiuwenmate-chat-history-loading {
+  padding: 24px 0;
+  color: var(--jm-text-3);
+  font-size: 12px;
+  text-align: center;
 }
 
 .jiuwenmate-chat-message {
@@ -4650,7 +5011,20 @@
   }
 
   .jiuwenmate-workspace {
-    grid-template-columns: 200px 260px minmax(0, 1fr);
+    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  }
+
+  .jiuwenmate-workspace--collapsed,
+  .jiuwenmate-workspace--empty {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .jiuwenmate-workspace--collapsed .jiuwenmate-workspace__main {
+    grid-column: 1;
+  }
+
+  .jiuwenmate-records {
+    grid-column: 1;
   }
 
   .jiuwenmate-trace-body--detail {

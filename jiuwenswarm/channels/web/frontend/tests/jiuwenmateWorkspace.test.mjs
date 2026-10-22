@@ -4,9 +4,11 @@ import test from 'node:test';
 import {
   closeChannelTrace,
   createWorkspaceState,
+  mergeWorkspaceConversations,
   openChannelTrace,
   selectChannel,
   selectColleague,
+  selectManagementChannel,
   selectRecordTab,
   selectTraceRow,
   setRecordsCollapsed,
@@ -27,6 +29,37 @@ const rows = [
   { id: 't3-answer', turn: 3, role: 'assistant', content: '杭州天气' },
 ];
 
+test('keeps the selected colleague conversations visible while its list refreshes', () => {
+  const selected = {
+    id: 'conversation-learning',
+    title: '你能做什么',
+    updatedAt: '2026-10-22T00:00:00Z',
+    agentId: 'agent-learning',
+  };
+  const other = {
+    id: 'conversation-other',
+    title: '其他会话',
+    updatedAt: '2026-10-21T00:00:00Z',
+    agentId: 'agent-other',
+  };
+
+  const duringRefresh = mergeWorkspaceConversations([selected, other], 'agent-learning', [], false);
+  assert.ok(duringRefresh.some((conversation) => conversation.id === selected.id));
+
+  const afterRefresh = mergeWorkspaceConversations([selected, other], 'agent-learning', [selected], true);
+  assert.ok(afterRefresh.some((conversation) => conversation.id === selected.id));
+  assert.ok(afterRefresh.some((conversation) => conversation.id === other.id));
+});
+
+test('pinned conversations stay above unpinned conversations across colleagues', () => {
+  const pinned = { id: 'older', agentId: 'agent-1', title: 'Pinned', updatedAt: '1', pinned: true };
+  const recent = { id: 'newer', agentId: 'agent-2', title: 'Recent', updatedAt: '9', pinned: false };
+  assert.deepEqual(mergeWorkspaceConversations([recent, pinned], 'agent-2', [recent], true).map((item) => item.id), [
+    'older',
+    'newer',
+  ]);
+});
+
 test('workspace selections switch across colleagues, tabs and channels', () => {
   const initial = createWorkspaceState('after-sales-assistant', 'robot-trial-group');
   assert.equal(selectColleague(initial, 'system-architect').selectedColleagueId, 'system-architect');
@@ -38,6 +71,14 @@ test('workspace selections switch across colleagues, tabs and channels', () => {
   assert.equal(switched.traceOpen, false);
 
   assert.equal(setRecordsCollapsed(initial, true).recordsCollapsed, true);
+});
+
+test('opening a management channel keeps the conversation list selected', () => {
+  const initial = createWorkspaceState('agent-learning', null);
+  const selected = selectManagementChannel(initial, 'group-1');
+
+  assert.equal(selected.recordTab, 'conversations');
+  assert.equal(selected.managementChannelId, 'group-1');
 });
 
 test('trace filters are mutually exclusive toggles and reset on close', () => {

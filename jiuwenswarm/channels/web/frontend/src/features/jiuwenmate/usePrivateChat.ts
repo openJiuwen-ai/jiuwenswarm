@@ -19,6 +19,7 @@ export type JiuwenMateChatApi = Pick<
   | 'onStream'
   | 'listConversations'
   | 'renameConversation'
+  | 'setConversationPinned'
   | 'deleteConversation'
 >;
 
@@ -37,18 +38,22 @@ export function newId(): string {
  * message's draft; its end, or a fragment of a message not listed yet, is followed by a query.
  */
 export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversationId: string, connectionEpoch: number) {
+  const scope = `${agentId} ${conversationId}`;
   const [requests, setRequests] = useState<JiuwenMateChatRequest[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [pollRound, setPollRound] = useState(0);
-  const scope = `${agentId} ${conversationId}`;
   const scopeRef = useRef(scope);
   const unsent = useRef<{ scope: string; text: string; messageId: string } | null>(null);
   const listed = useRef(requests);
+  const visibleRequests = loadedScope === scope ? requests : [];
+  const visibleError = loadedScope === scope ? error : null;
+  const loading = Boolean(agentId && conversationId && loadedScope !== scope);
 
   useEffect(() => {
-    listed.current = requests;
-  }, [requests]);
+    listed.current = visibleRequests;
+  }, [visibleRequests]);
 
   useEffect(() => {
     if (scopeRef.current !== scope) {
@@ -60,10 +65,16 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     let active = true;
     api.history(agentId, conversationId).then(
       (listed) => {
-        if (active) setRequests(listed);
+        if (active) {
+          setRequests(listed);
+          setLoadedScope(scope);
+        }
       },
       (reason: unknown) => {
-        if (active) setError(errorMessage(reason));
+        if (active) {
+          setError(errorMessage(reason));
+          setLoadedScope(scope);
+        }
       },
     );
     return () => {
@@ -102,7 +113,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     };
   }, [api, agentId, conversationId]);
 
-  const pendingIds = requests
+  const pendingIds = visibleRequests
     .filter(isPending)
     .map((item) => item.requestId)
     .join(' ');
@@ -163,5 +174,5 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     [api, scope],
   );
 
-  return { requests, error, sending, send, abort };
+  return { requests: visibleRequests, error: visibleError, loading, sending, send, abort };
 }

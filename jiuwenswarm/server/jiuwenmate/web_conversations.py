@@ -2,7 +2,8 @@
 
 Each conversation is a separate Session (``ConversationRef.web(conversation_id)``),
 so it has its own history and window. This table only adds what the list shows: a
-title and the time of the latest message. A conversation is written when its first
+title and the time of the latest message. Conversation previews come from the latest
+Request in the Session. Pin state is stored with the conversation. A conversation is written when its first
 message is accepted, so opening a new one creates nothing. Deleting hides it from the
 list; its Requests and window stay with the Session.
 """
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS web_conversations (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT,
+    pinned INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (namespace_id, agent_id, conversation_id)
 );
 CREATE INDEX IF NOT EXISTS web_conversations_by_activity
@@ -48,6 +50,7 @@ class WebConversation:
     title: str
     created_at: datetime
     updated_at: datetime
+    pinned: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -56,11 +59,19 @@ class WebConversation:
             "title": self.title,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
+            "pinned": self.pinned,
         }
 
 
 class WebConversationStore(SQLiteStore):
     _schema = _SCHEMA
+
+    def __init__(self, db_path):
+        super().__init__(db_path)
+        with self._transaction() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(web_conversations)")}
+            if "pinned" not in columns:
+                conn.execute("ALTER TABLE web_conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
 
     @staticmethod
     def _conversation(row) -> WebConversation:
@@ -70,6 +81,7 @@ class WebConversationStore(SQLiteStore):
             title=row["title"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+            pinned=bool(row["pinned"]),
         )
 
     def _row(self, conn, namespace_id: str, agent_id: str, conversation_id: str):
@@ -92,7 +104,9 @@ class WebConversationStore(SQLiteStore):
         """Record a message: the first one names the conversation, each one moves it to the top."""
         with self._transaction() as conn:
             conn.execute(
-                "INSERT INTO web_conversations VALUES (?, ?, ?, ?, ?, ?, NULL) "
+                "INSERT INTO web_conversations "
+                "(namespace_id, agent_id, conversation_id, title, created_at, updated_at, deleted_at, pinned) "
+                "VALUES (?, ?, ?, ?, ?, ?, NULL, 0) "
                 "ON CONFLICT (namespace_id, agent_id, conversation_id) DO UPDATE SET updated_at = excluded.updated_at",
                 (namespace_id, agent_id, conversation_id, default_title(text), now.isoformat(), now.isoformat()),
             )
@@ -112,7 +126,9 @@ class WebConversationStore(SQLiteStore):
         """List a conversation that has messages from before this table; a known one is left unchanged."""
         with self._transaction() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO web_conversations VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                "INSERT OR IGNORE INTO web_conversations "
+                "(namespace_id, agent_id, conversation_id, title, created_at, updated_at, deleted_at, pinned) "
+                "VALUES (?, ?, ?, ?, ?, ?, NULL, 0)",
                 (
                     namespace_id,
                     agent_id,
@@ -132,7 +148,7 @@ class WebConversationStore(SQLiteStore):
         with self._transaction() as conn:
             rows = conn.execute(
                 "SELECT * FROM web_conversations WHERE namespace_id = ? AND agent_id = ? AND deleted_at IS NULL "
-                "ORDER BY updated_at DESC, created_at DESC",
+                "ORDER BY pinned DESC, updated_at DESC, created_at DESC",
                 (namespace_id, agent_id),
             ).fetchall()
         return [self._conversation(row) for row in rows]
@@ -146,6 +162,22 @@ class WebConversationStore(SQLiteStore):
                 "UPDATE web_conversations SET title = ? WHERE namespace_id = ? AND agent_id = ? "
                 "AND conversation_id = ? AND deleted_at IS NULL",
                 (title, namespace_id, agent_id, conversation_id),
+            ).rowcount
+            row = self._row(conn, namespace_id, agent_id, conversation_id)
+        if not updated:
+            raise PersistentAgentError("conversation not found", code="NOT_FOUND")
+        return self._conversation(row)
+
+    def set_pinned(
+        self, namespace_id: str, agent_id: str, conversation_id: str, pinned: bool
+    ) -> WebConversation:
+        if not isinstance(pinned, bool):
+            raise PersistentAgentError("pinned must be boolean")
+        with self._transaction() as conn:
+            updated = conn.execute(
+                "UPDATE web_conversations SET pinned = ? WHERE namespace_id = ? AND agent_id = ? "
+                "AND conversation_id = ? AND deleted_at IS NULL",
+                (int(pinned), namespace_id, agent_id, conversation_id),
             ).rowcount
             row = self._row(conn, namespace_id, agent_id, conversation_id)
         if not updated:
