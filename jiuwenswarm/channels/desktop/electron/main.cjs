@@ -16,7 +16,6 @@ const { registerDisplayMediaHandler } = require('./display_media_picker.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
 const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
-const { createShutdownReceipt, completeShutdownReceipt, recordShutdownOutcome } = require('./update_shutdown.cjs');
 let macUpdateInProgress = false;
 let updateShutdownReceipt = null;
 
@@ -3260,15 +3259,11 @@ app.on('before-quit', event => {
   saveSessionLastUrls();
   // 冲刷下载历史，保证重启后下载记录完整。
   saveStoredDownloads();
-  finalShutdownPromise = recordShutdownOutcome(updateShutdownReceipt, () => Promise.all([abortAllBlobSaves(), stopServices()]))
-    .catch(error => {
-      requestedExitCode = Math.max(1, requestedExitCode);
-      console.error('[electron] final shutdown incomplete; update is blocked', error);
-    }).finally(() => {
-      shutdownComplete = true;
-      destroyTray();
-      app.exit(requestedExitCode);
-    });
+  void Promise.all([abortAllBlobSaves(), stopServices()]).finally(() => {
+    shutdownComplete = true;
+    destroyTray();
+    app.exit(requestedExitCode);
+  });
 });
 app.on('activate', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;

@@ -19,10 +19,40 @@ export interface ElectronBrowserBounds {
   height: number;
 }
 
+export type ElectronDownloadState = 'downloading' | 'paused' | 'completed' | 'cancelled' | 'interrupted';
+
+export interface ElectronDownloadRecord {
+  id: string;
+  filename: string;
+  url: string;
+  /** 本地保存路径；完成（completed）后可用于打开文件 */
+  path: string;
+  receivedBytes: number;
+  totalBytes: number;
+  state: ElectronDownloadState;
+  /** 系统文件类型图标（data URL，与资源管理器一致）；解析失败时缺省走通用 SVG */
+  icon?: string;
+  /** 开始时间（毫秒时间戳） */
+  startTime: number;
+  endTime: number;
+  /** 仅 completed 态：文件已不在记录的保存路径（被移动/删除），面板显示"已删除" */
+  fileMissing?: boolean;
+}
+
 export interface ElectronShareImageExportProgress {
   sessionId: string;
   phase: 'loading_snapshot' | 'rendering' | 'saving';
   progress: number | null;
+}
+
+/** 下载气泡锚点矩形：主窗口内容区坐标系（CSS px），来自 getBoundingClientRect */
+export interface ElectronBubbleAnchorRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
 }
 
 export interface JiuwenElectronDesktopApi {
@@ -97,8 +127,6 @@ export interface JiuwenElectronDesktopApi {
     showDownloadBubble: (anchorRect: ElectronBubbleAnchorRect | null) => Promise<boolean>;
     hideDownloadBubble: () => Promise<boolean>;
     onDownloadBubbleChanged: (callback: (visible: boolean) => void) => () => void;
-    /** Optional for older shells; hides pages without closing their MCP bindings. */
-    setHeadless?: (headless: boolean) => Promise<boolean>;
     getState: (sessionId: string) => Promise<ElectronBrowserState>;
     listPanels: (sessionId: string) => Promise<ElectronBrowserState[]>;
     onPanelsChanged: (callback: (panels: ElectronBrowserState[]) => void) => () => void;

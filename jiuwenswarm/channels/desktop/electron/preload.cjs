@@ -83,7 +83,6 @@ const desktopApi = Object.freeze({
       ipcRenderer.on('browser:download-bubble-changed', listener);
       return () => ipcRenderer.removeListener('browser:download-bubble-changed', listener);
     },
-    setHeadless: headless => invoke('browser:set-headless', headless),
     getState: sessionId => invoke('browser:get-state', sessionId),
     listPanels: sessionId => invoke('browser:list-panels', sessionId),
     onPanelsChanged: callback => {
