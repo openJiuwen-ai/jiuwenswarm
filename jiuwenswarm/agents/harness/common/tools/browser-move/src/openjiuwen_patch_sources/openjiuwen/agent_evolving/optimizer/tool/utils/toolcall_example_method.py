@@ -9,7 +9,9 @@ from typing import Any, Dict, List, Optional, Union
 from openjiuwen.agent_evolving.optimizer.tool.utils.base_method import BaseMethod
 from openjiuwen.agent_evolving.optimizer.tool.utils.format import format_prompt_llama, parse_json
 from openjiuwen.agent_evolving.optimizer.tool.utils.rits import get_rits_response
-from openjiuwen.agent_evolving.optimizer.tool.utils.sensitive_data import credential_values, is_credential_name, redact
+from openjiuwen.agent_evolving.optimizer.tool.utils.sensitive_data import (
+    argument_dict, credential_values, is_credential_name, redact,
+)
 from openjiuwen.core.common.logging import logger
 
 
@@ -51,6 +53,10 @@ class APICallToExampleMethod(BaseMethod):
             logger.info("API call generation completed")
             if not isinstance(fn_call, dict):
                 raise ValueError("API call generation did not return a function call")
+            arguments = argument_dict(fn_call)
+            if arguments is None:
+                raise ValueError("API call arguments must be a JSON object")
+            fn_call["arguments"] = arguments
             secrets = credential_values(fn_call, self.api_keys, tool_for_opt)
             safe_fn_call = redact(fn_call, secrets)
             safe_tool = redact(tool_for_opt, secrets)
@@ -125,8 +131,6 @@ class APICallToExampleMethod(BaseMethod):
             logger.info("Eval step: Using eval fn")
             if isinstance(insts[-1], str) and isinstance(answers[-1], str):
                 examples = [(insts[-1].strip(), safe_fn_call, safe_tool_res, answers[-1].strip())]
-                arguments = fn_call.get('arguments')
-                arguments = arguments if isinstance(arguments, dict) else {}
                 credential_args = {
                     name: value for name, value in arguments.items()
                     if is_credential_name(name)
@@ -136,6 +140,8 @@ class APICallToExampleMethod(BaseMethod):
                 ):
                     # Unknown evaluators may persist or log the call; fail closed.
                     eval_score = 1.
+                    outputs['eval_skipped_reason'] = 'Evaluator does not support safe credential injection'
+                    logger.info('Optional scoring skipped: evaluator lacks safe credential injection')
                 else:
                     eval_kwargs = {'runs': 1}
                     if secrets and credential_args:
@@ -283,11 +289,12 @@ You must strictly follow the output format, including "name", "arguments", and p
             verbose=self.verbose
         )
         if self.api_keys:
-            arguments = result.get('arguments')
-            if isinstance(arguments, dict):
-                for name, value in self.api_keys.items():
-                    if name in arguments and is_credential_name(name):
-                        arguments[name] = value
+            arguments = argument_dict(result)
+            if arguments is None:
+                raise ValueError("API call arguments must be a JSON object")
+            result['arguments'] = arguments
+            for name, value in self.api_keys.items():
+                arguments[name] = value
         return result
 
     def critique_api_call(self, tool: Dict[str, Any], fn_call: Dict[str, Any], fn_response: str):

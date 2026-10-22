@@ -11,7 +11,7 @@ import numpy as np
 
 from openjiuwen.agent_evolving.optimizer.tool.utils.rits import rits_response
 from openjiuwen.agent_evolving.optimizer.tool.utils.sensitive_data import (
-    credential_values, is_credential_name, redact,
+    argument_dict, credential_values, is_credential_name, redact,
 )
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.llm import (
@@ -152,15 +152,10 @@ class SimpleEval:
             )
             
             # Step 2: Evaluate function call accuracy
-            if execution_credentials:
-                fn_call_score = self._evaluate_function_call_accuracy(
-                    redact(generated_fn_call, known_secrets),
-                    redact(expected_fn_call, known_secrets),
-                )
-            else:
-                fn_call_score = self._evaluate_function_call_accuracy(
-                    generated_fn_call, expected_fn_call
-                )
+            fn_call_score = self._evaluate_function_call_accuracy(
+                redact(generated_fn_call, known_secrets),
+                redact(expected_fn_call, known_secrets),
+            )
             
             # Step 3: Execute the generated function call
             execution_result = None
@@ -170,10 +165,13 @@ class SimpleEval:
             if self.api_wrapper:
                 try:
                     execution_call = copy.deepcopy(generated_fn_call)
-                    if execution_credentials and isinstance(execution_call.get("arguments"), dict):
+                    execution_args = argument_dict(execution_call)
+                    if execution_args is None:
+                        raise ValueError("Generated tool-call arguments are not a JSON object")
+                    execution_call["arguments"] = execution_args
+                    if execution_credentials:
                         for name, value in execution_credentials.items():
-                            if name in execution_call["arguments"]:
-                                execution_call["arguments"][name] = value
+                            execution_args[name] = value
                     actual_output, status_code = self.api_wrapper(tool, execution_call)
                     if status_code == 0:
                         execution_result = json.loads(actual_output)
@@ -272,6 +270,7 @@ class SimpleEval:
         """
         Generate a function call using LLM agent's built-in tool calling capability.
         """
+        function_name = tool.get("name", "unknown")
         try:
             # client = OpenAI()
             model_config = ModelRequestConfig(
@@ -317,12 +316,10 @@ class SimpleEval:
             function_name = api_response.tool_calls[0].name
             function_call = {"name": function_name, "arguments": fn_args}
 
-            # try to load str arguments to dict
-            if isinstance(function_call, str):
-                try:
-                    function_call = json.loads(function_call)
-                except json.JSONDecodeError:
-                    pass
+            arguments = argument_dict(function_call)
+            if arguments is None:
+                raise ValueError("Generated tool-call arguments are not a JSON object")
+            function_call["arguments"] = arguments
             # Return the first generated call, or handle multiple calls as needed
             if function_call and len(function_call) > 0:
                 return function_call

@@ -3,6 +3,7 @@
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Dict
 
@@ -12,7 +13,9 @@ from openjiuwen.agent_evolving.optimizer.tool.utils.beam_search import BeamSearc
 from openjiuwen.agent_evolving.optimizer.tool.utils.customized_api import SimpleAPIWrapperFromCallable
 from openjiuwen.agent_evolving.optimizer.tool.utils.customized_eval import SimpleEval
 from openjiuwen.agent_evolving.optimizer.tool.utils.description_example_method import ToolDescriptionMethod
-from openjiuwen.agent_evolving.optimizer.tool.utils.sensitive_data import credential_values, redact
+from openjiuwen.agent_evolving.optimizer.tool.utils.sensitive_data import (
+    credential_values, is_credential_name, redact,
+)
 from openjiuwen.agent_evolving.optimizer.tool.utils.toolcall_example_method import APICallToExampleMethod
 from openjiuwen.core.common.logging import logger
 
@@ -33,7 +36,13 @@ def customized_pipeline(stage, tool, config, tool_callable=None):
     else:
         raise ValueError("Either config or tool_callable must be provided.")
     eval_fn = SimpleEval(api_wrapper=call_api_fn, config=config)
-    api_keys = None # api keys are templates offered to llm for params generation
+    api_keys = config.get("api_keys")
+    if api_keys is not None and not isinstance(api_keys, dict):
+        raise TypeError("api_keys must map credential argument names to values")
+    parameters = tool.get("parameters")
+    required = parameters.get("required", []) if isinstance(parameters, Mapping) else []
+    if not api_keys and any(is_credential_name(name) for name in required):
+        raise ValueError("Required tool credentials must be supplied in config['api_keys']")
     non_opt_params = []
 
     if stage == "example":
@@ -45,7 +54,7 @@ def customized_pipeline(stage, tool, config, tool_callable=None):
     
     logger.info("=== Starting SingleRoundSearch ===")
     # Tool documentation is also included in later LLM prompts and saved results.
-    safe_tool = redact(tool, credential_values(tool))
+    safe_tool = redact(tool, credential_values(tool, api_keys))
     single_search = BeamSearch(
         method=method,
         beam_width=config["beam_width"],

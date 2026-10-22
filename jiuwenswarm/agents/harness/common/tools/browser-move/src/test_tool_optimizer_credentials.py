@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import statistics
 import sys
 import tempfile
 import types
@@ -67,11 +68,21 @@ class CredentialSafetyTests(unittest.TestCase):
         logging.logger = types.SimpleNamespace(info=lambda *args: None)
         fake_modules[logging.__name__] = logging
 
+        numpy = types.ModuleType("numpy")
+        numpy.mean = statistics.mean
+        numpy.std = statistics.pstdev
+        fake_modules["numpy"] = numpy
+        anyio = types.ModuleType("anyio")
+        anyio.run = lambda fn: fn()
+        fake_modules["anyio"] = anyio
+
+        cls.fake_modules = fake_modules
         with patch.dict(sys.modules, fake_modules):
             cls.sensitive = load_module(PREFIX + ".sensitive_data", UTILS / "sensitive_data.py")
             cls.toolcall = load_module("test_toolcall_example_method", UTILS / "toolcall_example_method.py")
             cls.evaluator = load_module("test_customized_eval", UTILS / "customized_eval.py")
             cls.wrapper = load_module("test_customized_api", UTILS / "customized_api.py")
+        cls.fake_modules[PREFIX + ".sensitive_data"] = cls.sensitive
 
     def test_redacts_nested_fields_json_results_and_authorization_text(self):
         secret = "test-secret-123"
@@ -83,6 +94,29 @@ class CredentialSafetyTests(unittest.TestCase):
         self.assertNotIn(secret, json.dumps(safe))
         self.assertEqual(safe["arguments"]["apiKey"], self.sensitive.REDACTED)
         self.assertEqual(payload["arguments"]["apiKey"], secret)
+
+    def test_redaction_preserves_schema_and_ordinary_numeric_values(self):
+        payload = {
+            "parameters": {"properties": {
+                "api_key": {"type": "string", "description": "Credential", "default": "test-secret"},
+                "max_tokens": {"type": "integer", "default": 100},
+                "sort_key": {"type": "string"},
+            }},
+            "description": 'headers={"Authorization": "Bearer test-secret"}; count=100',
+        }
+        secrets = self.sensitive.credential_values(payload)
+        safe = self.sensitive.redact(payload, secrets)
+        self.assertIn("test-secret", secrets)
+        self.assertNotIn("100", secrets)
+        self.assertFalse(self.sensitive.is_credential_name("max_tokens"))
+        self.assertFalse(self.sensitive.is_credential_name("auth_level"))
+        self.assertFalse(self.sensitive.is_credential_name("sort_key"))
+        self.assertTrue(self.sensitive.is_credential_name("user_token"))
+        self.assertEqual(safe["parameters"]["properties"]["api_key"]["type"], "string")
+        self.assertEqual(safe["parameters"]["properties"]["api_key"]["default"], "[REDACTED]")
+        self.assertEqual(safe["parameters"]["properties"]["max_tokens"]["default"], 100)
+        self.assertIn("count=100", safe["description"])
+        self.assertNotIn("test-secret", json.dumps(safe))
 
     def test_step_executes_real_call_but_returns_only_safe_examples(self):
         secret = "test-secret-456"
@@ -130,6 +164,18 @@ class CredentialSafetyTests(unittest.TestCase):
             self.toolcall.get_rits_response = original
         self.assertNotIn(secret, prompts[0])
         self.assertEqual(result["arguments"]["api_key"], secret)
+
+    def test_configured_key_is_added_when_model_omits_it(self):
+        config = {"gen_model_id": "fake", "llm_api_key": "fake", "verbose": False}
+        method = self.toolcall.APICallToExampleMethod(config, api_keys={"api_key": "test-secret"})
+        original = self.toolcall.get_rits_response
+        try:
+            self.toolcall.get_rits_response = lambda *args, **kwargs: {
+                "name": "lookup", "arguments": {"query": "weather"}}
+            result = method.generate_api_call_from_description({"name": "lookup"})
+        finally:
+            self.toolcall.get_rits_response = original
+        self.assertEqual(result["arguments"]["api_key"], "test-secret")
 
     def test_evaluator_does_not_return_or_reprompt_with_credentials(self):
         secret = "test-secret-eval"
@@ -196,6 +242,45 @@ class CredentialSafetyTests(unittest.TestCase):
         self.assertNotIn(secret, json.dumps(result["results"]))
         self.assertNotIn(secret, json.dumps(evaluated))
 
+    def test_evaluator_parses_string_arguments_and_compares_redacted_calls(self):
+        secret = "test-secret-string"
+        executed = []
+        evaluator = self.evaluator.SimpleEval(
+            api_wrapper=lambda tool, call: (executed.append(call) or json.dumps(
+                {"response": "ok"}), 0), config={})
+        evaluator._generate_function_call = lambda *args: {
+            "name": "lookup", "arguments": json.dumps({"api_key": "placeholder"})}
+        evaluator._evaluate_output_effectiveness = lambda *args: 1.0
+        result = evaluator(
+            {"name": "lookup", "parameters": {"type": "object", "properties": {
+                "api_key": {"type": "string"}}}}, "lookup",
+            [("Search", {"name": "lookup", "arguments": {"api_key": secret}}, "ok", "ok")],
+            execution_credentials={"api_key": secret},
+        )
+        self.assertEqual(executed[0]["arguments"]["api_key"], secret)
+        self.assertEqual(result["fn_call_accuracy"], 100.0)
+        self.assertNotIn(secret, json.dumps(result["results"]))
+
+    def test_description_evaluation_requires_safe_execution_credentials(self):
+        with patch.dict(sys.modules, self.fake_modules):
+            description = load_module(
+                "test_description_example_method", UTILS / "description_example_method.py")
+        seen = []
+
+        def evaluate(*args, **kwargs):
+            seen.append((args, kwargs))
+            return {"score_avg": 100.0}
+
+        evaluate.supports_execution_credentials = True
+        examples = [("Search", {"name": "lookup", "arguments": {
+            "api_key": "[REDACTED]"}}, "ok", "ok")]
+        method = description.ToolDescriptionMethod({"api_keys": {"api_key": "test-secret"}}, evaluate)
+        method.eval_loop({"name": "lookup"}, "lookup", examples)
+        self.assertEqual(seen[0][1]["execution_credentials"], {"api_key": "test-secret"})
+        method = description.ToolDescriptionMethod({}, evaluate)
+        with self.assertRaisesRegex(ValueError, "config\\['api_keys'\\]"):
+            method.eval_loop({"name": "lookup"}, "lookup", examples)
+
     def test_step_keeps_optional_scoring_with_safe_evaluator(self):
         secret = "test-secret-scoring"
         eval_calls = []
@@ -244,10 +329,12 @@ class CredentialSafetyTests(unittest.TestCase):
             self.wrapper.logger = original_logger
         self.assertEqual(status, 12)
         self.assertNotIn(secret, result + json.dumps(log_messages))
+        self.assertIn("RuntimeError", result)
 
     def test_pipeline_sanitizes_tool_and_existing_example_file(self):
         secret = "test-secret-file"
         seen_tools = []
+        seen_keys = []
 
         class BeamSearch:
             def __init__(self, **kwargs):
@@ -273,10 +360,12 @@ class CredentialSafetyTests(unittest.TestCase):
             PREFIX + ".description_example_method": module_with(
                 PREFIX + ".description_example_method", "ToolDescriptionMethod", lambda *args: None),
             PREFIX + ".toolcall_example_method": module_with(
-                PREFIX + ".toolcall_example_method", "APICallToExampleMethod", lambda *args, **kwargs: None),
+                PREFIX + ".toolcall_example_method", "APICallToExampleMethod",
+                lambda *args, **kwargs: seen_keys.append(kwargs.get("api_keys"))),
             "openjiuwen.core.common.logging": module_with(
                 "openjiuwen.core.common.logging", "logger",
                 types.SimpleNamespace(info=lambda *args: None)),
+            "dotenv": module_with("dotenv", "load_dotenv", lambda *args, **kwargs: None),
         }
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "lookup.json"
@@ -287,13 +376,51 @@ class CredentialSafetyTests(unittest.TestCase):
                 pipeline = load_module(
                     "test_customized_pipeline", UTILS / "customized_pipline.py")
             config = {"save_dir": temp_dir, "beam_width": 1, "expand_num": 1,
-                      "max_depth": 1, "num_workers": 1, "verbose": False, "top_k": 1}
+                      "max_depth": 1, "num_workers": 1, "verbose": False, "top_k": 1,
+                      "api_keys": {"api_key": secret}}
+            tool = {"name": "lookup", "description": "API key: " + secret,
+                    "parameters": {"type": "object", "properties": {
+                        "api_key": {"type": "string"}}, "required": ["api_key"]}}
             result = pipeline.customized_pipeline(
-                "example", {"name": "lookup", "description": "API key: " + secret},
-                config, tool_callable=lambda *args: None)
+                "example", tool, config, tool_callable=lambda *args: None)
+            self.assertEqual(seen_keys, [{"api_key": secret}])
+            self.assertEqual(seen_tools[0]["parameters"]["properties"]["api_key"],
+                             {"type": "string"})
             self.assertNotIn(secret, json.dumps(seen_tools))
             self.assertNotIn(secret, json.dumps(result))
             self.assertNotIn(secret, output_path.read_text(encoding="utf-8"))
+            with self.assertRaisesRegex(ValueError, "Required tool credentials"):
+                pipeline.customized_pipeline(
+                    "example", tool, {key: value for key, value in config.items()
+                                      if key != "api_keys"}, tool_callable=lambda *args: None)
+
+    def test_optimizer_passes_credentials_to_both_stages(self):
+        def module_with(name, **attributes):
+            module = types.ModuleType(name)
+            module.__dict__.update(attributes)
+            return module
+
+        base_prefix = "openjiuwen.agent_evolving.optimizer"
+        modules = dict(self.fake_modules)
+        modules.update({
+            base_prefix + ".base": module_with(base_prefix + ".base",
+                BaseOptimizer=type("BaseOptimizer", (), {"__init__": lambda self, **kwargs: None})),
+            PREFIX + ".customized_pipline": module_with(PREFIX + ".customized_pipline",
+                customized_pipeline=lambda *args, **kwargs: None),
+            PREFIX + ".customized_reviewer": module_with(PREFIX + ".customized_reviewer",
+                ToolDescriptionReviewer=object),
+            PREFIX + ".default_configs": module_with(PREFIX + ".default_configs",
+                default_config_desc={}, default_config_eg={}),
+            PREFIX + ".schema_extractor": module_with(PREFIX + ".schema_extractor",
+                extract_schema=lambda *args: None),
+        })
+        with patch.dict(sys.modules, modules):
+            optimizer_base = load_module("test_tool_optimizer_base", UTILS.parent / "base.py")
+        optimizer = optimizer_base.ToolOptimizerBase(
+            api_keys={"api_key": "test-secret"},
+            config_eg={}, config_desc={}, path_save_dir="results")
+        self.assertEqual(optimizer.config_eg["api_keys"], {"api_key": "test-secret"})
+        self.assertEqual(optimizer.config_desc["api_keys"], {"api_key": "test-secret"})
 
 
 if __name__ == "__main__":

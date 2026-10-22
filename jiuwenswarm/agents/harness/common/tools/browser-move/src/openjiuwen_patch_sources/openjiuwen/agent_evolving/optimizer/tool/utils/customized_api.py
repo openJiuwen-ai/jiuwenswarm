@@ -86,10 +86,11 @@ class SimpleAPIWrapper:
         try:
             output = fn(params)
             return json.dumps({'response': output}, ensure_ascii=False), 0
-        except Exception:
-            logger.error("Tool execution failed")
+        except Exception as exc:
+            error = f"Tool execution failed ({type(exc).__name__})"
+            logger.error(error)
             return json.dumps({
-                "error": "request invalid, tool execution failed",
+                "error": error,
                 "response": ""
             }), 12
 
@@ -140,10 +141,11 @@ class SimpleAPIWrapperFromCallable:
         try:
             output = fn(params)
             return json.dumps({'response': output}, ensure_ascii=False), 0
-        except Exception:
-            logger.error("Tool execution failed")
+        except Exception as exc:
+            error = f"Tool execution failed ({type(exc).__name__})"
+            logger.error(error)
             return json.dumps({
-                "error": "request invalid, tool execution failed",
+                "error": error,
                 "response": ""
             }), 12
         """
@@ -211,10 +213,11 @@ class SimpleAPIWrapperFromCallable:
         try:
             output = fn(params)
             return json.dumps({'response': output}, ensure_ascii=False), 0
-        except Exception:
-            logger.error("Tool execution failed")
+        except Exception as exc:
+            error = f"Tool execution failed ({type(exc).__name__})"
+            logger.error(error)
             return json.dumps({
-                "error": "request invalid, tool execution failed",
+                "error": error,
                 "response": ""
             }), 12
 
