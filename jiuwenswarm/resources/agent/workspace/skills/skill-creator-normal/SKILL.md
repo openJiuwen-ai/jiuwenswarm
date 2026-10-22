@@ -566,23 +566,20 @@ Take `best_description` from the JSON output and update the skill's SKILL.md fro
 This skill owns delivery end-to-end. Do **not** depend on being nested under `skill-creator` for packaging.
 
 1. Confirm the Skill root is still under a temp/draft directory (not `workspace/skills/<name>`).
-2. Confirm `skill_display.md` exists next to SKILL.md with non-empty
-   `display_name_zh`, `description_zh`, `display_name_en`, and `description_en`.
-   If any are missing, write or fix `skill_display.md` first — do not ship a locally authored skill without it.
-3. Run validation:
+2. Run validation:
 
 ```bash
 python scripts/quick_validate.py <path/to/skill-folder>
 ```
 
-4. Package the directory into a **`.zip` or `.skill`** (zip format). The package must **not** contain a root-level `.archive/`. Do not treat YAML `version` as a product version identity in create/modify output packages.
+3. Package the directory into a **`.zip` or `.skill`** (zip format). The package must **not** contain a root-level `.archive/`. Do not treat YAML `version` as a product version identity in create/modify output packages.
 
 ```bash
 python -m scripts.package_skill <path/to/skill-folder>
 ```
 
-5. Call tool **`send_file_to_user`** with the package's **absolute path** so the chat shows a Skill file card with **Save**.
-6. Tell the user: clicking **Save** installs into workspace; you will not auto-install.
+4. Call tool **`send_file_to_user`** with the package's **absolute path** so the chat shows a Skill file card with **Save**.
+5. Tell the user: clicking **Save** installs into workspace; you will not auto-install.
 
 Without `send_file_to_user`, the task is incomplete — even if a `.skill` file exists on disk.
 
