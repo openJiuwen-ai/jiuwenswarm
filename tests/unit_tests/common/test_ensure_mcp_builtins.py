@@ -157,7 +157,7 @@ def test_runtime_workspace_prepares_when_mcp_seed_is_stale(
     (workspace / "agent" / "workspace" / "mcp" / "mcp_builtins").mkdir(
         parents=True
     )
-    prepared: list[Path] = []
+    prepared: list[tuple[Path, bool]] = []
 
     monkeypatch.setattr(common_utils, "get_user_workspace_dir", lambda: workspace)
     monkeypatch.setattr(common_utils, "cleanup_team_files", lambda _workspace: None)
@@ -165,14 +165,14 @@ def test_runtime_workspace_prepares_when_mcp_seed_is_stale(
     monkeypatch.setattr(
         common_utils,
         "prepare_workspace",
-        lambda *, overwrite, workspace_dir: prepared.append(workspace_dir),
+        lambda *, overwrite, workspace_dir, migrate_config: prepared.append((workspace_dir, migrate_config)),
     )
     monkeypatch.setattr(common_utils, "ensure_config_migrated_from_template", lambda _workspace: None)
     monkeypatch.setattr(common_utils, "ensure_default_builtin_skills", lambda: None)
 
     common_utils.prepare_runtime_workspace(cleanup_stale_descs=False)
 
-    assert prepared == [workspace]
+    assert prepared == [(workspace, False)]
 
 
 # ---------------------------------------------------------------------------

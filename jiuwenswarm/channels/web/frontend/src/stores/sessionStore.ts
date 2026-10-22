@@ -32,7 +32,11 @@ import {
   registerConfirmedTaskCreation,
   type TaskProgressBaseline,
 } from '../features/teamTaskProgressBaseline';
-import type { AgentGroupSelectionIntent, AgentSelectionIntent } from '../features/agentManagement/types';
+import type {
+  AgentGroupIdentity,
+  AgentGroupSelectionIntent,
+  AgentSelectionIntent,
+} from '../features/agentManagement/types';
 import {
   loadTeamConnectionPresentation,
   saveTeamConnectionPresentation,
@@ -53,6 +57,7 @@ import {
   normalizeTeamLeaderIdentity,
   type TeamLeaderIdentity,
 } from '../features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 
 const MODE_STORAGE_KEY = 'jiuwenclaw_mode';
 const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
@@ -656,6 +661,8 @@ export interface SessionRuntime {
   agentGroupBindingPending: string | null;
   /** 首次 AgentGroup 绑定时锁定的 leader 身份；普通 Team 为 null。 */
   teamLeaderIdentity: TeamLeaderIdentity | null;
+  /** 本会话已选 AgentGroup 的展示身份；目录卸载后仍用于历史消息展示。 */
+  teamGroupIdentity: AgentGroupIdentity | null;
   /**
    * 本会话期间持续启用的插件id/MCP名，由输入框"+"菜单"扩展"面板的开关控制。与
    * selectedSkills 不同：这两个字段发 chat.send 后不清空，会一直带在每条消息里，直到用户在
@@ -720,6 +727,7 @@ function createEmptyRuntime(
     agentGroupBinding: null,
     agentGroupBindingPending: null,
     teamLeaderIdentity: null,
+    teamGroupIdentity: null,
     enabledPlugins: [],
     enabledMcps: [],
     extensionsHydrated: false,
@@ -804,6 +812,7 @@ interface SessionState {
   setAgentGroupBinding: (sessionId: string, groupId: string | null) => void;
   setAgentGroupBindingPending: (sessionId: string, groupId: string | null) => void;
   setTeamLeaderIdentity: (sessionId: string, identity: TeamLeaderIdentity | null) => void;
+  setTeamGroupIdentity: (sessionId: string, identity: AgentGroupIdentity | null) => void;
   /** 本会话启用插件：追加（去重） */
   addEnabledPlugin: (sessionId: string, pluginId: string) => void;
   /** 本会话启用插件：移除指定项 */
@@ -979,6 +988,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const baseRuntime = existingRuntime || createEmptyRuntime(sessionId);
       const hasGroupBinding = Object.prototype.hasOwnProperty.call(normalizedSession, 'agent_group_name');
       const hasTeamLeaderIdentity = Object.prototype.hasOwnProperty.call(normalizedSession, 'team_leader_identity');
+      const hasTeamGroupIdentity = Object.prototype.hasOwnProperty.call(normalizedSession, 'team_group_identity');
       const sessionGroupBinding = typeof normalizedSession.agent_group_name === 'string' && normalizedSession.agent_group_name.trim()
         ? normalizedSession.agent_group_name.trim()
         : null;
@@ -998,6 +1008,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         teamLeaderIdentity: hasTeamLeaderIdentity
           ? normalizeTeamLeaderIdentity(normalizedSession.team_leader_identity)
           : baseRuntime.teamLeaderIdentity,
+        teamGroupIdentity: hasTeamGroupIdentity
+          ? normalizeTeamGroupIdentity(normalizedSession.team_group_identity)
+          : baseRuntime.teamGroupIdentity,
       };
       return {
         currentSession: normalizedSession,
@@ -1079,6 +1092,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             agentGroupSelectionIntent,
             ...(normalizedMode !== 'team' ? { agentGroupBinding: null } : {}),
             ...(normalizedMode !== 'team' ? { agentGroupBindingPending: null } : {}),
+            ...(normalizedMode !== 'team' ? { teamGroupIdentity: null } : {}),
             ...(closingSwarmflow
               ? { enableSwarmflow: false, swarmflowBudget: null }
               : {}),
@@ -1618,6 +1632,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             teamLeaderIdentity: normalized && (!runtime.agentGroupBinding || runtime.agentGroupBinding === normalized)
               ? runtime.teamLeaderIdentity
               : null,
+            teamGroupIdentity: normalized && (
+              runtime.teamGroupIdentity?.name === normalized
+              || runtime.teamGroupIdentity?.id === normalized
+            )
+              ? runtime.teamGroupIdentity
+              : null,
             agentGroupSelectionIntent: normalized ? { kind: 'keep' } : runtime.agentGroupSelectionIntent,
           },
         },
@@ -1645,6 +1665,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, teamLeaderIdentity: identity },
+        },
+      };
+    });
+  },
+
+  setTeamGroupIdentity: (sessionId, identity) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamGroupIdentity: identity },
         },
       };
     });

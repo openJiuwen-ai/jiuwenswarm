@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional
 import logging
 from logging.handlers import BaseRotatingHandler
+import portalocker
 from ruamel.yaml import YAML
 
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
@@ -888,21 +889,20 @@ def ensure_config_migrated_from_template(
     """将模板新增的配置项合并进用户 config.yaml（保留用户已有值）。
 
     AgentOS 配置由部署模板管理，跳过包内默认模板的结构同步。
-    版本号短路：用户 config.config_version == 程序 VERSION 时跳过迁移；
-    不一致时迁移，迁移成功后由 migrate_config_from_template 把 config_version 写回程序版本。
+    每次启动检查模板新增项；迁移成功后由 migrate_config_from_template
+    把 config_version 写回程序版本。版本号相同也不能证明模板内容未变化。
 
-    合并为纯增量操作：只补齐模板新增项，不会删除用户 config.yaml 中
+    合并只补齐模板新增项，不会删除用户 config.yaml 中
     模板里没有的配置项（模板是示例文档而非 schema，其中本就包含留给
     用户填写的开放式配置节）。因此本函数可以每次启动安全调用。
 
-    Merges newly added template keys into the user's config.yaml. The merge is
-    purely additive: keys the operator added that the template does not contain
-    are preserved, so this is safe to call on every start.
+    Merges newly added template keys. Existing values and operator-added keys
+    are preserved.
     """
     if is_agentos_runtime():
         return False
 
-    from jiuwenswarm.common.config import migrate_config_from_template, load_yaml_round_trip
+    from jiuwenswarm.common.config import migrate_config_from_template
     from jiuwenswarm.common._build_config import VERSION
 
     root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
@@ -914,27 +914,16 @@ def ensure_config_migrated_from_template(
         logger.warning(f"跳过配置迁移: {e}")
         return False
 
-    # 版本号短路：已同步则跳过（不跑 _deep_merge、不读模板内容）
-    # config 不存在时交由 migrate_config_from_template 内部 exists() 优雅处理，不在此抛 FileNotFoundError
-    if not config_path.exists():
-        return migrate_config_from_template(template_path, config_path)
-
-    user_data = load_yaml_round_trip(config_path)
-    if isinstance(user_data, dict) and user_data.get("config_version") == VERSION:
-        logger.debug(f"config 版本 {VERSION} 一致，跳过迁移: {config_path}")
+    # The migration skips a missing config file and writes only on change.
+    try:
+        migrated = migrate_config_from_template(template_path, config_path)
+    except (TimeoutError, portalocker.exceptions.LockException) as exc:
+        logger.warning("跳过配置迁移，获取配置写锁失败: %s", exc)
+        return False
+    if not migrated:
         return False
 
-    if isinstance(user_data, dict) and user_data.get("config_version"):
-        logger.info(
-            f"config 版本 {user_data.get('config_version')} != 程序 {VERSION}，开始迁移"
-        )
-    else:
-        logger.info(f"config 无版本号(未迁移)，开始迁移到 {VERSION}")
-
-    if not migrate_config_from_template(template_path, config_path):
-        return False
-
-    logger.info(f"已从模板合并新增配置项: {config_path} (config_version -> {VERSION})")
+    logger.info(f"已同步配置模板: {config_path} (config_version = {VERSION})")
     return True
 
 
@@ -1077,6 +1066,7 @@ def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
     workspace_dir: Optional[Path] = None,
+    migrate_config: bool = True,
 ) -> CopyDiffResult:
     package_root = _find_package_root()
     if not package_root:
@@ -1269,7 +1259,8 @@ def prepare_workspace(
 
     from jiuwenswarm.common.config import migrate_config_from_template, set_preferred_language_in_config_file
 
-    migrate_config_from_template(config_yaml_src, config_yaml_dest)
+    if migrate_config:
+        migrate_config_from_template(config_yaml_src, config_yaml_dest)
     # Runtime MCP repairs must leave an existing AgentOS deployment config intact.
     # Fresh initialization and an explicit language choice can still set the language.
     if config_initialized or preferred_language is not None or not is_agentos_runtime():
@@ -1552,7 +1543,7 @@ def prepare_runtime_workspace(
         )
     )
     if workspace_preparation_needed:
-        prepare_workspace(overwrite=False, workspace_dir=workspace_dir)
+        prepare_workspace(overwrite=False, workspace_dir=workspace_dir, migrate_config=False)
 
     if migrate_config:
         ensure_config_migrated_from_template(workspace_dir)

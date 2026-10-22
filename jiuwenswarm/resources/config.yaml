@@ -422,6 +422,13 @@ models:
   #       context_window: 262144
   # Model groups reference models by stable model_id. Route order is the only
   # primary/fallback order; routes[0] is primary.
+  # Defaults for groups without their own routing timeouts. A group may override
+  # these under groups[].routing with timeout_seconds, stream_first_chunk_timeout,
+  # and stream_idle_timeout. Individual route timeouts take precedence.
+  group_routing_timeout_seconds: ${JIUWENSWARM_MODEL_GROUP_TIMEOUT_SECONDS:-360}
+  # Streaming timeouts are stored per group for future support; IntelliRouter does not consume them yet.
+  group_stream_first_chunk_timeout_seconds: ${JIUWENSWARM_MODEL_GROUP_STREAM_FIRST_CHUNK_TIMEOUT_SECONDS:-300}
+  group_stream_idle_timeout_seconds: ${JIUWENSWARM_MODEL_GROUP_STREAM_IDLE_TIMEOUT_SECONDS:-120}
   groups: []
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。

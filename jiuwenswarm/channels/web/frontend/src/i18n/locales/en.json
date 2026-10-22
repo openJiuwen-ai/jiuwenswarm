@@ -104,6 +104,7 @@
       "unsupported": "Only image, video, or audio files can be used as references."
     },
     "run": {
+      "moderationBlocked": "The model's content safety review blocked this generation. Tone down violent or graphic details in this node's prompt (imply them symbolically) and generate again.",
       "controlLabel": "Run controls",
       "execute": "Run",
       "continue": "Continue",
@@ -1552,7 +1553,7 @@
     "videoGeneration": "Video generation",
     "modeAutoHarness": "Auto-Harness Mode",
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
-    "recording": "Recording... (click the microphone again to finish)",
+    "recording": "Recording... (click the stop button to finish)",
     "transcribing": "Transcribing speech...",
     "startRecording": "Voice input",
     "stopRecording": "Stop recording and transcribe",

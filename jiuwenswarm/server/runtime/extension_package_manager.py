@@ -1284,6 +1284,107 @@ def _safe_avatar_reference(raw: Any, *, package_dir: Path) -> str:
     return _resolve_package_avatar(package_dir, {"avatar": value})
 
 
+def normalize_agent_group_display_identity(
+    value: Any,
+    *,
+    binding_name: str | None = None,
+) -> dict[str, Any] | None:
+    """Normalize an AgentGroup display snapshot for session metadata."""
+    if not isinstance(value, dict):
+        return None
+    raw_name = value.get("name", value.get("package_name"))
+    name = raw_name.strip() if isinstance(raw_name, str) else ""
+    expected_name = binding_name.strip() if isinstance(binding_name, str) else ""
+    if expected_name:
+        if name and name != expected_name:
+            return None
+        name = expected_name
+    raw_id = value.get("id", value.get("asset_id"))
+    identity_id = raw_id.strip() if isinstance(raw_id, str) else ""
+    raw_display_name = value.get("display_name", value.get("displayName"))
+    fallback_display_name = (
+        raw_display_name.strip() if isinstance(raw_display_name, str) else ""
+    )
+    raw_display_name_i18n = value.get(
+        "display_name_i18n", value.get("displayNameI18n")
+    )
+    localized_display_name = None
+    if isinstance(raw_display_name_i18n, dict):
+        localized_display_name = _i18n(
+            raw_display_name_i18n,
+            fallback_display_name,
+        )
+    elif isinstance(raw_display_name, dict):
+        localized_display_name = _i18n(raw_display_name, fallback_display_name)
+    if localized_display_name is not None:
+        localized_display_name = {
+            key: str(localized_display_name.get(key) or "").strip()
+            for key in ("zh", "en")
+        }
+        display_name = localized_display_name["zh"]
+    else:
+        display_name = fallback_display_name
+    if not name or not display_name:
+        return None
+    raw_avatar = value.get("avatar", value.get("avatarUrl"))
+    avatar = raw_avatar.strip() if isinstance(raw_avatar, str) else ""
+    if avatar and any(ord(char) < 0x20 for char in avatar):
+        avatar = ""
+    elif avatar:
+        try:
+            parsed = urlsplit(avatar)
+            is_external = (
+                parsed.scheme.lower() in {"http", "https"}
+                and bool(parsed.netloc)
+                and not any(char.isspace() for char in avatar)
+            )
+        except ValueError:
+            is_external = False
+        if not (avatar.lower().startswith("data:image/") or is_external):
+            avatar = ""
+    identity: dict[str, Any] = {
+        "id": identity_id or name,
+        "name": name,
+        "display_name": display_name,
+        "avatar": avatar,
+    }
+    if localized_display_name is not None:
+        identity["display_name_i18n"] = localized_display_name
+    return identity
+
+
+def resolve_agent_group_display_identity(name: Any) -> dict[str, Any] | None:
+    """Resolve the stable catalog identity of an installed AgentGroup."""
+    package_dir = resolve_agent_group_dir(name)
+    return _agent_group_display_identity_from_dir(package_dir)
+
+
+def _agent_group_display_identity_from_dir(package_dir: Path) -> dict[str, Any] | None:
+    """Read the display snapshot while the package body is still available."""
+    manifest = _read_package_manifest(package_dir)
+    if manifest is None:
+        return None
+    package_name = package_dir.name
+    install_record = _hub_install_state_store(_AGENT_GROUP_KIND).get_by_package_id(
+        package_name
+    )
+    display_name_i18n = _i18n(manifest.get("display_name"), package_name)
+    identity = {
+        "id": install_record.asset_id if install_record is not None else package_name,
+        "name": package_name,
+        "display_name": display_name_i18n["zh"],
+        "display_name_i18n": display_name_i18n,
+        "avatar": _safe_avatar_reference(
+            manifest.get("avatar"),
+            package_dir=package_dir,
+        ),
+    }
+    return normalize_agent_group_display_identity(
+        identity,
+        binding_name=package_name,
+    )
+
+
 def normalize_agent_group_leader_identity(value: Any) -> dict[str, Any] | None:
     """Normalize a persisted leader snapshot while retaining name-only identity."""
     if not isinstance(value, dict):
@@ -4272,6 +4373,13 @@ def uninstall_agent_group(params: dict) -> None:
         kind=_AGENT_GROUP_KIND,
         kind_label="agent_group",
     )
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        preserve_agent_group_display_identity,
+    )
+
+    identity = _agent_group_display_identity_from_dir(pkg_dir)
+    if identity is not None:
+        preserve_agent_group_display_identity(package_id, identity)
     _rmtree(pkg_dir)
     remove_agent_group_marketplace_entry(package_id)
     if record is not None:

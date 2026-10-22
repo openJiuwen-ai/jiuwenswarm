@@ -10,6 +10,7 @@ import { webClient } from '../../../services/webClient';
 import { ApplicationPluginTaskInputActions } from '../../../applicationPlugins/ApplicationPluginOutlet';
 import { useChatStore } from '../../../stores/chatStore';
 import { resolveChatModelSelection, useSessionStore } from '../../../stores/sessionStore';
+import { buildConversationModelPayload } from '../../../multi-session/state/conversationModelSelection';
 import type { Message, UserAnswer } from '../../../types';
 import {
   DESIGNER_TEAM_MODE,
@@ -116,9 +117,15 @@ export function DesignerChatPanel() {
   const [attachError, setAttachError] = useState('');
   const [sending, setSending] = useState(false);
   const activeSessionId = useChatStore((state) => state.activeSessionId);
+  // The canvas session owns the model the leader runs with; the binding above
+  // makes activeSessionId agree, but the graph's session id wins if they diverge.
+  const modelSessionId = sessionId ?? activeSessionId ?? '';
   const chatAvailableModels = useSessionStore((state) => state.chatAvailableModels);
   const selectedModelName = useSessionStore(
-    (state) => state.runtimes[activeSessionId ?? '']?.selectedModelName ?? null,
+    (state) => state.runtimes[modelSessionId]?.selectedModelName ?? null,
+  );
+  const selectedModelSelection = useSessionStore(
+    (state) => state.runtimes[modelSessionId]?.selectedModelSelection ?? null,
   );
   const defaultModelName = useSessionStore((state) => state.defaultModelName);
   const selectedModel = useMemo(
@@ -269,6 +276,11 @@ export function DesignerChatPanel() {
           mode: DESIGNER_TEAM_MODE,
           request_id: requestId,
           answers,
+          ...buildConversationModelPayload({
+            mode: DESIGNER_TEAM_MODE,
+            selectedModelName,
+            selectedModelSelection,
+          }),
           ...(source ? { source } : {}),
         });
         if (pendingQuestion) {
@@ -279,7 +291,7 @@ export function DesignerChatPanel() {
         return false;
       }
     },
-    [sessionId],
+    [sessionId, selectedModelName, selectedModelSelection],
   );
 
   const onKeyDown = useCallback(

@@ -3294,16 +3294,18 @@ async def _process_team_message_stream(
             is_first_request=is_first_request,
         )
         team_leader_identity: dict[str, Any] | None = None
+        team_group_identity: dict[str, Any] | None = None
         if agent_group_name:
             from jiuwenswarm.server.runtime.extension_package_manager import (
+                normalize_agent_group_display_identity,
                 normalize_agent_group_leader_identity,
+                resolve_agent_group_display_identity,
                 resolve_agent_group_leader_identity,
             )
 
+            stored_metadata = get_session_metadata(session_id, cache_bust=True)
             stored_identity = normalize_agent_group_leader_identity(
-                get_session_metadata(session_id, cache_bust=True).get(
-                    "team_leader_identity"
-                )
+                stored_metadata.get("team_leader_identity")
             )
             if stored_identity is not None:
                 team_leader_identity = stored_identity
@@ -3315,6 +3317,25 @@ async def _process_team_message_stream(
                 except Exception as identity_exc:  # noqa: BLE001 — identity is optional
                     logger.warning(
                         "[TeamHelpers] unable to resolve AgentGroup leader identity: "
+                        "session_id=%s agent_group_name=%s error=%s",
+                        session_id,
+                        agent_group_name,
+                        identity_exc,
+                    )
+            team_group_identity = normalize_agent_group_display_identity(
+                stored_metadata.get("team_group_identity"),
+                binding_name=agent_group_name,
+            )
+            if team_group_identity is None and (
+                persist_agent_group or is_first_request
+            ):
+                try:
+                    team_group_identity = resolve_agent_group_display_identity(
+                        agent_group_name
+                    )
+                except Exception as identity_exc:  # noqa: BLE001 — identity is optional
+                    logger.warning(
+                        "[TeamHelpers] unable to resolve AgentGroup display identity: "
                         "session_id=%s agent_group_name=%s error=%s",
                         session_id,
                         agent_group_name,
@@ -3486,6 +3507,8 @@ async def _process_team_message_stream(
             }
             if team_leader_identity is not None:
                 metadata_kwargs["team_leader_identity"] = team_leader_identity
+            if team_group_identity is not None:
+                metadata_kwargs["team_group_identity"] = team_group_identity
             update_session_metadata(**metadata_kwargs)
         _persist_team_file_monitor_roots(session_id, team_spec)
         # Drop unreachable MCPs before the team runtime starts so one bad MCP
