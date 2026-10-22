@@ -599,11 +599,9 @@ def terminal_internal_route(
         and not subagent_runtime_control_verified
     ):
         return None
-    if (
-        (observation_args_valid is None and not _closed_internal_args_valid(facts, network))
-        or facts.capability.risk_tier != "low"
-        or facts.capability.high_flex
-    ):
+    if observation_args_valid is None and not _closed_internal_args_valid(facts, network):
+        return None
+    if facts.capability.risk_tier != "low" or facts.capability.high_flex:
         return None
     if facts.external_paths or facts.write_paths or facts.command:
         return None
