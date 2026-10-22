@@ -123,3 +123,42 @@ def test_short_circuit_skips_after_tool_call_side_effects():
     assert idx["wf_1"]["query"] == real_entry["query"]
     assert idx["wf_1"]["file_name"] == real_entry["file_name"]
     assert "_deepresearch_short_circuit" not in ctx.extra
+
+
+def test_terminal_completed_updates_tool_msg_to_completion_content():
+    """终态完成时 tool_msg 更新为完成内容，替换 interaction 分支的「已暂停」消息。
+
+    修复前：terminal 分支不更新 tool_msg，interaction 分支留下的
+    「DeepResearch 已暂停…正在等待用户答复」消息残留到下一轮 LLM 上下文，
+    LLM 误判「研究未完成」（issue #5131 残留问题）。
+    修复后：terminal 分支在 request_force_finish 前把 tool_msg 更新为
+    完成内容，下一轮 LLM 看到的是「已完成」而非「已暂停」。
+    """
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
+        EXECUTION_SCHEMA,
+    )
+
+    sess = _fake_session()
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_done", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
+    completion_content = "✅ 深度研究已完成！\n\nai_chip_report已成功生成并交付。"
+    ctx.inputs.tool_result = {
+        "schema_version": EXECUTION_SCHEMA,
+        "kind": "completed",
+        "content": completion_content,
+        "state": {
+            "schema_version": 1,
+            "phase": "completed",
+            "query": "深度研究AI芯片行业",
+            "file_name": "ai_chip_report",
+            "conversation_id": "test-cid",
+            "requested_report_type": "brief",
+            "revision": 4,
+        },
+    }
+    r = rail.DeepResearchExecutionRail(model_provider=lambda: None)
+    asyncio.run(r.after_tool_call(ctx))
+    assert ctx.inputs.tool_msg is not None
+    assert "已完成" in ctx.inputs.tool_msg.content
+    assert "暂停" not in ctx.inputs.tool_msg.content
+    assert len(ctx.force_finish_requests) == 1

@@ -534,6 +534,10 @@ class DeepResearchExecutionRail(DeepAgentRail):
             _save_aliases(ctx.session, aliases)
             content = payload.get("content")
             if isinstance(content, str) and content.strip():
+                ctx.inputs.tool_msg = ToolMessage(
+                    content=content.strip(),
+                    tool_call_id=tool_call_id,
+                )
                 ctx.request_force_finish(
                     {"output": content.strip(), "result_type": "answer"}
                 )
