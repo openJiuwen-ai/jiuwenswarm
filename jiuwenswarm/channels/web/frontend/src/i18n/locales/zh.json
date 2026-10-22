@@ -4154,6 +4154,7 @@
     "pauseFailed": "暂停失败",
     "cancelFailed": "取消失败",
     "supplementFailed": "补充失败",
+    "supplementAttachmentsUnsupported": "带附件的消息无法插队发送，请先点击“编辑”移除附件后再发送。",
     "resumeFailed": "恢复失败",
     "submitAnswerFailed": "提交回答失败",
     "unknownError": "未知错误",
