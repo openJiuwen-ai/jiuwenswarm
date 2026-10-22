@@ -257,7 +257,13 @@ def test_ttse_categories_are_agent_work_only() -> None:
 
 def _engine_inputs(mode: ModeProfile = ModeProfile.AGENT_WORK) -> SimpleNamespace:
     subjects = [SimpleNamespace(subject_id="main", kind="main_agent")]
-    return SimpleNamespace(mode_profile=mode, snapshot=SimpleNamespace(subjects=subjects), locale="zh")
+    return SimpleNamespace(
+        mode_profile=mode,
+        snapshot=SimpleNamespace(subjects=subjects),
+        locale="zh",
+        skill_evolution=True,
+        ttse_advice=True,
+    )
 
 
 def _existing_cause(category: RootCauseCategory) -> RootCause:
@@ -309,6 +315,17 @@ def test_engine_skips_detection_outside_agent_work(monkeypatch: pytest.MonkeyPat
     result = EngineResult()
 
     calls = _append(monkeypatch, _engine_inputs(mode), result, _existing_cause(RootCauseCategory.TTSE_SUCCESS))
+
+    assert calls == []
+    assert result.root_causes == []
+
+
+def test_engine_skips_detection_when_ttse_advice_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    result = EngineResult()
+    inputs = _engine_inputs()
+    inputs.ttse_advice = False
+
+    calls = _append(monkeypatch, inputs, result, _existing_cause(RootCauseCategory.TTSE_SUCCESS))
 
     assert calls == []
     assert result.root_causes == []

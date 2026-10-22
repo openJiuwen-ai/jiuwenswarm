@@ -461,8 +461,8 @@ class _StreamingRuntime(NodeBackedRuntime):
         self._log(self._updated(status) + self._text["attribute_artifact"])
         return status
 
-    def record_skill_improvement(self, key: str, md: str) -> str:
-        status = super().record_skill_improvement(key, md)
+    def record_skill_evolution(self, key: str, md: str) -> str:
+        status = super().record_skill_evolution(key, md)
         self._log(self._updated(status) + self._text["attribute_skill"].format(key=key))
         return status
 
@@ -567,7 +567,7 @@ def _translate_attribution(
             instruction=runtime.artifact_improvement,
             root_cause_ids=[cause.id for cause in root_causes],
         )
-    for key, markdown in runtime.skill_improvements.items():
+    for key, markdown in runtime.skill_evolutions.items():
         suggestions.skills.append(
             SkillSuggestion(
                 id=f"skill-{uuid.uuid4().hex[:8]}",
@@ -713,7 +713,11 @@ class AttributionCoreEngine:
 
         Only agent work is judged, at most one such cause is reported, and a
         detection failure is logged without touching the rest of the result.
+        The host switch (``ttse_advice``) suppresses the whole stage, so
+        the "experience consolidation" card only appears with the setting on.
         """
+        if not inputs.ttse_advice:
+            return
         if inputs.mode_profile is not ModeProfile.AGENT_WORK:
             return
         if any(cause.category in TTSE_ROOT_CAUSE_CATEGORIES for cause in result.root_causes):
@@ -923,6 +927,8 @@ class AttributionCoreEngine:
             reward_overall=diagnosis.reward_overall,
             language=language,
             swarm_mode=inputs.mode_profile is ModeProfile.TEAM,
+            skill_evolution=inputs.skill_evolution,
+            ttse_advice=inputs.ttse_advice,
             runtime=runtime,
             status_sink=context.sink,
             model_name=context.model_name,

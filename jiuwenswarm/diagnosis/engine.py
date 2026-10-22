@@ -76,6 +76,8 @@ class EngineInputs:
         snapshot: Finished records of every subject of the session.
         ranges: At most one closed time range per diagnosed subject.
         model: Resolved model the engine should call.
+        skill_evolution: Host switch: local skill evolution and consolidation is on.
+        ttse_advice: Host switch: local experience (TTSE) evolution is on.
     """
 
     session_id: str
@@ -85,6 +87,8 @@ class EngineInputs:
     snapshot: TrajectorySnapshot
     ranges: list[SubjectRange]
     model: ResolvedDiagnosisModel
+    skill_evolution: bool = True
+    ttse_advice: bool = True
 
 
 @dataclass(slots=True)

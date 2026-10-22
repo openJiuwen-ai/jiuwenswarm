@@ -568,13 +568,13 @@ def test_streaming_runtime_logs_each_submission_as_it_happens() -> None:
 
     runtime.mark_signal_invalid("diag-2")
     runtime.record_artifact_improvement("改进")
-    runtime.record_skill_improvement("demo-skill", "改进")
+    runtime.record_skill_evolution("demo-skill", "改进")
     lines = _lines(queue)
     assert lines == ["标记无效：diag-2", "已提交产物改进意见", "已提交 Skill 改进：demo-skill"]
     # The stored state still feeds the root causes.
     assert runtime.invalid_signals == {"diag-2"}
     assert runtime.artifact_improvement == "改进"
-    assert runtime.skill_improvements == {"demo-skill": "改进"}
+    assert runtime.skill_evolutions == {"demo-skill": "改进"}
 
 
 def test_streaming_runtime_marks_resubmissions_as_updated() -> None:
@@ -705,7 +705,7 @@ def test_skill_suggestion_does_not_repeat_markdown() -> None:
     nodes = _single_node()
     runtime = NodeBackedRuntime(nodes, "zh")
     runtime.record_attribution("diag-1", [{"attr_id": "attr-00000001", "text_md": "原因", "start_node_id": "main:0"}])
-    runtime.record_skill_improvement("demo-skill", "## 改进\n- 加一步")
+    runtime.record_skill_evolution("demo-skill", "## 改进\n- 加一步")
 
     _causes, suggestions, _dropped = _translate_attribution(nodes, runtime, [_signal("diag-1")])
 
