@@ -346,16 +346,14 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
 
     if language in {"zh", "cn"}:
         return (
-            "输出一段很短的说明，然后输出合法的 a2ui-json block。"
-            "如果需要外部事实或图片，短暂使用工具后用 a2ui 呈现。"
+            "如果决策树判定使用 A2UI，输出一段很短的说明后跟合法的 a2ui-json block。"
             + autonomy_rule_zh
             + requested_component_rule_zh
             + a2ui_json_example
         )
     return (
-        "Output a very short intro followed by a valid a2ui-json block. "
-        "If external facts or images are needed, use the available tools "
-        "briefly, then present with a2ui."
+        "If the decision tree determines A2UI is appropriate, output a very "
+        "short intro followed by a valid a2ui-json block. "
         + autonomy_rule_en
         + requested_component_rule_en
         + a2ui_json_example
