@@ -275,7 +275,7 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         '    {"id": "root", "component": {"Column": {"children": {"explicitList": ["name", "submit_text", "submit"]}}}},\n'
         '    {"id": "name", "component": {"TextField": {"label": {"literalString": "Name"}, "text": {"path": "/form/name"}, "textFieldType": "shortText"}}},\n'
         '    {"id": "submit_text", "component": {"Text": {"text": {"literalString": "Submit"}, "usageHint": "body"}}},\n'
-        '    {"id": "submit", "component": {"Button": {"child": "submit_text", "primary": true, "action": {"name": "submit_form", "context": {"name": {"path": "/form/name"}}}}}}\n'
+        '    {"id": "submit", "component": {"Button": {"child": "submit_text", "primary": true, "action": {"name": "submit_form", "context": [{"key": "name", "value": {"path": "/form/name"}}]}}}}\n'
         "  ]}},\n"
         '  {"dataModelUpdate": {"surfaceId": "form", "path": "/form", "contents": [{"key": "name", "valueString": ""}]}}\n'
         "]\n"
