@@ -84,6 +84,7 @@ import {
 } from './features/tool-events/toolEventNormalizer';
 import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from './features/teamGroupIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webClient, webRequest } from './services/webClient';
 import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
@@ -2035,7 +2036,13 @@ function AppContent({
             ? normalizeTeamLeaderIdentity(session.team_leader_identity)
             : null,
         );
-        // 同 handleRestoreSession：拿到后端 metadata 后还原模型选择，
+        useSessionStore.getState().setTeamGroupIdentity(
+          targetSessionId,
+          sessionGroupId && Object.prototype.hasOwnProperty.call(session, 'team_group_identity')
+            ? normalizeTeamGroupIdentity(session.team_group_identity)
+            : null,
+        );
+        // 同 handleRestoreSession：拿到后端 metadata 里的 model 后还原 selectedModelName，
         // 覆盖"targetSession 为空、走 loadSessionMetadata"这条恢复路径（如从 cron 触发
         // 会话列表点进来的占位 session 之后补全元数据的场景，bug002）。
         // Prefer stable model_selection when present; never restore a group from active_model/model name.
@@ -3367,6 +3374,18 @@ function AppContent({
       (pendingRuntime?.enabledPlugins ?? []).forEach((id) => sessionStore.addEnabledPlugin(newSid, id));
       (pendingRuntime?.enabledMcps ?? []).forEach((name) => sessionStore.addEnabledMcp(newSid, name));
       if (pendingRuntime?.metadata) sessionStore.setSessionMetadata(newSid, pendingRuntime.metadata);
+      if (pendingRuntime?.teamGroupIdentity) {
+        sessionStore.setTeamGroupIdentity(newSid, pendingRuntime.teamGroupIdentity);
+      }
+      if (pendingRuntime?.selectedModelSelection) {
+        sessionStore.setSelectedModelSelection(newSid, pendingRuntime.selectedModelSelection);
+        void request('session.selection.set', {
+          session_id: newSid,
+          model_selection: pendingRuntime.selectedModelSelection,
+        }).catch((error) => {
+          console.warn('Failed to persist model selection for new session:', error);
+        });
+      }
       sessionStore.setAgentSelectionIntent(
         newSid,
         pendingRuntime?.agentSelectionIntent ?? { kind: 'keep' as const },
@@ -3603,6 +3622,11 @@ function AppContent({
         const pendingAgentGroupBinding = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.agentGroupBindingPending;
         if (pendingAgentGroupBinding) {
           useSessionStore.getState().setAgentGroupBindingPending(newSid, pendingAgentGroupBinding);
+        }
+        const pendingTeamGroupIdentity = useSessionStore.getState()
+          .getRuntime(NEW_CONVERSATION_ID)?.teamGroupIdentity;
+        if (pendingTeamGroupIdentity) {
+          useSessionStore.getState().setTeamGroupIdentity(newSid, pendingTeamGroupIdentity);
         }
         useSessionStore.getState().clearAgentGroupSelectionIntent(NEW_CONVERSATION_ID);
         // Swarmflow 开关同样按 session 存，必须在 removeRuntime('new') 之前搬到真实会话，

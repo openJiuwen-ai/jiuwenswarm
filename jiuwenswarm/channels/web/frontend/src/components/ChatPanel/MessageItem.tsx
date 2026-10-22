@@ -81,6 +81,7 @@ import {
   resolveTeamLeaderDisplayName,
   type TeamLeaderIdentity,
 } from '../../features/teamLeaderIdentity';
+import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 
 const CHAT_FILE_CATEGORY_LABEL_KEY: Record<ChatFileCategory, string> = {
   skill: 'chatUi.fileTypeSkill',
@@ -162,7 +163,7 @@ export function TeamMemberMessageFrame({
     const id = member?.trim() ?? '';
     if (!id) return '';
     if (isTeamLeaderMember(id)) {
-      return teamGroupIdentity?.displayName?.trim()
+      return resolveTeamGroupDisplayName(teamGroupIdentity, i18n.language)
         || resolveTeamLeaderDisplayName(teamLeaderIdentity, i18n.language)
         || 'Jiuwen';
     }
@@ -174,7 +175,7 @@ export function TeamMemberMessageFrame({
     ? teamGroupIdentity
       ? {
           agentTemplateId: teamGroupIdentity.id,
-          displayName: teamGroupIdentity.displayName,
+          displayName: resolveTeamGroupDisplayName(teamGroupIdentity, i18n.language),
           ...(teamGroupIdentity.avatarUrl ? { avatar: teamGroupIdentity.avatarUrl } : {}),
         }
       : teamLeaderIdentity ?? undefined

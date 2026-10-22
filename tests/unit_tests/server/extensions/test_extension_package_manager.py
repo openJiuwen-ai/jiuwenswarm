@@ -38,11 +38,6 @@ from tests.unit_tests.server.extensions.conftest import (
 _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
 
 
-def _run(coro):
-    """Drive an async catalog call from a synchronous test."""
-    return _asyncio.run(coro)
-
-
 def test_normalize_agent_group_display_identity_preserves_binding_and_asset_id():
     identity = catalog.normalize_agent_group_display_identity(
         {
@@ -204,6 +199,35 @@ def _seed_valid_agent_group(
         encoding="utf-8",
     )
     return package
+
+
+def test_uninstall_snapshot_survives_previously_queued_metadata(
+    extension_workspace: Path,
+) -> None:
+    from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+    group_name = "queued-display-group"
+    _seed_valid_agent_group(extension_workspace, group_name, under="local")
+    catalog.install_agent_group({"id": group_name})
+    sid = "queued-legacy-group"
+    queued = {
+        "session_id": sid,
+        "agent_group_name": group_name,
+        "message_count": 7,
+    }
+    metadata._write_metadata_sync(sid, queued)
+    identity = catalog.resolve_agent_group_display_identity(group_name)
+
+    catalog.uninstall_agent_group({"id": group_name})
+    metadata._write_metadata_sync(
+        sid,
+        {**queued, "message_count": 8},
+        metadata._MetadataWriteOptions(preserve_pin_fields=True),
+    )
+
+    restored = metadata.get_session_metadata(sid, cache_bust=True)
+    assert restored["team_group_identity"] == identity
+    assert restored["message_count"] == 8
 
 
 class TestPrepareWorkspaceAndMarketplace:

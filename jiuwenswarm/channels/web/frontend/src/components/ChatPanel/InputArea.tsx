@@ -169,14 +169,9 @@ import { TeamSelector } from './TeamSelector';
 import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
-import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
-import {
-  resolveTeamBootstrapMode,
-  resolveTeamDispatchMode,
-  useTeamScheduledDispatchEnabled,
-} from '../../features/teamDispatch/featureConfig';
+import { resolveTeamDispatchMode, useTeamScheduledDispatchEnabled } from '../../features/teamDispatch/featureConfig';
 
 const MENU_GAP = 10;
 /** 智能体选择列表单行高度（与 ChatPanel.css 的 .chat-agent-picker__item min-height 一致） */

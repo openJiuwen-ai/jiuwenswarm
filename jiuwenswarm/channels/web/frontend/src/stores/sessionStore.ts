@@ -28,6 +28,12 @@ import {
   SessionTokenUsageSnapshot,
   TeamMemberContextCompressionState,
 } from '../types';
+import {
+  createTaskProgressBaseline,
+  mergeTaskProgressBaseline,
+  registerConfirmedTaskCreation,
+  type TaskProgressBaseline,
+} from '../features/teamTaskProgressBaseline';
 import type {
   AgentGroupIdentity,
   AgentGroupSelectionIntent,

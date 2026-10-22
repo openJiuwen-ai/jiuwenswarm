@@ -728,6 +728,12 @@ def _write_metadata_unfenced(
                 session_id, len(recovered), sorted(recovered),
             )
 
+        # The display snapshot is frozen at first binding. Queued metadata
+        # captured before uninstall must not remove the persisted identity.
+        if current is not None and isinstance(current.get("team_group_identity"), dict):
+            to_write = to_write.copy()
+            to_write["team_group_identity"] = copy.deepcopy(current["team_group_identity"])
+
         # External Harness runtime selection is a first-binding field. Preserve
         # the authoritative on-disk value against stale queued snapshots and
         # later attempts to switch the session to another runtime.
@@ -1682,30 +1688,8 @@ def preserve_agent_group_display_identity(
             expected_fields={"team_group_identity": (False, None)},
         )
         written = _write_metadata_sync(session_id, metadata, options)
-        _refresh_written_cache(session_id, written, options)
-
-
-async def get_session_metadata_async(
-    session_id: str,
-    cache_bust: bool = False,
-    *,
-    enable_writeback: bool = True,
-    user_id: str | None = None,
-) -> dict[str, Any]:
-    """Async twin of :func:`get_session_metadata`（``to_thread`` 包装）。
-
-    统一异步入口：gateway 侧 WS 远端实现（``gateway/routing/
-    session_metadata_remote``）同签名互换；``user_id`` 仅供远端路由使用，
-    本地实现接受即忽略。
-    """
-    import asyncio
-
-    return await asyncio.to_thread(
-        get_session_metadata,
-        session_id,
-        cache_bust,
-        enable_writeback=enable_writeback,
-    )
+        with _CACHE_LOCK:
+            _METADATA_CACHE[session_id] = written.copy()
 
 
 def get_session_metadata(

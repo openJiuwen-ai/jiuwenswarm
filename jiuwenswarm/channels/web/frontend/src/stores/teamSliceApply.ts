@@ -10,7 +10,6 @@ import { useTeamSelectorStore } from './teamSelectorStore';
 import type { TeamTask, TeamTaskStatus } from './sessionStore';
 import type { TeamSnapshotPayload } from './teamSelectorStore';
 import { resolveOrganizationTeamIdentity } from '../features/teamOrganization/teamIdentity';
-import { isDepartedTeamMemberStatus } from '../features/teamMemberDeparture';
 
 const TEAM_TASK_STATUSES = new Set<TeamTaskStatus>([
   'pending',

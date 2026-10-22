@@ -162,7 +162,6 @@ import { useAgentCatalogStore } from '../stores/agentCatalogStore';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
 import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
-import { isDepartedTeamMemberStatus, reconcileSnapshotRoster } from '../features/teamMemberDeparture';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
 import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
 import { getMcpAppContexts } from '../features/mcpApps/mcpAppContext';
