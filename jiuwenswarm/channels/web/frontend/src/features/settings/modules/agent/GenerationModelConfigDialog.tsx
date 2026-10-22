@@ -17,7 +17,6 @@ import {
 import {
   CUSTOM_VENDOR_SELECTION,
   findVendorPreset,
-  flattenVendorCatalog,
   parseVendorCatalog,
   vendorSelectionKey,
 } from '../models/modelAdapters';
@@ -74,14 +73,19 @@ function trimSlash(value: string): string {
 
 /** 之前保存下来的配置只有 provider 名称、协议和 api_base（没有厂商 key）。vLLM-Omni 的地址
  *  由用户填写，按协议找回；其余按 api_base 优先、其次按名称找回对应的厂商预设，这样编辑
- *  已有配置时下拉能回显成对应厂商。 */
+ *  已有配置时下拉能回显成对应厂商。
+ *
+ *  只在 custom_api 里找：这个弹窗的 ModelProviderSelect 固定只展示 custom_api（见下方
+ *  groups={['custom_api', 'other']}），有的厂商（如 MiniMax）在 token_plan/coding_plan
+ *  下也有一份同 api_base 的预设 —— flattenVendorCatalog 会先命中那份，算出的
+ *  vendor_selection（"token_plan:minimax"）在下拉的选项里根本不存在，回显成了"请选择"。 */
 function findStoredPreset(
   catalog: VendorPresetMap,
   provider: string,
   protocol: string,
   apiBase: string,
 ): VendorPreset | undefined {
-  const presets = flattenVendorCatalog(catalog);
+  const presets = catalog.custom_api;
   if (protocol.trim() === VLLM_OMNI_PROTOCOL) {
     return presets.find((preset) => preset.vendor_key === VLLM_OMNI_PROTOCOL);
   }
@@ -219,14 +223,17 @@ export function GenerationModelConfigDialog({
   useEffect(() => {
     const current = form.getValues();
     if (current.vendor_selection !== CUSTOM_VENDOR_SELECTION) return;
-    const match = findStoredPreset(catalog, readConfig(config, slot, 'provider'), current.protocol, current.api_base);
+    // Search pickerCatalog, not the full catalog: that's the exact (ALLOWED_API_VENDORS-filtered,
+    // custom_api-only) set ModelProviderSelect offers below, so whatever this finds is guaranteed
+    // to be a selectable option rather than a same-api_base preset from a plan the picker hides.
+    const match = findStoredPreset(pickerCatalog, readConfig(config, slot, 'provider'), current.protocol, current.api_base);
     if (!match) return;
     const next = { ...current, vendor_selection: vendorSelectionKey(match.plan, match.vendor_key) };
     // 没有专属目录的厂商只支持 OpenAI 协议，旧配置里残留的其他协议值一并纠正。
     if (!generationVendor(match.vendor_key, match.api_base)) next.protocol = OPENAI_PROTOCOL;
     if (form.hasUnsavedChanges()) form.setValues({ vendor_selection: next.vendor_selection });
     else form.reset(next);
-  }, [catalog, config, form, slot]);
+  }, [pickerCatalog, config, form, slot]);
 
   const updateVendor = (selection: string) => {
     if (selection === CUSTOM_VENDOR_SELECTION) {
