@@ -1,5 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { ChevronLeft } from 'lucide-react';
+import { ColleagueAvatar } from '../components/ColleagueAvatar';
+import type { JiuwenMateCategory } from '../types';
 import { scheduleSummary, toZonedInput } from './state';
 import type { Schedule, ScheduleRun } from './types';
 
@@ -10,61 +12,97 @@ function runStatus(status: string): 'success' | 'failed' | 'stopped' | 'running'
   return 'running';
 }
 
+type HistoryExecutor = {
+  id: string;
+  name: string;
+  avatarUrl?: string;
+  avatarHue?: number;
+  category?: JiuwenMateCategory;
+  isDefault?: boolean;
+};
+
 export function ScheduleHistory({
   plan,
   runs,
-  executorName,
+  executor,
   onBack,
 }: {
   plan: Schedule;
   runs: readonly ScheduleRun[];
-  executorName?: string;
+  executor?: HistoryExecutor;
   onBack: () => void;
 }) {
   const { t } = useTranslation();
   return (
     <section className="jiuwenmate-schedule-history" data-testid="jiuwenmate-schedule-history">
-      <button type="button" className="jiuwenmate-link-button" onClick={onBack}>
+      <button type="button" className="jiuwenmate-schedule-history__back" onClick={onBack}>
         <ChevronLeft aria-hidden />
-        {t('jiuwenmate.schedule.historyTitle', { count: runs.length })}
+        {t('jiuwenmate.schedule.back')}
       </button>
       <h3>{t('jiuwenmate.schedule.basic')}</h3>
-      <dl>
-        <dt>{t('jiuwenmate.schedule.name')}</dt>
-        <dd>{plan.name}</dd>
-        <dt>{t('jiuwenmate.schedule.prompt')}</dt>
-        <dd>{plan.prompt}</dd>
-        <dt>{t('jiuwenmate.schedule.plan')}</dt>
-        <dd>{scheduleSummary(plan)}</dd>
-        {executorName ? (
-          <>
-            <dt>{t('jiuwenmate.schedule.executor')}</dt>
-            <dd>{executorName}</dd>
-          </>
+      <dl className="jiuwenmate-schedule-history__facts">
+        <div>
+          <dt>{t('jiuwenmate.schedule.name')}</dt>
+          <dd>{plan.name}</dd>
+        </div>
+        <div>
+          <dt>{t('jiuwenmate.schedule.prompt')}</dt>
+          <dd>{plan.prompt}</dd>
+        </div>
+        <div>
+          <dt>{t('jiuwenmate.schedule.plan')}</dt>
+          <dd>{scheduleSummary(plan)}</dd>
+        </div>
+        {executor ? (
+          <div className="jiuwenmate-schedule-history__executor">
+            <dt>{t('jiuwenmate.schedule.historyExecutor')}</dt>
+            <dd>
+              <ColleagueAvatar
+                size="small"
+                colleague={{
+                  id: executor.id,
+                  name: executor.name,
+                  category: executor.category ?? 'custom',
+                  avatarUrl: executor.avatarUrl,
+                  avatarHue: executor.avatarHue,
+                  isDefault: executor.isDefault,
+                }}
+              />
+              {executor.name}
+            </dd>
+          </div>
         ) : null}
       </dl>
       <h3>{t('jiuwenmate.schedule.historyHeading', { count: runs.length })}</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>{t('jiuwenmate.schedule.runAt')}</th>
-            <th>{t('jiuwenmate.schedule.runStatus')}</th>
-            <th>{t('jiuwenmate.schedule.description')}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map((run) => {
-            const tone = runStatus(run.status);
-            return (
-              <tr key={run.requestId}>
-                <td>{toZonedInput(run.scheduledFor, plan.timezone || 'Asia/Shanghai').replace('T', ' ')}</td>
-                <td data-tone={tone}>{t(`jiuwenmate.schedule.run.${tone}`)}</td>
-                <td>{t(`jiuwenmate.schedule.runDetail.${tone}`)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div className="jiuwenmate-schedule-history__table">
+        <table>
+          <thead>
+            <tr>
+              <th>{t('jiuwenmate.schedule.runAt')}</th>
+              <th>{t('jiuwenmate.schedule.runStatus')}</th>
+              <th>{t('jiuwenmate.schedule.description')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {runs.map((run) => {
+              const tone = runStatus(run.status);
+              const detail = run.description.trim() || t(`jiuwenmate.schedule.runDetail.${tone}`);
+              return (
+                <tr key={run.requestId}>
+                  <td>{toZonedInput(run.scheduledFor, plan.timezone || 'Asia/Shanghai').replace('T', ' ')}</td>
+                  <td>
+                    <span className="jiuwenmate-schedule-history__status" data-tone={tone}>
+                      <i aria-hidden />
+                      {t(`jiuwenmate.schedule.run.${tone}`)}
+                    </span>
+                  </td>
+                  <td>{detail}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

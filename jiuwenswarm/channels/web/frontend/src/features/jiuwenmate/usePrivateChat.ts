@@ -45,6 +45,7 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
   const [sending, setSending] = useState(false);
   const [pollRound, setPollRound] = useState(0);
   const scopeRef = useRef(scope);
+  const reloadSeq = useRef(0);
   const unsent = useRef<{ scope: string; text: string; messageId: string } | null>(null);
   const listed = useRef(requests);
   const visibleRequests = loadedScope === scope ? requests : [];
@@ -174,5 +175,20 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     [api, scope],
   );
 
-  return { requests: visibleRequests, error: visibleError, loading, sending, send, abort };
+  const reload = useCallback(async () => {
+    if (!agentId || !conversationId) return;
+    const requested = scope;
+    const seq = ++reloadSeq.current;
+    try {
+      const listed = await api.history(agentId, conversationId);
+      if (scopeRef.current !== requested || seq !== reloadSeq.current) return;
+      setRequests(listed);
+      setLoadedScope(requested);
+      setError(null);
+    } catch (reason) {
+      if (scopeRef.current === requested && seq === reloadSeq.current) setError(errorMessage(reason));
+    }
+  }, [api, agentId, conversationId, scope]);
+
+  return { requests: visibleRequests, error: visibleError, loading, sending, send, abort, reload };
 }

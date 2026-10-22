@@ -50,11 +50,19 @@ export function ScheduleBoard({
   const colleagueOf = (agentId: string) => colleagues.find((item) => item.id === agentId);
   const nameOf = (agentId: string) => colleagueOf(agentId)?.name ?? agentId;
   if (history) {
+    const executor = colleagueOf(history.plan.agentId);
     return (
       <ScheduleHistory
         plan={history.plan}
         runs={history.runs}
-        executorName={nameOf(history.plan.agentId)}
+        executor={{
+          id: history.plan.agentId,
+          name: executor?.name ?? nameOf(history.plan.agentId),
+          avatarUrl: executor?.avatarUrl,
+          avatarHue: executor?.avatarHue,
+          category: executor?.category,
+          isDefault: executor?.isDefault,
+        }}
         onBack={() => setHistory(null)}
       />
     );
