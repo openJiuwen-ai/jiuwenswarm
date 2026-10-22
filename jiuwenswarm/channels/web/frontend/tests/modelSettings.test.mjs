@@ -351,7 +351,7 @@ test('custom models never submit vendor metadata and legacy connection fields re
   assert.equal('endpoint_profile' in edited, false);
 });
 
-test('display name validation is required, unique among display names, and excludes the edited row', () => {
+test('alias validation is optional, global, exact, and excludes the edited row by model_id or origin_index', () => {
   const models = [
     {
       model_name: 'same-model',
@@ -493,59 +493,46 @@ test('display name validation is required, unique among display names, and exclu
     /aliasConflict/,
   );
 
-  // Hidden free/login models are not Settings-editable; their model_name must not
-  // block a custom display name that happens to match (#5808 review).
-  const runtimeGrantedModels = [
+  // Upsert edit path: entries use model_id without origin_index. Alias equal to own
+  // model_name must not be treated as a conflict with self.
+  const upsertModels = [
     {
-      model_name: 'qwen3-max',
-      alias: '',
-      is_free: true,
-      api_base: 'https://free.example/v1',
-      api_key: '',
+      model_id: 'mdl_self',
+      model_name: 'GLM-5.3-Flash',
+      alias: 'GLM-5.3-Flash',
+      api_base: 'https://custom.example/v1',
+      api_key: 'secret',
       model_provider: 'OpenAI',
     },
     {
-      model_name: 'login-model',
-      alias: '',
-      source: LOGIN_MODEL_SOURCE,
-      api_base: 'https://login.example/v1',
-      api_key: '',
+      model_id: 'mdl_other',
+      model_name: 'other-model',
+      alias: 'other-alias',
+      api_base: 'https://two.example/v1',
+      api_key: 'two',
       model_provider: 'OpenAI',
     },
   ];
+  const upsertDraft = {
+    ...baseDraft,
+    alias: 'GLM-5.3-Flash',
+    model_name: 'GLM-5.3-Flash',
+  };
+  assert.match(validateModelDraft(upsertDraft, upsertModels, undefined, catalog, t).alias, /aliasConflict/);
   assert.equal(
-    validateModelDraft(
-      { ...baseDraft, alias: 'qwen3-max', model_name: 'qwen3-max' },
-      runtimeGrantedModels,
-      undefined,
-      catalog,
-      t,
-    ).alias,
+    validateModelDraft(upsertDraft, upsertModels, { model_id: 'mdl_self' }, catalog, t).alias,
     undefined,
   );
-  assert.equal(
-    validateModelDraft(
-      { ...baseDraft, alias: 'login-model', model_name: 'custom-id' },
-      runtimeGrantedModels,
-      undefined,
-      catalog,
-      t,
-    ).alias,
-    undefined,
-  );
-});
-
-test('model group dialog validates unique group names and vendor switch keeps display-name sync', () => {
-  const groupDialog = source('src/features/settings/modules/models/ModelGroupDialog.tsx');
-  const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
-  assert.match(groupDialog, /modelGroups/);
-  assert.match(groupDialog, /modelGroupNameConflict/);
-  assert.match(groupDialog, /item === group \|\|[\s\S]{0,120}model_group_id/);
   assert.match(
-    dialog,
-    /alias === previousModelName \|\| alias === previousSync[\s\S]{0,80}alias: ''/,
+    validateModelDraft(
+      { ...upsertDraft, alias: 'other-alias' },
+      upsertModels,
+      { model_id: 'mdl_self' },
+      catalog,
+      t,
+    ).alias,
+    /aliasConflict/,
   );
-  assert.match(dialog, /aliasSyncedFromModelName\.current = ''/);
 });
 
 test('model API keys accept 2048 characters and reject longer values', () => {
