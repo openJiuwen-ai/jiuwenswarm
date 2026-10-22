@@ -110,8 +110,21 @@ export async function uploadDesignerAsset(file: File): Promise<{
   filename: string;
   mime_type?: string;
 }> {
-  if (!file || file.size === 0) {
-    throw new Error('empty_file');
+  const form = new FormData();
+  form.append('file', file);
+  const response = await fetch('/file-api/upload', {
+    method: 'POST',
+    body: form,
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    let code = '';
+    try {
+      code = String((JSON.parse(detail) as { error?: unknown }).error ?? '');
+    } catch {
+      code = '';
+    }
+    throw new Error(code || detail.slice(0, 160) || `HTTP ${response.status}`);
   }
   if (file.size > DESIGNER_UPLOAD_MAX_BYTES) {
     throw new Error(DESIGNER_UPLOAD_TOO_LARGE);
