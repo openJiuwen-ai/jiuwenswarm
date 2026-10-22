@@ -1485,6 +1485,8 @@ extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：
   # EXTENSION_DIRS="E:/a;D:/b"
   extension_dirs: ${EXTENSION_DIRS:-jiuwenswarm/extensions}
+  # V2 扩展包安装目录；相对路径相对于用户工作目录（可由 JIUWENSWARM_DATA_DIR 改变）。
+  install_dir: ${EXTENSION_INSTALL_DIR:-extension_pkgs}
 
 # ============================================================
 # Hooks 配置
