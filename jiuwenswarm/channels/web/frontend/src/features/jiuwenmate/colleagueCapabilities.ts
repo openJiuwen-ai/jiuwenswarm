@@ -19,6 +19,27 @@ export type MutableColleagueCapabilitySelections = Record<ColleagueCapabilityKin
 const CAPABILITY_KINDS: readonly ColleagueCapabilityKind[] = ['skills', 'connectors', 'plugins', 'knowledge'];
 const INSTALLABLE_SKILL_SOURCES = new Set(['clawhub', 'skillnet', 'teamskillshub']);
 const SELECTABLE_SKILL_TYPES = new Set(['skill', 'swarm_skill', 'multimodal_skill']);
+const TEAM_SKILL_MARKERS = new Set([
+  'swarm_skill',
+  'swarm-skill',
+  'swarmskill',
+  'team-skill',
+  'teamskills',
+  'team_skill',
+]);
+
+/** Team skills belong to a group of agents, so a single employee must not be offered them. */
+export function isColleagueTeamSkill(skill: {
+  skillType?: string;
+  kind?: string;
+  pluginType?: string;
+  isTeam?: boolean;
+}): boolean {
+  if (skill.isTeam) return true;
+  return [skill.skillType, skill.kind, skill.pluginType].some((value) =>
+    TEAM_SKILL_MARKERS.has((value ?? '').trim().toLocaleLowerCase()),
+  );
+}
 
 function resolveCatalogOption(
   catalog: ColleagueCapabilityCatalog,
@@ -32,6 +53,44 @@ function resolveCatalogOption(
 
   const labels = options.filter((option) => option.label === selectedName);
   return labels.length === 1 ? labels[0] : null;
+}
+
+const PUBLISHABLE_SKILL_NAME = /^[A-Za-z0-9._-]{1,128}$/;
+
+/** Directory names of an installed expert's own skills. Publish copies these onto the employee. */
+export function installedExpertSkillNames(skills: readonly { id: string; name: string }[]): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const skill of skills) {
+    const name = skill.id.trim() || skill.name.trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
+/**
+ * An installed expert's skills ship inside its package, so they stay selected
+ * even when the shared skill library does not list them.
+ */
+export function withInstalledExpertSkills(
+  bundled: readonly string[],
+  split: { available: MutableColleagueCapabilitySelections; missing: MutableColleagueCapabilitySelections },
+): { available: MutableColleagueCapabilitySelections; missing: MutableColleagueCapabilitySelections } {
+  const kept = new Set<string>();
+  for (const name of bundled) {
+    const trimmed = name.trim();
+    if (PUBLISHABLE_SKILL_NAME.test(trimmed)) kept.add(trimmed);
+  }
+  const skills = [...split.available.skills];
+  for (const name of kept) {
+    if (!skills.includes(name)) skills.push(name);
+  }
+  return {
+    available: { ...split.available, skills },
+    missing: { ...split.missing, skills: split.missing.skills.filter((name) => !kept.has(name)) },
+  };
 }
 
 /** Keep only template capabilities that the current host can publish. */
@@ -81,29 +140,92 @@ export interface TemplateSkillRecommendations {
 
 export interface TemplateSkillSearchContext {
   name: string;
-  coreAbilities: readonly { title: string }[];
+  coreAbilities?: readonly { title: string }[];
+  skills?: readonly { name: string }[];
   skillSearchTerms?: readonly string[];
 }
 
-/** Build a short Skills Plaza query from the selected template's role and skills vocabulary. */
+const GENERIC_SKILL_TOKENS = new Set([
+  '检查',
+  '练习',
+  '分析',
+  '规划',
+  '整理',
+  '评审',
+  '助手',
+  '教练',
+  '专家',
+  '顾问',
+  '写作',
+  '学习',
+  'learning',
+  'writing',
+  'review',
+  'analysis',
+  'practice',
+  'coach',
+]);
+
+function curatedSearchTerms(template: TemplateSkillSearchContext): string[] {
+  return [...new Set((template.skillSearchTerms ?? []).map((value) => value.trim()).filter(Boolean))];
+}
+
+/** One plaza query per curated term. A single joined phrase matches no marketplace record. */
+export function templateSkillSearchQueries(template: TemplateSkillSearchContext): string[] {
+  const curated = curatedSearchTerms(template).slice(0, 8);
+  if (curated.length > 0) return curated;
+  const fallback = buildTemplateSkillSearchQuery(template);
+  return fallback ? [fallback] : [];
+}
+
+/** Search Skills Plaza with the template's curated vocabulary. The role title is omitted because a shared word such as “教练” matches unrelated skills. */
 export function buildTemplateSkillSearchQuery(template: TemplateSkillSearchContext): string {
-  const values = [
+  const curated = curatedSearchTerms(template);
+  if (curated.length > 0) return curated.join(' ');
+  const fallback = [
     template.name,
-    ...template.coreAbilities.map((ability) => ability.title),
-    ...(template.skillSearchTerms ?? []),
+    ...(template.coreAbilities ?? []).map((ability) => ability.title),
+    ...(template.skills ?? []).map((skill) => skill.name),
   ];
-  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].join(' ');
+  return [...new Set(fallback.map((value) => value.trim()).filter(Boolean))].join(' ');
+}
+
+function termMatchTokens(term: string): string[] {
+  const normalized = term.normalize('NFKC').toLocaleLowerCase().trim();
+  if (normalized.length < 2) return [];
+  const tokens = [normalized];
+  const cjk = /^[\u3400-\u9fff]+$/u.test(normalized);
+  if (cjk && normalized.length === 4) {
+    tokens.push(normalized.slice(0, 2), normalized.slice(2));
+  } else if (!cjk) {
+    for (const part of normalized.split(/[^a-z0-9]+/u)) {
+      if (part.length >= 4) tokens.push(part);
+    }
+  }
+  return [...new Set(tokens)];
+}
+
+function matchesCuratedTerms(haystack: string, terms: readonly string[]): boolean {
+  if (terms.length === 0) return true;
+  return terms.some((term) => {
+    const normalized = term.normalize('NFKC').toLocaleLowerCase();
+    const tokens = termMatchTokens(term);
+    const present = tokens.filter((token) => haystack.includes(token));
+    if (present.includes(normalized)) return true;
+    return present.some((token) => token !== normalized && !GENERIC_SKILL_TOKENS.has(token));
+  });
 }
 
 /** Rank locally installed skills against template-specific terms; unrelated skills stay out of the recommendations. */
 export function recommendInstalledTemplateSkills(
   terms: readonly string[],
-  skills: readonly { name: string; label?: string; description?: string }[],
+  skills: readonly { name: string; label?: string; description?: string; skillType?: string }[],
   limit = 4,
 ): { name: string; label: string; description: string }[] {
   const normalizedTerms = [...new Set(terms.map((term) => term.trim().toLocaleLowerCase()).filter(Boolean))];
   const seen = new Set<string>();
   return skills
+    .filter((skill) => !isColleagueTeamSkill({ skillType: skill.skillType }))
     .map((skill, index) => {
       const name = skill.name.trim();
       const label = skill.label?.trim() || name;
@@ -123,13 +245,15 @@ export function recommendInstalledTemplateSkills(
     .map(({ name, label, description }) => ({ name, label, description }));
 }
 
-/** Keep installable, not-yet-installed plaza results in the order returned by search. */
+/** Keep installable, not-yet-installed plaza results that still contain a curated template term. */
 export function recommendMarketplaceTemplateSkills(
   payload: unknown,
   installedSkillNames: readonly string[],
   limit = 5,
+  terms: readonly string[] = [],
 ): SkillInstallCandidate[] {
   const installed = new Set(installedSkillNames.map((name) => name.trim().toLocaleLowerCase()).filter(Boolean));
+  const needles = [...new Set(terms.map((term) => term.trim().normalize('NFKC').toLocaleLowerCase()).filter((term) => term.length >= 2))];
   const items = Array.isArray(object(payload).items) ? (object(payload).items as unknown[]) : [];
   const seen = new Set<string>();
   const recommendations: SkillInstallCandidate[] = [];
@@ -139,26 +263,36 @@ export function recommendMarketplaceTemplateSkills(
     const source = string(item.source).toLocaleLowerCase();
     const name = string(item.name);
     const identifier = string(item.identifier);
-    const skillType = string(item.skill_type);
+    const skillType = string(item.skill_type) || string(item.kind);
+    const pluginType = string(item.plugin_type);
+    const displayName = string(item.display_name) || name;
+    const description = string(item.description);
     const key = name.toLocaleLowerCase();
+    const haystack = `${name} ${displayName} ${description}`.normalize('NFKC').toLocaleLowerCase();
     if (
       !INSTALLABLE_SKILL_SOURCES.has(source) ||
+      isColleagueTeamSkill({
+        skillType: string(item.skill_type),
+        kind: string(item.kind),
+        pluginType,
+        isTeam: item.is_team_skill === true,
+      }) ||
       (skillType && !SELECTABLE_SKILL_TYPES.has(skillType)) ||
       !name ||
       !identifier ||
       installed.has(key) ||
-      seen.has(key)
+      seen.has(key) ||
+      (needles.length > 0 && !matchesCuratedTerms(haystack, needles))
     ) {
       continue;
     }
-    const displayName = string(item.display_name) || name;
     const ownerHandle = string(item.owner_handle);
     recommendations.push({
       source,
       name,
       display_name: displayName,
       identifier,
-      description: string(item.description),
+      description,
       ...(ownerHandle ? { owner_handle: ownerHandle } : {}),
     });
     seen.add(key);

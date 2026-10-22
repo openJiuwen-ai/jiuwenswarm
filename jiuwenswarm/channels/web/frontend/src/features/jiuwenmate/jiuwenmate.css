@@ -4817,6 +4817,7 @@
 /* Office */
 .jiuwenmate-office {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 18px;
 }
@@ -4891,6 +4892,8 @@
 .jiuwenmate-office__individual,
 .jiuwenmate-office__tasks {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 16px;
 }
 
@@ -4944,12 +4947,14 @@
 
 .jiuwenmate-office__carousel-frame {
   position: relative;
+  min-width: 0;
 }
 
 .jiuwenmate-office__carousel {
   display: grid;
   grid-auto-columns: minmax(230px, calc((100% - 42px) / 4));
   grid-auto-flow: column;
+  min-width: 0;
   gap: 14px;
   overflow-x: auto;
   scroll-snap-type: x mandatory;

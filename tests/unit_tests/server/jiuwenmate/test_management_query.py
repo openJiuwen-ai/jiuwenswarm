@@ -67,6 +67,10 @@ CREATE TABLE group_chats (
     platform_chat_id TEXT NOT NULL, created_at TEXT NOT NULL,
     PRIMARY KEY (namespace_id, group_chat_id)
 );
+CREATE TABLE group_details (
+    namespace_id TEXT NOT NULL, group_chat_id TEXT NOT NULL, name TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, group_chat_id)
+);
 CREATE TABLE web_conversations (
     namespace_id TEXT NOT NULL, agent_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
     title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT,
@@ -273,6 +277,7 @@ def test_group_file_delivery_is_an_artifact_and_other_namespace_is_hidden(tmp_pa
         "INSERT INTO group_chats VALUES (?, 'grp_1', 'feishu', 'oc_room', ?)",
         (NS, "2026-10-16T00:00:00+00:00"),
     )
+    _insert(db, "INSERT INTO group_details VALUES (?, 'grp_1', '设计讨论')", (NS,))
     _insert(
         db,
         "INSERT INTO sessions VALUES (?, 'sess_g', 'mate_a', 'group', 'group', 'grp_1', 1, ?)",
@@ -306,7 +311,7 @@ def test_group_file_delivery_is_an_artifact_and_other_namespace_is_hidden(tmp_pa
     assert member["groups"] == [
         {
             "group_chat_id": "grp_1",
-            "name": "oc_room",
+            "name": "设计讨论",
             "platform": "feishu",
             "artifacts": 1,
             "tokens": 0,
@@ -315,6 +320,45 @@ def test_group_file_delivery_is_an_artifact_and_other_namespace_is_hidden(tmp_pa
         }
     ]
     assert [item["agent_id"] for item in ActivityQuery(db).report("other", now=NOW)["members"]] == ["mate_b"]
+
+
+def test_group_label_prefers_the_stored_name():
+    shared = dict(
+        colleagues=[{"agent_id": "mate_a", "created_at": "2026-10-16T00:00:00+00:00"}],
+        requests=[
+            {
+                "request_id": "req_g",
+                "agent_id": "mate_a",
+                "session_id": "sess_g",
+                "status": "ended",
+                "outcome": "completed",
+                "updated_at": "2026-10-16T08:30:00+00:00",
+            }
+        ],
+        executions=[{"execution_id": "exe_g", "request_id": "req_g", "started_at": "2026-10-16T08:00:00+00:00"}],
+        sessions=[
+            {
+                "session_id": "sess_g",
+                "agent_id": "mate_a",
+                "kind": "group",
+                "channel": "feishu",
+                "conversation_key": "grp_1",
+            }
+        ],
+        calls=[],
+        deliveries=[],
+        now=NOW,
+    )
+    named = assemble_activity(
+        **shared,
+        groups=[{"group_chat_id": "grp_1", "platform": "feishu", "platform_chat_id": "oc_room", "name": " 设计讨论 "}],
+    )
+    missing = assemble_activity(
+        **shared,
+        groups=[{"group_chat_id": "grp_1", "platform": "feishu", "platform_chat_id": "oc_room"}],
+    )
+    assert named["members"][0]["groups"][0]["name"] == "设计讨论"
+    assert missing["members"][0]["groups"][0]["name"] == "oc_room"
 
 
 def test_queued_request_without_execution_is_not_a_task():

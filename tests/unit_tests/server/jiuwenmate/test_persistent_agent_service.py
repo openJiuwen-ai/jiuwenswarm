@@ -360,6 +360,39 @@ def test_colleague_created_from_template_uses_its_persona(tmp_path):
     assert service.read_settings(NS, view.agent_id).persona == TEMPLATES["system-architect"]["persona"]
 
 
+def test_an_expert_can_be_added_only_once(tmp_path):
+    service = make_service(tmp_path)
+    service.create_colleague(NS, settings(), template_id="system-architect", unique_source=True)
+
+    with pytest.raises(PersistentAgentError) as caught:
+        service.create_colleague(NS, settings(name="另一位"), template_id="system-architect", unique_source=True)
+
+    assert caught.value.code == "CONFLICT"
+    assert len(service.list_colleagues(NS)) == 1
+
+
+def test_a_builtin_template_can_be_added_only_once(tmp_path):
+    service = make_service(tmp_path)
+    view = service.create_colleague(
+        NS,
+        settings(name="英语表达教练"),
+        source_template_id="english-coach",
+        unique_source=True,
+    )
+
+    assert view.source_template_id == "english-coach"
+    with pytest.raises(PersistentAgentError) as caught:
+        service.create_colleague(
+            NS,
+            settings(name="另一位"),
+            source_template_id="english-coach",
+            unique_source=True,
+        )
+
+    assert caught.value.code == "CONFLICT"
+    assert len(service.list_colleagues(NS)) == 1
+
+
 def test_each_colleague_owns_one_template(tmp_path):
     service = make_service(tmp_path)
     first = service.create_colleague(NS, settings(), template_id="system-architect")

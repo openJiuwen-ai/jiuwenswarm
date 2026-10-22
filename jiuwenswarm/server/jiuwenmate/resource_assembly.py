@@ -536,7 +536,34 @@ class InstalledResourceCatalog:
             candidate = root / name
             if (candidate / "SKILL.md").is_file() and not candidate.is_symlink():
                 return SkillSource(name=name, directory=candidate)
+        return self._agent_template_skill(name)
+
+    def _agent_template_skill(self, name: str) -> SkillSource | None:
+        """A skill that ships inside an installed expert, not the shared skill library."""
+        for root in self._agent_template_roots():
+            if not root.is_dir():
+                continue
+            packages = sorted(
+                path
+                for path in root.iterdir()
+                if path.is_dir() and not path.is_symlink() and not path.name.startswith(".")
+            )
+            for package in packages:
+                directory = package / "skills" / name
+                if directory.is_symlink() or not (directory / "SKILL.md").is_file() or not _inside(directory, package):
+                    continue
+                return SkillSource(name=name, directory=directory.resolve())
         return None
+
+    def _agent_template_roots(self) -> tuple[Path, ...]:
+        if self._skills_dir is not None:
+            workspace = self._skills_dir.parent
+        else:
+            from jiuwenswarm.common.utils import get_agent_workspace_dir
+
+            workspace = get_agent_workspace_dir()
+        base = workspace / "plugins" / "agent_templates"
+        return base / "local", base / "built_in"
 
     def plugin(self, name: str) -> PluginSource | None:
         if _NAME.fullmatch(name) is None:

@@ -516,7 +516,7 @@ test('installed skill and connected MCP names are the only selectable colleague 
       ],
     },
   );
-  assert.deepEqual(selected.skills, [{ name: 'report-writer', label: '报告', description: '整理周报' }]);
+  assert.deepEqual(selected.skills, [{ name: 'report-writer', label: '报告', description: '整理周报', skillType: 'skill' }]);
   assert.deepEqual(selected.connectors, [{ name: 'feishu', label: '飞书', description: '' }]);
   assert.deepEqual(selected.plugins, []);
   assert.deepEqual(
