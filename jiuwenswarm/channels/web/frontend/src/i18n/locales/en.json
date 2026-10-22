@@ -713,8 +713,15 @@
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
+      "arkRegion": "Region",
+      "arkRegions": {
+        "cnBeijing": "China · Beijing (Volcengine)",
+        "apSoutheast": "Asia Pacific · Southeast Asia (BytePlus)",
+        "euWest": "Europe · Dublin (BytePlus)",
+        "custom": "Other region (enter API address)"
+      },
       "regionalBaseHint": "Keys are region-bound: use https://api.minimax.io/v1 for a global key and https://api.minimaxi.com/v1 for a China key. If the address and the key's region differ, the other region is tried automatically.",
-      "regionalBaseHintModelark": "Keys and model activation are region-bound: use https://ark.ap-southeast.bytepluses.com/api/v3 for BytePlus ModelArk (international) and https://ark.cn-beijing.volces.com/api/v3 for Volcengine (China). Discovery and generation use the configured region without switching. Activate models in the matching console.",
+      "regionalBaseHintModelark": "Select the API key's region to fill its official address, or enter another official regional address. Discovery and generation use the same region. Activate the model there; model availability varies by region.",
       "arkGenerationBaseInvalid": "Use an official regional Volcengine Ark or BytePlus /api/v3 address. Coding Plan addresses do not support image or video generation.",
       "regionalBaseHintDashscope": "Generation uses the native DashScope /api/v1 API, not the chat compatible-mode URL. Keys are region-bound: use https://dashscope.aliyuncs.com/api/v1 for a China key and https://dashscope-intl.aliyuncs.com/api/v1 for an international key. If the address and the key's region differ, the other region is tried automatically.",
       "selfHostedBaseHintVllmOmni": "Enter the address of your self-hosted vLLM-Omni server (for example http://127.0.0.1:8091/v1). Leave the API key empty if the server has no auth; leave the model empty to use the model the server has loaded.",

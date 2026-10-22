@@ -36,6 +36,22 @@ export const MODELARK_PROTOCOL = 'modelark';
 export const DASHSCOPE_PROTOCOL = 'dashscope';
 export const VLLM_OMNI_PROTOCOL = 'vllm-omni';
 
+export const ARK_REGIONS = {
+  'cn-beijing': 'https://ark.cn-beijing.volces.com/api/v3',
+  'ap-southeast-1': 'https://ark.ap-southeast.bytepluses.com/api/v3',
+  'eu-west-1': 'https://ark.eu-west.bytepluses.com/api/v3',
+} as const;
+export type ArkRegion = keyof typeof ARK_REGIONS | 'custom';
+
+export function arkRegionForApiBase(apiBase: string): ArkRegion {
+  const base = apiBase.trim().replace(/\/+$/, '').toLowerCase();
+  for (const region of Object.keys(ARK_REGIONS) as (keyof typeof ARK_REGIONS)[]) {
+    const url = ARK_REGIONS[region];
+    if (base === url || base === url.slice(0, -'/api/v3'.length)) return region;
+  }
+  return 'custom';
+}
+
 const DASHSCOPE_API_BASE = 'https://dashscope.aliyuncs.com/api/v1';
 
 const OPENROUTER_MODELS: Record<GenerationSlot, readonly string[]> = {
