@@ -1119,6 +1119,7 @@ class AgentRuntime:
                 await self._team_lifecycle().pause_session(
                     context,
                     reason=ExecutionCancelCause.USER_PAUSE.value,
+                    channel_id=request.channel_id,
                 )
             elif intent in {"cancel", "stop"}:
                 await self._team_lifecycle().stop_session(

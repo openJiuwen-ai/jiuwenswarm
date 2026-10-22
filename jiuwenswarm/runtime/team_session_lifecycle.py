@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol
+from typing import Any, Protocol
 
 from jiuwenswarm.runtime.session.model import (
     ExecutionLifecycleContext,
@@ -41,6 +41,16 @@ class _TeamLifecycleManager(Protocol):
         generation: int | None = None,
     ) -> bool:
         """Pause runtime resources owned by the matching Session generation."""
+        ...
+
+    async def broadcast_event(
+        self,
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        channel_id: str | None = None,
+    ) -> bool:
+        """Deliver one Team event to the Session's waiters or server push."""
         ...
 
     async def stop_session_runtime(
@@ -122,13 +132,30 @@ class TeamSessionLifecycleAdapter:
         context: SessionLifecycleContext,
         *,
         reason: str,
+        channel_id: str | None = None,
     ) -> None:
         """Pause the matching Team generation."""
-        await self._team_manager.pause_session_runtime(
+        paused = await self._team_manager.pause_session_runtime(
             context.session_id,
             reason,
             generation=context.generation,
         )
+        if paused:
+            # This pause tears the runtime down first, so the later agent-level
+            # team interrupt finds nothing to pause and skips its terminal
+            # frame.  Emit it here, otherwise a round with no surviving
+            # foreground stream (e.g. an ask_user resume) never reports
+            # is_processing=false and the session keeps spinning.
+            await self._team_manager.broadcast_event(
+                context.session_id,
+                {
+                    "event_type": "chat.processing_status",
+                    "session_id": context.session_id,
+                    "is_processing": False,
+                    "is_complete": True,
+                },
+                channel_id=channel_id,
+            )
 
     async def stop_session(
         self,
