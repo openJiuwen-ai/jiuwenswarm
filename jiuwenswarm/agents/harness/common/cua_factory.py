@@ -8,6 +8,17 @@ from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config as build_core_cua_config
 
 
+def build_cua_delegation_approval_rail(language="cn"):
+    """Select the installer extension without changing the stock permission rail."""
+    from .rails.cua_delegation_approval_rail import CuaDelegationApprovalRail
+
+    if getattr(sys, "frozen", False) and sys.platform in ("darwin", "win32"):
+        from jiuwenswarm.cua_engine.approval_rail import CuaCodeApprovalRail
+
+        return CuaCodeApprovalRail(language=language)
+    return CuaDelegationApprovalRail(language=language)
+
+
 def build_cua_agent_config(
     model,
     *,

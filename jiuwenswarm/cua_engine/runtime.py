@@ -35,7 +35,7 @@ def desktop_lane() -> DesktopLane:
 
 
 class ReplRuntime:
-    """One persistent engine session per delegation; the engine owns its worker."""
+    """One persistent session per delegation, launched by the bound host executor."""
 
     def __init__(self, *, session=None, execution_backend=None):
         self.session = session
@@ -49,17 +49,18 @@ class ReplRuntime:
         async with self.call_lock:
             if self.closing or self.cleanup_error:
                 raise RuntimeError("The previous REPL was closed; recreate variables in a fresh delegation.")
-            if self.execution_backend is not None:
-                # Authorization rejects a cell before the worker is started or
-                # written to. A rejection must not reset an existing namespace.
-                await self.execution_backend.authorize(code, title)
+            if self.execution_backend is None:
+                raise RuntimeError("No host code executor is bound. No code was sent.")
+            # Authorization rejects a cell before the worker is started or
+            # written to. A rejection must not reset an existing namespace.
+            await self.execution_backend.authorize(code, title)
             try:
                 if self.session is None:
                     prepare_native()
                     from computer_use.mcp.session import ExecutionSession
 
                     self.session = ExecutionSession(
-                        worker_launcher=self.execution_backend.start if self.execution_backend is not None else None,
+                        worker_launcher=self.execution_backend.start,
                     )
                 # No retained-history capability is advertised: reads stay full.
                 result = await self.session.execute(code, title=title.strip() or None)

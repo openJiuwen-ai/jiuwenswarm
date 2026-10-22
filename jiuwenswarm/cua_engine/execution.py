@@ -17,7 +17,6 @@ from openjiuwen.core.sys_operation import SysOperation
 from openjiuwen.core.sys_operation.base import OperationMode
 from openjiuwen.core.sys_operation.cwd import get_cwd
 from openjiuwen.core.sys_operation.local.code_operation import CodeOperation
-from .cua_code_approval import request_code_permission
 
 
 LOGGER = logging.getLogger(__name__)
@@ -33,7 +32,7 @@ class LocalCodeSession:
         owner: str,
         *,
         session_timeout: int = 3600,
-        authorize_cell: Callable[[str, str], Awaitable[None]] = request_code_permission,
+        authorize_cell: Callable[[str, str], Awaitable[None]] | None = None,
     ):
         self.operation = sys_operation
         self.owner = owner
@@ -57,6 +56,8 @@ class LocalCodeSession:
         self._require_local()
         if self.session_id is None:
             raise RuntimeError("The CUA execution session is not bound. No code was sent.")
+        if self.authorize_cell is None:
+            raise PermissionError("No host code authorization is bound. No code was sent; variables are unchanged.")
         try:
             await self.authorize_cell(code, title)
         except PermissionError:

@@ -10256,11 +10256,11 @@ class JiuWenSwarmDeepAdapter:
         if self._is_cron_execution:
             return None
         try:
-            from jiuwenswarm.agents.harness.common.rails.cua_delegation_approval_rail import (
-                CuaDelegationApprovalRail,
+            from jiuwenswarm.agents.harness.common.cua_factory import (
+                build_cua_delegation_approval_rail,
             )
 
-            return CuaDelegationApprovalRail(language=self._resolve_runtime_language())
+            return build_cua_delegation_approval_rail(language=self._resolve_runtime_language())
         except Exception as exc:
             logger.warning(
                 "[%s] CuaDelegationApprovalRail create failed: %s", type(self).__name__, exc

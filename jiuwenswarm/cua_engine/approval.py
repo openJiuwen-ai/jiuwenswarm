@@ -19,6 +19,7 @@ from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptExcept
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPT_AUTO_CONFIRM_KEY
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.interrupt.interrupt_base import ApproveResult, InterruptResult
+from openjiuwen.harness.rails.interrupt.ask_user_rail import AskUserPayload, AskUserRequest
 
 from jiuwenswarm.common.permission_mode import is_auto_permission_enabled
 
@@ -63,11 +64,33 @@ class _Cell:
     answer: asyncio.Future | None = None
     names: tuple[str, ...] = ()
     name_index: int = 0
+    question: str = ""
+
+    def confirmation_input(self, user_input, call_id):
+        """Project the standard question answer through the host's own parser."""
+        if isinstance(user_input, AskUserPayload):
+            user_input = user_input.model_dump()
+        if not isinstance(user_input, dict) or "answers" not in user_input:
+            return user_input
+        answers = user_input["answers"]
+        if not isinstance(answers, dict) or set(answers) != {self.question}:
+            return None
+        selected = answers[self.question]
+        if not isinstance(selected, str) or not selected.strip():
+            return None
+        from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+
+        # Reuse the same option parsing as web, CLI and TUI confirmations.
+        # pylint: disable-next=protected-access
+        reply = JiuWenSwarm._build_interactive_input_from_answers(
+            call_id, [{"selected_options": [selected]}], source="confirm_interrupt",
+        )
+        return reply.user_inputs.get(call_id)
 
     async def decide(self, ctx, user_input):
         # Import lazily: the standard host builder imports the delegation rail.
-        from ..rails.interrupt.interrupt_helpers import build_permission_rail
-        from ..rails.permissions.permissions_layers import capture_permission_layers
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
+        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import capture_permission_layers
 
         global_permissions, _, _, permissions = capture_permission_layers(ctx.session.get_session_id())
         if is_auto_permission_enabled(permissions):
@@ -96,7 +119,7 @@ class _Cell:
         fresh = await policy.resolve_interrupt(ctx, call, None, remembered)
         if not isinstance(fresh, InterruptResult) or user_input is None:
             return fresh
-        return await policy.resolve_interrupt(ctx, call, user_input, remembered)
+        return await policy.resolve_interrupt(ctx, call, self.confirmation_input(user_input, call.id), remembered)
 
 class _Delegation:
     def __init__(self, arguments):
@@ -177,17 +200,32 @@ class CuaCodeApprovals:
                 decision = await entry.pending.decide(ctx, user_input)
                 user_input = None  # An answer can authorize only its pending policy check.
                 if isinstance(decision, InterruptResult):
-                    request = decision.request.model_copy(deep=True)
+                    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+                        extract_question_from_interaction,
+                    )
+
+                    original_request = decision.request
                     fence = "```"
                     while fence in entry.pending.code:
                         fence += "`"
-                    request.message = (
-                        CODE_APPROVAL_LEAD + "\n\n" + request.message
+                    entry.pending.question = (
+                        CODE_APPROVAL_LEAD + "\n\n" + original_request.message
                         + "\n\n" + fence + "python\n" + entry.pending.code + "\n" + fence
                     )
-                    request.auto_confirm_key = "cua_repl:code"
-                    # The parent call is a normal confirm continuation, not a
-                    # second root permission-queue invocation of task_tool.
+                    question = extract_question_from_interaction(dict(id=key[1], value=dict(
+                        original_request.model_dump(), tool_name=entry.pending.names[entry.pending.name_index],
+                    )))
+                    question.update(question=entry.pending.question, header="cua_repl")
+                    # Use Core's structured question contract. The host already
+                    # renders and resumes it without classifying arbitrary code
+                    # text as a new permission request for the outer task_tool.
+                    request = AskUserRequest(
+                        message=entry.pending.question,
+                        questions=[question],
+                        payload_schema=AskUserPayload.to_schema(),
+                        auto_confirm_key="cua_repl:code",
+                        metadata=original_request.metadata,
+                    )
                     state = dict(ctx.session.get_state(_PENDING_STATE) or {})
                     state[key[1]] = True
                     ctx.session.update_state({_PENDING_STATE: state})
