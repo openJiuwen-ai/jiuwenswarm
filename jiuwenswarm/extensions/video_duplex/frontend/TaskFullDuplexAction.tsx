@@ -35,6 +35,11 @@ import {
 import './TaskFullDuplexAction.css';
 import { DuplexOrb } from './DuplexOrb';
 
+// The orb floats above the docked composer stack: the input frame plus any
+// card or bar stacked over it, such as a pending approval.
+const COMPOSER_DOCK_SELECTOR = '.chat-compose, .chat-input-frame, [data-testid="interaction-slot-root"]';
+const COMPOSER_DOCK_GAP = 12;
+
 function parseEnabled(value: unknown): boolean {
   return value === true || String(value).trim().toLowerCase() === 'true';
 }
@@ -201,6 +206,49 @@ export function TaskFullDuplexControls() {
     };
   }, []);
 
+  // Until the user drags the orb, keep it clear of the composer and its cards.
+  const [dockBottom, setDockBottom] = useState<number | null>(null);
+  useEffect(() => {
+    if (!orbMounted || position) return;
+    let observed: Element[] = [];
+    // Page mutations arrive per React commit while replies stream; measure (a forced
+    // layout) at most once per frame.
+    let frame = 0;
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(() => { frame = 0; update(); });
+    };
+    const resizeObserver = typeof window.ResizeObserver === 'undefined' ? null : new window.ResizeObserver(schedule);
+    const update = () => {
+      const docked = Array.from(document.querySelectorAll(COMPOSER_DOCK_SELECTOR));
+      if (resizeObserver && (docked.length !== observed.length || docked.some((el, i) => el !== observed[i]))) {
+        resizeObserver.disconnect();
+        docked.forEach((el) => resizeObserver.observe(el));
+        observed = docked;
+      }
+      let top = Infinity;
+      for (const el of docked) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) top = Math.min(top, rect.top);
+      }
+      if (!Number.isFinite(top)) {
+        setDockBottom(null);
+        return;
+      }
+      const height = controlsRef.current?.offsetHeight || 116;
+      setDockBottom(Math.max(8, Math.min(window.innerHeight - top + COMPOSER_DOCK_GAP, window.innerHeight - height - 8)));
+    };
+    update();
+    const mutationObserver = new window.MutationObserver(schedule);
+    mutationObserver.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('resize', schedule);
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      mutationObserver.disconnect();
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', schedule);
+    };
+  }, [orbMounted, position]);
+
   useEffect(() => {
     const keepVisible = () => setPosition((current) => current
       ? constrainPosition(current.left, current.top) : current);
@@ -238,7 +286,13 @@ export function TaskFullDuplexControls() {
             <div
               ref={controlsRef}
               className={`task-full-duplex-orb${dragging ? ' is-dragging' : ''}${running ? '' : ' is-leaving'}`}
-              style={position ? { ...position, bottom: 'auto', transform: 'none' } : undefined}
+              style={
+                position
+                  ? { ...position, bottom: 'auto', transform: 'none' }
+                  : dockBottom !== null
+                    ? { bottom: dockBottom }
+                    : undefined
+              }
               data-testid="chat-panel-duplex-controls"
               data-variant={state}
             >

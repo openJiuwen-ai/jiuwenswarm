@@ -115,7 +115,7 @@ let timers;
 const previousGlobals = new Map();
 
 beforeEach(async () => {
-  dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/' });
+  dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/', pretendToBeVisual: true });
   dom.window.HTMLCanvasElement.prototype.getContext = () => null;
   for (const [name, value] of Object.entries({
     window: dom.window,
@@ -628,6 +628,47 @@ test('typing keeps the native send button alongside the active orb and accessibl
   await act(async () => new Promise((resolve) => setTimeout(resolve, 250)));
   assert.equal(document.querySelector('[data-testid="chat-panel-duplex-orb"]'), null);
   assert.ok(document.querySelector('[data-testid="native-send"]'));
+});
+
+test('the undragged orb stays above the input frame and any pending card docked over it', async () => {
+  // Issue #8943: a fixed bottom offset let the orb cover the pending approval card.
+  const rect = (top, height) => () => ({ top, bottom: top + height, left: 300, right: 1000, width: 700, height, x: 300, y: top });
+  const renderComposer = (withCard) => act(async () => root.render(createElement('div', null,
+    createElement(TaskFullDuplexRuntime, { ...props, key: 'runtime' }),
+    withCard ? createElement('div', { key: 'card', 'data-testid': 'interaction-slot-root' }) : null,
+    createElement('div', { key: 'frame', className: 'chat-input-frame' }),
+  )));
+  await act(async () => root.render(null));
+  await renderComposer(true);
+  const card = document.querySelector('[data-testid="interaction-slot-root"]');
+  card.getBoundingClientRect = rect(560, 49);
+  document.querySelector('.chat-input-frame').getBoundingClientRect = rect(618, 150);
+  await start();
+  const orb = () => document.querySelector('[data-testid="chat-panel-duplex-controls"]');
+  // Layout changes are measured on the next animation frame.
+  const nextFrame = () => act(() => new Promise((resolve) => dom.window.requestAnimationFrame(() => resolve())));
+  // JSDOM viewport is 768px tall: 768 - card top 560 + 12px gap.
+  assert.equal(orb().style.bottom, '220px');
+  // An expanded card pushes the orb up with it.
+  card.getBoundingClientRect = rect(480, 129);
+  await act(async () => card.append(document.createElement('p')));
+  await nextFrame();
+  assert.equal(orb().style.bottom, '300px');
+  // A streamed reply mutates the page per commit; it must not force a layout per mutation.
+  let measured = 0;
+  card.getBoundingClientRect = () => { measured += 1; return rect(480, 129)(); };
+  await act(async () => {
+    for (let i = 0; i < 20; i += 1) {
+      card.append(document.createElement('span'));
+      await Promise.resolve(); // separate commits, as while a reply streams
+    }
+  });
+  await nextFrame();
+  assert.equal(measured, 1);
+  // Once the card is resolved the orb settles above the input frame.
+  await renderComposer(false);
+  await nextFrame();
+  assert.equal(orb().style.bottom, '162px');
 });
 
 async function mountAction() {
