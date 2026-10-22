@@ -2355,7 +2355,15 @@ async def _team_round_settled(channel_id: str | None, session_id: str) -> bool |
     返回：True=落定可收尾；False=确未落定（成员在途/有非终态任务/有未读，
     等 team.completed 的旧行为）；None=读数不可得（monitor 快照未就绪、DB
     读取失败）——调用方应延迟重试而非放弃。
+
+    例外：`TeamNotEstablishedError`（团队从未建立——team_info
+    无行 / 会话动态表不存在）原样上抛。这是确定性终结而非"读数瞬态失败"，
+    续窗重试永不收口，调用方应立即带 error 终态判死。
     """
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
     try:
         from jiuwenswarm.server.runtime.agent_adapter.team_stall_watchdog import (
             team_progress_snapshot,
@@ -2378,6 +2386,8 @@ async def _team_round_settled(channel_id: str | None, session_id: str) -> bool |
         if unread:
             return False
         return True
+    except TeamNotEstablishedError:
+        raise
     except Exception:
         logger.info(
             "[TeamHelpers] team round settle check failed (treated as unknown): "
@@ -2402,7 +2412,18 @@ async def _emit_forced_terminal_at_stream_end(
     （回合真实状态不明）补带 error 终态，不粉饰——error 优先复用本轮
     未恢复的 leader 模型错误史，其次通用不明状态文案。
     """
-    settle_verdict = await _team_round_settled(channel_id, session_id)
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
+    try:
+        settle_verdict = await _team_round_settled(channel_id, session_id)
+    except TeamNotEstablishedError as e:
+        # 确定性终结（团队从未建立）——按"未确证"补带 error 终态，
+        # 但 error 用具体原因而非通用不明文案；绝不能让异常逃出 finally。
+        settle_verdict = None
+        if not unrecovered_error:
+            unrecovered_error = str(e)
     forced_terminal: dict[str, Any] = {
         "event_type": "chat.processing_status",
         "session_id": session_id,
@@ -2430,7 +2451,15 @@ async def _team_has_unread_messages(channel_id: str | None, session_id: str) -> 
 
     访问链与 team_stall_watchdog.team_progress_snapshot_db 一致；解析不到
     team_name / DB 不可用返回 None（调用方按「未落定」退化）。
+
+    例外：`TeamNotEstablishedError`（团队从未建立=确定性终结）
+    原样上抛——注意必须在外层 `except Exception`，否则内层
+    raise 经 finally 后仍会被外层吞回 None。
     """
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
     try:
         from openjiuwen.agent_teams.context import reset_session_id, set_session_id
         from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
@@ -2464,13 +2493,28 @@ async def _team_has_unread_messages(channel_id: str | None, session_id: str) -> 
             await db.create_cur_session_tables()
             if db.message is None:
                 return None
-            return await db.message.has_unread_messages(team_name)
+            try:
+                return await db.message.has_unread_messages(team_name)
+            except Exception as read_err:
+                # 会话动态表不存在 = 团队从未建立（确定性终结），
+                # 上抛让 settle 复核立即收口；瞬态错误仍归 None。
+                if "no such table" in str(read_err):
+                    raise TeamNotEstablishedError(
+                        f"session dynamic tables missing for session '{session_id}' "
+                        f"(team never built): {read_err}"
+                    ) from read_err
+                return None
         finally:
             reset_session_id(token)
-    except Exception:
-        logger.debug(
-            "[TeamHelpers] team unread-messages check failed: session_id=%s",
+    except TeamNotEstablishedError:
+        # 确定性终结（团队从未建立）：穿透给 settle 复核立即收口，
+        # 不得被下方通用 except 吞回 None。
+        raise
+    except Exception as exe:
+        logger.warning(
+            "[TeamHelpers] team unread-messages check failed: session_id=%s, %s",
             session_id,
+            exe,
             exc_info=True,
         )
         return None
@@ -2573,6 +2617,10 @@ async def _consume_stream_with_query(
     envs: dict[str, Any] | None = None,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamNotEstablishedError,
+    )
+
     _envs = envs or {}
     hide_dm: bool = bool(_envs.get("hide_dm", False))
     received_chunks = 0
@@ -2670,7 +2718,43 @@ async def _consume_stream_with_query(
             return False
         # 仅"确证落定"才发；False（确未落定）与 None（未知）都不发。
         # 三态必须用 not（True 才通过）
-        if not await _team_round_settled(channel_id, session_id):
+        from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+            TeamNotEstablishedError,
+        )
+
+        try:
+            settled = await _team_round_settled(channel_id, session_id)
+        except TeamNotEstablishedError as e:
+            # 确定性终结（团队从未建立）——带 error 收口（不粉饰），
+            # 并级联 park 运行时收流，否则流永挂、keepalive 不止。
+            await _broadcast_event(
+                channel_id,
+                session_id,
+                {
+                    "event_type": "chat.processing_status",
+                    "session_id": session_id,
+                    "rid": round_id,
+                    "is_processing": False,
+                    "is_complete": True,
+                    "error": str(e),
+                },
+            )
+            completion_signals += 1
+            settle_terminal_fired = True
+            tm_.mark_stream_round_terminal(session_id)
+            logger.warning(
+                "[TeamHelpers] settle terminal emitted (team not established): "
+                "channel_id=%s session_id=%s round_id=%s error=%s",
+                _resolve_channel_id(channel_id),
+                session_id,
+                round_id,
+                e,
+            )
+            _cascade_park_runtime_after_terminal(
+                channel_id, session_id, round_id, source="settle-team-not-established"
+            )
+            return True
+        if not settled:
             return False
         await _broadcast_event(
             channel_id,
@@ -2704,6 +2788,10 @@ async def _consume_stream_with_query(
         baseline_signals = completion_signals
 
         async def _delayed() -> None:
+            from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+                TeamNotEstablishedError,
+            )
+
             for _attempt in range(_SETTLE_TERMINAL_MAX_ATTEMPTS):
                 try:
                     await asyncio.sleep(_SETTLE_TERMINAL_QUIET_SEC)
@@ -2715,7 +2803,14 @@ async def _consume_stream_with_query(
                     return
                 if not tm_.has_stream_task(session_id):
                     return
-                result = await _team_round_settled(channel_id, session_id)
+                try:
+                    result = await _team_round_settled(channel_id, session_id)
+                except TeamNotEstablishedError:
+                    # 确定性终结（团队从未建立）：续窗重试永不收口，
+                    # 立即带 error 判死（_emit_settle_terminal 内置同判定+
+                    # 级联收流）。
+                    await _emit_settle_terminal()
+                    return
                 logger.info(
                     "[TeamHelpers] settle window attempt %s/%s: session_id=%s "
                     "round_id=%s result=%s",
@@ -3135,11 +3230,15 @@ async def _consume_stream_with_query(
                             },
                             mode="team",
                         )
-                    if is_leader and not _is_retry_notice(parsed):
+                    if is_leader and not _is_retry_notice(parsed) and not parsed.get("degraded"):
                         # 注意：重试通知不进本分支——通知是 rail 过程性广播（马上自动重试），
                         # 不是"未恢复错误史"：挂探针会在重试回退窗口（0.5-2s 后还有一次
                         # 模型调用静默期）误补失败终态；round_unrecovered_error 同理，
                         # 通知后恢复产出的清除逻辑（chat.delta/final）才是它的语义边界。
+                        # degraded 标记（build_team 熔断降级等会话级降级告警）也不进
+                        # 本分支——此时主理人已被引导单干，轮次预期正常完成：错误史会让
+                        # PS 终帧带 error 把"完成+告警"误记成整轮失败，探针补的带 error
+                        # 终态同理。广播与 warning 落盘在上方已照常完成。
                         # 记录本轮未恢复的 leader 模型错误史，
                         # 供 team.completed 等收尾帧携带（根治"重试耗尽却记已完成"）
                         round_unrecovered_error = str(parsed.get("error") or "")
@@ -3216,9 +3315,23 @@ async def _consume_stream_with_query(
                         # True=落定、False=确未落定（等 team.completed）、
                         # None=读数未就绪（续窗重试，不得一次性放弃）。
                         settle_evaluated = True
-                        settle_decision = await _team_round_settled(
-                            channel_id, session_id
-                        )
+                        try:
+                            settle_decision = await _team_round_settled(
+                                channel_id, session_id
+                            )
+                        except TeamNotEstablishedError as e:
+                            # 团队从未建立=确定性终结，静默窗续窗
+                            # 永不收口——跳过窗口立即带 error 判死
+                            # （_emit_settle_terminal 内置同判定+级联收流）。
+                            logger.info(
+                                "[TeamHelpers] settle decision at final: session_id=%s "
+                                "round_id=%s team not established: %s",
+                                session_id,
+                                round_id,
+                                e,
+                            )
+                            await _emit_settle_terminal()
+                            continue
                     if settle_evaluated:
                         # 长流协作防误杀：settle 是瞬时快照，即发会把"leader 先发言、
                         # 团队随后继续干活"的回合误判收尾——True 与 None 都进静默窗

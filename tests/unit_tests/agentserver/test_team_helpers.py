@@ -3375,6 +3375,84 @@ async def test_team_completed_carries_unrecovered_leader_error(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_degraded_chat_error_stays_warning_and_completion_clean(monkeypatch):
+    """degraded 标记的 chat.error（build_team 熔断降级）只广播+落盘告警：
+
+    不进 leader 错误史（team.completed 的收尾帧不带 error）、不补空 chat.final、
+    不挂死亡探针——降级单干的轮次终态必须是"完成+告警"而不是整轮失败。
+    """
+    broadcasted: list[dict] = []
+    persisted: list[dict] = []
+    detail = "[132001] build_team failed: RuntimeError: Failed to create team t"
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(
+            type="controller_output",
+            payload={
+                "type": "task_failed",
+                "data": [{"type": "text", "text": detail}],
+                "metadata": {"degraded": True},
+            },
+            role=TeamRole.LEADER,
+        )
+        # leader 降级单干产出实质正文
+        yield SimpleNamespace(
+            type="llm_output",
+            payload={"content": "已降级由主理人完成"},
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="team.completed",
+            payload={"member_count": 0, "task_count": 0},
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kw: persisted.append(kw))
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    event_types = [event["event_type"] for event in broadcasted]
+    # 告警广播照发且带 degraded 透传标记
+    error_events = [e for e in broadcasted if e["event_type"] == "chat.error"]
+    assert len(error_events) == 1
+    assert error_events[0].get("degraded") is True
+    assert "132001" in error_events[0]["error"]
+    # 不进错误史：收尾 processing_status 不带 error；无探针补帧用的空 chat.final
+    assert "chat.final" not in event_types
+    completion = broadcasted[event_types.index("chat.processing_status", 1)]
+    assert completion["is_complete"] is True
+    assert completion["is_processing"] is False
+    assert "error" not in completion
+    # 落盘留痕仍是 warning 级
+    assert len(persisted) == 1
+    assert persisted[0]["extra"]["warning"] is True
+
+
+@pytest.mark.anyio
 async def test_team_completed_clean_when_leader_recovered_after_error(monkeypatch):
     """防误杀：leader chat.error 之后有实质正文产出（已恢复），
     team.completed 的收尾帧不得携带 error。"""
