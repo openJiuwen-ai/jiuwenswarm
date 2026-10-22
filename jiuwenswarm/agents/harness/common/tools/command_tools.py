@@ -1124,7 +1124,7 @@ async def mcp_exec_command(
     # cron_guard L1 (issue #5018): sleep/poll interception for cron scheduled
     # runs only.  Fail-open on guard errors; interactive requests unaffected.
     try:
-        from jiuwenswarm.agents.harness.common.cron_guard.sleep_guard import (
+        from jiuwenswarm.common.cron_guard.sleep_guard import (
             guard_shell_command,
         )
 
@@ -1163,7 +1163,7 @@ async def mcp_exec_command(
 
     # cron_guard L3/L4 (issue #5018): accumulate foreground shell wait into
     # the cron run budget (no-op for interactive requests; never raises).
-    from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+    from jiuwenswarm.common.cron_guard.identity import (
         record_shell_wait,
     )
 
@@ -1197,7 +1197,7 @@ async def mcp_exec_command(
         # cron_guard (issue #5018): register background pids under the active
         # cron run so the request-entry reaper terminates them on run end.
         try:
-            from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+            from jiuwenswarm.common.cron_guard.identity import (
                 get_current_or_registered_run,
                 get_run_registry,
             )

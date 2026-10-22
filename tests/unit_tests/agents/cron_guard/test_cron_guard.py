@@ -11,11 +11,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.agents.harness.common.cron_guard import config as cfg_mod
-from jiuwenswarm.agents.harness.common.cron_guard import identity as id_mod
-from jiuwenswarm.agents.harness.common.cron_guard import sleep_guard
-from jiuwenswarm.agents.harness.common.cron_guard.config import clamp_deadlines
-from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+from jiuwenswarm.common.cron_guard import config as cfg_mod
+from jiuwenswarm.common.cron_guard import identity as id_mod
+from jiuwenswarm.common.cron_guard import sleep_guard
+from jiuwenswarm.common.cron_guard.config import clamp_deadlines
+from jiuwenswarm.common.cron_guard.identity import (
     CronRunContext,
     RunBudget,
     RunRegistry,
@@ -24,7 +24,7 @@ from jiuwenswarm.agents.harness.common.cron_guard.identity import (
     sign_run_token,
     verify_run_token,
 )
-from jiuwenswarm.agents.harness.common.cron_guard.ledger import (
+from jiuwenswarm.common.cron_guard.ledger import (
     STATE_FAILED,
     STATE_FINISHED,
     STATE_ORPHANED,
@@ -532,7 +532,7 @@ def _db_keys(path):
 
 
 def test_quarantine_reversible(tmp_path):
-    from jiuwenswarm.agents.harness.common.cron_guard import checkpoint_guard as cg
+    from jiuwenswarm.common.cron_guard import checkpoint_guard as cg
 
     db = tmp_path / "checkpoint.db"
     sid = "cron_job1"
@@ -549,7 +549,7 @@ def test_quarantine_reversible(tmp_path):
 
 
 def test_quarantine_missing_blob(tmp_path):
-    from jiuwenswarm.agents.harness.common.cron_guard import checkpoint_guard as cg
+    from jiuwenswarm.common.cron_guard import checkpoint_guard as cg
 
     db = tmp_path / "checkpoint.db"
     _make_checkpoint_db(db, "other_sid")
@@ -558,7 +558,7 @@ def test_quarantine_missing_blob(tmp_path):
 
 
 def test_govern_restore_at_entry_tripped_prior(monkeypatch, tmp_path):
-    from jiuwenswarm.agents.harness.common.cron_guard import checkpoint_guard as cg
+    from jiuwenswarm.common.cron_guard import checkpoint_guard as cg
     import copy
 
     base = copy.deepcopy(cfg_mod.DEFAULTS)
@@ -589,7 +589,7 @@ def test_govern_restore_at_entry_tripped_prior(monkeypatch, tmp_path):
 
 
 def test_govern_finished_prior_allowed(monkeypatch, tmp_path):
-    from jiuwenswarm.agents.harness.common.cron_guard import checkpoint_guard as cg
+    from jiuwenswarm.common.cron_guard import checkpoint_guard as cg
     import copy
 
     base = copy.deepcopy(cfg_mod.DEFAULTS)
@@ -609,7 +609,7 @@ def test_govern_finished_prior_allowed(monkeypatch, tmp_path):
 
 
 def test_govern_untrusted_log_only(monkeypatch, tmp_path):
-    from jiuwenswarm.agents.harness.common.cron_guard import checkpoint_guard as cg
+    from jiuwenswarm.common.cron_guard import checkpoint_guard as cg
     import copy
 
     base = copy.deepcopy(cfg_mod.DEFAULTS)
@@ -631,7 +631,7 @@ def test_govern_untrusted_log_only(monkeypatch, tmp_path):
 
 
 def test_govern_quarantine_and_fresh_continues(monkeypatch, tmp_path):
-    from jiuwenswarm.agents.harness.common.cron_guard import checkpoint_guard as cg
+    from jiuwenswarm.common.cron_guard import checkpoint_guard as cg
     import copy
 
     base = copy.deepcopy(cfg_mod.DEFAULTS)
@@ -657,7 +657,7 @@ def test_govern_quarantine_and_fresh_continues(monkeypatch, tmp_path):
 
 
 def test_govern_backup_failure_fails_run(monkeypatch, tmp_path):
-    from jiuwenswarm.agents.harness.common.cron_guard import checkpoint_guard as cg
+    from jiuwenswarm.common.cron_guard import checkpoint_guard as cg
     import copy
 
     base = copy.deepcopy(cfg_mod.DEFAULTS)
@@ -688,7 +688,7 @@ def test_govern_backup_failure_fails_run(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_budget_rail_iteration_cap(guard_enabled, cron_ctx):
-    from jiuwenswarm.agents.harness.common.cron_guard.budget_rail import (
+    from jiuwenswarm.common.cron_guard.budget_rail import (
         CronBudgetRail,
         CronBudgetExceeded,
     )
@@ -711,7 +711,7 @@ async def test_budget_rail_iteration_cap(guard_enabled, cron_ctx):
 
 @pytest.mark.asyncio
 async def test_budget_rail_force_finish_consumed(guard_enabled, cron_ctx):
-    from jiuwenswarm.agents.harness.common.cron_guard.budget_rail import CronBudgetRail
+    from jiuwenswarm.common.cron_guard.budget_rail import CronBudgetRail
 
     rail = CronBudgetRail()
     cron_ctx.max_iterations = 1
@@ -730,7 +730,7 @@ async def test_budget_rail_force_finish_consumed(guard_enabled, cron_ctx):
 
 @pytest.mark.asyncio
 async def test_budget_rail_interactive_noop(guard_enabled):
-    from jiuwenswarm.agents.harness.common.cron_guard.budget_rail import CronBudgetRail
+    from jiuwenswarm.common.cron_guard.budget_rail import CronBudgetRail
 
     rail = CronBudgetRail()
     calls = []
@@ -747,7 +747,7 @@ async def test_budget_rail_interactive_noop(guard_enabled):
 
 @pytest.mark.asyncio
 async def test_budget_rail_soft_deadline(guard_enabled, cron_ctx):
-    from jiuwenswarm.agents.harness.common.cron_guard.budget_rail import CronBudgetRail
+    from jiuwenswarm.common.cron_guard.budget_rail import CronBudgetRail
 
     rail = CronBudgetRail()
     cron_ctx.soft_deadline_reached = True
@@ -769,7 +769,7 @@ def test_watchdog_begin_interactive_none(monkeypatch):
     base = copy.deepcopy(cfg_mod.DEFAULTS)
     base["enabled"] = True
     monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
-    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
+    from jiuwenswarm.common.cron_guard import watchdog as wd
 
     monkeypatch.setattr(wd, "_orphans_marked", True)
     req = SimpleNamespace(metadata={}, params={})
@@ -785,8 +785,8 @@ def test_watchdog_begin_end_lifecycle(tmp_path, monkeypatch):
     base["budget_ledger"]["path"] = str(tmp_path / "ledger.db")
     monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
     monkeypatch.setenv("JIUWENSWARM_CRON_RUN_SECRET", "sec")
-    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
-    from jiuwenswarm.agents.harness.common.cron_guard import ledger as led_mod
+    from jiuwenswarm.common.cron_guard import watchdog as wd
+    from jiuwenswarm.common.cron_guard import ledger as led_mod
 
     led_mod.reset_run_ledger()
     try:
@@ -956,7 +956,7 @@ def test_guard_budget_counts_sleep_calls_not_commands(guard_enabled):
 
 
 def test_record_shell_wait_accumulates_and_exceeds(guard_enabled, cron_ctx):
-    from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+    from jiuwenswarm.common.cron_guard.identity import (
         record_shell_wait,
     )
 
@@ -967,7 +967,7 @@ def test_record_shell_wait_accumulates_and_exceeds(guard_enabled, cron_ctx):
 
 
 def test_record_shell_wait_no_run_noop(guard_enabled):
-    from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+    from jiuwenswarm.common.cron_guard.identity import (
         record_shell_wait,
     )
 
@@ -984,9 +984,9 @@ def test_watchdog_begin_quarantine_rolls_back_registry(tmp_path, monkeypatch):
     base["budget_ledger"]["path"] = str(tmp_path / "ledger.db")
     monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
     monkeypatch.setenv("JIUWENSWARM_CRON_RUN_SECRET", "sec")
-    from jiuwenswarm.agents.harness.common.cron_guard import checkpoint_guard as cg
-    from jiuwenswarm.agents.harness.common.cron_guard import ledger as led_mod
-    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
+    from jiuwenswarm.common.cron_guard import checkpoint_guard as cg
+    from jiuwenswarm.common.cron_guard import ledger as led_mod
+    from jiuwenswarm.common.cron_guard import watchdog as wd
 
     led_mod.reset_run_ledger()
     try:
@@ -1029,8 +1029,8 @@ def test_cron_guard_end_async_lifecycle(tmp_path, monkeypatch):
     base["budget_ledger"]["path"] = str(tmp_path / "ledger.db")
     monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
     monkeypatch.setenv("JIUWENSWARM_CRON_RUN_SECRET", "sec")
-    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
-    from jiuwenswarm.agents.harness.common.cron_guard import ledger as led_mod
+    from jiuwenswarm.common.cron_guard import watchdog as wd
+    from jiuwenswarm.common.cron_guard import ledger as led_mod
 
     led_mod.reset_run_ledger()
     try:
@@ -1062,8 +1062,8 @@ def test_cron_guard_end_async_reap_off_event_loop(tmp_path, monkeypatch):
     base["enabled"] = True
     base["budget_ledger"]["path"] = str(tmp_path / "ledger.db")
     monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
-    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
-    from jiuwenswarm.agents.harness.common.cron_guard import ledger as led_mod
+    from jiuwenswarm.common.cron_guard import watchdog as wd
+    from jiuwenswarm.common.cron_guard import ledger as led_mod
 
     led_mod.reset_run_ledger()
     try:
@@ -1110,8 +1110,8 @@ def test_cron_guard_end_async_survives_reap_raise(tmp_path, monkeypatch):
     base["enabled"] = True
     base["budget_ledger"]["path"] = str(tmp_path / "ledger.db")
     monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
-    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
-    from jiuwenswarm.agents.harness.common.cron_guard import ledger as led_mod
+    from jiuwenswarm.common.cron_guard import watchdog as wd
+    from jiuwenswarm.common.cron_guard import ledger as led_mod
 
     led_mod.reset_run_ledger()
     try:
@@ -1131,7 +1131,7 @@ def test_cron_guard_end_async_survives_reap_raise(tmp_path, monkeypatch):
 
 def test_cron_terminal_state_mapping():
     """Guard trips are 'tripped'; a producer crash is 'failed'; clean is 'finished'."""
-    from jiuwenswarm.agents.harness.common.cron_guard.watchdog import cron_terminal_state
+    from jiuwenswarm.common.cron_guard.watchdog import cron_terminal_state
 
     assert cron_terminal_state(None) == "finished"
     assert cron_terminal_state("deadline_exceeded") == "tripped"
@@ -1149,8 +1149,8 @@ def test_cron_guard_end_async_producer_error_records_failed(tmp_path, monkeypatc
     base["budget_ledger"]["path"] = str(tmp_path / "ledger.db")
     monkeypatch.setattr(cfg_mod, "get_cron_guard_config", lambda: base)
     monkeypatch.setenv("JIUWENSWARM_CRON_RUN_SECRET", "sec")
-    from jiuwenswarm.agents.harness.common.cron_guard import watchdog as wd
-    from jiuwenswarm.agents.harness.common.cron_guard import ledger as led_mod
+    from jiuwenswarm.common.cron_guard import watchdog as wd
+    from jiuwenswarm.common.cron_guard import ledger as led_mod
 
     led_mod.reset_run_ledger()
     try:

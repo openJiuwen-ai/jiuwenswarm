@@ -1568,7 +1568,7 @@ class CronSchedulerService:
                 # AgentServer can trust the scheduled_run identity.  No secret
                 # configured -> no token -> tightening-only degraded mode.
                 try:
-                    from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+                    from jiuwenswarm.common.cron_guard.identity import (
                         maybe_sign_run_token,
                     )
 

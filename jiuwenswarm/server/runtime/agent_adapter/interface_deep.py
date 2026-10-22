@@ -10146,7 +10146,7 @@ class JiuWenSwarmDeepAdapter:
         through the adapter rail build list -> ``register_rail`` (no bypass).
         """
         try:
-            from jiuwenswarm.agents.harness.common.cron_guard.budget_rail import (
+            from jiuwenswarm.common.cron_guard.budget_rail import (
                 CronBudgetRail,
             )
 

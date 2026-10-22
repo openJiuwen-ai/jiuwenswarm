@@ -41,7 +41,7 @@ def _pre_execute_shell_command(command: str) -> str | None:
     # cron_guard L1 (issue #5018): sleep/poll interception for cron scheduled
     # runs only.  Fail-open: guard errors never block interactive requests.
     try:
-        from jiuwenswarm.agents.harness.common.cron_guard.sleep_guard import (
+        from jiuwenswarm.common.cron_guard.sleep_guard import (
             guard_shell_command,
         )
 
@@ -61,7 +61,7 @@ def _wrap_invoke(
     from openjiuwen.harness.tools.base_tool import ToolOutput
 
     async def invoke(self: Any, inputs: dict[str, Any], **kwargs: Any) -> Any:
-        from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+        from jiuwenswarm.common.cron_guard.identity import (
             record_shell_wait,
         )
 
@@ -88,7 +88,7 @@ def _wrap_stream(
     from openjiuwen.harness.tools.base_tool import ToolOutput
 
     async def stream(self: Any, inputs: dict[str, Any], **kwargs: Any):
-        from jiuwenswarm.agents.harness.common.cron_guard.identity import (
+        from jiuwenswarm.common.cron_guard.identity import (
             record_shell_wait,
         )
 

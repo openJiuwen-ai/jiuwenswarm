@@ -3857,15 +3857,15 @@ class JiuWenSwarm:
         # an exception in input building never leaves a registered run behind.
         # Interactive requests return (None, None, None) and are unaffected.
         try:
-            from jiuwenswarm.agents.harness.common.cron_guard.watchdog import (
+            from jiuwenswarm.common.cron_guard.watchdog import (
                 cron_guard_begin,
                 cron_guard_end_async,
                 cron_terminal_state,
             )
-            from jiuwenswarm.agents.harness.common.cron_guard.checkpoint_guard import (
+            from jiuwenswarm.common.cron_guard.checkpoint_guard import (
                 CronCheckpointQuarantined,
             )
-            from jiuwenswarm.agents.harness.common.cron_guard.budget_rail import (
+            from jiuwenswarm.common.cron_guard.budget_rail import (
                 CronBudgetExceeded,
             )
 
@@ -3890,7 +3890,7 @@ class JiuWenSwarm:
                 )
                 return
             if cron_ctx is not None:
-                from jiuwenswarm.agents.harness.common.cron_guard.config import (
+                from jiuwenswarm.common.cron_guard.config import (
                     get_cron_guard_config as _cg_cfg,
                 )
 
