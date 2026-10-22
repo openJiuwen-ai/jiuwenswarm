@@ -2,7 +2,11 @@ import { Download, Replace, ScanSearch, Trash } from 'lucide-react';
 import { useCallback, useRef, useState, type ChangeEvent, type MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { downloadPreviewFile } from '../../../../components/ui/FilePreviewPanel/filePreviewShared';
-import { collectDesignerMaterials, previewMaterialForNode } from '../../designerMaterials';
+import {
+  collectDesignerMaterials,
+  designerMaterialFilename,
+  previewMaterialForNode,
+} from '../../designerMaterials';
 import {
   canReplaceUploadedNode,
   storeDesignerUpload,
@@ -56,10 +60,7 @@ export function DesignerNodeActionBar({ nodeId, nodeType }: DesignerNodeActionBa
     async (event: MouseEvent) => {
       event.stopPropagation();
       if (!material || !hasOutput) return;
-      const filename =
-        material.label?.trim() ||
-        material.uri.split('/').pop() ||
-        `designer-node-${nodeId}`;
+      const filename = designerMaterialFilename(material, `designer-node-${nodeId}`);
       if (material.previewUrl) {
         await downloadPreviewFile({ filename, downloadUrl: material.previewUrl });
         return;

@@ -4098,6 +4098,22 @@ def _validate_agent_template_import_layout(pkg_root: Path, manifest: dict) -> No
         )
 
 
+def _validate_agent_group_import_skill_paths(manifest: dict) -> None:
+    """Reject host-specific skill paths before the core package loader runs."""
+    skills = manifest.get("skills", [])
+    if not isinstance(skills, list):
+        return
+    for skill in skills:
+        raw_dir = skill.get("dir") if isinstance(skill, dict) else skill
+        if not isinstance(raw_dir, str):
+            continue
+        if Path(raw_dir).expanduser().is_absolute():
+            raise ValueError("agent_group skill dir must be package-relative")
+        windows_path = PureWindowsPath(raw_dir)
+        if windows_path.drive or windows_path.root:
+            raise ValueError("agent_group skill dir must be package-relative")
+
+
 def _commit_imported_package(
     pkg_root: Path, *, kind: str, kind_label: str, package_type: str
 ) -> dict:
@@ -4127,6 +4143,7 @@ def _commit_imported_package(
                 "agent_group manifest name must match its package directory"
             )
         _assert_no_symlinks(pkg_root)
+        _validate_agent_group_import_skill_paths(manifest)
         load_agent_group_package(pkg_root)
     local_root = _local_root(kind)
     _assert_package_id_available(

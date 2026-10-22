@@ -18,7 +18,7 @@ def recovery(monkeypatch):
     monkeypatch.setattr(history, "get_config", lambda: {"experimental": {"team_organization_ui_enabled": True}})
     monkeypatch.setattr(identities, "load_organization_team_identity", lambda _: {"agent_group_name": "technology-insight"})
     monkeypatch.setattr("jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir", lambda name: name)
-    monkeypatch.setattr("jiuwenswarm.agents.swarm.agent_group.load_agent_group_package_bundle", lambda path: object())
+    monkeypatch.setattr("openjiuwen.agent_teams.experts.load_agent_group_package_bundle", lambda path: object())
     organization = SimpleNamespace(
         organization_id="org", owner_team_id="owner",
         leaders=[SimpleNamespace(team_id=name) for name in ("owner", "expert")],

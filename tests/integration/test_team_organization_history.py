@@ -331,7 +331,7 @@ async def test_restart_direct_expert_chat_restores_backend_and_reuses_membership
         JiuwenExpertTeamLauncher, "_build_enriched_spec", AsyncMock(return_value=SimpleNamespace(team_name="tech"))
     )
     monkeypatch.setattr("jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir", lambda name: name)
-    monkeypatch.setattr("jiuwenswarm.agents.swarm.agent_group.load_agent_group_package_bundle", lambda path: object())
+    monkeypatch.setattr("openjiuwen.agent_teams.experts.load_agent_group_package_bundle", lambda path: object())
     records = []
     monkeypatch.setattr(agent_ws_server, "append_history_record", lambda **kwargs: records.append(kwargs))
 

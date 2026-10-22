@@ -24,6 +24,7 @@ returns a result dict and never raises.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -63,6 +64,20 @@ _STAGE_BY_KIND = {
 #: Text is one cheap chat call; image/video generations are paid and are
 #: never repeated by the tool.
 _GENERATE_ATTEMPTS_BY_KIND = {"text": 2}
+
+
+def image_generate_timeout_seconds() -> float:
+    """AbilityManager budget for character / scene generate tools."""
+    from jiuwenswarm.server.runtime.designer.media_generation import image_tool_timeout_seconds
+
+    return image_tool_timeout_seconds()
+
+
+def video_generate_timeout_seconds() -> float:
+    """AbilityManager budget for clip / compose generate tools."""
+    from jiuwenswarm.server.runtime.designer.media_generation import video_tool_timeout_seconds
+
+    return video_tool_timeout_seconds()
 
 
 class _ToolError(Exception):
@@ -403,6 +418,19 @@ async def generate_node_output(
         try:
             result, sent_prompt = await _run_handler(env, node, injected, kind)
             break
+        except asyncio.CancelledError:
+            # CancelledError is shared by tool fail_after, the node wall-clock
+            # cap, and user/session stop — we cannot tell which here, so keep
+            # the note neutral. Without it the node only shows the engine's
+            # "no structured_output" mask.
+            message = f"{member} generation cancelled or timed out"
+            _note_member_error(env, node_id, message)
+            logger.warning(
+                "[design-tools] generate cancelled or timed out: node=%s member=%s",
+                node_id,
+                member,
+            )
+            raise
         except Exception as exc:  # noqa: BLE001 — a failed generation is an answer
             last_error = exc
             logger.warning(
@@ -595,7 +623,9 @@ def _read_text(ref: dict[str, Any]) -> str:
 __all__ = [
     "MEMBER_OUTPUT_KIND",
     "generate_node_output",
+    "image_generate_timeout_seconds",
     "note_rejection",
     "read_node_context",
     "submit_node_output",
+    "video_generate_timeout_seconds",
 ]

@@ -1838,13 +1838,14 @@ async def _run(
     from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _DummyBus,
-        _CONFIG_SET_ENV_MAP,
         _FORWARD_NO_LOCAL_HANDLER_METHODS,
         _FORWARD_REQ_METHODS,
         _normalize_feishu_conf,
         _normalize_xiaoyi_conf,
         _register_web_handlers,
     )
+    # M0-a：app_web_handlers 的兼容别名已删，直连 common 源
+    from jiuwenswarm.common.config_panel.config_set_handlers import CONFIG_SET_ENV_MAP
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
     from jiuwenswarm.common.updater import UpdaterService
@@ -1962,7 +1963,7 @@ async def _run(
 
     client.set_or_update_server_config(
         config=dict(full_cfg or {}),
-        env={env_key: (os.getenv(env_key) or "") for env_key in _CONFIG_SET_ENV_MAP.values()},
+        env={env_key: (os.getenv(env_key) or "") for env_key in CONFIG_SET_ENV_MAP.values()},
     )
 
     # Data-plane settings are AgentOS-only. A personal Gateway using etcd for

@@ -88,6 +88,11 @@ from openjiuwen.harness.rails import (
     SysOperationRail,
     MemoryRail,
 )
+# JiuwenMemoryRail 由 openjiuwen 提供，未必随当前 pinned 依赖一起安装——
+# jiuwen_rail_builder 已对它做惰性 + 防御式导入（缺失即降级为 None，不阻断启动）。
+# 这里若顶层硬导入，openjiuwen 未导出时会令整个 deep adapter 模块加载失败，
+# 进而拖垮所有 import interface_deep 的单测收集（ERROR）与运行态 session.create。
+# 故仅按需在 _drain_jiuwen_memory_rail 里惰性导入，与 builder 保持一致。
 from openjiuwen.harness.rails import (
     EvolutionInterruptRail,
     SkillCreateRail,
@@ -442,6 +447,11 @@ from jiuwenswarm.agents.harness.common.memory.config import (
     is_proactive_memory,
 )
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_builtin_memory_allowed
+from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import (
+    build_jiuwen_memory_rail,
+    is_jiuwen_builtin_memory,
+    jiuwen_builtin_config_fingerprint,
+)
 from jiuwenswarm.common.model_config_validation import (
     is_placeholder_api_base,
     is_placeholder_model_entry,
@@ -9976,9 +9986,26 @@ class JiuWenSwarmDeepAdapter:
         resolved_language = getattr(self, "_resolved_language", None) or "zh"
         return Workspace(root_path=self._workspace_dir or "./", language=resolved_language)
 
-    def _build_memory_rail(self, mode: str) -> MemoryRail | None:
+    def _build_memory_rail(self, mode: str) -> Any | None:
         try:
             config = get_config()
+            # jiuwen 变体：memory.builtin.provider=jiuwen 时用 JiuwenMemoryRail +
+            # AgentMemoryMemoryProvider（HTTP -> agent-memory 服务）替换原生 MemoryRail。
+            # 构建失败返回 None（不静默回退原生文件记忆，避免两套记忆语义混淆）。
+            if is_jiuwen_builtin_memory(config):
+                self._is_proactive_memory = is_proactive_memory(mode, config)
+                rail = build_jiuwen_memory_rail(
+                    config, agent_name=getattr(self, "_agent_name", None)
+                )
+                if rail is not None:
+                    logger.info(
+                        "[JiuWenSwarmDeepAdapter] JiuwenMemoryRail create success (builtin provider=jiuwen)"
+                    )
+                else:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] JiuwenMemoryRail create failed, builtin memory disabled"
+                    )
+                return rail
             embed_config = config.get("embed") if isinstance(config, dict) else None
             has_api_key = (
                 embed_config.get("embed_api_key") if isinstance(embed_config, dict) else None
@@ -10005,6 +10032,47 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] MemoryRail create failed: %s", exc)
             memory_rail = None
         return memory_rail
+
+    @staticmethod
+    async def _drain_jiuwen_memory_rail(rail: Any) -> None:
+        """JiuwenMemoryRail 卸载前收尾：等 sync_turn 后台任务 + 显式关闭 provider。
+
+        rail.uninit 的 shutdown 走 run_coroutine_threadsafe + future.result(15s)，
+        在事件循环上 await 卸载时是同循环自等——必然 15s 超时后才放行。这里先把
+        数据收尾做完（sync_turn 落库 + provider 连接池关闭，均为幂等），
+        uninit 里迟到的 shutdown 变成 no-op。非 JiuwenMemoryRail 直接返回。
+        """
+        # 与 jiuwen_rail_builder 一致地惰性导入：openjiuwen 未导出 JiuwenMemoryRail 时
+        # 缺失即按"非 jiuwen 变体"放行（no-op），rail 不可能是 JiuwenMemoryRail。
+        # 导入失败必须留痕，避免依赖缺失/版本不匹配被无声吞掉。
+        try:
+            from openjiuwen.harness.rails import JiuwenMemoryRail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] JiuwenMemoryRail import failed, "
+                "skip memory drain: %s",
+                exc,
+            )
+            return
+        if not isinstance(rail, JiuwenMemoryRail):
+            return
+        provider = getattr(rail, "_provider", None)
+        if provider is None:
+            return
+        sync_task = getattr(rail, "_sync_task", None)
+        if sync_task is not None and not sync_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(sync_task), timeout=10.0)
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] jiuwen memory sync drain failed: %s", exc
+                )
+        try:
+            await asyncio.wait_for(provider.shutdown(), timeout=10.0)
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] jiuwen memory provider shutdown failed: %s", exc
+            )
 
     @staticmethod
     def _build_avatar_rail() -> Any | None:
@@ -12179,6 +12247,18 @@ class JiuWenSwarmDeepAdapter:
             self._instance.deep_config.project_root = initial_runtime_workspace
         self._seed_runtime_cwd(initial_cwd, workspace=initial_runtime_workspace)
         setattr(self._instance, "_jiuwenswarm_project_dir", initial_runtime_workspace)
+        # 初始化期未进入 _apply_runtime_config_stages 前,外部记忆 rail 读这两个属性做 coords.project 路由:
+        # - is_projectless=True → rail 返回 None,让 jiuwen-memory 内核按 default 空间处理(不做 project 隔离)
+        # - is_projectless=False → rail 返回 basename 作为 project(命名空间标识,非路径)
+        # 同步给内层 ReActAgent: ProgressiveToolRail 的 before_model_call 拿到的
+        # ctx.agent 是 ReActAgent(不是外层 DeepAgent),仅设 DeepAgent 会让第二次
+        # prefetch 拿到 has_attr=False → coords 丢失。
+        is_projectless_init = self._is_projectless_agent_mode(mode)
+        setattr(self._instance, "_jiuwenswarm_is_projectless", is_projectless_init)
+        react_agent = getattr(self._instance, "_react_agent", None)
+        if react_agent is not None:
+            setattr(react_agent, "_jiuwenswarm_project_dir", initial_runtime_workspace)
+            setattr(react_agent, "_jiuwenswarm_is_projectless", is_projectless_init)
 
         self._sync_a2x_runtime_state()
         # Cron tools belong to the agent's standing toolset, not to any one
@@ -13635,8 +13715,36 @@ class JiuWenSwarmDeepAdapter:
             deep_config.cwd = task_cwd
             deep_config.project_root = task_workspace
         self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
-        if runtime_paths is not None and runtime_paths.is_projectless:
-            setattr(self._instance, "_jiuwenswarm_project_dir", task_workspace)
+        # 外部记忆 rail 的 _resolve_project 读这两个属性做 coords.project 路由:
+        # - 非 projectless mode (web/ide 等): task_workspace 来自 runtime_config.workspace /
+        #   project_dir / self._project_dir / 默认会话目录,is_projectless=False → rail 返回
+        #   basename 作为 project(命名空间标识,非路径)。
+        # - projectless mode (SDK 对接 jiuwen-memory): task_workspace 来自 runtime_paths,
+        #   is_projectless 由 resolve_runtime_workspace_paths / resolve_bound_runtime_workspace_paths 决定:
+        #     * 用户传 project_dir → explicit_root 非空 → is_projectless=False → rail 返回 basename
+        #     * 无 project_dir → 分配 chat-<n> 任务目录 → is_projectless=True → rail 返回 None,
+        #       让 jiuwen-memory 内核按 default 空间处理(不做 project 隔离)。
+        # 每轮 _apply_runtime_config_stages 都会刷新,跨轮切换 project 也能即时生效。
+        #
+        # 同步设到内层 ReActAgent: ProgressiveToolRail 的 before_model_call 拿到的
+        # ctx.agent 是 ReActAgent(不是外层 DeepAgent),仅设 DeepAgent 会让第二次
+        # prefetch 拿到 has_attr=False → coords 丢失。
+        project_dir_str = task_workspace
+        is_projectless = bool(
+            runtime_paths is not None
+            and getattr(runtime_paths, "is_projectless", False)
+        )
+        # 外部记忆 rail 经 getattr(ctx.agent, "_jiuwenswarm_project_dir", ...) 读
+        # 这两个属性做 coords.project 路由;真实 DeepAgent/ReActAgent 都带 __dict__,
+        # setattr 必然成功。仅当 _instance 是无法承载实例属性的桩(如纯 object())时
+        # 跳过——这类桩本就不会被 rail 读取,避免拖垮单测桩。
+        if hasattr(self._instance, "__dict__"):
+            setattr(self._instance, "_jiuwenswarm_project_dir", project_dir_str)
+            setattr(self._instance, "_jiuwenswarm_is_projectless", is_projectless)
+        react_agent = getattr(self._instance, "_react_agent", None)
+        if react_agent is not None and hasattr(react_agent, "__dict__"):
+            setattr(react_agent, "_jiuwenswarm_project_dir", project_dir_str)
+            setattr(react_agent, "_jiuwenswarm_is_projectless", is_projectless)
         resolved_language = self._resolve_runtime_language()
         resolved_channel = (
             str(
@@ -20092,24 +20200,30 @@ class JiuWenSwarmDeepAdapter:
             if builtin_on:
                 # 开启记忆
                 new_embed_fp = self._embedding_config_fingerprint(config)
+                if is_jiuwen_builtin_memory(config):
+                    # jiuwen 变体不走本地 embedding：指纹改用 jiuwen 配置指纹，
+                    # base_url/身份轴等变化即重建 rail；native↔jiuwen 切换同样触发。
+                    new_embed_fp = jiuwen_builtin_config_fingerprint(config)
                 previous_embed_fp = self._memory_embedding_fingerprint
                 if self._memory_rail is not None:
                     cur_memory_type = is_proactive_memory(mode, config)
                     if self._is_proactive_memory != cur_memory_type:
                         # 当前记忆类型（主动/被动）和之前注册的不一致，重新注册
+                        await self._drain_jiuwen_memory_rail(self._memory_rail)
                         await self._instance.unregister_rail(self._memory_rail)
                         self._memory_rail = None
                     elif self._memory_embedding_fingerprint != new_embed_fp:
-                        # 记忆类型没变，但 embedding 配置（base_url/api_key/model）变了：
-                        # 必须重建 rail 才能刷新 MemoryRail._embedding_config，否则换 endpoint
-                        # 时 rail 仍持旧配置，新 manager 仍用旧 provider。
+                        # 记忆类型没变，但记忆配置指纹变了（embedding 或 jiuwen 配置）：
+                        # 必须重建 rail 才能让新配置生效——原生路径换 embedding endpoint、
+                        # jiuwen 路径换 base_url/身份轴，都走这里。
                         logger.info(
-                            "[JiuWenSwarmDeepAdapter] embedding config changed, rebuilding MemoryRail"
+                            "[JiuWenSwarmDeepAdapter] memory config changed, rebuilding memory rail"
                         )
+                        await self._drain_jiuwen_memory_rail(self._memory_rail)
                         await self._instance.unregister_rail(self._memory_rail)
                         self._memory_rail = None
                     else:
-                        # 已经注册，且记忆类型与 embedding 配置均未变，无需其他操作
+                        # 已经注册，且记忆类型与配置指纹均未变，无需其他操作
                         return
                 if self._memory_rail is None:
                     self._memory_rail = self._build_memory_rail(mode)
@@ -20130,9 +20244,15 @@ class JiuWenSwarmDeepAdapter:
                     else:
                         logger.info(f"[JiuWenSwarmDeepAdapter] MemoryRail registered for {mode} mode")
                         # 重建后触发延时重索引（debounce），使新 embedding 配置对历史记忆文件生效
-                        if previous_embed_fp and previous_embed_fp != new_embed_fp:
+                        # （jiuwen 变体没有本地索引，跳过）
+                        if (
+                            previous_embed_fp
+                            and previous_embed_fp != new_embed_fp
+                            and not is_jiuwen_builtin_memory(config)
+                        ):
                             self._schedule_memory_reindex()
             elif not builtin_on and self._memory_rail is not None:
+                await self._drain_jiuwen_memory_rail(self._memory_rail)
                 await self._instance.unregister_rail(self._memory_rail)
                 self._memory_rail = None
                 logger.info(f"[JiuWenSwarmDeepAdapter] MemoryRail unregistered for {mode} mode")
@@ -20142,6 +20262,9 @@ class JiuWenSwarmDeepAdapter:
             build_external_memory_rail,
         )
 
+        # build_external_memory_rail 未提供 agent_id 形参（各 provider 的 agent_id
+        # 由各自配置段自取，如 mem0.agent_id），这里不得单方面传入——否则
+        # TypeError 会从 _handle_external_memory_rail_by_config 冒泡阻塞主流程。
         return build_external_memory_rail(
             config=get_config(),
             workspace_dir=self._workspace_dir,

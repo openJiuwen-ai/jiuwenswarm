@@ -24,8 +24,10 @@ export function stripUploadDocumentBlocks(content: string): string {
   // Document hints are always appended after the user query — drop from the
   // marker through the end so titles / bubbles only keep the query text.
   return content
-    .replace(/【上传文档】[\s\S]*$/u, '')
-    .replace(/【上传文档[:：][\s\S]*$/u, '')
+    // Generated blocks put the marker on its own line. Requiring that shape
+    // keeps ordinary query text containing the marker intact.
+    .replace(/(?:^|\r?\n)【上传文档】(?:\r?\n|$)[\s\S]*$/u, '')
+    .replace(/(?:^|\r?\n)【上传文档[:：][^\r\n]*(?:\r?\n|$)[\s\S]*$/u, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

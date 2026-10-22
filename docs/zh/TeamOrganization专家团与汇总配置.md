@@ -184,3 +184,7 @@ modes:
 解散 Organization 后，组织临时创建的专家 Team 和共享 Summary Team 停止；Owner Team 保留，可继续聊天或重新组建组织。原本独立存在、后来受邀加入的普通 Team 只解除组织绑定。Web 团队选择器回到 Owner，不再提供已停止的临时专家 Team。解散不会卸载专家团模板，也不会删除历史消息和已写入的交付物，但会删除该组织的任务、验收及汇总执行等组织数据。
 
 排障时重点查看：AgentGroup 扫描日志、专家/汇总 Launcher 日志、Organization 进度事件、Team runtime 状态，以及各 Team 是否持有同一个数据库实例。
+
+## 导入包
+
+导入在保存和安装前校验技能。`skills` 字符串项必须是技能名称，例如 `"docx-pro"`；目录映射使用包内相对路径，例如 `{"dir": "skills/docx-pro", "mode": "all"}`。拒绝 POSIX 和 Windows 绝对路径，包括上传至非 Windows 服务端的 Windows 路径。技能目录必须位于包内并包含 `SKILL.md`。

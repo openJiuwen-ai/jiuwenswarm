@@ -69,10 +69,10 @@ from jiuwenswarm.common.ws_diagnostics import (
     format_ws_diagnostics,
 )
 from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
+from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import persist_cli_trusted_directory
-from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
+from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_CAPABILITIES
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.session_provisioner import (
@@ -8759,7 +8759,9 @@ class AgentWebSocketServer:
         # Build McpServerConfig (same logic as _fetch_mcp_tools_from_config)
         payload: dict[str, Any] = {"server_name": name, "client_type": transport}
         if transport == "stdio":
-            command = server_payload.get("command", "")
+            from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+            command = resolve_preserved_cli_path(server_payload.get("command", ""))
             if not command:
                 return True, "skipped: no command"
             # stdio 预检查改为纯静态校验,静态校验零 spawn、零 anyio。
@@ -8770,6 +8772,7 @@ class AgentWebSocketServer:
                 for arg in raw_args:
                     if not isinstance(arg, str):
                         continue
+                    arg = resolve_preserved_cli_path(arg)
                     looks_like_path = (
                         arg.startswith(("/", "./", "../", "~"))
                         or arg.endswith((".js", ".mjs", ".cjs", ".json", ".py", ".sh"))
