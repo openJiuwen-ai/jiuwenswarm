@@ -108,6 +108,94 @@ async def test_workspace_upload_chunks_stay_in_injected_user_dir(
 
 
 @pytest.mark.asyncio
+async def test_upload_chunk_concurrent_same_name_does_not_clobber(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """并发同 target_rel_path 首块必须各自占用唯一文件（独占创建）。
+
+    重建 A1g 删除的 test_persist_media_locally_concurrent_same_name_
+    does_not_clobber 并发守护：E2A 分块路径首块的 check-then-write 竞态
+    （unique_upload_path 后非原子 open）回归时本测试必须失败。
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from jiuwenswarm.server.runtime.gateway_adapter import workspace_file_adapter as module
+
+    monkeypatch.setattr(module, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(module, "is_path_within_user_dirs", lambda path: Path(path).is_relative_to(tmp_path))
+    adapter = WorkspaceFileAdapter()
+
+    def _first_chunk(index: int):
+        return asyncio.run(
+            adapter.handle(
+                _request(
+                    ReqMethod.FILE_UPLOAD_CHUNK,
+                    {
+                        "upload_id": f"u-{index}",
+                        "target_rel_path": "agent/sessions/s1/uploads/report.bin",
+                        "data": base64.b64encode(f"chunk-{index}".encode()).decode("ascii"),
+                        "final": True,
+                    },
+                )
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        responses = list(pool.map(_first_chunk, range(16)))
+
+    assert all(resp.ok for resp in responses)
+    paths = [Path(resp.payload["path"]) for resp in responses]
+    assert len(set(paths)) == 16
+    assert {path.read_bytes() for path in paths} == {
+        f"chunk-{index}".encode() for index in range(16)
+    }
+
+
+@pytest.mark.asyncio
+async def test_im_file_persist_concurrent_same_name_does_not_clobber(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """并发同名 IM 附件必须各自占用唯一文件（独占创建，不静默覆盖）。"""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter.get_agent_workspace_dir",
+        lambda: tmp_path,
+    )
+    adapter = WorkspaceFileAdapter()
+
+    def _persist(index: int):
+        data = f"content-{index}".encode()
+        return asyncio.run(
+            adapter.handle(
+                _request(
+                    ReqMethod.IM_FILE_PERSIST,
+                    {
+                        "platform": "feishu",
+                        "category": "files",
+                        "filename": "report.txt",
+                        "data": base64.b64encode(data).decode("ascii"),
+                    },
+                )
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        responses = list(pool.map(_persist, range(16)))
+
+    assert all(resp.ok for resp in responses)
+    paths = [Path(resp.payload["path"]) for resp in responses]
+    assert len(set(paths)) == 16
+    assert {path.read_bytes() for path in paths} == {
+        f"content-{index}".encode() for index in range(16)
+    }
+
+
+@pytest.mark.asyncio
 async def test_workspace_verified_download_revalidates_every_bounded_chunk(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1545,3 +1633,37 @@ class TestParseIntParam:
         assert parse_int_param({"limit": "abc"}, "limit", 20, minimum=1, maximum=200) == 20
         assert parse_int_param({"limit": True}, "limit", 20, minimum=1, maximum=200) == 20
         assert parse_int_param({}, "limit", 20, minimum=1, maximum=200) == 20
+
+
+@pytest.mark.asyncio
+async def test_owner_scopes_set_triggers_async_reload_callback(tmp_path, monkeypatch) -> None:
+    """A5 review 回归：SET 分支的 reload 回调链路（inspect 缺失曾致 NameError）。
+
+    ConfigAdapter 生产装配恒带 on_config_saved（_reload_after_config_save 为
+    async）——该路径此前无任何测试覆盖，NameError 逃逸到线上才被发现。
+    """
+    reload_calls: list[tuple[list[str], dict]] = []
+
+    async def on_config_saved(updated_keys=None, *, env_updates=None, config_payload=None, reload_options=None):
+        reload_calls.append((list(updated_keys or []), dict(reload_options or {})))
+        return True
+
+    # handler 内惰性导入，patch 源模块（config_adapter 不是属性宿主）
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.update_permissions_owner_scopes_in_config",
+        lambda scopes, guidance: None,
+    )
+    from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import ConfigAdapter
+
+    adapter = ConfigAdapter(on_config_saved=on_config_saved)
+
+    response = await adapter.handle(
+        _request(
+            ReqMethod.PERMISSIONS_OWNER_SCOPES_SET,
+            {"owner_scopes": {"tool_edit": "allow"}, "deny_guidance_message": "x"},
+        )
+    )
+
+    assert response.ok is True
+    assert response.payload["applied_without_restart"] is True
+    assert reload_calls == [(["permissions"], {"reload_scopes": ["permissions"]})]

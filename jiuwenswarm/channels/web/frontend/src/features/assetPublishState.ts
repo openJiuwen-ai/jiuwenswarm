@@ -34,6 +34,20 @@ export function localRecordState(record: PublishRecord): LocalRecordState {
       return 'unconfirmed';
   }
 }
+/**
+ * A submission that is still in flight keeps the form locked: only queued / uploading
+ * operations can change on their own, so replacing them would race the running upload.
+ * An unverified outcome is terminal, so it must not lock the asset; the user resolves it with a
+ * new submission instead.
+ */
+export function isSubmissionLocked(record: PublishRecord): boolean {
+  return record.execution_status === 'queued' || record.execution_status === 'uploading';
+}
+
+/** Terminal records, including an unverified outcome, can start a new submission. */
+export function canStartNewVersion(record: PublishRecord): boolean {
+  return !isSubmissionLocked(record);
+}
 export function validateMetadata(metadata: PublishMetadata): string[] {
   const errors: string[] = [];
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(metadata.asset_name)) errors.push('asset_name');

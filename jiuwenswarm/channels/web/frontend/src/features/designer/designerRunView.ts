@@ -9,6 +9,15 @@ export function isActiveDesignerRun(status: string | undefined): boolean {
   return Boolean(status && DESIGNER_ACTIVE_RUN_STATUSES.has(status));
 }
 
+// Provider wordings: MiniMax "1026 content blocked by moderation", DashScope
+// "DataInspectionFailed", ModelArk "*SensitiveContentDetected".
+const MODERATION_ERROR_PATTERN =
+  /content blocked|moderation|data_?inspection_?failed|sensitive_?content_?detected|sensitive content/i;
+
+export function isDesignerModerationError(message: string | null | undefined): boolean {
+  return MODERATION_ERROR_PATTERN.test(String(message || ''));
+}
+
 /** Prefer run-level error; fall back to the first failed node error. */
 export function designerRunFailureMessage(
   run: DesignerExecutionRun | null | undefined,

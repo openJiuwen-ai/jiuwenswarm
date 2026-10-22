@@ -15,7 +15,9 @@ class ApplicationPluginServices:
     """Core services made available while an application plugin binds to Gateway."""
 
     agent_client: Any = None
-    media_attachment_normalizer: Callable[[dict[str, Any], str | None], None] | None = None
+    media_attachment_normalizer: (
+        Callable[[dict[str, Any], str | None], Awaitable[None]] | None
+    ) = None
 
     def require_agent_client(self) -> Any:
         """Return the registered Core Agent client or fail during plugin binding."""
@@ -24,18 +26,22 @@ class ApplicationPluginServices:
             raise RuntimeError("application plugin requires the Core Agent service")
         return self.agent_client
 
-    def normalize_media_attachments(
+    async def normalize_media_attachments(
         self,
         params: dict[str, Any],
         session_id: str | None,
     ) -> None:
-        """Prepare browser media through the host-registered attachment service."""
+        """Prepare browser media through the host-registered attachment service.
+
+        A1g：小图落盘改经 E2A 分块上传（AgentServer 侧落盘），故宿主注册的
+        normalizer 为异步；调用方需 ``await``。
+        """
 
         if self.media_attachment_normalizer is None:
             raise RuntimeError(
                 "application plugin requires the media attachment service"
             )
-        self.media_attachment_normalizer(params, session_id)
+        await self.media_attachment_normalizer(params, session_id)
 
 
 @dataclass(frozen=True)

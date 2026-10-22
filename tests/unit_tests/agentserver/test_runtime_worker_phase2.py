@@ -170,6 +170,7 @@ async def test_ipc_request_stream_and_cancel() -> None:
                 break
 
     serve_task = asyncio.create_task(_serve())
+    client = None
     try:
         client = await connect(path)
         request = _request(ReqMethod.CHAT_SEND, is_stream=True)
@@ -206,6 +207,10 @@ async def test_ipc_request_stream_and_cancel() -> None:
         if not serve_task.done():
             serve_task.cancel()
             await asyncio.gather(serve_task, return_exceptions=True)
+        if client is not None:
+            await client.close()
+        if holder.conn is not None:
+            await holder.conn.close()
         await server.close()
 
 

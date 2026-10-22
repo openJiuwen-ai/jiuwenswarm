@@ -15,6 +15,7 @@ export interface RuntimeTeamInfo {
   team_name: string;
   display_name?: string | null;
   agent_group_name?: string | null;
+  team_group_identity?: unknown;
   state: RuntimeTeamState | string;
   leader_id?: string | null;
   organization_id?: string | null;

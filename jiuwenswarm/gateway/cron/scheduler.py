@@ -1497,7 +1497,7 @@ class CronSchedulerService:
                 # Phase 4：project_id → project_dir 归属解析不在 Gateway 本地项目表执行。
                 # 目录分离后 Gateway 反查会得到空值或错误归属；改为只传 project_id，
                 # 由目标 AgentServer 在其注入目录内按 project_id 解析 project_dir
-                # （resolve_session_project_binding 规则2：仅传 project_id → 自动补齐）。
+                # （server 侧 resolve_session_project_binding 规则2：仅传 project_id → 自动补齐）。
                 # 取消路径仍保存 Runtime agent cache 所需的 work_mode；project_dir
                 # 由 AgentServer 依据 project_id/session 解析，Gateway 不跨目录反查。
                 state.exec_work_mode = job.work_mode or DEFAULT_WEB_WORK_MODE

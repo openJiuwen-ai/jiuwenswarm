@@ -218,6 +218,9 @@ class WebChannel(BaseWsChannel):
         self.git_watcher_registry: Any = None
         # AgentOSRouterClient for same-port HTTP container file APIs (set by handlers).
         self.container_file_client: Any = None
+        # Agent client the diagnosis HTTP proxy uses to reach the AgentServer
+        # service; bound by the web handler registration.
+        self.diagnosis_agent_client: Any = None
         self._trajectory_pending_updates: dict[tuple[str, str], Any] = {}
         self._trajectory_send_task: asyncio.Task[None] | None = None
         # 3rd-agent Web UI proxy: one northbound port per agent_type.
@@ -874,13 +877,6 @@ class WebChannel(BaseWsChannel):
             session_id = str(getattr(update, "session_id", "") or "").strip()
             if not session_id:
                 continue
-            clients: set[Any] = set()
-            for routing_key, ws_list in self._clients_by_key.items():
-                if routing_key.session_id != session_id:
-                    continue
-                for ws in ws_list:
-                    if not getattr(ws, "closed", False):
-                        clients.add(ws)
             payload = {
                 "session_id": session_id,
                 "trace_id": str(getattr(update, "trace_id", "") or ""),
@@ -889,8 +885,35 @@ class WebChannel(BaseWsChannel):
                 "store_epoch": getattr(update, "store_epoch", None),
                 "lifecycle": str(getattr(update, "lifecycle", "final") or "final"),
             }
-            for ws in clients:
-                await self.send_event(ws, "trace.updated", payload)
+            await self.send_session_event(session_id, "trace.updated", payload)
+
+    def _clients_for_session(self, session_id: str) -> set[Any]:
+        """Return open connections registered for ``session_id``."""
+        clients: set[Any] = set()
+        for routing_key, ws_list in self._clients_by_key.items():
+            if routing_key.session_id != session_id:
+                continue
+            for ws in ws_list:
+                if not getattr(ws, "closed", False):
+                    clients.add(ws)
+        return clients
+
+    async def send_session_event(
+        self,
+        session_id: str,
+        event: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Send one event only to the connections registered for a session.
+
+        Args:
+            session_id: Target session; connections of other sessions never
+                receive the event.
+            event: Event name, for example ``trace.updated``.
+            payload: JSON-serializable event payload.
+        """
+        for ws in self._clients_for_session(session_id):
+            await self.send_event(ws, event, payload)
 
     async def connect(self) -> None:
         """兼容方法：调用 start."""
@@ -1302,9 +1325,15 @@ class WebChannel(BaseWsChannel):
         # interrupt_result 根据 intent 决定 is_processing 状态
         # (busy 映射已在 send() 入口 _track_session_busy 统一维护,此处仅补发
         #  合成的 processing_status 事件让前端同步状态)
+        # pause 不合成任何帧: 服务端在 pause_session_runtime 成功 park 后显式
+        # 广播 processing_status{is_processing:false, paused:true}, 此处合成
+        # true 会在服务端权威帧前后到达, 把帧式消费方的状态翻回 true.
+        # pause 失败时也不合成 false — 状态未变, 合成会误报.
         if event_name == "chat.interrupt_result":
             intent = payload.get("intent", "cancel") if isinstance(payload, dict) else "cancel"
-            is_processing = intent in ("pause", "supplement", "resume")
+            if intent == "pause":
+                return
+            is_processing = intent in ("supplement", "resume")
             await self._broadcast_to({
                 "type": "event",
                 "event": "chat.processing_status",

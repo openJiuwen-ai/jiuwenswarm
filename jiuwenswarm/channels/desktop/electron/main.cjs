@@ -1129,13 +1129,35 @@ function emitLayoutInvalidated() {
   }
 }
 
+// 地址栏输入分流：看起来像主机名才导航，否则交给必应搜索。
+// 只看有没有空格不够：纯中文裸词（如"清华大学"）会被 WHATWG URL 解析成
+// xn-- punycode 假域名（https://xn--xkry9kk1bz66a/），DNS 必然失败。
+function looksLikeBrowserHost(raw) {
+  // 显式 http(s) 优先于空白判定：含字面空格的 URL（如复制自邮件正文的
+  // https://example.com/foo bar）应交给 URL 解析器编码成 %20 正常导航，
+  // 而不是拿去检索——旧实现的豁免语义（/\s/ && !/^https?:\/\//）必须保留。
+  if (/^https?:\/\//i.test(raw)) return true;
+  if (/\s/.test(raw)) return false;
+  if (/^about:/i.test(raw)) return true;
+  // IPv4：每段需 ≤255（WHATWG 会拒绝 999.1.1.1 这类地址，Chrome 对其走搜索）。
+  if (/^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:[/?#].*)?$/.test(raw)) {
+    return raw.split(/[/:?#]/)[0].split('.').every(octet => Number(octet) <= 255);
+  }
+  if (/^localhost(?::\d+)?(?:[/?#].*)?$/i.test(raw)) return true;
+  // 主机名需含点号 + TLD（标签允许中文域名字符，允许末尾 FQDN 点）；
+  // "清华大学"这类裸词走搜索。
+  return /^(?:[a-z\d\u00a1-\uffff](?:[a-z\d\u00a1-\uffff-]*[a-z\d\u00a1-\uffff])?\.)+[a-z\u00a1-\uffff]{2,}\.?(?::\d+)?(?:[/?#].*)?$/i.test(raw);
+}
+
 function normalizeBrowserTarget(rawValue) {
   const raw = String(rawValue || '').trim();
   if (!raw) return 'about:blank';
-  if (/\s/.test(raw) && !/^https?:\/\//i.test(raw)) {
+  if (!looksLikeBrowserHost(raw)) {
     return `https://cn.bing.com/search?q=${encodeURIComponent(raw)}`;
   }
-  const candidate = /^[a-z][a-z\d+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+  // 仅认 http(s)/about 为显式协议；example.com:8080、localhost:3000 里的冒号
+  // 是端口分隔符，之前会被误判成协议导致解析抛错。
+  const candidate = /^(?:https?|about):/i.test(raw) ? raw : `https://${raw}`;
   const parsed = new URL(candidate);
   if (!['https:', 'http:', 'about:'].includes(parsed.protocol)) {
     throw new Error(`Unsupported browser URL protocol: ${parsed.protocol}`);
@@ -1282,7 +1304,7 @@ async function ensureBrowserView(sessionId, lease = null) {
   view.setBounds({ x: 0, y: 0, ...entry.viewportSize });
   view.setVisible(false);
   applyBrowserBounds(entry, lastBrowserBounds?.width > 0 && lastBrowserBounds?.height > 0
-    ? lastBrowserBounds : { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height });
+    ? lastBrowserBounds : { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height }, 'create-init');
   if (lease) entry.leases.set(lease.leaseId, lease.ownerPid);
   browserViews.set(key, entry);
   entry.ready = initializeBrowserView(entry).catch(error => {
@@ -1367,9 +1389,12 @@ async function initializeBrowserView(entry) {
   return entry;
 }
 
-function applyBrowserBounds(entry, bounds) {
+function applyBrowserBounds(entry, bounds, source = 'unknown') {
   if (!entry?.view || !mainWindow || mainWindow.isDestroyed()) return { x: 0, y: 0, width: 0, height: 0 };
-  if (!(Number(bounds?.width) > 0 && Number(bounds?.height) > 0)) return entry.view.getBounds();
+  if (!(Number(bounds?.width) > 0 && Number(bounds?.height) > 0)) {
+    console.log('[browser-bounds]', 'skip-invalid', { panelId: entry.panelId, source, requested: bounds });
+    return entry.view.getBounds();
+  }
   const contentBounds = mainWindow.getContentBounds();
   // Renderer rectangles are expressed in CSS pixels. Electron View bounds
   // use device-independent pixels, which only match CSS pixels at 100% zoom.
@@ -1380,7 +1405,11 @@ function applyBrowserBounds(entry, bounds) {
   const y = Math.max(0, Math.min(scaledY, contentBounds.height));
   const width = Math.max(0, Math.min(Math.round((Number(bounds?.width) || 0) * zoomFactor), contentBounds.width - x));
   const height = Math.max(0, Math.min(Math.round((Number(bounds?.height) || 0) * zoomFactor), contentBounds.height - y));
-  if (width === 0 || height === 0) return entry.view.getBounds();
+  if (width === 0 || height === 0) {
+    console.log('[browser-bounds]', 'skip-clamped-zero', { panelId: entry.panelId, source, requested: bounds, clamped: { x, y, width, height } });
+    return entry.view.getBounds();
+  }
+  console.log('[browser-bounds]', 'apply', { panelId: entry.panelId, source, requested: bounds, applied: { x, y, width, height }, zoomFactor });
   entry.view.setBounds({ x, y, width, height });
   // Native hidden views can have a zero layout viewport on Windows. Keep the
   // renderer's desktop viewport in sync with the pane even when not displayed.
@@ -1425,7 +1454,7 @@ function setBrowserPaneVisible(sessionId, visible, focus = true) {
       if (!entry || activePaneSessionId !== key) return;
       entry.visible = true;
       entry.view.setVisible(true);
-      if (lastBrowserBounds) applyBrowserBounds(entry, lastBrowserBounds);
+      if (lastBrowserBounds) applyBrowserBounds(entry, lastBrowserBounds, 'activate-cache');
       // focus=false 用于模态弹窗关闭后的恢复显示：不抢主窗口焦点。
       if (entry.visible && focus) entry.view.webContents.focus();
       emitBrowserState(entry);
@@ -1723,10 +1752,32 @@ async function uniqueDownloadPath(filename) {
   }
 }
 
+/** Decode a browser FileReader-style data URL into bytes for local save. */
+function decodeDownloadDataUrl(dataUrl) {
+  const raw = String(dataUrl);
+  if (!raw.startsWith('data:')) throw new Error('Unsupported download protocol: data-url');
+  const comma = raw.indexOf(',');
+  if (comma < 0) throw new Error('Invalid data URL');
+  const metadata = raw.slice(5, comma);
+  const payload = raw.slice(comma + 1);
+  const isBase64 = /(?:^|;)base64$/i.test(metadata);
+  if (isBase64) return Buffer.from(payload, 'base64');
+  return Buffer.from(decodeURIComponent(payload), 'utf8');
+}
+
 async function saveDownloadedFile(url, filename) {
-  const targetUrl = new URL(String(url), currentFrontendUrl);
-  if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
-    throw new Error(`Unsupported download protocol: ${targetUrl.protocol}`);
+  // File-preview text downloads (e.g. manifest.json) pass a data: URL from the
+  // renderer. Accept those locally; keep rejecting other non-http(s) schemes.
+  const rawUrl = String(url);
+  let inlineBytes = null;
+  let targetUrl = null;
+  if (rawUrl.startsWith('data:')) {
+    inlineBytes = decodeDownloadDataUrl(rawUrl);
+  } else {
+    targetUrl = new URL(rawUrl, currentFrontendUrl);
+    if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+      throw new Error(`Unsupported download protocol: ${targetUrl.protocol}`);
+    }
   }
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: path.join(app.getPath('downloads'), sanitizeFilename(filename)),
@@ -1736,12 +1787,24 @@ async function saveDownloadedFile(url, filename) {
   const temporaryPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${randomUUID()}.part`);
   let temporaryCreated = false;
   try {
-    const response = await net.fetch(targetUrl);
-    if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
-    if (!response.body) throw new Error('Download response has no body');
-    const handle = await fs.open(temporaryPath, 'wx');
-    temporaryCreated = true;
-    await pipeline(Readable.fromWeb(response.body), handle.createWriteStream());
+    if (inlineBytes) {
+      // Mark created as soon as the exclusive create succeeds so a mid-write
+      // failure (e.g. ENOSPC) still removes the leftover .part in finally.
+      const handle = await fs.open(temporaryPath, 'wx');
+      temporaryCreated = true;
+      try {
+        await handle.writeFile(inlineBytes);
+      } finally {
+        await handle.close().catch(() => {});
+      }
+    } else {
+      const response = await net.fetch(targetUrl);
+      if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
+      if (!response.body) throw new Error('Download response has no body');
+      const handle = await fs.open(temporaryPath, 'wx');
+      temporaryCreated = true;
+      await pipeline(Readable.fromWeb(response.body), handle.createWriteStream());
+    }
     await fs.rename(temporaryPath, targetPath);
     temporaryCreated = false;
   } finally {
@@ -1780,6 +1843,10 @@ const BLOB_EXPORT_SPECS = {
   'image/svg+xml': { suffixes: ['.svg'], parameters: ['charset=utf-8'], filter: { name: 'SVG Image', extensions: ['svg'] } },
   'text/plain': { suffixes: ['.mmd'], parameters: ['charset=utf-8'], filter: { name: 'Mermaid Diagram', extensions: ['mmd'] } },
   'application/json': { suffixes: ['.json'], parameters: ['charset=utf-8'], filter: { name: 'JSON Archive', extensions: ['json'] } },
+  // Trajectory panel exports (.trajectory.zip / .trajectory.jsonl). Keep in sync
+  // with DATA_URL_EXPORT_SPECS in desktop_app.py (contract test enforces this).
+  'application/zip': { suffixes: ['.zip'], parameters: [], filter: { name: 'ZIP Archive', extensions: ['zip'] } },
+  'application/jsonl': { suffixes: ['.jsonl'], parameters: ['charset=utf-8'], filter: { name: 'JSONL Archive', extensions: ['jsonl'] } },
 };
 const BASE64_CHUNK_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 const blobSaveTransfers = new Map();

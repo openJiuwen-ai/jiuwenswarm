@@ -20,6 +20,11 @@
   height: auto;
 }
 
+.root[data-display-mode='full'] {
+  /* The member toolbar sticks to the lane list; clipping here would trap it. */
+  overflow: visible;
+}
+
 .ledger {
   position: relative;
   z-index: 0;

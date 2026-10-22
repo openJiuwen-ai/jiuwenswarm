@@ -21,6 +21,7 @@ import {
 import type { DesignerReactFlowNode } from '../../designerGraphAdapter';
 import { DesignerModalityTypeIcon } from '../../designerIcons';
 import { useDesignerRunStore } from '../../designerRunStore';
+import { isDesignerModerationError } from '../../designerRunView';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../../designerStore';
 import { useDesignerUiStore } from '../../designerUiStore';
@@ -223,7 +224,7 @@ function DesignerNodeShell({
         <div className="designer-node__body">{body}</div>
         {nodeError ? (
           <p className="designer-node__error" data-testid="designer-node-error" title={nodeError}>
-            {nodeError}
+            {isDesignerModerationError(nodeError) ? t('designer.run.moderationBlocked') : nodeError}
           </p>
         ) : null}
         <DesignerNodePortControl nodeId={nodeId} side="successor" />

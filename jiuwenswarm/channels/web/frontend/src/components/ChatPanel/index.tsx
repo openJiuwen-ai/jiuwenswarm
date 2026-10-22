@@ -194,6 +194,12 @@ interface ChatPanelProps {
    * 仅在停靠模式下回调；收起时上报 0。
    */
   onComposerHeightChange?: (height: number) => void;
+  /** 是否显示头部的“轨迹分析”入口（诊断视图）。 */
+  diagnosisEntryAvailable?: boolean;
+  /** 诊断视图当前是否打开，决定入口按钮的选中态。 */
+  diagnosisActive?: boolean;
+  /** 点击“轨迹分析”入口：打开诊断视图，再次点击回到对话。 */
+  onToggleDiagnosis?: () => void;
 }
 
 // 邀请指令只对 human_agent 成员存在（见 upsertHumanShareCommandFromEvent 的
@@ -1085,6 +1091,9 @@ export const ChatPanel = React.memo(function ChatPanel({
   composerCollapsed = false,
   onToggleComposerCollapsed,
   onComposerHeightChange,
+  diagnosisEntryAvailable = false,
+  diagnosisActive = false,
+  onToggleDiagnosis,
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -1101,18 +1110,18 @@ export const ChatPanel = React.memo(function ChatPanel({
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const storedTeamGroupIdentity = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.teamGroupIdentity ?? null,
+    (s) => s.runtimes[conversationId]?.teamGroupIdentity ?? null,
   );
   const setTeamGroupIdentity = useSessionStore((s) => s.setTeamGroupIdentity);
   const handleTeamGroupIdentityChange = useCallback(
     (identity: AgentGroupIdentity | null) => {
-      if (activeSessionId) setTeamGroupIdentity(activeSessionId, identity);
+      if (conversationId) setTeamGroupIdentity(conversationId, identity);
     },
-    [activeSessionId, setTeamGroupIdentity],
+    [conversationId, setTeamGroupIdentity],
   );
   // 输入框的专家团列表是异步的，切会话后到达前 Leader 头像会退成首字母；已绑定的会话
   // 直接用缓存的专家团身份兜底，列表到了再以它为准。
-  const boundGroupId = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.agentGroupBinding ?? null);
+  const boundGroupId = useSessionStore((s) => s.runtimes[conversationId]?.agentGroupBinding ?? null);
   const boundGroupIdentity = useAgentGroupVisualIdentity(boundGroupId)?.identity ?? null;
   const teamGroupIdentity = storedTeamGroupIdentity ?? boundGroupIdentity;
   const [agentGroupDeletedNoticeOpen, setAgentGroupDeletedNoticeOpen] = useState(false);
@@ -1865,6 +1874,19 @@ export const ChatPanel = React.memo(function ChatPanel({
             )}
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
+            {diagnosisEntryAvailable && onToggleDiagnosis && (
+              <button
+                type="button"
+                className={`chat-header-icon-btn ${diagnosisActive ? 'chat-header-icon-btn--active' : ''}`}
+                data-testid="chat-panel-header-diagnosis-toggle"
+                aria-pressed={diagnosisActive}
+                title={t('trajectory.diagnosis.entry')}
+                aria-label={t('trajectory.diagnosis.entry')}
+                onClick={onToggleDiagnosis}
+              >
+                <ClipboardList size={16} strokeWidth={2} aria-hidden />
+              </button>
+            )}
             {composerDockVisible && onToggleComposerCollapsed && (
               <button
                 type="button"

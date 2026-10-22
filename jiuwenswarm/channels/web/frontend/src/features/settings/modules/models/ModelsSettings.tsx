@@ -21,6 +21,8 @@ import { ModelGroupsSettings } from './ModelGroupsSettings';
 import { getVendorLabel } from './ModelProviderSelect';
 import { displayModelProtocol, parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
 import {
+  extractModelSelectionReferences,
+  formatModelSelectionReferenceScopes,
   getGroupDefaultRouteId,
   getModelGroupDisplayName,
   parseModelGroup,
@@ -434,7 +436,21 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
       }
       setConfirmation(null);
     } catch (error) {
-      setConfirmError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+      const references = extractModelSelectionReferences(error);
+      if (references.length > 0) {
+        const key =
+          confirmation?.type === 'delete-group'
+            ? 'settingsPanel.models.modelGroupReferenced'
+            : 'settingsPanel.models.modelReferenced';
+        setConfirmError(
+          t(key, {
+            count: references.length,
+            scopes: formatModelSelectionReferenceScopes(references, models, modelGroups),
+          }),
+        );
+      } else {
+        setConfirmError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+      }
     } finally {
       setConfirming(false);
       setSaving(false);

@@ -270,17 +270,20 @@ _DESIGN_RAIL_NAMES: tuple[str, ...] = (
     registry.STREAM_EVENT,
     registry.SECURITY,
     registry.MODEL_ANOMALY_DETECTION,
-    registry.HEARTBEAT,
-    registry.AVATAR_PROMPT,
     registry.MULTIMODAL_IMAGE,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
-    registry.PERSONAL_CONTEXT,
 )
 
 _DESIGN_TOOL_NAMES: tuple[str, ...] = (
     registry.VISION,
     registry.AUDIO,
+)
+
+_DESIGN_LEADER_TOOL_NAMES: tuple[str, ...] = (
+    registry.WEB_SEARCH,
+    registry.WEB_FETCH,
+    registry.WEB_PAID_SEARCH,
 )
 
 
@@ -311,7 +314,7 @@ def _build_design_capability_specs(
         # the execution graph (analyze → brief → review → storyboard →
         # review → graph → validate).
         rails_specs.append(RailSpec(type=registry.DESIGNER_AUTHORING))
-        # Leader execution rail: the designer_run_graph tool (canvas
+        # Leader execution rail: the swarmflow tool (canvas
         # compilation/trigger from the conversation, single-node rerun,
         # cascade rerun) + its prompt section. Graph editing
         # (designer_graph_tools) and execution stay two tools on two rails.
@@ -344,7 +347,7 @@ def _build_design_capability_specs(
         # provider, which resolves the session's graph binding. No send_file:
         # node outputs reach the frontend through the canvas node contract
         # (DESIGNER_RUN_UPDATED / graph output_refs), not chat file delivery.
-        tool_names = (*tool_names, registry.DESIGNER_GRAPH_TOOLS)
+        tool_names = (*tool_names, *_DESIGN_LEADER_TOOL_NAMES, registry.DESIGNER_GRAPH_TOOLS)
     tool_specs: list[BuiltinToolSpec] = [
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
         for name in tool_names

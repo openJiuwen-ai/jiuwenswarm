@@ -383,6 +383,24 @@ export function ExternalCliAgentsSection({
   const scheduledDetectPathsRef = useRef<Partial<Record<ExternalCliAgentKind, string>>>({});
   // Most-recently-used path per agent, feeding the path dropdown options.
   const [pathHistories, setPathHistories] = useState<PathHistoryMap>(() => loadPathHistories());
+  // PATH discovery is independent of the executable currently selected.
+  const [pathCandidates, setPathCandidates] = useState<Record<string, string>>({});
+  const visibleAgentsSignature = JSON.stringify(visibleAgentKinds);
+  useEffect(() => {
+    if (!onDetect) return;
+    let cancelled = false;
+    const agents = JSON.parse(visibleAgentsSignature) as string[];
+    for (const agent of agents) {
+      if (!EXTERNAL_CLI_AGENT_KINDS.includes(agent)) continue;
+      void onDetect(agent, '', false).then((result) => {
+        if (cancelled) return;
+        setPathCandidates((prev) => ({ ...prev, [agent]: result.path || '' }));
+      }).catch(() => {
+        // Keep the last known PATH candidate when discovery is unavailable.
+      });
+    }
+    return () => { cancelled = true; };
+  }, [onDetect, visibleAgentsSignature]);
 
   // Inline success toast (top-center), mirroring the models settings'
   // connection-test toast; auto-dismisses after 3 seconds.
@@ -623,9 +641,28 @@ export function ExternalCliAgentsSection({
     [onCommitAgent, setAgentError],
   );
 
-  // One-click install/repair: commits the built-in choice with force so the
-  // backend re-runs its dependency repair even when nothing else changed
-  // (e.g. the managed CLI binary was deleted manually).
+  // Preserve explicit choices and prefer PATH when no executable was selected.
+  const resolveEnabledChoice = useCallback(
+    async (
+      cliAgent: ExternalCliAgentKind,
+      useBuiltin: boolean,
+      cliPath: string,
+    ): Promise<ExternalCliAgentChoice> => {
+      if (useBuiltin || cliPath.trim()) {
+        return { enabled: true, useBuiltin, cliPath: useBuiltin ? '' : cliPath.trim() };
+      }
+      const probe = EXTERNAL_CLI_AGENT_KINDS.includes(cliAgent)
+        ? await onDetect?.(cliAgent, '', false)
+        : undefined;
+      if (probe?.path && isInstalledStatus(probe)) {
+        return { enabled: true, useBuiltin: false, cliPath: probe.path };
+      }
+      return { enabled: true, useBuiltin: true, cliPath: '' };
+    },
+    [onDetect],
+  );
+
+  // Force dependency repair even when the executable choice is unchanged.
   // Installs started by the user in this session. The initial status poll can
   // return a historical 'succeeded' for a past install, which must not toast.
   const userInitiatedInstallRef = useRef<Set<ExternalCliAgentKind>>(new Set());
@@ -636,7 +673,12 @@ export function ExternalCliAgentsSection({
   const installNow = useCallback(
     async (cliAgent: ExternalCliAgentKind) => {
       try {
-        await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '', force: true });
+        const choice = await resolveEnabledChoice(
+          cliAgent,
+          draftValues[externalCliKey(cliAgent, 'use_builtin')] === 'true',
+          draftValues[externalCliKey(cliAgent, 'cli_path')] || '',
+        );
+        await commit(cliAgent, { ...choice, force: true });
         userInitiatedInstallRef.current.add(cliAgent);
         postInstallDetectRanRef.current[cliAgent] = false;
         // The commit only queues the install. When it finishes instantly (deps
@@ -651,7 +693,7 @@ export function ExternalCliAgentsSection({
         setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
       }
     },
-    [commit, onInstallStatusChange, onInstallStatusGet, setAgentError],
+    [commit, draftValues, onInstallStatusChange, onInstallStatusGet, resolveEnabledChoice, setAgentError],
   );
 
   /**
@@ -663,9 +705,15 @@ export function ExternalCliAgentsSection({
     async (cliAgent: ExternalCliAgentKind, requestedPath: string): Promise<boolean> => {
       if (onDetect) {
         try {
-          const probe = await onDetect(cliAgent, requestedPath, false);
-          if (probe.status !== 'ok' && probe.status !== 'warning') {
-            setAgentError(cliAgent, detectFailureMessage(probe, requestedPath, cliAgent, t));
+          // Use `detect` (not raw `onDetect`) so the card's result object is
+          // refreshed alongside the validation probe — otherwise enabling
+          // after a page reload leaves the card showing "not installed" until
+          // the next auto-detect tick.
+          const probe = await detect(cliAgent, requestedPath, false);
+          if (!probe || (probe.status !== 'ok' && probe.status !== 'warning')) {
+            if (probe) {
+              setAgentError(cliAgent, detectFailureMessage(probe, requestedPath, cliAgent, t));
+            }
             return false;
           }
         } catch (error) {
@@ -682,7 +730,7 @@ export function ExternalCliAgentsSection({
       showHint(t('config.externalCli.savedHint'));
       return true;
     },
-    [commit, onDetect, setAgentError, showHint, t],
+    [commit, detect, onDetect, setAgentError, showHint, t],
   );
 
   /**
@@ -690,9 +738,8 @@ export function ExternalCliAgentsSection({
    * the agent: no validation, no wipe, no uninstall. Enabling restores the
    * agent's previous choice: built-in CLI delegates to the install flow; a
    * custom path is re-probed first (validateAndCommitPath) so a broken path
-   * never gets persisted. With no path configured (e.g. right after a reload
-   * of a disabled agent) the built-in CLI is used as fallback so the switch
-   * can always re-enable the agent.
+   * never gets persisted. With no path configured, probe PATH before falling
+   * back to the built-in CLI.
    */
   const toggleAgentEnabled = useCallback(
     async (
@@ -710,8 +757,13 @@ export function ExternalCliAgentsSection({
           return;
         }
         if (useBuiltin || !requestedPath.trim()) {
-          await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '' });
+          const choice = await resolveEnabledChoice(cliAgent, useBuiltin, requestedPath);
+          await commit(cliAgent, choice);
           showHint(t('config.externalCli.savedHint'));
+          // Refresh the detect result synchronously so the card never flashes
+          // "not installed" after enabling (e.g. right after a page reload,
+          // before the auto-detect timer has fired).
+          void detect(cliAgent, '', true);
           return;
         }
         await validateAndCommitPath(cliAgent, requestedPath);
@@ -721,7 +773,7 @@ export function ExternalCliAgentsSection({
         setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
       }
     },
-    [commit, setAgentError, showHint, t, validateAndCommitPath],
+    [commit, detect, resolveEnabledChoice, setAgentError, showHint, t, validateAndCommitPath],
   );
 
   const startEdit = useCallback(
@@ -792,9 +844,16 @@ export function ExternalCliAgentsSection({
   useEffect(() => {
     const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean][];
     for (const [cliAgent, cliPath] of currentPaths) {
-      if (observedCliPathsRef.current[cliAgent] === cliPath) continue;
+      const previous = observedCliPathsRef.current[cliAgent];
+      if (previous === cliPath) continue;
       observedCliPathsRef.current[cliAgent] = cliPath;
-      clearDetectResult(cliAgent);
+      // Only clear when a previously observed non-empty path actually
+      // changed — transitioning from empty (draft values still loading on
+      // remount) to a real path is a reload, not a user edit, and clearing
+      // would wipe the App-layer detect results and flash "not installed".
+      if (previous) {
+        clearDetectResult(cliAgent);
+      }
     }
   }, [cliPathsSignature, clearDetectResult]);
 
@@ -986,7 +1045,7 @@ export function ExternalCliAgentsSection({
               ) : undefined,
             });
           };
-          for (const path of [cliPath, detectedPath]) pushPathOption(path, false);
+          for (const path of [cliPath, pathCandidates[cliAgent] || '', detectedPath]) pushPathOption(path, false);
           for (const path of pathHistories[cliAgent] ?? []) pushPathOption(path, true);
         }
         const detectingNow = detecting[cliAgent];
@@ -1058,6 +1117,15 @@ export function ExternalCliAgentsSection({
           >
             <Loader2 className="settings-spinner h-3.5 w-3.5" />
             {t('config.externalCli.detecting')}
+          </span>
+        ) : !enabled ? (
+          <span
+            className="inline-flex items-center gap-1 text-xs text-danger"
+            data-testid="settings-panel-external-cli-agent-status"
+            data-variant={cliAgent}
+          >
+            <CliStatusDisc ringClassName="text-danger" filled />
+            {t('config.externalCli.disabled')}
           </span>
         ) : installed ? (
           <span
@@ -1257,7 +1325,7 @@ export function ExternalCliAgentsSection({
                   <div className="flex flex-shrink-0 items-center gap-2">
                     <Switch
                       checked={enabled}
-                      disabled={disabled || committing[cliAgent] || !installed || agentInstalling || editing[cliAgent]}
+                      disabled={disabled || committing[cliAgent] || agentInstalling || editing[cliAgent]}
                       onChange={(next) => void toggleAgentEnabled(cliAgent, next, useBuiltin, cliPath)}
                       aria-label={t('config.externalCli.toggleEnable', { agent: label })}
                       data-testid="settings-panel-external-cli-agent-enable-switch"
@@ -1389,11 +1457,13 @@ export function ExternalCliAgentsSection({
                     onStatusChange={onInstallStatusChange}
                     inline
                   />
-                ) : !installed && (!result || !detectingNow) ? (
+                ) : !installed && enabled && (!result || !detectingNow) ? (
                   // One-click install entry: shown initially (no result yet)
                   // and whenever a finished detect reports the agent missing.
                   // While a detect is in flight with a result on screen the
                   // banner hides, so a manual re-detect never flashes it.
+                  // Disabled agents never prompt: the user already turned them
+                  // off, so "install now" would be noise after a page reload.
                   <div
                     className="flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5"
                     data-testid="settings-panel-external-cli-agent-install-hint"

@@ -420,6 +420,44 @@ def test_sanitize_log_text_stays_linear_on_long_identifier_runs():
     assert elapsed < 2.0, f"masking 400k chars took {elapsed:.2f}s"
 
 
+def test_oversized_log_records_bound_sanitizer_work(monkeypatch):
+    import logging
+
+    def unexpected(_text):
+        raise AssertionError("oversized messages must not enter regex/JSON masking")
+
+    monkeypatch.setattr(utils, "_sanitize_log_text", unexpected)
+    record = logging.LogRecord(
+        "third-party", logging.INFO, __file__, 0,
+        "payload=%s api_key=secret", ("x" * 1_000_000,), None,
+    )
+    assert utils.SensitiveDataFilter().filter(record)
+    assert len(record.getMessage()) < 100
+    assert "log payload omitted" in record.getMessage()
+    assert "secret" not in record.getMessage()
+
+
+def test_email_sanitizer_stays_linear_on_punctuation_runs():
+    raw = "a+" * 200_000 + " user+tag@example.com api_key=test-only-secret"
+    began = time.perf_counter()
+    masked = utils._sanitize_log_text(raw)
+    assert time.perf_counter() - began < 2
+    assert masked.startswith("a+" * 200_000)
+    assert "user+tag@example.com" not in masked
+    assert "test-only-secret" not in masked
+
+
+def test_oversized_structured_log_keeps_valid_json():
+    import json
+
+    raw = json.dumps({"payload": "x" * 100_000, "api_key": "test-only-secret"})
+    masked = utils._sanitize_record_text(raw)
+    parsed = json.loads(masked)
+    assert parsed["log_payload_omitted"] is True
+    assert parsed["original_characters"] == len(raw)
+    assert "test-only-secret" not in masked
+
+
 class TestUserWorkspace:
     """Test user workspace functions."""
 

@@ -75,41 +75,13 @@ def infer_work_mode_from_targets(job_item: dict[str, Any]) -> str:
     return DEFAULT_WEB_WORK_MODE
 
 
-_cron_project_lister: Any = None
+def resolve_cron_job_work_mode(item: dict[str, Any]) -> str:
+    """A3g：work_mode 迁移仅按 targets 通道启发式推断。
 
-
-def set_cron_project_lister(list_projects: Any) -> None:
-    """Gateway 注入自己的项目表读取函数，避免 runtime 引用 gateway。"""
-    global _cron_project_lister
-    _cron_project_lister = list_projects
-
-
-def build_cron_project_lookup() -> dict[str, str]:
-    """构建 project_id → work_mode 映射,供 cron job 惰性迁移推断 work_mode。"""
-    try:
-        if _cron_project_lister is None:
-            # gateway 进程恒由 gateway/cron/store.py 注入 project lister；
-            # 缺失即装配异常，显式降级为空映射（work_mode 退到 targets 启发式）
-            logger.warning(
-                "[cron-mutations] project lister not injected; "
-                "work_mode lookup degraded to empty"
-            )
-            return {}
-        return {
-            p.project_id: p.work_mode
-            for p in _cron_project_lister(include_hidden=True, cache_bust=True)
-            if p.project_id
-        }
-    except Exception:
-        return {}
-
-
-def resolve_cron_job_work_mode(
-    item: dict[str, Any], id_to_work_mode: dict[str, str]
-) -> str:
-    pid = str(item.get("project_id") or "").strip()
-    if pid and pid in id_to_work_mode:
-        return id_to_work_mode[pid]
+    原先经 project lister 查项目表推断精确 work_mode 的路径已随 gateway
+    本地 project_store 反查删除（项目表的权威在目标 AgentServer；迁移是
+    一次性动作且结果落盘持久，存量部署早已完成迁移）。
+    """
     return infer_work_mode_from_targets(item)
 
 
@@ -122,12 +94,11 @@ def migrate_work_mode_on_items(jobs_raw: list[Any]) -> tuple[list[Any], bool]:
             break
     if not needs_migration:
         return jobs_raw, False
-    id_to_work_mode = build_cron_project_lookup()
     changed = False
     for item in jobs_raw:
         if not isinstance(item, dict) or not job_dict_needs_work_mode(item):
             continue
-        item["work_mode"] = resolve_cron_job_work_mode(item, id_to_work_mode)
+        item["work_mode"] = resolve_cron_job_work_mode(item)
         changed = True
     return jobs_raw, changed
 

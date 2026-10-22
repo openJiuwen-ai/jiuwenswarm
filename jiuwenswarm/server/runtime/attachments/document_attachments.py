@@ -35,17 +35,9 @@ _MAX_DOCUMENT_BYTES: int = 100 * 1024 * 1024
 _MAX_DOCUMENT_COUNT: int = 8
 
 
-def _strip_data_uri_prefix(raw_base64: str) -> str:
-    """剥离 ``data:...;base64,`` 前缀。
-
-    某些前端上传库（react-dropzone 配合 FileReader.readAsDataURL）会把文件
-    编码成 ``data:application/pdf;base64,JVBERi0xLjQK...`` 形式。``base64.b64decode``
-    在 ``validate=True`` 下会因前缀中的 ``:`` ``/`` ``;`` ``,`` 等非字母表字符
-    抛 ``binascii.Error`` 被上层 ``suppress`` 吞掉，导致合法文件被当作无效丢弃。
-    """
-    if raw_base64.startswith("data:"):
-        return raw_base64.split(",", 1)[-1]
-    return raw_base64
+from jiuwenswarm.common.attachment_safety import (  # noqa: F401,E402
+    strip_data_uri_prefix as _strip_data_uri_prefix,
+)
 
 # Executable / script / package types rejected by document upload.
 from jiuwenswarm.common.attachment_safety import (  # noqa: F401
