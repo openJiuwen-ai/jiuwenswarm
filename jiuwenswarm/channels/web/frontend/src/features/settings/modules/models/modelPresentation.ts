@@ -1,8 +1,7 @@
+import type { TFunction } from 'i18next';
 import type { ModelEntry } from '../../../../types';
 import { displayModelProtocol } from './modelAdapters';
 import { getVendorLabel } from './ModelProviderSelect';
-
-type Translate = (key: string, values?: Record<string, unknown>) => string;
 
 /** Primary label shown in pickers and cards. */
 export function getModelDisplayName(model: ModelEntry): string {
@@ -13,7 +12,7 @@ export function getModelDisplayName(model: ModelEntry): string {
  * Secondary identity line: provider · protocol · model id
  * e.g. "自定义 · OpenAI · GLM-5.2"
  */
-export function formatModelMetadata(model: ModelEntry, t: Translate): string {
+export function formatModelMetadata(model: ModelEntry, t: TFunction): string {
   const protocolLabel = t(`settingsPanel.models.protocols.${displayModelProtocol(model)}`);
   if (model.model_provider === 'OpenAIAccount') {
     return [t('settingsPanel.models.openaiAccount'), protocolLabel, model.model_name].join(' · ');
