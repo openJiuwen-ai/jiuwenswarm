@@ -174,6 +174,9 @@ class ReqMethod(Enum):
     DESIGNER_RUN_PAUSE = "designer.run.pause"
     DESIGNER_RUN_CANCEL = "designer.run.cancel"
 
+    # WebUI 扩展：上行事件统一入口，事件名在 params.event。
+    WEBUI_DISPATCH = "webui.dispatch"
+
     PROACTIVE_TICK = "proactive.tick"  # Trigger proactive recommendation tick (from Cron)
     PROACTIVE_FEEDBACK = "proactive.feedback"  # User feedback on proactive recommendation (like/dislike)
     COMMAND_GOAL = "command.goal"

@@ -51,6 +51,7 @@ import { ProactiveRecommendationCard } from './ProactiveRecommendationCard';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
+import { WebUIMessageSlotHost } from '../../features/webui/WebUISlotHost';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
@@ -1053,6 +1054,13 @@ export const MessageItem = memo(function MessageItem({
                 {tooltip}
               </div>
             )}
+
+            {!isUser && message.outputOrder?.requestId ? (
+              <WebUIMessageSlotHost
+                slotId="message.assistant.meta"
+                instanceKey={message.outputOrder.requestId}
+              />
+            ) : null}
           </div>
         )}
       </div>

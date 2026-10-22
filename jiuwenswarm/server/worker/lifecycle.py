@@ -250,6 +250,12 @@ class WorkerRuntime:
             await trajectory_gateway_hint_bridge.unbind()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Worker] trajectory hint bridge unbind failed: %s", exc)
+        try:
+            from jiuwenswarm.extensions_v2.assembly import shutdown_extensions
+
+            await shutdown_extensions()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Worker] extension v2 shutdown failed: %s", exc)
         stop = getattr(self.server, "stop", None)
         if callable(stop):
             await stop()
@@ -390,6 +396,11 @@ async def _start_worker_runtime(
     log_startup_stage("runtime_constructed")
     if on_constructed is not None:
         await on_constructed(server)
+    # Extensions V2 在装配屏障内完成事件、包管理与 WebUI 的初始化。
+    from jiuwenswarm.extensions_v2.assembly import install_extensions
+
+    await install_extensions(server)
+    log_startup_stage("extensions_v2_installed")
     set_hooks = getattr(server, "set_runtime_lifecycle_hooks", None)
     if callable(set_hooks):
         set_hooks(
