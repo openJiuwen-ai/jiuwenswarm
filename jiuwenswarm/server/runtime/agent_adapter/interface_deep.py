@@ -3873,6 +3873,33 @@ class JiuWenSwarmDeepAdapter:
                     sid, remove_lock=False, remove_runtime_state=False,
                 )
                 existing = None
+            _tool_retrieval_flip_pending = (
+                existing is not None
+                and not is_external_harness
+                and not busy
+                and callable(
+                    getattr(
+                        existing,
+                        "_tool_retrieval_enable_flip_pending",
+                        None,
+                    )
+                )
+                and existing._tool_retrieval_enable_flip_pending()  # pylint: disable=protected-access
+            )
+            if _tool_retrieval_flip_pending:
+                # tool_search 渐进式披露在会话建实例时冻结了关闭态画像，而优化开关
+                # 此后已被打开：configure() 热更新无法接管已初始化的引擎自带
+                # ProgressiveToolRail（回调与元工具保持注册，两套披露并存），只能像
+                # 上方 MoA 切换一样重建会话 adapter——重建路径会重读 config 并从磁盘
+                # 恢复会话上下文。
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] rebuilding session adapter for tool "
+                    "retrieval enable: session_id=%s",
+                    sid,
+                )
+                await existing.cleanup()
+                self._drop_session_adapter_cache_entry(sid, remove_lock=False)
+                existing = None
             if existing is not None:
                 first_mcp_reconcile = requested_mcp_scan_names is not None and not bool(
                     getattr(
@@ -6773,6 +6800,25 @@ class JiuWenSwarmDeepAdapter:
         return self._tool_retrieval_session_enabled and is_tool_retrieval_enabled(
             config_base
         )
+
+    def _tool_retrieval_enable_flip_pending(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return True when the optimize switch turned on after this session froze.
+
+        The tool-retrieval session profile is frozen at instance build. A
+        configure()-based reload cannot take over an already-initialized
+        bundled ProgressiveToolRail (its callbacks and meta tools stay
+        registered), so hot-enable is impossible; the session-acquire path
+        rebuilds the adapter instead. Frozen-on sessions keep running (the
+        live ``is_tool_retrieval_enabled`` AND already disables them hot).
+        """
+
+        frozen = self._tool_retrieval_session_enabled
+        if frozen is None or frozen:
+            return False
+        return is_tool_retrieval_enabled(config_base or get_config())
 
     def _sync_tool_retrieval_tools_for_runtime(
         self,
