@@ -223,11 +223,24 @@ export function ModelDialog({
     connectionChanged.current = true;
     invalidateConnectionState();
     fetchedModelLists.current.clear();
-    const next = applyVendorSelection(form.getValues(), selection, catalog);
+    const current = form.getValues();
+    let next = applyVendorSelection(current, selection, catalog);
+    const previousModelName = current.model_name.trim();
+    const previousSync = aliasSyncedFromModelName.current.trim();
+    // Vendor switch clears model_name; keep display-name auto-follow by clearing a
+    // previously synced alias, otherwise the old name blocks sync after the next select.
+    if (!next.model_name.trim()) {
+      const alias = current.alias.trim();
+      if (!alias || alias === previousModelName || alias === previousSync) {
+        next = { ...next, alias: '' };
+      }
+      aliasSyncedFromModelName.current = '';
+    } else {
+      aliasSyncedFromModelName.current = next.model_name;
+    }
     const nextPreset = findVendorPreset(catalog, selection);
     const nextOptions: string[] = [];
     applyModelDraft(next);
-    aliasSyncedFromModelName.current = next.model_name;
     form.clearValidate(['api_key', 'model_name', 'alias']);
     setModelOptions(nextOptions);
     setFetchStatus(describePresetStatus(nextPreset, next.api_key, nextOptions));
