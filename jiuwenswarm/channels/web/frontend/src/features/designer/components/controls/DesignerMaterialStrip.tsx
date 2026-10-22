@@ -2,7 +2,10 @@ import { Headphones, Image as ImageIcon, Sheet, Video, X } from 'lucide-react';
 import { useCallback, useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { designerAssetPreviewUrl } from '../../designerAssetUrl';
-import { preferredDesignerPreviewRef } from '../../designerMaterials';
+import {
+  designerImagePreviewUrl,
+  resolveDesignerNodePreviewRef,
+} from '../../designerMaterials';
 import { useDesignerAssetLibraryStore } from '../../designerAssetLibraryStore';
 import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
@@ -88,10 +91,9 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
       const allowTextLike =
         nodeType === DESIGNER_NODE_TYPE_VIDEO && isTextLikeNodeType(sourceType);
       if (!isMediaNodeType(sourceType) && !allowTextLike) continue;
-      const previewRef = preferredDesignerPreviewRef(
-        nodeStates[source.id]?.output_ref,
-        nodeStates[source.id]?.candidate_output_ref,
-      );
+      // Uploaded predecessors are never executed, so their output lives on the
+      // graph node (or its upload config) rather than in the run store.
+      const previewRef = resolveDesignerNodePreviewRef(source, nodeStates[source.id]);
       items.push({
         kind: 'linked',
         key: `linked:${edge.id}`,
@@ -99,7 +101,7 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
         sourceNodeId: source.id,
         label: source.label || source.id,
         mediaType: sourceType,
-        previewUrl: designerAssetPreviewUrl(previewRef?.uri),
+        previewUrl: designerImagePreviewUrl(previewRef, sourceType),
       });
     }
     return items;
@@ -109,14 +111,21 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
     const assetById = new Map(libraryAssets.map((asset) => [asset.id, asset]));
     const uploaded: UploadMaterial[] = uploads.map((slot) => {
       const asset = slot.asset_id ? assetById.get(slot.asset_id) : undefined;
+      const mimeType = slot.mime_type ?? asset?.mime_type;
+      // Only images can back an <img>; video and audio keep their type icon.
+      const imagePreview = String(mimeType ?? '')
+        .toLowerCase()
+        .startsWith('image/')
+        ? asset?.objectUrl || designerAssetPreviewUrl(slot.uri) || undefined
+        : undefined;
       return {
         kind: 'upload',
         key: `upload:${slot.id}`,
         materialId: slot.id,
         assetId: slot.asset_id,
         label: slot.filename,
-        mimeType: slot.mime_type ?? asset?.mime_type,
-        previewUrl: asset?.objectUrl || designerAssetPreviewUrl(slot.uri) || undefined,
+        mimeType,
+        previewUrl: imagePreview,
       };
     });
     return [...linked, ...uploaded];
@@ -156,11 +165,7 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
             {item.label}
           </span>
           <div className="designer-node-toolbar__material-tile">
-            {item.previewUrl &&
-            (item.kind === 'upload'
-              ? Boolean(item.mimeType?.startsWith('image/'))
-              : item.mediaType !== DESIGNER_NODE_TYPE_TABLE &&
-                item.mediaType !== DESIGNER_NODE_TYPE_TEXT) ? (
+            {item.previewUrl ? (
               <img
                 className="designer-node-toolbar__material-thumb"
                 src={item.previewUrl}
