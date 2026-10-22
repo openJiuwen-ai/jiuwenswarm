@@ -173,7 +173,7 @@ flowchart LR
 | 接收通道配置 | 绑定查询键 `platform + app_id`；解析结果为 `namespace_id="local"` 和由配置 `persistent_agent_id` 映射出的运行时 `agent_id` | `app_id` 来自当前 FeishuChannel；@ 不参与绑定查询；配置项需唯一、启用且绑定目标有效 |
 | 平台消息 ID | `source_ref="feishu:message:<message_id>"`；`source.message_id` | 重投不变；不含 `app_id`，使同一事件跨 Bot 的身份一致 |
 | 会话类型与 `chat_id` | 群：`GroupChatRepository.resolve` 后 `ConversationRef.group(group_chat_id)`；私聊：`ConversationRef.im_direct("feishu", chat_id)` | 群与私聊各自隔离；不同 Agent 在同一群有不同 Session |
-| 发送者 | 群：`GroupMessage.sender_id`、`sender_name`、`sender_kind`；私聊：`DirectMessageSource` | Feishu 用户映射为 `human`；其他 Agent Bot 映射为 `agent`；事件未提供显示名时以真实 sender ID 作非授权用途的名称标签；未知类型不得臆造身份 |
+| 发送者 | 群：`GroupMessage.sender_id`、`sender_name`、`sender_kind`；私聊：`DirectMessageSource` | Feishu 用户映射为 `human`；其他 Agent Bot 映射为 `agent`；人类缺少显示名时，用该群内各 Bot 的成员列表按 open_id 取飞书名，查询失败仍保留 sender ID。页面只把当前员工自己的 Agent 消息标为本人，其他 Agent 使用对应员工名；未知类型不得臆造身份 |
 | 正文 | `RequestInput.text` 与群来源 `GroupMessage.text` | 保留消息正文；附件消息无正文时仅顶层 Request 使用 `[附件消息]` 满足非空文本契约，来源正文仍为 `None`；不把调试 / 传输字段拼入正文 |
 | @ 列表 | 共享归档保留 Feishu 原始 `open_id`；Request 的 `GroupMessage.mention_ids` 在当前接收 Bot 被 @ 时追加绑定的内部 `agent_id` | Bot 是否被 @ 由当前应用的 `bot_open_id` 与原始 @ 列表精确匹配；只改本次 Request 副本，不改公共群归档；PA-07 以内部 `agent_id` 确定进入 respond |
 | 回复关系 | `GroupMessage.reply_to`；顶层 `reply_target` | 两者分别保留：前者表示来源消息回复关系，后者用于结果回到哪个平台会话；需与 JM-09 使用同一语义 |

@@ -142,3 +142,80 @@ def test_trace_uses_this_colleagues_group_session(tmp_path):
 def test_trace_rows_skip_events_without_text():
     rows = trace_rows([("整理进展", ())])
     assert rows[0]["role"] == "user" and rows[0]["content"] == "整理进展"
+
+
+def test_the_same_display_name_is_listed_once_per_platform(tmp_path):
+    records, groups, archive, _sessions = _records(tmp_path)
+    older = groups.resolve(NS, "feishu", "oc_old", now=NOW)
+    newer = groups.resolve(NS, "feishu", "oc_new", now=NOW)
+    dingtalk = groups.resolve(NS, "dingtalk", "cid_product", now=NOW)
+    for group in (older, newer, dingtalk):
+        groups.set_name(NS, group.group_chat_id, "产品群")
+        groups.observe_access(
+            NS, AGENT, group.group_chat_id, "app-a", observed_at=NOW, source_ref=f"binding:{group.group_chat_id}",
+        )
+    archive.append(NS, older.group_chat_id, _message(older.group_chat_id, 1), source_ref="feishu:message:old")
+    archive.append(NS, newer.group_chat_id, _message(newer.group_chat_id, 2), source_ref="feishu:message:new")
+
+    listed = {(item["platform"], item["id"]) for item in records.list_channels(NS, AGENT)}
+    assert listed == {("feishu", newer.group_chat_id), ("dingtalk", dingtalk.group_chat_id)}
+
+
+def test_each_speaker_keeps_a_distinct_name(tmp_path):
+    groups = GroupChatRepository(tmp_path / "agents.sqlite3")
+    archive = ConversationArchive(tmp_path / "group_messages", groups)
+    sessions = ExecutionRepository(tmp_path / "agents.sqlite3")
+    looked_up: list[str] = []
+
+    def human_name(open_id: str) -> str | None:
+        looked_up.append(open_id)
+        return "张三" if open_id == "ou_zhang" else None
+
+    records = ChannelRecords(
+        groups, archive, sessions, clock=lambda: NOW,
+        agent_names={AGENT: "小九", OTHER: "小八"},
+        app_agents={"cli_self": AGENT, "cli_other": OTHER},
+        human_name=human_name,
+    )
+    group = groups.resolve(NS, "feishu", "oc_product", now=NOW)
+    groups.observe_access(NS, AGENT, group.group_chat_id, "app-a", observed_at=NOW, source_ref="binding:a")
+    speakers = (
+        dict(sender_id="cli_self", sender_name=AGENT, sender_kind="agent"),
+        dict(sender_id="cli_other", sender_name=OTHER, sender_kind="agent"),
+        dict(sender_id=OTHER, sender_name="小八", sender_kind="agent"),
+        dict(sender_id="ou_zhang", sender_name="ou_zhang", sender_kind="human"),
+        dict(sender_id="ou_li", sender_name="李四", sender_kind="human"),
+    )
+    for number, speaker in enumerate(speakers, start=1):
+        archive.append(
+            NS, group.group_chat_id, _message(group.group_chat_id, number, **speaker),
+            source_ref=f"feishu:message:m{number}",
+        )
+
+    page = records.messages(NS, AGENT, group.group_chat_id)
+    shown = [(item["sender"], item["own"]) for item in page["messages"]]
+    assert shown == [("小九", True), ("小八", False), ("小八", False), ("张三", False), ("李四", False)]
+    assert looked_up == ["ou_zhang"]
+
+
+def test_a_feishu_member_list_names_the_human(tmp_path):
+    groups = GroupChatRepository(tmp_path / "agents.sqlite3")
+    archive = ConversationArchive(tmp_path / "group_messages", groups)
+    sessions = ExecutionRepository(tmp_path / "agents.sqlite3")
+
+    def member_names(chat_id: str, app_ids: tuple[str, ...]) -> dict[str, str]:
+        assert chat_id == "oc_product" and app_ids == ("app-a",)
+        return {"ou_zhang": "张三"}
+
+    records = ChannelRecords(
+        groups, archive, sessions, clock=lambda: NOW, member_names=member_names,
+    )
+    group = groups.resolve(NS, "feishu", "oc_product", now=NOW)
+    groups.observe_access(NS, AGENT, group.group_chat_id, "app-a", observed_at=NOW, source_ref="binding:a")
+    archive.append(
+        NS, group.group_chat_id,
+        _message(group.group_chat_id, 1, sender_id="ou_zhang", sender_name="ou_zhang"),
+        source_ref="feishu:message:m1",
+    )
+    page = records.messages(NS, AGENT, group.group_chat_id)
+    assert page["messages"][0]["sender"] == "张三" and page["messages"][0]["own"] is False

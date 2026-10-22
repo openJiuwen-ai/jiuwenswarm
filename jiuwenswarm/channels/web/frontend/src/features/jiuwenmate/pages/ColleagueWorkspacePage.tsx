@@ -44,6 +44,23 @@ import { ScheduleDialog } from '../schedules/ScheduleDialog';
 import { scheduleSummary } from '../schedules/state';
 import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
 import type { JiuwenMateChannel, JiuwenMateChannelMessage, JiuwenMateColleague, JiuwenMateTraceRow } from '../types';
+
+const CHANNEL_PLATFORM_ORDER = ['feishu', 'welink', 'dingtalk'];
+
+function channelGroups(channels: readonly JiuwenMateChannel[]): { platform: string; items: JiuwenMateChannel[] }[] {
+  const buckets = new Map<string, JiuwenMateChannel[]>();
+  for (const channel of channels) {
+    const platform = channel.platform || 'other';
+    const items = buckets.get(platform);
+    if (items) items.push(channel);
+    else buckets.set(platform, [channel]);
+  }
+  const ordered = [
+    ...CHANNEL_PLATFORM_ORDER.filter((platform) => buckets.has(platform)),
+    ...[...buckets.keys()].filter((platform) => !CHANNEL_PLATFORM_ORDER.includes(platform)),
+  ];
+  return ordered.map((platform) => ({ platform, items: buckets.get(platform) ?? [] }));
+}
 import { useConversations } from '../useConversations';
 import { newId, usePrivateChat, type JiuwenMateChatApi } from '../usePrivateChat';
 import {
@@ -135,6 +152,12 @@ export function ColleagueWorkspacePage({
   onRenameColleague,
 }: ColleagueWorkspacePageProps) {
   const { t } = useTranslation();
+  const platformLabel = (platform: string) => {
+    if (platform === 'feishu') return t('jiuwenmate.im.feishu');
+    if (platform === 'welink') return t('jiuwenmate.im.welink');
+    if (platform === 'dingtalk') return t('jiuwenmate.im.dingtalk');
+    return platform;
+  };
   const colleague = colleagues.find((item) => item.id === selectedColleagueId) ?? colleagues[0];
   const [state, setState] = useState(() => initialState(colleague, intent));
   const channelId = state.managementChannelId ?? state.selectedChannelId;
@@ -543,23 +566,26 @@ export function ColleagueWorkspacePage({
           {channels.length === 0 ? (
             <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noChannels')}</p>
           ) : (
-            channels.map((channel) => (
-              <div key={channel.id} className="jiuwenmate-records__item jiuwenmate-records__item--channel" aria-current={channel.id === selectedChannel?.id ? 'true' : undefined}>
-                <button
-                  type="button"
-                  onClick={() => setState((current) => selectChannel(current, channel.id))}
-                  data-testid="jiuwenmate-channel-record"
-                  data-variant={channel.id}
-                >
-                  <span className="jiuwenmate-letter-avatar" data-variant={channel.id}>
-                    {channel.name.slice(0, 1)}
-                  </span>
-                  <span>{channel.name}</span>
-                  <em className="jiuwenmate-platform-badge">
-                    {channel.platform === 'feishu' ? t('jiuwenmate.im.feishu') : channel.platform}
-                  </em>
-                </button>
-              </div>
+            channelGroups(channels).map((group) => (
+              <section key={group.platform} className="jiuwenmate-channel-group" data-platform={group.platform}>
+                <h3>{platformLabel(group.platform)}</h3>
+                {group.items.map((channel) => (
+                  <div key={channel.id} className="jiuwenmate-records__item jiuwenmate-records__item--channel" aria-current={channel.id === selectedChannel?.id ? 'true' : undefined}>
+                    <button
+                      type="button"
+                      onClick={() => setState((current) => selectChannel(current, channel.id))}
+                      data-testid="jiuwenmate-channel-record"
+                      data-variant={channel.id}
+                    >
+                      <span className="jiuwenmate-letter-avatar" data-variant={channel.id}>
+                        {channel.name.slice(0, 1)}
+                      </span>
+                      <span>{channel.name}</span>
+                      <em className="jiuwenmate-platform-badge">{platformLabel(channel.platform)}</em>
+                    </button>
+                  </div>
+                ))}
+              </section>
             ))
           )}
         </div>
@@ -707,7 +733,7 @@ export function ColleagueWorkspacePage({
             <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noChannelMessages')}</p>
           ) : null}
           {channelMessages.map((message) => (
-            <article key={message.id} data-testid="jiuwenmate-channel-message" data-variant={message.id}>
+            <article key={message.id} data-testid="jiuwenmate-channel-message" data-variant={message.id} data-own={message.fromColleague ? 'true' : 'false'}>
               <header>
                 {message.fromColleague ? (
                   <ColleagueAvatar colleague={colleague} size="small" />
@@ -883,12 +909,17 @@ export function ColleagueWorkspacePage({
                     <strong className="jiuwenmate-side-panel__count">{t('jiuwenmate.workspace.channelsCount', { count: channels.length })}</strong>
                     {channelNotice ? <p className="jiuwenmate-records__empty">{channelNotice}</p> : null}
                     {!channelNotice && channels.length === 0 ? <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noChannels')}</p> : null}
-                    {channels.filter((channel) => channel.name.toLocaleLowerCase().includes(managementSearch.trim().toLocaleLowerCase())).map((channel) => (
-                      <button key={channel.id} type="button" className="jiuwenmate-side-panel__item" aria-current={channel.id === selectedChannel?.id && (state.managementChannelId === channel.id || state.recordTab === 'channels') ? 'true' : undefined} onClick={() => setState((current) => selectManagementChannel(current, channel.id))}>
-                        <span className="jiuwenmate-letter-avatar" data-variant={channel.id}>{channel.name.slice(0, 1)}</span>
-                        <span>{channel.name}</span>
-                        <em className="jiuwenmate-platform-badge">{channel.platform === 'feishu' ? t('jiuwenmate.im.feishu') : channel.platform}</em>
-                      </button>
+                    {channelGroups(channels.filter((channel) => channel.name.toLocaleLowerCase().includes(managementSearch.trim().toLocaleLowerCase()))).map((group) => (
+                      <section key={group.platform} className="jiuwenmate-channel-group" data-platform={group.platform}>
+                        <h3>{platformLabel(group.platform)}</h3>
+                        {group.items.map((channel) => (
+                          <button key={channel.id} type="button" className="jiuwenmate-side-panel__item" aria-current={channel.id === selectedChannel?.id && (state.managementChannelId === channel.id || state.recordTab === 'channels') ? 'true' : undefined} onClick={() => setState((current) => selectManagementChannel(current, channel.id))}>
+                            <span className="jiuwenmate-letter-avatar" data-variant={channel.id}>{channel.name.slice(0, 1)}</span>
+                            <span>{channel.name}</span>
+                            <em className="jiuwenmate-platform-badge">{platformLabel(channel.platform)}</em>
+                          </button>
+                        ))}
+                      </section>
                     ))}
                   </>
                 ) : (
