@@ -164,6 +164,13 @@ class MethodRouter:
                             # stopped. Preserve the persisted processing flag.
                             if isinstance(snapshot.get("is_processing"), bool):
                                 response.payload["is_processing"] = snapshot["is_processing"]
+                                # ``status`` is the Session-level execution
+                                # state polled by clients; the persisted value
+                                # is a constant "idle" default, so mirror the
+                                # authoritative snapshot here instead.
+                                response.payload["status"] = (
+                                    "processing" if snapshot["is_processing"] else "idle"
+                                )
             elif method in CONTROL_PROJECT_METHODS:
                 _load_project_service()
                 response = await _HANDLE_PROJECT(request)
