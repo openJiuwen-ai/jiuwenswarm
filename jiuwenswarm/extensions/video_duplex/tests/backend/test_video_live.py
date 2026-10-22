@@ -1766,10 +1766,7 @@ async def test_transcribe_audio_uses_dashscope_run_task_for_wss_fallback(monkeyp
         await conn.recv()
         await conn.send(json.dumps({"header": {"event": "task-started"}}))
         audio = b""
-        while True:
-            message = await conn.recv()
-            if not isinstance(message, bytes):
-                break
+        while isinstance(message := await conn.recv(), bytes):
             audio += message
         seen["audio"] = audio
         sentence = {"text": "<think>x</think>你好。", "sentence_end": True}
