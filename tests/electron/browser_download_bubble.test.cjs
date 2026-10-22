@@ -187,6 +187,21 @@ test('raise keeps the visible bubble above browser sideviews created later', () 
   assert.equal(lastChild(), browserView);
 });
 
+test('a failing removeChildView does not skip re-attaching the bubble view', () => {
+  // Regression guard: remove and add are guarded separately, so a throw from
+  // removeChildView (view never attached / already detached) must not leave
+  // the bubble unmounted while show() still reports it visible.
+  const window = createFakeWindow();
+  window.contentView.removeChildView = () => {
+    throw new Error('not a child view');
+  };
+  const { controller, views } = createController({ getWindow: () => window });
+  assert.equal(controller.show(ANCHOR), true);
+  const lastChild = () => window.contentView.children[window.contentView.children.length - 1];
+  assert.equal(lastChild(), views[0]);
+  assert.equal(views[0].visible, true);
+});
+
 test('destroy removes the view and closes its webContents', () => {
   const window = createFakeWindow();
   const { controller, views } = createController({ getWindow: () => window });
