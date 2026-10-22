@@ -169,7 +169,10 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
             # diagnosis, but never activate an inconsistent configuration.
             kv_cfg[KV_CACHE_AFFINITY_ENABLED_KEY] = False
     # send_file 工具默认开关：web/feishu/xiaoyi 顶层缺 send_file_allowed 时兜底 True。
-    channels = config.get("channels", {})
+    channels = config.get("channels")
+    if channels is None:
+        channels = {}
+        config["channels"] = channels
     for _ch in ("web", "feishu", "xiaoyi"):
         _ch_conf = channels.get(_ch)
         if not isinstance(_ch_conf, dict):
@@ -1558,6 +1561,92 @@ def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _normalize_legacy_model_nulls(models: dict[str, Any]) -> bool:
+    """Repair empty YAML nodes without changing configured model identities."""
+    changed = False
+    for source in ("defaults", "agentos", "groups"):
+        entries = models.get(source)
+        if source in models and entries is None:
+            models[source] = []
+            changed = True
+        elif isinstance(entries, list):
+            # Empty YAML list items have no configuration or identity to retain.
+            if source != "groups" and any(entry is None for entry in entries):
+                entries[:] = [entry for entry in entries if entry is not None]
+                changed = True
+            if source != "groups":
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    for key in ("model_client_config", "model_config_obj"):
+                        if key in entry and entry[key] is None:
+                            entry[key] = {}
+                            changed = True
+    return changed
+
+
+def _models_for_write(data: dict[str, Any]) -> dict[str, Any]:
+    """Recover existing model fields under the config lock, backing up invalid data."""
+    if data.get("models") is None:
+        data["models"] = {}
+    models = _require_dict(data["models"], "models")
+    if _recover_existing_model_fields(models):
+        # Preserve the exact original, including comments and invalid values.
+        # A failed backup must abort the write rather than lose user data.
+        import shutil
+
+        backup = CONFIG_YAML_PATH.with_name(f"{CONFIG_YAML_PATH.name}.models-{uuid.uuid4().hex}.bak")
+        shutil.copy2(CONFIG_YAML_PATH, backup)
+        logger.warning("Recovered invalid model fields; original configuration saved to %s", backup)
+    _normalize_legacy_model_nulls(models)
+    return models
+
+
+def _recover_model_fields(entry: dict[str, Any]) -> bool:
+    """Make old model objects editable; return whether non-null data was repaired."""
+    recovered = False
+    for key in ("model_client_config", "model_config_obj", "model_detail"):
+        value = entry.get(key)
+        if key in entry and not isinstance(value, dict):
+            entry[key] = {}
+            recovered = recovered or value is not None
+    client = entry.get("model_client_config")
+    if isinstance(client, dict):
+        for key in ("model_name", "api_base", "api_key", "client_provider"):
+            value = client.get(key)
+            if value is not None and not isinstance(value, str):
+                client[key] = ""
+                recovered = True
+        headers = client.get("custom_headers")
+        if headers is not None and not isinstance(headers, (str, dict)):
+            client["custom_headers"] = {}
+            recovered = True
+    detail = entry.get("model_detail")
+    if isinstance(detail, dict):
+        for key in ("fallback_tag", "model_description"):
+            value = detail.get(key)
+            if value is not None and not isinstance(value, str):
+                detail[key] = ""
+                recovered = True
+    return recovered
+
+
+def _recover_existing_model_fields(models: dict[str, Any]) -> bool:
+    """Recover persisted model entries only, never an incoming model submission."""
+    recovered = False
+    for source in ("defaults", "agentos"):
+        entries = models.get(source)
+        if not isinstance(entries, list):
+            continue
+        if any(entry is not None and not isinstance(entry, dict) for entry in entries):
+            entries[:] = [entry for entry in entries if entry is None or isinstance(entry, dict)]
+            recovered = True
+        for entry in entries:
+            if isinstance(entry, dict):
+                recovered = _recover_model_fields(entry) or recovered
+    return recovered
+
+
 def _decrypt_model_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """解密模型条目中的 api_key 字段，返回深拷贝不改变原始数据。同时推断 is_default。"""
     import copy
@@ -1574,11 +1663,11 @@ def _decrypt_model_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]
             exc_info=True,
         )
 
-    for entry in result:
+    for index, entry in enumerate(result):
         if not isinstance(entry, dict):
             continue
-        # YAML 里 `model_config_obj:` 后只跟注释时解析为 null（键存在，
-        # dict.get 的默认值不生效），统一回填为空 dict，下游 .get 不再崩。
+        if _recover_model_fields(entry):
+            logger.warning("Ignoring invalid field types in model entry %d; edit the model in Settings", index)
         if entry.get("model_config_obj") is None:
             entry["model_config_obj"] = {}
         mcc = entry.get("model_client_config")
@@ -1618,7 +1707,7 @@ def get_agentos_models(config: dict[str, Any] | None = None) -> list[dict[str, A
     """
     if config is None:
         config = get_config()
-    models = config.get("models", {})
+    models = _require_dict(config.get("models") or {}, "models")
     agentos_raw = models.get("agentos")
     agentos_list = agentos_raw if isinstance(agentos_raw, list) else []
     entries: list[dict[str, Any]] = []
@@ -1630,6 +1719,7 @@ def get_agentos_models(config: dict[str, Any] | None = None) -> list[dict[str, A
             # model_name 为空 = 该条未配置，跳过不入缓存
             continue
         agentos_entry = deepcopy(agentos_block)
+        _recover_model_fields(agentos_entry)
         agentos_entry["is_default"] = False
         # _source 注入到 model_config_obj 内部，仅供前端 is_agentos 置灰只读展示
         # （不再参与 context_window 出口判断——所有条目一视同仁）。context_window
@@ -1638,9 +1728,12 @@ def get_agentos_models(config: dict[str, Any] | None = None) -> list[dict[str, A
         # 加为 ModelRequestConfig 正式字段（core_has_context_window_field 自动适配）：
         # core 未加字段时 pop 防发厂商，加字段后停止 pop，context_window 留在
         # ModelRequestConfig 供 core 读取。
-        agentos_mco = agentos_entry.setdefault("model_config_obj", {})
-        if isinstance(agentos_mco, dict):
-            agentos_mco["_source"] = "agentos"
+        agentos_mco = agentos_entry.get("model_config_obj")
+        if agentos_mco is None:
+            agentos_mco = {}
+        agentos_mco = _require_dict(agentos_mco, "models.agentos.model_config_obj")
+        agentos_mco["_source"] = "agentos"
+        agentos_entry["model_config_obj"] = agentos_mco
         entries.append(agentos_entry)
     return entries
 
@@ -1683,10 +1776,9 @@ def migrate_model_business_ids() -> bool:
 
     def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
         nonlocal changed
-        models = data.setdefault("models", {})
-        if not isinstance(models, dict):
-            raise ValueError("models must be an object")
-        changed = _ensure_model_business_ids(models)
+        before = deepcopy(data.setdefault("models", {}))
+        models = _models_for_write(data)
+        changed = _ensure_model_business_ids(models) or before != models
         from jiuwenswarm.common.model_config_validation import raise_if_invalid
         raise_if_invalid(models)
         return data if changed else None
@@ -1698,13 +1790,15 @@ def migrate_model_business_ids() -> bool:
 def load_models_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return an ID-indexed, decrypted snapshot without mutating persisted config."""
     config = deepcopy(config if config is not None else get_config())
-    models = config.get("models") or {}
+    models = _require_dict(config.get("models") or {}, "models")
     defaults = _decrypt_model_entries(models.get("defaults") or [])
     agentos = get_agentos_models(config)
     groups = deepcopy(models.get("groups") or [])
     by_id: dict[str, dict[str, Any]] = {}
     for source, entries in (("defaults", defaults), ("agentos", agentos)):
         for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             entry["model_detail"] = {
                 **(entry.get("model_detail") or {}),
                 "fallback_tag": (entry.get("model_client_config") or {}).get("model_name"),
@@ -1718,6 +1812,7 @@ def load_models_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
 def save_models_candidate(models: dict[str, Any]) -> dict[str, Any]:
     """Validate and atomically replace only the models section."""
     candidate = deepcopy(models)
+    _normalize_legacy_model_nulls(candidate)
     _ensure_model_business_ids(candidate)
     from jiuwenswarm.common.model_config_validation import raise_if_invalid
     raise_if_invalid(candidate)
@@ -1737,7 +1832,14 @@ def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
     normalized and return as-is.  Otherwise promote flat fields into the nested
     structure the rest of the system expects.
     """
-    saved = deepcopy(entry)
+    saved = deepcopy(_require_dict(entry, "model"))
+    for key in ("model_client_config", "model_config_obj", "model_detail"):
+        if saved.get(key) is not None:
+            _require_dict(saved[key], f"model.{key}")
+    for key in ("model_name", "api_base", "api_key", "client_provider", "model_provider"):
+        value = saved.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"model.{key} must be a string")
     if isinstance(saved.get("model_client_config"), dict):
         return saved
     mcc: dict[str, Any] = {}
@@ -1809,7 +1911,7 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
 
     def _mutate(data):
         nonlocal saved
-        candidate = data.setdefault("models", {})
+        candidate = _models_for_write(data)
         _require_editable_model(candidate, saved["model_id"])
         defaults = candidate.setdefault("defaults", [])
         for index, current in enumerate(defaults):
@@ -1876,7 +1978,7 @@ def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
             route.setdefault("route_id", _new_business_id("rte"))
 
     def _mutate(data):
-        candidate = data.setdefault("models", {})
+        candidate = _models_for_write(data)
         groups = candidate.setdefault("groups", [])
         for index, current in enumerate(groups):
             if current.get("model_group_id") == saved["model_group_id"]:
@@ -1903,7 +2005,7 @@ def delete_model_resource(resource_type: str, resource_id: str, *, cron_referenc
 
     def _mutate(data):
         nonlocal deleted
-        candidate = data.setdefault("models", {})
+        candidate = _models_for_write(data)
         if resource_type == "model":
             _require_editable_model(candidate, resource_id)
         entries = candidate.get(key) or []
@@ -1949,7 +2051,7 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
     """
     if config is None:
         config = get_config()
-    models = config.get("models", {})
+    models = _require_dict(config.get("models") or {}, "models")
 
     # 新格式：已有 defaults 列表
     if "defaults" in models and isinstance(models["defaults"], list) and models["defaults"]:
@@ -2039,15 +2141,14 @@ def update_default_models_in_config(
     models_list: list[dict[str, Any]], *, cron_references_checked: bool = False,
 ) -> None:
     def _mutate(data):
-        if "models" not in data:
-            data["models"] = {}
+        models = _models_for_write(data)
         for entry in models_list:
             if isinstance(entry, dict) and isinstance(entry.get("alias"), str):
                 entry["alias"] = DoubleQuotedScalarString(entry["alias"])
-        data["models"]["defaults"] = models_list
-        if "default" in data["models"]:
-            del data["models"]["default"]
-        _validate_model_candidate(data["models"])
+        models["defaults"] = models_list
+        if "default" in models:
+            del models["default"]
+        _validate_model_candidate(models)
         return data
     update_config(_mutate)
 
