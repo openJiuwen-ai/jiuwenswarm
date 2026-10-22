@@ -28,6 +28,7 @@ from jiuwenswarm.server.jiuwenmate.web_adapter import (
     JiuwenMateWebAdapter,
     _coalesce,
 )
+from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
 
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.harness import persistent_agent as core
@@ -535,6 +536,10 @@ async def test_each_conversation_keeps_its_own_history_and_is_listed_latest_firs
     assert first["request"]["conversation_id"] == "conv-a"
     listed = await host.conversations(agent_id)
     assert [item["conversation_id"] for item in listed] == ["conv-b", "conv-a"]
+    assert {item["conversation_id"]: item["last_message"] for item in listed} == {
+        "conv-b": "第二个对话的问题",
+        "conv-a": "第一个对话的问题",
+    }
     a = (await host.history(agent_id, "conv-a")).payload["requests"]
     b = (await host.history(agent_id, "conv-b")).payload["requests"]
     assert [item["text"] for item in a] == ["第一个对话的问题"]
@@ -543,6 +548,33 @@ async def test_each_conversation_keeps_its_own_history_and_is_listed_latest_firs
     session_a = sessions.find_session(WEB_NAMESPACE, agent_id, ConversationRef.web("conv-a"))
     session_b = sessions.find_session(WEB_NAMESPACE, agent_id, ConversationRef.web("conv-b"))
     assert session_a.session_id != session_b.session_id
+
+
+async def test_conversation_pin_state_persists_and_changes_list_order(host):
+    agent_id = await host.colleague()
+    host.core.release("较早的对话", "较新的对话")
+    first = (await host.send(agent_id, "较早的对话", conversation_id="conv-old")).payload["request"]
+    await host.settled(first["request_id"])
+    second = (await host.send(agent_id, "较新的对话", conversation_id="conv-new")).payload["request"]
+    await host.settled(second["request_id"])
+
+    pinned = await host.call(
+        ReqMethod.JIUWENMATE_CONVERSATION_PIN,
+        agent_id=agent_id,
+        conversation_id="conv-old",
+        pinned=True,
+    )
+    assert pinned.ok and pinned.payload["conversation"]["pinned"] is True
+    assert [item["conversation_id"] for item in await host.conversations(agent_id)] == ["conv-old", "conv-new"]
+
+    unpinned = await host.call(
+        ReqMethod.JIUWENMATE_CONVERSATION_PIN,
+        agent_id=agent_id,
+        conversation_id="conv-old",
+        pinned=False,
+    )
+    assert unpinned.ok and unpinned.payload["conversation"]["pinned"] is False
+    assert [item["conversation_id"] for item in await host.conversations(agent_id)] == ["conv-new", "conv-old"]
 
 
 async def test_a_new_conversation_is_listed_only_after_its_first_message(host):
@@ -569,6 +601,7 @@ async def test_the_title_is_the_start_of_the_first_message_and_can_be_renamed(ho
     )
 
     assert [item["title"] for item in titled] == ["请帮我 整理 本周研发进展并输出一份详细"]
+    assert [item["last_message"] for item in titled] == ["继续"]
     assert renamed.ok and renamed.payload["conversation"]["title"] == "周报"
     assert not empty.ok and empty.payload["code"] == "BAD_REQUEST"
     assert [item["title"] for item in await host.conversations(agent_id)] == ["周报"]
@@ -659,3 +692,24 @@ async def test_refused_controls_keep_their_error_code(host, params, code):
 
     assert not response.ok and response.payload["code"] == code
     host.core.release("任务")
+
+
+def test_existing_conversation_database_migrates_pin_state(tmp_path):
+    db_path = tmp_path / "old-conversations.sqlite3"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "CREATE TABLE web_conversations ("
+            "namespace_id TEXT NOT NULL, agent_id TEXT NOT NULL, conversation_id TEXT NOT NULL, "
+            "title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT, "
+            "PRIMARY KEY (namespace_id, agent_id, conversation_id))"
+        )
+        connection.execute(
+            "INSERT INTO web_conversations VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            (WEB_NAMESPACE, "agent-1", "conv-1", "旧对话", NOW.isoformat(), NOW.isoformat()),
+        )
+
+    conversations = WebConversationStore(db_path)
+    listed = conversations.list(WEB_NAMESPACE, "agent-1")
+    assert len(listed) == 1 and listed[0].pinned is False
+    pinned = conversations.set_pinned(WEB_NAMESPACE, "agent-1", "conv-1", True)
+    assert pinned.pinned is True

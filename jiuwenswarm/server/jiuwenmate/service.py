@@ -63,11 +63,13 @@ DEFAULT_COLLEAGUE = ColleagueSettings(
     ),
 )
 
-# The core read_file description still asks for absolute paths, which the guarded tools refuse.
+# Write and edit parameter text is rewritten to these office-relative paths when the tool is registered.
 WORKSPACE_PROMPT = (
     "\n\n## 办公目录\n\n"
     "你可以用 list_files 和 read_file 查看办公目录中的文件，用 write_file 和 edit_file 创建或修改文件。"
-    "路径一律写成相对于办公目录的路径，例如 `.` 或 `资料/周报.md`，不要使用绝对路径。"
+    "路径一律写成相对于办公目录的路径，不要使用绝对路径。"
+    "新建文件默认放在办公目录根下，路径写文件名本身，例如 `test.txt`；"
+    "只有对方指定了子目录时，才使用 `资料/周报.md` 这样的相对路径。"
     "修改已有文件前先读取它；如果提示版本冲突，说明文件已被改动，重新读取后再修改。"
     "`sessions/` 存放各对话的私有草稿，不要读写其中的内容；获准访问的其他位置由各对话共享。"
     "具体可访问范围由本次请求授权决定；遇到拒绝时不要猜测文件内容或声称已经读取。"

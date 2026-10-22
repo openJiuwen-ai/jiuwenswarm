@@ -86,6 +86,7 @@ _RUNTIME_METHODS = frozenset(
         ReqMethod.JIUWENMATE_REQUEST_ABORT.value,
         ReqMethod.JIUWENMATE_CONVERSATION_LIST.value,
         ReqMethod.JIUWENMATE_CONVERSATION_RENAME.value,
+        ReqMethod.JIUWENMATE_CONVERSATION_PIN.value,
         ReqMethod.JIUWENMATE_CONVERSATION_DELETE.value,
         ReqMethod.JIUWENMATE_ACTIVITY_GET.value,
         ReqMethod.JIUWENMATE_KNOWLEDGE_LIST.value,
@@ -414,13 +415,29 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         if method == ReqMethod.JIUWENMATE_CONVERSATION_LIST.value:
             await self._list_legacy_conversation(manager, conversations, agent_id)
             listed = await asyncio.to_thread(conversations.list, WEB_NAMESPACE, agent_id)
-            return {"conversations": [item.to_dict() for item in listed]}
+
+            async def summarize(item):
+                last_message = await manager.latest_conversation_message(
+                    WEB_NAMESPACE, agent_id, ConversationRef.web(item.conversation_id)
+                )
+                return {**item.to_dict(), "last_message": last_message}
+
+            return {"conversations": await asyncio.gather(*(summarize(item) for item in listed))}
         conversation_id = _text_param(params, "conversation_id")
         if method == ReqMethod.JIUWENMATE_CONVERSATION_RENAME.value:
             renamed = await asyncio.to_thread(
                 conversations.rename, WEB_NAMESPACE, agent_id, conversation_id, params.get("title")
             )
             return {"conversation": renamed.to_dict()}
+        if method == ReqMethod.JIUWENMATE_CONVERSATION_PIN.value:
+            pinned = await asyncio.to_thread(
+                conversations.set_pinned,
+                WEB_NAMESPACE,
+                agent_id,
+                conversation_id,
+                params.get("pinned"),
+            )
+            return {"conversation": pinned.to_dict()}
         if method == ReqMethod.JIUWENMATE_CONVERSATION_DELETE.value:
             await asyncio.to_thread(conversations.delete, WEB_NAMESPACE, agent_id, conversation_id, now=_utc_now())
             return {"deleted": True}
@@ -440,7 +457,10 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             listed = await asyncio.to_thread(
                 conversations.touch, WEB_NAMESPACE, agent_id, conversation_id, text=text, now=_utc_now()
             )
-            return {"request": view.to_dict(), "conversation": listed.to_dict()}
+            return {
+                "request": view.to_dict(),
+                "conversation": {**listed.to_dict(), "last_message": text},
+            }
         views = await manager.conversation_requests(WEB_NAMESPACE, agent_id, conversation)
         return {"requests": [view.to_dict() for view in views]}
 

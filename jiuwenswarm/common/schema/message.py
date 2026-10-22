@@ -421,6 +421,7 @@ class ReqMethod(Enum):
     JIUWENMATE_REQUEST_ABORT = "jiuwenmate.request.abort"
     JIUWENMATE_CONVERSATION_LIST = "jiuwenmate.conversation.list"
     JIUWENMATE_CONVERSATION_RENAME = "jiuwenmate.conversation.rename"
+    JIUWENMATE_CONVERSATION_PIN = "jiuwenmate.conversation.pin"
     JIUWENMATE_CONVERSATION_DELETE = "jiuwenmate.conversation.delete"
     JIUWENMATE_ACTIVITY_GET = "jiuwenmate.activity.get"
     JIUWENMATE_KNOWLEDGE_LIST = "jiuwenmate.knowledge.list"

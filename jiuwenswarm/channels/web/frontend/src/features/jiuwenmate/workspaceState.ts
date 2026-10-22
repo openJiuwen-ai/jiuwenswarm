@@ -1,4 +1,25 @@
 import type { JiuwenMateTraceRow } from './types';
+import type { JiuwenMateConversation } from './jiuwenmateApi';
+
+export type JiuwenMateWorkspaceConversation = JiuwenMateConversation & { agentId: string };
+
+export function mergeWorkspaceConversations(
+  allConversations: readonly JiuwenMateWorkspaceConversation[],
+  activeAgentId: string,
+  activeConversations: readonly JiuwenMateConversation[],
+  activeLoaded: boolean,
+): JiuwenMateWorkspaceConversation[] {
+  const activeRecords = activeLoaded
+    ? activeConversations.map((conversation) => ({ ...conversation, agentId: activeAgentId }))
+    : allConversations.filter((conversation) => conversation.agentId === activeAgentId);
+  return [
+    ...allConversations.filter((conversation) => conversation.agentId !== activeAgentId),
+    ...activeRecords,
+  ].sort(
+    (left, right) =>
+      Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) || right.updatedAt.localeCompare(left.updatedAt),
+  );
+}
 
 export type JiuwenMateRecordTab = 'conversations' | 'channels' | 'schedules';
 export type JiuwenMateTraceMetric = 'duration' | 'tokens';
@@ -7,6 +28,7 @@ export type JiuwenMateTraceFilter = 'none' | 'turn' | 'tool';
 export interface JiuwenMateWorkspaceState {
   selectedColleagueId: string;
   selectedChannelId: string | null;
+  managementChannelId: string | null;
   recordTab: JiuwenMateRecordTab;
   recordsCollapsed: boolean;
   traceOpen: boolean;
@@ -23,6 +45,7 @@ export function createWorkspaceState(
   return {
     selectedColleagueId,
     selectedChannelId,
+    managementChannelId: null,
     recordTab: 'conversations',
     recordsCollapsed: false,
     traceOpen: false,
@@ -40,11 +63,19 @@ export function selectColleague(state: JiuwenMateWorkspaceState, selectedColleag
 }
 
 export function selectRecordTab(state: JiuwenMateWorkspaceState, recordTab: JiuwenMateRecordTab): JiuwenMateWorkspaceState {
-  return { ...state, ...RESET_TRACE, recordTab };
+  return { ...state, ...RESET_TRACE, recordTab, managementChannelId: null };
 }
 
 export function selectChannel(state: JiuwenMateWorkspaceState, selectedChannelId: string): JiuwenMateWorkspaceState {
-  return { ...state, ...RESET_TRACE, selectedChannelId };
+  return { ...state, ...RESET_TRACE, selectedChannelId, managementChannelId: null };
+}
+
+export function selectManagementChannel(state: JiuwenMateWorkspaceState, managementChannelId: string): JiuwenMateWorkspaceState {
+  return { ...state, ...RESET_TRACE, managementChannelId };
+}
+
+export function clearManagementChannel(state: JiuwenMateWorkspaceState): JiuwenMateWorkspaceState {
+  return state.managementChannelId ? { ...state, managementChannelId: null } : state;
 }
 
 export function setRecordsCollapsed(state: JiuwenMateWorkspaceState, recordsCollapsed: boolean): JiuwenMateWorkspaceState {

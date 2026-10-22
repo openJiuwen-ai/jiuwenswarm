@@ -65,7 +65,7 @@
       "exit": "切换为个人版"
     },
     "nav": {
-      "messages": "员工",
+      "messages": "聊天",
       "office": "办公室",
       "plaza": "广场",
       "assets": "资产",
@@ -96,6 +96,7 @@
       "noReply": "员工没有回复消息",
       "file": {
         "download": "下载",
+        "preview": "预览",
         "unavailable": "文件暂不可下载"
       },
       "status": {
@@ -350,6 +351,13 @@
       "sessionsCount": "会话（{{count}}）",
       "channelsCount": "频道（{{count}}）",
       "noSessions": "暂无会话",
+      "loadingHistory": "正在加载会话…",
+      "recentConversations": "最近",
+      "management": "管理",
+      "artifacts": "所有产物",
+      "closePanel": "关闭面板",
+      "backToArtifacts": "返回产物列表",
+      "noArtifacts": "暂无产物",
       "noChannels": "暂无频道",
       "noChannelsHint": "配置 IM 渠道后，可在这里查看员工在群聊中的工作记录",
       "noChannelMessages": "这个群还没有可查看的公共记录",
@@ -370,6 +378,10 @@
       "scheduleDelete": "删除",
       "scheduleNext": "下次触发 {{time}}",
       "newSession": "新会话",
+      "pinned": "置顶",
+      "pinConversation": "置顶对话",
+      "unpinConversation": "取消置顶",
+      "deleteConversation": "删除对话",
       "rename": "重命名",
       "viewTrace": "查看轨迹",
       "composerPlaceholder": "需要帮你做些什么？输入“/”快速引用技能及指令",

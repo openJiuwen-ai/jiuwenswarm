@@ -498,15 +498,6 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
     return result.skill?.name?.trim() || candidate.name;
   };
 
-  const listHandlers = {
-    onCreateFromPlaza: startCreation,
-    onCreateCustom: startCustomCreation,
-    onOpenSchedules: () => undefined,
-    onManage: (id: string) => openProfile(id),
-    onToggleDisabled: requestToggleDisabled,
-    onDelete: requestDelete,
-  };
-
   const selectedColleague = state.colleagues.find((item) => item.id === state.selectedColleagueId) ?? null;
   const authorizeColleague = state.colleagues.find((item) => item.id === state.authorizeColleagueId) ?? null;
   const [boundAppId, setBoundAppId] = useState('');
@@ -630,7 +621,7 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
       case 'office-intro':
         return <OfficeIntroPage onCreate={startCreation} />;
       case 'colleague-empty':
-        return <ColleagueEmptyPage onCreate={startCreation} {...listHandlers} />;
+        return <ColleagueEmptyPage onCreate={startCreation} />;
       case 'colleague-create':
         return (
           <ColleagueCreatePage
@@ -766,7 +757,18 @@ export function JiuwenMateApp({ onExit, renderExistingPage, confirmDiscardSettin
             onLoadScheduleHistory={loadScheduleHistory}
             channelApi={api}
             modelCatalog={modelCatalog}
-            {...listHandlers}
+            onRenameColleague={async (agentId, name) => {
+              const settings = await api.readSettings(agentId);
+              await api.updateSettings(agentId, { ...settings, name: name.trim() });
+              await api.publish(agentId);
+              const fresh = await api.getColleague(agentId);
+              setState((current) => ({
+                ...current,
+                colleagues: current.colleagues.map((item) =>
+                  item.id === fresh.id ? { ...fresh, imConfigured: item.imConfigured, disabled: item.disabled } : item,
+                ),
+              }));
+            }}
           />
         ) : null;
       default:

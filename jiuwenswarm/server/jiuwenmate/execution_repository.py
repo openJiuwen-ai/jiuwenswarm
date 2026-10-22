@@ -462,6 +462,14 @@ class ExecutionRepository(SQLiteStore):
             ).fetchall()
         return [self._request(row) for row in rows]
 
+    def latest_session_request(self, namespace_id: str, session_id: str) -> RequestState | None:
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM requests WHERE namespace_id = ? AND session_id = ? ORDER BY seq DESC LIMIT 1",
+                (namespace_id, session_id),
+            ).fetchone()
+        return None if row is None else self._request(row)
+
     def record_events(self, events: Sequence[AgentEvent], *, now: datetime) -> None:
         """Store events of one Execution in one transaction; nothing is kept if any of them is rejected.
 

@@ -65,7 +65,7 @@
       "exit": "Switch to personal edition"
     },
     "nav": {
-      "messages": "Employees",
+      "messages": "Chat",
       "office": "Office",
       "plaza": "Plaza",
       "assets": "Assets",
@@ -96,6 +96,7 @@
       "noReply": "The employee sent no reply",
       "file": {
         "download": "Download",
+        "preview": "Preview",
         "unavailable": "File is not available to download"
       },
       "status": {
@@ -350,6 +351,13 @@
       "sessionsCount": "Conversations ({{count}})",
       "channelsCount": "Channels ({{count}})",
       "noSessions": "No conversations",
+      "loadingHistory": "Loading conversation…",
+      "recentConversations": "Recent",
+      "management": "Management",
+      "artifacts": "All artifacts",
+      "closePanel": "Close panel",
+      "backToArtifacts": "Back to artifacts",
+      "noArtifacts": "No artifacts",
       "noChannels": "No channels",
       "noChannelsHint": "After an IM channel is configured, the employee's group chat records appear here",
       "noChannelMessages": "This group has no public record to show",
@@ -370,6 +378,10 @@
       "scheduleDelete": "Delete",
       "scheduleNext": "Next run {{time}}",
       "newSession": "New conversation",
+      "pinned": "Pinned",
+      "pinConversation": "Pin conversation",
+      "unpinConversation": "Unpin conversation",
+      "deleteConversation": "Delete conversation",
       "rename": "Rename",
       "viewTrace": "View trace",
       "composerPlaceholder": "What can I help with? Type \"/\" to reference skills and commands",

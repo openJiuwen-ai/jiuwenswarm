@@ -1,5 +1,5 @@
 .conversation-sidebar {
-  --conversation-sidebar-width: 240px;
+  --conversation-sidebar-width: 320px;
 
   display: flex;
   width: var(--conversation-sidebar-width);

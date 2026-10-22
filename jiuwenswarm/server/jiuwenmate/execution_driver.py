@@ -35,7 +35,12 @@ from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_in
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from openjiuwen.harness import persistent_agent as core
 from jiuwenswarm.server.jiuwenmate.bash_runtime import bind_bash_runtime, close_bash_runtime
+from jiuwenswarm.server.jiuwenmate.dropped_stream_retry import install_dropped_stream_retry
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
+from jiuwenswarm.server.jiuwenmate.workspace_relative_tools import install_office_relative_write_tools
+
+install_dropped_stream_retry()
+install_office_relative_write_tools()
 
 logger = logging.getLogger(__name__)
 

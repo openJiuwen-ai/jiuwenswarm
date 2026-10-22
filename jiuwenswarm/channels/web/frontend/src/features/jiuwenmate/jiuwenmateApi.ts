@@ -36,6 +36,7 @@ export const JIUWENMATE_METHODS = {
   requestAbort: 'jiuwenmate.request.abort',
   conversationList: 'jiuwenmate.conversation.list',
   conversationRename: 'jiuwenmate.conversation.rename',
+  conversationPin: 'jiuwenmate.conversation.pin',
   conversationDelete: 'jiuwenmate.conversation.delete',
   activityGet: 'jiuwenmate.activity.get',
   scheduleList: 'jiuwenmate.schedule.list',
@@ -110,6 +111,8 @@ export interface JiuwenMateConversation {
   id: string;
   title: string;
   updatedAt: string;
+  lastMessage?: string;
+  pinned?: boolean;
 }
 
 /** A private message and what became of it; replies are only the outputs the colleague's final answer adopted. */
@@ -134,6 +137,8 @@ export interface JiuwenMateChatRequest {
 export interface JiuwenMateSharedFile {
   outputId: string;
   name: string;
+  /** Office-relative path. Later handoffs of this path replace earlier ones in the artifact list. */
+  path: string | null;
   size: number;
   caption: string | null;
   downloadUrl: string | null;
@@ -474,7 +479,14 @@ export function toStreamEvent(value: unknown): JiuwenMateStreamEvent | null {
 
 export function toConversation(value: unknown): JiuwenMateConversation {
   const wire = record(value);
-  return { id: text(wire.conversation_id), title: text(wire.title), updatedAt: text(wire.updated_at) };
+  const lastMessage = text(wire.last_message);
+  return {
+    id: text(wire.conversation_id),
+    title: text(wire.title),
+    updatedAt: text(wire.updated_at),
+    ...(lastMessage ? { lastMessage } : {}),
+    ...(typeof wire.pinned === 'boolean' ? { pinned: wire.pinned } : {}),
+  };
 }
 
 /** Puts a conversation that just received a message at the top of the list, replacing its old entry. */
@@ -953,6 +965,20 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
         await request(JIUWENMATE_METHODS.conversationRename, { agent_id: agentId, conversation_id: conversationId, title }),
       );
       return toConversation(renamed.conversation);
+    },
+    async setConversationPinned(
+      agentId: string,
+      conversationId: string,
+      pinned: boolean,
+    ): Promise<JiuwenMateConversation> {
+      const updated = record(
+        await request(JIUWENMATE_METHODS.conversationPin, {
+          agent_id: agentId,
+          conversation_id: conversationId,
+          pinned,
+        }),
+      );
+      return toConversation(updated.conversation);
     },
     async deleteConversation(agentId: string, conversationId: string): Promise<void> {
       await request(JIUWENMATE_METHODS.conversationDelete, { agent_id: agentId, conversation_id: conversationId });

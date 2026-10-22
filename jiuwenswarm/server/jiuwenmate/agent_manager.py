@@ -461,6 +461,16 @@ class AgentManager:
         states = await asyncio.to_thread(self._sessions.session_requests, namespace_id, session.session_id)
         return [await self._view(state, conversation.key) for state in states]
 
+    async def latest_conversation_message(
+        self, namespace_id: str, agent_id: str, conversation: ConversationRef
+    ) -> str:
+        """Return the latest user message without materializing the full conversation history."""
+        session = await asyncio.to_thread(self._sessions.find_session, namespace_id, agent_id, conversation)
+        if session is None:
+            return ""
+        state = await asyncio.to_thread(self._sessions.latest_session_request, namespace_id, session.session_id)
+        return "" if state is None else state.record.request_input.text
+
     async def request_view(self, namespace_id: str, request_id: str) -> RequestView:
         state = await asyncio.to_thread(self._sessions.get_request, namespace_id, request_id)
         session = await asyncio.to_thread(self._sessions.get_session, namespace_id, state.record.session_id)
@@ -563,14 +573,18 @@ class AgentManager:
         from jiuwenswarm.common.file_download_token import build_file_download_info
 
         name = (output.file_path or "").rsplit("/", 1)[-1] or "file"
-        path = self._files.path(record.namespace_id, output) if output.file_ref and output.file_path else None
+        stored = self._files.path(record.namespace_id, output) if output.file_ref and output.file_path else None
         download_url = None
-        if path is not None and path.is_file():
-            download_url = build_file_download_info(str(path), name, record.session_id)["download_url"]
+        if stored is not None and stored.is_file():
+            download_url = build_file_download_info(str(stored), name, record.session_id)["download_url"]
+        size = output.file_size
+        if stored is not None and stored.is_file():
+            size = stored.stat().st_size
         return {
             "output_id": output.output_id,
             "name": name,
-            "size": output.file_size,
+            "path": output.file_path,
+            "size": size,
             "caption": output.text,
             "share_mode": output.share_mode,
             "download_url": download_url,
