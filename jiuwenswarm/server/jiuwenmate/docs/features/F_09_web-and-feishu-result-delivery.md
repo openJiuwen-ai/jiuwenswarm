@@ -292,6 +292,8 @@ AgentServer 启动后扫描 `pending`、过期 `sending` 与 `unknown`：`pendin
 
 Persistent Agent 工作空间的最终文件源路径遵循 F_14/JM-14：Agent 应先把需要交付的文件复制或移动到共享目录 `output/<文件名>`，再通过现有 `share_file` 以工作空间相对路径引用它。工作空间 `output/` 是 `<data_dir>/workspaces/<namespace_id>/<agent_id>/output/`，Agent 可跨 Session 读取；例如默认数据目录下是 `~/.jiuwenswarm/jiuwenmate/workspaces/local/<agent_id>/output/`。
 
+二维码 PNG 等现有 `_is_image_file` 支持的图片通过既有 `image.create` 接口上传，并发送 `msg_type=image`，直接在聊天内展示；PPT、PDF 等继续上传和发送普通文件。复用 JM-09 现有 `file_key` 回执字段保存平台上传标识：图片保存原始 `image_key`，普通文件保存原始 `file_key`；重试时按 Feishu 图片标识的 `img_` 前缀还原图片消息类型，无需重新读取工作空间文件。升级前已按普通文件上传的 PNG 仍复用其旧文件 key 按文件发送，不把旧文件 key 当图片 key 使用。图片上传失败时返回既有上传失败结果，不自动另发文件；图文说明、稳定 UUID 和未知结果规则保持。此调整仅作用于 `send_persistent_result`，个人版图片、文件发送流程不变，不增加工具、配置或数据库字段。平台消息格式见[飞书图片消息说明](https://open.feishu.cn/document/server-docs/im-v1/message-content-description/create_json)。
+
 本方案最初设计由宿主将文件复制到内部 `outputs/`；该复制设计已由 **2026-10-21 JM-09 实施调整**替代。当前不再创建或读取宿主 `outputs/`：AgentServer 在接收文件候选和终态时核验来源文件的大小与 SHA-256；Web 生成文件视图及 Gateway 投递时，使用 `namespace_id/agent_id/output/<文件名>` 这一逻辑 key，在同一个 Agent 工作空间中重新解析并核验原文件。绝对本机路径不进入 Gateway 消息。Web 下载 URL 指向该原文件，不创建副本；Feishu 上传成功后保留平台 `file_key`，后续重试可直接复用，不要求重新读取源文件。已有 `outputs/` 目录和文件不会被本次代码删除，但新投递流程不再依赖它们。
 
 直接使用共享源文件意味着它不是不可变归档：如果 Agent 后续覆盖或删除同名文件，重新生成 Web 文件视图或执行尚未上传的 Feishu 投递时会因摘要或大小不匹配而失败关闭；已经上传并记录的 Feishu `file_key` 仍可用于后续发送。已签发的 Web 下载 URL 当前携带的是受签名保护的文件路径，不携带内容摘要；如果文件在签发后被覆盖，旧 URL 可能读到新内容。需要保留历史文件时，应由 Agent 以不同文件名保存到 `output/`；Web URL 的下载时内容校验留作后续增强，不恢复 `outputs/` 副本。
@@ -405,6 +407,8 @@ uv run pytest `
 
 2026-10-21 / 工作空间直接投递（替代上方旧验证结论）：`uv run --no-sync pytest --no-cov -q tests/unit_tests/server/jiuwenmate/test_output_files.py`，14 passed。覆盖候选校验、直接解析 Agent `output/`、禁止路径越界、内容变化后拒绝、Web 下载令牌指向原文件、Gateway 直读与 Feishu 上传 key 重试；测试确认不创建第二份 `outputs/`。未覆盖真实 Web 下载请求、真实 Feishu 上传 / 发消息、分机部署和并发覆盖场景。
 
+2026-10-22 / 二维码图片消息：执行 `.venv/Scripts/python.exe -m pytest -q -o addopts='--asyncio-mode=auto --strict-markers --tb=short' -o log_cli=false tests/unit_tests/server/jiuwenmate/test_output_files.py tests/unit_tests/server/jiuwenmate/test_feishu_group_production_wiring.py tests/unit_tests/gateway/test_feishu_streaming_card.py tests/unit_tests/channel/test_feishu_upload.py`，79 passed。新增 4 个场景在原实现下先失败，修复后通过；覆盖私聊 / 群回复中的图片上传与原生图片消息、独立说明卡片、稳定 UUID、发送回执未知后的图片 key 复用、图片上传失败时不另发普通文件。既有普通文件、Gateway 接线、个人版卡片与附件用例通过；平台 SDK 为替身，未发送真实二维码，不代表当前租户的图片权限和客户端显示已验证。
+
 ### 8.3 验证结论
 
 - 已证明范围：JM-04 final + outbox 持久提交、Web 结果查询、JM-08 Feishu 入站路由快照、AgentServer→Gateway→Feishu 文本 / 文件适配和 ACK、从 Agent `output/` 直接解析文件均有自动化覆盖；个人版消息 / 附件定向回归通过。
@@ -445,6 +449,10 @@ uv run pytest `
 | Feishu 群内消息接力 | 在动态群成员范围内把终态文本交接标记转成原生 Bot @，目标通过自己的 JM-08 / PA-07 入站链路继续 | 宿主替身验证已通过；真实 Feishu 群和真实 Agent 联调未执行 |
 
 ## 10. 设计演进与修订
+
+### 2026-10-22 二维码等图片在聊天内展示
+
+用户截图显示授权二维码作为 PNG 文件卡片发送，需要打开文件才能查看。代码核实 JM-09 专用发送入口对所有附件固定使用文件上传与 `msg_type=file`，没有复用已有图片上传能力。已调整为受支持图片使用原生图片消息，并沿用现有上传回执保存、稳定 UUID 和重试流程；不改变普通文档、共享文件路径校验或个人版发送逻辑。定向与个人版兼容性验证 79 项通过，详见 §8.2；真实飞书图片显示待重启服务后验证，旧文件卡片不会被自动改写或重发。
 
 ### 2026-10-20 普通回复去掉自动 @
 

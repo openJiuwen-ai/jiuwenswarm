@@ -1,7 +1,8 @@
-"""Host-owned, private Feishu CLI installation and per-Agent authentication.
+"""Host-owned Feishu CLI installation and per-Agent authentication profile.
 
-Child environments avoid accidental identity sharing, not malicious shell access.
-No personal CLI driver, global environment mutation, or model-supplied credentials.
+Each Agent keeps its own Lark CLI config, including any user login created by
+the bundled CLI flow. Child environments avoid accidental identity sharing,
+not malicious shell access; no credentials are supplied by the model.
 """
 
 from __future__ import annotations
@@ -16,8 +17,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Any
-
 import portalocker
 import psutil
 
@@ -247,8 +246,9 @@ class FeishuCliRuntime:
             return (
                 len(apps) == 1 and apps[0].get("appId") == binding[0]
                 and apps[0].get("appSecret") == {"source": "file", "id": str(secret_file)}
-                and apps[0].get("defaultAs") == "bot" and apps[0].get("strictMode") == "bot"
-                and value.get("strictMode") == "bot" and not apps[0].get("users")
+                and apps[0].get("defaultAs") == "bot"
+                and "strictMode" not in apps[0] and "strictMode" not in value
+                and isinstance(apps[0].get("users"), list)
                 and secret_file.read_text(encoding="utf-8") == binding[1]
             )
         except (OSError, ValueError, TypeError, AttributeError):
@@ -322,9 +322,9 @@ class FeishuCliRuntime:
                 config.mkdir(parents=True, mode=0o700)
                 # config init writes the shared OS keychain by app_id. File SecretRef avoids it.
                 _write_private_text(config / "app-secret", secret)
-                _write_json(config / "config.json", {"currentApp": app_id, "strictMode": "bot", "apps": [{
+                _write_json(config / "config.json", {"currentApp": app_id, "apps": [{
                     "appId": app_id, "appSecret": {"source": "file", "id": str(config / "app-secret")},
-                    "brand": "feishu", "lang": "zh", "defaultAs": "bot", "strictMode": "bot", "users": [],
+                    "brand": "feishu", "lang": "zh", "defaultAs": "bot", "users": [],
                 }]})
                 if self._binding(namespace_id, agent_id) != binding or not self._matches(config, binding):
                     raise ValueError("Feishu binding changed or CLI identity could not be verified")

@@ -18,6 +18,7 @@ from jiuwenswarm.server.jiuwenmate.resource_assembly import (
     PluginSource,
     SkillSource,
     ConnectorSource,
+    apply_feishu_skills,
 )
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
@@ -272,6 +273,24 @@ def test_connector_manuals_stay_out_of_the_employee_skill_list(tmp_path):
     assert len(manuals) == 1
     assert "连接器附带说明" in spec.system_prompt
     assert "lark-doc" not in spec.system_prompt
+
+
+def test_feishu_skill_prompt_uses_shared_agent_user_identity(tmp_path):
+    skill = tmp_path / "installed" / "lark-calendar"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("calendar skill", encoding="utf-8")
+
+    result = apply_feishu_skills(
+        {"system_prompt": "base prompt", "skills": [], "rails": []},
+        tmp_path / "office",
+        (skill.parent,),
+    )
+
+    prompt = result["system_prompt"]
+    assert "显式使用 `--as user`" in prompt
+    assert "供该 Agent 的私聊和群聊共同使用" in prompt
+    assert "群内结果直接回复当前群，群成员均可见" in prompt
+    assert "群聊必须先由提问者私聊确认" not in prompt
 
 
 def test_connectors_keep_separate_credentials_and_do_not_touch_the_process_environment(tmp_path, monkeypatch):

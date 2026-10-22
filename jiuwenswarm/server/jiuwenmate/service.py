@@ -37,7 +37,7 @@ from jiuwenswarm.server.jiuwenmate.bash_runtime import (
     BASH_PROMPT,
     WEB_FETCH_PROMPT,
     PROVIDER as BASH_PROVIDER,
-    ensure_web_fetch,
+    refresh_builtin_tools,
     with_bash_tool,
 )
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
@@ -543,7 +543,7 @@ class PersistentAgentService:
         if not any(tool.get("type") == BASH_PROVIDER for tool in (fields.get("tools") or [])):
             fields = with_bash_tool(fields)
             fields["system_prompt"] += BASH_PROMPT
-        fields = ensure_web_fetch(fields)
+        fields = refresh_builtin_tools(fields)
         if publish_spec(agent_id, current.config_version, fields).fingerprint == current.fingerprint:
             return self._version_view(namespace_id, agent_id, current.config_version)
         snapshot = publish_spec(agent_id, self._repository.next_version(namespace_id, agent_id), fields,

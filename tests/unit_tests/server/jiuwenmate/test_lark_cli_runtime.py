@@ -114,6 +114,25 @@ async def test_private_secret_reference_never_initializes_system_keychain(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_agent_profile_allows_persistent_user_login_without_losing_cli_readiness(tmp_path, setup_cli):
+    acquire, run, _ = setup_cli
+    runtime = runtime_class()(tmp_path, config_loader=lambda: config(), package_loader=acquire, runner=run)
+    assert (await runtime.prepare("local", "agent-a"))["status"] == "ready"
+
+    profile = tmp_path / "runtime/local/agent-a/lark-cli/config"
+    config_path = profile / "config.json"
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    data["apps"][0]["users"] = [{"userOpenId": "ou_agent_owner", "userName": "Agent owner"}]
+    config_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert runtime.status("local", "agent-a")["status"] == "ready"
+    assert runtime.skill_directories("local", "agent-a")
+    assert "strictMode" not in data
+    assert "strictMode" not in data["apps"][0]
+    assert data["apps"][0]["defaultAs"] == "bot"
+
+
+@pytest.mark.asyncio
 async def test_rebinding_rotates_profile(tmp_path, setup_cli):
     acquire, run, calls = setup_cli
     current = config()

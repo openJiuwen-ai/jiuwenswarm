@@ -1944,10 +1944,11 @@ class FeishuChannel(BaseChannel):
         """Send one JM-09 result and return Feishu's message receipt.
 
         A text result is one Markdown card, without copying inbound mentions.
-        A file result sends its caption, when it has one, then uploads the file
-        unless ``file_key`` names an earlier upload,
-        then sends the file message; its receipt carries the ``file_key`` so a retry
-        does not upload again. The personal-agent ``send`` path below keeps its
+        An attachment sends its caption, when it has one, then uploads unless
+        ``file_key`` names an earlier upload. Images are sent inline; other
+        attachments remain file messages. The receipt's ``file_key`` holds either
+        the image key (``img_*``) or file key, so retries need no new upload or
+        local file. The personal-agent ``send`` path below keeps its
         existing routing and retry semantics; persistent results use this path.
         """
         if not self._api_client:
@@ -1978,14 +1979,19 @@ class FeishuChannel(BaseChannel):
             )
             if caption.get("outcome") != "delivered":
                 return caption
+        is_image = bool(file_key and file_key.startswith("img_"))
         if not file_key:
             if not file_path:
                 return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
-            file_key = await asyncio.get_running_loop().run_in_executor(None, self._upload_file, file_path)
+            is_image = self._is_image_file(file_path)
+            upload = self._upload_image if is_image else self._upload_file
+            file_key = await asyncio.get_running_loop().run_in_executor(None, upload, file_path)
             if not file_key:
                 return {"outcome": "failed", "error_code": "FEISHU_UPLOAD_FAILED"}
+        msg_type = "image" if is_image else "file"
+        resource_field = "image_key" if is_image else "file_key"
         result = await self._send_persistent_message(
-            chat_id, "file", json.dumps({"file_key": file_key}, ensure_ascii=False), source_message_id, idempotency_key
+            chat_id, msg_type, json.dumps({resource_field: file_key}, ensure_ascii=False), source_message_id, idempotency_key
         )
         return {**result, "file_key": file_key}
 
@@ -3492,7 +3498,6 @@ class FeishuChannel(BaseChannel):
                 self._user_question_card.pop(request_id)
             # 获取用户和上下文信息
             operator_id = event.operator.open_id if event.operator and event.operator.open_id else ""
-
             logger.info(
                 "[FeishuChannel] 收到卡片回调: token=%s, action=%s, user=%s",
                 token,

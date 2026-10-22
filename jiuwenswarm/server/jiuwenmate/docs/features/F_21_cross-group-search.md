@@ -8,7 +8,7 @@
 | 范围 | JM-21 的跨群搜索子范围；后续其他 IM 平台扩展不在本方案实施范围 |
 | 方案成熟度 | 已确认；跨群宿主子范围已实现，整项 JM-21 仍进行中 |
 | 计划条目 | [JM-21](../designs/jiuwenmate-development-plan.md#jm-21-跨群搜索与-im-扩展扩展) |
-| 负责人 | 常钰聪（沿用开发计划；本次建档不调整责任人） |
+| 负责人 | 闫祉君 |
 | 状态 | 进行中（跨群宿主子范围已实现并通过本地测试；真实飞书及 JM-21 其他 IM 扩展未验收） |
 | 设计依据 | agent-core 仓 `openjiuwen/harness/persistent_agent/docs/features/F_23_group-chat-history-retrieval.md` 与 `docs/specs/S_09_group-chat-and-knowledge.md`；[本仓服务端架构](../designs/jiuwenmate-architecture.md)的宿主授权职责 |
 | 关联 feature | 前置：[F_11 群公共记录](F_11_group-public-records.md)；接入：[F_08](F_08_feishu-group-fanout.md)、[F_07](F_07_execution-driver.md)、[F_10_02](F_10_02_web-private-chat.md) |
@@ -114,7 +114,7 @@ flowchart TD
 | I-04 | `execution_driver.py` | 在 direct_message／group_message Persistent 执行中注入搜索能力，scheduled 和个人版接线不变 |
 | I-05 | `test_cross_group_search.py`、`test_session_scheduler.py`、`test_cross_group_search_real_core.py` | 授权隔离、分页失效、模式接线和真实 core PA-23 工具调用 |
 
-公共 DTO 沿用 agent-core PA-23，本仓通过 S_01 维护宿主授权和查询契约，不复制 core Schema。JM-21 仍属扩展，不纳入本期 S2a，也不调整原负责人。整体架构文件未修改。
+公共 DTO 沿用 agent-core PA-23，本仓通过 S_01 维护宿主授权和查询契约，不复制 core Schema。JM-21 仍属扩展，不纳入本期 S2a。整体架构文件未修改。
 
 ## 7. 兼容与迁移
 
@@ -158,3 +158,5 @@ flowchart TD
 2026-10-17：以本地已实现的 PA-23 替代“GroupChatPort 不支持跨群”的旧前提；按用户确认的每群独立目录、无 local 路径层落地设计。群访问关系仍归宿主，权限主体仍为 Agent，不要求提问者是目标群成员。补充确认：用户可按群聊名称指定目标，复用 JM-11 当前群名并仅在实时核验后的授权集合内解析到 group_id；精确匹配，重名安全消歧，不建额外映射表。该段记录的是建档时的方案状态。
 
 2026-10-17 实施更新：完成 JM-21 跨群宿主子范围，包括授权群枚举与精确名称解析、固定群归档快照及全局分页、15 分钟哈希游标、逐页授权和正文修订复核，以及 direct_message／group_message 执行链注入。验证见 §8；真实飞书与其他 IM 平台仍未验证／未设计，原负责人和扩展分类未变。
+
+2026-10-21：JM-21 负责人调整为闫祉君；跨群搜索范围、扩展分类和验收口径不变。
