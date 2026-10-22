@@ -3626,12 +3626,11 @@ def migrate_config_from_template(
         if not user_data:
             return False
 
-        # This diagnostic label does not control whether template migration runs.
-        from jiuwenswarm.common.version import get_runtime_version_label
+        # Write the program version with any changes to the merged config.
+        from jiuwenswarm.common._build_config import VERSION
 
-        version_label = get_runtime_version_label()
-        if user_data.get("config_version") != version_label:
-            user_data["config_version"] = version_label
+        if user_data.get("config_version") != VERSION:
+            user_data["config_version"] = VERSION
             changes += 1
 
         # Only write if there are actual changes

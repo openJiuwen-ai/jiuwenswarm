@@ -1365,10 +1365,9 @@ react:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
+        from jiuwenswarm.common._build_config import VERSION
         from jiuwenswarm.common.utils import ensure_config_migrated_from_template
 
-        monkeypatch.setattr("jiuwenswarm.common.version.get_runtime_version", lambda: "0.2.8b1")
-        monkeypatch.setattr("jiuwenswarm.common.version.get_runtime_build_date", lambda: "2026-10-26")
         template_path = tmp_path / "template.yaml"
         template_path.write_text(
             "react:\n  answer_chunk_size: 500\n  new_option: true\n",
@@ -1378,7 +1377,7 @@ react:
         config_path = workspace_dir / "config" / "config.yaml"
         config_path.parent.mkdir(parents=True)
         config_path.write_text(
-            'config_version: "0.2.8b1 · 2026-10-26"\nreact:\n  answer_chunk_size: 300\n',
+            f"config_version: {VERSION}\nreact:\n  answer_chunk_size: 300\n",
             encoding="utf-8",
         )
         monkeypatch.setattr(
@@ -1389,7 +1388,7 @@ react:
         assert ensure_config_migrated_from_template(workspace_dir) is True
         migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert migrated["react"] == {"answer_chunk_size": 300, "new_option": True}
-        assert migrated["config_version"] == "0.2.8b1 · 2026-10-26"
+        assert migrated["config_version"] == VERSION
         assert ensure_config_migrated_from_template(workspace_dir) is False
 
     @staticmethod
