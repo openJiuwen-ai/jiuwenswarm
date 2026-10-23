@@ -64,15 +64,17 @@ async def queue(monkeypatch, tmp_path):
 
     async def execute(_client, **kwargs):
         name = kwargs["question"]
-        executed.append(name)
-        execution_users.append(kwargs.get("user_id"))
-        await gates[name].wait()
         with manager.service.store.transaction() as db:
             task = next(
                 t
                 for t in manager.service.store.rows(db)
                 if t["request_id"] == kwargs["request_id"]
             )
+        # This fake represents a running Core invocation, after admission.
+        manager.service.store.update(task["id"], lambda t: t.update(execution_bound=True))
+        executed.append(name)
+        execution_users.append(kwargs.get("user_id"))
+        await gates[name].wait()
         manager.service.store.update(
             task["id"], lambda t: t.update(execution_settled=True)
         )
@@ -154,6 +156,38 @@ async def test_reorder_and_cancel_waiter(queue):
     assert q.record(b)["status"] == "cancelled"
 
 
+async def test_voice_reorder_with_quoted_version_pushes_queue_and_changes_execution_order(queue):
+    q = queue
+    await q.start("A")
+    await until(lambda: q.executed == ["A"])
+    desktop, weather = await q.start("B"), await q.start("C")
+    before = q.manager.snapshot("alice", "scope")
+    q.events.clear()
+    await q.manager.handle_qwen_tool(None, "voice-move", {
+        "name": "jiuwen_task_reorder", "call_id": "move-weather",
+        "search_session_id": "scope", "question": "把天气任务调到最前面",
+        "arguments": json.dumps({"job_id": weather, "action": "next",
+                                 "queue_version": str(before["queue_version"])}),
+    }, None)
+    assert q.responses[-1]["ok"]
+    receipt = q.responses[-1]["payload"]["tool_result"]
+    assert receipt["operation"]["state"] == "reordered"
+    assert receipt["queue_version"] > before["queue_version"]
+    await until(lambda: any(name == "video.search.queue" for name, _ in q.events))
+    pushed = next(payload for name, payload in q.events if name == "video.search.queue")
+    positions = {job["job_id"]: job["queue_position"] for job in pushed["jobs"]}
+    assert positions[weather] == 1 and positions[desktop] == 2
+    assert q.executed == ["A"], "Reordering must not interrupt current work"
+    q.gates["A"].set()
+    await until(lambda: len(q.executed) == 2)
+    assert q.executed == ["A", "C"]
+    q.gates["C"].set()
+    await until(lambda: len(q.executed) == 3)
+    assert q.executed == ["A", "C", "B"]
+    q.gates["B"].set()
+    await until(lambda: q.record(desktop)["status"] == "completed")
+
+
 async def test_preempt_stays_pending_until_exact_stop_ack(queue):
     q = queue
     a = await q.start("A")
@@ -185,7 +219,7 @@ async def test_rejected_stop_blocks_dispatch_without_claiming_stopped(queue, act
     q.reject[0] = True
     assert (await q.control(c if action == "preempt" else a, action))["ok"]  # durable admission only
     await until(lambda: q.record(a)["error"])
-    assert q.record(a)["status"] == "cancelling" and q.executed == ["A"]
+    assert q.record(a)["status"] == "unknown" and q.executed == ["A"]
     assert q.record(b)["status"] == q.record(c)["status"] == "queued"
     # The accepted reorder persists, but cannot release an unsettled execution.
     assert (q.record(c)["position"] < q.record(b)["position"]) == (action == "preempt")

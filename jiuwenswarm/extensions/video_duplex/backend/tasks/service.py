@@ -12,6 +12,7 @@ import portalocker
 
 from .store import TaskStore
 from .errors import QueueVersionConflict, TaskRevisionConflict
+from .diagnostics import task_state, trace_task
 
 TERMINAL = {"completed", "failed", "cancelled"}
 logger = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ class TaskService:
         for task in sorted(tasks, key=lambda t: t["position"]):
             if (
                 sum(
-                    t["status"] != "unknown"
+                    (t["status"] != "unknown" or t["id"] in self.workers)
                     and not (
                         t["status"] == "waiting_user" and t.get("execution_settled")
                     )
@@ -425,6 +426,7 @@ class TaskService:
         return receipt
 
     async def _cancel(self, task):
+        trace_task("task_cancel_worker_started", task=task_state(task))
         try:
             await self.executor.cancel(task)
             current = self.store.read(task["id"])
@@ -434,6 +436,7 @@ class TaskService:
                     observer.cancel()
                     await asyncio.gather(observer, return_exceptions=True)
             # Let the output observer publish any completion that won the race.
+            trace_task("task_cancel_output_waiting", task=task_state(self.store.read(task["id"])))
             while not self.store.read(task["id"])["output_closed"]:
                 await asyncio.sleep(0.05)
             # The adapter must await the exact execution's local settlement.
@@ -452,12 +455,16 @@ class TaskService:
             )
         except Exception as exc:
             message = str(exc) or type(exc).__name__
+            trace_task("task_cancel_worker_failed", task=task_state(self.store.read(task["id"])),
+                       error_type=type(exc).__name__, error=message[:2000])
             task = self.store.update(
                 task["id"],
                 lambda t: (
-                    t.update(error=message) if t["status"] == "cancelling" else None
+                    t.update(status="unknown", error="Stop could not be confirmed: " + message)
+                    if t["status"] == "cancelling" else None
                 ),
             )
+        trace_task("task_cancel_worker_finished", task=task_state(task))
         await self._notify(task)
         self.kick()
 
@@ -587,13 +594,29 @@ class TaskService:
         return receipt
 
     def queue_version(self, db, owner, session):
-        # An opaque, JS-safe token of scheduling facts, not streamed progress.
+        # Persist an ordered revision of scheduling facts, not streamed progress.
         facts = [
             [t["id"], t["status"], t["position"], t["request"].get("independent", False),
              t["request"].get("depends_on", []), t["request"].get("resources", [])]
             for t in self.store.rows(db, owner, session)
         ]
-        return int(hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()[:12], 16)
+        fingerprint = hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
+        previous = db.execute(
+            "SELECT fingerprint, version FROM task_queue_versions WHERE owner=? AND session=?",
+            (owner, session),
+        ).fetchone()
+        if previous is not None and previous["fingerprint"] == fingerprint:
+            return previous["version"]
+        # All legacy hash tokens were below 2**48. Start above them so delayed
+        # pre-upgrade snapshots cannot overwrite the new monotonic revisions.
+        version = previous["version"] + 1 if previous is not None else 2**48
+        db.execute(
+            "INSERT INTO task_queue_versions VALUES (?,?,?,?) "
+            "ON CONFLICT(owner,session) DO UPDATE SET "
+            "fingerprint=excluded.fingerprint, version=excluded.version",
+            (owner, session, fingerprint, version),
+        )
+        return version
 
     def snapshot(self, owner, session):
         self.start()
@@ -744,6 +767,7 @@ class TaskService:
 
             await self._notify(self.store.update(task_id, append))
 
+        trace_task("task_execution_dispatching", task=task_state(task))
         reasoning = None
         last_flush = time.monotonic()
 

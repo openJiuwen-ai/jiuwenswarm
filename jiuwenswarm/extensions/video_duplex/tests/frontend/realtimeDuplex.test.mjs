@@ -6,6 +6,22 @@ import { runInNewContext } from 'node:vm';
 import { RealtimeDuplexSession } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/realtimeDuplex.mjs';
 import { SpeechGate } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/speechGate.mjs';
 
+test('tool output diagnostics distinguish sending from provider acknowledgement without result text', () => {
+  const { session, diagnostics, sent } = createSession();
+  session.enqueueOperationResult('call-trace', { state: 'accepted', result: 'private result body' });
+  const transmitted = diagnostics.find(event => event.event === 'qwen_tool_output_sent');
+  assert.equal(transmitted.call_id, 'call-trace');
+  assert.equal(sent[0].item.call_id, 'call-trace');
+  assert.equal(diagnostics.some(event => event.event === 'qwen_tool_output_acknowledged'), false);
+  session.handleEvent({ type: 'conversation.item.created', item: {
+    type: 'function_call_output', call_id: 'call-trace', id: 'item-trace',
+  } });
+  const acknowledged = diagnostics.find(event => event.event === 'qwen_tool_output_acknowledged');
+  assert.equal(acknowledged.call_id, 'call-trace');
+  assert.equal(acknowledged.item_id, 'item-trace');
+  assert.equal(JSON.stringify(diagnostics).includes('private result body'), false);
+});
+
 test('accepted delegation returns its ID before completion and never sends two outputs for one call', () => {
   const {session,sent}=createSession();
   session.enqueueOperationResult('create-a',{state:'accepted',job_id:'a'});

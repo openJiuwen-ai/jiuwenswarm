@@ -15242,12 +15242,29 @@ class JiuWenSwarmDeepAdapter:
         active_cua_execution = None
         if request.channel_id == "video_tool" and managed_task_request:
             from .managed_subagent_control import active_cua_execution as find_active_cua
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
 
             active_cua_execution = find_active_cua(managed_task_request)
+            trace_task(
+                "agent_cancel_target_resolved", request_id=managed_task_request,
+                cancel_request_id=request.request_id, core_session_id=request.session_id,
+                cua_active=active_cua_execution is not None,
+                cua_execution_done=(active_cua_execution.task.done() if active_cua_execution else None),
+                cua_execution_cancelling=(active_cua_execution.task.cancelling() if active_cua_execution else None),
+                scheduler_task_count=len(getattr(
+                    getattr(getattr(self._instance, "_loop_controller", None), "_task_scheduler", None),
+                    "_running_tasks", {},
+                ) or {}),
+            )
             if active_cua_execution is not None:
+                from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import capture_task_execution
+
+                capture_task_execution(
+                    self._voice_agent_task_rail, request, active_cua_execution.task,
+                )
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] interrupt(%s): active CUA detected; "
-                    "using single cancellation path managed_request=%s session=%s",
+                    "using standard scheduler cancellation managed_request=%s session=%s",
                     intent,
                     managed_task_request,
                     request.session_id,
@@ -15258,7 +15275,9 @@ class JiuWenSwarmDeepAdapter:
         # otherwise block behind that child work and never return an
         # interrupt_result to the TUI.  This does not cancel the registered
         # session stream producer -- cancel_round still owns that lifecycle.
-        if active_cua_execution is None:
+        if active_cua_execution is not None:
+            self._cancel_scheduler_running_tasks(active_cua_execution.task)
+        else:
             self._cancel_scheduler_running_tasks()
         # Collect in-flight tools without cancelling the stream producer task —
         # interaction cancel must keep round ownership in cancel_round().
@@ -15271,6 +15290,9 @@ class JiuWenSwarmDeepAdapter:
                 reason="user_cancel",
             )
             cancel_call_completed = True
+            if request.channel_id == "video_tool" and managed_task_request:
+                trace_task("agent_cancel_round_returned", request_id=managed_task_request,
+                           core_session_id=request.session_id, cancelled=cancelled)
             if request.channel_id == "video_tool":
                 from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import close_task_output
 
@@ -15290,8 +15312,7 @@ class JiuWenSwarmDeepAdapter:
         finally:
             # A scheduler task may be installed while cancel_round is
             # unwinding; repeat the targeted cancellation as a safety net.
-            if active_cua_execution is None:
-                self._cancel_scheduler_running_tasks()
+            self._cancel_scheduler_running_tasks()
         continuation_discarded = True
         if cutover_handoff is not None:
             try:
@@ -15346,7 +15367,7 @@ class JiuWenSwarmDeepAdapter:
             metadata=request.metadata,
         )
 
-    def _cancel_scheduler_running_tasks(self) -> None:
+    def _cancel_scheduler_running_tasks(self, execution_task: asyncio.Task | None = None) -> None:
         """Cancel in-flight asyncio.Tasks in the Controller's TaskScheduler.
 
         Cooperative abort (rail.abort + instance.abort) only stops at checkpoints,
@@ -15355,17 +15376,16 @@ class JiuWenSwarmDeepAdapter:
         """
         try:
             controller = getattr(self._instance, '_loop_controller', None)
-            if controller is None:
-                return
             scheduler = getattr(controller, '_task_scheduler', None)
-            if scheduler is None:
-                return
-            running = getattr(scheduler, '_running_tasks', None)
-            if not running:
-                return
+            running = getattr(scheduler, '_running_tasks', None) or {}
+            executions = {entry[1] for entry in list(running.values()) if entry[1] is not None}
+            # Permission continuations can run task_tool directly, outside the
+            # scheduler map. Use the exact registered execution in that case.
+            if execution_task is not None:
+                executions.add(execution_task)
             cancelled_count = 0
-            for _task_id, (_executor, exec_task) in list(running.items()):
-                if exec_task is not None and not exec_task.done():
+            for exec_task in executions:
+                if exec_task is not asyncio.current_task() and not exec_task.done() and not exec_task.cancelling():
                     exec_task.cancel()
                     cancelled_count += 1
             if cancelled_count > 0:

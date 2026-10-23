@@ -74,7 +74,7 @@ const INPUT_RATE = 16_000;
 const OUTPUT_RATE = 24_000;
 const SEND_INTERVAL_MS = 200;
 const USER_TURN_SILENCE_MS = 1_200;
-const REALTIME_CLIENT_BUILD = 'qwen-silero-recovery-v2';
+const REALTIME_CLIENT_BUILD = 'qwen-task-trace-v1';
 const INITIAL_PLAYBACK_BUFFER_MS = 400;
 
 function readableError(value: unknown): string {
@@ -791,6 +791,11 @@ export class RealtimeDuplexSession {
     const operation = this.pendingOperations.shift();
     if (operation) {
       this.notificationConflicts = 0;
+      this.emitDiagnostic('qwen_tool_output_sent', {
+        call_id: operation.callId, response_id: this.responseId || '',
+        response_active: this.responseActive, user_speech_active: this.userActivityActive,
+        output_chars: JSON.stringify(operation.output).length,
+      });
       this.send(createQwenOmniToolOutputEvent(operation.callId, JSON.stringify(operation.output)));
       this.requestResponse(true);
       return;
@@ -831,6 +836,12 @@ export class RealtimeDuplexSession {
     const response = event.response as Record<string, unknown> | undefined;
     const eventResponseId = String(event.response_id || response?.id || '') || null;
     const outputResponseId = eventResponseId || this.responseId || '';
+    if (type === 'conversation.item.created') {
+      const item = event.item as Record<string, unknown> | undefined;
+      if (item?.type === 'function_call_output') this.emitDiagnostic('qwen_tool_output_acknowledged', {
+        call_id: String(item.call_id || ''), item_id: String(item.id || ''),
+      });
+    }
     // Allow message-item text and audio to stream before response.done.
     // A later tool item cannot retract output already delivered to the user.
     if (type === 'response.output_item.added') {
@@ -880,6 +891,7 @@ export class RealtimeDuplexSession {
           name: functionCall.name,
           call_id: functionCall.callId,
           task: functionCall.task,
+          response_id: eventResponseId || '',
         });
         const args = JSON.parse(functionCall.arguments) as Record<string, unknown>;
         const signature = JSON.stringify([functionCall.name, Object.keys(args).sort().map(key => [key, args[key]])]);

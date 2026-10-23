@@ -169,6 +169,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       {
         event,
         client_time: new Date().toISOString(),
+        search_session_id: searchSessionRef.current,
         ...details,
       },
       { timeoutMs: 5_000 },
@@ -939,6 +940,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             },
             onAssistantText: (text, final, toolJobId, responseId) => {
               const visibleText = text.trim();
+              if (final && visibleText) reportRealtimeEvent('task_trace_assistant_final', {
+                text: visibleText, job_id: toolJobId, response_id: responseId,
+              });
               if (final && toolJobId) {
                 searchJobsRef.current.delete(toolJobId);
                 setSearchStatus('');
@@ -970,6 +974,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             },
             onUserText: (text, final) => {
               if (final) {
+                reportRealtimeEvent('task_trace_user_transcript', { text });
                 handleFinalRealtimeUserText(text);
               } else {
                 const partialTranscript = text.trim();
@@ -1104,7 +1109,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 });
             },
             onDiagnostic: (event) => {
-              void webRequest('video.realtime.telemetry', event, {
+              void webRequest('video.realtime.telemetry', {
+                ...event, search_session_id: searchSessionRef.current,
+              }, {
                 timeoutMs: 5_000,
               }).catch(() => undefined);
             },

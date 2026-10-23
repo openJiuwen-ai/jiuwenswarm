@@ -133,7 +133,7 @@ async def test_unconfirmed_stop_preserves_uncertainty(tasks):
     receipt = await service.cancel("alice", "conversation", task["id"], "stop")
     assert receipt["state"] == "accepted"
     await until(lambda: service.store.read(task["id"])["error"])
-    assert service.store.read(task["id"])["status"] == "cancelling"
+    assert service.store.read(task["id"])["status"] == "unknown"
     waiting = independent(service, "waiting")
     await asyncio.sleep(0.03)
     assert len(executor.calls) == 1
@@ -454,11 +454,11 @@ async def test_cancelled_invocation_captured_as_current_task_settles_inline(
     assert stopped["execution_settled"] and stopped["execution_cancelled"]
 
 
-async def test_cancelled_invocation_ignores_stale_scheduler_handle(tasks, monkeypatch):
+async def test_cancelled_consumer_waits_for_scheduler_cleanup(tasks, monkeypatch):
     from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
 
     service, executor = tasks
-    task = submit(service, "cancel-stale-scheduler")
+    task = submit(service, "cancel-scheduler-cleanup")
     await until(lambda: executor.calls)
     release = asyncio.Event()
     stale = asyncio.create_task(release.wait())
@@ -500,12 +500,64 @@ async def test_cancelled_invocation_ignores_stale_scheduler_handle(tasks, monkey
                 await task_checkpoint(rail, ctx, "before_model")
                 raise asyncio.CancelledError()
 
-        stopped = service.store.read(task["id"])
-        assert stopped["execution_settled"] and stopped["execution_cancelled"]
+        assert not service.store.read(task["id"])["execution_settled"]
         assert not stale.done()
+        release.set()
+        await until(lambda: service.store.read(task["id"])["execution_settled"])
+        assert service.store.read(task["id"])["execution_cancelled"]
     finally:
         release.set()
         await stale
+
+
+async def test_resumed_cua_receipt_tracks_execution_missing_from_scheduler(tasks, monkeypatch):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import capture_task_execution
+
+    service, executor = tasks
+    task = submit(service, "resumed-cua-stop")
+    await until(lambda: executor.calls)
+    root = object()
+    rail = SimpleNamespace(managed_tasks={})
+    harness = SimpleNamespace(
+        _react_agent=root,
+        active_round=SimpleNamespace(task_id="resumed-round"),
+        loop_controller=SimpleNamespace(task_scheduler=SimpleNamespace(_running_tasks={})),
+    )
+    adapter = TaskAdapter(
+        _instance=harness, _voice_agent_task_rail=rail, _is_session_scoped_adapter=True
+    )
+    request = SimpleNamespace(
+        channel_id="video_tool", session_id=task["core_session_id"], request_id=task["request_id"],
+    )
+    install_bridge(monkeypatch, service.store, request)
+    request.params["managed_task_request"] = task["request_id"]
+    release = asyncio.Event()
+    entered_cleanup = asyncio.Event()
+
+    async def child():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            entered_cleanup.set()
+            await release.wait()
+
+    native = asyncio.create_task(child())
+    await asyncio.sleep(0)
+    try:
+        async with bind_task_execution(request, adapter, {}):
+            binding = rail.managed_tasks[request.session_id]
+            binding.capture_execution(in_callback=False)
+            assert binding.settlement_unobserved
+            capture_task_execution(rail, request, native)
+            native.cancel()
+            await entered_cleanup.wait()
+        assert not service.store.read(task["id"])["execution_settled"]
+        release.set()
+        await until(lambda: service.store.read(task["id"])["execution_settled"])
+        assert service.store.read(task["id"])["execution_cancelled"]
+    finally:
+        release.set()
+        await asyncio.gather(native, return_exceptions=True)
 
 
 @pytest.mark.parametrize("swallowed_cancel", [False, True])
@@ -840,7 +892,7 @@ async def test_reorder_version_ignores_progress_but_detects_dispatch(tasks):
     assert service.snapshot("alice", "conversation")[1] == version
     service.reorder("alice", "conversation", third["id"], version)
     changed = service.snapshot("alice", "conversation")[1]
-    assert changed != version
+    assert changed > version
     with pytest.raises(ValueError, match="Queue changed"):
         service.reorder("alice", "conversation", second["id"], version)
     with pytest.raises(ValueError, match="no longer waiting"):
@@ -848,9 +900,29 @@ async def test_reorder_version_ignores_progress_but_detects_dispatch(tasks):
     executor.gates[first["id"]].set()
     await until(lambda: len(executor.calls) == 2)
     assert executor.calls[1]["id"] == third["id"]
-    assert service.snapshot("alice", "conversation")[1] != changed
+    assert service.snapshot("alice", "conversation")[1] > changed
     with pytest.raises(ValueError, match="Queue changed"):
         service.reorder("alice", "conversation", second["id"], changed)
+
+
+async def test_queue_revision_persists_and_increases_when_order_returns_to_previous_state(tasks):
+    service, executor = tasks
+    first = submit(service, "active")
+    await until(lambda: len(executor.calls) == 1)
+    desktop, weather = submit(service, "desktop"), submit(service, "weather")
+    _, initial = service.snapshot("alice", "conversation")
+    assert 2**48 <= initial < 2**53
+    service.reorder("alice", "conversation", weather["id"], initial)
+    _, moved = service.snapshot("alice", "conversation")
+    service.reorder("alice", "conversation", desktop["id"], moved)
+    _, restored = service.snapshot("alice", "conversation")
+    assert initial < moved < restored
+    reopened = TaskStore(service.store.path)
+    with reopened.transaction() as db:
+        assert service.queue_version(db, "alice", "conversation") == restored
+    executor.gates[first["id"]].set()
+    await until(lambda: len(executor.calls) == 2)
+    assert executor.calls[1]["id"] == desktop["id"]
 
 
 async def test_cancel_receipt_does_not_claim_stop_before_ack(tasks):

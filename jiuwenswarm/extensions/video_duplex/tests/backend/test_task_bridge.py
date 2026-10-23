@@ -72,6 +72,124 @@ def routed_task_fixture(tmp_path, monkeypatch):
     endpoint.close()
 
 
+async def test_cancel_ack_waits_for_execution_receipt_and_keeps_target(routed_task):
+    r = routed_task
+    remote = bridge.RemoteTaskEndpoint(r.request)
+    await remote.call("bind")
+    r.store.update(r.task["id"], lambda t: t.update(status="cancelling"))
+    received = asyncio.Event()
+    requests = []
+
+    async def cancel_request(env):
+        requests.append(env)
+        received.set()
+        return SimpleNamespace(ok=True, payload={"success": True})
+
+    executor = task_adapter.AgentTaskExecutor(
+        SimpleNamespace(send_request=cancel_request), r.store, None
+    )
+    pending = asyncio.create_task(executor.cancel(r.task))
+    try:
+        await asyncio.wait_for(received.wait(), 1)
+        assert not pending.done()
+        assert not r.store.read(r.task["id"])["execution_settled"]
+        await remote.call("close")
+        await remote.call("settle", cancelled=True)
+        await asyncio.wait_for(pending, 1)
+        await executor.cancel(r.task)
+        assert len(requests) == 1
+        for env in requests:
+            assert env.method == ReqMethod.CHAT_CANCEL.value
+            assert env.session_id == r.task["core_session_id"]
+            assert env.params["managed_task_request"] == r.task["request_id"]
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+async def test_missing_cancel_receipt_reports_timeout_without_claiming_stop(routed_task, monkeypatch):
+    r = routed_task
+    client = SimpleNamespace(send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={"success": True})
+    ))
+    executor = task_adapter.AgentTaskExecutor(client, r.store, None)
+    monkeypatch.setattr(task_adapter, "STOP_SETTLEMENT_TIMEOUT", 0.02)
+    with pytest.raises(RuntimeError, match="cleanup was not confirmed"):
+        await executor.cancel(r.task)
+    assert not r.store.read(r.task["id"])["execution_settled"]
+    assert not r.store.read(r.task["id"])["execution_cancelled"]
+
+
+@pytest.mark.parametrize("bind_first", [False, True])
+async def test_starting_task_cancel_revokes_admission_without_scheduler_cancel(routed_task, bind_first):
+    r = routed_task
+    remote = bridge.RemoteTaskEndpoint(r.request)
+    r.store.update(r.task["id"], lambda t: t.update(status="cancelling"))
+    client = SimpleNamespace(send_request=AsyncMock())
+    executor = task_adapter.AgentTaskExecutor(client, r.store, None)
+    if bind_first:
+        assert await remote.call("bind") == {"cancelled": True}
+    await executor.cancel(r.task)
+    if not bind_first:
+        assert await remote.call("bind") == {"cancelled": True}
+    current = r.store.read(r.task["id"])
+    assert not current["execution_bound"]
+    assert current["execution_cancelled"] and current["execution_settled"]
+    assert current["output_closed"] and not current["checkpoint_open"]
+    client.send_request.assert_not_called()
+
+    adapter = SimpleNamespace(
+        _is_session_scoped_adapter=True,
+        task_execution_binding=(SimpleNamespace(_react_agent=object()), SimpleNamespace(managed_tasks={})),
+    )
+    with pytest.raises(RuntimeError, match="TASK_CANCELLED_BEFORE_EXECUTION"):
+        async with bind_task_execution(r.request, adapter, {}):
+            pytest.fail("A cancelled admission must never start Core")
+
+
+async def test_bound_task_worker_loss_preserves_unknown_stop_error(routed_task):
+    r = routed_task
+    await bridge.RemoteTaskEndpoint(r.request).call("bind")
+    r.store.update(r.task["id"], lambda t: t.update(status="cancelling"))
+    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(
+        ok=False, payload={"code": "WORKER_CLOSED", "error": "runtime worker closed"},
+    )))
+    executor = task_adapter.AgentTaskExecutor(client, r.store, None)
+    with pytest.raises(RuntimeError, match="WORKER_CLOSED"):
+        await executor.cancel(r.task)
+    current = r.store.read(r.task["id"])
+    assert not current["execution_settled"] and not current["execution_cancelled"]
+
+
+async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_task):
+    r = routed_task
+    r.store.update(r.task["id"], lambda t: t.update(status="queued"))
+    client = SimpleNamespace(send_request=AsyncMock())
+    executor = task_adapter.AgentTaskExecutor(client, r.store, None)
+    started = asyncio.Queue()
+
+    async def run(task, progress):
+        await started.put(task["id"])
+        await asyncio.Event().wait()
+
+    executor.run = run
+    service = TaskService(r.store, executor, concurrency=1)
+    service.started = True
+    try:
+        service.kick()
+        assert await asyncio.wait_for(started.get(), 1) == r.task["id"]
+        waiting = service.submit("alice", "voice", "next", "Next task")
+        await service.cancel("alice", "voice", r.task["id"], "stop-starting")
+        assert await asyncio.wait_for(started.get(), 1) == waiting["id"]
+        stopped = r.store.read(r.task["id"])
+        assert stopped["status"] == "cancelled"
+        assert stopped["execution_settled"] and stopped["output_closed"]
+        assert await bridge.RemoteTaskEndpoint(r.request).call("bind") == {"cancelled": True}
+        client.send_request.assert_not_called()
+    finally:
+        await service.close()
+
+
 async def test_checkpoint_changes_and_settlement_roundtrip_without_shared_data(routed_task):
     r = routed_task
     r.store.update(r.task["id"], lambda t: t.update(changes=[{

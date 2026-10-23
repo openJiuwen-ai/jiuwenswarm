@@ -148,8 +148,18 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
                 if not isinstance(item, list) or not 1 <= len(item) <= 32:
                     raise ValueError("Invalid answers")
             elif key in {"revision", "offset", "queue_version"}:
+                # Some providers quote JSON integers despite the integer schema.
+                # Normalize only canonical decimal queue tokens; never coerce
+                # booleans, fractions, signs, exponents or arbitrary text.
+                if key == "queue_version" and isinstance(item, str) and (
+                    item == "0" or (item.isascii() and item.isdecimal() and not item.startswith("0"))
+                ) and len(item) <= 16:
+                    item = int(item)
+                    arguments[key] = item
                 if type(item) is not int or item < (1 if key == "revision" else 0):
                     raise ValueError(f"Invalid {key}")
+                if key == "queue_version" and item > 2**53 - 1:
+                    raise ValueError("Invalid queue_version: exceeds JavaScript safe integer range")
             elif (
                 not isinstance(item, str)
                 or not item.strip()

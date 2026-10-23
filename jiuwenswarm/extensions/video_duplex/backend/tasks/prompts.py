@@ -81,7 +81,9 @@ def task_query_instructions(total, counts, unfinished, page_size, matched):
         "for capacity, and waiting_user means awaiting an answer. requires_click=true means an approval card "
         "(approval_cards) that only the user can click on screen; ask them to click it and never answer it by "
         "voice or claim it was approved. File lists confirm "
-        "paths, not that file contents were read."
+        "paths, not that file contents were read. This query is read-only: no order, cancellation or requirement "
+        "was changed. If the user requested a change, continue by calling the matching management tool with "
+        "the returned IDs and numeric versions. Do not claim or promise that a query applied the change."
     )
 
 

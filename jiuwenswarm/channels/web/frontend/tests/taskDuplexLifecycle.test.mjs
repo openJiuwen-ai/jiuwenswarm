@@ -247,6 +247,28 @@ test('headless task runtime forwards waiting forms only to their active conversa
   assert.equal(harness.interactions.length, count, 'stopped media must not receive voice questions');
 });
 
+test('queue pushes update waiting positions and delayed snapshots cannot undo a reorder', async () => {
+  const scope = await start();
+  const snapshot = (version, moved) => ({
+    search_session_id: scope, queue_version: version,
+    jobs: ['desktop', 'weather'].map((id, index) => job(scope, {
+      job_id: id, status: 'queued', sequence: moved ? 2 : 1,
+      queue_version: version, queue_position: moved ? 2 - index : index + 1,
+    })),
+  });
+  await event('queue', snapshot(226924028018914, false));
+  await event('queue', snapshot(2 ** 48, false));
+  await event('queue', snapshot(2 ** 48 + 1, true));
+  const positions = () => Object.fromEntries(harness.tasks.sessions['conversation-a']
+    .map(task => [task.id, task.queuePosition]));
+  assert.deepEqual(positions(), { desktop: 2, weather: 1 });
+  await event('queue', snapshot(226924028018914, false));
+  await event('queue', snapshot(2 ** 48, false));
+  assert.deepEqual(positions(), { desktop: 2, weather: 1 });
+  assert.ok(harness.requests.some(request => request.method === 'video.realtime.telemetry'
+    && request.params.reason === 'older_queue_version'));
+});
+
 test('cancelled jobs remain cancelled after late success and persist one cancellation record', async () => {
   const scope = await start();
   await event('started', job(scope));

@@ -2028,6 +2028,29 @@ async def test_realtime_telemetry_routes_sanitized_events(
 
 
 @pytest.mark.asyncio
+async def test_task_trace_telemetry_retains_queue_identity_but_drops_results(monkeypatch) -> None:
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import diagnostics
+
+    channel = _video_channel()
+    captured = []
+    monkeypatch.setattr(diagnostics, "trace_task", lambda event, **fields: captured.append((event, fields)))
+    monkeypatch.setattr(video_live, "_append_realtime_telemetry", lambda event: None)
+    await channel.handlers["video.realtime.telemetry"](
+        object(), "trace-1", {
+            "event": "task_trace_queue_received", "search_session_id": "task-duplex:one",
+            "queue_version": 8, "secret": "api-key",
+            "jobs": [{"job_id": "one", "status": "cancelling", "queue_position": 0,
+                      "result": "private output", "api_key": "secret"}],
+        }, "session",
+    )
+    assert channel.responses[-1][1]["payload"] == {"logged": True}
+    assert captured[0][0] == "task_trace_queue_received"
+    assert captured[0][1]["queue_version"] == 8
+    assert captured[0][1]["jobs"] == [{"job_id": "one", "status": "cancelling", "queue_position": 0}]
+    assert "secret" not in captured[0][1]
+
+
+@pytest.mark.asyncio
 async def test_qwen_vad_recovery_diagnostics_include_processing_latency(monkeypatch) -> None:
     channel = _video_channel()
     captured = []

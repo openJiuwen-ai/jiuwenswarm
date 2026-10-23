@@ -194,3 +194,13 @@ the original result and full cancellation intent. The receipt reports `state=fol
 and `converted_to=modify`, confirming acceptance only. Repeated requests reuse the
 same successor. Unfinished invocations retain normal cancellation; legacy or UI
 requests without a user utterance never create follow-up actions automatically.
+
+CUA cancellation waits for the exact execution to finish cleanup before reporting
+`cancelled`. A delayed invocation cancelled before admission must not start Core.
+If cleanup cannot be confirmed within 90 seconds after the stop response, the task
+becomes `unknown`; this does not confirm that execution stopped.
+Voice queue changes publish the same authoritative snapshot as interface controls.
+Queue versions increase across scheduling changes and restarts, so delayed snapshots
+cannot restore an older order. A query reports state without changing the queue.
+Control diagnostics are saved in `~/.jiuwenswarm/logs/duplex-task-trace.jsonl` to
+correlate requests, cancellation settlement, queue versions and interface updates.

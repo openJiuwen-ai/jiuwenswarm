@@ -38,6 +38,13 @@ const WAIT_REASON_LABELS: Record<string, string> = {
   capacity_order_or_resource: "等待执行名额、队列顺序或资源释放",
 };
 
+function traceTaskUi(event: string, fields: Record<string, unknown>): void {
+  void webRequest("video.realtime.telemetry", {
+    event: `task_trace_${event}`, client_time: new Date().toISOString(),
+    client_build: "task-trace-v1", ...fields,
+  }, { timeoutMs: 5_000 }).catch(() => undefined);
+}
+
 type PersistedTimelineEvent = Record<string, unknown> & {
   kind:
     "user" | "assistant" | "reasoning" | "tool_call" | "tool_result" | "file";
@@ -241,13 +248,21 @@ export function TaskFullDuplexRuntime({
       event: "started" | "progress" | "completed" | "failed" | "cancelled",
       incoming: SearchJobPayload,
     ) => {
+      let rejectionReason = "";
       const job = conversationJobsRef.current.accept({
         ...incoming,
         status:
           incoming.status ||
           (event === "completed" || event === "failed" ? event : "running"),
-      });
-      if (!job) return;
+      }, (reason) => { rejectionReason = reason; });
+      if (!job) {
+        traceTaskUi("progress_ignored", {
+          job_id: incoming.job_id, search_session_id: incoming.search_session_id,
+          status: incoming.status, sequence: incoming.sequence,
+          queue_version: incoming.queue_version, reason: rejectionReason,
+        });
+        return;
+      }
       const { sessionId: targetSessionId, payload } = job;
       const jobId = payload.job_id!;
       const entries = payload.progress_history?.length
@@ -289,6 +304,15 @@ export function TaskFullDuplexRuntime({
         searchSessionId: payload.search_session_id,
         queuePosition: payload.queue_position ?? previousTask?.queuePosition,
         queueVersion: payload.queue_version ?? previousTask?.queueVersion,
+      });
+      const stored = useApplicationTaskStore.getState().sessions[targetSessionId]
+        ?.find((task) => task.id === jobId);
+      traceTaskUi("progress_store_observed", {
+        job_id: jobId, search_session_id: payload.search_session_id,
+        status, sequence: payload.sequence ?? latest?.sequence ?? 0,
+        queue_version: payload.queue_version, queue_position: payload.queue_position,
+        stored_status: stored?.status, stored_sequence: stored?.sequence,
+        stored_queue_version: stored?.queueVersion, stored_queue_position: stored?.queuePosition,
       });
       if (runtimeSessionIdRef.current === targetSessionId)
         panelRef.current?.deliverTaskInteraction(payload);
@@ -433,14 +457,21 @@ export function TaskFullDuplexRuntime({
       queue_version: number;
       jobs: SearchJobPayload[];
     }) => {
+      traceTaskUi("queue_received", snapshot);
       for (const payload of snapshot.jobs) {
         const existing = Object.values(
           useApplicationTaskStore.getState().sessions,
         )
           .flat()
           .find((task) => task.id === payload.job_id);
-        if (existing && (existing.queueVersion ?? -1) > snapshot.queue_version)
+        if (existing && (existing.queueVersion ?? -1) > snapshot.queue_version) {
+          traceTaskUi("queue_ignored", {
+            job_id: payload.job_id, search_session_id: snapshot.search_session_id,
+            queue_version: snapshot.queue_version, stored_queue_version: existing.queueVersion,
+            reason: "older_queue_version",
+          });
           continue;
+        }
         handleCoreAgentProgress("progress", payload);
         const entry = Object.entries(
           useApplicationTaskStore.getState().sessions,
@@ -452,6 +483,14 @@ export function TaskFullDuplexRuntime({
             queueVersion: snapshot.queue_version,
             queuePosition: payload.queue_position,
           });
+        const stored = entry && useApplicationTaskStore.getState().sessions[entry[0]]
+          ?.find((item) => item.id === payload.job_id);
+        traceTaskUi("queue_store_observed", {
+          job_id: payload.job_id, search_session_id: snapshot.search_session_id,
+          queue_version: snapshot.queue_version, queue_position: payload.queue_position,
+          stored_status: stored?.status, stored_sequence: stored?.sequence,
+          stored_queue_version: stored?.queueVersion, stored_queue_position: stored?.queuePosition,
+        });
       }
     },
     [handleCoreAgentProgress],
@@ -466,22 +505,35 @@ export function TaskFullDuplexRuntime({
     const unregister = registerApplicationTaskController(
       "video-duplex",
       async (task, action, beforeId) => {
-        const result = await webRequest<{
-          search_session_id: string;
-          queue_version: number;
-          jobs: SearchJobPayload[];
-        }>(
-          "video.search.control",
-          {
-            job_id: task.id,
-            search_session_id: task.searchSessionId,
-            action,
-            queue_version: task.queueVersion,
-            before_job_id: beforeId,
-          },
-          { timeoutMs: 30_000 },
-        );
-        acceptQueue(result);
+        traceTaskUi("control_sent", {
+          job_id: task.id, action, before_job_id: beforeId,
+          search_session_id: task.searchSessionId, queue_version: task.queueVersion,
+        });
+        try {
+          const result = await webRequest<{
+            search_session_id: string;
+            queue_version: number;
+            jobs: SearchJobPayload[];
+          }>(
+            "video.search.control",
+            {
+              job_id: task.id,
+              search_session_id: task.searchSessionId,
+              action,
+              queue_version: task.queueVersion,
+              before_job_id: beforeId,
+            },
+            { timeoutMs: 30_000 },
+          );
+          traceTaskUi("control_received", { action, job_id: task.id, ...result });
+          acceptQueue(result);
+        } catch (error) {
+          traceTaskUi("control_failed", {
+            job_id: task.id, action, search_session_id: task.searchSessionId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
       },
     );
     return () => {

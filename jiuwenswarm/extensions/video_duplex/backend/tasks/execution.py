@@ -14,6 +14,7 @@ from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
 
 from .checkpoint import TaskCheckpoint
 from .bridge import RemoteTaskEndpoint
+from .diagnostics import trace_task
 
 _settlements = set()
 logger = logging.getLogger(__name__)
@@ -76,14 +77,23 @@ async def bind_task_execution(request, adapter, inputs):
         yield
         return
     endpoint = RemoteTaskEndpoint(request)
+    trace_task("execution_binding_entered", **endpoint.identity)
     previous_output = getattr(adapter, "_interaction_output_handoff", None)
     if previous_output is not None:
-        await previous_output.wait()
+        trace_task("execution_handoff_waiting", **endpoint.identity)
+        try:
+            await previous_output.wait()
+        except BaseException as exc:
+            trace_task("execution_handoff_failed", **endpoint.identity,
+                       error_type=type(exc).__name__, error=str(exc)[:1000])
+            raise
+        trace_task("execution_handoff_finished", **endpoint.identity)
     if (not str(request.session_id or "").startswith("managed-task-")
             and not isinstance(inputs.get("query"), InteractiveInput)
             and getattr(adapter.task_execution_binding[0], "active_round", None) is not None):
         raise RuntimeError("当前会话仍有任务或文字回复在执行，请完成后再发起全双工工具任务。")
     if adapter.task_execution_binding[1] is None:
+        trace_task("execution_rail_installing", **endpoint.identity)
         await adapter.install_voice_task_rail()
     harness, rail = adapter.task_execution_binding
     root = getattr(harness, "_react_agent", None)
@@ -94,7 +104,11 @@ async def bind_task_execution(request, adapter, inputs):
     bindings = rail.managed_tasks
     if request.session_id in bindings:
         raise RuntimeError("Task execution already bound")
-    await endpoint.call("bind")
+    admission = await endpoint.call("bind")
+    if admission.get("cancelled"):
+        trace_task("execution_admission_cancelled", **endpoint.identity)
+        raise RuntimeError("TASK_CANCELLED_BEFORE_EXECUTION")
+    trace_task("execution_bound", **endpoint.identity)
     task = {"id": endpoint.identity["task_id"], "request_id": request.request_id}
     checkpoint = TaskExecutionBinding(endpoint, task, root, harness)
     bindings[request.session_id] = checkpoint
@@ -120,6 +134,8 @@ async def bind_task_execution(request, adapter, inputs):
         invocation_cancelled = True
         raise
     finally:
+        trace_task("execution_unwinding", **endpoint.identity, cancelled=invocation_cancelled,
+                   native_execution_count=len(checkpoint.native_executions))
         # Setup/output checks can fail before any model callback is reached.
         # Outside a callback, only the scheduler handle is execution evidence.
         checkpoint.capture_execution(in_callback=False)
@@ -138,17 +154,13 @@ async def bind_task_execution(request, adapter, inputs):
         # from a detached reporter creates a self-dependency and the reporter can
         # be discarded with the request before it acknowledges settlement.
         current_execution = asyncio.current_task()
-        pending_executions = set()
-        if not invocation_cancelled:
-            pending_executions = {
-                native
-                for native in checkpoint.native_executions
-                if native is not current_execution
-            }
-        # CancelledError reaches this boundary only after the managed invoke
-        # stack (including synchronous subagents such as CUA) has unwound. A
-        # scheduler entry retained from that round is bookkeeping, not live
-        # task ownership, and must not keep the durable task in "cancelling".
+        pending_executions = {
+            native
+            for native in checkpoint.native_executions
+            if native is not current_execution
+        }
+        # Closing or cancelling the output consumer does not prove that the
+        # scheduler execution has finished cleaning up its synchronous subagent.
 
         def retain_reporter(reporter):
             _settlements.add(reporter)
@@ -163,31 +175,21 @@ async def bind_task_execution(request, adapter, inputs):
 
             reporter.add_done_callback(finished)
 
-        if invocation_cancelled:
-            # A second cancel can arrive while this finally block is running.
-            # Start the atomic durable write before awaiting it and retain the
-            # task if the enclosing request is cancelled again.
-            reporter = asyncio.create_task(endpoint.call("cancel_settle"))
-            retain_reporter(reporter)
-            try:
-                await asyncio.shield(reporter)
-            except asyncio.CancelledError:
-                pass
-        else:
-            async def report_settlement():
-                await endpoint.call("close")
-                if checkpoint.settlement_unobserved:
-                    logger.warning(
-                        "Managed task settlement is unobserved: request=%s",
-                        request.request_id,
-                    )
-                    return
-                # A separate reporter may await the enclosing invocation itself.
-                # Shield native handles so a reporting timeout cannot cancel Agent work.
-                await asyncio.gather(
-                    *(asyncio.shield(t) for t in pending_executions),
-                    return_exceptions=True,
+        async def report_settlement():
+            await endpoint.call("close")
+            if checkpoint.settlement_unobserved and not invocation_cancelled:
+                logger.warning(
+                    "Managed task settlement is unobserved: request=%s",
+                    request.request_id,
                 )
+                return
+            await asyncio.gather(
+                *(asyncio.shield(t) for t in pending_executions),
+                return_exceptions=True,
+            )
+            if invocation_cancelled:
+                await endpoint.call("cancel_settle")
+            else:
                 await endpoint.call(
                     "settle", cancelled=any(
                         native.cancelled() or native.cancelling() > 0
@@ -195,11 +197,15 @@ async def bind_task_execution(request, adapter, inputs):
                     ),
                 )
 
-            if all(t.done() for t in pending_executions):
-                await report_settlement()
-            else:
-                reporter = asyncio.create_task(report_settlement())
-                retain_reporter(reporter)
+        # Retain the receipt independently of the stream consumer. A subsequent
+        # cancellation must not lose the close/settle acknowledgement.
+        reporter = asyncio.create_task(report_settlement())
+        retain_reporter(reporter)
+        if all(t.done() for t in pending_executions):
+            try:
+                await asyncio.shield(reporter)
+            except asyncio.CancelledError:
+                pass
 
 
 async def bind_task_output(rail, request, stream):
@@ -211,6 +217,16 @@ async def bind_task_output(rail, request, stream):
     binding.output_stream = stream
     if (await binding.endpoint.call("status"))["status"] == "cancelling":
         await stream.close(abort_active_round=False)
+
+
+def capture_task_execution(rail, request, execution):
+    """Retain an exact resumed execution before cancellation removes ownership."""
+    binding = getattr(rail, "managed_tasks", {}).get(request.session_id)
+    expected = (request.params or {}).get("managed_task_request")
+    if binding is None or not expected or binding.request_id != expected:
+        return
+    binding.native_executions.add(execution)
+    binding.settlement_unobserved = False
 
 
 async def close_task_output(rail, request):

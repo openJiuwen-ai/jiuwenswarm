@@ -50,6 +50,25 @@ def test_qwen_tool_definition_exposes_delegate_and_task_controls() -> None:
         assert schemas[name]["properties"][field]["type"] == "integer"
 
 
+@pytest.mark.parametrize("version", [45527757797612, "45527757797612", "0"])
+def test_reorder_normalizes_decimal_queue_version(version):
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_task_reorder", "call_id": "move-weather",
+        "arguments": {"job_id": "weather", "action": "next", "queue_version": version},
+    })
+    assert type(call.arguments["queue_version"]) is int
+    assert call.arguments["queue_version"] == int(version)
+
+
+@pytest.mark.parametrize("version", [True, 1.0, "1.0", "1e2", "-1", "+1", "01", " 1", "１２", "9007199254740992", 2**53])
+def test_reorder_rejects_ambiguous_or_unsafe_queue_version(version):
+    with pytest.raises(ValueError, match="Invalid queue_version"):
+        parse_qwen_omni_tool_call({
+            "name": "jiuwen_task_reorder", "call_id": "invalid-version",
+            "arguments": {"job_id": "weather", "action": "next", "queue_version": version},
+        })
+
+
 def test_parse_qwen_delegate_accepts_complete_task() -> None:
     call = parse_qwen_omni_tool_call({
         "name": QWEN_OMNI_DELEGATE_TOOL_NAME,

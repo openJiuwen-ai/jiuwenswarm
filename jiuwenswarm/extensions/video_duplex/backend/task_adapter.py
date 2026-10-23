@@ -11,6 +11,7 @@ from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModifi
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
 from .tasks.errors import QueueVersionConflict, TaskRevisionConflict, TaskNotFound
 from .tasks.interactions import approval_cards
+from .tasks.diagnostics import receipt_state, task_state, trace_task
 from .tasks.prompts import (
     APPROVAL_REQUIRES_CLICK_INSTRUCTIONS,
     EMPTY_QUERY_INSTRUCTIONS,
@@ -25,6 +26,7 @@ from .core_receipts import receipt_payload
 logger = logging.getLogger(__name__)
 AGENT_QUERY_TIMEOUT = 20
 EVENT_SEND_TIMEOUT = 2
+STOP_SETTLEMENT_TIMEOUT = 90
 
 
 class AgentRequestTimeoutError(TimeoutError):
@@ -297,6 +299,25 @@ class AgentTaskExecutor:
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
+        # Admission and cancellation share the checkpoint transaction. Revoke an
+        # unclaimed invocation before sending a scheduler cancel which could run
+        # before that scheduler owns the request (or affect another round).
+        with self.store.transaction() as db:
+            current = self.store.get(db, task["id"])
+            if current["request_id"] != task["request_id"]:
+                raise RuntimeError("Task execution changed before cancellation")
+            if current["execution_cancelled"] and current["execution_settled"]:
+                return
+            if current["status"] == "cancelling" and not current["execution_bound"]:
+                current.update(
+                    checkpoint_open=False, execution_settled=True,
+                    execution_cancelled=True, output_closed=True,
+                    sequence=current["sequence"] + 1,
+                )
+                self.store.put(db, current)
+                trace_task("cancel_before_execution_bound", task=task_state(current))
+                return
+
         client = (
             self.client.get("value") if isinstance(self.client, dict) else self.client
         )
@@ -311,11 +332,30 @@ class AgentTaskExecutor:
             is_stream=False,
             timestamp=time.time(),
         )
+        started = time.monotonic()
+        trace_task("cancel_rpc_sent", task=task_state(self.store.read(task["id"])),
+                   cancel_request_id=request.request_id)
         response = await asyncio.wait_for(client.send_request(request), 20)
+        trace_task("cancel_rpc_response", task=task_state(self.store.read(task["id"])),
+                   ok=response.ok, payload=receipt_state(response.payload),
+                   elapsed_ms=round((time.monotonic() - started) * 1000))
         if not response.ok or (response.payload or {}).get("success") is False:
-            raise RuntimeError("Agent has not confirmed the stop request")
-        while not self.store.read(task["id"])["execution_settled"]:
-            await asyncio.sleep(0.2)
+            payload = response.payload or {}
+            detail = str(payload.get("code") or payload.get("error") or "")[:500]
+            raise RuntimeError("Agent has not confirmed the stop request" + (": " + detail if detail else ""))
+        try:
+            async with asyncio.timeout(STOP_SETTLEMENT_TIMEOUT):
+                while not self.store.read(task["id"])["execution_settled"]:
+                    await asyncio.sleep(0.2)
+        except TimeoutError as exc:
+            trace_task("cancel_settlement_timeout", task=task_state(self.store.read(task["id"])),
+                       elapsed_ms=round((time.monotonic() - started) * 1000))
+            raise RuntimeError(
+                "Stop accepted, but execution cleanup was not confirmed within "
+                f"{STOP_SETTLEMENT_TIMEOUT} seconds (request={task['request_id']})"
+            ) from exc
+        trace_task("cancel_settled", task=task_state(self.store.read(task["id"])),
+                   elapsed_ms=round((time.monotonic() - started) * 1000))
 
 
 class VideoSearchManager:
@@ -497,6 +537,10 @@ class VideoSearchManager:
 
     async def changed(self, task):
         state = task["status"]
+        trace_task("task_state_published", task=task_state(task),
+                   queue_version=self.snapshot(task["owner"], task["session"])["queue_version"],
+                   subscriber_count=sum(key[:2] == (task["owner"], task["session"])
+                                        for key in self.subscribers))
         if state in {"failed", "completed", "cancelled"}:
             self.log_event({"stage": "search_" + state, "job_id": task["id"]})
         event = state if state in {"completed", "failed", "cancelled"} else "progress"
@@ -518,6 +562,7 @@ class VideoSearchManager:
                 ws, "video.search.queue", self.snapshot(*key[:2])
             ), EVENT_SEND_TIMEOUT)
             await self._sync_approval_card(ws, task, key)
+            trace_task("task_push_sent", task=task_state(task), connection_id=key[2])
 
         # One slow connection must not consume the budget of other subscribers.
         results = await asyncio.gather(*(
@@ -525,6 +570,8 @@ class VideoSearchManager:
             if key[:2] == (task["owner"], task["session"])
         ), return_exceptions=True)
         if any(isinstance(result, Exception) for result in results):
+            trace_task("task_push_failed", task=task_state(task),
+                       errors=[str(result)[:1000] for result in results if isinstance(result, Exception)])
             raise RuntimeError("Task notification delivery was incomplete")
 
     async def _sync_approval_card(self, ws, task, key):
@@ -598,14 +645,24 @@ class VideoSearchManager:
         )
         return self.public(task)
 
-    async def _respond(self, ws, req_id, action):
+    async def _respond(self, ws, req_id, action, *, trace=None):
+        started = time.monotonic()
+        if trace is not None:
+            trace_task("task_rpc_received", rpc_request_id=req_id, **trace)
         try:
             payload = await action()
         except Exception as exc:
+            if trace is not None:
+                trace_task("task_rpc_rejected", rpc_request_id=req_id, **trace,
+                           error_type=type(exc).__name__, error=str(exc)[:2000],
+                           elapsed_ms=round((time.monotonic() - started) * 1000))
             await self.channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED"
             )
             return
+        if trace is not None:
+            trace_task("task_rpc_completed", rpc_request_id=req_id, **trace,
+                       receipt=receipt_state(payload), elapsed_ms=round((time.monotonic() - started) * 1000))
         await self.channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def handle_qwen_tool(self, ws, req_id, params, session_id):
@@ -644,7 +701,12 @@ class VideoSearchManager:
                 "call_id": call.call_id,
             }
 
-        await self._respond(ws, req_id, run)
+        await self._respond(ws, req_id, run, trace={
+            "source": "qwen", "call_id": params.get("call_id"),
+            "name": params.get("name"), "search_session_id": params.get("search_session_id"),
+            "arguments": str(params.get("arguments") or "")[:6000],
+            "question": str(params.get("question") or "")[:1000],
+        })
 
     async def operate(self, owner, scope, call, *, user_instruction=""):
         args = call.arguments
@@ -693,6 +755,7 @@ class VideoSearchManager:
             page = selected[offset:offset + 5]
             result = {
                 **snapshot,
+                "operation": "query", "applied": False,
                 "jobs": [self.voice_job(t) for t in page],
                 "scope": {"session_id": scope, "job_id": args.get("job_id"),
                           "query": args.get("query", ""), "status": status},
@@ -738,6 +801,10 @@ class VideoSearchManager:
             }
             if receipt.get("state") == "rejected":
                 result.update(receipt, message=QUEUE_CONFLICT_INSTRUCTIONS)
+            else:
+                # Voice controls must publish the same authoritative queue as UI
+                # controls, even when the running task emits no more progress.
+                await self.service._notify(self.service.get(owner, scope, args["job_id"]))
         elif call.name == "jiuwen_task_answer":
             cards = approval_cards(self.service.get(owner, scope, args["job_id"]).get("interaction"))
             if cards is not None:
@@ -857,7 +924,12 @@ class VideoSearchManager:
             await self.channel.send_event(ws, "video.search.queue", snapshot)
             return snapshot
 
-        await self._respond(ws, req_id, run)
+        await self._respond(ws, req_id, run, trace={
+            "source": "task_controls", "job_id": params.get("job_id"),
+            "action": params.get("action"), "before_job_id": params.get("before_job_id"),
+            "queue_version": params.get("queue_version"),
+            "search_session_id": params.get("search_session_id"),
+        })
 
     async def close(self):
         if self._service is not None:

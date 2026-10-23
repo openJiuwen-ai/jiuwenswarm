@@ -44,7 +44,7 @@ _CONVERSATION_EVENT_KINDS = {
 
 
 _REALTIME_TELEMETRY_EVENT = re.compile(
-    r"^(?:realtime|qwen|joyai|search_result|barge_in)_[a-z0-9_]{1,80}$"
+    r"^(?:realtime|qwen|joyai|search_result|barge_in|task_trace)_[a-z0-9_]{1,80}$"
 )
 _REALTIME_TELEMETRY_FIELDS = {
     "event", "client_time", "level", "peak_level", "threshold",
@@ -65,6 +65,9 @@ _REALTIME_TELEMETRY_FIELDS = {
     "speech_probability",
     "queued_count", "result_kind", "brief_chars",
     "latency_ms", "inference_ms", "wait_ms", "dropped_chunks",
+    "rpc_request_id", "action", "before_job_id", "queue_version", "sequence",
+    "status", "queue_position", "stored_status", "stored_sequence",
+    "stored_queue_version", "stored_queue_position", "output_chars", "item_id",
 }
 
 
@@ -520,7 +523,7 @@ def register_video_live_handler(
                 ws, req_id, ok=False, error="unsupported telemetry event", code="BAD_REQUEST"
             )
             return
-        allowed: dict[str, str | int | float | bool] = {}
+        allowed: dict[str, Any] = {}
         for key, value in params.items():
             if key not in _REALTIME_TELEMETRY_FIELDS:
                 continue
@@ -538,6 +541,19 @@ def register_video_live_handler(
         for key in ("result", "realtime_answer"):
             if isinstance(allowed.get(key), str):
                 allowed[key] = allowed[key][:50_000]
+        if event_name.startswith(("task_trace_", "qwen_tool_")) or event_name in {
+            "qwen_realtime_error", "qwen_text_input_dispatched",
+        }:
+            from .tasks.diagnostics import trace_task
+
+            if event_name.startswith("task_trace_") and isinstance(params.get("jobs"), list):
+                allowed["jobs"] = [
+                    {key: job.get(key) for key in (
+                        "job_id", "status", "sequence", "queue_position", "queue_version",
+                    ) if isinstance(job.get(key), (str, int, float, bool))}
+                    for job in params["jobs"][:100] if isinstance(job, dict)
+                ]
+            trace_task(event_name, **{key: value for key, value in allowed.items() if key != "event"})
         if event_name in {
             "realtime_answer_final",
             "search_result_received",
