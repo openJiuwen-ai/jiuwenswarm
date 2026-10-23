@@ -265,23 +265,6 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         + image_url_rule_en
         + unsupported_component_rule_en
     )
-    a2ui_json_example = (
-        "\n"
-        "Example a2ui-json block structure:\n"
-        "<a2ui-json>\n"
-        "[\n"
-        '  {"beginRendering": {"surfaceId": "form", "root": "root"}},\n'
-        '  {"surfaceUpdate": {"surfaceId": "form", "components": [\n'
-        '    {"id": "root", "component": {"Column": {"children": {"explicitList": ["name", "submit_text", "submit"]}}}},\n'
-        '    {"id": "name", "component": {"TextField": {"label": {"literalString": "Name"}, "text": {"path": "/form/name"}, "textFieldType": "shortText"}}},\n'
-        '    {"id": "submit_text", "component": {"Text": {"text": {"literalString": "Submit"}, "usageHint": "body"}}},\n'
-        '    {"id": "submit", "component": {"Button": {"child": "submit_text", "primary": true, "action": {"name": "submit_form", "context": [{"key": "name", "value": {"path": "/form/name"}}]}}}}\n'
-        "  ]}},\n"
-        '  {"dataModelUpdate": {"surfaceId": "form", "path": "/form", "contents": [{"key": "name", "valueString": ""}]}}\n'
-        "]\n"
-        "</a2ui-json>\n"
-    )
-
     # --- zh rules ---
     image_url_rule_zh = (
         " 不要编造图片 URL。使用用户提供的 HTTPS URL 或已验证的稳定来源；"
@@ -349,14 +332,12 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
             "如果决策树判定使用 A2UI，输出一段很短的说明后跟合法的 a2ui-json block。"
             + autonomy_rule_zh
             + requested_component_rule_zh
-            + a2ui_json_example
         )
     return (
         "If the decision tree determines A2UI is appropriate, output a very "
         "short intro followed by a valid a2ui-json block. "
         + autonomy_rule_en
         + requested_component_rule_en
-        + a2ui_json_example
     )
 
 
