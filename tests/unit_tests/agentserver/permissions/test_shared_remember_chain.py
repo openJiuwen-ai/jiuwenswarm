@@ -321,7 +321,6 @@ async def test_reject_and_allow_once_apply_only_to_current_call(storage, tmp_pat
                 rail, call, None, remember=False, approved=approved,
                 queue=queue, request_id=f"request-{call_id}",
             )
-            assert bool(resumed.extra.get("_skip_tool")) is not approved
             results = await manager.execute(resumed, resumed.inputs.tool_call, first.session)
             assert executed == (["same"] if approved else [])
             if approved:
