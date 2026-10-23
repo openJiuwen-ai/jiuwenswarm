@@ -90,6 +90,7 @@ from agent_gateway.common.volcengine_endpoints import normalize_ark_api_base
 from jiuwenswarm.agents.harness.common.tools import vllm_omni_gen
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.common.volcengine_endpoints import normalize_ark_api_base
 
 logger = logging.getLogger(__name__)
 
@@ -832,6 +833,8 @@ async def _modelark_submit_video(target: GenerationTarget, request: VideoRequest
                 except _TRANSIENT_HTTP_ERRORS as exc:
                     logger.warning("[generate_video] polling ModelArk job %s failed, retrying: %r", task_id, exc)
                     continue
+                if status == "auth_failed":
+                    return _modelark_auth_failure_message(api_base, query_error or "")
                 if query_error:
                     return query_error
             if status in _PENDING_STATUSES:

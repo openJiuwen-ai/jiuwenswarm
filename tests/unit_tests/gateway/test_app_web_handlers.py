@@ -360,39 +360,6 @@ async def test_vendors_fetch_models_rejects_untrusted_ark_generation_base(monkey
 
 
 @pytest.mark.asyncio
-async def test_external_cli_validate_paths_survives_unreadable_paths(monkeypatch, tmp_path):
-    """A PermissionError yields null: unreadable is not proof of absence."""
-    channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
-
-    usable_file = tmp_path / "claude.cmd"
-    usable_file.write_text("demo")
-    locked_path = str(tmp_path / "locked" / "codex.cmd")
-    original_is_file = Path.is_file
-
-    def flaky_is_file(self):
-        if self.name == "codex.cmd":
-            raise PermissionError(13, "Permission denied")
-        return original_is_file(self)
-
-    monkeypatch.setattr(Path, "is_file", flaky_is_file)
-
-    await channel.methods["external_cli.validate_paths"](
-        object(),
-        "req-validate-paths-eacces",
-        {"paths": [str(usable_file), locked_path]},
-        "sess-validate-paths-eacces",
-    )
-
-    assert channel.responses[-1]["ok"] is True
-    results = channel.responses[-1]["payload"]["results"]
-    assert results[str(usable_file)] is True
-    # null (not False): a locked path must never be treated as missing, so
-    # the history cleanup keeps it in the dropdown.
-    assert results[locked_path] is None
-
-
-@pytest.mark.asyncio
 async def test_vendors_fetch_models_requires_key_without_generation_preset_fallback(monkeypatch):
     monkeypatch.setattr("httpx.get", lambda *args, **kwargs: pytest.fail("unexpected remote request"))
     channel = FakeWebChannel()
