@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import Future as ConcurrentFuture
 from copy import deepcopy
+from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
 import inspect
@@ -236,7 +237,7 @@ class SwarmSymphonyService:
         self._retired_runtime_tasks: set[asyncio.Task[None]] = set()
         self._closing = False
         self._graph_status_lock = asyncio.Lock()
-        self._graph_status_cache_key: tuple[Any, ...] | None = None
+        self._graph_status_cache_key: _GraphStatusCacheKey | None = None
         self._graph_status_cache_payload: dict[str, Any] | None = None
         self._graph_status_generation = 0
 
@@ -270,7 +271,7 @@ class SwarmSymphonyService:
         config: SymphonyConfig,
         skills_root: Path,
         graph_dir: Path,
-        cache_key: tuple[Any, ...],
+        cache_key: _GraphStatusCacheKey,
     ) -> dict[str, Any]:
         """Cache only the expensive graph scan. Build progress stays live."""
         cached = self._graph_status_cache_payload
@@ -1881,21 +1882,34 @@ def _build_runs_digest(graph_dir: Path) -> str:
     return digest.hexdigest()
 
 
+@dataclass(frozen=True)
+class _GraphStatusCacheKey:
+    skills_root: str
+    graph_dir: str
+    max_depth: int | None
+    config_digest: str
+    skills_digest: str
+    graph_dir_stamp: tuple[int, int] | None
+    pointer_stamp: tuple[int, int] | None
+    artifact_stamps: tuple[tuple[int, int] | None, ...]
+    build_runs_digest: str
+
+
 def _graph_status_cache_key(
     config: Any,
     skills_root: Path,
     graph_dir: Path,
-) -> tuple[Any, ...]:
+) -> _GraphStatusCacheKey:
     """Build a cheap identity for everything graph status reads."""
     fingerprint_config = getattr(config, "fingerprint", None)
     scan_config = getattr(fingerprint_config, "scan", None)
     max_depth = getattr(scan_config, "max_depth", None)
     try:
         artifact_dir = resolve_graph_artifact_dir(graph_dir)
-    except (OSError, ValueError, json.JSONDecodeError):
+    except (OSError, ValueError):
         artifact_dir = None
 
-    artifact_stamps: tuple[Any, ...] = ()
+    artifact_stamps: tuple[tuple[int, int] | None, ...] = ()
     if artifact_dir is not None:
         artifact_stamps = (
             _path_stamp(artifact_dir / "graph.json"),
@@ -1903,16 +1917,18 @@ def _graph_status_cache_key(
             _path_stamp(artifact_dir / FINGERPRINT_ARTIFACT_FILENAME),
         )
 
-    return (
-        str(skills_root),
-        str(graph_dir),
-        max_depth,
-        hashlib.sha256(repr(config).encode("utf-8", "surrogateescape")).hexdigest(),
-        _skills_metadata_digest(skills_root, max_depth=max_depth),
-        _path_stamp(graph_dir),
-        _path_stamp(graph_dir / CURRENT_POINTER_FILENAME),
-        artifact_stamps,
-        _build_runs_digest(graph_dir),
+    return _GraphStatusCacheKey(
+        skills_root=str(skills_root),
+        graph_dir=str(graph_dir),
+        max_depth=max_depth,
+        config_digest=hashlib.sha256(
+            repr(config).encode("utf-8", "surrogateescape")
+        ).hexdigest(),
+        skills_digest=_skills_metadata_digest(skills_root, max_depth=max_depth),
+        graph_dir_stamp=_path_stamp(graph_dir),
+        pointer_stamp=_path_stamp(graph_dir / CURRENT_POINTER_FILENAME),
+        artifact_stamps=artifact_stamps,
+        build_runs_digest=_build_runs_digest(graph_dir),
     )
 
 
@@ -1939,7 +1955,7 @@ def _tail_lines(path: Path, limit: int) -> list[str]:
         if position > 0:
             first_newline = data.find(b"\n")
             if first_newline >= 0:
-                data = data[first_newline + 1 :]
+                data = data[first_newline + 1:]
         return data.decode("utf-8").splitlines()
 
 
