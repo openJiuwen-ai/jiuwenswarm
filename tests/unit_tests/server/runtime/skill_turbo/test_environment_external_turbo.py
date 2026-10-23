@@ -139,6 +139,40 @@ def test_external_scan_survives_builtin_cache_hit(
     assert env2.skills["fakedeck"].package_name == "skill_turbo_codes_fakedeck"
 
 
+def test_enable_turbo_switch_takes_effect_on_next_scan(external_root, monkeypatch):
+    """enable_turbo 翻转无需重启：下一次 Environment 构造（扫描）即生效（F_05）。
+
+    机制：发现阶段每次重扫（meta.json 每次重读），被禁用技能从 discovered
+    消失 → mtime 快照 key 集合变化 → _external_scan_cache 必 miss →
+    全量重扫。仅翻转开关、不动任何 .py（mtime 快照值不变），隔离"目录
+    内容变化触发失效"的干扰路径，锁定成员变化本身即触发重扫。
+    """
+    from jiuwenswarm.server.runtime.skill_turbo.environment import (
+        SkillTurboEnvironment,
+    )
+
+    # 类级缓存隔离，避免与其他用例串扰
+    monkeypatch.setattr(SkillTurboEnvironment, "_external_scan_cache", {})
+
+    _write_min_skill(external_root, "fakedeck", "fakedeck-craft")
+    assert "fakedeck" in _make_env().skills
+
+    meta_file = external_root / "fakedeck-craft" / "turbo" / "meta.json"
+    # 下线：只改 meta.json
+    meta_file.write_text(
+        '{"external_name": "fakedeck-craft", "enable_turbo": false}',
+        encoding="utf-8",
+    )
+    assert "fakedeck" not in _make_env().skills, "下线在下一次扫描即生效"
+
+    # 重新启用：同样下一次扫描即重新注册
+    meta_file.write_text(
+        '{"external_name": "fakedeck-craft", "enable_turbo": true}',
+        encoding="utf-8",
+    )
+    assert "fakedeck" in _make_env().skills, "重新启用在下一次扫描即生效"
+
+
 def test_validator_for_external_skill_prefixes(external_root):
     """外部专用 validator 前缀构成：内置 + 自身动态包前缀，剔除其他动态包。
 
