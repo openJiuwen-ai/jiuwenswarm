@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable
 from urllib.parse import parse_qs, urlparse
 
+
 # Include entry-module import/configuration work in later startup phase logs.
 # PyInstaller boot time is intentionally outside this boundary.
 _PROCESS_START_T0 = time.monotonic()
@@ -41,19 +42,15 @@ def _mark_startup_import_phase(stage: str) -> None:
 
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
+from jiuwenswarm.common.ws_diagnostics import format_ws_diagnostics, describe_ws_peer, describe_ws_exception
 from jiuwenswarm.common.media_capability_config import (
     migrate_media_capability_switches,
-)
-from jiuwenswarm.common.ws_diagnostics import (
-    describe_ws_exception,
-    describe_ws_peer,
-    format_ws_diagnostics,
 )
 
 # user_id 白名单: 仅允许字母数字及 _-, 拒绝路径遍历字符
 _SAFE_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
-from jiuwenswarm.dotenv_early import load_dotenv_runtime, parse_dotenv_early
+from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
 
 parse_dotenv_early("jiuwenswarm-gateway")
 _mark_startup_import_phase("dotenv_parsed")
@@ -70,44 +67,34 @@ if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
     prepare_runtime_workspace(cleanup_stale_descs=False)
 _mark_startup_import_phase("runtime_workspace_ready")
 
-from openjiuwen.core.common.logging import (  # pylint: disable=wrong-import-order
-    LogManager,
-)
-
+from openjiuwen.core.common.logging import LogManager  # pylint: disable=wrong-import-order
 from jiuwenswarm.gateway.channel_manager.base import BaseWebChannel
-
 _mark_startup_import_phase("openjiuwen_and_channel_base_imported")
 
 # --- Now safe to import jiuwenswarm modules ---
-from jiuwenswarm.common.debug_dump import (
-    install_async_dump_handler,
-    install_crash_exit_handler,
-)
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.process_supervision import (
-    GATEWAY_RESTART_EXIT_CODE,
-    SUPERVISOR_PID_ENV,
-)
-from jiuwenswarm.common.schema.message import Message, Mode, ReqMethod
+from jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect import AcpGatewayBridge
+from jiuwenswarm.gateway.routing.agent_request_timeout import coerce_client_timeout_ms
 from jiuwenswarm.common.security.ws_origin import (
     extract_handshake_request,
     get_header_value,
 )
+from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
+from jiuwenswarm.common.debug_dump import (
+    install_async_dump_handler,
+    install_crash_exit_handler,
+)
+from jiuwenswarm.common.process_supervision import GATEWAY_RESTART_EXIT_CODE, SUPERVISOR_PID_ENV
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     get_env_file,
     get_root_dir,
     get_user_workspace_dir,
 )
-from jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect import (
-    AcpGatewayBridge,
-)
+from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+from jiuwenswarm.common.schema.message import ReqMethod, Message, Mode
 from jiuwenswarm.gateway.channel_manager.web.media import (
     normalize_chat_media_attachments,
 )
-from jiuwenswarm.gateway.routing.agent_request_timeout import coerce_client_timeout_ms
-from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
-
 _mark_startup_import_phase("gateway_core_imports_loaded")
 
 _logging_yaml = get_root_dir() / "config" / "logging.yaml"
@@ -2125,7 +2112,6 @@ async def _run(
         register_3rdagent_web_method,
     )
     from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
-        _CONFIG_SET_ENV_MAP,
         _FORWARD_NO_LOCAL_HANDLER_METHODS,
         _FORWARD_REQ_METHODS,
         WebHandlersBindParams,

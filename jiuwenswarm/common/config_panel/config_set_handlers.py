@@ -52,7 +52,6 @@ from jiuwenswarm.common.config import (
     get_config,
     get_config_raw,
     resolve_env_vars,
-    set_auto_memory_enabled,
     replace_teams_in_config,
     update_a2ui_in_config,
     update_context_engine_enabled_in_config,
@@ -410,7 +409,6 @@ CONFIG_YAML_KEYS = frozenset({
     "setup_guide_enabled",
     "skill_evolution",
     "ttse_enabled",
-    "auto_memory_enabled",
     "enable_free_models",
 })
 # 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification /
@@ -1488,8 +1486,6 @@ def apply_config_payload(
                 update_skill_evolution_enabled_in_config(parsed)
             elif param_key == "ttse_enabled":
                 update_ttse_enabled_in_config(parsed)
-            elif param_key == "auto_memory_enabled":
-                set_auto_memory_enabled(parsed)
             elif param_key.startswith("a2ui_"):
                 a2ui = provider("a2ui")
                 ok, update, error = a2ui.validate_a2ui_config_update(param_key, val)
@@ -1710,7 +1706,6 @@ async def config_get_handler(
         payload["skill_evolution"] = "true" if evolution_cfg.get("skill_evolution", False) else "false"
         ttse_cfg = (raw.get("react") or {}).get("ttse") or {}
         payload["ttse_enabled"] = "true" if ttse_cfg.get("enabled", False) else "false"
-        payload["auto_memory_enabled"] = "true" if raw.get("auto_memory_enabled", False) else "false"
         memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
         payload["memory_forbidden_enabled"] = "true" if memory_cfg.get("enabled", False) else "false"
         memory_desc = memory_cfg.get("description") or {}
@@ -1765,7 +1760,6 @@ async def config_get_handler(
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
         payload.setdefault("ttse_enabled", "false")
-        payload.setdefault("auto_memory_enabled", "false")
         payload.setdefault("memory_forbidden_enabled", "false")
         payload.setdefault("memory_forbidden_description", "")
         payload.setdefault("swarmflow_enabled", "true" if DEFAULT_SWARMFLOW_ENABLED else "false")

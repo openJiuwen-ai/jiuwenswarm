@@ -68,7 +68,7 @@ _WORKER_LOCK = threading.Lock()
 # Reentrant: the read path now holds this lock too (see _read_metadata).
 # RLock guards against a same-thread nesting (read->write or write->read)
 # deadlocking in the future.
-FILE_LOCK = threading.RLock()
+_FILE_LOCK = threading.RLock()
 _MIGRATION_LOCK = threading.Lock()
 _PENDING_MIGRATIONS: set[tuple[str, str]] = set()
 _MAX_PENDING_MIGRATIONS = 64
@@ -541,7 +541,7 @@ def _read_metadata(
     # replaces the whole file, so an unlocked read can land inside the
     # replacement window and observe empty content.
     try:
-        with FILE_LOCK:
+        with _FILE_LOCK:
             raw = fpath.read_text(encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -625,7 +625,7 @@ def _write_metadata_unfenced(
     读取不到 agentserver 进程写入的最新数据。
 
     rebind 版本检查: 调用方可在 ``options.rebind_gen_at_enqueue`` 中传入快照
-    入队/捕获时记录的版本。本函数持 ``FILE_LOCK`` 后重比
+    入队/捕获时记录的版本。本函数持 ``_FILE_LOCK`` 后重比
     ``_get_rebind_gen(session_id)``, 使"gen 比较"与
     "文件读写"在同一临界区内完成, 消除 worker 队列路径(P3)的 TOCTOU 窗口:
     即使调用方在持锁前比 gen 为"非陈旧", 持锁后又发生了 rebind, 此处也能发现
@@ -644,7 +644,7 @@ def _write_metadata_unfenced(
         if options.expected_fields is not None else _metadata_file(session_id)
     )
     to_write = metadata
-    with FILE_LOCK:
+    with _FILE_LOCK:
         current: dict[str, Any] | None = None
         if fpath.exists():
             try:
@@ -800,7 +800,7 @@ def _merge_pin_fields_from_disk(session_id: str, metadata: dict[str, Any]) -> di
     if not fpath.exists():
         return metadata
     try:
-        with FILE_LOCK:
+        with _FILE_LOCK:
             current = json.loads(fpath.read_text(encoding="utf-8") or "{}")
     except Exception as exc:  # noqa: BLE001
         logger.warning("读取 metadata.json 置顶字段失败: %s", exc)
@@ -851,7 +851,7 @@ def _ensure_worker_started() -> None:
                     if options.migration_key is not None and options.migration_key[0] != str(get_agent_sessions_dir()):
                         continue
                     # rebind 版本检查已下沉到 _write_metadata_sync 内部, 持
-                    # FILE_LOCK 后重比 gen, 消除"gen 比较与文件写入"的 TOCTOU 窗口(P3)。
+                    # _FILE_LOCK 后重比 gen, 消除"gen 比较与文件写入"的 TOCTOU 窗口(P3)。
                     written = _write_metadata_sync(sid, metadata, options)
                     # gen 追踪启用时, _write_metadata_sync 可能在持锁后才发现陈旧
                     # 并合并 rebound 字段, 故只要启用了 gen 追踪就刷新缓存为落盘结果。

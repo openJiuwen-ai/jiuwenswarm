@@ -29,31 +29,27 @@ from jiuwenswarm.common.protocol_ids import (
     validate_session_id,
     validate_workflow_run_id,
 )
-from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
+from jiuwenswarm.common.utils import get_logs_dir
+from jiuwenswarm.gateway.channel_manager.base import ChannelMetadata, RobotMessageRouter, ConnectHook
+from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
+from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
+from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 from jiuwenswarm.common.security.ws_origin import (
     get_header_value,
 )
+from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
 from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
-from jiuwenswarm.common.utils import get_logs_dir
 from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
-from jiuwenswarm.gateway.channel_manager.base import (
-    ChannelMetadata,
-    ConnectHook,
-    RobotMessageRouter,
-)
 from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
-from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
-from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
-from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
 logger = logging.getLogger(__name__)
 
@@ -710,9 +706,7 @@ class WebChannel(BaseWsChannel):
             guarded_http_protocol,
             guarded_websockets_protocol,
         )
-        from jiuwenswarm.gateway.channel_manager.web.web_channel_app import (
-            build_web_channel_app,
-        )
+        from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
         app = build_web_channel_app(self)
         uv_cfg = uvicorn.Config(
@@ -1744,12 +1738,7 @@ class WebChannel(BaseWsChannel):
         method = data.get("method")
         params = data.get("params")
 
-        _rejected = (
-            req_type != "req"
-            or not isinstance(req_id, str)
-            or not isinstance(method, str)
-        )
-        if _rejected:
+        if req_type != "req" or not isinstance(req_id, str) or not isinstance(method, str):
             await self.send_response(
                 ws,
                 req_id if isinstance(req_id, str) else "",

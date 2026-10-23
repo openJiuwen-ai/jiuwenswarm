@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import copy
 import hashlib
 import json
@@ -67,7 +66,7 @@ from openjiuwen.core.sys_operation import (
     SysOperationCard,
     OperationMode,
 )
-from openjiuwen.core.sys_operation.cwd import init_cwd, set_cwd, set_original_cwd
+from openjiuwen.core.sys_operation.cwd import init_cwd
 from openjiuwen.harness import (
     AudioModelConfig,
     DeepAgent,
@@ -173,6 +172,7 @@ _ERROR_EVENT = getattr(InteractionEventType, "EXECUTION_ERROR", None)
 if _ERROR_EVENT is None:
     _ERROR_EVENT = getattr(InteractionEventType, "RUNTIME_ERROR")
 ERROR_EVENT_TYPE = _ERROR_EVENT.value
+
 # SDK chunk types that close one interaction round's output. ``answer`` carries
 # every round result (normal answer, empty answer, goal attempt boundary); HITL
 # interrupt frames replace it when a round stops for a human decision.
@@ -258,12 +258,6 @@ def _ensure_ttse_consult_eager_tool(
         insert_at = 2 if len(eager_tools) >= 2 else len(eager_tools)
         eager_tools.insert(insert_at, _TTSE_CONSULT_TOOL_NAME)
     return eager_tools
-
-
-def _update_cwd_state(cwd: str) -> None:
-    """Point the CwdState bound in the running context at one request's cwd."""
-    set_cwd(cwd)
-    set_original_cwd(cwd)
 
 
 def _strip_whitespace(text: str) -> str:
@@ -1845,8 +1839,6 @@ class JiuWenSwarmDeepAdapter:
         self._interaction_output_handoff: OutputHandoff | None = None
         self._session_input_guard: SessionInputGuard | None = None
         self._voice_agent_task_rail = None
-        # Context the DeepAgent interaction loop was started from; see _seed_runtime_cwd.
-        self._interaction_context: contextvars.Context | None = None
         self._project_dir: str | None = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._permission_workspace_root: Path | None = None
@@ -8335,6 +8327,9 @@ class JiuWenSwarmDeepAdapter:
                     rebound = rebind_context_model(
                         context_config,
                         session_id=session_id,
+                        model=model,
+                        model_config=model.model_config,
+                        model_client_config=model.model_client_config,
                     )
                     # Zero also means the contexts already match, or none have
                     # been created yet. New contexts use the published config.
@@ -13488,12 +13483,6 @@ class JiuWenSwarmDeepAdapter:
         if not runtime_cwd or not os.path.isdir(runtime_cwd):
             runtime_cwd = workspace_root
         init_cwd(runtime_cwd, project_root=workspace_root, workspace=workspace_root)
-        # Rounds of a started interaction run in tasks forked from the context
-        # start() was called in, so the binding above never reaches their tools.
-        # Move that state's cwd in place so relative paths resolve per request;
-        # its workspace and project root stay the agent's own anchors.
-        if self._interaction_context is not None:
-            self._interaction_context.run(_update_cwd_state, runtime_cwd)
 
     @staticmethod
     def _resolve_request_task_name(
@@ -14010,7 +13999,6 @@ class JiuWenSwarmDeepAdapter:
         await self.install_session_input_guard()
         if session_id.startswith("managed-task-"):
             await self.install_voice_task_rail()
-        self._interaction_context = contextvars.copy_context()
         await self._instance.start(session=session)
         if getattr(self._instance, "_interaction_started", True) is not True:
             raise RuntimeError(f"DeepAgent interaction did not become ready: {session_id}")

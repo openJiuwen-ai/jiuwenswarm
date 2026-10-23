@@ -692,7 +692,6 @@
       "test": "测试"
     },
     "agent": {
-      "memory": "记忆",
       "skills": "技能",
       "webSearch": "网页搜索",
       "mediaTools": "工具",
@@ -916,10 +915,6 @@
       "prompt_suggestion_enabled": {
         "title": "提示词推荐",
         "description": "在回复结束后给出下一步可点的输入建议。未设置时跟随程序默认。"
-      },
-      "auto_memory_enabled": {
-        "title": "自动记忆",
-        "description": "记住对话中的长期偏好与本项目要求，后续回答会参考这些记忆。开启后会产生整理调用。"
       },
       "ttse_enabled": {
         "title": "本地环境事实与任务经验自动演进",

@@ -699,7 +699,6 @@
       "test": "Test"
     },
     "agent": {
-      "memory": "Memory",
       "skills": "Skills",
       "webSearch": "Web search",
       "mediaTools": "Tools",
@@ -926,10 +925,6 @@
       "prompt_suggestion_enabled": {
         "title": "Prompt suggestions",
         "description": "Show tappable next-input chips after a reply. Unset follows the code default."
-      },
-      "auto_memory_enabled": {
-        "title": "Automatic memory",
-        "description": "Remember lasting preferences and project requirements for later answers. Enabling this adds memory update calls."
       },
       "ttse_enabled": {
         "title": "Local environment facts and task experience auto-evolution",

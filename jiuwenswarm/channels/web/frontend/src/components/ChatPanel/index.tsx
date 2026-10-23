@@ -1807,18 +1807,12 @@ export const ChatPanel = React.memo(function ChatPanel({
     if (!el) return;
 
     const atBottom = isScrollAtBottom(el);
-    const currentSessionId = activeSessionId ?? '';
-    // 流式内容在视图下方增长后，滚动事件可能晚到：此时离底部变远，但用户并没有滚动。
-    // 只有滚动位置确实上移才算离开底部。
-    const previous = historyLayoutSnapshotRef.current;
-    const movedUp = previous?.sessionId !== currentSessionId || el.scrollTop < previous.scrollTop;
-    if (atBottom) {
-      userScrolledUpRef.current = false;
-    } else if (movedUp) {
-      userScrolledUpRef.current = true;
+    userScrolledUpRef.current = !atBottom;
+    if (!atBottom) {
       stickToBottomUntilStableRef.current = false;
     }
 
+    const currentSessionId = activeSessionId ?? '';
     rememberSessionScrollTop(currentSessionId, el);
     updateHistoryLayoutSnapshot(currentSessionId, el);
 

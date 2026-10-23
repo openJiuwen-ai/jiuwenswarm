@@ -3149,16 +3149,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   /**
    * Start KVC preparation on the leading edge of a real editor insertion.
-   * React builds onBeforeInput from textInput / keypress / compositionend, so
-   * the inserted text is on the synthetic event and the native event has no
-   * inputType. An IME commit reaches the editor only this way: its keydown is
-   * "Process", not a printable key.
    * `onInput` remains below as a compatibility fallback for WebViews that do
    * not expose a useful beforeinput event.
    */
   const handleEditorBeforeInput = useCallback(
-    (event: FormEvent<HTMLDivElement> & { data?: string | null }) => {
-      if (event.data) {
+    (event: FormEvent<HTMLDivElement>) => {
+      const nativeEvent = event.nativeEvent as InputEvent;
+      if (String(nativeEvent.inputType || '').startsWith('insert')) {
         notifyKVCInputIntent();
       }
     },
@@ -4026,7 +4023,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               onKeyDown={handleKeyDown}
               onCompositionStart={() => {
                 isComposingRef.current = true;
-                notifyKVCInputIntent();
               }}
               onCompositionEnd={() => {
                 isComposingRef.current = false;
@@ -4826,7 +4822,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     type="button"
                     className="chat-mode-select__trigger"
                     data-testid="chat-panel-mode-select-trigger"
-                    aria-label={t(currentMode.i18nKey)}
                     data-variant={currentMode.value}
                     onClick={() => {
                       if (hasHistory || isProcessing) return;
@@ -6109,7 +6104,6 @@ function PermissionSelector({
           )}
           disabled={disabled}
           data-testid="chat-panel-permission-selector-trigger"
-          aria-label={t(currentPerm.i18nKey)}
           data-variant={permission}
           title={disabled ? t('chat.configLockedHistory') : undefined}
           onClick={() => {

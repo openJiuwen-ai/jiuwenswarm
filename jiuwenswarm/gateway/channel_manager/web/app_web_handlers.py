@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import importlib.metadata
 import importlib.util
 import json
@@ -17,8 +16,9 @@ import secrets
 import shutil
 import subprocess
 import sys
-import threading
 import time
+import base64
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,123 +45,24 @@ from jiuwenswarm.common.config import (
     get_config,
     get_config_raw,
     get_default_models,
+    update_health_check_in_config,
+    update_channel_in_config,
     replace_channel_subsection_with_cleanup,
     update_browser_in_config,
-    update_channel_in_config,
-    update_health_check_in_config,
     update_preferred_language_in_config,
     update_updater_in_config,
 )
 from jiuwenswarm.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
-    ASR_ENV_KEYS as _ASR_ENV_KEYS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    CONFIG_KEYS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    CONFIG_SET_ENV_MAP as _CONFIG_SET_ENV_MAP,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    CONFIG_YAML_KEYS as _CONFIG_YAML_KEYS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    EXTERNAL_CLI_AGENT_CONFIG_KEYS as _EXTERNAL_CLI_AGENT_CONFIG_KEYS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    EXTERNAL_CLI_AGENT_KINDS as _EXTERNAL_CLI_AGENT_KINDS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    MODEL_RELOAD_ENV_KEYS as _MODEL_RELOAD_ENV_KEYS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    MULTIMODAL_RELOAD_ENV_KEYS as _MULTIMODAL_RELOAD_ENV_KEYS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    PERMISSIONS_PROFILES as _PERMISSIONS_PROFILES,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    SEARCH_RELOAD_ENV_KEYS as _SEARCH_RELOAD_ENV_KEYS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    SKILL_RETRIEVAL_CONFIG_KEYS as _SKILL_RETRIEVAL_CONFIG_KEYS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    SKILL_RETRIEVAL_CONFIG_SPECS as _SKILL_RETRIEVAL_CONFIG_SPECS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    SYMPHONY_CONFIG_KEYS as _SYMPHONY_CONFIG_KEYS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    SYMPHONY_CONFIG_SPECS as _SYMPHONY_CONFIG_SPECS,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    ConfigApplyResult as _ConfigApplyResult,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    ConfigChangeSet as _ConfigChangeSet,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
     build_external_cli_publish_url as _build_external_cli_publish_url,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    canonical_permission_facade as _canonical_permission_facade,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
     detect_external_cli_agent as _detect_external_cli_agent,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    external_cli_agent_effective_state as _external_cli_agent_effective_state,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    external_cli_agents_from_switches as _external_cli_agents_from_switches,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
     external_cli_managed_cli_path as _external_cli_managed_cli_path,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    flatten_external_cli_agents_for_config_panel as _flatten_external_cli_agents_for_config_panel,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    flatten_modes_team_for_config_panel as _flatten_modes_team_for_config_panel,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    flatten_skill_retrieval_for_config_panel as _flatten_skill_retrieval_for_config_panel,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    flatten_swarmflow_for_config_panel as _flatten_swarmflow_for_config_panel,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    flatten_symphony_for_config_panel as _flatten_symphony_for_config_panel,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    inject_external_cli_publish_url as _inject_external_cli_publish_url,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    parse_config_switch_bool as _parse_config_switch_bool,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    permission_profile as _permission_profile,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    team_item_requests_codex as _team_item_requests_codex,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    team_payload_requests_codex as _team_payload_requests_codex,
-)
-from jiuwenswarm.common.config_panel.models_handlers import (
-    normalize_provider_value as _normalize_provider_value,
-)
-from jiuwenswarm.common.config_panel.models_handlers import (  # noqa: F401  — 兼容别名
-    reasoning_level_display as _reasoning_level_display,
-)
-from jiuwenswarm.common.config_panel.models_handlers import (
-    resolve_model_config_obj_for_validate as _resolve_model_config_obj_for_validate,
 )
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
     get_env_file,
     get_root_dir,
 )
+from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_TUI_WORK_MODE,
@@ -169,7 +70,6 @@ from jiuwenswarm.common.work_mode import (
     SUPPORTED_WORK_MODES,
     is_default_project_id,
 )
-from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     transcribe_task_audio,
@@ -6538,11 +6438,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # 其余 permissions.*（tools / rules / approval_overrides）走 _forward_permissions_to_agent。
 
     async def _permissions_owner_scopes_get(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
         from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
 
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
                                   params={}, session_id=session_id, user_id=user_id,
@@ -6553,11 +6450,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
         from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
 
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
                                   params=params, session_id=session_id, user_id=user_id,
