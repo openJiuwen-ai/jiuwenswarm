@@ -11528,12 +11528,16 @@ class JiuWenSwarmDeepAdapter:
                 CuaDelegationApprovalRail,
             )
 
-            return CuaDelegationApprovalRail(language=self._resolve_runtime_language())
+            return CuaDelegationApprovalRail(language=self._resolve_cua_card_language)
         except Exception as exc:
             logger.warning(
                 "[%s] CuaDelegationApprovalRail create failed: %s", type(self).__name__, exc
             )
             return None
+
+    def _resolve_cua_card_language(self) -> str:
+        """Resolve the cua approval card language; read each time a card is raised."""
+        return self._resolve_runtime_language()
 
     def _auto_permission_capability_enabled(self) -> bool:
         """Only a session-owned Deep runtime may install Smart permission rails."""

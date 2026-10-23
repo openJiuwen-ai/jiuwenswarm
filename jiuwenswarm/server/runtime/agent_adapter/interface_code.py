@@ -692,6 +692,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             raw = "cn"
         return resolve_language(raw)
 
+    def _resolve_cua_card_language(self) -> str:
+        """The cua approval card is read by the user, so it follows the UI
+        language rather than the English code-mode prompt language."""
+        return self._resolve_output_language()
+
     def _session_instance_extra_create_kwargs(self) -> dict[str, Any]:
         """Propagate an explicit Spec through lazy root and session builds."""
         if self._session_instance_spec is not None:

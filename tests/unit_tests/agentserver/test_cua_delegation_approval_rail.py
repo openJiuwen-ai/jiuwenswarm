@@ -20,6 +20,7 @@ from openjiuwen.harness.rails.interrupt.interrupt_base import (
     RejectResult,
 )
 
+from jiuwenswarm.agents.harness.common.rails import cua_delegation_approval_rail as rail_module
 from jiuwenswarm.agents.harness.common.rails.cua_delegation_approval_rail import (
     CUA_DELEGATION_AUTO_CONFIRM_KEY,
     GATED_CUA_TOOLS,
@@ -197,6 +198,48 @@ def test_gated_actions_follow_agent_core_rules():
     # the enabled capabilities, so it cannot drift from what cua may do.
     # kill_app is denied by agent-core but off by default, so it is not listed.
     assert GATED_CUA_TOOLS == ("launch_app", "type_text")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ui_language", "lead", "options"),
+    [
+        ("zh", "**cua_agent 将操作你的桌面", rail_module._OPTIONS_CN),
+        ("en", "**cua_agent will control your desktop", rail_module._OPTIONS_EN),
+    ],
+)
+async def test_code_mode_card_follows_the_ui_language(monkeypatch, ui_language, lead, options):
+    # Code mode keeps English prompts on purpose, but this card is read by the
+    # user, so it must use the UI language (#8833) like deep mode does.
+    from jiuwenswarm.server.runtime.agent_adapter import interface_code
+
+    monkeypatch.setattr(interface_code, "get_config", lambda: {"preferred_language": ui_language})
+    adapter = interface_code.JiuwenSwarmCodeAdapter()
+    rail = adapter._build_cua_delegation_approval_rail()
+
+    decision = await _first_check(rail, _task_call("cua_agent"))
+
+    assert decision.request.message.startswith(lead)
+    # Every button is in that language too, whichever options the card offers.
+    assert [o["label"] for o in decision.request.ui_options] == [o["label"] for o in options]
+    # Only the card follows the UI; code-mode prompts stay English.
+    assert adapter._resolve_runtime_language() == "en"
+
+
+@pytest.mark.asyncio
+async def test_card_language_is_read_when_the_card_is_raised(monkeypatch):
+    # The rail is built once with the agent and reused across requests, so a
+    # language switched in settings afterwards must still reach the card.
+    from jiuwenswarm.server.runtime.agent_adapter import interface_code
+
+    config = {"preferred_language": "en"}
+    monkeypatch.setattr(interface_code, "get_config", lambda: config)
+    rail = interface_code.JiuwenSwarmCodeAdapter()._build_cua_delegation_approval_rail()
+    config["preferred_language"] = "zh"
+
+    decision = await _first_check(rail, _task_call("cua_agent"))
+
+    assert decision.request.message.startswith("**cua_agent 将操作你的桌面")
 
 
 def test_cron_runs_do_not_mount_the_gate():
