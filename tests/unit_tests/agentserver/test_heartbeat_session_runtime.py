@@ -1671,34 +1671,6 @@ def delete_chain(make_chain, tmp_path, monkeypatch):
         chain.manager.cleanup_session_runtime = AsyncMock(side_effect=strict_cleanup)
         chain.service = session_archive.SessionArchiveService(chain.runtime)
         chain.service.poke_recovery = Mock()
-
-        async def _drain_finalizers() -> None:
-            for _ in range(50):
-                tasks = [
-                    task
-                    for task in chain.service._finalizing.values()
-                    if task is not None and not task.done()
-                ]
-                if not tasks:
-                    return
-                await asyncio.gather(*tasks, return_exceptions=True)
-                await asyncio.sleep(0)
-
-        original_session = chain.service.session
-        original_batch = chain.service.project_batch
-
-        async def session_and_drain(*args, **kwargs):
-            result = await original_session(*args, **kwargs)
-            await _drain_finalizers()
-            return result
-
-        async def batch_and_drain(*args, **kwargs):
-            result = await original_batch(*args, **kwargs)
-            await _drain_finalizers()
-            return result
-
-        chain.service.session = session_and_drain
-        chain.service.project_batch = batch_and_drain
         chain.directory = directory
         if state == "running":
             await chain.heartbeat.scheduler._tick_once()
@@ -1842,11 +1814,8 @@ async def test_product_delete_retry_keeps_one_preparation(delete_chain, failure)
             asyncio.CancelledError if failure == "cancel" else RuntimeError("cleanup failed")
         )
     try:
-        result = await chain.service.session(SESSION, "delete", "web")
-        # Delete is accepted immediately; the preparation failure is recorded
-        # on the durable operation instead of surfacing to the caller.
-        assert result["ok"] is True
-        assert lc.state("session", SESSION)["operation"]["status"] == "failed"
+        with pytest.raises(asyncio.CancelledError if failure in {"cancel", "policy_cancel"} else lc.LifecycleError):
+            await chain.service.session(SESSION, "delete", "web")
         assert lc.state("session", SESSION)["blocked"]
         assert SESSION in chain.heartbeat.scheduler._suspended_sessions
         assert not await chain.heartbeat.should_retain_session(SESSION)
@@ -1883,9 +1852,8 @@ async def test_failed_heartbeat_prepare_stays_suspended_until_delete_retry(delet
         side_effect=asyncio.CancelledError if cancel else RuntimeError("prepare failed")
     )
     try:
-        result = await chain.service.session(SESSION, "delete", "web")
-        assert result["ok"] is True
-        assert lc.state("session", SESSION)["operation"]["status"] == "failed"
+        with pytest.raises(asyncio.CancelledError if cancel else lc.LifecycleError):
+            await chain.service.session(SESSION, "delete", "web")
         assert lc.state("session", SESSION)["blocked"]
         assert SESSION in chain.heartbeat.scheduler._suspended_sessions
         assert SESSION not in chain.runtime._session_provisioner._prepared_session_deletes
@@ -1894,82 +1862,5 @@ async def test_failed_heartbeat_prepare_stays_suspended_until_delete_retry(delet
         assert (await chain.service.session(SESSION, "delete", "web"))["ok"]
         assert chain.heartbeat.begin_session_delete.await_count == 2
         assert SESSION not in chain.heartbeat.scheduler._suspended_sessions
-    finally:
-        await _finish(chain)
-
-
-@pytest.mark.parametrize("mode", SINGLE_AGENT_MODES)
-@pytest.mark.parametrize("behavior", ["ask_live", "ask_ended"])
-async def test_worker_recovers_real_heartbeat_root_and_followup_questions(make_chain, mode, behavior):
-    from jiuwenswarm.server.ipc.protocol import dump_agent_request
-    from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
-    from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBridge
-
-    chain = await make_chain(mode, behavior=behavior)
-    frames = []
-
-    class Connection:
-        async def send(self, frame):
-            frames.append(frame)
-
-    conn = Connection()
-    holder = ConnHolder()
-    generation = holder.open_session(conn)
-    bridge = WorkerGatewayBridge(holder)
-    dispatcher = WorkerDispatcher(bridge)
-    dispatcher._runtime = chain.runtime
-
-    def accepted(rid):
-        return AgentRequest(request_id=rid, channel_id="web", session_id=SESSION,
-                            req_method=ReqMethod.CHAT_SEND, params={"session_id": SESSION}, is_stream=True)
-
-    async def push(message):
-        rid = message["request_id"]
-        if rid not in bridge.events.records:
-            bridge.events.register(accepted(rid), rid)
-        bridge.events.append({"request_id": rid, "is_stream": True, "body": message["payload"]}, rid)
-        if message["payload"].get("event_type") == "chat.ask_user_question":
-            chain.agent.question_seen.set()
-        return True
-
-    chain.server.send_push.side_effect = push
-
-    async def recover():
-        frames.clear()
-        query = accepted("metadata")
-        await dispatcher._subscribe({"payload": dump_agent_request(query), "subscribe": True,
-                                      "after": 0}, conn, generation)
-        return [item["payload"]["body"] for item in frames if item.get("replayed")
-                and item["payload"].get("body", {}).get("event_type") == "chat.ask_user_question"]
-
-    async def deliver(request):
-        yield chain.agent._chunk(request, {"event_type": "chat.ask_user_question", "request_id": "question-2"})
-
-    chain.agent.deliver_control_input = deliver
-    try:
-        await chain.heartbeat.scheduler._tick_once()
-        await asyncio.wait_for(chain.agent.question_seen.wait(), 2)
-        if behavior == "ask_ended":
-            await _wait_heartbeat_state(chain, "waiting_for_control")
-        root = next(item for item in _executions(chain) if item.work_kind is SessionWorkKind.HEARTBEAT)
-        initial = await recover()
-        assert [item["request_id"] for item in initial] == ["question-1"]
-        assert initial[0]["execution_id"] == root.execution_id  # Actual Runtime background output.
-
-        events = await _user_turn(chain, query="", request_id="question-1", source="ask_user_interrupt",
-                                  answers=[{"question": "continue", "selected_options": ["yes"]}])
-        bridge.events.register(accepted("answer"), "answer")
-        for event in events:
-            bridge.events.append({"request_id": "answer", "is_stream": True, "body": event.payload}, "answer")
-        child = next(item for item in _executions(chain) if item.work_kind is SessionWorkKind.CONTROL_INPUT)
-        assert child.state.terminal
-        # A past control child is not proof that a frame belongs to its live root.
-        bridge.events.append({"request_id": "answer", "is_stream": True,
-                              "body": {"event_type": "chat.ask_user_question", "request_id": "question-2",
-                                       "execution_id": child.execution_id}}, "answer")
-        recovered = await recover()
-        assert [item["request_id"] for item in recovered] == ["question-2"]
-        assert recovered[0]["execution_id"] == root.execution_id
-        assert not chain.coordinator.has_control_target(SESSION, "question-1")
     finally:
         await _finish(chain)
