@@ -178,6 +178,13 @@ class AutoPermissionBeforeToolMixin:
     async def before_tool_call(self, *args: Any, **kwargs: Any) -> Any:
         """Evaluate the current root tool call once."""
 
+        from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
+
+        levels = RUN_PERMISSIONS.get()
+        if levels is None:
+            # SDK workers can predate the adapter's request ContextVar binding.
+            levels = getattr(self, "run_permission_levels", None)
+        run_token = RUN_PERMISSIONS.set(levels)
         native_token = NATIVE_PATH_ACCESS.set(None)
         try:
             invocation = _extract_invocation(args, kwargs)
@@ -199,6 +206,7 @@ class AutoPermissionBeforeToolMixin:
             raise
         finally:
             NATIVE_PATH_ACCESS.reset(native_token)
+            RUN_PERMISSIONS.reset(run_token)
 
     async def _client_tool_permission(
         self, args: tuple[Any, ...], kwargs: dict[str, Any], invocation: ToolInvocation
@@ -626,6 +634,7 @@ class AutoPermissionBeforeToolMixin:
             domain_route is not None and domain_route.reason in {
                 "subagent_runtime_control_binding_unverified",
                 "readonly_tool_binding_unverified",
+                "readonly_tool_arguments_unverified",
             }
         )
         if policy_evaluation.level == ALLOW_LEVEL and not binding_unverified:
