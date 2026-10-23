@@ -42,7 +42,8 @@ export function VirtualTimeline({
     getItemKey,
     estimateSize: () => ESTIMATED_ROW_HEIGHT,
     initialMeasurementsCache: initialState?.measurements,
-    initialOffset: () => initialState?.offset ?? items.length * (ESTIMATED_ROW_HEIGHT + ROW_GAP),
+    // The host handles initial bottom scrolling after layout; an estimated total can exceed the scrollable range.
+    initialOffset: () => initialState?.offset ?? 0,
     initialRect: { width: 0, height: 1 },
     gap: ROW_GAP,
     overscan: 5,

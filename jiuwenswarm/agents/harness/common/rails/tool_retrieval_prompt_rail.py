@@ -341,12 +341,20 @@ class ToolRetrievalPromptRail(DeepAgentRail):
             raise target_result
         target_success = getattr(target_result, "success", None)
         if target_success is False:
+            raw_error = str(
+                getattr(target_result, "error", None)
+                or getattr(target_message, "content", None)
+                or target_result
+            )
             return ToolOutput(
                 success=False,
-                error=str(
-                    getattr(target_result, "error", None)
-                    or getattr(target_message, "content", None)
-                    or target_result
+                error=(
+                    f"{raw_error} — deferred call to '{target_name}' failed; "
+                    "if the args did not match, re-fetch the exact schema "
+                    f"with tool_search (operation=get_schema, "
+                    f"tool='{target_name}') and resend: args must mirror "
+                    "that schema's parameters object, with object-typed "
+                    "fields as JSON object literals, never JSON strings."
                 ),
             )
         return ToolOutput(
