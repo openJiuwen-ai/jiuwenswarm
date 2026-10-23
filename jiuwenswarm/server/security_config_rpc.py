@@ -302,6 +302,11 @@ async def dispatch_security_config_request(
         raise ValueError("expected_revision must be a string")
     prior_state = service.get_candidate()["apply"] if method != ReqMethod.SECURITY_CONFIG_INITIALIZE else {}
     retry_axes = prior_state.get("sandbox_retry") or {}
+    rollback_snapshot = (
+        service.snapshot_for_rollback()
+        if method == ReqMethod.SECURITY_CONFIG_INITIALIZE
+        or (method != ReqMethod.SECURITY_CONFIG_APPLY and prior_state.get("applied")) else None
+    )
 
     def validate_coverage(permissions, live):
         _check_sandbox_coverage(permissions, live, retry_axes=retry_axes)
@@ -393,6 +398,39 @@ async def dispatch_security_config_request(
                 targets["sandbox"] = "applied"
         except Exception as exc:
             targets["sandbox"] = f"failed: {exc}"
+
+    if rollback_snapshot is not None and targets["sandbox"].startswith("failed:"):
+        try:
+            restored = service.restore_snapshot(rollback_snapshot, expected_revision=revision)
+            old_config = service._read_yaml(service.config_path)
+            rollback_targets = {"rail": "applied", "host_exit": "applied", "sandbox": "applied"}
+            try:
+                publish_host_exit_policy_from_config(old_config)
+            except Exception as exc:
+                rollback_targets["host_exit"] = f"failed: {exc}"
+            try:
+                await agent_manager.reload_agents_config(old_config, None)
+            except Exception as exc:
+                rollback_targets["rail"] = f"failed: {exc}"
+            try:
+                restarted = await restart_sandboxes({})
+                if restarted.get("network_status") == "externally_managed" and net_changed:
+                    rollback_targets["sandbox"] = "external_pending"
+            except Exception as exc:
+                rollback_targets["sandbox"] = f"failed: {exc}"
+            rollback_applied = all(value in {"applied", "not_required"} for value in rollback_targets.values())
+            if restored is not None and not rollback_applied:
+                restored = service.record_apply(
+                    restored["revision"], rollback_targets,
+                    sandbox_retry={"file": bool(file_changed), "network": bool(net_changed)},
+                )
+            return {
+                "saved": False, "applied": False,
+                "rolled_back": rollback_applied,
+                "failed_targets": targets, "apply": restored,
+            }
+        except Exception as exc:
+            targets["sandbox"] = f"{targets['sandbox']}; rollback failed: {exc}"
 
     result = service.record_apply(
         revision, targets,

@@ -351,6 +351,47 @@ class SecurityConfigService:
             self._write_state(state)
             return {"config": published, "previous": previous, "apply": deepcopy(state)}
 
+    def snapshot_for_rollback(self) -> dict[str, Any]:
+        """Capture the last accepted files before a managed update changes them."""
+        with self._thread_lock, self._locked():
+            paths = (self.config_path, self.settings_path, self.local_path, self.cloud_path)
+            return {
+                "files": {path: path.read_bytes() if path.is_file() else None for path in paths},
+                "state": deepcopy(self._state()) if self.state_path.is_file() else None,
+            }
+
+    def restore_snapshot(self, snapshot: dict[str, Any], *, expected_revision: str) -> dict[str, Any] | None:
+        """Discard a failed revision and restore its predecessor's disk state."""
+        from jiuwenswarm.common.config import _atomic_replace, _config_lock_path
+
+        with self._thread_lock, self._locked():
+            if self._state()["revision"] != expected_revision:
+                raise ValueError("VERSION_CONFLICT")
+
+            def restore(path: Path, contents: bytes | None) -> None:
+                if contents is None:
+                    path.unlink(missing_ok=True)
+                    return
+                temp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+                try:
+                    temp.write_bytes(contents)
+                    _atomic_replace(temp, path)
+                finally:
+                    temp.unlink(missing_ok=True)
+
+            files = snapshot["files"]
+            with portalocker.Lock(str(_config_lock_path(self.config_path)), timeout=10):
+                restore(self.config_path, files[self.config_path])
+            for path in (self.settings_path, self.local_path, self.cloud_path):
+                restore(path, files[path])
+            old_state = snapshot["state"]
+            if old_state is None:
+                self.state_path.unlink(missing_ok=True)
+                self.initial_snapshot_path.unlink(missing_ok=True)
+            else:
+                self._write_state(old_state)
+            return deepcopy(old_state)
+
     def record_apply(
         self, revision: str, targets: dict[str, str],
         *, sandbox_file_skipped: list[dict[str, str]] | None = None,
