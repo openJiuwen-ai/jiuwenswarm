@@ -3,7 +3,6 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
-
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import BaseError, build_error
 from openjiuwen.core.foundation.llm import (
@@ -15,16 +14,16 @@ from openjiuwen.core.foundation.llm import (
 from jiuwenswarm.symphony.adapter import llm_config_signature
 from jiuwenswarm.symphony.llm import (
     LLMConfig,
+    _record_usage_from_response,
     create_llm_client,
     create_model_response_observer,
     extract_message_content,
     get_llm_token_usage_summary,
     probe_model_connection,
+    reasoning_disabled_request_overrides,
     register_request_model,
-    resolve_request_llm_config,
     reset_llm_token_usage,
-    thinking_disabled_request_overrides,
-    _record_usage_from_response,
+    resolve_request_llm_config,
 )
 
 
@@ -77,22 +76,14 @@ def test_model_request_kwargs_force_kimi_sampling_through_aggregator() -> None:
     assert config.model_request_kwargs()["top_p"] == 0.95
 
 
-def test_thinking_disabled_request_overrides_returns_isolated_compatibility_fields():
-    first = thinking_disabled_request_overrides()
-    second = thinking_disabled_request_overrides()
+def test_reasoning_disabled_request_overrides_returns_neutral_intent():
+    first = reasoning_disabled_request_overrides()
+    second = reasoning_disabled_request_overrides()
 
-    assert first == {
-        "extra_body": {
-            "thinking": {"type": "disabled"},
-            "enable_thinking": False,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
-    }
-    first["extra_body"]["thinking"]["type"] = "enabled"
-    first["extra_body"]["chat_template_kwargs"]["enable_thinking"] = True
+    assert first == {"reasoning": {"mode": "disabled"}}
+    first["reasoning"]["mode"] = "enabled"
 
-    assert second["extra_body"]["thinking"]["type"] == "disabled"
-    assert second["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+    assert second == {"reasoning": {"mode": "disabled"}}
 
 
 def test_extract_message_content_supports_openjiuwen_response_shape():
@@ -268,12 +259,9 @@ def test_llm_config_removes_internal_reasoning_level():
     request_kwargs = config.model_request_kwargs()
 
     assert "reasoning_level" not in request_kwargs
-    assert "reasoning" not in request_kwargs
+    assert request_kwargs["reasoning"] == {"mode": "disabled"}
     assert request_kwargs["max_tokens"] == 99
-    assert (
-        request_kwargs["extra_body"]
-        == thinking_disabled_request_overrides()["extra_body"]
-    )
+    assert "extra_body" not in request_kwargs
 
 
 def test_llm_config_forces_high_reasoning_config_to_disabled():
@@ -306,19 +294,16 @@ def test_llm_config_forces_high_reasoning_config_to_disabled():
     request_kwargs = config.model_request_kwargs()
 
     assert "reasoning_level" not in request_kwargs
-    assert "reasoning" not in request_kwargs
+    assert request_kwargs["reasoning"] == {"mode": "disabled"}
     assert "reasoning_effort" not in request_kwargs
     assert "thinking" not in request_kwargs
     assert "enable_thinking" not in request_kwargs
     assert "chat_template_kwargs" not in request_kwargs
     assert request_kwargs["max_tokens"] == 99
-    assert request_kwargs["extra_body"] == {
-        "custom_option": {"enabled": True},
-        **thinking_disabled_request_overrides()["extra_body"],
-    }
+    assert request_kwargs["extra_body"] == {"custom_option": {"enabled": True}}
 
 
-def test_llm_config_legacy_controls_reach_core_without_neutral_reasoning_plan(
+def test_llm_config_legacy_controls_become_neutral_reasoning_plan(
     monkeypatch,
 ):
     config = LLMConfig.from_model_entry(
@@ -343,11 +328,39 @@ def test_llm_config_legacy_controls_reach_core_without_neutral_reasoning_plan(
     model = config.create_model()
 
     assert isinstance(model, FakeModel)
-    assert captured["request"].reasoning is None
-    assert (
-        captured["request"].extra_body
-        == thinking_disabled_request_overrides()["extra_body"]
-    )
+    assert captured["request"].reasoning.mode == "disabled"
+    assert getattr(captured["request"], "extra_body", None) is None
+
+
+def test_glm53_variants_share_the_same_provider_neutral_graph_config():
+    requests = []
+    for model_name in ("GLM-5.3", "GLM-5.3-Flash"):
+        config = LLMConfig.from_model_entry(
+            _model_entry(
+                client={"model_name": model_name},
+                request={
+                    "extra_body": {
+                        "custom_option": "kept",
+                        "thinking": {"type": "enabled"},
+                    }
+                },
+            )
+        )
+        requests.append(config.model_request_kwargs())
+
+    assert requests[0]["model"] == "GLM-5.3"
+    assert requests[1]["model"] == "GLM-5.3-Flash"
+    for request in requests:
+        assert request["reasoning"] == {"mode": "disabled"}
+        assert request["extra_body"] == {"custom_option": "kept"}
+        assert "thinking" not in request
+        assert "enable_thinking" not in request
+
+    without_model = [
+        {key: value for key, value in request.items() if key != "model"}
+        for request in requests
+    ]
+    assert without_model[0] == without_model[1]
 
 
 def test_llm_config_owns_nested_model_entry_data():
@@ -464,7 +477,8 @@ async def test_probe_model_connection_uses_bounded_low_cost_request(monkeypatch)
         {
             "messages": [{"role": "user", "content": "Hi"}],
             "max_tokens": 16,
-            "timeout": 25,
+            "timeout": 60,
+            "reasoning": {"mode": "auto"},
         }
     ]
 
