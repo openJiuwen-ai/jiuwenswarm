@@ -558,15 +558,7 @@
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
-      "jevTab": "Decision models",
-      "jevTabHelp": "Optional. Enhances decision-making for browser subagents and multi-model collaboration in single-agent conversations.",
-      "jevModels": "Jev models",
-      "jevDeleteFailed": "Failed to clear the Jev configuration. Please try again.",
-      "jevEmpty": "No Jev model configured",
-      "jevEmptyDescription": "Add one Jev model to share between browser decisions and multi-model collaboration.",
-      "jevDisplayNamePlaceholder": "Enter a model display name",
-      "jevApiBasePlaceholder": "e.g. https://jev.example.com/v1",
-      "jevModelHint": "Enter a Jev model name supported by the provider, such as typesafe/jev-1.13 or jev-1.13.0.",
+      "jevTab": "Jev",
       "modelGroups": "Model groups",
       "modelGroupsManagement": "Model group management",
       "empty": "No models configured",
@@ -794,6 +786,8 @@
       "providerTypesafe": "TypeSafe",
       "providerCustom": "Custom",
       "jevConfig": "Jev Model Configuration",
+      "jevKeyMissing": "Jev API key is not configured. Configure it under Models > Jev first.",
+      "clearSharedJevConfirm": "Clear this provider's Jev key? Browser decisions will return to LLM only, and JEV decision for multi-model collaboration will be disabled.",
       "jevBaseInvalid": "Enter an HTTPS API base URL without credentials, query parameters or fragments",
       "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
@@ -874,7 +868,7 @@
       },
       "decision_mode": {
         "title": "Browser decisions",
-        "description": "Choose who decides each browser step. Jev modes use the shared configuration under Models > Decision models."
+        "description": "Choose who decides each browser step. Jev modes use the shared configuration under Models > Jev."
       },
       "decision_provider": {
         "title": "Jev provider",
@@ -1157,7 +1151,7 @@
       },
       "moa_jev_enabled": {
         "title": "JEV decision",
-        "description": "Use Jev configured under Models > Decision models to decide whether to consult reference models. When off, use the selected model group’s default model to verify execution progress."
+        "description": "Use JEV configured under Models > Jev to verify execution progress. When off, use the selected model group’s default model."
       },
       "moa_verifier_interval": {
         "title": "Verification interval (rounds)",

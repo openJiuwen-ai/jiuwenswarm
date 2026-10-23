@@ -15,6 +15,7 @@ from agent_gateway.common.model_selection import ModelSelection
 
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.browser_settings import resolve_jev_connection
+from jiuwenswarm.common.model_selection import ModelSelection
 from jiuwenswarm.common.moa_config import build_moa_config_from_frontend
 from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 

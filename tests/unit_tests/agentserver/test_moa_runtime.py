@@ -78,7 +78,7 @@ async def test_single_enabled_member_uses_its_model_without_moa(moa_config, jev_
     group["routes"][2]["enabled"] = False
     moa_config["experimental"]["multi_model_collaboration"]["jev_enabled"] = jev_enabled
     if jev_enabled:
-        moa_config["experimental"]["multi_model_collaboration"]["jev"] = {"api_key": "encrypted-jev-key"}
+        monkeypatch.setenv("TYPESAFE_API_KEY", "encrypted-jev-key")
         monkeypatch.setattr(
             "jiuwenswarm.common.config.get_crypto_provider",
             lambda: SimpleNamespace(decrypt=lambda _: "test-jev-key"),
@@ -452,6 +452,7 @@ def test_ordinary_model_and_old_flag_never_enable_moa(moa_config):
 
 @pytest.mark.asyncio
 async def test_jev_interval_and_default_change_affect_next_runtime(moa_config, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "shared-jev-secret")
     monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
     before = await build_moa_runtime(moa_config, SELECTION)
     moa_config["experimental"]["multi_model_collaboration"].update({"jev_enabled": True, "verifier_interval": 1, "jev": {"api_key": "jev-secret"}})
@@ -479,8 +480,9 @@ async def test_shared_jev_config_reaches_actual_client_wire_format(
 
     import httpx
     from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
+    from openjiuwen.core.foundation.llm.system_one.schema import ChoiceQuestion
 
-    from jiuwenswarm.common.browser_config import browser_decision_state
+    from jiuwenswarm.agents.harness.common.browser_config import browser_decision_state
 
     monkeypatch.setenv(key_env, "shared-provider-secret")
     monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
@@ -490,9 +492,8 @@ async def test_shared_jev_config_reaches_actual_client_wire_format(
     moa_config["experimental"]["multi_model_collaboration"].update({
         "jev_enabled": True, "jev": {"api_key": "obsolete-key", "model_name": "obsolete-model"},
     })
-    runtime = build_moa_runtime(moa_config, SELECTION)
     projected = browser_decision_state(moa_config)
-    settings = runtime.config.scorer._settings
+    settings = resolve_moa_settings(moa_config, SELECTION)[0]["jev"]
     assert settings["api_base"] == projected["decision_api_base"]
     assert settings["model_name"] == projected["decision_model"]
     requests = []
@@ -509,16 +510,30 @@ async def test_shared_jev_config_reaches_actual_client_wire_format(
         })
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        scorer = JevProgressScorer(
-            **settings, client_factory=lambda **kwargs: JevSystemOneClient(http_client=client, **kwargs),
+        monkeypatch.setattr(
+            "openjiuwen.core.foundation.llm.system_one.JevSystemOneClient",
+            lambda **kwargs: JevSystemOneClient(http_client=client, **kwargs),
         )
-        assert await scorer("Read the page", ("Read the answer",), 1) == 1.0
+        runtime = await build_moa_runtime(moa_config, SELECTION)
+        try:
+            assert runtime.config.mode == "jev_routed"
+            assert runtime.config.scorer is None
+            response = await runtime.config.jev.client.system_one(
+                [{"role": "user", "content": "Read the page"}],
+                {"progress": ChoiceQuestion(
+                    instructions="Assess progress",
+                    criteria={"A": "Incomplete", "T": "Complete"},
+                )},
+            )
+            assert response.answers["progress"].choice == "T"
+        finally:
+            await runtime.aclose()
     assert len(requests) == 1
     assert str(requests[0].url) == base + endpoint
     assert requests[0].headers["Authorization"] == "Bearer shared-provider-secret"
     assert json.loads(requests[0].content)["model"] == model
     monkeypatch.setenv(key_env, "rotated-shared-key")
-    assert build_moa_runtime(moa_config, SELECTION).fingerprint != runtime.fingerprint
+    assert resolve_moa_settings(moa_config, SELECTION)[2] != runtime.fingerprint
 
 
 @pytest.mark.parametrize("requested,expected", [("model-b", "model:mdl_b"), ("Alias b", "model:mdl_b"), ("login-only-model", "login-only-model"), ("zen-free-model", "zen-free-model")])
@@ -565,6 +580,7 @@ def test_global_default_group_retains_upstream_team_and_cron_priority(moa_config
 
 @pytest.mark.asyncio
 async def test_status_and_single_member_never_construct_jev_transport(moa_config, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "shared-jev-secret")
     moa_config["experimental"]["multi_model_collaboration"].update({
         "jev_enabled": True, "jev": {"api_key": "test-key"},
     })
@@ -582,6 +598,7 @@ async def test_status_and_single_member_never_construct_jev_transport(moa_config
 
 @pytest.mark.asyncio
 async def test_jev_factory_closes_client_on_configuration_failure(moa_config, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "shared-jev-secret")
     import openjiuwen.harness.moa as moa
     from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
 
@@ -701,6 +718,7 @@ async def test_session_start_failure_closes_uncached_child(moa_config, monkeypat
 
 @pytest.mark.asyncio
 async def test_factory_cleanup_error_preserves_original_build_failure(moa_config, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "shared-jev-secret")
     import openjiuwen.harness.moa as moa
     from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
 

@@ -97,6 +97,11 @@ import {
   browserDisplayRevision,
 } from './features/desktopBrowserDisplay';
 import {
+  applyBrowserDisplaySettings,
+  browserDisplayRevision,
+  useDesktopBrowserHeadless,
+} from './features/desktopBrowserDisplay';
+import {
   AgentMode,
   MediaItem,
   type ChatInputProvenance,
@@ -955,6 +960,8 @@ function AppContent({
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
+  const browserAgentActive = useBrowserAgentActivity(sessionId);
+  const browserHeadless = useDesktopBrowserHeadless();
   const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
   const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
@@ -999,25 +1006,31 @@ function AppContent({
     setSingleAgentPanelExpanded(expanded);
   }, [mode, setSingleAgentPanelExpanded, setTeamAreaActiveTab, setTeamAreaExpanded, teamAreaActiveTab]);
 
-  const handleBrowserTaskOpen = useCallback(() => {
-    setHeartbeatPanelOpen(false);
-    setToolPanelHidden(false);
-    if (mode === 'team') {
-      setTeamAreaActiveTab('browser');
-      setTeamAreaExpanded(true);
-    } else {
-      setSingleAgentPanelActiveTab('browser');
-      setSingleAgentPanelExpanded(true);
+  const browserAutoExpandedSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (browserHeadless) {
+      browserAutoExpandedSessionRef.current = null;
+      return;
     }
+    if (!window.jiuwenDesktop?.isElectron || !browserAgentActive) return;
+    // Electron 内置浏览器页签只在浏览器 Agent 真正被调用后出现；每个会话只自动
+    // 展开一次，之后尊重用户手动收起的选择。team 模式不抢 tab，等回到单 agent
+    // 模式再展开。
+    if (mode === 'team') return;
+    if (browserAutoExpandedSessionRef.current === sessionId) return;
+    browserAutoExpandedSessionRef.current = sessionId;
+    setToolPanelHidden(false);
+    setSingleAgentPanelActiveTab('browser');
+    setSingleAgentPanelExpanded(true);
   }, [
+    browserAgentActive,
+    browserHeadless,
     mode,
+    sessionId,
     setSingleAgentPanelActiveTab,
     setSingleAgentPanelExpanded,
-    setTeamAreaActiveTab,
-    setTeamAreaExpanded,
     setToolPanelHidden,
   ]);
-  useDesktopBrowserAutoOpen(sessionId, handleBrowserTaskOpen);
 
   const handleOpenCodeReview = useCallback((target: CodeReviewTarget) => {
     setHeartbeatPanelOpen(false);

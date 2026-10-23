@@ -141,7 +141,7 @@ export function SettingsPageLayout({
       setActiveModuleId(nextId);
       onNavigate?.();
     },
-    [active?.module.id, saveStatus.status, unsavedChanges, onNavigate],
+    [active?.module.id, saveQueue, saveStatus.status, unsavedChanges, onNavigate],
   );
   if (!active) return null;
   return (
@@ -205,7 +205,9 @@ export function SettingsPageLayout({
               ) : saveStatus.status === 'error' ? (
                 <span className="settings-page__status settings-page__status--error" role="alert" data-testid="settings-save-status" data-variant="error">
                   <CircleAlert size={14} aria-hidden />
-                  {saveStatus.error || t('settingsPanel.feedback.saveFailed')}
+                  {missingJevKey
+                    ? t('settingsPanel.browser.jevKeyMissing')
+                    : saveStatus.error || t('settingsPanel.feedback.saveFailed')}
                 </span>
               ) : null}
             </header>

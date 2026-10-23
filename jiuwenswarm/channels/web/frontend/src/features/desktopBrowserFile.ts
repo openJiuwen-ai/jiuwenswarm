@@ -4,8 +4,7 @@ import { useChatStore } from '../stores/chatStore';
 import { useSessionStore } from '../stores/sessionStore';
 import { openSingleAgentPanel } from './singleAgentPanelState';
 import { openTeamPanel } from './teamPanelState';
-import { isDesktopBrowserHeadless, useDesktopBrowserHeadless } from './desktopBrowserDisplay';
-import type { ElectronBrowserState } from '../types/electron';
+import { isDesktopBrowserHeadless } from './desktopBrowserDisplay';
 
 const DESKTOP_BROWSER_TAB_EVENT = 'jiuwenclaw-desktop-browser-tab-change';
 const DESKTOP_BROWSER_TAB_FLAGS_KEY = 'jiuwenclaw_desktop_browser_tab_flags';

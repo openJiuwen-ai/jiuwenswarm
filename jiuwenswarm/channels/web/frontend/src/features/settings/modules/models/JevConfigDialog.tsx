@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Form, FormDialog, useForm, useFormState, type FormItem } from '../../../../components/form';
-import { getModelLogoUrl } from '../../../../assets/providers';
 import { SettingsConfirmDialog } from '../../components';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
@@ -10,14 +9,12 @@ import { JEV_PRESETS, type JevDraft, type JevProvider } from '../browser/jevSett
 const BROWSER_PROVIDERS: readonly JevProvider[] = ['openrouter', 'typesafe', 'custom'];
 
 export function JevConfigDialog({
-  mode,
   initialValues,
   createProviderDraft,
   validate,
   save,
   onClose,
 }: {
-  mode: 'add' | 'edit';
   initialValues: JevDraft;
   createProviderDraft: (provider: JevProvider) => JevDraft;
   validate: (draft: JevDraft) => Partial<Record<keyof JevDraft, string>>;
@@ -32,7 +29,6 @@ export function JevConfigDialog({
   const values = form.getValues();
   const drafts = useRef<Partial<Record<JevProvider, JevDraft>>>({});
   const previousProvider = useRef(values.provider);
-  const previousModel = useRef(values.model);
   const busy = useRef(false);
   const [submitting, setSubmitting] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -48,33 +44,15 @@ export function JevConfigDialog({
       label: t('settingsPanel.models.vendor'),
       component: 'select',
       required: true,
-      placeholder: t('settingsPanel.models.vendorPlaceholder'),
       options: BROWSER_PROVIDERS.map((provider) => ({
         value: provider,
-        label: (
-          <span
-            className="settings-model-provider-select__value"
-            data-testid="settings-models-jev-provider-option-label"
-            data-variant={provider}
-          >
-            <img src={getModelLogoUrl({ vendor_key: provider })} alt="" aria-hidden />
-            <span>{provider === 'custom' ? t('settingsPanel.browser.providerCustom') : JEV_PRESETS[provider].label}</span>
-          </span>
-        ),
+        label: provider === 'custom' ? t('settingsPanel.browser.providerCustom') : JEV_PRESETS[provider].label,
       })),
       onChange: (value) => {
         const provider = value as JevProvider;
-        const current = form.getValues();
-        if (previousProvider.current) {
-          drafts.current[previousProvider.current] = { ...current, provider: previousProvider.current };
-        }
-        const next = drafts.current[provider] ?? createProviderDraft(provider);
-        if (!drafts.current[provider] && current.display_name.trim() !== current.model.trim()) {
-          next.display_name = current.display_name;
-        }
-        form.setValues(next);
+        drafts.current[previousProvider.current] = { ...form.getValues(), provider: previousProvider.current };
+        form.setValues(drafts.current[provider] ?? createProviderDraft(provider));
         previousProvider.current = provider;
-        previousModel.current = next.model;
         form.clearValidate();
         setSaveError('');
       },
@@ -86,7 +64,7 @@ export function JevConfigDialog({
       label: t('settingsPanel.fields.api_base.title'),
       component: 'input',
       required: true,
-      placeholder: t('settingsPanel.models.jevApiBasePlaceholder'),
+      placeholder: 'https://example.com/v1',
     });
   }
   items.push(
@@ -96,33 +74,10 @@ export function JevConfigDialog({
       component: 'input',
       type: 'password',
       required: true,
-      disabled: !values.provider,
       placeholder: t('settingsPanel.fields.api_key.placeholder'),
       passwordVisibilityLabels: { show: t('settingsPanel.common.showValue'), hide: t('settingsPanel.common.hideValue') },
     },
-    {
-      name: 'model',
-      label: t('settingsPanel.models.model'),
-      component: 'input',
-      required: true,
-      disabled: !values.provider,
-      helpTips: t('settingsPanel.models.jevModelHint'),
-      placeholder: values.provider ? JEV_PRESETS[values.provider].model : '',
-      onBlur: (_value, draft) => {
-        if (!draft.display_name.trim() || draft.display_name.trim() === previousModel.current.trim()) {
-          form.setFieldValue('display_name', draft.model.trim());
-        }
-        previousModel.current = draft.model;
-      },
-    },
-    {
-      name: 'display_name',
-      label: t('settingsPanel.models.customName'),
-      component: 'input',
-      required: true,
-      disabled: !values.provider,
-      placeholder: t('settingsPanel.models.jevDisplayNamePlaceholder'),
-    },
+    { name: 'model', label: t('settingsPanel.models.model'), component: 'input', required: true },
   );
   const confirm = async () => {
     if (busy.current || !isConnected) return;
@@ -145,12 +100,11 @@ export function JevConfigDialog({
     <>
       <FormDialog
         open
-        title={t(mode === 'add' ? 'settingsPanel.models.addModel' : 'settingsPanel.models.editModel')}
+        title={t('settingsPanel.browser.jevConfig')}
         submitting={submitting}
         confirmDisabled={!isConnected}
-        confirmLabel={t('common.confirm')}
+        confirmLabel={t('common.save')}
         cancelLabel={t('common.cancel')}
-        dialogClassName="settings-model-dialog"
         testIdPrefix={testIdPrefix}
         onConfirm={() => void confirm()}
         onCancel={requestClose}
@@ -162,7 +116,7 @@ export function JevConfigDialog({
           showOptional={false}
           optionalText={t('common.optional')}
           testIdPrefix={testIdPrefix}
-          rules={Object.fromEntries(['provider', 'api_base', 'api_key', 'model', 'display_name'].map((name) => [name, [{
+          rules={Object.fromEntries(['api_base', 'api_key', 'model'].map((name) => [name, [{
             validator: (_value: unknown, draft: JevDraft) => {
               const key = validate(draft)[name as keyof JevDraft];
               return key ? t(key) : undefined;

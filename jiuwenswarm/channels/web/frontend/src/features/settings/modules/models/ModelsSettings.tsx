@@ -20,6 +20,7 @@ import { ModelGroupDialog } from './ModelGroupDialog';
 import { ModelGroupsSettings } from './ModelGroupsSettings';
 import { parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
 import { formatModelMetadata, getModelDisplayName } from './modelPresentation';
+import { JevSettings } from './JevSettings';
 import {
   extractModelSelectionReferences,
   formatModelSelectionReferenceScopes,
