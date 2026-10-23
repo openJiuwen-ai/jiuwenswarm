@@ -27,6 +27,7 @@ from jiuwenswarm.common.mode_matrix import (
     normalize_work_mode,
     resolve_new_canonical_mode,
 )
+from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     is_auto_permission_enabled,
     resolve_declared_auto_workspace,
@@ -54,7 +55,7 @@ def get_team_manager(channel_id: str | None = None) -> Any:
     return resolve(channel_id)
 
 
-ACP_DEFAULT_CAPABILITIES: dict[str, Any] = build_acp_initialize_result()
+ACP_DEFAULT_CAPABILITIES: dict[str, Any] = build_acp_initialize_result(agent_version=get_runtime_version())
 
 
 def _normalize_channel_id(channel_id: str | None) -> str:

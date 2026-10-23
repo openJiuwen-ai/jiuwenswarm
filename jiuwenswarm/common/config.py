@@ -2509,7 +2509,7 @@ def _normalize_builtin_models(value: Any, field_name: str) -> list[dict[str, Any
 
     The catalog lists the models a CLI offers on its own login (a
     subscription), which the team leader may pick per member through
-    ``spawn_external_cli(builtin_model=...)`` / ``set_member_model``. It is
+    ``spawn_teammate(external_cli={"builtin_model": ...})`` / ``set_member_model``. It is
     carried through verbatim to ``ExternalCliAgentSpec.builtin_models``, so
     dropping unknown keys here would silently disable the capability.
 

@@ -1140,6 +1140,7 @@ class AgentRuntime:
                 await self._team_lifecycle().pause_session(
                     context,
                     reason=ExecutionCancelCause.USER_PAUSE.value,
+                    channel_id=request.channel_id,
                 )
             elif intent in {"cancel", "stop"}:
                 await self._team_lifecycle().stop_session(
@@ -3721,8 +3722,8 @@ class AgentRuntime:
     async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
         if request.req_method not in AgentRuntime._chat_turn_methods():
             return
-        from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-        from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
+        from jiuwenswarm.common.hook_event import AgentServerHookEvents
+        from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
         from jiuwenswarm.extensions.registry import ExtensionRegistry
 
         params = request.params if isinstance(request.params, dict) else {}

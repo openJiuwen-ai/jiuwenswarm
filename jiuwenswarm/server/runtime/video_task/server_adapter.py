@@ -23,7 +23,9 @@ class VoiceTaskServerAdapter(GatewayAdapter):
             from jiuwenswarm.server.runtime.session.session_history import (
                 flush_pending_writes, load_history_records,
             )
-            from ..video_files import normalize_file_items
+            from jiuwenswarm.extensions.video_duplex.backend.video_files import (
+                normalize_file_items,
+            )
 
             session = request.session_id or ""
             execution_id = (request.params or {}).get("execution_request_id")

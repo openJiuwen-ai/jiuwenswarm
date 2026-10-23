@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from openjiuwen.core.runner.callback.errors import AbortError
 
-from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import (
+from jiuwenswarm.server.runtime.video_task.rail import (
     VoiceAgentTaskRail,
 )
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
@@ -125,8 +125,8 @@ async def test_callbacks_ignore_ordinary_and_child_requests_and_reject_closed_bi
 
 
 async def test_active_root_without_execution_marker_cannot_bypass_checkpoint(routed_task):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import RemoteTaskEndpoint
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import (
+    from jiuwenswarm.server.runtime.video_task.bridge import RemoteTaskEndpoint
+    from jiuwenswarm.server.runtime.video_task.execution import (
         TaskExecutionBinding,
     )
 

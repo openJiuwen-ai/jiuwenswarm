@@ -16,6 +16,7 @@ import {
   reconcileModelReasoning,
   resolveModelPreset,
   selectProviderDefaultModel,
+  syncDisplayNameWithModelName,
   vendorSelectionKey,
 } from '../node_modules/.cache/settings-refactor/modules/models/modelAdapters.js';
 import { validateModelDraft } from '../node_modules/.cache/settings-refactor/modules/models/modelValidation.js';
@@ -251,7 +252,7 @@ test('provider model options are normalized and provider changes choose a valid 
   assert.equal(unresolvedLegacyDraft.model_input_mode, 'manual');
 });
 
-test('editing a model preserves an empty custom name without deriving it from the model name', () => {
+test('editing a model seeds empty display name from the model name and syncs on model changes', () => {
   const legacyModel = {
     alias: '',
     model_name: 'qwen-existing',
@@ -261,11 +262,67 @@ test('editing a model preserves an empty custom name without deriving it from th
     vendor_key: 'alibaba',
     plan: 'token_plan',
   };
-  assert.equal(createModelDraft(legacyModel, catalog).alias, '');
+  assert.equal(createModelDraft(legacyModel, catalog).alias, 'qwen-existing');
   assert.equal(createModelDraft({ ...legacyModel, alias: 'my-qwen' }, catalog).alias, 'my-qwen');
 
+  assert.equal(
+    syncDisplayNameWithModelName(
+      {
+        alias: '',
+        protocol: 'openai',
+        vendor_selection: CUSTOM_VENDOR_SELECTION,
+        model_name: 'glm-new',
+        model_input_mode: 'manual',
+        api_key: 'secret',
+        api_base: 'https://custom.example/v1',
+        reasoning_level: '',
+        context_window_tokens: '262144',
+        is_default: false,
+      },
+      '',
+    ).alias,
+    'glm-new',
+  );
+  assert.equal(
+    syncDisplayNameWithModelName(
+      {
+        alias: 'qwen-existing',
+        protocol: 'openai',
+        vendor_selection: CUSTOM_VENDOR_SELECTION,
+        model_name: 'glm-new',
+        model_input_mode: 'manual',
+        api_key: 'secret',
+        api_base: 'https://custom.example/v1',
+        reasoning_level: '',
+        context_window_tokens: '262144',
+        is_default: false,
+      },
+      'qwen-existing',
+    ).alias,
+    'glm-new',
+  );
+  assert.equal(
+    syncDisplayNameWithModelName(
+      {
+        alias: 'my-custom',
+        protocol: 'openai',
+        vendor_selection: CUSTOM_VENDOR_SELECTION,
+        model_name: 'glm-new',
+        model_input_mode: 'manual',
+        api_key: 'secret',
+        api_base: 'https://custom.example/v1',
+        reasoning_level: '',
+        context_window_tokens: '262144',
+        is_default: false,
+      },
+      'qwen-existing',
+    ).alias,
+    'my-custom',
+  );
+
   const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
-  assert.doesNotMatch(dialog, /aliasManuallyEdited|syncAliasWithModel/);
+  assert.match(dialog, /syncDisplayNameWithModelName/);
+  assert.match(dialog, /name: 'alias'[\s\S]{0,180}required: true/);
 });
 
 test('custom models never submit vendor metadata and legacy connection fields remain unchanged until edited', () => {
@@ -293,7 +350,7 @@ test('custom models never submit vendor metadata and legacy connection fields re
   assert.equal('endpoint_profile' in edited, false);
 });
 
-test('alias validation is optional, global, exact, and excludes the edited row by model_id or origin_index', () => {
+test('display name validation is required, unique among display names, and excludes the edited row', () => {
   const models = [
     {
       model_name: 'same-model',
@@ -324,15 +381,17 @@ test('alias validation is optional, global, exact, and excludes the edited row b
     context_window_tokens: '262144',
     is_default: false,
   };
-  assert.equal(validateModelDraft(baseDraft, models, undefined, catalog, t).alias, undefined);
+  assert.match(validateModelDraft(baseDraft, models, undefined, catalog, t).alias, /aliasRequired/);
   assert.match(validateModelDraft({ ...baseDraft, alias: 'second' }, models, 3, catalog, t).alias, /aliasConflict/);
-  assert.match(
+  // Matching another model's ID (not its explicit display name) is allowed.
+  assert.equal(
     validateModelDraft({ ...baseDraft, alias: 'same-model' }, models, undefined, catalog, t).alias,
-    /aliasConflict/,
+    undefined,
   );
   assert.equal(validateModelDraft({ ...baseDraft, alias: 'first' }, models, 3, catalog, t).alias, undefined);
   assert.equal(
-    validateModelDraft({ ...baseDraft, model_name: 'same-model' }, models, undefined, catalog, t).model_name,
+    validateModelDraft({ ...baseDraft, alias: 'unique', model_name: 'same-model' }, models, undefined, catalog, t)
+      .model_name,
     undefined,
   );
   assert.match(
@@ -341,7 +400,51 @@ test('alias validation is optional, global, exact, and excludes the edited row b
     /modelNameConflict/,
   );
 
-  // Upsert edit path: entries use model_id without origin_index. Alias equal to own
+  // Legacy peers with empty alias + same model_name: seeding display name from model_name
+  // must not block editing endpoint/key (#5646 / review P2).
+  const legacyDuplicateModels = [
+    {
+      model_id: 'mdl_a',
+      model_name: 'GLM-5.2',
+      alias: '',
+      api_base: 'https://one.example/v1',
+      api_key: 'one',
+      model_provider: 'OpenAI',
+    },
+    {
+      model_id: 'mdl_b',
+      model_name: 'GLM-5.2',
+      alias: '',
+      api_base: 'https://two.example/v1',
+      api_key: 'two',
+      model_provider: 'OpenAI',
+    },
+  ];
+  assert.equal(
+    validateModelDraft(
+      { ...baseDraft, alias: 'GLM-5.2', model_name: 'GLM-5.2' },
+      legacyDuplicateModels,
+      { model_id: 'mdl_a' },
+      catalog,
+      t,
+    ).alias,
+    undefined,
+  );
+  assert.match(
+    validateModelDraft(
+      { ...baseDraft, alias: 'GLM-5.2', model_name: 'GLM-5.2' },
+      [
+        { ...legacyDuplicateModels[0], alias: 'GLM-5.2' },
+        legacyDuplicateModels[1],
+      ],
+      { model_id: 'mdl_b' },
+      catalog,
+      t,
+    ).alias,
+    /aliasConflict/,
+  );
+
+  // Upsert edit path: entries use model_id without origin_index. Display name equal to own
   // model_name must not be treated as a conflict with self.
   const upsertModels = [
     {
@@ -381,6 +484,19 @@ test('alias validation is optional, global, exact, and excludes the edited row b
     ).alias,
     /aliasConflict/,
   );
+});
+
+test('model group dialog validates unique group names and vendor switch keeps display-name sync', () => {
+  const groupDialog = source('src/features/settings/modules/models/ModelGroupDialog.tsx');
+  const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
+  assert.match(groupDialog, /modelGroups/);
+  assert.match(groupDialog, /modelGroupNameConflict/);
+  assert.match(groupDialog, /item === group \|\|[\s\S]{0,120}model_group_id/);
+  assert.match(
+    dialog,
+    /alias === previousModelName \|\| alias === previousSync[\s\S]{0,80}alias: ''/,
+  );
+  assert.match(dialog, /aliasSyncedFromModelName\.current = ''/);
 });
 
 test('model API keys accept 2048 characters and reject longer values', () => {
@@ -579,12 +695,10 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
     page,
     /await saveModel\(next, dialog\.model \? 'model\.edit' : 'model\.add', \{ errorScope: 'caller' \}\)/,
   );
-  assert.match(page, /const customName = model\.alias\?\.trim\(\) \|\| model\.model_name/);
+  assert.match(page, /customName: getModelDisplayName\(model\)/);
+  assert.match(page, /metadata: formatModelMetadata\(model, t\)/);
   assert.match(page, /models\.map\(\(model, index\) => renderModelCard\(model, index\)\)/);
   assert.doesNotMatch(page, /getModelDisplayGroups|setGroupDefaultModel|settings-model-group"/);
-  assert.match(page, /const protocol = displayModelProtocol\(model\)/);
-  assert.match(page, /vendorKey \? getVendorLabel\(vendorKey, t\) : t\('settingsPanel\.models\.customVendor'\)/);
-  assert.match(page, /\[providerLabel, protocolLabel, model\.model_name\]\.join\(' · '\)/);
   assert.match(
     page,
     /<h3[\s\S]{0,240}title=\{presentation\.customName\}[\s\S]{0,240}data-testid="settings-models-card-title"[\s\S]{0,240}>\s*\{presentation\.customName\}\s*<\/h3>/,
@@ -727,7 +841,16 @@ test('model dialog uses provider terminology and validates as part of confirmati
   assert.ok(dialog.indexOf("name: 'api_base'") < dialog.indexOf("name: 'api_key'"));
   assert.ok(dialog.indexOf("name: 'api_key'") < dialog.indexOf("name: 'model_name'"));
   assert.ok(dialog.indexOf("name: 'model_name'") < dialog.indexOf("name: 'alias'"));
-  assert.ok(dialog.indexOf("name: 'alias'") < dialog.indexOf("name: 'reasoning_level'"));
+  assert.ok(dialog.indexOf("name: 'alias'") < dialog.indexOf("name: 'context_window_tokens'"));
+  assert.ok(dialog.indexOf("name: 'context_window_tokens'") < dialog.indexOf("name: 'reasoning_level'"));
+  assert.match(
+    dialog,
+    /name: 'model_name'[\s\S]{0,400}onBlur:[\s\S]{0,220}syncDisplayNameWithModelName/,
+  );
+  assert.doesNotMatch(
+    dialog,
+    /name: 'model_name'[\s\S]{0,220}onChange:[\s\S]{0,180}syncDisplayNameWithModelName/,
+  );
   assert.doesNotMatch(dialog, /updateModelMode|enterModelId|chooseListedModel/);
   assert.match(dialog, /fetchedModelLists\.current\.has\(fetchKey\)/);
   assert.match(dialog, /fetchedModelLists\.current\.clear\(\)/);
@@ -735,9 +858,19 @@ test('model dialog uses provider terminology and validates as part of confirmati
   assert.match(dialog, /result\.source === 'preset'[\s\S]{0,180}updateModelOptions\(\[\]\)/);
   assert.match(dialog, /const updateModelOptions = \(options: readonly string\[\]\)[\s\S]{0,160}setModelOptions/);
   assert.doesNotMatch(dialog, /const updateModelOptions[\s\S]{0,220}form\.setFieldValue\('model_name'/);
-  assert.doesNotMatch(dialog, /aliasManuallyEdited|syncAliasWithModel|form\.validate\('alias'\)/);
+  assert.match(dialog, /syncDisplayNameWithModelName/);
+  assert.match(dialog, /form\.validate\('alias'\)/);
+  assert.match(dialog, /if \(Object\.keys\(errors\)\.length\)/);
   assert.match(dialog, /account \? !openAIAccount\.authenticated : !model && !values\.vendor_selection/);
-  assert.doesNotMatch(dialog, /historicalAliasRequired|history-warning/);
+  assert.doesNotMatch(dialog, /historicalAliasRequired|history-warning|aliasManuallyEdited/);
+  assert.equal(zh.settingsPanel.models.customName, '模型展示名称');
+  assert.equal(zh.settingsPanel.models.validation.aliasRequired, '模型展示名称为必填项');
+  assert.equal(
+    zh.settingsPanel.models.validation.aliasConflict,
+    '模型展示名称必须全局唯一，不能与其他模型的展示名称重复',
+  );
+  assert.equal(en.settingsPanel.models.customName, 'Model display name');
+  assert.equal(en.settingsPanel.models.validation.aliasRequired, 'Model display name is required');
   assert.match(modelNameField, /className="settings-model-name-field__refresh"/);
   assert.match(modelNameField, /className="settings-model-name-field__toggle"/);
   assert.match(
