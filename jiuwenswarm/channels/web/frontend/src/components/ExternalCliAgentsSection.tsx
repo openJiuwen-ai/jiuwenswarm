@@ -1110,6 +1110,18 @@ export function ExternalCliAgentsSection({
             <Loader2 className="settings-spinner h-3.5 w-3.5" />
             {t('config.externalCli.detecting')}
           </span>
+        ) : agentInstalling ? (
+          // One-click install is running: the progress panel below grows the
+          // card (scrollbar appears), so reflect it here too instead of the
+          // stale pre-install badge.
+          <span
+            className="inline-flex items-center gap-1 text-xs text-text-muted"
+            data-testid="settings-panel-external-cli-agent-status"
+            data-variant={cliAgent}
+          >
+            <Loader2 className="settings-spinner h-3.5 w-3.5" />
+            {t('config.externalCli.installPhase.running')}
+          </span>
         ) : !enabled ? (
           <span
             className="inline-flex items-center gap-1 text-xs text-danger"
