@@ -174,6 +174,12 @@ _SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
 # 信号本身无用户可见内容，_parse_stream_chunk 对未知类型返回 None 将其吞掉。
 _RESUME_SIGNAL_CHUNK_TYPE = "__resume_signal__"
 
+# shutdown_context_session_memory 用哨兵区分"属性缺失（框架改名/异型
+# rail）"与"属性合法为 None（未配置或已关闭，框架初始即 None，仅在
+# session_memory_compressor_config.enabled=true 时创建）"——两者日志
+# 级别不同，getattr 默认值无法表达该区分（CR-5）。
+_MISSING_SESSION_MEMORY_MGR = object()
+
 
 def _propagate_stream_source_id(
     src_payload: Any, result: dict[str, Any] | None
@@ -9765,16 +9771,43 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def shutdown_context_session_memory(context_processor_rail: ContextProcessorRail) -> bool:
-        """Stop overlapping semantic session memory through a stable Adapter API."""
-        session_memory_manager = getattr(context_processor_rail, "_session_memory_mgr", None)
-        if session_memory_manager is None:
+        """Stop overlapping semantic session memory through a stable Adapter API.
+
+        三态区分（CR-5），保证日志不失实：
+
+        - manager 在位：shutdown 并置 None，返回 True；
+        - 属性为 None：未配置（框架默认，仅在
+          session_memory_compressor_config.enabled=true 时创建）或已
+          关闭的合法幂等态，debug 即可，不告警；
+        - 属性缺失（agent-core 私有属性被改名 / rail 类型不符）：
+          保留 CR-2 加固的 WARNING——SessionMemoryManager 可能仍在
+          eternal conversation 旁 unnoticed 运行（双记忆后端风险）。
+
+        上游 02957a531 对两种非在位状态都是静默 False；缺失属性告警
+        是本地有意的加强。
+        """
+        session_memory_manager = getattr(
+            context_processor_rail, "_session_memory_mgr", _MISSING_SESSION_MEMORY_MGR
+        )
+        if session_memory_manager is _MISSING_SESSION_MEMORY_MGR:
             # _session_memory_mgr is a private agent-core attribute; a renamed
-            # attribute or an uninitialized rail would otherwise fail silently
+            # attribute or a wrong rail type would otherwise fail silently
             # and leave SessionMemoryManager writing beside eternal conversation.
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] shutdown_context_session_memory found no "
-                "_session_memory_mgr on %r; SessionMemoryManager may keep running "
-                "beside eternal conversation (double memory backend)",
+                "_session_memory_mgr attribute on %r; the framework may have renamed "
+                "it and SessionMemoryManager may keep running beside eternal "
+                "conversation (double memory backend)",
+                type(context_processor_rail).__name__,
+            )
+            return False
+        if session_memory_manager is None:
+            # 合法幂等态：未配置或已成功关闭。上游在 None 时也静默返回
+            # False；这里只留 debug 便于排障，不打 WARNING（CR-5）。
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] shutdown_context_session_memory: "
+                "no active SessionMemoryManager on %r (not configured or "
+                "already shut down)",
                 type(context_processor_rail).__name__,
             )
             return False
