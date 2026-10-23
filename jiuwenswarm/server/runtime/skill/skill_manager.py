@@ -4105,7 +4105,7 @@ class SkillManager:
                 raise RuntimeError("下载文件校验失败（SHA256 不匹配）")
             return body
 
-        artifact_bytes = _download_with_requests()
+        artifact_bytes = await asyncio.to_thread(_download_with_requests)
 
         with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_local_") as tmpdir:
             tmp_path = Path(tmpdir)
