@@ -15,8 +15,10 @@ the call simply returns an empty ``stdout``.  Callers that parse that output
 conclude "nothing found" -- ``is_process_alive()`` reported live processes as
 dead and ``_find_pid_by_port()`` returned ``None`` for a listening port.
 
-Passing an explicit ``encoding`` (plus ``errors="replace"``) makes the decode
-deterministic and independent of the interpreter's UTF-8 mode.
+Passing an explicit ``encoding`` plus a tolerant ``errors`` handler makes the
+decode deterministic and independent of the interpreter's UTF-8 mode.  Both are
+asserted below: an explicit ``encoding`` alone still raises when the bytes do
+not match it, so either one missing leaves the crash reachable.
 """
 
 from __future__ import annotations
@@ -77,8 +79,24 @@ def _keyword(call: ast.Call, name: str):
     return None
 
 
+SAFE_ERROR_HANDLERS = frozenset({"replace", "ignore", "backslashreplace"})
+
+
+def _constant_str(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+@pytest.mark.unit
 def test_text_mode_probes_declare_an_explicit_encoding() -> None:
-    """Every ``subprocess.run(..., text=True)`` in instance_manager pins a codec."""
+    """Every ``subprocess.run(..., text=True)`` in instance_manager pins a codec.
+
+    The error handler is asserted as well as the codec: an explicit
+    ``encoding`` alone still raises from subprocess' reader thread when the
+    bytes do not match it, and that is exactly the failure this test exists to
+    prevent.
+    """
     offenders: list[str] = []
     for path in sorted(INSTANCE_MANAGER_DIR.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -86,15 +104,19 @@ def test_text_mode_probes_declare_an_explicit_encoding() -> None:
             text_kw = _keyword(call, "text")
             if not (isinstance(text_kw, ast.Constant) and text_kw.value is True):
                 continue
+            rel = path.relative_to(ROOT).as_posix()
             if _keyword(call, "encoding") is None:
-                rel = path.relative_to(ROOT).as_posix()
-                offenders.append(f"{rel}:{call.lineno}")
+                offenders.append(f"{rel}:{call.lineno} (missing encoding=)")
+                continue
+            errors = _constant_str(_keyword(call, "errors"))
+            if errors not in SAFE_ERROR_HANDLERS:
+                offenders.append(f"{rel}:{call.lineno} (errors={errors!r})")
 
     assert not offenders, (
-        "subprocess.run(..., text=True) must pass an explicit 'encoding=' (and "
-        "'errors=\"replace\"') so Windows console output is never decoded with an "
-        "implicit codec chosen by the interpreter's UTF-8 mode: "
-        + ", ".join(offenders)
+        "subprocess.run(..., text=True) must pin 'encoding=' plus a tolerant "
+        "'errors=' (one of " + ", ".join(sorted(SAFE_ERROR_HANDLERS)) + "), so "
+        "Windows console output is never decoded with a codec chosen by the "
+        "interpreter's UTF-8 mode: " + ", ".join(offenders)
     )
 
 
