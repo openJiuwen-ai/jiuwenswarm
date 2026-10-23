@@ -2126,6 +2126,10 @@ async def _run(
         WebChannel,
         WebChannelConfig,
     )
+    from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.gateway.cleanup import start_background_cleanup
+    from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
     from jiuwenswarm.gateway.cron import (
         CronController,
         CronSchedulerService,

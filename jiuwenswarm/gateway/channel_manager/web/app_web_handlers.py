@@ -3601,9 +3601,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     ws, req_id, ok=False, error="initial_dir must be string", code="BAD_REQUEST",
                 )
                 return
-            from jiuwenswarm.channels.web.directory_picker import (
-                select_directory_native,
-            )
+            from jiuwenswarm.gateway.channel_manager.web.directory_picker import select_directory_native
             try:
                 selected = await asyncio.to_thread(
                     select_directory_native,
@@ -3658,7 +3656,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     ws, req_id, ok=False, error="allow_multiple must be boolean", code="BAD_REQUEST",
                 )
                 return
-            from jiuwenswarm.channels.web.file_picker import select_and_describe_files
+            from jiuwenswarm.gateway.channel_manager.web.file_picker import select_and_describe_files
             try:
                 selected = await asyncio.to_thread(
                     select_and_describe_files,
@@ -3713,7 +3711,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if isinstance(initial_path, str) and initial_path.strip():
             resolved_initial_dir = str(Path(initial_path.strip()).expanduser().parent)
 
-        from jiuwenswarm.channels.web.directory_picker import select_file_native
+        from jiuwenswarm.gateway.channel_manager.web.directory_picker import select_file_native
 
         try:
             selected = await asyncio.to_thread(
@@ -4966,7 +4964,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             deleted = await cc.delete_job(job_id)
         except Exception as exc:
-            from jiuwenswarm.common.lifecycle_errors import LifecycleError
+            from jiuwenswarm.gateway.lifecycle_errors import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code=code

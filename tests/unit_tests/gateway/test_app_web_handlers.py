@@ -735,7 +735,7 @@ async def test_path_select_file_returns_selected_path(
         return selected_path
 
     monkeypatch.setattr(
-        "jiuwenswarm.channels.web.directory_picker.select_file_native",
+        "jiuwenswarm.gateway.channel_manager.web.directory_picker.select_file_native",
         fake_select_file_native,
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
@@ -764,7 +764,7 @@ async def test_path_select_file_returns_selected_path(
 async def test_path_select_file_returns_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = FakeWebChannel()
     monkeypatch.setattr(
-        "jiuwenswarm.channels.web.directory_picker.select_file_native",
+        "jiuwenswarm.gateway.channel_manager.web.directory_picker.select_file_native",
         lambda **_: None,
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
