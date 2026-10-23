@@ -2870,6 +2870,37 @@ export const ChatPanel = React.memo(function ChatPanel({
                   </>
                 )}
               </div>
+              <div className="chat-welcome__composer" data-testid="chat-panel-welcome-composer">
+                <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
+                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
+                <InterruptResultBubble />
+                <InteractionSlot onSubmit={onUserAnswer} />
+                <InputArea
+                  ref={inputAreaRef}
+                  onSubmit={handleSendMessage}
+                  onEnsureSession={onEnsureSession}
+                  onForkSession={onForkSession}
+                  onInputIntent={handleInputIntent}
+                  onPersistMedia={onPersistMedia}
+                  onPersistDocuments={onPersistDocuments}
+                  onDiscardMedia={onDiscardMedia}
+                  onInterrupt={onInterrupt}
+                  onCancel={onCancel}
+                  onSwitchMode={onSwitchMode}
+                  isProcessing={isProcessing}
+                  autoFocusKey={autoFocusKey}
+                  onNavigateToSkills={onNavigateToSkills}
+                  onNavigateToAgents={onNavigateToAgents}
+                  onAgentGroupIdentityChange={handleTeamGroupIdentityChange}
+                  permissionProfile={permissionProfile}
+                  onSavePermission={onSavePermission}
+                  onSetGoal={onSetGoal}
+                  onPauseGoal={onPauseGoal}
+                  onResumeGoal={onResumeGoal}
+                  onRefreshGoal={onRefreshGoal}
+                  onClearGoal={onClearGoal}
+                />
+              </div>
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
                 <p className="chat-suggestions__label" data-testid="chat-panel-welcome-recommendation-label">
                   {t('chat.topicStarter.recommendations')}
@@ -2928,37 +2959,6 @@ export const ChatPanel = React.memo(function ChatPanel({
                     />
                   );
                 })}
-              </div>
-              <div className="chat-welcome__composer" data-testid="chat-panel-welcome-composer">
-                <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
-                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
-                <InterruptResultBubble />
-                <InteractionSlot onSubmit={onUserAnswer} />
-                <InputArea
-                  ref={inputAreaRef}
-                  onSubmit={handleSendMessage}
-                  onEnsureSession={onEnsureSession}
-                  onForkSession={onForkSession}
-                  onInputIntent={handleInputIntent}
-                  onPersistMedia={onPersistMedia}
-                  onPersistDocuments={onPersistDocuments}
-                  onDiscardMedia={onDiscardMedia}
-                  onInterrupt={onInterrupt}
-                  onCancel={onCancel}
-                  onSwitchMode={onSwitchMode}
-                  isProcessing={isProcessing}
-                  autoFocusKey={autoFocusKey}
-                  onNavigateToSkills={onNavigateToSkills}
-                  onNavigateToAgents={onNavigateToAgents}
-                  onAgentGroupIdentityChange={handleTeamGroupIdentityChange}
-                  permissionProfile={permissionProfile}
-                  onSavePermission={onSavePermission}
-                  onSetGoal={onSetGoal}
-                  onPauseGoal={onPauseGoal}
-                  onResumeGoal={onResumeGoal}
-                  onRefreshGoal={onRefreshGoal}
-                  onClearGoal={onClearGoal}
-                />
               </div>
               {isGroupCreateWelcome && (
                 <div className="chat-welcome__capabilities" data-testid="chat-panel-welcome-capabilities">
