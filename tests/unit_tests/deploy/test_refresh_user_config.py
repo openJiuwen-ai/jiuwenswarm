@@ -531,6 +531,77 @@ class FlowTests(unittest.TestCase):
         self.assertIn("/home/agentos/users/aaa", out)
         self.assertIn("不匹配", out)
 
+    def test_restart_detail_failure_returns_2(self):
+        ws = Workspace(self.root)
+
+        def http(url, method):
+            if method == "DELETE":
+                raise AssertionError("详情读取失败时不应删除任何实例")
+            if url.endswith("/api/agent"):
+                return 200, json.dumps(
+                    {"instances": [{"instance_id": "id-1", "sandbox_type": "supervisor"}]}
+                )
+            return 500, "{}"
+
+        rc, out, err = run_captured(
+            ws.options(frontend="http://fake"), make_runtime(http=http)
+        )
+
+        self.assertEqual(rc, 2)
+        self.assertIn("无法判定归属", err)
+        self.assertNotIn("未发现用户 testu02 的运行实例", out)
+
+    def test_restart_detail_404_returns_0(self):
+        ws = Workspace(self.root)
+
+        def http(url, method):
+            if method == "DELETE":
+                raise AssertionError("实例已不存在时不应删除")
+            if url.endswith("/api/agent"):
+                return 200, json.dumps(
+                    {"instances": [{"instance_id": "id-1", "sandbox_type": "supervisor"}]}
+                )
+            return 404, "{}"
+
+        rc, out, _ = run_captured(
+            ws.options(frontend="http://fake"), make_runtime(http=http)
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("实例已不存在", out)
+
+    def test_restart_partial_uncertain_returns_2(self):
+        ws = Workspace(self.root)
+        mine = (ws.home_base / "testu02").as_posix()
+        deletes = []
+
+        def http(url, method):
+            if method == "GET":
+                if url.endswith("/api/agent"):
+                    return 200, json.dumps(
+                        {
+                            "instances": [
+                                {"instance_id": "id-1", "sandbox_type": "supervisor"},
+                                {"instance_id": "id-2", "sandbox_type": "docker"},
+                            ]
+                        }
+                    )
+                if url.endswith("/api/agent/id-1"):
+                    return 200, json.dumps(
+                        {"instance": {"rootfs": {"workspace": mine}}}
+                    )
+                return 500, "{}"
+            deletes.append(url.rsplit("/", 1)[-1])
+            return 200, "{}"
+
+        rc, _, err = run_captured(
+            ws.options(frontend="http://fake"), make_runtime(http=http)
+        )
+
+        self.assertEqual(rc, 2)
+        self.assertEqual(deletes, ["id-1"])
+        self.assertIn("重启未完全确认", err)
+
     def _add_user(self, username, agentos_block=None):
         cfg_dir = self.root / "home" / username / ".jiuwenswarm" / "config"
         cfg_dir.mkdir(parents=True)
