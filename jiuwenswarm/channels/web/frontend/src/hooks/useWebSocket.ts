@@ -2208,11 +2208,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
             : {}),
-          // 会话级 worktree 开关：仅用户显式拨过（非 undefined）才发送，
-          // 后端按 params > 会话持久化 > 团队模板配置 回退。
-          ...(sessionRt?.swarmflowWorktree !== undefined
-            ? { swarmflow_worktree: sessionRt.swarmflowWorktree }
-            : {}),
           // 会话级团队调度模式：新建会话时由欢迎页开关落成显式值，恢复会话时从 metadata 读回；
           // 未设置时不发送，后端按 会话持久化 > 团队配置 回退。
           ...(sessionRt?.teamDispatchMode !== undefined
