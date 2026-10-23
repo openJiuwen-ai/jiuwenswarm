@@ -732,6 +732,8 @@ if ($FrontendOnly) {
 $RequiredFiles = @(
     (Join-Path $ElectronAppDir $ShellExeName),
     (Join-Path $AppDir "main.cjs"),
+    (Join-Path $AppDir "browser_downloads.cjs"),
+    (Join-Path $AppDir "browser_download_bubble.cjs"),
     (Join-Path $AppDir "display_media_picker.cjs"),
     (Join-Path $AppDir "preload.cjs"),
     (Join-Path $AppDir "dist\index.html"),
