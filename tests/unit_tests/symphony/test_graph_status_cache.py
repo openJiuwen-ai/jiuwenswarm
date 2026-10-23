@@ -429,54 +429,48 @@ def test_read_build_log_keeps_last_line_without_trailing_newline(tmp_path):
     assert [entry["stage"] for entry in entries] == ["second"]
 
 
-def test_cache_exclusions_never_exceed_pinned_scanner_rules():
+def test_cache_exclusions_follow_expected_scanner_rules():
     """False exclusions would hide Skill changes from the cache key."""
-    from openjiuwen.symphony.shared.fingerprint import scanner
+    directories = {
+        ".git": True,
+        ".venv": True,
+        "__pycache__": True,
+        ".cache": True,
+        "node_modules": True,
+        "api_keys": True,
+        "secret_store": True,
+        "my_credentials": True,
+        "token_cache": True,
+        "passwords": True,
+        "private_keys": True,
+        "hockey": False,
+        "monkey": False,
+        "src": False,
+        "scripts": False,
+    }
+    files = {
+        "SKILL.md": False,
+        "index.js": False,
+        "notes.md": False,
+        "id_rsa": True,
+        "id_rsa.pub": True,
+        "server.pem": True,
+        "token.json": True,
+        "secrets.yaml": True,
+        "password.txt": True,
+        "api_key.py": True,
+        "hockey.py": False,
+        "tokenizer.py": False,
+        "public.py": False,
+        ".env": True,
+        ".env.local": True,
+        "x.pyc": True,
+    }
 
-    directories = [
-        ".git",
-        ".venv",
-        "__pycache__",
-        ".cache",
-        "node_modules",
-        "api_keys",
-        "secret_store",
-        "my_credentials",
-        "token_cache",
-        "passwords",
-        "private_keys",
-        "hockey",
-        "monkey",
-        "src",
-        "scripts",
-    ]
-    files = [
-        "SKILL.md",
-        "index.js",
-        "notes.md",
-        "id_rsa",
-        "id_rsa.pub",
-        "server.pem",
-        "token.json",
-        "secrets.yaml",
-        "password.txt",
-        "api_key.py",
-        "hockey.py",
-        "tokenizer.py",
-        "public.py",
-        ".env",
-        ".env.local",
-        "x.pyc",
-    ]
-
-    for name in directories:
-        assert not (
-            _cache_excludes_directory(name) and not scanner._exclude_directory(name)
-        ), name
-    for name in files:
-        assert not (
-            _cache_excludes_file(name) and not scanner._exclude_file(name)
-        ), name
+    for name, expected in directories.items():
+        assert _cache_excludes_directory(name) is expected, name
+    for name, expected in files.items():
+        assert _cache_excludes_file(name) is expected, name
 
 
 def test_cache_link_detection_handles_windows_reparse_points(monkeypatch):
