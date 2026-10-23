@@ -114,7 +114,7 @@ async def test_restored_session_queries_and_observers_do_not_create_work(real_st
     dispatcher._runtime = SimpleNamespace(get_session_snapshot=lambda _: SimpleNamespace(executions=executions))
     await dispatcher._subscribe_locked({"payload": dump_agent_request(request())}, conn, generation)
     snapshot = conn.frames[-1]["payload"]
-    expected_busy = real_state not in {None, "succeeded"}
+    expected_busy = real_state not in {None, "succeeded", "waiting_for_input"}
     assert snapshot["is_processing"] is expected_busy
     assert bridge.events.snapshot(request())["is_processing"] is expected_busy
     assert len(snapshot["executions"]) == len(executions)
@@ -122,8 +122,9 @@ async def test_restored_session_queries_and_observers_do_not_create_work(real_st
 
 
 @pytest.mark.asyncio
-async def test_inspection_transport_cannot_hide_registered_background_execution() -> None:
-    """Real runtime execution remains authoritative, even under a read RPC's context."""
+@pytest.mark.parametrize("team_running", [True, False])
+async def test_inspection_transport_cannot_hide_registered_background_execution(team_running: bool) -> None:
+    """Team lifecycle, not a read RPC's context, owns actual background activity."""
     from jiuwenswarm.runtime.session.model import SessionExecutionHandle, SessionExecutionState, SessionWorkKind
 
     holder = ConnHolder()
@@ -138,9 +139,16 @@ async def test_inspection_transport_cannot_hide_registered_background_execution(
         execution_id="background", session_id="session-1", request_id="background", root_request_id=query.request_id,
         generation=1, work_kind=SessionWorkKind.TEAM_BACKGROUND, state=SessionExecutionState.RUNNING,
     ).snapshot()
-    dispatcher._runtime = SimpleNamespace(get_session_snapshot=lambda _: SimpleNamespace(executions=(execution,)))
+    lifecycle = SimpleNamespace(is_running=Mock(return_value=team_running))
+    dispatcher._runtime = SimpleNamespace(
+        get_session_snapshot=lambda _: SimpleNamespace(generation=1, executions=(execution,)),
+        _session_runtime_lifecycle=lifecycle,
+    )
     await dispatcher._subscribe_locked({"payload": dump_agent_request(request())}, conn, generation)
-    assert conn.frames[-1]["payload"]["is_processing"] is True
+    assert conn.frames[-1]["payload"]["is_processing"] is team_running
+    context = lifecycle.is_running.call_args.args[0]
+    assert context.session_id == query.session_id
+    assert context.generation == 1
 
 
 @pytest.mark.asyncio
@@ -397,7 +405,7 @@ async def test_resume_does_not_treat_attach_execution_as_busy(real_state):
     dispatcher._runtime = SimpleNamespace(get_session_snapshot=lambda _: SimpleNamespace(executions=executions))
     await dispatcher._subscribe_locked({"payload": dump_agent_request(request())}, conn, generation)
     snapshot = conn.frames[-1]["payload"]
-    assert snapshot["is_processing"] is (real_state in {"running", "waiting_for_input", "queued"})
+    assert snapshot["is_processing"] is (real_state in {"running", "queued"})
     assert observer_record.active is True
     assert observer_record.is_processing is False
     assert any(item["request_id"] == "observer" for item in snapshot["executions"])

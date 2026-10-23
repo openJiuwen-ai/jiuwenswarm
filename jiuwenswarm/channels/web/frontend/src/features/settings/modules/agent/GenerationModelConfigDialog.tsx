@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { VendorPreset, VendorPresetMap } from '../../../../types';
+import type { VendorFetchModelsResult, VendorPreset, VendorPresetMap } from '../../../../types';
 import { Button } from '../../../../components/ui';
 import { Form, FormDialog, useForm, useFormState, type FormItem } from '../../../../components/form';
 import { SettingsConfirmDialog } from '../../components';
@@ -9,13 +9,8 @@ import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { ModelNameField } from '../models/ModelNameField';
 import { ModelProviderSelect } from '../models/ModelProviderSelect';
 import {
-  normalizeContextWindowTokens,
-  resolveDraftContextWindowTokens,
-} from '../models/contextWindow';
-import {
   CUSTOM_VENDOR_SELECTION,
   findVendorPreset,
-  flattenVendorCatalog,
   parseVendorCatalog,
   vendorSelectionKey,
 } from '../models/modelAdapters';
@@ -27,7 +22,9 @@ import {
   generationModelOptions,
   generationProviderName,
   generationVendor,
+  isArkGenerationApiBase,
   isEditableBaseVendor,
+  MODELARK_PROTOCOL,
   modelProtocol,
   regionalHintKey,
   VLLM_OMNI_PROTOCOL,
@@ -59,7 +56,6 @@ type GenerationDraft = {
   api_base: string;
   api_key: string;
   model_name: string;
-  context_window_tokens: string;
 };
 
 function readConfig(config: Readonly<Record<string, unknown>>, slot: GenerationSlot, suffix: string): string {
@@ -72,19 +68,31 @@ function trimSlash(value: string): string {
 
 /** 之前保存下来的配置只有 provider 名称、协议和 api_base（没有厂商 key）。vLLM-Omni 的地址
  *  由用户填写，按协议找回；其余按 api_base 优先、其次按名称找回对应的厂商预设，这样编辑
- *  已有配置时下拉能回显成对应厂商。 */
+ *  已有配置时下拉能回显成对应厂商。
+ *
+ *  只在 custom_api 里找：这个弹窗的 ModelProviderSelect 固定只展示 custom_api（见下方
+ *  groups={['custom_api', 'other']}），有的厂商（如 MiniMax）在 token_plan/coding_plan
+ *  下也有一份同 api_base 的预设 —— flattenVendorCatalog 会先命中那份，算出的
+ *  vendor_selection（"token_plan:minimax"）在下拉的选项里根本不存在，回显成了"请选择"。 */
 function findStoredPreset(
   catalog: VendorPresetMap,
   provider: string,
   protocol: string,
   apiBase: string,
 ): VendorPreset | undefined {
-  const presets = flattenVendorCatalog(catalog);
+  const presets = catalog.custom_api;
   if (protocol.trim() === VLLM_OMNI_PROTOCOL) {
     return presets.find((preset) => preset.vendor_key === VLLM_OMNI_PROTOCOL);
   }
   const base = trimSlash(apiBase);
   const name = provider.trim().toLowerCase();
+  const arkPreset = catalog.custom_api.find((preset) => preset.vendor_key === 'volcengine');
+  if (
+    arkPreset &&
+    (isArkGenerationApiBase(apiBase) || name === arkPreset.vendor_key || name === arkPreset.display_name.toLowerCase())
+  ) {
+    return arkPreset;
+  }
   return (
     (base
       ? presets.find((preset) => trimSlash(generationApiBase(preset.vendor_key, preset.api_base)) === base)
@@ -108,7 +116,6 @@ function createDraft(config: Readonly<Record<string, unknown>>, slot: Generation
     api_base: apiBase,
     api_key: apiKey,
     model_name: model,
-    context_window_tokens: normalizeContextWindowTokens(readConfig(config, slot, 'context_window_tokens')),
   };
 }
 
@@ -121,7 +128,6 @@ function buildUpdates(slot: GenerationSlot, draft: GenerationDraft, catalog: Ven
     [`${slot}_api_base`]: (editableBase ? draft.api_base : preset.api_base).trim(),
     [`${slot}_api_key`]: draft.api_key.trim(),
     [`${slot}_model`]: draft.model_name.trim(),
-    [`${slot}_context_window_tokens`]: String(resolveDraftContextWindowTokens(draft.context_window_tokens)),
   };
 }
 
@@ -152,6 +158,11 @@ export function GenerationModelConfigDialog({
   const [submitting, setSubmitting] = useState(false);
   const [saveError, setSaveError] = useState('');
   const catalogRequestId = useRef(0);
+  const fetchRequestId = useRef(0);
+  const [fetchingKey, setFetchingKey] = useState<string | null>(null);
+  const [fetchedModels, setFetchedModels] = useState<{ key: string; models: string[] } | null>(null);
+  const [fetchStatus, setFetchStatus] = useState<{ key: string; text: string } | null>(null);
+  const [attemptedFetchKey, setAttemptedFetchKey] = useState<string | null>(null);
   // 只给下拉本身用的收窄版 catalog——preset/findStoredPreset 等逻辑仍然用上面
   // 完整的 catalog，不然已保存的旧配置（provider 是被收窄掉的厂商）编辑时会
   // 回显失败。
@@ -178,6 +189,46 @@ export function GenerationModelConfigDialog({
   const vendor = generationVendor(preset?.vendor_key, custom ? '' : apiBase);
   const catalogAll = custom;
   const catalogApplies = catalogAll || vendor !== undefined;
+  const arkSelection = vendor === 'modelark' && preset?.vendor_key === 'volcengine' && preset.plan === 'custom_api';
+  const fetchKey = JSON.stringify([slot, values.vendor_selection, apiBase, values.api_key.trim()]);
+
+  const fetchGenerationModels = async () => {
+    const current = form.getValues();
+    const selected = findVendorPreset(catalog, current.vendor_selection);
+    if (!isConnected || selected?.vendor_key !== 'volcengine' || selected.plan !== 'custom_api') return;
+    const base = current.api_base.trim();
+    const key = current.api_key.trim();
+    const identity = JSON.stringify([slot, current.vendor_selection, base, key]);
+    if (!key) {
+      setFetchStatus({ key: identity, text: t('settingsPanel.models.fetchReasons.apiKeyRequired') });
+      return;
+    }
+    const currentRequestId = ++fetchRequestId.current;
+    setAttemptedFetchKey(identity);
+    setFetchingKey(identity);
+    setFetchStatus({ key: identity, text: t('settingsPanel.models.fetchModelsLoading') });
+    try {
+      const result = await request<VendorFetchModelsResult>(
+        'vendors.fetch_models',
+        { vendor_key: 'volcengine', plan: 'custom_api', api_key: key, api_base: base, modality: slot === 'visual_gen' ? 'image' : 'video' },
+        { timeoutMs: 30_000 },
+      );
+      if (currentRequestId !== fetchRequestId.current) return;
+      if (result.source !== 'remote' || !Array.isArray(result.models) || !result.models.every((name) => typeof name === 'string')) {
+        throw new Error(result.reason || t('settingsPanel.models.fetchModelsInvalidResponse'));
+      }
+      const models = Array.from(new Set(result.models.map((name) => name.trim()).filter(Boolean)));
+      setFetchedModels({ key: identity, models });
+      setFetchStatus({ key: identity, text: t('settingsPanel.models.fetchGenerationModelsRemote', { count: models.length }) });
+    } catch (error) {
+      if (currentRequestId === fetchRequestId.current) {
+        const detail = error instanceof Error ? error.message : t('settingsPanel.models.fetchModelsFailed');
+        setFetchStatus({ key: identity, text: detail });
+      }
+    } finally {
+      if (currentRequestId === fetchRequestId.current) setFetchingKey(null);
+    }
+  };
 
   const loadCatalog = useCallback(async () => {
     if (!isConnected) {
@@ -217,14 +268,17 @@ export function GenerationModelConfigDialog({
   useEffect(() => {
     const current = form.getValues();
     if (current.vendor_selection !== CUSTOM_VENDOR_SELECTION) return;
-    const match = findStoredPreset(catalog, readConfig(config, slot, 'provider'), current.protocol, current.api_base);
+    // Search pickerCatalog, not the full catalog: that's the exact (ALLOWED_API_VENDORS-filtered,
+    // custom_api-only) set ModelProviderSelect offers below, so whatever this finds is guaranteed
+    // to be a selectable option rather than a same-api_base preset from a plan the picker hides.
+    const match = findStoredPreset(pickerCatalog, readConfig(config, slot, 'provider'), current.protocol, current.api_base);
     if (!match) return;
     const next = { ...current, vendor_selection: vendorSelectionKey(match.plan, match.vendor_key) };
     // 没有专属目录的厂商只支持 OpenAI 协议，旧配置里残留的其他协议值一并纠正。
     if (!generationVendor(match.vendor_key, match.api_base)) next.protocol = OPENAI_PROTOCOL;
     if (form.hasUnsavedChanges()) form.setValues({ vendor_selection: next.vendor_selection });
     else form.reset(next);
-  }, [catalog, config, form, slot]);
+  }, [pickerCatalog, config, form, slot]);
 
   const updateVendor = (selection: string) => {
     if (selection === CUSTOM_VENDOR_SELECTION) {
@@ -250,7 +304,7 @@ export function GenerationModelConfigDialog({
       api_base: generationApiBase(nextPreset.vendor_key, nextPreset.api_base),
       api_key: '',
       protocol: nextVendor ? defaults.protocol : OPENAI_PROTOCOL,
-      model_name: defaults.model,
+      model_name: nextVendor === 'modelark' ? '' : defaults.model,
     });
     form.clearValidate(['vendor_selection', 'api_base', 'api_key', 'model_name', 'protocol']);
   };
@@ -263,9 +317,11 @@ export function GenerationModelConfigDialog({
         value,
         label: value,
       }));
-  const modelOptions = catalogApplies
-    ? generationModelOptions(slot, vendor, catalogAll, values.protocol, values.model_name)
-    : [];
+  const modelOptions = arkSelection
+    ? withCurrentOption(fetchedModels?.key === fetchKey ? fetchedModels.models : [], values.model_name)
+    : catalogApplies
+      ? generationModelOptions(slot, vendor, catalogAll, values.protocol, values.model_name)
+      : [];
 
   const optionalCredentials = credentialsOptional(values.protocol);
 
@@ -282,6 +338,9 @@ export function GenerationModelConfigDialog({
       if (!baseValue) next.api_base = t('config.modelList.apiBaseRequired');
       else if (baseValue.length > 512) next.api_base = t('config.modelList.apiBaseTooLong');
       else if (!/^https?:\/\//i.test(baseValue)) next.api_base = t('config.modelList.apiBaseUrlInvalid');
+      else if (values.protocol.trim() === MODELARK_PROTOCOL && !isArkGenerationApiBase(baseValue)) {
+        next.api_base = t('settingsPanel.agent.arkGenerationBaseInvalid');
+      }
     }
     const apiKey = values.api_key.trim();
     if (!apiKey && !optionalCredentials) next.api_key = t('config.modelList.apiKeyRequired');
@@ -367,13 +426,15 @@ export function GenerationModelConfigDialog({
           options={modelOptions}
           disabled={fieldDisabled || !values.vendor_selection}
           invalid={Boolean(error)}
-          fetchStatus=""
-          fetching={false}
-          showRefresh={false}
-          fetchDisabled
+          fetchStatus={arkSelection && fetchStatus?.key === fetchKey ? fetchStatus.text : ''}
+          fetching={arkSelection && fetchingKey === fetchKey}
+          showRefresh={arkSelection}
+          fetchDisabled={!isConnected || !values.api_key.trim() || fetchingKey === fetchKey}
           emptyText={t('settingsPanel.models.noModelResults')}
-          onOpen={() => undefined}
-          onFetch={() => undefined}
+          onOpen={() => {
+            if (arkSelection && attemptedFetchKey !== fetchKey && fetchingKey !== fetchKey) void fetchGenerationModels();
+          }}
+          onFetch={() => { void fetchGenerationModels(); }}
           onChange={(model) => {
             onChange(model);
             // 选了别的家族的模型，协议跟着切过去（协议下拉里会带上这个值）。
