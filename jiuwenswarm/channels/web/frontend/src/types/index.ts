@@ -211,7 +211,7 @@ export type VendorPresetMap = Record<ModelPlan, VendorPreset[]> & {
 
 export interface VendorFetchModelsResult {
   models: string[];
-  source: 'remote' | 'preset';
+  source: 'remote' | 'preset' | 'unavailable';
   reason?: string;
 }
 

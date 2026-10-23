@@ -2413,8 +2413,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _vendors_fetch_models(ws, req_id, params, session_id):
         """按厂商预设拉取远端可用模型列表(供前端"拉取最新"按钮)。
 
-        params: {vendor_key, plan, api_key?}。按预设的 ``models_needs_key``
-        决定是否带 Authorization;失败/无端点优雅回退预设列表,永不报错。
+        params: {vendor_key, plan, api_key?, modality?, api_base?}。按预设的 ``models_needs_key``
+        决定是否带 Authorization。普通列表失败时回退预设；火山生成模型按
+        domain 返回完整远端目录，失败时返回空列表供前端手填。
         """
         del session_id
         if not isinstance(params, dict):
@@ -2423,6 +2424,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         vendor_key = str(params.get("vendor_key") or "").strip()
         plan_raw = str(params.get("plan") or "").strip()
         api_key = str(params.get("api_key") or "").strip()
+        modality = str(params.get("modality") or "").strip()
         try:
             from jiuwenswarm.common.model_vendor_registry import (
                 PlanKind,
@@ -2430,7 +2432,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
 
             def _fetch_remote_sync(
-                endpoint: str, hdrs: dict[str, str]
+                endpoint: str, hdrs: dict[str, str], model_domain: str | None = None,
             ) -> tuple[list[str], str]:
                 """同步拉取并解析 /models(在线程池里跑,不阻塞事件循环)。
 
@@ -2458,6 +2460,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     return [], "remote returned non-JSON body"
                 if not isinstance(payload_json, dict):
                     return [], "remote returned unexpected body shape"
+                if model_domain:
+                    entries = payload_json.get("data")
+                    if not isinstance(entries, list):
+                        return [], "remote returned unexpected body shape"
+                    ids: list[str] = []
+                    seen: set[str] = set()
+                    for item in entries:
+                        if not isinstance(item, dict) or item.get("domain") != model_domain:
+                            continue
+                        model_id = item.get("id")
+                        if not isinstance(model_id, str):
+                            continue
+                        model_id = model_id.strip()
+                        if model_id and model_id not in seen:
+                            seen.add(model_id)
+                            ids.append(model_id)
+                    return ids, "" if ids else "remote returned empty generation model list"
                 try:
                     ids = parse_openai_account_model_ids(payload_json)
                 except Exception:  # noqa: BLE001
@@ -2485,6 +2504,26 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 )
                 return
 
+            model_domain = None
+            endpoint = preset.models_endpoint
+            if modality:
+                if vendor_key != "volcengine" or plan != PlanKind.CUSTOM_API or modality not in {"image", "video"}:
+                    await channel.send_response(
+                        ws, req_id, ok=False, error="unsupported model modality", code="BAD_REQUEST",
+                    )
+                    return
+                from jiuwenswarm.common.volcengine_endpoints import normalize_ark_api_base
+
+                try:
+                    api_base = normalize_ark_api_base(str(params.get("api_base") or preset.api_base))
+                except ValueError as exc:
+                    await channel.send_response(
+                        ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST",
+                    )
+                    return
+                endpoint = f"{api_base}/models"
+                model_domain = "ImageGeneration" if modality == "image" else "VideoGeneration"
+
             # 无远端端点(Maas 等) -> 直接回退预设
             if not preset.models_endpoint:
                 await channel.send_response(
@@ -2504,8 +2543,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     await channel.send_response(
                         ws, req_id, ok=True,
                         payload={
-                            "models": list(preset.model_options),
-                            "source": "preset",
+                            "models": [] if model_domain else list(preset.model_options),
+                            "source": "unavailable" if model_domain else "preset",
                             "reason": "api_key required for fetch",
                         },
                     )
@@ -2515,7 +2554,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 同步 httpx.get 通过 asyncio.to_thread 卸载到线程池,避免阻塞事件循环
             # (与同文件 _openai_account_*_payload / _updater_* 的 to_thread 模式一致)。
             remote_ids, remote_reason = await asyncio.to_thread(
-                _fetch_remote_sync, preset.models_endpoint, headers,
+                _fetch_remote_sync, endpoint, headers, model_domain,
             )
 
             # DashScope's /models catalogue includes unavailable marketplace,
@@ -2554,8 +2593,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(
                 ws, req_id, ok=True,
                 payload={
-                    "models": list(preset.model_options),
-                    "source": "preset",
+                    "models": [] if model_domain else list(preset.model_options),
+                    "source": "unavailable" if model_domain else "preset",
                     "reason": remote_reason or "remote fetch failed or empty",
                 },
             )

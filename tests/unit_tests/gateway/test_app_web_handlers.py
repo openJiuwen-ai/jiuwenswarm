@@ -241,6 +241,105 @@ class _FakeModelsResponse:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("modality", "expected"),
+    [
+        ("image", ["doubao-seedream-active", "doubao-seedream-retiring"]),
+        ("video", ["doubao-seedance-active", "doubao-seedance-shutdown"]),
+    ],
+)
+async def test_vendors_fetch_models_filters_ark_generation_domain_without_dropping_lifecycle_status(
+    monkeypatch, modality, expected,
+):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"data": [
+                {"id": "doubao-seedream-active", "domain": "ImageGeneration"},
+                {"id": "doubao-seedream-retiring", "domain": "ImageGeneration", "status": "Retiring"},
+                {"id": "doubao-seedance-active", "domain": "VideoGeneration"},
+                {"id": "doubao-seedance-shutdown", "domain": "VideoGeneration", "status": "Shutdown"},
+                {"id": "doubao-vision", "domain": "VLM", "modalities": {"input_modalities": ["image"]}},
+            ]}
+
+    requested = []
+
+    def fake_get(url, **kwargs):
+        requested.append(url)
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models",
+        {
+            "vendor_key": "volcengine", "plan": "custom_api", "api_key": "secret",
+            "api_base": "https://ark.ap-southeast.bytepluses.com/api/v3", "modality": modality,
+        },
+        "sess-1",
+    )
+
+    assert requested == ["https://ark.ap-southeast.bytepluses.com/api/v3/models"]
+    assert channel.responses[-1]["payload"] == {"models": expected, "source": "remote"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_base", [
+    "https://ark.cn-beijing.volces.com.evil.example/api/v3",
+    "https://ark.cn-beijing.volces.com/api/coding/v3",
+])
+async def test_vendors_fetch_models_rejects_untrusted_ark_generation_base(monkeypatch, api_base):
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: pytest.fail("unexpected remote request"))
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models",
+        {
+            "vendor_key": "volcengine", "plan": "custom_api", "api_key": "secret",
+            "api_base": api_base, "modality": "image",
+        },
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_requires_key_without_generation_preset_fallback(monkeypatch):
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: pytest.fail("unexpected remote request"))
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models", {"vendor_key": "volcengine", "plan": "custom_api", "modality": "image"}, "sess-1",
+    )
+    assert channel.responses[-1]["payload"] == {
+        "models": [], "source": "unavailable", "reason": "api_key required for fetch",
+    }
+
+
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_does_not_show_single_preset_when_ark_generation_catalog_is_empty(monkeypatch):
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: _FakeModelsResponse(["doubao-text-only"]))
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models",
+        {"vendor_key": "volcengine", "plan": "custom_api", "api_key": "secret", "modality": "image"},
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["payload"] == {
+        "models": [], "source": "unavailable", "reason": "remote returned empty generation model list",
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("first_failure", ["exception", "empty"])
 async def test_config_validate_model_retries_failed_probe_with_more_tokens(
     monkeypatch, first_failure

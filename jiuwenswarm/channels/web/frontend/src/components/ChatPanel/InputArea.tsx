@@ -87,7 +87,7 @@ import { SkillPickerPanel } from './SkillPickerPanel';
 import { PickerPanel } from './PickerPanel';
 import { PickerSearchInput } from './PickerSearchInput';
 import { Switch } from '../Switch';
-import { Input } from '../ui';
+import { Button, CloseButton, Dialog, Input } from '../ui';
 import { Select } from '../ui/Select/Select';
 import { ExtensionIcon } from '../ConnectorMarket/icons';
 import {
@@ -798,6 +798,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [projectCreateMode, setProjectCreateMode] = useState<ProjectCreateMode>('blank');
   const [menuDirection, setMenuDirection] = useState<'up' | 'down'>('up');
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const [groupRuntimeNotice, setGroupRuntimeNotice] = useState<string | null>(null);
   const [externalAgentSwitchNotice, setExternalAgentSwitchNotice] = useState<string | null>(null);
   const [agentPickerQuery, setAgentPickerQuery] = useState('');
   const [pickerTab, setPickerTab] = useState<'agent' | 'group'>('agent');
@@ -4308,8 +4309,27 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                             : item.description || t('chat.agentGroupBinding')
                                       }
                                       {...agentTooltipHandlers}
-                                      onClick={() => {
+                                      onClick={async () => {
                                         if (agentGroupSelectionDisabled || !activeSessionId) return;
+                                        try {
+                                          const result = await webRequest<{ group?: { disabledRuntimes?: string[] } }>(
+                                            'agent_groups.show', { id: item.id },
+                                          );
+                                          const disabled = result.group?.disabledRuntimes ?? [];
+                                          if (disabled.length > 0) {
+                                            setGroupRuntimeNotice(t('chat.agentGroupRuntimeDisabled', {
+                                              agents: disabled.map((name) => {
+                                                if (name === 'claude') return 'Claude';
+                                                if (name === 'codex') return 'Codex';
+                                                return name;
+                                              }).join(', '),
+                                            }));
+                                            return;
+                                          }
+                                        } catch (error) {
+                                          setGroupRuntimeNotice(String(error));
+                                          return;
+                                        }
                                         useSessionStore.getState().setMode(activeSessionId, 'team');
                                         setAgentGroupSelectionIntent(activeSessionId, { kind: 'select', id: item.name });
                                         setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
@@ -5593,6 +5613,31 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         </div>
       </div>
 
+      <Dialog
+        open={groupRuntimeNotice !== null}
+        titleId="group-runtime-notice-title"
+        className="chat-group-runtime-dialog"
+        onCancel={() => setGroupRuntimeNotice(null)}
+        onBackdropClick={() => setGroupRuntimeNotice(null)}
+      >
+        <div className="chat-group-runtime-dialog__header" data-testid="chat-panel-group-runtime-notice-header">
+          <h2 id="group-runtime-notice-title">{t('chat.agentGroupRuntimeDisabledTitle')}</h2>
+          <CloseButton
+            testId="chat-panel-group-runtime-notice-close"
+            ariaLabel={t('common.close')}
+            onClick={() => setGroupRuntimeNotice(null)}
+          />
+        </div>
+        <p className="chat-group-runtime-dialog__message" data-testid="chat-panel-group-runtime-notice">
+          {groupRuntimeNotice}
+        </p>
+        <div className="chat-group-runtime-dialog__actions" data-testid="chat-panel-group-runtime-notice-actions">
+          <Button variant="primary" data-testid="chat-panel-group-runtime-notice-confirm"
+            onClick={() => setGroupRuntimeNotice(null)}>
+            {t('chat.agentGroupRuntimeDisabledConfirm')}
+          </Button>
+        </div>
+      </Dialog>
       {goalOverwriteRequest && (
         <OverwriteGoalConfirmModal
           currentObjective={goalOverwriteRequest.currentObjective}
