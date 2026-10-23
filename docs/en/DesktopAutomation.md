@@ -55,7 +55,10 @@ the main agent runs the web part with `browser_agent` first, then the desktop pa
 
 ## 3. Enable
 
-Use **Settings → Experimental → Computer control** to toggle the desktop subagent.
+Use **Settings → Experimental → Computer control** when the backend's installation
+prerequisites are present. Unsupported platforms, missing optional dependencies or
+missing bundled driver files hide the section without changing saved preferences.
+The check does not start a driver or request OS permissions; visibility does not imply permission grants.
 The persisted `react.subagents.cua_agent.enabled` defaults to `null`, following the
 release default (currently off). Only changing the switch saves `true` or `false`;
 reading settings and upgrading preserve `null` and any explicit user preference.
