@@ -1,0 +1,18 @@
+{
+  "package_type": "agent_group",
+  "name": "math_reasoning",
+  "display_name": {
+    "zh": "数学推理专家团",
+    "en": "Math Reasoning Team"
+  },
+  "description": "数学推理平台团队：一般数学求解、Lean4 形式化证明、优化建模求解、数模竞赛论文全流程。",
+  "instruction": "这是数学推理专家团。按任务类型与交付要求把任务分派给唯一匹配的成员：一般数学求解交 nl_solver；证明与求证类命题交 formal_prover；优化建模只要求最优解交 opt_solver；要求完整论文或成文交付的建模任务交 paper_gen。不要把一个任务同时分给多个成员，也不要自己解题。",
+  "agents": [
+    "leader",
+    "nl_solver",
+    "formal_prover",
+    "opt_solver",
+    "paper_gen"
+  ],
+  "skills": []
+}

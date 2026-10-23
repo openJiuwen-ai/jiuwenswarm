@@ -1,0 +1,23 @@
+{
+  "package_type": "agent_template",
+  "name": "opt_solver",
+  "display_name": {
+    "zh": "优化建模求解（快）",
+    "en": "Optimization Solver"
+  },
+  "description": "优化建模求解：决策变量+目标函数+约束，输出数值最优解与求解状态。",
+  "persona": {
+    "dir": "persona"
+  },
+  "tools": [
+    {
+      "file": "tools/math_platform.py",
+      "class": "MathPlatformTool"
+    }
+  ],
+  "tags": [
+    { "en": "optimization", "zh": "优化" },
+    { "en": "modeling", "zh": "建模" },
+    { "en": "fast", "zh": "快速" }
+  ]
+}

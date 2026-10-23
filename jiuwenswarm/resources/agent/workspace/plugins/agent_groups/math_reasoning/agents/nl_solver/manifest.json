@@ -1,0 +1,23 @@
+{
+  "package_type": "agent_template",
+  "name": "nl_solver",
+  "display_name": {
+    "zh": "自然语言求解（快）",
+    "en": "NL Math Solver"
+  },
+  "description": "一般数学问题求解：计算、求值、解方程、几何计算、数列、概率等，自然语言到自然语言。",
+  "persona": {
+    "dir": "persona"
+  },
+  "tools": [
+    {
+      "file": "tools/math_platform.py",
+      "class": "MathPlatformTool"
+    }
+  ],
+  "tags": [
+    { "en": "math", "zh": "数学" },
+    { "en": "solver", "zh": "求解" },
+    { "en": "fast", "zh": "快速" }
+  ]
+}

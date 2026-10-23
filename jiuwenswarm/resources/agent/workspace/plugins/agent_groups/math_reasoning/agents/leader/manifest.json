@@ -1,0 +1,12 @@
+{
+  "package_type": "agent_template",
+  "name": "leader",
+  "display_name": {
+    "zh": "数学推理团长",
+    "en": "Math Reasoning Lead"
+  },
+  "description": "按任务类型与交付要求把任务分派给团队成员，不自己解题。",
+  "persona": {
+    "dir": "persona"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "package_type": "agent_template",
+  "name": "paper_gen",
+  "display_name": {
+    "zh": "论文生成（完整）",
+    "en": "Paper Generator"
+  },
+  "description": "数模竞赛论文全流程：建模、计算、LaTeX 写作、审校，交付完整论文 PDF。耗时小时级，异步两段式。",
+  "persona": {
+    "dir": "persona"
+  },
+  "tools": [
+    {
+      "file": "tools/math_platform.py",
+      "class": "MathPlatformTool"
+    }
+  ],
+  "tags": [
+    { "en": "paper", "zh": "论文" },
+    { "en": "modeling_contest", "zh": "数模竞赛" },
+    { "en": "full_pipeline", "zh": "全流程" }
+  ]
+}

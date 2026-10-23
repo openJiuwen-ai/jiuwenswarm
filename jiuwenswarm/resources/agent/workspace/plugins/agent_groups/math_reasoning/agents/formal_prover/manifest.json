@@ -1,0 +1,23 @@
+{
+  "package_type": "agent_template",
+  "name": "formal_prover",
+  "display_name": {
+    "zh": "形式化证明（准）",
+    "en": "Formal Prover"
+  },
+  "description": "有确定性结论的命题证明：证明题、求证类，Lean4 机器验证，结论客观。",
+  "persona": {
+    "dir": "persona"
+  },
+  "tools": [
+    {
+      "file": "tools/math_platform.py",
+      "class": "MathPlatformTool"
+    }
+  ],
+  "tags": [
+    { "en": "proof", "zh": "证明" },
+    { "en": "lean4", "zh": "形式化" },
+    { "en": "verified", "zh": "机器验证" }
+  ]
+}
