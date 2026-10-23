@@ -44,7 +44,10 @@ const VENDOR_TRANSLATION_KEYS: Record<string, string> = {
   zhipu: 'zhipu',
 };
 
-export function getVendorLabel(vendorKey: string, t: ReturnType<typeof useTranslation>['t']): string {
+/** Minimal translator signature shared by label helpers and presentation helpers. */
+export type ModelTranslate = (key: string, values?: Record<string, unknown>) => string;
+
+export function getVendorLabel(vendorKey: string, t: ModelTranslate): string {
   const translationKey = VENDOR_TRANSLATION_KEYS[vendorKey];
   return translationKey
     ? t(`settingsPanel.models.vendors.${translationKey}`)
@@ -56,7 +59,7 @@ function useVendorLabel() {
   return useCallback((vendorKey: string) => getVendorLabel(vendorKey, t), [t]);
 }
 
-export function getPresetLabel(preset: VendorPreset, t: ReturnType<typeof useTranslation>['t']): string {
+export function getPresetLabel(preset: VendorPreset, t: ModelTranslate): string {
   return getVendorLabel(preset.vendor_key, t);
 }
 
