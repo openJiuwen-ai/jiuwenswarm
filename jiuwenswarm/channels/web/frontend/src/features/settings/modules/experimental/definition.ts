@@ -18,12 +18,6 @@ export const experimentalModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
-      id: 'computer-control',
-      visibleWhen: 'cua_backend_available',
-      titleKey: 'settingsPanel.experimental.computerControl',
-      items: [{ id: 'cua-agent-enabled', component: 'switch', key: 'cua_agent_enabled' }],
-    },
-    {
       id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
       items: [{ id: 'external-cli-custom-agents', component: 'custom', render: ExternalCliCustomAgentsItem }],
@@ -133,6 +127,12 @@ export const experimentalModule: SettingsModuleDefinition = {
           },
         },
       ],
+    },
+    {
+      id: 'computer-control',
+      visibleWhen: 'cua_backend_available',
+      titleKey: 'settingsPanel.experimental.computerControl',
+      items: [{ id: 'cua-agent-enabled', component: 'switch', key: 'cua_agent_enabled' }],
     },
   ],
 };
