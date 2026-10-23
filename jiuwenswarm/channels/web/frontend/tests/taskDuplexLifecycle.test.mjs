@@ -14,11 +14,15 @@ const outfile = resolve('node_modules/.cache/task-duplex-lifecycle/runtime.mjs')
 await build({
   stdin: {
     contents: `export { TaskFullDuplexAction } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexAction.tsx`)};
-      export { TaskFullDuplexRuntime } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
+      export { TaskFullDuplexRuntime, flushConversationHistory } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
       export { JoyAIProvider } from ${JSON.stringify(`${pluginRoot}/VideoLivePanel/joyaiProvider.ts`)};
+      export { ApplicationConversationRuntimes } from './src/applicationPlugins/ApplicationConversationRuntimes.tsx';
+      export { useSessionAssetsStore } from './src/features/sessionAssets/sessionAssets.ts';
       export { useChatStore } from './src/stores/chatStore.ts';
+      export { useSessionStore } from './src/stores/sessionStore.ts';
+      export { toastStore } from './src/components/ui/Toast/toastStore.ts';
       export { buildArtifacts } from './src/components/ArtifactsPanel/artifactCollection.ts';
-      export { parseHistoryJsonFileToPreviewMessages } from './src/features/historyRestore.ts';
+      export { parseHistoryJsonFileToPreviewMessages, parseHistoryJsonFileToTimelinePreview } from './src/features/historyRestore.ts';
       export { artifactDownloadUrl, artifactTextPreviewUrl } from './src/components/ArtifactsPanel/filePreviewModel.ts';
       export * from ${JSON.stringify(`${pluginRoot}/taskFullDuplexRuntimeStore.ts`)};`,
     resolveDir: process.cwd(),
@@ -38,12 +42,16 @@ await build({
       name: 'task-runtime-ports',
       setup(builder) {
         builder.onResolve(
-          { filter: /(?:services\/webClient|taskProgressStore|taskFullDuplex\/featureFlag|\/VideoLivePanel|components\/form)$/ },
+          { filter: /(?:services\/webClient|taskProgressStore|taskFullDuplex\/featureFlag|\/VideoLivePanel|components\/form|ApplicationPluginOutlet)$/ },
           ({ path }) => ({ path, namespace: 'ports' }),
         );
         builder.onLoad({ filter: /.*/, namespace: 'ports' }, ({ path }) => ({
           loader: 'tsx',
-          contents: path.endsWith('components/form')
+          resolveDir: process.cwd(),
+          contents: path.endsWith('ApplicationPluginOutlet')
+            ? `import { TaskFullDuplexRuntime } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
+               export const ApplicationPluginTaskRuntimes = TaskFullDuplexRuntime;`
+            : path.endsWith('components/form')
             ? `export function FormDialog(props) {
                 return <div data-testid={props.testIdPrefix}>{props.children}
                   <button data-testid={props.testIdPrefix + '-confirm'} onClick={props.onConfirm}>Confirm</button>
@@ -57,6 +65,7 @@ await build({
             globalThis.__duplexHarness.panelProps = props;
             useImperativeHandle(ref, () => ({
               async startScreenDuplex(id, shareScreen, visualSource) {
+                if (globalThis.__duplexHarness.startError) throw new Error(globalThis.__duplexHarness.startError);
                 globalThis.__duplexHarness.sharingRequests.push(shareScreen);
                 globalThis.__duplexHarness.visualSources.push(visualSource);
                 globalThis.__duplexHarness.starts.push(id);
@@ -68,7 +77,9 @@ await build({
               setSpeakerMuted(value) { globalThis.__duplexHarness.speaker.push(value); },
               stopScreenSharing() { props.onScreenSharingChange(false); },
               stop() { globalThis.__duplexHarness.stops += 1; props.onRuntimeState('idle'); },
-              deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); }
+              deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); },
+              deliverQuestion(payload) { globalThis.__duplexHarness.mediaQuestions.push(payload); },
+              deliverTaskInteraction(payload) { globalThis.__duplexHarness.interactions.push(payload); }
             }));
             return null;
           });`
@@ -89,6 +100,10 @@ await build({
 });
 const {
   TaskFullDuplexRuntime,
+  flushConversationHistory,
+  toastStore,
+  ApplicationConversationRuntimes,
+  useSessionAssetsStore,
   TaskFullDuplexAction,
   startTaskFullDuplex,
   stopTaskFullDuplex,
@@ -97,8 +112,10 @@ const {
   toggleTaskDuplexSpeaker,
   stopTaskDuplexScreenSharing,
   useChatStore,
+  useSessionStore,
   buildArtifacts,
   parseHistoryJsonFileToPreviewMessages,
+  parseHistoryJsonFileToTimelinePreview,
   artifactDownloadUrl,
   artifactTextPreviewUrl,
 } = await import(pathToFileURL(outfile));
@@ -111,7 +128,8 @@ let timers;
 const previousGlobals = new Map();
 
 beforeEach(async () => {
-  dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/' });
+  dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/', pretendToBeVisual: true });
+  dom.window.HTMLCanvasElement.prototype.getContext = () => null;
   for (const [name, value] of Object.entries({
     window: dom.window,
     document: dom.window.document,
@@ -136,6 +154,8 @@ beforeEach(async () => {
     mic: [],
     speaker: [],
     mediaResults: [],
+    mediaQuestions: [],
+    interactions: [],
     requests: [],
     messages: [],
     tools: [],
@@ -161,6 +181,7 @@ beforeEach(async () => {
     },
     async request(method, params) {
       this.requests.push({ method, params });
+      if (method === 'session.assets.register') return { assets: params.items.map((item, index) => ({ ...item, asset_id: String(index), name: 'report', kind: 'document', created_at: 1 })) };
       if (method === 'video.search.list') return { jobs: this.recoveryJobs || [], next_offset: null };
       if (method === 'video.search.status') return this.statuses.get(params.job_id);
       return { persisted: true };
@@ -168,6 +189,7 @@ beforeEach(async () => {
   };
   globalThis.__duplexHarness = harness;
   useChatStore.setState({ runtimes: {} });
+  useSessionAssetsStore.setState({ bySession: {} });
   props = {
     sessionId: 'conversation-a',
     onConversationItem: (...args) => harness.messages.push(args),
@@ -212,6 +234,21 @@ function job(searchSessionId, overrides = {}) {
   return { job_id: 'job-a', search_session_id: searchSessionId, question: '生成代码', status: 'running', ...overrides };
 }
 
+test('headless task runtime forwards waiting forms only to their active conversation', async () => {
+  const scope = await start();
+  const interaction = { id: 'form-a', request_id: 'request-a', state: 'pending', source: 'ask_user_interrupt',
+    questions: [{ question: '什么时候执行？' }, { question: '内容是什么？' }] };
+  await event('progress', job(scope, { status: 'waiting_user', interaction }));
+  assert.deepEqual(harness.interactions.at(-1).interaction, interaction);
+  assert.match(harness.tasks.sessions['conversation-a'][0].detail, /什么时候执行/);
+  const count = harness.interactions.length;
+  await event('progress', job('foreign-scope', { status: 'waiting_user', interaction }));
+  assert.equal(harness.interactions.length, count);
+  await act(async () => stopTaskFullDuplex());
+  await event('progress', job(scope, { sequence: 3, status: 'waiting_user', interaction }));
+  assert.equal(harness.interactions.length, count, 'stopped media must not receive voice questions');
+});
+
 test('cancelled jobs remain cancelled after late success and persist one cancellation record', async () => {
   const scope = await start();
   await event('started', job(scope));
@@ -230,6 +267,25 @@ test('media restart keeps the Core Agent scope, while a different conversation g
   assert.equal(await start(), first);
   await act(async () => root.render(createElement(TaskFullDuplexRuntime, { ...props, sessionId: 'conversation-b' })));
   assert.notEqual(await start('conversation-b'), first);
+});
+
+test('a pending approval card reaches the live voice session, but not from replays or after stop', async () => {
+  // In task mode the panel is headless; without this the voice model never
+  // learns a card is waiting and cannot tell the user to click it (#8941).
+  const scope = await start();
+  const card = {
+    id: 'interaction-a', request_id: 'call-a', source: 'confirm_interrupt', state: 'pending',
+    questions: [{ question: 'cua_agent 将操作你的桌面', header: '操作确认: cua_agent', options: [] }],
+  };
+  await event('started', job(scope));
+  await event('progress', job(scope, { status: 'waiting_user', interaction: card }));
+  await event('progress', job(scope, { status: 'waiting_user', interaction: card, replay: true }));
+  assert.equal(harness.mediaQuestions.length, 1);
+  assert.equal(harness.mediaQuestions[0].interaction.source, 'confirm_interrupt');
+
+  await act(async () => stopTaskFullDuplex());
+  await event('progress', job(scope, { status: 'waiting_user', interaction: { ...card, id: 'interaction-b' } }));
+  assert.equal(harness.mediaQuestions.length, 1);
 });
 
 test('a stopped conversation receives and persists a completed result exactly once without audio', async () => {
@@ -324,6 +380,7 @@ test('navigation preserves voice, controls and result delivery to the original c
   assert.equal(harness.mediaResults.at(-1).job_id, 'job-a');
   await act(async () => document.querySelector('[data-testid="chat-panel-duplex-exit"]').click());
   assert.equal(harness.stops, stopsBefore + 1);
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 250)));
   assert.equal(document.querySelector('[data-testid="chat-panel-duplex-orb"]'), null);
 });
 
@@ -360,6 +417,33 @@ test('unregistered plugin sessions cannot inject results into the visible task',
   await event('completed', job('standalone-plugin-session', { status: 'completed', result: 'unrelated' }));
   assert.equal(harness.messages.length, 0);
   assert.deepEqual(harness.tasks.sessions, {});
+});
+
+test('failed history writes block restart and retry the original events in order with stable IDs', async () => {
+  await start();
+  const request = harness.request.bind(harness);
+  const writes = [];
+  let fail = true;
+  harness.request = async (method, params) => {
+    if (method !== 'video.conversation.append') return request(method, params);
+    writes.push({ ...params });
+    if (fail) throw new Error('History storage unavailable');
+    return { persisted: true };
+  };
+  await act(async () => harness.panelProps.onConversationItem('user', 'Remember Cedar'));
+  await act(async () => harness.panelProps.onConversationItem('assistant', 'I will remember it'));
+  await assert.rejects(flushConversationHistory('conversation-a'), /History storage unavailable/);
+  await start('conversation-a');
+  assert.equal(harness.starts.length, 1, 'do not start with incomplete history');
+  assert.ok(toastStore.getSnapshot().some(notice => notice.content.includes('History storage unavailable')), 'surface the saving failure');
+  fail = false;
+  await start('conversation-a');
+  assert.equal(harness.starts.length, 2);
+  const firstId = writes[0].event_id;
+  assert.ok(firstId);
+  assert.ok(writes.slice(0, -1).every(event => event.event_id === firstId));
+  assert.notEqual(writes.at(-1).event_id, firstId);
+  assert.equal(writes.at(-1).content, 'I will remember it');
 });
 
 test('a late job acknowledgement after stop is still tracked and recovered', async () => {
@@ -430,7 +514,7 @@ test('JoyAI receipt playback does not duplicate the conversation-owned full resu
   const brief = { status: 'completed', summary: '代码已经生成', result_kind: 'code', displayed_in_ui: true };
   assert.equal(provider.handleCompletedSearch(payload, brief), true);
   await provider.searchDeliveryQueue;
-  assert.deepEqual(displayed, []);
+  assert.deepEqual(displayed, ['代码已经生成']);
   assert.deepEqual(spoken, ['代码已经生成']);
   assert.equal(provider.pendingToolContext[0].result, '完整代码内容');
   provider.stop();
@@ -590,8 +674,52 @@ test('typing keeps the native send button alongside the active orb and accessibl
   await act(async () => microphone.click());
   assert.equal(microphone.getAttribute('aria-pressed'), 'true');
   await act(async () => document.querySelector('[data-testid="chat-panel-duplex-exit"]').click());
+  // The orb fades out before it unmounts.
+  assert.ok(document.querySelector('.task-full-duplex-orb.is-leaving'));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 250)));
   assert.equal(document.querySelector('[data-testid="chat-panel-duplex-orb"]'), null);
   assert.ok(document.querySelector('[data-testid="native-send"]'));
+});
+
+test('the undragged orb stays above the input frame and any pending card docked over it', async () => {
+  // Issue #8943: a fixed bottom offset let the orb cover the pending approval card.
+  const rect = (top, height) => () => ({ top, bottom: top + height, left: 300, right: 1000, width: 700, height, x: 300, y: top });
+  const renderComposer = (withCard) => act(async () => root.render(createElement('div', null,
+    createElement(TaskFullDuplexRuntime, { ...props, key: 'runtime' }),
+    withCard ? createElement('div', { key: 'card', 'data-testid': 'interaction-slot-root' }) : null,
+    createElement('div', { key: 'frame', className: 'chat-input-frame' }),
+  )));
+  await act(async () => root.render(null));
+  await renderComposer(true);
+  const card = document.querySelector('[data-testid="interaction-slot-root"]');
+  card.getBoundingClientRect = rect(560, 49);
+  document.querySelector('.chat-input-frame').getBoundingClientRect = rect(618, 150);
+  await start();
+  const orb = () => document.querySelector('[data-testid="chat-panel-duplex-controls"]');
+  // Layout changes are measured on the next animation frame.
+  const nextFrame = () => act(() => new Promise((resolve) => dom.window.requestAnimationFrame(() => resolve())));
+  // JSDOM viewport is 768px tall: 768 - card top 560 + 12px gap.
+  assert.equal(orb().style.bottom, '220px');
+  // An expanded card pushes the orb up with it.
+  card.getBoundingClientRect = rect(480, 129);
+  await act(async () => card.append(document.createElement('p')));
+  await nextFrame();
+  assert.equal(orb().style.bottom, '300px');
+  // A streamed reply mutates the page per commit; it must not force a layout per mutation.
+  let measured = 0;
+  card.getBoundingClientRect = () => { measured += 1; return rect(480, 129)(); };
+  await act(async () => {
+    for (let i = 0; i < 20; i += 1) {
+      card.append(document.createElement('span'));
+      await Promise.resolve(); // separate commits, as while a reply streams
+    }
+  });
+  await nextFrame();
+  assert.equal(measured, 1);
+  // Once the card is resolved the orb settles above the input frame.
+  await renderComposer(false);
+  await nextFrame();
+  assert.equal(orb().style.bottom, '162px');
 });
 
 async function mountAction() {
@@ -606,6 +734,25 @@ async function mountAction() {
     }),
   )));
 }
+
+test('a failed start does not leave its error on the button in another conversation', async () => {
+  harness.startError = 'Not supported';
+  await mountAction();
+  await act(async () => document.querySelector('[data-testid="chat-panel-input-full-duplex"]').click());
+  const button = () => document.querySelector('[data-testid="chat-panel-input-full-duplex"]');
+  assert.match(button().getAttribute('title'), /Not supported/);
+  await act(async () => root.render(createElement('div', { className: 'chat-input-frame' },
+    createElement(TaskFullDuplexRuntime, props),
+    createElement(TaskFullDuplexAction, {
+      eligible: true, sessionId: 'another-session',
+      ensureSession: async () => 'another-session',
+      labels: { start: 'start', stop: 'stop', starting: 'starting' },
+      fallback: createElement('button', null, 'Send'),
+    }),
+  )));
+  assert.equal(button().getAttribute('title'), 'start');
+  harness.startError = '';
+});
 
 test('canceling the share chooser starts no media session', async () => {
   window.localStorage.setItem('jiuwen.taskFullDuplex.screenSharing', 'true');
@@ -631,4 +778,108 @@ test('camera selection reaches media controller and closing sharing retains voic
   assert.ok(document.querySelector('[data-testid="chat-panel-duplex-orb"]'));
   await act(async () => toggleTaskDuplexSpeaker());
   assert.deepEqual(harness.speaker, [true]);
+});
+
+
+test('final-only files populate artifacts and background session assets once through application callbacks', async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  await act(async () => root.render(null));
+  useChatStore.getState().ensureRuntime('conversation-a');
+  await act(async () => root.render(createElement(ApplicationConversationRuntimes, { sessionId: 'conversation-a' })));
+  const scope = await start();
+  await event('started', job(scope));
+  await act(async () => root.render(createElement(ApplicationConversationRuntimes, { sessionId: 'conversation-b' })));
+  const file = { name: 'report.pdf', path: 'C:/work/report.pdf', download_token: 'initial' };
+  const completed = job(scope, { status: 'completed', result: '报告完成', files: [file] });
+  await event('completed', completed);
+  await event('completed', completed);
+  assert.equal(buildArtifacts(useChatStore.getState().getRuntime('conversation-a').messages).length, 1);
+  assert.equal(useChatStore.getState().getRuntime('conversation-b'), undefined);
+  assert.equal(useSessionAssetsStore.getState().bySession['conversation-a'][0].path, file.path);
+  const registrations = harness.requests.filter(r => r.method === 'session.assets.register');
+  assert.equal(registrations.length, 1);
+  assert.equal(registrations[0].params.session_id, 'conversation-a');
+  assert.deepEqual(registrations[0].params.items, [{ path: file.path, source: 'generated' }]);
+  assert.equal(harness.requests.filter(r => r.method === 'video.conversation.append' && r.params.kind === 'file').length, 1);
+  now += 1_000;
+  await event('completed', job(scope, { ...completed, files: [{ ...file, download_token: 'renewed' }] }));
+  const artifacts = buildArtifacts(useChatStore.getState().getRuntime('conversation-a').messages);
+  assert.equal(artifacts.length, 1);
+  assert.equal(artifacts[0].downloadToken, 'renewed');
+});
+
+test('task board displays the independent title, retains it through progress and falls back for legacy tasks', async () => {
+  const scope = await start();
+  await event('started', job(scope, { title: '修改打卡提醒为九点', question: '把刚才那个改到九点' }));
+  assert.equal(harness.tasks.sessions['conversation-a'][0].title, '修改打卡提醒为九点');
+  await event('progress', job(scope, { question: '把刚才那个改到九点' }));
+  assert.equal(harness.tasks.sessions['conversation-a'][0].title, '修改打卡提醒为九点');
+  await event('started', job(scope, { job_id: 'legacy-job', question: '完整的原始任务要求' }));
+  assert.equal(harness.tasks.sessions['conversation-a'][1].title, '完整的原始任务要求');
+});
+
+async function renderWithControls() {
+  await act(async () => root.render(null));
+  await act(async () => root.render(createElement('div', { className: 'chat-input-frame' },
+    createElement(TaskFullDuplexRuntime, props),
+    createElement(TaskFullDuplexAction, {
+      eligible: true, sessionId: props.sessionId, hasTextDraft: false,
+      ensureSession: async () => props.sessionId,
+      labels: { start: 'start', stop: 'stop', starting: 'starting' },
+    }),
+  )));
+}
+
+const cancelRequests = () => harness.requests
+  .filter(({ method, params }) => method === 'video.search.control' && params.action === 'cancel')
+  .map(({ params }) => params);
+
+test('#5527 the exit control cancels this conversation\'s queued and running tasks; internal stop does not', async () => {
+  await renderWithControls();
+  const scope = await start();
+  await event('progress', job(scope, { job_id: 'job-running', status: 'running', sequence: 1 }));
+  await event('progress', job(scope, { job_id: 'job-queued', status: 'queued', sequence: 1 }));
+  await event('completed', job(scope, { job_id: 'job-done', status: 'completed', sequence: 1, display_result: 'ok' }));
+  await act(async () => stopTaskFullDuplex());
+  assert.deepEqual(cancelRequests(), [], 'a media stop/restart keeps conversation-owned tasks');
+  await start();
+  await act(async () => document.querySelector('[data-testid="chat-panel-duplex-exit"]').click());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+  assert.deepEqual(cancelRequests(), [
+    { job_id: 'job-queued', search_session_id: scope, action: 'cancel' },
+    { job_id: 'job-running', search_session_id: scope, action: 'cancel' },
+  ]);
+});
+
+test('#5570 a newer queue snapshot is applied even when its opaque queue_version hash is smaller', async () => {
+  const scope = await start();
+  await event('progress', job(scope, { job_id: 'job-q', status: 'queued', sequence: 2, queue_version: 999_999, queue_position: 1 }));
+  await event('queue', { search_session_id: scope, queue_version: 5,
+    jobs: [job(scope, { job_id: 'job-q', status: 'queued', sequence: 3, queue_version: 5, queue_position: 2, replay: true })] });
+  const task = harness.tasks.sessions['conversation-a'].find((item) => item.id === 'job-q');
+  assert.equal(task.queuePosition, 2);
+  assert.equal(task.queueVersion, 5);
+  await event('queue', { search_session_id: scope, queue_version: 7,
+    jobs: [job(scope, { job_id: 'job-q', status: 'queued', sequence: 1, queue_version: 7, queue_position: 9, replay: true })] });
+  assert.equal(harness.tasks.sessions['conversation-a'].find((item) => item.id === 'job-q').queuePosition, 2,
+    'an older per-task sequence is still ignored');
+});
+
+test('a queue snapshot without a sequence still applies its terminal status', async () => {
+  const scope = await start();
+  await event('progress', job(scope, { job_id: 'job-s', status: 'running', sequence: 4 }));
+  await event('queue', { search_session_id: scope, queue_version: 3,
+    jobs: [job(scope, { job_id: 'job-s', status: 'cancelled', replay: true })] });
+  assert.equal(harness.tasks.sessions['conversation-a'].find((item) => item.id === 'job-s').status, 'cancelled');
+});
+
+test('#5544 a capacity wait names the conversation and task it is waiting on', async () => {
+  useSessionStore.setState({ sessions: [{ session_id: 'conversation-b', title: '整理周报', project_id: '', project_dir: '' }] });
+  const scope = await start();
+  await event('progress', job(scope, { job_id: 'job-wait', status: 'queued', sequence: 1,
+    wait_reason: 'capacity_order_or_resource',
+    waiting_on: [{ id: 'job-b', title: '打开浏览器下载报表', status: 'running', search_session_id: 'task-duplex:conversation-b' }] }));
+  const detail = harness.tasks.sessions['conversation-a'].find((item) => item.id === 'job-wait').detail;
+  assert.match(detail, /会话「整理周报」的任务「打开浏览器下载报表」（执行中）/);
 });

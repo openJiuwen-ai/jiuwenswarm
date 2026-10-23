@@ -274,7 +274,9 @@ def register_video_live_handler(
             params.get("reply_language", settings.reply_language())
         )
         request_kind = str(params.get("request_kind") or "frame").strip().casefold()
-        if not _is_allowed_image_data_url(frame_data_url):
+        if (frame_data_url and not _is_allowed_image_data_url(frame_data_url)) or (
+            not frame_data_url and request_kind != "user"
+        ):
             await channel.send_response(
                 ws, req_id, ok=False,
                 error="frame_data_url must be a base64 JPEG, PNG, or WebP data URL",
@@ -400,6 +402,7 @@ def register_video_live_handler(
         # JoyAI has a delegation marker rather than native function calls. Only
         # explicit schema-validated JSON is a control; no text intent classifier.
         scheduling = None
+        task_title = ""
         for operation_index in range(3):
             delegation = str(result.get("delegation") or "").strip()
             if result.get("decision") != "delegation" or not delegation.startswith("{"):
@@ -416,6 +419,8 @@ def register_video_live_handler(
                     "jiuwen_task_modify",
                     "jiuwen_task_cancel",
                 }:
+                    if value.get("name") == "jiuwen_task_answer":
+                        raise ValueError("JoyAI voice form answers are disabled; complete the on-screen form")
                     raise ValueError("Unsupported task operation")
                 owner, scope = await search_manager.scope(
                     ws, {"search_session_id": search_session_id}
@@ -427,6 +432,7 @@ def register_video_live_handler(
                     }
                 )
                 if call.name == "jiuwen_delegate":
+                    task_title = call.arguments.get("title", "")
                     scheduling = {
                         k: call.arguments.get(k)
                         for k in ("independent", "depends_on", "resources")
@@ -437,7 +443,7 @@ def register_video_live_handler(
                 receipt = await search_manager.operate(owner, scope, call)
                 # Feed facts through the same provider conversation, including ids
                 # needed for query -> modify. A receipt cannot manufacture a task.
-                followup = task_receipt_followup(receipt)
+                followup = model_instruction + "\n\n" + task_receipt_followup(receipt)
                 result = await joyai_provider.request_frame(
                     frame_data_url, followup, upstream_session_id
                 )
@@ -448,14 +454,15 @@ def register_video_live_handler(
                 )
                 return
         else:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="Task operation limit reached; query current state",
-                code="TASK_REQUEST_REJECTED",
-            )
-            return
+            if result.get("decision") == "delegation":
+                await channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="Task operation limit reached; query current state",
+                    code="TASK_REQUEST_REJECTED",
+                )
+                return
 
         search_job = None
         tools_used: list[str] = []
@@ -466,6 +473,7 @@ def register_video_live_handler(
                     ws,
                     question=question or delegation,
                     query=delegation,
+                    title=task_title,
                     search_session_id=search_session_id,
                     visual_context=str(result.get("response") or ""),
                     frame_data_url=frame_data_url,

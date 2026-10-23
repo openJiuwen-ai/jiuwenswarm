@@ -232,6 +232,30 @@ test('observed question and spoken answer retain exact task and interaction iden
   assert.equal(JSON.parse(outputs().at(-1).item.output).state, 'accepted');
 });
 
+test('headless panel receives information forms once and excludes permission approvals', async () => {
+  const args = await call('jiuwen_task_query', {}, 'query-form');
+  await receipt('query-form', { tool_result: { jobs: [] } });
+  await finishResponse();
+  await act(async () => root.render(createElement(VideoLivePanel, { ref: panel, headless: true })));
+  const payload = { job_id: 'task-form', search_session_id: args.search_session_id, status: 'waiting_user',
+    interaction: { id: 'form-a', request_id: 'request-a', source: 'ask_user_interrupt', state: 'pending',
+      questions: [{ question: '时间？' }, { question: '内容？' }] } };
+  const notices = () => sent.filter(event => event.item?.content?.[0]?.text?.includes('Background Agent information form'));
+  await act(async () => {
+    panel.current.deliverTaskInteraction({ ...payload, replay: true });
+    panel.current.deliverTaskInteraction({ ...payload, search_session_id: 'other' });
+    panel.current.deliverTaskInteraction({ ...payload, interaction: { ...payload.interaction, source: 'permission_interrupt' } });
+  });
+  assert.equal(notices().length, 0);
+  await act(async () => {
+    panel.current.deliverTaskInteraction(payload);
+    panel.current.deliverTaskInteraction(payload);
+  });
+  assert.equal(notices().length, 1);
+  assert.match(notices()[0].item.content[0].text, /form-a/);
+  assert.match(notices()[0].item.content[0].text, /内容/);
+});
+
 test('late RPC receipt after media restart cannot speak into the new session', async () => {
   await call('jiuwen_delegate', { task: 'old task' }, 'old');
   const previous = session;

@@ -407,6 +407,107 @@ async def test_cancelled_invocation_before_first_model_is_observed(tasks, monkey
     assert stopped["execution_settled"] and stopped["execution_cancelled"]
 
 
+async def test_cancelled_invocation_captured_as_current_task_settles_inline(
+    tasks, monkeypatch
+):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+
+    service, executor = tasks
+    task = submit(service, "cancel-captured-request")
+    await until(lambda: executor.calls)
+    root = object()
+    rail = SimpleNamespace(managed_tasks={})
+    harness = SimpleNamespace(
+        _react_agent=root,
+        active_round=SimpleNamespace(task_id="direct-resume"),
+        loop_controller=SimpleNamespace(
+            task_scheduler=SimpleNamespace(_running_tasks={})
+        ),
+    )
+    adapter = TaskAdapter(
+        _instance=harness,
+        _is_session_scoped_adapter=True,
+        _voice_agent_task_rail=rail,
+    )
+    request = SimpleNamespace(
+        channel_id="video_tool",
+        session_id=task["core_session_id"],
+        request_id=task["request_id"],
+    )
+    install_bridge(monkeypatch, service.store, request)
+    ctx = SimpleNamespace(
+        agent=root,
+        session=None,
+        extra={
+            "run_context": {
+                "extra": {"managed_task_request": task["request_id"]}
+            }
+        },
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        async with module.bind_task_execution(request, adapter, {}):
+            await task_checkpoint(rail, ctx, "before_model")
+            raise asyncio.CancelledError()
+
+    stopped = service.store.read(task["id"])
+    assert stopped["execution_settled"] and stopped["execution_cancelled"]
+
+
+async def test_cancelled_invocation_ignores_stale_scheduler_handle(tasks, monkeypatch):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+
+    service, executor = tasks
+    task = submit(service, "cancel-stale-scheduler")
+    await until(lambda: executor.calls)
+    release = asyncio.Event()
+    stale = asyncio.create_task(release.wait())
+    root = object()
+    rail = SimpleNamespace(managed_tasks={})
+    harness = SimpleNamespace(
+        _react_agent=root,
+        active_round=SimpleNamespace(task_id="stale-native"),
+        loop_controller=SimpleNamespace(
+            task_scheduler=SimpleNamespace(
+                _running_tasks={"stale-native": (None, stale)}
+            )
+        ),
+    )
+    adapter = TaskAdapter(
+        _instance=harness,
+        _is_session_scoped_adapter=True,
+        _voice_agent_task_rail=rail,
+    )
+    request = SimpleNamespace(
+        channel_id="video_tool",
+        session_id=task["core_session_id"],
+        request_id=task["request_id"],
+    )
+    install_bridge(monkeypatch, service.store, request)
+    ctx = SimpleNamespace(
+        agent=root,
+        session=None,
+        extra={
+            "run_context": {
+                "extra": {"managed_task_request": task["request_id"]}
+            }
+        },
+    )
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            async with module.bind_task_execution(request, adapter, {}):
+                await task_checkpoint(rail, ctx, "before_model")
+                raise asyncio.CancelledError()
+
+        stopped = service.store.read(task["id"])
+        assert stopped["execution_settled"] and stopped["execution_cancelled"]
+        assert not stale.done()
+    finally:
+        release.set()
+        await stale
+
+
 @pytest.mark.parametrize("swallowed_cancel", [False, True])
 async def test_closed_output_waits_for_captured_native_execution(
     tasks, monkeypatch, swallowed_cancel
@@ -777,3 +878,140 @@ async def test_cancelled_execution_final_text_is_not_success(tasks):
     record = service.get("alice", "conversation", task["id"])
     assert record["result"] is None
     assert record["partial_result"]["answer"] == "I will start researching"
+
+
+async def test_completed_cancel_preserves_resource_context_for_core_revision(tasks):
+    service, executor = tasks
+    task = submit(service, "create daily reminder")
+    await until(lambda: executor.calls)
+    executor.gates[task["id"]].set()
+    await until(lambda: service.store.read(task["id"])["status"] == "completed")
+    original = {"answer": "Created cron-reminder-1", "files": []}
+    service.store.update(task["id"], lambda current: current.update(result=original))
+    receipt = await service.cancel("alice", "conversation", task["id"], "stop-finished")
+    assert receipt["task_status"] == "completed"
+    assert receipt["stopped"] is False
+    assert "仍可另行委托 Core 修改或继续处理" in receipt["message"]
+    current = service.store.read(task["id"])
+    revision = service.modify(
+        "alice", "conversation", task["id"], "manage-reminder",
+        TaskModification(current["revision"], "Query and delete cron-reminder-1; verify deletion"),
+    )
+    assert revision["state"] == "followup"
+    child = service.store.read(revision["successor_id"])
+    assert child["request"]["prior_result"] == original
+    assert "cron-reminder-1" in child["instruction"]
+    assert service.store.read(task["id"])["result"] == original
+
+
+async def test_titles_persist_search_and_revision_without_replacing_instructions(tasks):
+    service, executor = tasks
+    task = service.submit("alice", "conversation", "titled", "请查询香港今天的天气并说明是否带伞", {"title": "查询香港天气"})
+    await until(lambda: executor.calls)
+    restored = TaskStore(service.store.path).read(task["id"])
+    assert restored["title"] == "查询香港天气"
+    assert restored["instruction"] == task["instruction"]
+    assert service.list("alice", "conversation", query="查询香港天气")[0][0]["id"] == task["id"]
+    assert service.list("alice", "conversation", query="是否带伞")[0][0]["id"] == task["id"]
+    executor.gates[task["id"]].set()
+    await until(lambda: service.store.read(task["id"])["status"] == "completed")
+    receipt = service.modify("alice", "conversation", task["id"], "english", TaskModification(1, "改成英文", "用英文介绍香港天气"))
+    child = service.store.read(receipt["successor_id"])
+    assert child["title"] == "用英文介绍香港天气"
+    assert child["request"]["prior_result"]["answer"] == task["instruction"]
+    assert service.store.read(task["id"])["title"] == "查询香港天气"
+    assert service.modify("alice", "conversation", task["id"], "english", TaskModification(1, "改成英文", "用英文介绍香港天气")) == receipt
+
+
+async def test_queued_title_change_preserves_full_requirement_and_legacy_replay(tasks):
+    service, executor = tasks
+    first = submit(service, "first")
+    await until(lambda: executor.calls)
+    queued = service.submit("alice", "conversation", "second", "修改刚才的打卡提醒", {"title": "调整打卡提醒时间"})
+    service.modify("alice", "conversation", queued["id"], "time", TaskModification(1, "改到九点", "修改打卡提醒为九点"))
+    updated = service.store.read(queued["id"])
+    assert updated["title"] == "修改打卡提醒为九点"
+    assert "修改刚才的打卡提醒" in updated["instruction"] and "改到九点" in updated["instruction"]
+    assert submit(service, "first")["id"] == first["id"]
+    service.store.update(first["id"], lambda task: task.pop("title", None))
+    assert service.list("alice", "conversation", query="first")[0][0]["id"] == first["id"]
+
+
+def _round_harness(round_task=None):
+    harness = SimpleNamespace(
+        _react_agent=object(),
+        active_round=SimpleNamespace(task_id="round-id"),
+        loop_controller=SimpleNamespace(task_scheduler=SimpleNamespace(_running_tasks={})),
+    )
+    if round_task is not None:
+        harness._interaction_round_task = round_task
+    return harness
+
+
+@pytest.mark.parametrize("has_round_task", [True, False])
+async def test_5545_stopped_round_without_scheduler_handle_still_settles(
+    tasks, monkeypatch, has_round_task
+):
+    """#5545: the output closes while the stopped round (e.g. CUA cleanup) still
+    unwinds outside the scheduler map; its end must still be acknowledged."""
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+
+    service, executor = tasks
+    task = submit(service, "computer-use-stop")
+    await until(lambda: executor.calls)
+    gate = asyncio.Event()
+    round_task = asyncio.create_task(gate.wait()) if has_round_task else None
+    harness = _round_harness(round_task)
+    rail = SimpleNamespace(managed_tasks={})
+    adapter = TaskAdapter(
+        _instance=harness, _voice_agent_task_rail=rail, _is_session_scoped_adapter=True
+    )
+    request = SimpleNamespace(
+        channel_id="video_tool", request_id=task["request_id"], session_id=task["core_session_id"]
+    )
+    install_bridge(monkeypatch, service.store, request)
+    try:
+        async with module.bind_task_execution(request, adapter, {}):
+            pass
+        await asyncio.sleep(0.1)
+        assert not service.store.read(task["id"])["execution_settled"]
+        if has_round_task:
+            gate.set()
+        else:
+            harness.active_round = None
+        await until(lambda: service.store.read(task["id"])["execution_settled"])
+    finally:
+        gate.set()
+        if round_task is not None:
+            await round_task
+
+
+async def test_5545_failed_stop_request_still_ends_cancelled_when_execution_ends(tasks):
+    """#5545: a stop request that errors must not leave the task 'stopping' forever
+    once the execution has actually ended."""
+    service, executor = tasks
+    service.concurrency = 1
+    task = independent(service, "first")
+    await until(lambda: executor.calls)
+    executor.reject_stop = True
+    await service.cancel("alice", "conversation", task["id"], "stop")
+    await until(lambda: service.store.read(task["id"])["error"])
+    executor.gates[task["id"]].set()
+    await until(lambda: service.store.read(task["id"])["status"] == "cancelled")
+
+
+async def test_5544_capacity_wait_names_the_other_conversations_task(tasks):
+    """#5544: with one desktop slot, a queued task names exactly what it waits on."""
+    service, executor = tasks
+    service.concurrency = 1
+    running = service.submit("alice", "task-duplex:a", "a", "open the browser")
+    await until(lambda: executor.calls)
+    waiting = service.submit("alice", "task-duplex:b", "b", "fill the form")
+    service.submit("bob", "task-duplex:c", "c", "bob private")
+    snapshot, _ = service.snapshot("alice", "task-duplex:b")
+    queued = next(t for t in snapshot if t["id"] == waiting["id"])
+    assert queued["wait_reason"] == "capacity_order_or_resource"
+    assert queued["waiting_on"] == [dict(
+        id=running["id"], title=running.get("title") or running["instruction"],
+        status="running", search_session_id="task-duplex:a",
+    )]

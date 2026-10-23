@@ -1,4 +1,6 @@
 import { TASK_ACCEPTED_INSTRUCTIONS } from './taskPrompts';
+import { informationInteraction } from './taskInteraction';
+import { toast } from '../../../../channels/web/frontend/src/components/ui/Toast/toastStore';
 import {
   ChangeEvent,
   FormEvent,
@@ -84,6 +86,8 @@ export interface VideoLivePanelHandle {
   setSpeakerMuted: (muted: boolean) => void;
   stopScreenSharing: () => void;
   deliverToolResult: (payload: SearchJobPayload) => void;
+  deliverQuestion: (payload: SearchJobPayload) => void;
+  deliverTaskInteraction: (payload: SearchJobPayload) => void;
 }
 
 interface VideoLivePanelProps {
@@ -94,6 +98,15 @@ interface VideoLivePanelProps {
   onError?: (message: string) => void;
   onScreenSharingChange?: (sharing: boolean) => void;
   onCoreAgentProgress?: (event: 'started' | 'progress' | 'completed' | 'failed', payload: SearchJobPayload) => void;
+}
+
+export const SCREEN_SHARE_UNSUPPORTED_NOTICE = '当前环境不支持屏幕共享，已仅开启语音';
+
+function isScreenCaptureUnsupported(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'NotSupportedError') return true;
+  const name = (error as { name?: unknown } | null)?.name;
+  const message = (error as { message?: unknown } | null)?.message;
+  return name === 'NotSupportedError' || (typeof message === 'string' && /not supported/i.test(message));
 }
 
 export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelProps>(function VideoLivePanel(
@@ -423,6 +436,13 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     setSearchStatus(`${payload.engine || '九问搜索 Agent'}失败：${error}`);
   };
 
+  const deliverTaskInteraction = (payload: SearchJobPayload) => {
+    if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current || !payload.job_id) return;
+    const interaction = informationInteraction(payload);
+    if (payload.replay && interaction?.state === 'pending') return;
+    if (interaction) duplexRef.current?.enqueueQuestion(payload.job_id, interaction);
+  };
+
   useEffect(() => {
     // In task mode the conversation runtime owns subscriptions, polling and result display.
     if (headless) return;
@@ -445,9 +465,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     });
     const unsubscribeProgress = webClient.on<SearchJobPayload>('video.search.progress', ({ payload }) => {
       if (!belongsToCurrentSession(payload)) return;
-      if (!payload.replay && payload.job_id && payload.interaction) {
-        duplexRef.current?.enqueueQuestion(payload.job_id, payload.interaction);
-      }
+      deliverTaskInteraction(payload);
       updateSearchProgress(payload);
       onCoreAgentProgress?.('progress', payload);
       const job = payload.job_id ? searchJobsRef.current.get(payload.job_id) : undefined;
@@ -749,12 +767,18 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     });
   }, []);
 
-  const startScreen = async (): Promise<boolean> => {
+  /**
+   * `unsupported` means this runtime cannot capture the screen at all (e.g. the
+   * Windows desktop WebView rejects getDisplayMedia with "Not supported", #5283).
+   * With `allowUnsupported` the caller handles that case instead of an error.
+   */
+  const startScreen = async (allowUnsupported = false): Promise<boolean | 'unsupported'> => {
     if (screens.length >= MAX_SCREENS) {
       setError(`最多同时读取 ${MAX_SCREENS} 个屏幕。`);
       return false;
     }
     if (!navigator.mediaDevices?.getDisplayMedia) {
+      if (allowUnsupported) return 'unsupported';
       setError('当前运行环境不支持屏幕共享。');
       return false;
     }
@@ -798,8 +822,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       });
       return true;
     } catch (screenError) {
-      if (screenError instanceof DOMException && screenError.name === 'NotAllowedError') {
+      // Browsers reject a cancelled picker with NotAllowedError; Electron's
+      // display-media handler denies with AbortError.
+      if (screenError instanceof DOMException && (screenError.name === 'NotAllowedError' || screenError.name === 'AbortError')) {
         setError('已取消选择屏幕。');
+      } else if (allowUnsupported && isScreenCaptureUnsupported(screenError)) {
+        return 'unsupported';
       } else {
         setError(screenError instanceof Error ? screenError.message : '无法读取屏幕。');
       }
@@ -927,6 +955,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             },
             onState: (state) => {
               if (duplexRef.current !== session) return;
+              setDuplexVoicePhase(state);
               if (state === 'closed') {
                 renewingRealtimeRef.current = false;
                 renewalResultsRef.current.clear();
@@ -1131,9 +1160,17 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         await startRealtime();
         return Boolean(duplexRef.current || joyaiProviderRef.current?.active);
       }
-      const started = visualSource === 'camera' ? await startCamera() : await startScreen();
-      pendingScreenAutostartRef.current = started;
-      return started;
+      const result = visualSource === 'camera' ? await startCamera() : await startScreen(true);
+      if (result === 'unsupported') {
+        // Fallback, not a root-cause fix: keep voice duplex usable when the
+        // runtime cannot share the screen (#5283).
+        pendingScreenAutostartRef.current = false;
+        toast.open({ content: SCREEN_SHARE_UNSUPPORTED_NOTICE, variant: 'warning' });
+        await startRealtime();
+        return Boolean(duplexRef.current || joyaiProviderRef.current?.active);
+      }
+      pendingScreenAutostartRef.current = result;
+      return result;
     },
     stop: () => {
       pendingScreenAutostartRef.current = false;
@@ -1157,7 +1194,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         setSourceName('');
       }
     },
+    deliverTaskInteraction,
     deliverToolResult: (payload) => {
+      deliverTaskInteraction(payload);
       if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;
       // The runtime delivers terminal events once. Hold them while replacing
       // Qwen's transport, including the interval spent fetching fresh config.
@@ -1187,6 +1226,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       }
       if (payload.status === 'failed') acceptFailedSearch(payload);
       else acceptCompletedSearch(payload);
+    },
+    deliverQuestion: (payload) => {
+      // Headless panels have no task subscriptions, so the runtime forwards
+      // pending questions and approval cards for the model to raise.
+      if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;
+      if (payload.job_id && payload.interaction) duplexRef.current?.enqueueQuestion(payload.job_id, payload.interaction);
     },
   }));
 

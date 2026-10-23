@@ -52,6 +52,8 @@ def _isolate_video_mode_environment(monkeypatch) -> None:
         "VOICE_TTS_MODEL",
         "VOICE_TTS_VOICE",
         "JOYAI_VOICE_PROVIDER",
+        "JOYAI_ASR_WS_URL",
+        "JOYAI_TTS_WS_URL",
         "ASR_API_MODE",
         "QWEN_OMNI_REALTIME_URL",
         "QWEN_OMNI_API_KEY",
@@ -794,7 +796,7 @@ async def test_qwen_tool_rpc_delegates_original_instruction_to_core_agent(
         {
             "name": "jiuwen_delegate",
             "call_id": "call-weather",
-            "arguments": '{"task":"查询香港天气"}',
+            "arguments": '{"task":"查询香港天气","title":"查询香港天气与出行建议"}',
             "question": "请查询香港今天的天气，并告诉我出门是否需要带伞",
             "search_session_id": "qwen-search-session",
         },
@@ -805,6 +807,13 @@ async def test_qwen_tool_rpc_delegates_original_instruction_to_core_agent(
     assert response["ok"] is True
     job = response["payload"]["search_job"]
     assert response["payload"]["call_id"] == "call-weather"
+    assert job["title"] == "查询香港天气与出行建议"
+    from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call
+    lookup = await channel.manager.operate("test-user", "qwen-search-session", parse_qwen_omni_tool_call({
+        "name": "jiuwen_task_query", "call_id": "find-title", "arguments": {"query": "出行建议"},
+    }))
+    assert lookup["jobs"][0]["title"] == job["title"]
+    assert lookup["jobs"][0]["job_id"] == job["job_id"]
     assert job["tool_call_id"] == "call-weather"
     assert job["tool_name"] == "jiuwen_delegate"
 
@@ -994,9 +1003,9 @@ async def test_qwen_tool_rpc_rejects_invalid_or_inactive_calls(monkeypatch) -> N
         ),
         (
             "</response> 我帮你查询。\n</delegation> 查询这个品牌",
-            "response",
+            "delegation",
             "我帮你查询。",
-            "",
+            "查询这个品牌",
         ),
         ("plain fallback", "response", "plain fallback", ""),
     ],
@@ -1007,6 +1016,16 @@ def test_parse_joyai_action(raw, decision, response, delegation) -> None:
         "response": response,
         "delegation": delegation,
     }
+
+
+async def test_joyai_frame_only_request_carries_protocol(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    completion = AsyncMock(return_value={"raw_content": "</silence>"})
+    monkeypatch.setattr(joyai_provider, "request_completion", completion)
+    result = await joyai_provider.request_frame("data:image/jpeg;base64,AA==", "", "frame-only")
+    assert result["decision"] == "silence"
+    assert completion.await_args.args[1].startswith(joyai_provider._ACTION_INSTRUCTIONS)  # pylint: disable=protected-access
 
 
 @pytest.mark.asyncio
@@ -1058,7 +1077,8 @@ async def test_request_joyai_frame_uses_stateful_chat_completion(monkeypatch) ->
     assert request["json"]["model"] == "joyai-model"
     request_text = request["json"]["messages"][0]["content"][0]
     assert request_text["type"] == "text"
-    assert request_text["text"] == "持续观察，有重要变化时回应"
+    assert request_text["text"].endswith("持续观察，有重要变化时回应")
+    assert "you MUST delegate to Core" in request_text["text"]
     assert request["json"]["messages"][0]["content"][1]["type"] == "image_url"
     assert request["json"]["max_tokens"] == 512
     assert request["json"]["temperature"] == 0.0
@@ -1077,7 +1097,7 @@ async def test_request_joyai_frame_uses_stateful_chat_completion(monkeypatch) ->
 
 
 @pytest.mark.asyncio
-async def test_request_joyai_frame_without_instruction_sends_image_only(
+async def test_request_joyai_frame_without_instruction_sends_image_and_action_protocol(
     monkeypatch,
 ) -> None:
     calls = []
@@ -1108,15 +1128,54 @@ async def test_request_joyai_frame_without_instruction_sends_image_only(
     assert request["headers"]["x-streaming-session"] == "joyai-session-frame-only"
     assert request["headers"]["x-system-prompt-key"] == "DEFAULT_SYSTEM_PROMPT_EN"
     content = request["json"]["messages"][0]["content"]
-    assert content == [
-        {
-            "type": "image_url",
-            "image_url": {"url": "data:image/jpeg;base64,ZmFrZQ=="},
-        }
-    ]
+    assert {
+        "type": "image_url",
+        "image_url": {"url": "data:image/jpeg;base64,ZmFrZQ=="},
+    } in content
+    assert any(
+        item.get("type") == "text" and item.get("text") == joyai_provider._ACTION_INSTRUCTIONS  # pylint: disable=protected-access
+        for item in content
+    )
     assert request["json"]["max_tokens"] == 128
     assert "extra_body" not in request["json"]
     assert result["decision"] == "silence"
+
+
+async def test_request_joyai_voice_only_turn_sends_text_without_an_image(monkeypatch):
+    calls = []
+    response = _FakeHttpResponse(payload={
+        "choices": [{"message": {"content": "</response> 听见了。"}}],
+    })
+    monkeypatch.setattr(joyai_provider.httpx, "AsyncClient", _recording_http_client(calls, response))
+    monkeypatch.setattr(joyai_provider, "model_config", lambda: ("http://joyai.example/v1", "EMPTY", "joyai-model"))
+    result = await joyai_provider.request_frame("", "你好", "voice-only", "1.0 seconds ~ 2.0 seconds")
+    request = calls[1]
+    assert request["headers"]["x-streaming-session"] == "voice-only"
+    content = request["json"]["messages"][0]["content"]
+    assert len(content) == 1 and content[0]["type"] == "text"
+    assert "no live screen or camera image" in content[0]["text"]
+    assert content[0]["text"].endswith("你好")
+    assert "extra_body" not in request["json"]
+    assert result["decision"] == "response" and result["response"] == "听见了。"
+
+
+@pytest.mark.parametrize("kind,frame,instruction", [
+    ("frame", "", ""),
+    ("user", "data:text/plain;base64,ZmFrZQ==", "你好"),
+    ("user", "", ""),
+])
+async def test_joyai_voice_only_support_still_rejects_empty_polling_and_invalid_images(monkeypatch, kind, frame, instruction):
+    from unittest.mock import AsyncMock
+
+    channel = _video_channel()
+    provider = AsyncMock()
+    monkeypatch.setattr(joyai_provider, "request_frame", provider)
+    await channel.handlers["video.joyai.frame"](None, "invalid-empty-frame", {
+        "frame_data_url": frame, "instruction": instruction, "question": instruction,
+        "request_kind": kind, "search_session_id": "scope", "joyai_session_id": "joyai",
+    }, None)
+    assert channel.responses[-1][1]["ok"] is False
+    provider.assert_not_awaited()
 
 
 def test_joyai_raw_content_log_keeps_model_output_and_skips_silence(
@@ -1722,8 +1781,8 @@ def test_ground_joyai_user_instruction_defers_unresolved_search_and_resumes_it()
     assert "不得先 Speak、再等待下一帧补发 Delegate" in prompt
     assert "一旦补齐对象" in prompt
     assert "立即结合先前搜索意图输出一个完整 Delegate 动作" in prompt
-    assert "</response> 与 </delegation> 必须出现在同一行" in prompt
-    assert "跨行拆开" in prompt
+    assert "</response> 与 </delegation> 必须出现在同一次输出中" in prompt
+    assert "标记之间允许空白或换行" in prompt
     assert "不得自行判断能否完成、是否有权限" in prompt
     assert "必须把任务原样交给九问 Core Agent 执行" in prompt
     assert "能否执行由 Core Agent 返回，不由你判断" in prompt
@@ -2815,8 +2874,50 @@ async def test_joyai_task_query_then_revision_uses_shared_service(monkeypatch):
     assert tasks[1]["parent_id"] == task["id"]
 
 
+async def test_joyai_voice_form_answer_is_blocked_and_manual_form_resumes_original_task(monkeypatch):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.extensions.video_duplex.tests.backend.test_task_interactions import QuestionExecutor, until
+
+    channel = _video_channel(SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(
+        ok=True, payload={"user_id": "test-user", "mode": "agent", "work_mode": "work"},
+    ))))
+    service = channel.manager.service
+    service.executor = QuestionExecutor(service.store)
+    scope = "task-duplex:manual-form"
+    job = await channel.manager.start(
+        None, question="填写预算", query="填写预算", search_session_id=scope, command_id="create-form",
+    )
+    await until(lambda: service.store.read(job["id"])["output_closed"])
+    pending = service.store.read(job["id"])
+    operation = {"name": "jiuwen_task_answer", "arguments": {
+        "job_id": job["id"], "interaction_id": pending["interaction"]["id"], "answers": ["5000元"],
+    }}
+    provider = AsyncMock(return_value=_joyai_result("delegation", delegation=json.dumps(operation)))
+    monkeypatch.setattr(joyai_provider, "request_frame", provider)
+    monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
+    await channel.handlers["video.joyai.frame"](None, "voice-answer", {
+        "frame_data_url": "", "instruction": "5000元", "question": "5000元", "request_kind": "user",
+        "search_session_id": scope, "joyai_session_id": "joyai-form",
+    }, None)
+    assert channel.responses[-1][1]["ok"] is False
+    assert "voice form answers are disabled" in channel.responses[-1][1]["error"]
+    assert service.store.read(job["id"])["interaction"]["state"] == "pending"
+    assert provider.await_count == 1
+    await channel.handlers["video.search.answer"](None, "manual-answer", {
+        "session_id": "manual-form", "job_id": job["id"],
+        "request_id": pending["interaction"]["request_id"], "answers": ["5000元"],
+    }, None)
+    assert channel.responses[-1][1]["ok"] is True
+    await until(lambda: service.store.read(job["id"])["status"] == "completed")
+    tasks, _ = service.list("test-user", scope)
+    assert len(tasks) == 1 and tasks[0]["result"]["answer"] == "5000元"
+
+
+
+
+@pytest.mark.parametrize("frame", ["data:image/jpeg;base64,ZmFrZQ==", ""])
 async def test_joyai_structured_independent_delegate_reaches_shared_service(
-    monkeypatch,
+    monkeypatch, frame,
 ):
     from unittest.mock import AsyncMock
 
@@ -2829,7 +2930,7 @@ async def test_joyai_structured_independent_delegate_reaches_shared_service(
     )
     operation = {
         "name": "jiuwen_delegate",
-        "arguments": {"task": "Hangzhou weather", "independent": True, "resources": []},
+        "arguments": {"task": "Hangzhou weather", "title": "查询杭州天气", "independent": True, "resources": []},
     }
     monkeypatch.setattr(
         joyai_provider,
@@ -2843,7 +2944,7 @@ async def test_joyai_structured_independent_delegate_reaches_shared_service(
         None,
         "independent",
         {
-            "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
+            "frame_data_url": frame,
             "instruction": "weather",
             "question": "weather",
             "request_kind": "user",
@@ -2855,6 +2956,7 @@ async def test_joyai_structured_independent_delegate_reaches_shared_service(
     response = channel.responses[-1][1]
     assert response["ok"]
     job = response["payload"]["search_job"]
+    assert job["title"] == "查询杭州天气"
     assert job["independent"] is True and job["resources"] == []
 
 
@@ -2985,3 +3087,153 @@ def test_voice_brief_protocol_allows_unfinished_background_work():
     prompt = video_search.core_agent_brief_protocol("pending-outcome")
     assert "Preserve pending, partial, blocked and failed outcomes" in prompt
     assert "do not claim the task is still unfinished" not in prompt
+
+
+def test_joyai_resource_policy_survives_completed_and_empty_invocation_queries():
+    for message in [joyai_provider.ground_user_instruction("删除这个每天九点的定时提醒")]:
+        assert "Completed Core work can still be revised" in message
+        assert "Further actions on prior results may also be delegated to Core" in message
+        assert "original result and context" in message
+        assert "accepted/submitted is not completion" in message
+        assert "cancel receipt reports completed/stopped=false" in message
+        assert "Cron tools" not in message
+
+
+async def test_joyai_delegates_reminder_deletion_after_completed_creation(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    client = SimpleNamespace(send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={"content": "Reminder deleted"}),
+    ))
+    channel = _video_channel(client)
+    created = await channel.manager.start(
+        None, question="创建每天八点的提醒", query="创建每天八点的提醒",
+        search_session_id="scope", command_id="create-reminder",
+    )
+    await _wait_for_event(channel, "video.search.completed")
+    channel.manager.service.store.update(
+        created["id"], lambda task: task.update(
+            status="completed", result={"answer": "Created reminder cron-reminder-1"},
+        ),
+    )
+    before = client.send_request.call_count
+    calls = []
+
+    async def provider(frame, instruction, session):
+        calls.append(instruction)
+        if len(calls) == 1:
+            assert "Completed Core work can still be revised" in instruction
+            operation = {"name": "jiuwen_task_query", "arguments": {}}
+        else:
+            assert created["id"] in instruction
+            assert "cron-reminder-1" in instruction
+            assert "Further actions on prior results may also be delegated to Core" in instruction
+            operation = {"name": "jiuwen_delegate", "arguments": {
+                "task": "查询 Cron 中 cron-reminder-1，确认它是每天九点的提醒后删除，并核验删除结果。",
+            }}
+        return _joyai_result("delegation", delegation=json.dumps(operation))
+
+    monkeypatch.setattr(joyai_provider, "request_frame", provider)
+    monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
+    await channel.handlers["video.joyai.frame"](
+        None, "delete-reminder", {
+            "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
+            "instruction": "删除这个每天九点的定时提醒", "question": "删除这个每天九点的定时提醒",
+            "request_kind": "user", "search_session_id": "scope", "joyai_session_id": "joyai",
+        }, None,
+    )
+    response = channel.responses[-1][1]
+    assert response["ok"] is True
+    assert response["payload"]["search_job"]["id"] != created["id"]
+    for _ in range(100):
+        if client.send_request.call_count > before:
+            break
+        await asyncio.sleep(0.01)
+    assert client.send_request.call_count > before
+    assert "cron-reminder-1" in client.send_request.call_args.args[0].params["query"]
+    assert "核验删除结果" in client.send_request.call_args.args[0].params["query"]
+    assert channel.manager.service.get("test-user", "scope", created["id"])["status"] == "completed"
+
+
+@pytest.mark.parametrize("provider", ["qwen", "joyai"])
+async def test_wrong_resource_id_recovers_via_query_and_correct_core_followup(monkeypatch, provider):
+    from unittest.mock import AsyncMock
+
+    channel = _video_channel(SimpleNamespace(send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={"content": "Created external-resource-1"}),
+    )))
+    original = await channel.manager.start(
+        None, question="Create an object", query="Create an object", search_session_id="scope",
+        command_id="create-object",
+    )
+    await _wait_for_event(channel, "video.search.completed")
+    operations = [
+        {"name": "jiuwen_task_modify", "arguments": {
+            "job_id": "external-resource-1", "revision": 1, "instruction": "Stop this object",
+        }},
+        {"name": "jiuwen_task_query", "arguments": {}},
+        {"name": "jiuwen_task_modify", "arguments": {
+            "job_id": original["id"], "revision": 1, "instruction": "Stop external-resource-1 and verify",
+        }},
+    ]
+    if provider == "qwen":
+        receipts = []
+        for index, operation in enumerate(operations):
+            await channel.handlers["video.qwen.tool"](None, f"recover-{index}", {
+                **operation, "call_id": f"recover-{index}", "search_session_id": "scope",
+                "question": "Stop this object",
+            }, None)
+            response = channel.responses[-1][1]
+            assert response["ok"] is True
+            receipts.append(response["payload"]["tool_result"])
+        assert receipts[0]["code"] == "TASK_NOT_FOUND"
+        assert receipts[0]["applied"] is False
+        assert receipts[0]["retryable"] is True
+        assert receipts[1]["jobs"][0]["job_id"] == original["id"]
+        assert receipts[2]["state"] == "followup"
+    else:
+        calls = []
+        async def request(frame, instruction, session):
+            calls.append(instruction)
+            if len(calls) == 2:
+                assert "TASK_NOT_FOUND" in instruction and "No operation was performed" in instruction
+            elif len(calls) == 3:
+                assert original["id"] in instruction and "external-resource-1" in instruction
+            elif len(calls) == 4:
+                assert '"state": "followup"' in instruction
+                return _joyai_result("response", response="后续处理已提交。")
+            return _joyai_result("delegation", delegation=json.dumps(operations[len(calls) - 1]))
+        monkeypatch.setattr(joyai_provider, "request_frame", request)
+        monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
+        await channel.handlers["video.joyai.frame"](None, "recover", {
+            "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "Stop this object",
+            "question": "Stop this object", "request_kind": "user", "search_session_id": "scope",
+            "joyai_session_id": "joyai",
+        }, None)
+        assert channel.responses[-1][1]["ok"] is True
+        assert channel.responses[-1][1]["payload"]["response"] == "后续处理已提交。"
+    tasks, _ = channel.manager.service.list("test-user", "scope")
+    assert len(tasks) == 2
+    child = next(task for task in tasks if task["parent_id"] == original["id"])
+    assert child["instruction"].endswith("User revision: Stop external-resource-1 and verify")
+    assert child["request"]["prior_result"]["answer"] == "Created external-resource-1"
+
+
+async def test_missing_task_recovery_never_discloses_or_changes_another_conversation():
+    from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call
+
+    channel = _video_channel()
+    foreign = await channel.manager.start(
+        None, question="Private requirement", query="Private requirement", search_session_id="other-scope",
+        command_id="private-task",
+    )
+    for task_id in [foreign["id"], "absent-id"]:
+        call = parse_qwen_omni_tool_call({
+            "name": "jiuwen_task_cancel", "call_id": "wrong-target-" + task_id,
+            "arguments": {"job_id": task_id},
+        })
+        receipt = await channel.manager.operate("test-user", "scope", call)
+        assert receipt["code"] == "TASK_NOT_FOUND" and receipt["applied"] is False
+        assert "Private requirement" not in json.dumps(receipt)
+        assert "other-scope" not in json.dumps(receipt)
+    assert channel.manager.service.get("test-user", "other-scope", foreign["id"])["status"] != "cancelled"

@@ -17,10 +17,18 @@ TERMINAL = {"completed", "failed", "cancelled"}
 logger = logging.getLogger(__name__)
 
 
+def _clean_title(title):
+    """Display-only task name: one line, at most 80 characters."""
+    if not isinstance(title, str) or len(title) > 80 or "\n" in title or "\r" in title:
+        raise ValueError("Invalid title")
+    return title.strip()
+
+
 @dataclass(frozen=True)
 class TaskModification:
     revision: int
     instruction: str
+    title: str = ""
 
 
 class ExecutionUncertain(RuntimeError):
@@ -41,6 +49,7 @@ class TaskService:
         self.notification_timeout = notification_timeout
         self.workers = {}
         self.cancellations = {}
+        self.reconciles = set()
         self.notifications = {}
         self.pending_notifications = {}
         self.closed = False
@@ -54,8 +63,12 @@ class TaskService:
             return
         self.lease.acquire()
         try:
+            stopping = set()
             with self.store.transaction() as db:
                 for task in self.store.rows(db):
+                    if task["status"] == "cancelling":
+                        # The user asked to stop it, so Core's "not running" settles it as cancelled (#5545).
+                        stopping.add(task["id"])
                     if task["status"] in {"running", "cancelling", "waiting_user"} or (
                         task["status"] == "queued" and task.get("resume_answer")
                     ):
@@ -75,6 +88,43 @@ class TaskService:
             raise
         self.started = True
         self.kick()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            with self.store.transaction() as db:
+                lost = [t for t in self.store.rows(db) if t["status"] == "unknown"]
+            for task in lost:
+                self._spawn_reconcile(task, stopped=task["id"] in stopping)
+
+    def _spawn_reconcile(self, task, *, stopped=False):
+        # Kept out of self.cancellations: a probe must not block a real stop.
+        work = asyncio.create_task(
+            self._reconcile(task, stopped=stopped), name="managed-task-reconcile"
+        )
+        self.reconciles.add(work)
+        work.add_done_callback(self.reconciles.discard)
+
+    async def _reconcile(self, task, *, stopped=False):
+        """Ask Core once whether an unknown/cancelling task still runs; end it if not (#5486, #5545)."""
+        probe = getattr(self.executor, "cancel", None)
+        try:
+            gone = await probe(task, probe=True)
+        except Exception:
+            logger.warning("Task reconcile failed for %s", task["id"], exc_info=True)
+            return
+        if not gone:
+            return
+        task = self.store.update(task["id"], lambda t: (
+            (t.update(status="cancelled", output_closed=True, checkpoint_open=False, error="")
+             if stopped else
+             t.update(status="failed", output_closed=True, checkpoint_open=False,
+                      error="执行已中断，未重放"))
+            if t["status"] == "unknown" else None
+        ))
+        await self._notify(task)
+        self.kick()
 
     def kick(self):
         if self.closed or not self.started:
@@ -88,16 +138,7 @@ class TaskService:
         # Capacity covers executions owned by this service. Unknown executions
         # still constrain dependencies/resources; their activity is not inferred.
         for task in sorted(tasks, key=lambda t: t["position"]):
-            if (
-                sum(
-                    t["status"] != "unknown"
-                    and not (
-                        t["status"] == "waiting_user" and t.get("execution_settled")
-                    )
-                    for t in active
-                )
-                >= self.concurrency
-            ):
+            if sum(map(self._holds_capacity, active)) >= self.concurrency:
                 break
             if task["status"] != "queued" or task["id"] in self.workers:
                 continue
@@ -113,44 +154,61 @@ class TaskService:
             )
 
     @staticmethod
+    def _holds_capacity(t):
+        # A settled waiting_user task holds no execution; unknown ones are not ours.
+        return t["status"] != "unknown" and not (
+            t["status"] == "waiting_user" and t.get("execution_settled")
+        )
+
+    @staticmethod
     def _ready(task, tasks, active):
+        return not TaskService._blockers(task, tasks, active)
+
+    @staticmethod
+    def _blockers(task, tasks, active):
+        """The exact tasks that keep ``task`` from dispatching (empty: ready)."""
         request = task["request"]
         by_id = {t["id"]: t for t in tasks}
-        if any(
-            by_id.get(key, {}).get("status") != "completed"
-            for key in request.get("depends_on", [])
-        ):
-            return False
+        dependencies = [
+            by_id.get(key, {}) for key in request.get("depends_on", [])
+        ]
+        if any(t.get("status") != "completed" for t in dependencies):
+            return [t for t in dependencies if t and t.get("status") != "completed"] or [{}]
 
         def same_scope(t):
             return (t["owner"], t["session"]) == (task["owner"], task["session"])
 
         # A saved chat owns one Agent/context/output lease, including independent jobs.
-        if task["session"].startswith("task-duplex:") and any(
-            same_scope(t) and t["id"] != task["id"] and t in active
-            for t in tasks
-        ):
-            return False
+        if task["session"].startswith("task-duplex:"):
+            held = [
+                t for t in tasks
+                if same_scope(t) and t["id"] != task["id"] and t in active
+            ]
+            if held:
+                return held
 
-        if not request.get("independent", False) and any(
-            same_scope(t)
-            and t["id"] != task["id"]
-            and (
-                t in active
-                or (t["position"] < task["position"] and t["status"] not in TERMINAL)
-            )
-            for t in tasks
-        ):
-            return False
+        if not request.get("independent", False):
+            earlier = [
+                t for t in tasks
+                if same_scope(t)
+                and t["id"] != task["id"]
+                and (
+                    t in active
+                    or (t["position"] < task["position"] and t["status"] not in TERMINAL)
+                )
+            ]
+            if earlier:
+                return earlier
         # Missing declarations mean unknown resources, not a proven conflict.
         resources = set(request.get("resources", []))
+        conflicts = []
         for other in active:
             held = set(other["request"].get("resources", []))
             if not resources or not held:
                 continue
             if "*" in resources or "*" in held or resources & held:
-                return False
-        return True
+                conflicts.append(other)
+        return conflicts
 
     def _worker_done(self, scope, worker):
         self.workers.pop(scope, None)
@@ -166,6 +224,7 @@ class TaskService:
             owner=owner,
             session=session,
             instruction=instruction,
+            title=request.get("title", ""),
             request=request,
             status="queued",
             revision=1,
@@ -200,6 +259,9 @@ class TaskService:
         if len(instruction) > 16000:
             raise ValueError("Task instruction exceeds 16000 characters")
         request = dict(request or {})
+        title = _clean_title(request.pop("title", ""))
+        if title:
+            request["title"] = title
         if not isinstance(request.get("independent", False), bool):
             raise ValueError("independent must be a boolean")
         for key in ("depends_on", "resources"):
@@ -258,12 +320,13 @@ class TaskService:
             tasks = self.store.rows(db, owner, session)
         if status:
             tasks = [t for t in tasks if t["status"] == status]
-        tasks = [t for t in tasks if query.casefold() in t["instruction"].casefold()]
+        tasks = [t for t in tasks if query.casefold() in t["instruction"].casefold() or query.casefold() in t.get("title", "").casefold()]
         end = offset + limit
         return tasks[offset:end], (end if len(tasks) > end else None)
 
     def modify(self, owner, session, task_id, command_id, change: TaskModification):
         revision, instruction = change.revision, change.instruction
+        title = _clean_title(change.title)
         self.start()
         if (
             not isinstance(instruction, str)
@@ -278,7 +341,7 @@ class TaskService:
                 owner,
                 session,
                 command_id,
-                ["modify", task_id, revision, instruction],
+                ["modify", task_id, revision, instruction] + ([title] if title else []),
             )
             if replay:
                 return replay
@@ -298,8 +361,12 @@ class TaskService:
                 task["instruction"] += "\nUser modification: " + instruction.strip()
                 change["state"] = "queued_input_updated"
             elif task["status"] == "completed":
-                child = self._successor(db, task, instruction.strip())
+                child = self._successor(db, task, instruction.strip(), title=title)
                 change.update(state="followup", successor_id=child["id"])
+            if title:
+                change["title"] = title
+                if task["status"] != "completed":
+                    task["title"] = title
             task["changes"].append(change)
             task["revision"] += 1
             task["sequence"] += 1
@@ -312,10 +379,11 @@ class TaskService:
                 successor_id=change.get("successor_id"),
             )
             self.store.command(db, task, command_id, fingerprint, receipt)
+        self._publish(task)
         self.kick()
         return receipt
 
-    def _successor(self, db, task, instruction):
+    def _successor(self, db, task, instruction, *, title=""):
         if task["successor_id"]:
             return self.store.get(db, task["successor_id"])
         adopted = "\n".join(
@@ -325,6 +393,7 @@ class TaskService:
         )
         request = {
             **task["request"],
+            "title": title or task.get("title", ""),
             "prior_result": task["result"],
             "depends_on": [task["id"]],
         }
@@ -351,6 +420,8 @@ class TaskService:
             )
             if replay:
                 return replay
+            # A repeated stop asks Core again so a lost settle ack cannot hold the task (#5545).
+            recheck = task["status"] == "cancelling"
             if task["status"] == "queued" and not task.get("resume_answer"):
                 task["status"] = "cancelled"
             elif task["status"] not in TERMINAL:
@@ -372,50 +443,51 @@ class TaskService:
                 message=("取消已受理，正在等待执行停止；尚未确认停止。"
                          if task["status"] == "cancelling" else
                          "任务已取消。" if task["status"] == "cancelled" else
-                         "任务已经结束，未执行新的取消操作。"),
+                         "本次 Core 执行已经结束，未执行新的取消操作；其结果仍可另行委托 Core 修改或继续处理。"),
             )
             self.store.command(db, task, command_id, fingerprint, receipt)
         if task["status"] == "cancelling" and task_id not in self.cancellations:
             work = asyncio.create_task(self._cancel(task), name="managed-task-cancel")
             self.cancellations[task_id] = work
             work.add_done_callback(lambda _: self.cancellations.pop(task_id, None))
+        elif recheck and task["status"] == "cancelling":
+            self._spawn_reconcile(task)
+        self.kick()
         await self._notify(task)
         return receipt
 
     async def _cancel(self, task):
         try:
             await self.executor.cancel(task)
-            current = self.store.read(task["id"])
-            if current.get("execution_cancelled") and current["execution_settled"]:
-                observer = self.workers.get(task["id"])
-                if observer and not observer.done():
-                    observer.cancel()
-                    await asyncio.gather(observer, return_exceptions=True)
-            # Let the output observer publish any completion that won the race.
-            while not self.store.read(task["id"])["output_closed"]:
-                await asyncio.sleep(0.05)
-            # The adapter must await the exact execution's local settlement.
-            current = self.store.read(task["id"])
-            if not current["execution_settled"]:
-                raise RuntimeError(
-                    "Stop accepted; execution settlement is not confirmed"
-                )
-            task = self.store.update(
-                task["id"],
-                lambda t: (
-                    t.update(status="cancelled", error="")
-                    if t["status"] == "cancelling"
-                    else None
-                ),
-            )
         except Exception as exc:
+            # A failed stop request does not end the execution; its settle ack still decides.
             message = str(exc) or type(exc).__name__
-            task = self.store.update(
+            await self._notify(self.store.update(
                 task["id"],
                 lambda t: (
                     t.update(error=message) if t["status"] == "cancelling" else None
                 ),
-            )
+            ))
+        current = self.store.read(task["id"])
+        if current.get("execution_cancelled") and current["execution_settled"]:
+            observer = self.workers.get(task["id"])
+            if observer and not observer.done():
+                observer.cancel()
+                await asyncio.gather(observer, return_exceptions=True)
+        # Without a worker (e.g. after restart) nothing else closes the output.
+        while task["id"] in self.workers and not self.store.read(task["id"])["output_closed"]:
+            await asyncio.sleep(0.05)
+        # Wait for the execution's settle ack, which arrives even after a rejected stop.
+        while not self.store.read(task["id"])["execution_settled"]:
+            await asyncio.sleep(0.05)
+        task = self.store.update(
+            task["id"],
+            lambda t: (
+                t.update(status="cancelled", error="")
+                if t["status"] == "cancelling"
+                else None
+            ),
+        )
         await self._notify(task)
         self.kick()
 
@@ -471,6 +543,7 @@ class TaskService:
             )
             if command_id is not None:
                 self.store.command(db, task, command_id, fingerprint, receipt)
+        self._publish(next((t for t in tasks if t["id"] == task_id), task))
         self.kick()
         return receipt
 
@@ -574,7 +647,29 @@ class TaskService:
                     if any(t.get("status") != "completed" for t in dependencies)
                     else "capacity_order_or_resource"
                 )
+                if task["wait_reason"] == "capacity_order_or_resource":
+                    task["waiting_on"] = self._waiting_on(task, all_tasks)
             return tasks, self.queue_version(db, owner, session)
+
+    def _waiting_on(self, task, all_tasks):
+        """Name the tasks a waiting task is held behind, using kick()'s rules."""
+        active = [
+            t for t in all_tasks
+            if t["status"] in {"running", "cancelling", "unknown", "waiting_user"}
+            or t["id"] in self.workers
+        ]
+        blockers = self._blockers(task, all_tasks, active)
+        if not blockers:
+            counted = [t for t in active if self._holds_capacity(t)]
+            if len(counted) >= self.concurrency:
+                blockers = counted
+        # Capacity is shared by every conversation, but other users' tasks stay private.
+        return [
+            dict(id=t["id"], title=t.get("title") or t["instruction"],
+                 status=t["status"], search_session_id=t["session"])
+            for t in blockers
+            if t.get("owner") == task["owner"]
+        ]
 
     async def preempt(self, owner, session, task_id, revision, command_id):
         # Admission/reorder has no await: a stale request cannot stop another task.
@@ -589,6 +684,10 @@ class TaskService:
         # Dispatch stays blocked until the exact old execution settles.
 
     async def _notify(self, task):
+        self._publish(task)
+
+    def _publish(self, task):
+        # Queue edits must reach every subscriber of the conversation, not only the caller.
         if not self.on_change or self.closed:
             return
         # One sender and one latest snapshot per task. Slow clients must not
@@ -748,6 +847,9 @@ class TaskService:
                 current = self.store.get(db, task["id"])
                 current["checkpoint_open"] = False
                 current["output_closed"] = True
+                if not current.get("execution_bound"):
+                    # Closing the checkpoint here rejects any later bind, so nothing is left to settle.
+                    current["execution_settled"] = True
                 if current["execution_cancelled"] and current["execution_settled"]:
                     # A cancellation flush can contain chat.final/partial text.
                     # The exact execution's stop fact takes precedence over that text.
@@ -757,6 +859,9 @@ class TaskService:
                 elif current["status"] == "cancelling" and result is not None:
                     # Completion won the race; do not discard the actual result.
                     current.update(status="completed", result=result, error="")
+                elif current["status"] == "cancelling" and current["execution_settled"]:
+                    # Stop was requested and the execution ended without a result.
+                    current.update(status="cancelled", result=None, error="")
                 if current["status"] == "waiting_user":
                     interaction = current.get("interaction") or {}
                     if (
@@ -774,6 +879,7 @@ class TaskService:
                         db,
                         current,
                         "\n".join(c["instruction"] for c in pending),
+                        title=next((c["title"] for c in reversed(pending) if c.get("title")), ""),
                     )
                     for change in pending:
                         change.update(state="followup", successor_id=child["id"])
