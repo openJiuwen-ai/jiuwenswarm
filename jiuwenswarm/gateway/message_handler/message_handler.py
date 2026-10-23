@@ -3249,7 +3249,7 @@ class MessageHandler(ABC):
         payload = chunk.payload if isinstance(chunk.payload, dict) else None
         if payload is None or payload.get("event_type") != CREDENTIAL_REFRESH_EVENT:
             return False
-        from jiuwenswarm.common.auth.passthrough import refreshed_credential_for_ref
+        from jiuwenswarm.gateway.auth.passthrough import refreshed_credential_for_ref
 
         credential_ref = str(payload.get("credential_ref") or "")
         try:
@@ -4315,7 +4315,7 @@ class MessageHandler(ABC):
         if isinstance(auth, dict):
             # 凭据是 Gateway 按登录会话挂的：记下会话主人
             try:
-                from jiuwenswarm.common.auth import session_owners
+                from jiuwenswarm.gateway.auth import session_owners
 
                 session_owners.remember(
                     session_id,
@@ -4329,7 +4329,7 @@ class MessageHandler(ABC):
             return
 
         try:
-            from jiuwenswarm.common.auth import session_owners
+            from jiuwenswarm.gateway.auth import session_owners
             from jiuwenswarm.common.auth.login_credentials import bare_model_name
 
             owner = session_owners.lookup(session_id)

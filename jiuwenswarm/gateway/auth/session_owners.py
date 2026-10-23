@@ -124,7 +124,7 @@ def lookup(session_id: str) -> SessionOwner | None:
 def login_auth_for_owner(owner: SessionOwner) -> dict | None:
     from jiuwenswarm.common.auth.apig import resolve_apig_config
     from jiuwenswarm.common.auth.model_catalog import get_models
-    from jiuwenswarm.common.auth.passthrough import refreshed_credential_for_ref
+    from jiuwenswarm.gateway.auth.passthrough import refreshed_credential_for_ref
 
     if owner.model_name not in {model.model_name for model in get_models(allow_refresh=False)}:
         return None

@@ -267,7 +267,7 @@ def _auth_session_id(msg) -> str | None:
 def _normalize_model_auth(params: dict[str, Any], msg) -> None:
     """给登录模型挂上本次调用方的凭据。失败不阻断转发。"""
     try:
-        from jiuwenswarm.common.auth.passthrough import normalize_model_auth
+        from jiuwenswarm.gateway.auth.passthrough import normalize_model_auth
 
         normalize_model_auth(params, _auth_session_id(msg))
     except Exception:  # noqa: BLE001 — 凭据注入失败不该让整条消息发不出去
@@ -288,7 +288,7 @@ async def _refresh_expired_login_credential(msg) -> None:
     续不了（refresh_token失效等）就照旧转发，由AgentServer提示重新登录。
     """
     try:
-        from jiuwenswarm.common.auth.passthrough import expired_login_session
+        from jiuwenswarm.gateway.auth.passthrough import expired_login_session
         from jiuwenswarm.common.auth.service import get_auth_service
 
         params = msg.params if isinstance(msg.params, dict) else {}
