@@ -201,3 +201,69 @@ async def test_disable_awaits_owned_exit_then_uses_shared_strict_cleanup(monkeyp
     with pytest.raises(RuntimeError, match="pending external delete"):
         await rpc._apply_sandbox_change("enabled", strict=True)
     assert events == ["stop", "cleanup"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry,strict", [("cli", True), ("rpc", True), ("rpc", False)])
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+async def test_disable_attempts_all_deletes_after_stop_failure(monkeypatch, entry, strict, cleanup_failure):
+    from jiuwenswarm.common import config
+    from jiuwenswarm.server import agent_ws_server as server_module
+    from jiuwenswarm.server import sandbox_config_rpc as rpc
+    from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+
+    cls = box._JiuwenBoxProviderMixin
+    live_key, historical_key = "http://localhost:8321|live", "http://localhost:9000|historical"
+    cls._shared_sandbox_ids[live_key] = "live"
+    cls._pending_deletions[(historical_key, "historical")] = (True, None)
+    stop_error = RuntimeError("owned process could not be killed")
+    cleanup_error = httpx.ConnectError("live sandbox delete failed")
+    events = []
+
+    async def stop():
+        events.append("stop")
+        raise stop_error
+
+    def client_for(base_url, **kwargs):
+        client = Mock(__enter__=Mock(), __exit__=Mock(return_value=False))
+        client.__enter__.return_value = client
+
+        def delete(sid):
+            events.append((base_url, sid))
+            if cleanup_failure and sid == "live":
+                raise cleanup_error
+
+        client.delete_sandbox.side_effect = delete
+        return client
+
+    monkeypatch.setattr(box, "_JiuwenBoxClient", client_for)
+    runner = SimpleNamespace(get_owned_endpoint=lambda: ("localhost", 8321), stop=AsyncMock(side_effect=stop))
+    monkeypatch.setattr(JiuwenBoxRunner, "instance", lambda: runner)
+    monkeypatch.setattr(config, "get_sandbox_runtime", lambda: {"enabled": False})
+    monkeypatch.setattr(rpc, "_teardown_registered_sandbox_sysops", Mock(return_value=2))
+    monkeypatch.setattr(server_module, "update_sandbox_runtime", lambda patch: patch)
+    server = SimpleNamespace(
+        _jiuwenbox_runner=runner, _agent_manager=SimpleNamespace(recreate_agent=AsyncMock()),
+    )
+
+    async def disable():
+        if entry == "cli":
+            return await server_module.AgentWebSocketServer._handle_sandbox_disable(server, "web")
+        return await rpc._apply_sandbox_change("enabled", strict=strict)
+
+    if strict:
+        with pytest.raises(RuntimeError) as caught:
+            await disable()
+        if cleanup_failure:
+            assert caught.value.__cause__ is cleanup_error
+        else:
+            assert caught.value is stop_error
+    else:
+        assert await disable() is None
+    assert events == ["stop", ("http://localhost:8321", "live"), ("http://localhost:9000", "historical")]
+    if cleanup_failure:
+        assert cls._shared_sandbox_ids == {live_key: "live"}
+        assert set(cls._pending_deletions) == {(live_key, "live")}
+    else:
+        assert not cls._shared_sandbox_ids and not cls._pending_deletions
+    assert not cls._delete_tasks

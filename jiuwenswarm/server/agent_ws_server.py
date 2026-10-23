@@ -7740,16 +7740,26 @@ class AgentWebSocketServer:
         from jiuwenswarm.server.sandbox_lifecycle import cleanup_jiuwenbox_sandboxes
 
         _teardown_registered_sandbox_sysops()
+        stop_error = None
         try:
             # stop() also retires an already-exited owned process, whose live
             # endpoint is None. External processes are never stopped by runner.
             await self._jiuwenbox_runner.stop()
+        except Exception as stop_exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] /sandbox disable: jiuwenbox stop failed: %s", stop_exc,
+            )
+            stop_error = stop_exc
+        try:
+            # A stop failure must not skip DELETEs against a still-live service.
             await cleanup_jiuwenbox_sandboxes(reason="disabled", strict=True)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[AgentWebSocketServer] /sandbox disable: cleanup failed: %s", exc,
             )
             raise
+        if stop_error is not None:
+            raise stop_error
 
         payload: dict[str, Any] = {
             "runtime": runtime,

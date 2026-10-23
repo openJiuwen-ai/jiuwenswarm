@@ -188,8 +188,17 @@ async def _apply_sandbox_change(kind: str, *, strict: bool = False) -> None:
 
                 # Stop only an owned service. Its confirmed exit retires dead-URL
                 # entries; unreachable external services still fail strictly.
-                await JiuwenBoxRunner.instance().stop()
+                stop_error = None
+                try:
+                    await JiuwenBoxRunner.instance().stop()
+                except Exception as stop_exc:  # noqa: BLE001
+                    logger.warning("[sandbox] jiuwenbox stop failed: %s", stop_exc)
+                    stop_error = stop_exc
+                # A failed stop can leave the service reachable. Always attempt
+                # its DELETEs, and give a strict cleanup failure precedence.
                 released = await cleanup_jiuwenbox_sandboxes(reason="disabled", strict=strict)
+                if stop_error is not None:
+                    raise stop_error
                 logger.info(
                     "[sandbox] enabled 变更为关闭, 已移除 %d 个残留沙箱 sysop, 释放 %d 个残留沙箱进程, 下轮 _create_sys_operation 读新值生效",
                     removed, released,
