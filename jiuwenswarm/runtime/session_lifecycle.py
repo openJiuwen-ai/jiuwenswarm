@@ -187,8 +187,8 @@ class SessionRuntimeLifecyclePort(Protocol):
         *,
         reason: str,
         channel_id: str | None = None,
-    ) -> bool:
-        """Return whether one Team Session generation was paused or drained."""
+    ) -> None:
+        """Pause one Team Session generation."""
         ...
 
     async def stop_session(
