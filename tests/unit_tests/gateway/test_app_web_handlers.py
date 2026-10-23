@@ -42,6 +42,8 @@ class FakeWebChannel:
         self.connect_handler = None
         self.disconnect_handler = None
         self.routing_keys: list[RoutingKey] = []
+        self.rebounds: list[tuple[str | None, str]] = []
+        self.cleared: list[str | None] = []
 
     def register_method(self, name, handler):
         self.methods[name] = handler
@@ -65,6 +67,12 @@ class FakeWebChannel:
 
     async def routing_keys_for_ws(self, ws):
         return list(self.routing_keys)
+
+    def record_a4p_rebound(self, session_id, ws_id):
+        self.rebounds.append((session_id, ws_id))
+
+    def clear_a4p_rebound(self, session_id):
+        self.cleared.append(session_id)
 
 
 @pytest.mark.asyncio
@@ -107,6 +115,11 @@ async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
         "app_id": "app-1",
         "agent_ref": {"mode": "team", "id": "research"},
     }
+    if method == "a4p.authorization.complete":
+        # 完成授权时把恢复 turn 的输出改绑到当前连接（当前 ws_id 覆盖授权方冻结的旧 ws）。
+        assert channel.rebounds == [("session-1", "ws-1")]
+    else:
+        assert channel.rebounds == []
 
 
 @pytest.mark.asyncio
