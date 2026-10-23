@@ -3,11 +3,12 @@
 import asyncio
 import json
 import os
+import uuid
 
 import httpx
 import websockets
 
-from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_gateway import QwenOmniRealtimeConfig
+from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_gateway import QwenOmniRealtimeConfig, qwen_upstream_error
 from jiuwenswarm.extensions.video_duplex.backend.settings import settings_payload
 
 
@@ -23,12 +24,17 @@ async def check_saved_connection():
                 open_timeout=10,
                 close_timeout=1,
             ) as socket:
+                await socket.send(json.dumps({
+                    "type": "session.update",
+                    "session": {"modalities": ["audio", "text"], "voice": config.voice},
+                }))
                 while True:
                     event = json.loads(await socket.recv())
-                    if event.get("type") in {"session.created", "session.updated"}:
+                    error = qwen_upstream_error(event, config.api_key)
+                    if error:
+                        raise ValueError(f"The provider rejected the session: {error[1]}")
+                    if event.get("type") == "session.updated":
                         return
-                    if event.get("type") == "error":
-                        raise ValueError("The provider rejected the session. Check the model and API key.")
         else:
             base = values["joyai_api_base"].rstrip("/")
             model = values["joyai_model"]
@@ -36,8 +42,27 @@ async def check_saved_connection():
             if not base or not model or not key:
                 raise ValueError("Configure the JoyAI endpoint, model and API key first.")
             async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(f"{base}/models", headers={"Authorization": f"Bearer {key}"})
+                response = await client.post(
+                    f"{base}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "x-streaming-session": f"connection-check-{uuid.uuid4().hex}",
+                        "x-system-prompt-key": os.getenv(
+                            "JOYAI_SYSTEM_PROMPT_KEY", "DEFAULT_SYSTEM_PROMPT_EN"
+                        ).strip()
+                        or "DEFAULT_SYSTEM_PROMPT_EN",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "user", "content": "Reply with OK."}
+                        ],
+                        "max_tokens": 8,
+                        "temperature": 0,
+                        "stream": False,
+                    },
+                )
                 response.raise_for_status()
-                available = response.json().get("data", [])
-                if not any(item.get("id") == model for item in available):
-                    raise ValueError("The configured model is not listed by the provider.")
+                choices = response.json().get("choices", [])
+                if not choices or not choices[0].get("message"):
+                    raise ValueError("The provider returned an invalid chat response.")

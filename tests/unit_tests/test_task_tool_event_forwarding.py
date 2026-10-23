@@ -28,6 +28,14 @@ from jiuwenswarm.server.runtime.agent_adapter.task_tool_events import (
     _invoke_with_event_forwarding,
     apply_task_tool_event_patch,
 )
+from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
+    active_cua_execution,
+    bind_managed_task_request,
+    bind_managed_task_session,
+    cancel_cua_execution,
+    reset_managed_task_request,
+    unbind_managed_task_session,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -127,6 +135,11 @@ async def _failing_original(task_tool: Any, subagent: Any, **kwargs: Any) -> Any
 async def _slow_original(task_tool: Any, subagent: Any, **kwargs: Any) -> Any:
     await asyncio.sleep(0.08)
     return {"output": "done"}
+
+
+async def _blocking_original(task_tool: Any, subagent: Any, **kwargs: Any) -> Any:
+    task_tool.started.set()
+    await asyncio.Future()
 
 
 async def test_forwarding_emits_roster_and_activity_frames() -> None:
@@ -331,3 +344,74 @@ def test_patch_applies_once_and_wraps_seam() -> None:
     assert TaskTool.roster_event_patch_applied is True
     assert TaskTool.roster_event_patch_mode == "dispatch_only"
     assert TaskTool._invoke_created_subagent.__name__ == "_invoke_created_subagent_with_events"
+
+
+async def test_managed_cua_delegation_can_be_cancelled_by_request_id() -> None:
+    session = _RecordingSession()
+    task_tool: Any = SimpleNamespace(started=asyncio.Event())
+    token = bind_managed_task_request("managed-request-1")
+    try:
+        invocation = asyncio.create_task(
+            _invoke_with_event_forwarding(
+                task_tool,
+                _blocking_original,
+                _FakeSubagent(),
+                _kwargs(session, normalized_type="cua_agent"),
+            )
+        )
+    finally:
+        reset_managed_task_request(token)
+
+    await task_tool.started.wait()
+    active = active_cua_execution("managed-request-1")
+    assert active is not None
+    assert active.sub_session_id == "sess_sub_browser_agent_ab12"
+    assert cancel_cua_execution("managed-request-1") is True
+    with pytest.raises(asyncio.CancelledError):
+        await invocation
+    assert active_cua_execution("managed-request-1") is None
+
+
+async def test_non_cua_delegation_is_not_registered_for_special_cancel() -> None:
+    session = _RecordingSession()
+    task_tool: Any = SimpleNamespace()
+    token = bind_managed_task_request("managed-request-2")
+    try:
+        await _invoke_with_event_forwarding(
+            task_tool,
+            _consuming_original,
+            _FakeSubagent(),
+            _kwargs(session, normalized_type="browser_agent"),
+        )
+    finally:
+        reset_managed_task_request(token)
+
+    assert active_cua_execution("managed-request-2") is None
+    assert cancel_cua_execution("managed-request-2") is False
+
+
+async def test_managed_session_registers_cua_when_scheduler_drops_context() -> None:
+    session = _RecordingSession()
+    task_tool: Any = SimpleNamespace(started=asyncio.Event())
+    binding = bind_managed_task_session("parent-sess-1", "managed-request-3")
+    invocation = asyncio.create_task(
+        _invoke_with_event_forwarding(
+            task_tool,
+            _blocking_original,
+            _FakeSubagent(),
+            _kwargs(session, normalized_type="cua_agent"),
+        ),
+        context=None,
+    )
+    try:
+        await task_tool.started.wait()
+        active = active_cua_execution("managed-request-3")
+        assert active is not None
+        assert active.parent_session_id == "parent-sess-1"
+        invocation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await invocation
+    finally:
+        unbind_managed_task_session(binding)
+
+    assert active_cua_execution("managed-request-3") is None

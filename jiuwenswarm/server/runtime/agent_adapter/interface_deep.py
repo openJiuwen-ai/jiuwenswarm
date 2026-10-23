@@ -15236,13 +15236,30 @@ class JiuWenSwarmDeepAdapter:
 
         cancelled = False
         cancel_call_completed = False
+        managed_task_request = str(
+            (request.params or {}).get("managed_task_request") or ""
+        ).strip()
+        active_cua_execution = None
+        if request.channel_id == "video_tool" and managed_task_request:
+            from .managed_subagent_control import active_cua_execution as find_active_cua
+
+            active_cua_execution = find_active_cua(managed_task_request)
+            if active_cua_execution is not None:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] interrupt(%s): active CUA detected; "
+                    "using single cancellation path managed_request=%s session=%s",
+                    intent,
+                    managed_task_request,
+                    request.session_id,
+                )
         # Stop the scheduler execution before asking the interaction owner to
         # cancel the round.  In particular, task_tool awaits its subagent in
         # the scheduler's exec task; cancelling only the interaction round can
         # otherwise block behind that child work and never return an
         # interrupt_result to the TUI.  This does not cancel the registered
         # session stream producer -- cancel_round still owns that lifecycle.
-        self._cancel_scheduler_running_tasks()
+        if active_cua_execution is None:
+            self._cancel_scheduler_running_tasks()
         # Collect in-flight tools without cancelling the stream producer task —
         # interaction cancel must keep round ownership in cancel_round().
         cancelled_tool_results = self._collect_cancelled_tools_for_session(
@@ -15273,7 +15290,8 @@ class JiuWenSwarmDeepAdapter:
         finally:
             # A scheduler task may be installed while cancel_round is
             # unwinding; repeat the targeted cancellation as a safety net.
-            self._cancel_scheduler_running_tasks()
+            if active_cua_execution is None:
+                self._cancel_scheduler_running_tasks()
         continuation_discarded = True
         if cutover_handoff is not None:
             try:
@@ -15295,6 +15313,8 @@ class JiuWenSwarmDeepAdapter:
             "success": continuation_discarded,
             "message": message,
         }
+        if active_cua_execution is not None:
+            payload["cua_cancel_requested"] = True
         if not continuation_discarded:
             payload["error"] = "permission_continuation_discard_failed"
         if new_input:

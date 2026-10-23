@@ -40,7 +40,15 @@ class GatewayTaskEndpoint:
                 raise ValueError("TASK_EXECUTION_BINDING_STALE")
             if action == "status":
                 return {"status": task["status"]}
-            if action not in {"bind", "claim", "context_written", "observed", "close", "settle"}:
+            if action not in {
+                "bind",
+                "claim",
+                "context_written",
+                "observed",
+                "close",
+                "settle",
+                "cancel_settle",
+            }:
                 raise ValueError("Unknown task checkpoint command")
             replay, fingerprint = self.store.replay(
                 db, task["owner"], task["session"], command.get("command_id"), command
@@ -75,6 +83,13 @@ class GatewayTaskEndpoint:
                         change["state"] = after
             elif action == "close":
                 task["checkpoint_open"] = False
+            elif action == "cancel_settle":
+                # Cancellation has already unwound the managed invocation.
+                # Persist close and settlement in one transaction so another
+                # cancellation cannot interrupt between the two facts.
+                task["checkpoint_open"] = False
+                task["execution_settled"] = True
+                task["execution_cancelled"] = True
             elif action == "settle":
                 if task.get("checkpoint_open"):
                     raise RuntimeError("Task invocation is still open")

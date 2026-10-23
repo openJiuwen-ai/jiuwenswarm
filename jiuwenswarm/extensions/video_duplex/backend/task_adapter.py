@@ -9,7 +9,7 @@ from typing import Any
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
-from .tasks.errors import QueueVersionConflict, TaskRevisionConflict
+from .tasks.errors import QueueVersionConflict, TaskRevisionConflict, TaskNotFound
 from .tasks.interactions import approval_cards
 from .tasks.prompts import (
     APPROVAL_REQUIRES_CLICK_INSTRUCTIONS,
@@ -251,8 +251,11 @@ class AgentTaskExecutor:
                 channel_id=request.channel_id,
                 session_id=request.session_id,
                 req_method=request.req_method,
-                params={**request.params, **({"managed_task_request": task["request_id"]}
-                                            if request.params.get("mode") == "team.design" else {})},
+                params={
+                    **request.params,
+                    "managed_task_request": task["request_id"],
+                    "managed_task_binding": self.endpoint.binding(task),
+                },
                 is_stream=False,
                 timestamp=time.time(),
                 user_id=task["owner"] or None,
@@ -385,6 +388,7 @@ class VideoSearchManager:
                     files.extend(entry.get("files", []))
         return dict(
             engine="Jiuwen Core Agent",
+            title=task.get("title", ""),
             id=task["id"],
             job_id=task["id"],
             search_session_id=task["session"],
@@ -441,7 +445,7 @@ class VideoSearchManager:
     def voice_job(job):
         """Return control facts, not the UI's repeated reasoning/tool history."""
         fields = (
-            "id", "job_id", "status", "revision", "queue_version", "queue_position",
+            "id", "job_id", "title", "status", "revision", "queue_version", "queue_position",
             "independent", "parent_id", "successor_id", "wait_reason",
         )
         result = {key: job.get(key) for key in fields}
@@ -571,12 +575,14 @@ class VideoSearchManager:
         turn_id="",
         command_id="",
         scheduling=None,
+        title="",
     ):
         owner, scope = await self.scope(ws, {"search_session_id": search_session_id})
         from .mode_routing import resolve_execution_target
 
         target = await resolve_execution_target(self.client, owner, scope)
         request = dict(
+            title=title,
             query=query,
             visual_context=visual_context,
             frame_data_url=frame_data_url,
@@ -620,6 +626,7 @@ class VideoSearchManager:
                     ws,
                     question=params.get("question") or call.task,
                     query=call.task,
+                    title=call.arguments.get("title", ""),
                     search_session_id=scope,
                     frame_data_url=frame,
                     tool_call_id=call.call_id,
@@ -633,14 +640,35 @@ class VideoSearchManager:
                 )
                 return {"search_job": task, "call_id": call.call_id}
             return {
-                "tool_result": await self.operate(owner, scope, call),
+                "tool_result": await self.operate(owner, scope, call, user_instruction=params.get("question") or ""),
                 "call_id": call.call_id,
             }
 
         await self._respond(ws, req_id, run)
 
-    async def operate(self, owner, scope, call):
+    async def operate(self, owner, scope, call, *, user_instruction=""):
         args = call.arguments
+        if args.get("job_id"):
+            try:
+                self.service.get(owner, scope, args["job_id"])
+            except TaskNotFound:
+                logger.info(
+                    "Voice task target not found: operation=%s job_id=%s scope=%s",
+                    call.name, args["job_id"], scope,
+                )
+                return {
+                    "state": "rejected", "applied": False, "code": "TASK_NOT_FOUND",
+                    "attempted_job_id": args["job_id"], "retryable": True,
+                    "message": (
+                        "No operation was performed. This ID does not identify a Core invocation in the current conversation. "
+                        "Do not infer that the resulting resource was deleted or that the user request is impossible. "
+                        "Query jiuwen_task_query without job_id, locate the intended invocation from its requirement "
+                        "and result, and copy its exact job_id and revision before trying a corrected operation. "
+                        "IDs inside result text identify external resources, not Core invocations; send such IDs "
+                        "to Core in the follow-up instruction, never as job_id. If the target remains ambiguous, ask the user. "
+                        "Never repeat this rejected ID, operate on another conversation, or recreate the resource."
+                    ),
+                }
         if call.name == "jiuwen_task_query":
             snapshot = self.snapshot(owner, scope)
             jobs = snapshot["jobs"]
@@ -649,7 +677,7 @@ class VideoSearchManager:
                 jobs = [t for t in jobs if t["id"] == args["job_id"]]
             else:
                 query = args.get("query", "").casefold()
-                jobs = [t for t in jobs if query in t["question"].casefold()]
+                jobs = [t for t in jobs if query in t["question"].casefold() or query in t.get("title", "").casefold()]
             counts = {}
             for job in jobs:
                 counts[job["status"]] = counts.get(job["status"], 0) + 1
@@ -679,7 +707,8 @@ class VideoSearchManager:
                 result["message"] = EMPTY_QUERY_INSTRUCTIONS
         elif call.name == "jiuwen_task_cancel":
             result = await self.service.cancel(
-                owner, scope, args["job_id"], call.call_id
+                owner, scope, args["job_id"], call.call_id,
+                user_instruction=user_instruction if user_instruction != call.name else "",
             )
         elif call.name == "jiuwen_task_reorder":
             if args["action"] == "before" and not args.get("before_job_id"):
@@ -730,7 +759,7 @@ class VideoSearchManager:
             try:
                 result = self.service.modify(
                     owner, scope, args["job_id"], call.call_id,
-                    TaskModification(args["revision"], args["instruction"]),
+                    TaskModification(args["revision"], args["instruction"], args.get("title", "")),
                 )
             except TaskRevisionConflict as exc:
                 current = self.service.get(owner, scope, args["job_id"])
@@ -818,7 +847,7 @@ class VideoSearchManager:
                     scope,
                     task_id,
                     params.get("command_id") or str(req_id),
-                    TaskModification(params.get("revision"), params.get("instruction")),
+                    TaskModification(params.get("revision"), params.get("instruction"), params.get("title", "")),
                 )
             else:
                 raise ValueError(

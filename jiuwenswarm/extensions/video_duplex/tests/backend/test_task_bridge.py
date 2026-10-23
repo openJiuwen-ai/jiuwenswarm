@@ -105,6 +105,17 @@ async def test_checkpoint_changes_and_settlement_roundtrip_without_shared_data(r
     r.handler.publish_robot_messages.assert_not_called()
 
 
+async def test_cancel_settlement_closes_and_settles_in_one_checkpoint(routed_task):
+    r = routed_task
+    remote = bridge.RemoteTaskEndpoint(r.request)
+    await remote.call("bind")
+    await remote.call("cancel_settle")
+    current = r.store.read(r.task["id"])
+    assert not current["checkpoint_open"]
+    assert current["execution_settled"]
+    assert current["execution_cancelled"]
+
+
 @pytest.mark.parametrize("key,value", [
     ("owner", "mallory"), ("session_id", "managed-task-other"), ("request_id", "stale"),
 ])
@@ -113,7 +124,16 @@ async def test_foreign_or_stale_execution_cannot_read_or_mutate_checkpoint(route
     remote = bridge.RemoteTaskEndpoint(r.request)
     remote.identity[key] = value
     before = r.store.read(r.task["id"])
-    for action in ("status", "bind", "claim", "context_written", "observed", "close", "settle"):
+    for action in (
+        "status",
+        "bind",
+        "claim",
+        "context_written",
+        "observed",
+        "close",
+        "settle",
+        "cancel_settle",
+    ):
         with pytest.raises(RuntimeError, match="STALE"):
             await remote.call(action)
         assert r.store.read(r.task["id"]) == before

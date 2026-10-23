@@ -16,10 +16,12 @@ await build({
     contents: `export { TaskFullDuplexAction } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexAction.tsx`)};
       export { TaskFullDuplexRuntime, flushConversationHistory } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
       export { JoyAIProvider } from ${JSON.stringify(`${pluginRoot}/VideoLivePanel/joyaiProvider.ts`)};
+      export { ApplicationConversationRuntimes } from './src/applicationPlugins/ApplicationConversationRuntimes.tsx';
+      export { useSessionAssetsStore } from './src/features/sessionAssets/sessionAssets.ts';
       export { useChatStore } from './src/stores/chatStore.ts';
       export { toastStore } from './src/components/ui/Toast/toastStore.ts';
       export { buildArtifacts } from './src/components/ArtifactsPanel/artifactCollection.ts';
-      export { parseHistoryJsonFileToPreviewMessages } from './src/features/historyRestore.ts';
+      export { parseHistoryJsonFileToPreviewMessages, parseHistoryJsonFileToTimelinePreview } from './src/features/historyRestore.ts';
       export { artifactDownloadUrl, artifactTextPreviewUrl } from './src/components/ArtifactsPanel/filePreviewModel.ts';
       export * from ${JSON.stringify(`${pluginRoot}/taskFullDuplexRuntimeStore.ts`)};`,
     resolveDir: process.cwd(),
@@ -39,12 +41,16 @@ await build({
       name: 'task-runtime-ports',
       setup(builder) {
         builder.onResolve(
-          { filter: /(?:services\/webClient|taskProgressStore|taskFullDuplex\/featureFlag|\/VideoLivePanel|components\/form)$/ },
+          { filter: /(?:services\/webClient|taskProgressStore|taskFullDuplex\/featureFlag|\/VideoLivePanel|components\/form|ApplicationPluginOutlet)$/ },
           ({ path }) => ({ path, namespace: 'ports' }),
         );
         builder.onLoad({ filter: /.*/, namespace: 'ports' }, ({ path }) => ({
           loader: 'tsx',
-          contents: path.endsWith('components/form')
+          resolveDir: process.cwd(),
+          contents: path.endsWith('ApplicationPluginOutlet')
+            ? `import { TaskFullDuplexRuntime } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
+               export const ApplicationPluginTaskRuntimes = TaskFullDuplexRuntime;`
+            : path.endsWith('components/form')
             ? `export function FormDialog(props) {
                 return <div data-testid={props.testIdPrefix}>{props.children}
                   <button data-testid={props.testIdPrefix + '-confirm'} onClick={props.onConfirm}>Confirm</button>
@@ -71,7 +77,8 @@ await build({
               stopScreenSharing() { props.onScreenSharingChange(false); },
               stop() { globalThis.__duplexHarness.stops += 1; props.onRuntimeState('idle'); },
               deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); },
-              deliverQuestion(payload) { globalThis.__duplexHarness.mediaQuestions.push(payload); }
+              deliverQuestion(payload) { globalThis.__duplexHarness.mediaQuestions.push(payload); },
+              deliverTaskInteraction(payload) { globalThis.__duplexHarness.interactions.push(payload); }
             }));
             return null;
           });`
@@ -94,6 +101,8 @@ const {
   TaskFullDuplexRuntime,
   flushConversationHistory,
   toastStore,
+  ApplicationConversationRuntimes,
+  useSessionAssetsStore,
   TaskFullDuplexAction,
   startTaskFullDuplex,
   stopTaskFullDuplex,
@@ -104,6 +113,7 @@ const {
   useChatStore,
   buildArtifacts,
   parseHistoryJsonFileToPreviewMessages,
+  parseHistoryJsonFileToTimelinePreview,
   artifactDownloadUrl,
   artifactTextPreviewUrl,
 } = await import(pathToFileURL(outfile));
@@ -143,6 +153,7 @@ beforeEach(async () => {
     speaker: [],
     mediaResults: [],
     mediaQuestions: [],
+    interactions: [],
     requests: [],
     messages: [],
     tools: [],
@@ -168,6 +179,7 @@ beforeEach(async () => {
     },
     async request(method, params) {
       this.requests.push({ method, params });
+      if (method === 'session.assets.register') return { assets: params.items.map((item, index) => ({ ...item, asset_id: String(index), name: 'report', kind: 'document', created_at: 1 })) };
       if (method === 'video.search.list') return { jobs: this.recoveryJobs || [], next_offset: null };
       if (method === 'video.search.status') return this.statuses.get(params.job_id);
       return { persisted: true };
@@ -175,6 +187,7 @@ beforeEach(async () => {
   };
   globalThis.__duplexHarness = harness;
   useChatStore.setState({ runtimes: {} });
+  useSessionAssetsStore.setState({ bySession: {} });
   props = {
     sessionId: 'conversation-a',
     onConversationItem: (...args) => harness.messages.push(args),
@@ -218,6 +231,21 @@ async function event(name, payload) {
 function job(searchSessionId, overrides = {}) {
   return { job_id: 'job-a', search_session_id: searchSessionId, question: '生成代码', status: 'running', ...overrides };
 }
+
+test('headless task runtime forwards waiting forms only to their active conversation', async () => {
+  const scope = await start();
+  const interaction = { id: 'form-a', request_id: 'request-a', state: 'pending', source: 'ask_user_interrupt',
+    questions: [{ question: '什么时候执行？' }, { question: '内容是什么？' }] };
+  await event('progress', job(scope, { status: 'waiting_user', interaction }));
+  assert.deepEqual(harness.interactions.at(-1).interaction, interaction);
+  assert.match(harness.tasks.sessions['conversation-a'][0].detail, /什么时候执行/);
+  const count = harness.interactions.length;
+  await event('progress', job('foreign-scope', { status: 'waiting_user', interaction }));
+  assert.equal(harness.interactions.length, count);
+  await act(async () => stopTaskFullDuplex());
+  await event('progress', job(scope, { sequence: 3, status: 'waiting_user', interaction }));
+  assert.equal(harness.interactions.length, count, 'stopped media must not receive voice questions');
+});
 
 test('cancelled jobs remain cancelled after late success and persist one cancellation record', async () => {
   const scope = await start();
@@ -484,7 +512,7 @@ test('JoyAI receipt playback does not duplicate the conversation-owned full resu
   const brief = { status: 'completed', summary: '代码已经生成', result_kind: 'code', displayed_in_ui: true };
   assert.equal(provider.handleCompletedSearch(payload, brief), true);
   await provider.searchDeliveryQueue;
-  assert.deepEqual(displayed, []);
+  assert.deepEqual(displayed, ['代码已经生成']);
   assert.deepEqual(spoken, ['代码已经生成']);
   assert.equal(provider.pendingToolContext[0].result, '完整代码内容');
   provider.stop();
@@ -748,4 +776,78 @@ test('camera selection reaches media controller and closing sharing retains voic
   assert.ok(document.querySelector('[data-testid="chat-panel-duplex-orb"]'));
   await act(async () => toggleTaskDuplexSpeaker());
   assert.deepEqual(harness.speaker, [true]);
+});
+
+
+test('final-only files populate artifacts and background session assets once through application callbacks', async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  await act(async () => root.render(null));
+  useChatStore.getState().ensureRuntime('conversation-a');
+  await act(async () => root.render(createElement(ApplicationConversationRuntimes, { sessionId: 'conversation-a' })));
+  const scope = await start();
+  await event('started', job(scope));
+  await act(async () => root.render(createElement(ApplicationConversationRuntimes, { sessionId: 'conversation-b' })));
+  const file = { name: 'report.pdf', path: 'C:/work/report.pdf', download_token: 'initial' };
+  const completed = job(scope, { status: 'completed', result: '报告完成', files: [file] });
+  await event('completed', completed);
+  await event('completed', completed);
+  assert.equal(buildArtifacts(useChatStore.getState().getRuntime('conversation-a').messages).length, 1);
+  assert.equal(useChatStore.getState().getRuntime('conversation-b'), undefined);
+  assert.equal(useSessionAssetsStore.getState().bySession['conversation-a'][0].path, file.path);
+  const registrations = harness.requests.filter(r => r.method === 'session.assets.register');
+  assert.equal(registrations.length, 1);
+  assert.equal(registrations[0].params.session_id, 'conversation-a');
+  assert.deepEqual(registrations[0].params.items, [{ path: file.path, source: 'generated' }]);
+  assert.equal(harness.requests.filter(r => r.method === 'video.conversation.append' && r.params.kind === 'file').length, 1);
+  now += 1_000;
+  await event('completed', job(scope, { ...completed, files: [{ ...file, download_token: 'renewed' }] }));
+  const artifacts = buildArtifacts(useChatStore.getState().getRuntime('conversation-a').messages);
+  assert.equal(artifacts.length, 1);
+  assert.equal(artifacts[0].downloadToken, 'renewed');
+});
+
+test('native skill calls retain arguments and structured results in UI and persisted history', async () => {
+  const scope = await start();
+  const skillTree = { query: 'report', candidates: [{ worker_id: 'report', label: 'Report' }] };
+  const entries = [
+    { sequence: 1, stage: 'tool_call', title: 'skill', status: 'running', tool_call_id: 'skill-a',
+      tool_payload: { event_type: 'chat.tool_call', tool_call: {
+        id: 'skill-a', name: 'skill_tool', arguments: '{"skill_name":"report"}', call_goal: '制作报告',
+      } } },
+    { sequence: 2, stage: 'tool_result', title: 'skill result', status: 'completed', tool_call_id: 'skill-a',
+      tool_payload: { event_type: 'chat.tool_result', tool_result: {
+        tool_call_id: 'skill-a', tool_name: 'skill_tool', rendered_result: '已完成',
+        raw_output: { skill_tree: skillTree }, status: 'pending',
+      } } },
+  ];
+  await event('progress', job(scope, { progress_history: entries }));
+  await event('progress', job(scope, { progress_history: entries }));
+  assert.equal(harness.tools.length, 2);
+  assert.equal(harness.tools[0][1].name, 'skill_tool');
+  assert.equal(harness.tools[0][1].arguments.skill_name, 'report');
+  assert.equal(harness.tools[0][1].call_goal, '制作报告');
+  assert.equal(harness.tools[1][1].toolCallId, harness.tools[0][1].id);
+  assert.equal(harness.tools[1][1].pending, true);
+  assert.equal(harness.tools[1][1].skillTree.candidates[0].worker_id, 'report');
+  const saved = harness.requests.find(r => r.method === 'video.conversation.append' && r.params.kind === 'tool_result');
+  assert.deepEqual(saved.params.tool_result.raw_output.skill_tree, skillTree);
+  const restored = parseHistoryJsonFileToTimelinePreview(
+    harness.requests.filter(r => ['tool_call', 'tool_result'].includes(r.params.kind)).map(r => ({
+      role: 'assistant', channel_id: 'video_duplex', session_id: 'conversation-a', content: '', timestamp: 1800000000,
+      event_type: `chat.${r.params.kind}`, [r.params.kind]: r.params[r.params.kind],
+    })), 'conversation-a',
+  );
+  assert.ok(restored.executions.some(execution => execution.toolCall.arguments.skill_name === 'report'));
+});
+
+
+test('task board displays the independent title, retains it through progress and falls back for legacy tasks', async () => {
+  const scope = await start();
+  await event('started', job(scope, { title: '修改打卡提醒为九点', question: '把刚才那个改到九点' }));
+  assert.equal(harness.tasks.sessions['conversation-a'][0].title, '修改打卡提醒为九点');
+  await event('progress', job(scope, { question: '把刚才那个改到九点' }));
+  assert.equal(harness.tasks.sessions['conversation-a'][0].title, '修改打卡提醒为九点');
+  await event('started', job(scope, { job_id: 'legacy-job', question: '完整的原始任务要求' }));
+  assert.equal(harness.tasks.sessions['conversation-a'][1].title, '完整的原始任务要求');
 });

@@ -122,3 +122,33 @@ def test_shared_task_tool_contract(case):
     else:
         with pytest.raises(ValueError):
             parse_qwen_omni_tool_call(value)
+
+
+def test_task_tools_allow_followup_on_completed_results():
+    tools = {tool["function"]["name"]: tool["function"] for tool in qwen_omni_tools()}
+    query = tools["jiuwen_task_query"]["description"]
+    cancel = tools["jiuwen_task_cancel"]["description"]
+    modify = tools["jiuwen_task_modify"]["description"]
+    delegate = tools["jiuwen_delegate"]["description"]
+    assert "Core invocations and their results" in query
+    assert "not reversal of its completed effects" in cancel
+    assert "completed work creates a linked Core revision" in modify
+    assert "Prior results can still be acted on after" in delegate
+    assert "Cron tools" not in delegate
+
+
+@pytest.mark.parametrize("title", ["查询香港天气", "  修改打卡提醒  "])
+def test_delegation_title_is_separate_from_complete_requirements(title):
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_delegate", "call_id": "titled",
+        "arguments": {"task": "请查询香港今天的天气，并说明是否需要带伞", "title": title},
+    })
+    assert call.arguments["title"] == title.strip()
+    assert call.task == "请查询香港今天的天气，并说明是否需要带伞"
+
+
+@pytest.mark.parametrize("title", [None, 42, "", "x" * 81, "first\nsecond"])
+def test_delegation_rejects_invalid_titles(title):
+    with pytest.raises(ValueError, match="title"):
+        parse_qwen_omni_tool_call({"name": "jiuwen_delegate", "call_id": "bad-title",
+                                   "arguments": {"task": "complete requirements", "title": title}})

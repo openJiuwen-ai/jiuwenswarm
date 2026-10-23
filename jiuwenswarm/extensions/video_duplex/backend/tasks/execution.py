@@ -5,6 +5,13 @@ from contextlib import asynccontextmanager
 import logging
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
+from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
+    bind_managed_task_request,
+    bind_managed_task_session,
+    reset_managed_task_request,
+    unbind_managed_task_session,
+)
+
 from .checkpoint import TaskCheckpoint
 from .bridge import RemoteTaskEndpoint
 
@@ -99,6 +106,11 @@ async def bind_task_execution(request, adapter, inputs):
         "managed_task_request": request.request_id,
     }
     inputs["run"] = {**run, "context": context}
+    managed_request_token = bind_managed_task_request(request.request_id)
+    managed_session_binding = bind_managed_task_session(
+        request.session_id,
+        request.request_id,
+    )
     invocation_cancelled = False
     try:
         yield
@@ -117,36 +129,77 @@ async def bind_task_execution(request, adapter, inputs):
             inputs.pop("run", None)
         else:
             inputs["run"] = previous
+        unbind_managed_task_session(managed_session_binding)
+        reset_managed_task_request(managed_request_token)
 
-        async def report_settlement():
-            await endpoint.call("close")
-            if checkpoint.settlement_unobserved:
-                return
-            # A separate reporter may await the enclosing invocation itself.
-            # Shield native handles so a reporting timeout cannot cancel Agent work.
-            await asyncio.gather(
-                *(asyncio.shield(t) for t in checkpoint.native_executions),
-                return_exceptions=True,
-            )
-            await endpoint.call(
-                "settle", cancelled=invocation_cancelled or any(
-                    native.cancelled() or native.cancelling() > 0
-                    for native in checkpoint.native_executions
-                ),
-            )
+        # A callback can capture this exact request task as the native execution.
+        # Reaching this finally block means the managed invocation has already
+        # returned or unwound through cancellation. Waiting for that same task
+        # from a detached reporter creates a self-dependency and the reporter can
+        # be discarded with the request before it acknowledges settlement.
+        current_execution = asyncio.current_task()
+        pending_executions = set()
+        if not invocation_cancelled:
+            pending_executions = {
+                native
+                for native in checkpoint.native_executions
+                if native is not current_execution
+            }
+        # CancelledError reaches this boundary only after the managed invoke
+        # stack (including synchronous subagents such as CUA) has unwound. A
+        # scheduler entry retained from that round is bookkeeping, not live
+        # task ownership, and must not keep the durable task in "cancelling".
 
-        if all(t.done() for t in checkpoint.native_executions):
-            await report_settlement()
-        else:
-            reporter = asyncio.create_task(report_settlement())
+        def retain_reporter(reporter):
             _settlements.add(reporter)
 
             def finished(done):
                 _settlements.discard(done)
                 if not done.cancelled() and done.exception() is not None:
-                    logger.warning("Task settlement acknowledgement failed: %s", done.exception())
+                    logger.warning(
+                        "Task settlement acknowledgement failed: %s",
+                        done.exception(),
+                    )
 
             reporter.add_done_callback(finished)
+
+        if invocation_cancelled:
+            # A second cancel can arrive while this finally block is running.
+            # Start the atomic durable write before awaiting it and retain the
+            # task if the enclosing request is cancelled again.
+            reporter = asyncio.create_task(endpoint.call("cancel_settle"))
+            retain_reporter(reporter)
+            try:
+                await asyncio.shield(reporter)
+            except asyncio.CancelledError:
+                pass
+        else:
+            async def report_settlement():
+                await endpoint.call("close")
+                if checkpoint.settlement_unobserved:
+                    logger.warning(
+                        "Managed task settlement is unobserved: request=%s",
+                        request.request_id,
+                    )
+                    return
+                # A separate reporter may await the enclosing invocation itself.
+                # Shield native handles so a reporting timeout cannot cancel Agent work.
+                await asyncio.gather(
+                    *(asyncio.shield(t) for t in pending_executions),
+                    return_exceptions=True,
+                )
+                await endpoint.call(
+                    "settle", cancelled=any(
+                        native.cancelled() or native.cancelling() > 0
+                        for native in checkpoint.native_executions
+                    ),
+                )
+
+            if all(t.done() for t in pending_executions):
+                await report_settlement()
+            else:
+                reporter = asyncio.create_task(report_settlement())
+                retain_reporter(reporter)
 
 
 async def bind_task_output(rail, request, stream):

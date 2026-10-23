@@ -14,7 +14,7 @@ export function describeDuplexError(raw: string, scope: FailureScope = 'session'
   if (/请配置|未配置|missing.*(key|model|url|endpoint)|not configured/i.test(detail)) {
     result = task ? result : '全双工会话无法正常启动或继续';
     action = '请在全双工设置中补全提示所指的配置，然后重新启动会话';
-  } else if (/\b(401|403)\b|unauthorized|forbidden|invalid.?api.?key|鉴权|认证失败/i.test(detail)) {
+  } else if (/\b(401|403)\b|unauthorized|forbidden|accessdenied|unpurchased|access to model denied|invalid.?api.?key|鉴权|认证失败/i.test(detail)) {
     action = '请检查对应服务的 API Key、访问权限及模型授权，然后重试';
   } else if (/\b429\b|quota|rate.?limit|限流|额度|配额/i.test(detail)) {
     action = '请检查服务额度和限流状态，额度恢复后重试';

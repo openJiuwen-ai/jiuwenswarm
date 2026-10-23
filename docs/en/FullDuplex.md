@@ -8,6 +8,16 @@ Full-duplex in another chat replaces the previous media session. Use Exit to sto
 Drag the blue ball with a mouse or touch to move the controller. It stays within the
 window. The sharing indicator and Close button move with it. Close stops video sharing
 while voice continues. Microphone mute and speaker mute remain separate controls.
+Without an image, JoyAI sends the user's speech transcript or typed instruction directly
+without waiting for another frame. It does not poll with empty images while idle.
+Stopping sharing does not resend old screenshots; the model is told there is no current
+image. Sharing again resumes the existing video flow.
+JoyAI user turns begin with an explicit action protocol: external facts and actions
+require Core delegation, while direct replies need a `response` marker. Unmarked output
+is withheld from display and speech, corrected at most once, then reported as an error
+if still invalid. Newlines do not split response and delegation actions within one output.
+Core summaries are written to the conversation and queued for speech once per task;
+JoyAI does not generate another summary.
 
 ![Isolated controller preview with sharing enabled](../images/full-duplex-controls.png)
 
@@ -101,6 +111,34 @@ Approval cards (permission approvals, cua desktop confirmations and similar) mus
 clicked on screen (Allow or Reject); voice cannot approve or reject them. While a task
 waits on one, the assistant explains what the card is for and asks you to click it,
 without claiming it was allowed.
+While Qwen Full-duplex is active, it asks pending information-form questions
+about time, content and parameters aloud. They collect the user's spoken answers,
+ask for missing fields and query the current interaction before submitting through
+`jiuwen_task_answer`. Answers resume the original task without another delegation.
+Duplicate notices do not repeat questions; other sessions and replay notices do not
+trigger speech. Native forms remain available for manual input. Permission and
+operation approvals keep their existing UI.
+JoyAI does not ask or answer information forms by voice. Users complete the existing
+on-screen forms, and the server rejects JoyAI `jiuwen_task_answer` requests. Ordinary
+voice conversation, task management and Core summaries in text and speech remain available.
+Completion notices retain the Core invocation's `job_id`. Resource IDs inside result
+text belong in follow-up instructions and cannot replace the invocation ID. If a
+target is absent from the current conversation, the backend returns a tool rejection
+without performing an action. The realtime model should query the current conversation
+to identify the target. It must not infer deletion, recreate resources or access another
+conversation from that rejection.
+
+```mermaid
+flowchart LR
+  Core[Core waits for information] --> Form[Original task form]
+  Form --> Voice[Qwen asks]
+  Form --> Manual[JoyAI uses the existing manual form]
+  Voice --> User[User answers by voice]
+  User --> Check[Query current form and task IDs]
+  Check --> Answer[jiuwen_task_answer]
+  Answer --> Resume[Resume original task]
+```
+
 Voice tasks retain their own per-round result subscription even when the Design page
 already has a subscription. Canvas, node, run and assistant activity updates use the
 saved Design session's Web channel, so the page does not need a refresh.
@@ -126,3 +164,33 @@ Long-lived Design text streams observe later managed tasks without publishing a 
 voice receipt for those tasks.
 Final replies that omit the closing summary marker use the same length and format
 validation, so the marker does not enter speech output.
+
+Full-duplex Work tasks use the normal conversation tool event parser, preserving
+actual skill arguments, skill trees, and tool status. Artifacts consume both streamed
+file events and final receipt files, deduplicate by file identity, and persist in
+conversation history. Artifacts with local paths are registered as generated assets
+in their owning conversation, including after navigation or media stop. References
+use the normal recorded skills; paths mentioned only in answer text are not artifacts.
+
+Completed tasks can still be revised through a linked Core follow-up carrying the
+original result and context. Further actions on existing results may also be delegated
+to Core; completion alone is not grounds to refuse. Qwen and JoyAI share this general
+rule. Only confirmed Core results prove that a requested change is complete.
+
+The task board prefers a short action-and-object title submitted with the delegation.
+Complete requirements are stored separately. Goal changes may supply an updated title;
+completed-task revisions name only the successor. Queries match both title and original
+requirements. Older or untitled tasks retain their original requirement as the label.
+Titles are display metadata and never replace execution instructions.
+
+Stopping execution differs from undoing its effects. A completed execution does not
+prevent a user-requested follow-up on its results. Tool-receipt responses may send
+the full action to Core through modification or delegation; completed effects are
+never rolled back automatically.
+
+Voice cancellation of a completed invocation, when accompanied by the original user
+utterance, reuses the modification flow to create a linked Core follow-up retaining
+the original result and full cancellation intent. The receipt reports `state=followup`
+and `converted_to=modify`, confirming acceptance only. Repeated requests reuse the
+same successor. Unfinished invocations retain normal cancellation; legacy or UI
+requests without a user utterance never create follow-up actions automatically.

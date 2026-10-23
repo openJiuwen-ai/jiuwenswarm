@@ -41,8 +41,12 @@ export function parseQwenOmniFunctionCall(event: Record<string, unknown>): QwenO
   try {
     const argumentsObject = asRecord(typeof argumentsValue === 'string' ? JSON.parse(rawArguments) : argumentsValue);
     if (!argumentsObject) return null;
+    if ('title' in argumentsObject && (
+      typeof argumentsObject.title !== 'string' || !argumentsObject.title.trim() ||
+      argumentsObject.title.length > 80 || /[\r\n]/.test(argumentsObject.title)
+    )) return null;
     if (isManagement) return { name, callId, arguments: rawArguments, task: name };
-    const schedulingKeys = ['independent', 'depends_on', 'resources'];
+    const schedulingKeys = ['independent', 'depends_on', 'resources', 'title'];
     const taskKeys = Object.keys(argumentsObject).filter((key) => !schedulingKeys.includes(key));
     if (taskKeys.length !== 1 || (isLegacyResearch && Object.keys(argumentsObject).length !== 1)) return null;
     if ('independent' in argumentsObject && typeof argumentsObject.independent !== 'boolean') return null;
@@ -98,7 +102,7 @@ export function createQwenOmniToolFollowupEvent(
       content: [
         {
           type: 'input_text',
-          text: taskResultNotice(brief, context?.question, replyLanguage),
+          text: taskResultNotice(brief, context?.question, replyLanguage, context?.jobId),
         },
       ],
     },

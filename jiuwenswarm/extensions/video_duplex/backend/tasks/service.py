@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 class TaskModification:
     revision: int
     instruction: str
+    title: str = ""
 
 
 class ExecutionUncertain(RuntimeError):
@@ -166,6 +167,7 @@ class TaskService:
             owner=owner,
             session=session,
             instruction=instruction,
+            title=request.get("title", ""),
             request=request,
             status="queued",
             revision=1,
@@ -200,6 +202,13 @@ class TaskService:
         if len(instruction) > 16000:
             raise ValueError("Task instruction exceeds 16000 characters")
         request = dict(request or {})
+        title = request.get("title", "")
+        if not isinstance(title, str) or len(title) > 80 or "\n" in title or "\r" in title:
+            raise ValueError("Invalid title")
+        if title.strip():
+            request["title"] = title.strip()
+        else:
+            request.pop("title", None)
         if not isinstance(request.get("independent", False), bool):
             raise ValueError("independent must be a boolean")
         for key in ("depends_on", "resources"):
@@ -258,12 +267,16 @@ class TaskService:
             tasks = self.store.rows(db, owner, session)
         if status:
             tasks = [t for t in tasks if t["status"] == status]
-        tasks = [t for t in tasks if query.casefold() in t["instruction"].casefold()]
+        tasks = [t for t in tasks if query.casefold() in t["instruction"].casefold() or query.casefold() in t.get("title", "").casefold()]
         end = offset + limit
         return tasks[offset:end], (end if len(tasks) > end else None)
 
     def modify(self, owner, session, task_id, command_id, change: TaskModification):
         revision, instruction = change.revision, change.instruction
+        title = change.title
+        if not isinstance(title, str) or len(title) > 80 or "\n" in title or "\r" in title:
+            raise ValueError("Invalid title")
+        title = title.strip()
         self.start()
         if (
             not isinstance(instruction, str)
@@ -278,7 +291,7 @@ class TaskService:
                 owner,
                 session,
                 command_id,
-                ["modify", task_id, revision, instruction],
+                ["modify", task_id, revision, instruction] + ([title] if title else []),
             )
             if replay:
                 return replay
@@ -298,8 +311,12 @@ class TaskService:
                 task["instruction"] += "\nUser modification: " + instruction.strip()
                 change["state"] = "queued_input_updated"
             elif task["status"] == "completed":
-                child = self._successor(db, task, instruction.strip())
+                child = self._successor(db, task, instruction.strip(), title=title)
                 change.update(state="followup", successor_id=child["id"])
+            if title:
+                change["title"] = title
+                if task["status"] != "completed":
+                    task["title"] = title
             task["changes"].append(change)
             task["revision"] += 1
             task["sequence"] += 1
@@ -315,7 +332,7 @@ class TaskService:
         self.kick()
         return receipt
 
-    def _successor(self, db, task, instruction):
+    def _successor(self, db, task, instruction, *, title=""):
         if task["successor_id"]:
             return self.store.get(db, task["successor_id"])
         adopted = "\n".join(
@@ -325,6 +342,7 @@ class TaskService:
         )
         request = {
             **task["request"],
+            "title": title or task.get("title", ""),
             "prior_result": task["result"],
             "depends_on": [task["id"]],
         }
@@ -342,43 +360,67 @@ class TaskService:
         self.store.put(db, child)
         return child
 
-    async def cancel(self, owner, session, task_id, command_id):
+    async def cancel(self, owner, session, task_id, command_id, *, user_instruction=""):
         self.start()
+        if not isinstance(user_instruction, str) or len(user_instruction) > 4000:
+            raise ValueError("Cancellation instruction must contain at most 4000 characters")
+        user_instruction = user_instruction.strip()
         with self.store.transaction() as db:
             task = self.store.get(db, task_id, owner, session)
             replay, fingerprint = self.store.replay(
-                db, owner, session, command_id, ["cancel", task_id]
+                db, owner, session, command_id,
+                ["cancel", task_id] + ([user_instruction] if user_instruction else []),
             )
             if replay:
                 return replay
-            if task["status"] == "queued" and not task.get("resume_answer"):
-                task["status"] = "cancelled"
-            elif task["status"] not in TERMINAL:
-                task["status"] = "cancelling"
-            task["revision"] += 1
-            task["sequence"] += 1
-            for change in task["changes"]:
-                if change["state"] == "pending":
-                    change["state"] = "rejected"
-            if task.get("interaction"):
-                task["interaction"]["state"] = "expired"
-            self.store.put(db, task)
-            receipt = dict(
-                task_id=task_id,
-                operation_id=command_id,
-                state="accepted" if task["status"] == "cancelling" else task["status"],
-                task_status=task["status"],
-                stopped=task["status"] == "cancelled",
-                message=("取消已受理，正在等待执行停止；尚未确认停止。"
-                         if task["status"] == "cancelling" else
-                         "任务已取消。" if task["status"] == "cancelled" else
-                         "任务已经结束，未执行新的取消操作。"),
-            )
+            if task["status"] == "completed" and user_instruction:
+                if task["successor_id"]:
+                    raise TaskRevisionConflict("Task already has a follow-up; query the current task")
+                # Reuse completed-task modification without guessing how to undo effects.
+                child = self._successor(db, task, user_instruction, title="处理取消请求")
+                task["changes"].append(dict(
+                    id=command_id, instruction=user_instruction,
+                    state="followup", successor_id=child["id"],
+                ))
+                task["revision"] += 1
+                task["sequence"] += 1
+                self.store.put(db, task)
+                receipt = dict(
+                    task_id=task_id, operation_id=command_id, state="followup",
+                    task_status="completed", stopped=False, revision=task["revision"],
+                    successor_id=child["id"], converted_to="modify",
+                    message="原执行已完成，已将用户的完整取消要求交给 Core 后续处理；尚未确认处理结果。",
+                )
+            else:
+                if task["status"] == "queued" and not task.get("resume_answer"):
+                    task["status"] = "cancelled"
+                elif task["status"] not in TERMINAL:
+                    task["status"] = "cancelling"
+                task["revision"] += 1
+                task["sequence"] += 1
+                for change in task["changes"]:
+                    if change["state"] == "pending":
+                        change["state"] = "rejected"
+                if task.get("interaction"):
+                    task["interaction"]["state"] = "expired"
+                self.store.put(db, task)
+                receipt = dict(
+                    task_id=task_id,
+                    operation_id=command_id,
+                    state="accepted" if task["status"] == "cancelling" else task["status"],
+                    task_status=task["status"],
+                    stopped=task["status"] == "cancelled",
+                    message=("取消已受理，正在等待执行停止；尚未确认停止。"
+                             if task["status"] == "cancelling" else
+                             "任务已取消。" if task["status"] == "cancelled" else
+                             "本次 Core 执行已经结束，未执行新的取消操作；其结果仍可另行委托 Core 修改或继续处理。"),
+                )
             self.store.command(db, task, command_id, fingerprint, receipt)
         if task["status"] == "cancelling" and task_id not in self.cancellations:
             work = asyncio.create_task(self._cancel(task), name="managed-task-cancel")
             self.cancellations[task_id] = work
             work.add_done_callback(lambda _: self.cancellations.pop(task_id, None))
+        self.kick()
         await self._notify(task)
         return receipt
 
@@ -774,6 +816,7 @@ class TaskService:
                         db,
                         current,
                         "\n".join(c["instruction"] for c in pending),
+                        title=next((c["title"] for c in reversed(pending) if c.get("title")), ""),
                     )
                     for change in pending:
                         change.update(state="followup", successor_id=child["id"])

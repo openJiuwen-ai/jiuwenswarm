@@ -16,6 +16,11 @@ import type {
   SearchProgressEntry,
 } from "./VideoLivePanel/types";
 import { TaskFullDuplexControls } from "./TaskFullDuplexAction";
+import {
+  normalizeToolCallPayload,
+  normalizeToolResultPayload,
+} from "../../../channels/web/frontend/src/features/tool-events/toolEventNormalizer";
+import { getFileIdentityKey } from "../../../channels/web/frontend/src/utils/fileDownloadDedup";
 import { TaskDuplexJobs } from "./taskDuplexJobs";
 import { describeDuplexError } from "./duplexErrorMessage";
 import { applyDuplexSubagentEvent } from "./duplexSubagentEvents";
@@ -116,6 +121,7 @@ export function TaskFullDuplexRuntime({
   const conversationJobsRef = useRef(new TaskDuplexJobs());
   const pollingJobsRef = useRef(new Set<string>());
   const coreToolIdsRef = useRef<Map<string, Map<string, string>>>(new Map());
+  const deliveredFilesRef = useRef(new Map<string, Map<string, string>>());
   const persistedAssistantStreamsRef = useRef<Set<string>>(new Set());
   const pendingReasoningRef = useRef(
     new Map<
@@ -185,13 +191,16 @@ export function TaskFullDuplexRuntime({
       targetSessionId: string,
       toolResult: Parameters<typeof onToolResult>[1],
       updatedAt?: string,
+      nativeResult?: Record<string, unknown>,
     ) => {
       onToolResult(targetSessionId, toolResult, updatedAt);
       persistTimelineEvent(targetSessionId, {
         kind: "tool_result",
         timestamp: timestampSeconds(updatedAt),
         tool_result: {
+          ...nativeResult,
           ...toolResult,
+          ...(nativeResult?.id ? { id: toolResult.toolCallId } : {}),
           tool_name: toolResult.toolName,
           tool_call_id: toolResult.toolCallId,
         },
@@ -212,26 +221,6 @@ export function TaskFullDuplexRuntime({
       return new Date(progressAtMs(entry)).toISOString();
     },
     [progressAtMs],
-  );
-
-  const toolArguments = useCallback(
-    (value: unknown): Record<string, unknown> => {
-      if (value && typeof value === "object" && !Array.isArray(value)) {
-        return value as Record<string, unknown>;
-      }
-      if (typeof value === "string") {
-        try {
-          const parsed = JSON.parse(value);
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            return parsed as Record<string, unknown>;
-          }
-        } catch {
-          return value ? { input: value } : {};
-        }
-      }
-      return value == null ? {} : { input: value };
-    },
-    [],
   );
 
   const toolResultText = useCallback(
@@ -282,6 +271,7 @@ export function TaskFullDuplexRuntime({
         id: jobId,
         pluginId: "video-duplex",
         title:
+          payload.title?.trim() ||
           payload.question?.trim() ||
           payload.query?.trim() ||
           previousTask?.title ||
@@ -300,6 +290,8 @@ export function TaskFullDuplexRuntime({
         queuePosition: payload.queue_position ?? previousTask?.queuePosition,
         queueVersion: payload.queue_version ?? previousTask?.queueVersion,
       });
+      if (runtimeSessionIdRef.current === targetSessionId)
+        panelRef.current?.deliverTaskInteraction(payload);
       if (payload.replay) return;
       if (payload.interaction && runtimeSessionIdRef.current === targetSessionId)
         panelRef.current?.deliverQuestion(payload);
@@ -310,6 +302,23 @@ export function TaskFullDuplexRuntime({
         coreToolIdsRef.current.get(jobId) || new Map<string, string>();
       coreToolIdsRef.current.set(jobId, toolIds);
 
+      const deliveredFiles = deliveredFilesRef.current.get(jobId) || new Map<string, string>();
+      deliveredFilesRef.current.set(jobId, deliveredFiles);
+      const emitFiles = (files: NonNullable<SearchJobPayload["files"]>, atMs: number) => {
+        const changed = files.filter((file) => {
+          const key = getFileIdentityKey(file);
+          const revision = JSON.stringify(file);
+          if (deliveredFiles.get(key) === revision) return false;
+          deliveredFiles.set(key, revision);
+          return true;
+        });
+        if (!changed.length) return;
+        onFileItems(targetSessionId, changed, new Date(atMs).toISOString());
+        persistTimelineEvent(targetSessionId, {
+          kind: "file", files: changed, timestamp: atMs / 1_000,
+        });
+      };
+
       entries
         .slice()
         .sort((left, right) => left.sequence - right.sequence)
@@ -319,12 +328,7 @@ export function TaskFullDuplexRuntime({
           const atMs = progressAtMs(entry);
 
           if (entry.stage === "file" && entry.files?.length) {
-            onFileItems(targetSessionId, entry.files, progressAtIso(entry));
-            persistTimelineEvent(targetSessionId, {
-              kind: "file",
-              files: entry.files,
-              timestamp: atMs / 1_000,
-            });
+            emitFiles(entry.files, atMs);
             return;
           }
 
@@ -345,12 +349,14 @@ export function TaskFullDuplexRuntime({
             emitToolCall(
               targetSessionId,
               {
+                ...normalizeToolCallPayload(entry.tool_payload || {
+                  name: entry.tool_name,
+                  arguments: entry.tool_arguments,
+                  description: entry.tool_description,
+                  formatted_args: entry.tool_formatted_args,
+                  display_name: entry.tool_display_name,
+                }),
                 id,
-                name: entry.tool_name?.trim() || "unknown",
-                arguments: toolArguments(entry.tool_arguments),
-                description: entry.tool_description?.trim() || undefined,
-                formatted_args: entry.tool_formatted_args?.trim() || undefined,
-                display_name: entry.tool_display_name?.trim() || undefined,
               },
               progressAtIso(entry),
             );
@@ -361,20 +367,26 @@ export function TaskFullDuplexRuntime({
             const id =
               toolIds.get(rawId) ||
               `full-duplex-core-${jobId}-${rawId || `sequence-${entry.sequence}`}`;
+            const nativePayload = entry.tool_payload;
+            const normalized = normalizeToolResultPayload(nativePayload || {
+              tool_name: entry.tool_name,
+              result: toolResultText(entry.tool_result, entry.detail || ""),
+              success: entry.tool_success !== false && entry.status !== "failed",
+              summary: entry.tool_summary,
+            });
             emitToolResult(
               targetSessionId,
-              {
-                toolName: entry.tool_name?.trim() || "unknown",
-                toolCallId: id,
-                result: toolResultText(entry.tool_result, entry.detail || ""),
-                success:
-                  entry.tool_success !== false && entry.status !== "failed",
-                summary: entry.tool_summary?.trim() || undefined,
-              },
+              { ...normalized, toolCallId: id },
               progressAtIso(entry),
+              nativePayload
+                ? (nativePayload.tool_result as Record<string, unknown> | undefined) || nativePayload
+                : undefined,
             );
           }
         });
+
+      // Final receipts can recover files that were absent from streamed progress.
+      if (incoming.files?.length) emitFiles(incoming.files, Date.now());
 
       if (
         status === "completed" ||
@@ -411,7 +423,6 @@ export function TaskFullDuplexRuntime({
       progressAtMs,
       onConversationItem,
       onFileItems,
-      toolArguments,
       toolResultText,
     ],
   );
