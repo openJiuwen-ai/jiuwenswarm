@@ -208,6 +208,7 @@
       "assetsHint": "Toggle the current-canvas asset list.",
       "upload": "Upload",
       "uploadHint": "Upload an image, video, or audio file as a new canvas node.",
+      "uploadTooLarge": "File too large: images, videos, and audio can be up to 32 MB.",
       "comfyuiHint": "Import a ComfyUI workflow (.json). Only vLLM-Omni Generate Image / Generate Video nodes are added.",
       "group": {
         "image": "Image",
@@ -579,8 +580,8 @@
       "deleteConfirm": "Delete “{{alias}}” ({{model}})?",
       "deleteConfirmTitle": "Delete model",
       "loadFailed": "Failed to load the model list. Please try again.",
-      "customName": "Custom name",
-      "customNamePlaceholder": "Enter a unique custom name",
+      "customName": "Model display name",
+      "customNamePlaceholder": "Enter a unique model display name",
       "protocol": "Protocol",
       "vendor": "Model provider",
       "model": "Model",
@@ -687,8 +688,10 @@
         "reasoningUnsupported": "The reasoning option “{{value}}” is unsupported. Select another option or use the default",
         "reasoningUnavailable": "Reasoning options have not loaded. Retry before saving",
         "contextWindowInvalid": "Enter a valid positive context window, such as 256K, 1M, or 1310720",
-        "aliasConflict": "Custom name must be globally unique and cannot match another model ID",
-        "modelNameConflict": "Model ID cannot match another configuration's custom name"
+        "aliasRequired": "Model display name is required",
+        "aliasConflict": "Model display name must be globally unique and cannot match another model's display name",
+        "modelNameConflict": "Model ID cannot match another configuration's model display name",
+        "modelGroupNameConflict": "Model group name must be globally unique and cannot match another model group name"
       },
       "testConnection": "Test connection",
       "test": "Test"
@@ -2166,7 +2169,7 @@
       "apiBaseUrlInvalid": "API Base URL must start with http:// or https://",
       "modelNameRequired": "Model name is required. Select a model before saving",
       "modelNameTooLong": "Model name is too long. Use 100 characters or fewer",
-      "aliasTooLong": "Alias is too long. Use 100 characters or fewer",
+      "aliasTooLong": "Model display name is too long. Use 100 characters or fewer",
       "apiBaseTooLong": "API Base URL is too long. Use 512 characters or fewer"
     },
     "booleanLabels": {
