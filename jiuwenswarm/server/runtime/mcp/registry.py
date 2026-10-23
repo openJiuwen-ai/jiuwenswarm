@@ -1053,15 +1053,24 @@ def _cli_cred_tokens_stored(name: str) -> bool:
 
 
 def _classify_install_failure(n: str, inst: Any) -> CliConnectError:
-    """Map a failed CliDriver.install() onto a CliConnectError by cause:
-    binary_not_found → MCP_RUNTIME_MISSING, install_script_dep →
-    MCP_INSTALL_SCRIPT_DEP, network stderr → MCP_INSTALL_NETWORK, else →
-    MCP_CLI_INCOMPLETE. ``runtime``/``install_cmd`` are surfaced so the
-    frontend hint can name the dependency / show the upgrade command.
+    """Map a failed CliDriver.install() onto a CliConnectError by cause.
+
+    CLI binary missing → MCP_CLI_INCOMPLETE, runtime/package-manager missing →
+    MCP_RUNTIME_MISSING, install_script_dep → MCP_INSTALL_SCRIPT_DEP, network
+    stderr → MCP_INSTALL_NETWORK, else → MCP_CLI_INCOMPLETE.
     """
     runtime = inst.runtime or ""
     install_cmd = inst.install_cmd or ""
     if inst.error_kind == "binary_not_found":
+        if getattr(inst, "cli_binary_missing", False):
+            # The CLI's own versionCheck binary is absent: the CLI itself is
+            # not installed. The actionable hint is the install command, not
+            # "node is missing" (the runtime may be perfectly fine).
+            return CliConnectError(
+                CODE_CLI_INCOMPLETE,
+                f"mcp '{n}' CLI binary not found on PATH; {inst.error}",
+                runtime=runtime, install_cmd=install_cmd,
+            )
         return CliConnectError(
             CODE_RUNTIME_MISSING,
             f"mcp '{n}' CLI runtime '{runtime or 'unknown'}' not found on PATH; {inst.error}",

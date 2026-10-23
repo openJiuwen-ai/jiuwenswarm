@@ -8689,6 +8689,8 @@ class AgentWebSocketServer:
             command = resolve_preserved_cli_path(server_payload.get("command", ""))
             if not command:
                 return True, "skipped: no command"
+            from jiuwenswarm.common.mcp_config import resolve_node_package_runner
+            command, _ = resolve_node_package_runner(command, [])
             # stdio 预检查改为纯静态校验,静态校验零 spawn、零 anyio。
             if not shutil.which(command):
                 return False, f"{name} (stdio) pre-check failed: command not found in PATH: {command}"

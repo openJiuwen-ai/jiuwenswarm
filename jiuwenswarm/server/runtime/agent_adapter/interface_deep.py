@@ -5397,7 +5397,10 @@ class JiuWenSwarmDeepAdapter:
         """
         name = str(entry.get("name", "")).strip()
         resolver = build_mcp_credential_resolver(name)
-        return build_mcp_server_config(entry, server_id_scope="jiuwenswarm", credential_resolver=resolver)
+        return build_mcp_server_config(
+            entry, server_id_scope="jiuwenswarm", credential_resolver=resolver,
+            resolve_node_launcher=True,
+        )
 
     @staticmethod
     def _extract_enabled_mcp_server_entries(config_base: dict[str, Any]) -> list[dict[str, Any]]:
