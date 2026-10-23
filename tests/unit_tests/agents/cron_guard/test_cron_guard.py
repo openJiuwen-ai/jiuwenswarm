@@ -75,6 +75,22 @@ def guard_config(guard_enabled):
     return guard_enabled
 
 
+@pytest.fixture(autouse=True)
+def _cron_context_isolation():
+    """Per-test contextvar isolation (CI cross-file pollution guard).
+
+    cron_guard_begin's contextvar token is reset inside the copied context
+    of any asyncio.run() Task (e.g. cron_guard_end_async driven via
+    asyncio.run), so the outer test context keeps the bound run otherwise —
+    which leaked a live cron run (budget rail active) into unrelated test
+    files in the same pytest session. This fixture guarantees the
+    contextvar value present before each test is restored after it.
+    """
+    token = current_cron_run.set(None)
+    yield
+    current_cron_run.reset(token)
+
+
 # ---------------------------------------------------------------- sleep parser: BLOCK cases
 
 @pytest.mark.parametrize(
