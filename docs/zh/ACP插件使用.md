@@ -4,7 +4,7 @@
 
 ## 前置要求
 
-* Python `>=3.11, <3.14`
+* Python `>=3.11`
 * 已安装 VS Code 扩展 `formulahendry.acp-client`
 
 
