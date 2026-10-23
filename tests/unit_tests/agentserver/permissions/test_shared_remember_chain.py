@@ -85,7 +85,7 @@ async def approve(rail, ctx, permanent, before_answer=None, remember=True):
         with pytest.raises(AbortError) as raised:
             await rail.before_tool_call(ctx)
         ctx.exception = raised.value
-        await queue_rail.on_tool_exception(ctx)
+        await queue_rail.after_tool_call(ctx)
         card = queue.pending_for_call(
             root_session_id=ctx.session.get_session_id(),
             execution_session_id=ctx.session.get_session_id(),
