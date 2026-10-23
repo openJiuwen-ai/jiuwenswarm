@@ -40,6 +40,7 @@ export type ExtToWebviewMsg =
   | { type: 'skill_toggled'; skillId: string; enabled: boolean }
   | { type: 'skills_error'; message: string }
   | { type: 'jiuwen_event'; event: Record<string, unknown> }
+  | { type: 'models_updated'; models: ModelEntry[]; activeModel?: string }
   | { type: 'error'; message?: string; requestId?: string }
   | { type: 'debug_log'; line: string }
   | { type: 'prefill'; content: string }

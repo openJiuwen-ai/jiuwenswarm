@@ -1700,6 +1700,7 @@ let state = {
   skills: [],
   showDebug: false,
   streaming: false,
+  stopRequested: false, // set when the user clicks ■; final turn is classified as stopped
   models: [],
   activeModel: null,
   turns: [],
@@ -1867,6 +1868,11 @@ function handleHostMessage(msg) {
       if (msg.models) { state.models = msg.models; }
       updateModelDisplay(state.models, state.activeModel);
       break;
+    case 'models_updated':
+      if (msg.models) { state.models = msg.models; }
+      if (msg.activeModel) { state.activeModel = msg.activeModel; }
+      updateModelDisplay(state.models, state.activeModel);
+      break;
     case 'memory':
       renderMemoryChip(msg);
       break;
@@ -1983,7 +1989,11 @@ function updateModelDisplay(models, activeModel) {
 function toggleModelDropdown() {
   var dd = document.getElementById('model-dropdown');
   if (!dd) return;
+  var opening = !dd.classList.contains('visible');
   dd.classList.toggle('visible');
+  // Models are configured outside the IDE. Re-fetch when the picker opens so a
+  // session created before the model was configured does not keep the placeholder.
+  if (opening) send({ type: 'refresh_models' });
 }
 
 function closeModelDropdown() {
@@ -2756,6 +2766,7 @@ function handleJiuwenEvent(evt) {
 // Called when we send a message — create a user turn and an empty assistant turn
 function beginTurn(requestId, userContent) {
   const msgs = document.getElementById('messages');
+  state.stopRequested = false;
 
   // User message
   const userEl = document.createElement('div');
@@ -3155,13 +3166,26 @@ function renderAskUserQuestion(rid, payload) {
     btn.addEventListener('click', function() {
       card.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
       card.classList.add('answered');
-      sendAnswerForInterrupt(pt, rid, source, btn.dataset.value);
+      sendAnswerForInterrupt(pt, rid, source, mapInterruptAnswerValue(pt, btn.dataset.value));
     });
   });
 
   pt.streamEl.appendChild(card);
   pt.pendingQuestion = card;
+  pt.planApprovalKind = payload.plan_approval_kind || payload.planApprovalKind || null;
   scrollToBottom();
+}
+
+// The WebUI sends plan_execute / plan_skip / plan_revise for plan approval.
+// The generic ask-user card only has approve/reject options, and a plain
+// "reject" keeps the agent in plan mode instead of finishing the turn (the
+// source of the stuck stop-button state). Map the two generic values.
+function mapInterruptAnswerValue(pt, value) {
+  if (pt && pt.planApprovalKind === 'plan_approval') {
+    if (value === 'reject') return 'plan_skip';
+    if (value === 'approve') return 'plan_execute';
+  }
+  return value;
 }
 
 function sendAnswerForInterrupt(pt, rid, source, optionValue) {
@@ -3636,7 +3660,9 @@ function finalizeTurn(rid, payload) {
 
     // ── Live metrics ──
     pt.hasFinal = true;
-    if (payload.stopped) pt.stopped = true;
+    // The local stop click may race the server's final; the flag makes sure the
+    // turn is still classified as stopped if the final arrives afterwards.
+    if (payload.stopped || state.stopRequested) pt.stopped = true;
 
     // Record the final response text as a 'final' event so the trajectory
     // shows the turn's response as its own entry. Live streaming never emits a
@@ -4118,13 +4144,18 @@ inputEl.addEventListener('input', function() {
 
 sendBtn.addEventListener('click', function() {
   if (state.streaming) {
+    state.stopRequested = true;
     send({ type: 'stop' });
     // Finalize all pending turns immediately — Gateway handles backend cancellation.
-    // Without this, the UI stays stuck in streaming mode because the Gateway's
-    // interrupt_result event is not handled by the webview.
+    // A turn waiting on an interrupt would otherwise keep the early-return path in
+    // finalizeTurn and leave the UI stuck in streaming mode.
     Object.keys(state.pendingTurns).forEach(function(rid) {
+      var pt = state.pendingTurns[rid];
+      if (pt) pt.questionAnswered = true;
       finalizeTurn(rid, { stopped: true });
     });
+    // No live turn (e.g. it was already finalized server-side) — still release UI.
+    if (state.streaming) setStreaming(false);
   } else {
     submitMessage();
   }
@@ -4728,6 +4759,7 @@ function clearMessages() {
   msgs.innerHTML = '';
   state.pendingTurns = {};
   state.streaming = false;
+  state.stopRequested = false;
   state.rewindable = false;
   _historyPendingAssistant = null;
   document.getElementById('input').disabled = false;
