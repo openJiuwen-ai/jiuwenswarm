@@ -674,7 +674,16 @@ def get_mcp_tools(name: str) -> list[dict[str, Any]]:
 def _marketplace_mcp_cfg(name: str) -> dict[str, Any] | None:
     """Return the manifest-declared MCP server configuration."""
     package = _resolve_package(name)
-    return dict(package.server_config) if package and package.server_config else None
+    if package is None or not package.server_config:
+        return None
+    config = dict(package.server_config)
+    if package.credentials_type == "oauth" and package.integration_type == "remote-mcp":
+        # OAuth belongs to the host; distributable packages need no token field.
+        headers = dict(config["headers"]) if isinstance(config.get("headers"), dict) else {}
+        if not any(str(key).lower() == "authorization" for key in headers):
+            headers["Authorization"] = "Bearer ${OAUTH_ACCESS_TOKEN}"
+        config["headers"] = headers
+    return config
 
 
 def _normalize_transport(raw: str, cfg: dict[str, Any]) -> str:
@@ -848,6 +857,7 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
         entry = build_config_entry(n)
         from jiuwenswarm.server.runtime.mcp.credential import (
             CredentialStore,
+            KIND_OAUTH,
             detect_credential_kind,
             required_tokens_from_schema,
         )
@@ -905,6 +915,26 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
                 "installed_skills": skills,
                 "mcp_entry": None,
             }
+        # Host-managed OAuth (Canva): return the auth_required sentinel before
+        # writing any server entry. mcp.wait_auth holds the request while the
+        # user completes the browser flow; only token completion registers it.
+        if kind == KIND_OAUTH:
+            from jiuwenswarm.server.runtime.mcp.oauth_flow import (
+                is_host_oauth_mcp,
+                load_oauth_credentials,
+            )
+            if is_host_oauth_mcp(n) and load_oauth_credentials(n) is None:
+                return {
+                    "name": n,
+                    "integration_type": itype,
+                    "auth_required": True,
+                    "auth_pending": True,
+                    "host_oauth": True,
+                    "step_index": 0,
+                    "steps_total": 1,
+                    "auth_url": None,
+                    "credential_kind": "oauth",
+                }
         # Form B (mcp.json with ${VAR}): resolve placeholders from the store; if
         # any token is not yet provisioned, return credentials_required.
         if kind == "token":
@@ -1308,6 +1338,41 @@ def complete_cli_auth(name: str, step_index: int, *, install_only: bool = False)
     return _connect_cli(n, idx + 1, install_only=install_only)
 
 
+def complete_oauth_callback(query: dict[str, Any]) -> bool:
+    """Expose callback completion through the existing registered MCP facade."""
+    from jiuwenswarm.server.runtime.mcp.oauth_flow import complete_oauth_flow
+
+    return complete_oauth_flow(query)
+
+
+def complete_host_oauth_auth(name: str) -> dict[str, Any]:
+    """Finish a host-managed OAuth MCP connect after the callback succeeded.
+
+    Reuses ``connect_mcp``'s marketplace tail: install bundled skills, persist
+    the remote entry as ``connecting``, and return it for the live-connect probe.
+    """
+    n = str(name or "").strip()
+    if not n:
+        raise ValueError("mcp name is required")
+    package = _resolve_package(n)
+    if package is None or package.integration_type == "cli":
+        raise ValueError(f"mcp '{n}' is not a host OAuth MCP")
+    entry = build_config_entry(n)
+    if entry is None:
+        raise ValueError(f"mcp '{n}' has no usable mcp.json")
+    skills = _install_bundled_skills_safe(n)
+    from jiuwenswarm.server.runtime.mcp.state_store import (
+        upsert_mcp_record,
+    )
+    upsert_mcp_record(
+        n, entry, state="connecting",
+        integration_type=package.integration_type, skills=skills or None,
+    )
+    result = dict(entry)
+    result["installed_skills"] = skills
+    return result
+
+
 def _wipe_stored_credentials(n: str) -> None:
     """Delete the local CredentialStore token file for MCP ``n``.
 
@@ -1524,6 +1589,8 @@ __all__ = [
     "connect_mcp",
     "disconnect_mcp",
     "complete_cli_auth",
+    "complete_oauth_callback",
+    "complete_host_oauth_auth",
     "register_custom_mcp",
     "delete_custom_mcp",
     "save_mcp_credentials",

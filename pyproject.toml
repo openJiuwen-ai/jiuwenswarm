@@ -22,6 +22,7 @@ dependencies = [
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
+    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@edfdae9a8a876b7a15dbf6bce501b929d235b6dc#subdirectory=openjiuwen-protocol",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -211,6 +212,7 @@ default-groups = ['dev']
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "9ad4b9837e23661d63230f233b83a5595460f3d3" }
+openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "edfdae9a8a876b7a15dbf6bce501b929d235b6dc", subdirectory = "openjiuwen-protocol" }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)

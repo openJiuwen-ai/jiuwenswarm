@@ -95,6 +95,7 @@ interface ConnectorState {
   deleteConnector: (name: string) => Promise<boolean>;
   // 取代旧版 authComplete：一次 hold-open 请求等到最终结果，调用方（CliAuthModal）不用再自己轮询。
   waitAuth: (name: string, stepIndex: number) => Promise<ConnectorConnectResponse | null>;
+  startOAuth: (name: string) => Promise<ConnectorConnectResponse | null>;
   cancelConnectAction: (name: string) => Promise<void>;
   // 插"连接中"占位卡片（同步，调用方不 await 也能立刻看到）→ 长 RPC（mcp.register_custom
   // 内部"写配置→探活→注册"，hold 住到探活完成，最长 10min，见 MCP 接口文档 §5.6）在后台跑
@@ -487,6 +488,20 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       }
       scheduleQuickRefresh(get);
       return response;
+    } catch (error) {
+      set((state) => ({
+        ...patchConnectionAll(state, name, 'error'),
+        busyMap: { ...state.busyMap, [name]: undefined },
+        error: friendlyCliError(error),
+      }));
+      scheduleQuickRefresh(get);
+      return null;
+    }
+  },
+
+  startOAuth: async (name: string) => {
+    try {
+      return await connectorApi.startOAuth(name);
     } catch (error) {
       set((state) => ({
         ...patchConnectionAll(state, name, 'error'),

@@ -227,6 +227,24 @@ export function isDesignerFallbackTextAsset(
   );
 }
 
+/** Preview URL of a node output, only when it is an image an ``<img>`` can show. */
+export function designerImagePreviewUrl(
+  ref: Pick<AssetRef, 'kind' | 'uri' | 'mime_type' | 'label'> | null | undefined,
+  nodeType: string,
+): string | null {
+  if (!ref?.uri) return null;
+  const previewUrl = designerAssetPreviewUrl(ref.uri);
+  const kind = classifyDesignerOutput({
+    kind: ref.kind || nodeType,
+    mimeType: ref.mime_type,
+    label: ref.label,
+    uri: ref.uri,
+    previewUrl,
+    placeholder: isPlaceholderAsset(ref.uri),
+  });
+  return kind === 'image' ? previewUrl : null;
+}
+
 export function preferredDesignerPreviewRef(
   accepted?: AssetRef | null,
   candidate?: AssetRef | null,

@@ -208,6 +208,7 @@
       "assetsHint": "打开当前画布素材列表。",
       "upload": "上传",
       "uploadHint": "上传图片、视频或音频文件，作为新节点添加到画布。",
+      "uploadTooLarge": "文件过大：图片、视频和音频不能超过 32MB。",
       "comfyuiHint": "导入 ComfyUI 工作流（.json）。仅添加 vLLM-Omni 的 Generate Image / Generate Video 节点。",
       "group": {
         "image": "图片",

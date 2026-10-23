@@ -1,4 +1,5 @@
 import json
+import zipfile
 
 import pytest
 
@@ -7,6 +8,7 @@ from jiuwenswarm.server.runtime.marketplace.asset_publish_api import (
     PublishAPIError,
 )
 from jiuwenswarm.server.runtime.marketplace.asset_publish_models import PublishResult
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_canva_oauth_package
 
 
 class Publisher:
@@ -52,6 +54,54 @@ def params(**kwargs):
         "auth": {"access_token": "synthetic-user-token", "oauth_provider": "gitcode"},
         **kwargs,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_header", [False, True])
+async def test_prepare_canva_oauth_package_without_upload_or_credential_lookup(tmp_path, monkeypatch, legacy_header):
+    from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
+
+    installed = write_canva_oauth_package(tmp_path / "installed" / "canva", legacy_header=legacy_header)
+    original_files = {p.relative_to(installed): p.read_bytes() for p in installed.rglob("*") if p.is_file()}
+    publisher = Publisher()
+    server = AssetPublishAPI(
+        tmp_path / "state",
+        publisher=publisher,
+        resolver=lambda kind, local_id: installed,
+        hub_url="https://example.invalid",
+    )
+
+    def reject_credential_lookup(*args, **kwargs):
+        raise AssertionError("Publishing must not read runtime credentials")
+
+    monkeypatch.setattr(CredentialStore, "get_all", reject_credential_lookup)
+    monkeypatch.setattr(CredentialStore, "get_token", reject_credential_lookup)
+    try:
+        description = await server.call(
+            "describe", params(kind="mcp", local_id="canva"), gateway_user="browser-user"
+        )
+        draft = await server.call(
+            "prepare",
+            params(kind="mcp", local_id="canva", metadata=description["defaults"]),
+            gateway_user="browser-user",
+        )
+
+        assert draft["can_submit"] is True
+        assert draft["errors"] == []
+        assert publisher.calls == 0
+        assert set(draft["files"]) == {"manifest.json", "mcp.json", "icon.png", "skills/canva-guide/SKILL.md"}
+        archives = list((tmp_path / "state" / "packages").rglob("artifact.zip"))
+        assert len(archives) == 1
+        with zipfile.ZipFile(archives[0]) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            config = json.loads(archive.read("mcp.json"))
+        assert manifest["credentials"] == {"type": "oauth"}
+        assert "headers" not in config["mcpServers"]["canva"]
+        assert "OAUTH_ACCESS_TOKEN" not in json.dumps(config)
+        assert ("mcp.host_oauth_authorization" in draft["normalizations"]) is legacy_header
+        assert original_files == {p.relative_to(installed): p.read_bytes() for p in installed.rglob("*") if p.is_file()}
+    finally:
+        await server.close()
 
 
 @pytest.mark.asyncio

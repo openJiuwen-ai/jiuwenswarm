@@ -1804,7 +1804,7 @@ class JiuWenSwarmDeepAdapter:
 
     async def install_voice_task_rail(self, *, reload=False):
         """Keep task rail lifecycle and internal Agent ownership inside the Host."""
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import install_task_rail
+        from jiuwenswarm.server.runtime.video_task.rail import install_task_rail
 
         self._voice_agent_task_rail = await install_task_rail(
             self._instance, self._voice_agent_task_rail, reload=reload
@@ -15492,7 +15492,7 @@ class JiuWenSwarmDeepAdapter:
             )
             cancel_call_completed = True
             if request.channel_id == "video_tool":
-                from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import close_task_output
+                from jiuwenswarm.server.runtime.video_task.execution import close_task_output
 
                 await close_task_output(self._voice_agent_task_rail, request)
             logger.info(
@@ -16976,7 +16976,7 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one request."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+            from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
 
             with self._bind_permission_request_context(request):
                 async with bind_task_execution(request, self, inputs):
@@ -17680,7 +17680,7 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one stream."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+            from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
 
             with self._bind_permission_request_context(request):
                 async with bind_task_execution(request, self, inputs):
@@ -18796,7 +18796,7 @@ class JiuWenSwarmDeepAdapter:
             # A previous consumer may have stopped mid-round; this stream must
             # sample the run kind again on its own first chunk.
             self._reset_round_kind_latch()
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_output
+            from jiuwenswarm.server.runtime.video_task.execution import bind_task_output
 
             await bind_task_output(self._voice_agent_task_rail, request, interaction_stream)
             async for chunk in interaction_stream:

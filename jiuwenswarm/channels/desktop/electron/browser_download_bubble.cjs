@@ -33,15 +33,26 @@ function computeBubbleBounds(
     Math.max(0, contentBounds.height - EDGE_MARGIN * 2),
   );
   if (!(width > 0 && height > 0)) return { x: 0, y: 0, width: 0, height: 0 };
+  // The IPC contract allows a null anchor (renderer reference not ready);
+  // fall back to the content area's top-right corner instead of throwing on
+  // anchorRect.right below — the bubble still lands near the toolbar.
+  const anchor = anchorRect || {
+    left: 0,
+    top: 0,
+    right: contentBounds.width,
+    bottom: 0,
+    width: 0,
+    height: 0,
+  };
   // Right edge aligned to the download button's right edge, plus the manual
   // X offset; clamped to stay inside the content area.
-  let x = scale(anchorRect.right) - width + BUBBLE_X_OFFSET;
+  let x = scale(anchor.right) - width + BUBBLE_X_OFFSET;
   x = Math.max(
     EDGE_MARGIN,
     Math.min(x, contentBounds.width - width - EDGE_MARGIN),
   );
   // Top edge just below the button, clamped inside the content area.
-  let y = scale(anchorRect.bottom) + ANCHOR_GAP;
+  let y = scale(anchor.bottom) + ANCHOR_GAP;
   y = Math.max(
     EDGE_MARGIN,
     Math.min(y, contentBounds.height - height - EDGE_MARGIN),

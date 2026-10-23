@@ -420,6 +420,58 @@ test('unconfirmed submissions keep their local variant and waiting icon', async 
   assert.ok(find('asset-publish-form'));
   await act(async () => find('asset-publish-close').click());
 });
+test('undefined placeholders show a localized package error without asking for a new login', async () => {
+  assetPublishApi.describe = async () => description;
+  assetPublishApi.prepare = async () => {
+    throw Object.assign(new Error('privatevalue'), { code: 'UNDEFINED_PLACEHOLDER' });
+  };
+  let commitCalls = 0;
+  assetPublishApi.commit = async () => { commitCalls++; };
+  for (const language of ['zh', 'en']) {
+    await act(async () => i18next.changeLanguage(language));
+    await act(async () => openAssetPublish({ kind: 'mcp', local_id: 'canva' }));
+    await tick();
+    await act(async () =>
+      find('asset-publish-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+    );
+    await tick();
+    const message = find('asset-publish-error').textContent;
+    assert.match(message, language === 'zh' ? /未声明的参数/ : /undeclared parameter/);
+    assert.doesNotMatch(message, /privatevalue|请求未完成|The request did not complete/);
+    assert.equal(find('asset-publish-commit').disabled, true);
+    assert.equal(commitCalls, 0);
+    await act(async () => find('asset-publish-close').click());
+  }
+  await act(async () => i18next.changeLanguage('en'));
+});
+
+test('persisted Hub MCP rejection shows a package error in both languages without resubmitting', async () => {
+  const record = {
+    operation_id: 'canva-failed',
+    execution_status: 'failed',
+    result: null,
+    error: { code: 'invalid_agent_mcp', http_status: 400, message: 'privatevalue' },
+    version: '1.0.0',
+  };
+  assetPublishApi.describe = async () => ({ ...description, records: [record] });
+  assetPublishApi.records = async () => ({ records: [record] });
+  let calls = 0;
+  assetPublishApi.commit = async () => { calls++; };
+  assetPublishApi.prepare = async () => { calls++; };
+  for (const language of ['zh', 'en']) {
+    await act(async () => i18next.changeLanguage(language));
+    await act(async () => openAssetPublish({ kind: 'mcp', local_id: 'canva' }));
+    await tick();
+    const content = find('asset-publish-result').textContent;
+    assert.match(content, /invalid_agent_mcp/);
+    assert.match(content, language === 'zh' ? /包校验/ : /package validation/);
+    assert.doesNotMatch(content, /privatevalue|请求未完成|The request did not complete/);
+    assert.equal(calls, 0);
+    await act(async () => find('asset-publish-close').click());
+  }
+  await act(async () => i18next.changeLanguage('en'));
+});
+
 test('OAuth restore contains metadata and does not auto prepare or commit', async () => {
   assetPublishApi.describe = async () => description;
   let called = 0;

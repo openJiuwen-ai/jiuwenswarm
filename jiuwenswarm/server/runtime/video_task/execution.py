@@ -5,7 +5,8 @@ from contextlib import asynccontextmanager
 import logging
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
-from .checkpoint import TaskCheckpoint
+from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
+
 from .bridge import RemoteTaskEndpoint
 
 _settlements = set()

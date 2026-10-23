@@ -294,7 +294,7 @@ async def test_resume_does_not_treat_attach_execution_as_busy(real_state):
     dispatcher._runtime = SimpleNamespace(get_session_snapshot=lambda _: SimpleNamespace(executions=executions))
     await dispatcher._subscribe_locked({"payload": dump_agent_request(request())}, conn, generation)
     snapshot = conn.frames[-1]["payload"]
-    assert snapshot["is_processing"] is (real_state in {"running", "waiting_for_input", "queued"})
+    assert snapshot["is_processing"] is (real_state in {"running", "queued"})
     assert observer_record.active is True
     assert observer_record.is_processing is False
     assert any(item["request_id"] == "observer" for item in snapshot["executions"])

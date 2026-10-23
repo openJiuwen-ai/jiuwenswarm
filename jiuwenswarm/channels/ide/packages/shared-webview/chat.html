@@ -4646,9 +4646,11 @@ function scrollToBottom() {
 // Custom hover tooltips (native title= is unreliable in JetBrains' JCEF)
 // ─────────────────────────────────────────────
 var _tipEl = null;
+var _tipTarget = null;
 function showHoverTooltip(target) {
   var text = target.getAttribute('data-tooltip');
   if (!text) return;
+  _tipTarget = target;
   if (!_tipEl) {
     _tipEl = document.createElement('div');
     _tipEl.className = 'custom-tooltip';
@@ -4666,20 +4668,58 @@ function showHoverTooltip(target) {
   _tipEl.style.top = Math.round(y) + 'px';
 }
 function hideHoverTooltip() {
+  _tipTarget = null;
   if (_tipEl) _tipEl.style.display = 'none';
 }
+// Native `title=` tooltips are unreliable in JetBrains' JCEF, so route every
+// titled element (header icons, menus, delete/refresh, attach, etc.) through the
+// same custom tooltip used by stat chips. The title is migrated to data-tooltip
+// on first hover and re-synced if the app updates it afterwards.
+function findTooltipTarget(node) {
+  if (!node || !node.closest) return null;
+  var t = node.closest('[data-tooltip], [title]');
+  if (!t) return null;
+  // The copy button already renders its tooltip via CSS.
+  if (t.classList && t.classList.contains('copy-btn')) return null;
+  var title = t.getAttribute('title');
+  if (title !== null) {
+    if (t.getAttribute('data-tooltip') !== title) {
+      t.setAttribute('data-tooltip', title);
+    }
+    t.removeAttribute('title');
+  }
+  return t;
+}
 document.addEventListener('mouseover', function(e) {
-  var t = (e.target && e.target.closest)
-    ? e.target.closest('.stat-badge[data-tooltip], .stat-chip[data-tooltip], .traj-toggle[data-tooltip]')
-    : null;
+  var t = findTooltipTarget(e.target);
   if (t) showHoverTooltip(t);
 });
 document.addEventListener('mouseout', function(e) {
-  var t = (e.target && e.target.closest)
-    ? e.target.closest('.stat-badge[data-tooltip], .stat-chip[data-tooltip], .traj-toggle[data-tooltip]')
-    : null;
+  var t = findTooltipTarget(e.target);
   if (t) hideHoverTooltip();
 });
+
+// Keep the visible tooltip in sync when the app changes an element's title while
+// the pointer is still over it (e.g. session delete flips to "Click again to
+// confirm" after the first click).
+var _tooltipObserver = new MutationObserver(function(mutations) {
+  for (var i = 0; i < mutations.length; i++) {
+    var el = mutations[i].target;
+    if (!el || !el.getAttribute) continue;
+    var title = el.getAttribute('title');
+    if (title === null) continue;
+    el.setAttribute('data-tooltip', title);
+    el.removeAttribute('title');
+    if (_tipTarget === el) showHoverTooltip(el);
+  }
+});
+if (document.body) {
+  _tooltipObserver.observe(document.body, {
+    attributes: true,
+    attributeFilter: ['title'],
+    subtree: true,
+  });
+}
 
 function generateId() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {

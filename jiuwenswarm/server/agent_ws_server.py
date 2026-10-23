@@ -192,7 +192,7 @@ from jiuwenswarm.runtime.host_services import (
     restore_runtime_push_handler,
 )
 from jiuwenswarm.runtime.plan import PlanModeController
-from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import VoiceTaskServerAdapter
+from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
@@ -2842,6 +2842,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.MCP_WAIT_AUTH:
                 await self._handle_mcp_wait_auth(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.MCP_OAUTH_START:
+                await self._handle_mcp_oauth_start(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.MCP_CANCEL_CONNECT:
                 await self._handle_mcp_cancel_connect(ws, request, send_lock)
@@ -9812,6 +9815,68 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
+    async def _handle_mcp_oauth_start(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Handle ``mcp.oauth.start`` for host-managed remote MCP OAuth.
+
+        The frontend invokes this after ``mcp.connect`` returned the OAuth
+        sentinel. The response carries the provider authorization URL; the
+        same frontend then calls ``mcp.wait_auth``, which completes when the
+        local HTTP callback exchanges the code and the live MCP probe passes.
+        """
+        from jiuwenswarm.server.runtime.mcp.oauth_flow import (
+            McpOAuthError,
+            start_oauth_flow,
+        )
+        name = ""
+        try:
+            params = request.params or {}
+            name = str(params.get("name", "")).strip()
+            if not name:
+                raise ValueError("mcp name is required")
+            callback_url = str(params.get("callback_url", "")).strip()
+            if not callback_url:
+                raise ValueError("callback_url is required")
+            item = await asyncio.to_thread(start_oauth_flow, name, callback_url)
+            payload = {"type": "auth_required", "name": name, **self._mask_sensitive_fields(item)}
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=payload,
+            )
+        except McpOAuthError as exc:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "type": "connect_failed",
+                    "name": name,
+                    "error": str(exc),
+                    "code": "MCP_AUTH_FAILED",
+                },
+            )
+        except ValueError as exc:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "bad_request", "error": str(exc), "code": "MCP_BAD_REQUEST"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] mcp.oauth.start failed: %s", exc)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
+            )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
     async def _handle_mcp_wait_auth(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
@@ -9825,13 +9890,17 @@ class AgentWebSocketServer:
         the frontend shows a "connecting…" spinner while waiting.
         """
         from jiuwenswarm.server.runtime.mcp.registry import CliConnectError
+        from jiuwenswarm.server.runtime.mcp.oauth_flow import is_host_oauth_mcp
         try:
             params = request.params or {}
             name = str(params.get("name", "")).strip()
             if not name:
                 raise ValueError("mcp name is required")
             step_index = int(params.get("step_index", 0) or 0)
-            result = await self._await_cli_auth(name, step_index)
+            if is_host_oauth_mcp(name):
+                result = await self._await_host_oauth_auth(name)
+            else:
+                result = await self._await_cli_auth(name, step_index)
             if result.get("type") == "auth_failed":
                 resp = AgentResponse(
                     request_id=request.request_id,
@@ -10102,6 +10171,66 @@ class AgentWebSocketServer:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] _await_cli_auth '%s' failed: %s", name, exc)
             return {"type": "auth_failed", "name": name, "error": str(exc)}
+
+    async def _await_host_oauth_auth(
+        self, name: str, *, max_attempts: int = 200, delay: float = 1.0
+    ) -> dict[str, Any]:
+        """Poll locally stored OAuth credentials until the loopback callback lands."""
+        from jiuwenswarm.server.runtime.mcp.oauth_flow import load_oauth_credentials
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            complete_host_oauth_auth,
+            was_connect_cancelled,
+        )
+
+        for _attempt in range(max_attempts):
+            if was_connect_cancelled(name):
+                logger.info("[mcp] host OAuth '%s' cancelled by user", name)
+                return {"type": "cancelled", "name": name}
+            credentials = await asyncio.to_thread(load_oauth_credentials, name)
+            if credentials is not None:
+                item = await asyncio.to_thread(complete_host_oauth_auth, name)
+                probe_ok, _reason = await self._agent_manager.probe_mcp_live_connection(name)
+                if not probe_ok:
+                    try:
+                        from jiuwenswarm.server.runtime.mcp.registry import (
+                            rollback_failed_connect,
+                        )
+                        rollback_failed_connect(name)
+                    except Exception as rollback_exc:  # noqa: BLE001
+                        logger.warning(
+                            "[mcp] rollback failed host-OAuth probe '%s': %s",
+                            name, rollback_exc,
+                        )
+                    return {
+                        "type": "auth_failed",
+                        "name": name,
+                        "error": f"MCP '{name}' rejected the authorization token",
+                    }
+                try:
+                    from jiuwenswarm.server.runtime.mcp.state_store import (
+                        set_mcp_state,
+                    )
+                    set_mcp_state(name, state="connected")
+                except Exception as flip_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[mcp] flip host-OAuth '%s' connected failed: %s", name, flip_exc
+                    )
+                try:
+                    self._agent_manager.sync_mcp_credentials()
+                except Exception as sync_exc:  # noqa: BLE001
+                    logger.warning("[mcp] sync credentials after host OAuth failed: %s", sync_exc)
+                return {
+                    "type": "connected",
+                    "name": name,
+                    "applied": True,
+                    "item": self._mask_sensitive_fields(item),
+                }
+            await asyncio.sleep(delay)
+        return {
+            "type": "auth_failed",
+            "name": name,
+            "error": "Authorization timed out. Retry connect.",
+        }
 
     async def _handle_mcp_register_custom(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock

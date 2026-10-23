@@ -208,6 +208,7 @@
       "assetsHint": "Toggle the current-canvas asset list.",
       "upload": "Upload",
       "uploadHint": "Upload an image, video, or audio file as a new canvas node.",
+      "uploadTooLarge": "File too large: images, videos, and audio can be up to 32 MB.",
       "comfyuiHint": "Import a ComfyUI workflow (.json). Only vLLM-Omni Generate Image / Generate Video nodes are added.",
       "group": {
         "image": "Image",
