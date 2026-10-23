@@ -3169,21 +3169,37 @@ def _looks_like_bare_filename(value: str) -> bool:
     return "/" not in value and "\\" not in value and not Path(value).is_absolute()
 
 
-def _jiuwenbox_configs_dir() -> Path | None:
-    """探测仓库或安装位置上的 ``jiuwenbox/configs/`` 目录。
+def _configs_dir_with_policy(candidate: Path) -> Path | None:
+    """目录里至少有一份 policy yaml 才算可用。"""
+    if candidate.is_dir() and any(candidate.glob("*.yaml")):
+        return candidate
+    return None
 
-    优先在仓库目录树里寻找 (开发场景, ``jiuwenbox/src/jiuwenbox/configs``);
-    失败再尝试已 ``pip install`` 的 jiuwenbox 包内 ``configs/``。
+
+def _frozen_jiuwenbox_configs_dir() -> Path | None:
+    """冻包里的 policy 模板。
+
+    ``collect_all`` 把 yaml 放到 ``_MEIPASS/jiuwenbox/configs``。box-server
+    启动时会把这个目录改名为 ``jiuwenbox_legacy_overlay``，避免磁盘包盖住 PYZ。
     """
-    here = Path(__file__).resolve()
+    if not getattr(sys, "frozen", False):
+        return None
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return None
+    root = Path(meipass)
+    for candidate in (
+        root / "jiuwenbox" / "configs",
+        root / "jiuwenbox_legacy_overlay" / "configs",
+    ):
+        found = _configs_dir_with_policy(candidate)
+        if found is not None:
+            return found
+    return None
 
-    for ancestor in here.parents[1:7]:
-        for candidate in (
-            ancestor / "jiuwenbox" / "src" / "jiuwenbox" / "configs",
-            ancestor / "jiuwenbox" / "configs",
-        ):
-            if candidate.is_dir():
-                return candidate
+
+def _installed_jiuwenbox_configs_dir() -> Path | None:
+    """已安装 jiuwenbox 自带的 ``configs/``（git 依赖或 wheel）。"""
     try:
         import jiuwenbox  # type: ignore[import-not-found]
     except ImportError:
@@ -3192,18 +3208,42 @@ def _jiuwenbox_configs_dir() -> Path | None:
         pkg_dir = Path(jiuwenbox.__file__).resolve().parent
     except Exception:  # noqa: BLE001
         return None
-    # wheel 安装版: policy 模板随包打入 ``<site-packages>/jiuwenbox/configs/``。
-    direct = pkg_dir / "configs"
-    if direct.is_dir():
-        return direct
-
+    found = _configs_dir_with_policy(pkg_dir / "configs")
+    if found is not None:
+        return found
     for steps_up in (2, 3):
         candidate = pkg_dir
         for _ in range(steps_up):
             candidate = candidate.parent
-        candidate = candidate / "configs"
-        if candidate.is_dir():
-            return candidate
+        found = _configs_dir_with_policy(candidate / "configs")
+        if found is not None:
+            return found
+    return None
+
+
+def _jiuwenbox_configs_dir() -> Path | None:
+    """探测 ``jiuwenbox/configs/`` 目录。
+
+    裸文件名（例如 ``windows-policy.yaml``）从这里拼接。
+    顺序：冻包数据目录、已安装的 jiuwenbox 包、本仓库里残留的 ``jiuwenbox/``。
+    """
+    frozen = _frozen_jiuwenbox_configs_dir()
+    if frozen is not None:
+        return frozen
+
+    installed = _installed_jiuwenbox_configs_dir()
+    if installed is not None:
+        return installed
+
+    here = Path(__file__).resolve()
+    for ancestor in here.parents[1:7]:
+        for candidate in (
+            ancestor / "jiuwenbox" / "src" / "jiuwenbox" / "configs",
+            ancestor / "jiuwenbox" / "configs",
+        ):
+            found = _configs_dir_with_policy(candidate)
+            if found is not None:
+                return found
     return None
 
 

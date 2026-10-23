@@ -293,6 +293,26 @@ datas += _rust_datas
 hiddenimports += _rust_hidden
 _bundled_binaries = _bundled_binaries + _rust_binaries
 
+# jiuwenbox 的平台适配器写在 registry._RUNTIME_IMPORTS 的字符串里，
+# Windows 启动时才 importlib.import_module("jiuwenbox.server.runtime.windows.runtime")。
+# 静态分析跟不到这个包，冻结后会 ModuleNotFoundError。collect_all 同时带上
+# configs/*.yaml；下面再点名 Windows 运行时，避免 collect 时 Linux 模块导入失败把它们漏掉。
+_jiuwenbox_datas, _jiuwenbox_binaries, _jiuwenbox_hidden = collect_all("jiuwenbox")
+datas += _jiuwenbox_datas
+hiddenimports += _jiuwenbox_hidden
+_bundled_binaries = _bundled_binaries + _jiuwenbox_binaries
+hiddenimports += [
+    "jiuwenbox.server.runtime.windows",
+    "jiuwenbox.server.runtime.windows.runtime",
+    "jiuwenbox.supervisor.win_acl",
+    "jiuwenbox.supervisor.win_constants",
+    "jiuwenbox.supervisor.win_exec",
+    "jiuwenbox.supervisor.win_job",
+    "jiuwenbox.supervisor.win_proxy",
+    "jiuwenbox.supervisor.win_setup",
+    "jiuwenbox.supervisor.win_wfp",
+]
+
 a = Analysis(
     [entry_script],
     pathex=[project_root, symphony_root],

@@ -149,25 +149,11 @@ def _cleanup_stale_win_proxy_ports(
             )
 
 
-def _resolve_jiuwenbox_src_dir() -> Optional[Path]:
-    """探测仓库内 ``code_agent/jiuwenbox/src``; 若存在则供 PYTHONPATH 注入用.
-
-    便于无需 ``pip install -e jiuwenbox/`` 也能直接运行本地源码版 jiuwenbox.
-    返回 ``None`` 表示未找到 (则依赖 site-packages 中的安装版).
-    """
-    here = Path(__file__).resolve()
-    for ancestor in here.parents[1:7]:
-        candidate = ancestor / "jiuwenbox" / "src" / "jiuwenbox" / "__init__.py"
-        if candidate.exists():
-            return candidate.parent.parent
-    return None
-
-
 def _resolve_jiuwenbox_configs_dir() -> Optional[Path]:
     """探测 ``jiuwenbox/configs/`` 目录 (policy 模板所在).
 
-    与 ``config._jiuwenbox_configs_dir`` 同一探测顺序: 冻包 ``_MEIPASS``、
-    仓库目录树、pip 安装包。
+    与 ``config._jiuwenbox_configs_dir`` 同一探测顺序: 冻包数据目录、
+    已安装的 jiuwenbox 包、本仓库残留目录。
     """
     from jiuwenswarm.common.config import _jiuwenbox_configs_dir
     return _jiuwenbox_configs_dir()
@@ -245,9 +231,8 @@ class JiuwenBoxRunner:
         """把 policy 文件名解析为绝对路径 (供 ``ensure_running(policy_path=...)``).
 
         ``filename`` 通常是 ``default-policy.yaml`` (Linux) 或
-        ``windows-policy.yaml`` (Windows)。优先在仓库内
-        ``jiuwenbox/src/jiuwenbox/configs/`` 找 (开发态), 失败回落到
-        site-packages 里随 wheel 带出的 ``jiuwenbox/configs/`` (打包态)。
+        ``windows-policy.yaml`` (Windows)。在已安装 jiuwenbox 包的
+        ``configs/`` 下查找; 冻包则用随安装包打进去的那份。
         找不到返回 ``None`` —— ``ensure_running`` 接受 ``None``, 由
         jiuwenbox-server 自身回落到内置默认 policy。
         """
@@ -484,18 +469,6 @@ class JiuwenBoxRunner:
             # extra_env (调用方显式传入) 覆盖, 权限最高.
             if extra_env:
                 env.update({str(k): str(v) for k, v in extra_env.items()})
-            # 若 jiuwenbox 未安装到 site-packages, 尝试用仓库内源码目录注入 PYTHONPATH
-            local_src = _resolve_jiuwenbox_src_dir()
-            if local_src is not None and not getattr(sys, "frozen", False):
-                existing = env.get("PYTHONPATH", "")
-                parts = [str(local_src)]
-                if existing:
-                    parts.append(existing)
-                env["PYTHONPATH"] = os.pathsep.join(parts)
-                logger.info(
-                    "[JiuwenBoxRunner] prepending local jiuwenbox src to PYTHONPATH: %s",
-                    local_src,
-                )
             # 把 policy 路径通过环境变量传给 jiuwenbox-server (与 README 中
             # ``JIUWENBOX_POLICY_PATH`` 用法一致, 即 ``server/app.py`` 启动时读取)。
             # 如果调用方没给, 显式删掉父进程继承下来的同名变量, 避免误用旧值。

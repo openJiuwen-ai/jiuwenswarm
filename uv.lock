@@ -55,6 +55,14 @@ wheels = [
 ]
 
 [[package]]
+name = "agent-ssas"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent-ssas&rev=develop#1199d25188cc4c56249793a569fe83553c7ee33f" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2152,11 +2160,31 @@ wheels = [
 ]
 
 [[package]]
+name = "jiuwen-security"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=jiuwen_security&rev=develop#1199d25188cc4c56249793a569fe83553c7ee33f" }
+
+[[package]]
+name = "jiuwenbox"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=jiuwenbox&rev=develop#1199d25188cc4c56249793a569fe83553c7ee33f" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "mcp" },
+    { name = "pydantic" },
+    { name = "python-multipart" },
+    { name = "pyyaml" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[[package]]
 name = "jiuwenswarm"
 version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "a2ui-agent-sdk" },
+    { name = "agent-ssas" },
     { name = "aiosqlite" },
     { name = "anthropic" },
     { name = "asyncpg" },
@@ -2171,6 +2199,8 @@ dependencies = [
     { name = "google-genai" },
     { name = "greenlet" },
     { name = "httpx", extra = ["socks"] },
+    { name = "jiuwen-security" },
+    { name = "jiuwenbox" },
     { name = "json-repair" },
     { name = "lark-oapi" },
     { name = "loguru" },
@@ -2326,6 +2356,7 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = "==1.0.0" },
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
+    { name = "agent-ssas", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent-ssas&rev=develop" },
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },
@@ -2352,6 +2383,8 @@ requires-dist = [
     { name = "httptools", marker = "extra == 'harmony'", specifier = ">=0.6.3" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'harmony'", specifier = ">=0.27" },
+    { name = "jiuwen-security", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=jiuwen_security&rev=develop" },
+    { name = "jiuwenbox", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=jiuwenbox&rev=develop" },
     { name = "jiuwenswarm-tui", marker = "extra == 'tui'", directory = "packages/jiuwenswarm-tui" },
     { name = "json-repair", specifier = ">=0.58.0" },
     { name = "json-repair", marker = "extra == 'harmony'", specifier = ">=0.58.0" },
