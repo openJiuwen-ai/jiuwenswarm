@@ -32,12 +32,6 @@ export class TaskDuplexJobs {
         && payload.sequence < previous.payload.sequence) return null;
     if (previous?.payload.status === "cancelled") return null;
     if (
-      previous &&
-      (payload.queue_version ?? previous.payload.queue_version ?? -1) <
-        (previous.payload.queue_version ?? -1)
-    )
-      return null;
-    if (
       previous?.payload.status === "cancelling" &&
       ["queued", "running"].includes(payload.status || "") &&
       payload.queue_version == null

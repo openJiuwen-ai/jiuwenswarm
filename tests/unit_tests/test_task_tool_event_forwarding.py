@@ -28,6 +28,12 @@ from jiuwenswarm.server.runtime.agent_adapter.task_tool_events import (
     _invoke_with_event_forwarding,
     apply_task_tool_event_patch,
 )
+from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
+    bind_managed_task_session,
+    cancel_cua_execution,
+    has_active_cua,
+    unbind_managed_task_session,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -127,6 +133,11 @@ async def _failing_original(task_tool: Any, subagent: Any, **kwargs: Any) -> Any
 async def _slow_original(task_tool: Any, subagent: Any, **kwargs: Any) -> Any:
     await asyncio.sleep(0.08)
     return {"output": "done"}
+
+
+async def _blocking_original(task_tool: Any, subagent: Any, **kwargs: Any) -> Any:
+    task_tool.started.set()
+    await asyncio.Future()
 
 
 async def test_forwarding_emits_roster_and_activity_frames() -> None:
@@ -331,3 +342,117 @@ def test_patch_applies_once_and_wraps_seam() -> None:
     assert TaskTool.roster_event_patch_applied is True
     assert TaskTool.roster_event_patch_mode == "dispatch_only"
     assert TaskTool._invoke_created_subagent.__name__ == "_invoke_created_subagent_with_events"
+
+
+async def test_managed_cua_delegation_can_be_cancelled_by_request_id() -> None:
+    session = _RecordingSession()
+    task_tool: Any = SimpleNamespace(started=asyncio.Event())
+    binding = bind_managed_task_session("parent-sess-1", "managed-request-1")
+    try:
+        invocation = asyncio.create_task(
+            _invoke_with_event_forwarding(
+                task_tool,
+                _blocking_original,
+                _FakeSubagent(),
+                _kwargs(session, normalized_type="cua_agent"),
+            )
+        )
+        await task_tool.started.wait()
+        assert has_active_cua("managed-request-1")
+        assert cancel_cua_execution("managed-request-1") is True
+        with pytest.raises(asyncio.CancelledError):
+            await invocation
+    finally:
+        unbind_managed_task_session(binding)
+    assert not has_active_cua("managed-request-1")
+
+
+async def test_non_cua_delegation_is_not_registered_for_special_cancel() -> None:
+    session = _RecordingSession()
+    task_tool: Any = SimpleNamespace()
+    binding = bind_managed_task_session("parent-sess-1", "managed-request-2")
+    try:
+        await _invoke_with_event_forwarding(
+            task_tool,
+            _consuming_original,
+            _FakeSubagent(),
+            _kwargs(session, normalized_type="browser_agent"),
+        )
+    finally:
+        unbind_managed_task_session(binding)
+
+    assert not has_active_cua("managed-request-2")
+    assert cancel_cua_execution("managed-request-2") is False
+
+
+async def test_managed_session_registers_cua_when_scheduler_drops_context() -> None:
+    session = _RecordingSession()
+    task_tool: Any = SimpleNamespace(started=asyncio.Event())
+    binding = bind_managed_task_session("parent-sess-1", "managed-request-3")
+    invocation = asyncio.create_task(
+        _invoke_with_event_forwarding(
+            task_tool,
+            _blocking_original,
+            _FakeSubagent(),
+            _kwargs(session, normalized_type="cua_agent"),
+        ),
+        context=None,
+    )
+    try:
+        await task_tool.started.wait()
+        assert has_active_cua("managed-request-3")
+        invocation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await invocation
+    finally:
+        unbind_managed_task_session(binding)
+
+    assert not has_active_cua("managed-request-3")
+
+
+async def test_two_cua_delegations_of_one_request_are_both_tracked_and_cancelled() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
+        register_cua_execution,
+        unregister_cua_execution,
+    )
+
+    started = [asyncio.Event(), asyncio.Event()]
+    registrations = []
+
+    async def run(index):
+        registrations.append(register_cua_execution(
+            parent_session_id="parent", sub_session_id=f"sub-{index}",
+        ))
+        started[index].set()
+        await asyncio.sleep(60)
+
+    binding = bind_managed_task_session("parent", "managed-request-many")
+
+    first = asyncio.create_task(run(0))
+    second = asyncio.create_task(run(1))
+    await started[0].wait()
+    await started[1].wait()
+    unregister_cua_execution(registrations[1])
+    still_tracked = has_active_cua("managed-request-many")
+    unregister_cua_execution(registrations[0])
+    assert still_tracked and not has_active_cua("managed-request-many")
+
+    registrations.clear()
+    first.cancel()
+    second.cancel()
+    await asyncio.gather(first, second, return_exceptions=True)
+
+    started = [asyncio.Event(), asyncio.Event()]
+    first = asyncio.create_task(run(0))
+    second = asyncio.create_task(run(1))
+    await started[0].wait()
+    await started[1].wait()
+    assert cancel_cua_execution("managed-request-many") is True
+    await asyncio.wait({first, second}, timeout=1)
+    both = first.cancelled() and second.cancelled()
+    first.cancel()
+    second.cancel()
+    for registration in registrations:
+        unregister_cua_execution(registration)
+    unbind_managed_task_session(binding)
+    assert both

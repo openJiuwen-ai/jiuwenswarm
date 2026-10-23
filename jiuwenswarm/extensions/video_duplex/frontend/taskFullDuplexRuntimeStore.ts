@@ -18,6 +18,7 @@ interface TaskFullDuplexRuntimeSnapshot {
 
 let controller: VideoLivePanelHandle | null = null;
 let bindSession: ((sessionId: string) => string | Promise<string>) | null = null;
+let cancelSessionTasks: ((sessionId: string) => Promise<void>) | null = null;
 let startGeneration = 0;
 let snapshot: TaskFullDuplexRuntimeSnapshot = {
   state: "idle",
@@ -66,9 +67,11 @@ function publish(update: Partial<TaskFullDuplexRuntimeSnapshot>): void {
 export function registerTaskFullDuplexController(
   next: VideoLivePanelHandle | null,
   nextBindSession?: ((sessionId: string) => string | Promise<string>) | null,
+  nextCancelSessionTasks?: ((sessionId: string) => Promise<void>) | null,
 ): void {
   controller = next;
   bindSession = next ? (nextBindSession ?? null) : null;
+  cancelSessionTasks = next ? (nextCancelSessionTasks ?? null) : null;
 }
 
 export function setTaskFullDuplexRuntimeState(
@@ -137,6 +140,17 @@ export function stopTaskFullDuplex(): void {
     microphoneMuted: false,
     speakerMuted: false,
     screenSharing: false,
+  });
+}
+
+// User exit also cancels this conversation's tasks; internal restarts use stopTaskFullDuplex (#5527).
+export function exitTaskFullDuplex(): void {
+  const sessionId = snapshot.sessionId;
+  const cancel = cancelSessionTasks;
+  stopTaskFullDuplex();
+  if (!sessionId || !cancel) return;
+  void cancel(sessionId).catch((error: unknown) => {
+    publish({ error: error instanceof Error ? error.message : "无法停止本会话的任务。" });
   });
 }
 
