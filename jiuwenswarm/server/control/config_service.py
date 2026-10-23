@@ -410,9 +410,6 @@ def get_panel() -> dict[str, Any]:
         param_key: (environment.get(env_key) or "")
         for param_key, env_key in _CONFIG_SET_ENV_MAP.items()
     }
-    browser_environment = _browser_credential_environment()
-    for field in ("jev_openrouter_api_key", "jev_typesafe_api_key", "jev_custom_api_key"):
-        payload[field] = browser_environment.get(_CONFIG_SET_ENV_MAP.get(field, ""), "")
     payload["app_version"] = get_runtime_version()
     runtime_platform = (
         (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
