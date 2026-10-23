@@ -2930,6 +2930,61 @@ async def test_joyai_task_query_then_revision_uses_shared_service(monkeypatch):
     assert tasks[1]["parent_id"] == task["id"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fourth_result, expected_ok", [
+    (_joyai_result("response", response="查询完成。"), True),
+    (_joyai_result("silence"), True),
+    (_joyai_result("delegation", delegation=json.dumps({
+        "name": "jiuwen_task_query", "arguments": {"query": "next"},
+    })), False),
+    (_joyai_result("delegation", delegation=json.dumps({
+        "name": "jiuwen_delegate", "arguments": {"task": "整理查询结果"},
+    })), False),
+    (_joyai_result("delegation", delegation="整理查询结果"), False),
+])
+async def test_joyai_operation_limit_allows_final_response_and_rejects_next_operation(
+    monkeypatch, fourth_result, expected_ok,
+):
+    from unittest.mock import AsyncMock
+
+    channel = _video_channel()
+    operate = AsyncMock(wraps=channel.manager.operate)
+    monkeypatch.setattr(channel.manager, "operate", operate)
+    calls = []
+
+    async def provider(frame, instruction, session):
+        calls.append(instruction)
+        if len(calls) == 4:
+            return fourth_result
+        operation = {"name": "jiuwen_task_query", "arguments": {"query": "current"}}
+        return _joyai_result("delegation", delegation=json.dumps(operation))
+
+    monkeypatch.setattr(joyai_provider, "request_frame", provider)
+    monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
+    await channel.handlers["video.joyai.frame"](None, "operation-limit", {
+        "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
+        "instruction": "查询当前任务",
+        "question": "查询当前任务",
+        "request_kind": "user",
+        "search_session_id": "operation-limit",
+        "joyai_session_id": "joyai-operation-limit",
+    }, None)
+
+    response = channel.responses[-1][1]
+    assert response.get("ok") is expected_ok, response
+    assert len(calls) == 4, response
+    assert operate.await_count == 3
+    assert [call.args[2].call_id for call in operate.await_args_list] == [
+        "operation-limit:0", "operation-limit:1", "operation-limit:2",
+    ]
+    if expected_ok:
+        assert response["payload"]["response"] == fourth_result["response"]
+        assert response["payload"]["search_job"] is None
+    else:
+        assert response["code"] == "TASK_REQUEST_REJECTED"
+        assert "operation limit" in response["error"]
+
+
 async def test_joyai_voice_form_answer_is_blocked_and_manual_form_resumes_original_task(monkeypatch):
     from unittest.mock import AsyncMock
     from jiuwenswarm.extensions.video_duplex.tests.backend.test_task_interactions import QuestionExecutor, until

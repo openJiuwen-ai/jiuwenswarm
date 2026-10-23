@@ -406,7 +406,8 @@ def register_video_live_handler(
         # explicit schema-validated JSON is a control; no text intent classifier.
         scheduling = None
         task_title = ""
-        for operation_index in range(3):
+        operation_count = 0
+        while operation_count < 3:
             delegation = str(result.get("delegation") or "").strip()
             if result.get("decision") != "delegation" or not delegation.startswith("{"):
                 break
@@ -431,7 +432,7 @@ def register_video_live_handler(
                 call = parse_qwen_omni_tool_call(
                     {
                         **value,
-                        "call_id": f"{params.get('command_id') or req_id}:{operation_index}",
+                        "call_id": f"{params.get('command_id') or req_id}:{operation_count}",
                     }
                 )
                 if call.name == "jiuwen_delegate":
@@ -444,6 +445,7 @@ def register_video_live_handler(
                     result = {**result, "delegation": call.task}
                     break
                 receipt = await search_manager.operate(owner, scope, call, user_instruction=question or instruction)
+                operation_count += 1
                 # Feed facts through the same provider conversation, including ids
                 # needed for query -> modify. A receipt cannot manufacture a task.
                 followup = model_instruction + "\n\n" + task_receipt_followup(receipt)
@@ -456,16 +458,15 @@ def register_video_live_handler(
                     ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED"
                 )
                 return
-        else:
-            if result.get("decision") == "delegation":
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="Task operation limit reached; query current state",
-                    code="TASK_REQUEST_REJECTED",
-                )
-                return
+        if operation_count == 3 and result.get("decision") == "delegation":
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="Task operation limit reached; query current state",
+                code="TASK_REQUEST_REJECTED",
+            )
+            return
 
         search_job = None
         tools_used: list[str] = []
