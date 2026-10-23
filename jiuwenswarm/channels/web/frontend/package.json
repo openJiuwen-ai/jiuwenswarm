@@ -11,6 +11,7 @@
     "test:team-organization": "esbuild tests/fixtures/teamOrganizationExports.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/team-organization/organization.mjs --define:import.meta.env={} && node --test tests/teamOrganization.test.mjs",
     "test:browser-agent-activity": "esbuild src/features/browserAgentActivity.ts src/stores/sessionStore.ts src/stores/subagentStore.ts --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/browser-agent-activity --define:import.meta.env={} && node --test tests/browserAgentActivity.test.mjs",
     "test:generation-models": "esbuild src/features/settings/modules/agent/generationModels.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/generation-models/generationModels.mjs && node --test tests/generationModels.test.mjs",
+    "test:generation-model-dialog": "node --test tests/generationModelDialog.test.mjs",
     "test:a4p-authorization": "node --test tests/a4pAuthorization.test.mjs",
     "test:a4p-settings": "node --test tests/a4pSettings.test.mjs",
     "test:secondary-sidebar": "esbuild src/hooks/useSecondarySidebar.ts src/hooks/useResponsive.ts --bundle --platform=node --format=esm --packages=external --out-extension:.js=.mjs --outdir=node_modules/.cache/secondary-sidebar && node --test tests/secondarySidebar.test.mjs",
@@ -163,7 +164,8 @@
     "test:trajectory-frames": "esbuild src/features/trajectory/trajectoryFrames.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-frames/trajectoryFrames.mjs && node --test tests/trajectoryFrames.test.mjs",
     "test:trajectory-turn-gaps": "esbuild src/features/trajectory/trajectoryTurnGaps.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-turn-gaps/trajectoryTurnGaps.mjs && node --test tests/trajectoryTurnGaps.test.mjs",
     "test:trajectory-sequences": "esbuild src/features/trajectory/trajectorySequences.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-sequences/trajectorySequences.mjs && node --test tests/trajectorySequences.test.mjs",
-    "test:permission-text-i18n": "tsc src/components/InteractionSlot/permissionTextI18n.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/permission-text-i18n --skipLibCheck --noEmitOnError && node --test tests/permissionTextI18n.test.mjs"
+    "test:permission-text-i18n": "tsc src/components/InteractionSlot/permissionTextI18n.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/permission-text-i18n --skipLibCheck --noEmitOnError && node --test tests/permissionTextI18n.test.mjs",
+    "test:model-presentation": "node --test tests/modelPresentation.test.mjs"
   },
   "dependencies": {
     "@a2ui/react": "0.8.0",
