@@ -347,6 +347,22 @@ class AutoPermissionBeforeToolMixin:
                 decision_source=decision_source,
             )
             if (
+                decision_source == "policy_evaluator"
+                and policy_evaluation.level == ALLOW_LEVEL
+                and classify_permission_result(result) == "allow"
+            ):
+                self._record_reviewer_success_metadata(
+                    invocation.ctx,
+                    facts,
+                    tool_call_id=tool_call_id,
+                    reason="policy_allow",
+                    metadata={
+                        "decision_source": "policy_evaluator",
+                        "reviewer_status": "approved",
+                        "final_reviewer_status": "approved",
+                    },
+                )
+            if (
                 invocation_resume is not None
                 and decision_source == "manual_approval"
                 and classify_permission_result(result) == "allow"
