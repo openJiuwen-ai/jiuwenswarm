@@ -229,9 +229,13 @@ def fetch_response(
     allow_redirects: bool = True,
 ) -> requests.Response:
     if not public_https:
+        if allow_redirects:
+            # Keep the legacy call shape: requests follows redirects by default, and existing
+            # callers and tests treat an absent argument as that default.
+            return _http_get(url, headers=_REQUEST_HEADERS, timeout=timeout_seconds)
         return _http_get(
             url, headers=_REQUEST_HEADERS, timeout=timeout_seconds,
-            allow_redirects=allow_redirects,
+            allow_redirects=False,
         )
     # URL eligibility only: no DNS, peer or firewall policy. Keep requests' limit.
     for _ in range(requests.models.DEFAULT_REDIRECT_LIMIT + 1):
