@@ -163,6 +163,8 @@ def _find_pid_by_port(port: int) -> Optional[int]:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             # Look for lines like: "TCP    0.0.0.0:18092    0.0.0.0:0    LISTENING    12345"
@@ -189,6 +191,8 @@ def _find_pid_by_port(port: int) -> Optional[int]:
                     ],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=5,
                 )
                 if result.stdout.strip():

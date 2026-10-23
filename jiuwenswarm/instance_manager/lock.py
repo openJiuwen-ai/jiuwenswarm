@@ -561,11 +561,17 @@ def is_process_alive(pid: int) -> bool:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             # tasklist returns "INFO: No tasks are running..." if not found
             return str(pid) in result.stdout and "INFO:" not in result.stdout
-        except Exception:
+        except Exception as exc:
+            # Never swallow the reason silently: a probe failure here makes a
+            # live process look dead, which is indistinguishable from a real
+            # "not running" result to every caller.
+            logger.debug("tasklist liveness probe failed for PID %d: %s", pid, exc)
             return False
     else:
         # Unix: send signal 0 to check existence
