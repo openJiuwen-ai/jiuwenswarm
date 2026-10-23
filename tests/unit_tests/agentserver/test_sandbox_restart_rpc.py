@@ -35,6 +35,111 @@ async def test_network_application_failure_prevents_instance_recreation(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_bulk_cleanup_failure_prevents_all_replacement_acl_installation(monkeypatch):
+    from jiuwenswarm.server import sandbox_lifecycle
+
+    adapter = SimpleNamespace(apply_sandbox_runtime_patch=AsyncMock(return_value=True))
+    server = SimpleNamespace(
+        _agent_manager=SimpleNamespace(agents={"web": {"a": adapter}}),
+        _resolve_adapter=lambda agent: agent,
+    )
+    monkeypatch.setattr(server_module, "get_sandbox_runtime", lambda: {"enabled": True})
+    monkeypatch.setattr(server_module, "get_sandbox_endpoint", lambda: {"type": "jiuwenbox"})
+    cleanup = AsyncMock(side_effect=RuntimeError("old endpoint pending"))
+    monkeypatch.setattr(sandbox_lifecycle, "cleanup_jiuwenbox_sandboxes", cleanup)
+    with pytest.raises(RuntimeError, match="old endpoint pending"):
+        await server_module.AgentWebSocketServer._restart_configured_sandboxes(server, {})
+    cleanup.assert_awaited_once_with(reason="policy_changed", strict=True)
+    adapter.apply_sandbox_runtime_patch.assert_awaited_once_with(
+        {"enabled": True}, files_changed=True, strict=True, prepare_only=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dead_owned_service_port_change_can_rebuild_after_failed_delete(monkeypatch, saved_service_policy):
+    import httpx
+    from openjiuwen.core.runner import Runner
+    from openjiuwen.core.sys_operation.sandbox.gateway.gateway import SandboxGateway
+    from openjiuwen.extensions.sys_operation.sandbox.providers import jiuwenbox as box
+    from jiuwenswarm.common import config
+    from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as mod
+
+    cls = box._JiuwenBoxProviderMixin
+    for name in ("_shared_sandbox_ids", "_creation_locks", "_creation_failures", "_lifecycle_hooks",
+                 "_pending_deletions", "_delete_tasks", "_idle_timeout_cache"):
+        monkeypatch.setattr(cls, name, {})
+    monkeypatch.setattr(config, "get_config", lambda: {})
+    monkeypatch.setattr(mod, "build_filesystem_policy", lambda *a, **kw: ({"filesystem_policy": {}}, []))
+    old_url, new_url = "http://127.0.0.1:54657", "http://127.0.0.1:55981"
+    old_key = old_url + "|scope"
+    cls.register_shared_sandbox_id(old_key, "old-id")
+    events, requests = [], []
+    cls.register_lifecycle_hook(old_key, lambda event, ctx: events.append(event))
+
+    def client_for(base_url, **kwargs):
+        client = Mock(__enter__=Mock(), __exit__=Mock(return_value=False))
+        client.__enter__.return_value = client
+
+        def delete(sid):
+            requests.append((base_url, sid))
+            if base_url == old_url:
+                raise httpx.ConnectError("old port is dead")
+
+        client.delete_sandbox.side_effect = delete
+        return client
+
+    monkeypatch.setattr(box, "_JiuwenBoxClient", client_for)
+    with pytest.raises(RuntimeError, match="old port is dead"):
+        await box.delete_jiuwenbox_sandbox(shared_key=old_key, raise_on_error=True)
+    launcher = SimpleNamespace(sandbox_type="jiuwenbox", base_url=old_url, extra_params={"sandbox_id": "old-id"})
+    gateway = SimpleNamespace(launcher_config=launcher)
+    registered = SimpleNamespace(id="op", _run_config=SimpleNamespace(config=gateway, isolation_key_template="scope"))
+    registry = SimpleNamespace(_sys_operations={"op": registered})
+    monkeypatch.setattr(Runner, "resource_mgr", SimpleNamespace(
+        _resource_registry=SimpleNamespace(sys_operation=lambda: registry),
+    ))
+    monkeypatch.setattr(SandboxGateway, "get_instance", lambda: SimpleNamespace(release_sandbox=AsyncMock()))
+    runner = JiuwenBoxRunner()
+    runner.process = SimpleNamespace(returncode=1)
+    runner.owns_process = True
+    runner.port = 54657
+    monkeypatch.setattr(runner, "_release_win_job", lambda: events.append("job_closed"))
+
+    async def bootstrap(*args):
+        await runner.stop()
+        assert not cls._pending_deletions and not cls._shared_sandbox_ids
+        await mod.JiuWenSwarmDeepAdapter.retarget_sandbox_sys_operations(old_url, new_url)
+        return True
+
+    saved_service_policy.side_effect = bootstrap
+
+    async def create(url, **kwargs):
+        assert url == new_url
+        assert events == ["before_delete", "job_closed", "after_delete"]
+        events.append("new_acl")
+        return "new-id"
+
+    monkeypatch.setattr(box, "force_recreate_jiuwenbox_sandbox", AsyncMock(side_effect=create))
+    adapter = SimpleNamespace(
+        _sys_operation_card=SimpleNamespace(mode=mod.OperationMode.SANDBOX, gateway_config=gateway),
+        _sys_operation_isolation_key=lambda card: "scope", _is_code_agent=False,
+        _resolve_project_dir_for_sandbox=lambda: None,
+    )
+    adapter.apply_sandbox_runtime_patch = MethodType(mod.JiuWenSwarmDeepAdapter.apply_sandbox_runtime_patch, adapter)
+    server = SimpleNamespace(
+        _agent_manager=SimpleNamespace(agents={"web": {"a": adapter}}), _resolve_adapter=lambda agent: agent,
+    )
+    monkeypatch.setattr(server_module, "get_sandbox_runtime", lambda: {"enabled": True, "files": []})
+    monkeypatch.setattr(server_module, "get_sandbox_endpoint", lambda: {"type": "jiuwenbox"})
+    result = await server_module.AgentWebSocketServer._restart_configured_sandboxes(server, {})
+    assert result["restarted"] == 1
+    assert launcher.extra_params["sandbox_id"] == "new-id"
+    assert [url for url, _ in requests].count(old_url) == 1
+    assert not cls._pending_deletions and old_key not in cls._shared_sandbox_ids
+
+
+@pytest.mark.asyncio
 async def test_external_service_allows_file_rebuild_and_reports_network_ownership(monkeypatch):
     from jiuwenswarm.common import config
     from jiuwenswarm.server import sandbox_config_rpc as rpc
@@ -266,7 +371,7 @@ async def test_windows_second_create_failure_disables_host_fallback(monkeypatch)
     create = AsyncMock(side_effect=["new-one", RuntimeError("second create failed"), "new-three"])
     monkeypatch.setattr(box, "force_recreate_jiuwenbox_sandbox", create)
     async def delete(**kwargs):
-        return [kwargs["sandbox_id"]] if kwargs["sandbox_id"] else []
+        return [kwargs["sandbox_id"]] if kwargs.get("sandbox_id") else []
     monkeypatch.setattr(box, "delete_jiuwenbox_sandbox", delete)
     children = []
     for name in ("one", "two", "three"):

@@ -194,8 +194,9 @@ async def _update_native_sandbox_config(
         if limits != previous["limits"]:
             await _apply_sandbox_change("limits", strict=True)
         if not value["enabled"]:
-            if previous["enabled"]:
-                await _apply_sandbox_change("enabled", strict=True)
+            # Retrying a failed disable must revisit pending cleanup even though
+            # the saved enabled flag is already false.
+            await _apply_sandbox_change("enabled", strict=True)
             status = "not_required"
         else:
             if not previous["enabled"]:

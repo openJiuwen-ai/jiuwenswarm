@@ -110,10 +110,20 @@ def _teardown_registered_sandbox_sysops() -> int:
     if rm is None:
         return 0
     try:
-        registered = rm.get_sys_operation()
+        # No-argument lookup only covers the default tag. Match restart/retarget's
+        # process registry, including session/project-owned sandbox sysops.
+        registry = getattr(rm, "_resource_registry", None)
+        registered = list(registry.sys_operation()._sys_operations.values())
     except Exception as exc:  # noqa: BLE001
-        logger.debug("[sandbox] teardown: get_sys_operation 失败 (%s)", exc)
-        return 0
+        logger.warning(
+            "[sandbox] teardown: full sysop registry unavailable (%s); "
+            "falling back to default-tag lookup, session/project cleanup may be incomplete", exc,
+        )
+        try:
+            registered = rm.get_sys_operation()
+        except Exception as fallback_exc:  # noqa: BLE001
+            logger.warning("[sandbox] teardown: fallback get_sys_operation failed: %s", fallback_exc)
+            return 0
     # get_sys_operation(None) 可能返回单实例/列表/None.
     if registered is None:
         return 0
@@ -159,22 +169,27 @@ async def _apply_sandbox_change(kind: str, *, strict: bool = False) -> None:
     """
     try:
         if kind == "enabled":
-            # enabled 只影响 _create_sys_operation 选 LOCAL/SANDBOX (读 config.yaml,
-            # update_sandbox_runtime 已 clear_config_cache, 下次读即新值), 不动 box-server.
+            # enabled 影响 _create_sys_operation 选 LOCAL/SANDBOX (读 config.yaml,
+            # update_sandbox_runtime 已 clear_config_cache, 下次读即新值)。
             # 但关闭时须清理两层残留, 否则 LOCAL sysop 仍会命中旧 sandbox_id 照样进沙箱:
             #   1. Runner.resource_mgr 里残留的沙箱 sysop (_teardown_registered_sandbox_sysops)
             #   2. jiuwenbox provider 的 _shared_sandbox_ids 缓存 + 对应的 box-server 沙箱进程
-            #      (shutdown_jiuwenbox_sandboxes 清缓存并 DELETE 远端沙箱)
+            #      (与 restart 共用 lifecycle-aware 删除，失败保留待删除记录)
             # 只清第 1 层不够: provider 缓存的 sandbox_id 会被后续 LOCAL sysop 的 bash exec
             # 复用 (provider _get_sandbox_id 命中缓存), 命令仍发到旧沙箱.
             from jiuwenswarm.common.config import get_sandbox_runtime
             if not bool(get_sandbox_runtime().get("enabled")):
                 removed = _teardown_registered_sandbox_sysops()
-                # 清 provider 缓存 + 删残留沙箱进程 (同步 HTTP 调用, 放 worker 线程不阻塞 event loop).
+                # 与 restart 覆盖相同的历史 URL 缓存和待删除记录。
                 from jiuwenswarm.server.sandbox_lifecycle import (
-                    shutdown_jiuwenbox_sandboxes,
+                    cleanup_jiuwenbox_sandboxes,
                 )
-                released = await asyncio.to_thread(shutdown_jiuwenbox_sandboxes)
+                from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+
+                # Stop only an owned service. Its confirmed exit retires dead-URL
+                # entries; unreachable external services still fail strictly.
+                await JiuwenBoxRunner.instance().stop()
+                released = await cleanup_jiuwenbox_sandboxes(reason="disabled", strict=strict)
                 logger.info(
                     "[sandbox] enabled 变更为关闭, 已移除 %d 个残留沙箱 sysop, 释放 %d 个残留沙箱进程, 下轮 _create_sys_operation 读新值生效",
                     removed, released,

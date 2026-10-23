@@ -14,6 +14,62 @@ from jiuwenswarm.server.sandbox import jiuwenbox_runner as runner_module
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("owned", [False, True])
+async def test_retire_only_confirmed_owned_exit_after_job_teardown(monkeypatch, owned):
+    from openjiuwen.extensions.sys_operation.sandbox.providers import jiuwenbox as box
+
+    runner = runner_module.JiuwenBoxRunner()
+    runner.process = SimpleNamespace(returncode=1)
+    runner.owns_process = owned
+    runner.port = 54657
+    events = []
+    monkeypatch.setattr(runner, "_release_win_job", lambda: events.append("job"))
+    retire = AsyncMock(side_effect=lambda url: events.append(url))
+    monkeypatch.setattr(box, "retire_jiuwenbox_service", retire)
+    await runner.stop()
+    assert events == (["job", "http://127.0.0.1:54657"] if owned else ["job"])
+    assert not runner._stopped_base_urls
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_stop_failure_does_not_retire_service(monkeypatch):
+    from openjiuwen.extensions.sys_operation.sandbox.providers import jiuwenbox as box
+
+    runner = runner_module.JiuwenBoxRunner()
+    runner.process = SimpleNamespace(returncode=None)
+    runner.owns_process = True
+    monkeypatch.setattr(runner, "_stop_process_no_lock", AsyncMock(side_effect=RuntimeError("kill failed")))
+    retire = AsyncMock()
+    monkeypatch.setattr(box, "retire_jiuwenbox_service", retire)
+    with pytest.raises(RuntimeError, match="kill failed"):
+        await runner.stop()
+    retire.assert_not_awaited()
+    assert not runner._stopped_base_urls
+
+
+@pytest.mark.asyncio
+async def test_failed_retirement_is_retried_before_next_service_start(monkeypatch):
+    from openjiuwen.extensions.sys_operation.sandbox.providers import jiuwenbox as box
+
+    runner = runner_module.JiuwenBoxRunner()
+    runner.process = SimpleNamespace(returncode=1)
+    runner.owns_process = True
+    retire = AsyncMock(side_effect=[RuntimeError("hook failed"), RuntimeError("hook failed"), []])
+    monkeypatch.setattr(box, "retire_jiuwenbox_service", retire)
+    spawn = AsyncMock()
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spawn)
+    with pytest.raises(RuntimeError, match="hook failed"):
+        await runner.stop()
+    with pytest.raises(RuntimeError, match="hook failed"):
+        await runner.ensure_running(port=55981)
+    spawn.assert_not_awaited()
+    monkeypatch.setattr(runner, "health_check", AsyncMock(return_value=True))
+    assert await runner.ensure_running(port=55981, startup_mode="external")
+    assert retire.await_count == 3
+    assert not runner._stopped_base_urls
+
+
+@pytest.mark.asyncio
 async def test_stop_preserves_pumps_until_process_exit(monkeypatch):
     runner = runner_module.JiuwenBoxRunner()
     exited = asyncio.Event()

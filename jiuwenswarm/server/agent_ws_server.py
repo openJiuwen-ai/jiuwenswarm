@@ -5680,10 +5680,15 @@ class AgentWebSocketServer:
         restarted = 0
         # Finish old Windows ACL cleanup for every scope before installing any
         # replacement ACLs. Otherwise a later old instance can undo an earlier new one.
+        from jiuwenswarm.server.sandbox_lifecycle import cleanup_jiuwenbox_sandboxes
+
         for adapter in adapters:
             await adapter.apply_sandbox_runtime_patch(
                 runtime, files_changed=True, strict=True, prepare_only=True,
             )
+        # Include orphaned scopes/historical URLs after preparing active cards
+        # (which also disables host fallback), still before any new ACL exists.
+        await cleanup_jiuwenbox_sandboxes(reason="policy_changed", strict=True)
         failures = []
         for index, adapter in enumerate(adapters):
             try:
@@ -7731,26 +7736,25 @@ class AgentWebSocketServer:
 
         # 记录关闭前的端点用于回执 (external 模式下 runner 没拥有进程, 会是 None)。
         owned_endpoint = self._jiuwenbox_runner.get_owned_endpoint()
-        jiuwenbox_stopped = False
-        if owned_endpoint is not None:
-            try:
-                await self._jiuwenbox_runner.stop()
-                jiuwenbox_stopped = True
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[AgentWebSocketServer] /sandbox disable: jiuwenbox stop failed: %s",
-                    exc,
-                )
-        else:
-            logger.debug(
-                "[AgentWebSocketServer] /sandbox disable: no owned jiuwenbox to stop "
-                "(external startup_mode or never started)"
+        from jiuwenswarm.server.sandbox_config_rpc import _teardown_registered_sandbox_sysops
+        from jiuwenswarm.server.sandbox_lifecycle import cleanup_jiuwenbox_sandboxes
+
+        _teardown_registered_sandbox_sysops()
+        try:
+            # stop() also retires an already-exited owned process, whose live
+            # endpoint is None. External processes are never stopped by runner.
+            await self._jiuwenbox_runner.stop()
+            await cleanup_jiuwenbox_sandboxes(reason="disabled", strict=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] /sandbox disable: cleanup failed: %s", exc,
             )
+            raise
 
         payload: dict[str, Any] = {
             "runtime": runtime,
             "agent_recreated": True,
-            "jiuwenbox_stopped": jiuwenbox_stopped,
+            "jiuwenbox_stopped": owned_endpoint is not None,
         }
         if owned_endpoint is not None:
             host, port = owned_endpoint

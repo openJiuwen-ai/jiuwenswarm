@@ -24,11 +24,19 @@ class Manager:
 
 
 @pytest.fixture
-def service(tmp_path):
+def service(tmp_path, monkeypatch):
+    from jiuwenswarm.common import config
+
     path = tmp_path / "config.yaml"
+    # Runtime reads use get_config_file(), while legacy setters retain the
+    # _CONFIG_YAML_PATH alias. Isolate all three from the developer's live config.
+    monkeypatch.setattr(config, "CONFIG_YAML_PATH", path)
+    monkeypatch.setattr(config, "_CONFIG_YAML_PATH", path)
+    monkeypatch.setattr(config, "get_config_file", lambda: path)
     dump_yaml_round_trip(path, {
         "model": "untouched", "permissions": {"enabled": True, "tools": {"bash": "allow"}},
-        "sandbox": {"type": "jiuwenbox", "enabled": False},
+        "sandbox": {"type": "jiuwenbox", "enabled": False,
+                    "limits": {"max_file_mb": 100, "exec_timeout_seconds": 600}},
     })
     return SecurityConfigService(path, builtin_reader=lambda: {"permissions": {}})
 
@@ -707,6 +715,38 @@ async def test_native_sandbox_facade_reports_restart_failure(service, monkeypatc
     )
     assert retried["applied"]
     assert retried["targets"]["sandbox"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_same_disabled_config_retries_failed_cleanup(service, monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.server import sandbox_policy_render as render
+    from jiuwenswarm.server import sandbox_config_rpc as rpc
+
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(render, "_config_dir", lambda: tmp_path)
+    cleanup = AsyncMock(side_effect=[RuntimeError("old delete pending"), None])
+    monkeypatch.setattr(rpc, "_apply_sandbox_change", cleanup)
+    config = {
+        "enabled": False,
+        "filesystem": {key: [] for key in ("allow_read", "allow_write", "deny_read", "deny_write")},
+        "network": {"disable_all": False, "allow_domains": [], "deny_domains": []},
+    }
+    restart = AsyncMock()
+    first = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_SANDBOX_UPDATE, {"config": config},
+        agent_manager=Manager(), restart_sandboxes=restart, service=service,
+    )
+    assert first["saved"] and not first["applied"]
+    second = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_SANDBOX_UPDATE, {"config": config},
+        agent_manager=Manager(), restart_sandboxes=restart, service=service,
+    )
+    assert second["applied"]
+    assert cleanup.await_count == 2
+    cleanup.assert_awaited_with("enabled", strict=True)
+    restart.assert_not_awaited()
 
 
 @pytest.mark.asyncio

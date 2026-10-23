@@ -346,43 +346,39 @@ async def _run(host: str, port: int) -> None:
         if desktop_channels is not None:
             await desktop_channels.stop()
         await server.stop()
-        # jiuwenbox 关停顺序: 先 DELETE 远端沙箱, 再停 box-server 子进程。
-        # shutdown_jiuwenbox_sandboxes 是 HTTP DELETE 给 box-server (清本进程 provider
-        # 缓存里的 sandbox_id), 必须 box-server 还活着才能响应; 故它在 runner.stop()
-        # 之前。runner.stop() 再停 box-server 子进程 (external 模式下 no-op)。若反过来
-        # 先停子进程, DELETE 会全失败 (被 warning 吞不崩, 但沙箱没正常清理)。
-        # 走线程是因为底层 httpx 是同步 API, 不能直接堵 event loop。
-        # cleanup 自身已经吞了所有异常并永不抛, 外层 try/except 只是再加一道防线,
-        # 兜住 import 阶段 (例如 venv 损坏) 这种极端情况。
+        # server.stop() 在 TCP 形态下可能已停止受管 box-server，并 retire 旧 URL；
+        # listenerless 形态的 runner 则由下面的兜底 stop 收尾。这里统一处理剩余缓存
+        # 和待删除条目（包括 external / 历史 URL），不假设受管服务仍存活。
+        # 与 provider 使用同一 event loop 合并并发删除；HTTP 在线程中执行。
+        # 非 strict 清理失败保留重试记录，不阻断 AgentServer 关停。
         try:
             from jiuwenswarm.server.sandbox_lifecycle import (
-                shutdown_jiuwenbox_sandboxes,
+                cleanup_jiuwenbox_sandboxes,
             )
 
             logger.info(
-                "[AgentServer][sandbox] step 1: DELETE 远端沙箱 (box-server 活着)"
+                "[AgentServer][sandbox] cleanup remaining cached and pending sandboxes"
             )
-            released = await asyncio.to_thread(shutdown_jiuwenbox_sandboxes)
-            logger.info("[AgentServer][sandbox] step 1 done: released=%s", released)
+            released = await cleanup_jiuwenbox_sandboxes()
+            logger.info("[AgentServer][sandbox] remaining sandbox cleanup done: released=%s", released)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[AgentServer] jiuwenbox sandbox cleanup failed: %s",
                 exc,
             )
-        # 停 internal 模式下由本 agent-server 拉起的 box-server 子进程。box-server
-        # 进程退出时其 FastAPI lifespan shutdown 会兜底调 shutdown_all_sandboxes
-        # (清上面 DELETE 漏网的沙箱)。失败不阻断后续清理。
+        # 幂等兜底：停止尚未停止的受管进程，并重试已确认退出 URL 的本地收敛。
+        # 不停止外部服务；失败不阻断后续清理。
         try:
             from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
 
             runner = JiuwenBoxRunner.instance()
             owned = runner.get_owned_endpoint()
             logger.info(
-                "[AgentServer][sandbox] step 2: stop box-server 子进程 (owned=%s)",
+                "[AgentServer][sandbox] final owned box-server stop/retire (owned=%s)",
                 owned,
             )
             await runner.stop()
-            logger.info("[AgentServer][sandbox] step 2 done")
+            logger.info("[AgentServer][sandbox] final owned box-server stop/retire done")
         except Exception as exc:  # noqa: BLE001
             logger.warning("[AgentServer] jiuwenbox runner stop failed: %s", exc)
         try:

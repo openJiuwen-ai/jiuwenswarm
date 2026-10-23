@@ -306,6 +306,9 @@ class JiuwenBoxRunner:
         self._lock = asyncio.Lock()
         # 标记进程是否由本 runner 启动; 若用户在外部已起服务, 不应在 stop() 时杀掉
         self.owns_process: bool = False
+        # Keep confirmed exits retryable if local lifecycle cleanup fails. Never
+        # infer service death from an HTTP error or from a changed endpoint.
+        self._stopped_base_urls: set[str] = set()
         # 进程退出兜底: atexit 同步钩子, 即便 stop() 没被走到也尝试终止子进程
         self._atexit_registered: bool = False
         # Windows: KILL_ON_JOB_CLOSE Job held only by this process, so a hard kill
@@ -463,6 +466,7 @@ class JiuwenBoxRunner:
             True 表示启动 / 已运行并通过健康检查; False 表示超时未就绪。
         """
         async with self._lock:
+            await self._retire_stopped_services()
             normalized_mode = (startup_mode or "internal").strip().lower()
             if normalized_mode not in ("internal", "external"):
                 normalized_mode = "internal"
@@ -904,6 +908,8 @@ class JiuwenBoxRunner:
         被 ``ensure_running`` 复用: 监测到 policy_path 变更, 需要重启子进程以让
         新的 ``JIUWENBOX_POLICY_PATH`` 生效。
         """
+        proc, owned = self.process, self.owns_process
+        old_url = f"http://{self.host}:{self.port}"
         try:
             await self._stop_process_no_lock()
         finally:
@@ -911,6 +917,18 @@ class JiuwenBoxRunner:
             # so the CTRL_BREAK lifespan shutdown is never cut short.
             if self.process is None or self.process.returncode is not None:
                 self._release_win_job()
+                if owned and proc is not None:
+                    self._stopped_base_urls.add(old_url)
+        await self._retire_stopped_services()
+
+    async def _retire_stopped_services(self) -> None:
+        if not self._stopped_base_urls:
+            return
+        from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import retire_jiuwenbox_service
+
+        for base_url in list(self._stopped_base_urls):
+            await retire_jiuwenbox_service(base_url)
+            self._stopped_base_urls.remove(base_url)
 
     async def _stop_process_no_lock(self) -> None:
         proc = self.process
