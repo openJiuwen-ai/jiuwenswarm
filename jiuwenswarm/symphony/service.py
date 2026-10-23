@@ -13,10 +13,11 @@ import json
 import logging
 import os
 import stat
+import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-import tempfile
 from typing import Any, Callable, TypeAlias
 
 import openjiuwen.symphony as core_symphony  # type: ignore[import-untyped]
@@ -239,6 +240,7 @@ class SwarmSymphonyService:
         self._graph_status_lock = asyncio.Lock()
         self._graph_status_cache_key: _GraphStatusCacheKey | None = None
         self._graph_status_cache_payload: dict[str, Any] | None = None
+        self._graph_status_cache_created_at = 0.0
         self._graph_status_generation = 0
 
     async def graph_status(
@@ -275,7 +277,7 @@ class SwarmSymphonyService:
     ) -> dict[str, Any]:
         """Cache only the expensive graph scan. Build progress stays live."""
         cached = self._graph_status_cache_payload
-        if self._graph_status_cache_key == cache_key and cached is not None:
+        if self._graph_status_cache_is_fresh(cache_key) and cached is not None:
             return cached
 
         def status() -> dict[str, Any]:
@@ -291,20 +293,31 @@ class SwarmSymphonyService:
 
         async with self._graph_status_lock:
             cached = self._graph_status_cache_payload
-            if self._graph_status_cache_key == cache_key and cached is not None:
+            if self._graph_status_cache_is_fresh(cache_key) and cached is not None:
                 return cached
             generation = self._graph_status_generation
             payload = await asyncio.to_thread(status)
             if generation == self._graph_status_generation:
                 self._graph_status_cache_key = cache_key
                 self._graph_status_cache_payload = payload
+                self._graph_status_cache_created_at = time.monotonic()
             return payload
+
+    def _graph_status_cache_is_fresh(self, cache_key: _GraphStatusCacheKey) -> bool:
+        if (
+            self._graph_status_cache_key != cache_key
+            or self._graph_status_cache_payload is None
+        ):
+            return False
+        age = time.monotonic() - self._graph_status_cache_created_at
+        return age < _GRAPH_STATUS_CACHE_TTL_SECONDS
 
     def _invalidate_graph_status_cache(self) -> None:
         """Drop the cached status after a build changes its inputs."""
         self._graph_status_generation += 1
         self._graph_status_cache_key = None
         self._graph_status_cache_payload = None
+        self._graph_status_cache_created_at = 0.0
 
     async def refresh_graph(
         self,
@@ -1549,13 +1562,30 @@ _BUILD_STAGE_PROGRESS = {
 }
 
 
-def _path_stamp(path: Path) -> tuple[int, int] | None:
+@dataclass(frozen=True)
+class _FileStamp:
+    """File identity used to invalidate graph-status caches."""
+
+    mtime_ns: int
+    ctime_ns: int
+    size: int
+    inode: int
+    device: int
+
+
+def _path_stamp(path: Path) -> _FileStamp | None:
     """Return the identity used to invalidate graph-status caches."""
     try:
         info = path.stat()
     except OSError:
         return None
-    return info.st_mtime_ns, info.st_size
+    return _FileStamp(
+        mtime_ns=info.st_mtime_ns,
+        ctime_ns=info.st_ctime_ns,
+        size=info.st_size,
+        inode=info.st_ino,
+        device=info.st_dev,
+    )
 
 
 # Keep these rules aligned with the pinned Symphony Scanner. The cache key must
@@ -1845,9 +1875,10 @@ def _skills_metadata_digest(root: Path, *, max_depth: int | None) -> str:
                 )
                 digest.update(b"\0")
                 digest.update(
-                    f"{info.st_mode}:{info.st_size}:{info.st_mtime_ns}".encode(
-                        "ascii"
-                    )
+                    (
+                        f"{info.st_mode}:{info.st_size}:{info.st_mtime_ns}:"
+                        f"{info.st_ctime_ns}:{info.st_ino}:{info.st_dev}"
+                    ).encode("ascii")
                 )
                 digest.update(b"\0")
     except (_MetadataScanLimitExceeded, OSError):
@@ -1882,6 +1913,11 @@ def _build_runs_digest(graph_dir: Path) -> str:
     return digest.hexdigest()
 
 
+# Bound staleness when metadata cannot prove a change. On Unix, ctime detects
+# content edits that restore mtime. On Windows, ctime is creation time.
+_GRAPH_STATUS_CACHE_TTL_SECONDS = 60.0
+
+
 @dataclass(frozen=True)
 class _GraphStatusCacheKey:
     skills_root: str
@@ -1889,9 +1925,9 @@ class _GraphStatusCacheKey:
     max_depth: int | None
     config_digest: str
     skills_digest: str
-    graph_dir_stamp: tuple[int, int] | None
-    pointer_stamp: tuple[int, int] | None
-    artifact_stamps: tuple[tuple[int, int] | None, ...]
+    graph_dir_stamp: _FileStamp | None
+    pointer_stamp: _FileStamp | None
+    artifact_stamps: tuple[_FileStamp | None, ...]
     build_runs_digest: str
 
 
@@ -1909,7 +1945,7 @@ def _graph_status_cache_key(
     except (OSError, ValueError):
         artifact_dir = None
 
-    artifact_stamps: tuple[tuple[int, int] | None, ...] = ()
+    artifact_stamps: tuple[_FileStamp | None, ...] = ()
     if artifact_dir is not None:
         artifact_stamps = (
             _path_stamp(artifact_dir / "graph.json"),

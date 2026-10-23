@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 import stat as stat_module
 import threading
@@ -131,6 +132,58 @@ async def test_skill_file_change_invalidates_graph_status(
         "---\nname: writer\n---\nnew content\n",
         encoding="utf-8",
     )
+    await service.graph_status()
+
+    assert calls == [2]
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows ctime is creation time, not a change time",
+)
+@pytest.mark.asyncio
+async def test_preserved_mtime_change_invalidates_graph_status(
+    monkeypatch,
+    tmp_path,
+):
+    config = _config(tmp_path)
+    skill_dir = config.paths.skills_root / "writer"
+    skill_dir.mkdir()
+    skill_file = skill_dir / "SKILL.md"
+    original_text = "---\nname: writer\n---\nabc\n"
+    changed_text = "---\nname: writer\n---\nxyz\n"
+    assert len(original_text) == len(changed_text)
+    skill_file.write_text(original_text, encoding="utf-8")
+    calls = [0]
+    _install_fake_status(monkeypatch, config, calls=calls)
+    service = SwarmSymphonyService()
+
+    await service.graph_status()
+    original_stat = skill_file.stat()
+    time.sleep(0.01)
+    skill_file.write_text(changed_text, encoding="utf-8")
+    os.utime(
+        skill_file,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    changed_stat = skill_file.stat()
+    assert changed_stat.st_size == original_stat.st_size
+    assert changed_stat.st_mtime_ns == original_stat.st_mtime_ns
+
+    await service.graph_status()
+
+    assert calls == [2]
+
+
+@pytest.mark.asyncio
+async def test_cache_expires_after_ttl(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+    calls = [0]
+    _install_fake_status(monkeypatch, config, calls=calls)
+    service = SwarmSymphonyService()
+
+    await service.graph_status()
+    service._graph_status_cache_created_at = 0.0
     await service.graph_status()
 
     assert calls == [2]
