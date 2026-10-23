@@ -361,7 +361,14 @@ async def test_remote_task_controls_preserve_connection_user_scope(queue, operat
             "queue_version": q.manager.snapshot(owner or "", "scope").get("queue_version"),
         }, None)
 
-    assert q.responses[-1].get("ok") is False
+    if operation == "answer":
+        assert q.responses[-1].get("ok") is True
+        rejection = q.responses[-1]["payload"]["tool_result"]
+        assert rejection["code"] == "TASK_NOT_FOUND"
+        assert rejection["applied"] is False
+        assert "jobs" not in rejection and "result" not in rejection
+    else:
+        assert q.responses[-1].get("ok") is False
     assert record() == before
     assert q.executed == ["A"] and not q.cancels
     assert q.execution_users == [owner]
@@ -423,7 +430,8 @@ async def test_answer_forwards_task_user_without_local_prefix_special_case(owner
 
     executor = AgentTaskExecutor(SimpleNamespace(send_request=send_request), None, None)
     await executor.answer({
-        "owner": owner, "core_session_id": "execution-a",
+        "id": "task-a", "request_id": "execution-request-a", "resume_answer": True,
+        "owner": owner, "core_session_id": "execution-a", "request": {},
         "interaction": {
             "operation_id": "answer-a", "request_id": "question-a", "source": "ask_user_interrupt",
             "answers": [{"question": "Budget?", "answer": "5000"}],
@@ -432,6 +440,8 @@ async def test_answer_forwards_task_user_without_local_prefix_special_case(owner
     assert len(sent) == 1
     assert sent[0].user_id == (owner or None)
     assert sent[0].session_id == "execution-a"
+    assert sent[0].params["managed_task_request"] == "execution-request-a"
+    assert sent[0].params["managed_task_binding"]["task_id"] == "task-a"
 
 
 async def test_cancel_completed_task_never_sends_cancel_to_following_execution(queue):
@@ -504,8 +514,9 @@ async def test_query_summary_covers_unfinished_tasks_beyond_first_page(tmp_path)
     assert missing["jobs"] == [] and missing["summary"]["all_finished"] is False
     assert "do not infer" in missing["message"]
     call.arguments = {"job_id": result["jobs"][0]["id"]}
-    with pytest.raises(ValueError, match="not found"):
-        await manager.operate("mallory", "scope", call)
+    rejected = await manager.operate("mallory", "scope", call)
+    assert rejected["code"] == "TASK_NOT_FOUND" and rejected["applied"] is False
+    assert "jobs" not in rejected and "result" not in rejected
 
 
 def test_voice_artifacts_use_file_events_not_answer_claims():

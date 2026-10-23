@@ -2711,9 +2711,13 @@ class AgentRuntime:
             LifecycleError,
             assert_runtime_owner,
             release_runtime,
+            session_delete_pending,
         )
 
         assert_runtime_owner(session_id)
+        # CHAT_CANCEL(wait_for_stop) shares this drain path but owns no delete.
+        if session_delete_pending(session_id):
+            await self._session_provisioner.prepare_session_delete(session_id)
         await self._stop_team_runtime_for_delete(
             channel_id=channel_id, session_id=session_id
         )

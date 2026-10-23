@@ -10,12 +10,14 @@ import {
   registerApplicationTaskController,
   useApplicationTaskStore,
 } from "../../../channels/web/frontend/src/applicationPlugins/taskProgressStore";
+import { useSessionStore } from "../../../channels/web/frontend/src/stores/sessionStore";
 import { VideoLivePanel, type VideoLivePanelHandle } from "./VideoLivePanel";
 import type {
   SearchJobPayload,
   SearchProgressEntry,
 } from "./VideoLivePanel/types";
 import { TaskFullDuplexControls } from "./TaskFullDuplexAction";
+import { getFileIdentityKey } from "../../../channels/web/frontend/src/utils/fileDownloadDedup";
 import { TaskDuplexJobs } from "./taskDuplexJobs";
 import { describeDuplexError } from "./duplexErrorMessage";
 import { applyDuplexSubagentEvent } from "./duplexSubagentEvents";
@@ -31,6 +33,63 @@ const WAIT_REASON_LABELS: Record<string, string> = {
   dependency_failed_or_cancelled: "前置任务已失败或取消，本任务暂不能执行",
   dependency_pending: "等待前置任务完成",
   capacity_order_or_resource: "等待执行名额、队列顺序或资源释放",
+};
+
+const BLOCKER_STATUS_LABELS: Record<string, string> = {
+  running: "执行中",
+  cancelling: "停止中",
+  waiting_user: "等待回答",
+  unknown: "状态未确认",
+};
+
+/** Names the exact task (and its conversation) a queued job is waiting behind. */
+function describeWaitingOn(
+  payload: SearchJobPayload,
+  ownSessionId: string,
+): string {
+  const blockers = payload.waiting_on || [];
+  if (!blockers.length) return "";
+  const sessions = useSessionStore.getState().sessions;
+  const names = blockers.map((blocker) => {
+    const sessionId = blocker.search_session_id.replace(/^task-duplex:/, "");
+    const session = sessions.find((item) => item.session_id === sessionId);
+    const where =
+      sessionId === ownSessionId
+        ? "本会话"
+        : `会话「${session?.display_title || session?.title || sessionId}」`;
+    const status = BLOCKER_STATUS_LABELS[blocker.status] || blocker.status;
+    return `${where}的任务「${blocker.title}」（${status}）`;
+  });
+  return `等待${names.join("、")}结束后执行`;
+}
+
+// Exiting full duplex ends this conversation's unfinished Core tasks. Queued
+// ones are cancelled first so a freed slot is not handed to them.
+const cancelSessionTasks = async (targetSessionId: string) => {
+  const tasks = (
+    useApplicationTaskStore.getState().sessions[targetSessionId] || []
+  ).filter(
+    (task) =>
+      task.pluginId === "video-duplex" &&
+      (task.status === "queued" || task.status === "running"),
+  );
+  const cancel = (task: (typeof tasks)[number]) =>
+    webRequest(
+      "video.search.control",
+      {
+        job_id: task.id,
+        search_session_id: task.searchSessionId,
+        action: "cancel",
+      },
+      // Same timeout as the task panel's video.search.control request.
+      { timeoutMs: 30_000 },
+    );
+  const results = await Promise.allSettled([
+    ...tasks.filter((task) => task.status === "queued").map(cancel),
+    ...tasks.filter((task) => task.status === "running").map(cancel),
+  ]);
+  if (results.some((result) => result.status === "rejected"))
+    throw new Error("部分任务未能停止，请在任务面板中重试。");
 };
 
 type PersistedTimelineEvent = Record<string, unknown> & {
@@ -116,6 +175,7 @@ export function TaskFullDuplexRuntime({
   const conversationJobsRef = useRef(new TaskDuplexJobs());
   const pollingJobsRef = useRef(new Set<string>());
   const coreToolIdsRef = useRef<Map<string, Map<string, string>>>(new Map());
+  const deliveredFilesRef = useRef(new Map<string, Map<string, string>>());
   const persistedAssistantStreamsRef = useRef<Set<string>>(new Set());
   const pendingReasoningRef = useRef(
     new Map<
@@ -282,6 +342,7 @@ export function TaskFullDuplexRuntime({
         id: jobId,
         pluginId: "video-duplex",
         title:
+          payload.title?.trim() ||
           payload.question?.trim() ||
           payload.query?.trim() ||
           previousTask?.title ||
@@ -290,6 +351,7 @@ export function TaskFullDuplexRuntime({
         sequence: payload.sequence ?? latest?.sequence ?? 0,
         detail:
           (status === "waiting_user" ? "等待回答：" + (payload.interaction?.questions.map(q => q.question).join("；") || "") : "") ||
+          describeWaitingOn(payload, targetSessionId) ||
           WAIT_REASON_LABELS[payload.wait_reason || ""] ||
           (payload.error ? describeDuplexError(payload.error, "task") : "") ||
           payload.display_result || payload.result ||
@@ -300,6 +362,8 @@ export function TaskFullDuplexRuntime({
         queuePosition: payload.queue_position ?? previousTask?.queuePosition,
         queueVersion: payload.queue_version ?? previousTask?.queueVersion,
       });
+      if (runtimeSessionIdRef.current === targetSessionId)
+        panelRef.current?.deliverTaskInteraction(payload);
       if (payload.replay) return;
       if (payload.interaction && runtimeSessionIdRef.current === targetSessionId)
         panelRef.current?.deliverQuestion(payload);
@@ -310,6 +374,23 @@ export function TaskFullDuplexRuntime({
         coreToolIdsRef.current.get(jobId) || new Map<string, string>();
       coreToolIdsRef.current.set(jobId, toolIds);
 
+      const deliveredFiles = deliveredFilesRef.current.get(jobId) || new Map<string, string>();
+      deliveredFilesRef.current.set(jobId, deliveredFiles);
+      const emitFiles = (files: NonNullable<SearchJobPayload["files"]>, atMs: number) => {
+        const changed = files.filter((file) => {
+          const key = getFileIdentityKey(file);
+          const revision = JSON.stringify(file);
+          if (deliveredFiles.get(key) === revision) return false;
+          deliveredFiles.set(key, revision);
+          return true;
+        });
+        if (!changed.length) return;
+        onFileItems(targetSessionId, changed, new Date(atMs).toISOString());
+        persistTimelineEvent(targetSessionId, {
+          kind: "file", files: changed, timestamp: atMs / 1_000,
+        });
+      };
+
       entries
         .slice()
         .sort((left, right) => left.sequence - right.sequence)
@@ -319,12 +400,7 @@ export function TaskFullDuplexRuntime({
           const atMs = progressAtMs(entry);
 
           if (entry.stage === "file" && entry.files?.length) {
-            onFileItems(targetSessionId, entry.files, progressAtIso(entry));
-            persistTimelineEvent(targetSessionId, {
-              kind: "file",
-              files: entry.files,
-              timestamp: atMs / 1_000,
-            });
+            emitFiles(entry.files, atMs);
             return;
           }
 
@@ -375,6 +451,9 @@ export function TaskFullDuplexRuntime({
             );
           }
         });
+
+      // Final receipts can recover files that were absent from streamed progress.
+      if (incoming.files?.length) emitFiles(incoming.files, Date.now());
 
       if (
         status === "completed" ||
@@ -428,7 +507,14 @@ export function TaskFullDuplexRuntime({
         )
           .flat()
           .find((task) => task.id === payload.job_id);
-        if (existing && (existing.queueVersion ?? -1) > snapshot.queue_version)
+        // queue_version is an opaque hash; only per-task sequence orders snapshots.
+        // A snapshot without a sequence cannot be proven older; only skip a known older one.
+        if (
+          existing &&
+          typeof existing.sequence === "number" &&
+          typeof payload.sequence === "number" &&
+          existing.sequence > payload.sequence
+        )
           continue;
         handleCoreAgentProgress("progress", payload);
         const entry = Object.entries(
@@ -548,7 +634,7 @@ export function TaskFullDuplexRuntime({
       runtimeSessionIdRef.current = targetSessionId;
       await flushConversationHistory(targetSessionId);
       return conversationJobsRef.current.bind(targetSessionId);
-    });
+    }, cancelSessionTasks);
   }, []);
 
   useEffect(

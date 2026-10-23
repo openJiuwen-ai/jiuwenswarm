@@ -1352,7 +1352,7 @@ def apply_config_payload(
             build_moa_config_from_frontend(moa_params, get_config_raw(), resolve_value=resolve_env_vars)
         except ValueError as exc:
             raise ConfigPanelBadRequest(str(exc)) from exc
-    # The MoA section writer encrypts only newly entered, nonempty credentials.
+    # Collaboration writes only its switches and interval; Jev credentials use the shared env fields.
     params = encrypt_config_params({key: value for key, value in params.items() if key not in MOA_CONFIG_KEYS})
     env_updates: dict[str, str] = {}
     yaml_updated: list[str] = []
@@ -1573,10 +1573,7 @@ def apply_config_payload(
 
     if moa_params:
         try:
-            crypto = _get_crypto_provider()
-            save_moa_config_from_frontend(
-                moa_params, encrypt_secret=crypto.encrypt if crypto is not None else None,
-            )
+            save_moa_config_from_frontend(moa_params)
             yaml_updated.extend(moa_params)
         except ValueError as exc:
             raise ConfigPanelBadRequest(str(exc)) from exc

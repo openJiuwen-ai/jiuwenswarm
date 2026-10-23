@@ -42,8 +42,6 @@ def fields():
         "multi_model_collaboration_enabled": "true",
         "moa_jev_enabled": "false",
         "moa_verifier_interval": "3",
-        "moa_jev_api_base": "https://api.typesafe.ai",
-        "moa_jev_model_name": "jev-latest",
     }
 
 
@@ -66,36 +64,45 @@ async def test_save_all_round_trips_with_ui_reload(panel_config, fields):
     await handlers.config_get_handler(channel, None, "get", {}, None)
     public = channel.send_response.call_args.kwargs["payload"]
     assert {key: public[key] for key in fields} == fields
-    assert public["moa_jev_api_key"] == ""
-    assert public["moa_jev_api_key_configured"] == "false"
+    assert "moa_jev_api_key" not in public
+    assert "moa_jev_api_key_configured" not in public
 
 
 @pytest.mark.asyncio
-async def test_jev_secret_is_encrypted_write_only_and_preserved(panel_config, fields, monkeypatch):
+async def test_shared_key_is_saved_once_and_used_by_collaboration(panel_config, fields, monkeypatch):
     crypto = SimpleNamespace(
         encrypt=lambda value: f"encrypted:{value}",
         decrypt=lambda value: value,
     )
     monkeypatch.setattr(handlers, "_get_crypto_provider", lambda: crypto)
-    fields.update({"moa_jev_enabled": "true", "moa_jev_api_key": "test-write-only-secret"})
     channel = SimpleNamespace(send_response=AsyncMock())
+    monkeypatch.setenv("TYPESAFE_API_KEY", "")
+    await handlers.config_save_all_handler(channel, None, "key", {
+        "config": {"jev_typesafe_api_key": "test-shared-secret"},
+    }, None)
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    assert os.environ["TYPESAFE_API_KEY"] == "encrypted:test-shared-secret"
+    fields["moa_jev_enabled"] = "true"
     await handlers.config_save_all_handler(channel, None, "save", {"config": fields}, None)
     assert channel.send_response.call_args.kwargs["ok"] is True
-    assert "test-write-only-secret" not in str(channel.send_response.call_args.kwargs)
-    assert yaml.safe_load(panel_config.read_text())["experimental"]["multi_model_collaboration"]["jev"]["api_key"] == "encrypted:test-write-only-secret"
+    assert "test-shared-secret" not in str(channel.send_response.call_args.kwargs)
+    assert "jev" not in yaml.safe_load(panel_config.read_text())["experimental"]["multi_model_collaboration"]
 
     await handlers.config_get_handler(channel, None, "get", {}, None)
     public = channel.send_response.call_args.kwargs["payload"]
-    assert public["moa_jev_api_key"] == ""
-    assert public["moa_jev_api_key_configured"] == "true"
-    assert "test-write-only-secret" not in str(public)
+    assert "moa_jev_api_key" not in public
+    assert public["moa_jev_enabled"] == "true"
 
-    fields["moa_jev_api_key"] = ""
     fields["moa_verifier_interval"] = "1"
     await handlers.config_save_all_handler(channel, None, "save", {"config": fields}, None)
     raw = yaml.safe_load(panel_config.read_text())
-    assert raw["experimental"]["multi_model_collaboration"]["jev"]["api_key"] == "encrypted:test-write-only-secret"
+    assert os.environ["TYPESAFE_API_KEY"] == "encrypted:test-shared-secret"
     assert raw["experimental"]["multi_model_collaboration"]["verifier_interval"] == 1
+    await handlers.config_save_all_handler(channel, None, "clear", {
+        "config": {"jev_typesafe_api_key": "", "moa_jev_enabled": "false"},
+    }, None)
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    assert yaml.safe_load(panel_config.read_text())["experimental"]["multi_model_collaboration"]["jev_enabled"] is False
 
 
 @pytest.mark.asyncio
@@ -115,7 +122,6 @@ async def test_invalid_moa_rejects_before_any_config_writes(panel_config, fields
 
 @pytest.mark.asyncio
 async def test_write_failures_are_reported_without_secret(panel_config, fields, monkeypatch, caplog):
-    fields.update({"moa_jev_enabled": "true", "moa_jev_api_key": "test-write-only-secret"})
     before = panel_config.read_text()
 
     def fail(*args, **kwargs):

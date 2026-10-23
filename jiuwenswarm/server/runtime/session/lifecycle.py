@@ -139,6 +139,17 @@ def state(kind: str, resource_id: str) -> dict:
     return read_json(resource_path(kind, resource_id)) if resource_id else {}
 
 
+def session_delete_pending(session_id: str) -> bool:
+    """Whether an unfinished delete owns the Session execution barrier."""
+    value = state("session", session_id)
+    operation = value.get("operation") or {}
+    return bool(
+        value.get("blocked")
+        and operation.get("kind") == "delete"
+        and operation.get("status") != "completed"
+    )
+
+
 def save_locked(kind: str, resource_id: str, value: dict) -> None:
     value["revision"] = int(value.get("revision", 0)) + 1
     operation = value.get("operation")

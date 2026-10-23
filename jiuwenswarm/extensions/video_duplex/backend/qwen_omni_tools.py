@@ -45,7 +45,7 @@ def qwen_omni_tools() -> list[dict[str, Any]]:
                     "Delegate any request that cannot be completed directly from the current "
                     "audio, video, and conversation to the full Jiuwen Core Agent. Jiuwen may "
                     "use all of its available capabilities, including research, files, document "
-                    "processing, calculation, code execution, and computer or browser tools."
+                    "processing, calculation, code execution, and computer or browser tools. Prior results can still be acted on after their creation invocation completed."
                     " Call this when the user explicitly requests background Agent work. If the Agent must "
                     "ask about budget or other information first, include asking and waiting in task and "
                     "delegate immediately; do not substitute your own question for task creation."
@@ -53,6 +53,10 @@ def qwen_omni_tools() -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "title": {
+                            "type": "string", "maxLength": 80,
+                            "description": "Short action-and-object task name, usually 8-20 Chinese characters. Resolve references from context; do not invent goals or claim success. Display only; task must retain all requirements.",
+                        },
                         "independent": {
                             "type": "boolean",
                             "description": (
@@ -158,7 +162,7 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
             ):
                 raise ValueError("Only before requires before_job_id")
         return QwenOmniToolCall(name, call_id, arguments, "")
-    task_fields = set(arguments) - {"independent", "depends_on", "resources"}
+    task_fields = set(arguments) - {"independent", "depends_on", "resources", "title"}
     if len(task_fields) != 1 or (
         name == QWEN_OMNI_RESEARCH_TOOL_NAME and len(arguments) != 1
     ):
@@ -249,9 +253,9 @@ def task_management_tools():
         (
             "jiuwen_task_query",
             (
-                "Find tasks and their results in this conversation. Query before selecting an "
+                "Find Core invocations and their results in this conversation. Query before selecting an "
                 "ambiguous task; use exact returned job_id and revision for controls. "
-                "query is a literal substring of the original task text, not a question or "
+                "query is a literal substring of the task title or original task text, not a question or "
                 "a list of keywords. Prefer a known job_id. If no task matches, shorten query "
                 "or list without query; no match does NOT prove completion or absence of files."
             ),
@@ -271,7 +275,7 @@ def task_management_tools():
         ),
         (
             "jiuwen_task_cancel",
-            "Request cancellation of the exact task. Accepted does not mean stopped. Query for the final state.",
+            "Request cancellation of the exact Core invocation, not reversal of its completed effects. Completed invocations cannot be stopped. To remove, disable or undo resulting effects requested by the user, use task_modify or delegate that full action to Core; completion is not grounds to refuse. Accepted does not mean stopped. Query for the final state.",
             {"job_id": {"type": "string"}},
             ["job_id"],
         ),
@@ -279,13 +283,14 @@ def task_management_tools():
             "jiuwen_task_modify",
             (
                 "Change the exact task's requirements. Queued input is updated; running changes wait "
-                "for a model checkpoint; finished work creates a linked revision. Receipt never proves"
+                "for a model checkpoint; completed work creates a linked Core revision carrying the original result. Receipt never proves"
                 " the requirement is satisfied."
             ),
             {
                 "job_id": {"type": "string"},
                 "revision": {"type": "integer", "minimum": 1},
                 "instruction": {"type": "string", "maxLength": 4000},
+                "title": {"type": "string", "maxLength": 80, "description": "Updated short action-and-object title when the requested goal changes. Omit to retain the existing title."},
             },
             ["job_id", "revision", "instruction"],
         ),
