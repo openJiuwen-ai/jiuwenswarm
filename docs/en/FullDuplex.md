@@ -97,6 +97,10 @@ uses native design tools in the current project. Voice and text share the Design
 later typed turns also receive recent saved voice context. Native question cards remain
 answerable. Voice answers and cancellation use the current task binding, so a stale
 cancellation cannot stop a later turn.
+Approval cards (permission approvals, cua desktop confirmations and similar) must be
+clicked on screen (Allow or Reject); voice cannot approve or reject them. While a task
+waits on one, the assistant explains what the card is for and asks you to click it,
+without claiming it was allowed.
 Voice tasks retain their own per-round result subscription even when the Design page
 already has a subscription. Canvas, node, run and assistant activity updates use the
 saved Design session's Web channel, so the page does not need a refresh.

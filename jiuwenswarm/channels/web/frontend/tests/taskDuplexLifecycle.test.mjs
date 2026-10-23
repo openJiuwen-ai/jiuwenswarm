@@ -70,7 +70,8 @@ await build({
               setSpeakerMuted(value) { globalThis.__duplexHarness.speaker.push(value); },
               stopScreenSharing() { props.onScreenSharingChange(false); },
               stop() { globalThis.__duplexHarness.stops += 1; props.onRuntimeState('idle'); },
-              deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); }
+              deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); },
+              deliverQuestion(payload) { globalThis.__duplexHarness.mediaQuestions.push(payload); }
             }));
             return null;
           });`
@@ -144,7 +145,6 @@ beforeEach(async () => {
     speaker: [],
     mediaResults: [],
     mediaQuestions: [],
-    interactions: [],
     requests: [],
     messages: [],
     tools: [],

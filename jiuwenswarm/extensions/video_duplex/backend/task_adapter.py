@@ -9,10 +9,10 @@ from typing import Any
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
-from .tasks.errors import CancellationSettlementTimeout, QueueVersionConflict, TaskRevisionConflict, TaskNotFound
-from .tasks.interactions import approval_cards, approval_option_labels, voice_approval_answers
-from .tasks.diagnostics import receipt_state, task_state, trace_task
+from .tasks.errors import QueueVersionConflict, TaskRevisionConflict
+from .tasks.interactions import approval_cards
 from .tasks.prompts import (
+    APPROVAL_REQUIRES_CLICK_INSTRUCTIONS,
     EMPTY_QUERY_INSTRUCTIONS,
     QUEUE_CONFLICT_INSTRUCTIONS,
     SCHEDULED_JOBS_INSTRUCTIONS,
@@ -654,9 +654,9 @@ class VideoSearchManager:
                 )
         else:
             result["interaction"] = interaction
-        # Voice answers approval cards with one of each card's own option labels.
+        # Approval cards are click-only; voice may still answer information questions.
         cards = approval_cards(interaction)
-        approval = {"approval_cards": cards} if cards else {}
+        approval = dict(requires_click=cards is not None, **({"approval_cards": cards} if cards else {}))
         result.update(approval)
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12000:
             # Five jobs remain well below the provider's 256 KiB frame limit,
@@ -1108,26 +1108,22 @@ class VideoSearchManager:
             if receipt.get("state") == "rejected":
                 result.update(receipt, message=QUEUE_CONFLICT_INSTRUCTIONS)
         elif call.name == "jiuwen_task_answer":
-            if not args.get("job_id"):
-                # A typed chat's card has no job; it is named by its interaction_id.
-                return await self.answer_chat_card(
-                    ws, owner, scope, args["interaction_id"], args["answers"]
-                )
-            interaction = self.service.get(owner, scope, args["job_id"]).get("interaction")
-            if approvals_only and approval_cards(interaction) is None:
-                raise ValueError("JoyAI voice form answers are disabled; complete the on-screen form")
-            try:
-                result = await self.service.answer(
-                    owner,
-                    scope,
-                    args["job_id"],
-                    call.call_id,
-                    args["interaction_id"],
-                    answers=args["answers"],
-                )
-            except ValueError as exc:
+            cards = approval_cards(self.service.get(owner, scope, args["job_id"]).get("interaction"))
+            if cards is not None:
                 # Explicit receipt so the model cannot mistake a refusal for consent.
-                return dict(task_id=args["job_id"], state="rejected", applied=False, error=str(exc))
+                return dict(
+                    task_id=args["job_id"], state="rejected", applied=False,
+                    code="APPROVAL_REQUIRES_CLICK", requires_click=True,
+                    approval_cards=cards, message=APPROVAL_REQUIRES_CLICK_INSTRUCTIONS,
+                )
+            result = await self.service.answer(
+                owner,
+                scope,
+                args["job_id"],
+                call.call_id,
+                args["interaction_id"],
+                answers=args["answers"],
+            )
         else:
             try:
                 result = self.service.modify(

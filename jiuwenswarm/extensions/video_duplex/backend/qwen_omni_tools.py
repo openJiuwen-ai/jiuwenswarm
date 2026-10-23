@@ -316,17 +316,12 @@ def task_management_tools():
         (
             "jiuwen_task_answer",
             (
-                "Permission requests (permission_interrupt) require a manual click and cannot be answered "
-                "by this tool. Answer an observed pending Agent information question or approval card "
-                "so the original task "
-                "continues. Query exact job_id, interaction.id and questions first; pass interaction.id as "
-                "interaction_id. Clarify which task if ambiguous. Never create a new task for an answer, and "
-                "never use a new request (e.g. 打开微信) as an answer. Approval cards: choose the allow option "
-                "only when the user clearly says 同意/允许/可以/批准, the reject option when they clearly say "
-                "拒绝/不要/取消这个操作, the session option (会话内记住) only for 本会话保持同意/本会话同意/这个会话都允许; "
-                "the permanent option (永久记住) only for an explicit 永久同意/永久允许/以后都允许; "
-                "if unclear or several cards are pending, ask first and do not submit. Say 已批准 only after "
-                "the receipt or a later query shows the task resumed. answers is an array of plain text "
+                "Answer an observed pending Agent information question so the original task continues."
+                " Query exact job_id, interaction.id and questions first; pass interaction.id as "
+                "interaction_id. Clarify which task if ambiguous. Never use this for permission "
+                "approvals or create a new task for an answer; requires_click approval cards are "
+                "answered only by the user clicking on screen, so ask them to click and never say an "
+                "approval was granted unless a later query shows the task resumed. answers is an array of plain text "
                 "strings, one per observed question in the SAME order, e.g. [\"5000元\", \"2人\"]. "
                 "Use only explicit user answers; ask for missing answers instead of inventing them. "
                 "Accepted is not completed."

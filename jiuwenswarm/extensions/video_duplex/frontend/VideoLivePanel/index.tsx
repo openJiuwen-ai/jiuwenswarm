@@ -85,9 +85,6 @@ export interface VideoLivePanelHandle {
   stopScreenSharing: () => void;
   deliverToolResult: (payload: SearchJobPayload) => void;
   deliverQuestion: (payload: SearchJobPayload) => void;
-  /** A typed-chat approval card in this conversation; it has no job, so job_id is "". */
-  deliverChatApproval: (interaction: { request_id: string; state: string; source?: string; questions?: unknown[] }) => void;
-  deliverTaskInteraction: (payload: SearchJobPayload) => void;
 }
 
 interface VideoLivePanelProps {
@@ -1279,11 +1276,6 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       // pending questions and approval cards for the model to raise.
       if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;
       if (payload.job_id && payload.interaction) duplexRef.current?.enqueueQuestion(payload.job_id, payload.interaction);
-      if (payload.job_id && payload.interaction) deliverJoyAIApproval(payload.job_id, payload.interaction);
-    },
-    deliverChatApproval: (interaction) => {
-      duplexRef.current?.enqueueQuestion('', { ...interaction, id: interaction.request_id } as never);
-      deliverJoyAIApproval('', { ...interaction, id: interaction.request_id } as ApprovalInteraction);
     },
   }));
 

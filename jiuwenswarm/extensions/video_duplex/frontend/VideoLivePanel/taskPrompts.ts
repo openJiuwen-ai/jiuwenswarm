@@ -14,7 +14,8 @@ export const QWEN_OMNI_TOOL_INSTRUCTIONS = [
   'Provide a short title when delegating, usually 8-20 Chinese characters: action plus object and necessary distinguishing details resolved from context. Do not invent goals or claim success. Title is display metadata; preserve full requirements in task. When modifying the goal, optionally provide an updated title.',
   'Follow the configured reply language. Preserve user-provided data, task IDs and file paths exactly.',
   'accepted_instruction is the requirement actually accepted at creation. If it differs from your task description, report the accepted requirement. Never claim a new delegation without a new tool call and acceptance receipt. File paths require explicit artifact evidence; otherwise say no file has been confirmed.',
-  VOICE_APPROVAL_RULES,
+  'Use jiuwen_task_reorder for next/before on waiting tasks; first query queue_version and exact task IDs. "Do this next" never authorizes cancelling current work. Use jiuwen_task_answer only for an observed pending information question: copy interaction_id and send answers as plain text strings in question order, e.g. ["5000 yuan"]. Supply only explicit user answers. Ask for missing information; never invent budget, people or preferences. Clarify ambiguous task targets. An answer continues the original task, never delegates a new one. Permission approvals are not supported by this voice tool: a requires_click approval card can only be approved by the user clicking it on screen, so ask them to click and never say it was allowed unless a later query shows the task resumed.',
+  'Use jiuwen_task_query to find an existing task, jiuwen_task_cancel to stop it, and jiuwen_task_modify to change it. Use exact returned job_id and revision. Accepted or context_written does not mean completed or verified. Never delegate a duplicate just to query or modify work.',
   'The jiuwen_delegate function delegates work to the full Jiuwen Core Agent, which may use all tools and capabilities available in Jiuwen.',
   'Answer directly only when the request can be completed from the current audio, video, conversation, or an earlier Jiuwen result. Core invocation status always requires a fresh invocation query; external resource status requires a fresh Core tool result. A request to READ a file always requires actual file access: query its reported path, then delegate reading that exact path with depends_on containing the source job_id and independent=true. A prior summary is not file contents.',
   'A modification receipt with state=followup and successor_id creates a linked revision awaiting execution; the original task and result stay unchanged. Do not claim the original was updated, the revision completed, or calculate its result yourself. An answer receipt with state=accepted confirms submission only, not task completion.',
@@ -45,11 +46,29 @@ export function taskCancellationNotice(jobId: string): string {
   return `Task stop confirmed: ${JSON.stringify({ job_id: jobId, status: 'cancelled', stopped: true })}. This task was cancelled, not successfully completed. Other tasks are unaffected.`;
 }
 
-export const APPROVAL_SOURCES = new Set(['confirm_interrupt']);
+export const APPROVAL_SOURCES = new Set(['permission_interrupt', 'confirm_interrupt']);
 
-export interface ApprovalInteraction {
-  id?: string; request_id: string; state: string; source?: string;
-  questions?: Array<{ header?: string; question?: string; options?: Array<{ label?: string }> }>;
+// Standing instructions while approval cards are open: a one-off notice is
+// forgotten by the next user turn, and a spoken "允许" must not read as consent.
+export function pendingApprovalInstructions(headers: string[]): string {
+  if (!headers.length) return '';
+  return `[Pending approval cards] These Background Agent approval cards are waiting for the user to click on screen: ${JSON.stringify(headers)}. Voice cannot approve or reject them. If the user says 允许, 同意, 可以, 确认, allow or 拒绝 by voice, say that voice cannot approve it and ask them to click 允许 or 拒绝 on the card. Never say a pending card was allowed or approved, or that its task is starting, until a later result or query shows the task resumed.`;
+}
+
+// Placed directly before every reply to the user's speech while a card is open. The
+// realtime model hears the audio itself (its transcript can differ), and it read a spoken
+// "允许" as a click even with the pending-card instructions in place.
+export function pendingCardTurnNotice(headers: string[]): string {
+  return `[Approval card status] ${JSON.stringify(headers)} is still waiting for the user to click it on screen. The user has NOT clicked it, and voice cannot approve or reject it. If the user's latest speech answers the card in any wording (allow, agree, yes, ok, reject...), reply only that voice cannot answer the card and ask them to click 允许 or 拒绝 on the on-screen card. Otherwise answer the user's latest request normally. Never say the card was allowed, approved, rejected or clicked.`;
+}
+
+export function taskQuestionNotice(question: unknown): string {
+  const source = (question as { interaction?: { source?: unknown } } | null)?.interaction?.source;
+  if (typeof source === 'string' && APPROVAL_SOURCES.has(source)) {
+    // Approval cards are click-only; voice consent must never look like approval.
+    return `Background Agent approval card (not a new task): ${JSON.stringify(question)}. Briefly tell the user what this card asks to allow and ask them to click 允许 or 拒绝 on the on-screen card. Voice cannot approve or reject it. Do not call jiuwen_task_answer, and never say it was allowed or approved unless a later query shows the task resumed.`;
+  }
+  return `Background Agent question (not a new task): ${JSON.stringify(question)}. Identify the task and relay its question to the user. After the user answers, query whether the question is still pending, then call jiuwen_task_answer. Never invent an answer or claim completion.`;
 }
 
 // Card identity and option labels, so a voice model can answer by voice in one call.
