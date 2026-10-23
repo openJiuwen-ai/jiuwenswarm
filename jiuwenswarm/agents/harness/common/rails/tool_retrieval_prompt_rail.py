@@ -430,15 +430,18 @@ class ToolRetrievalPromptRail(DeepAgentRail):
         """Render the progressive disclosure section: categories + names.
 
         Mirrors ``SkillRetrievalPromptRail._build_candidate_appendix``: only
-        the category catalogue is shown, never a full flat dump. Each category
-        line carries only its description — tool names are discovered
-        through tool_search. MCP connector tools get one virtual branch line
-        per connector; tools no category line routes to (static-table misses)
-        are listed with name+description in an uncategorized block (bare
-        names carry no routing signal: the model would have to probe each
-        one with get_schema). The listing is frozen at init; mid-session
-        drift is reported through delta attachments, not by rewriting this
-        section.
+        the category catalogue is shown, never a full flat dump. Multi-tool
+        category lines carry only their description — tool names are
+        discovered through tool_search; a category whose live membership is
+        exactly one tool collapses to that tool's ``[tool]`` line (a list
+        round-trip revealing one already-nameable tool buys nothing) and
+        lands in the direct get_schema block. MCP connector tools get one
+        virtual branch line per connector; tools no category line routes to
+        (static-table misses) are listed with name+description in the same
+        direct block (bare names carry no routing signal: the model would
+        have to probe each one with get_schema). The listing is frozen at
+        init; mid-session drift is reported through delta attachments, not
+        by rewriting this section.
         """
 
         lines = ["## Deferred Tools" if english else "## Deferred 工具（渐进式披露）"]
@@ -448,12 +451,23 @@ class ToolRetrievalPromptRail(DeepAgentRail):
             return "\n".join(lines)
 
         categories = snapshot.categories
-        if categories:
+        multi_categories = tuple(
+            category for category in categories if len(category.tools) > 1
+        )
+        collapsed_names = sorted(
+            (
+                category.tools[0]
+                for category in categories
+                if len(category.tools) == 1
+            ),
+            key=str.casefold,
+        )
+        if multi_categories:
             lines.extend(
                 [
                     "",
                     "Categories (virtual groups):" if english else "分类（虚拟目录）：",
-                    *_render_categories(categories),
+                    *_render_categories(multi_categories),
                 ]
             )
         covered = {name for category in categories for name in category.tools}
@@ -461,21 +475,24 @@ class ToolRetrievalPromptRail(DeepAgentRail):
             english, covered
         )
         lines.extend(connector_lines)
-        uncovered = self._uncovered_tool_names(connector_names)
-        if uncovered:
-            # No category line routes to these tools, so a bare name
-            # list would force one get_schema probe per opaque name:
-            # list them with compact descriptions instead — the same
-            # entry primitive the uncategorized block uses, bounded by
-            # compaction.
+        direct_names = sorted(
+            (*collapsed_names, *self._uncovered_tool_names(connector_names)),
+            key=str.casefold,
+        )
+        if direct_names:
+            # Single-tool category members and static-table misses: a
+            # catalogue line already routes to each by name, so list them
+            # with compact descriptions — the model goes straight to
+            # get_schema instead of spending a list round-trip or probing
+            # opaque names.
             lines.extend(
                 [
                     "",
                     "Direct get_schema tools:" if english else "直接 get_schema 工具：",
-                    *_render_entries(self._uncovered_flat_entries(uncovered)),
+                    *_render_entries(self._flat_entries_for(tuple(direct_names))),
                 ]
             )
-        if not categories and not connector_lines and not uncovered:
+        if not multi_categories and not connector_lines and not direct_names:
             lines.extend(
                 [
                     "",
@@ -544,12 +561,12 @@ class ToolRetrievalPromptRail(DeepAgentRail):
             covered |= extra_covered
         return tuple(sorted(self._frozen_tool_names - covered, key=str.casefold))
 
-    def _uncovered_flat_entries(self, uncovered: tuple[str, ...]) -> tuple:
-        """Frozen name+description entries for the uncovered tool names.
+    def _flat_entries_for(self, names: tuple[str, ...]) -> tuple:
+        """Frozen name+description entries for the given tool names.
 
         The frozen flat inventory — captured at the same freeze as the
-        catalogue — supplies the compact descriptions; uncovered order is
-        preserved so the block stays deterministic.
+        catalogue — supplies the compact descriptions; the caller's order
+        is preserved so the block stays deterministic.
         """
 
         snapshot = self._frozen_snapshot
@@ -559,7 +576,7 @@ class ToolRetrievalPromptRail(DeepAgentRail):
         }
         return tuple(
             (name, descriptions.get(name, ""))
-            for name in uncovered
+            for name in names
         )
 
     def _filter_deferred_from_inputs(self, ctx: AgentCallbackContext) -> None:
@@ -1009,10 +1026,12 @@ def _compact_description(description: str) -> str:
 def _render_categories(categories: tuple[ToolCategory, ...]) -> list[str]:
     """Render description-only category lines, type-marked ``[category]``.
 
-    Lines carry only the description — tool names are discovered through
-    tool_search, not listed here. The ``[category]``/``[tool]`` marks mirror
-    tool_search's list output so rule 3 can navigate by mark: category ->
-    list, tool -> get_schema.
+    Receives the multi-tool categories only — single-tool categories collapse
+    to their member ``[tool]`` line in the direct get_schema block before
+    this. Lines carry only the description — tool names are discovered
+    through tool_search, not listed here. The ``[category]``/``[tool]``
+    marks mirror tool_search's list output so rule 3 can navigate by mark:
+    category -> list, tool -> get_schema.
     """
 
     return [
