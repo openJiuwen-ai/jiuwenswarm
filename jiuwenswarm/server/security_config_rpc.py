@@ -413,17 +413,21 @@ async def dispatch_security_config_request(
             except Exception as exc:
                 rollback_targets["rail"] = f"failed: {exc}"
             try:
-                restarted = await restart_sandboxes({})
-                if restarted.get("network_status") == "externally_managed" and net_changed:
-                    rollback_targets["sandbox"] = "external_pending"
+                await restart_sandboxes({})
             except Exception as exc:
                 rollback_targets["sandbox"] = f"failed: {exc}"
             rollback_applied = all(value in {"applied", "not_required"} for value in rollback_targets.values())
             if restored is not None and not rollback_applied:
                 restored = service.record_apply(
                     restored["revision"], rollback_targets,
-                    sandbox_retry={"file": bool(file_changed), "network": bool(net_changed)},
+                    sandbox_retry={"file": bool(file_changed), "network": bool(net_changed)}
+                    if rollback_targets["sandbox"].startswith("failed:") else {},
                 )
+            if restored is None:
+                restored = {
+                    "revision": None, "status": "uninitialized", "saved": False,
+                    "applied": False, "targets": rollback_targets,
+                }
             return {
                 "saved": False, "applied": False,
                 "rolled_back": rollback_applied,
@@ -437,7 +441,7 @@ async def dispatch_security_config_request(
         sandbox_file_skipped=sandbox_file_skipped,
         sandbox_network_skipped=sandbox_network_skipped,
         sandbox_retry={"file": bool(file_changed), "network": bool(net_changed)}
-        if targets["sandbox"] not in {"applied", "not_required"} else {},
+        if targets["sandbox"].startswith("failed:") else {},
     )
     return {"saved": True, "applied": result["applied"], "apply": result}
 

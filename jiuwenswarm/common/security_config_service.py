@@ -225,8 +225,8 @@ class SecurityConfigService:
             result = mutate(settings, local)
             settings = validate_settings(settings)
             local = validate_source(local)
-            state = self._pending_state()
-            compose_candidate(settings, self._sources(settings, local, cloud), state["revision"])
+            state = self._pending_after_edit()
+            self._compose_checked(settings, local, cloud, state)
             dump_yaml_round_trip(self.settings_path, settings)
             dump_yaml_round_trip(self.local_path, local)
             self._write_state(state)
@@ -409,9 +409,13 @@ class SecurityConfigService:
             state["sandbox_file_skipped"] = deepcopy(sandbox_file_skipped or [])
             state["sandbox_network_skipped"] = deepcopy(sandbox_network_skipped or [])
             state["sandbox_retry"] = deepcopy(state.get("sandbox_retry", {}) if sandbox_retry is None else sandbox_retry)
-            if targets["sandbox"] in {"applied", "not_required"} or sandbox_retry is not None:
+            if targets["sandbox"] == "applied" or sandbox_retry is not None:
                 state["sandbox_pending"] = {}
-            state["applied"] = all(value in {"applied", "not_required"} for value in targets.values())
+            state["applied"] = (
+                all(value in {"applied", "not_required"} for value in targets.values())
+                and not any((state.get("sandbox_pending") or {}).values())
+                and not any((state.get("sandbox_retry") or {}).values())
+            )
             state["status"] = "applied" if state["applied"] else "failed"
             self._write_state(state)
             return deepcopy(state)
@@ -561,14 +565,17 @@ class SecurityConfigService:
             grants[:] = [item for item in grants if item.get("id") != grant["id"]]
             grants.append(deepcopy(grant))
             local = validate_source(local)
-            state = self._pending_state()
-            compose_candidate(settings, self._sources(settings, local, cloud), state["revision"])
+            state = self._pending_after_edit()
+            self._compose_checked(settings, local, cloud, state)
             dump_yaml_round_trip(self.local_path, local)
             self._write_state(state)
         try:
             self.publish_candidate(expected_revision=state["revision"])
+            sandbox_pending = any((state.get("sandbox_pending") or {}).values())
+            sandbox_retry = any((state.get("sandbox_retry") or {}).values())
             self.record_apply(state["revision"], {
-                "rail": "applied", "host_exit": "not_required", "sandbox": "not_required",
+                "rail": "applied", "host_exit": "not_required",
+                "sandbox": "pending" if sandbox_pending or sandbox_retry else "not_required",
             })
         except Exception:
             return False
