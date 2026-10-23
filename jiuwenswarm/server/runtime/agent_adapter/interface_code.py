@@ -1216,8 +1216,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # 主事件循环 await 这个 future 时保持响应，期间能读取并处理 esc 的 cancel。
         # 跑完后回主 loop 继续后续代码，时序与语义不变；唯一变化是初始化期间主 loop 活。
         #
-        # 安全性：ensure_initialized 操作的是 self._pending_rails、workspace 文件等实例自己的资源，
-        # 不碰全局 asyncio 原语，不跨 loop 访问主 loop 对象，不会死锁。
+        # The resident Worker forwards shared callback-registry access to its
+        # business loop; filesystem and rail initialization stay in this thread.
         if agent_definition is not None and agent_definition.get("tools") != "*":
             from jiuwenswarm.runtime.tool_allowlist import install_tool_allowlist
 
