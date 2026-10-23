@@ -538,8 +538,9 @@ class WorkerDispatcher:
                             executions, default=lambda value: value.value if isinstance(value, Enum) else str(value)
                         )
                     )
-                    # Accepted warming/queued dispatches have no Coordinator
-                    # execution yet. An empty execution list must not clear them.
+                    # The event store retains warming/queued execution, not
+                    # pending inspection RPCs. Actual Coordinator execution
+                    # remains authoritative, including work started by recovery.
                     work_requests = {
                         record.request.request_id for record in self._bridge.events.records.values()
                         if record.scope == request_scope(request) and not record.is_passive_subscription
