@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 
 import pytest
 
@@ -108,3 +109,54 @@ def test_pypi_publish_time_falls_back_to_version_json_api(monkeypatch):
         "https://mirror.test/pypi/pypi/workswarm/1.2.3/json",
         "https://pypi.org/pypi/workswarm/1.2.3/json",
     ]
+
+
+def test_publish_time_gives_up_within_budget_when_upstream_hangs(monkeypatch):
+    requested_urls = []
+
+    def fake_urlopen(request, timeout):
+        requested_urls.append(request.full_url)
+        # 1st request: simple index (mirror) without upload-time -> empty
+        if len(requested_urls) == 1:
+            return JsonResponse({
+                "files": [{
+                    "filename": "workswarm-1.2.3-py3-none-any.whl",
+                    "url": "https://mirror.test/pypi/packages/workswarm-1.2.3-py3-none-any.whl",
+                }],
+            })
+        # 2nd request: mirror JSON API reachable but carries no upload time
+        if len(requested_urls) == 2:
+            return JsonResponse({"releases": {"1.2.3": []}})
+        # 3rd request: upstream PyPI hangs. Only the total budget keeps the
+        # check from stalling for a full per-request timeout (5s here); the
+        # request gets the remaining budget as its socket timeout and then
+        # fails, so _fetch_publish_time gives up.
+        time.sleep(timeout)
+        raise version_source.socket.timeout("simulated hang")
+
+    monkeypatch.setattr(version_source, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        version_source, "PYPI_PUBLISH_TIME_TOTAL_TIMEOUT_SECONDS", 0.05
+    )
+    source = version_source.PyPIVersionSource(
+        package="workswarm",
+        mirror="https://mirror.test/pypi",
+        timeout_seconds=5,
+    )
+
+    start = time.monotonic()
+    release = source.fetch_latest("1.2.3")
+    elapsed = time.monotonic() - start
+
+    # The version and download info were already resolved from the simple
+    # index; the hanging supplementary lookup must not lose them or stall the
+    # check past a fraction of the per-request timeout.
+    assert requested_urls == [
+        "https://mirror.test/pypi/simple/workswarm/",
+        "https://mirror.test/pypi/pypi/workswarm/1.2.3/json",
+        "https://pypi.org/pypi/workswarm/1.2.3/json",
+    ]
+    assert release.published_at == ""
+    assert release.version == "1.2.3"
+    assert release.assets[0].name == "workswarm-1.2.3-py3-none-any.whl"
+    assert elapsed < 1.0

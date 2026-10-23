@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import socket
+import time
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -24,6 +25,15 @@ GITHUB_API = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
 GITCODE_API = "https://api.gitcode.com/api/v5/repos/{owner}/{repo}/releases/latest"
 PYPI_SIMPLE_API = "https://pypi.org/simple/{package}/"
 PYPI_VERSION_JSON_API = "https://pypi.org/pypi/{package}/{version}/json"
+
+#: Total budget for the best-effort publish-time lookup in
+#: ``PyPIVersionSource._fetch_publish_time``.  The release check has already
+#: fetched the simple index, so a hanging supplementary endpoint (e.g. upstream
+#: PyPI when a mirror serves the index without timestamps) must not stack
+#: another full per-request timeout on top and push the whole check past the
+#: web client's request timeout.  On budget exhaustion the lookup gives up and
+#: returns an empty timestamp, keeping the release info already resolved.
+PYPI_PUBLISH_TIME_TOTAL_TIMEOUT_SECONDS = 10.0
 
 # Matches pre-release markers: 0.2.0-beta1, 0.2.0.beta.1, 0.2.0alpha, 0.2.0rc2, 0.2.0.dev0, etc.
 _PRERELEASE_PATTERN = re.compile(
@@ -649,6 +659,13 @@ class PyPIVersionSource(VersionSource):
         just the HTML index cannot provide a publish time. Query the
         version-scoped JSON API (mirror first, then upstream PyPI) to recover
         it without downloading metadata for every release.
+
+        The whole lookup is bounded by
+        ``PYPI_PUBLISH_TIME_TOTAL_TIMEOUT_SECONDS``: each candidate request only
+        gets the remaining budget as its socket timeout, and once the budget is
+        exhausted the lookup gives up and returns an empty timestamp (the
+        caller keeps the release info already fetched) instead of letting a
+        hanging endpoint delay the check past the web client's timeout.
         """
         candidates = [
             urljoin(self._base_url + "/", f"pypi/{self._name}/{version}/json")
@@ -659,11 +676,15 @@ class PyPIVersionSource(VersionSource):
         )
         if default_url not in candidates:
             candidates.append(default_url)
+        deadline = time.monotonic() + PYPI_PUBLISH_TIME_TOTAL_TIMEOUT_SECONDS
         for url in candidates:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
                 req = Request(url)
                 req.add_header("Accept", "application/json")
-                with urlopen(req, timeout=self._timeout) as resp:
+                with urlopen(req, timeout=min(self._timeout, remaining)) as resp:
                     payload = json.loads(resp.read().decode("utf-8"))
             except (HTTPError, URLError, json.JSONDecodeError, OSError, ValueError):
                 continue
