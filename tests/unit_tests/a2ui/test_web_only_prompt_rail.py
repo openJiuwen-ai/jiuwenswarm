@@ -311,3 +311,55 @@ async def test_response_prompt_rail_does_not_inject_a2ui_for_tui_session_prefix(
 
     assert "response" in rail.system_prompt_builder.sections
     assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
+async def test_a2ui_boost_injected_only_for_officeclaw_channel(monkeypatch):
+    """A2UI_BOOST(117) targets officeclaw (relay-claw) to counteract soul's
+    structured-output bias; other channels must not receive it."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+
+    await rail.before_model_call(SimpleNamespace(inputs={"channel": "officeclaw"}))
+
+    assert LocalSectionName.A2UI in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI_BOOST in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
+async def test_a2ui_boost_not_injected_for_web_channel(monkeypatch):
+    """Web already renders A2UI natively without the boost counterweight."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+
+    await rail.before_model_call(SimpleNamespace(inputs={"channel": "web"}))
+
+    assert LocalSectionName.A2UI in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI_BOOST not in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
+async def test_a2ui_boost_removed_when_a2ui_disabled(monkeypatch):
+    """With A2UI off, both the main section and a stale boost section must be
+    removed from the prompt builder."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=False),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+    rail.system_prompt_builder.sections[LocalSectionName.A2UI] = object()
+    rail.system_prompt_builder.sections[LocalSectionName.A2UI_BOOST] = object()
+
+    await rail.before_model_call(SimpleNamespace(inputs={"channel": "officeclaw"}))
+
+    assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI_BOOST not in rail.system_prompt_builder.sections
