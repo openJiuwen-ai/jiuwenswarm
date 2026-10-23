@@ -146,13 +146,13 @@ JIUWENBOX_URL=unix:///tmp/jiuwenbox-sock/jiuwenbox.sock jiuwenbox health
 | --- | --- | --- |
 | `id` | string | 沙箱 ID |
 | `phase` | string | 沙箱状态，取值为 `provisioning`、`ready`、`stopped`、`error`、`deleting` |
-| `runtime` | string | 当前固定为 `process` |
-| `pid` | integer/null | 沙箱生命周期进程 PID |
+| `runtime` | string | 沙箱后端：`process`（bubblewrap）或 `conch` |
+| `pid` | integer/null | `process` 后端为生命周期进程 PID；`conch` 后端无 host PID，固定为 `null` |
 | `created_at` | string | 创建时间 |
 | `started_at` | string/null | 启动时间 |
 | `error_message` | string/null | 错误信息 |
-| `env` | object | 创建沙箱时注入的环境变量 |
-| `ip_address` | string/null | 最近一次成功 create/start 后确认的 IPv4 快照。`network.mode=isolated` 时为沙箱 veth 地址；`host` 时为 jiuwenbox 与沙箱共享网络命名空间的出口 IPv4（若服务运行在 Docker/WSL 中，可能是容器或 WSL 地址，不承诺物理宿主机 LAN 地址）。`provisioning`、创建/启动失败的 `error` 为 `null`；`stopped` 保留停止前最后一次有效地址。get/list 不重新探测，只返回该快照 |
+| `env` | object | 创建沙箱时提交的环境变量；不包含 policy 或 runtime 注入的变量 |
+| `ip_address` | string/null | 最近一次成功 create/start 后确认的 IPv4 快照。`network.mode=isolated` 时为沙箱 veth 地址；`host` 时为 jiuwenbox 与沙箱共享网络命名空间的出口 IPv4（若服务运行在 Docker/WSL 中，可能是容器或 WSL 地址，不承诺物理宿主机 LAN 地址）。`process`（bwrap）后端同时将该快照注入 `SANDBOX_IP`；解析失败时变量不存在。该变量仅为便利元数据，沙箱代码可自行修改，不能用于鉴权或可信审计。`provisioning`、创建/启动失败的 `error` 为 `null`；`stopped` 保留停止前最后一次有效地址。get/list 不重新探测，只返回该快照；restart 会重新探测并注入 |
 
 示例：
 
@@ -241,10 +241,23 @@ print(resp.json())
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `env` | object | 否 | 沙箱公共环境变量 |
+| `env` | object | 否 | 沙箱公共环境变量；`SANDBOX_IP` 为 process runtime 保留键，提交时返回 422 |
 | `policy` | object/null | 否 | 覆盖或追加的 policy 数据 |
 | `policy_mode` | string | 否 | `override` 或 `append`，默认 `override` |
 | `sandbox_id` | string/null | 否 | 可选，指定沙箱 ID。长度 4~16，仅允许小写字母、数字、减号（`-`）和下划线（`_`）。省略或空字符串时服务端自动生成（形如 `6011f5ca-76a`）。格式非法返回 400；与已有 ID 冲突返回 409 |
+| `sandbox_runtime` | string/null | 否 | 沙箱后端。省略、空字符串或 `bwrap` → 响应 `runtime=process`；`conch` → 响应 `runtime=conch`。其它值返回 400 |
+
+说明：
+
+- 启动 policy 文件可以没有 `conch` 段。创建 Conch 沙箱时读取合并后的 `policy.conch`（`template_name`、`vcpu_num` / `vcpu_max` / `ram_mb`、`env`、`filesystem_policy.bind_mounts`、`network`，以及可选成对的 `run_as_user` / `run_as_group`）。
+- process（bwrap）环境优先级为 policy `environment` → create `env` → exec `env` → runtime 保留变量。有效 policy 的 `environment` 也不能声明 `SANDBOX_IP`。
+- `conch.template_name` 解析顺序：有效 policy → 环境变量 `JIUWENBOX_CONCH_TEMPLATE_NAME` → 不传（由 conchd `sandbox.default_template_name` 决定）。
+- `conch.run_as_user` / `conch.run_as_group`：可选成对；create 时在宿主机解析为 uid:gid（纯数字直通，名字走 `pwd`/`grp`）。未配置则保持 conch-agent 身份。未知名或越界返回 400。与顶层 `process.run_as_*` 无关；改身份需重建沙箱。
+- 顶层 `environment` 只注入 bwrap/process。Conch guest 环境变量用 `conch.env`；创建请求的 `env` 覆盖同名 key。
+- `conch.network` 仅支持 IPv4/CIDR 的 `default` + `allowed_ips` / `blocked_ips`（无域名/端口/IPv6）；映射到 Conch `allowOut`/`denyOut`/`allowIn`/`denyIn`，并由 `egress.default` 推导 SDK 内部的 `allow_internet_access`（不对用户暴露）。
+- `ingress.default: deny` 且 `allowed_ips` 为空时，适配层仅在发给 Conch 的 `denyIn` 注入 `0.0.0.0/0`，不会写入用户可见或持久化的 jiuwenbox policy。
+- SDK 未安装、conchd 不可达或 template 不存在属于 runtime 启动错误：仍返回 `201`，`phase=error`，`error_message` 说明原因。非法 `sandbox_runtime`、非法 Conch bind mount、非法网络地址或非法 `run_as_*` 返回 `400`。
+- CLI：`jiuwenbox sandbox create --sandbox-runtime conch`。
 
 Python 请求示例：
 
@@ -412,6 +425,8 @@ print(resp.json())
 
 用途：停止沙箱。
 
+对 `runtime=conch` 的沙箱返回 **409**（Conch 无 stop；请用 `DELETE` 销毁，或用 `restart` 冷重建）。
+
 Python 请求示例：
 
 ```python
@@ -444,6 +459,8 @@ print(resp.json())
 接口：`POST /api/v1/sandboxes/{sandbox_id}/restart`
 
 用途：重启沙箱。
+
+对 `runtime=conch`：因无 stop，实现为冷重建（先 delete 再按同 ID 和当前 policy create）。
 
 Python 请求示例：
 
@@ -484,7 +501,7 @@ print(resp.json())
 | --- | --- | --- | --- |
 | `command` | string[] | 是 | 待执行命令 |
 | `workdir` | string/null | 否 | 命令工作目录 |
-| `env` | object/null | 否 | 本次执行追加环境变量 |
+| `env` | object/null | 否 | 本次执行覆盖/追加的环境变量；不能包含保留键 `SANDBOX_IP` |
 | `stdin` | string/null | 否 | 标准输入文本 |
 | `timeout_seconds` | integer/null | 否 | 超时时间，单位秒 |
 
@@ -533,7 +550,7 @@ print(resp.json())
 | `command` | string[] | 是 | 要执行的命令 argv |
 | `job_id` | string | 否 | 自定义 job id（4–16 位，`[0-9a-z_-]`）；省略则服务端自动生成 |
 | `workdir` | string | 否 | 沙箱内工作目录 |
-| `env` | object | 否 | 额外环境变量 |
+| `env` | object | 否 | 额外环境变量；不能包含保留键 `SANDBOX_IP` |
 | `stdin` | string | 否 | 标准输入文本 |
 | `timeout_seconds` | int | 否 | 预留字段 |
 
@@ -839,6 +856,40 @@ print(resp.json())
 
 ## Policy 接口
 
+etcd 数据面热更新与下面的批量 `PUT /api/v1/policies` 走同一方法、同一套语义。
+watcher 抽取 etcd 文档的 `jiuwenbox` 段（即本接口的 `policy` 体），以
+`policy_mode=override`、`update_default_policy=true`、
+`update_existing_sandboxes=true` 调用 `SandboxManager.update_all_policies`。
+契约 key 为 `/agentos/config/data-plane`（可用 `JIUWENBOX_ETCD_CONFIG_KEY` 覆盖）。
+`JIUWENBOX_ETCD_ENDPOINTS` 为空，或未设置 `JIUWENBOX_RUNTIME_PROFILE=agentos` 时不启动 watcher。
+兄弟段 `gateway:` 被忽略。
+只有 `network` / `conch.network` 的 egress/ingress 会对运行中沙箱热生效；
+其余字段只影响之后创建的沙箱。`update_policy.yaml` 一旦存在会在下次启动
+整份替换 `JIUWENBOX_POLICY_PATH` 基线。`NetworkRulePolicy` 等模型
+未设 `extra="forbid"`，拼错字段名会被静默丢弃。
+
+### 查询默认沙箱策略
+
+接口：`GET /api/v1/policies`
+
+用途：返回当前生效的默认沙箱策略，即新建沙箱继承的基线。
+它等于 `~/.jiuwenbox/update_policy.yaml`（若存在）中保存的已合并默认策略，
+否则等于启动时加载的 policy YAML；再叠加此后所有带
+`update_default_policy: true` 的 `PUT /api/v1/policies` 更新。
+创建沙箱时不传 `policy`（或 `policy_mode: append`）就以它为基线。
+
+Python 请求示例：
+
+```python
+import requests
+
+resp = requests.get("http://127.0.0.1:8321/api/v1/policies", timeout=30)
+print(resp.status_code)
+print(resp.json())
+```
+
+返回完整 `SecurityPolicy` JSON（与 `GET /policies/{sandbox_id}` 同形）。
+
 ### 查询沙箱策略
 
 接口：`GET /api/v1/policies/{sandbox_id}`
@@ -875,16 +926,22 @@ print(resp.json())
 
 接口：`PUT /api/v1/policies/{sandbox_id}`
 
-用途：动态更新指定沙箱的 `network.egress` / `network.ingress`。
-请求体字段与创建沙箱一致（`policy` + `policy_mode`）。
-本期仅支持改 ingress/egress；`network.mode` / `uplink` 以及其它 policy 段会返回 400。
+用途：动态更新指定沙箱的网络 ingress/egress。
+请求体字段为 `policy` + `policy_mode`。
+`runtime=process` 只接受 `policy.network` 的 egress/ingress；`network.mode` / `uplink` 以及其它 policy 段返回 400。
 对 `network.mode: isolated` 且正在运行的沙箱会热更新 netns 内 iptables；已停止的沙箱只落盘，下次 start 生效。`host` 模式返回 400。
+`runtime=conch` 只接受 `policy.conch.network` 的 egress/ingress，并热更新到 Conch。
+`append`：字典递归合并，列表去重追加，标量覆盖；未出现的叶子保留。
+`override`：字典递归合并，列表整段替换，标量覆盖；未出现的叶子保留。
+Conch 热更新始终把合并后的完整 `conch.network` 映射为 Conch 网络字段后做 full-replace `update_network`。运行中沙箱先应用 runtime 规则，再落盘；落盘失败会 best-effort 回滚 runtime。STOPPED/ERROR 只持久化，下次 start 生效。
+仅对新连接生效；已建立连接不会因热更新断开。
+响应中的 `conch.network` 含 `default`，不含 `allow_internet_access`，也不含适配层合成的 `0.0.0.0/0`。
 
 请求字段：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `policy` | object | 是 | 本期须含 `network`，且 `egress` / `ingress` 至少提供一个 |
+| `policy` | object | 是 | process 沙箱须含 `network`；conch 沙箱须含 `conch.network`；`egress` / `ingress` 至少提供一个 |
 | `policy_mode` | string | 否 | `override`（默认）或 `append`，语义与创建沙箱相同 |
 
 Python 请求示例：
@@ -922,11 +979,25 @@ print(resp.json())
 
 接口：`PUT /api/v1/policies`
 
-用途：对当前所有已注册沙箱应用与单沙箱接口相同的网络规则更新。
-不修改 server 默认 policy。请求体非法时整请求 400，不落任何沙箱。
-`host` 模式沙箱记入 `skipped`；单个沙箱热更新失败记入 `failed`，不阻断其余沙箱。
+用途：更新 server 默认沙箱策略，和/或对当前已注册沙箱热更新网络规则。
+请求体非法时整请求 400，不落盘、不改默认策略、不碰沙箱。
 
-请求体与 `PUT /api/v1/policies/{sandbox_id}` 相同。
+- `update_default_policy=true`：将 `policy` 作为完整沙箱策略 fragment 深度合并进默认策略，并把合并后的完整默认策略覆盖写入 `~/.jiuwenbox/update_policy.yaml`（只保留一份）。重启时若该文件存在则直接作为默认策略。含 `timeout` 时立即重启 idle reaper。`inference_privacy_proxies` 会被忽略。未设置 `JIUWENBOX_RUNTIME_PROFILE=agentos` 时该字段返回 400。
+- `update_existing_sandboxes=true`（默认）：只消费 `network` / `conch.network` 的 egress/ingress，按 runtime 热更新现有沙箱；缺少对应片段记入 `skipped`，`host` 模式 process 沙箱记入 `skipped`，单个失败记入 `failed`。
+- `update_existing_sandboxes=false`：不枚举现有沙箱，`updated`/`skipped`/`failed` 为空。
+
+未带 `update_default_policy`、且没有 Conch 沙箱时，行为与原先的批量网络更新相同：不修改 server 默认 policy。
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `policy` | object | 是 | 沙箱相关 fragment；现有沙箱仅使用其中的网络 egress/ingress |
+| `policy_mode` | string | 否 | `override`（默认）或 `append` |
+| `update_default_policy` | bool | 否 | 默认 `false`。为 `true` 时更新默认策略并落盘 |
+| `update_existing_sandboxes` | bool | 否 | 默认 `true`。为 `false` 时不热更新现有沙箱 |
+
+`update_default_policy` 只影响之后创建、且未自带完整 policy 的沙箱。该字段只在批量接口上有效；发给 `PUT /api/v1/policies/{sandbox_id}` 会被忽略。合并结果落在 `~/.jiuwenbox/update_policy.yaml`，不改写 `JIUWENBOX_POLICY_PATH`。要重新以 base YAML 为准，删除该文件后重启。
 
 Python 请求示例：
 

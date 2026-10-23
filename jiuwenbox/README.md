@@ -11,6 +11,7 @@ isolation policy in-process by spawning `bubblewrap` directly for each sandbox
 ## Features
 
 - Process isolation with `bubblewrap`
+- Optional Conch sandbox backend (`sandbox_runtime=conch`) via the Conch Python SDK
 - Static policy-based filesystem access rules
 - Server-managed sandbox backing storage (`~/.jiuwenbox/workspace`)
 - Optional network isolation with Linux network namespaces and firewall rules
@@ -27,9 +28,9 @@ isolation policy in-process by spawning `bubblewrap` directly for each sandbox
   - FastAPI app that manages sandbox lifecycle, policy loading, audit logs, and
     API routing.
 - `server/runtime`
-  - In-process runtime adapter that translates each sandbox policy into a
-    `bubblewrap` command line and spawns it directly from the server (one
-    long-lived daemon per sandbox plus per-call background commands).
+  - In-process runtime adapters: `ProcessRuntime` (bubblewrap daemon) and
+    optional `ConchRuntime` (Conch SDK; selected per sandbox via
+    `sandbox_runtime`).
 - `server/proxy_manager`
   - Manages inference privacy proxies for LLM API routing with API key injection.
 - `server/policy_reader`
@@ -78,6 +79,96 @@ uv pip install ./dist/jiuwenbox*.whl
 The wheel ships `jiuwenbox/configs/*.yaml` (sources under `src/jiuwenbox/configs/`).
 When `JIUWENBOX_POLICY_PATH` is unset, the server uses the bundled
 `default-policy.yaml`.
+
+## Optional Conch Backend
+
+The default backend remains bubblewrap (`sandbox_runtime` omitted / empty / `bwrap`
+→ response field `runtime=process`). Setting `sandbox_runtime=conch` routes lifecycle, exec, files,
+and network updates through `ConchRuntime`.
+
+### Install the Conch SDK
+
+The Conch SDK is not declared as a jiuwenbox PyPI dependency (the package is not
+a reliable public distribution). Install the checkout that ships with this
+monorepo (adjust the relative path to your tree):
+
+```bash
+# from code_agent/jiuwenbox/
+pip install -e ../../Conch/sdk
+```
+
+jiuwenbox lazy-imports Conch only when a Conch sandbox is created, so default
+bwrap deployments do not need the SDK.
+
+### Runtime prerequisites
+
+- `conchd` is running and reachable
+- `CONCH_SDK_CONFIG` points at a valid Conch SDK config
+- A template name is available via policy `conch.template_name`, env
+  `JIUWENBOX_CONCH_TEMPLATE_NAME`, or conchd `sandbox.default_template_name`
+- Bind mounts need Conch volume/virtiofs support on the host
+- Network IP filters need CNI + iptables and the corresponding kernel capabilities
+
+### Conch policy fields (`policy.conch`)
+
+The startup policy file does not need a `conch` section. A create request can
+supply `policy.conch`; omitted fields use the model defaults.
+
+| Field | Purpose |
+| --- | --- |
+| `template_name` | Conch template (also overridable via `JIUWENBOX_CONCH_TEMPLATE_NAME`) |
+| `vcpu_num` / `vcpu_max` | Optional VM vCPU boot count and max; omit → SDK/`sdk-config.yaml` defaults |
+| `ram_mb` | Optional VM memory in MB; omit → SDK default |
+| `run_as_user` / `run_as_group` | Optional pair; host resolves names/digits to uid:gid at create. Omit both → conch-agent identity. Unknown names → **400** (no nobody fallback). Independent of top-level `process.run_as_*` |
+| `env` | Guest env for Conch create. **Not** the top-level `environment` (bwrap-only). Create API `env` overrides same keys |
+| `filesystem_policy.bind_mounts` | Host dirs → Conch `volume_mounts` |
+| `network` | IPv4 allow/deny ingress/egress (hot-updatable) |
+
+Changing `vcpu_*` / `ram_mb` / `env` / `run_as_*` requires recreating the sandbox (not hot-updated). Guest needs `python3`; exec and file APIs use `commands.run`, with setuid/setgid wrapping when `run_as_*` is set.
+
+Example:
+
+```yaml
+conch:
+  template_name: tmpl_xxx
+  vcpu_num: 2
+  vcpu_max: 4
+  ram_mb: 4096
+  # run_as_user: sandbox
+  # run_as_group: sandbox
+  env:
+    FOO: bar
+  filesystem_policy:
+    bind_mounts: []
+  network:
+    egress:
+      default: allow
+```
+
+### Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `CONCH_SDK_CONFIG` | Path to Conch SDK config (required for Conch sandboxes) |
+| `JIUWENBOX_CONCH_TEMPLATE_NAME` | Fallback template name when policy `conch.template_name` is empty |
+| `JIUWENBOX_CONCH_NETWORK_TEST_IP` | Optional stable IPv4 for Conch network e2e enforcement tests |
+
+### Lifecycle note
+
+Conch has no `Sandbox.stop()`. Calling jiuwenbox `POST .../stop` on a Conch
+sandbox returns **409**. Use `DELETE` to destroy the sandbox, or `POST .../restart`
+for cold recreate (delete + create with the same id and current policy).
+`start` still recreates a non-running Conch sandbox from the persisted policy.
+
+### CLI examples
+
+```bash
+export JIUWENBOX_CONCH_TEMPLATE_NAME=tmpl_xxx
+jiuwenbox sandbox create --sandbox-runtime conch
+jiuwenbox sandbox create --sandbox-runtime conch --policy-file conch-policy.yaml
+jiuwenbox policy update <ID> --policy \
+  '{"conch":{"network":{"egress":{"blocked_ips":["192.0.2.10"]}}}}'
+```
 
 ## Start The Server
 
@@ -176,6 +267,8 @@ UDS-related env vars:
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `JIUWENBOX_LISTEN` | `http://<HTTP_IP_ADDRESS>:<PORT>` | Management API listen URI; accepts `http://host:port` or `unix:///abs/socket/path`. |
+| `JIUWENBOX_ETCD_ENDPOINTS` | _unset_ | Comma-separated etcd client URLs for data-plane policy sync. Empty disables the watcher. The watcher also stays off unless `JIUWENBOX_RUNTIME_PROFILE=agentos`. |
+| `JIUWENBOX_ETCD_CONFIG_KEY` | `/agentos/config/data-plane` | etcd key shared with the management plane and gateway. |
 | `JIUWENBOX_UDS_MODE` | `0666` | UDS socket file permissions (octal string). The Docker default is permissive so a non-root host user can connect; for multi-tenant / hardened deployments set `0660` and pass `docker run --user $(id -u):$(id -g)`. |
 | `JIUWENBOX_UDS_HOST_DIR` | `/tmp/jiuwenbox-sock` | Host directory bind-mounted by `run_docker.sh` to expose the socket. |
 | `JIUWENBOX_UDS_CONTAINER_DIR` | `/run/jiuwenbox` | Container-side mount point; must match the directory in `JIUWENBOX_LISTEN`'s socket path. |
@@ -290,8 +383,72 @@ ls /tmp/jiuwenbox-logs
 
 ## Policy Files
 
-The server loads one static default policy at startup. Policy dynamic update is
-not enabled.
+The server loads `~/.jiuwenbox/update_policy.yaml` as the default policy when
+that file exists; otherwise it loads `JIUWENBOX_POLICY_PATH` (or the bundled
+`default-policy.yaml`). `PUT /api/v1/policies` with `update_default_policy: true`
+(and the etcd data-plane watcher, which calls the same method) merges the
+request into the in-memory default and overwrites `update_policy.yaml` with the
+full merged result. Once that file exists it **replaces** the startup YAML
+wholesale on the next boot — it is not merged with `JIUWENBOX_POLICY_PATH`.
+Delete the file and restart to go back to the base YAML.
+Persisting the default policy requires `JIUWENBOX_RUNTIME_PROFILE=agentos`.
+
+Misspelled keys inside `network.egress` / `network.ingress` (and similar
+fragments) are dropped silently: `NetworkRulePolicy` does not set
+`extra="forbid"`. Same behaviour as the HTTP API.
+
+### etcd data-plane policy sync
+
+jiuwenbox can watch the AgentOS data-plane key and apply the `jiuwenbox`
+section through the same path as `PUT /api/v1/policies`
+(`update_all_policies` with `policy_mode=override`,
+`update_default_policy=true`, `update_existing_sandboxes=true`). The
+document is a three-party contract with the management plane and gateway;
+do not change the key without coordinating all three.
+
+- Key: `/agentos/config/data-plane` (override with `JIUWENBOX_ETCD_CONFIG_KEY`)
+- `JIUWENBOX_ETCD_ENDPOINTS`: comma-separated `http://host:port`. Empty
+  disables the watcher. On this branch the watcher also requires
+  `JIUWENBOX_RUNTIME_PROFILE=agentos`.
+- Only the top-level `jiuwenbox:` mapping is applied. The sibling `gateway:`
+  section is ignored. Top-level keys starting with `_` are metadata.
+- The `jiuwenbox` mapping is the same fragment as the HTTP `policy` body.
+  Live sandboxes only hot-apply `network` / `conch.network` egress/ingress;
+  other fields affect sandboxes created afterwards.
+- Setup failures and a missing endpoint list do not block server startup.
+
+Local smoke test (no AgentOS). Prefer `quay.io/coreos/etcd` (or a local
+`etcd` binary); `gcr.io` is often unreachable:
+
+```bash
+docker run -d --name jbx-etcd -p 2379:2379 \
+  quay.io/coreos/etcd:v3.5.16 \
+  /usr/local/bin/etcd \
+  --advertise-client-urls http://0.0.0.0:2379 \
+  --listen-client-urls http://0.0.0.0:2379
+
+docker exec -i jbx-etcd etcdctl put /agentos/config/data-plane <<'EOF'
+_version: 1
+jiuwenbox:
+  network:
+    egress:
+      default: deny
+      allowed_domains: ["example.com"]
+    ingress:
+      default: deny
+EOF
+
+rm -f ~/.jiuwenbox/update_policy.yaml
+JIUWENBOX_RUNTIME_PROFILE=agentos \
+  JIUWENBOX_ETCD_ENDPOINTS=http://127.0.0.1:2379 \
+  jiuwenbox-server
+# other terminal:
+curl -s http://<HTTP_IP_ADDRESS>:<PORT>/api/v1/policies | jq .network.egress
+```
+
+Re-put the key with a different `allowed_domains` list; `GET /policies`
+should change within a few seconds. Delete `~/.jiuwenbox/update_policy.yaml`
+before repeating the smoke test, or the previous result becomes the next baseline.
 
 ### Field Reference
 
@@ -301,7 +458,7 @@ not enabled.
 | --- | --- | --- |
 | `version` | `1` | Policy schema version. Only `1` is supported today. |
 | `name` | `"default"` | Human-readable name shown by the policy API. |
-| `environment` | `{}` | Environment variables injected into every process inside the sandbox. |
+| `environment` | `{}` | **bwrap/process only.** Environment variables injected into every process inside the sandbox. `runtime=conch` does not read this field; use `conch.env`. |
 
 #### `filesystem_policy`
 
@@ -571,7 +728,8 @@ jiuwenswarm decides **whether the sandbox is on, which jiuwenbox to talk to, whe
 sandbox:
   # -- Endpoint & type --
   url: "http://<HTTP_IP_ADDRESS>:<PORT>"      # jiuwenbox HTTP endpoint; TCP uses http://, UDS uses unix:///abs/socket/path
-  type: "jiuwenbox"                 # sandbox provider name; currently only "jiuwenbox"
+  type: "jiuwenbox"                 # jiuwenbox | jiuwenbox-conch | yuanrong
+  # template_name: "<conch-template>" # required for jiuwenbox-conch; that mode rejects files
 
   # -- Startup & policy --
   startup_mode: "internal"          # internal = agent-server spawns jiuwenbox-server; external = you start it yourself
@@ -582,7 +740,7 @@ sandbox:
   enabled: true                     # whether sandbox mode is on
   excluded_commands:                # shell globs whose matches run locally instead of in the sandbox
     - "git *"
-  files:                            # user-configured write policy; auto-managed paths are injected by the server, no need to repeat them here
+  files:                            # type=jiuwenbox only; a non-empty files block fails validation for jiuwenbox-conch
     allow: []
     deny: []
 ```
@@ -592,13 +750,30 @@ Field reference:
 | Field | Values | Default | Notes |
 | --- | --- | --- | --- |
 | `sandbox.url` | URL string | `http://<HTTP_IP_ADDRESS>:<PORT>` | jiuwenbox management API endpoint. TCP: `http://host:port`; UDS: `unix:///abs/socket/path` (mirrors `JIUWENBOX_LISTEN`). |
-| `sandbox.type` | string | `jiuwenbox` | Sandbox provider name. Currently jiuwenswarm only wires up `jiuwenbox`. |
-| `sandbox.startup_mode` | `internal` / `external` | `internal` | `internal`: agent-server spawns `jiuwenbox-server` at boot and persists the effective `url` (auto-picks a free port if the configured one is busy). `external`: agent-server never touches jiuwenbox; you must start it yourself per the top of this README. |
+| `sandbox.type` | string | `jiuwenbox` | `jiuwenbox` (bwrap/process), `jiuwenbox-conch` (same HTTP API plus Conch; the provider is still jiuwenbox), or `yuanrong`. |
+| `sandbox.template_name` | string | _unset_ | **Required for `jiuwenbox-conch`.** Written to `policy.conch.template_name`. |
+| `sandbox.user` / `sandbox.group` | string | _unset_ | Optional pair. Under `jiuwenbox-conch` they are copied to `policy.conch.run_as_user` / `run_as_group` and resolved on the jiuwenbox host. Prefer numeric strings when the host passwd/group database does not contain the names. |
+| `sandbox.startup_mode` | `internal` / `external` | `internal` | `internal`: agent-server spawns `jiuwenbox-server` at boot and persists the effective `url` (auto-picks a free port if the configured one is busy). `external`: agent-server never touches jiuwenbox; you must start it yourself per the top of this README. Conch should use `external`. |
 | `sandbox.policy_file` | filename or path | `code-agent-policy.yaml` | Bare filename → resolved relative to `jiuwenbox/configs/`; otherwise expanded (`~`, `$VAR`) and used verbatim. **Only honored under `startup_mode=internal`**; in `external` mode the policy is chosen by whoever started jiuwenbox-server (via `JIUWENBOX_DEFAULT_POLICY_PATH`). |
-| `sandbox.preserve_file_sharing_mode` | `mount` | `mount` | Intrinsic files (`AGENT.md` etc.) and `project_dir` are bind-mounted, with `project_dir/config/config.yaml` auto-added to `deny_write`. Writing any other value is rejected. |
+| `sandbox.preserve_file_sharing_mode` | `mount` | `mount` | Intrinsic files (`AGENT.md` etc.) and `project_dir` are bind-mounted, with `project_dir/config/config.yaml` auto-added to `deny_write`. Under `jiuwenbox-conch` those mounts go into `policy.conch.filesystem_policy.bind_mounts`. Writing any other value is rejected. |
 | `sandbox.enabled` | bool | `false` | When true, agent rebuilds route tools through the sandbox provider; toggled by `/sandbox enable`. |
 | `sandbox.excluded_commands` | list[str] | `[]` | Shell globs matched per **simple-command leaf**. All matches → whole command on host; no matches → whole command in sandbox; mixed → local bash orchestrates control flow and wraps remote leaves with `jiuwenbox sandbox exec` (CLI required). Unsafe mixed forms run the whole original command in the sandbox. |
-| `sandbox.files.allow` / `sandbox.files.deny` | list | `[]` | User-configured write policy. The effective set shown by `/sandbox status` is `auto_managed ∪ user_configured`; see [the `/sandbox` command reference](../docs/en/SlashCommands.md). |
+| `sandbox.files.allow` / `sandbox.files.deny` | list | `[]` | Write policy, not a mount list. **`type=jiuwenbox` only**; a non-empty `files` block under `jiuwenbox-conch` is rejected. The effective set shown by `/sandbox status` is `auto_managed ∪ user_configured`; see [the `/sandbox` command reference](../docs/en/SlashCommands.md). |
+
+Conch example:
+
+```yaml
+sandbox:
+  type: jiuwenbox-conch
+  url: http://<HTTP_IP_ADDRESS>:<PORT>
+  startup_mode: external
+  template_name: <conch-template>
+  # user: "1000"      # optional; pair with group → policy.conch.run_as_*
+  # group: "1000"
+  policy_file: code-agent-policy.yaml
+  enabled: true
+  preserve_file_sharing_mode: mount
+```
 
 ### Two typical deployment shapes
 
@@ -803,6 +978,25 @@ flag to maintain in sync:
 ./tests/test.sh default --server-endpoint=unix:///tmp/jiuwenbox-sock/jiuwenbox.sock
 ```
 
+### Conch API tests
+
+`tests/integration/test_server_api_conch.py` covers `sandbox_runtime` validation
+without Conch, plus lifecycle/exec/files/network cases marked `@pytest.mark.conch`.
+Those opt in with `JIUWENBOX_CONCH_TEMPLATE_NAME` and talk to jiuwenbox over HTTP
+only — Conch SDK / `CONCH_SDK_CONFIG` / conchd must be configured on the
+**server** host, not necessarily on the pytest client:
+
+```bash
+# server: install SDK, set CONCH_SDK_CONFIG, run conchd + jiuwenbox
+# client:
+export JIUWENBOX_CONCH_TEMPLATE_NAME=tmpl_xxx
+# optional:
+# export JIUWENBOX_CONCH_TEMPLATE_NAME_OVERRIDE=tmpl_yyy
+# export JIUWENBOX_CONCH_NETWORK_TEST_IP=198.51.100.10
+python3 -m pytest tests/integration/test_server_api_conch.py -v \
+  --server-endpoint <HTTP_IP_ADDRESS>:<PORT>
+```
+
 `test.sh` does **not** start the server; launch jiuwenbox first on the
 selected transport (TCP with `JIUWENBOX_LISTEN=http://<HTTP_IP_ADDRESS>:<PORT>` or a
 custom port, UDS with `JIUWENBOX_LISTEN=unix:///...`).
@@ -892,6 +1086,9 @@ jiuwenbox health
 
 # Sandbox lifecycle
 ID=$(jiuwenbox sandbox create | jq -r .id)
+# Optional Conch backend (default remains bwrap/process)
+jiuwenbox sandbox create --sandbox-runtime conch
+jiuwenbox sandbox create --sandbox-runtime conch --policy-file conch-policy.yaml
 jiuwenbox sandbox exec "$ID" -- python3 -c 'print("hi")'
 JOB=$(jiuwenbox sandbox bg-exec "$ID" --job-id http-srv -- python3 -m http.server 18080 | jq -r .job_id)
 jiuwenbox sandbox bg-get "$ID" "$JOB"
