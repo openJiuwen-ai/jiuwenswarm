@@ -1,4 +1,5 @@
 import { withCatalogCache, type CatalogCacheMetadata } from '../catalogCache';
+import { isEnterprise } from '../../edition';
 import { connectorApi } from '../../services/connectorApi';
 import { webRequest } from '../../services/webClient';
 import { requestEquipmentList } from '../equipmentListRequest';
@@ -46,6 +47,46 @@ function agentTemplateWritePayload(draft: AgentDraft) {
       ? { runtime: { provider_name: draft.externalHarnessProvider, config: {} } }
       : {}),
   };
+}
+
+const POD_RETRY_INTERVAL_MS = 2_000;
+const POD_RETRY_BUDGET_MS = 60_000;
+
+export function isPodStartingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+  return code === 'NO_POD_AVAILABLE' || message.includes('NO_POD_AVAILABLE') || message.includes('Pod 冷启动中');
+}
+
+/** 从第一次 Pod 冷启动失败起，每 2 秒重试，最多再等 60 秒。其他错误立刻抛出。 */
+export async function retryWhilePodStarting<T>(
+  run: () => Promise<T>,
+  options: {
+    onWaiting?: () => void;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<T> {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  let firstFailureAt: number | null = null;
+  for (;;) {
+    try {
+      return await run();
+    } catch (error) {
+      if (!isPodStartingError(error)) throw error;
+      const failedAt = now();
+      firstFailureAt ??= failedAt;
+      if (failedAt - firstFailureAt >= POD_RETRY_BUDGET_MS) {
+        throw new AgentManagementError('pod_start_timeout', 'pod_start_timeout', false);
+      }
+      options.onWaiting?.();
+      await sleep(POD_RETRY_INTERVAL_MS);
+    }
+  }
 }
 
 function rethrowAgentError(error: unknown): never {
@@ -129,16 +170,21 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     source: 'live',
     async listCatalog(options: AgentCatalogListOptions = {}) {
       try {
-        const payload = await requestEquipmentList<RawAgentListPayload & { cache?: CatalogCacheMetadata }>(
-          webRequest,
-          'agent_templates.list',
-          {
-            ...(options.filter ? { filter: options.filter } : {}),
-            ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
-            ...(options.query ? { query: options.query } : {}),
-          },
-          !options.query,
-        );
+        const params = {
+          ...(options.filter ? { filter: options.filter } : {}),
+          ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
+          ...(options.query ? { query: options.query } : {}),
+        };
+        const loadCatalog = () =>
+          requestEquipmentList<RawAgentListPayload & { cache?: CatalogCacheMetadata }>(
+            webRequest,
+            'agent_templates.list',
+            params,
+            !options.query,
+          );
+        const payload = isEnterprise()
+          ? await retryWhilePodStarting(loadCatalog, { onWaiting: options.onPodStarting })
+          : await loadCatalog();
 
         const items = (payload.templates || []).map((item) =>
           normalizeAgentTemplateListItem(item, getAgentManagementLocale()),
@@ -151,7 +197,11 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     },
     async getDefinition(id) {
       try {
-        const payload = await webRequest<RawAgentDetailPayload>('agent_templates.show', { id }, { timeoutMs: 90000 });
+        const payload = await webRequest<RawAgentDetailPayload>(
+          'agent_templates.show',
+          { id },
+          { timeoutMs: 90000 },
+        );
         if (!payload.template) {
           throw new AgentManagementError('Agent detail is empty', 'agent_detail_empty', false);
         }

@@ -13,6 +13,7 @@ import { resolveUserId } from '../utils/userId';
 import { WebHttpClient } from './webHttpClient';
 import i18n from '../i18n';
 import { appendRuntimeScopeQuery } from './runtimeScope';
+import { withExpertUiLanguage } from './expertUiLanguage';
 import { GoalRecord } from '../types/goal';
 import { createSessionEventGate } from './sessionEventGate';
 import { RuntimeResume } from './runtimeResume';
@@ -310,7 +311,7 @@ class WebClient {
       type: 'req',
       id,
       method,
-      params: params ?? {},
+      params: withExpertUiLanguage(method, params),
       ...(options.isStream ? { is_stream: true } : {}),
     };
 

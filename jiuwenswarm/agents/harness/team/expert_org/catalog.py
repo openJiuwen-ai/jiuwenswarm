@@ -95,7 +95,11 @@ class JiuwenExpertGroupCatalog:
     def list(*, capabilities: set[str] | None = None) -> list[ExpertGroupDescriptor]:
         required = set(capabilities or ())
         results: list[ExpertGroupDescriptor] = []
+        from jiuwenswarm.server.runtime.package_allowlist import allows
+
         for name, package_dir in _iter_agent_group_dirs():
+            if not allows("agent_group", name):
+                continue
             try:
                 descriptor = descriptor_from_agent_group_dir(name, package_dir)
             except (ValueError, OSError) as exc:
@@ -112,8 +116,12 @@ class JiuwenExpertGroupCatalog:
 
     @staticmethod
     def get(name: str) -> ExpertGroupDescriptor:
-        package_dir = _resolve_agent_group_dir(str(name).strip())
-        return descriptor_from_agent_group_dir(str(name).strip(), package_dir)
+        from jiuwenswarm.server.runtime.package_allowlist import require_allowed
+
+        group_name = str(name).strip()
+        require_allowed("agent_group", group_name)
+        package_dir = _resolve_agent_group_dir(group_name)
+        return descriptor_from_agent_group_dir(group_name, package_dir)
 
 
 __all__ = [

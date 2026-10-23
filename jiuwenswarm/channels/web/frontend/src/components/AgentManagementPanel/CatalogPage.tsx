@@ -36,6 +36,7 @@ type CatalogPageProps = {
   installation?: 'all' | 'installed' | 'uninstalled';
   status: RequestStatus;
   error: string | null;
+  loadingText?: string;
   busyIds: ReadonlySet<string>;
   onCategoryChange: (value: string) => void;
   onRetry: () => void;
@@ -55,6 +56,7 @@ export function CatalogPage({
   installation = 'all',
   status,
   error,
+  loadingText,
   busyIds,
   onCategoryChange,
   onRetry,
@@ -159,7 +161,7 @@ export function CatalogPage({
             role="status"
           >
             <LoaderCircle className="animate-spin" size={20} aria-hidden="true" />
-            <p>{t('common.loading')}</p>
+            <p>{loadingText || t('common.loading')}</p>
           </div>
         ) : status === 'error' && totalItems === 0 ? (
           <div className="agent-management-state agent-management-state--error" role="alert">
