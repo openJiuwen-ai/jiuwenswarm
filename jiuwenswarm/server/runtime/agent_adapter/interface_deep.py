@@ -4748,6 +4748,11 @@ class JiuWenSwarmDeepAdapter:
                         [git_bin, *args],
                         capture_output=True,
                         text=True,
+                        # git always writes UTF-8 (branch names, commits, user
+                        # names); pin the codec so a non-UTF-8 locale cannot
+                        # turn the output into a decode error or mojibake.
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=5,
                         cwd=project_dir,
                     )
