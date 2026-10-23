@@ -677,3 +677,35 @@ async def test_group_policy_requires_archived_history_on_every_query(service, me
         assert "continue reading until the archived history is complete" in content["en"]
         assert '"active_execution_id"' not in content["en"]
     assert builder.remove_section.call_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["agent_template", "agent_group"])
+async def test_group_policy_scopes_member_identity_for_saved_and_dynamic_members(service, kind):
+    from jiuwenswarm.agents.swarm.group_execution import GroupTaskPolicyRail
+
+    group = await make_group(service, kind=kind)
+    builder = Mock()
+    ctx = SimpleNamespace(agent=SimpleNamespace(system_prompt_builder=builder))
+    rail = GroupTaskPolicyRail(SimpleNamespace(session_id=group["group_id"], member_name="advisor"))
+    for _ in range(2):
+        await rail.before_invoke(ctx)
+        content = builder.add_section.call_args.args[0].content["en"]
+        assert "independent member, not the group leader" in content
+        assert "peers, not your subordinates" in content
+        assert ("consult it through run_team" in content) == (kind == "agent_group")
+        assert ("Do not use start_group_task or implement deliverables yourself" in content) == (kind == "agent_group")
+
+
+@pytest.mark.asyncio
+async def test_group_host_keeps_its_coordinator_identity(service):
+    from jiuwenswarm.agents.swarm.group_execution import GroupTaskPolicyRail
+
+    group = await make_group(service)
+    builder = Mock()
+    ctx = SimpleNamespace(agent=SimpleNamespace(system_prompt_builder=builder))
+    rail = GroupTaskPolicyRail(SimpleNamespace(session_id=group["group_id"], member_name="host"))
+    await rail.before_invoke(ctx)
+    content = builder.add_section.call_args.args[0].content["en"]
+    assert "Coordinate public conversation" in content
+    assert "not the group leader" not in content
