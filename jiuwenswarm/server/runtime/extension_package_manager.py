@@ -2730,7 +2730,7 @@ def disabled_agent_group_runtimes(package: Any) -> list[str]:
     """Read current switches before selecting an expert team."""
     from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
     from jiuwenswarm.common.config import get_config
-    from jiuwenswarm.common.config_panel.external_cli_read import flatten_external_cli_agents_for_config_panel
+    from jiuwenswarm.common.config_panel.config_set_handlers import flatten_external_cli_agents_for_config_panel
 
     switches = flatten_external_cli_agents_for_config_panel(get_config())
     disabled: list[str] = []
@@ -2764,7 +2764,7 @@ def show_agent_group(name: str) -> dict | None:
     )
 
     if card is not None:
-        from openjiuwen.agent_teams.experts import load_agent_group_package_bundle
+        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package_bundle
 
         package = load_agent_group_package_bundle(package_dir)
         card["disabledRuntimes"] = disabled_agent_group_runtimes(package)
