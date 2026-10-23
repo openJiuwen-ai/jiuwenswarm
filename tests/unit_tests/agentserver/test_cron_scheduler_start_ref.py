@@ -113,3 +113,60 @@ def test_sync_fallback_runs_when_loop_not_running(
         loop.close()
 
     assert fake.start_called.is_set(), "sync fallback must await ensure_scheduler"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_ensure_scheduler_starts_scheduler_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """回归：并发 ensure_scheduler 只能启动一次调度器（启动临界区单飞）。
+
+    无锁时两个协程会各自越过状态检查并双 start，覆盖 self._scheduler 泄漏旧实例。
+    """
+    import jiuwenswarm.agents.harness.common.tools.cron.cron_tools as ct
+    from jiuwenswarm.server.runtime import cron_local_runtime as clr
+
+    gate = asyncio.Event()
+    start_calls = {"n": 0}
+
+    class _FakeScheduler:
+        def __init__(self, **_kwargs) -> None:
+            self.started = False
+
+        def is_running(self) -> bool:
+            return self.started
+
+        async def start(self) -> None:
+            start_calls["n"] += 1
+            await gate.wait()  # 卡住首次启动，制造并发窗口
+            self.started = True
+
+        async def stop(self) -> None:
+            self.started = False
+
+    monkeypatch.setattr(ct, "CronSchedulerService", _FakeScheduler)
+    monkeypatch.setattr(
+        ct, "resolve_cron_jobs_path", lambda *a, **k: tmp_path / "cron_jobs.json"
+    )
+    monkeypatch.setattr(clr, "resolve_agent_side_cron_deps", lambda **_kw: (None, None))
+    monkeypatch.setattr(
+        clr.AgentCronRegistry, "is_current", staticmethod(lambda *a, **k: True)
+    )
+
+    tools = ct.CronTools()
+    monkeypatch.setattr(tools, "_enterprise_ready", lambda: False)
+
+    t1 = asyncio.create_task(tools.ensure_scheduler())
+    t2 = asyncio.create_task(tools.ensure_scheduler())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert start_calls["n"] == 1, (
+        "only one coroutine may enter the start critical section"
+    )
+
+    gate.set()
+    r1, r2 = await asyncio.gather(t1, t2)
+
+    assert start_calls["n"] == 1, "scheduler must be started exactly once"
+    assert r1 is r2 and r1 is not None, "both callers must observe the same scheduler"
