@@ -686,7 +686,7 @@ class PyPIVersionSource(VersionSource):
                 req.add_header("Accept", "application/json")
                 with urlopen(req, timeout=min(self._timeout, remaining)) as resp:
                     payload = json.loads(resp.read().decode("utf-8"))
-            except (HTTPError, URLError, json.JSONDecodeError, OSError, ValueError):
+            except (OSError, ValueError):
                 continue
             entries = None
             if isinstance(payload, dict):
