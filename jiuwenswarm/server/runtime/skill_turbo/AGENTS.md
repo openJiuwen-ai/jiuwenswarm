@@ -91,7 +91,7 @@ skill_turbo/
 ├── skill_meta.py           # meta.json 解析 + find_skill_root_file（入口发现唯一实现，三消费方共用）
 ├── thinking_seam.py        # thinking 参数 fail-open 注入 + 参数被拒启发式判定（裸参重试一次）
 ├── tools_loader.py         # 10 分组工具装载（异常隔离）+ send_file 每请求刷新
-├── turbo_package_loader.py # 外部 turbo 发现 + 动态包注册/清洗碰撞/rebind + resume 自愈重注册
+├── turbo_package_loader.py # 外部 turbo 发现（enable_turbo 开关）+ 动态包注册/清洗碰撞/rebind + resume 自愈重注册
 ├── validator.py            # PlanCodeValidator 三 profile（import 白黑名单/危险函数/require_abort_reraise 静态强制）
 ├── rails/                  # ask_user_rail（HITL）/ artifact_rail（产物检测+事件）/ delivery_summary_rail（交付骨架时序）/ permission_rail（审批卡）/ skill_prompt_rail（指南注入）
 ├── runtime/                # skill_turbo_runtime 门面（契约符号 re-export + CONTRACT_VERSION）+ tool_utils（通用工具单副本）
@@ -163,7 +163,7 @@ pytest.ini 的 addopts 含全仓 coverage 与 `-v`，日常跑请覆盖为仅保
 "not natively supported"）：
 
 ```powershell
-# 模块单测（397 个：validator/包加载/tool_utils/planner/fallback/HITL 对齐/交付门禁/退出路径帧级/AbortError 守卫/契约解析/ask_user 门控/ContextVar 通道（9 通道 bind/reset）/入口拦截/task_states 快照/fallback 标志检测/flash 交付收尾/槽位登记簿 B_03/fresh 守卫后续交付物放行 B_04…）
+# 模块单测（412 个：validator/包加载/tool_utils/planner/fallback/HITL 对齐/交付门禁/退出路径帧级/AbortError 守卫/契约解析/ask_user 门控/ContextVar 通道（9 通道 bind/reset）/入口拦截/task_states 快照/fallback 标志检测/flash 交付收尾/槽位登记簿 B_03/fresh 守卫后续交付物放行 B_04/python_cmd 注入 F_04/enable_turbo 开关 F_05…）
 .venv\Scripts\python.exe -m pytest tests/unit_tests/server/runtime/skill_turbo/ -o addopts="--asyncio-mode=auto"
 
 # HITL / 工具面 / 中断恢复（历史路径在 agentserver/ 下——skill_turbo 曾位于该处，迁移遗留，勿再新增）
