@@ -802,10 +802,15 @@ export function ConversationSidebar({
 
   const switchWorkMode = async (nextMode: WorkMode) => {
     setWorkModeMenuOpen(false);
+    if (enterprise && nextMode !== 'work') return;
     if (nextMode === workMode) return;
     await setWorkMode(nextMode);
     onNew();
   };
+
+  useEffect(() => {
+    if (enterprise && workMode !== 'work') void setWorkMode('work');
+  }, [enterprise, workMode, setWorkMode]);
 
   const cronJobs = useCronStore((s) => s.jobs);
   const loadCronJobs = useCronStore((s) => s.loadJobs);
@@ -1237,21 +1242,24 @@ export function ConversationSidebar({
             <button
               type="button"
               className="conversation-sidebar__mode-trigger"
-              onClick={() => setWorkModeMenuOpen((open) => !open)}
-              aria-haspopup="menu"
-              aria-expanded={workModeMenuOpen}
+              onClick={() => {
+                if (!enterprise) setWorkModeMenuOpen((open) => !open);
+              }}
+              aria-haspopup={enterprise ? undefined : 'menu'}
+              aria-expanded={enterprise ? undefined : workModeMenuOpen}
+              style={enterprise ? { cursor: 'default' } : undefined}
               data-testid="multi-session-work-mode-trigger"
             >
-              <span data-testid="multi-session-work-mode-label" data-variant={workMode}>
-                {workMode === 'code'
+              <span data-testid="multi-session-work-mode-label" data-variant={enterprise ? 'work' : workMode}>
+                {!enterprise && workMode === 'code'
                   ? t('codeMode.code')
-                  : workMode === 'design'
+                  : !enterprise && workMode === 'design'
                     ? t('nav.design')
                     : t('codeMode.work')}
               </span>
-              <ChevronDown size={15} className={workModeMenuOpen ? 'is-open' : ''} />
+              {!enterprise && <ChevronDown size={15} className={workModeMenuOpen ? 'is-open' : ''} />}
             </button>
-            {workModeMenuOpen ? (
+            {!enterprise && workModeMenuOpen ? (
               <div className="conversation-sidebar__mode-menu" role="menu" data-testid="multi-session-work-mode-menu">
                 <button
                   type="button"
