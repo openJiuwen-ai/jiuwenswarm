@@ -14,11 +14,15 @@ import re
 from datetime import datetime, timezone
 from html import unescape
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
+import requests
 from lxml import etree  # type: ignore[import-untyped]
 from lxml import html as lxml_html
 
+from jiuwenswarm.agents.harness.common.recommendation.topic_url_safety import (
+    public_fetch_url_rejection_reason_sync,
+)
 from jiuwenswarm.agents.harness.common.tools import web_fetch_tools
 
 _META_TAG_RE = re.compile(r"<meta\b[^>]*>", flags=re.IGNORECASE)
@@ -189,6 +193,41 @@ def msn_detail_api_url(url: str) -> str | None:
     return f"{_MSN_DETAIL_API_URL}{article.group(1)}" if article else None
 
 
+def _fetch_verified_response(
+    url: str,
+    timeout_seconds: int,
+    *,
+    public_https: bool,
+) -> requests.Response:
+    """Fetch one page, following redirects only to public targets.
+
+    The initial URL check happens before the request, but requests follows a 3xx by default
+    without inspecting the target. With ``public_https`` each hop is resolved again, so a
+    public URL that redirects into the link-local metadata range is refused.
+    """
+
+    if not public_https:
+        return web_fetch_tools.fetch_response(url, timeout_seconds, public_https=False)
+    current = url
+    for _ in range(requests.models.DEFAULT_REDIRECT_LIMIT + 1):
+        reason = public_fetch_url_rejection_reason_sync(current)
+        if reason is not None:
+            raise ValueError(f"unsafe fetch target: {reason}")
+        response = web_fetch_tools.fetch_response(
+            current,
+            timeout_seconds,
+            public_https=False,
+            allow_redirects=False,
+        )
+        if not response.is_redirect:
+            return response
+        try:
+            current = urljoin(response.url, response.headers["Location"])
+        finally:
+            response.close()
+    raise requests.TooManyRedirects("Exceeded the default redirect limit")
+
+
 def fetch_topic_page_via_jina_sync(
     url: str,
     timeout_seconds: int,
@@ -198,27 +237,27 @@ def fetch_topic_page_via_jina_sync(
     """Read a blocked page through Jina, keeping its title and publication time."""
 
     reader_url = f"https://r.jina.ai/{url}"
-    response = web_fetch_tools.fetch_response(
+    with _fetch_verified_response(
         reader_url,
         timeout_seconds,
         public_https=public_https,
-    )
-    response.raise_for_status()
-    text = web_fetch_tools.decode_response_text(response).strip()
-    published_at, published_at_source = extract_published_at(text, url=url)
-    title_match = _JINA_TITLE_RE.search(text)
-    title = unescape(title_match.group(1).strip()) if title_match else ""
-    result: dict[str, Any] = {
-        "url": url,
-        "status_code": response.status_code,
-        "title": title,
-        "content": _extract_jina_reader_content(text, title=title),
-        "fetch_reader": "jina-reader",
-    }
-    if published_at and published_at_source:
-        result["published_at"] = published_at
-        result["published_at_source"] = published_at_source
-    return result
+    ) as response:
+        response.raise_for_status()
+        text = web_fetch_tools.decode_response_text(response).strip()
+        published_at, published_at_source = extract_published_at(text, url=url)
+        title_match = _JINA_TITLE_RE.search(text)
+        title = unescape(title_match.group(1).strip()) if title_match else ""
+        result: dict[str, Any] = {
+            "url": url,
+            "status_code": response.status_code,
+            "title": title,
+            "content": _extract_jina_reader_content(text, title=title),
+            "fetch_reader": "jina-reader",
+        }
+        if published_at and published_at_source:
+            result["published_at"] = published_at
+            result["published_at_source"] = published_at_source
+        return result
 
 
 def fetch_topic_page_sync(
@@ -229,66 +268,75 @@ def fetch_topic_page_sync(
 ) -> dict[str, Any]:
     """Fetch one topic source, with publication time and the article body."""
 
-    response = web_fetch_tools.fetch_response(
+    with _fetch_verified_response(
         url,
         timeout_seconds,
         public_https=public_https,
-    )
-    if response.status_code in {401, 403, 429}:
-        response.close()
-        return fetch_topic_page_via_jina_sync(
-            url,
-            timeout_seconds,
-            public_https=public_https,
-        )
-    response.raise_for_status()
+    ) as response:
+        if response.status_code in {401, 403, 429}:
+            return fetch_topic_page_via_jina_sync(
+                url,
+                timeout_seconds,
+                public_https=public_https,
+            )
+        response.raise_for_status()
 
-    text = web_fetch_tools.decode_response_text(response)
-    published_at, published_at_source = extract_published_at(text, url=response.url)
-    content_type = response.headers.get("Content-Type", "")
-    title_match = re.search(r"<title[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
-    title = web_fetch_tools.strip_tags(title_match.group(1)) if title_match else ""
+        text = web_fetch_tools.decode_response_text(response)
+        published_at, published_at_source = extract_published_at(text, url=response.url)
+        content_type = response.headers.get("Content-Type", "")
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
+        title = web_fetch_tools.strip_tags(title_match.group(1)) if title_match else ""
 
-    if "html" in content_type.lower():
-        text = _extract_html_content(text, title=title)
-    else:
-        text = re.sub(r"\s+", " ", text).strip()
+        if "html" in content_type.lower():
+            text = _extract_html_content(text, title=title)
+        else:
+            text = re.sub(r"\s+", " ", text).strip()
 
-    result: dict[str, Any] = {
-        "url": response.url,
-        "status_code": response.status_code,
-        "title": title,
-        "content": text,
-        "fetch_reader": "direct",
-    }
-    if published_at and published_at_source:
-        result["published_at"] = published_at
-        result["published_at_source"] = published_at_source
-    return result
+        result: dict[str, Any] = {
+            "url": response.url,
+            "status_code": response.status_code,
+            "title": title,
+            "content": text,
+            "fetch_reader": "direct",
+        }
+        if published_at and published_at_source:
+            result["published_at"] = published_at
+            result["published_at_source"] = published_at_source
+        return result
 
 
-def fetch_msn_detail_sync(url: str, api_url: str, timeout_seconds: int) -> dict[str, Any]:
+def fetch_msn_detail_sync(
+    url: str,
+    api_url: str,
+    timeout_seconds: int,
+    *,
+    public_https: bool = False,
+) -> dict[str, Any]:
     """Read an msn article from its detail API: body, publication time and original URL."""
 
-    response = web_fetch_tools.fetch_response(api_url, timeout_seconds, public_https=False)
-    response.raise_for_status()
-    try:
-        detail = json.loads(web_fetch_tools.decode_response_text(response))
-    except ValueError:
-        detail = {}
-    title = str(detail.get("title") or "")
-    source_href = str(detail.get("sourceHref") or "").strip()
-    parsed_href = urlparse(source_href)
-    result: dict[str, Any] = {
-        "url": source_href if parsed_href.scheme in {"http", "https"} and parsed_href.netloc else url,
-        "status_code": response.status_code,
-        "title": title,
-        "content": _extract_html_content(str(detail.get("body") or ""), title=title),
-        "fetch_reader": "msn-detail-api",
-        "api_url": api_url,
-    }
-    published_at = str(detail.get("publishedDateTime") or "").strip()
-    if published_at:
-        result["published_at"] = published_at
-        result["published_at_source"] = "msn_detail_api.publishedDateTime"
-    return result
+    with _fetch_verified_response(
+        api_url,
+        timeout_seconds,
+        public_https=public_https,
+    ) as response:
+        response.raise_for_status()
+        try:
+            detail = json.loads(web_fetch_tools.decode_response_text(response))
+        except ValueError:
+            detail = {}
+        title = str(detail.get("title") or "")
+        source_href = str(detail.get("sourceHref") or "").strip()
+        parsed_href = urlparse(source_href)
+        result: dict[str, Any] = {
+            "url": source_href if parsed_href.scheme in {"http", "https"} and parsed_href.netloc else url,
+            "status_code": response.status_code,
+            "title": title,
+            "content": _extract_html_content(str(detail.get("body") or ""), title=title),
+            "fetch_reader": "msn-detail-api",
+            "api_url": api_url,
+        }
+        published_at = str(detail.get("publishedDateTime") or "").strip()
+        if published_at:
+            result["published_at"] = published_at
+            result["published_at_source"] = "msn_detail_api.publishedDateTime"
+        return result

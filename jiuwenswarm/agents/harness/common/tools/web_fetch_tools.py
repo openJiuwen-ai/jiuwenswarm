@@ -221,9 +221,18 @@ def _check_fetch_url(url: str) -> None:
         raise ValueError(reason)
 
 
-def fetch_response(url: str, timeout_seconds: int, *, public_https: bool) -> requests.Response:
+def fetch_response(
+    url: str,
+    timeout_seconds: int,
+    *,
+    public_https: bool,
+    allow_redirects: bool = True,
+) -> requests.Response:
     if not public_https:
-        return _http_get(url, headers=_REQUEST_HEADERS, timeout=timeout_seconds)
+        return _http_get(
+            url, headers=_REQUEST_HEADERS, timeout=timeout_seconds,
+            allow_redirects=allow_redirects,
+        )
     # URL eligibility only: no DNS, peer or firewall policy. Keep requests' limit.
     for _ in range(requests.models.DEFAULT_REDIRECT_LIMIT + 1):
         _check_fetch_url(url)

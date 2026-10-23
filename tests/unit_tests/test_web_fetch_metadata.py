@@ -1,6 +1,10 @@
+import pytest
 import requests
 
 from jiuwenswarm.agents.harness.common.recommendation import topic_page_fetch
+from jiuwenswarm.agents.harness.common.recommendation.topic_url_safety import (
+    public_fetch_url_rejection_reason_sync,
+)
 from jiuwenswarm.agents.harness.common.tools import web_fetch_tools
 
 
@@ -378,3 +382,65 @@ def test_arxiv_version_history_date_is_not_first_submission_date():
     assert topic_page_fetch.extract_published_at(text, url="https://arxiv.org/abs/2608.05510") == ("2026-08-06T01:23:51+00:00", "arxiv.version_history")
     assert topic_page_fetch.extract_published_at(text, url="https://arxiv.org/abs/2608.05510v1")[0] == "2026-08-01T01:23:51+00:00"
     assert topic_page_fetch.extract_published_at('<meta name="citation_date" content="2026/08/01">', url="https://arxiv.org/abs/2608.05510v2") == (None, None)
+
+
+def _closable_response(status_code: int, *, url: str, location: str | None = None):
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = url
+    response._content = b""
+    response._content_consumed = True
+    if location is not None:
+        response.headers["Location"] = location
+    closed: list[bool] = []
+    response.close = lambda: closed.append(True)
+    return response, closed
+
+
+def test_sync_url_check_refuses_a_metadata_literal() -> None:
+    assert public_fetch_url_rejection_reason_sync(
+        "http://169.254.169.254/latest/meta-data/"
+    ) == "network_metadata_host"
+
+
+def test_fetch_refuses_a_redirect_into_the_network(monkeypatch) -> None:
+    redirect, closed = _closable_response(
+        302,
+        url="https://example.org/redirect",
+        location="http://169.254.169.254/latest/meta-data/",
+    )
+    requested: list[str] = []
+
+    def _get(url, **_kwargs):
+        requested.append(url)
+        return redirect
+
+    monkeypatch.setattr(web_fetch_tools, "_http_get", _get)
+    monkeypatch.setattr(
+        topic_page_fetch,
+        "public_fetch_url_rejection_reason_sync",
+        lambda url: "network_metadata_host" if "169.254.169.254" in url else None,
+    )
+
+    with pytest.raises(ValueError, match="network_metadata_host"):
+        topic_page_fetch.fetch_topic_page_sync(
+            "https://example.org/redirect", timeout_seconds=30, public_https=True,
+        )
+
+    assert requested == ["https://example.org/redirect"]
+    assert closed == [True]
+
+
+def test_fetch_releases_the_response_when_the_status_is_an_error(monkeypatch) -> None:
+    response, closed = _closable_response(500, url="https://example.org/article")
+    monkeypatch.setattr(web_fetch_tools, "_http_get", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(
+        topic_page_fetch, "public_fetch_url_rejection_reason_sync", lambda _url: None,
+    )
+
+    with pytest.raises(requests.HTTPError):
+        topic_page_fetch.fetch_topic_page_sync(
+            "https://example.org/article", timeout_seconds=30, public_https=True,
+        )
+
+    assert closed == [True]

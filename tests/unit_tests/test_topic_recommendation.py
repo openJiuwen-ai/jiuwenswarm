@@ -2072,3 +2072,70 @@ def test_a_malformed_global_interest_candidate_is_dropped_alone() -> None:
     )
 
     assert [plan["candidate_id"] for plan in plans] == ["slot-1"]
+
+
+@pytest.mark.asyncio
+async def test_unconsumed_validation_receipts_stay_bounded() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        _MAX_PENDING_VALIDATION_RECEIPTS,
+        ArkBackgroundConfig,
+        build_ark_stage_invoker,
+    )
+
+    class _Message:
+        content = "{}"
+        refusal = None
+
+    class _Choice:
+        message = _Message()
+        finish_reason = "stop"
+
+    class _Response:
+        id = "provider-response"
+        object = "chat.completion"
+        model = "test"
+        usage = None
+        choices = [_Choice()]
+
+    class _Completions:
+        async def create(self, **_kwargs):
+            return _Response()
+
+    class _Client:
+        class chat:  # noqa: N801 - mimics the OpenAI client shape
+            completions = _Completions()
+
+        async def close(self) -> None:
+            return None
+
+    receipts: list[dict] = []
+    invoke = build_ark_stage_invoker(
+        ArkBackgroundConfig(api_key="test", model="test"),
+        client_factory=lambda **_kwargs: _Client(),
+        receipt_sink=receipts.append,
+    )
+    # A caller that fails before record_validation must not let results accumulate forever.
+    results = [
+        await invoke("stage", "system", "{}")
+        for _ in range(_MAX_PENDING_VALIDATION_RECEIPTS + 20)
+    ]
+    for result in results:
+        invoke.record_validation(result, "ok")
+
+    recorded = [receipt for receipt in receipts if receipt.get("status") == "ok"]
+    assert len(recorded) == _MAX_PENDING_VALIDATION_RECEIPTS
+
+
+def test_recommendation_stores_wait_the_same_for_a_write_lock(tmp_path) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_short_intent import (
+        ShortIntentStateStore,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
+        TopicStarterStore,
+    )
+
+    topic_store = TopicStarterStore(tmp_path / "recommendation.db")
+    short_store = ShortIntentStateStore(topic_store)
+    for store in (topic_store, short_store):
+        with store._connect() as connection:
+            assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 5000

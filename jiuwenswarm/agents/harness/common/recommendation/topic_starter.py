@@ -63,6 +63,9 @@ _EVENT_PAYLOAD_QUERY_FIELDS = frozenset(
 
 logger = logging.getLogger(__name__)
 
+# recommendation.db is written by several stores; wait for the write lock like they do.
+_SQLITE_BUSY_TIMEOUT_SECONDS = 5.0
+
 
 @dataclass(frozen=True)
 class InterestDrift:
@@ -199,7 +202,8 @@ class TopicStarterStore:
             connection.execute("VACUUM")
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS)
+        connection.execute(f"PRAGMA busy_timeout = {int(_SQLITE_BUSY_TIMEOUT_SECONDS * 1000)}")
         connection.row_factory = sqlite3.Row
         return connection
 

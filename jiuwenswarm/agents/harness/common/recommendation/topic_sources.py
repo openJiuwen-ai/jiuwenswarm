@@ -75,8 +75,12 @@ async def default_fetch(url: str, timeout_seconds: int) -> dict[str, Any]:
     # An msn article page renders its text by script; its detail API is that page's fetch.
     api_url = msn_detail_api_url(url)
     if api_url:
-        return await asyncio.to_thread(fetch_msn_detail_sync, url, api_url, timeout_seconds)
-    return await asyncio.to_thread(fetch_topic_page_sync, url, timeout_seconds)
+        return await asyncio.to_thread(
+            fetch_msn_detail_sync, url, api_url, timeout_seconds, public_https=True,
+        )
+    return await asyncio.to_thread(
+        fetch_topic_page_sync, url, timeout_seconds, public_https=True,
+    )
 
 
 def default_source_classifier(url: str, _content: str) -> SourceAssessment:

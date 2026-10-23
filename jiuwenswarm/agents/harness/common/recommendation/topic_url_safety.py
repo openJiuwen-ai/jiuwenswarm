@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+from typing import Any
 from urllib.parse import urlparse
 
 FETCH_URL_SCHEMES = frozenset({"http", "https"})
@@ -64,31 +65,24 @@ def _host_rejection_reason(host: str) -> str | None:
     return None if address.is_global else "network_host_not_public"
 
 
-async def public_fetch_url_rejection_reason(url: str) -> str | None:
-    """Return why this URL must not be fetched, or None when its target is public.
-
-    The hostname is resolved and every address must be globally routable, so a name that
-    points into a private range is refused just like a private literal. A name that cannot
-    be resolved is allowed: the request itself then fails without reaching anything internal.
-    """
+def _endpoint_or_reason(url: str) -> tuple[str | None, str, int]:
+    """The scheme/host checks and the host to resolve, or the reason to refuse it."""
 
     parsed = urlparse(str(url or "").strip())
     if parsed.scheme.lower() not in FETCH_URL_SCHEMES:
-        return "network_scheme_not_http"
+        return "network_scheme_not_http", "", 0
     host = normalize_fetch_host(parsed.hostname)
     reason = _host_rejection_reason(host)
     if reason is not None:
-        return reason
+        return reason, host, 0
     try:
         port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
     except ValueError:
-        return "network_url_invalid_port"
-    try:
-        resolved = await asyncio.get_running_loop().getaddrinfo(
-            host, port, type=socket.SOCK_STREAM
-        )
-    except (OSError, UnicodeError):
-        return None
+        return "network_url_invalid_port", host, 0
+    return None, host, port
+
+
+def _resolved_rejection_reason(resolved: list[Any]) -> str | None:
     for info in resolved:
         try:
             address = ipaddress.ip_address(str(info[4][0]))
@@ -97,3 +91,36 @@ async def public_fetch_url_rejection_reason(url: str) -> str | None:
         if not address.is_global:
             return "network_host_not_public"
     return None
+
+
+async def public_fetch_url_rejection_reason(url: str) -> str | None:
+    """Return why this URL must not be fetched, or None when its target is public.
+
+    The hostname is resolved and every address must be globally routable, so a name that
+    points into a private range is refused just like a private literal. A name that cannot
+    be resolved is allowed: the request itself then fails without reaching anything internal.
+    """
+
+    reason, host, port = _endpoint_or_reason(url)
+    if reason is not None:
+        return reason
+    try:
+        resolved = await asyncio.get_running_loop().getaddrinfo(
+            host, port, type=socket.SOCK_STREAM
+        )
+    except (OSError, UnicodeError):
+        return None
+    return _resolved_rejection_reason(resolved)
+
+
+def public_fetch_url_rejection_reason_sync(url: str) -> str | None:
+    """The same check for a worker-thread caller following redirects hop by hop."""
+
+    reason, host, port = _endpoint_or_reason(url)
+    if reason is not None:
+        return reason
+    try:
+        resolved = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return None
+    return _resolved_rejection_reason(resolved)

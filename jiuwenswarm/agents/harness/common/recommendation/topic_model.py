@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable
 
 _REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high"})
+# A result whose consumer fails before record_validation keeps its receipt here; bound how many
+# such unconsumed results stay referenced, since a caller is not obliged to call aclose().
+_MAX_PENDING_VALIDATION_RECEIPTS = 64
 
 
 @dataclass(frozen=True)
@@ -361,6 +364,8 @@ def build_ark_stage_invoker(
                     **receipt, "attempt_id": attempt_id, "request_id": request_id,
                     **call_context,
                 })
+                while len(validation_receipts) > _MAX_PENDING_VALIDATION_RECEIPTS:
+                    validation_receipts.pop(next(iter(validation_receipts)))
             if return_response_metadata:
                 return {
                     "result": result,

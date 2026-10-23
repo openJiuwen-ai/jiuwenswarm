@@ -17,6 +17,8 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
 )
 
 
+# The other stores on recommendation.db use the same wait, so a write here waits like theirs.
+_SQLITE_BUSY_TIMEOUT_SECONDS = 5.0
 _NATURAL_INPUT_ORIGIN = "manual_free_text"
 _NATURAL_ASSISTANCE_ORIGIN = "none"
 _HIGH_INTENT_KINDS = frozenset({"new_goal", "correction", "recent_action"})
@@ -147,7 +149,8 @@ class ShortIntentStateStore:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS)
+        connection.execute(f"PRAGMA busy_timeout = {int(_SQLITE_BUSY_TIMEOUT_SECONDS * 1000)}")
         connection.row_factory = sqlite3.Row
         return connection
 
