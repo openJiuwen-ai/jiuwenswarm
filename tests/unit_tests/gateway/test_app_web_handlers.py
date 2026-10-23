@@ -1707,52 +1707,49 @@ async def test_config_get_returns_jev_credentials_like_model_settings(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_trajectory_ui_switch_round_trips_through_config_rpc(monkeypatch):
+async def test_trajectory_diagnosis_switch_round_trips_through_config_rpc(monkeypatch):
     channel = FakeWebChannel()
     persisted: list[bool] = []
     monkeypatch.setattr(
         app_web_handlers,
         "get_config_raw",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     monkeypatch.setattr(
         app_web_handlers,
         "get_config",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     # config.set 路径实现已下沉 config_set_handlers，config.get 仍读 gateway 侧，双patch
     monkeypatch.setattr(
         config_set_handlers,
         "get_config_raw",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     monkeypatch.setattr(
         config_set_handlers,
         "get_config",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     monkeypatch.setattr(
         config_set_handlers,
-        "update_trajectory_ui_in_config",
+        "update_trajectory_diagnosis_in_config",
         lambda enabled: persisted.append(enabled),
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](object(), "req-trajectory-get", {}, "session")
-    assert channel.responses[-1]["payload"]["trajectory_ui_enabled"] == "false"
+    assert channel.responses[-1]["payload"]["trajectory_ui_diagnosis_enabled"] == "false"
 
     await channel.methods["config.set"](
         object(),
         "req-trajectory-set",
-        {"trajectory_ui_enabled": "true"},
+        {"trajectory_ui_diagnosis_enabled": "true"},
         "session",
     )
     assert persisted == [True]
-    assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_enabled"]
-    change_set = config_set_handlers.ConfigChangeSet({}, ["trajectory_ui_enabled"])
-    assert change_set.reload_scopes == {"agent_runtime", "web_ui"}
-    # Diagnosis switches the trajectory data plane on too, so it needs the same
-    # runtime sync as the trajectory view switch.
+    assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_diagnosis_enabled"]
+    # Diagnosis owns the data plane and chat/trajectory tabs.
     diagnosis_change_set = config_set_handlers.ConfigChangeSet({}, ["trajectory_ui_diagnosis_enabled"])
     assert diagnosis_change_set.reload_scopes == {"agent_runtime", "web_ui"}
 

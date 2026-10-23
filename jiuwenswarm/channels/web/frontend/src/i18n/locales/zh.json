@@ -748,7 +748,7 @@
       "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
       "rsi": "RSI 递归自我改进",
-      "trajectoryUi": "轨迹界面",
+      "trajectoryUi": "轨迹诊断",
       "kvCacheAffinity": "算力亲和",
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "调度模式",
@@ -921,13 +921,9 @@
         "title": "启用 RSI",
         "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
       },
-      "trajectory_ui_enabled": {
-        "title": "启用轨迹界面",
-        "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
-      },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
-        "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据，无需同时启用轨迹界面；仅能诊断开启之后产生的记录。"
+        "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据；仅能诊断开启之后产生的记录。关闭后不再显示轨迹相关页面。"
       },
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization",
@@ -1047,18 +1043,22 @@
       "diagnose": "诊断轨迹",
       "selection": {
         "fullScope": "全部轨迹",
-        "notePlaceholder": "请输入用户反馈（可选）",
+        "selectAll": "全选",
+        "clearSelectAll": "取消全选",
+        "selectAllAgent": "选中 {{name}} 的全部轨迹",
+        "clearSelectAllAgent": "取消选中 {{name}} 的全部轨迹",
+        "notePlaceholder": "对已选轨迹补充问题描述（可选）。例：答非所问；工具失败后未重试；未产出预期文件",
         "cancel": "取消",
         "start": "开始执行",
         "starting": "启动中…",
-        "summary": "已选择 {{count}} 个 Agent，{{nodes}} 个节点",
+        "summary": "已选择 {{count}} 个 Agent · {{nodes}} 个节点",
         "emptyNodes": "选中范围内没有完整可诊断的步骤（未完整覆盖的步骤已被剔除）",
         "lastTurn": "选中轨迹包含主agent最后一轮响应，将尝试进行产物评估和过程异常诊断归因",
         "nodeLimit": "选中轨迹超过 {{limit}} 个节点（当前 {{count}} 个），请缩小选择范围",
         "running": "已有诊断正在进行",
         "noData": "当前没有可诊断的轨迹"
       },
-      "summary": "{{traces}} 条轨迹 · {{spans}} 个 OTel Span",
+      "summary": "{{agents}}个Agent · {{nodes}} 个节点",
       "toolbar": {
         "scale": "轨迹比例",
         "time": "时间",
@@ -1086,7 +1086,7 @@
     },
     "diagnosis": {
       "entry": "轨迹分析",
-      "noteLabel": "补充说明（可选）",
+      "noteLabel": "用户反馈：描述已选轨迹中的问题（可选）",
       "fullScopeBusy": "会话运行中，无法诊断完整轨迹",
       "cancel": "取消诊断",
       "selectionHint": "在时间轴或任一泳道上拖选一段时间，并勾选要诊断的成员。",

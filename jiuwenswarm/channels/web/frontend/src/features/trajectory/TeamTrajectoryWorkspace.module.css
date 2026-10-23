@@ -6,11 +6,19 @@
   overflow: hidden;
 }
 
+/* Keep the shared axis and lane plots on the same horizontal origin. */
+.axisHost {
+  flex: none;
+  padding: 0 8px;
+}
+
 .lanes {
   display: flex;
   min-height: 0;
   flex: 1 1 0;
   flex-direction: column;
+  gap: 8px;
+  padding: 8px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -23,7 +31,15 @@
   flex: 0 0 auto;
   flex-direction: column;
   overflow: hidden;
+  /* box-shadow border so the 1px frame does not shift the plot vs the axis. */
+  border: 0;
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-layer-1);
+}
+
+.laneRow :global([aria-label='Trajectory timeline']) {
+  border-bottom: 0;
 }
 
 .laneRowExpanded {
@@ -39,11 +55,6 @@
   top: 0;
   z-index: 8;
   background: var(--dsw-alias-bg-layer-1);
-}
-
-.laneRow[data-highlighted='true'] :global([role='toolbar']),
-.laneRowExpanded[data-highlighted='true'] :global([role='toolbar']) {
-  background: #ddecff;
 }
 
 .memberCluster {
@@ -116,8 +127,49 @@
   white-space: nowrap;
 }
 
+.selectAll {
+  flex: none;
+  height: 20px;
+  border: 0;
+  border-radius: 3px;
+  padding: 0 5px;
+  background: transparent;
+  color: var(--dsw-alias-state-business-primary);
+  cursor: pointer;
+  font: var(--dsw-font-xxs-12);
+  white-space: nowrap;
+}
+
+.selectAllActive {
+  background: var(--dsw-alias-interactive-bg-hover);
+  font-weight: 600;
+}
+
+.selectAll:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.selectAll:focus-visible {
+  outline: 1px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+.selectAll:disabled {
+  color: var(--dsw-alias-label-caption);
+  cursor: not-allowed;
+}
+
 .chevron {
+  display: inline-block;
+  flex: none;
   color: var(--dsw-alias-label-secondary);
   font-size: 0.75rem;
+  font-weight: 500;
   line-height: 1;
+  transform-origin: center;
+  transition: transform 0.12s ease;
+}
+
+.chevronExpanded {
+  transform: rotate(90deg);
 }

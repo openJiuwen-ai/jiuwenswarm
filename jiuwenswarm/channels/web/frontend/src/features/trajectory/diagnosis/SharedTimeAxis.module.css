@@ -61,38 +61,32 @@
 .track {
   position: relative;
   height: 12px;
-  border-radius: 999px;
+  border-radius: 0;
   background: #e8e8e8;
   pointer-events: none;
 }
 
-.track::before,
-.track::after {
-  content: '';
+.tick {
   position: absolute;
-  top: 0;
-  z-index: 2;
-  width: 6px;
-  height: 12px;
-  background: #a3a3a3;
+  top: 50%;
+  z-index: 1;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #b0b0b0;
+  transform: translate(-50%, -50%);
   pointer-events: none;
-}
-
-.track::before {
-  left: 0;
-  border-radius: 6px 0 0 6px;
-}
-
-.track::after {
-  right: 0;
-  border-radius: 0 6px 6px 0;
 }
 
 .selection {
   position: absolute;
   top: 0;
   bottom: 0;
-  background: #a9c7f1;
+  z-index: 2;
+  /* Deeper wash + thicker parallel /// hatch (still lighter than edge bars). */
+  background-color: rgb(30 100 220 / 12%);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Cpath d='M-2 2l4-4M0 10l10-10M8 12l4-4' stroke='%231a66d8' stroke-opacity='0.32' stroke-width='2' stroke-linecap='square' fill='none'/%3E%3C/svg%3E");
+  background-size: 10px 10px;
   pointer-events: none;
 }
 
@@ -102,7 +96,7 @@
   position: absolute;
   top: 0;
   z-index: 1;
-  width: 4px;
+  width: 2px;
   height: 12px;
   background: #1877ff;
   pointer-events: none;
@@ -110,12 +104,10 @@
 
 .selection::before {
   left: 0;
-  border-radius: 4px 0 0 4px;
 }
 
 .selection::after {
   right: 0;
-  border-radius: 0 4px 4px 0;
 }
 
 .selectionStart,
