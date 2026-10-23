@@ -3,6 +3,37 @@ import test from 'node:test';
 
 import { useChatStore } from '../node_modules/.cache/chat-store-streaming/chatStore.mjs';
 
+test('authoritative runtime snapshots reconcile questions independently of history and processing', () => {
+  const store = useChatStore.getState();
+  const sessionId = 'pending-snapshot';
+  store.ensureRuntime(sessionId);
+  store.ensureRuntime('pending-other-session');
+  const question = {
+    request_id: 'waiting-control', source: 'ask_user_interrupt',
+    questions: [{ header: 'Continue', question: 'Continue?', options: [] }],
+    runtimeEvent: { worker_instance: 'worker', sequence: 10 },
+  };
+  store.enqueuePendingQuestion('pending-other-session', question);
+  const snapshot = {
+    worker_instance: 'worker', cursor: 20, is_processing: false, history_required: false,
+    dispatches: [{ pending_interactions: [{ ...question, event_type: 'chat.ask_user_question' }] }],
+  };
+  try {
+    store.reconcilePendingQuestions(sessionId, snapshot);
+    store.replaceHistoryMessages(sessionId, []);
+    assert.equal(store.getRuntime(sessionId).pendingQuestions[0].request_id, 'waiting-control');
+    assert.equal(store.getRuntime(sessionId).isProcessing, false);
+    store.reconcilePendingQuestions(sessionId, { ...snapshot, recovery_pending: true, dispatches: [] });
+    assert.equal(store.getRuntime(sessionId).pendingQuestions.length, 1);
+    store.reconcilePendingQuestions(sessionId, { ...snapshot, dispatches: [] });
+    assert.deepEqual(store.getRuntime(sessionId).pendingQuestions, []);
+    assert.equal(store.getRuntime('pending-other-session').pendingQuestions.length, 1);
+  } finally {
+    store.removeRuntime(sessionId);
+    store.removeRuntime('pending-other-session');
+  }
+});
+
 test('setThinking does not notify subscribers when the value is unchanged', () => {
   const sessionId = 'streaming-thinking-noop';
   useChatStore.getState().ensureRuntime(sessionId);

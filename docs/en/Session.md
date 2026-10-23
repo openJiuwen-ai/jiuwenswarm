@@ -6,6 +6,18 @@ Sessions are the core mechanism in JiuwenSwarm for managing conversation history
 
 ## Concepts
 
+### Restoring Team execution and confirmations in Web
+
+Work and Code Team sessions restore execution activity and pending confirmations independently.
+A Team waiting for input stops its execution timer; if a current confirmation is pending, its card remains
+available after a page reload. A successful cancellation clears that execution's pending cards, and reconnect
+replay must not make a cancelled card actionable again. Cancelling a round still allows the Team to accept
+another round and show new confirmations.
+Successfully answering a confirmation also retires it, so subsequent reloads do not ask the same question again.
+
+Recovery uses the current Runtime snapshot. An explicit empty pending-interaction list clears old Runtime
+cards; a snapshot that is still recovering does not clear them. Historical messages remain available for review.
+
 ### What is a Session
 
 A **Session** is a data unit in JiuwenSwarm used to record and manage single or multiple continuous conversation interactions. Each session contains:

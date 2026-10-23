@@ -7,8 +7,93 @@ import {
   consumePendingQuestion,
   enqueuePendingQuestions,
   pendingQuestionIdentity,
+  normalizePendingQuestion,
+  reconcilePendingQuestions,
   shouldClearPermissionQuestionsForLifecycleEvent,
 } from '../node_modules/.cache/pending-question-queue/pendingQuestionQueue.mjs';
+
+function runtimeQuestion(requestId, sequence = 10, instance = 'worker') {
+  return normalizePendingQuestion({
+    request_id: requestId,
+    source: 'ask_user_interrupt',
+    questions: [{ header: 'Question', question: requestId, options: [{ label: 'Continue' }] }],
+    runtime_event: { worker_instance: instance, sequence },
+  });
+}
+
+function snapshot(interactions = [], cursor = 20) {
+  return {
+    worker_instance: 'worker', cursor, is_processing: false, history_required: false,
+    dispatches: [{ pending_interactions: interactions.map((question) => ({
+      event_type: 'chat.ask_user_question', request_id: question.request_id,
+      source: question.source, questions: question.questions,
+    })) }],
+  };
+}
+
+test('idle snapshots restore current questions without requiring history replay', () => {
+  const question = runtimeQuestion('waiting-control');
+  const restored = reconcilePendingQuestions([], snapshot([question]));
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].request_id, 'waiting-control');
+  assert.deepEqual(restored[0].runtimeEvent, { worker_instance: 'worker', sequence: 20 });
+  assert.deepEqual(reconcilePendingQuestions(restored, snapshot([question])), restored);
+});
+
+test('empty authoritative snapshots clear old runtime cards and preserve unrelated interactions', () => {
+  const external = { request_id: 'external', source: 'other-service', questions: [] };
+  const queue = [runtimeQuestion('old-control'), external];
+  assert.deepEqual(reconcilePendingQuestions(queue, snapshot()), [external]);
+});
+
+test('pending, incomplete and malformed snapshots cannot clear a question', () => {
+  const queue = [runtimeQuestion('pending')];
+  for (const partial of [
+    { ...snapshot(), recovery_pending: true },
+    { is_processing: false },
+    { ...snapshot(), dispatches: [{}] },
+    { ...snapshot(), cursor: NaN },
+  ]) assert.equal(reconcilePendingQuestions(queue, partial), undefined);
+});
+
+test('snapshot reconciliation preserves questions published after its watermark', () => {
+  const newer = runtimeQuestion('new-control', 21);
+  const queue = [runtimeQuestion('old-control'), newer];
+  assert.deepEqual(reconcilePendingQuestions(queue, snapshot()), [newer]);
+  assert.deepEqual(reconcilePendingQuestions(queue, snapshot([runtimeQuestion('new-control')])), [newer]);
+});
+
+test('an older replay of a current control cannot overwrite its newer presentation', () => {
+  const latest = runtimeQuestion('current', 21);
+  latest.questions[0].question = 'Latest question';
+  const replayed = runtimeQuestion('current', 10);
+  assert.deepEqual(enqueuePendingQuestions([latest], replayed), [latest]);
+});
+
+test('worker replacement drops old cards while restoring the new current question', () => {
+  const restored = reconcilePendingQuestions([runtimeQuestion('old', 100, 'previous-worker')], snapshot([
+    runtimeQuestion('current'),
+  ]));
+  assert.deepEqual(restored.map((question) => question.request_id), ['current']);
+});
+
+test('normalization retains plan, permission, evolution and workflow response fields', () => {
+  const question = normalizePendingQuestion({
+    request_id: 'plan', source: 'permission_interrupt',
+    questions: [{ card_id: 'card-id', question: 'Allow?' }],
+    approval_schema: 'smart', _evolution_meta: { key: 'value' },
+    plan_approval_kind: 'plan_approval', plan_content: 'Plan body', plan_language: 'cn',
+    swarmflow_meta: { run_id: 'flow' }, duplex_job_id: 'video',
+  });
+  assert.equal(question.questions[0].card_id, 'card-id');
+  assert.equal(question.approvalSchema, 'smart');
+  assert.deepEqual(question.evolutionMeta, { key: 'value' });
+  assert.equal(question.planApprovalKind, 'plan_approval');
+  assert.equal(question.planContent, 'Plan body');
+  assert.equal(question.planLanguage, 'cn');
+  assert.equal(question.swarmflowMeta.run_id, 'flow');
+  assert.equal(question.duplexJobId, 'video');
+});
 
 function permission(cardId, text = cardId) {
   return {

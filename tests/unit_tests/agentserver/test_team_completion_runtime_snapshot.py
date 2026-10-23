@@ -11,6 +11,7 @@ import pytest
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.session import RuntimeSessionCoordinator, SessionPersistencePolicy
 from jiuwenswarm.runtime.session.model import (
     SessionExecutionHandle,
     SessionExecutionState,
@@ -55,6 +56,45 @@ async def recovery_snapshot(dispatcher, request):
         {"payload": dump_agent_request(request)}, conn, generation,
     )
     return conn.send.call_args.args[0]["payload"]
+
+
+@pytest.mark.asyncio
+async def test_answered_team_question_is_absent_from_repeated_worker_snapshots():
+    coordinator = RuntimeSessionCoordinator()
+    await coordinator.register_session("team-session", "web", SessionPersistencePolicy.PERSISTENT)
+    request = team_request()
+    parent = coordinator._new_execution(
+        coordinator._sessions["team-session"], request.request_id, SessionWorkKind.TEAM_REQUEST,
+        team=TeamExecutionDetails(waiter_kind=TeamWaiterKind.PERSISTENT),
+    )
+    parent.state = SessionExecutionState.WAITING_FOR_INPUT
+    parent.waiting_control_id = "question"
+    bridge = WorkerGatewayBridge(ConnHolder())
+    record = bridge.events.register(request, "original-question")
+    record.last_execution_id = parent.execution_id
+    record.interactions["question"] = {
+        "event_type": "chat.ask_user_question", "request_id": "question", "source": "ask_user_interrupt",
+    }
+    dispatcher = WorkerDispatcher(bridge)
+    dispatcher._runtime = SimpleNamespace(get_session_snapshot=coordinator.snapshot_session)
+
+    async def answer():
+        return "delivered"
+
+    try:
+        before = await recovery_snapshot(dispatcher, request)
+        assert before["dispatches"][0]["pending_interactions"]
+        await coordinator.run_unary(
+            "team-session", "answer", SessionWorkKind.TEAM_CONTROL, answer,
+            team=TeamExecutionDetails(control_id="question"),
+        )
+        for _ in range(3):
+            snapshot = await recovery_snapshot(dispatcher, request)
+            assert snapshot["is_processing"] is False
+            assert snapshot["dispatches"][0]["pending_interactions"] == []
+        assert parent.state is SessionExecutionState.WAITING_FOR_INPUT
+    finally:
+        await coordinator.close()
 
 
 @pytest.mark.asyncio

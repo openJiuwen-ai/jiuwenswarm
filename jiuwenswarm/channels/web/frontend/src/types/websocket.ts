@@ -159,6 +159,7 @@ export interface Question {
  * 用户问题请求 Payload（服务端 -> 客户端）
  */
 export interface AskUserQuestionPayload {
+  runtimeEvent?: { worker_instance: string; sequence: number };
   duplexJobId?: string;
   request_id: string;
   questions: Question[];

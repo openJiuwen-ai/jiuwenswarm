@@ -217,6 +217,7 @@ class RuntimeSessionCoordinator:
                 )
                 if control_id:
                     self._registry.mark_awaiting_control(handle, control_id)
+                self._resolve_team_control(handle)
                 if handle.waiting_control_id:
                     self._registry.mark_waiting(handle)
                 else:
@@ -274,6 +275,28 @@ class RuntimeSessionCoordinator:
                 and handle.task is asyncio.current_task()
             ):
                 handle.task = None
+
+    def _resolve_team_control(self, handle: SessionExecutionHandle) -> None:
+        """Retire only the Team interaction successfully answered by this work."""
+        if handle.work_kind is not SessionWorkKind.TEAM_CONTROL or handle.team is None:
+            return
+        control_id = handle.team.control_id
+        if not control_id:
+            return
+        for parent in self._registry.select(
+            session_id=handle.session_id,
+            generation=handle.generation,
+            active_only=True,
+        ):
+            if parent is handle or parent.team is None or parent.cancellation_requested:
+                continue
+            if parent.waiting_control_id != control_id:
+                continue
+            parent.waiting_control_id = None
+            # A parked persistent response owner remains available for reuse.
+            # An output owner whose stream already ended can finish normally.
+            if parent.state is SessionExecutionState.WAITING_FOR_CONTROL:
+                self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
 
     def record_interaction(
         self, session_id: str, request_id: str, control_id: str
@@ -696,6 +719,7 @@ class RuntimeSessionCoordinator:
                 )
                 terminal_item = _StreamItem(error=exc, done=True)
             else:
+                self._resolve_team_control(handle)
                 if handle.waiting_control_id:
                     self._registry.mark_waiting(handle)
                 else:
