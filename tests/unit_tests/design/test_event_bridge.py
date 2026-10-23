@@ -54,6 +54,34 @@ def test_node_failure_is_persisted_with_its_error():
     assert state["error"] == "model timeout"
 
 
+def test_success_clears_stale_error():
+    bridge, store, _pushed = _bridge()
+
+    bridge.emit(WorkflowProgressEvent(kind=ProgressKind.AGENT_STARTED, label="n_brief"))
+    bridge.emit(
+        WorkflowProgressEvent(kind=ProgressKind.AGENT_FAILED, label="n_brief", message="model timeout")
+    )
+    bridge.on_node_result("n_brief", {"text": "v2"})
+
+    state = store.saved[-1]["node_states"]["n_brief"]
+    assert state["status"] == "completed"
+    assert "error" not in state
+
+
+def test_restart_clears_stale_error():
+    bridge, store, _pushed = _bridge()
+
+    bridge.emit(WorkflowProgressEvent(kind=ProgressKind.AGENT_STARTED, label="n_brief"))
+    bridge.emit(
+        WorkflowProgressEvent(kind=ProgressKind.AGENT_FAILED, label="n_brief", message="model timeout")
+    )
+    bridge.emit(WorkflowProgressEvent(kind=ProgressKind.AGENT_STARTED, label="n_brief"))
+
+    state = store.saved[-1]["node_states"]["n_brief"]
+    assert state["status"] == "running"
+    assert "error" not in state
+
+
 def test_first_result_writes_current_slots_and_double_writes_refs():
     bridge, store, _pushed = _bridge()
     ref_a = {"uri": "file:///a.png"}

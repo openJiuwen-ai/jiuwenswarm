@@ -9,7 +9,7 @@ import type {
   ExternalCliPendingChoice,
 } from '../../components/ExternalCliAgentsSection';
 import type { ExternalCliInstallStatuses } from '../../components/ExternalCliInstallDialog';
-import { SettingsPageLayout } from './SettingsPageLayout';
+import { SettingsPageLayout, type SettingsSidebarControls } from './SettingsPageLayout';
 import { SettingsServicesProvider } from './services/SettingsServicesProvider';
 import type { SettingsPageDefinition } from './registry/types';
 import type { SettingsModuleTarget } from './settingsNavigation';
@@ -31,6 +31,7 @@ export function SettingsPage({
   externalCliDetectResults,
   onExternalCliDetectResultsChange,
   initialModuleId,
+  sidebar,
 }: {
   definition: SettingsPageDefinition;
   isConnected: boolean;
@@ -62,6 +63,7 @@ export function SettingsPage({
         >),
   ) => void;
   initialModuleId?: SettingsModuleTarget;
+  sidebar?: SettingsSidebarControls;
 }) {
   return (
     <SettingsServicesProvider
@@ -80,7 +82,7 @@ export function SettingsPage({
       externalCliDetectResults={externalCliDetectResults}
       onExternalCliDetectResultsChange={onExternalCliDetectResultsChange}
     >
-      <SettingsPageLayout definition={definition} initialModuleId={initialModuleId} />
+      <SettingsPageLayout definition={definition} initialModuleId={initialModuleId} sidebar={sidebar} />
     </SettingsServicesProvider>
   );
 }

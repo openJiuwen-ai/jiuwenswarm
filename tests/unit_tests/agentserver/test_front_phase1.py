@@ -873,7 +873,7 @@ def test_runtime_start_defaults_to_no_transport_bind() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_construct_is_off_front_process(monkeypatch) -> None:
+async def test_runtime_construct_is_off_front_process(monkeypatch, worker_callback_framework) -> None:
     from pathlib import Path
     from types import SimpleNamespace
     from unittest.mock import AsyncMock

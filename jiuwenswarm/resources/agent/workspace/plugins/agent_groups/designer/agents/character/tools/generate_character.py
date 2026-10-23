@@ -12,6 +12,7 @@ class GenerateCharacter(Tool):
     """One generation call for this member. A second call returns an error dict."""
 
     def __init__(self) -> None:
+        timeout_s = float(node_tools().image_generate_timeout_seconds())
         super().__init__(
             ToolCard(
                 id="generate_character",
@@ -33,6 +34,7 @@ class GenerateCharacter(Tool):
                     "required": ["shot_ticket", "prompt"],
                     "additionalProperties": False,
                 },
+                properties={"resilience": {"timeout_s": timeout_s}},
                 parallel_safe=False,
             )
         )
@@ -47,6 +49,10 @@ class GenerateCharacter(Tool):
             "error": error,
         }
 
+    def _reject(self, data: dict, prompt: str, error: str) -> dict:
+        node_tools().note_rejection(data.get("shot_ticket"), "character", "generate_character", error)
+        return self._failure(prompt, error)
+
     async def invoke(self, inputs: Any, **kwargs: Any) -> dict:
         del kwargs
         prompt = ""
@@ -55,12 +61,12 @@ class GenerateCharacter(Tool):
             prompt = data.get("prompt") if isinstance(data.get("prompt"), str) else ""
             if data.get("__node_guard_reject__") == "generate_already_called" or self._used:
                 self._used = True
-                return self._failure(prompt, "generate_already_called")
+                return self._reject(data, prompt, "generate_already_called")
             ticket = ticket_of(data)
             if ticket is None:
-                return self._failure(prompt, "missing_shot_ticket")
+                return self._reject(data, prompt, "missing_shot_ticket")
             if not prompt.strip():
-                return self._failure(prompt, "missing_prompt")
+                return self._reject(data, prompt, "missing_prompt")
             self._used = True
             return await node_tools().generate_node_output(
                 ticket,

@@ -123,6 +123,7 @@ def _safe_error(value: dict | None) -> str | None:
         "http_status",
         "outcome_unknown",
         "retry_after",
+        "message",
     }:
         raise PublishStoreError("invalid_record")
     if not isinstance(value.get("code"), str) or value["code"] not in _SAFE_ERRORS:

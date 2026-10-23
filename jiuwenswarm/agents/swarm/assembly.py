@@ -26,18 +26,18 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from jiuwenswarm.agents.swarm.agent_group import LoadedAgentGroupPackage
+    from openjiuwen.agent_teams.experts import LoadedAgentGroupPackage
 
 from openjiuwen.agent_teams.paths import (
     SKILL_VISIBILITY_FILENAME,
     configure_global_skills_dir,
     team_home,
 )
+from openjiuwen.agent_teams.experts import compose_template_member
 from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
 from openjiuwen.agent_teams.schema.blueprint import TransportSpec
 from openjiuwen.agent_teams.schema.team import (
@@ -47,7 +47,6 @@ from openjiuwen.agent_teams.schema.team import (
 )
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
-from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
 
 from jiuwenswarm.agents.swarm.config_specs import (
     build_member_capability_specs,
@@ -75,7 +74,6 @@ logger = logging.getLogger(__name__)
 
 # Member roles enriched in place, in deterministic order.
 _MEMBER_ROLES: tuple[str, ...] = ("leader", "teammate")
-_PROMPT_TEMPLATE_PATTERN = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
 
 
 def _external_team_publish_url(channel_id: str | None) -> str:
@@ -132,88 +130,10 @@ def _with_project_cwd(member_spec: Any, project_dir: str | None) -> Any:
     return member_spec.model_copy(update={"cwd": project_root, "project_root": project_root})
 
 
-def _template_skill_names(template: AgentTemplateSpec) -> list[str]:
-    """Return stable, deduplicated skill directory names from a template."""
-    names: list[str] = []
-    seen: set[str] = set()
-    for skill in template.skills:
-        name = Path(skill.dir).name
-        if name and name not in seen:
-            names.append(name)
-            seen.add(name)
-    return names
-
-
-def _select_prompt_content(content: dict[str, str], language: str) -> str:
-    """Select one localized AgentTemplate prompt using core's fallback order."""
-    if language in content:
-        return content[language]
-    if "en" in content:
-        return content["en"]
-    if "cn" in content:
-        return content["cn"]
-    if content:
-        return next(iter(content.values()))
-    return ""
-
-
-def _render_prompt_text(text: str, params: dict[str, Any]) -> str:
-    """Render the plain ``{{ name }}`` placeholders used by AgentTemplate."""
-
-    def _replace(match: re.Match[str]) -> str:
-        key = match.group(1)
-        return str(params[key]) if key in params else match.group(0)
-
-    return _PROMPT_TEMPLATE_PATTERN.sub(_replace, text)
-
-
-def _template_team_prompt(template: AgentTemplateSpec, member_spec: Any) -> str:
-    """Flatten an AgentTemplate's prompt sections into the Team-owned prompt.
-
-    ``TeamMemberSpec.prompt`` / ``LeaderSpec.prompt`` is the persisted source of
-    truth for a member's private working agreement.  Preserve AgentTemplate
-    priority and localization semantics while moving that content into the Team
-    layer instead of letting ``NativeHarness`` replace prompt sections later.
-    """
-    language = str(getattr(member_spec, "language", None) or "cn").strip() or "cn"
-    workspace = getattr(getattr(member_spec, "workspace", None), "root_path", None)
-    base_params: dict[str, Any] = {
-        "language": language,
-        "workspace": workspace or "",
-    }
-    rendered: list[str] = []
-    for section in sorted(template.prompt_sections, key=lambda item: item.priority):
-        params = {**base_params, **dict(section.render_params or {})}
-        text = _render_prompt_text(
-            _select_prompt_content(section.content, language),
-            params,
-        ).strip()
-        if text:
-            rendered.append(text)
-    return "\n\n".join(rendered)
-
-
 def _merge_team_prompt(existing: str | None, expert_prompt: str) -> str:
     """Append an expert prompt without discarding an existing Team prompt."""
     return "\n\n".join(
         part for part in (str(existing or "").strip(), expert_prompt.strip()) if part
-    )
-
-
-def _with_agent_template(member_spec: Any, template: AgentTemplateSpec) -> Any:
-    """Attach a capability-only template snapshot and seed Skill visibility."""
-    skills: list[str] = []
-    seen: set[str] = set()
-    for name in [*(member_spec.skills or []), *_template_skill_names(template)]:
-        if name and name not in seen:
-            skills.append(name)
-            seen.add(name)
-    runtime_template = template.model_copy(update={"prompt_sections": []})
-    return member_spec.model_copy(
-        update={
-            "agent_template_spec": runtime_template.model_dump(mode="json"),
-            "skills": skills,
-        }
     )
 
 
@@ -227,7 +147,7 @@ def _apply_agent_group(
         resolve_agent_group_member_display_name,
     )
     if package is None:
-        from jiuwenswarm.agents.swarm.agent_group import (
+        from openjiuwen.agent_teams.experts import (
             load_agent_group_package_bundle,
         )
         from jiuwenswarm.server.runtime.extension_package_manager import (
@@ -239,11 +159,14 @@ def _apply_agent_group(
         )
     templates = package.templates
     package_dir = package.package_dir
+    # The metadata key stays for existing readers; ``agent_group_name`` is the
+    # field core's spawn_expert reads to spawn more instances of a member.
     spec.metadata = {
         **(spec.metadata or {}),
         "agent_group_name": agent_group_name,
         "capabilities": list(package.capabilities),
     }
+    spec.agent_group_name = agent_group_name
 
     leader_base = spec.agents.get("leader")
     teammate_base = spec.agents.get("teammate")
@@ -251,29 +174,23 @@ def _apply_agent_group(
         raise ValueError(
             "AgentGroup assembly requires both base 'leader' and 'teammate' specs"
         )
-    leader_template = templates["leader"]
-    leader_prompt = _template_team_prompt(leader_template, leader_base)
+    leader_member = compose_template_member(leader_base, templates["leader"])
     spec.leader = spec.leader.model_copy(
         update={
-            "prompt": _merge_team_prompt(spec.leader.prompt, leader_prompt),
+            "prompt": _merge_team_prompt(spec.leader.prompt, leader_member.persona),
         }
     )
-    spec.agents["leader"] = _with_agent_template(
-        leader_base,
-        leader_template,
-    )
+    spec.agents["leader"] = leader_member.spec
 
     predefined_members: list[TeamMemberSpec] = []
     for agent_name, template in templates.items():
         if agent_name == "leader":
             continue
-        member_prompt = _template_team_prompt(template, teammate_base)
+        assembled = compose_template_member(teammate_base.model_copy(deep=True), template)
+        member_prompt = assembled.persona
         external_config = external_cli_agent_spec_from_template(template)
         if external_config is None:
-            spec.agents[agent_name] = _with_agent_template(
-                teammate_base.model_copy(deep=True),
-                template,
-            )
+            spec.agents[agent_name] = assembled.spec
             member = TeamMemberSpec(
                 member_name=agent_name,
                 display_name=resolve_agent_group_member_display_name(
@@ -317,7 +234,7 @@ def _is_design_team_mode(mode: str) -> bool:
 # server-side prompt assembly where these rules were force-fed every turn.
 _DESIGN_LEADER_SYSTEM_PROMPT = (
     "你是设计画布（Design Canvas）的主编，与用户对话并编辑设计图。"
-    "全新的创作需求用 designer_graph_autorun 自动建图，小改动用 designer_graph_patch；执行入口是 designer_run_graph 和画布运行按钮。"
+    "全新的创作需求用 designer_graph_autorun 自动建图，小改动用 designer_graph_patch；执行入口是 swarmflow 和画布运行按钮。"
     "\n\n画布硬规则（每次编辑必须遵守）：\n1. 全新创作需求（用户提出\"帮我做一个关于X的视频/广告/故事\"）必须调 designer_graph_autorun，"
     "把用户的完整需求原文传给 prompt 参数——导演链（分析→简报→审核→分镜→审核→建图→校验）在服务端完成，产出带完整锁体系的图。不要自己用 graph_patch 从零拼整图。"
     "\n2. designer_graph_patch 只用于用户要求的小改：加减个别节点、改 config.prompt、连线/断连、删节点。"
@@ -327,7 +244,7 @@ _DESIGN_LEADER_SYSTEM_PROMPT = (
     "config.role 合法值：text、table、image、video、audio；"
     "config.pipeline 合法值：brief、character、scene、storyboard、clip、compose、music、speech。不要自创其他取值。"
     "\n4. 不要重建整张图，只 patch 用户要求改动的部分；保留既有节点 ID 与无关内容。"
-    "\n5. designer_graph_autorun 建图成功后直接调用 designer_run_graph 开始执行（用户明确说先不要跑时除外）；graph_patch 小改后询问用户是否重跑（等用户确认或点运行按钮）。"
+    "\n5. designer_graph_autorun 建图成功后直接调用 swarmflow 开始执行（用户明确说先不要跑时除外）；graph_patch 小改后询问用户是否重跑（等用户确认或点运行按钮）。"
     "执行完成后如果用户反馈不满意，给出具体优化建议（哪个节点改什么提示词），询问是否按建议调整后重跑。"
     "\n6. 上传参考图节点（id 以 n_ref_ 开头，config 带 user_reference_path）是用户上传的素材，"
     "系统已创建：不要删除、不要重建、不要改它们的连线——创作节点（角色/场景/分镜）应引用这些参考（参考图是视觉权威，从中提取可兼容的可见特征）。"
@@ -346,7 +263,7 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
     ``DesignerSurfaceSanitizerRail`` (execution is service-driven; the leader
     has no run-control surface).
     """
-    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+    from openjiuwen.agent_teams.experts import load_agent_group_package
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_dir,
     )
@@ -358,14 +275,13 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
         raise ValueError(
             "AgentGroup assembly requires both base 'leader' and 'teammate' specs"
         )
-    leader_template = templates["leader"]
-    leader_prompt = _template_team_prompt(leader_template, leader_base)
+    leader_member = compose_template_member(leader_base, templates["leader"])
     spec.leader = spec.leader.model_copy(
         update={
-            "prompt": _merge_team_prompt(spec.leader.prompt, leader_prompt),
+            "prompt": _merge_team_prompt(spec.leader.prompt, leader_member.persona),
         }
     )
-    leader_spec = _with_agent_template(leader_base, leader_template)
+    leader_spec = leader_member.spec
 
     # Design-team leader: a conversation surface over the canvas.
     # Rebuild the leader spec instead of extending the config.yaml base:
@@ -442,10 +358,7 @@ def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
     for agent_name, template in templates.items():
         if agent_name in ("leader", "teammate"):
             continue
-        spec.agents[agent_name] = _with_agent_template(
-            teammate_base.model_copy(deep=True),
-            template,
-        )
+        spec.agents[agent_name] = compose_template_member(teammate_base.model_copy(deep=True), template).spec
     spec.enable_swarmflow = False
     spec.predefined_members = []
     # Team-level swarmflow progressive switch (swarmflow_progressive_tool):

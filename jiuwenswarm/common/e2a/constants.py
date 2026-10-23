@@ -101,6 +101,10 @@ E2A_CANCEL_SOURCE_CLIENT_DISCONNECT = "client_disconnect"
 
 # Gateway → AgentServer：登录模型的请求级凭据
 E2A_MODEL_AUTH_PARAM_KEY = "_model_auth"
+#: 登录会话 id 的请求参数键（models.list 等读模型清单的 RPC 用）。Gateway 从
+#: 受认证的 WS 连接属性写入、AgentServer 侧 ConfigAdapter 消费后构造 ws 上下文；
+#: 客户端传来的该键一律由 Gateway 先删（与 ``_model_auth`` 同款硬规则）。
+E2A_AUTH_SESSION_PARAM_KEY = "_jiuwen_auth_session"
 # Gateway → AgentServer：没有登录会话的通道（飞书等）拿不到登录模型凭据时的具体原因提示，
 # AgentServer 报 login_required 时用它替换通用文案。只由 Gateway 写。
 E2A_LOGIN_REQUIRED_HINT_PARAM_KEY = "_login_required_hint"

@@ -95,20 +95,28 @@ and retain the key environment variable in the invoking CMD.
 
 ## 4. File access approval
 
-With both `permissions.enabled` and `permissions.file_guard.enabled` enabled,
-Process CLI requires explicit approval for each shell command whose file
-accesses cannot be determined, including variable-based command chains,
-redirections, interpreters, and unrecognized programs. Smart Approval cannot
-approve these commands automatically, and approvals are not remembered for
-the session or persisted. Recognized literal paths retain existing path policy.
-A standalone prompt command that cannot receive approval exits with code `4`
-before the tool executes. Machine entry points retain their existing approval
-response contracts.
+With permissions enabled, standalone prompt commands directly deny operations
+that require approval, without displaying an approval question. A one-shot
+machine request that cannot receive interaction answers follows the same policy.
+Writes already allowed by the trusted-path policy continue to work. Interactive
+CLI workers and duplex machine requests retain their approval response flow.
+
+Standalone prompt commands do not expose `ask_user` or read interactive choices,
+even in a real terminal. An unexpected interaction event ends the command with
+exit code `4` without waiting for user input.
+
+With `permissions.file_guard.enabled` also enabled, shell commands whose file
+accesses cannot be determined require approval, including variable-based command
+chains, redirections, interpreters, and unrecognized programs. Non-interactive
+runs deny these commands. Interactive runs require explicit approval each time;
+Smart Approval cannot approve them automatically, and approvals are not remembered
+for the session or persisted. Recognized literal paths retain existing path policy.
 
 `--cwd` selects a working directory and `--trusted-dir` adds trusted paths;
-neither provides an operating-system sandbox. Explicitly disabling permissions
-or file protection preserves existing unrestricted behavior. This policy is
-exclusive to `process_cli`; other channels retain their existing behavior.
+neither provides an operating-system sandbox. Disabling permissions skips these
+checks. Disabling only file protection leaves tool-level permission rules in
+effect. This policy is exclusive to `process_cli`; other channels retain their
+existing behavior.
 
 ## 5. Codex comparison
 

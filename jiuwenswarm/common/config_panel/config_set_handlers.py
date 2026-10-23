@@ -39,12 +39,14 @@ from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
     DEFAULT_TEAM_DISPATCH_MODE,
+    DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
     DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
     SWARMFLOW_BUDGET_CONFIG_PATH,
     SWARMFLOW_ENABLED_CONFIG_PATH,
     SWARMFLOW_WORKTREE_CONFIG_PATH,
     TEAM_DISPATCH_MODE_CONFIG_PATH,
+    TEAM_MEMBER_MESSAGING_CONFIG_PATH,
     TEAM_TASK_VERIFICATION_CONFIG_PATH,
     get_config,
     get_config_raw,
@@ -72,7 +74,9 @@ from jiuwenswarm.common.config import (
     update_team_organization_ui_in_config,
     update_task_asr_in_config,
     update_team_scheduled_dispatch_in_config,
+    update_team_member_messaging_in_config,
     update_team_task_verification_in_config,
+    update_trajectory_diagnosis_in_config,
     update_trajectory_ui_in_config,
     update_default_models_in_config,
     update_login_model_settings_in_config,
@@ -224,7 +228,9 @@ class ConfigChangeSet:
                 scopes.add("proactive")
             elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
                 scopes.add("agent_runtime")
-            elif key_text == "trajectory_ui_enabled":
+            elif key_text in {"trajectory_ui_enabled", "trajectory_ui_diagnosis_enabled"}:
+                # Diagnosis switches the trajectory data plane on as well, so
+                # it needs the same runtime sync as the trajectory view switch.
                 scopes.update({"agent_runtime", "web_ui"})
             elif key_text in {"task_full_duplex_enabled", "team_organization_ui_enabled"}:
                 scopes.add("web_ui")
@@ -377,6 +383,7 @@ CONFIG_YAML_KEYS = frozenset({
     "a2ui_enabled",
     "rsi_enabled",
     "trajectory_ui_enabled",
+    "trajectory_ui_diagnosis_enabled",
     "task_full_duplex_enabled",
     "team_organization_ui_enabled",
     "task_asr_enabled",
@@ -387,6 +394,7 @@ CONFIG_YAML_KEYS = frozenset({
     "swarmflow_budget",
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
+    "team_member_messaging_enabled",
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
@@ -398,10 +406,12 @@ CONFIG_YAML_KEYS = frozenset({
     "ttse_enabled",
     "enable_free_models",
 })
-# 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification），改动后需重载 team。
+# 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification /
+# enable_member_messaging），改动后需重载 team。
 TEAM_DISPATCH_CONFIG_KEYS = frozenset({
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
+    "team_member_messaging_enabled",
 })
 EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
     "external_cli_agent_claude_enabled",
@@ -593,9 +603,15 @@ def flatten_team_dispatch_for_config_panel(raw: dict[str, Any]) -> dict[str, str
         TEAM_TASK_VERIFICATION_CONFIG_PATH,
         DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
     )
+    member_messaging = get_nested_config_value(
+        raw,
+        TEAM_MEMBER_MESSAGING_CONFIG_PATH,
+        DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
+    )
     return {
         "team_scheduled_dispatch_enabled": "true" if str(dispatch_mode).strip() == "scheduled" else "false",
         "team_task_verification_enabled": "true" if parse_config_switch_bool(verification) else "false",
+        "team_member_messaging_enabled": "true" if parse_config_switch_bool(member_messaging) else "false",
     }
 
 
@@ -795,7 +811,9 @@ def external_cli_managed_cli_path(cli_agent: str) -> str:
 
 
 def resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str, str]:
-    requested = cli_path.strip()
+    from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+    requested = resolve_preserved_cli_path(cli_path.strip())
     if requested:
         resolved = shutil.which(requested)
         if resolved:
@@ -1378,16 +1396,21 @@ def apply_config_payload(
             elif param_key == "team_scheduled_dispatch_enabled":
                 update_team_scheduled_dispatch_in_config(parsed)
                 if not parsed:
-                    # 验证者只在调度模式下生效，关闭调度模式时一并关闭。
+                    # 验证者与成员间通信只在调度模式下生效，关闭调度模式时一并关闭。
                     update_team_task_verification_in_config(False)
                     yaml_updated.append("team_task_verification_enabled")
-            elif param_key == "team_task_verification_enabled":
+                    update_team_member_messaging_in_config(False)
+                    yaml_updated.append("team_member_messaging_enabled")
+            elif param_key in ("team_task_verification_enabled", "team_member_messaging_enabled"):
                 scheduled = (
                     parse_config_bool(params["team_scheduled_dispatch_enabled"])
                     if "team_scheduled_dispatch_enabled" in params
                     else flatten_team_dispatch_for_config_panel(raw)["team_scheduled_dispatch_enabled"] == "true"
                 )
-                update_team_task_verification_in_config(parsed and scheduled)
+                if param_key == "team_task_verification_enabled":
+                    update_team_task_verification_in_config(parsed and scheduled)
+                else:
+                    update_team_member_messaging_in_config(parsed and scheduled)
             elif is_external_cli_agent_config_key(param_key):
                 if not external_cli_agents_updated:
                     try:
@@ -1435,6 +1458,8 @@ def apply_config_payload(
                 update_a2ui_in_config(update)
             elif param_key == "trajectory_ui_enabled":
                 update_trajectory_ui_in_config(parsed)
+            elif param_key == "trajectory_ui_diagnosis_enabled":
+                update_trajectory_diagnosis_in_config(parsed)
             elif param_key == "task_full_duplex_enabled":
                 update_task_full_duplex_in_config(parsed)
             elif param_key == "team_organization_ui_enabled":
@@ -1650,6 +1675,9 @@ async def config_get_handler(
         payload["trajectory_ui_enabled"] = (
             "true" if trajectory_cfg.get("enabled", False) else "false"
         )
+        payload["trajectory_ui_diagnosis_enabled"] = (
+            "true" if trajectory_cfg.get("diagnosis_enabled", False) else "false"
+        )
         experimental_cfg = raw.get("experimental") or {}
         payload["team_organization_ui_enabled"] = (
             "true" if experimental_cfg.get("team_organization_ui_enabled", False) else "false"
@@ -1699,9 +1727,14 @@ async def config_get_handler(
             "team_task_verification_enabled",
             "true" if DEFAULT_TEAM_TASK_VERIFICATION_ENABLED else "false",
         )
+        payload.setdefault(
+            "team_member_messaging_enabled",
+            "true" if DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED else "false",
+        )
         for key, value in provider("a2ui").get_default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")
+        payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
         payload.setdefault("task_asr_enabled", "false")

@@ -3,14 +3,16 @@
 #   正式版:  .\scripts\build-electron-exe.ps1
 #   测试版:  .\scripts\build-electron-exe.ps1 -Test
 #   前端测试: .\scripts\build-electron-exe.ps1 -Test -FrontendOnly
+#   仅目录包: .\scripts\build-electron-exe.ps1 -NoSign -SkipInstaller
+#   复用后端: .\scripts\build-electron-exe.ps1 -NoSign -SkipInstaller -ReuseBackend
 #
 # 打包流程:
 # 1. 安装 Python 依赖 (uv sync --extra dev --extra cua) [跳过: FrontendOnly]
 # 2. 构建前端 (vite build with ELECTRON=true)
 # 3. 安装 Electron 桌面端依赖 (npm install in channels/desktop/electron)
-# 4. PyInstaller 打包后端 (jiuwenswarm.spec)           [跳过: FrontendOnly]
+# 4. PyInstaller 打包后端 (jiuwenswarm.spec)           [跳过: FrontendOnly / ReuseBackend]
 # 5. 组装最终产物: Electron shell + 前端 dist + 后端 exe + resources
-# 6. Inno Setup 打成 build_config 定义的正式安装包
+# 6. Inno Setup 打成 build_config 定义的正式安装包      [跳过: SkipInstaller]
 #    （应用名 / exe 名 / 版本号均来自 build_config，与 Python 打包一致）
 
 param(
@@ -22,7 +24,9 @@ param(
     [switch]$NoSign,
     [switch]$RequireSigning,
     [switch]$Test,
-    [switch]$FrontendOnly
+    [switch]$FrontendOnly,
+    [switch]$SkipInstaller,
+    [switch]$ReuseBackend
 )
 
 $ErrorActionPreference = "Stop"
@@ -391,10 +395,6 @@ $BuildConfigJson = uv run --no-project --python 3.11 python `
     "$ProjectRoot\scripts\build_config.py" --sync --emit-json
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $BuildConfig = $BuildConfigJson | ConvertFrom-Json
-if (-not $FrontendOnly) {
-    uv run --no-project --python 3.11 python "$ProjectRoot\scripts\generate_build_info.py" --require-agent-core-branch
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
 $BuildDistDirName = [string]$BuildConfig.dist_dir_name
 $BuildExecutableNameWindows = [string]$BuildConfig.executable_name_windows
 $BuildVersion = [string]$BuildConfig.version
@@ -487,11 +487,15 @@ if (-not (Test-Path -LiteralPath $ElectronExe -PathType Leaf)) {
 Write-Host "  Electron: $ElectronExe" -ForegroundColor Gray
 
 # ── 4. PyInstaller: build backend exe ─────────────────────────────────────────
-if (-not $FrontendOnly) {
+$BackendDist = Join-Path $ProjectRoot "dist\$BuildDistDirName"
+if ($FrontendOnly) {
+    Write-Host "`n[4/6] Skipping PyInstaller (FrontendOnly)" -ForegroundColor Gray
+} elseif ($ReuseBackend -and (Test-Path (Join-Path $BackendDist $BuildExecutableNameWindows))) {
+    Write-Host "`n[4/6] Reusing existing PyInstaller backend: $BackendDist" -ForegroundColor Yellow
+} else {
     Write-Host "`n[4/6] Running PyInstaller (backend)..." -ForegroundColor Yellow
     uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    $BackendDist = Join-Path $ProjectRoot "dist\$BuildDistDirName"
     if (-not (Test-Path (Join-Path $BackendDist $BuildExecutableNameWindows))) {
         throw "PyInstaller output not found: $BackendDist\$BuildExecutableNameWindows"
     }
@@ -552,8 +556,6 @@ if (-not $FrontendOnly) {
     } else {
         Write-Warning "gitcode-cli has no bundled Windows binary; the GitCode connector will use its existing pip fallback"
     }
-} else {
-    Write-Host "`n[4/6] Skipping PyInstaller (FrontendOnly)" -ForegroundColor Gray
 }
 
 # ── 5. Assemble final Electron app ────────────────────────────────────────────
@@ -581,16 +583,28 @@ if (-not (Test-Path -LiteralPath $LogoIco -PathType Leaf)) {
 }
 $ShellExePath = Join-Path $ElectronAppDir $ShellExeName
 Write-Host "  Setting exe icon and version resources via pinned rcedit..." -ForegroundColor Gray
-& $Rcedit $ShellExePath `
-    --set-icon $LogoIco `
-    --set-version-string FileDescription $BuildDisplayName `
-    --set-version-string ProductName $BuildDisplayName `
-    --set-version-string InternalName $ShellExeName `
-    --set-version-string OriginalFilename $ShellExeName `
-    --set-file-version $BuildVersion `
-    --set-product-version $BuildVersion
-if ($LASTEXITCODE -ne 0) {
-    throw "rcedit failed to set the application icon or version resources (exit code $LASTEXITCODE)."
+# rcedit can corrupt the PE when icon + version strings are applied in one pass;
+# edit a temp copy in two passes, then replace the shell exe.
+$RceditTemp = Join-Path $env:TEMP ("workswarm-shell-" + [guid]::NewGuid().ToString('N') + ".exe")
+try {
+    Copy-Item -LiteralPath $ShellExePath -Destination $RceditTemp -Force
+    & $Rcedit $RceditTemp --set-icon $LogoIco
+    if ($LASTEXITCODE -ne 0) {
+        throw "rcedit failed to set the application icon (exit code $LASTEXITCODE)."
+    }
+    & $Rcedit $RceditTemp `
+        --set-version-string FileDescription $BuildDisplayName `
+        --set-version-string ProductName $BuildDisplayName `
+        --set-version-string InternalName $ShellExeName `
+        --set-version-string OriginalFilename $ShellExeName `
+        --set-file-version $BuildVersion `
+        --set-product-version $BuildVersion
+    if ($LASTEXITCODE -ne 0) {
+        throw "rcedit failed to set the application version resources (exit code $LASTEXITCODE)."
+    }
+    Copy-Item -LiteralPath $RceditTemp -Destination $ShellExePath -Force
+} finally {
+    Remove-Item -LiteralPath $RceditTemp -Force -ErrorAction SilentlyContinue
 }
 if (-not (Test-PortableExecutable -Path $ShellExePath)) {
     throw "rcedit produced an invalid PE executable: $ShellExePath"
@@ -744,6 +758,19 @@ if ($DoSign) {
 }
 $TotalSize = [math]::Round((Get-ChildItem $ElectronAppDir -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)
 Write-Host "  Assembled app size: $TotalSize MB" -ForegroundColor Gray
+
+if ($SkipInstaller) {
+    Write-Host "`n=== Build complete (directory package only) ===" -ForegroundColor Green
+    Write-Host "App dir: $ElectronAppDir" -ForegroundColor Green
+    Write-Host "Shell:   $ShellExePath" -ForegroundColor Green
+    Write-Host "Size:    $TotalSize MB" -ForegroundColor Green
+    if ($DoSign) {
+        Write-Host "Signature: applied to assembled PE payloads" -ForegroundColor Green
+    } else {
+        Write-Host "Signature: not applied; this package is for local testing only" -ForegroundColor Yellow
+    }
+    return
+}
 
 # ── 6. Build installer (Inno Setup) ───────────────────────────────────────────
 Write-Host "`n[6/6] Building installer (Inno Setup)..." -ForegroundColor Yellow

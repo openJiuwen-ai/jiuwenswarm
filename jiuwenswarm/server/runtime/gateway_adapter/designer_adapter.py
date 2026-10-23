@@ -953,6 +953,17 @@ def _compose_design_session(
     model_name = str(params.get("model_name") or "").strip()
     if model_name:
         metadata["model_name"] = model_name
+        # Team rounds resolve their chat model from the session, not the graph.
+        # Persist the canvas's chosen model here as well, otherwise the leader
+        # turn (``chat.send(mode='team.design')`` carries no model_name) falls
+        # back to the configured default even though the canvas was created
+        # with another model selected.
+        update_session_metadata(
+            session_id=session_id,
+            model=model_name,
+            touch_last_message_at=False,
+            sync_write=True,
+        )
     graph["metadata"] = metadata
     if prompt:
         graph["description"] = prompt

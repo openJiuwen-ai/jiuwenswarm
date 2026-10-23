@@ -20,6 +20,8 @@ import {
   AgentManagementError,
   advancePendingInstallQueue,
   createAgentGroupManagementClient,
+  deriveAgentGroupId,
+  deriveAgentId,
   createPendingInstallQueue,
   createAgentManagementClient,
   type AgentFileContent,
@@ -218,20 +220,6 @@ function getFriendlyErrorMessage(
   const connector = /^connector not connected:\s*(.+)$/i.exec(normalizedMessage)?.[1];
   if (connector) return translate('agentManagement.states.connectorUnavailableNamed', { connector });
   return fallback;
-}
-
-function deriveAgentId(name: string): string {
-  const slug = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return slug.length >= 3 ? slug.slice(0, 50) : `agent-${Date.now().toString(36)}`;
-}
-
-function deriveAgentGroupId(name: string): string {
-  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return slug.length >= 3 ? slug.slice(0, 50) : `agent-group-${Date.now().toString(36)}`;
 }
 
 export function AgentManagementPanel({
@@ -1084,6 +1072,12 @@ export function AgentManagementPanel({
       if (editingId) {
         await client.updateAgent({ ...draft, id: editingId });
       } else {
+        const existingAgents = await client.listCatalog({ filter: 'mine' });
+        const normalizedName = draft.name.trim().toLocaleLowerCase();
+        if (existingAgents.some(agent => agent.displayName.trim().toLocaleLowerCase() === normalizedName)) {
+          setCreateError(t('agentManagement.states.duplicateName'));
+          return;
+        }
         const id = draft.id || deriveAgentId(draft.name);
         await client.createAgent({ ...draft, id });
         await handleInstall(id);

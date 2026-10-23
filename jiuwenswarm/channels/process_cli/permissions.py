@@ -22,6 +22,7 @@ from openjiuwen.harness.security.permission_engine.toolguard.tool_categories imp
 from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
     ExactPermissionPersistCallback, JiuwenSwarmPermissionInterruptRail,
 )
+from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT
 
 
 _RULE = "process_cli:unresolved_file_access"
@@ -36,6 +37,14 @@ _PATH_COMMANDS = frozenset({
 _EXECUTION_TOOLS = frozenset({
     "cmd", "code", "acp_chat", "subagent_spawn", "subagent_resume", "subagent_send_input",
 })
+
+
+def _supports_permission_approval(engine: PermissionEngine) -> bool:
+    bound = getattr(engine, "supports_permission_approval", None)
+    if bound is not None:
+        return bound
+    context = CURRENT_RUN_CONTEXT.get()
+    return context is None or context.supports_permission_approval
 
 
 @dataclass
@@ -119,11 +128,21 @@ class ProcessCliPermissionEngine(PermissionEngine):
         if result.permission == PermissionLevel.DENY:
             return result
         if self.requires_manual_command_approval(tool_name, args):
-            return ProcessCliPermissionResult(
+            result = ProcessCliPermissionResult(
                 permission=PermissionLevel.ASK,
                 matched_rule="|".join(filter(None, (result.matched_rule, _RULE))),
                 reason=("Process CLI cannot determine this command's file accesses; "
                         "explicit approval is required."),
+                external_paths=result.external_paths,
+            )
+        if result.permission == PermissionLevel.ASK and not _supports_permission_approval(self):
+            return PermissionResult(
+                permission=PermissionLevel.DENY,
+                matched_rule="|".join(filter(None, (
+                    result.matched_rule, "process_cli:noninteractive_approval_denied",
+                ))),
+                reason=("Non-interactive Process CLI denied this operation because it requires approval. "
+                        "Use an interactive CLI or explicitly trusted paths."),
                 external_paths=result.external_paths,
             )
         return result
@@ -148,10 +167,13 @@ class ProcessCliPermissionInterruptRail(JiuwenSwarmPermissionInterruptRail):
         if scene_hook is not None:
             async def preserve_human_gate(scene_input: Any) -> Any:
                 outcome = await scene_hook(scene_input)
-                if (outcome is not None and outcome[0] == "approve"
-                        and engine.requires_manual_command_approval(
-                            scene_input.normalized_tool_name, scene_input.tool_args,
-                        )):
+                if outcome is None or outcome[0] != "approve":
+                    return outcome
+                if not _supports_permission_approval(engine):
+                    return None
+                if engine.requires_manual_command_approval(
+                    scene_input.normalized_tool_name, scene_input.tool_args,
+                ):
                     return None
                 return outcome
 
@@ -160,6 +182,14 @@ class ProcessCliPermissionInterruptRail(JiuwenSwarmPermissionInterruptRail):
             config=config, engine=engine, tool_names=tool_names, llm=llm,
             model_name=model_name, host=host, exact_persist_callback=exact_persist_callback,
         )
+
+    @property
+    def supports_permission_approval(self) -> bool | None:
+        return getattr(self._engine, "supports_permission_approval", None)
+
+    @supports_permission_approval.setter
+    def supports_permission_approval(self, enabled: bool | None) -> None:
+        self._engine.supports_permission_approval = enabled
 
     def _get_auto_confirm_key(self, tool_call: Any) -> str:
         if tool_call is None:
@@ -174,6 +204,9 @@ class ProcessCliPermissionInterruptRail(JiuwenSwarmPermissionInterruptRail):
         self, ctx: Any, tool_call: Any, user_input: Any,
         auto_confirm_config: dict | None = None,
     ) -> Any:
+        if not _supports_permission_approval(self._engine):
+            user_input = None
+            auto_confirm_config = {}
         if tool_call is not None and self._engine.requires_manual_command_approval(
             self._normalize_tool_name(tool_call.name), self.parse_tool_args(tool_call),
         ):

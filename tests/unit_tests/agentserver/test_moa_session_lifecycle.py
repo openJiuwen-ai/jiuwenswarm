@@ -118,7 +118,7 @@ async def test_external_harness_ignores_invalid_moa_selection(
     monkeypatch.setattr(
         interface_deep,
         "load_persisted_external_harness_binding",
-        lambda _: binding if binding_source == "metadata" else None,
+        AsyncMock(side_effect=lambda _: binding if binding_source == "metadata" else None),
     )
     if binding_source == "cached":
         existing = parent._new_session_scoped_adapter(session_id)

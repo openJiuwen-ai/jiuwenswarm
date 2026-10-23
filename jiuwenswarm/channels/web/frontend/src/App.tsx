@@ -201,6 +201,11 @@ import {
   setTrajectoryUiEnabled,
   useTrajectoryUiEnabled,
 } from './features/trajectory/featureConfig';
+import {
+  normalizeTrajectoryDiagnosisEnabled,
+  setTrajectoryDiagnosisEnabled,
+  useTrajectoryDiagnosisEnabled,
+} from './features/trajectory/diagnosis/diagnosisFeatureConfig';
 import './App.css';
 import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
 import {
@@ -214,6 +219,10 @@ import {
 const LazyTrajectoryPanel = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryPanel');
   return { default: module.TrajectoryPanel };
+});
+const LazyTrajectoryAnalysisPage = lazy(async () => {
+  const module = await import('./features/trajectory/TrajectoryAnalysisPage');
+  return { default: module.TrajectoryAnalysisPage };
 });
 const CHAT_PANEL_DEFAULT_WIDTH_PCT = 33.33;
 const CHAT_PANEL_MIN_WIDTH_PCT = 20;
@@ -470,6 +479,7 @@ function AppContent({
   const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
   const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
+  const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
   // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
@@ -480,6 +490,7 @@ function AppContent({
   const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const trajectoryUiEnabled = useTrajectoryUiEnabled();
+  const trajectoryDiagnosisEnabled = useTrajectoryDiagnosisEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
   const [restartModalOpen, setRestartModalOpen] = useState(false);
@@ -529,6 +540,7 @@ function AppContent({
     close: closeSidebarPeek,
     surfaceProps: peekSurfaceProps,
   } = useSecondarySidebarPeek();
+  const isSettingsNarrowViewport = useMediaQuery('(max-width: 640px)');
   const isRsiNarrowViewport = useMediaQuery('(max-width: 1250px)');
   const rsiHasExperiments = useRsiStore((s) => s.list.length > 0);
   const rsiListKnownEmpty = useRsiStore((s) => s.listLoadedOnce && s.list.length === 0);
@@ -805,19 +817,35 @@ function AppContent({
     )) ?? null;
   }, [currentSession, projects, sessions, sessionId]);
   const mode = useSessionStore((s) => s.runtimes[sessionId]?.mode ?? 'agent');
-  const chatSurfaceView: ChatSurfaceView = trajectoryUiEnabled
-    && (mode === 'agent' || mode === 'team')
+  const surfaceModeSupported = mode === 'agent' || mode === 'team';
+  // The diagnosis view has its own switch: it needs an Agent or Team session that exists, but not the trajectory UI.
+  const diagnosisEntryAvailable = trajectoryDiagnosisEnabled
+    && surfaceModeSupported
+    && sessionId !== NEW_CONVERSATION_ID;
+  const requestedChatSurfaceView: ChatSurfaceView = surfaceModeSupported
     ? (chatSurfaceViews[sessionId] ?? 'chat')
     : 'chat';
+  const chatSurfaceView: ChatSurfaceView = (requestedChatSurfaceView === 'trajectory' && !trajectoryUiEnabled)
+    || (requestedChatSurfaceView === 'diagnosis' && !diagnosisEntryAvailable)
+    ? 'chat'
+    : requestedChatSurfaceView;
   const selectChatSurfaceView = useCallback((nextView: ChatSurfaceView) => {
     if (nextView === 'trajectory') setTrajectoryUiRequested(true);
+    if (nextView === 'diagnosis') setDiagnosisUiRequested(true);
     setChatSurfaceViews((current) => (
       current[sessionId] === nextView
         ? current
         : { ...current, [sessionId]: nextView }
     ));
   }, [sessionId]);
-  const composerDocked = chatSurfaceView === 'trajectory';
+  // The chat header entry opens the diagnosis view, and leaves it for the chat.
+  const toggleDiagnosisView = useCallback(() => {
+    selectChatSurfaceView(chatSurfaceView === 'diagnosis' ? 'chat' : 'diagnosis');
+  }, [chatSurfaceView, selectChatSurfaceView]);
+  const leaveDiagnosisView = useCallback(() => {
+    selectChatSurfaceView('chat');
+  }, [selectChatSurfaceView]);
+  const composerDocked = chatSurfaceView === 'trajectory' || chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
   const toggleTrajectoryComposer = useCallback(() => {
     setTrajectoryComposerCollapsed((current) => ({
@@ -1115,8 +1143,8 @@ function AppContent({
     (activeNav === 'experiments' && rsiHasExperiments && !rsiSidebarCollapsed);
 
   useEffect(() => {
-    if (hasFixedSecondarySidebar) closeSidebarPeek();
-  }, [hasFixedSecondarySidebar, closeSidebarPeek]);
+    if (hasFixedSecondarySidebar || (sidebarPeek === 'settings' && !isSettingsNarrowViewport)) closeSidebarPeek();
+  }, [hasFixedSecondarySidebar, sidebarPeek, isSettingsNarrowViewport, closeSidebarPeek]);
 
   const trajectoryTaskPanelAvailable = toolPanelHasContent || isRestoringTeamHistory;
   const effectiveTeamAreaExpanded = isTeamAreaExpanded;
@@ -1899,6 +1927,7 @@ function AppContent({
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
+      setTrajectoryDiagnosisEnabled(normalizeTrajectoryDiagnosisEnabled(config.trajectory_ui_diagnosis_enabled));
       setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
       setTeamScheduledDispatchEnabled(config.team_scheduled_dispatch_enabled);
       const collaborationSnapshotApplied = applyMultiModelCollaborationSnapshot(
@@ -3861,7 +3890,8 @@ function AppContent({
   const handleNavItemClick = (nav: MainNavKey) => {
     const peekTarget = (
       (nav === 'chat' && conversationSidebarCollapsed) ||
-      (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed)
+      (nav === 'experiments' && !rsiListKnownEmpty && rsiSidebarCollapsed) ||
+      (nav === 'settings' && isSettingsNarrowViewport)
     ) ? nav : null;
     handleNavigate(nav, peekTarget);
   };
@@ -4213,7 +4243,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         hiddenNavItems={hiddenNavItems}
         applicationPlugins={visibleApplicationPlugins}
         onNavItemHover={(key) => {
-          const target = key === 'chat' || (key === 'experiments' && !rsiListKnownEmpty) ? key : null;
+          const target = (
+            key === 'chat' ||
+            (key === 'settings' && isSettingsNarrowViewport) ||
+            (key === 'experiments' && !rsiListKnownEmpty)
+          ) ? key : null;
           hoverSidebarPeek(!hasFixedSecondarySidebar ? target : null);
         }}
         onNavItemPointerDownCapture={(key) => {
@@ -4243,7 +4277,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         )}
 
-        {sidebarPeek && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
+        {sidebarPeek && sidebarPeek !== 'settings' && !hasFixedSecondarySidebar && (sidebarPeek !== 'experiments' || !rsiListKnownEmpty) && (
           <div className="chat-layout--peek-host" {...peekSurfaceProps}>
             {sidebarPeek === 'chat' ? (
               <ConversationSidebar
@@ -4394,9 +4428,30 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onToggleComposerCollapsed={toggleTrajectoryComposer}
                         onComposerHeightChange={setTrajectoryComposerHeight}
                         onContinueQueuedSessionMessages={handleContinueQueuedSessionMessages}
+                        diagnosisEntryAvailable={diagnosisEntryAvailable}
+                        diagnosisActive={chatSurfaceView === 'diagnosis'}
+                        onToggleDiagnosis={toggleDiagnosisView}
                       />
                     )}
                     chatLabel={t('nav.chat')}
+                    diagnosis={(
+                      <Suspense
+                        fallback={(
+                          <div className="trajectory-view-loading">
+                            {t('trajectory.loading')}
+                          </div>
+                        )}
+                      >
+                        <LazyTrajectoryAnalysisPage
+                          active={chatSurfaceView === 'diagnosis'}
+                          mode={mode}
+                          sessionId={sessionId}
+                          onBack={leaveDiagnosisView}
+                        />
+                      </Suspense>
+                    )}
+                    diagnosisEnabled={diagnosisEntryAvailable}
+                    diagnosisRequested={diagnosisUiRequested}
                     mode={mode}
                     onViewChange={selectChatSurfaceView}
                     tabListLabel={t('trajectory.tabs.aria')}
@@ -4566,8 +4621,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             </div>
           </div>
         )}
-        {activeNav === 'settings' && (
-          <div className="app-section">
+        {(activeNav === 'settings' || (isSettingsNarrowViewport && sidebarPeek === 'settings' && !hasFixedSecondarySidebar)) && (
+          <div className={activeNav === 'settings' ? 'app-section' : 'app-section--peek-only'}>
             <SettingsPage
               definition={settingsPageDefinition}
               isConnected={isConnected}
@@ -4585,6 +4640,13 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               externalCliDetectResults={externalCliDetectResults}
               onExternalCliDetectResultsChange={setExternalCliDetectResults}
               initialModuleId={requestedSettingsModuleId ?? undefined}
+              sidebar={{
+                isActive: activeNav === 'settings',
+                collapsed: isSettingsNarrowViewport,
+                peek: isSettingsNarrowViewport && sidebarPeek === 'settings' && !hasFixedSecondarySidebar,
+                surfaceProps: peekSurfaceProps,
+                onNavigate: () => { handleNavigate('settings'); },
+              }}
             />
           </div>
         )}

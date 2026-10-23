@@ -69,10 +69,10 @@ from jiuwenswarm.common.ws_diagnostics import (
     format_ws_diagnostics,
 )
 from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
+from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import persist_cli_trusted_directory
-from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
+from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_CAPABILITIES
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.session_provisioner import (
@@ -416,6 +416,17 @@ def _log_background_session_kvc_failure(task: asyncio.Task) -> None:
             exc,
             exc_info=exc,
         )
+
+_DIAGNOSIS_REQ_METHODS = frozenset(
+    {
+        ReqMethod.DIAGNOSIS_RUN,
+        ReqMethod.DIAGNOSIS_LIST,
+        ReqMethod.DIAGNOSIS_GET,
+        ReqMethod.DIAGNOSIS_CANCEL,
+        ReqMethod.DIAGNOSIS_DELETE,
+        ReqMethod.DIAGNOSIS_TTSE_TRIGGER,
+    },
+)
 
 _SERVER_PLAN_CONTROLLER = PlanModeController()
 # Compatibility aliases for existing diagnostics/tests. Runtime semantics live
@@ -1170,6 +1181,8 @@ class AgentWebSocketServer:
         self._group_service = None
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
+        # Trajectory diagnosis host (lazy, see _get_diagnosis_host)
+        self._diagnosis_host: Any = None
         # Optional production Provider injection point.  The concrete class is
         # supplied by the composition root once it is available.
         self._rsi_harness_provider: Any = None
@@ -2034,6 +2047,14 @@ class AgentWebSocketServer:
         if sandbox_start is not None:
             sandbox_start.cancel()
             await asyncio.gather(sandbox_start, return_exceptions=True)
+        diagnosis_host = getattr(self, "_diagnosis_host", None)
+        if diagnosis_host is not None:
+            # A restart builds a fresh host so the shutdown flag does not linger.
+            self._diagnosis_host = None
+            try:
+                await diagnosis_host.shutdown()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentWebSocketServer] diagnosis shutdown failed: %s", exc)
         task = getattr(self, "_asset_start_task", None)
         if task is not None:
             task.cancel()
@@ -2893,6 +2914,10 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.HARNESS_PACKAGES_DELETE:
                 await self._handle_harness_packages_delete(ws, request, send_lock)
+                return
+            # Trajectory diagnosis: run, query and TTSE writes proxied by the Gateway.
+            if request.req_method in _DIAGNOSIS_REQ_METHODS:
+                await self._handle_diagnosis_request(ws, request, send_lock)
                 return
             # RSI 优化平台：16 个 rsi.* web method 统一分发（B2）
             if (
@@ -6546,6 +6571,7 @@ class AgentWebSocketServer:
 
     async def _targeted_expert_response_stream(self, request: AgentRequest) -> Any:
         """Run one selected expert as a normal cancellable AgentServer stream."""
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(request.session_id or "").strip()
         team_id = str(params.get("target_team_id") or "").strip()
@@ -6575,9 +6601,38 @@ class AgentWebSocketServer:
             getattr(getattr(target_backend, "org_task_manager", None), "organization_id", None)
             or ""
         ).strip()
-        if not session_id or target_backend is None:
+        has_team_target = bool(session_id and team_id)
+        has_organization_binding = bool(owner_org_id and target_org_id)
+        needs_recovery = target_backend is None or not has_organization_binding
+        if not organization_enabled():
+            error = "Team Organization is disabled"
+        elif has_team_target and needs_recovery:
+            try:
+                persisted = await self._load_persisted_organization(session_id, team_id)
+                if persisted is None:
+                    error = "target expert team does not belong to the owner's organization"
+                else:
+                    from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
+
+                    db, organization = persisted
+                    owner_org_id = organization.organization_id
+                    target_backend = await JiuwenExpertTeamLauncher().restore(
+                        team_id=team_id, session_id=session_id, organization=organization,
+                        db=db, channel_id=channel_id,
+                    )
+                    target_org_id = str(
+                        getattr(getattr(target_backend, "org_task_manager", None), "organization_id", None) or ""
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "[AgentWebSocketServer] expert recovery failed: session=%s team=%s",
+                    session_id,
+                    team_id,
+                )
+                error = f"target expert team could not be restored: {exc}"
+        if not error and (not session_id or target_backend is None):
             error = "target expert team is not bound to this session"
-        elif not owner_org_id or target_org_id != owner_org_id:
+        elif not error and (not owner_org_id or target_org_id != owner_org_id):
             error = "target expert team does not belong to the owner's organization"
         precheck_failed = bool(error)
 
@@ -6875,6 +6930,7 @@ class AgentWebSocketServer:
                         leader_id=getattr(backend, "leader_member_name", None),
                         organization_id=organization_id,
                         agent_group_name=spec_metadata.get("agent_group_name"),
+                        team_group_identity=spec_metadata.get("team_group_identity"),
                         source="pool",
                     )
             except Exception as e:
@@ -6914,6 +6970,63 @@ class AgentWebSocketServer:
                     source="metadata",
                 )
 
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+
+        try:
+            persisted = await self._load_persisted_organization(session_id) if organization_enabled() else None
+        except Exception:
+            persisted = None
+            logger.exception("[AgentWebSocketServer] historical team.list failed: session_id=%s", session_id)
+
+        if persisted is not None:
+            db, organization = persisted
+            # Membership is authoritative; optional labels must never remove a Team.
+            for leader in organization.leaders:
+                _upsert(
+                    leader.team_id,
+                    state="configured",
+                    leader_id=leader.leader_id,
+                    organization_id=organization.organization_id,
+                    capabilities=list(leader.capabilities or []),
+                    source="database",
+                )
+            try:
+                from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
+            except ImportError:
+                load_organization_team_identity = None
+                logger.warning("[AgentWebSocketServer] historical Team identity loader unavailable", exc_info=True)
+
+            for leader in organization.leaders:
+                team = None
+                identity = {}
+                try:
+                    team = await db.team.get_team(leader.team_id)
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team details unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+                try:
+                    if load_organization_team_identity is not None:
+                        identity = load_organization_team_identity(leader.team_id)
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team identity unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+                try:
+                    _upsert(
+                        leader.team_id,
+                        state="configured",
+                        display_name=getattr(team, "display_name", None) or identity.get("display_name"),
+                        agent_group_name=identity.get("agent_group_name"),
+                    )
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team labels unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+
         # ``team_name`` reaches session metadata only when the team runtime
         # becomes ready (sync_team_identity_metadata). During the first-turn
         # assembly window the session's own team is already listed via the
@@ -6932,6 +7045,24 @@ class AgentWebSocketServer:
                     entry["organization_id"] = org_id
 
         return list(entries.values())
+
+    async def _load_persisted_organization(
+        self, session_id: str, team_id: str = ""
+    ) -> tuple[Any, Any] | None:
+        from jiuwenswarm.server.runtime.team_organization_history import (
+            load_persisted_organization,
+            organization_enabled,
+        )
+
+        if not organization_enabled():
+            return None
+
+        metadata = (get_session_metadata(session_id) or {}) if session_id else {}
+        owner_team_id = str(metadata.get("team_name") or "").strip()
+        owner_backend = self._resolve_team_backend(session_id, owner_team_id)
+        return await load_persisted_organization(
+            session_id, team_id, db=getattr(owner_backend, "db", None)
+        )
 
     @staticmethod
     def _lookup_session_org_binding(session_id: str, team_id: str) -> str | None:
@@ -6995,10 +7126,13 @@ class AgentWebSocketServer:
     async def _handle_org_snapshot(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """Return organization + task-pool state for the right-hand info box.
 
-        The organization is always resolved from the exact session-bound Team
-        backend. A caller-supplied ``organization_id`` is only a consistency
-        check and never selects which organization is queried.
+        Resolve the live Team binding first, then durable membership anchored
+        to the session's owner. A caller-supplied ``organization_id`` is only
+        a consistency check and never selects the organization to query.
         """
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+
+        enabled = organization_enabled()
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "").strip()
         team_id = str(params.get("team_id") or "").strip()
@@ -7012,11 +7146,20 @@ class AgentWebSocketServer:
             "stats": {},
         }
 
-        backend = self._resolve_team_backend(session_id, team_id)
+        backend = self._resolve_team_backend(session_id, team_id) if enabled else None
+        db = getattr(backend, "db", None)
         organization_id = str(
             getattr(getattr(backend, "org_task_manager", None), "organization_id", None) or ""
         ).strip()
-        if not backend or not organization_id:
+        if enabled and not organization_id and team_id:
+            try:
+                persisted = await self._load_persisted_organization(session_id, team_id)
+                if persisted is not None:
+                    db, organization = persisted
+                    organization_id = organization.organization_id
+            except Exception:
+                logger.exception("[AgentWebSocketServer] historical org.snapshot failed: session_id=%s", session_id)
+        if db is None or not organization_id:
             payload: dict[str, Any] = dict(empty_payload)
         elif requested_organization_id and requested_organization_id != organization_id:
             logger.warning(
@@ -7034,6 +7177,7 @@ class AgentWebSocketServer:
                 team_id=team_id,
                 organization_id=organization_id,
                 backend=backend,
+                db=db,
             )
 
         logger.info(
@@ -7061,9 +7205,10 @@ class AgentWebSocketServer:
         team_id: str,
         organization_id: str,
         backend: Any,
+        db: Any = None,
     ) -> dict[str, Any]:
-        """Read one organization's spec + task pool through its process manager."""
-        from openjiuwen.agent_teams.organization.pool import get_process_org_manager
+        """Read durable organization state without changing runtime bindings."""
+        from openjiuwen.agent_teams.organization.manager import TeamOrganizationManager
 
         empty_payload: dict[str, Any] = {
             "organization": None,
@@ -7073,7 +7218,8 @@ class AgentWebSocketServer:
             "stats": {},
         }
 
-        db = getattr(backend, "db", None)
+        if db is None:
+            db = getattr(backend, "db", None)
         if db is None:
             logger.warning(
                 "[AgentWebSocketServer] org.snapshot has no db handle: session_id=%s team_id=%s",
@@ -7082,10 +7228,11 @@ class AgentWebSocketServer:
             )
             return empty_payload
 
-        manager = get_process_org_manager(
+        # A historical query may precede Team activation. Never cache its
+        # transport-less reader as the manager used for runtime coordination.
+        manager = TeamOrganizationManager(
             organization_id=organization_id,
             db=db,
-            messager=getattr(backend, "messager", None),
             session_id=session_id or None,
         )
         task_pool = manager.task_pool
@@ -8612,7 +8759,9 @@ class AgentWebSocketServer:
         # Build McpServerConfig (same logic as _fetch_mcp_tools_from_config)
         payload: dict[str, Any] = {"server_name": name, "client_type": transport}
         if transport == "stdio":
-            command = server_payload.get("command", "")
+            from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+            command = resolve_preserved_cli_path(server_payload.get("command", ""))
             if not command:
                 return True, "skipped: no command"
             # stdio 预检查改为纯静态校验,静态校验零 spawn、零 anyio。
@@ -8623,6 +8772,7 @@ class AgentWebSocketServer:
                 for arg in raw_args:
                     if not isinstance(arg, str):
                         continue
+                    arg = resolve_preserved_cli_path(arg)
                     looks_like_path = (
                         arg.startswith(("/", "./", "../", "~"))
                         or arg.endswith((".js", ".mjs", ".cjs", ".json", ".py", ".sh"))
@@ -12611,6 +12761,36 @@ class AgentWebSocketServer:
                 )
         except Exception as exc:
             logger.exception("[AgentServer] rsi request failed: %s", exc)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "INTERNAL_ERROR"},
+            )
+
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    def _get_diagnosis_host(self) -> Any:
+        """Lazily build the trajectory diagnosis host once."""
+        if getattr(self, "_diagnosis_host", None) is None:
+            from jiuwenswarm.server.diagnosis.host import DiagnosisHost
+
+            self._diagnosis_host = DiagnosisHost(
+                get_agent_manager=lambda: self._agent_manager,
+                send_push=self.send_push,
+            )
+        return self._diagnosis_host
+
+    async def _handle_diagnosis_request(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Answer one ``diagnosis.*`` request proxied by the Gateway."""
+        try:
+            resp = await self._get_diagnosis_host().handle(request)
+        except Exception as exc:
+            logger.exception("[AgentServer] diagnosis request failed: %s", exc)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,

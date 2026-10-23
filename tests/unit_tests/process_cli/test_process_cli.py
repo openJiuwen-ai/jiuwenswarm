@@ -911,6 +911,30 @@ async def test_noninteractive_interaction_is_an_explicit_machine_failure(
 
 
 @pytest.mark.asyncio
+async def test_prompt_command_rejects_interaction_without_reading_tty(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def unexpected_input(*_args):
+        pytest.fail("A standalone prompt command must not ask for input")
+
+    monkeypatch.setattr(app, "InProcessRuntimeClient", ConsecutiveInteractionClient)
+    monkeypatch.setattr(app.sys, "stdin", type("Tty", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr(app, "_interaction_answer", unexpected_input)
+    output = io.StringIO()
+
+    result = await app.run(
+        _args(tmp_path, output="human"),
+        stdout=output,
+        stderr=output,
+    )
+
+    assert result == 4
+    assert ConsecutiveInteractionClient.latest.answer_count == 0
+    assert "无法接收交互输入" in output.getvalue()
+
+
+@pytest.mark.asyncio
 async def test_answer_interaction_handles_consecutive_questions(
     monkeypatch,
     tmp_path: Path,
@@ -1676,6 +1700,24 @@ def test_interactive_worker_enables_runtime_interactions(tmp_path: Path) -> None
     )
 
     assert request.params["supports_user_interaction"] is True
+    assert request.params["supports_permission_approval"] is True
+
+
+def test_prompt_command_denies_permission_requests_even_with_a_tty(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app.sys, "stdin", type("Tty", (), {"isatty": lambda self: True})())
+    request = app._build_request(
+        _args(tmp_path, output="human"),
+        session_id="runtime-session", request_id="runtime-request",
+    )
+    assert request.params["supports_user_interaction"] is False
+    assert request.params["supports_permission_approval"] is False
+    interaction = RuntimeEvent(
+        request_id=request.request_id, channel_id="process_cli", session_id=request.session_id,
+        payload={"event_type": "chat.ask_user_question", "source": "ask_user_interrupt", "request_id": "question"},
+    )
+    answer, _ = app._answer_request(request, interaction, [{"answer": "continue"}])
+    assert answer.params["supports_user_interaction"] is False
+    assert answer.params["supports_permission_approval"] is False
 
 
 def test_process_cli_has_no_server_or_transport_dependencies() -> None:

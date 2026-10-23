@@ -155,6 +155,57 @@ memory:
   #   both     — 内置 + 外接并存
   #   none     — 全部关闭
   engine: ${MEMORY_ENGINE:-builtin}
+
+  # ------------------------------------------------------------
+  # 内置记忆的 jiuwen 变体（engine ∈ {builtin, both} 且 provider=jiuwen 时生效）
+  # 用 JiuwenMemoryRail + AgentMemoryMemoryProvider 替换原生 MemoryRail；
+  # modes.agent.memory.enabled 仍是总开关。模板缺省 ''（原生文件记忆）：
+  # jiuwen 变体依赖 site-packages 的 jiuwen_memory_adapter 包，按需显式开启。
+  # 两种挂载模式（memory.builtin.jiuwen.mode）：
+  #   http — 连远程 agent-memory HTTP 服务（需服务在跑）
+  #   sdk  — 进程内装配 agent-memory 内核，内核配置统一由 provider 内置
+  #          agent 场景默认装配（F09：md 真源 + shadow 索引 + agent_llm 抽取，
+  #          serve-doc 的代码化副本，随 adapter 部署）
+  # ------------------------------------------------------------
+  builtin:
+    provider: ""                  # '' / 缺省 = 原生 MemoryRail；jiuwen = AgentMemory 外接引擎
+    jiuwen:
+      mode: ${JIUWEN_MEMORY_MODE:-sdk}   # http = HTTP 服务；sdk = 进程内内核
+      base_url: ${JIUWEN_MEMORY_BASE_URL:-http://127.0.0.1:8137}  # http：AgentMemory HTTP 服务
+      api_key: ${JIUWEN_MEMORY_API_KEY:-}                          # http：可选 Bearer
+      user_id: ${MEMORY_USER_ID:-__default__}     # 数据隔离标识（与 memory.external 共用 env）
+      scope_id: ${MEMORY_SCOPE_ID:-__default__}
+      session_id: ""               # 空 = 跨会话共享；显式传值 = 按会话隔离
+      agent_id: jiuwenswarm        # AgentMemory scope 的 agent 轴
+      space: ""                    # 只认显式传入，不从 scope_id 猜测
+      identity_org: local          # http 模式认证身份 org（对齐 dev 认证器缺省）
+      identity_user: developer     # http 模式认证身份 user
+      session_end_extract: false   # uninit 时批量 EXTRACT（infer 模式下冗余，保持关）
+
+      # ---- sdk 模式专用（mode=sdk）----
+      # 进程内装配 agent-memory 内核，直连后端。sdk 下只贴"上层必须显式覆盖"的
+      # 关键内核装配项：globals 里的凭证/维度 + markdown_store 落盘根目录；其余
+      # namespace（extractor/engine/dedup 等算子）由 provider 内置的 agent 场景
+      # 默认装配补齐（AssemblyContext 深合并），不必重复贴。凭证字段留空 = 由
+      # provider 从 jiuwenswarm 顶层 models.defaults[is_default=true] + embed.*
+      # 注入真值（空串会被内置默认覆盖成空，所以这里显式占位）。
+      sdk:
+        globals:
+          embedder_dim: 1024        # 与 embedding 模型维度绑定（bge-m3 → 1024），须与向量库 dim 一致
+          llm_base_url: ""          # LLM base_url；留空由 provider 从 models.defaults 注入
+          llm_api_key: ""           # LLM api_key；留空由 provider 从 models.defaults 注入
+          llm_model: ""             # LLM 模型名（如 deepseek-v4-pro）；留空由 provider 注入
+          llm_temperature: 0.0      # LLM 抽取温度（0 = 确定性抽取）
+          llm_max_tokens: 4096      # LLM 抽取单次最大输出 token
+          embedder_base_url: ""     # embedding base_url；留空由 provider 从 embed.* 注入（自动去 /embeddings 后缀）
+          embedder_api_key: ""      # embedding api_key；留空由 provider 从 embed.* 注入
+          embedder_model: ""        # embedding 模型名（如 BAAI/bge-m3）；留空由 provider 注入
+        markdown_store:
+          default:
+            target: local           # md 真源落本地文件系统
+            params:
+              root: ""              # 记忆文档根目录；留空由 provider 设为 {user_workspace}/agent
+
   forbidden_memory_definition:
     enabled: false
     patterns: []
@@ -419,6 +470,13 @@ models:
   #       context_window: 262144
   # Model groups reference models by stable model_id. Route order is the only
   # primary/fallback order; routes[0] is primary.
+  # Defaults for groups without their own routing timeouts. A group may override
+  # these under groups[].routing with timeout_seconds, stream_first_chunk_timeout,
+  # and stream_idle_timeout. Individual route timeouts take precedence.
+  group_routing_timeout_seconds: ${JIUWENSWARM_MODEL_GROUP_TIMEOUT_SECONDS:-360}
+  # Streaming timeouts are stored per group for future support; IntelliRouter does not consume them yet.
+  group_stream_first_chunk_timeout_seconds: ${JIUWENSWARM_MODEL_GROUP_STREAM_FIRST_CHUNK_TIMEOUT_SECONDS:-300}
+  group_stream_idle_timeout_seconds: ${JIUWENSWARM_MODEL_GROUP_STREAM_IDLE_TIMEOUT_SECONDS:-120}
   groups: []
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。
@@ -572,6 +630,7 @@ agent_observability:
 # ============================================================
 trajectory_ui:
   enabled: false                     # 启用“对话 / 轨迹”数据链路
+  diagnosis_enabled: false           # 启用“诊断与归因”视图；开启后同样会记录轨迹数据，无需同时开启 enabled
   db_path: ""                       # Session database root; defaults to ~/.jiuwenswarm/.trace/sessions
   retention_days: 7                 # SQLite 轨迹保留天数
   queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
@@ -1719,6 +1778,12 @@ modes:
       # 不带 reviewer）。reviewer 机制（列、guard、投票）本身始终可用，
       # 与本开关无关；本开关只影响 leader 的建任务引导语。见 F_62。
       enable_task_verification: false
+
+      # 调度模式下的成员间通信开关（TeamAgentSpec.enable_member_messaging）：
+      # 默认关闭时成员的 send_message 只能发给 leader / user，成员间信息由
+      # leader 转达；开启后成员可点对点、多播、广播给其他成员，任务指派与
+      # 交接仍归 leader 和调度框架。autonomous 模式下忽略。见 core F_126。
+      enable_member_messaging: false
 
       leader:
         member_name: team-leader

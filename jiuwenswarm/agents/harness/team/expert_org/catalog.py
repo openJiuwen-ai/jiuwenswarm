@@ -59,7 +59,7 @@ def _resolve_agent_group_dir(name: str) -> Path:
 
 def _load_agent_group_package_bundle(path: Path) -> Any:
     """Lazy import so unit tests can monkeypatch without loading swarm assembly."""
-    from jiuwenswarm.agents.swarm.agent_group import (
+    from openjiuwen.agent_teams.experts import (
         load_agent_group_package_bundle,
     )
 

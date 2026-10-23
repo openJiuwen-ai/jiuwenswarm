@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import copy
+import functools
 import logging
 import queue
 import sys
 import threading
+from contextvars import copy_context
 from logging.handlers import QueueHandler
+from typing import Any
 
 
 class BackgroundLogWriter:
@@ -49,7 +52,7 @@ class BackgroundLogWriter:
             if self._stopping.is_set():
                 return
             try:
-                self.queue.put_nowait((handlers, record))
+                self.queue.put_nowait((handlers, record, copy_context()))
             except queue.Full:
                 # Falling back to synchronous emission would recreate the stall.
                 self.dropped += 1
@@ -74,19 +77,19 @@ class BackgroundLogWriter:
         reported_drops = 0
         while not self._stopping.is_set() or not self.queue.empty():
             try:
-                handlers, record = self.queue.get(timeout=0.05)
+                handlers, record, context = self.queue.get(timeout=0.05)
             except queue.Empty:
                 self._close_retired()
                 continue
             try:
-                self._emit(handlers, record)
+                context.run(self._emit, handlers, record)
                 if self.dropped > reported_drops:
                     summary = logging.LogRecord(
                         "jiuwenswarm.server.worker.logging", logging.WARNING,
                         __file__, 0, "Worker log queue full: dropped=%s", (self.dropped,), None,
                     )
                     reported_drops = self.dropped
-                    self._emit(handlers, summary)
+                    context.run(self._emit, handlers, summary)
             finally:
                 self.queue.task_done()
             if self.queue.empty():
@@ -179,6 +182,26 @@ def wrap_log_handlers(logger: logging.Logger | None = None) -> None:
     for candidate in list(logging.Logger.manager.loggerDict.values()):
         if isinstance(candidate, logging.Logger):
             _writer.wrap(candidate)
+
+
+def install_core_logging_queue() -> None:
+    """Include SDK loggers created lazily after Worker preparation."""
+    from openjiuwen.core.common.logging import LogManager
+
+    original = LogManager.get_logger.__func__
+    if getattr(original, "jiuwen_background_logging", False):
+        return
+
+    @functools.wraps(original)
+    def get_logger(cls: type, log_type: str) -> Any:
+        logger = original(cls, log_type)
+        candidate = getattr(logger, "_logger", None)
+        if isinstance(candidate, logging.Logger):
+            wrap_log_handlers(candidate)
+        return logger
+
+    get_logger.jiuwen_background_logging = True
+    LogManager.get_logger = classmethod(get_logger)
 
 
 def stop_background_logging(timeout: float = 2.0) -> bool:

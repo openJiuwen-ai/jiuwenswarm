@@ -513,27 +513,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     third_agent = bind.third_agent if bind.third_agent is not None else get_unsupported_third_agent()
     harmonyos_dev_init_tasks: dict[tuple[int, str], asyncio.Task[Any]] = {}
 
-    async def _config_get(ws, req_id, params, session_id):
-        """config.get 实现已下沉 ``common.config_panel.tui_models_handlers``。"""
-        await tui_models_handlers.config_get_handler(
-            channel, ws, req_id, params, session_id
-        )
-
-    async def _config_set(ws, req_id, params, session_id):
-        """config.set 实现已下沉 ``common.config_panel.tui_models_handlers``。"""
-        await tui_models_handlers.config_set_handler(
-            channel, ws, req_id, params, session_id,
-            on_config_saved=on_config_saved,
-            agent_client=agent_client,
-            send_request=_tui_config_send_request,
-        )
-
-    async def _config_validate_model(ws, req_id, params, session_id):
-        """config.validate_model 实现已下沉（TUI 契约与 Web 侧分模块保留）。"""
-        await tui_models_handlers.config_validate_model_handler(
-            channel, ws, req_id, params
-        )
-
     async def _session_list(ws, req_id, params, session_id, user_id=None):
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
@@ -1438,7 +1417,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         "execution: %s",
                         exc,
                     )
-                    from jiuwenswarm.gateway.embedded.runtime.harmonyos.harmonyos_dev import (
+                    from jiuwenswarm.gateway.channel_manager.tui.harmonyos.harmonyos_dev import (
                         run_harmonyos_dev_init,
                     )
 
@@ -1566,21 +1545,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         )
 
     async def _command_model(ws, req_id, params, session_id, user_id=None):
-        # The legacy implementation reads/writes config.yaml directly.
-        # Any remote AgentServer has its own user directory.  Only the default
-        # local WebSocket client shares Gateway's directory and can use the
-        # legacy implementation (sunk to common.config_panel.tui_models_handlers).
-        from jiuwenswarm.gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
+        # A4g：command.model 统一经目标 AgentServer 执行（与 config.* 同语义），
+        # 删除共享目录单用户的本地读写回落。``force_local_config`` 保留——
+        # 它是 ConfigAdapter 复用防二次代理的语义，与 legacy 回落无关。
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve_agent_client(agent_client)
-        if (
-            not force_local_config
-            and resolved_client is not None
-            and not is_legacy_shared_directory_client(resolved_client)
-        ):
+        if not force_local_config and resolved_client is not None:
             from jiuwenswarm.common.schema.message import ReqMethod
 
             await proxy_unary_request(
@@ -1598,12 +1569,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             on_config_saved=on_config_saved,
             send_request=_tui_config_send_request,
             user_id=user_id,
-        )
-
-    async def _models_list(ws, req_id, params, session_id):
-        """models.list 实现已下沉（TUI 契约与 Web 侧分模块保留）。"""
-        await tui_models_handlers.models_list_handler(
-            channel, ws, req_id, params, session_id
         )
 
     async def _3rdagent_list(ws, req_id, params, session_id, user_id=None):
@@ -1697,26 +1662,24 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             label="config",
         )
 
-    def _register_config_proxy(method_name, req_method, local_handler):
-        async def _handler(ws, req_id, params, session_id, user_id=None):
-            # 单用户共享目录：本地执行（保留 on_config_saved 热更新与 TUI 专用键语义）。
-            # AgentOS 多用户：经 E2A 在目标 AgentServer 注入目录执行（与 command.model 同模式）。
-            from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
+    def _register_config_proxy(method_name, req_method, local_handler=None):
+        # A4g：配置读写统一经目标 AgentServer 执行（ConfigAdapter 在注入目录
+        # 本地执行，自带 in-process reload 等后置行为），删除 legacy 单用户的
+        # gateway 本地执行回落。TUI 无外部 CLI 依赖安装门控（tui_models_handlers
+        # 无 ensure 回调）。local_handler 参数保留为兼容签名，不再使用。
+        del local_handler
 
-            resolved_client = _resolve_agent_client(agent_client)
-            if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-                await local_handler(ws, req_id, params, session_id)
-                return
+        async def _handler(ws, req_id, params, session_id, user_id=None):
             await _proxy_config_request(
                 ws, req_id, params, session_id, user_id, req_method=req_method
             )
         channel.register_local_handler(path, method_name, _handler)
 
     from jiuwenswarm.common.schema.message import ReqMethod as _ConfigReq
-    _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
-    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
-    _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
-    _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
+    _register_config_proxy("config.get", _ConfigReq.CONFIG_GET)
+    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET)
+    _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL)
+    _register_config_proxy("models.list", _ConfigReq.MODELS_LIST)
     channel.register_local_handler(path, "3rdagent.list", _3rdagent_list)
     channel.register_local_handler(path, "3rdagent.switch", _3rdagent_switch)
     channel.register_local_handler(path, "session.list", _session_list)
@@ -1842,13 +1805,16 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return job.get(name, default)
         return getattr(job, name, default)
 
-    async def _cron_job_list(ws, req_id, params, session_id):
+    async def _cron_job_list(ws, req_id, params, session_id, user_id=None):
         cc = _get_cron()
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
         try:
-            jobs = await cc.list_jobs()
+            # 连接带 user_id 时只列该用户的任务:过滤在 controller 内先于
+            # 准入闸门执行,既避免跨用户数据可见,也避免替别人的沙箱付超时。
+            uid = str(user_id or getattr(ws, "_gateway_user_id", None) or "").strip()
+            jobs = await cc.list_jobs(user_id=uid or None)
             await channel.send_response(ws, req_id, ok=True, payload={"jobs": jobs})
         except Exception as exc:
             logger.warning("[cron.job.list] %s", exc)
