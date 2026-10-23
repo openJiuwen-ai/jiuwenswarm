@@ -69,3 +69,13 @@ def test_bridge_tool_requires_question():
     tool = module.MathPlatformTool()
     result = asyncio.run(tool.invoke({"backend": "nl", "question": ""}))
     assert result["success"] is False
+
+def test_paper_rejects_synchronous_run():
+    """paper 为小时级长任务：同步 run 必须显式拒绝并引导 start/status 两段式。"""
+    module = _load_bridge_module()
+    tool = module.MathPlatformTool()
+    result = asyncio.run(tool.invoke({
+        "backend": "paper", "action": "run", "question": "数模竞赛题",
+    }))
+    assert result["success"] is False
+    assert "start" in result["error"] and "status" in result["error"]

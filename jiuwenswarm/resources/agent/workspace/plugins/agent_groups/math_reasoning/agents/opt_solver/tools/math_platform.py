@@ -36,7 +36,8 @@ PLATFORM_ROOT = Path(os.environ.get("MATH_PLATFORM_ROOT",
                                     "/docker/zy/Mathematical_Reasoning_Platform")).resolve()
 PLATFORM_PYTHON = os.environ.get("MATH_PLATFORM_PYTHON", "/usr/bin/python3")
 RUNS_ROOT = (PLATFORM_ROOT / "platform_runs").resolve()
-BACKEND_TIMEOUT = {"nl": 900, "formal": 2500, "opt": 1300}
+# paper 为小时级长任务：仅支持 start/status 两段式，不提供同步 run（防御性超时仅作兜底）
+BACKEND_TIMEOUT = {"nl": 900, "formal": 2500, "opt": 1300, "paper": 7200}
 VALID_BACKENDS = ("nl", "formal", "opt", "paper")
 
 
@@ -171,6 +172,11 @@ class MathPlatformTool(Tool):
             return self._status(inputs)
         if action not in ("run", "start"):
             return {"success": False, "error": f"未知 action: {action!r}"}
+        if backend == "paper" and action == "run":
+            return {"success": False,
+                    "error": ("paper 是小时级长任务，不支持同步 run；"
+                              "请使用 action=start 启动，再用 action=status 且携带 "
+                              "run_dir 轮询。")}
         if not question:
             return {"success": False, "error": "question 必填：请提供完整题目原文"}
 
