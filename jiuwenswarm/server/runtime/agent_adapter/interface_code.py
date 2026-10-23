@@ -1568,6 +1568,61 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
         self._align_code_multimodal_tool_records()
 
+    def _reconcile_tool_retrieval_rails_after_spec_reload(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> None:
+        """Take back tool disclosure after a spec-rebuild reload.
+
+        ``apply_deep_agent_parts`` re-queues the spec-armed bundled
+        ProgressiveToolRail (``progressive_tool_enabled`` stays True to keep
+        the deferred whitelist armed), and a bundled copy registered by an
+        earlier reload is treated as an external rail that never retires.
+        For sessions still running our profile (frozen on ∧ switch on) strip
+        every bundled copy (pending and registered) so ``ensure_initialized``
+        only keeps our ToolRetrievalPromptRail. The gate matches the
+        runtime syncs (``_tool_retrieval_tools_enabled_for_runtime``): a
+        session frozen off keeps its bundled rail — its handover is the
+        session rebuild at the next acquire, never mid-reload surgery that
+        would mount ours just to unmount it a step later.
+
+        Ours is queued before the strip: when the build fails the bundled
+        rail stays as the disclosure owner instead of leaving the session
+        with neither system.
+        """
+
+        if not self._tool_retrieval_tools_enabled_for_runtime(
+            config_base or self._config_base_cache
+        ):
+            return
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return
+        try:
+            from openjiuwen.harness.rails.progressive_tool_rail import (
+                ProgressiveToolRail,
+            )
+            from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import (
+                ToolRetrievalPromptRail,
+            )
+
+            if not instance.find_rails_by_type((ToolRetrievalPromptRail,)):
+                if self._register_tool_retrieval_prompt_rail() is None:
+                    return
+            removed = instance.strip_rails_by_type((ProgressiveToolRail,))
+            if removed:
+                logger.info(
+                    "[JiuwenSwarmCodeAdapter] stripped %d bundled "
+                    "ProgressiveToolRail(s) on spec reload",
+                    removed,
+                )
+        except Exception:
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] tool retrieval rail reconcile on "
+                "spec reload failed",
+                exc_info=True,
+            )
+
     async def _reload_agent_config(
         self,
         config_base: dict[str, Any] | None = None,
@@ -1736,7 +1791,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     omitted_fields,
                 )
 
+            # apply_deep_agent_parts 把 spec 武装的 bundled ProgressiveToolRail
+            # 重新排进 pending；优化开关开启时在 ensure_initialized 消费队列前
+            # 统一摘除（含此前 reload 已注册的副本），并确保我们的
+            # ToolRetrievalPromptRail 在位。
+            self._reconcile_tool_retrieval_rails_after_spec_reload(config_base)
             await self._instance.ensure_initialized()
+            await self._sync_tool_retrieval_prompt_rail_for_runtime(config_base)
         except Exception:
             self._config_cache = previous_config_cache
             self._config_base_cache = previous_config_base_cache
