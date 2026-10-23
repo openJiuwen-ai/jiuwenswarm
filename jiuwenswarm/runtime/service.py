@@ -2715,6 +2715,7 @@ class AgentRuntime:
         )
 
         assert_runtime_owner(session_id)
+        await self._session_provisioner.prepare_session_delete(session_id)
         await self._stop_team_runtime_for_delete(
             channel_id=channel_id, session_id=session_id
         )
