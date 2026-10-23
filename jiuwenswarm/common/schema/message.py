@@ -152,6 +152,11 @@ _ensure_req_method("JIUWENMATE_COLLEAGUE_SET_ENABLED", "jiuwenmate.colleague.set
 _ensure_req_method("JIUWENMATE_FEISHU_PREPARE", "jiuwenmate.feishu.prepare")
 _ensure_req_method("JIUWENMATE_CONVERSATION_PIN", "jiuwenmate.conversation.pin")
 _ensure_req_method("JIUWENMATE_THINKING_NOTICE_ACK", "jiuwenmate.thinking_notice.ack")
+_ensure_req_method("JIUWENMATE_AGENT_MAIL_STATUS", "jiuwenmate.agent_mail.status")
+_ensure_req_method("JIUWENMATE_AGENT_MAIL_AUTH_BEGIN", "jiuwenmate.agent_mail.auth.begin")
+_ensure_req_method("JIUWENMATE_AGENT_MAIL_AUTH_POLL", "jiuwenmate.agent_mail.auth.poll")
+_ensure_req_method("JIUWENMATE_AGENT_MAIL_AUTH_CANCEL", "jiuwenmate.agent_mail.auth.cancel")
+_ensure_req_method("JIUWENMATE_AGENT_MAIL_DISCONNECT", "jiuwenmate.agent_mail.disconnect")
 # The Gateway forwards an event only when the protocol EventType knows it; the
 # pinned protocol package does not define this one yet.
 _ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_REQUEST", "chat.client_tool_request")

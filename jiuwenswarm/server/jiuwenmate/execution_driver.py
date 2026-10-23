@@ -38,6 +38,9 @@ from openjiuwen.harness import persistent_agent as core
 from jiuwenswarm.server.jiuwenmate.bash_runtime import bind_bash_runtime, close_bash_runtime
 from jiuwenswarm.server.jiuwenmate.dropped_stream_retry import install_dropped_stream_retry
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
+from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailRuntimeService
+from jiuwenswarm.server.jiuwenmate.agent_mail_tool import prepare_agent_mail_invocation
+from jiuwenswarm.server.jiuwenmate.presentation_package import install_presentation_handoff
 from jiuwenswarm.server.jiuwenmate.workspace_relative_tools import install_office_relative_write_tools
 
 install_dropped_stream_retry()
@@ -129,6 +132,7 @@ class ExecutionDriver:
         abort: AbortEntry = _default_abort,
         clock: Callable[[], datetime] = _utc_now,
         cli: FeishuCliRuntime | None = None,
+        agent_mail_runtime: AgentMailRuntimeService | None = None,
     ) -> None:
         self._snapshots = snapshots
         self._commit_port = commit_port
@@ -151,6 +155,7 @@ class ExecutionDriver:
         self._abort = abort
         self._clock = clock
         self._cli = cli or FeishuCliRuntime(windows.db_path.parent)
+        self._agent_mail_runtime = agent_mail_runtime
 
     def new_handle(self) -> ExecutionHandle:
         return ExecutionHandle(self._abort)
@@ -230,6 +235,7 @@ class ExecutionDriver:
                 ports=ports,
                 system_prompt_addendum="\n\n".join(addenda),
             )
+            spec = await prepare_agent_mail_invocation(spec, context, self._agent_mail_runtime)
             bind_bash_runtime(context, office=office, cli=self._cli)
             await handle._attach(context)
             inputs = record.request_input

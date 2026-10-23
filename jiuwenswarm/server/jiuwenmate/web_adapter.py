@@ -34,6 +34,7 @@ from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ,
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
 from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
+from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailScope
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType
 
@@ -101,6 +102,11 @@ _RUNTIME_METHODS = frozenset(
         ReqMethod.JIUWENMATE_CHANNEL_LIST.value,
         ReqMethod.JIUWENMATE_CHANNEL_MESSAGES.value,
         ReqMethod.JIUWENMATE_CHANNEL_TRACE.value,
+        ReqMethod.JIUWENMATE_AGENT_MAIL_STATUS.value,
+        ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_BEGIN.value,
+        ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_POLL.value,
+        ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_CANCEL.value,
+        ReqMethod.JIUWENMATE_AGENT_MAIL_DISCONNECT.value,
     }
 )
 
@@ -376,6 +382,28 @@ class JiuwenMateWebAdapter(GatewayAdapter):
     async def _run(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
         manager = await self._runtime()
         conversations = self._conversations
+        if method.startswith("jiuwenmate.agent_mail."):
+            agent_id = _text_param(params, "agent_id")
+            await asyncio.to_thread(self._colleagues().get_colleague, WEB_NAMESPACE, agent_id)
+            scope = AgentMailScope(WEB_NAMESPACE, agent_id)
+            if method == ReqMethod.JIUWENMATE_AGENT_MAIL_STATUS.value:
+                return {"agent_mail": await manager.agent_mail_runtime.status(scope)}
+            if method == ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_BEGIN.value:
+                return {"authorization": await manager.agent_mail_runtime.begin_auth(scope)}
+            if method == ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_POLL.value:
+                return {
+                    "agent_mail": await manager.agent_mail_runtime.poll_auth(
+                        scope, _text_param(params, "operation_id")
+                    )
+                }
+            if method == ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_CANCEL.value:
+                return {
+                    "agent_mail": await manager.agent_mail_runtime.cancel_auth(
+                        scope, _text_param(params, "operation_id")
+                    )
+                }
+            if method == ReqMethod.JIUWENMATE_AGENT_MAIL_DISCONNECT.value:
+                return {"agent_mail": await manager.agent_mail_runtime.disconnect(scope)}
         if method == ReqMethod.JIUWENMATE_REQUEST_GET.value:
             view = await manager.request_view(WEB_NAMESPACE, _text_param(params, "request_id"))
             return {"request": view.to_dict()}
