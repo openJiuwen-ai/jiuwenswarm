@@ -6,14 +6,6 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import (
-    ALLOW_LEVEL,
-    post_policy_route,
-)
-from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import (
-    ToolDecisionFacts,
-)
-
 _RETIRED_TASK_SCOPE_CONFIRMATION_KEYS = frozenset(
     {"task_grant", "task_grant_proposal_id", "task_grant_request_id"}
 )
@@ -36,15 +28,6 @@ def _reviewer_route_audit_extra(
     if reviewer_called is not None:
         extra["reviewer_called"] = reviewer_called
     return extra
-
-
-def _should_degrade_auto_confirm(facts: ToolDecisionFacts, user_input: Any) -> bool:
-    payload = _parse_confirmation_payload(user_input)
-    if not payload:
-        return False
-    if payload.get("approved") is not True or payload.get("auto_confirm") is not True:
-        return False
-    return post_policy_route(facts, policy_level=ALLOW_LEVEL) is not None
 
 
 def _is_allow_once_confirmation(user_input: Any) -> bool:

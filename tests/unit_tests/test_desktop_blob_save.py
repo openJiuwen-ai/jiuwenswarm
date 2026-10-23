@@ -94,6 +94,54 @@ def test_blob_save_accepts_utf8_json_archives(monkeypatch, tmp_path):
     assert target_path.read_bytes() == content
 
 
+def test_blob_save_accepts_trajectory_zip_archives(monkeypatch, tmp_path):
+    runtime = _runtime()
+    target_path = tmp_path / "trajectory-session.trajectory.zip"
+    content = b"PK\x03\x04trajectory-zip-bytes"
+    monkeypatch.setattr(
+        runtime, "_select_save_path", lambda filename, file_types: target_path
+    )
+
+    transfer_id = _begin_transfer(
+        runtime,
+        "trajectory-session.trajectory.zip",
+        "application/zip",
+        len(content),
+    )
+    assert runtime.append_blob_save(
+        transfer_id, base64.b64encode(content).decode("ascii")
+    )
+    assert runtime.finish_blob_save(transfer_id) == {
+        "ok": True,
+        "cancelled": False,
+    }
+    assert target_path.read_bytes() == content
+
+
+def test_blob_save_accepts_trajectory_jsonl_archives(monkeypatch, tmp_path):
+    runtime = _runtime()
+    target_path = tmp_path / "trajectory-session.trajectory.jsonl"
+    content = b'{"format":"openjiuwen.trajectory.archive"}\n'
+    monkeypatch.setattr(
+        runtime, "_select_save_path", lambda filename, file_types: target_path
+    )
+
+    transfer_id = _begin_transfer(
+        runtime,
+        "trajectory-session.trajectory.jsonl",
+        "application/jsonl;charset=utf-8",
+        len(content),
+    )
+    assert runtime.append_blob_save(
+        transfer_id, base64.b64encode(content).decode("ascii")
+    )
+    assert runtime.finish_blob_save(transfer_id) == {
+        "ok": True,
+        "cancelled": False,
+    }
+    assert target_path.read_bytes() == content
+
+
 def test_blob_save_reports_cancellation_before_creating_a_transaction(monkeypatch):
     runtime = _runtime()
     monkeypatch.setattr(runtime, "_select_save_path", lambda filename, file_types: None)

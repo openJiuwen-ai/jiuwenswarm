@@ -53,6 +53,7 @@ from jiuwenswarm.channels.process_cli.prompt import (
 )
 from jiuwenswarm.channels.process_cli.prompt import read_prompt as _read_prompt
 from jiuwenswarm.channels.process_cli.ui import ProcessCliUI, resolved_cwd
+from jiuwenswarm.common.mode_matrix import deprecate_mode
 
 if TYPE_CHECKING:
     import argparse
@@ -111,6 +112,8 @@ def _worker_command(
     worker_result_file: str | None = None,
     operation: str = "chat",
 ) -> list[str]:
+    worker_work_mode = _resolve_cli_work_mode(args.mode, args.work_mode)
+    worker_mode = deprecate_mode(_resolve_display_mode(args.mode, worker_work_mode))
     command = [
         sys.executable,
         "-m",
@@ -118,9 +121,7 @@ def _worker_command(
         "--output",
         "human",
         "--mode",
-        args.mode,
-        "--work-mode",
-        args.work_mode,
+        worker_mode,
         "--_interactive-worker",
         "--_session-result-file",
         session_result_file,

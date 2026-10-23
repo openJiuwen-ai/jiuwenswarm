@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -104,6 +105,94 @@ async def test_workspace_upload_chunks_stay_in_injected_user_dir(
     )
     assert second.ok is True
     assert Path(actual_path).read_bytes() == b"first-second"
+
+
+@pytest.mark.asyncio
+async def test_upload_chunk_concurrent_same_name_does_not_clobber(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """并发同 target_rel_path 首块必须各自占用唯一文件（独占创建）。
+
+    重建 A1g 删除的 test_persist_media_locally_concurrent_same_name_
+    does_not_clobber 并发守护：E2A 分块路径首块的 check-then-write 竞态
+    （unique_upload_path 后非原子 open）回归时本测试必须失败。
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from jiuwenswarm.server.runtime.gateway_adapter import workspace_file_adapter as module
+
+    monkeypatch.setattr(module, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(module, "is_path_within_user_dirs", lambda path: Path(path).is_relative_to(tmp_path))
+    adapter = WorkspaceFileAdapter()
+
+    def _first_chunk(index: int):
+        return asyncio.run(
+            adapter.handle(
+                _request(
+                    ReqMethod.FILE_UPLOAD_CHUNK,
+                    {
+                        "upload_id": f"u-{index}",
+                        "target_rel_path": "agent/sessions/s1/uploads/report.bin",
+                        "data": base64.b64encode(f"chunk-{index}".encode()).decode("ascii"),
+                        "final": True,
+                    },
+                )
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        responses = list(pool.map(_first_chunk, range(16)))
+
+    assert all(resp.ok for resp in responses)
+    paths = [Path(resp.payload["path"]) for resp in responses]
+    assert len(set(paths)) == 16
+    assert {path.read_bytes() for path in paths} == {
+        f"chunk-{index}".encode() for index in range(16)
+    }
+
+
+@pytest.mark.asyncio
+async def test_im_file_persist_concurrent_same_name_does_not_clobber(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """并发同名 IM 附件必须各自占用唯一文件（独占创建，不静默覆盖）。"""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter.get_agent_workspace_dir",
+        lambda: tmp_path,
+    )
+    adapter = WorkspaceFileAdapter()
+
+    def _persist(index: int):
+        data = f"content-{index}".encode()
+        return asyncio.run(
+            adapter.handle(
+                _request(
+                    ReqMethod.IM_FILE_PERSIST,
+                    {
+                        "platform": "feishu",
+                        "category": "files",
+                        "filename": "report.txt",
+                        "data": base64.b64encode(data).decode("ascii"),
+                    },
+                )
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        responses = list(pool.map(_persist, range(16)))
+
+    assert all(resp.ok for resp in responses)
+    paths = [Path(resp.payload["path"]) for resp in responses]
+    assert len(set(paths)) == 16
+    assert {path.read_bytes() for path in paths} == {
+        f"content-{index}".encode() for index in range(16)
+    }
 
 
 @pytest.mark.asyncio
@@ -1228,6 +1317,7 @@ async def test_config_adapter_keeps_browser_config_in_agentserver_directory(monk
 
     current = {"browser": {"chrome_path": "/agent/chrome", "headless": False}}
     updates: list[dict] = []
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     monkeypatch.setattr(config_module, "get_config", lambda: current)
     monkeypatch.setattr(config_module, "update_browser_in_config", lambda payload: updates.append(payload))
     adapter = ConfigAdapter()
@@ -1237,7 +1327,11 @@ async def test_config_adapter_keeps_browser_config_in_agentserver_directory(monk
         _request(ReqMethod.PATH_SET, {"chrome_path": "/agent/new-chrome", "headless": True})
     )
 
-    assert got.payload == {"chrome_path": "/agent/chrome", "headless": False}
+    assert got.payload == {
+        "chrome_path": "/agent/chrome", "headless": False, "decision_mode": "llm",
+        "decision_provider": "typesafe", "jev_key_configured": False,
+        "decision_model": "jev-1.13.0", "decision_api_base": "https://api.typesafe.ai/v1",
+    }
     assert updates == [{"chrome_path": "/agent/new-chrome", "headless": True}]
     assert changed.metadata["config_changed"] is True
     assert changed.metadata["browser_runtime_restart"] is True
@@ -1255,12 +1349,18 @@ async def test_config_adapter_resolves_platform_browser_path_for_runtime_restart
         }
     }
     monkeypatch.setattr(config_module, "get_config", lambda: current)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
 
     response = await ConfigAdapter().handle(_request(ReqMethod.PATH_GET))
 
     assert response.payload == {
         "chrome_path": "/agent/chrome",
         "headless": True,
+        "decision_mode": "llm",
+        "decision_provider": "typesafe",
+        "jev_key_configured": False,
+        "decision_model": "jev-1.13.0",
+        "decision_api_base": "https://api.typesafe.ai/v1",
     }
 
 
@@ -1279,6 +1379,239 @@ async def test_config_adapter_resolves_env_browser_path_for_runtime_restart(monk
     response = await ConfigAdapter().handle(_request(ReqMethod.PATH_GET))
 
     assert response.payload["chrome_path"] == "/agent/chrome"
+
+
+def _browser_writes(monkeypatch, current: dict) -> list[tuple[str, object]]:
+    from jiuwenswarm.common import config as config_module
+
+    writes: list[tuple[str, object]] = []
+    monkeypatch.setattr(config_module, "get_config", lambda: current)
+    monkeypatch.setattr(config_module, "update_browser_in_config", lambda p: writes.append(("browser", p)))
+    monkeypatch.setattr(config_module, "update_browser_decision_in_config", lambda u: writes.append(("decision", u)))
+    return writes
+
+
+def _set(**decision) -> AgentRequest:
+    return _request(ReqMethod.PATH_SET, {"chrome_path": "", "headless": True, **decision})
+
+
+_BROWSER = ("browser", {"chrome_path": "", "headless": True})
+_JEV_CONFIG = {"browser": {"decision": {"mode": "llm", "provider": "openrouter", "api_key_env": "TEST_JEV_UI_KEY"}}}
+_requires_jev = pytest.mark.skipif(
+    importlib.util.find_spec("openjiuwen.harness.tools.browser_move.decision") is None,
+    reason="installed openjiuwen has no Jev decision support",
+)
+
+
+@pytest.mark.asyncio
+async def test_config_adapter_reports_the_jev_setup_but_never_the_key(monkeypatch) -> None:
+    """The Browser settings page shows what the next browser task will use; the key stays server-side."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-secret-value")
+    _browser_writes(monkeypatch, {"browser": {"decision": {"mode": "shadow", "provider": "openrouter"}}})
+    response = await ConfigAdapter().handle(_request(ReqMethod.PATH_GET))
+    assert response.payload["decision_mode"] == "shadow"
+    assert response.payload["decision_provider"] == "openrouter"
+    assert response.payload["jev_key_configured"] is True
+    assert "synthetic-secret-value" not in repr(response.payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "decision",
+    [{"decision_mode": "shadow"}, {"decision_mode": "hybrid"}, {"decision_mode": "turbo"}, {"decision_provider": "x"}],
+)
+async def test_config_adapter_refuses_jev_settings_that_cannot_run(monkeypatch, decision) -> None:
+    """Without a key (or with an unknown value) Jev would fail at every step: refuse and write nothing."""
+    monkeypatch.delenv("TEST_JEV_UI_KEY", raising=False)
+    writes = _browser_writes(monkeypatch, _JEV_CONFIG)
+    response = await ConfigAdapter().handle(_set(**decision))
+    assert response.ok is False and response.payload["code"] == "BAD_REQUEST"
+    assert writes == []
+
+
+@_requires_jev
+@pytest.mark.asyncio
+async def test_config_adapter_switches_to_jev_when_its_key_is_set(monkeypatch) -> None:
+    monkeypatch.setenv("TEST_JEV_UI_KEY", "synthetic-not-used")
+    writes = _browser_writes(monkeypatch, _JEV_CONFIG)
+    response = await ConfigAdapter().handle(_set(decision_mode="hybrid", decision_provider="openrouter"))
+    assert response.ok is True
+    assert writes == [_BROWSER, ("decision", {"mode": "hybrid"})]
+    assert response.metadata["browser_runtime_restart"] is True
+
+
+@_requires_jev
+@pytest.mark.asyncio
+async def test_config_adapter_provider_switch_writes_that_providers_endpoint(monkeypatch) -> None:
+    """TypeSafe must not keep OpenRouter's model and endpoint, and needs its own key."""
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    writes = _browser_writes(monkeypatch, {"browser": {"decision": {"mode": "hybrid", "provider": "openrouter"}}})
+    refused = await ConfigAdapter().handle(_set(decision_mode="hybrid", decision_provider="typesafe"))
+    assert refused.ok is False and "TYPESAFE_API_KEY" in refused.payload["error"] and writes == []
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "synthetic-not-used")
+    response = await ConfigAdapter().handle(_set(decision_mode="hybrid", decision_provider="typesafe"))
+    assert response.ok is True
+    assert writes[-1] == (
+        "decision",
+        {
+            "provider": "typesafe",
+            "model": "jev-1.13.0",
+            "api_base": "https://api.typesafe.ai/v1",
+            "api_key_env": "TYPESAFE_API_KEY",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_config_adapter_switches_back_to_llm_without_a_key(monkeypatch) -> None:
+    """Turning Jev off must always work, even after its key was removed."""
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    writes = _browser_writes(monkeypatch, {"browser": {"decision": {"mode": "hybrid"}}})
+    response = await ConfigAdapter().handle(_set(decision_mode="llm"))
+    assert response.ok is True
+    assert writes[-1] == ("decision", {"mode": "llm"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["LLM", " llm ", "typo"])
+async def test_config_adapter_repairs_unrecognized_saved_decision_mode(monkeypatch, mode) -> None:
+    writes = _browser_writes(monkeypatch, {"browser": {"decision": {"mode": mode}}})
+    response = await ConfigAdapter().handle(_set(decision_mode="llm"))
+    assert response.ok is True
+    assert response.payload["decision_mode"] == "llm"
+    assert writes == [_BROWSER, ("decision", {"mode": "llm"})]
+
+
+@pytest.mark.asyncio
+async def test_config_adapter_unrelated_save_works_while_the_jev_key_is_missing(monkeypatch) -> None:
+    """The page resends its whole state; changing the Chrome path must not trip the Jev check."""
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    writes = _browser_writes(monkeypatch, {"browser": {"decision": {"mode": "hybrid"}}})
+    response = await ConfigAdapter().handle(_set(decision_mode="hybrid", decision_provider="typesafe"))
+    assert response.ok is True and writes == [_BROWSER]
+
+
+@pytest.mark.asyncio
+async def test_config_adapter_leaves_the_decision_alone_for_older_clients(monkeypatch) -> None:
+    writes = _browser_writes(monkeypatch, {"browser": {"decision": {"mode": "hybrid"}}})
+    response = await ConfigAdapter().handle(_set())
+    assert response.ok is True and response.payload["decision_mode"] == "hybrid"
+    assert writes == [_BROWSER]
+
+
+def test_saving_decision_fields_keeps_the_rest_of_the_jev_settings(tmp_path, monkeypatch) -> None:
+    from jiuwenswarm.common import config as config_module
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "browser:\n  headless: false\n  decision:\n    mode: llm # keep me\n"
+        "    provider: openrouter\n    min_confidence: 0.55\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", path)
+    config_module.update_browser_decision_in_config({"mode": "hybrid"})
+    saved = path.read_text(encoding="utf-8")
+    assert "mode: hybrid" in saved and "provider: openrouter" in saved
+    assert "min_confidence: 0.55" in saved and "headless: false" in saved
+
+
+def test_jev_provider_defaults_match_openjiuwen() -> None:
+    """jiuwenswarm writes these on a provider switch; they must equal what openjiuwen would pick."""
+    decision = pytest.importorskip("openjiuwen.harness.tools.browser_move.decision")
+    from jiuwenswarm.agents.harness.common.browser_config import JEV_PROVIDER_DEFAULTS
+
+    for provider, defaults in JEV_PROVIDER_DEFAULTS.items():
+        if provider == "custom":
+            continue
+        resolved = decision.BrowserDecisionConfig(provider=provider)
+        assert {k: getattr(resolved, k) for k in defaults} == defaults
+
+
+@_requires_jev
+@pytest.mark.asyncio
+async def test_jev_credential_save_read_and_provider_switch(monkeypatch, tmp_path):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.config_panel import config_set_handlers as handlers
+
+    current = {"browser": {"decision": {"mode": "hybrid", "provider": "openrouter"}}}
+    monkeypatch.setenv("TYPESAFE_API_KEY", "")
+    monkeypatch.setattr(config_module, "get_config", lambda: current)
+    monkeypatch.setattr(handlers, "get_config", lambda: current)
+    monkeypatch.setattr(handlers, "get_config_raw", lambda: current)
+    monkeypatch.setattr(handlers, "ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr(handlers, "_get_crypto_provider", lambda: None)
+    monkeypatch.setattr(config_module, "update_browser_in_config", lambda updates: current["browser"].update(updates))
+    monkeypatch.setattr(
+        config_module, "update_browser_decision_in_config", lambda updates: current["browser"]["decision"].update(updates)
+    )
+    adapter = ConfigAdapter()
+    credentials = {"jev_typesafe_api_key": "synthetic-provider-key"}
+    saved = await adapter.handle(_request(ReqMethod.CONFIG_SAVE_ALL, {"config": credentials}))
+    assert saved.ok
+    assert current["browser"]["decision"]["provider"] == "openrouter"
+    assert "synthetic-provider-key" not in repr(saved.payload)
+    read = await adapter.handle(_request(ReqMethod.CONFIG_GET))
+    assert read.payload["jev_typesafe_api_key"] == "synthetic-provider-key"
+    switched = await adapter.handle(_set(decision_mode="hybrid", decision_provider="typesafe"))
+    assert switched.ok and switched.payload["decision_provider"] == "typesafe"
+    assert switched.payload["jev_key_configured"] is True
+    assert "synthetic-provider-key" not in repr(switched.payload)
+    assert current["browser"]["decision"]["api_key_env"] == "TYPESAFE_API_KEY"
+
+
+@_requires_jev
+@pytest.mark.asyncio
+async def test_custom_jev_model_and_endpoint_round_trip_through_front(monkeypatch, tmp_path):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.config_panel import config_set_handlers as handlers
+    from jiuwenswarm.server.control import config_service
+
+    current = {"browser": {"decision": {"mode": "hybrid", "provider": "typesafe"}}}
+    monkeypatch.setenv("JEV_CUSTOM_API_KEY", "")
+    monkeypatch.setattr(config_module, "get_config", lambda: current)
+    monkeypatch.setattr(handlers, "get_config", lambda: current)
+    monkeypatch.setattr(handlers, "get_config_raw", lambda: current)
+    monkeypatch.setattr(handlers, "ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr(handlers, "_get_crypto_provider", lambda: None)
+    monkeypatch.setattr(config_service, "_read_raw_config", lambda: current)
+    monkeypatch.setattr(config_service, "get_env_file", lambda: tmp_path / ".env")
+    monkeypatch.setattr(config_module, "update_browser_in_config", lambda u: current["browser"].update(u))
+    monkeypatch.setattr(
+        config_module, "update_browser_decision_in_config", lambda u: current["browser"]["decision"].update(u)
+    )
+    adapter = ConfigAdapter()
+    saved = await adapter.handle(_request(ReqMethod.CONFIG_SAVE_ALL, {
+        "config": {"jev_custom_api_key": "synthetic-custom-key"},
+    }))
+    assert saved.ok
+    changed = await adapter.handle(_set(
+        decision_provider="custom", decision_model="jev-preview",
+        decision_api_base="https://jev.example.test/v1",
+    ))
+    assert changed.ok
+    # Simulate a Front process whose environment predates Runtime's credential write.
+    monkeypatch.setenv("JEV_CUSTOM_API_KEY", "")
+    reopened = await config_service.handle_config_request(_request(ReqMethod.PATH_GET))
+    assert reopened.payload == changed.payload
+    assert reopened.payload["decision_provider"] == "custom"
+    assert reopened.payload["decision_model"] == "jev-preview"
+    assert reopened.payload["decision_api_base"] == "https://jev.example.test/v1"
+    assert reopened.payload["jev_key_configured"] is True
+    assert "synthetic-custom-key" not in repr(reopened.payload)
+    keys = await config_service.handle_config_request(_request(ReqMethod.CONFIG_GET))
+    assert keys.payload["jev_custom_api_key"] == "synthetic-custom-key"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_base", ["", "http://example.test", "https://user:pass@example.test", []])
+async def test_invalid_custom_jev_endpoint_does_not_write(monkeypatch, api_base):
+    writes = _browser_writes(monkeypatch, _JEV_CONFIG)
+    response = await ConfigAdapter().handle(_set(
+        decision_provider="custom", decision_api_base=api_base, decision_model="jev-preview",
+    ))
+    assert response.ok is False
+    assert writes == []
 
 
 class TestBuildErrorResponse:
@@ -1300,3 +1633,37 @@ class TestParseIntParam:
         assert parse_int_param({"limit": "abc"}, "limit", 20, minimum=1, maximum=200) == 20
         assert parse_int_param({"limit": True}, "limit", 20, minimum=1, maximum=200) == 20
         assert parse_int_param({}, "limit", 20, minimum=1, maximum=200) == 20
+
+
+@pytest.mark.asyncio
+async def test_owner_scopes_set_triggers_async_reload_callback(tmp_path, monkeypatch) -> None:
+    """A5 review 回归：SET 分支的 reload 回调链路（inspect 缺失曾致 NameError）。
+
+    ConfigAdapter 生产装配恒带 on_config_saved（_reload_after_config_save 为
+    async）——该路径此前无任何测试覆盖，NameError 逃逸到线上才被发现。
+    """
+    reload_calls: list[tuple[list[str], dict]] = []
+
+    async def on_config_saved(updated_keys=None, *, env_updates=None, config_payload=None, reload_options=None):
+        reload_calls.append((list(updated_keys or []), dict(reload_options or {})))
+        return True
+
+    # handler 内惰性导入，patch 源模块（config_adapter 不是属性宿主）
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.update_permissions_owner_scopes_in_config",
+        lambda scopes, guidance: None,
+    )
+    from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import ConfigAdapter
+
+    adapter = ConfigAdapter(on_config_saved=on_config_saved)
+
+    response = await adapter.handle(
+        _request(
+            ReqMethod.PERMISSIONS_OWNER_SCOPES_SET,
+            {"owner_scopes": {"tool_edit": "allow"}, "deny_guidance_message": "x"},
+        )
+    )
+
+    assert response.ok is True
+    assert response.payload["applied_without_restart"] is True
+    assert reload_calls == [(["permissions"], {"reload_scopes": ["permissions"]})]

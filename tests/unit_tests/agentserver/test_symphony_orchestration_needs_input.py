@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from openjiuwen.core.common import HeartbeatReason, RunContext
 from openjiuwen.core.foundation.llm import (
     AssistantMessage,
     BaseModelClient,
@@ -19,11 +20,10 @@ from openjiuwen.core.foundation.llm import (
 )
 from openjiuwen.core.foundation.tool import LocalFunction, ToolCard
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+from openjiuwen.core.common.run_context import HeartbeatReason
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
-    HeartbeatReason,
     InvokeInputs,
-    RunContext,
     ToolCallInputs,
 )
 from openjiuwen.harness import create_deep_agent

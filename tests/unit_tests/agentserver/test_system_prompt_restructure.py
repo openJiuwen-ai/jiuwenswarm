@@ -24,7 +24,7 @@ from openjiuwen.symphony.discovery import SkillPromptBranch, SkillPromptSnapshot
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
     AuthorizationExecutionContext,
     AuthorizerRoute,
@@ -1179,7 +1179,12 @@ async def test_a4p_guidance_is_a_runtime_attachment_not_cached_system_prompt(
 
 
 @pytest.mark.asyncio
-async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatch):
+@pytest.mark.parametrize("permissions", [
+    None,
+    {"enabled": True, "mode": "auto"},
+    {"enabled": False, "mode": "manual"},
+])
+async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatch, permissions):
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_config",
         lambda: {"a4p": {"enabled": True}},
@@ -1192,7 +1197,13 @@ async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatc
     ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
     await rail._sync_a4p_intent_authorization_attachment(ctx)
 
-    rail.set_a4p_authorizer_available(False)
+    if permissions is None:
+        rail.set_a4p_authorizer_available(False)
+    else:
+        monkeypatch.setattr(
+            "jiuwenswarm.common.config.get_config",
+            lambda: {"a4p": {"enabled": True}, "permissions": permissions},
+        )
     await rail._sync_a4p_intent_authorization_attachment(ctx)
 
     rendered = agent.prompt_attachment_manager.render(
@@ -1201,7 +1212,12 @@ async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatc
     assert "A4P Intent Authorization" not in rendered
 
 
-def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch):
+@pytest.mark.parametrize("channel,permissions", [
+    ("tui", {}),
+    ("web", {"enabled": True, "mode": "auto"}),
+    ("web", {"enabled": False, "mode": "manual"}),
+])
+def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch, channel, permissions):
     fake_resource = _FakeResourceManager()
     fake_instance = _FakeRuntimeInstance()
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
@@ -1240,8 +1256,8 @@ def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch):
         ]
 
         adapter._sync_a4p_tools_for_runtime(
-            {"a4p": {"enabled": True}},
-            "tui",
+            {"a4p": {"enabled": True}, "permissions": permissions},
+            channel,
             "session-1",
         )
         assert adapter._a4p_tools == []
@@ -1273,7 +1289,7 @@ async def test_cron_a4p_scope_is_injected_as_runtime_attachment(monkeypatch):
         lambda: {"a4p": {"enabled": True}},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.a4p_runtime.get_a4p_runtime",
+        "jiuwenswarm.agents.harness.common.a4p.runtime.get_a4p_runtime",
         lambda: _Runtime(),
     )
     builder = SystemPromptBuilder(language="en")
@@ -1385,13 +1401,13 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     assert "genuinely unanswered requirements" in task_section.content["en"]
     assert "a partial label or unmapped field alone does not justify" in task_section.content["en"]
     assert "Do not use `subagent_spawn` for browser_agent" in task_section.content["en"]
-    assert "Delegate only the original goal and necessary constraints" in task_section.content["en"]
+    assert "Preserve the original goal, budget, dates and object constraints" in task_section.content["en"]
     assert "top AI/knowledge/weather answers with attribution" in task_section.content["en"]
     assert "preserve explicit natural-result/detail-visit requests" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
     assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
     assert "不因 partial 标签或字段未结构化而重跑浏览器或交叉验证" in build_browser_task_prompt("cn")
-    assert "派发描述只保留原始目标和必要约束" in build_browser_task_prompt("cn")
+    assert "派发描述保留原始目标、预算、时间和对象约束" in build_browser_task_prompt("cn")
     assert "用户明确要求自然结果或进入详情时仍须执行" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
@@ -1923,15 +1939,17 @@ async def test_runtime_prompt_clears_directory_boundaries_outside_web_and_tui(
 @pytest.mark.asyncio
 async def test_runtime_prompt_reports_powershell_and_removes_generic_shell_rules(monkeypatch):
     import jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail as runtime_module
+    from jiuwenswarm.agents.harness.common.prompt.shell_environment import ShellCapabilities
+
+    async def get_capabilities(os_type):
+        assert os_type == "win32"
+        return ShellCapabilities(
+            detected=True,
+            powershell=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        )
 
     monkeypatch.setattr(runtime_module.sys, "platform", "win32")
-    monkeypatch.setattr(
-        runtime_module.shutil,
-        "which",
-        lambda command: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        if command == "powershell"
-        else None,
-    )
+    monkeypatch.setattr(runtime_module, "get_shell_capabilities", get_capabilities)
 
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -2461,3 +2479,76 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
         language="cn",
         max_iterations=DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "reason", "injected"),
+    [
+        ("success", "attachment_registered", True),
+        ("non_web", "non_web_channel", False),
+        ("no_authorizer", "authorizer_unavailable", False),
+        ("disabled", "a4p_disabled", False),
+        ("config_error", "config_error", False),
+        ("no_manager", "attachment_unavailable", False),
+        ("write_error", "attachment_unavailable", False),
+        ("unexpected_error", "attachment_error", False),
+    ],
+)
+async def test_a4p_prompt_injection_observation(monkeypatch, case, reason, injected):
+    import hashlib
+    import json
+
+    from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import A4P_PROMPT_VERSION
+
+    def config():
+        if case == "config_error":
+            raise RuntimeError("configuration unavailable")
+        return {"a4p": {"enabled": case != "disabled"}}
+
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", config)
+    log_info = Mock()
+    monkeypatch.setattr(_utils_mod.logger, "info", log_info)
+    agent = _FakeAgent(SystemPromptBuilder(language="en"))
+    rail = RuntimePromptRail(language="en", channel="cli" if case == "non_web" else "web")
+    rail.init(agent)
+    rail.set_a4p_authorizer_available(case != "no_authorizer")
+    rail.set_model_name("test-model")
+    if case == "no_manager":
+        rail.attachment_manager = None
+    elif case in {"write_error", "unexpected_error"}:
+        rail.attachment_manager = SimpleNamespace(
+            bind_context=Mock(side_effect=(
+                ValueError("invalid attachment context") if case == "write_error"
+                else RuntimeError("attachment storage failed")
+            )),
+        )
+    ctx = AgentCallbackContext(
+        agent=agent, inputs=None, session=_FakeSession(), extra={"request_id": "observation-request"},
+    )
+
+    if case == "unexpected_error":
+        with pytest.raises(RuntimeError, match="attachment storage failed"):
+            await rail._sync_a4p_intent_authorization_attachment(ctx)
+    else:
+        await rail._sync_a4p_intent_authorization_attachment(ctx)
+
+    records = [call for call in log_info.call_args_list if call.args[0] == "[RuntimePromptRail] %s"]
+    assert len(records) == 1
+    event = json.loads(records[0].args[1])
+    assert event["version"] == A4P_PROMPT_VERSION
+    assert event["session_id"] == "sess1"
+    assert event["request_id"] == "observation-request"
+    assert event["model"] == "test-model"
+    assert event["language"] == "en"
+    assert event["injected"] is injected
+    assert event["reason"] == reason
+    assert "content" not in event
+    items = await agent.prompt_attachment_manager.collect_for_session("sess1")
+    if injected:
+        attachment = next(item for item in items if item.id.endswith("a4p.intent_authorization"))
+        assert event["content_chars"] == len(attachment.content)
+        assert event["content_sha256"] == hashlib.sha256(attachment.content.encode("utf-8")).hexdigest()
+        assert len(attachment.content) < 4000
+    else:
+        assert not items

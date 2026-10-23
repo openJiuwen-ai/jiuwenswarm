@@ -6,3 +6,4 @@ export const applicationPluginId = "video-duplex";
 export const applicationPluginTaskInputAction = TaskFullDuplexAction;
 export const applicationPluginTaskRuntime = TaskFullDuplexRuntime;
 export default VideoLivePanel;
+export { flushConversationHistory as applicationPluginBeforeChatSend } from "./TaskFullDuplexRuntime";

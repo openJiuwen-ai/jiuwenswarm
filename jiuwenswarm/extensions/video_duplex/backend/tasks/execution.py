@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
 from .checkpoint import TaskCheckpoint
 from .bridge import RemoteTaskEndpoint
@@ -50,14 +51,31 @@ class TaskExecutionBinding(TaskCheckpoint):
 
 @asynccontextmanager
 async def bind_task_execution(request, adapter, inputs):
-    managed = request.channel_id == "video_tool" and str(request.session_id or "").startswith("managed-task-")
+    managed = request.channel_id == "video_tool" and (
+        bool((getattr(request, "params", None) or {}).get("managed_task_binding"))
+        or str(request.session_id or "").startswith("managed-task-")
+    )
     if not managed:
         yield
         return
+    # The shared adapter receives the request first and forwards it to the
+    # session-owned child. Binding happens on that second call.
+    if not getattr(adapter, "_is_session_scoped_adapter", False):
+        yield
+        return
     endpoint = RemoteTaskEndpoint(request)
+    previous_output = getattr(adapter, "_interaction_output_handoff", None)
+    if previous_output is not None:
+        await previous_output.wait()
+    if (not str(request.session_id or "").startswith("managed-task-")
+            and not isinstance(inputs.get("query"), InteractiveInput)
+            and getattr(adapter.task_execution_binding[0], "active_round", None) is not None):
+        raise RuntimeError("当前会话仍有任务或文字回复在执行，请完成后再发起全双工工具任务。")
+    if adapter.task_execution_binding[1] is None:
+        await adapter.install_voice_task_rail()
     harness, rail = adapter.task_execution_binding
     root = getattr(harness, "_react_agent", None)
-    if root is None or not getattr(adapter, "_is_session_scoped_adapter", False):
+    if root is None:
         raise RuntimeError("Managed tasks require the session-owned Agent")
     if rail is None:
         raise RuntimeError("Managed task callback rail is unavailable")

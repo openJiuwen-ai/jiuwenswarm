@@ -797,6 +797,10 @@ If `config.yaml` has no hooks configured, displays `No hooks configured.` with a
 
 #### Hooks Concept Overview
 
+User-configured tool hooks also apply to sub-agent and swarm-member tool calls.
+For these calls, hook input includes the child's `session_id` and `subagent_type`
+(`"swarm_member"` for unnamed swarm members).
+
 Hooks are extension logic that executes automatically when specific events fire. 17 events are supported:
 
 | Event | Execution Layer | Trigger |

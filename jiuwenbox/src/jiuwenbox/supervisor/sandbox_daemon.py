@@ -88,6 +88,7 @@ SANDBOX_DAEMON_SANDBOX_PATH = f"{SANDBOX_RESERVED_DIR}/sandbox-daemon.py"
 SANDBOX_LAUNCHER_PATH = f"{SANDBOX_RESERVED_DIR}/landlock-launcher.py"
 SANDBOX_DAEMON_COMMAND = ["python3", "-S", SANDBOX_DAEMON_SANDBOX_PATH]
 LISTENER_FD_ENV = "JIUWENBOX_CONTROL_LISTENER_FD"
+SANDBOX_IP_ENV = "SANDBOX_IP"
 
 REQUEST_TYPE_EXEC = "exec"
 REQUEST_TYPE_SHUTDOWN = "shutdown"
@@ -179,6 +180,46 @@ def _normalize_env(env: Any) -> dict[str, str] | None:
     return {str(key): str(value) for key, value in env.items()}
 
 
+def build_child_env(env_override: dict[str, str] | None) -> dict[str, str]:
+    """Merge an exec environment while preserving runtime-owned metadata.
+
+    Public so host-side tests can exercise reserved-key handling without
+    poking private helpers. Keep in sync with ``apply_sandbox_ip_env`` in
+    ``daemon_ipc.py`` (this script cannot import that module in-sandbox).
+    """
+    sandbox_ip = os.environ.get(SANDBOX_IP_ENV)
+    merged_env = dict(os.environ)
+    # Children must not see the listener fd or the env var pointing at it;
+    # close_fds=True closes the fd, and removing the variable avoids exposing
+    # an unusable internal descriptor number.
+    merged_env.pop(LISTENER_FD_ENV, None)
+    if env_override is not None:
+        merged_env.update(env_override)
+    # The sandbox address is a lifecycle snapshot owned by the runtime.
+    # Always remove a caller value, including when address discovery failed.
+    merged_env.pop(SANDBOX_IP_ENV, None)
+    if sandbox_ip:
+        merged_env[SANDBOX_IP_ENV] = sandbox_ip
+    return merged_env
+
+
+def _prefer_oom_kill_self() -> None:
+    """Make this process the preferred OOM victim before exec.
+
+    The sandbox daemon lives in the same memory cgroup as the user
+    command. With equal scores the daemon's larger resident set is what
+    the kernel kills, and the client then sees a closed IPC socket
+    instead of the command's exit status. ``+1000`` is the maximum
+    adjustment and does not require ``CAP_SYS_RESOURCE``; lowering the
+    daemon's own score does, and often fails inside a user namespace.
+    """
+    try:
+        with open("/proc/self/oom_score_adj", "w", encoding="ascii") as fh:
+            fh.write("1000")
+    except OSError:
+        pass
+
+
 class DaemonState:
     """Shared mutable state guarded by ``lock``."""
 
@@ -248,14 +289,7 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
             if _try_fastpath_exec(conn, command, header, stdin_bytes):
                 return
 
-        merged_env = dict(os.environ)
-        # Children must not see the listener fd or the env var pointing at
-        # it; ``close_fds=True`` (Python default) closes the fd, but we also
-        # strip the env var so user code cannot trivially fingerprint the
-        # daemon.
-        merged_env.pop(LISTENER_FD_ENV, None)
-        if env_override is not None:
-            merged_env.update(env_override)
+        merged_env = build_child_env(env_override)
 
         proc_kwargs: dict[str, Any] = {
             "stdin": subprocess.PIPE if stdin_size else subprocess.DEVNULL,
@@ -269,6 +303,7 @@ def _handle_exec(conn: socket.socket, header: dict[str, Any], state: DaemonState
         }
         if workdir:
             proc_kwargs["cwd"] = workdir
+        proc_kwargs["preexec_fn"] = _prefer_oom_kill_self
 
         try:
             proc = subprocess.Popen(command, **proc_kwargs)
@@ -2335,10 +2370,7 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
 
         reserved = True
         try:
-            merged_env = dict(os.environ)
-            merged_env.pop(LISTENER_FD_ENV, None)
-            if env_override is not None:
-                merged_env.update(env_override)
+            merged_env = build_child_env(env_override)
 
             # Background jobs discard stdout/stderr; use ``exec`` when output
             # must be captured.
@@ -2352,6 +2384,7 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
             }
             if workdir:
                 proc_kwargs["cwd"] = workdir
+            proc_kwargs["preexec_fn"] = _prefer_oom_kill_self
 
             try:
                 proc = subprocess.Popen(command, **proc_kwargs)

@@ -5,10 +5,12 @@ import test from 'node:test';
 const read = (path) => readFileSync(path, 'utf8');
 
 test('video duplex contributes a task action backed by the headless existing workflow', () => {
+  const inputArea = read('src/components/ChatPanel/InputArea.tsx');
   const entry = read('../../../extensions/video_duplex/frontend/index.tsx');
   const action = read('../../../extensions/video_duplex/frontend/TaskFullDuplexAction.tsx');
   const runtime = read('../../../extensions/video_duplex/frontend/TaskFullDuplexRuntime.tsx');
   const panel = read('../../../extensions/video_duplex/frontend/VideoLivePanel/index.tsx');
+  assert.match(inputArea, /eligible=\{fullDuplexActionEligible && !isTeamMode\}/);
   assert.match(entry, /applicationPluginTaskInputAction = TaskFullDuplexAction/);
   assert.match(entry, /applicationPluginTaskRuntime = TaskFullDuplexRuntime/);
   assert.match(action, /startTaskFullDuplex/);
@@ -83,7 +85,7 @@ test('task Full-duplex creates a real session before starting and persists its t
   assert.match(types, /ensureSession: \(initialTitle\?: string\) => Promise<string \| null>/);
   assert.match(app, /ensureApplicationPluginSession/);
   assert.match(action, /await ensureSession\(/);
-  assert.match(action, /startTaskFullDuplex\(readySessionId\)/);
+  assert.match(action, /startTaskFullDuplex\(readySessionId, visualSource\)/);
   assert.match(runtime, /video\.conversation\.append/);
   assert.match(runtime, /historyQueues/);
   assert.match(backend, /"video\.conversation\.append": _append_conversation/);

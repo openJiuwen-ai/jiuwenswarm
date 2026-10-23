@@ -1,0 +1,156 @@
+.root {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-surface-card);
+}
+
+.header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.75rem 1rem 0;
+}
+
+.back {
+  display: inline-flex;
+  width: 1.75rem;
+  height: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.back:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.back:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 1px;
+}
+
+.title {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.5rem;
+}
+
+.summary {
+  margin-left: 0.75rem;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+}
+
+.tabBar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 1rem;
+  border-bottom: 1px solid var(--color-border-default);
+  padding: 0 1rem 0 2.25rem;
+}
+
+.tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 1.5rem;
+}
+
+/* Right side of the tab bar on the diagnosis tab, where the trajectory tab keeps its toolbar. */
+.tabBarEnd {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0.25rem 0;
+}
+
+.tab {
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  padding: 0.5rem 0.125rem;
+}
+
+.tab:hover {
+  color: var(--color-text-primary);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: -2px;
+}
+
+.tabActive {
+  border-bottom-color: var(--color-action-primary);
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.panel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.diagnose {
+  flex: 0 0 auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: 1rem;
+  background: var(--color-action-secondary);
+  color: var(--color-action-secondary-text);
+  cursor: pointer;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  padding: 0.25rem 1rem;
+}
+
+.diagnose:hover:not(:disabled) {
+  border-color: var(--color-border-hover);
+  background: var(--color-surface-hover);
+}
+
+.tab:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.diagnose:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.diagnose:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}

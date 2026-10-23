@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import types
@@ -61,6 +62,57 @@ def test_raw_file_serves_persisted_session_image(tmp_path):
             assert response.status == 200
             assert response.headers["Content-Type"] == "image/png"
             assert response.read() == image_bytes
+        finally:
+            connection.close()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_raw_file_serves_an_image_in_the_selected_project_directory(tmp_path):
+    agent_root = tmp_path / "agent"
+    agent_root.mkdir()
+    project_dir = tmp_path / "Videos"
+    image_path = project_dir / "image.jpg"
+    image_path.parent.mkdir()
+    image_bytes = b"\xff\xd8\xffjpg-data"
+    image_path.write_bytes(image_bytes)
+    outside = tmp_path / "outside" / "secret.jpg"
+    outside.parent.mkdir()
+    outside.write_bytes(b"secret")
+    (agent_root / "projects.json").write_text(
+        json.dumps({"version": 1, "projects": [{"project_id": "proj_videos", "project_dir": str(project_dir)}]}),
+        encoding="utf-8",
+    )
+
+    class Handler(_SpaStaticHandler):
+        project_root = tmp_path
+        workspace_root = agent_root
+        agent_teams_root = tmp_path / "agent-teams"
+        logs_root = tmp_path / "logs"
+        auto_harness_root = tmp_path / "auto-harness"
+        api_target = ""
+        ws_target = ""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", f"/file-api/raw-file?path={quote(str(image_path))}")
+        response = connection.getresponse()
+        try:
+            assert response.status == 200
+            assert response.read() == image_bytes
+        finally:
+            connection.close()
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", f"/file-api/raw-file?path={quote(str(outside))}")
+        denied = connection.getresponse()
+        try:
+            assert denied.status == 403
+            denied.read()
         finally:
             connection.close()
     finally:
@@ -139,7 +191,7 @@ def test_verified_download_get_and_head_use_conventional_staged_file_handler(
     )
     manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.web_file_download.time.time",
+        "jiuwenswarm.common.file_download_token.time.time",
         lambda: 100.0,
     )
     monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)

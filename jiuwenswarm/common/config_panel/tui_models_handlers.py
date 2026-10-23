@@ -71,7 +71,7 @@ from jiuwenswarm.common.reasoning_config import (
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.utils import get_user_workspace_dir
-from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.version import get_runtime_version
 
 logger = logging.getLogger(__name__)
 
@@ -472,7 +472,7 @@ async def config_get_handler(
         param_key: (os.getenv(env_key) or "")
         for param_key, env_key in CLI_CONFIG_SET_ENV_MAP.items()
     }
-    payload["app_version"] = __version__
+    payload["app_version"] = get_runtime_version()
     try:
         raw = get_config_raw()
         crypto_provider = _get_crypto_provider()

@@ -20,6 +20,8 @@ import {
   AgentManagementError,
   advancePendingInstallQueue,
   createAgentGroupManagementClient,
+  deriveAgentGroupId,
+  deriveAgentId,
   createPendingInstallQueue,
   createAgentManagementClient,
   type AgentFileContent,
@@ -80,6 +82,8 @@ const EMPTY_DRAFT: AgentDraft = {
   skillRefs: [],
   mcpRefs: [],
   suggestedPrompts: [],
+  useExternalHarness: false,
+  externalHarnessProvider: 'claudecode',
 };
 
 const EMPTY_GROUP_DRAFT: AgentGroupDraft = {
@@ -98,10 +102,15 @@ const EMPTY_GROUP_DRAFT: AgentGroupDraft = {
 
 function detailToDraft(detail: AgentDetail): AgentDraft {
   const presetIds = new Set<string>(AGENT_TAG_OPTIONS.map((option) => option.id));
+  const harnessTagLabels = new Set(['三方Harness', 'External Harness']);
   const tagIds = detail.tags
     .map((tag) => tag.id)
     .filter((id): id is string => presetIds.has(id));
-  const customTags = detail.tags.filter((tag) => !presetIds.has(tag.id)).map((tag) => tag.label);
+  const customTags = detail.tags
+    .filter((tag) => !presetIds.has(tag.id) && !harnessTagLabels.has(tag.label) && !harnessTagLabels.has(tag.id))
+    .map((tag) => tag.label);
+  const provider = detail.runtime?.provider_name;
+  const useExternalHarness = provider === 'claudecode' || provider === 'codex';
   return {
     id: detail.id,
     name: detail.displayName,
@@ -110,8 +119,10 @@ function detailToDraft(detail: AgentDetail): AgentDraft {
     tagIds,
     customTags,
     skillRefs: detail.skills.map((skill) => skill.id),
-    mcpRefs: detail.mcps.map((mcp) => mcp.id),
+    mcpRefs: useExternalHarness ? [] : detail.mcps.map((mcp) => mcp.id),
     suggestedPrompts: detail.suggestedPrompts,
+    useExternalHarness,
+    externalHarnessProvider: provider === 'codex' ? 'codex' : 'claudecode',
   };
 }
 
@@ -140,6 +151,7 @@ function getFriendlyErrorMessage(
   const code =
     error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code || '') : '';
   if (code === 'agent_detail_empty') return translate('agentManagement.states.detailError');
+  if (code === 'pod_start_timeout') return translate('experts.podStartTimeout');
   const normalizedMessage = message.trim();
   if (code === 'REQUEST_TIMEOUT') return translate('network.requestTimeout');
   if (code === 'WS_NOT_READY') return translate('network.connectionUnavailable');
@@ -211,20 +223,6 @@ function getFriendlyErrorMessage(
   return fallback;
 }
 
-function deriveAgentId(name: string): string {
-  const slug = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return slug.length >= 3 ? slug.slice(0, 50) : `agent-${Date.now().toString(36)}`;
-}
-
-function deriveAgentGroupId(name: string): string {
-  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return slug.length >= 3 ? slug.slice(0, 50) : `agent-group-${Date.now().toString(36)}`;
-}
-
 export function AgentManagementPanel({
   isActive = true,
   onUseAgent,
@@ -255,6 +253,7 @@ export function AgentManagementPanel({
   const [groupCatalogQuery, setGroupCatalogQuery] = useState('');
   const [groupMineQuery, setGroupMineQuery] = useState('');
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [catalogPodStarting, setCatalogPodStarting] = useState(false);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [detailOrigin, setDetailOrigin] = useState<'catalog' | 'mine'>('catalog');
   const [groupDetailOrigin, setGroupDetailOrigin] = useState<'teams' | 'mine'>('teams');
@@ -421,27 +420,41 @@ export function AgentManagementPanel({
     const revision = ++catalogRevisionRef.current;
     const requestScope = catalogScope();
     if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loading' });
+    setCatalogPodStarting(false);
     dispatch({ type: 'catalog.loading' });
     try {
       const compatibilityOptions = options.includeTeamCompatibility
         ? { includeTeamCompatibility: true }
         : {};
+      const onPodStarting = () => {
+        if (revision === catalogRevisionRef.current) setCatalogPodStarting(true);
+      };
       const [marketplaceCatalog, mineCatalog] = await Promise.all([
         client.listCatalog({
           filter: equipmentListFilter('agent', 'catalog'),
           ...compatibilityOptions,
           ...(options.query ? { query: options.query } : {}),
+          onPodStarting,
         }),
-        client.listCatalog({ filter: equipmentListFilter('agent', 'mine'), ...compatibilityOptions }),
+        client.listCatalog({
+          filter: equipmentListFilter('agent', 'mine'),
+          ...compatibilityOptions,
+          onPodStarting,
+        }),
       ]);
       if (requestScope !== catalogScope()) return;
       const cache = scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(options); }, () => catalogRevisionRef.current === revision);
+      const mineNames = new Map(mineCatalog.map(item => [item.id, item.searchNames]));
       const catalog = Array.from(
-        new Map([...mineCatalog, ...marketplaceCatalog].map((item) => [item.id, item])).values(),
+        new Map([...mineCatalog, ...marketplaceCatalog].map(item => [item.id, {
+          ...item,
+          searchNames: mineNames.get(item.id) ?? item.searchNames,
+        }])).values(),
       );
       if (revision !== catalogRevisionRef.current) return;
       withCatalogCache(catalog, cache);
       catalogRef.current = catalog;
+      setCatalogPodStarting(false);
       if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
       // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
       if (!options.query) seedAgentCatalog(catalog);
@@ -982,11 +995,13 @@ export function AgentManagementPanel({
   };
 
   const handleUninstallGroup = async (id: string) => {
+    const before = groupDetail?.id === id ? groupDetail : [...groupCatalogRef.current, ...groupMineRef.current].find(item => item.id === id);
+    const confirmed = window.confirm(t('agentManagement.confirm.uninstallGroupMessage', { name: before?.displayName ?? id }));
+    if (!confirmed) return;
     markBusy(id);
     setActionNotice(null);
     try {
       const fromDetail = view === 'group-detail' && groupSelectedId === id;
-      const before = groupDetail?.id === id ? groupDetail : [...groupCatalogRef.current, ...groupMineRef.current].find(item => item.id === id);
       const result = await groupClient.uninstallGroup(id);
       await Promise.all([loadGroups('catalog'), loadGroups('mine')]);
       if (fromDetail && before?.source === 'local') {
@@ -1069,6 +1084,12 @@ export function AgentManagementPanel({
       if (editingId) {
         await client.updateAgent({ ...draft, id: editingId });
       } else {
+        const existingAgents = await client.listCatalog({ filter: 'mine' });
+        const normalizedName = draft.name.trim().toLocaleLowerCase();
+        if (existingAgents.some(agent => agent.displayName.trim().toLocaleLowerCase() === normalizedName)) {
+          setCreateError(t('agentManagement.states.duplicateName'));
+          return;
+        }
         const id = draft.id || deriveAgentId(draft.name);
         await client.createAgent({ ...draft, id });
         await handleInstall(id);
@@ -1095,6 +1116,7 @@ export function AgentManagementPanel({
         setGroupCreateError(t('agentManagement.group.states.duplicateName'));
         return;
       }
+      const displayName = groupDraft.name.trim();
       const result = await groupClient.createGroup({
         ...groupDraft,
         id: groupDraft.id || deriveAgentGroupId(groupDraft.name),
@@ -1104,7 +1126,12 @@ export function AgentManagementPanel({
       setGroupMineQuery('');
       setMineKind('group');
       setView('mine');
-      showActionNotice(t('agentManagement.group.states.createSuccess', { id: result.id }));
+      // Toast must use the user-facing display name, not package id (#5470).
+      showActionNotice(
+        t('agentManagement.group.states.createSuccess', {
+          name: displayName || result.id,
+        }),
+      );
     } catch (error) {
       setGroupCreateError(formatActionError(error, t('agentManagement.group.form.saveError')));
     } finally {
@@ -1285,7 +1312,7 @@ export function AgentManagementPanel({
                 wrapperTestId="agent-management-search"
                 inputTestId="agent-management-search-input"
                 name="agent-management-search"
-                aria-label={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView ? 'agentManagement.searchMineGroup' : isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
+                aria-label={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView || isMine ? 'common.searchName' : 'agentManagement.searchCatalog')}
                 autoComplete="off"
                 disabled={connectorFlowId !== null}
                 value={view === 'teams' ? groupCatalogQuery : isGroupView ? groupMineQuery : isMine ? mineQuery : query}
@@ -1312,7 +1339,7 @@ export function AgentManagementPanel({
                     setQuery('');
                   }
                 }}
-                placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView ? 'agentManagement.searchMineGroup' : isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
+                placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView || isMine ? 'common.searchName' : 'agentManagement.searchCatalog')}
               />
               {isMine ? (
                 <div className="agent-management-create-menu" data-testid="agent-management-create-menu">
@@ -1402,6 +1429,7 @@ export function AgentManagementPanel({
                   : state.catalogStatus
               }
               error={state.catalogError}
+              loadingText={catalogPodStarting ? t('experts.podStarting') : undefined}
               busyIds={busyIds}
               onCategoryChange={setCategory}
               onRetry={() => void loadCatalog(

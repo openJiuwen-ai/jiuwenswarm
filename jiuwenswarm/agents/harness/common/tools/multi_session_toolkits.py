@@ -37,7 +37,7 @@ from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
 from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import get_mcp_tools, track_mcp_search_tools
 from jiuwenswarm.runtime.context import get_current_agent_manager
-from jiuwenswarm.runtime.host_services import send_runtime_push
+from jiuwenswarm.common.host_services import send_runtime_push
 
 logger = logging.getLogger(__name__)
 

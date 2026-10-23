@@ -4,6 +4,7 @@ import { MarkdownRenderer } from '../../MarkdownRenderer';
 import { CodePreview } from '../../ArtifactsPanel/CodePreview';
 import { inlineDownloadUrl } from '../../ArtifactsPanel/filePreviewModel';
 import FileCopyIcon from '../../../assets/agent-management/file-copy.svg?react';
+import { writeClipboard } from '../../../utils/writeClipboard';
 import {
   downloadPreviewFile,
   formatJsonContent,
@@ -82,12 +83,10 @@ export function FilePreviewContent({
 
   const handleCopy = async () => {
     if (!file?.content) return;
-    try {
-      await navigator.clipboard.writeText(getPreviewCopyText(file.path, file.content));
-      setCopyState('copied');
-    } catch {
-      setCopyState('failed');
-    }
+    // Prefer writeClipboard so Electron still has an execCommand fallback after
+    // a failed native save dialog (navigator.clipboard alone can stay denied).
+    const ok = await writeClipboard(getPreviewCopyText(file.path, file.content));
+    setCopyState(ok ? 'copied' : 'failed');
     window.setTimeout(() => setCopyState('idle'), 1600);
   };
 

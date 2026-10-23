@@ -221,9 +221,11 @@ async def run(args):
 #   this script actually uses. Do not use import *, delayed imports, aliases, or
 #   dynamic import/importlib/getattr(sys.modules[...]) lookup. The supported
 #   operators are agent, agent_session, budget, compact, flatten_filter, human,
-#   human_session, log, map_parallel, parallel, phase, pipeline, pmap, and
-#   workflow. AgentSession and HumanSession are type-only imports; import them
-#   only for annotations and never construct them directly.
+#   human_session, log, map_parallel, parallel, phase, pipeline, pmap, verify,
+#   and workflow. Reviewer is a constructible type. AgentSession, HumanSession,
+#   VerifyResult, and VerifyVote are type-only imports; never construct them.
+#   fork is a session method, not an import: use await session.fork(...).
+# - Before generating verify/fork, confirm the runtime engine exposes them.
 # - Do not define variables, functions, parameters, or classes named like
 #   SwarmFlow operators. They shadow the imported runtime primitives.
 # - Use workflow(...) only to reuse a child workflow script that already exists
@@ -282,7 +284,12 @@ async def run(args):
 #   failure. Use a schema when the human answer must be structured.
 # - Use human_session(...) or agent_session(...) only when the same participant
 #   needs multiple turns with persistent context. The factories are synchronous:
-#   assign their return value without await. Await every session.send(...) and
+#   assign their return value without await. Both factories have the signature
+#   (*, label=None, phase=None, instructions=None, options=None).
+#   Put a default schema in options or pass schema=... to send().
+# - Session calls: send(prompt, *, schema=None, notify=False, options=None)
+#   and aclose(). Set turn label/phase through send's options, for example
+#   options={"label": "turn", "phase": "stage"}. Await every session.send(...) and
 #   session.aclose() call, keep sends on one session sequential, and close the
 #   session in a finally block. send(notify=True) is one-way and returns None;
 #   never combine notify=True with schema=....
@@ -352,3 +359,43 @@ async def run(args):
 #   key fields are non-empty (not just that the cache file exists). An empty
 #   scores list or null signal indicates a failed prior run and should be
 #   treated as a cache miss, not a valid result to skip.
+# - options bags on agent/human, both session factories, send/fork, verify,
+#   and Reviewer accept only these engine/Team keys: label, phase, schema,
+#   model, timeout, isolation, agent_type, builtin_model, effort, agent_template.
+#   agent_template is the bare member name of the AgentGroup bound to the session
+#   (e.g. "clip", never "designer/clip"); omit it for a generic worker.
+#   Generate it only when the deployment guarantees a bound agent_group_name.
+#   Do not use leader, combine agent_template with agent_type, or put it on a
+#   human node. The backend rejects unknown, unbound, and external-runtime
+#   members before dispatch. Expert workers use the member persona/capability
+#   snapshot, not the generic teammate toolset. The first real session turn
+#   fixes the member; changing members requires a fork.
+# - Quality gates use await verify(non_empty_reviewers). threshold defaults to
+#   0.85; use a numeric literal when specifying threshold explicitly.
+#   Construct Reviewer(kind="verdict" or "score", prompt=fully_rendered_prompt).
+#   Keep reviewer prompts inline. VerifyResult has verdict, votes, feedback,
+#   and passed. Branch on result.verdict: "pass", "fail", or None (undecided).
+#   result.passed is False for both fail and undecided.
+# - Verify tally: a complete verdict pool has one-vote veto; a complete score
+#   pool must meet the threshold on average. A verdict fail wins before score-pool missing
+#   votes; missing votes never produce a pass. Reviewer.role is display-only.
+# - verify performs one review round. Feed result.feedback into script-managed
+#   rework with a round limit or budget guard; return a visible failure/degraded
+#   result when exhausted. Each reviewer is one agent call with its own
+#   budget/journal key; resume replays those calls. Reviewer options override
+#   verify defaults.
+# - Use await parent.fork(...) with keyword arguments only. fork_mode must be
+#   full, before, after, keep_before_compact_after, or keep_after_compact_before.
+#   Non-full modes require keep_rounds, measured in prior send() rounds.
+#   human_session cannot fork. Native out-of-range splits warn and fall back
+#   to full; external agent_type sessions reject unsupported modes/out-of-range
+#   splits and only support their provider's declared modes.
+#   The parent context is snapshotted eagerly. Later parent sends cannot change
+#   the child. Child options override inherited options; label/phase/instructions
+#   inherit unless overridden. A parent with no prior send has no context to
+#   inherit, so its child is a normal agent session. Await child send/aclose and
+#   close parent and child independently in finally blocks. Keep fork position
+#   and arguments deterministic so resume can reuse child rounds.
+# - Confirm dynamic options, deployed member availability, result handling,
+#   stop conditions, and session cleanup through runtime or manual checks;
+#   static validation alone cannot establish these properties.

@@ -295,6 +295,15 @@ def _domain_operation(facts: ToolDecisionFacts) -> str:
     operation = (raw or facts.tool_name).strip().lower().replace("-", "_")
     category = facts.tool_category
     if category == "browser":
+        if facts.tool_name == "browser_page_action" and operation in {
+            "read_text", "find", "snapshot", "tabs", "wait",
+        }:
+            # Closed runtime readers use the same review route as a native snapshot.
+            # This classification grants no permission and accepts no arbitrary script.
+            return "inspect"
+        if facts.tool_name == "browser_page_action" and operation == "scroll":
+            # The bounded runtime helper still needs the normal interaction review.
+            return "click"
         if "cancel" in operation:
             return "control_cancel"
         if "route" in operation or "unroute" in operation:
@@ -463,6 +472,8 @@ def terminal_low_risk_route(facts: ToolDecisionFacts) -> DecisionRoute | None:
         or facts.write_paths
         or not facts.accesses_known
     ):
+        return None
+    if facts.tool_name == "lsp":
         return None
     if facts.capability.category == "path":
         if facts.capability.risk_tier == "low" and not facts.capability.static_side_effects:

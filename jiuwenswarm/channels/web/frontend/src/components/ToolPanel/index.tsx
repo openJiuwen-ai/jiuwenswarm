@@ -13,15 +13,18 @@ import { useSessionArtifacts, useSessionArtifactsCount } from '../ArtifactsPanel
 import { useTaskPlanningMetrics } from '../teamArea';
 import { ExpandedPanel } from '../teamArea/ExpandedPanel';
 import { loadTeamHistoryPanelState } from '../../features/teamHistoryPanelRestore';
+import { mergeTaskTimeline } from '../teamArea/groupChatTimeline';
 import { TaskPlanningPanel } from '../teamArea/TaskPlanningPanel';
 import { TeamMembersPanel } from '../teamArea/TeamMembersPanel';
 import { CompactTaskList } from '../teamArea/CompactTaskList';
+import { RunGroupHeader } from '../teamArea/RunGroupHeader';
+import { groupByWorkflowRun } from '../teamArea/runGrouping';
 import { FileIcon } from '../FileIcon';
 import { CollapsibleSection } from './CollapsibleSection';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
-import { getMemberPlainName, type TabType, type TeamDetailTab } from '../teamArea/shared';
-import type { TeamTask, TeamTaskStatus } from '../../stores/sessionStore';
+import { getMemberAvatarIdentity, getMemberAvatarKey, getMemberPlainName, type TabType, type TeamDetailTab } from '../teamArea/shared';
+import type { TeamMemberExecutionEvent, TeamTask, TeamTaskStatus } from '../../stores/sessionStore';
 import type { ProjectInfo, TodoItem, TodoStatus } from '../../types';
 import teamIcon from '../../assets/team.svg';
 import RecentTasksIcon from '../../assets/work-mode/progress-tasks.svg?react';
@@ -43,6 +46,8 @@ import { useSubagentStore, selectSubagents } from '../../stores/subagentStore';
 import { useMinWidth } from '../../hooks/useResponsive';
 import { DesktopBrowserPane } from '../DesktopBrowserPane';
 import './ToolPanel.css';
+import { SessionAssetList } from '../../features/sessionAssets/SessionAssetList';
+import { selectSessionAssets, useSessionAssetsStore } from '../../features/sessionAssets/sessionAssets';
 import { applicationTasksToTeamTasks, EMPTY_APPLICATION_TASKS, useApplicationTaskStore } from '../../applicationPlugins/taskProgressStore';
 
 /** 规划/性能模式下把 TodoItem 降级映射为 TeamTask，复用 TaskPlanningPanel 紧凑态样式 */
@@ -159,6 +164,7 @@ export function ToolPanel({
   const teamHistoryMessages = useSessionStore(s => s.runtimes[conversationId]?.teamHistoryMessages ?? []);
   const setTeamMembers = useSessionStore(s => s.setTeamMembers);
   const setTeamTaskEvents = useSessionStore(s => s.setTeamTaskEvents);
+  const setTeamTaskTimeline = useSessionStore(s => s.setTeamTaskTimeline);
   const setTeamTasks = useSessionStore(s => s.setTeamTasks);
   const mergeTeamTaskProgressBaseline = useSessionStore(s => s.mergeTeamTaskProgressBaseline);
   const setTeamMemberExecutionEvents = useSessionStore(s => s.setTeamMemberExecutionEvents);
@@ -171,6 +177,7 @@ export function ToolPanel({
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
   const { completedTasks: teamCompletedTasks, progressTasks, teamTasks, totalTasks: teamTotalTasks, now } = useTaskPlanningMetrics();
   const artifactsCount = useSessionArtifactsCount();
+  const sessionAssetCount = useSessionAssetsStore(selectSessionAssets(activeSessionId)).length;
   const subagentCount = useSubagentStore(state => Object.keys(state.runtimes[resolvedSessionId]?.subagentsById ?? {}).length);
   const subagentRuntime = useSubagentStore(state => state.runtimes[resolvedSessionId]);
   const subagentList = selectSubagents(subagentRuntime);
@@ -265,9 +272,29 @@ export function ToolPanel({
           title: `@${member.member_id} ${getMemberPlainName(member)}`,
           status: 'completed' as const,
           assignee: member.member_id,
+          workflow_run_id: member.workflow_run_id,
         })),
     [teamMembers, teamLeaderMemberIds],
   );
+  // 镜像的 swarmflow worker 按 run 分组展示；真实队友（无 workflow_run_id）平铺。
+  const teamWorkflowRuns = useSessionStore((s) => s.runtimes[conversationId ?? '']?.workflowRuns ?? []);
+  const memberRunGroups = useMemo(
+    () => groupByWorkflowRun(memberTasks, teamWorkflowRuns),
+    [memberTasks, teamWorkflowRuns],
+  );
+  // 成员行头像：镜像 worker 按 agent.name 哈希（与树视图同源），真实队友按 member_id。
+  const memberRowAvatar = (task: TeamTask) => {
+    const member = teamMembers.find((item) => item.member_id === task.assignee);
+    return (
+      <TeamMemberAvatar
+        member={member ? getMemberAvatarKey(member) : task.assignee ?? ''}
+        identity={member ? getMemberAvatarIdentity(member) : undefined}
+        alt={task.title ?? ''}
+        className="h-4 w-4 rounded-full shrink-0"
+        imageClassName="rounded-full"
+      />
+    );
+  };
   // 规划/性能模式下复用 TaskPlanningPanel 紧凑态：把 TodoItem 降级为 TeamTask
   const todos = useTodoStore(s => s.runtimes[activeSessionId ?? '']?.todos ?? []);
   const codeProject = project?.work_mode === 'code' && !project.is_default ? project : null;
@@ -380,6 +407,8 @@ export function ToolPanel({
         const mergedTaskEvents = mergeById(historyState.taskEvents, current?.teamTaskEvents ?? [], event => event.task_id);
         // Always apply — an empty restored list must clear stale events too.
         setTeamTaskEvents(sessionId, mergedTaskEvents);
+        // 时间线：历史为底，叠加恢复期间已到的实时事件（去重见 mergeTaskTimeline）。
+        setTeamTaskTimeline(sessionId, mergeTaskTimeline(historyState.taskTimeline, current?.teamTaskTimeline ?? []));
 
         // History/snapshot is the authoritative board after restore. Never import
         // live-only task_ids (LLM `id` orphans left in the waiting column from
@@ -392,7 +421,12 @@ export function ToolPanel({
         setTeamTasks(sessionId, mergedTasks);
         mergeTeamTaskProgressBaseline(sessionId, historyState.taskProgressBaseline);
 
-        const mergedExecutionEvents = mergeById(historyState.executionEvents, current?.teamMemberExecutionEvents ?? [], event => event.id);
+        // 同一次调用在两条路径下的 id 不同（实时 stableEventId vs 历史恢复
+        // hist-*），按 id 合并会留下两张卡片；调用/结果改按 (member, kind,
+        // tool_call_id) 逻辑键合并，final/file 等无调用 id 的保持按 id。
+        const executionEventKey = (event: TeamMemberExecutionEvent) =>
+          event.tool_call_id ? `${event.member_id}:${event.kind}:${event.tool_call_id}` : event.id;
+        const mergedExecutionEvents = mergeById(historyState.executionEvents, current?.teamMemberExecutionEvents ?? [], executionEventKey);
         if (mergedExecutionEvents.length > 0) {
           setTeamMemberExecutionEvents(sessionId, mergedExecutionEvents);
         }
@@ -430,6 +464,7 @@ export function ToolPanel({
     setTeamMemberExecutionEvents,
     setTeamMembers,
     setTeamTaskEvents,
+    setTeamTaskTimeline,
     setTeamTasks,
   ]);
 
@@ -611,19 +646,52 @@ export function ToolPanel({
           defaultCollapsed
           autoExpandOnContent
         >
-          <CompactTaskList
-            tasks={memberTasks}
-            members={teamMembers}
-            hideAssignee
-            maxCollapsedCount={4}
-            expanded={teamMembersExpanded}
-            emptyText={t('team.noMemberData')}
-            emptyIllustration={emptyMembersIcon}
-            renderStatusIcon={task => (
-              <TeamMemberAvatar member={task.assignee ?? ''} alt={task.title ?? ''} className="h-4 w-4 rounded-full shrink-0" imageClassName="rounded-full" />
-            )}
-            onTaskClick={memberId => expandTo('team', memberId)}
-          />
+          {memberTasks.length === 0 ? (
+            <CompactTaskList
+              tasks={[]}
+              members={teamMembers}
+              hideAssignee
+              maxCollapsedCount={4}
+              expanded={teamMembersExpanded}
+              emptyText={t('team.noMemberData')}
+              emptyIllustration={emptyMembersIcon}
+            />
+          ) : (
+            <>
+              {memberRunGroups.ungrouped.length > 0 && (
+                <CompactTaskList
+                  tasks={memberRunGroups.ungrouped}
+                  members={teamMembers}
+                  hideAssignee
+                  maxCollapsedCount={4}
+                  expanded={teamMembersExpanded}
+                  emptyText={t('team.noMemberData')}
+                  emptyIllustration={emptyMembersIcon}
+                  renderStatusIcon={memberRowAvatar}
+                  onTaskClick={memberId => expandTo('team', memberId)}
+                />
+              )}
+              {memberRunGroups.groups.map(group => {
+                const visible = teamMembersExpanded ? group.items : group.items.slice(0, 4);
+                const remaining = teamMembersExpanded ? 0 : group.items.length - visible.length;
+                return (
+                  <div key={group.runId} className="border-b border-border last:border-b-0">
+                    <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} />
+                    <CompactTaskList
+                      tasks={visible}
+                      members={teamMembers}
+                      hideAssignee
+                      maxCollapsedCount={4}
+                      expanded={teamMembersExpanded}
+                      renderStatusIcon={memberRowAvatar}
+                      onTaskClick={memberId => expandTo('team', memberId)}
+                    />
+                    {remaining > 0 && <div className="px-2 py-1 text-xs text-text-muted">{t('team.moreTasks', { count: remaining })}</div>}
+                  </div>
+                );
+              })}
+            </>
+          )}
         </CollapsibleSection>
       ),
     },
@@ -701,6 +769,23 @@ export function ToolPanel({
           </CollapsibleSection>
         ),
       },
+    {
+      key: 'assets',
+      testId: 'tool-panel-assets-pane',
+      render: () => (
+        <CollapsibleSection
+          title={t('sessionAssets.title')}
+          icon={<img src={artifactsIcon} width={16} height={16} aria-hidden="true" />}
+          childCount={sessionAssetCount}
+          dataTestId="tool-panel-assets"
+          defaultCollapsed
+          autoExpandOnContent
+          showExpandButton={false}
+        >
+          <SessionAssetList hideTitle />
+        </CollapsibleSection>
+      ),
+    },
     {
       key: 'artifacts',
       testId: 'tool-panel-artifacts-pane',

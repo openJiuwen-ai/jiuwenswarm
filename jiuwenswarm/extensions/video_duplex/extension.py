@@ -112,6 +112,26 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
             local_only=True,
             available_when_disabled=True,
         )
+
+        async def test_connection(ws, req_id, params, session_id):  # noqa: ANN001
+            del params, session_id
+            from jiuwenswarm.extensions.video_duplex.backend.connection_check import check_saved_connection
+
+            try:
+                await check_saved_connection()
+            except Exception:  # noqa: BLE001 - do not expose provider URLs or credentials
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error="Model connection failed. Check the saved endpoint, API key and model.",
+                    code="CONNECTION_FAILED",
+                )
+                return
+            await channel.send_response(ws, req_id, ok=True, payload={"connected": True})
+
+        channel.register_method(
+            "video.duplex.settings.test", test_connection,
+            local_only=True, available_when_disabled=True,
+        )
         channel.register_method(
             "video.duplex.settings.update",
             update_settings,

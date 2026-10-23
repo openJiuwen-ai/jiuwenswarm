@@ -19,6 +19,9 @@ Step 4 records the background PID in a small JSON state file so that
 ``jiuwenswarm-stop`` can terminate exactly that service later. The service is
 spawned into its own process group / session, and stopping signals the whole
 group - see ``_stop_process_tree`` for why the leader PID alone is not enough.
+The resident Runtime Worker deliberately leaves that group so it survives Front
+restarts; ``jiuwenswarm-stop`` shuts it down over IPC afterwards, otherwise the
+next start would reattach to a Worker still running the old code.
 
 The background child is ``python -m jiuwenswarm.start_services all`` rather
 than a nested ``uv run``: it keeps the service a single direct child, so no
@@ -32,6 +35,7 @@ syncs the project dependencies, neither of which exists in a package install.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -49,6 +53,10 @@ import yaml
 
 from jiuwenswarm.common.utils import get_config_file
 from jiuwenswarm.instance_manager import is_process_alive, stop_process_by_pid
+from jiuwenswarm.server.supervisor.worker_process import (
+    default_socket_path,
+    request_resident_worker_shutdown,
+)
 
 # Package source root: <repo>/jiuwenswarm in source mode.
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -822,6 +830,41 @@ def _stop_process_tree(
     return not _process_group_alive(pgid)
 
 
+def _stop_resident_worker(timeout: float = DEFAULT_STOP_TIMEOUT) -> bool:
+    """Shut down the resident Runtime Worker left behind by the service.
+
+    The Worker is spawned in its own session so it outlives Front restarts,
+    which also puts it outside the process group ``_stop_process_tree``
+    signals. Call this only after the service tree is gone: a live Front
+    would respawn the Worker as soon as it disconnects.
+
+    Args:
+        timeout: Seconds to wait for a graceful exit before force-killing.
+
+    Returns:
+        True when no Worker is left running.
+    """
+    socket_path = default_socket_path()
+    try:
+        pid = asyncio.run(request_resident_worker_shutdown(socket_path))
+    except (OSError, RuntimeError, asyncio.TimeoutError) as exc:
+        logging.info(f"[debug] WARNING: cannot reach runtime worker at {socket_path}: {exc}")
+        return False
+    if pid is None:
+        return True
+
+    logging.info(f"[debug] Stopping resident runtime worker (PID={pid})...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not is_process_alive(pid):
+            return True
+        time.sleep(0.3)
+
+    logging.info(f"[debug] Runtime worker (PID={pid}) did not exit within {timeout}s; killing it.")
+    stop_process_by_pid(pid, timeout=5.0)
+    return not is_process_alive(pid)
+
+
 def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
     """Stop the background service recorded by ``jiuwenswarm-start debug``.
 
@@ -846,6 +889,9 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
             "clearing state."
         )
         clear_debug_state()
+        if not _stop_resident_worker(timeout=timeout):
+            logging.info("[debug] ERROR: failed to stop the resident runtime worker.")
+            return 1
         return 0
 
     logging.info(f"[debug] Stopping debug service (PID={state.pid})...")
@@ -856,6 +902,9 @@ def stop_debug_service(timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
         return 1
 
     clear_debug_state()
+    if not _stop_resident_worker(timeout=timeout):
+        logging.info("[debug] ERROR: failed to stop the resident runtime worker.")
+        return 1
     logging.info("[debug] Debug service stopped.")
     if state.log_file:
         logging.info(f"[debug] Log kept at: {state.log_file}")

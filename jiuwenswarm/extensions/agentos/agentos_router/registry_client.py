@@ -23,6 +23,10 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, ImageInfo
+from jiuwenswarm.extensions.agentos.registry_watcher.decode import (
+    parse_access_mode,
+    port_from_access_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +71,9 @@ class LaunchSpec:
         env_vars = payload.get("env_vars")
         return cls(
             framework=str(payload.get("framework") or "").strip(),
-            framework_version=str(payload.get("framework_version") or "").strip(),
+            framework_version=str(
+                payload.get("framework_version") or payload.get("version") or ""
+            ).strip(),
             runtime_spec=dict(runtime_spec)
             if isinstance(runtime_spec, dict)
             else {},
@@ -130,13 +136,6 @@ def _image_list_name(payload: dict[str, Any]) -> str:
     return str(payload.get("name") or payload.get("framework") or "").strip()
 
 
-def parse_access_mode(raw: Any) -> list[dict[str, Any]]:
-    """Normalize registry ``access_mode`` into a list of dict rows."""
-    if not isinstance(raw, list):
-        return []
-    return [dict(row) for row in raw if isinstance(row, dict)]
-
-
 def cmd_for_access_mode(access_mode: Any, name: str) -> str:
     """Return ``cmd`` for the ``access_mode`` row whose ``name`` matches *name*."""
     want = str(name or "").strip().lower()
@@ -149,6 +148,15 @@ def cmd_for_access_mode(access_mode: Any, name: str) -> str:
         if str(row.get("name") or "").strip().lower() == want:
             return str(row.get("cmd") or "").strip()
     return ""
+
+
+def http_web_port_from_access_mode(access_mode: Any) -> int | None:
+    """Southbound container web port: ``access_mode`` row ``name=web`` (HTTP).
+
+    Shares the row parser with ``registry_watcher`` so the northbound
+    ``web_svc_port`` and this southbound ``web`` port cannot drift apart.
+    """
+    return port_from_access_mode(access_mode, "web")
 
 
 @dataclass(frozen=True)
@@ -636,6 +644,7 @@ class RegistryClient:
                 "launch_spec": dict(spec.raw),
                 "runtime_spec": runtime_spec,
                 "env_vars": dict(spec.env_vars),
+                "access_mode": parse_access_mode(spec.raw.get("access_mode")),
                 "source": "registry",
             },
         )

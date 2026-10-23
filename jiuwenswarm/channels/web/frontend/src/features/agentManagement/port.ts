@@ -15,7 +15,8 @@ import type {
   McpOption,
   SkillOption,
 } from './types';
-import { resolveAgentTagPayload } from './tagOptions';
+import { resolveAgentGroupTagPayload } from './tagOptions';
+import { generateUuidV4 } from '../../utils/uuid';
 
 export type AgentInstallResult =
   | { kind: 'ok' }
@@ -57,6 +58,8 @@ export interface AgentCatalogListOptions {
   filter?: 'builtin+hub' | 'mine';
   includeTeamCompatibility?: boolean;
   query?: string;
+  /** 企业版列表遇到 Pod 冷启动时回调。个人版不会触发。 */
+  onPodStarting?: () => void;
 }
 
 export interface SkillListOptions {
@@ -99,6 +102,21 @@ export interface AgentGroupManagementClient {
   uninstallGroup(id: string): Promise<{ notice?: string }>;
 }
 
+function derivePackageId(name: string, fallbackPrefix: 'agent' | 'agent-group'): string {
+  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  // Preserve the 50-character ID budget, including the UUID suffix.
+  const prefix = slug.length >= 3 ? slug.slice(0, 13) : fallbackPrefix;
+  return `${prefix}-${generateUuidV4()}`;
+}
+
+export function deriveAgentId(name: string): string {
+  return derivePackageId(name, 'agent');
+}
+
+export function deriveAgentGroupId(name: string): string {
+  return derivePackageId(name, 'agent-group');
+}
+
 export function buildAgentGroupCreatePayload(draft: AgentGroupDraft): Record<string, unknown> {
   const id = draft.id.trim();
   const memberIds = Array.from(new Set(draft.memberIds.map(memberId => memberId.trim()).filter(Boolean)))
@@ -114,7 +132,7 @@ export function buildAgentGroupCreatePayload(draft: AgentGroupDraft): Record<str
     quickInputs: draft.suggestedPrompts.map(prompt => prompt.trim()).filter(Boolean),
   };
   if (draft.category.trim()) payload.category = draft.category.trim();
-  const tags = resolveAgentTagPayload(draft.tagIds, draft.customTags);
+  const tags = resolveAgentGroupTagPayload(draft.tagIds, draft.customTags);
   if (tags.length > 0) payload.tags = tags;
   return payload;
 }
@@ -185,6 +203,12 @@ export function buildAgentGroupSelectionPayloadForMode(
     || !intent.id.trim()
   ) return {};
   return { agent_group_name: intent.id.trim() };
+}
+
+export function isExternalHarnessCatalogItem(
+  item: Pick<AgentCatalogItem, 'runtime'>,
+): boolean {
+  return Boolean(item.runtime?.provider_name?.trim());
 }
 
 export function buildDefinitionSelectionPayload(intent: AgentSelectionIntent): Record<string, string> {

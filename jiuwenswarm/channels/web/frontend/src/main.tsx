@@ -49,6 +49,7 @@ function resolveOpenSourceSettingsRequest(request: SettingsRequest): SettingsReq
 }
 
 const runnerQuery = new URLSearchParams(window.location.search)
+const browserRunner = window.location.pathname === '/share-export-runner' && runnerQuery.get('client') === '1'
 const runnerSessionId = window.location.pathname === '/share-export-runner'
   ? runnerQuery.get('session_id')?.trim() || null
   : null
@@ -58,11 +59,12 @@ const runnerJobId = window.location.pathname === '/share-export-runner'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <A2UIProvider onAction={handleA2UIAction}>
-    {runnerJobId || runnerSessionId ? (
+    {browserRunner || runnerJobId || runnerSessionId ? (
       <ShareImageExportRunner
         jobId={runnerJobId}
         sessionId={runnerSessionId}
         locale={runnerQuery.get('locale')}
+        client={browserRunner}
       />
     ) : (
       <EnterpriseEntry>

@@ -52,44 +52,11 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
 from jiuwenswarm.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
-    ASR_ENV_KEYS as _ASR_ENV_KEYS,
-    CONFIG_KEYS,
-    CONFIG_SET_ENV_MAP as _CONFIG_SET_ENV_MAP,
-    CONFIG_YAML_KEYS as _CONFIG_YAML_KEYS,
-    ConfigApplyResult as _ConfigApplyResult,
-    ConfigChangeSet as _ConfigChangeSet,
-    EXTERNAL_CLI_AGENT_CONFIG_KEYS as _EXTERNAL_CLI_AGENT_CONFIG_KEYS,
-    EXTERNAL_CLI_AGENT_KINDS as _EXTERNAL_CLI_AGENT_KINDS,
-    MODEL_RELOAD_ENV_KEYS as _MODEL_RELOAD_ENV_KEYS,
-    MULTIMODAL_RELOAD_ENV_KEYS as _MULTIMODAL_RELOAD_ENV_KEYS,
-    PERMISSIONS_PROFILES as _PERMISSIONS_PROFILES,
-    SEARCH_RELOAD_ENV_KEYS as _SEARCH_RELOAD_ENV_KEYS,
-    SKILL_RETRIEVAL_CONFIG_KEYS as _SKILL_RETRIEVAL_CONFIG_KEYS,
-    SKILL_RETRIEVAL_CONFIG_SPECS as _SKILL_RETRIEVAL_CONFIG_SPECS,
-    SYMPHONY_CONFIG_KEYS as _SYMPHONY_CONFIG_KEYS,
-    SYMPHONY_CONFIG_SPECS as _SYMPHONY_CONFIG_SPECS,
     build_external_cli_publish_url as _build_external_cli_publish_url,
-    canonical_permission_facade as _canonical_permission_facade,
     detect_external_cli_agent as _detect_external_cli_agent,
-    external_cli_agent_effective_state as _external_cli_agent_effective_state,
-    external_cli_agents_from_switches as _external_cli_agents_from_switches,
-    flatten_external_cli_agents_for_config_panel as _flatten_external_cli_agents_for_config_panel,
-    flatten_modes_team_for_config_panel as _flatten_modes_team_for_config_panel,
-    flatten_skill_retrieval_for_config_panel as _flatten_skill_retrieval_for_config_panel,
-    flatten_swarmflow_for_config_panel as _flatten_swarmflow_for_config_panel,
-    flatten_symphony_for_config_panel as _flatten_symphony_for_config_panel,
-    inject_external_cli_publish_url as _inject_external_cli_publish_url,
-    parse_config_switch_bool as _parse_config_switch_bool,
-    permission_profile as _permission_profile,
-    team_item_requests_codex as _team_item_requests_codex,
-    team_payload_requests_codex as _team_payload_requests_codex,
+    external_cli_managed_cli_path as _external_cli_managed_cli_path,
 )
 from jiuwenswarm.common.model_catalog import ModelCatalog
-from jiuwenswarm.common.config_panel.models_handlers import (  # noqa: F401  — 兼容别名
-    reasoning_level_display as _reasoning_level_display,
-    normalize_provider_value as _normalize_provider_value,
-    resolve_model_config_obj_for_validate as _resolve_model_config_obj_for_validate,
-)
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
     get_env_file,
@@ -439,6 +406,12 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.marketplace.remove",
     "skills.marketplace.toggle",
     "skills.uninstall",
+    "agent_templates.list",
+    "agent_templates.show",
+    "agent_templates.file.list",
+    "agent_templates.file.read",
+    "agent_templates.install",
+    "agent_templates.uninstall",
     "skills.online_search.search",
     "skills.online_search.install",
     "skills.skillnet.search",
@@ -630,6 +603,12 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.marketplace.remove",
     "skills.marketplace.toggle",
     "skills.uninstall",
+    "agent_templates.list",
+    "agent_templates.show",
+    "agent_templates.file.list",
+    "agent_templates.file.read",
+    "agent_templates.install",
+    "agent_templates.uninstall",
     "skills.online_search.search",
     "skills.online_search.install",
     "skills.skillnet.search",
@@ -1953,7 +1932,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _schedule_agent_prewarm_sync(name: str) -> None:
         """Reconcile project-derived warm keys without delaying the Web RPC."""
-        from jiuwenswarm.gateway.embedded.runtime.agent_prewarm import prewarm_enabled_by_env
+        from jiuwenswarm.gateway.runtime.agent_prewarm import prewarm_enabled_by_env
 
         if not prewarm_enabled_by_env():
             return
@@ -2069,7 +2048,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         cli_agent = str(params.get("cli_agent") or "").strip().lower()
         cli_path = str(params.get("cli_path") or "").strip()
-        result = _detect_external_cli_agent(cli_agent, cli_path)
+        raw_use_builtin = params.get("use_builtin")
+        use_builtin = raw_use_builtin is True or str(raw_use_builtin).strip().lower() == "true"
+        _activate_managed_external_cli_paths_if_needed()
+        result = _detect_external_cli_agent(cli_agent, cli_path, use_builtin)
         await channel.send_response(ws, req_id, ok=True, payload=result)
 
     async def _external_cli_codex_install_status(ws, req_id, params, session_id):
@@ -4691,13 +4673,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
-        jobs = await cc.list_jobs()
         # 按 web 连接 user_id 过滤:只返回该用户创建的定时任务(隔离)。
-        # user_id 为空(连接未带)时维持原行为(返回全部);agent 内部创建的 cron
-        # (user_id 空串)在带 user_id 的连接下被过滤掉(对人类用户不可见)。
+        # 过滤在 controller 内进行,先于按属主路由的准入闸门,避免为其他
+        # 用户的沙箱冷启动/超时买单。user_id 为空(连接未带)时维持原行为
+        # (返回全部);agent 内部创建的 cron(user_id 空串)在带 user_id 的
+        # 连接下被过滤掉(对人类用户不可见)。
         uid_str = str(user_id or "").strip()
-        if uid_str:
-            jobs = [j for j in jobs if str(j.get("user_id") or "").strip() == uid_str]
+        jobs = await cc.list_jobs(user_id=uid_str or None)
         # 可选按 project_id 过滤(支持 default/default_code 虚拟项目)
         if isinstance(params, dict):
             raw_pid = params.get("project_id")
@@ -5087,30 +5069,115 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="config",
         )
 
-    def _register_config_proxy(method_name, req_method, local_handler):
+    def _external_cli_install_gate(params: dict[str, Any]) -> dict[str, Any] | None:
+        """外部 CLI 依赖安装门控（原 config.set 本地执行的 ensure 回调语义）。
+
+        这是前端"一键安装"的唯一触发通道（``external_cli.install`` 无前端调用
+        方），安装器与状态轮询（``external_cli.install_status``）都是 gateway
+        本地能力，须随 A4g 保留。命中 codex/claude 相关键且依赖未就绪时启动
+        安装并返回状态 payload——调用方据此短路本次 config.set（安装完成前
+        不写配置，与原本地语义一致，前端装完后重发）。已就绪/未命中返回
+        None，请求正常经 E2A 转发。触发条件为简化版 key 前缀判定：相比本地
+        执行少了"当前配置中该 agent 已启用"的前置检查，误触发的代价仅是
+        ensure 幂等空转（已装即返回 None）。
+        """
+        from jiuwenswarm.common.config_panel.config_set_handlers import (
+            team_payload_requests_codex,
+        )
+
+        # 键形状与 config_save_all_handler 的展平规则一致：config.set 键在顶层；
+        # config.save_all 键嵌套在 params.config（前端外部 CLI 卡片的唯一保存
+        # 链路即 save_all 嵌套形状），agents/team 两处皆可出现且**顶层优先**
+        # （save_all 的合并顺序：嵌套 config 先建，顶层 agents/team 后写覆盖——
+        # 门控若反向合并，碰撞形状下会漏判被顶层覆盖落盘的 team 载荷）。
+        raw_config = params.get("config")
+        keys_view: dict[str, Any] = (
+            dict(raw_config) if isinstance(raw_config, dict) else {}
+        )
+        for key, value in params.items():
+            if key != "config":
+                keys_view[key] = value
+
+        codex_touched = any(
+            key.startswith("external_cli_agent_codex_") for key in keys_view
+        ) or (
+            ("agents" in keys_view or "team" in keys_view)
+            and team_payload_requests_codex(keys_view)
+        )
+        claude_touched = any(
+            key.startswith("external_cli_agent_claude_") for key in keys_view
+        )
+        installs: dict[str, Any] = {}
+        if codex_touched:
+            install = _ensure_codex_dependency_available_or_start_install()
+            if install is not None:
+                installs["codex"] = install
+        if claude_touched:
+            install = _ensure_claude_dependency_available_or_start_install()
+            if install is not None:
+                installs["claude"] = install
+        if not installs:
+            return None
+        return {
+            "updated": [],
+            "applied_without_restart": False,
+            "external_cli_dependency_installs": installs,
+        }
+
+    def _register_config_proxy(method_name, req_method, local_handler=None):
+        # A4g：配置读写默认经目标 AgentServer 执行（ConfigAdapter 在注入目录
+        # 本地执行，自带 in-process reload / zen warmup / config_changed 标记
+        # 等后置行为）。企业版 RuntimeRoutedAgentClient / 无 client 时仍走
+        # local_handler（runtime HTTP 无 config.get REST）。legacy 共享目录的
+        # 外部 CLI 依赖安装门控保留在 gateway。
+
         async def _handler(ws, req_id, params, session_id, user_id=None):
-            # 单用户共享目录：本地执行（保留 on_config_saved 热更新与原有写回语义）。
-            # AgentOS 多用户：经 E2A 在目标 AgentServer 注入目录执行（与 command.model 同模式）。
             from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
             resolved_client = _resolve(agent_client)
-            # WebSocket 单机客户端、以及 runtime HTTP 客户端都在 Gateway 本地读配置。
-            # runtime 南向没有 config.get 的 REST，转发给 AgentServer 会得到
-            # HTTP_METHOD_NOT_HANDLED。只有 AgentOS 多用户才注入目录后转发。
-            local_config = (
+            # Enterprise RuntimeRoutedAgentClient / no client: Gateway-local config
+            # (runtime HTTP has no config.get REST). AgentOS multi-user still proxies.
+            if local_handler is not None and (
                 resolved_client is None
-                or is_legacy_shared_directory_client(resolved_client)
                 or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
-            )
-            if local_config:
+            ):
                 await local_handler(ws, req_id, params, session_id)
                 return
+            # 登录会话 id 随请求转发（硬规则：客户端传来的键先删，只信连接属性）：
+            # models.list 经目标 AgentServer 执行时无法看到 Gateway 连接，登录送的
+            # 免费模型合并需要会话 id（AgentOS 既有缺口，A4g 统一后对 legacy 同样关键）。
+            if isinstance(params, dict):
+                from jiuwenswarm.common.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+
+                forwarded = dict(params)
+                forwarded.pop(E2A_AUTH_SESSION_PARAM_KEY, None)
+                auth_session = str(getattr(ws, "_jiuwen_auth_session", "") or "").strip()
+                if auth_session:
+                    forwarded[E2A_AUTH_SESSION_PARAM_KEY] = auth_session
+                params = forwarded
+            if req_method in (
+                _ConfigReq.CONFIG_SET,
+                _ConfigReq.CONFIG_SAVE_ALL,
+            ) and isinstance(params, dict):
+                if resolved_client is not None and is_legacy_shared_directory_client(resolved_client):
+                    install_payload = _external_cli_install_gate(params)
+                    if install_payload is not None:
+                        await channel.send_response(ws, req_id, ok=True, payload=install_payload)
+                        return
             await _proxy_config_request(
                 ws, req_id, params, session_id, user_id, req_method=req_method
             )
         channel.register_method(method_name, _handler)
 
     from jiuwenswarm.common.schema.message import ReqMethod as _ConfigReq
+
+    async def _config_moa_status(ws, req_id, params, session_id, user_id=None):
+        await _proxy_config_request(
+            ws, req_id, params, session_id, user_id,
+            req_method=_ConfigReq.CONFIG_MOA_STATUS,
+        )
+
+    channel.register_method("config.moa_status", _config_moa_status)
     _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
     _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)
@@ -5240,6 +5307,31 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # 转发到 AgentServer 与本地 handler 冲突）。静态元数据本地返回最快、依赖最少。
     channel.register_method("commands.list", _commands_list)
 
+    async def _file_upload_chunk(ws, req_id, params, session_id, user_id=None):
+        """浏览器分块上传（E2A 转发 AgentServer 的 ``file.upload_chunk``）。
+
+        生产入口（app_web 静态服务）没有 Vite 的 /file-api 上传中间件，画布素材
+        改为复用这条已认证的 WS 通道逐块上传（前端 512 KiB/块），由 AgentServer
+        落到注入目录；避免前端直连要求 token 的 /file-api/upload 得到
+        ``missing_token``（issue #5325）。
+        """
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.FILE_UPLOAD_CHUNK,
+            label="file.upload_chunk",
+            timeout_seconds=120.0,
+        )
+
+    channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
     from jiuwenswarm.common.schema.message import ReqMethod as _FileReq
 
@@ -5634,63 +5726,30 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("heartbeat.job.run_now", _hb_job_run_now)
     channel.register_method("heartbeat.job.cancel", _hb_job_cancel)
 
-    # 数字分身 — permissions.owner_scopes：仅 Web 网关直连 config（不经 E2A / config_rpc）。
+    # 数字分身 — permissions.owner_scopes：A5 起统一经目标 AgentServer 的
+    # ConfigAdapter 执行（写入后 server 侧 in-process reload）。
     # 其余 permissions.*（tools / rules / approval_overrides）走 _forward_permissions_to_agent。
 
     async def _permissions_owner_scopes_get(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client, proxy_unary_request
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
         from jiuwenswarm.common.schema.message import ReqMethod
 
-        resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
-            await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                                      params={}, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.PERMISSIONS_OWNER_SCOPES_GET,
-                                      label="permissions.owner_scopes.get")
-            return
-        from jiuwenswarm.common.config import get_permissions_owner_scopes
-
-        try:
-            payload = get_permissions_owner_scopes()
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-        except Exception as e:
-            logger.exception("[permissions.owner_scopes.get] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
+                                  params={}, session_id=session_id, user_id=user_id,
+                                  req_method=ReqMethod.PERMISSIONS_OWNER_SCOPES_GET,
+                                  label="permissions.owner_scopes.get")
 
     async def _permissions_owner_scopes_set(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.common.config import update_permissions_owner_scopes_in_config
-
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
-        from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client, proxy_unary_request
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
         from jiuwenswarm.common.schema.message import ReqMethod
 
-        resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
-            await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                                      params=params, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.PERMISSIONS_OWNER_SCOPES_SET,
-                                      label="permissions.owner_scopes.set")
-            return
-        try:
-            owner_scopes = params.get("owner_scopes", {})
-            deny_guidance = params.get("deny_guidance_message")
-            update_permissions_owner_scopes_in_config(owner_scopes, deny_guidance)
-            applied_without_restart = await config_set_handlers.apply_config_change_set(
-                config_set_handlers.ConfigChangeSet({}, ["permissions"], force=True),
-                on_config_saved=on_config_saved,
-                agent_client=_resolve(agent_client),
-            )
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=True,
-                payload={"ok": True, "applied_without_restart": applied_without_restart},
-            )
-        except Exception as e:
-            logger.exception("[permissions.owner_scopes.set] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
+                                  params=params, session_id=session_id, user_id=user_id,
+                                  req_method=ReqMethod.PERMISSIONS_OWNER_SCOPES_SET,
+                                  label="permissions.owner_scopes.set")
 
     channel.register_method("permissions.owner_scopes.get", _permissions_owner_scopes_get)
     channel.register_method("permissions.owner_scopes.set", _permissions_owner_scopes_set)
@@ -6011,3 +6070,5 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         channel.container_file_client = real_agent_client
     else:
         channel.container_file_client = None
+    # The diagnosis HTTP proxy reaches the AgentServer service through this client.
+    channel.diagnosis_agent_client = real_agent_client

@@ -112,7 +112,11 @@ export function ModelDialog({
     onClose,
   });
   const values = form.getValues();
-  const errors = validateModelDraft(values, models, model?.origin_index, catalog, t);
+  const hasUnchangedApiKey = model?.has_api_key === true && !connectionChanged.current;
+  const editingSelf = model
+    ? { model_id: model.model_id, origin_index: model.origin_index }
+    : undefined;
+  const errors = validateModelDraft(values, models, editingSelf, catalog, t, hasUnchangedApiKey);
   const account = values.vendor_selection === OPENAI_ACCOUNT_SELECTION;
   const preset = findVendorPreset(catalog, values.vendor_selection);
   const custom = values.vendor_selection === CUSTOM_VENDOR_SELECTION;
@@ -241,6 +245,10 @@ export function ModelDialog({
     }
     const currentRequestId = ++validationRequestId.current;
     const snapshot = buildEntry();
+    if (hasUnchangedApiKey && !snapshot.api_key.trim()) {
+      await persist(snapshot);
+      return;
+    }
     setTesting(true);
     setSaveError('');
     setValidationFailure(null);
@@ -300,11 +308,7 @@ export function ModelDialog({
       } else if (result.source === 'preset' && result.reason) {
         updateModelOptions([]);
         const reasonKey = FETCH_REASON_KEYS[result.reason];
-        setFetchStatus(
-          reasonKey
-            ? t(`settingsPanel.models.fetchReasons.${reasonKey}`)
-            : result.reason,
-        );
+        setFetchStatus(reasonKey ? t(`settingsPanel.models.fetchReasons.${reasonKey}`) : result.reason);
       } else {
         throw new Error(t('settingsPanel.models.fetchModelsUnrecognizedResult'));
       }
@@ -378,7 +382,7 @@ export function ModelDialog({
       name: 'protocol',
       label: t('settingsPanel.models.protocol'),
       component: 'select',
-      required: true,
+      required: !hasUnchangedApiKey,
       options: protocolOptions,
       onChange: (value) => updateProtocol(value as ModelProtocol),
     });
@@ -542,7 +546,12 @@ export function ModelDialog({
         onCancel={requestClose}
       >
         {catalogLoading ? (
-          <div className="settings-model-dialog__catalog-status" role="status" aria-live="polite" data-testid="settings-model-dialog-catalog-loading">
+          <div
+            className="settings-model-dialog__catalog-status"
+            role="status"
+            aria-live="polite"
+            data-testid="settings-model-dialog-catalog-loading"
+          >
             {t('settingsPanel.models.catalogLoading')}
           </div>
         ) : null}
@@ -577,7 +586,7 @@ export function ModelDialog({
               {
                 trigger: ['change', 'blur'],
                 validator: (_alias, currentValues) =>
-                  validateModelDraft({ ...currentValues }, models, model?.origin_index, catalog, t).alias,
+                  validateModelDraft({ ...currentValues }, models, editingSelf, catalog, t).alias,
               },
             ],
             protocol: [{ validator: () => errors.protocol }],

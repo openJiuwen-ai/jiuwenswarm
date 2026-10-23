@@ -717,3 +717,31 @@ class TestResolveCronProjectBinding:
         binding = resolve_cron_project_binding("proj_missing", "", "work")
         assert binding.error is not None
         assert "project not found" in binding.error
+
+    @staticmethod
+    def test_design_mode_is_not_cron_eligible(project_store_dir):
+        from jiuwenswarm.server.runtime.session.project_store import (
+            resolve_cron_project_binding,
+        )
+
+        binding = resolve_cron_project_binding("", "", "design")
+        assert binding.code == "BAD_REQUEST"
+        assert binding.error == "cron is not supported for work_mode: 'design'"
+
+    @staticmethod
+    def test_design_project_is_not_cron_eligible(project_store_dir, tmp_path):
+        from jiuwenswarm.server.runtime.session.project_store import (
+            create_project_checked,
+            resolve_cron_project_binding,
+        )
+
+        project_dir = tmp_path / "design-project"
+        project_dir.mkdir()
+        project, _ = create_project_checked(
+            "Design",
+            str(project_dir),
+            work_mode="design",
+        )
+        binding = resolve_cron_project_binding(project.project_id, "", "work")
+        assert binding.code == "BAD_REQUEST"
+        assert binding.error == "cron is not supported for work_mode: 'design'"

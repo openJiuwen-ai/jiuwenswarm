@@ -108,6 +108,58 @@ def test_view_navigation_never_prefetches_but_input_intent_does() -> None:
     )
 
 
+def test_historical_typing_prefetch_offloads_on_last_view_loss() -> None:
+    guard = SessionKVCacheTaskGuard()
+    session_id = "session-A"
+    guard.set_foreground(
+        session_id=session_id,
+        view_id="view-1",
+        visible=True,
+        is_team=False,
+        has_history=True,
+    )
+
+    prefetch = guard.prepare(
+        session_id=session_id,
+        intent_id="intent-1",
+        is_team=False,
+        has_history=True,
+    )
+    offload = guard.set_foreground(
+        session_id=session_id,
+        view_id="view-1",
+        visible=False,
+        is_team=False,
+        has_history=True,
+    )
+
+    assert prefetch is not None and prefetch.action == "prefetch"
+    assert offload is not None and offload.action == "offload"
+
+
+def test_historical_view_without_typing_does_not_offload() -> None:
+    guard = SessionKVCacheTaskGuard()
+    session_id = "session-A"
+    guard.set_foreground(
+        session_id=session_id,
+        view_id="view-1",
+        visible=True,
+        is_team=False,
+        has_history=True,
+    )
+
+    assert (
+        guard.set_foreground(
+            session_id=session_id,
+            view_id="view-1",
+            visible=False,
+            is_team=False,
+            has_history=True,
+        )
+        is None
+    )
+
+
 def test_task_start_prefetch_fallback_does_not_wait_or_hide_task_count() -> None:
     guard = SessionKVCacheTaskGuard()
     session_id = "session-A"

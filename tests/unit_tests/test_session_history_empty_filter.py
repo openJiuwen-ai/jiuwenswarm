@@ -83,6 +83,45 @@ def test_append_history_skips_empty_chat_final_and_heartbeat(tmp_path, monkeypat
     assert session_history.load_history_records("health_check_abc") == []
 
 
+def test_append_history_limits_user_event_types_to_designer(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+
+    session_history.append_history_record(
+        session_id="s-user-events",
+        request_id="assistant",
+        channel_id="web",
+        role="assistant",
+        event_type="chat.final",
+        content="assistant message",
+        timestamp=1.0,
+    )
+    session_history.append_history_record(
+        session_id="s-user-events",
+        request_id="designer-user",
+        channel_id="web",
+        role="user",
+        event_type="design.user",
+        content="designer message",
+        timestamp=2.0,
+    )
+    session_history.append_history_record(
+        session_id="s-user-events",
+        request_id="regular-user",
+        channel_id="web",
+        role="user",
+        event_type="chat.custom",
+        content="regular message",
+        timestamp=3.0,
+    )
+
+    data = _wait_history("s-user-events", min_count=3)
+    assert [item.get("event_type") for item in data] == [
+        "chat.final",
+        "design.user",
+        None,
+    ]
+
+
 def test_assistant_file_event_is_restored_for_team_history() -> None:
     assert session_history._is_team_relevant(
         {

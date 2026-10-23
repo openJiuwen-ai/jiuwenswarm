@@ -60,13 +60,15 @@ const TEAM_MEMBER_BACKGROUND_COLORS = [
 const FNV_OFFSET_BASIS = 2166136261;
 const FNV_PRIME = 16777619;
 
-export type TeamMemberAvatarKind = 'leader' | 'user' | 'human' | 'cli' | 'member';
+export type TeamMemberAvatarKind = 'leader' | 'user' | 'human' | 'cli' | 'expert' | 'member';
 
 export interface ResolvedTeamMemberAvatar {
   src: string;
   kind: TeamMemberAvatarKind;
   normalizedId: string;
   backgroundColor?: string;
+  /** 专家团成员的角标：swarmflow 专家节点与名册里的预定义成员同样佩戴，两种场景一个样。 */
+  badge?: 'expert';
 }
 
 export function normalizeTeamMemberId(member?: string): string {
@@ -112,6 +114,10 @@ export interface TeamMemberIdentity {
   mode?: string;
   /** 外部 CLI 后端名：claude / codex / ... */
   cliAgent?: string | null;
+  /** swarmflow 专家节点引用的专家团成员名；非空即认作专家 */
+  agentTemplate?: string | null;
+  /** 是绑定专家团包里的成员（含专家节点与真实预定义成员）：带 ★ 的插画外观 */
+  packageMember?: boolean;
 }
 
 function isHumanIdentity(identity?: TeamMemberIdentity): boolean {
@@ -130,7 +136,7 @@ function resolveCliAvatarKey(cliAgent?: string | null): string | null {
 
 export function resolveTeamMemberAvatar(
   member?: string,
-  identity?: TeamMemberIdentity
+  identity?: TeamMemberIdentity,
 ): ResolvedTeamMemberAvatar {
   const normalizedId = normalizeTeamMemberId(member);
 
@@ -164,6 +170,10 @@ export function resolveTeamMemberAvatar(
 
   const hashKey = normalizedId || 'unknown_member';
   const hash = hashMemberKey(hashKey);
+  // 专家团成员：swarmflow 点名的专家节点，或名册里来自同一个包的预定义成员。
+  const isExpert = Boolean(identity?.agentTemplate || identity?.packageMember);
+
+  // 包内图片一律不用：多数包只有一张团级图，成员间会撞脸；专家统一带 ★ 的插画。
 
   // 人类成员单独一套：这一格背后是真人，和 AI 队友混用同一套插画会误导。
   if (isHumanIdentity(identity)) {
@@ -177,9 +187,10 @@ export function resolveTeamMemberAvatar(
 
   return {
     src: TEAM_MEMBER_AVATARS[hash % TEAM_MEMBER_AVATARS.length],
-    kind: 'member',
+    kind: isExpert ? 'expert' : 'member',
     normalizedId,
     backgroundColor: getMemberAvatarBackgroundColor(hashKey),
+    ...(isExpert ? { badge: 'expert' as const } : {}),
   };
 }
 

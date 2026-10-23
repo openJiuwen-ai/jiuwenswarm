@@ -34,6 +34,9 @@ from openjiuwen.agent_teams.harness.manifest import (
 
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
 from jiuwenswarm.agents.harness.common.tools.send_file_to_user import SendFileToolkit
+from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
+    SessionMessagingToolkit,
+)
 from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import is_send_file_enabled
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.common.cron_session import is_cron_execution_session
@@ -43,6 +46,23 @@ logger = logging.getLogger(__name__)
 # Provider name constants; namespaced under the shared "swarm." prefix.
 CRON_TOOLS = "swarm.cron_tools"
 SEND_FILE = "swarm.send_file"
+SESSION_MESSAGING_TOOLS = "swarm.session_messaging_tools"
+
+
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=SESSION_MESSAGING_TOOLS,
+    description="Leader-only durable cross-Session messaging toolkit.",
+)
+def build_session_messaging_tools(
+    params: dict[str, Any],
+    ctx: SwarmBuildContext,
+) -> list[Any]:
+    """Build Session messaging tools only for the Team leader."""
+    _ = params
+    if str(getattr(ctx, "role", "") or "") != "leader":
+        return []
+    return list(SessionMessagingToolkit().get_tools())
 
 
 class CronToolsInput(ConstructionInput):
@@ -282,6 +302,8 @@ def build_send_file_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> lis
 __all__ = [
     "CRON_TOOLS",
     "SEND_FILE",
+    "SESSION_MESSAGING_TOOLS",
     "build_cron_tools",
     "build_send_file_tools",
+    "build_session_messaging_tools",
 ]

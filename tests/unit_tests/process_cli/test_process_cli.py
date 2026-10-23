@@ -522,13 +522,10 @@ async def test_runtime_client_session_methods_only_delegate_to_runtime() -> None
 
 
 @pytest.mark.asyncio
-async def test_runtime_client_close_drains_team_work_before_runtime() -> None:
+async def test_runtime_client_close_delegates_to_runtime_owner() -> None:
     calls: list[str] = []
 
     class RuntimeStub:
-        async def cancel_all_team_stream_tasks(self, *, reason):
-            calls.append(f"team:{reason}")
-
         async def close(self):
             calls.append("close")
 
@@ -536,32 +533,24 @@ async def test_runtime_client_close_drains_team_work_before_runtime() -> None:
 
     await client.close()
 
-    assert calls == [
-        "team:[process CLI close] ",
-        "close",
-    ]
+    assert calls == ["close"]
 
 
 @pytest.mark.asyncio
-async def test_runtime_client_close_attempts_every_stage_after_cleanup_failure() -> (
-    None
-):
+async def test_runtime_client_close_propagates_runtime_failure() -> None:
     calls: list[str] = []
 
     class RuntimeStub:
-        async def cancel_all_team_stream_tasks(self, *, reason):
-            calls.append("team")
-            raise RuntimeError("team cleanup failed")
-
         async def close(self):
             calls.append("close")
+            raise RuntimeError("runtime cleanup failed")
 
     client = InProcessRuntimeClient(RuntimeStub())
 
-    with pytest.raises(RuntimeError, match="team cleanup failed"):
+    with pytest.raises(RuntimeError, match="runtime cleanup failed"):
         await client.close()
 
-    assert calls == ["team", "close"]
+    assert calls == ["close"]
 
 
 @pytest.mark.parametrize(
@@ -919,6 +908,30 @@ async def test_noninteractive_interaction_is_an_explicit_machine_failure(
     assert events[-1]["ok"] is False
     assert events[-1]["payload"]["event_type"] == "runtime.error"
     assert "interactive input is unavailable" in events[-1]["payload"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_command_rejects_interaction_without_reading_tty(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def unexpected_input(*_args):
+        pytest.fail("A standalone prompt command must not ask for input")
+
+    monkeypatch.setattr(app, "InProcessRuntimeClient", ConsecutiveInteractionClient)
+    monkeypatch.setattr(app.sys, "stdin", type("Tty", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr(app, "_interaction_answer", unexpected_input)
+    output = io.StringIO()
+
+    result = await app.run(
+        _args(tmp_path, output="human"),
+        stdout=output,
+        stderr=output,
+    )
+
+    assert result == 4
+    assert ConsecutiveInteractionClient.latest.answer_count == 0
+    assert "无法接收交互输入" in output.getvalue()
 
 
 @pytest.mark.asyncio
@@ -1687,6 +1700,24 @@ def test_interactive_worker_enables_runtime_interactions(tmp_path: Path) -> None
     )
 
     assert request.params["supports_user_interaction"] is True
+    assert request.params["supports_permission_approval"] is True
+
+
+def test_prompt_command_denies_permission_requests_even_with_a_tty(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app.sys, "stdin", type("Tty", (), {"isatty": lambda self: True})())
+    request = app._build_request(
+        _args(tmp_path, output="human"),
+        session_id="runtime-session", request_id="runtime-request",
+    )
+    assert request.params["supports_user_interaction"] is False
+    assert request.params["supports_permission_approval"] is False
+    interaction = RuntimeEvent(
+        request_id=request.request_id, channel_id="process_cli", session_id=request.session_id,
+        payload={"event_type": "chat.ask_user_question", "source": "ask_user_interrupt", "request_id": "question"},
+    )
+    answer, _ = app._answer_request(request, interaction, [{"answer": "continue"}])
+    assert answer.params["supports_user_interaction"] is False
+    assert answer.params["supports_permission_approval"] is False
 
 
 def test_process_cli_has_no_server_or_transport_dependencies() -> None:

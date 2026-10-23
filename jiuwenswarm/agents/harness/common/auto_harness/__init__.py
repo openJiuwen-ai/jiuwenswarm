@@ -1,28 +1,24 @@
-# jiuwenswarm/agentserver/deep_agent/auto_harness/__init__.py
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+"""Optional Auto-Harness exports with no evolving SDK import at package load."""
+from importlib import import_module
 
-"""Auto-Harness module: single execution and scheduled task management."""
+_EXPORTS = {
+    "AutoHarnessService": ".service",
+    "ActiveAutoHarnessRun": ".service",
+    "validate_harness_config_fields": ".service",
+    "validate_harness_config_paths": ".service",
+    "validate_harness_config": ".service",
+    "reset_harness_packages_state": ".state",
+    "Scheduler": ".scheduler",
+    "TaskStore": ".task_store",
+    "ConfigValidator": ".config_validator",
+}
+__all__ = list(_EXPORTS)
 
-from .service import (
-    AutoHarnessService,
-    ActiveAutoHarnessRun,
-    reset_harness_packages_state,
-    validate_harness_config_fields,
-    validate_harness_config_paths,
-    validate_harness_config,
-)
-from .scheduler import Scheduler
-from .task_store import TaskStore
-from .config_validator import ConfigValidator
 
-__all__ = [
-    "AutoHarnessService",
-    "ActiveAutoHarnessRun",
-    "reset_harness_packages_state",
-    "validate_harness_config_fields",
-    "validate_harness_config_paths",
-    "validate_harness_config",
-    "Scheduler",
-    "TaskStore",
-    "ConfigValidator",
-]
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    value = getattr(import_module(_EXPORTS[name], __name__), name)
+    globals()[name] = value
+    return value

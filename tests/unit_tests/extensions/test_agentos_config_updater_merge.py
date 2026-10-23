@@ -283,3 +283,56 @@ def test_normalize_mutates_in_place():
 def test_normalize_leaves_unknown_fields_untouched():
     normalized = normalize_section({"sandbox": {"other": "x"}})
     assert normalized == {"sandbox": {"other": "x"}}
+
+
+# --------------------------------------------------------------------------
+# 5-field contract: agent_sandbox cpu/memory + tool_sandbox.*
+# --------------------------------------------------------------------------
+
+def test_filter_managed_section_keeps_all_five_fields():
+    managed, ignored = filter_managed_section(
+        {
+            "agent_sandbox": {"idle_timeout": 120.0, "cpu": 1000, "memory": 2048},
+            "tool_sandbox": {"idle_timeout": 300, "cpu": 2000, "memory": 4096},
+        }
+    )
+
+    assert managed == {
+        "agent_sandbox": {"idle_timeout": 120.0, "cpu": 1000, "memory": 2048},
+        "tool_sandbox": {"idle_timeout": 300, "cpu": 2000, "memory": 4096},
+    }
+    assert ignored == []
+
+
+def test_validate_accepts_agent_sandbox_resources():
+    assert validate_section({"agent_sandbox": {"cpu": 1000, "memory": 2048}}) == []
+
+
+def test_validate_rejects_non_positive_resources():
+    for value in (0, -1, True):
+        assert validate_section({"agent_sandbox": {"cpu": value}})
+        assert validate_section({"tool_sandbox": {"memory": value}})
+
+
+def test_validate_tool_idle_timeout_must_be_integer():
+    errors = validate_section({"tool_sandbox": {"idle_timeout": 45.5}})
+
+    assert len(errors) == 1
+    assert "tool_sandbox.idle_timeout" in errors[0]
+
+
+def test_validate_agent_idle_timeout_accepts_float():
+    assert validate_section({"agent_sandbox": {"idle_timeout": 120.5}}) == []
+
+
+def test_validate_ignores_old_flat_sandbox_contract():
+    # The pre-5-field flat ``sandbox.*`` path is not managed.
+    assert validate_section({"sandbox": {"cpu": 2000, "memory": 4096}}) == []
+
+
+def test_normalize_keeps_tool_idle_timeout_int():
+    normalized = normalize_section({"tool_sandbox": {"idle_timeout": 300}})
+
+    value = normalized["tool_sandbox"]["idle_timeout"]
+    assert value == 300
+    assert isinstance(value, int)

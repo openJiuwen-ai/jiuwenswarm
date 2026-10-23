@@ -1,9 +1,9 @@
-<svg viewBox="0 0 456 382" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="456.000000" height="382.000000" fill="none" showMaskRef="url(#show_mask_5)" mask="url(#mask_17)">
+<svg viewBox="0 0 456 382" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="456.000000" height="382.000000" fill="none">
 	<mask id="mask_17" width="456.000000" height="382.000000" x="0.000000" y="0.000000" maskUnits="userSpaceOnUse">
 		<g filter="url(#pixso_custom_mask_type_outline)">
-			<rect id="矩形 545055" width="456.000000" height="382.000000" x="0.000000" y="0.000000" rx="32.000000" fill="rgb(255,255,255)" />
-			<rect id="矩形 545055" width="456.000000" height="382.000000" x="0.000000" y="0.000000" rx="32.000000" fill="rgb(255,255,255)" />
-			<rect id="矩形 545055" width="455.000000" height="381.000000" x="0.500000" y="0.500000" rx="31.500000" stroke="rgb(230,230,230)" stroke-opacity="0" stroke-width="1.000000" />
+			<rect id="矩形 545055" width="456.000000" height="382.000000" x="0.000000" y="0.000000" rx="24.000000" fill="rgb(255,255,255)" />
+			<rect id="矩形 545055" width="456.000000" height="382.000000" x="0.000000" y="0.000000" rx="24.000000" fill="rgb(255,255,255)" />
+			<rect id="矩形 545055" width="455.000000" height="381.000000" x="0.500000" y="0.500000" rx="23.500000" stroke="rgb(230,230,230)" stroke-opacity="0" stroke-width="1.000000" />
 		</g>
 	</mask>
 	<defs>
@@ -61,9 +61,9 @@
 	</defs>
 	<rect id="step 3" width="456.000000" height="382.000000" x="0.000000" y="0.000000" />
 	<g id="show_mask_5">
-		<rect id="矩形 545055" width="456.000000" height="382.000000" x="0.000000" y="0.000000" rx="32.000000" fill="rgb(136,220,185)" fill-opacity="0.200000003" />
-		<rect id="矩形 545055" width="456.000000" height="382.000000" x="0.000000" y="0.000000" rx="32.000000" fill="url(#paint_linear_20)" fill-opacity="0.800000012" />
-		<rect id="矩形 545055" width="455.000000" height="381.000000" x="0.500000" y="0.500000" rx="31.500000" stroke="rgb(230,230,230)" stroke-opacity="0" stroke-width="1.000000" />
+		<rect id="矩形 545055" width="456.000000" height="382.000000" x="0.000000" y="0.000000" rx="24.000000" fill="rgb(136,220,185)" fill-opacity="0.200000003" />
+		<rect id="矩形 545055" width="456.000000" height="382.000000" x="0.000000" y="0.000000" rx="24.000000" fill="url(#paint_linear_20)" fill-opacity="0.800000012" />
+		<rect id="矩形 545055" width="455.000000" height="381.000000" x="0.500000" y="0.500000" rx="23.500000" stroke="rgb(230,230,230)" stroke-opacity="0" stroke-width="1.000000" />
 	</g>
 	<g filter="url(#filter_18)">
 		<path id="矢量 8262" d="M-32 424L62 142L80 424L-32 424Z" fill="url(#paint_linear_21)" fill-opacity="0.400000006" fill-rule="evenodd" />

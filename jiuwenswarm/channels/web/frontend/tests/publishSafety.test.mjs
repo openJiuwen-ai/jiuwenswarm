@@ -41,6 +41,13 @@ test('publish errors preserve actionable safe backend codes', () => {
   assert.equal(publishFailureKey(new Error('internal details')), 'requestFailed');
   assert.equal(publishIssueKey('invalid_plugin_structure'), 'invalidPluginStructure');
   assert.equal(publishIssueKey('hub_request_failed'), 'hubRequestFailed');
+  // #4753: these codes already reached the UI but had no text of their own.
+  assert.equal(publishFailureKey(Object.assign(new Error('failed'), { code: 'INVALID_PACKAGE' })), 'invalidPackage');
+  assert.equal(
+    publishFailureKey(Object.assign(new Error('failed'), { code: 'PUBLISH_UNAVAILABLE' })),
+    'publishUnavailable',
+  );
+  assert.equal(publishIssueKey('upload_outcome_unknown'), 'uploadOutcomeUnknown');
 });
 
 test('oauth start tolerates an empty error response', async () => {
@@ -176,3 +183,12 @@ for (const provider of ['gitcode', 'github']) {
     });
   }
 }
+
+test('credential question keeps choices but masks typed answers and legacy answers', () => {
+  const result = parseQaSummaryContent(buildQaSummaryContent({items:[
+    {question:'用哪种方式更新令牌？',answers:['让你代登录','FAKE-4470'],answerSources:['option','input']},
+    {question:'请输入 token',answers:['FAKE-LEGACY']},
+  ]}));
+  assert.deepEqual(result.items[0].answers,['让你代登录','••••••']);
+  assert.deepEqual(result.items[1].answers,['••••••']);
+});

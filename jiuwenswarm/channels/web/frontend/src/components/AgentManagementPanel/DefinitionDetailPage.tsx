@@ -1,4 +1,3 @@
-import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { openAssetPublish } from '../../features/assetPublishEvents';
 import { canShowAssetPublish } from '../../features/assetPublishState';
 
@@ -131,7 +130,6 @@ export function DefinitionDetailPage({
         {t('agentManagement.actions.back')}
       </button>
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
-        <PublicationDetailStatus kind="agent_template" localId={detail.runtimePackageName} />
         <EntityHeader
           testId="agent-management-detail-header"
           avatar={{ name: detail.displayName, iconUrl: avatarUrl, testId: 'agent-management-detail-avatar' }}

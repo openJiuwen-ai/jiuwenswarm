@@ -38,6 +38,7 @@ from jiuwenswarm.instance_manager import (
     InstanceConfig,
     InstanceLock,
     InstanceStatus,
+    InstancesYamlError,
     calculate_instance_ports,
     create_bootstrap_env,
     find_available_ports,
@@ -1115,17 +1116,22 @@ def _validate_args(args: argparse.Namespace) -> int | None:
 def _dispatch_action(args: argparse.Namespace) -> int:
     """Dispatch action based on parsed arguments.
 
-    Args:
-        args: Parsed arguments
-
-    Returns:
-        Exit code
+    A damaged ``instances.yaml`` is a normal configuration error for the
+    instance commands; the loader already produces a user-facing message with
+    fix suggestions, so print that instead of leaking a traceback.
     """
-    # Validate arguments
     error_code = _validate_args(args)
     if error_code is not None:
         return error_code
+    try:
+        return _dispatch_command(args)
+    except InstancesYamlError as exc:
+        logging.info(str(exc))
+        return 1
 
+
+def _dispatch_command(args: argparse.Namespace) -> int:
+    """Run the validated action against the parsed arguments."""
     # --list: list all instances
     if args.list:
         return _action_list()
