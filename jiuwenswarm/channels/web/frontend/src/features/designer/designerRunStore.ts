@@ -240,14 +240,21 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
         result = failedId
           ? await designerGraphClient.startRun({
               graphId: graph.graph_id,
+              sessionId: String(graph.metadata?.session_id || ''),
               runId: run?.run_id,
               nodeId: failedId,
             })
-          : await designerGraphClient.startRun({ graphId: graph.graph_id });
+          : await designerGraphClient.startRun({
+              graphId: graph.graph_id,
+              sessionId: String(graph.metadata?.session_id || ''),
+            });
       } else if (run?.run_id && primary === 'continue') {
-        result = await designerGraphClient.startRun({ runId: run.run_id });
+        result = await designerGraphClient.startRun({ runId: run.run_id, sessionId: String(graph.metadata?.session_id || '') });
       } else {
-        result = await designerGraphClient.startRun({ graphId: graph.graph_id });
+        result = await designerGraphClient.startRun({
+          graphId: graph.graph_id,
+          sessionId: String(graph.metadata?.session_id || ''),
+        });
       }
       const warning = String(result.warning || result.run?.warning || result.warnings?.[0] || '').trim() || null;
       get().applyRun(result.run);
@@ -267,6 +274,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       const run = get().run?.graph_id === graph.graph_id ? get().run : null;
       const result = await designerGraphClient.startRun({
         graphId: graph.graph_id,
+        sessionId: String(graph.metadata?.session_id || ''),
         runId: run?.run_id,
         nodeId,
       });
@@ -285,7 +293,10 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
     await persistBeforeRun();
     set({ runError: null, runWarning: null });
     try {
-      const result = await designerGraphClient.startRun({ graphId: graph.graph_id });
+      const result = await designerGraphClient.startRun({
+        graphId: graph.graph_id,
+        sessionId: String(graph.metadata?.session_id || ''),
+      });
       const warning = String(result.warning || result.run?.warning || result.warnings?.[0] || '').trim() || null;
       get().applyRun(result.run);
       if (warning) {

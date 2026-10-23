@@ -359,6 +359,7 @@ export type DesignerExecutionGraph = {
 
 export type DesignerNodeState = {
   status: string;
+  version?: number;
   started_at?: number | null;
   completed_at?: number | null;
   output_ref?: AssetRef | null;
