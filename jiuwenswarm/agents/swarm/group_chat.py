@@ -138,10 +138,12 @@ def assemble_group_members(spec, members: list[dict]) -> None:
                     },
                 ),
             ]
+            from jiuwenswarm.agents.swarm.group_execution import GROUP_MEMBER_RULES, EXPERT_TEAM_RULES
+
             prompt = _merge_team_prompt(
                 prompt,
-                "You represent an expert team in this public group. Answer directly when appropriate. "
-                "For work requiring your team, call run_team with a stable run_id and the task. "
+                GROUP_MEMBER_RULES + EXPERT_TEAM_RULES
+                + "For private-team work, call run_team with a stable run_id and the task. "
                 "The tool starts background work and returns its execution_id; remain available for new messages. "
                 "Use run_team action=update or cancel to change that execution. "
                 "For a follow-up use run_team action=continue with a new run_id and the previous execution_id. "
@@ -819,10 +821,20 @@ class GroupMemberTemplateRail(DeepAgentRail):
             return
         definition = group["compiled"].get(self.context.member_name)
         if definition is not None and definition["template"] is not None:
-            await ctx.agent.load_agent_template_spec(
-                AgentTemplateSpec.model_validate(definition["template"]),
-                context=self.context,
-            )
+            template = AgentTemplateSpec.model_validate(definition["template"])
+            from jiuwenswarm.agents.swarm.group_execution import START_TASK
+
+            abilities = getattr(ctx.agent, "ability_manager", None)
+            shared_tools = {START_TASK: "start_group_task", RUN_TEAM: "run_team"}
+            tools = []
+            for tool in template.tools:
+                name = shared_tools.get(tool.type)
+                # Recovery may already bind group tools; duplicate binding rolls back the entire template.
+                if name and abilities is not None and abilities.get(name) is not None:
+                    continue
+                tools.append(tool)
+            template.tools = tools
+            await ctx.agent.load_agent_template_spec(template, context=self.context)
         self.loaded = True
 
 

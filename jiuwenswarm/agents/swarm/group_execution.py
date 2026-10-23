@@ -15,10 +15,26 @@ from jiuwenswarm.server.runtime.group_service import GroupError, read_group
 
 START_TASK = "swarm.group_start_task"
 TASK_POLICY = "swarm.group_task_policy"
+GROUP_MEMBER_RULES = (
+    "Your role in this public group is an independent member, not the group leader. "
+    "Other public group members are peers, not your subordinates or your internal team. "
+    "Any Leader/coordinator identity in your original expert persona applies only within your own expert team. "
+    "The public group's team_leader is a separate coordinator, not a member of your private team. "
+)
+EXPERT_TEAM_RULES = (
+    "You are the public representative of a separate private expert team. "
+    "Public group rosters and member-list tools describe the outer group, not your private team. "
+    "For requests about your own team, including its roster or a roll call, consult it through run_team; "
+    "do not infer private members from public group messages. "
+    "Delegate substantive work to your private team through run_team. "
+    "Do not use start_group_task or implement deliverables yourself as the public proxy. "
+    "Your private leader coordinates only its private members, including configured Claude Code/Codex members. "
+    "These role boundaries take precedence over general Leader instructions in your persona. "
+)
 TASK_RULES = (
     "An @ mention alone is ordinary conversation: reply with group_send_message. "
-    "For substantive work you choose to undertake, call start_group_task before doing the work. "
-    "For an assigned execution, call start_group_task before substantive work; direct answers need no card. "
+    "Individual experts call start_group_task before undertaking substantive work. "
+    "Individual experts call start_group_task for assigned substantive work; direct answers need no card. "
     "For an assigned direct answer, use group_send_message with its execution_id without starting a task. "
     "Do not publish progress, reasoning or intermediate results to the group. "
     "Use group_send_message with execution_id, content and attachments for the final task result. "
@@ -150,9 +166,14 @@ class GroupTaskPolicyRail(DeepAgentRail):
         store = GroupExecutions(self.context.session_id)
         await store.reconcile()
         active = store.active(self.context.member_name)
-        member_names = {member["member_name"] for member in group["members"]}
+        member = next((item for item in group["members"]
+                       if item["member_name"] == self.context.member_name), None)
         content = TASK_RULES
-        if self.context.member_name not in member_names:
+        if member is not None:
+            content += "\n" + GROUP_MEMBER_RULES
+            if member["kind"] == "agent_group":
+                content += "\n" + EXPERT_TEAM_RULES
+        else:
             content = (
                 "Coordinate public conversation. Organization progress belongs to system execution events. "
                 "Only publish the final organization deliverable to the group after the root task completes."

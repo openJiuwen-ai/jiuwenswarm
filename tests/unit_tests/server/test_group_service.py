@@ -258,9 +258,15 @@ async def test_proxy_template_binds_real_run_team_tool_before_first_model_call(s
     agent = DeepAgent(AgentCard(id="group-proxy-binding-test", name="Proxy")).configure(
         DeepAgentConfig()
     )
+    from jiuwenswarm.agents.swarm.group_execution import GroupTaskTool
+
+    task_tool = GroupTaskTool(backend, context)
+    agent.ability_manager.add_ability(task_tool.card, task_tool)
     rail = GroupMemberTemplateRail(context, set())
     await rail.before_invoke(SimpleNamespace(agent=agent))
     assert "run_team" in [tool.name for tool in agent.deep_config.tools]
+    assert agent.ability_manager.get("start_group_task") is task_tool.card
+    assert rail.loaded
 
 
 @pytest.mark.asyncio
