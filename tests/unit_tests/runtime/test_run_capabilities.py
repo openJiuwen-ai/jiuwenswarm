@@ -126,6 +126,7 @@ async def test_permission_rail_rejects_run_deny_before_host_approval() -> None:
     assert result == "[PERMISSION_DENIED] run policy"
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("current,fallback,expected", [
     (None, {"get_current_goal": "deny", "locked": "allow"}, "deny"),
     ({}, {"get_current_goal": "deny"}, "allow"),
@@ -156,6 +157,7 @@ async def test_auto_callback_restores_adapter_permissions(current, fallback, exp
         RUN_PERMISSIONS.reset(token)
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
 @pytest.mark.asyncio
 async def test_auto_callback_cleans_request_permissions_on_failure(error):
@@ -177,6 +179,7 @@ async def test_auto_callback_cleans_request_permissions_on_failure(error):
         RUN_PERMISSIONS.reset(token)
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_auto_callback_keeps_existing_workers_and_next_requests_isolated():
     from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool import (
