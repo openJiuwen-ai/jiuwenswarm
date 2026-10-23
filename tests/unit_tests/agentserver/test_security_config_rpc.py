@@ -439,6 +439,14 @@ async def test_disabled_cloud_source_saves_policy_without_enforcing_until_enable
     assert received["applied"]
     assert service.cloud_path.is_file()
     assert "cloud_only" not in manager.configs[-1]["permissions"]["tools"]
+    view = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_GET, {}, agent_manager=manager,
+        restart_sandboxes=no_restart, service=service,
+    )
+    assert view["cloud"]["permissions"]["tools"]["cloud_only"] == "deny"
+    assert "cloud_only" not in view["permissions"]["tools"]
+    assert view["settings"]["security"]["policy_sources"][1]["enabled"] is False
+    assert "permissions" in view["builtin"]
     enabled = await dispatch_security_config_request(
         ReqMethod.SECURITY_CONFIG_SETTINGS_UPDATE,
         {"patch": {"policy_sources": [
