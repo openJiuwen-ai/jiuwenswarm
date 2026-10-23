@@ -528,6 +528,17 @@ if (-not $FrontendOnly) {
         throw "Frozen RSI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
     }
 
+    $CuaVerifier = Join-Path $ProjectRoot "scripts\verify_computer_use_bundle.py"
+    $CuaVerifyProcess = Start-Process `
+        -FilePath $FrozenExe `
+        -ArgumentList @("`"$CuaVerifier`"") `
+        -Wait `
+        -PassThru `
+        -NoNewWindow
+    if ($CuaVerifyProcess.ExitCode -ne 0) {
+        throw "Frozen Computer Use bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+    }
+
     # The PyInstaller spec intentionally allows platforms for which gitcode-cli
     # publishes no native binary (currently including Windows) and falls back to
     # the connector's pip-based initialization. Only run the frozen CLI verifier
@@ -600,6 +611,8 @@ New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
 Write-Host "  Copying Electron desktop shell..." -ForegroundColor Gray
 Copy-Item -Path (Join-Path $DesktopDir "main.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_panels.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "browser_downloads.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "browser_download_bubble.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "share_image_export.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "display_media_picker.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "preload.cjs") -Destination $AppDir -Force
@@ -704,9 +717,12 @@ if ($FrontendOnly) {
 $RequiredFiles = @(
     (Join-Path $ElectronAppDir $ShellExeName),
     (Join-Path $AppDir "main.cjs"),
+    (Join-Path $AppDir "browser_downloads.cjs"),
+    (Join-Path $AppDir "browser_download_bubble.cjs"),
     (Join-Path $AppDir "display_media_picker.cjs"),
     (Join-Path $AppDir "preload.cjs"),
     (Join-Path $AppDir "dist\index.html"),
+    (Join-Path $AppDir "dist\bubble.html"),
     (Join-Path $AppDir "node_modules\@playwright\mcp\package.json"),
     (Join-Path $AppDir "node_modules\@playwright\mcp\cli.js")
 )

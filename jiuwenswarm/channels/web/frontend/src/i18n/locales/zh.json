@@ -104,6 +104,7 @@
       "unsupported": "仅支持图片、视频或音频作为参考素材。"
     },
     "run": {
+      "moderationBlocked": "生成内容被模型的内容安全审核拦截。请把该节点提示词中的暴力、血腥等描写改为含蓄、象征性的画面后重新生成。",
       "controlLabel": "执行控制",
       "execute": "执行",
       "continue": "继续",
@@ -200,6 +201,7 @@
       "assetsHint": "打开当前画布素材列表。",
       "upload": "上传",
       "uploadHint": "上传图片、视频或音频文件，作为新节点添加到画布。",
+      "uploadTooLarge": "文件过大：视频不能超过 1GB，图片和音频不能超过 32MB。",
       "comfyuiHint": "导入 ComfyUI 工作流（.json）。仅添加 vLLM-Omni 的 Generate Image / Generate Video 节点。",
       "group": {
         "image": "图片",
@@ -564,8 +566,8 @@
       "deleteConfirm": "确定删除“{{alias}}”（{{model}}）吗？",
       "deleteConfirmTitle": "删除模型",
       "loadFailed": "模型列表获取失败，请重试。",
-      "customName": "自定义名称",
-      "customNamePlaceholder": "请输入唯一的自定义名称",
+      "customName": "模型展示名称",
+      "customNamePlaceholder": "请输入唯一的模型展示名称",
       "protocol": "协议",
       "vendor": "模型提供商",
       "model": "模型",
@@ -672,8 +674,10 @@
         "reasoningUnsupported": "当前推理选项“{{value}}”不受支持，请重新选择或使用默认值",
         "reasoningUnavailable": "推理选项尚未加载，请重试后保存",
         "contextWindowInvalid": "请输入有效的正整数上下文窗口，例如 256K、1M 或 1310720",
-        "aliasConflict": "自定义名称必须全局唯一，且不能与其他模型 ID 相同",
-        "modelNameConflict": "模型 ID 不能与其他配置的自定义名称相同"
+        "aliasRequired": "模型展示名称为必填项",
+        "aliasConflict": "模型展示名称必须全局唯一，不能与其他模型的展示名称重复",
+        "modelNameConflict": "模型 ID 不能与其他配置的模型展示名称相同",
+        "modelGroupNameConflict": "模型组名称必须全局唯一，不能与其他模型组名称重复"
       },
       "testConnection": "测试连接",
       "test": "测试"
@@ -744,7 +748,8 @@
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
-      "multiModelCollaboration": "多模型协同"
+      "multiModelCollaboration": "多模型协同",
+      "toolOptimize": "工具检索优化"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -920,6 +925,10 @@
         "title": "启用 Team Organization",
         "description": "启用组织视图及后端组织工具。修改后请完整重启后端并新建会话；不会立即停止已有组织任务。"
       },
+      "progressive_tool_optimize": {
+        "title": "启用工具检索优化",
+        "description": "开启后模型通过 tool_search 分类目录按需检索工具。"
+      },
       "team_scheduled_dispatch_enabled": {
         "title": "启用调度模式",
         "description": "Leader 将每个任务分配给指定成员，成员按分配顺序依次执行。"
@@ -1036,7 +1045,7 @@
         "starting": "启动中…",
         "summary": "已选择 {{count}} 个 Agent，{{nodes}} 个节点",
         "emptyNodes": "选中范围内没有完整可诊断的步骤（未完整覆盖的步骤已被剔除）",
-        "lastTurn": "选中轨迹包含主agent最后一轮，将尝试进行产物评估和过程异常诊断归因",
+        "lastTurn": "选中轨迹包含主agent最后一轮响应，将尝试进行产物评估和过程异常诊断归因",
         "nodeLimit": "选中轨迹超过 {{limit}} 个节点（当前 {{count}} 个），请缩小选择范围",
         "running": "已有诊断正在进行",
         "noData": "当前没有可诊断的轨迹"
@@ -1536,7 +1545,7 @@
     "videoGeneration": "视频生成",
     "modeAutoHarness": "自优化模式",
     "modeAutoHarnessDesc": "自动分析并优化目标仓库",
-    "recording": "正在录音...（再次点击麦克风结束）",
+    "recording": "正在录音...（点击停止按钮结束）",
     "transcribing": "正在转写语音...",
     "startRecording": "语音输入",
     "stopRecording": "结束录音并转写",
@@ -2108,7 +2117,7 @@
       "apiBaseUrlInvalid": "API Base URL 必须以 http:// 或 https:// 开头",
       "modelNameRequired": "模型名称为必填项，请先选择模型后再保存",
       "modelNameTooLong": "模型名称过长，请控制在 100 字符以内",
-      "aliasTooLong": "别名过长，请控制在 100 字符以内",
+      "aliasTooLong": "模型展示名称过长，请控制在 100 字符以内",
       "apiBaseTooLong": "API Base URL 过长，请控制在 512 字符以内"
     },
     "booleanLabels": {
@@ -2502,7 +2511,28 @@
       "reload": "刷新",
       "stop": "停止",
       "addressPlaceholder": "输入网址或搜索",
-      "unavailable": "内置浏览器不可用"
+      "unavailable": "内置浏览器不可用",
+      "downloadContent": "下载内容"
+    },
+    "downloads": {
+      "recentTitle": "最近的下载记录",
+      "empty": "暂无下载记录",
+      "downloading": "正在下载",
+      "paused": "已暂停",
+      "cancelled": "已取消",
+      "failed": "下载失败",
+      "justNow": "刚刚",
+      "minutesAgo": "{{count}} 分钟前",
+      "hoursAgo": "{{count}} 小时前",
+      "daysAgo": "{{count}} 天前",
+      "close": "关闭下载记录",
+      "openFile": "打开",
+      "showInFolder": "在文件夹中显示",
+      "fileDeleted": "已删除",
+      "removeRecord": "从列表中移除",
+      "pauseDownload": "暂停下载",
+      "resumeDownload": "继续下载",
+      "cancelDownload": "取消下载"
     }
   },
   "logsPanel": {

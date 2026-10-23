@@ -51,6 +51,11 @@ class TaskExecutionBinding(TaskCheckpoint):
 
 @asynccontextmanager
 async def bind_task_execution(request, adapter, inputs):
+    # Design runs through Team, whose stream entry owns this task binding.
+    # Binding the forwarding DeepAdapter too would consume the same invocation twice.
+    if (getattr(request, "params", None) or {}).get("mode") == "team.design":
+        yield
+        return
     managed = request.channel_id == "video_tool" and (
         bool((getattr(request, "params", None) or {}).get("managed_task_binding"))
         or str(request.session_id or "").startswith("managed-task-")

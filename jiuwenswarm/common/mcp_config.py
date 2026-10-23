@@ -139,23 +139,28 @@ def build_mcp_server_config(
         payload["server_id"] = explicit_server_id
 
     if transport == "stdio":
+        from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
         command = str(entry.get("command", "")).strip()
         if not command:
             return None
-        params: dict[str, Any] = {"command": command}
+        params: dict[str, Any] = {"command": resolve_preserved_cli_path(command)}
         args = entry.get("args")
         if isinstance(args, list):
             # resolve ${VAR} placeholders via credential_resolver (same as env
             # below): stdio MCPs like ssh-mcp-server pass --host ${SSH_HOST}
             # in args, and the spawned process gets argv literally (no shell
             # expansion), so placeholders must be substituted here.
-            params["args"] = [_resolve_string(str(item), credential_resolver) for item in args]
+            params["args"] = [
+                resolve_preserved_cli_path(_resolve_string(str(item), credential_resolver))
+                for item in args
+            ]
         else:
             # Default to [] so a bare command (no args) still spawns cleanly.
             params["args"] = []
         cwd = entry.get("cwd")
         if isinstance(cwd, str) and cwd.strip():
-            params["cwd"] = cwd.strip()
+            params["cwd"] = resolve_preserved_cli_path(cwd.strip(), directory=True)
         env = entry.get("env")
         if isinstance(env, dict):
             # resolve ${VAR} placeholders via credential_resolver

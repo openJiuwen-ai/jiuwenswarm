@@ -1,5 +1,7 @@
 """Supervise one persistent Python worker and its inherited native lifetimes."""
 import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass
 import logging
 import os
 import socket
@@ -8,7 +10,6 @@ import sys
 from computer_use._json import loads as jsonLoads
 
 from .._json import dumps
-from ..client.execution import eager
 from ..client.preview import is_preview_event
 from .history import HISTORY_KEY, HistoryGate
 from .journal import Journal
@@ -21,6 +22,16 @@ RESET_NOTICE = ('Execution session cleared. Recreate App variables and read agai
 
 def execution_error(message):
     return dict(content=[dict(type="text", text=message)], isError=True)
+
+
+@dataclass(frozen=True)
+class _ExecutionRequest:
+    code: str
+    signal: asyncio.Event | None
+    history: dict[str, object] | None
+    title: str | None
+    on_progress: Callable[[], object] | None
+    generation: int
 
 
 class ExecutionSession:
@@ -43,29 +54,39 @@ class ExecutionSession:
         task.add_done_callback(self._tasks.discard)
         return task
 
-    @eager
-    async def execute(self, code, signal=None, history=None, title=None, on_progress=None):
+    def execute(self, code, signal=None, history=None, title=None, on_progress=None):
+        # Bind queued work to this generation before a reset can yield control.
+        request = _ExecutionRequest(code, signal, history, title, on_progress, self._generation)
+        coroutine = self._execute(request)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return coroutine
+        return loop.create_task(coroutine)
+
+    async def _execute(self, request):
         if self._closed:
             return execution_error("Execution session is closed.")
+        if request.generation != self._generation:
+            return execution_error(
+                "Execution was reset before code was sent. No code was executed; recreate variables before continuing.")
         if self._resetting is not None:
             result = await asyncio.shield(self._resetting)
-            return result if result.get("isError") else await self.execute(code, signal, history, title, on_progress)
+            return result if result.get("isError") else await self._execute(request)
         if self._retiring is not None:
             return execution_error(
                 "Native cleanup is still pending. Call computer_use_reset before continuing; no code was executed.")
         if self._pending is not None or self._starting:
             return execution_error("Another call is running; await it before starting the next.")
-        if signal is not None and signal.is_set():
+        if request.signal is not None and request.signal.is_set():
             return execution_error("Call cancelled before execution.")
         self._starting = True
-        generation = self._generation
         starting = self._track(self._start())
         self._start_task = starting
 
         def started(_):
             if self._start_task is starting:
                 self._start_task = None
-                self._starting = False
 
         starting.add_done_callback(started)
         try:
@@ -75,20 +96,24 @@ class ExecutionSession:
             raise
         except Exception as error:
             return execution_error(str(error))
-        if generation != self._generation or self._closed:
+        finally:
+            # Keep admission reserved until this task can publish _pending.
+            self._starting = False
+        if request.generation != self._generation or self._closed:
             return execution_error(('Execution was reset before code was sent. No code was executed; '
                                     'recreate variables before '
                                     'continuing.'))
-        if signal is not None and signal.is_set():
+        if request.signal is not None and request.signal.is_set():
             return execution_error("Call cancelled before execution.")
         id_ = self._next_id
         self._next_id += 1
-        policy = self._history.begin(history)
-        self._journal.record(dict(kind="execution_start", executionId=id_, title=title, code=code, history=policy))
+        policy = self._history.begin(request.history)
+        self._journal.record(dict(kind="execution_start", executionId=id_, title=request.title,
+                                  code=request.code, history=policy))
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-        pending = dict(id=id_, title=title, startedAt=loop.time(), output=OutputBuffer(), future=future, timer=None,
-                       cancel=None)
+        pending = dict(id=id_, title=request.title, startedAt=loop.time(), output=OutputBuffer(),
+                       future=future, timer=None, cancel=None)
 
         def stalled():
             self.reset(f"Execution exceeded {self.timeout_ms} ms without native command progress.")
@@ -98,8 +123,8 @@ class ExecutionSession:
                 pending["timer"].cancel()
             pending["timer"] = loop.call_later(self.timeout_ms / 1000, stalled)
             try:
-                if on_progress is not None:
-                    result = on_progress()
+                if request.on_progress is not None:
+                    result = request.on_progress()
                     if hasattr(result, "__await__"):
                         self._track(result)
             except Exception:
@@ -114,15 +139,15 @@ class ExecutionSession:
         pending.update(progress=progress, cleanup=cleanup)
         pending["timer"] = loop.call_later(self.timeout_ms / 1000, stalled)
         self._pending = pending
-        if signal is not None:
+        if request.signal is not None:
 
             async def cancel():
-                await signal.wait()
+                await request.signal.wait()
                 self.reset("Call cancelled.")
 
             pending["cancel"] = self._track(cancel())
         try:
-            self._writer.write((dumps(dict(code=code, executionId=id_, history=policy)) + "\n").encode("utf-8"))
+            self._writer.write((dumps(dict(code=request.code, executionId=id_, history=policy)) + "\n").encode("utf-8"))
             await self._writer.drain()
         except Exception as error:
             self.reset(f"Cannot send code: {error}")

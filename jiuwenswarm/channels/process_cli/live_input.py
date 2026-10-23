@@ -39,6 +39,7 @@ _STEER_CONTEXT_KEYS = (
     "project_dir",
     "trusted_dirs",
     "supports_user_interaction",
+    "supports_permission_approval",
 )
 _TARGET_CHANGED_MARKERS = (
     "supplemental input was not sent",

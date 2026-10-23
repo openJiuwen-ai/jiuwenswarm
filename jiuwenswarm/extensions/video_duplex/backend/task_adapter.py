@@ -18,6 +18,7 @@ from .tasks.prompts import (
     task_query_instructions,
 )
 from .qwen_omni_tools import parse_qwen_omni_tool_call
+from .core_receipts import receipt_payload
 
 logger = logging.getLogger(__name__)
 AGENT_QUERY_TIMEOUT = 20
@@ -113,6 +114,12 @@ class AgentTaskExecutor:
         self.endpoint.close()
 
     async def run(self, task, progress):
+        if "execution_target" not in task["request"]:
+            from .mode_routing import resolve_execution_target
+
+            target = await resolve_execution_target(self.client, task["owner"], task["session"])
+            task["request"]["execution_target"] = target
+            self.store.update(task["id"], lambda t: t["request"].update(execution_target=target))
         independent = task["request"].get("independent", False)
         dependencies = task["request"].get("depends_on", [])
         completed = []
@@ -202,6 +209,7 @@ class AgentTaskExecutor:
         from jiuwenswarm.runtime.interaction import InteractionAnswerInput
 
         interaction = task["interaction"]
+        target = (task.get("request") or {}).get("execution_target") or {"mode": "agent", "work_mode": "work"}
         return InteractionAnswerInput(
             request_id=task["request_id"]
             if task.get("resume_answer")
@@ -223,8 +231,9 @@ class AgentTaskExecutor:
                 for a in interaction["answers"]
             ),
             source=interaction["source"],
-            mode="agent",
-            work_mode="work",
+            mode=target["mode"],
+            work_mode="" if target["mode"] == "team.design" else target.get("work_mode", "work"),
+            project_dir=target.get("project_dir", ""),
         )
 
     async def answer(self, task):
@@ -240,7 +249,8 @@ class AgentTaskExecutor:
                 channel_id=request.channel_id,
                 session_id=request.session_id,
                 req_method=request.req_method,
-                params=request.params,
+                params={**request.params, **({"managed_task_request": task["request_id"]}
+                                            if request.params.get("mode") == "team.design" else {})},
                 is_stream=False,
                 timestamp=time.time(),
                 user_id=task["owner"] or None,
@@ -251,6 +261,12 @@ class AgentTaskExecutor:
 
     async def _run(self, task, progress, context):
         from . import video_search
+        from .mode_routing import resolve_execution_target
+
+        current = await resolve_execution_target(self.client, task["owner"], task["session"])
+        target = task["request"].get("execution_target", current)
+        if any(target.get(key) != current.get(key) for key in ("mode", "work_mode", "project_id", "project_dir")):
+            raise ValueError("Conversation mode or project changed; submit a new task")
 
         return await video_search.execute_core_agent(
             self.client,
@@ -268,8 +284,8 @@ class AgentTaskExecutor:
             interaction_answer=self.answer_input(task)
             if task.get("resume_answer")
             else None,
-            brief_nonce=task["id"],
             managed_task_binding=self.endpoint.binding(task),
+            execution_target=target,
         )
 
     async def cancel(self, task):
@@ -285,7 +301,7 @@ class AgentTaskExecutor:
             session_id=task["core_session_id"],
             req_method=ReqMethod.CHAT_CANCEL,
             user_id=task["owner"] or None,
-            params={"intent": "cancel", "mode": "agent", "work_mode": "work",
+            params={"intent": "cancel", **task["request"].get("execution_target", {"mode": "agent", "work_mode": "work"}),
                     "managed_task_request": task["request_id"]},
             is_stream=False,
             timestamp=time.time(),
@@ -318,6 +334,7 @@ class VideoSearchManager:
         self._service = None
         self.subscribers = {}
         self._approval_cards = {}
+        self._execution_targets = {}
 
     @property
     def service(self):
@@ -349,6 +366,11 @@ class VideoSearchManager:
             )
             if not metadata or str(metadata.get("user_id") or "").strip() != owner:
                 raise ValueError("Conversation is unavailable to this user")
+            from .mode_routing import execution_target
+
+            self._execution_targets[(owner, session)] = execution_target(metadata)
+            if len(self._execution_targets) > 128:
+                self._execution_targets.pop(next(iter(self._execution_targets)))
         return owner, session
 
     @staticmethod
@@ -369,9 +391,7 @@ class VideoSearchManager:
             status=task["status"],
             revision=task["revision"],
             sequence=task["sequence"],
-            result=result.get("answer", ""),
-            display_result=result.get("display_result", ""),
-            realtime_brief=result.get("realtime_brief"),
+            **receipt_payload(result, question=task["instruction"]),
             files=files,
             artifact_lookup_failed=bool(result.get("artifact_lookup_failed")),
             progress_history=task["progress"],
@@ -399,6 +419,8 @@ class VideoSearchManager:
         positions = {t["id"]: i + 1 for i, t in enumerate(queued)}
         return {
             "search_session_id": scope,
+            "conversation": {key: value for key, value in self._execution_targets.get((owner, scope), {}).items()
+                             if key in {"mode", "work_mode", "project_id"}},
             "queue_version": version,
             "max_concurrency": self.concurrency,
             "concurrency_scope": "owned_active_executions; unknown execution activity is unconfirmed",
@@ -501,7 +523,7 @@ class VideoSearchManager:
             task["session"].startswith("task-duplex:")
             and task["status"] == "waiting_user"
             and interaction.get("state") == "pending"
-            and interaction.get("source") in {"permission_interrupt", "confirm_interrupt"}
+            and interaction.get("source") in {"permission_interrupt", "confirm_interrupt", "ask_user", "ask_user_interrupt", ""}
         )
         if pending:
             if self._approval_cards.get(card_key) == interaction["id"]:
@@ -544,6 +566,9 @@ class VideoSearchManager:
         scheduling=None,
     ):
         owner, scope = await self.scope(ws, {"search_session_id": search_session_id})
+        from .mode_routing import resolve_execution_target
+
+        target = await resolve_execution_target(self.client, owner, scope)
         request = dict(
             query=query,
             visual_context=visual_context,
@@ -551,8 +576,10 @@ class VideoSearchManager:
             tool_call_id=tool_call_id,
             tool_name=tool_name,
             turn_id=turn_id,
+            execution_target=target,
         )
         request.update(scheduling or {})
+        request["execution_target"] = target
         task = self.service.submit(
             owner, scope, command_id or tool_call_id, question or query, request
         )

@@ -10,7 +10,7 @@ test('video duplex contributes a task action backed by the headless existing wor
   const action = read('../../../extensions/video_duplex/frontend/TaskFullDuplexAction.tsx');
   const runtime = read('../../../extensions/video_duplex/frontend/TaskFullDuplexRuntime.tsx');
   const panel = read('../../../extensions/video_duplex/frontend/VideoLivePanel/index.tsx');
-  assert.match(inputArea, /eligible=\{fullDuplexActionEligible && !isTeamMode\}/);
+  assert.match(inputArea, /eligible=\{fullDuplexActionEligible && \(!isTeamMode \|\| isDesignLanding\)\}/);
   assert.match(entry, /applicationPluginTaskInputAction = TaskFullDuplexAction/);
   assert.match(entry, /applicationPluginTaskRuntime = TaskFullDuplexRuntime/);
   assert.match(action, /startTaskFullDuplex/);
@@ -20,17 +20,20 @@ test('video duplex contributes a task action backed by the headless existing wor
   assert.match(panel, /void startRealtime\(\)/);
 });
 
-test('task full-duplex runtime is mounted above welcome and conversation composer branches', () => {
+test('task full-duplex runtime is mounted at app level outside navigation branches', () => {
+  const app = read('src/App.tsx');
   const chatPanel = read('src/components/ChatPanel/index.tsx');
-  const runtimeMount = chatPanel.indexOf('<ApplicationPluginTaskRuntimes');
-  const conversationBranch = chatPanel.indexOf('{hasConversation ? (');
-  assert.ok(runtimeMount > 0);
-  assert.ok(conversationBranch > runtimeMount);
+  const bridge = read('src/applicationPlugins/ApplicationConversationRuntimes.tsx');
+  const runtimeMount = app.indexOf('<ApplicationConversationRuntimes');
+  const navigationBranch = app.indexOf("{activeNav === 'chat' && (", runtimeMount);
+  assert.ok(runtimeMount > 0 && navigationBranch > runtimeMount);
+  assert.doesNotMatch(chatPanel, /<ApplicationPluginTaskRuntimes/);
+  assert.match(bridge, /<ApplicationPluginTaskRuntimes/);
 });
 
 test('task full-duplex Core Agent progress reuses the normal reasoning and tool timeline', () => {
   const types = read('src/applicationPlugins/types.ts');
-  const chatPanel = read('src/components/ChatPanel/index.tsx');
+  const chatPanel = read('src/applicationPlugins/ApplicationConversationRuntimes.tsx');
   const runtime = read('../../../extensions/video_duplex/frontend/TaskFullDuplexRuntime.tsx');
   const panel = read('../../../extensions/video_duplex/frontend/VideoLivePanel/index.tsx');
   assert.match(types, /onToolCall/);
@@ -51,7 +54,7 @@ test('task full-duplex Core Agent progress reuses the normal reasoning and tool 
 
 test('task full-duplex assistant output reuses the native streaming message lifecycle', () => {
   const types = read('src/applicationPlugins/types.ts');
-  const chatPanel = read('src/components/ChatPanel/index.tsx');
+  const chatPanel = read('src/applicationPlugins/ApplicationConversationRuntimes.tsx');
   const runtime = read('../../../extensions/video_duplex/frontend/TaskFullDuplexRuntime.tsx');
   const panel = read('../../../extensions/video_duplex/frontend/VideoLivePanel/index.tsx');
 

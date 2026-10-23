@@ -655,9 +655,15 @@ export function ExternalCliAgentsSection({
   );
 
   /**
-   * Validates a requested CLI path with a throwaway detect call (the result is
-   * NOT written into the card state, so the card never flips while editing),
-   * then commits the path. Returns true when the commit succeeded.
+   * Validates a requested CLI path with a detect probe, then commits the
+   * path. Two failure modes are handled distinctly:
+   *  - probe returned a result but status is not ok/warning (e.g. path
+   *    missing): restore the previous result so the badge keeps its last
+   *    known state, and surface the probe's failure message.
+   *  - probe is undefined (detect() threw — network/timeout — and already
+   *    wrote an 'unavailable' result in its catch, or was superseded by a
+   *    newer probe): do NOT overwrite that result; add a generic failure
+   *    message so the user gets feedback instead of a silent no-op.
    */
   const validateAndCommitPath = useCallback(
     async (cliAgent: ExternalCliAgentKind, requestedPath: string): Promise<boolean> => {
@@ -667,10 +673,28 @@ export function ExternalCliAgentsSection({
           // refreshed alongside the validation probe — otherwise enabling
           // after a page reload leaves the card showing "not installed" until
           // the next auto-detect tick.
+          const previousResult = resultsRef.current[cliAgent];
           const probe = await detect(cliAgent, requestedPath, false);
           if (!probe || (probe.status !== 'ok' && probe.status !== 'warning')) {
             if (probe) {
+              // Got a result but validation failed: restore the previous
+              // result so the badge doesn't flip to "not installed".
+              if (previousResult) {
+                updateResults(cliAgent, previousResult);
+              } else {
+                clearDetectResult(cliAgent);
+              }
               setAgentError(cliAgent, detectFailureMessage(probe, requestedPath, cliAgent, t));
+            } else {
+              // probe === undefined: detect() threw (it already wrote an
+              // 'unavailable' result in its catch) or was superseded by a
+              // newer probe. Don't overwrite the result — let detect's
+              // unavailable status show. Add a generic failure message so
+              // the user gets feedback instead of a silent no-op.
+              setAgentError(cliAgent, t('config.externalCli.unavailableCli', {
+                agent: externalCliAgentDisplayName(cliAgent),
+                reason: '',
+              }));
             }
             return false;
           }
@@ -688,7 +712,7 @@ export function ExternalCliAgentsSection({
       showHint(t('config.externalCli.savedHint'));
       return true;
     },
-    [commit, detect, onDetect, setAgentError, showHint, t],
+    [clearDetectResult, commit, detect, onDetect, setAgentError, showHint, t, updateResults],
   );
 
   /**
@@ -716,7 +740,17 @@ export function ExternalCliAgentsSection({
           return;
         }
         if (useBuiltin || !requestedPath.trim()) {
-          await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '' });
+          // Pre-set detecting so the card shows "检测中" during the enable
+          // transition — without this, there's a brief "未安装" flash between
+          // commit success (enabled=true) and the detect result landing.
+          // `detect` will set detecting=false when it resolves.
+          setDetecting((prev) => ({ ...prev, [cliAgent]: true }));
+          try {
+            await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '' });
+          } catch (error) {
+            setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
+            throw error;
+          }
           showHint(t('config.externalCli.savedHint'));
           // Refresh the detect result synchronously so the card never flashes
           // "not installed" after enabling (e.g. right after a page reload,
@@ -731,7 +765,7 @@ export function ExternalCliAgentsSection({
         setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
       }
     },
-    [commit, detect, setAgentError, showHint, t, validateAndCommitPath],
+    [commit, detect, setAgentError, setDetecting, showHint, t, validateAndCommitPath],
   );
 
   const startEdit = useCallback(

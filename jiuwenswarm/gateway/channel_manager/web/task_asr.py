@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""OpenAI-compatible ASR used by the regular task chat composer."""
+"""ASR used by the regular task chat composer (see common.asr_client)."""
 
 from __future__ import annotations
 
@@ -13,21 +13,16 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from jiuwenswarm.common.asr_client import (
+    AUDIO_SUFFIXES,
+    AsrClient,
+    AsrError,
+    decrypt_api_key,
+    normalize_ws_endpoint,
+)
+
 
 MAX_TASK_ASR_AUDIO_BYTES = 25 * 1024 * 1024
-
-_AUDIO_EXTENSIONS = {
-    "audio/flac": ".flac",
-    "audio/m4a": ".m4a",
-    "audio/mp4": ".m4a",
-    "audio/mpeg": ".mp3",
-    "audio/mp3": ".mp3",
-    "audio/ogg": ".ogg",
-    "audio/wav": ".wav",
-    "audio/wave": ".wav",
-    "audio/webm": ".webm",
-    "audio/x-m4a": ".m4a",
-}
 
 
 class TaskAsrError(RuntimeError):
@@ -39,7 +34,7 @@ class TaskAsrError(RuntimeError):
 
 
 def task_asr_endpoint(api_base: str) -> str:
-    """Resolve a base URL or full transcription URL to the OpenAI route."""
+    """Resolve a base URL or full transcription URL to the OpenAI route, or a ws(s) URL."""
 
     value = str(api_base or "").strip().rstrip("/")
     if not value:
@@ -48,10 +43,13 @@ def task_asr_endpoint(api_base: str) -> str:
         )
 
     parts = urlsplit(value)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
+    if parts.scheme not in {"http", "https", "ws", "wss"} or not parts.netloc:
         raise TaskAsrError(
-            "任务对话 ASR API 地址必须是有效的 HTTP(S) 地址", "ASR_BAD_CONFIG"
+            "任务对话 ASR API 地址必须是有效的 HTTP(S) 或 WS(S) 地址", "ASR_BAD_CONFIG"
         )
+
+    if parts.scheme in {"ws", "wss"}:
+        return normalize_ws_endpoint(value)
 
     path = parts.path.rstrip("/")
     if not path.endswith("/audio/transcriptions"):
@@ -76,35 +74,15 @@ def _decode_audio(raw: Any) -> bytes:
     return audio
 
 
-def _response_error(response: httpx.Response) -> str:
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        if isinstance(error, dict) and error.get("message"):
-            return str(error["message"])
-        if isinstance(error, str) and error.strip():
-            return error.strip()
-        if payload.get("message"):
-            return str(payload["message"])
-        if payload.get("detail"):
-            return str(payload["detail"])
-    body = response.text.strip()
-    return body[:500] if body else f"HTTP {response.status_code}"
-
-
-def _decrypt_api_key(value: str) -> str:
-    if not value:
-        return ""
-    try:
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
-
-        crypto = ExtensionRegistry.get_instance().get_crypto_provider()
-        return str(crypto.decrypt(value)) if crypto else value
-    except Exception:  # noqa: BLE001
-        return value
+def _task_asr_error(exc: AsrError) -> TaskAsrError:
+    status = f" ({exc.status_code})" if exc.status_code else ""
+    message = {
+        "ASR_TIMEOUT": "任务对话 ASR 请求超时",
+        "ASR_CONNECTION_ERROR": f"无法连接任务对话 ASR 服务: {exc.detail}",
+        "ASR_INVALID_RESPONSE": "任务对话 ASR 返回了无效 JSON",
+        "ASR_AUDIO_DECODE_FAILED": exc.detail,
+    }.get(exc.code, f"任务对话 ASR 请求失败{status}: {exc.detail}")
+    return TaskAsrError(message, exc.code)
 
 
 async def transcribe_task_audio(
@@ -117,7 +95,7 @@ async def transcribe_task_audio(
 
     env = environ if environ is not None else os.environ
     endpoint = task_asr_endpoint(env.get("ASR_API_BASE", ""))
-    api_key = _decrypt_api_key(str(env.get("ASR_API_KEY", "") or "").strip())
+    api_key = decrypt_api_key(str(env.get("ASR_API_KEY", "") or "").strip())
     model = str(env.get("ASR_MODEL_NAME", "") or "").strip()
     if not model:
         raise TaskAsrError(
@@ -127,47 +105,22 @@ async def transcribe_task_audio(
     mime_type = (
         str(params.get("mime_type") or "audio/webm").split(";", 1)[0].strip().lower()
     )
-    extension = _AUDIO_EXTENSIONS.get(mime_type)
+    extension = AUDIO_SUFFIXES.get(mime_type)
     if extension is None:
         raise TaskAsrError(f"不支持的录音格式: {mime_type}", "ASR_UNSUPPORTED_FORMAT")
     audio = _decode_audio(params.get("audio_base64"))
-    filename = f"task-recording{extension}"
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
-    owns_client = client is None
-    active_client = client or httpx.AsyncClient(
-        timeout=httpx.Timeout(120.0, connect=15.0),
-        follow_redirects=True,
-    )
     try:
-        response = await active_client.post(
+        text = await AsrClient(
             endpoint,
-            headers=headers,
-            data={"model": model},
-            files={"file": (filename, audio, mime_type)},
-        )
-    except httpx.TimeoutException as exc:
-        raise TaskAsrError("任务对话 ASR 请求超时", "ASR_TIMEOUT") from exc
-    except httpx.RequestError as exc:
-        raise TaskAsrError(
-            f"无法连接任务对话 ASR 服务: {exc}", "ASR_CONNECTION_ERROR"
-        ) from exc
-    finally:
-        if owns_client:
-            await active_client.aclose()
-
-    if response.is_error:
-        raise TaskAsrError(
-            f"任务对话 ASR 请求失败 ({response.status_code}): {_response_error(response)}",
-            "ASR_UPSTREAM_ERROR",
-        )
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise TaskAsrError(
-            "任务对话 ASR 返回了无效 JSON", "ASR_INVALID_RESPONSE"
-        ) from exc
-    text = str(payload.get("text") or "").strip() if isinstance(payload, dict) else ""
+            api_key,
+            model,
+            timeout=httpx.Timeout(120.0, connect=15.0),  # 来源: 沿用本文件原 httpx.AsyncClient 超时
+            max_retries=0,  # 来源: 沿用本文件原 httpx 直连实现（不重试）
+            http_client=client,
+        ).transcribe(audio, mime_type, filename=f"task-recording{extension}")
+    except AsrError as exc:
+        raise _task_asr_error(exc) from exc
     if not text:
         raise TaskAsrError("任务对话 ASR 未返回转写文本", "ASR_EMPTY_TRANSCRIPT")
     return text

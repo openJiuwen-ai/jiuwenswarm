@@ -18,6 +18,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.policy_eval import Open
 from jiuwenswarm.channels.process_cli.permissions import (
     ProcessCliPermissionEngine, ProcessCliPermissionInterruptRail,
 )
+from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT, RunContext
 
 
 @pytest.fixture
@@ -45,6 +46,86 @@ def boundary(tmp_path):
 
 def _engine(h, cls=ProcessCliPermissionEngine):
     return cls(config=deepcopy(h.config), workspace_root=h.project, trusted_dirs=[h.project])
+
+
+@pytest.fixture
+def noninteractive():
+    token = CURRENT_RUN_CONTEXT.set(RunContext(supports_permission_approval=False))
+    try:
+        yield
+    finally:
+        CURRENT_RUN_CONTEXT.reset(token)
+
+
+@pytest.mark.parametrize("tool_name,arguments", [
+    ("write_file", {"file_path": "{outside}/out.txt", "content": "BLOCKED"}),
+    ("bash", {"command": "Set-Content -LiteralPath '{outside}/out.txt' -Value BLOCKED"}),
+    ("bash", {"command": "$d='{outside}'; Set-Content (Join-Path $d 'out.txt') BLOCKED"}),
+    ("bash", {"command": "echo BLOCKED>'{outside}/out.txt'"}),
+    ("bash", {"command": "python writer.py"}),
+    ("code", {"message": "write outside project"}),
+])
+async def test_noninteractive_requests_deny_instead_of_asking(boundary, noninteractive, tool_name, arguments):
+    args = {key: value.format(outside=boundary.outside.as_posix()) for key, value in arguments.items()}
+    result = await _engine(boundary).check_permission(tool_name, args)
+    assert result.permission.value == "deny"
+    assert "process_cli:noninteractive_approval_denied" in result.matched_rule
+    assert not getattr(result, "manual_approval_required", False)
+    assert not (boundary.outside / "out.txt").exists()
+
+
+async def test_noninteractive_requests_keep_trusted_writes_and_disabled_guards(boundary, noninteractive):
+    engine = _engine(boundary)
+    for tool_name, args in [
+        ("write_file", {"file_path": str(boundary.project / "ok.txt"), "content": "OK"}),
+        ("bash", {"command": f"Set-Content -LiteralPath '{boundary.project / 'ok.txt'}' -Value OK"}),
+    ]:
+        assert (await engine.check_permission(tool_name, args)).permission.value == "allow"
+    for disabled in ["permissions", "file_guard"]:
+        config = deepcopy(boundary.config)
+        if disabled == "permissions":
+            config["enabled"] = False
+        else:
+            config["file_guard"]["enabled"] = False
+        engine = ProcessCliPermissionEngine(config=config, workspace_root=boundary.project)
+        assert (await engine.check_permission("bash", {"command": "python writer.py"})).permission.value == "allow"
+
+
+@pytest.mark.parametrize("tool_name", ["write_file", "bash"])
+async def test_noninteractive_rejection_cannot_be_replaced_by_scene_or_cached_approval(
+    boundary, noninteractive, tool_name,
+):
+    async def scene(_inp):
+        return ("approve",)
+
+    async def confirm(_request):
+        pytest.fail("Non-interactive execution must not request approval")
+
+    rail = ProcessCliPermissionInterruptRail(
+        config=boundary.config, tool_names=[], llm=None, model_name=None,
+        host=ToolPermissionHost(resolve_workspace_dir=lambda: boundary.project,
+                                permission_scene_hook=scene, request_permission_confirmation=confirm),
+    )
+    args = ({"file_path": str(boundary.outside / "out.txt"), "content": "BLOCKED"}
+            if tool_name == "write_file" else {"command": "python writer.py"})
+    call = ToolCall(id="call", type="function", name=tool_name, arguments=json.dumps(args))
+    ctx = SimpleNamespace(session=None, extra={})
+    decision = await rail.resolve_interrupt(
+        ctx, call, {"approved": True}, {"": True, "bash_python": True},
+    )
+    assert type(decision).__name__ == "RejectResult"
+
+
+async def test_noninteractive_smart_policy_returns_deny_before_review(boundary, noninteractive):
+    rail = ProcessCliPermissionInterruptRail(
+        config={**boundary.config, "mode": "auto"}, tool_names=[], llm=None, model_name=None,
+        host=ToolPermissionHost(resolve_workspace_dir=lambda: boundary.project),
+    )
+    args = {"command": "python writer.py"}
+    invocation = SimpleNamespace(tool_name="bash", tool_args=args,
+                                 tool_call=ToolCall(id="call", type="function", name="bash", arguments=json.dumps(args)), ctx=None)
+    result = await OpenJiuwenPolicyEvaluator(rail).evaluate(invocation)
+    assert result.level == "deny"
 
 
 @pytest.mark.parametrize("command,old_level", [

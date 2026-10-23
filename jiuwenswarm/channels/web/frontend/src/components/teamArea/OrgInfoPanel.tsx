@@ -19,6 +19,7 @@ import { useOrganizationSnapshot } from '../../features/teamOrganization/useOrga
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 import {
   resolveOrganizationTeamIdentity,
+  resolveOrganizationTeamLabel,
   useOrganizationGroupCatalog,
 } from '../../features/teamOrganization/teamIdentity';
 
@@ -137,10 +138,7 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
   );
 
   const ownerTeam = organization?.owner_team_id ? runtimeTeamById.get(organization.owner_team_id) : undefined;
-  const ownerName =
-    resolveOrganizationTeamIdentity(ownerTeam, groups)?.displayName ||
-    ownerTeam?.agent_group_name?.trim() ||
-    organization?.owner_team_id;
+  const ownerName = resolveOrganizationTeamLabel(ownerTeam, groups, organization?.owner_team_id || '-');
 
   if (!organizationUiEnabled || !activeSessionId) return null;
 
@@ -227,7 +225,7 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
                     const runtimeTeam = team.team_id ? runtimeTeamById.get(team.team_id) : undefined;
                     const teamId = team.team_id || runtimeTeam?.team_name?.trim() || '-';
                     const identity = resolveOrganizationTeamIdentity(runtimeTeam, groups);
-                    const teamName = identity?.displayName || runtimeTeam?.agent_group_name?.trim() || teamId;
+                    const teamName = resolveOrganizationTeamLabel(runtimeTeam, groups, teamId);
                     const capabilities = team.capabilities?.length
                       ? team.capabilities
                       : (runtimeTeam?.capabilities ?? []);

@@ -73,7 +73,13 @@ export async function uploadDesignerAsset(file: File): Promise<{
   });
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(detail.slice(0, 160) || `HTTP ${response.status}`);
+    let code = '';
+    try {
+      code = String((JSON.parse(detail) as { error?: unknown }).error ?? '');
+    } catch {
+      code = '';
+    }
+    throw new Error(code || detail.slice(0, 160) || `HTTP ${response.status}`);
   }
   const payload = (await response.json()) as {
     files?: Array<{ path?: string; filename?: string; mime_type?: string }>;

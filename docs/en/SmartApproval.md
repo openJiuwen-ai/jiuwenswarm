@@ -32,6 +32,8 @@ The permission menu next to the Web message box offers these profiles:
 
 Profile changes take effect on the **next conversation turn**.
 
+Exception: delegating a task to the desktop automation subagent `cua_agent` shows a confirmation card under every profile, including Full Access, unless `react.subagents.cua_agent.require_approval` is `false`. See [Desktop Automation](DesktopAutomation.md).
+
 ## How to use it
 
 ### Enable it in the WebUI

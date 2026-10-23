@@ -1917,7 +1917,9 @@ def _node_execute_timeout_sec(node: DesignerGraphNode) -> float:
         return max(1800.0, video_tool_timeout_seconds())
     if pipeline == NODE_ROLE_COMPOSE:
         return 1800.0
-    return 1200.0
+    from jiuwenswarm.server.runtime.designer.media_generation import image_tool_timeout_seconds
+
+    return image_tool_timeout_seconds()
 
 
 class NodeAgentHost:

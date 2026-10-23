@@ -207,8 +207,18 @@ def register_video_live_handler(
         log_asr=lambda event: _append_asr_log(event),
     )
 
+    from .realtime_context import ContextRestoreExpired, RealtimeContextRestorer
+
+    context_restorer = RealtimeContextRestorer(search_manager)
+
     async def _realtime_config(ws, req_id, params, session_id):
-        del params, session_id
+        del session_id
+        try:
+            restored = await context_restorer.prepare(ws, str((params or {}).get("search_session_id") or "").strip())
+        except Exception as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
+            return
+        context_payload = {"context_restore": restored} if restored else {}
         if _video_live_mode() == "joyai":
             api_base, _, model = joyai_provider.model_config()
             if not api_base or not model:
@@ -220,7 +230,8 @@ def register_video_live_handler(
                 return
             await channel.send_response(
                 ws, req_id, ok=True,
-                payload={"provider": "joyai", "model": model, "reply_language": settings.reply_language()},
+                payload={"provider": "joyai", "model": model, "reply_language": settings.reply_language(),
+                         **context_payload},
             )
             return
         config = QwenOmniRealtimeConfig.from_environment()
@@ -246,6 +257,7 @@ def register_video_live_handler(
                 "voice": config.voice,
                 "tools": qwen_omni_tools(),
                 "reply_language": settings.reply_language(),
+                **context_payload,
             },
         )
 
@@ -328,6 +340,19 @@ def register_video_live_handler(
             return
         upstream_session_id = requested_session_id or str(session_id or f"joyai-{uuid.uuid4().hex}")
         search_session_id = search_session_id or upstream_session_id
+        restore_instructions = ""
+        restore_token = params.get("restore_token")
+        if restore_token:
+            try:
+                if request_kind != "user":
+                    raise ValueError("Restored context is allowed only for user requests")
+                restore_instructions = await context_restorer.instructions(ws, search_session_id, restore_token)
+            except ContextRestoreExpired as exc:
+                await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_EXPIRED")
+                return
+            except Exception as exc:
+                await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
+                return
         request_log = {
             "request_id": str(req_id),
             "joyai_session_id": upstream_session_id,
@@ -340,11 +365,12 @@ def register_video_live_handler(
         }
         await asyncio.to_thread(_append_joyai_log, {**request_log, "stage": "requested"})
         try:
-            model_instruction = (
-                joyai_provider.ground_user_instruction(instruction, tool_context, reply_language)
-                if request_kind == "user"
-                else instruction
-            )
+            model_instruction = instruction
+            if request_kind == "user":
+                model_instruction = (
+                    joyai_provider.ground_user_instruction(instruction, tool_context, reply_language, restore_instructions=restore_instructions)
+                    if restore_instructions else joyai_provider.ground_user_instruction(instruction, tool_context, reply_language)
+                )
             request_args = [frame_data_url, model_instruction, upstream_session_id]
             if frame_time_range:
                 request_args.append(frame_time_range)
@@ -628,9 +654,9 @@ def register_video_live_handler(
             content = ""
 
         previous_title: str | None = None
+        metadata = get_session_metadata(visible_session_id, cache_bust=True)
         if role == "user" and content.strip():
             # Refresh before history writes so a rename by AgentServer is respected.
-            metadata = get_session_metadata(visible_session_id, cache_bust=True)
             previous_title = str(metadata.get("title") or "")
             if previous_title == "Full-duplex conversation":
                 # Older plugin versions persisted this placeholder as a real title.
@@ -652,7 +678,7 @@ def register_video_live_handler(
             timestamp=timestamp,
             event_type=event_type,
             extra=extra,
-            mode="agent",
+            mode=str(metadata.get("mode") or ("team.design" if metadata.get("work_mode") == "design" else "agent")),
         )
         if previous_title is not None:
             title = str(get_session_metadata(visible_session_id).get("title") or "")
@@ -670,8 +696,24 @@ def register_video_live_handler(
             payload={"persisted": True, "event_id": event_id},
         )
 
+    async def _core_receipts(ws, req_id, params, session_id):
+        from .task_adapter import task_identity, task_agent_query
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        try:
+            owner, scope = task_identity(ws, str((params or {}).get("search_session_id") or ""))
+            if not scope.startswith("task-duplex:"):
+                raise ValueError("Core receipts require a saved conversation")
+            payload = await task_agent_query(agent_client, ReqMethod.VOICE_SESSION_RECEIPTS,
+                {"token": params.get("token"), "action": params.get("action")},
+                scope.removeprefix("task-duplex:"), owner)
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except Exception as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CORE_RECEIPT_REJECTED")
+
     handlers = {
         "video.realtime.config": _realtime_config,
+        "video.core.subscribe": _core_receipts,
         "video.joyai.frame": _joyai_frame,
         "video.realtime.telemetry": _realtime_telemetry,
         "video.conversation.append": _append_conversation,

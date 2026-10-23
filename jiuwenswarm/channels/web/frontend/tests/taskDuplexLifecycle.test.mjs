@@ -14,9 +14,10 @@ const outfile = resolve('node_modules/.cache/task-duplex-lifecycle/runtime.mjs')
 await build({
   stdin: {
     contents: `export { TaskFullDuplexAction } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexAction.tsx`)};
-      export { TaskFullDuplexRuntime } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
+      export { TaskFullDuplexRuntime, flushConversationHistory } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
       export { JoyAIProvider } from ${JSON.stringify(`${pluginRoot}/VideoLivePanel/joyaiProvider.ts`)};
       export { useChatStore } from './src/stores/chatStore.ts';
+      export { toastStore } from './src/components/ui/Toast/toastStore.ts';
       export { buildArtifacts } from './src/components/ArtifactsPanel/artifactCollection.ts';
       export { parseHistoryJsonFileToPreviewMessages } from './src/features/historyRestore.ts';
       export { artifactDownloadUrl, artifactTextPreviewUrl } from './src/components/ArtifactsPanel/filePreviewModel.ts';
@@ -54,6 +55,7 @@ await build({
             ? `
           import { forwardRef, useImperativeHandle } from 'react';
           export const VideoLivePanel = forwardRef(function Panel(props, ref) {
+            globalThis.__duplexHarness.panelProps = props;
             useImperativeHandle(ref, () => ({
               async startScreenDuplex(id, shareScreen, visualSource) {
                 if (globalThis.__duplexHarness.startError) throw new Error(globalThis.__duplexHarness.startError);
@@ -67,7 +69,7 @@ await build({
               setMicrophoneMuted(value) { globalThis.__duplexHarness.mic.push(value); },
               setSpeakerMuted(value) { globalThis.__duplexHarness.speaker.push(value); },
               stopScreenSharing() { props.onScreenSharingChange(false); },
-              stop() { props.onRuntimeState('idle'); },
+              stop() { globalThis.__duplexHarness.stops += 1; props.onRuntimeState('idle'); },
               deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); }
             }));
             return null;
@@ -89,6 +91,8 @@ await build({
 });
 const {
   TaskFullDuplexRuntime,
+  flushConversationHistory,
+  toastStore,
   TaskFullDuplexAction,
   startTaskFullDuplex,
   stopTaskFullDuplex,
@@ -111,7 +115,8 @@ let timers;
 const previousGlobals = new Map();
 
 beforeEach(async () => {
-  dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/' });
+  dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/', pretendToBeVisual: true });
+  dom.window.HTMLCanvasElement.prototype.getContext = () => null;
   for (const [name, value] of Object.entries({
     window: dom.window,
     document: dom.window.document,
@@ -129,6 +134,7 @@ beforeEach(async () => {
   };
   window.clearInterval = (id) => timers.delete(id);
   harness = {
+    stops: 0,
     starts: [],
     sharingRequests: [],
     visualSources: [],
@@ -300,11 +306,93 @@ test('switching conversations keeps old jobs attached to their owner and never p
   assert.equal(harness.mediaResults[0].job_id, 'job-b');
 });
 
+test('navigation preserves voice, controls and result delivery to the original conversation', async () => {
+  const renderPage = async (sessionId) => act(async () => root.render(createElement('div', null,
+    createElement(TaskFullDuplexRuntime, { ...props, sessionId }),
+    createElement('section', { 'data-testid': 'navigation-page' }, sessionId || 'Settings'),
+  )));
+  await act(async () => root.render(null));
+  await renderPage('conversation-a');
+  const scopeA = await start();
+  const stopsBefore = harness.stops;
+  await event('started', job(scopeA));
+  for (const sessionId of ['conversation-b', null, 'conversation-a']) {
+    await renderPage(sessionId);
+    assert.equal(harness.stops, stopsBefore);
+    assert.ok(document.querySelector('[data-testid="chat-panel-duplex-orb"]'));
+  }
+  await renderPage('conversation-b');
+  await act(async () => harness.panelProps.onConversationItem('user', 'Still talking to A'));
+  await event('completed', job(scopeA, { status: 'completed', result: 'Result for A' }));
+  assert.equal(harness.messages.at(-2)[0], 'conversation-a');
+  assert.equal(harness.messages.at(-1)[0], 'conversation-a');
+  assert.equal(harness.mediaResults.at(-1).job_id, 'job-a');
+  await act(async () => document.querySelector('[data-testid="chat-panel-duplex-exit"]').click());
+  assert.equal(harness.stops, stopsBefore + 1);
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 250)));
+  assert.equal(document.querySelector('[data-testid="chat-panel-duplex-orb"]'), null);
+});
+
+test('starting full-duplex in another conversation replaces the previous media run', async () => {
+  await start();
+  const stopsBefore = harness.stops;
+  await act(async () => root.render(createElement(TaskFullDuplexRuntime, { ...props, sessionId: 'conversation-b' })));
+  assert.equal(harness.stops, stopsBefore);
+  await start('conversation-b');
+  assert.equal(harness.stops, stopsBefore + 1);
+  await act(async () => harness.panelProps.onConversationItem('user', 'Talking to B now'));
+  assert.equal(harness.messages.at(-1)[0], 'conversation-b');
+});
+
+test('restart waits for saved conversation history and cancellation prevents a delayed start', async () => {
+  await start();
+  const request = harness.request.bind(harness);
+  let finishWrite;
+  harness.request = (method, params) => method === 'video.conversation.append'
+    ? new Promise(resolve => { finishWrite = resolve; })
+    : request(method, params);
+  await act(async () => harness.panelProps.onConversationItem('user', 'Remember Cedar'));
+  assert.equal(typeof finishWrite, 'function');
+  let restarting;
+  await act(async () => { restarting = startTaskFullDuplex('conversation-a'); });
+  assert.equal(harness.starts.length, 1, 'history must be saved before the new transport starts');
+  await act(async () => stopTaskFullDuplex());
+  await act(async () => { finishWrite({ persisted: true }); await restarting; });
+  assert.equal(harness.starts.length, 1, 'cancelled preparation must not reopen the microphone');
+});
+
 test('unregistered plugin sessions cannot inject results into the visible task', async () => {
   await start();
   await event('completed', job('standalone-plugin-session', { status: 'completed', result: 'unrelated' }));
   assert.equal(harness.messages.length, 0);
   assert.deepEqual(harness.tasks.sessions, {});
+});
+
+test('failed history writes block restart and retry the original events in order with stable IDs', async () => {
+  await start();
+  const request = harness.request.bind(harness);
+  const writes = [];
+  let fail = true;
+  harness.request = async (method, params) => {
+    if (method !== 'video.conversation.append') return request(method, params);
+    writes.push({ ...params });
+    if (fail) throw new Error('History storage unavailable');
+    return { persisted: true };
+  };
+  await act(async () => harness.panelProps.onConversationItem('user', 'Remember Cedar'));
+  await act(async () => harness.panelProps.onConversationItem('assistant', 'I will remember it'));
+  await assert.rejects(flushConversationHistory('conversation-a'), /History storage unavailable/);
+  await start('conversation-a');
+  assert.equal(harness.starts.length, 1, 'do not start with incomplete history');
+  assert.ok(toastStore.getSnapshot().some(notice => notice.content.includes('History storage unavailable')), 'surface the saving failure');
+  fail = false;
+  await start('conversation-a');
+  assert.equal(harness.starts.length, 2);
+  const firstId = writes[0].event_id;
+  assert.ok(firstId);
+  assert.ok(writes.slice(0, -1).every(event => event.event_id === firstId));
+  assert.notEqual(writes.at(-1).event_id, firstId);
+  assert.equal(writes.at(-1).content, 'I will remember it');
 });
 
 test('a late job acknowledgement after stop is still tracked and recovered', async () => {
@@ -540,6 +628,47 @@ test('typing keeps the native send button alongside the active orb and accessibl
   await act(async () => new Promise((resolve) => setTimeout(resolve, 250)));
   assert.equal(document.querySelector('[data-testid="chat-panel-duplex-orb"]'), null);
   assert.ok(document.querySelector('[data-testid="native-send"]'));
+});
+
+test('the undragged orb stays above the input frame and any pending card docked over it', async () => {
+  // Issue #8943: a fixed bottom offset let the orb cover the pending approval card.
+  const rect = (top, height) => () => ({ top, bottom: top + height, left: 300, right: 1000, width: 700, height, x: 300, y: top });
+  const renderComposer = (withCard) => act(async () => root.render(createElement('div', null,
+    createElement(TaskFullDuplexRuntime, { ...props, key: 'runtime' }),
+    withCard ? createElement('div', { key: 'card', 'data-testid': 'interaction-slot-root' }) : null,
+    createElement('div', { key: 'frame', className: 'chat-input-frame' }),
+  )));
+  await act(async () => root.render(null));
+  await renderComposer(true);
+  const card = document.querySelector('[data-testid="interaction-slot-root"]');
+  card.getBoundingClientRect = rect(560, 49);
+  document.querySelector('.chat-input-frame').getBoundingClientRect = rect(618, 150);
+  await start();
+  const orb = () => document.querySelector('[data-testid="chat-panel-duplex-controls"]');
+  // Layout changes are measured on the next animation frame.
+  const nextFrame = () => act(() => new Promise((resolve) => dom.window.requestAnimationFrame(() => resolve())));
+  // JSDOM viewport is 768px tall: 768 - card top 560 + 12px gap.
+  assert.equal(orb().style.bottom, '220px');
+  // An expanded card pushes the orb up with it.
+  card.getBoundingClientRect = rect(480, 129);
+  await act(async () => card.append(document.createElement('p')));
+  await nextFrame();
+  assert.equal(orb().style.bottom, '300px');
+  // A streamed reply mutates the page per commit; it must not force a layout per mutation.
+  let measured = 0;
+  card.getBoundingClientRect = () => { measured += 1; return rect(480, 129)(); };
+  await act(async () => {
+    for (let i = 0; i < 20; i += 1) {
+      card.append(document.createElement('span'));
+      await Promise.resolve(); // separate commits, as while a reply streams
+    }
+  });
+  await nextFrame();
+  assert.equal(measured, 1);
+  // Once the card is resolved the orb settles above the input frame.
+  await renderComposer(false);
+  await nextFrame();
+  assert.equal(orb().style.bottom, '162px');
 });
 
 async function mountAction() {

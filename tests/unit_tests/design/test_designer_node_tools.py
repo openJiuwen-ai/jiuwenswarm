@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import sys
@@ -56,6 +57,7 @@ def run_env() -> Any:
         "nodes": [
             {"id": "n_brief", "type": "text", "config": {"pipeline": "brief"}},
             {"id": "n_character", "type": "image", "config": {"pipeline": "character"}},
+            {"id": "n_clip", "type": "video", "config": {"pipeline": "clip"}},
         ],
     }
     run: dict[str, Any] = {"run_id": _RUN_ID, "graph_id": _GRAPH_ID, "node_states": {}}
@@ -120,6 +122,26 @@ async def test_media_generation_is_not_retried(node_tools, run_env, monkeypatch)
 
     assert result["success"] is False
     assert calls == ["image"]
+
+
+async def test_video_generation_cancelled_records_a_specific_error(
+    node_tools, run_env, monkeypatch
+):
+    """Any CancelledError path must note a real cause, not the receipt mask."""
+
+    async def cancelled(env, node, injected, kind):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(node_tools, "_run_handler", cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await node_tools.generate_node_output(
+            _ticket("n_clip"), member="clip", prompt="镜头视频"
+        )
+
+    error = run_env["bridge"].member_error_for("n_clip")
+    assert error
+    assert "structured_output" not in error
 
 
 async def test_rejected_submit_keeps_the_generation_error(node_tools, run_env, monkeypatch):

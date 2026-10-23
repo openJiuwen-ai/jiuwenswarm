@@ -7,8 +7,10 @@ import { MessageList } from '../../../components/ChatPanel/MessageList';
 import { InlineQuestionCard } from '../../../components/ChatPanel/InlineQuestionCard';
 import { InteractionSlot } from '../../../components/InteractionSlot';
 import { webClient } from '../../../services/webClient';
+import { ApplicationPluginTaskInputActions } from '../../../applicationPlugins/ApplicationPluginOutlet';
 import { useChatStore } from '../../../stores/chatStore';
 import { resolveChatModelSelection, useSessionStore } from '../../../stores/sessionStore';
+import { buildConversationModelPayload } from '../../../multi-session/state/conversationModelSelection';
 import type { Message, UserAnswer } from '../../../types';
 import {
   DESIGNER_TEAM_MODE,
@@ -115,9 +117,15 @@ export function DesignerChatPanel() {
   const [attachError, setAttachError] = useState('');
   const [sending, setSending] = useState(false);
   const activeSessionId = useChatStore((state) => state.activeSessionId);
+  // The canvas session owns the model the leader runs with; the binding above
+  // makes activeSessionId agree, but the graph's session id wins if they diverge.
+  const modelSessionId = sessionId ?? activeSessionId ?? '';
   const chatAvailableModels = useSessionStore((state) => state.chatAvailableModels);
   const selectedModelName = useSessionStore(
-    (state) => state.runtimes[activeSessionId ?? '']?.selectedModelName ?? null,
+    (state) => state.runtimes[modelSessionId]?.selectedModelName ?? null,
+  );
+  const selectedModelSelection = useSessionStore(
+    (state) => state.runtimes[modelSessionId]?.selectedModelSelection ?? null,
   );
   const defaultModelName = useSessionStore((state) => state.defaultModelName);
   const selectedModel = useMemo(
@@ -128,6 +136,17 @@ export function DesignerChatPanel() {
 
   const chatBusy = isProcessing || sending;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
+  const ensureDuplexSession = useCallback(async () => {
+    if (!sessionId || !domainGraph?.graph_id || isDesignerPreviewGraph(domainGraph)) return null;
+    try {
+      await useDesignerStore.getState().flushSave();
+      bindDesignerChatSession(sessionId);
+      return sessionId;
+    } catch (error) {
+      setAttachError(error instanceof Error ? error.message : t('designer.loadErrorFallback'));
+      return null;
+    }
+  }, [sessionId, domainGraph, t]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -244,12 +263,24 @@ export function DesignerChatPanel() {
       if (!sessionId) return false;
       const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestions[0];
       try {
+        if (pendingQuestion?.duplexJobId && pendingQuestion.request_id === requestId) {
+          await webClient.request('video.search.answer', {
+            session_id: sessionId, job_id: pendingQuestion.duplexJobId, request_id: requestId, answers,
+          });
+          useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
+          return true;
+        }
         await webClient.request('chat.send', {
           session_id: sessionId,
           query: '',
           mode: DESIGNER_TEAM_MODE,
           request_id: requestId,
           answers,
+          ...buildConversationModelPayload({
+            mode: DESIGNER_TEAM_MODE,
+            selectedModelName,
+            selectedModelSelection,
+          }),
           ...(source ? { source } : {}),
         });
         if (pendingQuestion) {
@@ -260,7 +291,7 @@ export function DesignerChatPanel() {
         return false;
       }
     },
-    [sessionId],
+    [sessionId, selectedModelName, selectedModelSelection],
   );
 
   const onKeyDown = useCallback(
@@ -360,16 +391,32 @@ export function DesignerChatPanel() {
                 <span className="designer-chat-panel__model-label">{modelLabel}</span>
               </span>
             ) : null}
-            <button
-              type="button"
-              className="designer-chat-panel__send"
-              disabled={chatBusy || !canSend}
-              onClick={handleSend}
-              aria-label={t('designer.chat.send')}
-              data-testid="designer-chat-panel-send"
-            >
-              <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
-            </button>
+            <ApplicationPluginTaskInputActions
+              eligible={
+                Boolean(sessionId && domainGraph?.graph_id && !isDesignerPreviewGraph(domainGraph)) &&
+                !chatBusy && attachments.length === 0
+              }
+              hasTextDraft={Boolean(draft.trim())}
+              sessionId={sessionId}
+              ensureSession={ensureDuplexSession}
+              labels={{
+                start: t('chat.taskFullDuplexStart'),
+                starting: t('chat.taskFullDuplexStarting'),
+                stop: t('chat.taskFullDuplexStop'),
+              }}
+              fallback={
+                <button
+                  type="button"
+                  className="designer-chat-panel__send"
+                  disabled={chatBusy || !canSend}
+                  onClick={handleSend}
+                  aria-label={t('designer.chat.send')}
+                  data-testid="designer-chat-panel-send"
+                >
+                  <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
+                </button>
+              }
+            />
           </div>
         </div>
       </div>

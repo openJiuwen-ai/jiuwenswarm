@@ -14,7 +14,7 @@ surface is a single-repo change.
 Tools kept (card names as registered by ability_manager.add_ability):
 
 * the design canvas toolset — designer_graph_* (design profile), the
-  authoring/execution tools (designer_graph_autorun / designer_run_graph),
+  authoring/execution tools (designer_graph_autorun / swarmflow),
   and the picked model/media tools (call_model / read_upstream /
   call_image_model / call_video_model / ffmpeg_compose / mix_audio).
 * ``ask_user`` — the structured-question contract with the user.
@@ -69,7 +69,7 @@ _KEEP_TOOL_NAMES: frozenset[str] = frozenset({
     "designer_node_run",
     "designer_node_complete",
     "designer_graph_autorun",
-    "designer_run_graph",
+    "swarmflow",
     "call_model",
     "read_upstream",
     "call_image_model",

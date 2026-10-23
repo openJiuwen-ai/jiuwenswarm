@@ -104,6 +104,7 @@
       "unsupported": "Only image, video, or audio files can be used as references."
     },
     "run": {
+      "moderationBlocked": "The model's content safety review blocked this generation. Tone down violent or graphic details in this node's prompt (imply them symbolically) and generate again.",
       "controlLabel": "Run controls",
       "execute": "Run",
       "continue": "Continue",
@@ -200,6 +201,7 @@
       "assetsHint": "Toggle the current-canvas asset list.",
       "upload": "Upload",
       "uploadHint": "Upload an image, video, or audio file as a new canvas node.",
+      "uploadTooLarge": "File too large: videos can be up to 1 GB, images and audio up to 32 MB.",
       "comfyuiHint": "Import a ComfyUI workflow (.json). Only vLLM-Omni Generate Image / Generate Video nodes are added.",
       "group": {
         "image": "Image",
@@ -571,8 +573,8 @@
       "deleteConfirm": "Delete “{{alias}}” ({{model}})?",
       "deleteConfirmTitle": "Delete model",
       "loadFailed": "Failed to load the model list. Please try again.",
-      "customName": "Custom name",
-      "customNamePlaceholder": "Enter a unique custom name",
+      "customName": "Model display name",
+      "customNamePlaceholder": "Enter a unique model display name",
       "protocol": "Protocol",
       "vendor": "Model provider",
       "model": "Model",
@@ -679,8 +681,10 @@
         "reasoningUnsupported": "The reasoning option “{{value}}” is unsupported. Select another option or use the default",
         "reasoningUnavailable": "Reasoning options have not loaded. Retry before saving",
         "contextWindowInvalid": "Enter a valid positive context window, such as 256K, 1M, or 1310720",
-        "aliasConflict": "Custom name must be globally unique and cannot match another model ID",
-        "modelNameConflict": "Model ID cannot match another configuration's custom name"
+        "aliasRequired": "Model display name is required",
+        "aliasConflict": "Model display name must be globally unique and cannot match another model's display name",
+        "modelNameConflict": "Model ID cannot match another configuration's model display name",
+        "modelGroupNameConflict": "Model group name must be globally unique and cannot match another model group name"
       },
       "testConnection": "Test connection",
       "test": "Test"
@@ -751,7 +755,8 @@
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
-      "multiModelCollaboration": "Multi-model collaboration"
+      "multiModelCollaboration": "Multi-model collaboration",
+      "toolOptimize": "Tool retrieval optimization"
     },
     "taskAsr": {
       "dialogTitle": "Configure speech transcription model",
@@ -936,6 +941,10 @@
         "title": "Enable Team Organization",
         "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
       },
+      "progressive_tool_optimize": {
+        "title": "Enable tool retrieval optimization",
+        "description": "When enabled, the model discovers tools on demand via the tool_search catalogue."
+      },
       "team_scheduled_dispatch_enabled": {
         "title": "Enable scheduled dispatch",
         "description": "The Leader assigns each task to a specific member, and members work through their assigned tasks in order."
@@ -1052,7 +1061,7 @@
         "starting": "Starting…",
         "summary": "{{count}} agent(s) selected, {{nodes}} node(s)",
         "emptyNodes": "The selection has no complete step to diagnose. Steps that are not fully covered were left out.",
-        "lastTurn": "The selection includes the main agent's last turn. Artifact evaluation and process-anomaly diagnosis will be attempted.",
+        "lastTurn": "The selection includes the main agent's last response. Artifact evaluation and process-anomaly diagnosis will be attempted.",
         "nodeLimit": "The selection contains {{count}} nodes, over the limit of {{limit}}. Narrow the range.",
         "running": "A diagnosis is already in progress",
         "noData": "There is no trajectory to diagnose yet"
@@ -1552,7 +1561,7 @@
     "videoGeneration": "Video generation",
     "modeAutoHarness": "Auto-Harness Mode",
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
-    "recording": "Recording... (click the microphone again to finish)",
+    "recording": "Recording... (click the stop button to finish)",
     "transcribing": "Transcribing speech...",
     "startRecording": "Voice input",
     "stopRecording": "Stop recording and transcribe",
@@ -2124,7 +2133,7 @@
       "apiBaseUrlInvalid": "API Base URL must start with http:// or https://",
       "modelNameRequired": "Model name is required. Select a model before saving",
       "modelNameTooLong": "Model name is too long. Use 100 characters or fewer",
-      "aliasTooLong": "Alias is too long. Use 100 characters or fewer",
+      "aliasTooLong": "Model display name is too long. Use 100 characters or fewer",
       "apiBaseTooLong": "API Base URL is too long. Use 512 characters or fewer"
     },
     "booleanLabels": {
@@ -2518,7 +2527,31 @@
       "reload": "Reload",
       "stop": "Stop",
       "addressPlaceholder": "Enter URL or search",
-      "unavailable": "Built-in browser unavailable"
+      "unavailable": "Built-in browser unavailable",
+      "downloadContent": "Downloads"
+    },
+    "downloads": {
+      "recentTitle": "Recent downloads",
+      "empty": "No downloads yet",
+      "downloading": "Downloading",
+      "paused": "Paused",
+      "cancelled": "Cancelled",
+      "failed": "Failed",
+      "justNow": "Just now",
+      "minutesAgo_one": "{{count}} minute ago",
+      "minutesAgo_other": "{{count}} minutes ago",
+      "hoursAgo_one": "{{count}} hour ago",
+      "hoursAgo_other": "{{count}} hours ago",
+      "daysAgo_one": "{{count}} day ago",
+      "daysAgo_other": "{{count}} days ago",
+      "close": "Close downloads",
+      "openFile": "Open",
+      "showInFolder": "Show in folder",
+      "fileDeleted": "Deleted",
+      "removeRecord": "Remove from list",
+      "pauseDownload": "Pause download",
+      "resumeDownload": "Resume download",
+      "cancelDownload": "Cancel download"
     }
   },
   "logsPanel": {

@@ -6,6 +6,7 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { toast } from '../ui/Toast/toastStore';
 import {
   Activity,
   ArrowRight,
@@ -87,8 +88,7 @@ import {
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../hooks';
-import { ApplicationPluginTaskRuntimes, flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
-import { generateUuidV4 } from '../../utils/uuid';
+import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { requestLogin, useAuthStore } from '../../stores/authStore';
 
@@ -1109,16 +1109,22 @@ export const ChatPanel = React.memo(function ChatPanel({
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
-  const [pickedGroupIdentity, setTeamGroupIdentity] = useState<AgentGroupIdentity | null>(null);
+  const storedTeamGroupIdentity = useSessionStore(
+    (s) => s.runtimes[conversationId]?.teamGroupIdentity ?? null,
+  );
+  const setTeamGroupIdentity = useSessionStore((s) => s.setTeamGroupIdentity);
+  const handleTeamGroupIdentityChange = useCallback(
+    (identity: AgentGroupIdentity | null) => {
+      if (conversationId) setTeamGroupIdentity(conversationId, identity);
+    },
+    [conversationId, setTeamGroupIdentity],
+  );
   // 输入框的专家团列表是异步的，切会话后到达前 Leader 头像会退成首字母；已绑定的会话
   // 直接用缓存的专家团身份兜底，列表到了再以它为准。
-  const boundGroupId = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.agentGroupBinding ?? null);
+  const boundGroupId = useSessionStore((s) => s.runtimes[conversationId]?.agentGroupBinding ?? null);
   const boundGroupIdentity = useAgentGroupVisualIdentity(boundGroupId)?.identity ?? null;
-  const teamGroupIdentity = pickedGroupIdentity ?? boundGroupIdentity;
+  const teamGroupIdentity = storedTeamGroupIdentity ?? boundGroupIdentity;
   const [agentGroupDeletedNoticeOpen, setAgentGroupDeletedNoticeOpen] = useState(false);
-  useEffect(() => {
-    setTeamGroupIdentity(null);
-  }, [activeSessionId]);
   useEffect(() => {
     setAgentGroupDeletedNoticeOpen(agentGroupUnavailable);
   }, [agentGroupUnavailable, activeSessionId]);
@@ -1243,93 +1249,6 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, []);
   // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
   const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
-  const handlePluginConversationItem = useCallback((sid: string, role: 'user' | 'assistant', text: string, presentation?: 'tool_result') => {
-    const content = text.trim();
-    if (!content) return;
-    useChatStore.getState().addMessage(sid, {
-      id: `full-duplex-${generateUuidV4()}`,
-      role,
-      content,
-      presentation,
-      keepExpanded: role === 'assistant',
-      timestamp: new Date().toISOString(),
-    });
-  }, []);
-  const handlePluginAssistantStream = useCallback(
-    (sid: string, update: { streamId: string; content: string; final: boolean }) => {
-      const streamId = update.streamId.trim();
-      if (!streamId) return;
-      const messageId = `full-duplex-${streamId}`;
-      const chatStore = useChatStore.getState();
-      const runtime = chatStore.getRuntime(sid);
-      const existing = runtime?.messages.find((message) => message.id === messageId);
-      const content = update.content.trim();
-
-      if (!existing && !content) return;
-      if (!existing) {
-        chatStore.addMessage(sid, {
-          id: messageId,
-          role: 'assistant',
-          content,
-          keepExpanded: true,
-          timestamp: new Date().toISOString(),
-          isStreaming: !update.final,
-          ...(update.final ? { completedAt: new Date().toISOString() } : {}),
-        });
-        if (!update.final && !runtime?.currentStreamId) {
-          chatStore.startStreaming(sid, messageId, messageId);
-        }
-        return;
-      }
-
-      chatStore.updateMessage(sid, messageId, {
-        ...(content ? { content } : {}),
-        keepExpanded: true,
-        isStreaming: !update.final,
-        ...(update.final ? { completedAt: new Date().toISOString() } : {}),
-      });
-      if (update.final && chatStore.getRuntime(sid)?.currentStreamId === messageId) {
-        chatStore.stopStreaming(sid, messageId);
-      }
-    },
-    [],
-  );
-  const handlePluginToolCall = useCallback(
-    (
-      sid: string,
-      toolCall: Parameters<ReturnType<typeof useChatStore.getState>['addToolCall']>[1],
-      startedAt?: string,
-    ) => {
-      useChatStore.getState().addToolCall(sid, toolCall, { startedAt });
-    },
-    [],
-  );
-  const handlePluginToolResult = useCallback(
-    (
-      sid: string,
-      toolResult: Parameters<ReturnType<typeof useChatStore.getState>['addToolResult']>[1],
-      updatedAt?: string,
-    ) => {
-      useChatStore.getState().addToolResult(sid, toolResult, { updatedAt });
-    },
-    [],
-  );
-  const handlePluginReasoning = useCallback((sid: string, content: string, atMs?: number) => {
-    useChatStore.getState().appendReasoning(sid, content, { atMs });
-  }, []);
-  const handlePluginFileItems = useCallback(
-    (
-      sid: string,
-      files: Parameters<ReturnType<typeof useChatStore.getState>['addFileItems']>[1],
-      timestampIso?: string,
-    ) => {
-      useChatStore.getState().addFileItems(sid, files, { timestampIso });
-    },
-    [],
-  );
-  const handlePluginReasoningClose = useCallback((sid: string, atMs?: number) => {
-    useChatStore.getState().closeReasoning(sid, { atMs });
-  }, []);
   const {
     turnsByMessageId: codeTurnsByMessageId,
     turnCardAnchors: codeTurnCardAnchors,
@@ -1680,11 +1599,16 @@ export const ChatPanel = React.memo(function ChatPanel({
   // 包装发送消息函数，添加滚动逻辑
   const handleSendMessage = useCallback(
     async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
-      if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
+      try {
+        if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
+      } catch (error) {
+        toast.open({ content: error instanceof Error ? error.message : t('network.requestFailed'), variant: 'error' });
+        return;
+      }
       setIsSending(true);
       onSendMessage(content, mediaItems, options);
     },
-    [activeSessionId, onSendMessage],
+    [activeSessionId, onSendMessage, t],
   );
 
   // 当发送消息时强制滚动到底部
@@ -1829,16 +1753,6 @@ export const ChatPanel = React.memo(function ChatPanel({
       onDragOver={handleDesktopFileDragOver}
       onDrop={handleDesktopFileDrop}
     >
-      <ApplicationPluginTaskRuntimes
-        sessionId={activeSessionId}
-        onConversationItem={handlePluginConversationItem}
-        onAssistantStream={handlePluginAssistantStream}
-        onReasoning={handlePluginReasoning}
-        onReasoningClose={handlePluginReasoningClose}
-        onToolCall={handlePluginToolCall}
-        onToolResult={handlePluginToolResult}
-        onFileItems={handlePluginFileItems}
-      />
       {turnChangeNotice ? (
         <div
           className="code-turn-change-toast"
@@ -2115,7 +2029,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   autoFocusKey={autoFocusKey}
                   onNavigateToSkills={onNavigateToSkills}
                   onNavigateToAgents={onNavigateToAgents}
-                  onAgentGroupIdentityChange={setTeamGroupIdentity}
+                  onAgentGroupIdentityChange={handleTeamGroupIdentityChange}
                   permissionProfile={permissionProfile}
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
@@ -2190,7 +2104,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             autoFocusKey={autoFocusKey}
             onNavigateToSkills={onNavigateToSkills}
             onNavigateToAgents={onNavigateToAgents}
-            onAgentGroupIdentityChange={setTeamGroupIdentity}
+            onAgentGroupIdentityChange={handleTeamGroupIdentityChange}
             permissionProfile={permissionProfile}
             onSavePermission={onSavePermission}
             onSetGoal={onSetGoal}

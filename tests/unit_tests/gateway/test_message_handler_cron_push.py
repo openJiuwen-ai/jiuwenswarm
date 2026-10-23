@@ -332,7 +332,8 @@ async def test_cron_command_id_survives_wire_projection_for_gateway_ack() -> Non
         "metadata": {"_jiuwenswarm_cron_owner_user_id": "user-a"},
         "body": {"command_id": "cmd-1", "action": "list", "status": "ok", "data": {}},
     })
-    async def _list_jobs() -> list[dict]:
+    async def _list_jobs(user_id=None) -> list[dict]:
+        assert user_id == "user-a"
         return []
 
     controller.list_jobs = _list_jobs

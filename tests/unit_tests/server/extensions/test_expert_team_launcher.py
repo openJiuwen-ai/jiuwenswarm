@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -13,6 +13,14 @@ from jiuwenswarm.agents.harness.team.expert_org.launcher import (
     JiuwenExpertTeamLauncher,
     _align_spec_storage,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_organization_identity_store(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_organization_identity_store.team_home",
+        lambda name: tmp_path / name,
+    )
 
 
 @pytest.mark.asyncio
@@ -262,6 +270,27 @@ def test_align_spec_storage_uses_donor_connection_string(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_expert_spec_snapshots_group_name_without_changing_team_alias(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    from jiuwenswarm.agents.swarm import assembly
+    from jiuwenswarm.server.runtime import extension_package_manager as catalog
+
+    identity = {"id": "asset", "name": "expert-group", "display_name": "专家团"}
+    monkeypatch.setattr(TeamManager, "load_default_team_spec", lambda _: _FakeSpec("owner"))
+    monkeypatch.setattr(catalog, "resolve_agent_group_display_identity", lambda _: identity)
+    monkeypatch.setattr(assembly, "enrich_team_spec_for_swarm", lambda *args, **kwargs: None)
+    spec = await JiuwenExpertTeamLauncher()._build_enriched_spec(
+        team_id="expert", session_id="session", agent_group_name="expert-group",
+        agent_group_package=SimpleNamespace(capabilities=("analysis",)),
+        display_name="Team alias",
+    )
+    assert spec.metadata["team_group_identity"] == identity
+    assert spec.metadata["agent_group_name"] == "expert-group"
+    assert spec.metadata["display_name"] == "Team alias"
+    assert spec.metadata["capabilities"] == ["analysis"]
+
+
+@pytest.mark.asyncio
 async def test_launch_creates_resolvable_team(
     monkeypatch: pytest.MonkeyPatch, agent_group_loader
 ) -> None:
@@ -284,6 +313,11 @@ async def test_launch_creates_resolvable_team(
     assert launched.team_id.startswith("org-expert-")
     assert len(launched.team_id.removeprefix("org-expert-")) == 12
     assert launched.agent_group_name == "sample-expert-group"
+    from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
+
+    assert load_organization_team_identity(launched.team_id) == {
+        "agent_group_name": "sample-expert-group", "display_name": "Sample",
+    }
     assert launched.leader_id == f"leader-{launched.team_id}"
     assert launched.capabilities == ("frontend",)
     assert launched.to_dict()["team_id"] == launched.team_id
@@ -295,6 +329,38 @@ async def test_launch_creates_resolvable_team(
     assert pooled is not None
     assert pooled.agent.team_backend.team_name == launched.team_id
     assert agent_group_loader == {"resolve": 1, "load": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [PermissionError("read only"), OSError("disk full"), ValueError("invalid identity"), RuntimeError("unexpected sidecar failure")])
+async def test_identity_write_failure_does_not_rollback_activated_team(monkeypatch, error):
+    from jiuwenswarm.agents.harness.team.expert_org import launcher as launcher_module
+
+    warnings = Mock(wraps=launcher_module.logger.warning)
+    monkeypatch.setattr(launcher_module.logger, "warning", warnings)
+    runtime = _FakeRuntime(_FakeDb())
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def build(**kwargs):
+        return _FakeSpec(kwargs["team_id"])
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", build)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.expert_org.launcher.save_organization_team_identity", fail
+    )
+    launched = await launcher.launch(
+        organization_id="org", agent_group_name="sample-expert-group", session_id="session"
+    )
+    assert await runtime.pool.get(launched.team_id) is not None
+    assert runtime.pause_calls == [(launched.team_id, "session")]
+    assert runtime.stop_calls == []
+    assert any(
+        "identity persistence failed" in call.args[0] and launched.team_id in call.args[1:]
+        for call in warnings.call_args_list
+    )
 
 
 @pytest.mark.asyncio

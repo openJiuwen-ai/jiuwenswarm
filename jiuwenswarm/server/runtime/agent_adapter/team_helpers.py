@@ -1741,13 +1741,14 @@ async def _wait_for_bounded_team_round_events(
     request_id: str,
     channel_id: str | None,
     session_id: str,
+    require_terminal: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Yield events until one Cron or Heartbeat Team round is complete."""
+    """Yield events until one bounded Team round is complete."""
     while True:
         try:
             event = await asyncio.wait_for(request_queue.get(), timeout=0.1)
         except asyncio.TimeoutError:
-            if cron_team_round_should_end(round_state):
+            if not require_terminal and cron_team_round_should_end(round_state):
                 break
             # Fallback: if the underlying team stream task has ended, no more
             # events will arrive.  Break so the agent stream can finalise and
@@ -1791,6 +1792,8 @@ async def _wait_for_bounded_team_round_events(
             and event.get("is_complete") is True
         ):
             break
+        if require_terminal:
+            continue
         apply_cron_team_round_event(round_state, event)
         if cron_team_round_should_end(round_state):
             if _cron_solo_harness_end_pending(round_state):
@@ -2717,6 +2720,7 @@ async def _start_team_stream_round(
     team_leader_identity: dict[str, Any] | None = None,
     generation: int | None = None,
     attach_waiter: bool = True,
+    request_scoped_waiter: bool = False,
     run_context: object | None = None,
     cross_session_marker: dict[str, Any] | None = None,
 ) -> asyncio.Queue | None:
@@ -2736,8 +2740,10 @@ async def _start_team_stream_round(
         # second one would duplicate every event to the frontend and double
         # the admission ownership. Exclusive (Heartbeat) waiters keep their
         # takeover semantics and are not blocked by an existing waiter.
+        # Request-scoped consumers also need their own terminal receipt; the
+        # page's persistent subscription cannot settle their managed tasks.
         already_attached = team_manager.has_interactive_waiter(session_id)
-        if exclusive_waiter or not already_attached:
+        if exclusive_waiter or request_scoped_waiter or not already_attached:
             request_queue = _new_team_event_queue()
             _add_team_waiter(
                 team_manager,
@@ -2791,6 +2797,19 @@ async def _start_team_stream_round(
 
 
 async def process_team_message_stream(
+    request: Any,
+    inputs: dict[str, Any],
+    deep_agent: DeepAgent,
+) -> AsyncIterator[AgentResponseChunk]:
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.design_execution import bind_design_voice_task
+
+    async with bind_design_voice_task(request, inputs):
+        async with aclosing(_process_team_message_stream_with_design(request, inputs, deep_agent)) as stream:
+            async for chunk in stream:
+                yield chunk
+
+
+async def _process_team_message_stream_with_design(
     request: Any,
     inputs: dict[str, Any],
     deep_agent: DeepAgent,
@@ -3038,7 +3057,13 @@ async def _process_team_message_stream(
         if has_execution_context
         else _is_cron_request_id(rid)
     )
-    is_bounded_round = is_heartbeat_request or is_cron_request
+    is_design_task = (
+        channel_id == "video_tool"
+        and (request.params or {}).get("mode") == "team.design"
+        and bool((request.params or {}).get("managed_task_binding"))
+    )
+    is_bounded_user_request = is_cron_request or is_design_task
+    is_bounded_round = is_heartbeat_request or is_bounded_user_request
     admission = getattr(heartbeat_service, "admission", None)
     # A cross-Session turn is executed by the mailbox worker, which already
     # holds this turn's ``session_message_run_id`` admission. Taking the
@@ -3136,7 +3161,7 @@ async def _process_team_message_stream(
             if admission is not None:
                 _ensure_interactive_round(terminal_armed=is_first_request)
             return
-        if is_cron_request and admission is not None:
+        if is_bounded_user_request and admission is not None:
             await admission.begin_bounded_team_user(session_id)
             cron_user_admitted = True
         try:
@@ -3175,7 +3200,7 @@ async def _process_team_message_stream(
                     generation=generation,
                 )
             return
-        if is_cron_request:
+        if is_bounded_user_request:
             if not accepted:
                 await _release_team_round(
                     team_manager,
@@ -3269,16 +3294,18 @@ async def _process_team_message_stream(
             is_first_request=is_first_request,
         )
         team_leader_identity: dict[str, Any] | None = None
+        team_group_identity: dict[str, Any] | None = None
         if agent_group_name:
             from jiuwenswarm.server.runtime.extension_package_manager import (
+                normalize_agent_group_display_identity,
                 normalize_agent_group_leader_identity,
+                resolve_agent_group_display_identity,
                 resolve_agent_group_leader_identity,
             )
 
+            stored_metadata = get_session_metadata(session_id, cache_bust=True)
             stored_identity = normalize_agent_group_leader_identity(
-                get_session_metadata(session_id, cache_bust=True).get(
-                    "team_leader_identity"
-                )
+                stored_metadata.get("team_leader_identity")
             )
             if stored_identity is not None:
                 team_leader_identity = stored_identity
@@ -3290,6 +3317,25 @@ async def _process_team_message_stream(
                 except Exception as identity_exc:  # noqa: BLE001 — identity is optional
                     logger.warning(
                         "[TeamHelpers] unable to resolve AgentGroup leader identity: "
+                        "session_id=%s agent_group_name=%s error=%s",
+                        session_id,
+                        agent_group_name,
+                        identity_exc,
+                    )
+            team_group_identity = normalize_agent_group_display_identity(
+                stored_metadata.get("team_group_identity"),
+                binding_name=agent_group_name,
+            )
+            if team_group_identity is None and (
+                persist_agent_group or is_first_request
+            ):
+                try:
+                    team_group_identity = resolve_agent_group_display_identity(
+                        agent_group_name
+                    )
+                except Exception as identity_exc:  # noqa: BLE001 — identity is optional
+                    logger.warning(
+                        "[TeamHelpers] unable to resolve AgentGroup display identity: "
                         "session_id=%s agent_group_name=%s error=%s",
                         session_id,
                         agent_group_name,
@@ -3461,6 +3507,8 @@ async def _process_team_message_stream(
             }
             if team_leader_identity is not None:
                 metadata_kwargs["team_leader_identity"] = team_leader_identity
+            if team_group_identity is not None:
+                metadata_kwargs["team_group_identity"] = team_group_identity
             update_session_metadata(**metadata_kwargs)
         _persist_team_file_monitor_roots(session_id, team_spec)
         # Drop unreachable MCPs before the team runtime starts so one bad MCP
@@ -3828,6 +3876,7 @@ async def _process_team_message_stream(
                             request_id=rid,
                             channel_id=channel_id,
                             session_id=session_id,
+                            require_terminal=is_design_task,
                         ):
                             _cron_agent_ref, _cron_meta = _build_team_event_chunk_meta(event)
                             yield AgentResponseChunk(
@@ -3933,6 +3982,7 @@ async def _process_team_message_stream(
                         if has_execution_context
                         else True
                     ),
+                    request_scoped_waiter=is_bounded_user_request,
                     run_context=run_context,
                     cross_session_marker=(
                         cross_session_marker if isinstance(cross_session_marker, dict) else None
@@ -3992,6 +4042,7 @@ async def _process_team_message_stream(
                     request_id=rid,
                     channel_id=channel_id,
                     session_id=session_id,
+                    require_terminal=is_design_task,
                 ):
                     _cron_agent_ref, _cron_meta = _build_team_event_chunk_meta(event)
                     yield AgentResponseChunk(

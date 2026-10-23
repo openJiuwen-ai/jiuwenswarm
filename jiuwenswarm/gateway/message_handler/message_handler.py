@@ -128,6 +128,9 @@ _INTERRUPT_RESUME_SOURCES = frozenset({
     "evolution_interrupt",
 })
 _A2UI_OPEN_TAG_MARKER = "<a2ui-json>"
+# 只有会进入 Agent turn 的流式请求才需要刷新 AgentServer 的 cron 工具视图。
+# 读取类流(history.get 等)不产生 turn,却会按任务属主触发项目准入 RPC。
+_CRON_SNAPSHOT_STREAM_METHODS = frozenset({"chat.send", "command.goal"})
 # before_chat_request 钩子可改写的用户可见参数：变更时实时回推前端
 # （chat.message_updated），避免前端气泡/模型显示停留在改写前的值。
 _BEFORE_CHAT_HOOK_WATCH_PARAM_KEYS = ("query", "model_name")
@@ -3547,13 +3550,7 @@ class MessageHandler(ABC):
 
         try:
             if action == "list":
-                data = await cc.list_jobs()
-                if owner_user_id:
-                    data = [
-                        job
-                        for job in data
-                        if str(job.get("user_id") or "").strip() == owner_user_id
-                    ]
+                data = await cc.list_jobs(user_id=owner_user_id or None)
             elif action == "get":
                 job_id = str(params.get("job_id") or "")
                 if params.get("authoritative") is True:
@@ -5215,6 +5212,10 @@ class MessageHandler(ABC):
         Failure is non-fatal for ordinary chat; mutation attempts will still
         report their Gateway delivery failure through the existing path.
         """
+        # 读取类流不进入 Agent turn,不会调用 cron 工具;对它们刷新快照只会
+        # 为任务列表付出按属主路由的准入 RPC。
+        if str(getattr(env, "method", "") or "") not in _CRON_SNAPSHOT_STREAM_METHODS:
+            return
         from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
 
         if not is_agentos_routing_client(self.agent_client):
@@ -5230,12 +5231,7 @@ class MessageHandler(ABC):
             )
             return
         try:
-            jobs = await controller.list_jobs()
-            user_jobs = [
-                job
-                for job in jobs
-                if str(job.get("user_id") or "").strip() == user_id
-            ]
+            jobs = await controller.list_jobs(user_id=user_id)
             from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
             from jiuwenswarm.common.schema.message import ReqMethod
 
@@ -5244,7 +5240,7 @@ class MessageHandler(ABC):
                 channel_id=env.channel or "web",
                 session_id=env.session_id,
                 req_method=ReqMethod.CRON_JOBS_SYNC,
-                params={"jobs": user_jobs},
+                params={"jobs": jobs},
                 is_stream=False,
                 timestamp=time.time(),
                 user_id=user_id,

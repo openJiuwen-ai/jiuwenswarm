@@ -137,6 +137,13 @@ def test_execution_id_requires_non_empty_runtime_payload() -> None:
     assert execution_id_from_event(event("chat.delta")) is None
 
 
+def test_steer_preserves_noninteractive_permission_policy() -> None:
+    root = root_request()
+    root.params["supports_permission_approval"] = False
+    request = build_steer_request(root, text="continue", execution_id="execution-1")
+    assert request.params["supports_permission_approval"] is False
+
+
 @pytest.mark.asyncio
 async def test_pipe_line_reader_accepts_parent_forwarded_input() -> None:
     reader = PipeLineReader(io.BytesIO("启动前补充\n".encode()))
