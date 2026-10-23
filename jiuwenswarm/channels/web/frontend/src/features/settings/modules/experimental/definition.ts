@@ -18,6 +18,11 @@ export const experimentalModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
+      id: 'computer-control',
+      titleKey: 'settingsPanel.experimental.computerControl',
+      items: [{ id: 'cua-agent-enabled', component: 'switch', key: 'cua_agent_enabled' }],
+    },
+    {
       id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
       items: [{ id: 'external-cli-custom-agents', component: 'custom', render: ExternalCliCustomAgentsItem }],
