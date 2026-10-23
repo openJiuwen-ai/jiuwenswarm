@@ -18,7 +18,6 @@ import { FreeModelsSettings } from './FreeModelsSettings';
 import { ModelDialog } from './ModelDialog';
 import { ModelGroupDialog } from './ModelGroupDialog';
 import { ModelGroupsSettings } from './ModelGroupsSettings';
-import { JevSettings } from './JevSettings';
 import { parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
 import { formatModelMetadata, getModelDisplayName } from './modelPresentation';
 import {

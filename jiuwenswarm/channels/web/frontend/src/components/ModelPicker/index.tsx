@@ -129,7 +129,7 @@ export default function ModelPicker({
     (selection?.type === 'model_group'
       ? selectionLabel || t('chat.modelSelector.placeholder')
       : selected
-        ? selected.alias || selected.model_name
+        ? getModelDisplayName(selected)
         : selectionLabel || value || t('chat.modelSelector.placeholder'));
   const groups = [
     {

@@ -351,7 +351,7 @@ test('custom models never submit vendor metadata and legacy connection fields re
   assert.equal('endpoint_profile' in edited, false);
 });
 
-test('alias validation is optional, global, exact, and excludes the edited row by model_id or origin_index', () => {
+test('display name validation is required, unique among display names, and excludes the edited row', () => {
   const models = [
     {
       model_name: 'same-model',
@@ -395,14 +395,19 @@ test('alias validation is optional, global, exact, and excludes the edited row b
       .model_name,
     undefined,
   );
-  // Model ID may match another configuration's display name (#5808).
-  assert.equal(
-    validateModelDraft({ ...baseDraft, alias: 'unique', model_name: 'second' }, models, undefined, catalog, t)
-      .model_name,
-    undefined,
+  assert.match(
+    validateModelDraft(
+      { ...upsertDraft, alias: 'other-alias' },
+      upsertModels,
+      { model_id: 'mdl_self' },
+      catalog,
+      t,
+    ).alias,
+    /aliasConflict/,
   );
 
-  // Empty-alias peers still display model_name; that visible name must stay unique.
+  // Legacy peers with empty alias + same model_name: seeding display name from model_name
+  // must not block editing endpoint/key (#5646 / review P2).
   const legacyDuplicateModels = [
     {
       model_id: 'mdl_a',
@@ -421,7 +426,7 @@ test('alias validation is optional, global, exact, and excludes the edited row b
       model_provider: 'OpenAI',
     },
   ];
-  assert.match(
+  assert.equal(
     validateModelDraft(
       { ...baseDraft, alias: 'GLM-5.2', model_name: 'GLM-5.2' },
       legacyDuplicateModels,
@@ -429,27 +434,20 @@ test('alias validation is optional, global, exact, and excludes the edited row b
       catalog,
       t,
     ).alias,
-    /aliasConflict/,
+    undefined,
   );
   assert.match(
     validateModelDraft(
-      { ...baseDraft, alias: 'GLM-5.2', model_name: 'glm-5.2' },
-      legacyDuplicateModels,
-      undefined,
+      { ...baseDraft, alias: 'GLM-5.2', model_name: 'GLM-5.2' },
+      [
+        { ...legacyDuplicateModels[0], alias: 'GLM-5.2' },
+        legacyDuplicateModels[1],
+      ],
+      { model_id: 'mdl_b' },
       catalog,
       t,
     ).alias,
     /aliasConflict/,
-  );
-  assert.equal(
-    validateModelDraft(
-      { ...baseDraft, alias: 'GLM-5.2-custom', model_name: 'GLM-5.2' },
-      legacyDuplicateModels,
-      { model_id: 'mdl_a' },
-      catalog,
-      t,
-    ).alias,
-    undefined,
   );
 
   // Upsert edit path: entries use model_id without origin_index. Display name equal to own
@@ -492,47 +490,19 @@ test('alias validation is optional, global, exact, and excludes the edited row b
     ).alias,
     /aliasConflict/,
   );
+});
 
-  // Upsert edit path: entries use model_id without origin_index. Alias equal to own
-  // model_name must not be treated as a conflict with self.
-  const upsertModels = [
-    {
-      model_id: 'mdl_self',
-      model_name: 'GLM-5.3-Flash',
-      alias: 'GLM-5.3-Flash',
-      api_base: 'https://custom.example/v1',
-      api_key: 'secret',
-      model_provider: 'OpenAI',
-    },
-    {
-      model_id: 'mdl_other',
-      model_name: 'other-model',
-      alias: 'other-alias',
-      api_base: 'https://two.example/v1',
-      api_key: 'two',
-      model_provider: 'OpenAI',
-    },
-  ];
-  const upsertDraft = {
-    ...baseDraft,
-    alias: 'GLM-5.3-Flash',
-    model_name: 'GLM-5.3-Flash',
-  };
-  assert.match(validateModelDraft(upsertDraft, upsertModels, undefined, catalog, t).alias, /aliasConflict/);
-  assert.equal(
-    validateModelDraft(upsertDraft, upsertModels, { model_id: 'mdl_self' }, catalog, t).alias,
-    undefined,
-  );
+test('model group dialog validates unique group names and vendor switch keeps display-name sync', () => {
+  const groupDialog = source('src/features/settings/modules/models/ModelGroupDialog.tsx');
+  const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
+  assert.match(groupDialog, /modelGroups/);
+  assert.match(groupDialog, /modelGroupNameConflict/);
+  assert.match(groupDialog, /item === group \|\|[\s\S]{0,120}model_group_id/);
   assert.match(
-    validateModelDraft(
-      { ...upsertDraft, alias: 'other-alias' },
-      upsertModels,
-      { model_id: 'mdl_self' },
-      catalog,
-      t,
-    ).alias,
-    /aliasConflict/,
+    dialog,
+    /alias === previousModelName \|\| alias === previousSync[\s\S]{0,80}alias: ''/,
   );
+  assert.match(dialog, /aliasSyncedFromModelName\.current = ''/);
 });
 
 test('model API keys accept 2048 characters and reject longer values', () => {

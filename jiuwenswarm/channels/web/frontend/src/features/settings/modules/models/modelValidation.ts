@@ -94,11 +94,10 @@ export function validateModelDraft(
 
   const identity = normalizeEditingIdentity(editingSelf);
   const others = models.filter((model) => model.is_agentos !== true && !isEditingSelf(model, identity));
-  if (
-    alias &&
-    !errors.alias &&
-    others.some((model) => getModelDisplayName(model).trim() === alias)
-  ) {
+  // Uniqueness is among explicit display names (alias) only. Empty-alias historical
+  // rows still fall back to model_name in the UI, but must not block editing peers that
+  // share the same model_name when the draft alias was only seeded from model_name.
+  if (alias && !errors.alias && others.some((model) => model.alias?.trim() === alias)) {
     errors.alias = t('settingsPanel.models.validation.aliasConflict');
   }
 
