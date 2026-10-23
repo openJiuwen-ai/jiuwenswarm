@@ -1,6 +1,7 @@
 import type { ModelEntry } from '../../../../types';
 import { displayModelProtocol } from './modelAdapters';
-import { getVendorLabel, type ModelTranslate } from './ModelProviderSelect';
+import type { ModelTranslate } from './modelTranslation';
+import { getVendorLabel } from './modelVendorLabels';
 
 /** Primary label shown in pickers and cards. */
 export function getModelDisplayName(model: ModelEntry): string {
