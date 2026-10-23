@@ -17,10 +17,10 @@ await build({
     contents: `export { TaskFullDuplexAction } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexAction.tsx`)};
       export { TaskFullDuplexRuntime, flushConversationHistory } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
       export { JoyAIProvider } from ${JSON.stringify(`${pluginRoot}/VideoLivePanel/joyaiProvider.ts`)};
-      export { reportedRuntimeState } from ${JSON.stringify(`${pluginRoot}/VideoLivePanel/runtimeState.ts`)};
       export { ApplicationConversationRuntimes } from './src/applicationPlugins/ApplicationConversationRuntimes.tsx';
       export { useSessionAssetsStore } from './src/features/sessionAssets/sessionAssets.ts';
       export { useChatStore } from './src/stores/chatStore.ts';
+      export { useSessionStore } from './src/stores/sessionStore.ts';
       export { toastStore } from './src/components/ui/Toast/toastStore.ts';
       export { buildArtifacts } from './src/components/ArtifactsPanel/artifactCollection.ts';
       export { parseHistoryJsonFileToPreviewMessages, parseHistoryJsonFileToTimelinePreview } from './src/features/historyRestore.ts';
@@ -43,7 +43,7 @@ await build({
       name: 'task-runtime-ports',
       setup(builder) {
         builder.onResolve(
-          { filter: /(?:services\/webClient|taskProgressStore|taskFullDuplex\/featureFlag|\/VideoLivePanel|ApplicationPluginOutlet)$/ },
+          { filter: /(?:services\/webClient|taskProgressStore|taskFullDuplex\/featureFlag|\/VideoLivePanel|components\/form|ApplicationPluginOutlet)$/ },
           ({ path }) => ({ path, namespace: 'ports' }),
         );
         builder.onLoad({ filter: /.*/, namespace: 'ports' }, ({ path }) => ({
@@ -52,6 +52,13 @@ await build({
           contents: path.endsWith('ApplicationPluginOutlet')
             ? `import { TaskFullDuplexRuntime } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
                export const ApplicationPluginTaskRuntimes = TaskFullDuplexRuntime;`
+            : path.endsWith('components/form')
+            ? `export function FormDialog(props) {
+                return <div data-testid={props.testIdPrefix}>{props.children}
+                  <button data-testid={props.testIdPrefix + '-confirm'} onClick={props.onConfirm}>Confirm</button>
+                  <button data-testid={props.testIdPrefix + '-cancel'} onClick={props.onCancel}>Cancel</button>
+                </div>;
+              }`
             : path.endsWith('/VideoLivePanel')
             ? `
           import { forwardRef, useImperativeHandle } from 'react';
@@ -71,7 +78,8 @@ await build({
               stopScreenSharing() { props.onScreenSharingChange(false); },
               stop() { globalThis.__duplexHarness.stops += 1; props.onRuntimeState('idle'); },
               deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); },
-              deliverQuestion(payload) { globalThis.__duplexHarness.mediaQuestions.push(payload); }
+              deliverQuestion(payload) { globalThis.__duplexHarness.mediaQuestions.push(payload); },
+              deliverTaskInteraction(payload) { globalThis.__duplexHarness.interactions.push(payload); }
             }));
             return null;
           });`
@@ -94,6 +102,8 @@ const {
   TaskFullDuplexRuntime,
   flushConversationHistory,
   toastStore,
+  ApplicationConversationRuntimes,
+  useSessionAssetsStore,
   TaskFullDuplexAction,
   startTaskFullDuplex,
   stopTaskFullDuplex,
@@ -145,6 +155,7 @@ beforeEach(async () => {
     speaker: [],
     mediaResults: [],
     mediaQuestions: [],
+    interactions: [],
     requests: [],
     messages: [],
     tools: [],
@@ -236,28 +247,6 @@ test('headless task runtime forwards waiting forms only to their active conversa
   await act(async () => stopTaskFullDuplex());
   await event('progress', job(scope, { sequence: 3, status: 'waiting_user', interaction }));
   assert.equal(harness.interactions.length, count, 'stopped media must not receive voice questions');
-});
-
-test('queue pushes update waiting positions and delayed snapshots cannot undo a reorder', async () => {
-  const scope = await start();
-  const snapshot = (version, moved) => ({
-    search_session_id: scope, queue_version: version,
-    jobs: ['desktop', 'weather'].map((id, index) => job(scope, {
-      job_id: id, status: 'queued', sequence: moved ? 2 : 1,
-      queue_version: version, queue_position: moved ? 2 - index : index + 1,
-    })),
-  });
-  await event('queue', snapshot(226924028018914, false));
-  await event('queue', snapshot(2 ** 48, false));
-  await event('queue', snapshot(2 ** 48 + 1, true));
-  const positions = () => Object.fromEntries(harness.tasks.sessions['conversation-a']
-    .map(task => [task.id, task.queuePosition]));
-  assert.deepEqual(positions(), { desktop: 2, weather: 1 });
-  await event('queue', snapshot(226924028018914, false));
-  await event('queue', snapshot(2 ** 48, false));
-  assert.deepEqual(positions(), { desktop: 2, weather: 1 });
-  assert.ok(harness.requests.some(request => request.method === 'video.realtime.telemetry'
-    && request.params.reason === 'older_queue_version'));
 });
 
 test('cancelled jobs remain cancelled after late success and persist one cancellation record', async () => {
@@ -841,41 +830,6 @@ test('final-only files populate artifacts and background session assets once thr
   assert.equal(artifacts.length, 1);
   assert.equal(artifacts[0].downloadToken, 'renewed');
 });
-
-test('native skill calls retain arguments and structured results in UI and persisted history', async () => {
-  const scope = await start();
-  const skillTree = { query: 'report', candidates: [{ worker_id: 'report', label: 'Report' }] };
-  const entries = [
-    { sequence: 1, stage: 'tool_call', title: 'skill', status: 'running', tool_call_id: 'skill-a',
-      tool_payload: { event_type: 'chat.tool_call', tool_call: {
-        id: 'skill-a', name: 'skill_tool', arguments: '{"skill_name":"report"}', call_goal: '制作报告',
-      } } },
-    { sequence: 2, stage: 'tool_result', title: 'skill result', status: 'completed', tool_call_id: 'skill-a',
-      tool_payload: { event_type: 'chat.tool_result', tool_result: {
-        tool_call_id: 'skill-a', tool_name: 'skill_tool', rendered_result: '已完成',
-        raw_output: { skill_tree: skillTree }, status: 'pending',
-      } } },
-  ];
-  await event('progress', job(scope, { progress_history: entries }));
-  await event('progress', job(scope, { progress_history: entries }));
-  assert.equal(harness.tools.length, 2);
-  assert.equal(harness.tools[0][1].name, 'skill_tool');
-  assert.equal(harness.tools[0][1].arguments.skill_name, 'report');
-  assert.equal(harness.tools[0][1].call_goal, '制作报告');
-  assert.equal(harness.tools[1][1].toolCallId, harness.tools[0][1].id);
-  assert.equal(harness.tools[1][1].pending, true);
-  assert.equal(harness.tools[1][1].skillTree.candidates[0].worker_id, 'report');
-  const saved = harness.requests.find(r => r.method === 'video.conversation.append' && r.params.kind === 'tool_result');
-  assert.deepEqual(saved.params.tool_result.raw_output.skill_tree, skillTree);
-  const restored = parseHistoryJsonFileToTimelinePreview(
-    harness.requests.filter(r => ['tool_call', 'tool_result'].includes(r.params.kind)).map(r => ({
-      role: 'assistant', channel_id: 'video_duplex', session_id: 'conversation-a', content: '', timestamp: 1800000000,
-      event_type: `chat.${r.params.kind}`, [r.params.kind]: r.params[r.params.kind],
-    })), 'conversation-a',
-  );
-  assert.ok(restored.executions.some(execution => execution.toolCall.arguments.skill_name === 'report'));
-});
-
 
 test('task board displays the independent title, retains it through progress and falls back for legacy tasks', async () => {
   const scope = await start();

@@ -11,14 +11,13 @@ import {
   useApplicationTaskStore,
 } from "../../../channels/web/frontend/src/applicationPlugins/taskProgressStore";
 import { useSessionStore } from "../../../channels/web/frontend/src/stores/sessionStore";
-import { useChatStore } from "../../../channels/web/frontend/src/stores/chatStore";
-import { APPROVAL_SOURCES } from "./VideoLivePanel/taskPrompts";
 import { VideoLivePanel, type VideoLivePanelHandle } from "./VideoLivePanel";
 import type {
   SearchJobPayload,
   SearchProgressEntry,
 } from "./VideoLivePanel/types";
 import { TaskFullDuplexControls } from "./TaskFullDuplexAction";
+import { getFileIdentityKey } from "../../../channels/web/frontend/src/utils/fileDownloadDedup";
 import { TaskDuplexJobs } from "./taskDuplexJobs";
 import { describeDuplexError } from "./duplexErrorMessage";
 import { applyDuplexSubagentEvent } from "./duplexSubagentEvents";
@@ -35,13 +34,6 @@ const WAIT_REASON_LABELS: Record<string, string> = {
   dependency_pending: "等待前置任务完成",
   capacity_order_or_resource: "等待执行名额、队列顺序或资源释放",
 };
-
-function traceTaskUi(event: string, fields: Record<string, unknown>): void {
-  void webRequest("video.realtime.telemetry", {
-    event: `task_trace_${event}`, client_time: new Date().toISOString(),
-    client_build: "task-trace-v1", ...fields,
-  }, { timeoutMs: 5_000 }).catch(() => undefined);
-}
 
 const BLOCKER_STATUS_LABELS: Record<string, string> = {
   running: "执行中",
@@ -361,15 +353,6 @@ export function TaskFullDuplexRuntime({
         queuePosition: payload.queue_position ?? previousTask?.queuePosition,
         queueVersion: payload.queue_version ?? previousTask?.queueVersion,
       });
-      const stored = useApplicationTaskStore.getState().sessions[targetSessionId]
-        ?.find((task) => task.id === jobId);
-      traceTaskUi("progress_store_observed", {
-        job_id: jobId, search_session_id: payload.search_session_id,
-        status, sequence: payload.sequence ?? latest?.sequence ?? 0,
-        queue_version: payload.queue_version, queue_position: payload.queue_position,
-        stored_status: stored?.status, stored_sequence: stored?.sequence,
-        stored_queue_version: stored?.queueVersion, stored_queue_position: stored?.queuePosition,
-      });
       if (runtimeSessionIdRef.current === targetSessionId)
         panelRef.current?.deliverTaskInteraction(payload);
       if (payload.replay) return;
@@ -520,15 +503,8 @@ export function TaskFullDuplexRuntime({
         )
           .flat()
           .find((task) => task.id === payload.job_id);
-        // New versions are monotonic; retain sequence ordering for legacy hash snapshots.
-        if (existing && (existing.queueVersion ?? -1) >= 2 ** 48
-            && existing.queueVersion! > snapshot.queue_version) {
-          traceTaskUi("queue_ignored", {
-            job_id: payload.job_id, queue_version: snapshot.queue_version,
-            stored_queue_version: existing.queueVersion, reason: "older_queue_version",
-          });
-          continue;
-        }
+        // queue_version is an opaque hash; only per-task sequence orders snapshots.
+        // A snapshot without a sequence cannot be proven older; only skip a known older one.
         if (
           existing &&
           typeof existing.sequence === "number" &&
@@ -692,7 +668,7 @@ export function TaskFullDuplexRuntime({
       await flushConversationHistory(targetSessionId);
       return conversationJobsRef.current.bind(targetSessionId);
     }, cancelSessionTasks);
-  }, [syncChatApprovals]);
+  }, []);
 
   useEffect(
     () => () => {

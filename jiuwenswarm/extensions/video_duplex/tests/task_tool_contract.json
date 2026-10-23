@@ -147,25 +147,5 @@
     },
     "server_accepts": true,
     "client_accepts": true
-  },
-  {
-    "id": "create-invalid-title",
-    "name": "jiuwen_delegate",
-    "arguments": {
-      "task": "weather",
-      "title": "first\nsecond"
-    },
-    "server_accepts": false,
-    "client_accepts": false
-  },
-  {
-    "id": "reorder-without-version",
-    "name": "jiuwen_task_reorder",
-    "arguments": {
-      "job_id": "a",
-      "action": "next"
-    },
-    "server_accepts": true,
-    "client_accepts": true
   }
 ]

@@ -22,9 +22,7 @@ logger = logging.getLogger(__name__)
 
 def _clean_title(title):
     """Display-only task name: one line, at most 80 characters."""
-    if not isinstance(title, str) or len(title) > 80:
-        raise ValueError("Invalid title")
-    if "\n" in title or "\r" in title:
+    if not isinstance(title, str) or len(title) > 80 or "\n" in title or "\r" in title:
         raise ValueError("Invalid title")
     return title.strip()
 
@@ -58,9 +56,6 @@ class TaskService:
         self.workers = {}
         self.cancellations = {}
         self.reconciles = set()
-        self.reconciling = set()
-        self.reconciled_requests = set()
-        self.reconcile_monitor = None
         self.notifications = {}
         self.pending_notifications = {}
         # Core sessions where a user still has to answer a card (#5486). A task
@@ -83,7 +78,6 @@ class TaskService:
                     if task["status"] == "cancelling":
                         # The user asked to stop it, so Core's "not running" settles it as cancelled (#5545).
                         stopping.add(task["id"])
-                        task["cancellation_requested"] = True
                     if task["status"] in {"running", "cancelling", "waiting_user"} or (
                         task["status"] == "queued" and task.get("resume_answer")
                     ):
@@ -115,123 +109,30 @@ class TaskService:
 
     def _spawn_reconcile(self, task, *, stopped=False):
         # Kept out of self.cancellations: a probe must not block a real stop.
-        if self.closed or task["id"] in self.reconciling:
-            return
-        self.reconciling.add(task["id"])
         work = asyncio.create_task(
             self._reconcile(task, stopped=stopped), name="managed-task-reconcile"
         )
         self.reconciles.add(work)
         work.add_done_callback(self.reconciles.discard)
-        work.add_done_callback(lambda _: self.reconciling.discard(task["id"]))
-
-    async def _monitor_unknown_tasks(self):
-        """Wait for readiness, then observe local settlement without repeated queries."""
-        while not self.closed:
-            await asyncio.sleep(RECONCILE_INTERVAL)
-            try:
-                with self.store.transaction() as db:
-                    tasks = self.store.rows(db)
-            except Exception:
-                logger.warning("Task reconciliation scan failed; retrying next sweep", exc_info=True)
-                continue
-            self._prune_reconciliation(tasks)
-            for task in tasks:
-                if task["status"] in TERMINAL:
-                    continue
-                stopping_without_worker = (
-                    task["status"] == "cancelling" and task.get("output_closed")
-                    and task["id"] not in self.workers
-                )
-                if task["status"] == "unknown" or task.get("recovery_observer") or stopping_without_worker:
-                    self._spawn_reconcile(task)
-
-    def _prune_reconciliation(self, tasks):
-        # Terminal records reject reconciliation before consulting this cache.
-        # Keep unresolved requests so a failed persistence write cannot query Core twice.
-        active = {t["request_id"] for t in tasks if t["status"] not in TERMINAL}
-        self.reconciled_requests.intersection_update(active)
-        prune = getattr(self.executor, "prune_reconciliation", None)
-        if prune is not None:
-            prune(active)
 
     async def _reconcile(self, task, *, stopped=False):
-        """Query a ready Core once per execution, then only observe its settlement."""
-        task = self.store.read(task["id"])
-        if task["status"] in TERMINAL:
+        """Ask Core once whether an unknown/cancelling task still runs; end it if not (#5486, #5545)."""
+        probe = getattr(self.executor, "cancel", None)
+        try:
+            gone = await probe(task, probe=True)
+        except Exception:
+            logger.warning("Task reconcile failed for %s", task["id"], exc_info=True)
             return
-        if task["status"] not in {"unknown", "cancelling"} and not task.get("recovery_observer"):
+        if not gone:
             return
-        stopped = stopped or task.get("cancellation_requested", False) or task.get("execution_cancelled", False)
-        local_settled = task.get("execution_settled") and task.get("output_closed")
-        if local_settled:
-            # Do not race a still-owned observer writing the actual final result.
-            if task["id"] in self.workers:
-                return
-            result = task.get("observed_result")
-            if result is None:
-                result = task.get("result")
-            outcome = {"status": "cancelled" if task.get("execution_cancelled") else
-                       "completed" if result is not None else "unknown",
-                       "result": result, "settled": True}
-        else:
-            if task["request_id"] in self.reconciled_requests:
-                if task.get("recovery_observer") and task["status"] == "unknown":
-                    task = self.store.update(task["id"], lambda t: t.update(
-                        status="cancelling" if stopped else "running",
-                    ) if t["status"] == "unknown" else None)
-                    await self._notify(task)
-                return
-            ready = getattr(self.executor, "reconciliation_ready", None)
-            if ready is not None and not await ready():
-                return
-            self.reconciled_requests.add(task["request_id"])
-            try:
-                reconcile = getattr(self.executor, "reconcile", None)
-                if reconcile is not None:
-                    outcome = await reconcile(task)
-                else:
-                    gone = await self.executor.cancel(task, probe=True)
-                    outcome = {"status": "unknown" if gone else "running", "settled": gone}
-            except Exception as exc:
-                logger.warning("Task reconciliation failed for %s", task["id"], exc_info=True)
-                outcome = {"status": "failed", "error": "无法核对执行结果: " + str(exc)[:500]}
-        status = outcome.get("status")
-        if status == "running":
-            def observe(current):
-                if current["request_id"] == task["request_id"] and current["status"] in {"unknown", "cancelling"}:
-                    current.update(status="cancelling" if stopped else "running", recovery_observer=True,
-                                   error="")
-            task = self.store.update(task["id"], observe)
-        else:
-            def finish(current):
-                if current["request_id"] != task["request_id"] or current["status"] in TERMINAL:
-                    return
-                cancelled = stopped or current.get("cancellation_requested") or current.get("execution_cancelled")
-                settled = outcome.get("settled") or status in {"completed", "cancelled"}
-                final_status = (
-                    "cancelled" if status == "cancelled" or (status != "completed" and cancelled and settled) else
-                    "completed" if status == "completed" else "failed"
-                )
-                current.update(
-                    status=final_status, recovery_observer=False,
-                    output_closed=True, checkpoint_open=False,
-                    result=outcome.get("result") if final_status == "completed" else None,
-                    error="" if final_status in {"completed", "cancelled"} else
-                    (outcome.get("error") or "执行已中断，未重放"),
-                )
-                if settled:
-                    current.update(execution_settled=True, execution_cancelled=final_status == "cancelled")
-            task = self.store.update(task["id"], finish)
+        task = self.store.update(task["id"], lambda t: (
+            (t.update(status="cancelled", output_closed=True, checkpoint_open=False, error="")
+             if stopped else
+             t.update(status="failed", output_closed=True, checkpoint_open=False,
+                      error="执行已中断，未重放"))
+            if t["status"] == "unknown" else None
+        ))
         await self._notify(task)
-        self.interrupt_settled()
-
-    def interrupt_settled(self, core_session_id=None):
-        """A card was answered or a turn ended: probe held sessions again, then dispatch."""
-        if core_session_id is None:
-            self.pending_interrupts.clear()
-        else:
-            self.pending_interrupts.discard(core_session_id)
         self.kick()
 
     def kick(self):
@@ -271,20 +172,19 @@ class TaskService:
                 lambda done, key=task["id"]: self._worker_done(key, done)
             )
 
-    def _holds_capacity(self, t):
-        # An uncertain execution still owned by our worker keeps its capacity.
-        return (t["status"] != "unknown" or t["id"] in self.workers) and not (
+    @staticmethod
+    def _holds_capacity(t):
+        # A settled waiting_user task holds no execution; unknown ones are not ours.
+        return t["status"] != "unknown" and not (
             t["status"] == "waiting_user" and t.get("execution_settled")
         )
 
-    def _ready(self, task, tasks, active):
-        return not self._blockers(task, tasks, active)
+    @staticmethod
+    def _ready(task, tasks, active):
+        return not TaskService._blockers(task, tasks, active)
 
-    def _holds_card(self, task):
-        # A resumed task answers its own card; only new work waits behind one.
-        return not task.get("resume_answer") and task.get("core_session_id") in self.pending_interrupts
-
-    def _blockers(self, task, tasks, active):
+    @staticmethod
+    def _blockers(task, tasks, active):
         """The exact tasks that keep ``task`` from dispatching (empty: ready)."""
         request = task["request"]
         by_id = {t["id"]: t for t in tasks}
@@ -293,9 +193,6 @@ class TaskService:
         ]
         if any(t.get("status") != "completed" for t in dependencies):
             return [t for t in dependencies if t and t.get("status") != "completed"] or [{}]
-
-        if self._holds_card(task):
-            return [{}]
 
         def same_scope(t):
             return (t["owner"], t["session"]) == (task["owner"], task["session"])
@@ -310,13 +207,15 @@ class TaskService:
                 return held
 
         if not request.get("independent", False):
-            earlier = []
-            for other in tasks:
-                if not same_scope(other) or other["id"] == task["id"]:
-                    continue
-                waiting_before = other["position"] < task["position"] and other["status"] not in TERMINAL
-                if other in active or waiting_before:
-                    earlier.append(other)
+            earlier = [
+                t for t in tasks
+                if same_scope(t)
+                and t["id"] != task["id"]
+                and (
+                    t in active
+                    or (t["position"] < task["position"] and t["status"] not in TERMINAL)
+                )
+            ]
             if earlier:
                 return earlier
         # Missing declarations mean unknown resources, not a proven conflict.
@@ -444,14 +343,7 @@ class TaskService:
             tasks = self.store.rows(db, owner, session)
         if status:
             tasks = [t for t in tasks if t["status"] == status]
-        matched = []
-        for task in tasks:
-            if (
-                query.casefold() in task["instruction"].casefold()
-                or query.casefold() in task.get("title", "").casefold()
-            ):
-                matched.append(task)
-        tasks = matched
+        tasks = [t for t in tasks if query.casefold() in t["instruction"].casefold() or query.casefold() in t.get("title", "").casefold()]
         end = offset + limit
         return tasks[offset:end], (end if len(tasks) > end else None)
 
@@ -555,50 +447,31 @@ class TaskService:
             )
             if replay:
                 return replay
+            # A repeated stop asks Core again so a lost settle ack cannot hold the task (#5545).
             recheck = task["status"] == "cancelling"
-            if task["status"] == "completed" and user_instruction:
-                if task["successor_id"]:
-                    raise TaskRevisionConflict("Task already has a follow-up; query the current task")
-                # Reuse completed-task modification without guessing how to undo effects.
-                child = self._successor(db, task, user_instruction, title="处理取消请求")
-                task["changes"].append(dict(
-                    id=command_id, instruction=user_instruction,
-                    state="followup", successor_id=child["id"],
-                ))
-                task["revision"] += 1
-                task["sequence"] += 1
-                self.store.put(db, task)
-                receipt = dict(
-                    task_id=task_id, operation_id=command_id, state="followup",
-                    task_status="completed", stopped=False, revision=task["revision"],
-                    successor_id=child["id"], converted_to="modify",
-                    message="原执行已完成，已将用户的完整取消要求交给 Core 后续处理；尚未确认处理结果。",
-                )
-            else:
-                if task["status"] == "queued" and not task.get("resume_answer"):
-                    task["status"] = "cancelled"
-                elif task["status"] not in TERMINAL:
-                    task["status"] = "cancelling"
-                    task["cancellation_requested"] = True
-                task["revision"] += 1
-                task["sequence"] += 1
-                for change in task["changes"]:
-                    if change["state"] == "pending":
-                        change["state"] = "rejected"
-                if task.get("interaction"):
-                    task["interaction"]["state"] = "expired"
-                self.store.put(db, task)
-                receipt = dict(
-                    task_id=task_id,
-                    operation_id=command_id,
-                    state="accepted" if task["status"] == "cancelling" else task["status"],
-                    task_status=task["status"],
-                    stopped=task["status"] == "cancelled",
-                    message=("取消已受理，正在等待执行停止；尚未确认停止。"
-                             if task["status"] == "cancelling" else
-                             "任务已取消。" if task["status"] == "cancelled" else
-                             "本次 Core 执行已经结束，未执行新的取消操作；其结果仍可另行委托 Core 修改或继续处理。"),
-                )
+            if task["status"] == "queued" and not task.get("resume_answer"):
+                task["status"] = "cancelled"
+            elif task["status"] not in TERMINAL:
+                task["status"] = "cancelling"
+            task["revision"] += 1
+            task["sequence"] += 1
+            for change in task["changes"]:
+                if change["state"] == "pending":
+                    change["state"] = "rejected"
+            if task.get("interaction"):
+                task["interaction"]["state"] = "expired"
+            self.store.put(db, task)
+            receipt = dict(
+                task_id=task_id,
+                operation_id=command_id,
+                state="accepted" if task["status"] == "cancelling" else task["status"],
+                task_status=task["status"],
+                stopped=task["status"] == "cancelled",
+                message=("取消已受理，正在等待执行停止；尚未确认停止。"
+                         if task["status"] == "cancelling" else
+                         "任务已取消。" if task["status"] == "cancelled" else
+                         "本次 Core 执行已经结束，未执行新的取消操作；其结果仍可另行委托 Core 修改或继续处理。"),
+            )
             self.store.command(db, task, command_id, fingerprint, receipt)
         if task["status"] == "cancelling" and task_id not in self.cancellations:
             work = asyncio.create_task(self._cancel(task), name="managed-task-cancel")
@@ -606,7 +479,7 @@ class TaskService:
             work.add_done_callback(lambda _: self.cancellations.pop(task_id, None))
         elif recheck and task["status"] == "cancelling":
             self._spawn_reconcile(task)
-        self.interrupt_settled()
+        self.kick()
         await self._notify(task)
         return receipt
 
@@ -614,14 +487,6 @@ class TaskService:
         trace_task("task_cancel_worker_started", task=task_state(task))
         try:
             await self.executor.cancel(task)
-        except CancellationSettlementTimeout as exc:
-            task = self.store.update(task["id"], lambda t: (
-                t.update(status="unknown", error=str(exc)) if t["status"] == "cancelling" else None
-            ))
-            trace_task("task_cancel_worker_failed", task=task_state(task), error=str(exc))
-            await self._notify(task)
-            self.kick()
-            return
         except Exception as exc:
             # A failed stop request does not end the execution; its settle ack still decides.
             message = str(exc) or type(exc).__name__
@@ -637,23 +502,12 @@ class TaskService:
             if observer and not observer.done():
                 observer.cancel()
                 await asyncio.gather(observer, return_exceptions=True)
-        try:
-            async with asyncio.timeout(CANCEL_SETTLEMENT_TIMEOUT):
-                # Without a worker (e.g. after restart) nothing else closes the output.
-                while task["id"] in self.workers and not self.store.read(task["id"])["output_closed"]:
-                    await asyncio.sleep(0.05)
-                # Wait for the execution's settle ack, which arrives even after a rejected stop.
-                while not self.store.read(task["id"])["execution_settled"]:
-                    await asyncio.sleep(0.05)
-        except TimeoutError:
-            task = self.store.update(task["id"], lambda t: (
-                t.update(status="unknown", error="Stop accepted, but execution cleanup was not confirmed")
-                if t["status"] == "cancelling" else None
-            ))
-            trace_task("task_cancel_settlement_timeout", task=task_state(task))
-            await self._notify(task)
-            self.kick()
-            return
+        # Without a worker (e.g. after restart) nothing else closes the output.
+        while task["id"] in self.workers and not self.store.read(task["id"])["output_closed"]:
+            await asyncio.sleep(0.05)
+        # Wait for the execution's settle ack, which arrives even after a rejected stop.
+        while not self.store.read(task["id"])["execution_settled"]:
+            await asyncio.sleep(0.05)
         task = self.store.update(
             task["id"],
             lambda t: (
@@ -849,12 +703,11 @@ class TaskService:
 
     def _waiting_on(self, task, all_tasks):
         """Name the tasks a waiting task is held behind, using kick()'s rules."""
-        active = []
-        for task_entry in all_tasks:
-            if task_entry["status"] in {"running", "cancelling", "unknown", "waiting_user"}:
-                active.append(task_entry)
-            elif task_entry["id"] in self.workers:
-                active.append(task_entry)
+        active = [
+            t for t in all_tasks
+            if t["status"] in {"running", "cancelling", "unknown", "waiting_user"}
+            or t["id"] in self.workers
+        ]
         blockers = self._blockers(task, all_tasks, active)
         if not blockers:
             counted = [t for t in active if self._holds_capacity(t)]

@@ -75,6 +75,7 @@ export class JoyAIProvider {
   private frameRequestIntervalMs = FRAME_POLL_INTERVAL_MS;
   private lastFrameRequestAt: number | null = null;
   private pendingToolContext: JoyAIToolContextEntry[] = [];
+  private deliveredSearchIds = new Set<string>();
   private restoreToken = '';
 
   constructor(callbacks: JoyAIProviderCallbacks, replyLanguage: ReplyLanguage = 'match') {
@@ -185,7 +186,6 @@ export class JoyAIProvider {
     this.lastFrameRequestAt = null;
     this.pendingToolContext = [];
     this.deliveredSearchIds.clear();
-    this.pendingApprovals.clear();
     this.handledTurns.clear();
     if (this.framePollTimer !== null) {
       window.clearInterval(this.framePollTimer);
@@ -364,10 +364,6 @@ export class JoyAIProvider {
       if (this.queuedRequestCount > 0) return;
       const frameDataUrl = this.callbacks.getLatestFrameDataUrl();
       if (!frameDataUrl && !this.promptLifecycle.hasPending) return;
-      if (
-        frameDataUrl && this.lastFrameRequestAt !== null
-        && now - this.lastFrameRequestAt < this.frameRequestIntervalMs
-      ) return;
       const pendingPrompt = this.promptLifecycle.claim();
       const request = this.requestFrame(pendingPrompt?.instruction || '', pendingPrompt?.question || '', frameDataUrl);
       void request
@@ -419,11 +415,6 @@ export class JoyAIProvider {
       const prompt = instruction.trim();
       const toolContext =
         requestKind === 'user' ? buildJoyAIToolContextBatch(this.pendingToolContext) : { text: '', jobIds: [] };
-      // Read at send time, so an answer to the card can see a card that opened meanwhile.
-      const approvalContext =
-        requestKind === 'user' && this.pendingApprovals.size
-          ? pendingCardTurnNotice([...this.pendingApprovals.values()], originalQuestion)
-          : '';
       const frameTimeRange = frameDataUrl ? this.frameClock.nextRange() : '';
       let result: JoyAIFrameResult;
       try {

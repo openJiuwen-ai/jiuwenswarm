@@ -1,4 +1,5 @@
 import { TASK_ACCEPTED_INSTRUCTIONS } from './taskPrompts';
+import { informationInteraction } from './taskInteraction';
 import { toast } from '../../../../channels/web/frontend/src/components/ui/Toast/toastStore';
 import {
   ChangeEvent,
@@ -86,6 +87,7 @@ export interface VideoLivePanelHandle {
   stopScreenSharing: () => void;
   deliverToolResult: (payload: SearchJobPayload) => void;
   deliverQuestion: (payload: SearchJobPayload) => void;
+  deliverTaskInteraction: (payload: SearchJobPayload) => void;
 }
 
 interface VideoLivePanelProps {
@@ -438,17 +440,6 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       toolCallId: callId,
     });
     setSearchStatus(`${payload.engine || '九问搜索 Agent'}失败：${error}`);
-  };
-
-  // JoyAI answers approval cards by voice only (information forms stay on screen), like Qwen's enqueueQuestion.
-  const deliverJoyAIApproval = (jobId: string, interaction: ApprovalInteraction) => {
-    const cards = approvalCardsRef.current;
-    if (interaction.state !== 'pending') {
-      for (const [key, card] of cards) if (card.jobId === jobId) cards.delete(key);
-    } else if (interaction.source && APPROVAL_SOURCES.has(interaction.source)) {
-      cards.set(`${jobId}:${interaction.id || interaction.request_id}`, { jobId, interaction });
-    }
-    joyaiProviderRef.current?.enqueueQuestion(jobId, interaction);
   };
 
   const deliverTaskInteraction = (payload: SearchJobPayload) => {

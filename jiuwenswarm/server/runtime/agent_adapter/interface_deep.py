@@ -16860,13 +16860,11 @@ class JiuWenSwarmDeepAdapter:
         managed_task_request = str(
             (request.params or {}).get("managed_task_request") or ""
         ).strip() if request.channel_id == "video_tool" else ""
-        from .managed_subagent_control import (
-            active_cua_executions, cancel_cua_execution, has_active_cua,
-        )
+        from .managed_subagent_control import has_active_cua
 
         cua_active = bool(managed_task_request) and has_active_cua(managed_task_request)
         if request.channel_id == "video_tool" and intent == "cancel":
-            from jiuwenswarm.server.runtime.video_task.execution import managed_request_detached
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import managed_request_detached
 
             managed = managed_task_request
             detached = bool(managed and managed_request_detached(self._voice_agent_task_rail, request)
@@ -16878,8 +16876,7 @@ class JiuWenSwarmDeepAdapter:
                     channel_id=request.channel_id,
                     ok=True,
                     payload={"event_type": "chat.interrupt_result", "intent": intent,
-                             "success": True, "managed_task_settled": detached,
-                             "managed_task_status": "unknown" if detached else "running"},
+                             "success": True, "managed_task_settled": detached},
                     metadata=request.metadata,
                 )
             if detached:
@@ -16926,20 +16923,8 @@ class JiuWenSwarmDeepAdapter:
         # otherwise block behind that child work and never return an
         # interrupt_result to the TUI.  This does not cancel the registered
         # session stream producer -- cancel_round still owns that lifecycle.
-        cua_cancel_requested = False
-        if cua_active:
-            from jiuwenswarm.server.runtime.video_task.execution import capture_task_execution
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_task
-
-            executions = active_cua_executions(managed_task_request)
-            for execution in executions:
-                capture_task_execution(self._voice_agent_task_rail, request, execution.task)
-            cua_cancel_requested = cancel_cua_execution(managed_task_request)
-            trace_task("agent_cancel_target_resolved", request_id=managed_task_request,
-                       cancel_request_id=request.request_id, core_session_id=request.session_id,
-                       cua_active=True, execution_count=len(executions),
-                       cua_cancel_requested=cua_cancel_requested)
-        self._cancel_scheduler_running_tasks()
+        if not cua_active:
+            self._cancel_scheduler_running_tasks()
         # Collect in-flight tools without cancelling the stream producer task —
         # interaction cancel must keep round ownership in cancel_round().
         cancelled_tool_results = self._collect_cancelled_tools_for_session(
@@ -16970,7 +16955,17 @@ class JiuWenSwarmDeepAdapter:
         finally:
             # A scheduler task may be installed while cancel_round is
             # unwinding; repeat the targeted cancellation as a safety net.
-            self._cancel_scheduler_running_tasks()
+            if not cua_active:
+                self._cancel_scheduler_running_tasks()
+        cua_cancel_requested = False
+        if cua_active:
+            if cancelled:
+                cua_cancel_requested = True
+            else:
+                # cancel_round did not stop the round; cancel the registered CUA directly.
+                from .managed_subagent_control import cancel_cua_execution
+
+                cua_cancel_requested = cancel_cua_execution(managed_task_request)
         continuation_discarded = True
         if cutover_handoff is not None:
             try:

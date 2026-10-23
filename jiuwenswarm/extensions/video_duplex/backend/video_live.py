@@ -295,11 +295,9 @@ def register_video_live_handler(
             params.get("reply_language", settings.reply_language())
         )
         request_kind = str(params.get("request_kind") or "frame").strip().casefold()
-        if frame_data_url:
-            invalid_frame = not _is_allowed_image_data_url(frame_data_url)
-        else:
-            invalid_frame = request_kind != "user"
-        if invalid_frame:
+        if (frame_data_url and not _is_allowed_image_data_url(frame_data_url)) or (
+            not frame_data_url and request_kind != "user"
+        ):
             await channel.send_response(
                 ws, req_id, ok=False,
                 error="frame_data_url must be a base64 JPEG, PNG, or WebP data URL",
@@ -494,18 +492,25 @@ def register_video_live_handler(
         # the same validation and command deduplication path as native calls.
         scheduling = None
         task_title = ""
-        operation_count = 0
-        queue_management = None
-        search_job = None
-        tools_used: list[str] = []
-        while operation_count < 3:
+        for operation_index in range(3):
             delegation = str(result.get("delegation") or "").strip()
             if result.get("decision") != "delegation" or not delegation.startswith("{"):
                 break
             try:
-                call = _parse_joyai_task_operation(
-                    delegation, f"{params.get('command_id') or req_id}:{operation_count}",
-                )
+                from .qwen_omni_tools import parse_qwen_omni_tool_call
+
+                value = json.loads(delegation)
+                if not isinstance(value, dict) or set(value) != {"name", "arguments"}:
+                    raise ValueError("Invalid task operation")
+                if value.get("name") not in {
+                    "jiuwen_delegate",
+                    "jiuwen_task_query",
+                    "jiuwen_task_modify",
+                    "jiuwen_task_cancel",
+                }:
+                    if value.get("name") == "jiuwen_task_answer":
+                        raise ValueError("JoyAI voice form answers are disabled; complete the on-screen form")
+                    raise ValueError("Unsupported task operation")
                 owner, scope = await search_manager.scope(
                     ws, {"search_session_id": search_session_id}
                 )
@@ -563,13 +568,16 @@ def register_video_live_handler(
                     ws, req_id, ok=False, error=error, code="TASK_REQUEST_REJECTED"
                 )
                 return
-        if operation_count == 3 and result.get("decision") == "delegation":
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error="Task operation limit reached; query current state",
-                code="TASK_REQUEST_REJECTED",
-            )
-            return
+        else:
+            if result.get("decision") == "delegation":
+                await channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="Task operation limit reached; query current state",
+                    code="TASK_REQUEST_REJECTED",
+                )
+                return
 
         delegation = str(result.get("delegation") or "").strip()
         if result.get("decision") == "delegation" and delegation:

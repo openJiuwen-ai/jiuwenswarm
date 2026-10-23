@@ -9,7 +9,7 @@ from typing import Any
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
-from .tasks.errors import QueueVersionConflict, TaskRevisionConflict
+from .tasks.errors import QueueVersionConflict, TaskRevisionConflict, TaskNotFound
 from .tasks.interactions import approval_cards
 from .tasks.prompts import (
     APPROVAL_REQUIRES_CLICK_INSTRUCTIONS,
@@ -243,18 +243,10 @@ class AgentTaskExecutor:
         except TimeoutError as exc:
             # Ask Core once before declaring the outcome unknown (#5486).
             try:
-                if await self.reconciliation_ready():
-                    outcome = await self.reconcile(task)
-                    if outcome.get("status") != "failed" and (
-                        outcome.get("settled") or outcome.get("status") in {"completed", "cancelled"}
-                    ):
-                        self.store.update(task["id"], lambda t: t.update(
-                            execution_settled=True, checkpoint_open=False,
-                            execution_cancelled=outcome.get("status") == "cancelled" or t["status"] == "cancelling",
-                        ))
-                        return
+                if await self.cancel(task, probe=True):
+                    return
             except Exception:
-                logger.warning("Execution cleanup reconciliation failed task=%s", task["id"], exc_info=True)
+                pass
             raise ExecutionUncertain(
                 "Execution cleanup is unconfirmed; no work was replayed"
             ) from exc
@@ -304,8 +296,11 @@ class AgentTaskExecutor:
                 channel_id=request.channel_id,
                 session_id=request.session_id,
                 req_method=request.req_method,
-                params={**request.params, **({"managed_task_request": task["request_id"]}
-                                            if request.params.get("mode") == "team.design" else {})},
+                params={
+                    **request.params,
+                    "managed_task_request": task["request_id"],
+                    "managed_task_binding": self.endpoint.binding(task),
+                },
                 is_stream=False,
                 timestamp=time.time(),
                 user_id=task["owner"] or None,
@@ -343,55 +338,8 @@ class AgentTaskExecutor:
             execution_target=target,
         )
 
-    async def reconciliation_ready(self) -> bool:
-        """Read current Front readiness, not the snapshot from connection.ack."""
-        if self._readiness_check is None or self._readiness_check.done():
-            self._readiness_check = asyncio.create_task(self._check_reconciliation_readiness())
-        return await asyncio.shield(self._readiness_check)
-
-    async def _check_reconciliation_readiness(self) -> bool:
-        from jiuwenswarm.common.schema.message import ReqMethod
-
-        try:
-            async with asyncio.timeout(5):
-                payload = await task_agent_query(
-                    self.client, ReqMethod.HEALTH_CHECK_GET_CONF, {}, "", "",
-                )
-            return payload.get("agent_ready") is True
-        except Exception:
-            # This is not the one task query. Retry readiness on the next sweep.
-            return False
-
-    async def reconcile(self, task):
-        """Query once; transport success is not a successful task outcome."""
-        key = task["request_id"]
-        if key not in self.reconciliation_outcomes:
-            try:
-                self.reconciliation_outcomes[key] = await self._reconcile_once(task)
-            except Exception as exc:
-                self.reconciliation_outcomes[key] = {
-                    "status": "failed", "error": "无法核对执行结果: " + str(exc)[:500],
-                }
-        return self.reconciliation_outcomes[key]
-
-    async def _reconcile_once(self, task):
-        response = await self._send_cancel_request(task, probe=True)
-        payload = response.payload or {}
-        if not response.ok or payload.get("success") is False:
-            return {"status": "failed", "error": "无法核对执行结果: " + str(
-                payload.get("code") or payload.get("error") or "Core rejected the query"
-            )[:500]}
-        status = payload.get("managed_task_status")
-        if status is None:
-            # Compatibility with Core versions that only report execution presence.
-            status = "unknown" if payload.get("managed_task_settled") else (
-                "running" if payload.get("managed_task_settled") is False else "unknown"
-            )
-        return {"status": status, "result": payload.get("managed_task_result"),
-                "error": payload.get("error", ""), "settled": bool(payload.get("managed_task_settled"))
-                or status in {"completed", "failed", "cancelled"}}
-
-    async def _send_cancel_request(self, task, *, probe):
+    async def cancel(self, task, *, probe=False):
+        """Stop the exact request; with probe=True only ask whether Core still runs it."""
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
@@ -405,7 +353,8 @@ class AgentTaskExecutor:
             req_method=ReqMethod.CHAT_CANCEL,
             user_id=task["owner"] or None,
             params={"intent": "cancel", **task["request"].get("execution_target", {"mode": "agent", "work_mode": "work"}),
-                    "managed_task_request": task["request_id"]},
+                    "managed_task_request": task["request_id"],
+                    **({"managed_task_probe": True} if probe else {})},
             is_stream=False,
             timestamp=time.time(),
         )
@@ -435,8 +384,7 @@ class AgentTaskExecutor:
 
         response = await self._send_cancel_request(task, probe=probe)
         if not response.ok or (response.payload or {}).get("success") is False:
-            detail = str((response.payload or {}).get("code") or (response.payload or {}).get("error") or "")[:500]
-            raise RuntimeError("Agent has not confirmed the stop request" + (": " + detail if detail else ""))
+            raise RuntimeError("Agent has not confirmed the stop request")
         if (response.payload or {}).get("managed_task_settled"):
             # Core holds no binding, reporter or CUA for this request (#5486):
             # the execution is gone, so no settle callback will ever arrive.
@@ -449,16 +397,8 @@ class AgentTaskExecutor:
             return True
         if probe:
             return False
-        try:
-            async with asyncio.timeout(STOP_SETTLEMENT_TIMEOUT):
-                while not self.store.read(task["id"])["execution_settled"]:
-                    await asyncio.sleep(0.2)
-        except TimeoutError as exc:
-            trace_task("cancel_settlement_timeout", task=task_state(self.store.read(task["id"])))
-            raise CancellationSettlementTimeout(
-                f"Stop accepted, but execution cleanup was not confirmed within {STOP_SETTLEMENT_TIMEOUT} seconds"
-            ) from exc
-        trace_task("cancel_settled", task=task_state(self.store.read(task["id"])))
+        while not self.store.read(task["id"])["execution_settled"]:
+            await asyncio.sleep(0.2)
         return False
 
 
@@ -951,9 +891,7 @@ class VideoSearchManager:
                     ws,
                     question=params.get("question") or call.task,
                     query=call.task,
-                    title=(call.arguments.get("title", "")
-                           if delegate_matches_input(question or call.task, call.arguments.get("title", ""))
-                           else ""),
+                    title=call.arguments.get("title", ""),
                     search_session_id=scope,
                     frame_data_url=frame,
                     tool_call_id=call.call_id,
@@ -1010,23 +948,14 @@ class VideoSearchManager:
             try:
                 self.service.get(owner, scope, args["job_id"])
             except TaskNotFound:
-                logger.info(
-                    "Voice task target not found: operation=%s job_id=%s scope=%s",
-                    call.name, args["job_id"], scope,
-                )
                 return {
                     "state": "rejected", "applied": False, "code": "TASK_NOT_FOUND",
                     "attempted_job_id": args["job_id"], "retryable": True,
                     "message": (
-                        "No operation was performed. This ID does not identify a Core invocation "
-                        "in the current conversation. "
-                        "Do not infer that the resulting resource was deleted or that the user request is impossible. "
-                        "Query jiuwen_task_query without job_id, locate the intended invocation from its requirement "
-                        "and result, and copy its exact job_id and revision before trying a corrected operation. "
-                        "IDs inside result text identify external resources, not Core invocations; send such IDs "
-                        "to Core in the follow-up instruction, never as job_id. "
-                        "If the target remains ambiguous, ask the user. "
-                        "Never repeat this rejected ID, operate on another conversation, or recreate the resource."
+                        "No operation was performed: this ID is not a Core invocation in the current conversation; "
+                        "IDs inside result text identify external resources and belong in the instruction to Core. "
+                        "Query jiuwen_task_query without job_id, copy the intended invocation's exact job_id and "
+                        "revision, and never repeat this rejected ID or recreate the resource."
                     ),
                 }
         if call.name == "jiuwen_task_query":

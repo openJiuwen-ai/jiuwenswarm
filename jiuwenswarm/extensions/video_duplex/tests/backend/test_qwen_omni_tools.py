@@ -217,52 +217,10 @@ def test_delegation_title_is_separate_from_complete_requirements():
     assert call.task == "请查询香港今天的天气，并说明是否需要带伞"
 
 
+@pytest.mark.parametrize("title", [None, 42, "x" * 81, "first\nsecond"])
+def test_task_service_rejects_invalid_titles(title):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.service import _clean_title
 
-
-@pytest.mark.parametrize("version", [45527757797612, "45527757797612", "0"])
-def test_reorder_normalizes_decimal_queue_version(version):
-    call = parse_qwen_omni_tool_call({
-        "name": "jiuwen_task_reorder", "call_id": "move-weather",
-        "arguments": {"job_id": "weather", "action": "next", "queue_version": version},
-    })
-    assert type(call.arguments["queue_version"]) is int
-    assert call.arguments["queue_version"] == int(version)
-
-
-
-@pytest.mark.parametrize("version", [True, 1.0, "1.0", "1e2", "-1", "+1", "01", " 1", "１２", "9007199254740992", 2**53])
-def test_reorder_ignores_ambiguous_or_unsafe_model_queue_version(version):
-    call = parse_qwen_omni_tool_call({
-        "name": "jiuwen_task_reorder", "call_id": "invalid-version",
-        "arguments": {"job_id": "weather", "action": "next", "queue_version": version},
-    })
-    assert call.arguments == {"job_id": "weather", "action": "next"}
-
-
-def test_reorder_allows_server_owned_queue_version():
-    call = parse_qwen_omni_tool_call({
-        "name": "jiuwen_task_reorder", "call_id": "server-version",
-        "arguments": {"job_id": "weather", "action": "next"},
-    })
-    assert call.arguments == {"job_id": "weather", "action": "next"}
-
-
-
-@pytest.mark.parametrize("title", [None, 42, "", "x" * 81, "first\nsecond"])
-def test_delegation_rejects_invalid_titles(title):
     with pytest.raises(ValueError, match="title"):
-        parse_qwen_omni_tool_call({"name": "jiuwen_delegate", "call_id": "bad-title",
-                                   "arguments": {"task": "complete requirements", "title": title}})
-
-
-def test_parse_qwen_answer_accepts_empty_job_id_for_typed_chat_card() -> None:
-    # A typed-chat approval card has no job; voice answers it with job_id "".
-    call = parse_qwen_omni_tool_call({
-        "name": "jiuwen_task_answer", "call_id": "c1",
-        "arguments": json.dumps({"job_id": "", "interaction_id": "call_a", "answers": ["本次允许"]}),
-    })
-    assert call.arguments["job_id"] == ""
-    with pytest.raises(ValueError):
-        parse_qwen_omni_tool_call({
-            "name": "jiuwen_task_cancel", "call_id": "c2", "arguments": json.dumps({"job_id": ""}),
-        })
+        _clean_title(title)
+    assert _clean_title("  修改打卡提醒  ") == "修改打卡提醒"

@@ -94,6 +94,10 @@ export function TaskFullDuplexAction({
       exitTaskFullDuplex();
       return;
     }
+    if (isTaskDuplexScreenSharingEnabled()) {
+      setShareDialog(true);
+      return;
+    }
     await beginSession();
   }, [beginSession, state]);
 
@@ -325,7 +329,7 @@ export function TaskFullDuplexControls() {
                 </button>
                 <button
                   type="button"
-                  onClick={stopTaskFullDuplex}
+                  onClick={exitTaskFullDuplex}
                   aria-label={t('chat.duplexControls.exit')}
                   title={t('chat.duplexControls.exit')}
                   data-testid="chat-panel-duplex-exit"
