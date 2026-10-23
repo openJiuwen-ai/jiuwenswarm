@@ -145,6 +145,8 @@ async def test_real_core_nested_permission_resume(tmp_path, case, target_name):
         event = ctx.event
         if event == AgentCallbackEvent.ON_TOOL_EXCEPTION:
             await queue_rail.on_tool_exception(ctx)
+        if event == AgentCallbackEvent.AFTER_TOOL_CALL:
+            await queue_rail.after_tool_call(ctx)
         if event != AgentCallbackEvent.BEFORE_TOOL_CALL:
             return
         await queue_rail.before_tool_call(ctx)
@@ -160,7 +162,11 @@ async def test_real_core_nested_permission_resume(tmp_path, case, target_name):
         card=SimpleNamespace(id="nested-permission"), ability_manager=manager,
         agent_callback_manager=callback_manager,
     )
-    for event in (AgentCallbackEvent.BEFORE_TOOL_CALL, AgentCallbackEvent.ON_TOOL_EXCEPTION):
+    for event in (
+        AgentCallbackEvent.BEFORE_TOOL_CALL,
+        AgentCallbackEvent.AFTER_TOOL_CALL,
+        AgentCallbackEvent.ON_TOOL_EXCEPTION,
+    ):
         await callback_manager.register_callback(event, callback)
     progressive = ProgressiveToolRail(SimpleNamespace(language="en"))
     progressive.init(agent)
@@ -1091,7 +1097,6 @@ async def test_ineligible_auto_manual_never_reaches_core_session_remember(
                 interrupt_requests={tool_call.id: request},
             )
         },
-        auto_confirm_mapping={tool_call.id: request.auto_confirm_key},
     )
     answer = InteractiveInput()
     answer.update(

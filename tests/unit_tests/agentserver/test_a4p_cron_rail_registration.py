@@ -81,7 +81,7 @@ async def test_assembled_cron_rail_only_asks_a4p_for_ask_rules(config, monkeypat
     ))
     rail = _build(config, variant)
     decision = await rail.resolve_interrupt(
-        ctx=SimpleNamespace(session=SimpleNamespace(get_session_id=lambda: "cron-test")),
+        ctx=SimpleNamespace(session=SimpleNamespace(get_session_id=lambda: "cron-test"), extra={}),
         tool_call=SimpleNamespace(name="bash", arguments={"command": "date"}, id="call-1"),
         user_input=None,
     )
@@ -140,7 +140,7 @@ async def test_assembled_cron_ask_failure_never_interrupts(config, monkeypatch, 
     ))
     rail = _build(config, "single" if channel == "__cron__" else "team-metadata")
     decision = await rail.resolve_interrupt(
-        ctx=SimpleNamespace(session=SimpleNamespace(get_session_id=lambda: "cron-test")),
+        ctx=SimpleNamespace(session=SimpleNamespace(get_session_id=lambda: "cron-test"), extra={}),
         tool_call=SimpleNamespace(name="bash", arguments={"command": "date"}, id="call-1"),
         user_input=None,
     )
