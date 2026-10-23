@@ -47,7 +47,8 @@ def main():
         "-env:UserInstallation=file://" + profile,
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180)
+        subprocess.run(cmd, check=True, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=180)
     except subprocess.CalledProcessError as e:  # noqa: BLE001
         print("LibreOffice failed: " + (e.stderr or str(e)), file=sys.stderr)
         return 1
