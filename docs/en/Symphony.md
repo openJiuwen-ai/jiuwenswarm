@@ -485,6 +485,10 @@ The build reads all installed skills and calls the model to generate branches an
 
 The build reads installed skills and analyzes input/output and semantic handoff relationships between them. More skills and more possible connections take longer. After the graph is built, you can read it directly instead of rebuilding it for every conversation.
 
+### Can I build the skill graph with a model that cannot disable thinking?
+
+For OpenAI-compatible models that explicitly reject disabling thinking, the connection check, skill feature extraction, and relation matching retry once using the model's default thinking behavior. This leaves your saved model configuration unchanged. Authentication failures, rate limits, and unrelated request errors do not trigger this compatibility retry; a failed retry is reported as a build error.
+
 ### What is the difference between Skill Retrieval and the skill graph?
 
 Skill Retrieval finds candidate skills from a large installed-skill set. The skill graph describes whether those skills can connect. The former is like browsing a directory; the latter is like inspecting a connection map.

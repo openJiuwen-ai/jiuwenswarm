@@ -443,15 +443,19 @@ async def probe_model_connection(config: LLMConfig) -> None:
 
     from openjiuwen.core.common.exception.codes import StatusCode
     from openjiuwen.core.common.exception.errors import BaseError, build_error
+    from openjiuwen.core.foundation.llm.request_context import (
+        disabled_thinking_fallback_scope,
+    )
 
     try:
-        await probe_configured_model_connection(
-            config.create_model(),
-            token_limits=(_MODEL_CONNECTION_PROBE_MAX_TOKENS,),
-            invoke_kwargs={"timeout": _MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS},
-            timeout_seconds=_MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS,
-            log_context="symphony model connection probe",
-        )
+        with disabled_thinking_fallback_scope():
+            await probe_configured_model_connection(
+                config.create_model(),
+                token_limits=(_MODEL_CONNECTION_PROBE_MAX_TOKENS,),
+                invoke_kwargs={"timeout": _MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS},
+                timeout_seconds=_MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS,
+                log_context="symphony model connection probe",
+            )
     except BaseError:
         raise
     except TimeoutError as exc:

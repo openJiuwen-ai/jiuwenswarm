@@ -6,6 +6,9 @@ import hashlib
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
+from openjiuwen.core.foundation.llm.request_context import (
+    disabled_thinking_fallback_scope,
+)
 from openjiuwen.symphony import (
     CapabilityFingerprint,
     CapabilityDescriptor,
@@ -72,7 +75,8 @@ class FingerprintLLMAdapter:
         # fixed completion cap may therefore cut the JSON before its outputs,
         # which previously degraded into a valid-looking graph with no edges.
         kwargs.pop("max_tokens", None)
-        response = await self._model.invoke(messages, **kwargs)
+        with disabled_thinking_fallback_scope():
+            response = await self._model.invoke(messages, **kwargs)
         self._observe(
             response,
             "fingerprint_extraction",
