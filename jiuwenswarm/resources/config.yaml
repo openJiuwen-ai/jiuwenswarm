@@ -1791,6 +1791,15 @@ modes:
       # 交接仍归 leader 和调度框架。autonomous 模式下忽略。见 core F_126。
       enable_member_messaging: false
 
+      # 调度模式下的成员子任务开关（TeamAgentSpec.max_subtask_depth）：
+      # 0 表示关闭，此时只有 leader 能建任务；大于 0 时成员可以用 create_task
+      # 把自己正在执行的任务拆成子任务，交给自己或其他已有成员。拆分后父任务
+      # 挂起为 blocked、不占成员名额，子任务全部结束后由调度框架恢复给原承担者；
+      # 子任务不单独向 leader 汇报。取值同时是嵌套层数上限（leader 的任务为
+      # 第 0 层，成员拆出的子任务为第 1 层……）。设置页开关打开时写入 2。
+      # autonomous 模式下忽略。见 core F_128。
+      max_subtask_depth: 0
+
       leader:
         member_name: team-leader
         display_name: 团队领导
