@@ -492,31 +492,45 @@ def test_get_schema_ignores_keyword() -> None:
 
 
 def test_frozen_catalogue_intersects_live_registry() -> None:
-    """The snapshot only carries categories with live tools."""
+    """The snapshot carries only multi-member categories; singles collapse.
+
+    Intersection with the live registry still drops absent tools, but a
+    category whose live membership falls to one tool no longer renders a
+    category line — the lone member falls through to the flat ``[tool]``
+    block instead (a one-tool category costs a list round trip that reveals
+    a single name the prompt could state outright).
+    """
 
     tools = [
         ToolInfo(name="cron_create_job", description="创建 cron 任务"),
+        ToolInfo(name="cron_list_jobs", description="列出 cron 任务"),
         ToolInfo(name="read_pdf", description="读 PDF"),
     ]
     toolkit = _build_toolkit(tools)
     snapshot = toolkit.frozen_catalogue
 
-    assert [category.path for category in snapshot.categories] == [
-        "documents",
-        "cron",
-    ]
-    assert snapshot.categories[1].tools == ("cron_create_job",)
+    # cron keeps two live members → stays a category; documents has only
+    # read_pdf live → collapses out of the category list.
+    assert [category.path for category in snapshot.categories] == ["cron"]
+    assert snapshot.categories[0].tools == ("cron_create_job", "cron_list_jobs")
     assert {entry.name for entry in snapshot.flat_entries} == {
         "cron_create_job",
+        "cron_list_jobs",
         "read_pdf",
     }
 
-    # refresh_snapshot() re-freezes against the (possibly grown) registry.
+    # refresh_snapshot() re-freezes against the (possibly grown) registry:
+    # worktree gains both members → becomes a category; a lone terminal
+    # member stays collapsed into the flat block.
     tools.append(ToolInfo(name="powershell", description="执行 PowerShell 命令"))
+    tools.append(ToolInfo(name="enter_worktree", description="进入 worktree"))
+    tools.append(ToolInfo(name="exit_worktree", description="退出 worktree"))
     toolkit.refresh_snapshot()
-    assert "terminal" in [
+    paths = [
         category.path for category in toolkit.frozen_catalogue.categories
     ]
+    assert "worktree" in paths
+    assert "terminal" not in paths
 
 
 def test_tool_call_envelope_registered_and_dispatches() -> None:
