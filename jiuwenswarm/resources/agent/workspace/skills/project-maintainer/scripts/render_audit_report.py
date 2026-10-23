@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -220,6 +221,11 @@ def run_integrity_report(args: argparse.Namespace, paths: dict[str, Path]) -> tu
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # The child is this same interpreter; pin its stream encoding so the
+        # UTF-8 decode below cannot disagree with what it actually wrote.
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
     if result.returncode != 0:
         return None, {

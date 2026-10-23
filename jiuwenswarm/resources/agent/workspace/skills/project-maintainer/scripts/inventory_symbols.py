@@ -217,6 +217,9 @@ def run_git(root: Path, *args: str) -> str | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # git always writes UTF-8 (branch names, commits, file names).
+            encoding="utf-8",
+            errors="replace",
         )
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -491,6 +494,10 @@ def extract_ctags(path: Path) -> tuple[list[dict[str, Any]], list[str], bool] | 
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # ctags emits UTF-8 for --output-format=json; the output is parsed,
+            # so a non-UTF-8 locale must not turn it into replacement garbage.
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
