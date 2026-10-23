@@ -112,6 +112,8 @@ export async function waitForHubOAuth(
         throw new Error('Hub 登录结果兑换失败，请重新授权；若仍失败请联系 Hub 管理员。');
       throw new Error('授权失败，请重试。');
     }
+    // The request may resolve after the caller aborted the attempt; never store a cancelled result.
+    if (signal?.aborted) throw new DOMException('OAuth cancelled', 'AbortError');
     sessionStorage.setItem(TOKEN_KEY, result.access_token);
     sessionStorage.setItem(PROVIDER_KEY, result.provider);
     if (result.user) {
