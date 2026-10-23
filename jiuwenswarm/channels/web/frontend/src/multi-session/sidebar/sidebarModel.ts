@@ -52,11 +52,11 @@ export function getSessionIndicator(
 }
 
 export function getViewedSessionId(
-  designCanvasOpen: boolean,
+  workMode: string,
   activeSessionId: string | null,
   activeDesignSessionId: string | undefined,
 ): string | null {
-  return designCanvasOpen ? activeDesignSessionId || null : activeSessionId;
+  return workMode === 'design' ? activeDesignSessionId || null : activeSessionId;
 }
 
 export function getTaskStatusLabel(indicator: SessionIndicator, translate: Translate): string {
