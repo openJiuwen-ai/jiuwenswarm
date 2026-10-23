@@ -31,7 +31,8 @@ def load_skill_meta(skill_name: str, skill_dir: Path) -> dict[str, Any]:
     含 external_name / description / match_keywords 任一键的有效 JSON 即被
     接受（仅含 external_name 也可路由，其余字段走 setdefault 默认值）；
     无 meta.json、解析失败或不含任一已知键时返回空 dict，
-    调用方走默认 description/keywords。
+    调用方走默认 description/keywords（不含任一已知键时打 warning——
+    仅含扩展键的最小配置静默失效是事故关停的可观测性黑洞）。
     """
     meta_file = skill_dir / "meta.json"
     if meta_file.is_file():
@@ -48,6 +49,20 @@ def load_skill_meta(skill_name: str, skill_dir: Path) -> dict[str, Any]:
                     skill_name,
                 )
                 return data
+            if isinstance(data, dict):
+                # 有效 JSON dict 但不含任何已知键：整体忽略（返回 {}），
+                # enable_turbo 等扩展键不生效。静默忽略会让"仅含扩展键"
+                # 的最小配置（如 {"enable_turbo": false}）零信号失效——
+                # 事故关停场景致命；与解析失败分支同级告警（含文件路径
+                # 与实际键列表，定位到具体 meta.json）。
+                logger.warning(
+                    "[SkillMeta] meta.json has no known keys (need any of "
+                    "%s); ignored entirely, extension keys (e.g. "
+                    "enable_turbo) have no effect: %s keys=%s",
+                    ",".join(META_KNOWN_KEYS),
+                    meta_file,
+                    sorted(data.keys()),
+                )
         except (OSError, ValueError) as e:
             logger.warning(
                 "[SkillMeta] load_skill_meta meta.json parse failed skill=%s: %s",

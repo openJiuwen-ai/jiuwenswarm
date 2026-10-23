@@ -217,18 +217,24 @@ def refresh_skill_acceleration_description() -> list[str]:
         )
         return sorted(_last_good_entries)
 
-# 中立收尾
-
 # 通用交付确认收尾：非 PPT 技能（docx/xlsx 等）交付节点产物 info 声明
 # send_file_status=sent 时使用（与 NEUTRAL 的区别：明确文件已发送，
 # 禁止重复调用/重复发送）。PPT 技能不走本提示（有专属骨架路径）。
-_SKILL_TURBO_STOP_HINT_CONFIRMED = (
-    "\n\n[SYSTEM] The skill_acceleration_exec task has finished, and the internal "
-    "delivery pipeline confirmed that the file(s) have been generated and sent "
-    "to the user. Summarize the result for the user now based on the artifact "
-    "summary above. Do NOT call skill_acceleration_exec, skill_tool, or "
-    "send_file_to_user again for this task."
-)
+# 按语言切换（语言源复用 request metadata；与 NEUTRAL 保持同语言）。
+_SKILL_TURBO_STOP_HINT_CONFIRMED = {
+    "cn": (
+        "\n\n[SYSTEM] skill_acceleration_exec 任务已结束，内部交付流水线已确认文件"
+        "生成并发送给用户。请基于上方产物摘要向用户总结结果。禁止对本任务再次调用 "
+        "skill_acceleration_exec、skill_tool 或 send_file_to_user。"
+    ),
+    "en": (
+        "\n\n[SYSTEM] The skill_acceleration_exec task has finished, and the internal "
+        "delivery pipeline confirmed that the file(s) have been generated and sent "
+        "to the user. Summarize the result for the user now based on the artifact "
+        "summary above. Do NOT call skill_acceleration_exec, skill_tool, or "
+        "send_file_to_user again for this task."
+    ),
+}
 
 
 # 中立收尾（按语言切换，语言源复用 request metadata；两份停止提示保持同语言）
