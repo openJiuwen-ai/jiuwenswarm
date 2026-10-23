@@ -4098,6 +4098,71 @@
   gap: 12px;
 }
 
+.jiuwenmate-profile__mail-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 16px;
+  max-width: 760px;
+  padding: 22px;
+  border: 1px solid var(--jm-border);
+  border-radius: 12px;
+  background: var(--jm-surface);
+}
+
+.jiuwenmate-profile__mail-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 1px solid var(--jm-border);
+  border-radius: 10px;
+  color: var(--jm-text-2);
+}
+
+.jiuwenmate-profile__mail-content {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.jiuwenmate-profile__mail-content h3,
+.jiuwenmate-profile__mail-content p {
+  margin: 0;
+}
+
+.jiuwenmate-profile__mail-content h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.jiuwenmate-profile__mail-content p,
+.jiuwenmate-profile__mail-content li {
+  color: var(--jm-text-2);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.jiuwenmate-profile__mail-content ol {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.jiuwenmate-profile__mail-content .jiuwenmate-profile__mail-note {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--jm-muted-2);
+}
+
+@media (max-width: 640px) {
+  .jiuwenmate-profile__mail-card {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 16px;
+  }
+}
+
 .jiuwenmate-profile__save-button {
   min-height: 28px;
   padding: 0 12px;
