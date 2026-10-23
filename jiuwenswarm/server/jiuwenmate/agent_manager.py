@@ -23,6 +23,12 @@ from pydantic import ValidationError
 
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
+from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import (
+    AgentMailRuntimeService,
+    AgentMailRuntimeStore,
+    AgentMailScope,
+    load_agent_mail_runtime_provider,
+)
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
 from jiuwenswarm.server.jiuwenmate.ports.group_chat import unavailable_membership
@@ -179,6 +185,7 @@ class AgentManager:
         files: WorkspaceOutputFiles | None = None,
         schedule_interval: timedelta = DEFAULT_SCHEDULE_INTERVAL,
         cli: FeishuCliRuntime | None = None,
+        agent_mail_runtime: AgentMailRuntimeService | None = None,
     ) -> None:
         if purge_interval <= timedelta(0) or schedule_interval <= timedelta(0):
             raise ValueError("purge_interval and schedule_interval must be positive")
@@ -186,6 +193,9 @@ class AgentManager:
             raise ValueError("archive_retention must not be negative")
         self._service = service
         self.cli_runtime = cli or getattr(service, "cli_runtime", None) or FeishuCliRuntime(sessions.db_path.parent)
+        self.agent_mail_runtime = agent_mail_runtime or AgentMailRuntimeService(
+            store=AgentMailRuntimeStore(sessions.db_path), runtime=load_agent_mail_runtime_provider()
+        )
         self._cli_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._cli_requested: set[tuple[str, str]] = set()
         self._cli_slots = asyncio.Semaphore(2)
@@ -232,6 +242,7 @@ class AgentManager:
             abort=abort,
             clock=clock,
             cli=self.cli_runtime,
+            agent_mail_runtime=self.agent_mail_runtime,
         )
         self._scheduler = SessionScheduler(sessions, driver, limits=limits, clock=clock)
         self._control = ExecutionControlService(sessions, self._scheduler, ControlStore(sessions.db_path), clock=clock)
@@ -418,6 +429,7 @@ class AgentManager:
         try:
             await asyncio.to_thread(self._service.delete_colleague, namespace_id, agent_id)
             await self.cli_runtime.remove_agent(namespace_id, agent_id)
+            await self.agent_mail_runtime.remove(AgentMailScope(namespace_id, agent_id))
         finally:
             self._scheduler.release_agent(namespace_id, agent_id)
 

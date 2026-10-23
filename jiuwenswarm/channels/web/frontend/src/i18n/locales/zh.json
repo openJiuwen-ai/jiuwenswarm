@@ -253,6 +253,7 @@
         "connectors": "连接器",
         "plugins": "插件",
         "knowledge": "知识",
+        "mail": "邮箱",
         "channels": "渠道",
         "schedules": "定时任务"
       },
@@ -273,6 +274,25 @@
       "knowledgeUpdatedAt": "更新时间",
       "knowledgeHint": "从个人上下文已发布的页面中选择。保存并发布后，所选页面会复制到该员工的办公目录，之后的新任务才能读取。未选择的页面不会进入该员工。",
       "joinedAt": "入职时间：{{time}}",
+      "mail": {
+        "title": "腾讯 Agent Mail",
+        "description": "为该员工单独连接腾讯邮箱，授权后即可在新对话中使用。",
+        "mailboxAddress": "绑定邮箱：",
+        "isolationHint": "本机未找到可用的 Node.js npx，无法启动 Agent Mail CLI。",
+        "start": "连接腾讯邮箱",
+        "authorizing": "等待完成授权…",
+        "disconnect": "解除邮箱连接",
+        "cancel": "取消授权",
+        "popupBlocked": "请允许弹出窗口后重试邮箱授权。",
+        "status": {
+          "loading": "正在检查邮箱连接…",
+          "unavailable": "本机未找到可用的 Node.js npx，无法启动 Agent Mail CLI。",
+          "not_connected": "尚未连接邮箱。",
+          "authorizing": "请在新打开的页面完成授权。",
+          "connected": "邮箱已连接到该员工。",
+          "error": "启动邮箱服务失败，请稍后重试。"
+        }
+      },
       "quickIm": "快速配置 IM 渠道",
       "goConfigure": "去配置",
       "groupReplyMode": "群聊回复模式",

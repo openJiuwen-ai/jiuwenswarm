@@ -631,6 +631,11 @@ _FORWARD_REQ_METHODS = frozenset({
     "jiuwenmate.channel.list",
     "jiuwenmate.channel.messages",
     "jiuwenmate.channel.trace",
+    "jiuwenmate.agent_mail.status",
+    "jiuwenmate.agent_mail.auth.begin",
+    "jiuwenmate.agent_mail.auth.poll",
+    "jiuwenmate.agent_mail.auth.cancel",
+    "jiuwenmate.agent_mail.disconnect",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
@@ -667,6 +672,11 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.channel.list",
     "jiuwenmate.channel.messages",
     "jiuwenmate.channel.trace",
+    "jiuwenmate.agent_mail.status",
+    "jiuwenmate.agent_mail.auth.begin",
+    "jiuwenmate.agent_mail.auth.poll",
+    "jiuwenmate.agent_mail.auth.cancel",
+    "jiuwenmate.agent_mail.disconnect",
     "initialize",
     "session.switch",
     "session.fork",

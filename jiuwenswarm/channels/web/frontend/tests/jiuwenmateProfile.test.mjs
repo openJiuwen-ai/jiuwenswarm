@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import i18n from 'i18next';
-import React from 'react';
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { JSDOM } from 'jsdom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { initReactI18next } from 'react-i18next';
 
@@ -71,6 +73,69 @@ test('the overview hides quick IM setup after the channel is configured', () => 
 
   const overview = renderProfile({ colleague: { ...colleague, imConfigured: true } });
   assert.doesNotMatch(overview, /data-testid="jiuwenmate-profile-quick-im"/);
+});
+
+test('the employee mail page gives a short connection note', () => {
+  const markup = renderProfile({ initialSection: 'mail' });
+  assert.match(markup, /data-variant="mail"/);
+  assert.match(markup, /腾讯 Agent Mail/);
+  assert.match(markup, /为该员工单独连接腾讯邮箱，授权后即可在新对话中使用。/);
+  assert.doesNotMatch(markup, /OAuth/);
+  assert.doesNotMatch(markup, /无需安装 Docker/);
+  assert.doesNotMatch(markup, /运行镜像/);
+  assert.match(markup, /data-testid="jiuwenmate-profile-mail-setup"/);
+  assert.match(markup, /正在检查邮箱连接/);
+  assert.match(markup, /<button[^>]*disabled=""[^>]*data-testid="jiuwenmate-profile-mail-start"/);
+});
+
+test('the employee mail page shows the connected mailbox address', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(React.createElement(ColleagueProfilePage, {
+        colleague,
+        initialSection: 'mail',
+        resourceCatalog: catalog,
+        onSaveSettings: noop,
+        onOpenOffice: noop,
+        onChat: noop,
+        onConfigureIm: noop,
+        onToggleDisabled: noop,
+        onDelete: noop,
+        onLoadAgentMailStatus: async () => ({ status: 'connected', cli_version: '1.0.18', email: 'employee@example.com' }),
+      }));
+      await Promise.resolve();
+    });
+
+    assert.match(container.innerHTML, /data-testid="jiuwenmate-profile-mail-address"/);
+    assert.match(container.innerHTML, /绑定邮箱：/);
+    assert.match(container.innerHTML, /employee@example\.com/);
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    if (previous.window === undefined) delete globalThis.window;
+    else globalThis.window = previous.window;
+    if (previous.document === undefined) delete globalThis.document;
+    else globalThis.document = previous.document;
+    if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+  }
+});
+
+test('the employee mail page does not explain a duplicate mailbox as a blocking dialog', () => {
+  const markup = renderProfile({ initialSection: 'mail' });
+  assert.doesNotMatch(markup, /role="alertdialog"/);
+  assert.doesNotMatch(markup, /一个邮箱只能绑定给一位员工/);
 });
 
 test('the overview shows quick IM setup when no channel is configured', () => {

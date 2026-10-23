@@ -8,6 +8,7 @@ import {
   CirclePlay,
   FileText,
   HardDrive,
+  Mail,
   Monitor,
   PencilLine,
   Plus,
@@ -66,6 +67,7 @@ export type JiuwenMateProfileSection =
   | 'connectors'
   | 'plugins'
   | 'knowledge'
+  | 'mail'
   | 'channels'
   | 'schedules';
 
@@ -77,6 +79,7 @@ export const PROFILE_SECTIONS: readonly JiuwenMateProfileSection[] = [
   'connectors',
   'plugins',
   'knowledge',
+  'mail',
   'channels',
   'schedules',
 ];
@@ -129,6 +132,12 @@ interface ColleagueProfilePageProps {
   onDeleteSchedule?: (planId: string) => void | Promise<void>;
   onRunSchedule?: (planId: string) => void | Promise<void>;
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
+  onLoadAgentMailStatus?: (agentId: string) => Promise<{ status: string; cli_version: string | null; operation_id?: string }>;
+  connectionEpoch?: number;
+  onBeginAgentMailAuth?: (agentId: string) => Promise<{ status: string; operation_id?: string; auth_url?: string }>;
+  onPollAgentMailAuth?: (agentId: string, operationId: string) => Promise<{ status: string; cli_version: string | null }>;
+  onCancelAgentMailAuth?: (agentId: string, operationId: string) => Promise<{ status: string; cli_version: string | null }>;
+  onDisconnectAgentMail?: (agentId: string) => Promise<{ status: string; cli_version: string | null }>;
   activity?: JiuwenMateActivityMember | null;
   onOpenOffice: () => void;
   onChat: () => void;
@@ -170,6 +179,12 @@ export function ColleagueProfilePage({
   onDeleteSchedule,
   onRunSchedule,
   onLoadScheduleHistory,
+  onLoadAgentMailStatus,
+  connectionEpoch = 0,
+  onBeginAgentMailAuth,
+  onPollAgentMailAuth,
+  onCancelAgentMailAuth,
+  onDisconnectAgentMail,
   activity = null,
   onOpenOffice,
   onChat,
@@ -191,9 +206,102 @@ export function ColleagueProfilePage({
   const [plugins, setPlugins] = useState(colleague.capabilities.plugins);
   const [knowledge, setKnowledge] = useState(colleague.capabilities.knowledge);
   const [groupReplyMode, setGroupReplyMode] = useState<'passive' | 'adaptive'>(colleague.groupReplyMode ?? 'adaptive');
+  const [agentMailStatus, setAgentMailStatus] = useState<string>('loading');
+  const [agentMailEmail, setAgentMailEmail] = useState('');
+  const [agentMailOperation, setAgentMailOperation] = useState('');
+  const [agentMailError, setAgentMailError] = useState('');
+  const applyAgentMailStatus = (status: { status: string; email?: string }) => {
+    setAgentMailStatus(status.status);
+    setAgentMailEmail(status.email ?? '');
+  };
+  const handleAgentMailError = (error: unknown) => {
+    setAgentMailError(error instanceof Error ? error.message : String(error));
+  };
+  const startMailAuthorization = async () => {
+    if (!onBeginAgentMailAuth) return;
+    setAgentMailError('');
+    const authorizationTab = window.open('about:blank', '_blank');
+    if (!authorizationTab) {
+      setAgentMailError(t('jiuwenmate.profile.mail.popupBlocked'));
+      return;
+    }
+    try {
+      const authorization = await onBeginAgentMailAuth(colleague.id);
+      setAgentMailError('');
+      applyAgentMailStatus(authorization);
+      if (authorization.status === 'connected') {
+        setAgentMailOperation('');
+        authorizationTab.close();
+        return;
+      }
+      if (!authorization.operation_id || !authorization.auth_url) {
+        throw new Error('The Agent Mail authorization response is incomplete.');
+      }
+      setAgentMailOperation(authorization.operation_id);
+      authorizationTab.location.href = authorization.auth_url;
+    } catch (error) {
+      authorizationTab?.close();
+      handleAgentMailError(error);
+    }
+  };
+  const disconnectAgentMail = async () => {
+    if (!onDisconnectAgentMail) return;
+    setAgentMailError('');
+    try {
+      const result = await onDisconnectAgentMail(colleague.id);
+      setAgentMailError('');
+      applyAgentMailStatus(result);
+    } catch (error) {
+      handleAgentMailError(error);
+    }
+  };
+  const cancelAgentMailAuth = async () => {
+    if (!onCancelAgentMailAuth || !agentMailOperation) return;
+    setAgentMailError('');
+    try {
+      const result = await onCancelAgentMailAuth(colleague.id, agentMailOperation);
+      setAgentMailError('');
+      applyAgentMailStatus(result);
+      setAgentMailOperation('');
+    } catch (error) {
+      handleAgentMailError(error);
+    }
+  };
   useEffect(() => {
     setGroupReplyMode(colleague.groupReplyMode ?? 'adaptive');
   }, [colleague.groupReplyMode]);
+  useEffect(() => {
+    if (section !== 'mail' || !onLoadAgentMailStatus) return;
+    let active = true;
+    setAgentMailStatus('loading');
+    setAgentMailError('');
+    void onLoadAgentMailStatus(colleague.id)
+      .then((status) => {
+        if (!active) return;
+        setAgentMailError('');
+        applyAgentMailStatus(status);
+        if (status.status === 'authorizing' && status.operation_id) setAgentMailOperation(status.operation_id);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setAgentMailStatus('error');
+        handleAgentMailError(error);
+      });
+    return () => { active = false; };
+  }, [colleague.id, connectionEpoch, onLoadAgentMailStatus, section]);
+  useEffect(() => {
+    if (!agentMailOperation || !onPollAgentMailAuth) return;
+    const timer = window.setInterval(() => {
+      void onPollAgentMailAuth(colleague.id, agentMailOperation)
+        .then((status) => {
+          setAgentMailError('');
+          applyAgentMailStatus(status);
+          if (status.status !== 'authorizing') setAgentMailOperation('');
+        })
+        .catch(handleAgentMailError);
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [agentMailOperation, colleague.id, onPollAgentMailAuth]);
   useEffect(() => {
     if (section !== 'persona' || !onLoadSettings) return;
     let active = true;
@@ -283,7 +391,7 @@ export function ColleagueProfilePage({
                   { key: 'delete', label: t('jiuwenmate.office.delete'), icon: Trash2, onSelect: onDelete },
                 ]}
               />
-              <button type="button" className="jiuwenmate-dark-button" onClick={onChat} data-testid="jiuwenmate-profile-chat">
+              <button type="button" className="jiuwenmate-dark-button" onClick={() => onChat()} data-testid="jiuwenmate-profile-chat">
                 {t('jiuwenmate.office.chat')}
               </button>
             </span>
@@ -336,6 +444,12 @@ export function ColleagueProfilePage({
               onDeleteSchedule={onDeleteSchedule}
               onRunSchedule={onRunSchedule}
               onLoadScheduleHistory={onLoadScheduleHistory}
+              agentMailStatus={agentMailStatus}
+              agentMailEmail={agentMailEmail}
+              agentMailError={agentMailError}
+              onStartAgentMailAuth={startMailAuthorization}
+              onDisconnectAgentMail={disconnectAgentMail}
+              onCancelAgentMailAuth={cancelAgentMailAuth}
             />
           )}
         </div>
@@ -762,6 +876,12 @@ function ProfileSectionDetail({
   onDeleteSchedule,
   onRunSchedule,
   onLoadScheduleHistory,
+  agentMailStatus,
+  agentMailEmail,
+  agentMailError,
+  onStartAgentMailAuth,
+  onDisconnectAgentMail,
+  onCancelAgentMailAuth,
 }: {
   colleague: JiuwenMateColleague;
   groupReplyMode: 'passive' | 'adaptive';
@@ -793,6 +913,12 @@ function ProfileSectionDetail({
   onDeleteSchedule?: (planId: string) => void | Promise<void>;
   onRunSchedule?: (planId: string) => void | Promise<void>;
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
+  agentMailStatus: string;
+  agentMailEmail: string;
+  agentMailError: string;
+  onStartAgentMailAuth: () => void;
+  onDisconnectAgentMail: () => void;
+  onCancelAgentMailAuth: () => void;
 }) {
   const { t } = useTranslation();
   const [resourcePickerOpen, setResourcePickerOpen] = useState(false);
@@ -945,6 +1071,51 @@ function ProfileSectionDetail({
           onRun={onRunSchedule}
           onLoadHistory={onLoadScheduleHistory}
         />
+      </section>
+    );
+  }
+
+  if (section === 'mail') {
+    return (
+      <section className="jiuwenmate-profile__block jiuwenmate-profile__mail" data-testid="jiuwenmate-profile-detail" data-variant="mail">
+        <header>
+          <h2>{title}</h2>
+        </header>
+        <article className="jiuwenmate-profile__mail-card" data-testid="jiuwenmate-profile-mail-setup">
+          <span className="jiuwenmate-profile__mail-icon" aria-hidden="true"><Mail size={22} /></span>
+          <div className="jiuwenmate-profile__mail-content">
+            <h3>{t('jiuwenmate.profile.mail.title')}</h3>
+            <p>{t('jiuwenmate.profile.mail.description')}</p>
+            <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-profile-mail-status">
+              {t(`jiuwenmate.profile.mail.status.${agentMailStatus}`, { defaultValue: t('jiuwenmate.profile.mail.isolationHint') })}
+            </p>
+            {agentMailStatus === 'connected' && agentMailEmail && (
+              <p className="jiuwenmate-profile__mail-note" data-testid="jiuwenmate-profile-mail-address">
+                <strong>{t('jiuwenmate.profile.mail.mailboxAddress')}</strong> {agentMailEmail}
+              </p>
+            )}
+            {agentMailStatus === 'connected' ? (
+              <button type="button" className="jiuwenmate-dark-button" onClick={onDisconnectAgentMail} data-testid="jiuwenmate-profile-mail-disconnect">
+                {t('jiuwenmate.profile.mail.disconnect')}
+              </button>
+            ) : agentMailStatus === 'authorizing' ? (
+              <button type="button" className="jiuwenmate-dark-button" onClick={onCancelAgentMailAuth} data-testid="jiuwenmate-profile-mail-cancel">
+                {t('jiuwenmate.profile.mail.cancel')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="jiuwenmate-dark-button"
+                disabled={agentMailStatus === 'unavailable' || agentMailStatus === 'loading' || agentMailStatus === 'authorizing'}
+                onClick={onStartAgentMailAuth}
+                data-testid="jiuwenmate-profile-mail-start"
+              >
+                {t(agentMailStatus === 'authorizing' ? 'jiuwenmate.profile.mail.authorizing' : 'jiuwenmate.profile.mail.start')}
+              </button>
+            )}
+            {agentMailError && <p role="alert" className="jiuwenmate-profile__mail-note">{agentMailError}</p>}
+          </div>
+        </article>
       </section>
     );
   }

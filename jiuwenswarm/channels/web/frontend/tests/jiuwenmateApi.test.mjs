@@ -181,6 +181,32 @@ test('create, enable, delete and publish send agent ids and settings without a n
   );
 });
 
+test('Agent Mail requests are scoped to one employee and expose authorization lifecycle', async () => {
+  const { calls, api } = recorder({
+    [JIUWENMATE_METHODS.agentMailStatus]: { agent_mail: { status: 'not_connected', cli_version: '1.0.18' } },
+    [JIUWENMATE_METHODS.agentMailAuthBegin]: {
+      authorization: { status: 'authorizing', operation_id: 'op-1', auth_url: 'https://agent.qq.com/auth' },
+    },
+    [JIUWENMATE_METHODS.agentMailAuthPoll]: {
+      agent_mail: { status: 'connected', cli_version: '1.0.18', email: 'employee@example.com' },
+    },
+    [JIUWENMATE_METHODS.agentMailAuthCancel]: { agent_mail: { status: 'not_connected', cli_version: '1.0.18' } },
+  });
+
+  assert.equal((await api.agentMailStatus('agent-1')).status, 'not_connected');
+  assert.equal((await api.beginAgentMailAuth('agent-1')).operation_id, 'op-1');
+  assert.deepEqual(await api.pollAgentMailAuth('agent-1', 'op-1'), {
+    status: 'connected', cli_version: '1.0.18', email: 'employee@example.com',
+  });
+  assert.equal((await api.cancelAgentMailAuth('agent-1', 'op-1')).status, 'not_connected');
+  assert.deepEqual(calls, [
+    [JIUWENMATE_METHODS.agentMailStatus, { agent_id: 'agent-1' }],
+    [JIUWENMATE_METHODS.agentMailAuthBegin, { agent_id: 'agent-1' }],
+    [JIUWENMATE_METHODS.agentMailAuthPoll, { agent_id: 'agent-1', operation_id: 'op-1' }],
+    [JIUWENMATE_METHODS.agentMailAuthCancel, { agent_id: 'agent-1', operation_id: 'op-1' }],
+  ]);
+});
+
 test('server refusals reach the caller unchanged', async () => {
   const refusal = Object.assign(new Error('the default colleague cannot be deleted'), { code: 'BAD_REQUEST' });
   const { api } = recorder({ [JIUWENMATE_METHODS.delete]: refusal });

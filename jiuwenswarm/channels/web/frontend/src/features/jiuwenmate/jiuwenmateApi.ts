@@ -50,7 +50,24 @@ export const JIUWENMATE_METHODS = {
   channelList: 'jiuwenmate.channel.list',
   channelMessages: 'jiuwenmate.channel.messages',
   channelTrace: 'jiuwenmate.channel.trace',
+  agentMailStatus: 'jiuwenmate.agent_mail.status',
+  agentMailAuthBegin: 'jiuwenmate.agent_mail.auth.begin',
+  agentMailAuthPoll: 'jiuwenmate.agent_mail.auth.poll',
+  agentMailAuthCancel: 'jiuwenmate.agent_mail.auth.cancel',
+  agentMailDisconnect: 'jiuwenmate.agent_mail.disconnect',
 } as const;
+
+export interface JiuwenMateAgentMailStatus {
+  status: 'unavailable' | 'not_connected' | 'authorizing' | 'connected' | 'error';
+  cli_version: string | null;
+  email?: string;
+  operation_id?: string;
+}
+
+export interface JiuwenMateAgentMailAuthorization extends JiuwenMateAgentMailStatus {
+  operation_id?: string;
+  auth_url?: string;
+}
 
 export type JiuwenMateSchedule = Schedule;
 
@@ -971,6 +988,21 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     },
     async channelTrace(agentId: string, groupId: string): Promise<{ startedAt: string; rows: JiuwenMateTraceRow[] }> {
       return toChannelTrace(await request(JIUWENMATE_METHODS.channelTrace, { agent_id: agentId, group_id: groupId }));
+    },
+    async agentMailStatus(agentId: string): Promise<JiuwenMateAgentMailStatus> {
+      return record(await request(JIUWENMATE_METHODS.agentMailStatus, { agent_id: agentId })).agent_mail as JiuwenMateAgentMailStatus;
+    },
+    async beginAgentMailAuth(agentId: string): Promise<JiuwenMateAgentMailAuthorization> {
+      return record(await request(JIUWENMATE_METHODS.agentMailAuthBegin, { agent_id: agentId })).authorization as JiuwenMateAgentMailAuthorization;
+    },
+    async pollAgentMailAuth(agentId: string, operationId: string): Promise<JiuwenMateAgentMailStatus> {
+      return record(await request(JIUWENMATE_METHODS.agentMailAuthPoll, { agent_id: agentId, operation_id: operationId })).agent_mail as JiuwenMateAgentMailStatus;
+    },
+    async cancelAgentMailAuth(agentId: string, operationId: string): Promise<JiuwenMateAgentMailStatus> {
+      return record(await request(JIUWENMATE_METHODS.agentMailAuthCancel, { agent_id: agentId, operation_id: operationId })).agent_mail as JiuwenMateAgentMailStatus;
+    },
+    async disconnectAgentMail(agentId: string): Promise<JiuwenMateAgentMailStatus> {
+      return record(await request(JIUWENMATE_METHODS.agentMailDisconnect, { agent_id: agentId })).agent_mail as JiuwenMateAgentMailStatus;
     },
     /** Sends a private message; resending the same message id returns the request it already created. */
     async sendMessage(

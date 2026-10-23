@@ -121,7 +121,11 @@ export function JiuwenMateApp({
   const api = useMemo(
     () =>
       createJiuwenMateApi(
-        (method, params) => webRequest(method, params),
+        (method, params) => webRequest(
+          method,
+          params,
+          method.startsWith('jiuwenmate.agent_mail.') ? { timeoutMs: 130_000 } : undefined,
+        ),
         (event, handler) => webClient.on(event, (frame) => handler(frame.payload)),
       ),
     [],
@@ -604,7 +608,10 @@ export function JiuwenMateApp({
       setSchedules([]);
       return;
     }
-    const agentIds = state.colleagues.map((item) => item.id).filter(Boolean);
+    const agentIds = (state.view === 'colleague-profile'
+      ? (state.selectedColleagueId ? [state.selectedColleagueId] : [])
+      : state.colleagues.map((item) => item.id)
+    ).filter(Boolean);
     if (agentIds.length === 0) {
       setSchedules([]);
       return;
@@ -618,9 +625,7 @@ export function JiuwenMateApp({
         .then((groups) => {
           if (!cancelled) setSchedules(groups.flat());
         })
-        .catch((error: unknown) => {
-          if (!cancelled) setActionError(errorMessage(error));
-        })
+        .catch(() => undefined)
         .finally(() => {
           refreshing = false;
         });
@@ -631,7 +636,7 @@ export function JiuwenMateApp({
       cancelled = true;
       window.clearInterval(refreshTimer);
     };
-  }, [api, state.view, state.colleagues, connectionEpoch]);
+  }, [api, state.view, state.colleagues, state.selectedColleagueId, connectionEpoch]);
 
   const failSchedule = (error: unknown) => {
     setActionError(errorMessage(error));
@@ -806,6 +811,12 @@ export function JiuwenMateApp({
             onDeleteSchedule={removeSchedule}
             onRunSchedule={runSchedule}
             onLoadScheduleHistory={loadScheduleHistory}
+            connectionEpoch={connectionEpoch}
+            onLoadAgentMailStatus={api.agentMailStatus}
+            onBeginAgentMailAuth={api.beginAgentMailAuth}
+            onPollAgentMailAuth={api.pollAgentMailAuth}
+            onCancelAgentMailAuth={api.cancelAgentMailAuth}
+            onDisconnectAgentMail={api.disconnectAgentMail}
             onOpenOffice={() => showFeature('office', openOffice)}
             onChat={() => openWorkspace(selectedColleague.id)}
             onConfigureIm={() => setState((current) => openColleagueAuthorization(current, selectedColleague.id))}

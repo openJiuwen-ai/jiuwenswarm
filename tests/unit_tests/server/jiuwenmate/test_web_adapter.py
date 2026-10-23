@@ -222,6 +222,53 @@ async def test_colleague_store_is_opened_once(host):
     assert host.created == 1
 
 
+async def test_agent_mail_web_rpcs_use_the_created_employees_runtime(host, monkeypatch):
+    class MailRuntime:
+        async def status(self, scope):
+            return {"status": "not_connected", "cli_version": "1.0.18"}
+
+        async def begin_auth(self, scope):
+            return {
+                "status": "authorizing",
+                "cli_version": "1.0.18",
+                "operation_id": "op-1",
+                "auth_url": "https://agent.qq.com/oauth?ticket=opaque",
+            }
+
+        async def poll_auth(self, scope, operation_id):
+            assert operation_id == "op-1"
+            return {"status": "connected", "cli_version": "1.0.18", "email": "employee@example.com"}
+
+        async def cancel_auth(self, scope, operation_id):
+            return {"status": "not_connected", "cli_version": "1.0.18"}
+
+        async def disconnect(self, scope):
+            return {"status": "not_connected", "cli_version": "1.0.18"}
+
+        async def execute(self, scope, operation, payload):
+            return {"ok": True}
+
+        async def remove_runtime(self, scope):
+            return None
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.jiuwenmate.agent_manager.load_agent_mail_runtime_provider", lambda: MailRuntime()
+    )
+    agent_id = (await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())).payload["colleague"]["agent_id"]
+
+    status = await host.call(ReqMethod.JIUWENMATE_AGENT_MAIL_STATUS, agent_id=agent_id)
+    authorization = await host.call(ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_BEGIN, agent_id=agent_id)
+    connected = await host.call(
+        ReqMethod.JIUWENMATE_AGENT_MAIL_AUTH_POLL, agent_id=agent_id, operation_id="op-1"
+    )
+
+    assert status.payload["agent_mail"]["status"] == "not_connected"
+    assert authorization.payload["authorization"]["auth_url"] == "https://agent.qq.com/oauth?ticket=opaque"
+    assert connected.payload["agent_mail"] == {
+        "status": "connected", "cli_version": "1.0.18", "email": "employee@example.com"
+    }
+
+
 def test_configured_model_catalog_carries_no_secret(monkeypatch):
     entries = [
         {
@@ -252,6 +299,7 @@ def test_web_gateway_does_not_forward_internal_jiuwenmate_methods():
         ReqMethod.JIUWENMATE_FEISHU_PREPARE.value,
         ReqMethod.JIUWENMATE_DELIVERY_ACK.value,
         ReqMethod.JIUWENMATE_GROUP_RESPONSE.value,
+        ReqMethod.JIUWENMATE_THINKING_NOTICE_ACK.value,
     }
     web_methods = {
         method.value

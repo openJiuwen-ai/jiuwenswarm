@@ -253,6 +253,7 @@
         "connectors": "Connectors",
         "plugins": "Plugins",
         "knowledge": "Knowledge",
+        "mail": "Email",
         "channels": "Channels",
         "schedules": "Scheduled tasks"
       },
@@ -273,6 +274,25 @@
       "knowledgeUpdatedAt": "Updated",
       "knowledgeHint": "Choose published personal-context pages. After saving and publishing, copies are placed in this employee's office and later tasks can read them. Pages that are not selected stay out.",
       "joinedAt": "Joined: {{time}}",
+      "mail": {
+        "title": "Tencent Agent Mail",
+        "description": "Connect Tencent Mail for this employee so later conversations can use it.",
+        "mailboxAddress": "Connected mailbox:",
+        "isolationHint": "Node.js npx is unavailable on this machine, so Agent Mail CLI cannot start.",
+        "start": "Connect Tencent Mail",
+        "authorizing": "Waiting for authorization…",
+        "disconnect": "Disconnect mailbox",
+        "cancel": "Cancel authorization",
+        "popupBlocked": "Allow pop-ups and try mailbox authorization again.",
+        "status": {
+          "loading": "Checking mailbox connection…",
+          "unavailable": "Node.js npx is unavailable on this machine, so Agent Mail CLI cannot start.",
+          "not_connected": "No mailbox is connected.",
+          "authorizing": "Complete authorization in the newly opened page.",
+          "connected": "The mailbox is connected to this employee.",
+          "error": "The mailbox service could not start. Try again shortly."
+        }
+      },
       "quickIm": "Quick IM channel setup",
       "goConfigure": "Configure",
       "groupReplyMode": "Group reply mode",
