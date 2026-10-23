@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import stat as stat_module
 import threading
 import time
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from jiuwenswarm.symphony.service import (
     SwarmSymphonyService,
     _cache_excludes_directory,
     _cache_excludes_file,
+    _cache_is_link_stat,
     _read_build_log,
 )
 
@@ -475,3 +477,29 @@ def test_cache_exclusions_never_exceed_pinned_scanner_rules():
         assert not (
             _cache_excludes_file(name) and not scanner._exclude_file(name)
         ), name
+
+
+def test_cache_link_detection_handles_windows_reparse_points(monkeypatch):
+    reparse_flag = 0x400
+    monkeypatch.setattr(
+        stat_module,
+        "FILE_ATTRIBUTE_REPARSE_POINT",
+        reparse_flag,
+        raising=False,
+    )
+    regular = SimpleNamespace(
+        st_mode=stat_module.S_IFREG,
+        st_file_attributes=0,
+    )
+    reparse = SimpleNamespace(
+        st_mode=stat_module.S_IFREG,
+        st_file_attributes=reparse_flag,
+    )
+    symlink = SimpleNamespace(
+        st_mode=stat_module.S_IFLNK,
+        st_file_attributes=0,
+    )
+
+    assert _cache_is_link_stat(regular) is False
+    assert _cache_is_link_stat(reparse) is True
+    assert _cache_is_link_stat(symlink) is True
