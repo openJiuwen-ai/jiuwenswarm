@@ -232,11 +232,13 @@ class WorkerDispatcher:
         record: DispatchRecord,
         executions: Sequence[SessionExecutionSnapshot],
     ) -> list[SessionExecutionSnapshot]:
-        return [
-            item for item in executions
-            if item.execution_id == record.last_execution_id
-            or record.request.request_id in {item.request_id, item.root_request_id}
-        ]
+        matching_executions = []
+        for execution in executions:
+            matches_execution = execution.execution_id == record.last_execution_id
+            matches_request = record.request.request_id in {execution.request_id, execution.root_request_id}
+            if matches_execution or matches_request:
+                matching_executions.append(execution)
+        return matching_executions
 
     @staticmethod
     def _execution_is_processing(execution: SessionExecutionSnapshot) -> bool:
@@ -544,12 +546,13 @@ class WorkerDispatcher:
         after = max(0, int(message.get("after") or 0))
         state = self._reconcile_execution_state(request)
         snapshot = self._bridge.events.snapshot(request, after=after)
-        work_records = [
-            record for record in self._bridge.events.records.values()
-            if record.scope == request_scope(request)
-            and not record.is_passive_subscription
-            and _is_session_work_request(record.request)
-        ]
+        work_records = []
+        scope = request_scope(request)
+        for record in self._bridge.events.records.values():
+            if record.scope != scope or record.is_passive_subscription:
+                continue
+            if _is_session_work_request(record.request):
+                work_records.append(record)
         # Navigation/history RPCs may overlap this query when the page reloads.
         # Their accepted handlers do not represent conversation execution.
         snapshot["is_processing"] = any(record.active or record.is_processing for record in work_records)
