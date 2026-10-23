@@ -2468,6 +2468,24 @@ def _build_agent_group_card(
     return card
 
 
+def disabled_agent_group_runtimes(package: Any) -> list[str]:
+    """Read current switches before selecting an expert team."""
+    from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
+    from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.common.config_panel.config_set_handlers import flatten_external_cli_agents_for_config_panel
+
+    switches = flatten_external_cli_agents_for_config_panel(get_config())
+    disabled: list[str] = []
+    for template in package.templates.values():
+        external = external_cli_agent_spec_from_template(template)
+        if external is None:
+            continue
+        name = external.cli_agent
+        if switches.get(f"external_cli_agent_{name}_enabled") != "true" and name not in disabled:
+            disabled.append(name)
+    return disabled
+
+
 def show_agent_group(name: str) -> dict | None:
     """Return one valid AgentGroup detail card, or ``None`` when absent."""
     from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
@@ -2479,13 +2497,20 @@ def show_agent_group(name: str) -> dict | None:
     market = _marketplace_index(read_agent_group_marketplace_entries())
     # Keep show as strict as Team assembly and list: a corrupt/unloadable group
     # must never be presented as selectable detail data.
-    return _build_agent_group_card(
+    card = _build_agent_group_card(
         package_dir,
         source=source,
         marketplace=market.get(package_dir.name),
         load_package=load_agent_group_package,
         include_details=True,
     )
+
+    if card is not None:
+        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package_bundle
+
+        package = load_agent_group_package_bundle(package_dir)
+        card["disabledRuntimes"] = disabled_agent_group_runtimes(package)
+    return card
 
 
 async def show_agent_group_with_hub(

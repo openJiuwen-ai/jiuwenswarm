@@ -5066,3 +5066,34 @@
 .chat-team-select__dot--idle {
   background: var(--color-feedback-warning);
 }
+
+.chat-group-runtime-dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 24px;
+}
+
+.chat-group-runtime-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.chat-group-runtime-dialog__header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.chat-group-runtime-dialog__message {
+  margin: 16px 0 24px;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.chat-group-runtime-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+}
