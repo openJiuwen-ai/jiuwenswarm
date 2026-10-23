@@ -205,18 +205,13 @@ export function isDesignerFallbackTextAsset(
   );
 }
 
-/**
- * Preview URL of a node output, only when it is an image an ``<img>`` can show.
- * Video and audio have no thumbnail the raw-file route can serve cheaply, so
- * they keep their type icon instead of a broken image.
- */
+/** Preview URL of a node output, only when it is an image an ``<img>`` can show. */
 export function designerImagePreviewUrl(
   ref: Pick<AssetRef, 'kind' | 'uri' | 'mime_type' | 'label'> | null | undefined,
   nodeType: string,
 ): string | null {
   if (!ref?.uri) return null;
   const previewUrl = designerAssetPreviewUrl(ref.uri);
-  if (!previewUrl) return null;
   const kind = classifyDesignerOutput({
     kind: ref.kind || nodeType,
     mimeType: ref.mime_type,
@@ -228,20 +223,9 @@ export function designerImagePreviewUrl(
   return kind === 'image' ? previewUrl : null;
 }
 
-/**
- * The output ref a node shows in a preview or material list.
- *
- * The run store's accepted ref wins, then the graph node's own ``output_ref``,
- * then a configured upload. An uploaded reference is never executed and a run
- * reloaded from disk can carry no state for a node, so the run store alone
- * leaves those tiles without a thumbnail.
- */
-export function resolveDesignerNodePreviewRef(
-  node:
-    | { type?: string; config?: unknown; output_ref?: AssetRef | null }
-    | null
-    | undefined,
-  state?: DesignerNodeState | null,
+export function preferredDesignerPreviewRef(
+  accepted?: AssetRef | null,
+  candidate?: AssetRef | null,
 ): AssetRef | null {
   const fromRun = state?.output_ref;
   if (fromRun?.uri && !isPlaceholderAsset(fromRun.uri)) return fromRun;
