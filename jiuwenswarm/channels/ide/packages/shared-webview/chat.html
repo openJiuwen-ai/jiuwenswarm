@@ -921,6 +921,13 @@
     flex-wrap: wrap;
   }
   #attachment-preview.has-items { display: flex; }
+  #attachment-error {
+    display: none;
+    padding: 0 0 6px 0;
+    font-size: 11px;
+    color: var(--error-text);
+  }
+  #attachment-error.visible { display: block; }
   .attachment-thumb {
     position: relative;
     width: 48px;
@@ -1609,6 +1616,7 @@
 
 <div id="input-area">
   <div id="attachment-preview"></div>
+  <div id="attachment-error" role="status" aria-live="polite"></div>
   <div id="input-row">
     <div id="mention-popup" class="hidden"></div>
     <div id="skill-popup" class="hidden"></div>
@@ -1624,7 +1632,7 @@
   <input type="file" id="image-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none">
   <div id="input-meta">
     <!-- Attach button — leftmost -->
-    <button id="attach-btn" disabled title="Add Image" onclick="document.getElementById('image-input').click()">+</button>
+    <button id="attach-btn" disabled title="Images: up to 10 MB each" onclick="document.getElementById('image-input').click()">+</button>
     <!-- Mode selector -->
     <div id="mode-wrap">
       <button id="mode-btn" onclick="toggleModeDropdown()" title="Coding mode — choose how the agent works">
@@ -1992,11 +2000,11 @@ function handleImageInput(files) {
   const maxSize = 10 * 1024 * 1024; // 10 MB
   Array.from(files).forEach(function(file) {
     if (!validTypes.includes(file.type)) {
-      console.warn('[webview] Unsupported image type:', file.type);
+      showAttachmentError('Unsupported image type: ' + (file.type || file.name) + '. Use PNG, JPEG, WebP or GIF.');
       return;
     }
     if (file.size > maxSize) {
-      console.warn('[webview] Image too large:', file.name, file.size);
+      showAttachmentError('"' + file.name + '" is ' + fmtBytes(file.size) + ', above the 10 MB image limit.');
       return;
     }
     // Create a blob URL immediately for preview (avoids embedding large base64 in DOM)
@@ -2013,6 +2021,24 @@ function handleImageInput(files) {
   });
 }
 
+var attachmentErrorTimer = null;
+
+function showAttachmentError(message) {
+  var el = document.getElementById('attachment-error');
+  if (!el) {
+    console.warn('[webview] ' + message);
+    return;
+  }
+  el.textContent = message;
+  el.classList.add('visible');
+  if (attachmentErrorTimer) clearTimeout(attachmentErrorTimer);
+  attachmentErrorTimer = setTimeout(function() {
+    el.classList.remove('visible');
+    el.textContent = '';
+    attachmentErrorTimer = null;
+  }, 5000);
+}
+
 function readFileAsBase64(file, callback) {
   var reader = new FileReader();
   reader.onload = function(e) {
@@ -2021,7 +2047,7 @@ function readFileAsBase64(file, callback) {
     callback(base64);
   };
   reader.onerror = function() {
-    console.warn('[webview] Failed to read file:', file.name);
+    showAttachmentError('Failed to read image: ' + file.name);
   };
   reader.readAsDataURL(file);
 }
@@ -2501,20 +2527,24 @@ function startRenameSession() {
   htEl.parentNode.insertBefore(inp, htEl);
   inp.focus();
   inp.select();
-  function save() {
+  var finished = false;
+  function finish(commit) {
+    if (finished) return;
+    finished = true;
     var val = inp.value.trim();
-    if (val && val !== current) {
+    if (commit && val && val !== current) {
       state.sessionTitle = val;
       send({ type: 'rename_session', title: val });
     }
-    htEl.textContent = val || current;
+    // Escape restores the original title; Enter/click commits the edited value.
+    htEl.textContent = commit ? (val || current) : current;
     htEl.style.display = '';
     inp.remove();
   }
-  inp.addEventListener('blur', save);
+  inp.addEventListener('blur', function() { finish(true); });
   inp.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') { e.preventDefault(); save(); }
-    if (e.key === 'Escape') { htEl.style.display = ''; inp.remove(); }
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
   });
 }
 
@@ -2592,15 +2622,30 @@ function copyDebugLog() {
 // ─────────────────────────────────────────────
 // JiuwenSwarm event handlers
 // ─────────────────────────────────────────────
+function isTeamMode() {
+  return state.mode === 'code.team';
+}
+
 function handleJiuwenEvent(evt) {
   const et = evt.event_type;
   const rid = evt.request_id;
   const payload = evt.payload || {};
+  // In team mode the wire also carries each teammate's private stream (role
+  // "teammate") under the same (or no) request id. Only the leader's output is
+  // the user-facing answer; member activity belongs to the Swarm Map.
+  const teammateChat = isTeamMode()
+    && (payload.role === 'teammate' || (payload.member_name && payload.role !== 'leader'));
 
   if (et === 'chat.delta') {
-    appendDelta(rid, payload.text || '');
+    if (!teammateChat) appendDelta(rid, payload.text || '');
   } else if (et === 'chat.reasoning') {
-    appendThinking(rid, payload.text || '');
+    if (!teammateChat) appendThinking(rid, payload.text || '');
+  } else if (et === 'chat.processing_status_deferred') {
+    // The team runtime acknowledges the send with an empty chat.final before
+    // the leader starts producing text. Remember that this turn is deferred so
+    // finalizeTurn() does not close the assistant bubble prematurely.
+    const dpt = state.pendingTurns[rid] || getActivePendingTurn();
+    if (dpt) dpt.deferred = true;
   } else if (et === 'chat.llm_call_start') {
     showThinkingPill(rid, payload);
   } else if (et === 'chat.llm_call_end') {
@@ -2682,7 +2727,10 @@ function handleJiuwenEvent(evt) {
     renderTokenCounter(state.lastTokenTotal);
     updateTokenBar();
   } else if (et === 'chat.final') {
-    finalizeTurn(rid, payload);
+    // Team mode emits one chat.final per leader segment (delegation, progress,
+    // result), each under a rid that may not match the chat.send turn. They are
+    // milestones, not end-of-turn; the turn ends on chat.processing_status.
+    if (!teammateChat) finalizeTurn(rid, payload);
   } else if (et === 'chat.processing_status' && payload.is_processing === false) {
     // Stream ended but no chat.final was sent by gateway — release the UI
     if (state.streaming) {
@@ -2781,7 +2829,10 @@ function beginTurn(requestId, userContent) {
 
 function appendDelta(rid, text) {
   promoteThinkingPill(rid);
-  const pt = state.pendingTurns[rid];
+  let pt = state.pendingTurns[rid];
+  // Team/leader streams can arrive without the chat.send request id (the server
+  // uses its own turn rid). Map them to the live turn so the answer is visible.
+  if (!pt) pt = getActivePendingTurn();
   if (!pt) return;
   // First real content removes the typing spinner and records TTFT
   if (pt.typingEl) {
@@ -2811,7 +2862,8 @@ function appendDelta(rid, text) {
 
 function appendThinking(rid, text) {
   promoteThinkingPill(rid);
-  const pt = state.pendingTurns[rid];
+  let pt = state.pendingTurns[rid];
+  if (!pt) pt = getActivePendingTurn();
   if (!pt || !text) return;
   pt.reasonedInCall = true;
   if (!pt.firstTokenTime) {
@@ -2883,6 +2935,7 @@ function showThinkingPill(rid, payload) {
 /** First streamed token for a call: flip the pill from "Thinking…" to "Generating…". */
 function promoteThinkingPill(rid) {
   var pt = state.pendingTurns[rid];
+  if (!pt) pt = getActivePendingTurn();
   if (!pt) return;
   if (pt.thinkingPillEl && pt.thinkingPillEl.textContent !== 'Generating…') {
     pt.thinkingPillEl.textContent = 'Generating…';
@@ -3465,9 +3518,58 @@ function attachIntermediateLlmResponses(events) {
   return out;
 }
 
+function displayTextFromFinalPayload(payload) {
+  var raw = payload && typeof payload.content === 'string' ? payload.content : '';
+  if (!raw) return '';
+  if (raw.indexOf('team.leader:') === 0) {
+    try {
+      var leader = JSON.parse(raw.slice('team.leader:'.length));
+      if (leader && typeof leader.content === 'string') return leader.content;
+    } catch (e) { /* fall through to raw */ }
+    return raw;
+  }
+  if (raw.indexOf('team.event:') === 0) {
+    try {
+      var parsed = JSON.parse(raw.slice('team.event:'.length));
+      var ev = parsed.event || (parsed.payload && parsed.payload.event) || parsed;
+      var from = ev && ev.from_member;
+      var to = ev && ev.to_member;
+      var type = ev && ev.type;
+      var toUser = from === 'team_leader' || (type === 'team.message.p2p' && to === 'user');
+      if (ev && typeof ev.content === 'string' && toUser) return ev.content;
+    } catch (e) { /* fall through to raw */ }
+  }
+  return raw;
+}
+
+function appendRawTurnText(pt, text) {
+  if (!text) return;
+  var lastChild = pt.streamEl.lastElementChild;
+  if (lastChild && lastChild.classList.contains('chunk-text')) {
+    lastChild.textContent += text;
+  } else {
+    var span = document.createElement('span');
+    span.className = 'chunk-text';
+    span.textContent = text;
+    pt.streamEl.appendChild(span);
+  }
+  pt.textContent += text;
+}
+
 function finalizeTurn(rid, payload) {
   hideThinkingPill(rid);
-  const pt = state.pendingTurns[rid];
+  payload = payload || {};
+  const finalPayloadText = displayTextFromFinalPayload(payload);
+  // chat.processing_status(is_processing=false) is the terminal frame for team
+  // turns; an empty chat.final right after the send is only a deferred ack.
+  const terminalStatus = payload.event_type !== 'chat.final'
+    && (payload.is_processing === false || payload.is_complete === true);
+  let pt = state.pendingTurns[rid];
+  // Team mode can emit the leader's answer under a member/leader request id.
+  // Fall back to the latest live turn so it is not left blank.
+  if (!pt && (terminalStatus || finalPayloadText.trim())) {
+    pt = getActivePendingTurn();
+  }
   if (pt) {
     if (pt.typingEl) {
       pt.typingEl.remove();
@@ -3489,11 +3591,45 @@ function finalizeTurn(rid, payload) {
       }
     });
 
+    // Team mode often delivers the leader's answer only in chat.final, without
+    // any chat.delta chunks. Render it so the turn is not left blank.
+    if (!String(pt.textContent || '').trim() && finalPayloadText.trim()) {
+      appendRawTurnText(pt, finalPayloadText);
+    }
+
     // Premature final: when an interrupt question is awaiting an answer, the server
     // emits chat.final for the original turn BEFORE the user responds. Don't finalize
     // then — the resumed stream (keyed by the question's request_id) continues this
     // same turn and will produce the real final.
     if (pt.pendingQuestion && !pt.questionAnswered) {
+      scrollToBottom();
+      return;
+    }
+
+    // Deferred team acknowledgement: the server sends an empty chat.final right
+    // after chat.send (before the runtime starts), then streams the leader's real
+    // answer later under a different/no request id. Keep the turn alive.
+    if (pt.deferred && !terminalStatus && !payload.stopped
+        && !finalPayloadText.trim() && !String(pt.textContent || '').trim()) {
+      scrollToBottom();
+      return;
+    }
+
+    // Team turns emit several per-leader chat.final milestones; only the
+    // processing_status terminal frame ends the turn. Keep accumulating leader
+    // output in the single assistant bubble and separate segments for readability.
+    if (isTeamMode() && !terminalStatus && !payload.stopped) {
+      pt.deferred = false;
+      const incoming = finalPayloadText.trim();
+      const shown = String(pt.textContent || '');
+      if (incoming && shown.indexOf(incoming) === -1) {
+        // A leader segment that only exists in chat.final (no deltas): append it.
+        if (shown.trim() && !/\n\s*$/.test(shown)) appendRawTurnText(pt, '\n\n');
+        appendRawTurnText(pt, incoming);
+      } else if (incoming && shown.trim() && !/\n\s*$/.test(shown)) {
+        // Same segment already streamed: leave a paragraph break for the next one.
+        appendRawTurnText(pt, '\n\n');
+      }
       scrollToBottom();
       return;
     }
@@ -3508,7 +3644,7 @@ function finalizeTurn(rid, payload) {
     // timeline has no response entry to display. Intermediate calls stream no
     // text deltas, so fall back to the chat.final payload content.
     const finalText = (pt.textContent ? pt.textContent.trim() : '')
-      || (payload && payload.content ? String(payload.content).trim() : '')
+      || finalPayloadText.trim()
       || '';
     if (finalText) {
       const lastE = pt.events[pt.events.length - 1];
