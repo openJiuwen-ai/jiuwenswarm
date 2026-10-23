@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import Future as ConcurrentFuture
 from copy import deepcopy
+from functools import lru_cache
 import hashlib
 import inspect
 import json
@@ -1556,37 +1557,301 @@ def _path_stamp(path: Path) -> tuple[int, int] | None:
     return info.st_mtime_ns, info.st_size
 
 
-def _tree_digest(root: Path, *, max_depth: int | None) -> str:
-    """Hash file metadata below ``root`` without reading file contents."""
-    digest = hashlib.sha256()
-    if not root.is_dir():
-        digest.update(b"missing")
-        return digest.hexdigest()
+# Keep these rules aligned with the pinned Symphony Scanner. The cache key must
+# change when the Scanner would read different Skill inputs, and no more often.
+_MAX_CACHE_SCAN_DIRECTORIES = 50_000
+_MAX_CACHE_DIRECTORY_ENTRIES = 20_000
+_MAX_CACHE_ENTRYPOINTS = 10_000
+_MAX_CACHE_ASSET_FILES_PER_SKILL = 10_000
+_MAX_CACHE_ASSET_FILES = 100_000
+_EXCLUDED_CACHE_DIRECTORY_NAMES = frozenset(
+    {
+        ".cache",
+        ".git",
+        ".hg",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".svn",
+        ".tox",
+        ".venv",
+        ".ssh",
+        "__pycache__",
+        "cache",
+        "caches",
+        "credential",
+        "credentials",
+        "key",
+        "keys",
+        "node_modules",
+        "private_keys",
+        "secret",
+        "secrets",
+    }
+)
+_SENSITIVE_DIRECTORY_TOKENS = frozenset(
+    {
+        "credential",
+        "credentials",
+        "key",
+        "keys",
+        "password",
+        "passwords",
+        "private",
+        "secret",
+        "secrets",
+        "token",
+        "tokens",
+    }
+)
+_SENSITIVE_FILE_TOKENS = frozenset(
+    {
+        "credential",
+        "credentials",
+        "key",
+        "keys",
+        "password",
+        "private",
+        "secret",
+        "secrets",
+        "token",
+        "tokens",
+    }
+)
+_KEY_MATERIAL_SUFFIXES = frozenset(
+    {
+        ".der",
+        ".jks",
+        ".key",
+        ".keystore",
+        ".p12",
+        ".pem",
+        ".pfx",
+        ".pkcs12",
+        ".ppk",
+        ".pub",
+    }
+)
+_SENSITIVE_EXACT_FILENAMES = frozenset(
+    {
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        "authorized_keys",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "id_rsa",
+    }
+)
 
-    def visit(directory: Path, depth: int) -> None:
-        try:
-            with os.scandir(directory) as entries:
-                ordered = sorted(entries, key=lambda entry: entry.name)
-        except OSError:
-            digest.update(b"unreadable\0")
-            return
-        for entry in ordered:
+
+# Token checks intentionally under-exclude compared with the Scanner. Extra
+# files only cause a cache miss; a false exclusion would hide a real change.
+@lru_cache(maxsize=4096)
+def _cache_name_tokens(name: str) -> frozenset[str]:
+    normalized = "".join(
+        char if char.isalnum() else "_" for char in name.casefold()
+    )
+    return frozenset(token for token in normalized.split("_") if token)
+
+
+def _cache_excludes_directory(name: str) -> bool:
+    lowered = name.casefold()
+    if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
+        return True
+    if lowered in _EXCLUDED_CACHE_DIRECTORY_NAMES or lowered.endswith(".cache"):
+        return True
+    return bool(_cache_name_tokens(name) & _SENSITIVE_DIRECTORY_TOKENS)
+
+
+def _cache_excludes_file(name: str) -> bool:
+    lowered = name.casefold()
+    if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
+        return True
+    if lowered in {".git", "__pycache__", "cache"}:
+        return True
+    stem, suffix = os.path.splitext(lowered)
+    if lowered in _SENSITIVE_EXACT_FILENAMES or suffix in _KEY_MATERIAL_SUFFIXES:
+        return True
+    if lowered.endswith((".pyc", ".pyo")):
+        return True
+    return bool(_cache_name_tokens(stem) & _SENSITIVE_FILE_TOKENS)
+
+
+def _cache_is_link_stat(info: os.stat_result) -> bool:
+    file_attributes = getattr(info, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat.S_ISLNK(info.st_mode) or bool(file_attributes & reparse_flag)
+
+
+class _MetadataBudget:
+    __slots__ = ("directories", "entrypoints", "files")
+
+    def __init__(self) -> None:
+        self.directories = 0
+        self.entrypoints = 0
+        self.files = 0
+
+
+class _MetadataScanLimitExceeded(RuntimeError):
+    """The metadata walk reached a Scanner resource limit."""
+
+
+def _cache_relative_path(path: str, root: str) -> str:
+    try:
+        return os.path.relpath(path, root).replace(os.sep, "/")
+    except ValueError:
+        return os.path.basename(path)
+
+
+def _read_metadata_entries(
+    directory: str,
+    budget: _MetadataBudget,
+) -> list[tuple[str, str, os.stat_result]]:
+    """List directory entries with the Scanner's limits and ordering."""
+    if budget.directories >= _MAX_CACHE_SCAN_DIRECTORIES:
+        raise _MetadataScanLimitExceeded
+    budget.directories += 1
+    entries: list[tuple[str, str, os.stat_result]] = []
+    with os.scandir(directory) as iterator:
+        for entry in iterator:
+            if len(entries) >= _MAX_CACHE_DIRECTORY_ENTRIES:
+                raise _MetadataScanLimitExceeded
             try:
                 info = entry.stat(follow_symlinks=False)
             except OSError:
                 continue
-            digest.update(entry.name.encode("utf-8", "surrogateescape"))
-            digest.update(b"\0")
+            entries.append((entry.name, entry.path, info))
+    entries.sort(key=lambda item: (item[0].casefold(), item[0]))
+    return entries
+
+
+def _discover_skill_roots(
+    root: Path,
+    max_depth: int | None,
+    budget: _MetadataBudget,
+) -> list[str]:
+    """Find Skill roots with the Scanner's ``max_depth`` semantics."""
+    root_path = str(root)
+    pending: list[tuple[str, int]] = [(root_path, 0)]
+    roots: set[str] = set()
+    while pending:
+        directory, depth = pending.pop()
+        try:
+            entries = _read_metadata_entries(directory, budget)
+        except OSError:
+            if directory == root_path:
+                raise
+            continue
+        subdirectories: list[str] = []
+        for name, path, info in entries:
+            if _cache_is_link_stat(info):
+                continue
+            if stat.S_ISREG(info.st_mode) and name == "SKILL.md":
+                budget.entrypoints += 1
+                if budget.entrypoints > _MAX_CACHE_ENTRYPOINTS:
+                    raise _MetadataScanLimitExceeded
+                roots.add(os.path.dirname(path))
+                continue
+            if stat.S_ISDIR(info.st_mode) and not _cache_excludes_directory(
+                name
+            ):
+                if max_depth is None or depth < max_depth:
+                    subdirectories.append(path)
+        pending.extend((child, depth + 1) for child in reversed(subdirectories))
+    return sorted(
+        roots,
+        key=lambda path: _cache_relative_path(path, root_path).casefold(),
+    )
+
+
+def _collect_skill_asset_files(
+    skill_root: str,
+    budget: _MetadataBudget,
+) -> tuple[list[tuple[str, os.stat_result]], bool]:
+    """Collect Skill asset metadata. ``max_depth`` does not limit assets."""
+    pending: list[tuple[str, str]] = [(skill_root, "")]
+    files: list[tuple[str, os.stat_result]] = []
+    limited = False
+    while pending:
+        directory, prefix = pending.pop()
+        try:
+            entries = _read_metadata_entries(directory, budget)
+        except OSError:
+            continue
+        subdirectories: list[tuple[str, str]] = []
+        for name, path, info in entries:
+            if _cache_is_link_stat(info):
+                continue
+            relative_path = f"{prefix}/{name}" if prefix else name
+            if stat.S_ISDIR(info.st_mode):
+                if not _cache_excludes_directory(name):
+                    subdirectories.append((path, relative_path))
+                continue
+            if not stat.S_ISREG(info.st_mode) or _cache_excludes_file(name):
+                continue
+            budget.files += 1
+            if budget.files > _MAX_CACHE_ASSET_FILES:
+                raise _MetadataScanLimitExceeded
+            files.append((relative_path, info))
+            if len(files) > _MAX_CACHE_ASSET_FILES_PER_SKILL:
+                limited = True
+                files.sort(key=lambda item: (item[0].casefold(), item[0]))
+                return files, limited
+        pending.extend(reversed(subdirectories))
+    files.sort(key=lambda item: (item[0].casefold(), item[0]))
+    return files, limited
+
+
+def _skills_metadata_digest(root: Path, *, max_depth: int | None) -> str:
+    """Hash Skill asset metadata without reading file contents.
+
+    Entry discovery follows ``max_depth``. Asset collection always walks each
+    discovered Skill recursively, matching ``SkillFolderScanner``.
+    """
+    digest = hashlib.sha256()
+    digest.update(b"skills-metadata-v1\0")
+    try:
+        root_stat = root.lstat()
+    except OSError:
+        digest.update(b"missing")
+        return digest.hexdigest()
+    if _cache_is_link_stat(root_stat) or not stat.S_ISDIR(
+        root_stat.st_mode
+    ):
+        digest.update(b"invalid")
+        return digest.hexdigest()
+
+    budget = _MetadataBudget()
+    root_path = str(root)
+    try:
+        skill_roots = _discover_skill_roots(root, max_depth, budget)
+        for skill_root in skill_roots:
+            digest.update(b"skill\0")
             digest.update(
-                f"{info.st_mode}:{info.st_size}:{info.st_mtime_ns}".encode("ascii")
+                _cache_relative_path(skill_root, root_path).encode(
+                    "utf-8", "surrogateescape"
+                )
             )
             digest.update(b"\0")
-            if stat.S_ISDIR(info.st_mode) and (
-                max_depth is None or depth < max_depth
-            ):
-                visit(Path(entry.path), depth + 1)
-
-    visit(root, 0)
+            files, limited = _collect_skill_asset_files(skill_root, budget)
+            if limited:
+                digest.update(b"limited\0")
+            for relative_path, info in files:
+                digest.update(
+                    relative_path.encode("utf-8", "surrogateescape")
+                )
+                digest.update(b"\0")
+                digest.update(
+                    f"{info.st_mode}:{info.st_size}:{info.st_mtime_ns}".encode(
+                        "ascii"
+                    )
+                )
+                digest.update(b"\0")
+    except (_MetadataScanLimitExceeded, OSError):
+        # Force a cache miss so the real Scanner can report its own limit error.
+        return f"unavailable:{os.urandom(8).hex()}"
     return digest.hexdigest()
 
 
@@ -1643,7 +1908,7 @@ def _graph_status_cache_key(
         str(graph_dir),
         max_depth,
         hashlib.sha256(repr(config).encode("utf-8", "surrogateescape")).hexdigest(),
-        _tree_digest(skills_root, max_depth=max_depth),
+        _skills_metadata_digest(skills_root, max_depth=max_depth),
         _path_stamp(graph_dir),
         _path_stamp(graph_dir / CURRENT_POINTER_FILENAME),
         artifact_stamps,

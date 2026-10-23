@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -15,17 +18,22 @@ from jiuwenswarm.symphony.build import GraphBuildRuntimeFactory
 from jiuwenswarm.symphony.config import symphony_config_from_dict
 from jiuwenswarm.symphony.service import (
     SwarmSymphonyService,
+    _cache_excludes_directory,
+    _cache_excludes_file,
     _read_build_log,
 )
 
 
-def _config(tmp_path: Path):
+def _config(tmp_path: Path, *, max_depth: int | None = None):
     skills_root = tmp_path / "skills"
     graph_dir = tmp_path / "graph"
     skills_root.mkdir()
     graph_dir.mkdir()
     return symphony_config_from_dict(
-        {"paths": {"skills_root": str(skills_root), "graph_dir": str(graph_dir)}}
+        {
+            "paths": {"skills_root": str(skills_root), "graph_dir": str(graph_dir)},
+            "fingerprint": {"scan": {"max_depth": max_depth}},
+        }
     )
 
 
@@ -39,6 +47,7 @@ def _install_fake_status(monkeypatch, config, *, calls: list[int]):
                 "exists": False,
                 "stale": True,
                 "detail": "Symphony graph is missing",
+                "diagnostics": {"added": []},
             }
         )
 
@@ -126,6 +135,62 @@ async def test_skill_file_change_invalidates_graph_status(
 
 
 @pytest.mark.asyncio
+async def test_nested_asset_change_invalidates_with_shallow_max_depth(
+    monkeypatch,
+    tmp_path,
+):
+    config = _config(tmp_path, max_depth=1)
+    skill_dir = config.paths.skills_root / "writer"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: writer\n---\nbody\n",
+        encoding="utf-8",
+    )
+    helper = scripts_dir / "helper.py"
+    helper.write_text("print('one')\n", encoding="utf-8")
+    calls = [0]
+    _install_fake_status(monkeypatch, config, calls=calls)
+    service = SwarmSymphonyService()
+
+    await service.graph_status()
+    helper.write_text("print('two changed')\n", encoding="utf-8")
+    await service.graph_status()
+
+    assert calls == [2]
+
+
+@pytest.mark.asyncio
+async def test_excluded_asset_directories_do_not_invalidate(
+    monkeypatch,
+    tmp_path,
+):
+    config = _config(tmp_path)
+    skill_dir = config.paths.skills_root / "writer"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: writer\n---\nbody\n",
+        encoding="utf-8",
+    )
+    node_modules = skill_dir / "node_modules" / "pkg"
+    node_modules.mkdir(parents=True)
+    (node_modules / "index.js").write_text("old\n", encoding="utf-8")
+    git_dir = skill_dir / ".git" / "objects"
+    git_dir.mkdir(parents=True)
+    (git_dir / "blob").write_text("old\n", encoding="utf-8")
+    calls = [0]
+    _install_fake_status(monkeypatch, config, calls=calls)
+    service = SwarmSymphonyService()
+
+    await service.graph_status()
+    (node_modules / "index.js").write_text("new content\n", encoding="utf-8")
+    (git_dir / "blob").write_text("new content\n", encoding="utf-8")
+    await service.graph_status()
+
+    assert calls == [1]
+
+
+@pytest.mark.asyncio
 async def test_build_log_change_refreshes_payload_without_rescanning(
     monkeypatch,
     tmp_path,
@@ -173,11 +238,99 @@ async def test_cached_payload_is_isolated_from_callers(monkeypatch, tmp_path):
     service = SwarmSymphonyService()
 
     first = await service.graph_status()
-    first["build_log"].append({"stage": "caller-mutation"})
+    first["detail"] = "caller-mutation"
+    first["diagnostics"]["added"].append("caller-mutation")
     second = await service.graph_status()
 
     assert calls == [1]
-    assert second["build_log"] == []
+    assert second["detail"] == "Symphony graph is missing"
+    assert second["diagnostics"] == {"added": []}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cache_miss_scans_once(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+    calls = [0]
+
+    def slow_graph_status(*args, **kwargs):
+        del args, kwargs
+        calls[0] += 1
+        time.sleep(0.05)
+        return SimpleNamespace(
+            to_dict=lambda: {
+                "success": True,
+                "exists": False,
+                "stale": True,
+                "detail": "Symphony graph is missing",
+            }
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.load_symphony_config",
+        lambda: config,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.graph_status",
+        slow_graph_status,
+    )
+    service = SwarmSymphonyService()
+
+    await asyncio.gather(
+        service.graph_status(),
+        service.graph_status(),
+    )
+
+    assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_invalidation_during_scan_does_not_cache_stale_result(
+    monkeypatch,
+    tmp_path,
+):
+    config = _config(tmp_path)
+    calls = [0]
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_graph_status(*args, **kwargs):
+        del args, kwargs
+        calls[0] += 1
+        if calls[0] == 1:
+            started.set()
+            release.wait(timeout=2)
+            detail = "stale"
+        else:
+            detail = "fresh"
+        return SimpleNamespace(
+            to_dict=lambda: {
+                "success": True,
+                "exists": False,
+                "stale": True,
+                "detail": detail,
+            }
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.load_symphony_config",
+        lambda: config,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.graph_status",
+        blocking_graph_status,
+    )
+    service = SwarmSymphonyService()
+
+    task = asyncio.create_task(service.graph_status())
+    assert await asyncio.to_thread(started.wait, 2)
+    service._invalidate_graph_status_cache()
+    release.set()
+    first = await task
+
+    assert first["detail"] == "stale"
+    second = await service.graph_status()
+    assert calls == [2]
+    assert second["detail"] == "fresh"
 
 
 def test_read_build_log_reads_only_the_tail(monkeypatch, tmp_path):
@@ -198,6 +351,51 @@ def test_read_build_log_reads_only_the_tail(monkeypatch, tmp_path):
         "stage-198",
         "stage-199",
     ]
+
+
+def test_read_build_log_reads_bounded_bytes(monkeypatch, tmp_path):
+    log_path = tmp_path / "build_log.jsonl"
+    lines = [json.dumps({"stage": f"stage-{index}"}) for index in range(20_000)]
+    log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    file_size = log_path.stat().st_size
+    bytes_read = [0]
+    real_open = Path.open
+
+    class CountingHandle:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __enter__(self):
+            self._handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._handle.__exit__(*args)
+
+        def seek(self, *args):
+            return self._handle.seek(*args)
+
+        def tell(self):
+            return self._handle.tell()
+
+        def read(self, size=-1):
+            data = self._handle.read(size)
+            bytes_read[0] += len(data)
+            return data
+
+    def counting_open(self, *args, **kwargs):
+        return CountingHandle(real_open(self, *args, **kwargs))
+
+    monkeypatch.setattr(Path, "open", counting_open)
+
+    entries = _read_build_log(tmp_path, limit=3)
+
+    assert [entry["stage"] for entry in entries] == [
+        "stage-19997",
+        "stage-19998",
+        "stage-19999",
+    ]
+    assert 0 < bytes_read[0] < file_size // 4
 
 
 def test_read_build_log_handles_utf8_split_at_chunk_boundary(
@@ -227,3 +425,53 @@ def test_read_build_log_keeps_last_line_without_trailing_newline(tmp_path):
     entries = _read_build_log(tmp_path, limit=1)
 
     assert [entry["stage"] for entry in entries] == ["second"]
+
+
+def test_cache_exclusions_never_exceed_pinned_scanner_rules():
+    """False exclusions would hide Skill changes from the cache key."""
+    from openjiuwen.symphony.shared.fingerprint import scanner
+
+    directories = [
+        ".git",
+        ".venv",
+        "__pycache__",
+        ".cache",
+        "node_modules",
+        "api_keys",
+        "secret_store",
+        "my_credentials",
+        "token_cache",
+        "passwords",
+        "private_keys",
+        "hockey",
+        "monkey",
+        "src",
+        "scripts",
+    ]
+    files = [
+        "SKILL.md",
+        "index.js",
+        "notes.md",
+        "id_rsa",
+        "id_rsa.pub",
+        "server.pem",
+        "token.json",
+        "secrets.yaml",
+        "password.txt",
+        "api_key.py",
+        "hockey.py",
+        "tokenizer.py",
+        "public.py",
+        ".env",
+        ".env.local",
+        "x.pyc",
+    ]
+
+    for name in directories:
+        assert not (
+            _cache_excludes_directory(name) and not scanner._exclude_directory(name)
+        ), name
+    for name in files:
+        assert not (
+            _cache_excludes_file(name) and not scanner._exclude_file(name)
+        ), name
