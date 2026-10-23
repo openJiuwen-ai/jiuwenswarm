@@ -2237,6 +2237,7 @@ async def _run(
         topic_starter_store,
         active_request_ids_loader=message_handler.active_chat_request_ids,
     )
+
     def prepare_after_chat(session_id: str, request_id: str) -> None:
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,
