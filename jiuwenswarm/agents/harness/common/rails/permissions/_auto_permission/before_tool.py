@@ -69,6 +69,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_ask_user import (
     ASK_USER_TOOL_NAME,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import (
+    session_observation_args_valid,
     ALLOW_LEVEL,
     ASK_LEVEL,
     DENY_LEVEL,
@@ -174,6 +175,13 @@ class AutoPermissionBeforeToolMixin:
     async def before_tool_call(self, *args: Any, **kwargs: Any) -> Any:
         """Evaluate the current root tool call once."""
 
+        from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS
+
+        levels = RUN_PERMISSIONS.get()
+        if levels is None:
+            # SDK workers can predate the adapter's request ContextVar binding.
+            levels = getattr(self, "run_permission_levels", None)
+        run_token = RUN_PERMISSIONS.set(levels)
         native_token = NATIVE_PATH_ACCESS.set(None)
         try:
             invocation = _extract_invocation(args, kwargs)
@@ -195,6 +203,7 @@ class AutoPermissionBeforeToolMixin:
             raise
         finally:
             NATIVE_PATH_ACCESS.reset(native_token)
+            RUN_PERMISSIONS.reset(run_token)
 
     async def _before_tool_call_impl(self, *args: Any, **kwargs: Any) -> Any:
         """Evaluate auto-permission guards before delegating to the base rail."""
@@ -430,7 +439,7 @@ class AutoPermissionBeforeToolMixin:
         )
         readonly_binding_verified = bool(
             facts.capability.operation_family == "internal_readonly"
-            and trusted_readonly_binding(invocation, session_id)
+            and trusted_readonly_binding(invocation, session_id, owner_agent=getattr(self, "_owner_agent", None))
         )
 
         if trusted_send_resolution is not None:
@@ -574,6 +583,8 @@ class AutoPermissionBeforeToolMixin:
             )
         if facts.capability.operation_family == "internal_readonly" and not readonly_binding_verified:
             domain_route = DecisionRoute(ASK_LEVEL, "readonly_tool_binding_unverified", "manual_only")
+        if session_observation_args_valid(facts.tool_name, facts.untrusted_args) is False:
+            domain_route = DecisionRoute(ASK_LEVEL, "readonly_tool_arguments_unverified", "manual_only")
 
         if _is_rejection_confirmation(user_input):
             if invocation_resume is None:
@@ -623,6 +634,7 @@ class AutoPermissionBeforeToolMixin:
             domain_route is not None and domain_route.reason in {
                 "subagent_runtime_control_binding_unverified",
                 "readonly_tool_binding_unverified",
+                "readonly_tool_arguments_unverified",
             }
         )
         if policy_evaluation.level == ALLOW_LEVEL and not binding_unverified:

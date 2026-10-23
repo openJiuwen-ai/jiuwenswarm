@@ -378,6 +378,88 @@ def _text_arg(args: Mapping[str, Any], *keys: str) -> str:
     return ""
 
 
+def _bounded_text(value: Any, limit: int, *, empty: bool = False) -> bool:
+    # Exact JSON primitives exclude subclasses with overridden validation behavior.
+    # pylint: disable-next=huawei-unidiomatic-typecheck
+    return type(value) is str and len(value) <= limit and "\x00" not in value and (empty or bool(value.strip()))
+
+
+def _catalogue_args_valid(name: str, args: Mapping[str, Any]) -> bool:
+    """Accept only finite discovery inputs, including supported retired spellings."""
+    # Exact JSON lists exclude subclasses with overridden iteration or length.
+    # pylint: disable=huawei-unidiomatic-typecheck
+    if name == "tool_search":
+        if not args.keys() <= {"operation", "category", "tool", "tools", "query", "cursor", "call_goal"}:
+            return False
+        operation = args.get("operation", "")
+        if not _bounded_text(operation, 32, empty=True) or operation.strip().lower() not in {
+            "", "list", "search", "get_schema",
+        }:
+            return False
+        for key, limit in (("category", 4096), ("tool", 128), ("cursor", 128), ("call_goal", 4096)):
+            if key in args and not _bounded_text(args[key], limit, empty=True):
+                return False
+        tools = args.get("tools", [])
+        if type(tools) is not list or len(tools) > 8 or any(not _bounded_text(item, 128) for item in tools):
+            return False
+        query = args.get("query", "")
+        if not (_bounded_text(query, 4096, empty=True) or (
+            type(query) is list and len(query) <= 8 and all(_bounded_text(item, 512) for item in query)
+        )):
+            return False
+        return operation.strip().lower() != "get_schema" or bool(args.get("tool", "").strip() or tools)
+    if not args.keys() <= {"operation", "category", "query", "cursor"}:
+        return False
+    if args.get("operation") not in ("list", "search"):
+        return False
+    for key, limit in (("category", 4096), ("cursor", 128)):
+        if key in args and not _bounded_text(args[key], limit):
+            return False
+    query = args.get("query", [])
+    if not (_bounded_text(query, 512) or (
+        type(query) is list and len(query) <= 8 and all(_bounded_text(item, 512) for item in query)
+    )):
+        return False
+    return args["operation"] == "list" or bool(query or args.get("cursor"))
+
+
+def tool_search_args_valid(args: Mapping[str, Any], *, progressive: bool) -> bool:
+    """Keep the SDK search and directory catalogue contracts separate."""
+    if not isinstance(args, Mapping):
+        return False
+    if not progressive:
+        return _catalogue_args_valid("tool_search", args)
+    limit = args.get("limit")
+    return bool(
+        args.keys() <= {"query", "limit"}
+        and _bounded_text(args.get("query"), 4096, empty=True)
+        # bool is an int subclass but is not a valid result limit.
+        # pylint: disable-next=huawei-unidiomatic-typecheck
+        and (limit is None or (type(limit) is int and 1 <= limit <= 20))
+    )
+
+
+def session_observation_args_valid(name: str, args: Mapping[str, Any]) -> bool | None:
+    """Return None outside the five closed session-observation contracts."""
+    if name == "tool_search":
+        return tool_search_args_valid(args, progressive=True) or tool_search_args_valid(args, progressive=False)
+    if name == "skill_index":
+        return _catalogue_args_valid(name, args)
+    if name == "list_skill":
+        return args.keys() <= {"query"} and _bounded_text(args.get("query", ""), 4096, empty=True)
+    if name == "get_current_goal":
+        return not args
+    if name == "recall_compressed_context":
+        memory_id = args.get("memory_id", "")
+        return bool(
+            args.keys() <= {"query", "memory_id"} and _bounded_text(args.get("query"), 4096)
+            and _bounded_text(memory_id, 128, empty=True)
+            and (not memory_id or re.fullmatch(r"[A-Za-z0-9_.:-]+", memory_id))
+            and memory_id not in {".", ".."}
+        )
+    return None
+
+
 def _closed_internal_args_valid(facts: ToolDecisionFacts, network: Any) -> bool:
     family = facts.capability.operation_family
     args = facts.untrusted_args
@@ -446,21 +528,30 @@ def _closed_internal_args_valid(facts: ToolDecisionFacts, network: Any) -> bool:
 
 
 def _internal_network_scope(facts: ToolDecisionFacts) -> Any:
-    """Exclude only SDK-owned opaque subagent message fields from URI checks."""
-    opaque_field = {
-        "subagent_spawn": "task_description",
-        "subagent_send_input": "query",
-    }.get(facts.tool_name)
-    if (
-        facts.capability.operation_family != "subagent_runtime_control"
-        or opaque_field is None
-    ):
+    """Inspect URIs after the caller validates closed observation arguments."""
+    opaque_fields = set()
+    if facts.capability.operation_family == "internal_readonly":
+        # These executors treat queries as local text, including URLs and shell syntax.
+        opaque_fields = {
+            "tool_search": {"query", "call_goal"},
+            "skill_index": {"query"},
+            "list_skill": {"query"},
+            "recall_compressed_context": {"query"},
+        }.get(facts.tool_name, set())
+    elif facts.capability.operation_family == "subagent_runtime_control":
+        opaque_field = {
+            "subagent_spawn": "task_description",
+            "subagent_send_input": "query",
+        }.get(facts.tool_name)
+        if opaque_field is not None:
+            opaque_fields = {opaque_field}
+    if not opaque_fields:
         return inspect_network_scope(facts)
-    checked_args = dict(facts.untrusted_args)
-    checked_args.pop(opaque_field, None)
-    return inspect_network_scope(
-        replace(facts, untrusted_args=MappingProxyType(checked_args))
-    )
+    return inspect_network_scope(replace(
+        facts, untrusted_args=MappingProxyType({
+            key: value for key, value in facts.untrusted_args.items() if key not in opaque_fields
+        }),
+    ))
 
 
 def terminal_low_risk_route(facts: ToolDecisionFacts) -> DecisionRoute | None:
@@ -488,6 +579,12 @@ def terminal_internal_route(
     readonly_binding_verified: bool = False,
 ) -> DecisionRoute | None:
     """Return the allow route for closed canonical Host actions."""
+    observation_args_valid = (
+        session_observation_args_valid(facts.tool_name, facts.untrusted_args)
+        if facts.capability.operation_family == "internal_readonly" else None
+    )
+    if observation_args_valid is False:
+        return None
     network = _internal_network_scope(facts)
     if facts.capability.operation_family == "internal_readonly" and not readonly_binding_verified:
         return None
@@ -502,11 +599,9 @@ def terminal_internal_route(
         and not subagent_runtime_control_verified
     ):
         return None
-    if (
-        not _closed_internal_args_valid(facts, network)
-        or facts.capability.risk_tier != "low"
-        or facts.capability.high_flex
-    ):
+    if observation_args_valid is None and not _closed_internal_args_valid(facts, network):
+        return None
+    if facts.capability.risk_tier != "low" or facts.capability.high_flex:
         return None
     if facts.external_paths or facts.write_paths or facts.command:
         return None
