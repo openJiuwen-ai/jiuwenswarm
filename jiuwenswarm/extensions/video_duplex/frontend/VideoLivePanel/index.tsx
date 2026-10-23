@@ -31,6 +31,7 @@ import { webClient, webRequest } from '../../../../channels/web/frontend/src/ser
 import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSession';
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
 import { JoyAIProvider } from './joyaiProvider';
+import { captureVideoFrame, FrameEncoder } from './frameEncoding';
 import { setDuplexVoicePhase } from '../duplexAudioMeter';
 import { describeDuplexError } from '../duplexErrorMessage';
 import {
@@ -64,9 +65,7 @@ interface ScreenSource {
 const FRAME_INTERVAL_MS = 500;
 const MAX_FRAMES = 6;
 const MAX_SCREENS = 4;
-const MAX_FRAME_WIDTH = 768;
 const SCREEN_PREVIEW_FRAME_RATE = 30;
-const FRAME_JPEG_QUALITY = 0.72;
 
 function cleanAssistantText(text: string): string {
   return text
@@ -620,42 +619,15 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     let cancelled = false;
     let captureInFlight = false;
 
-    const canvasToDataUrl = (canvas: HTMLCanvasElement): Promise<string | null> =>
-      new Promise((resolve) => {
-        canvas.toBlob(
-          (blob) => {
-            if (!blob || cancelled) {
-              resolve(null);
-              return;
-            }
-            const reader = new FileReader();
-            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
-            reader.onerror = () => resolve(null);
-            reader.readAsDataURL(blob);
-          },
-          'image/jpeg',
-          FRAME_JPEG_QUALITY,
-        );
-      });
+    const frameEncoder = new FrameEncoder();
 
     const captureVideo = async (video: HTMLVideoElement, sourceId: string): Promise<CapturedFrame | null> => {
       const canvas = canvasRef.current;
-      if (!canvas || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return null;
-      if (!video.videoWidth || !video.videoHeight) return null;
-
-      const scale = Math.min(1, MAX_FRAME_WIDTH / video.videoWidth);
-      const width = Math.round(video.videoWidth * scale);
-      const height = Math.round(video.videoHeight * scale);
-      if (canvas.width !== width) canvas.width = width;
-      if (canvas.height !== height) canvas.height = height;
-      const context = canvas.getContext('2d');
-      if (!context) return null;
-
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const dataUrl = await canvasToDataUrl(canvas);
-      if (!dataUrl || cancelled) return null;
+      if (!canvas) return null;
+      const frame = await captureVideoFrame(frameEncoder, video, canvas, sourceId, () => cancelled);
+      if (!frame) return null;
       return {
-        data_url: dataUrl,
+        data_url: frame.dataUrl,
         source_id: sourceId,
       };
     };
