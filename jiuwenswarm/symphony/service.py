@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future as ConcurrentFuture
+from copy import deepcopy
 import hashlib
 import inspect
 import json
 import logging
 import os
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -16,6 +18,7 @@ import tempfile
 from typing import Any, Callable, TypeAlias
 
 import openjiuwen.symphony as core_symphony  # type: ignore[import-untyped]
+from openjiuwen.symphony import FINGERPRINT_ARTIFACT_FILENAME
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
@@ -39,7 +42,12 @@ from jiuwenswarm.symphony.config import (
 )
 from jiuwenswarm.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.symphony.build import graph_status
-from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
+from jiuwenswarm.symphony.graph_state import GRAPH_STATE_FILENAME
+from jiuwenswarm.symphony.graph_storage import (
+    BUILD_RUNS_DIRNAME,
+    CURRENT_POINTER_FILENAME,
+    resolve_graph_artifact_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +234,10 @@ class SwarmSymphonyService:
         self._install_receipts: dict[str, dict[str, Any]] = {}
         self._retired_runtime_tasks: set[asyncio.Task[None]] = set()
         self._closing = False
+        self._graph_status_lock = asyncio.Lock()
+        self._graph_status_cache_key: tuple[Any, ...] | None = None
+        self._graph_status_cache_payload: dict[str, Any] | None = None
+        self._graph_status_generation = 0
 
     async def graph_status(
         self,
@@ -234,9 +246,38 @@ class SwarmSymphonyService:
         skills_root = config.paths.skills_root
         graph_dir = config.paths.graph_dir
         await self._repair_interrupted_build_state(graph_dir)
+        cache_key = await asyncio.to_thread(
+            _graph_status_cache_key,
+            config,
+            skills_root,
+            graph_dir,
+        )
+        graph_payload = await self._cached_graph_status(
+            config,
+            skills_root,
+            graph_dir,
+            cache_key,
+        )
+        return await asyncio.to_thread(
+            _compose_graph_status_payload,
+            graph_payload,
+            graph_dir,
+        )
+
+    async def _cached_graph_status(
+        self,
+        config: SymphonyConfig,
+        skills_root: Path,
+        graph_dir: Path,
+        cache_key: tuple[Any, ...],
+    ) -> dict[str, Any]:
+        """Cache only the expensive graph scan. Build progress stays live."""
+        cached = self._graph_status_cache_payload
+        if self._graph_status_cache_key == cache_key and cached is not None:
+            return cached
 
         def status() -> dict[str, Any]:
-            payload = graph_status(
+            return graph_status(
                 skills_root,
                 graph_dir,
                 # Freshness follows the model identity captured by the published
@@ -245,11 +286,23 @@ class SwarmSymphonyService:
                 llm_config=None,
                 symphony_config=config,
             ).to_dict()
-            payload.update(_build_log_payload(graph_dir))
-            _prefer_build_failure_detail(payload)
+
+        async with self._graph_status_lock:
+            cached = self._graph_status_cache_payload
+            if self._graph_status_cache_key == cache_key and cached is not None:
+                return cached
+            generation = self._graph_status_generation
+            payload = await asyncio.to_thread(status)
+            if generation == self._graph_status_generation:
+                self._graph_status_cache_key = cache_key
+                self._graph_status_cache_payload = payload
             return payload
 
-        return await asyncio.to_thread(status)
+    def _invalidate_graph_status_cache(self) -> None:
+        """Drop the cached status after a build changes its inputs."""
+        self._graph_status_generation += 1
+        self._graph_status_cache_key = None
+        self._graph_status_cache_payload = None
 
     async def refresh_graph(
         self,
@@ -274,6 +327,7 @@ class SwarmSymphonyService:
         config = load_symphony_config()
         graph_dir = config.paths.graph_dir
         async with self._build_guard:
+            self._invalidate_graph_status_cache()
             task = self._active_build_task
             if task is not None and not task.done():
                 payload = {
@@ -335,6 +389,7 @@ class SwarmSymphonyService:
                 if task is not None:
                     self._active_build_task = None
                 _repair_interrupted_build_log(graph_dir)
+                self._invalidate_graph_status_cache()
                 payload = {
                     "success": False,
                     "graph_dir": str(graph_dir),
@@ -348,6 +403,7 @@ class SwarmSymphonyService:
             build_logger.record("update.cancel_requested")
             task.cancel("skills.graph.cancel")
             build_logger.record("update.cancelled")
+            self._invalidate_graph_status_cache()
         try:
             await task
         except asyncio.CancelledError:
@@ -534,6 +590,7 @@ class SwarmSymphonyService:
                 payload.update(_build_log_payload(graph_dir))
                 return payload
             self._active_build_task = current_task
+            self._invalidate_graph_status_cache()
         progress_dispatcher = _OrderedProgressDispatcher(progress)
         progress_dispatcher.start()
         build_logger = _BuildProcessLogger(
@@ -628,6 +685,7 @@ class SwarmSymphonyService:
             result.update(_build_log_payload(graph_dir))
             return result
         finally:
+            self._invalidate_graph_status_cache()
             try:
                 if abort_progress:
                     await progress_dispatcher.abort()
@@ -1171,7 +1229,10 @@ class SwarmSymphonyService:
                 return False
             if task is not None:
                 self._active_build_task = None
-            return await asyncio.to_thread(_repair_interrupted_build_log, graph_dir)
+            repaired = await asyncio.to_thread(_repair_interrupted_build_log, graph_dir)
+            if repaired:
+                self._invalidate_graph_status_cache()
+            return repaired
 
 
 _SHARED_SERVICE: SwarmSymphonyService | None = None
@@ -1486,6 +1547,148 @@ _BUILD_STAGE_PROGRESS = {
 }
 
 
+def _path_stamp(path: Path) -> tuple[int, int] | None:
+    """Return the identity used to invalidate graph-status caches."""
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return info.st_mtime_ns, info.st_size
+
+
+def _tree_digest(root: Path, *, max_depth: int | None) -> str:
+    """Hash file metadata below ``root`` without reading file contents."""
+    digest = hashlib.sha256()
+    if not root.is_dir():
+        digest.update(b"missing")
+        return digest.hexdigest()
+
+    def visit(directory: Path, depth: int) -> None:
+        try:
+            with os.scandir(directory) as entries:
+                ordered = sorted(entries, key=lambda entry: entry.name)
+        except OSError:
+            digest.update(b"unreadable\0")
+            return
+        for entry in ordered:
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            digest.update(entry.name.encode("utf-8", "surrogateescape"))
+            digest.update(b"\0")
+            digest.update(
+                f"{info.st_mode}:{info.st_size}:{info.st_mtime_ns}".encode("ascii")
+            )
+            digest.update(b"\0")
+            if stat.S_ISDIR(info.st_mode) and (
+                max_depth is None or depth < max_depth
+            ):
+                visit(Path(entry.path), depth + 1)
+
+    visit(root, 0)
+    return digest.hexdigest()
+
+
+def _build_runs_digest(graph_dir: Path) -> str:
+    """Hash build run directories and checkpoints used by resume status."""
+    digest = hashlib.sha256()
+    runs_root = graph_dir / BUILD_RUNS_DIRNAME
+    if not runs_root.is_dir():
+        digest.update(b"missing")
+        return digest.hexdigest()
+    try:
+        with os.scandir(runs_root) as entries:
+            ordered = sorted(entries, key=lambda entry: entry.name)
+    except OSError:
+        digest.update(b"unreadable")
+        return digest.hexdigest()
+    for entry in ordered:
+        run_dir = Path(entry.path)
+        digest.update(entry.name.encode("utf-8", "surrogateescape"))
+        digest.update(b"\0")
+        digest.update(repr(_path_stamp(run_dir)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(
+            repr(_path_stamp(run_dir / "checkpoint.json")).encode("ascii")
+        )
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _graph_status_cache_key(
+    config: Any,
+    skills_root: Path,
+    graph_dir: Path,
+) -> tuple[Any, ...]:
+    """Build a cheap identity for everything graph status reads."""
+    fingerprint_config = getattr(config, "fingerprint", None)
+    scan_config = getattr(fingerprint_config, "scan", None)
+    max_depth = getattr(scan_config, "max_depth", None)
+    try:
+        artifact_dir = resolve_graph_artifact_dir(graph_dir)
+    except (OSError, ValueError, json.JSONDecodeError):
+        artifact_dir = None
+
+    artifact_stamps: tuple[Any, ...] = ()
+    if artifact_dir is not None:
+        artifact_stamps = (
+            _path_stamp(artifact_dir / "graph.json"),
+            _path_stamp(artifact_dir / GRAPH_STATE_FILENAME),
+            _path_stamp(artifact_dir / FINGERPRINT_ARTIFACT_FILENAME),
+        )
+
+    return (
+        str(skills_root),
+        str(graph_dir),
+        max_depth,
+        hashlib.sha256(repr(config).encode("utf-8", "surrogateescape")).hexdigest(),
+        _tree_digest(skills_root, max_depth=max_depth),
+        _path_stamp(graph_dir),
+        _path_stamp(graph_dir / CURRENT_POINTER_FILENAME),
+        artifact_stamps,
+        _build_runs_digest(graph_dir),
+    )
+
+
+_BUILD_LOG_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _tail_lines(path: Path, limit: int) -> list[str]:
+    """Read at most the last ``limit`` lines without loading the whole file."""
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        chunks: list[bytes] = []
+        newline_count = 0
+        # Keep one extra newline so the first decoded line can be dropped when
+        # the chunk started in the middle of a line.
+        while position > 0 and newline_count <= limit:
+            read_size = min(_BUILD_LOG_READ_CHUNK_BYTES, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            chunks.append(chunk)
+            newline_count += chunk.count(b"\n")
+        data = b"".join(reversed(chunks))
+        if position > 0:
+            first_newline = data.find(b"\n")
+            if first_newline >= 0:
+                data = data[first_newline + 1 :]
+        return data.decode("utf-8").splitlines()
+
+
+def _compose_graph_status_payload(
+    graph_payload: dict[str, Any],
+    graph_dir: Path,
+) -> dict[str, Any]:
+    """Merge cached graph facts with live build progress."""
+    payload = deepcopy(graph_payload)
+    payload.update(_build_log_payload(graph_dir))
+    _prefer_build_failure_detail(payload)
+    return payload
+
+
 def _build_log_payload(graph_dir: Path | str, *, limit: int = 80) -> dict[str, Any]:
     resolved_graph_dir = Path(graph_dir)
     entries = _read_build_log(resolved_graph_dir, limit=limit)
@@ -1508,12 +1711,12 @@ def _read_build_log(graph_dir: Path, *, limit: int = 80) -> list[dict[str, Any]]
     log_path = graph_dir / "build_log.jsonl"
     if not log_path.is_file():
         return []
+    line_limit = max(1, limit)
     try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
+        lines = _tail_lines(log_path, line_limit)
     except OSError:
         return []
     entries: list[dict[str, Any]] = []
-    line_limit = max(1, limit)
     for line in lines[-line_limit:]:
         try:
             payload = json.loads(line)
