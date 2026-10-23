@@ -534,6 +534,7 @@ class RuntimeSessionProvisioner:
         self._plan_controller = plan_controller
         self._delete_lifecycle = delete_lifecycle
         self._prepared_session_deletes: dict[str, SessionDeleteLifecycle] = {}
+        self._pending_session_delete_metadata: dict[str, dict[str, Any]] = {}
         self._participant_registry = (
             participant_registry or RuntimeParticipantRegistry()
         )
@@ -549,6 +550,10 @@ class RuntimeSessionProvisioner:
         lifecycle: SessionDeleteLifecycle | None,
     ) -> None:
         """Replace the optional lifecycle participant owned by the host."""
+        if lifecycle is not self._delete_lifecycle:
+            # The host owns stopping the old runtime. Its preparation cannot
+            # release resources retained by the replacement runtime on retry.
+            self._prepared_session_deletes.clear()
         self._delete_lifecycle = lifecycle
 
     async def prepare_session_delete(self, session_id: str) -> None:
@@ -559,21 +564,18 @@ class RuntimeSessionProvisioner:
             )
             if lifecycle is None:
                 return
-            error = await self._ensure_delete_dependencies(
-                session_id, delete_lifecycle=lifecycle
-            )
-            if error is not None:
-                from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
-
-                raise LifecycleError(error.error_code, error.error_message)
+            # Checkpoint initialization belongs to delete_session, after the
+            # drain. This early stage only releases heartbeat retention.
+            await self._ensure_delete_lifecycle_started(lifecycle)
             await self._prepare_delete_lifecycle(session_id, lifecycle)
 
     async def _prepare_delete_lifecycle(
         self, session_id: str, lifecycle: SessionDeleteLifecycle
     ) -> None:
-        if session_id not in self._prepared_session_deletes:
+        if self._prepared_session_deletes.get(session_id) is not lifecycle:
             await lifecycle.begin_session_delete(session_id)
-            self._prepared_session_deletes[session_id] = lifecycle
+            if lifecycle is self._delete_lifecycle:
+                self._prepared_session_deletes[session_id] = lifecycle
 
     async def prepare_session_create(
         self,
@@ -1488,7 +1490,8 @@ class RuntimeSessionProvisioner:
             delete_operation.get("kind") == "delete"
             and delete_operation.get("status") != "completed"
         )
-        if not session_dir.exists() and not recovering_delete:
+        commit_pending = target in self._pending_session_delete_metadata
+        if not session_dir.exists() and not (recovering_delete or commit_pending):
             completed = self._completed_session_deletes.get(target)
             if completed is not None:
                 return completed
@@ -1523,8 +1526,10 @@ class RuntimeSessionProvisioner:
             get_session_metadata,
         )
 
-        metadata = get_session_metadata(target) or delete_operation.get(
-            "delete_metadata", {}
+        metadata = (
+            get_session_metadata(target)
+            or delete_operation.get("delete_metadata")
+            or self._pending_session_delete_metadata.get(target, {})
         )
         if recovering_delete and not delete_operation.get("delete_metadata"):
             lifecycle_update("session", target, delete_metadata=metadata)
@@ -1595,7 +1600,7 @@ class RuntimeSessionProvisioner:
                 await self._prepare_delete_lifecycle(target, delete_lifecycle)
                 lifecycle_prepared = True
 
-            if not session_dir.exists() and recovering_delete:
+            if not session_dir.exists() and (recovering_delete or commit_pending):
                 deleted = True
             elif is_team_session:
                 if team_controller is None:
@@ -1692,6 +1697,9 @@ class RuntimeSessionProvisioner:
                 destructive_started=destructive_started,
             )
 
+        # Direct Runtime callers have no persisted lifecycle operation. Keep
+        # the identity needed to retry finalization after its directory is gone.
+        self._pending_session_delete_metadata[target] = metadata
         try:
             await self._commit_delete_observers(
                 result,
@@ -1743,6 +1751,7 @@ class RuntimeSessionProvisioner:
             delete_target,
         )
         self._completed_session_deletes[target] = committed_result
+        self._pending_session_delete_metadata.pop(target, None)
         return committed_result
 
     async def delete_team(
@@ -1913,6 +1922,12 @@ class RuntimeSessionProvisioner:
         operations: list[
             tuple[SessionDeleteResult, SessionLifecycleTarget, tuple[object, ...]]
         ] = []
+        # Each member keeps the participant that prepared it, even if the host
+        # replaces its runtime while this transaction awaits a controller.
+        delete_lifecycles = {
+            sid: self._prepared_session_deletes.get(sid, self._delete_lifecycle)
+            for sid in session_ids
+        }
         lifecycle_prepared: set[str] = set()
         destructive_started = False
         try:
@@ -1964,9 +1979,10 @@ class RuntimeSessionProvisioner:
                 operations.append((result, target, tuple(entered)))
 
             for result, target, _entered in operations:
-                if self._delete_lifecycle is not None:
+                lifecycle = delete_lifecycles[result.session_id]
+                if lifecycle is not None:
                     await self._prepare_delete_lifecycle(
-                        result.session_id, self._delete_lifecycle
+                        result.session_id, lifecycle
                     )
                     lifecycle_prepared.add(result.session_id)
                 await controller.quiesce_for_delete(target, reason="team.delete: ")
@@ -1997,7 +2013,7 @@ class RuntimeSessionProvisioner:
                         result,
                         trajectory_prepared=False,
                         lifecycle_prepared=True,
-                        delete_lifecycle=self._delete_lifecycle,
+                        delete_lifecycle=delete_lifecycles[result.session_id],
                         destructive_started=False,
                     )
                 await self._notify_delete_failed(
@@ -2029,14 +2045,12 @@ class RuntimeSessionProvisioner:
             try:
                 if session_dir.exists():
                     shutil.rmtree(session_dir)
-                if self._delete_lifecycle is not None:
+                if result.session_id in lifecycle_prepared:
                     await self._commit_delete_observers(
                         result,
                         trajectory_prepared=False,
                         lifecycle_prepared=True,
-                        delete_lifecycle=self._prepared_session_deletes.get(
-                            result.session_id, self._delete_lifecycle
-                        ),
+                        delete_lifecycle=delete_lifecycles[result.session_id],
                     )
                 committed = SessionDeleteResult(
                     ok=True,
@@ -2155,6 +2169,13 @@ class RuntimeSessionProvisioner:
                 message="persistent checkpointer is unavailable",
             )
 
+        await self._ensure_delete_lifecycle_started(delete_lifecycle)
+        return None
+
+    @staticmethod
+    async def _ensure_delete_lifecycle_started(
+        delete_lifecycle: SessionDeleteLifecycle | None,
+    ) -> None:
         if delete_lifecycle is None or bool(
             getattr(delete_lifecycle, "is_available", True)
         ):
@@ -2232,18 +2253,19 @@ class RuntimeSessionProvisioner:
                     exc,
                 )
         if lifecycle_prepared and delete_lifecycle is not None:
-            from jiuwenswarm.server.runtime.session.lifecycle import state
+            from jiuwenswarm.server.runtime.session.lifecycle import session_delete_pending
 
             # A failed product delete remains blocked and will be retried. Keep
             # its prepared heartbeat fence until that operation commits.
-            if state("session", result.session_id).get("blocked"):
+            if session_delete_pending(result.session_id):
                 return
             try:
                 await delete_lifecycle.abort_session_delete(
                     result.session_id,
                     channel_id=result.channel_id or "",
                 )
-                self._prepared_session_deletes.pop(result.session_id, None)
+                if self._prepared_session_deletes.get(result.session_id) is delete_lifecycle:
+                    self._prepared_session_deletes.pop(result.session_id, None)
             except Exception as exc:  # noqa: BLE001 - preserve primary failure
                 logger.warning(
                     "Runtime Session delete lifecycle rollback failed: "
@@ -2340,7 +2362,8 @@ class RuntimeSessionProvisioner:
                 await delete_lifecycle.commit_session_delete(
                     result.session_id,
                 )
-                self._prepared_session_deletes.pop(result.session_id, None)
+                if self._prepared_session_deletes.get(result.session_id) is delete_lifecycle:
+                    self._prepared_session_deletes.pop(result.session_id, None)
             except Exception as exc:  # noqa: BLE001 - deletion already committed
                 logger.warning(
                     "Runtime Session delete lifecycle commit failed: "

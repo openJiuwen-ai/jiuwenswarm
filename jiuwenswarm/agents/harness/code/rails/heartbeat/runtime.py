@@ -226,11 +226,11 @@ class HeartbeatRailRuntime:
         """Roll back a prepared product deletion and allow future dispatch."""
         session_id = str(session_id or "").strip()
         self._deleting_sessions.discard(session_id)
-        from jiuwenswarm.server.runtime.session.lifecycle import state
+        from jiuwenswarm.server.runtime.session.lifecycle import session_delete_pending
 
         # A failed/cancelled preparation may still belong to a blocked product
         # delete. Keep dispatch suspended; its retry will prepare again.
-        if state("session", session_id).get("blocked"):
+        if session_delete_pending(session_id):
             return
         self.scheduler.resume_session(session_id)
         await self.admission.unblock_heartbeats(session_id)
@@ -241,10 +241,13 @@ class HeartbeatRailRuntime:
         """Apply configured job policies after the product Session is gone."""
         session_id = str(session_id or "").strip()
         # Keep the prepared fence on policy failure so recovery can retry.
-        await self.scheduler.on_session_deleted(session_id)
-        await self.admission.clear_interaction_pending(session_id)
-        await self.admission.unblock_heartbeats(session_id)
-        self.release_agent(session_id)
+        try:
+            await self.scheduler.on_session_deleted(session_id)
+            await self.admission.clear_interaction_pending(session_id)
+            await self.admission.unblock_heartbeats(session_id)
+        finally:
+            # Resource ownership ends even if the policy still needs retrying.
+            self.release_agent(session_id)
         self._deleting_sessions.discard(session_id)
         self.scheduler.resume_session(session_id)
 
