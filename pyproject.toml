@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "workswarm"
 version = "0.2.5.beta1"
 description = "WorkSwarm"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.13"
 license = { text = "Apache-2.0" }
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
@@ -125,7 +125,6 @@ dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7"]
 tui = ["workswarm-tui==0.2.5.beta1"]  # build-config: tui-dependency
 distribute = ["openjiuwen[postgres,zmq]"]
 claude = ["openjiuwen[claude]"]
-codex = ["openjiuwen[codex]"]
 cua = ["openjiuwen[cua]"]
 shell-ast = []
 # Same packages as [dependency-groups] test (pip install -e ".[test]")
