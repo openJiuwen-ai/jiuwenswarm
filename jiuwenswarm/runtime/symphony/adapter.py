@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
+from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.common.exception.errors import build_error
+from openjiuwen.core.foundation.llm.request_context import (
+    disabled_thinking_fallback_scope,
+)
 from openjiuwen.symphony import (
     CapabilityFingerprint,
     CapabilityDescriptor,
@@ -15,8 +20,11 @@ from openjiuwen.symphony import (
     SourceSnapshot,
 )
 
-from jiuwenswarm.common.symphony_config import SymphonyConfig, evolution_flow_enabled
-from jiuwenswarm.runtime.symphony.llm import LLMConfig, create_model_response_observer
+from jiuwenswarm.symphony.config import SymphonyConfig, evolution_flow_enabled
+from jiuwenswarm.symphony.llm import LLMConfig, create_model_response_observer
+
+
+_FINGERPRINT_LLM_POLICY_VERSION = "no-symphony-output-cap-v2"
 
 
 @dataclass(frozen=True)
@@ -53,6 +61,46 @@ class FingerprintArtifactCapabilityProvider:
         self,
     ) -> tuple[SourceSnapshot, tuple[CapabilityFingerprint, ...]]:
         return self.artifact.source_snapshot, self.artifact.fingerprints
+
+
+class FingerprintLLMAdapter:
+    """Tag core fingerprint model calls for JiuwenSwarm usage accounting."""
+
+    def __init__(self, config: LLMConfig) -> None:
+        self._model = model_from_config(config)
+        self._observe = model_response_observer_from_config(config)
+        self.cache_signature = _fingerprint_llm_config_signature(config)
+
+    async def invoke(self, messages: Any, **kwargs: Any) -> object:
+        # Fingerprint JSON can include reasoning tokens on thinking models.  A
+        # fixed completion cap may therefore cut the JSON before its outputs,
+        # which previously degraded into a valid-looking graph with no edges.
+        kwargs.pop("max_tokens", None)
+        with disabled_thinking_fallback_scope():
+            response = await self._model.invoke(messages, **kwargs)
+        self._observe(
+            response,
+            "fingerprint_extraction",
+            "capability_extraction",
+        )
+        if getattr(response, "finish_reason", None) == "length":
+            # Framework errors abort extraction before partial JSON can be cached.
+            raise build_error(
+                StatusCode.MODEL_CALL_FAILED,
+                error_msg=(
+                    "fingerprint extraction exceeded the model output token budget "
+                    "(finish_reason=length); increase max_tokens in the model "
+                    "configuration and retry"
+                ),
+            )
+        return response
+
+
+def _fingerprint_llm_config_signature(config: LLMConfig) -> str:
+    """Invalidate fingerprints when model output handling changes."""
+
+    payload = f"{llm_config_signature(config)}:{_FINGERPRINT_LLM_POLICY_VERSION}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def fingerprint_settings_from_swarm(

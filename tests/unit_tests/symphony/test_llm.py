@@ -19,8 +19,8 @@ from openjiuwen.core.foundation.llm.request_context import (
     is_disabled_thinking_fallback_allowed,
 )
 
-from jiuwenswarm.runtime.symphony.adapter import llm_config_signature
-from jiuwenswarm.runtime.symphony.llm import (
+from jiuwenswarm.symphony.adapter import FingerprintLLMAdapter, llm_config_signature
+from jiuwenswarm.symphony.llm import (
     LLMConfig,
     create_model_response_observer,
     get_llm_token_usage_summary,
@@ -467,8 +467,9 @@ async def test_probe_model_connection_uses_bounded_low_cost_request(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_symphony_probe_retries_when_model_rejects_disabled_thinking(
-    monkeypatch,
+@pytest.mark.parametrize("operation", ["probe", "fingerprint"])
+async def test_symphony_calls_retry_when_model_rejects_disabled_thinking(
+    monkeypatch, operation,
 ):
     config = LLMConfig.from_model_entry(_model_entry(request={
         "max_tokens": 99,
@@ -492,15 +493,21 @@ async def test_symphony_probe_retries_when_model_rejects_disabled_thinking(
         "openai.resources.chat.completions.AsyncCompletions.create", create,
     )
 
-    await probe_model_connection(config)
+    if operation == "probe":
+        await probe_model_connection(config)
+    else:
+        await FingerprintLLMAdapter(config).invoke(
+            [{"role": "user", "content": "fingerprint"}],
+            max_tokens=2048, timeout=30,
+        )
 
     first, retry = [call.kwargs for call in create.call_args_list]
     assert first["extra_body"] == original_config["extra_body"]
     expected_retry = deepcopy(first)
     expected_retry["extra_body"] = {"routing": "keep"}
     assert retry == expected_retry
-    assert retry["max_tokens"] == 16
-    assert retry["timeout"] == 25
+    assert retry["max_tokens"] == (16 if operation == "probe" else 99)
+    assert retry["timeout"] == (25 if operation == "probe" else 30)
     assert config.model_config_obj == original_config
     assert is_disabled_thinking_fallback_allowed() is False
 

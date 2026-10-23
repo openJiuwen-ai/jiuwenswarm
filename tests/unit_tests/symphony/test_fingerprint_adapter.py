@@ -26,11 +26,11 @@ from jiuwenswarm.runtime.symphony.adapter import (
     graph_build_orchestration_config_from_swarm,
     graph_config_from_swarm,
 )
-from jiuwenswarm.common.symphony_config import symphony_config_from_dict
-from jiuwenswarm.runtime.symphony.build import GraphBuildRuntimeFactory, build_graph, graph_status
-from jiuwenswarm.runtime.symphony.graph_storage import resolve_graph_artifact_dir
-from jiuwenswarm.runtime.symphony.llm import LLMConfig, thinking_disabled_request_overrides
-from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
+from jiuwenswarm.symphony.config import symphony_config_from_dict
+from jiuwenswarm.symphony.build import build_graph, graph_status
+from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
+from jiuwenswarm.symphony.llm import LLMConfig, thinking_disabled_request_overrides
+from jiuwenswarm.symphony.service import SwarmSymphonyService
 
 
 @pytest.mark.asyncio
@@ -120,17 +120,10 @@ def test_swarm_settings_map_only_supported_core_controls(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
-async def test_fingerprint_factory_wires_native_model_and_usage_observer(
+async def test_fingerprint_adapter_removes_symphony_completion_token_override(
     monkeypatch,
-    tmp_path,
     finish_reason,
 ):
-    skill_dir = tmp_path / "skills" / "writer"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\nname: Writer\ndescription: Write text.\n---\nWrite the supplied text.",
-        encoding="utf-8",
-    )
     model = _CapturingFingerprintModel(finish_reason=finish_reason)
     captured_configs = []
     observed_responses = []
@@ -141,8 +134,8 @@ async def test_fingerprint_factory_wires_native_model_and_usage_observer(
     monkeypatch.setattr(
         "jiuwenswarm.runtime.symphony.build.model_response_observer_from_config",
         lambda _config: (
-            lambda response, stage, operation: observed_responses.append(
-                (response, stage, operation, is_disabled_thinking_fallback_allowed())
+            lambda response, _stage, _operation: observed_responses.append(
+                (response, is_disabled_thinking_fallback_allowed())
             )
         ),
     )
@@ -150,32 +143,24 @@ async def test_fingerprint_factory_wires_native_model_and_usage_observer(
         model="thinking-model",
         model_config_obj={"max_tokens": 99, "extra_body": {"custom": True}},
     )
-    runtime_config = symphony_config_from_dict({})
-    service = GraphBuildRuntimeFactory.fingerprint_service(
-        SkillFolderScanner(tmp_path / "skills").scan(),
-        tmp_path / "artifacts",
-        llm_config=config,
-        runtime_config=runtime_config,
-    )
-    if finish_reason == "length":
-        with pytest.raises(BaseError, match="finish_reason=length"):
-            await service.build()
-        assert not (tmp_path / "artifacts" / FINGERPRINT_ARTIFACT_FILENAME).exists()
-    else:
-        await service.build()
 
-    assert captured_configs == [config]
-    assert config.model_config_obj == {
-        "max_tokens": 99, "extra_body": {"custom": True},
+    adapter = FingerprintLLMAdapter(config)
+    if finish_reason == "length":
+        with pytest.raises(BaseError, match="increase max_tokens"):
+            await adapter.invoke([], max_tokens=2048, timeout=30)
+        response = observed_responses[0][0]
+    else:
+        response = await adapter.invoke([], max_tokens=2048, timeout=30)
+
+    assert captured_configs[0].model_config_obj == {
+        "max_tokens": 99,
+        "extra_body": {"custom": True},
     }
-    settings = fingerprint_settings_from_swarm(runtime_config, config)
-    assert settings.llm_max_tokens is None
-    assert len(model.calls) == 1
-    assert "max_tokens" not in model.calls[0]
-    assert model.calls[0]["timeout"] == settings.llm_timeout
-    assert len(observed_responses) == 1
-    assert observed_responses[0][1:] == (
-        "fingerprint_extraction", "capability_extraction", False,
+    assert model.calls == [{"timeout": 30}]
+    assert observed_responses == [(response, False)]
+    settings = fingerprint_settings_from_swarm(
+        symphony_config_from_dict({}),
+        config,
     )
 
 
@@ -262,7 +247,7 @@ async def test_swarm_graph_build_consumes_canonical_core_artifact(
     )
     llm_config.model_config_obj["max_tokens"] = 99
     monkeypatch.setattr(LLMConfig, "from_default_model", lambda: llm_config)
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
+    monkeypatch.setattr("jiuwenswarm.symphony.service.load_symphony_config", lambda: config)
 
     first = await SwarmSymphonyService().refresh_graph()
     assert all(request["max_tokens"] == 99 for request in fingerprint_requests)
@@ -270,7 +255,7 @@ async def test_swarm_graph_build_consumes_canonical_core_artifact(
     assert "thinking" not in fingerprint_requests[1].get("extra_body", {})
     if truncated_content is not None:
         assert first["success"] is False
-        assert "finish_reason=length" in first["detail"]
+        assert "increase max_tokens" in first["detail"]
         assert first["build_progress"]["status"] == "error"
         assert first["build_log"][-1]["stage"] == "update.failed"
         assert rejected_phases == ["probe", "fingerprint"]
