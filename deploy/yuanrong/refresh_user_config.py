@@ -486,7 +486,8 @@ def restart_instances(ctxs: list[Context], options: Options, rt: Runtime) -> int
     items = items if isinstance(items, list) else []
     targets: list[str] = []
     owner_of: dict[str, str] = {}
-    skipped: list[str] = []
+    skipped: list[str] = []    # 确认不属于目标用户，或实例已不存在
+    uncertain: list[str] = []  # 无法判定归属，重启结果不可确认
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -494,14 +495,24 @@ def restart_instances(ctxs: list[Context], options: Options, rt: Runtime) -> int
             item.get("instanceId") or item.get("instance_id") or item.get("id") or ""
         )
         if not instance_id:
-            skipped.append("  - <无实例 id> | 跳过")
+            uncertain.append("  - <无实例 id> | 无法判定归属")
+            continue
+        url = base + "/api/agent/" + urllib.parse.quote(instance_id, safe="")
+        try:
+            status, body = rt.http(url, "GET")
+        except Exception as exc:  # noqa: BLE001
+            uncertain.append(f"  - {instance_id} | 详情读取失败（{exc}）")
+            continue
+        if status == 404:
+            skipped.append(f"  - {instance_id} | 实例已不存在（404）")
+            continue
+        if status != 200:
+            uncertain.append(f"  - {instance_id} | 详情 HTTP {status}")
             continue
         try:
-            detail = _get_json(
-                rt, base + "/api/agent/" + urllib.parse.quote(instance_id, safe="")
-            )
-        except Exception as exc:  # noqa: BLE001
-            skipped.append(f"  - {instance_id} | 详情读取失败（{exc}） | 跳过")
+            detail = json.loads(body)
+        except ValueError:
+            uncertain.append(f"  - {instance_id} | 详情响应不是合法 JSON")
             continue
         owner = ""
         for username, home in homes.items():
@@ -516,6 +527,16 @@ def restart_instances(ctxs: list[Context], options: Options, rt: Runtime) -> int
 
     targets = list(dict.fromkeys(targets))
     if not targets:
+        if uncertain:
+            warning(
+                f"/api/agent 返回 {len(items)} 个实例，其中 {len(uncertain)} 个无法判定归属，"
+                "重启未完成（需人工确认）"
+            )
+            for line in uncertain[:20]:
+                info(line)
+            if skipped:
+                info(f"另有 {len(skipped)} 个确认不属于{scope}实例")
+            return 2
         if items:
             info(f"/api/agent 返回 {len(items)} 个实例，但没有匹配{scope}实例：")
             for line in skipped[:20]:
@@ -549,6 +570,13 @@ def restart_instances(ctxs: list[Context], options: Options, rt: Runtime) -> int
         return 2
     success(f"已删除 {len(deleted)} 个运行实例，用户下次访问自动重建 supervisor 与 docker 沙箱")
     warning("Gateway 内存中的旧实例缓存会在用户下次请求时自愈，可能表现为一次请求重试")
+    if uncertain:
+        warning(
+            f"另有 {len(uncertain)} 个实例无法判定归属，重启未完全确认（需人工确认）："
+        )
+        for line in uncertain[:20]:
+            info(line)
+        return 2
     return 0
 
 
@@ -778,7 +806,10 @@ def run(options: Options, rt: Runtime) -> int:
     rc = restart_phase([ctx], options, rt, docker_cleanup=True)
 
     print("")
-    info("完成")
+    if rc == 0:
+        info("完成")
+    else:
+        warning("配置已更新，但运行实例重启未完成（退出码 2）")
     if backup_path is not None:
         print(f"  备份          : {backup_path}")
     print(f"  目标配置      : {ctx.user_cfg}")
