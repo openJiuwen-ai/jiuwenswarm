@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -25,45 +26,53 @@ except ImportError:  # 独立调试（无 jiuwenswarm 运行时）时的最小�
     class ToolCard:  # type: ignore
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
+
     class Tool:  # type: ignore
+
         def __init__(self, card):
             self.card = card
 
 PLATFORM_ROOT = Path(os.environ.get("MATH_PLATFORM_ROOT",
-                                    "/docker/zy/Mathematical_Reasoning_Platform"))
+                                    "/docker/zy/Mathematical_Reasoning_Platform")).resolve()
 PLATFORM_PYTHON = os.environ.get("MATH_PLATFORM_PYTHON", "/usr/bin/python3")
+RUNS_ROOT = (PLATFORM_ROOT / "platform_runs").resolve()
 BACKEND_TIMEOUT = {"nl": 900, "formal": 2500, "opt": 1300}
 VALID_BACKENDS = ("nl", "formal", "opt", "paper")
 
 
-def _run_dir_root() -> Path:
-    return PLATFORM_ROOT / "platform_runs"
-
-
 def _find_run_dir(backend: str, started_wall: float) -> Path | None:
     """找平台自建的、启动时间之后产生的、带 jsw_<backend> 标签的 run 目录。"""
-    import time as _time
-    root = _run_dir_root()
-    pattern = f"*jsw_{backend}_single_1"
-    candidates = []
-    for d in root.glob(pattern):
-        if d.is_dir() and d.stat().st_mtime >= started_wall - 5:
-            candidates.append(d)
+    import time as time_mod
+
+    candidates = [
+        d for d in RUNS_ROOT.glob(f"*jsw_{backend}_single_1")
+        if d.is_dir() and d.stat().st_mtime >= started_wall - 5
+    ]
     return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
 
 
-def _summarize_report(report_path: Path) -> dict:
-    """解析平台统一报告 platform_report.json 为结构化摘要。"""
+def _read_result_file(path: Path) -> dict | None:
+    """读取并解析结果 JSON；缺失、损坏或未写完（无 status 字段）返回 None。"""
     try:
-        record = json.loads(report_path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        return None
+    if isinstance(data, dict) and data.get("status"):
+        return data
+    return None
+
+
+def _summarize_record(record: dict, run_dir: Path) -> dict:
+    """把平台统一报告压缩成团队友好的结构化摘要。"""
     dispatch = record.get("dispatch") or {}
-    summary = dispatch.get("summary") or {}
+    summary = dispatch.get("summary") or record.get("summary") or {}
+    if not isinstance(summary, dict):
+        summary = {}
     out = {
         "success": record.get("status") == "solved",
         "status": record.get("status"),
-        "report": str(report_path),
+        "run_dir": str(run_dir),
+        "report": str(run_dir / "platform_report.json"),
         "project": dispatch.get("project"),
     }
     if dispatch.get("project") == "NL Solver" or summary.get("verdict"):
@@ -81,43 +90,25 @@ def _summarize_report(report_path: Path) -> dict:
     return out
 
 
-def _find_result(run_dir: Path) -> dict:
-    result = run_dir / "mma_workspace" / "result.json"
-    if result.exists():
-        try:
-            return json.loads(result.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            pass
-    report = run_dir / "platform_report.json"
-    if report.exists():
-        return _summarize_report(report)
-    return {}
+def _resolve_status(rd: Path) -> dict:
+    """状态查询：优先 mma_workspace/result.json（paper），其次统一报告。
 
-
-def _summarize(record: dict, run_dir: Path) -> dict:
-    """把平台统一报告压缩成团队友好的结构化摘要。"""
-    dispatch = (record.get("dispatch") or {}) if isinstance(record, dict) else {}
-    summary = dispatch.get("summary") or {}
-    out = {
-        "success": record.get("status") in ("solved", "completed"),
-        "status": record.get("status"),
-        "run_dir": str(run_dir),
-        "report": str(run_dir / "platform_report.json"),
-    }
-    project = (dispatch.get("project") or "")
-    if "NL Solver" in project or summary.get("verdict"):
-        out["verdict"] = summary.get("verdict")
-        out["proof"] = (summary.get("proof") or "")[:2000]
-    if "Opt Solver" in project or summary.get("pred_value") is not None:
-        out["pred_value"] = summary.get("pred_value")
-        out["solver_status"] = summary.get("solver_status")
-    if "Paper Gen" in project or summary.get("pdf"):
-        out["paper_status"] = summary.get("status")
-        out["pdf"] = summary.get("pdf")
-        out["pages"] = summary.get("pages")
-    if record.get("error"):
-        out["platform_error"] = str(record.get("error"))[:300]
-    return out
+    两类文件任一缺失、损坏或未写完（无 status 字段）都视为仍在执行，
+    不返回 done + 空结果的假完成。
+    """
+    report = rd / "platform_report.json"
+    record = _read_result_file(report)
+    source = "platform_report.json"
+    if record is None:
+        result_file = rd / "mma_workspace" / "result.json"
+        record = _read_result_file(result_file)
+        source = "result.json"
+    if record is None:
+        return {"success": True, "phase_status": "running", "run_dir": str(rd),
+                "hint": "任务仍在执行或结果尚未写完，请稍后再查。"}
+    out = _summarize_record(record, rd)
+    out["source"] = source
+    return {"success": True, "phase_status": "done", **out}
 
 
 class MathPlatformTool(Tool):
@@ -130,9 +121,10 @@ class MathPlatformTool(Tool):
                 name="math_platform_solve",
                 description=(
                     "把一道数学题转交本机数学推理平台求解。"
-                    "backend=nl 求一般数学题（快速）；backend=formal 证明命题（慢、结论机器验证）；"
-                    "backend=opt 解优化建模（快速）；backend=paper 生成完整数模竞赛论文（很慢，"
-                    "必须先用 action=start 启动，再用 action=status 轮询）。"
+                    "backend=nl 求一般数学题（快速）；backend=formal 证明命题（慢、"
+                    "结论机器验证）；backend=opt 解优化建模（快速）；backend=paper "
+                    "生成完整数模竞赛论文（很慢，必须先用 action=start 启动，"
+                    "再用 action=status 且携带返回的 run_dir 轮询，此时无需 question）。"
                     "question 必须是完整题目的原文。"
                 ),
                 input_params={
@@ -145,7 +137,7 @@ class MathPlatformTool(Tool):
                         },
                         "question": {
                             "type": "string",
-                            "description": "完整题目原文（含全部条件与要求）。",
+                            "description": "完整题目原文（action=run 或 start 时必填）。",
                         },
                         "action": {
                             "type": "string",
@@ -161,7 +153,7 @@ class MathPlatformTool(Tool):
                             "description": "action=status 时填 start 返回的 run_dir。",
                         },
                     },
-                    "required": ["backend", "question"],
+                    "required": ["backend", "action"],
                     "additionalProperties": False,
                 },
                 parallel_safe=False,
@@ -175,12 +167,17 @@ class MathPlatformTool(Tool):
         action = str(inputs.get("action") or ("start" if backend == "paper" else "run")).strip()
         if backend not in VALID_BACKENDS:
             return {"success": False, "error": f"backend 必须是 {VALID_BACKENDS} 之一"}
+        if action == "status":
+            return self._status(inputs)
+        if action not in ("run", "start"):
+            return {"success": False, "error": f"未知 action: {action!r}"}
         if not question:
             return {"success": False, "error": "question 必填：请提供完整题目原文"}
 
-        import time as _time
-        started_wall = _time.time()
-        problem_file = PLATFORM_ROOT / "platform_runs" / f"jsw_{backend}_input_{int(started_wall)}.txt"
+        import time as time_mod
+
+        started_wall = time_mod.time()
+        problem_file = RUNS_ROOT / f"jsw_{backend}_input_{int(started_wall)}.txt"
         problem_file.parent.mkdir(parents=True, exist_ok=True)
         problem_file.write_text(question, encoding="utf-8")
 
@@ -189,65 +186,70 @@ class MathPlatformTool(Tool):
             "--force", "solving" if backend in ("nl", "formal") else "modeling",
             "--tag", f"jsw_{backend}",
         ]
-        if backend in ("nl", "formal"):
-            cmd += ["--solver", backend]
-        else:
-            cmd += ["--modeling-backend", backend]
-
         env = os.environ.copy()
 
         if action == "start":
-            detached = subprocess.Popen(
-                cmd, cwd=str(PLATFORM_ROOT), env=env,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            import time as _time2
-            time.sleep(3)  # 等平台创建自己的 run 目录
+            try:
+                detached = subprocess.Popen(
+                    cmd, cwd=str(PLATFORM_ROOT), env=env,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                return {"success": False, "error": f"启动失败: {exc}"}
+            time_mod.sleep(3)  # 等平台创建自己的 run 目录
             run_dir = _find_run_dir(backend, started_wall)
             return {
                 "success": True,
                 "action": "start",
                 "pid": detached.pid,
-                "run_dir": str(run_dir) if run_dir else "(平台 run 目录创建中，稍后用 status 提供)",
-                "result_file": (str(run_dir / "mma_workspace" / "result.json")
+                "run_dir": str(run_dir) if run_dir else "",
+                "result_file": (str(run_dir / "platform_report.json")
                                 if run_dir else ""),
-                "hint": "已后台启动。之后用 action=status 且 run_dir='"
-                        + str(run_dir or "?") + "' 轮询；platform_report.json 出现且 "
-                        "status=solved 即完成。",
+                "hint": ("已后台启动。之后用 action=status 且 run_dir='"
+                         + str(run_dir or "?") + "' 轮询，直到返回 done。"),
             }
 
-        if action == "status":
-            rd = Path(str(inputs.get("run_dir") or ""))
-            if not rd.is_dir():
-                return {"success": False, "error": "run_dir 不存在", "run_dir": str(rd)}
-            report = rd / "platform_report.json"
-            record = _find_result(rd)
-            if not record and not report.exists():
-                return {"success": True, "status": "running", "run_dir": str(rd),
-                        "hint": "任务仍在执行，请稍后再查。"}
-            return {"success": True, "status": "done", "result": _summarize_report(report)}
-
+        # action == "run"：放到工作线程执行，避免阻塞事件循环
         timeout = BACKEND_TIMEOUT.get(backend, 900)
         try:
-            proc = subprocess.run(
+            proc = await asyncio.to_thread(
+                subprocess.run,
                 cmd, cwd=str(PLATFORM_ROOT), env=env,
                 capture_output=True, text=True, timeout=timeout,
             )
             if proc.returncode not in (0, 1):
                 return {"success": False,
                         "error": f"平台退出码 {proc.returncode}",
-                        "stderr": proc.stderr[-500:]}
+                        "stderr": (proc.stderr or "")[-500:]}
         except subprocess.TimeoutExpired:
             return {"success": False, "error": f"平台执行超时（>{timeout}s）"}
+        except OSError as exc:
+            return {"success": False, "error": f"平台启动失败: {exc}"}
 
         run_dir = _find_run_dir(backend, started_wall)
-        report = (run_dir / "platform_report.json") if run_dir else None
-        if report and report.exists():
-            return {"success": True, "backend": backend,
-                    "result": _summarize_report(report), "run_dir": str(run_dir)}
-        return {"success": False, "error": "平台未产出结果文件",
+        if run_dir:
+            report = run_dir / "platform_report.json"
+            record = _read_result_file(report)
+            if record is not None:
+                return {"success": True, "backend": backend, "run_dir": str(run_dir),
+                        "result": _summarize_record(record, run_dir)}
+        return {"success": False, "error": "平台未产出可解析的结果文件",
                 "run_dir": str(run_dir or "")}
+
+    def _status(self, inputs: dict) -> dict:
+        run_dir_raw = str(inputs.get("run_dir") or "").strip()
+        if not run_dir_raw:
+            return {"success": False, "error": "action=status 需要 run_dir", "run_dir": ""}
+        try:
+            rd = Path(run_dir_raw).resolve()
+            rd.relative_to(RUNS_ROOT)
+        except (ValueError, OSError):
+            return {"success": False, "error": "run_dir 不在平台产物目录内",
+                    "run_dir": run_dir_raw}
+        if not rd.is_dir():
+            return {"success": False, "error": "run_dir 不存在", "run_dir": run_dir_raw}
+        return _resolve_status(rd)
 
     async def stream(self, inputs: Any, **kwargs: Any):
         yield await self.invoke(inputs, **kwargs)
