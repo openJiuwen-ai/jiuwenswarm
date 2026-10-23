@@ -37,7 +37,6 @@ import {
   consumePendingQuestion as consumeQueuedQuestion,
   clearPermissionQuestions as clearQueuedPermissionQuestions,
   enqueuePendingQuestions,
-  reconcilePendingQuestions as reconcileQueuedQuestions,
 } from './pendingQuestionQueue';
 
 const TOOL_TIMEOUT_MS = 12_000_000;
@@ -434,7 +433,6 @@ interface ChatState {
   removeFromTaskQueue: (sessionId: string, id: string) => void;
   reorderTaskQueue: (sessionId: string, fromIndex: number, toIndex: number) => void;
   enqueuePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
-  reconcilePendingQuestions: (sessionId: string, snapshot: Record<string, unknown>) => void;
   consumePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
   clearPendingQuestions: (sessionId: string) => void;
   setPendingA4PAuthorization: (
@@ -2076,21 +2074,6 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             ...runtime,
             pendingQuestions,
           },
-        },
-      };
-    });
-  },
-
-  reconcilePendingQuestions: (sessionId, snapshot) => {
-    set((state) => {
-      const runtime = state.runtimes[sessionId];
-      if (!runtime) return state;
-      const pendingQuestions = reconcileQueuedQuestions(runtime.pendingQuestions, snapshot);
-      if (!pendingQuestions) return state;
-      return {
-        runtimes: {
-          ...state.runtimes,
-          [sessionId]: { ...runtime, pendingQuestions },
         },
       };
     });

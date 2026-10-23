@@ -5,58 +5,6 @@ import type {
 
 const PERMISSION_SOURCES = new Set(['permission_interrupt']);
 
-export function normalizePendingQuestion(payload: Record<string, unknown>): AskUserQuestionPayload {
-  const marker = payload.runtime_event as Record<string, unknown> | undefined;
-  const evolutionMeta = payload.evolution_meta && typeof payload.evolution_meta === 'object'
-    ? payload.evolution_meta : payload._evolution_meta;
-  return {
-    request_id: typeof payload.request_id === 'string' ? payload.request_id : '',
-    source: typeof payload.source === 'string' ? payload.source : undefined,
-    questions: Array.isArray(payload.questions) ? payload.questions : [],
-    ...(typeof marker?.worker_instance === 'string' && typeof marker.sequence === 'number'
-      ? { runtimeEvent: { worker_instance: marker.worker_instance, sequence: marker.sequence } } : {}),
-    ...(typeof payload.duplex_job_id === 'string' ? { duplexJobId: payload.duplex_job_id } : {}),
-    ...(typeof payload.approval_schema === 'string' ? { approvalSchema: payload.approval_schema } : {}),
-    ...(evolutionMeta && typeof evolutionMeta === 'object'
-      ? { evolutionMeta: evolutionMeta as Record<string, unknown> } : {}),
-    ...(typeof payload.plan_approval_kind === 'string' ? { planApprovalKind: payload.plan_approval_kind } : {}),
-    ...(typeof payload.plan_content === 'string' ? { planContent: payload.plan_content } : {}),
-    ...(payload.plan_language === 'cn' || payload.plan_language === 'en' ? { planLanguage: payload.plan_language } : {}),
-    ...(payload.swarmflow_meta && typeof payload.swarmflow_meta === 'object'
-      ? { swarmflowMeta: payload.swarmflow_meta as AskUserQuestionPayload['swarmflowMeta'] } : {}),
-  };
-}
-
-export function reconcilePendingQuestions(
-  queue: readonly AskUserQuestionPayload[],
-  snapshot: Record<string, unknown>,
-): AskUserQuestionPayload[] | undefined {
-  const { worker_instance: instance, cursor, dispatches } = snapshot;
-  if (
-    snapshot.recovery_pending === true || typeof instance !== 'string' ||
-    typeof cursor !== 'number' || !Number.isSafeInteger(cursor) || cursor < 0 || !Array.isArray(dispatches)
-  ) return undefined;
-  // Missing dispatch data is unknown, rather than an authoritative empty set.
-  if (dispatches.some((item) => !item || !Array.isArray(item.pending_interactions))) return undefined;
-  let next = queue.filter((item) => !item.runtimeEvent || (
-    item.runtimeEvent.worker_instance === instance && item.runtimeEvent.sequence > cursor
-  ));
-  for (const dispatch of dispatches) {
-    for (const interaction of dispatch.pending_interactions) {
-      if (interaction?.event_type !== 'chat.ask_user_question') continue;
-      const question = normalizePendingQuestion({
-        ...interaction,
-        runtime_event: { worker_instance: instance, sequence: cursor },
-      });
-      const identity = pendingQuestionIdentity(question);
-      if (!next.some((item) => pendingQuestionIdentity(item) === identity)) {
-        next = enqueuePendingQuestions(next, question);
-      }
-    }
-  }
-  return next;
-}
-
 function boundedIdentity(value: unknown, limit: number): string | undefined {
   if (typeof value !== 'string') return undefined;
   const normalized = value.trim();
@@ -97,11 +45,6 @@ export function enqueuePendingQuestions(
   const identity = pendingQuestionIdentity(payload);
   if (!identity) return next;
   const existing = next.findIndex((candidate) => pendingQuestionIdentity(candidate) === identity);
-  const previousMarker = next[existing]?.runtimeEvent;
-  if (
-    previousMarker && payload.runtimeEvent?.worker_instance === previousMarker.worker_instance &&
-    payload.runtimeEvent.sequence < previousMarker.sequence
-  ) return next;
   if (existing >= 0) next[existing] = payload;
   else next.push(payload);
   return next;

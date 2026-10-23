@@ -102,10 +102,6 @@ class WebClient {
     return this.state;
   }
 
-  isHistoricalEvent(payload: Record<string, unknown>): boolean {
-    return this.runtimeResume.isHistoricalEvent(payload);
-  }
-
   onStateChange(handler: StateHandler): () => void {
     this.stateHandlers.add(handler);
     return () => {
@@ -363,8 +359,6 @@ class WebClient {
               },
             },
           ]);
-        } else if (runtime) {
-          this.publishRuntimeSnapshot(params.session_id, runtime);
         }
       }
       return value;
@@ -507,46 +501,6 @@ class WebClient {
     await Promise.all(queries.map((query) => this.resumeExecution(query)));
   }
 
-  private publishRuntimeSnapshot(sessionId: string, runtime: Record<string, unknown>): boolean {
-    if (!this.runtimeResume.applySnapshot(sessionId, runtime)) return false;
-    const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches.map((dispatch) => ({
-      ...dispatch,
-      pending_interactions: Array.isArray(dispatch?.pending_interactions)
-        ? dispatch.pending_interactions.filter((interaction: Record<string, unknown>) => (
-          interaction?.event_type !== 'chat.ask_user_question' || this.runtimeResume.shouldDispatch({
-            type: 'event',
-            event: 'chat.ask_user_question',
-            payload: {
-              ...interaction, session_id: sessionId,
-              runtime_event: { worker_instance: runtime.worker_instance, sequence: runtime.cursor },
-            },
-          })
-        )) : undefined,
-    })) : undefined;
-    this.dispatchEvent({
-      type: 'event', event: 'runtime.snapshot',
-      payload: { ...runtime, ...(dispatches ? { dispatches } : {}), session_id: sessionId },
-    });
-    if (
-      runtime.recovery_pending === true || typeof runtime.worker_instance !== 'string' ||
-      typeof runtime.cursor !== 'number' || !Number.isSafeInteger(runtime.cursor) || runtime.cursor < 0 ||
-      dispatches?.some((dispatch) => !Array.isArray(dispatch.pending_interactions))
-    ) return true;
-    for (const dispatch of dispatches ?? []) {
-      for (const interaction of dispatch.pending_interactions ?? []) {
-        if (typeof interaction.event_type !== 'string') continue;
-        this.dispatchEvent({
-          type: 'event', event: interaction.event_type,
-          payload: {
-            ...interaction, session_id: sessionId,
-            runtime_event: { worker_instance: runtime.worker_instance, sequence: runtime.cursor },
-          },
-        });
-      }
-    }
-    return true;
-  }
-
   private async resumeExecution(query: ReturnType<RuntimeResume['queries']>[number]): Promise<void> {
     const socket = this.ws;
     const owner = this.resumeOwner;
@@ -559,7 +513,11 @@ class WebClient {
         if (this.ws !== socket || this.resumeOwner !== owner) return;
         const runtime = metadata?.runtime;
         if (!runtime) return;
-        if (!this.publishRuntimeSnapshot(query.session_id, runtime)) return;
+        this.dispatchEvent({
+          type: 'event',
+          event: 'runtime.snapshot',
+          payload: { session_id: query.session_id, ...runtime },
+        });
         if (runtime.recovery_pending === true) {
           // An unfinished snapshot cannot clear a running task. Retry only the
           // metadata/cursor query, preserving the original accepted execution.
@@ -593,6 +551,19 @@ class WebClient {
           });
         }
         if (runtime.history_required === true) {
+          const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches : [];
+          for (const dispatch of dispatches) {
+            const interactions = Array.isArray(dispatch.pending_interactions) ? dispatch.pending_interactions : [];
+            for (const interaction of interactions) {
+              if (typeof interaction.event_type === 'string') {
+                this.dispatchEvent({
+                  type: 'event',
+                  event: interaction.event_type,
+                  payload: { ...interaction, session_id: query.session_id },
+                });
+              }
+            }
+          }
           this.dispatchEvent({
             type: 'event',
             event: 'runtime.history_required',
@@ -669,7 +640,6 @@ class WebClient {
   }
 
   private dispatchEventNow(event: WsEvent): void {
-    if (!this.runtimeResume.shouldDispatch(event)) return;
     const handlers = this.handlers.get(event.event);
     if (!handlers || handlers.size === 0) {
       return;

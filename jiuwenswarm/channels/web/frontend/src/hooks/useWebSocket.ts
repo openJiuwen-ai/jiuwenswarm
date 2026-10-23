@@ -73,7 +73,6 @@ import {
 } from '../features/teamConnectionPresentation';
 import {
   bindPendingPermissionCard,
-  normalizePendingQuestion,
   pendingQuestionIdentity,
   shouldClearPermissionQuestionsForLifecycleEvent,
 } from '../stores/pendingQuestionQueue';
@@ -3143,7 +3142,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (
           !isProactiveRecommendationPayload(payload) &&
           !activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused
-          && !webClient.isHistoricalEvent(payload)
         ) {
           useChatStore.getState().setProcessing(sessionId, true);
         }
@@ -3350,10 +3348,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
         const activityRuntime = useChatStore.getState().getRuntime(sessionId);
-        if (
-          !activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused
-          && !webClient.isHistoricalEvent(payload)
-        ) {
+        if (!activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused) {
           useChatStore.getState().setProcessing(sessionId, true);
         }
 
@@ -3555,7 +3550,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               crossSession,
             });
           }
-          if (!chatStore.getRuntime(sessionId)?.isLoadingHistory && !webClient.isHistoricalEvent(payload)) {
+          if (!chatStore.getRuntime(sessionId)?.isLoadingHistory) {
             chatStore.setExecutionError(sessionId, null);
             chatStore.setProcessing(sessionId, false);
             chatStore.setThinking(sessionId, false);
@@ -3678,9 +3673,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // In team mode the backend suppresses chat.final while the team is
         // still running and only sends chat.processing_status(is_complete=true)
         // on team.completed, so we must NOT reset isProcessing here.
-        if (
-          !useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory && !webClient.isHistoricalEvent(payload)
-        ) {
+        if (!useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) {
           useChatStore.getState().setExecutionError(sessionId, null);
           if (currentMode !== 'team') {
             // 有 active Goal 时，普通问答轮和 Goal 后续执行走同一条流；这次 chat.final 可能只是
@@ -4227,7 +4220,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (
           !isProactiveRecommendationPayload(payload) &&
           !activityRuntime?.isProcessing && !activityRuntime?.isLoadingHistory && !activityRuntime?.isPaused
-          && !webClient.isHistoricalEvent(payload)
         ) {
           useChatStore.getState().setProcessing(sessionId, true);
         }
@@ -4563,17 +4555,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
         usePlanStore.getState().setActive(sessionId, false);
-      }),
-      webClient.on('runtime.snapshot', ({ payload }) => {
-        const sessionId = resolveEventSessionId(payload);
-        if (!sessionId) return;
-        const store = useChatStore.getState();
-        store.ensureRuntime(sessionId);
-        store.reconcilePendingQuestions(sessionId, payload);
-        if (payload.recovery_pending !== true && typeof payload.is_processing === 'boolean') {
-          store.setProcessing(sessionId, payload.is_processing);
-          if (!payload.is_processing) store.setThinking(sessionId, false);
-        }
       }),
       webClient.on('chat.processing_status', ({ payload }) => {
         // A supplemental request never owns the original execution's lifecycle.
@@ -5048,8 +5029,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
           }
         } else if (resultPayload.intent === 'cancel') {
-          if (resultPayload.success) {
-            useChatStore.getState().clearPendingQuestions(sessionId);
+          if (shouldClearPermissionQuestionsForLifecycleEvent('cancel', resultPayload.success)) {
+            useChatStore.getState().clearPermissionQuestions(sessionId);
           }
           useChatStore.getState().setPaused(sessionId, false);
           useChatStore.getState().setProcessing(sessionId, false);
@@ -5162,8 +5143,45 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.ask_user_question', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
-        const normalizedPayload = normalizePendingQuestion(payload);
-        const { planApprovalKind, planContent } = normalizedPayload;
+        const questionPayload = payload as Record<string, unknown>;
+        const evolutionMeta =
+          questionPayload.evolution_meta && typeof questionPayload.evolution_meta === 'object'
+            ? (questionPayload.evolution_meta as Record<string, unknown>)
+            : questionPayload._evolution_meta && typeof questionPayload._evolution_meta === 'object'
+              ? (questionPayload._evolution_meta as Record<string, unknown>)
+              : undefined;
+        const questions = Array.isArray(questionPayload.questions) ? questionPayload.questions : [];
+        const approvalSchema =
+          typeof questionPayload.approval_schema === 'string'
+            ? questionPayload.approval_schema
+            : undefined;
+        const planApprovalKind =
+          typeof questionPayload.plan_approval_kind === 'string'
+            ? questionPayload.plan_approval_kind
+            : undefined;
+        const planContent =
+          typeof questionPayload.plan_content === 'string'
+            ? questionPayload.plan_content
+            : undefined;
+        const planLanguage =
+          questionPayload.plan_language === 'cn' || questionPayload.plan_language === 'en'
+            ? questionPayload.plan_language
+            : undefined;
+        const normalizedPayload: AskUserQuestionPayload = {
+          request_id: typeof questionPayload.request_id === 'string' ? questionPayload.request_id : '',
+          source: typeof questionPayload.source === 'string' ? questionPayload.source : undefined,
+          questions,
+          ...(typeof questionPayload.duplex_job_id === 'string'
+            ? { duplexJobId: questionPayload.duplex_job_id } : {}),
+          ...(approvalSchema ? { approvalSchema } : {}),
+          ...(evolutionMeta ? { evolutionMeta } : {}),
+          ...(planApprovalKind ? { planApprovalKind } : {}),
+          ...(planContent !== undefined ? { planContent } : {}),
+          ...(planLanguage ? { planLanguage } : {}),
+          ...(questionPayload.swarmflow_meta && typeof questionPayload.swarmflow_meta === 'object'
+            ? { swarmflowMeta: questionPayload.swarmflow_meta as AskUserQuestionPayload['swarmflowMeta'] }
+            : {}),
+        };
         // 计划正文走对话气泡，不再塞进审批卡片：审批栏只保留「执行」和
         // 「改进意见 + 下一步/跳过」。修订后再次提交会是新的 request_id，
         // 所以每一版计划都会留下自己的气泡。
