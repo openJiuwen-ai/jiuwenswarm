@@ -1497,7 +1497,7 @@ wheels = [
 [[package]]
 name = "openjiuwen-protocol"
 version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=edfdae9a8a876b7a15dbf6bce501b929d235b6dc#edfdae9a8a876b7a15dbf6bce501b929d235b6dc" }
+source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=ab3e9013a8211d00a36652fa90ee561b80541f12#ab3e9013a8211d00a36652fa90ee561b80541f12" }
 
 [[package]]
 name = "gitcode-api"
@@ -6152,7 +6152,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=2.14.2,<3.4.1" },
     { name = "filelock", specifier = ">=3.25.0,<4" },
     { name = "filelock", marker = "extra == 'harmony'", specifier = ">=3.25.0,<4" },
-    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=edfdae9a8a876b7a15dbf6bce501b929d235b6dc" },
+    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=ab3e9013a8211d00a36652fa90ee561b80541f12" },
     { name = "gitcode-api", specifier = ">=1.2.20,<2" },
     { name = "gitcode-api", marker = "extra == 'harmony'", specifier = ">=1.2.20" },
     { name = "gitcode-cli", specifier = "==0.12.0" },
