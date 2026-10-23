@@ -308,17 +308,45 @@
     padding: 8px 10px;
     border-radius: var(--radius);
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 10px;
     border: 1px solid transparent;
     background: var(--bg3);
     transition: border-color 0.1s;
+    min-width: 0;
+    box-sizing: border-box;
   }
   .skill-item:hover { border-color: var(--border); }
-  .skill-info { flex: 1; min-width: 0; }
-  .skill-name { font-size: 12px; font-weight: 600; color: var(--text); }
-  .skill-desc { font-size: 11px; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .skill-trigger { font-size: 10px; color: var(--accent); font-family: monospace; margin-top: 2px; }
+  .skill-info { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .skill-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .skill-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .skill-trigger {
+    font-size: 10px;
+    color: var(--accent);
+    font-family: monospace;
+    margin-top: 2px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
   .skill-toggle-btn {
     font-size: 10px;
     padding: 3px 8px;
@@ -1135,7 +1163,7 @@
     box-shadow: 0 4px 12px rgba(0,0,0,0.35);
   }
   #skill-popup.hidden { display: none; }
-  .skill-item {
+  #skill-popup .skill-item {
     padding: 5px 10px;
     cursor: pointer;
     font-size: 12px;
@@ -1144,9 +1172,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .skill-item:hover, .skill-item.active { background: var(--accent); color: #fff; }
-  .skill-item .sk-desc { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
-  .skill-item.active .sk-desc { color: rgba(255,255,255,0.7); }
+  #skill-popup .skill-item:hover, #skill-popup .skill-item.active { background: var(--accent); color: #fff; }
+  #skill-popup .skill-item .sk-desc { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
+  #skill-popup .skill-item.active .sk-desc { color: rgba(255,255,255,0.7); }
   /* ── Preset prompt picker popup (!) ── */
   #prompt-popup {
     position: absolute;
