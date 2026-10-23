@@ -261,6 +261,7 @@ def provider_report_to_web(report: Any, state: Any = None) -> dict[str, Any]:
         "usage": usage,
         "best_artifact": best_artifact,
         "report_summary": str(raw.get("summary") or ""),
+        "score_details": raw.get("score_details") if isinstance(raw.get("score_details"), dict) else None,
         "markdown": None,
     }
 

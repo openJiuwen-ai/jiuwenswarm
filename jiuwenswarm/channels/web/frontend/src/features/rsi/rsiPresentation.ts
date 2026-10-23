@@ -690,9 +690,9 @@ export function formatScore(score: number | null, digits = 1): string {
 // 程序演进的分数按百分制显示：×100 后保留 1 位小数（0.5524531 → 55.2）。
 // 引擎给的是归一化到 [0,1] 的分数，常在 0.5 附近以千分位变化
 // （relative_to_baseline 下 2x 的改进也只到 0.667），百分制正好把那一档变化摆到小数点前。
-// 其余场景（论文 / Harness）保持原值。位数两边都是 1 位。
-export function scoreDigits(_artifactType?: RsiArtifactType | null): number {
-  return 1;
+// Harness 保持 [0,1] 连续分并保留三位，避免把 0.05 的提升舍入掉。
+export function scoreDigits(artifactType?: RsiArtifactType | null): number {
+  return artifactType == null ? 3 : 1;
 }
 
 export function scoreScale(artifactType?: RsiArtifactType | null): number {

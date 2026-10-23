@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 from dataclasses import asdict, is_dataclass
 from collections.abc import Mapping
@@ -877,6 +878,15 @@ def _harness_profile_options(params: Mapping[str, Any]) -> dict[str, Any]:
             return params.get(name)
         return source.get(name, default)
 
+    margin = value("min_improvement", 0.05)
+    if (isinstance(margin, bool) or not isinstance(margin, (int, float))
+            or not math.isfinite(margin) or not 0 <= margin <= 1):
+        raise RsiBadRequest("min_improvement 必须是 0 到 1 之间的有限数值")
+    regression = value("non_target_max_regression", 0.05)
+    if (isinstance(regression, bool) or not isinstance(regression, (int, float))
+            or not math.isfinite(regression) or not 0 <= regression <= 1):
+        raise RsiBadRequest("non_target_max_regression 必须是 0 到 1 之间的有限数值")
+
     domain_raw = str(value("domain", "") or "").strip().lower()
     if domain_raw and domain_raw not in {"general", "office"}:
         raise RsiBadRequest("domain 只支持 general 或 office")
@@ -904,6 +914,8 @@ def _harness_profile_options(params: Mapping[str, Any]) -> dict[str, Any]:
 
     return {
         "domain": domain_raw,
+        "min_improvement": float(margin),
+        "non_target_max_regression": float(regression),
         "improver_policy_ref": improver_policy_ref,
         "execution_mode": execution_mode,
         "evaluation_method": evaluation_method,

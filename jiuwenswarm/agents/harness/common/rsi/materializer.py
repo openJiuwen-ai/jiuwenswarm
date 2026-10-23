@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 from collections.abc import Mapping
 from copy import deepcopy
@@ -290,6 +291,11 @@ class RsiTaskMaterializer:
             "workspace_dir": str(run_dir),
             "max_epochs": profile_options["max_epochs"],
             "model_configs": normalized_paths,
+            "promotion": {
+                "policy_version": "continuous_two_stage_v2",
+                "min_improvement": profile_options["min_improvement"],
+                "non_target_max_regression": profile_options["non_target_max_regression"],
+            },
             "data_loader": {
                 "file_pattern": "*.json",
                 "batch_size": profile_options["batch_size"],
@@ -298,6 +304,7 @@ class RsiTaskMaterializer:
             "evaluator": {
                 "backend": "single_harness",
                 "evaluation_method": profile_options["evaluation_method"],
+                "score_mode": "continuous",
                 "transient_case_retry_limit": 2,
             },
             "evaluation_result_analyzer": {
@@ -779,10 +786,20 @@ def _copy_harness_source(source: Path, target: Path) -> None:
 
 def _profile_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
     raw = options or {}
+    margin = raw.get("min_improvement", 0.05)
+    if (isinstance(margin, bool) or not isinstance(margin, (int, float))
+            or not math.isfinite(margin) or not 0 <= margin <= 1):
+        raise RsiPathInvalid("min_improvement 必须是 0 到 1 之间的有限数值")
+    regression = raw.get("non_target_max_regression", 0.05)
+    if (isinstance(regression, bool) or not isinstance(regression, (int, float))
+            or not math.isfinite(regression) or not 0 <= regression <= 1):
+        raise RsiPathInvalid("non_target_max_regression 必须是 0 到 1 之间的有限数值")
     evaluation_method = str(raw.get("evaluation_method", "script-based")).strip().lower().replace("-", "_")
     if evaluation_method not in {"script_based", "exact_match", "llm_as_judge"}:
         raise RsiPathInvalid("evaluation_method must be script_based, exact_match or llm_as_judge")
     values = {
+        "min_improvement": float(margin),
+        "non_target_max_regression": float(regression),
         "evaluation_method": "script-based" if evaluation_method == "script_based" else evaluation_method,
         "max_epochs": _profile_int(raw, "max_epochs", default=1, minimum=1),
         "batch_size": _profile_int(raw, "batch_size", default=1, minimum=1),

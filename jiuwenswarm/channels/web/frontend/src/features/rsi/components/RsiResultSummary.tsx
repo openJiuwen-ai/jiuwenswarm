@@ -72,6 +72,17 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
     { key: 'usage', value: usageFmt ? usageFmt.value : '--', unit: usageFmt?.unit, label: t('rsi.detail.usage') },
     { key: 'iterations', value: iterations != null ? String(iterations) : '--', label: t('rsi.detail.iterations') },
   ];
+  if (report?.score_details?.score_mode === 'continuous') {
+    metrics.push({
+      key: 'reference',
+      value: formatArtifactScore(report.score_details.reference_score, task.artifact_type),
+      label: t(
+        report.score_details.policy_version === 'continuous_two_stage_v2'
+          ? 'rsi.detail.comparisonBaselineScore'
+          : 'rsi.detail.referenceScore',
+      ),
+    });
+  }
   // 组合评测是 harness 优化的概念（一次评测跑的是若干组合）；程序优化每个候选
   // 只有一次评测，那两个数永远是 0/0，占着位置却什么都不说。
   if (!isProgram) {
@@ -140,7 +151,7 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
         {/* 指标组：占剩余宽度；指标按内容宽排版，富余空间由 space-between 平均补进各间距（gap 下限 40px） */}
         <div className="rsi-result__metrics">
           {metrics.map((m) => (
-            <div key={m.key} className="rsi-result__metric">
+            <div key={m.key} className="rsi-result__metric" data-testid="rsi-result-metric" data-variant={m.key}>
               <div className="rsi-result__metric-value">
                 {m.value}
                 {m.unit && <span className="rsi-result__metric-value-unit">{m.unit}</span>}
