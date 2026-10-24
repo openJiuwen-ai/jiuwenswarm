@@ -193,6 +193,36 @@ def test_cloud_versions_priority_and_source_switches(service):
     assert reordered["revision"] != cloud_state["revision"]
 
 
+def test_disabled_source_views_show_saved_rules_without_enforcing_them(service):
+    service.initialize_from_live()
+    service.replace_cloud_policy(1, {"tools": {"cloud_only": "deny"}})
+    service.update_settings({"policy_sources": [
+        {"id": "user", "enabled": False},
+        {"id": "cloud", "enabled": False},
+    ]})
+
+    snapshot = service.get_candidate(include_disabled_sources=True)
+    assert snapshot["local"]["permissions"]["tools"]["bash"] == "allow"
+    assert snapshot["cloud"]["permissions"]["tools"]["cloud_only"] == "deny"
+    assert snapshot["builtin"]["permissions"]["tools"]["builtin_tool"] == "deny"
+    assert snapshot["permissions"]["tools"] == {}
+    assert snapshot["permissions"]["composition"]["source_order"] == []
+    assert snapshot["source_errors"] == {}
+
+    service.update_local("tool", {"stored_only": "ask"})
+    edited = service.get_candidate(include_disabled_sources=True)
+    assert edited["local"]["permissions"]["tools"] == {"stored_only": "ask"}
+    assert edited["permissions"]["tools"] == {}
+
+    def broken_builtin():
+        raise ValueError("broken builtin")
+
+    service._builtin_reader = broken_builtin
+    unreadable = service.get_candidate(include_disabled_sources=True)
+    assert unreadable["source_errors"]["builtin"] == "broken builtin"
+    assert unreadable["permissions"]["tools"] == {}
+
+
 def test_local_module_replacement_and_invalid_input_do_not_touch_live(service):
     service.initialize_from_live()
     before = service.config_path.read_bytes()
@@ -249,6 +279,9 @@ def test_disabled_source_is_not_parsed_until_reenabled(service):
     service.update_settings({"policy_sources": [{"id": "user", "enabled": True}]})
     service.cloud_path.write_text("not: [valid", encoding="utf-8")
     assert service.get_candidate()["permissions"]["tools"] == {"bash": "allow"}
+    snapshot = service.get_candidate(include_disabled_sources=True)
+    assert snapshot["permissions"]["tools"] == {"bash": "allow"}
+    assert "cloud" in snapshot["source_errors"]
     with pytest.raises(Exception):
         service.update_settings({"policy_sources": [{"id": "cloud", "enabled": True}]})
     assert service.get_candidate()["permissions"]["tools"] == {"bash": "allow"}

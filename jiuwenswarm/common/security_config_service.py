@@ -231,12 +231,47 @@ class SecurityConfigService:
             self._write_state(state)
             return deepcopy(state)
 
-    def get_candidate(self) -> dict[str, Any]:
+    def get_candidate(self, *, include_disabled_sources: bool = False) -> dict[str, Any]:
         with self._thread_lock, self._locked():
             settings, local, cloud = self._load()
             state = self._state()
-            candidate = compose_candidate(settings, self._sources(settings, local, cloud), state["revision"])
-            return {"settings": settings, "local": local, "cloud": cloud, "permissions": candidate, "apply": state}
+            sources = self._sources(settings, local, cloud)
+            candidate = compose_candidate(settings, sources, state["revision"])
+            source_errors: dict[str, str] = {}
+            builtin: dict[str, Any] = {"permissions": {}}
+            if include_disabled_sources:
+                # Only the public read view inspects saved, disabled rules.
+                # Startup and apply must not parse dormant source files.
+                enabled = {item["id"] for item in settings["security"]["policy_sources"] if item["enabled"]}
+                if SOURCE_BUILTIN in enabled:
+                    builtin = sources[SOURCE_BUILTIN]
+                else:
+                    try:
+                        builtin = self._builtin_reader()
+                    except Exception as exc:
+                        source_errors[SOURCE_BUILTIN] = str(exc)
+                for source_id, path, is_cloud in (
+                    (SOURCE_USER, self.local_path, False),
+                    (SOURCE_CLOUD, self.cloud_path, True),
+                ):
+                    if source_id in enabled or (is_cloud and not path.is_file()):
+                        continue
+                    try:
+                        view = validate_source(self._read_yaml(path), cloud=is_cloud)
+                    except Exception as exc:
+                        source_errors[source_id] = str(exc)
+                        continue
+                    if is_cloud:
+                        cloud = view
+                    else:
+                        local = view
+            result = {
+                "settings": settings, "local": local, "cloud": cloud,
+                "permissions": candidate, "apply": state,
+            }
+            if include_disabled_sources:
+                result.update(builtin=builtin, source_errors=source_errors)
+            return result
 
     def get_builtin(self, module: str) -> dict[str, Any]:
         key_map = {

@@ -293,7 +293,7 @@ async def dispatch_security_config_request(
             raise ValueError("security.config.get accepts no parameters")
         if not service.is_initialized():
             return {"initialized": False}
-        return {"initialized": True, **service.get_candidate()}
+        return {"initialized": True, **service.get_candidate(include_disabled_sources=True)}
     if method == ReqMethod.SECURITY_BUILTIN_GET:
         if set(params) != {"module"}:
             raise ValueError("security.builtin.get requires module only")
