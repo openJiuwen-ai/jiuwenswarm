@@ -580,6 +580,64 @@ async def test_cold_expert_recovery_error_returns_terminal_status(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_team_list_marks_group_organization_owner(monkeypatch):
+    server = object.__new__(AgentWebSocketServer)
+    manager = team_manager_marker(
+        snapshot={"session": {"team_name": "jiuwen-group", "state": "active"}},
+        active="jiuwen-group",
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager", lambda channel_id: manager
+    )
+    monkeypatch.setattr(
+        agent_ws_server,
+        "get_session_metadata",
+        lambda _: {"team_name": "jiuwen-group"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.group_service.read_group",
+        lambda group_id: {
+            "organization_teams": [
+                {"team_id": "org-expert-owner", "role": "owner"},
+                {"team_id": "org-expert-member", "role": "member"},
+            ]
+        },
+    )
+
+    async def teams_for_session(session_id):
+        return [
+            SimpleNamespace(
+                team_name=name,
+                state=SimpleNamespace(value="paused"),
+                agent=SimpleNamespace(
+                    team_backend=SimpleNamespace(is_leader=True, leader_member_name="leader"),
+                    card=SimpleNamespace(name=name),
+                    spec=SimpleNamespace(metadata={}),
+                ),
+                current_session_id=session_id,
+            )
+            for name in ("org-expert-owner", "org-expert-member")
+        ]
+
+    monkeypatch.setattr(
+        "openjiuwen.core.runner.runner.GLOBAL_RUNNER",
+        SimpleNamespace(
+            _team_runtime_manager=SimpleNamespace(
+                pool=SimpleNamespace(teams_for_session=teams_for_session)
+            )
+        ),
+    )
+
+    teams = await server._team_list_entries("session", "web")
+
+    assert {team["team_id"]: team["is_owner"] for team in teams} == {
+        "org-expert-owner": True,
+        "org-expert-member": False,
+        "jiuwen-group": False,
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("description", [None, "", "short description", "x" * 400])
 async def test_org_snapshot_handles_empty_description(monkeypatch, description):
     from openjiuwen.agent_teams.organization import manager as org_manager

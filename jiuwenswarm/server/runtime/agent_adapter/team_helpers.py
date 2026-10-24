@@ -1477,6 +1477,33 @@ def _group_chat_input(request: Any, text: Any) -> dict | None:
     return payload
 
 
+def _record_group_organization_plan(session_id: str, group_input: dict) -> None:
+    """Record coordination state without changing the message or its mentions."""
+    try:
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+            record_organization_plan,
+        )
+
+        plan = record_organization_plan(
+            session_id,
+            mentions=list(group_input["mentions"]),
+            body=str(group_input.get("body") or ""),
+            plan_id=str(group_input["client_message_id"]),
+        )
+        logger.info(
+            "[TeamHelpers] group organization plan candidate session_id=%s "
+            "mentions=%s recorded=%s",
+            session_id,
+            group_input["mentions"],
+            bool(plan),
+        )
+    except Exception:
+        logger.exception(
+            "[TeamHelpers] group organization plan failed session_id=%s",
+            session_id,
+        )
+
+
 def _deliverable(turn: UserTurn, text: Any) -> Any:
     """Render ``text`` into the payload delivered to the team runtime.
 
@@ -3059,6 +3086,8 @@ async def _process_team_message_stream(
         return
     if group_input is not None:
         query = group_input
+        if len(group_input["mentions"]) > 1:
+            _record_group_organization_plan(session_id, group_input)
     query_text = query if isinstance(query, str) else ""
     try:
         from jiuwenswarm.agents.harness.team.remote_member_bootstrap import (

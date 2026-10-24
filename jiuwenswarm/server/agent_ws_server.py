@@ -1092,6 +1092,30 @@ _MCP_KEY_SENSITIVE_SUBSTRINGS = frozenset({
 })
 
 
+def _group_organization_owner_team_ids(session_id: str) -> set[str]:
+    """Owner instances created for a swarm group chat.
+
+    The session's own team stays the outer group team. The expert team that
+    owns the organization is a different id, and the web timeline only keeps
+    a team's replies in the main chat when that team is marked as owner.
+    """
+    if not str(session_id or "").strip():
+        return set()
+    try:
+        from jiuwenswarm.server.runtime.group_service import (
+            group_organization_owner_team_ids,
+        )
+
+        return group_organization_owner_team_ids(session_id)
+    except Exception:
+        logger.debug(
+            "[AgentWebSocketServer] group organization lookup failed session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return set()
+
+
 def resolve_status_code_graph(config: dict | None, workspace: str) -> dict[str, object]:
     """Port agent_os's SDK-backed status; do not create an Agent to inspect it."""
     from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
@@ -7170,9 +7194,26 @@ class AgentWebSocketServer:
         # flip to the empty team panel until the next poll. Metadata stays
         # authoritative once it has been persisted.
         owner_team_name = metadata_team_name or live_team_name
+        try:
+            from jiuwenswarm.server.runtime.group_service import group_organization_teams
+
+            for item in group_organization_teams(session_id):
+                _upsert(str(item.get("team_id") or ""), state="paused", source="group")
+        except Exception:
+            logger.debug(
+                "[AgentWebSocketServer] group organization teams skipped session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+        group_owner_ids = _group_organization_owner_team_ids(session_id)
         for entry in entries.values():
-            entry["is_owner"] = bool(
-                owner_team_name and entry["team_id"] == owner_team_name
+            entry["is_owner"] = (
+                entry["team_id"] in group_owner_ids
+                if group_owner_ids
+                else bool(
+                    owner_team_name
+                    and entry["team_id"] == owner_team_name
+                )
             )
             if not entry.get("organization_id"):
                 org_id = self._lookup_session_org_binding(session_id, entry["team_id"])

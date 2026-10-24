@@ -135,6 +135,127 @@ def read_group(group_id: str) -> dict | None:
     return state
 
 
+def group_organization_teams(group_id: str) -> list[dict]:
+    """Expert-team instances recorded for a swarm group, or an empty list."""
+    try:
+        state = read_group(group_id)
+    except GroupError:
+        return []
+    if not isinstance(state, dict):
+        return []
+    teams = state.get("organization_teams")
+    if not isinstance(teams, list):
+        return []
+    return [
+        item
+        for item in teams
+        if isinstance(item, dict) and str(item.get("team_id") or "").strip()
+    ]
+
+
+def clear_group_organization_binding(group_id: str) -> None:
+    """Forget the live organization registration. Plans and messages stay."""
+    state = read_group(group_id)
+    if state is None:
+        return
+    state.pop("organization_id", None)
+    state["organization_teams"] = []
+    state["updated_at"] = time.time()
+    _save(state)
+
+
+def group_organization_owner_team_ids(group_id: str) -> set[str]:
+    """Team ids that own the organization created for this group chat."""
+    return {
+        str(item.get("team_id")).strip()
+        for item in group_organization_teams(group_id)
+        if item.get("role") == "owner"
+    }
+
+
+def mark_group_organization(
+    group_id: str,
+    organization_id: str,
+    teams: list[dict],
+) -> None:
+    """Remember the organization created for this group. Extra keys stay readable."""
+    state = read_group(group_id)
+    if state is None:
+        return
+    state["organization_id"] = organization_id
+    state["organization_teams"] = teams
+    state["updated_at"] = time.time()
+    _save(state)
+
+
+def upsert_group_organization_team(
+    group_id: str,
+    organization_id: str,
+    entry: dict,
+) -> None:
+    """Persist one proxy-to-instance binding without replacing the others."""
+    state = read_group(group_id)
+    if state is None:
+        return
+    teams = [
+        item
+        for item in state.get("organization_teams") or []
+        if isinstance(item, dict)
+        and item.get("member_name") != entry.get("member_name")
+    ]
+    teams.append(copy.deepcopy(entry))
+    state["organization_id"] = organization_id
+    state["organization_teams"] = teams
+    state["updated_at"] = time.time()
+    _save(state)
+
+
+def group_organization_plans(group_id: str) -> list[dict]:
+    """Queued multi-expert runs for this group, oldest first."""
+    try:
+        state = read_group(group_id)
+    except GroupError:
+        return []
+    plans = (state or {}).get("organization_plans")
+    if not isinstance(plans, list):
+        return []
+    return [
+        item
+        for item in plans
+        if isinstance(item, dict) and str(item.get("plan_id") or "").strip()
+    ]
+
+
+def add_group_organization_plan(group_id: str, plan: dict) -> bool:
+    """Queue a run idempotently by the group message id."""
+    state = read_group(group_id)
+    if state is None:
+        return False
+    plans = group_organization_plans(group_id)
+    if any(item["plan_id"] == plan.get("plan_id") for item in plans):
+        return False
+    state["organization_plans"] = [*plans, copy.deepcopy(plan)]
+    state["updated_at"] = time.time()
+    _save(state)
+    return True
+
+
+def update_group_organization_plan(
+    group_id: str, plan_id: str, **fields
+) -> None:
+    state = read_group(group_id)
+    if state is None:
+        return
+    plans = group_organization_plans(group_id)
+    for item in plans:
+        if item["plan_id"] == plan_id:
+            item.update(copy.deepcopy(fields))
+            break
+    state["organization_plans"] = plans
+    state["updated_at"] = time.time()
+    _save(state)
+
+
 def _save(state: dict) -> None:
     # Share the session deletion fence so a late writer cannot recreate its directory.
     with lifecycle.resource_lock("session", state["group_id"]):
@@ -602,6 +723,12 @@ class GroupService:
                         await self.manager_factory(channel_id).stop_session_runtime(
                             child_session, reason="group.delete.private",
                         )
+                if state.get("organization_id"):
+                    from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+                        dissolve_group_organization,
+                    )
+
+                    await dissolve_group_organization(group_id)
                 await self.manager_factory(channel_id).stop_session_runtime(
                     group_id, reason="group.delete"
                 )

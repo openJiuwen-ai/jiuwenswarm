@@ -709,3 +709,93 @@ async def test_group_host_keeps_its_coordinator_identity(service):
     content = builder.add_section.call_args.args[0].content["en"]
     assert "Coordinate public conversation" in content
     assert "not the group leader" not in content
+
+
+@pytest.mark.asyncio
+async def test_organization_card_stays_out_of_member_slots(service):
+    group = await make_group(service)
+    store = ge.GroupExecutions(group["group_id"])
+    execution_id = "organization-card"
+    rows = {
+        "gchild-a": {"title": "商业策划专家团", "status": "pending", "member_id": "商业策划专家团"},
+        "gchild-b": {"title": "技术洞察专家团", "status": "pending", "member_id": "技术洞察专家团"},
+    }
+    first = await store.upsert_organization_card(
+        execution_id,
+        title="父任务",
+        task="父任务",
+        organization_id="gorg",
+        owner_member="advisor",
+        team_id="org-expert-owner",
+        root_task_id="groot-1",
+        tasks={"gchild-a": "pending", "gchild-b": "pending"},
+        task_details=rows,
+        status="running",
+        phase="executing",
+    )
+    assert first["presentation"] == "card"
+    assert first["execution_kind"] == "organization"
+    assert first["member_name"] is None
+    assert first["owner_member"] == "advisor"
+    assert "groot-1" not in first["tasks"]
+    assert store.active("advisor") is None
+    assert store.active(None) is None
+    await store.task_event(execution_id, {
+        "event_type": "team.task",
+        "event": {"task_id": "internal", "status": "in_progress", "title": "teammate"},
+    })
+    assert "internal" not in store.get(execution_id)["tasks"]
+    private = (await store.create(["advisor"], "Review", "one"))[0]
+    assert private["execution_kind"] == "agent"
+    assert private["member_name"] == "advisor"
+    updated = await store.upsert_organization_card(
+        execution_id,
+        title="父任务",
+        task="父任务",
+        organization_id="gorg",
+        owner_member="advisor",
+        team_id="org-expert-owner",
+        root_task_id="groot-1",
+        tasks={"gchild-a": "in_progress", "gchild-b": "pending"},
+        task_details=rows,
+        status="running",
+        phase="executing",
+    )
+    assert updated["execution_id"] == execution_id
+    assert updated["revision"] == 2
+    done = await store.upsert_organization_card(
+        execution_id,
+        title="父任务",
+        task="父任务",
+        organization_id="gorg",
+        owner_member="advisor",
+        team_id="org-expert-owner",
+        root_task_id="groot-1",
+        tasks={"gchild-a": "completed", "gchild-b": "completed"},
+        task_details=rows,
+        status="completed",
+        phase="completed",
+        message_id="msg-9",
+    )
+    assert done["status"] == "completed"
+    assert done["message_id"] == "msg-9"
+    reopened = await store.upsert_organization_card(
+        execution_id,
+        title="父任务",
+        task="父任务",
+        organization_id="gorg",
+        owner_member="advisor",
+        team_id="org-expert-owner",
+        root_task_id="groot-1",
+        tasks={"gchild-a": "pending", "gchild-b": "pending"},
+        task_details=rows,
+        status="running",
+        phase="executing",
+    )
+    assert reopened["status"] == "completed"
+    page = await service.execution_list(
+        group["group_id"], {}, user_id="owner", channel_id="web",
+    )
+    public = next(item for item in page["executions"] if item["execution_id"] == execution_id)
+    assert public["owner_member"] == "advisor"
+    assert "owner" not in public

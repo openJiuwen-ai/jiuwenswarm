@@ -340,7 +340,10 @@ export function buildRenderItems(items: TimelineItem[], isTeamMode: boolean, isP
       continue;
     }
 
+    // 群广播和成员之间的回复要留在主会话里。收进活动卡片后，刷新页面就只剩用户提示词。
     if (isTeamMemberCollaborationMessage(item.message)) {
+      flushToolGroup(true);
+      pushMessage(item);
       continue;
     }
 

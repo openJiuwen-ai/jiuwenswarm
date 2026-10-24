@@ -146,8 +146,16 @@ def assemble_group_members(spec, members: list[dict]) -> None:
                 + "For private-team work, call run_team with a stable run_id and the task. "
                 "The tool starts background work and returns its execution_id; remain available for new messages. "
                 "Use run_team action=update or cancel to change that execution. "
-                "For a follow-up use run_team action=continue with a new run_id and the previous execution_id. "
+                "For a follow-up to a private-team execution, use run_team action=continue with a new run_id and the previous execution_id. "
+                "After a Team Organization, a message that mentions only you is a follow-up. "
+                "Answer it yourself with group_send_message when one agent can do it. "
+                "Call run_team when the expert team should do it. That call resumes the same instance "
+                "and loads the context from its earlier child task. "
                 "Results are posted automatically; do not post or submit them twice. "
+                "If the same message mentions multiple expert teams, still call run_team. "
+                "That call joins your bound instance to one shared Team Organization and returns when the "
+                "organization run finishes. If its result says posted_to_group is false, do not post the "
+                "report again; the Owner proxy publishes the final report. "
                 "Use group_send_message for your own discussion. Do not build the outer group.",
             )
         member_params = dict(
@@ -282,15 +290,39 @@ class RunTeam(_GroupTool):
             return ToolOutput(success=False, error="run_team requires a group_chat runtime")
         if action in {"update", "cancel"}:
             return await self._adjust({**inputs, "action": action})
+        run_id, task = inputs.get("run_id"), inputs.get("content") or inputs.get("task")
+        if not all(isinstance(v, str) and v.strip() for v in (run_id, task)):
+            return ToolOutput(success=False, error="run_id and task must be nonempty")
+        session = self.context.session_id
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+            pending_organization_plan,
+            run_instance_followup,
+            run_organization_member,
+            saved_organization_instance,
+        )
+
+        plan = pending_organization_plan(session, self.backend.member_name)
+        if plan is not None:
+            return await run_organization_member(
+                backend=self.backend,
+                session_id=session,
+                plan=plan,
+            )
+        instance = await saved_organization_instance(
+            self.backend, self.backend.member_name, session
+        )
+        if instance is not None:
+            return await run_instance_followup(
+                backend=self.backend,
+                session_id=session,
+                run_id=run_id,
+                task=task,
+            )
         previous_id = inputs.get("execution_id") or inputs.get("continue_from_execution_id")
         if action == "continue" and not previous_id:
             return ToolOutput(success=False, error="continue requires a source execution_id")
         if action == "start" and previous_id:
             return ToolOutput(success=False, error="use action=continue to reuse an execution context")
-        run_id, task = inputs.get("run_id"), inputs.get("content") or inputs.get("task")
-        if not all(isinstance(v, str) and v.strip() for v in (run_id, task)):
-            return ToolOutput(success=False, error="run_id and task must be nonempty")
-        session = self.context.session_id
         key = hashlib.sha256(
             json.dumps(
                 [session, self.backend.team_name, self.backend.member_name, run_id]
