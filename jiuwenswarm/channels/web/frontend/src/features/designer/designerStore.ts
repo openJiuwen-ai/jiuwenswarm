@@ -37,6 +37,8 @@ const SAVE_DEBOUNCE_MS = 500;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveSeq = 0;
+// The server applies concurrent saves in any order, so an older snapshot could overwrite a newer one.
+let pendingSave: Promise<void> | null = null;
 let loadSeq = 0;
 const deletedNodeIds = new Set<string>();
 
@@ -635,20 +637,27 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
 
   flushSave: async () => {
     clearSaveTimer();
+    while (pendingSave) await pendingSave;
     const graph = get().domainGraph;
     if (!graph || get().bootstrapInProgress || isDesignerPreviewGraph(graph)) return;
     const seq = ++saveSeq;
-    const sentCount = graph.nodes.length;
     const savedGraphId = graph.graph_id;
     set({ saveStatus: 'saving' });
+    const request = designerGraphClient.save(graph);
+    const tracked = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    pendingSave = tracked;
     try {
-      const { graph: saved } = await designerGraphClient.save(graph);
+      const { graph: saved } = await request;
       if (seq !== saveSeq) return;
       const live = get().domainGraph;
       if (!live || live.graph_id !== savedGraphId) {
         return;
       }
-      if (live.nodes.length > sentCount) {
+      // Edits made while this save was in flight are not in the response; keep them for the next save.
+      if (live !== graph) {
         set({ saveStatus: 'saved' });
         return;
       }
@@ -661,6 +670,8 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     } catch {
       if (seq !== saveSeq) return;
       set({ saveStatus: 'error' });
+    } finally {
+      if (pendingSave === tracked) pendingSave = null;
     }
   },
 
