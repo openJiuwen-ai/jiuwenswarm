@@ -1,26 +1,9 @@
-import asyncio
 from contextvars import ContextVar
-from functools import wraps
 
 _guard = None
 _nested = ContextVar("computer_use_nested", default=False)
 _revision = 0
 _active = 0
-
-
-def eager(function):
-    """Match Promise calls: start immediately, including when await is omitted."""
-
-    @wraps(function)
-    def start(*args, **kwargs):
-        coroutine = function(*args, **kwargs)
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return coroutine
-        return asyncio.Task(coroutine, loop=loop, eager_start=True)
-
-    return start
 
 
 def operation_checkpoint():

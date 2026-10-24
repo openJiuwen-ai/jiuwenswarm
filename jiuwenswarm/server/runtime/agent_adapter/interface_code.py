@@ -45,7 +45,6 @@ from openjiuwen.harness.schema.deep_agent_spec import (
     WorkspaceSpec,
 )
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
-from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
@@ -62,6 +61,7 @@ from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 from jiuwenswarm.agents.harness.common.a4p.execution_context import (
     AUTHORIZATION_EXECUTION_CONTEXTS,
 )
+from jiuwenswarm.agents.harness.computer_use.config import build_cua_agent_config
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _ContextEngineModelState,
     JiuWenSwarmDeepAdapter,
