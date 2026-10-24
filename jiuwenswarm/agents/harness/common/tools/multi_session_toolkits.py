@@ -413,6 +413,9 @@ class MultiSessionToolkit:
         if created:
             result_msg += f": {', '.join(created)}"
         if failed:
+            # 统一失败标记：部分/全部创建失败都要让消费端能识别为失败
+            # （skill 加速 fallback、断路器等依赖 [ERROR] 前缀判定）。
+            result_msg = "[ERROR]: " + result_msg
             result_msg += f"\n创建失败 {len(failed)} 个: " + "; ".join(failed)
 
         logger.info(
@@ -436,7 +439,7 @@ class MultiSessionToolkit:
                 session_id,
                 list(self._tasks.keys()),
             )
-            return f"未找到 session_id={session_id}"
+            return f"[ERROR]: 未找到 session_id={session_id}"
         if task.done():
             logger.info("[MultiSessionToolkit] cancel_session session_id=%s 已结束，无需取消", session_id)
             return f"session_id={session_id} 已结束"

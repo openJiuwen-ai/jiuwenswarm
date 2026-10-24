@@ -140,7 +140,8 @@ class TodoToolkit:
         with self._get_session_lock(self.session_id):
             if self._todo_path.exists():
                 return self._append_todo_list(
-                    f"Error: A todo list for session {self.session_id} already exists."
+                    "[ERROR]: A todo list for session "
+                    f"{self.session_id} already exists."
                     " Use todo_insert to add more tasks."
                 )
             todo_tasks = [
@@ -168,7 +169,7 @@ class TodoToolkit:
                     t.result = result or "done"
                     self._save_tasks(todo_tasks)
                     return self._append_todo_list(f"Task {idx} marked as completed.")
-            return self._append_todo_list(f"Error: Task {idx} not found.")
+            return self._append_todo_list(f"[ERROR]: Task {idx} not found.")
 
     def todo_insert(self, idx: int, tasks: List[str]) -> str:
         """Insert new tasks at the given index. Existing tasks are shifted.
@@ -216,7 +217,7 @@ class TodoToolkit:
             todo_tasks = self._load_tasks()
             found = [t for t in todo_tasks if t.idx == idx]
             if not found:
-                return self._append_todo_list(f"Error: Task {idx} not found.")
+                return self._append_todo_list(f"[ERROR]: Task {idx} not found.")
             todo_tasks = [t for t in todo_tasks if t.idx != idx]
             # Renumber
             for i, t in enumerate(todo_tasks, 1):
