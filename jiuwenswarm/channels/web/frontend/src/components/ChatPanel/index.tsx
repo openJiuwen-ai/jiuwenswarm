@@ -90,6 +90,7 @@ import {
 import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../hooks';
 import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
 import { requestLogin, useAuthStore } from '../../stores/authStore';
 
 export interface ChatHistoryPagerProps {
@@ -1099,7 +1100,10 @@ export const ChatPanel = React.memo(function ChatPanel({
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const conversationId = useOrganizationConversationKey(activeSessionId);
   const expertIsProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
-  const isProcessing = conversationId === activeSessionId ? sessionIsProcessing : expertIsProcessing;
+  const organizationIsProcessing = useOrganizationProcessing(activeSessionId);
+  const isProcessing = conversationId === activeSessionId
+    ? sessionIsProcessing || organizationIsProcessing
+    : expertIsProcessing;
   const agentGroupUnavailable = useChatStore(
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
   );
