@@ -66,7 +66,10 @@ from jiuwenswarm.common.config import (
     get_skill_create_enabled,
     get_skill_evolution_enabled,
 )
-from jiuwenswarm.agents.harness.observability_runtime import build_observability_config
+from jiuwenswarm.agents.harness.observability_runtime import (
+    bind_agentarts_tracer_provider,
+    build_observability_config,
+)
 from jiuwenswarm.observability.config import load_trajectory_store_settings  # noqa: E402
 from jiuwenswarm.observability.runtime import sync_trajectory_runtime  # noqa: E402
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
@@ -195,7 +198,15 @@ def sync_team_observability() -> None:
             service_name="jiuwenswarm",
             traces_dir=traces_dir,
         )
+        agentarts_bound = bind_agentarts_tracer_provider(obs_cfg)
         provider_existed = team_observability.acquire_observability(obs_cfg)
+        if agentarts_bound and cfg.get("exporter", "otlp_grpc") == "file":
+            # Preserve local traces while the wheel owns the shared APM exporter.
+            from jiuwenswarm.agents.harness.agent_observability import (
+                _attach_file_exporter_fanout,
+            )
+
+            _attach_file_exporter_fanout(traces_dir, cfg, runtime="team")
         was_active = _observability_active
         _observability_active = True
         try:
@@ -227,6 +238,11 @@ def sync_team_observability() -> None:
 def shutdown_team_observability() -> None:
     """Shutdown team observability (called on disable or process exit)."""
     global _observability_active, _runtime_managed_observability
+    from jiuwenswarm.agents.harness.agent_observability import (
+        _release_file_exporter_fanout,
+    )
+
+    _release_file_exporter_fanout("team")
     if not _observability_active:
         return
     if _runtime_managed_observability:
