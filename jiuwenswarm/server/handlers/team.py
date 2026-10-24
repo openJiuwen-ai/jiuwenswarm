@@ -56,6 +56,7 @@ def _create_team_binding_from_template(
     team_name: str,
     template_id: str,
     config_base: dict[str, Any],
+    heal: bool = False,
 ) -> Any:
     from jiuwenswarm.agents.harness.team import (
         get_team_template_snapshot,
@@ -63,12 +64,36 @@ def _create_team_binding_from_template(
     )
     from jiuwenswarm.server.runtime.team_binding_store import (
         TeamBindingStoreError,
+        ensure_binding_for_entity,
         get_team_binding_store,
         validate_team_name,
     )
     from jiuwenswarm.server.runtime.team_entity_store import ensure_team_entity, get_team_entity_store
 
     normalized_name = validate_team_name(team_name)
+    entity_store = get_team_entity_store()
+    binding_store = get_team_binding_store()
+
+    # Upgrade heal (opt-in): entity without binding is otherwise an unrecoverable
+    # dead state. Only explicit create (heal=True) may backfill; generate/auto
+    # create keep CONFLICT so name-allocation retries stay "always new team".
+    if entity_store.exists(normalized_name):
+        existing_binding = binding_store.get(normalized_name)
+        if existing_binding is not None or not heal:
+            raise TeamBindingStoreError("team_name already exists", code="CONFLICT")
+        entity = entity_store.get(normalized_name)
+        if entity is None:
+            raise TeamBindingStoreError("team entity config missing", code="NOT_FOUND")
+        binding = ensure_binding_for_entity(entity, store=binding_store)
+        if binding is None:
+            raise TeamBindingStoreError("team entity config missing", code="NOT_FOUND")
+        logger.info(
+            "[AgentWebSocketServer] healed missing team binding from entity: team_name=%s template_id=%s",
+            binding.team_name,
+            binding.template_id,
+        )
+        return binding
+
     template_ids = {
         str(item.get("template_id") or "")
         for item in list_team_template_summaries(config_base)
@@ -76,11 +101,7 @@ def _create_team_binding_from_template(
     if template_id not in template_ids:
         raise TeamBindingStoreError("template_id not found", code="NOT_FOUND")
 
-    entity_store = get_team_entity_store()
-    if entity_store.exists(normalized_name):
-        raise TeamBindingStoreError("team_name already exists", code="CONFLICT")
     template_snapshot = get_team_template_snapshot(config_base, template_id=template_id)
-    binding_store = get_team_binding_store()
     binding = binding_store.create(team_name=normalized_name, template_id=template_id)
     try:
         entity = ensure_team_entity(
@@ -364,6 +385,7 @@ async def handle_team_binding_create(ctx: RequestContext) -> None:
             team_name=team_name,
             template_id=template_id,
             config_base=config_base,
+            heal=True,
         )
         resp = AgentResponse(
             request_id=request.request_id,

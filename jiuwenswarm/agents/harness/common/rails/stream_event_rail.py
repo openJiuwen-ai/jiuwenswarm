@@ -56,6 +56,7 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
+    SKILL_TURBO_OUTER_TODO_COMPLETED_BEFORE_EXTRA_KEY,
     SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY,
     is_todo_close_nudge,
 )
@@ -1273,8 +1274,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 }
 
         # SkillTurbo 专用 ContextVar 统一绑定（adapter / metadata / workspace /
-        # interactive_ask / outer_todo / outer_todo_pending / subagent_parent /
-        # resume_answers 共 8 个，条件语义与绑定实现见
+        # interactive_ask / outer_todo / outer_todo_pending /
+        # outer_todo_completed_before / subagent_parent / resume_answers
+        # 共 9 个，条件语义与绑定实现见
         # context_binding.bind_skill_turbo_context）
         try:
             _resume_answers = None
@@ -1285,9 +1287,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 _resume_answers = extra.get(RESUME_USER_INPUT_KEY)
             _outer_todo_active = None
             _outer_todo_pending = None
+            _outer_todo_completed_before = None
             if isinstance(extra, dict):
                 _outer_todo_active = extra.get(SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY)
                 _outer_todo_pending = extra.get(SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY)
+                _outer_todo_completed_before = extra.get(
+                    SKILL_TURBO_OUTER_TODO_COMPLETED_BEFORE_EXTRA_KEY
+                )
             bind_skill_turbo_context(
                 ctx,
                 adapter=self._skill_turbo_adapter,
@@ -1296,6 +1302,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 resume_answers=_resume_answers,
                 outer_todo_active=_outer_todo_active,
                 outer_todo_pending=_outer_todo_pending,
+                outer_todo_completed_before=_outer_todo_completed_before,
             )
         except Exception:
             # metadata / resume_answers 绑定失败意味着 HITL 作答注入静默失效，

@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_06 / hitl-interrupt-resume |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（executor.py、agent.py、plan_node.py、permission_bridge.py、resume_context.py、interactive_ask.py、hitl_dedup.py、rails/ask_user_rail.py、rails/permission_rail.py、skill_turbo_tools.py、context_binding.py、node_artifact_store.py）+ `agent_adapter/interface_deep.py`、`agent_adapter/interface.py` + `agents/harness/common/rails/stream_event_rail.py` + openjiuwen harness（`ToolInterruptHandler.handle_resume`） |
-| 最近一次修订日期 | 2026-10-20 |
-| 关联 feature | [[F_01]]（fresh 调用产物守卫）、[[F_02]]（resume 统一走 handle_resume + 发卡去重收口）；关联 bugfix [[B_01]]（duplicate 占位不追加停止提示 + 防重三件套测试补齐） |
+| 最近一次修订日期 | 2026-10-21 |
+| 关联 feature | [[F_01]]（fresh 调用产物守卫）、[[F_02]]（resume 统一走 handle_resume + 发卡去重收口）；关联 bugfix [[B_01]]（duplicate 占位不追加停止提示 + 防重三件套测试补齐）、[[B_04]]（fresh 守卫后续交付物放行，第 9 ContextVar 通道） |
 
 ## 范围 / 边界
 
@@ -45,7 +45,7 @@ ask_user / 权限类中断的**完整生命周期**：
 | 动态包与 runtime facade（含 resume 自愈重注册） | [[S_05]] |
 | fallback 与降级（AbortError 不进 fallback 的判定） | [[S_07]] |
 | 事件流协议细节（三件套事件帧格式、invocation_paused 字段定义） | [[S_08]] |
-| 外层集成（ContextVar 桥 8 通道 bind/reset） | [[S_09]] |
+| 外层集成（ContextVar 桥 9 通道 bind/reset） | [[S_09]] |
 
 ## 总览：一句话状态机与三层中断视图
 
@@ -181,7 +181,7 @@ async def resume_stream(self, *, plan_code, inputs, request_id, channel_id,
 |---|---|---|---|---|---|
 | **resume_ctx** | `__skill_turbo_resume_ctx__`（隔离 agent_id `{card.id}__skill_turbo` 下）`{plan_code, inputs, pending_tool_call_id, resume_in_flight(None/True), task_states?}` | ① 中断时 `use_tool` except AbortError → save（显式 `resume_in_flight=None`）；② resume 受理时 mark_in_flight | 恢复唯一入口 load（skill_turbo_tools.py 工具体 resume 分支） | ① rail approve（use_tool 内）；② resume 成功 / NotHandled；③ cancel / supplement isolated 清；④ 工具体 release_checkpoint | 基本收口，**三个已知洞**：(a) `resume_in_flight` 无 TTL——mark 后进程崩溃则 True 永久残留，后续作答全部判 duplicate，恢复手段仅 cancel / supplement；(b) save 失败仅 warning，中断继续但断点丢失，工具体退化为 fresh run_stream；(c) 无 card 降级 clear 清不到隔离键 |
 | **ToolInterruptionState** | `__react_agent_interruption__`（DeepAgent 键空间）`{ai_message(含尾部 pending tool_calls), iteration, original_query, interrupted_tools{tcid→{tool_call, interrupt_requests, is_sub_agent}}, auto_confirm_mapping}` | harness build_interrupt_state（TIE 暂停时） | harness 原生 resume（`ReactAgent` invoke resume 分支 `hitl_handler.load`）；harness resume 重放；`_clear_pending_skill_turbo_hitl` 校验 | ① cancel / supplement（经 `_clear_pending_skill_turbo_hitl`）；② harness 原生 resume 完成 / 二次中断由 `ToolInterruptHandler` 提交新状态 | 基本收口；纯 ask_user 轮另有 `_drop_pending_pure_ask_user_round` 补清 |
-| **node_artifacts** | `__skill_turbo_node_artifacts__`，结构 `{skill, nodes{plan_name→info/文件路径}, plan_code_hash}` | 节点完成逐步 + 流末 finally persist + 中断路径与 save_resume_ctx 合并落盘（skip_post_run 参数） | resume 重放 `_inherit_node_artifacts_for_replay`（hash 匹配）；fresh 工具入口守卫 `_fresh_call_artifacts_guard`（机制性拦截，见 [[F_01]]） | fresh run `_clear_stale_node_artifacts`；fresh 守卫仅 fresh_start=true 清库放行（拦截本身不清库）；**cancel 保留**（供降级 DeepAgent 复用，守卫即其消费方） | 收口（fresh 清 / cancel 留是有意语义） |
+| **node_artifacts** | `__skill_turbo_node_artifacts__`，结构 `{skill, nodes{plan_name→info/文件路径}, plan_code_hash}` | 节点完成逐步 + 流末 finally persist + 中断路径与 save_resume_ctx 合并落盘（skip_post_run 参数） | resume 重放 `_inherit_node_artifacts_for_replay`（hash 匹配）；fresh 工具入口守卫 `_fresh_call_artifacts_guard`（机制性拦截，见 [[F_01]]） | fresh run `_clear_stale_node_artifacts`；fresh 守卫仅 fresh_start=true 清库放行（拦截本身不清库），后续交付物放行（[[B_04]]）不清库交 executor 兜底；**cancel 保留**（供降级 DeepAgent 复用，守卫即其消费方） | 收口（fresh 清 / cancel 留是有意语义） |
 | **中断相位标记** | 随 loop session 状态（内存写 + interrupt_agent_execute 随 loop session 落盘；终态相位由 `_clear_session_persisted_interrupt_state` 落盘） | 发卡（paused）/ RESUME_SIGNAL（resumed）/ 轮末（idle）/ cancel（cancelled/supplemented） | `guard_stale_interrupt_response`（磁盘 + 内存双读） | 轮末 idle / 新卡覆盖 | 内存态与磁盘态**双源**，一致性靠约定 |
 
 ### 第二层：adapter 实例内存态（不持久化，重启即失）
@@ -309,7 +309,7 @@ async def resume_stream(self, *, plan_code, inputs, request_id, channel_id,
 
 1. 前置：上一步 InteractiveInput 到达外层 ReactAgent；ToolInterruptionState 存在且非"未匹配 confirm 放弃"。
 2. `ReactAgent._handle_resume` → `ToolInterruptHandler.handle_resume(resume_ctx)`：作答以 `ctx.extra[RESUME_USER_INPUT_KEY]` 暴露给 rail 链；批内 allow keys 一并注入；**deepcopy 中断 tool_call 后重放**（`tools_to_execute` → `execute_tool_call` 重跑 `skill_acceleration_exec`）。
-3. `StreamEventRail.before_tool_call`：resume 场景（skill_acceleration_exec + RESUME_USER_INPUT_KEY 存在）**跳过重复 tool_call / tool_update emit**；随后 `bind_skill_turbo_context` 把 resume_answers 绑进 ContextVar（8 通道统一 bind / reset，见 [[S_09]]）。
+3. `StreamEventRail.before_tool_call`：resume 场景（skill_acceleration_exec + RESUME_USER_INPUT_KEY 存在）**跳过重复 tool_call / tool_update emit**；随后 `bind_skill_turbo_context` 把 resume_answers 绑进 ContextVar（9 通道统一 bind / reset，见 [[S_09]]）。
 4. `SkillTurboPermissionRail.before_tool_call`：结构化 ask_user resume **短路 return**（不重弹权限卡）——`_is_ask_user_resume` 命中条件：tool_name 为 `skill_acceleration_exec` + extra 含 RESUME_USER_INPUT_KEY + 载荷为结构化 ask_user 形态（P2 协议化 dict `{"status","answers"}` 或裸 answers list；**ConfirmPayload 两形态不命中**，落回父类正常消费——外层权限中断 own the turn 的场景作答经父类权限 rail resolve）。权限在首次 `skill_acceleration_exec` 调用时已通过，重跑不二次审批。
 5. 工具体 `skill_turbo`：`get_skill_turbo_resume_answers()` 非 None → `_resolve_skill_turbo_resume_session_id`（metadata sid 优先，回退 parent session）→ 建 turbo_session + `set_skill_turbo_id`（对齐 `{card.id}__skill_turbo` 隔离键）→ `load_resume_ctx`（load 失败仅 warning，退化为 fresh `run_stream`）。
 6. **`resume_in_flight` 为 True → duplicate 提前返回**（"任务正在处理中，本次重复作答已忽略"占位——双击/网关重试作答不触发第二次 `resume_stream`，不弹错、不重跑；**裸 dict 返回且不携带 success 键**：不经 `_wrap_skill_turbo_result`（fresh 实例 artifact_holder 为空时 wrap 必然追加 NEUTRAL 停止提示"任务已结束…不要声称文件已发送"，与占位语义矛盾），且无 success 键使 `_infer_tool_result_error` 判 None → `chat.tool_result` 帧不带 success 字段，上层应用侧 `isSuccessfulPptTurboToolResult`（结构匹配 success===true）不会把占位帧误判成 PPT turbo 成功（[[B_01]]））；否则 `mark_resume_in_flight`（isolated 通道强制落盘）+ `_did_mark_in_flight` 局部标志。
@@ -361,9 +361,10 @@ async def resume_stream(self, *, plan_code, inputs, request_id, channel_id,
 | 4 | 工具体瞬时失败 | skill_turbo_tools.py 工具体 finally | **不清理、不 post_run**（保留断点，见 release_checkpoint 三态） |
 | 5 | 新一轮 fresh 执行 | executor.py `execute_plan_stream` | `_clear_stale_node_artifacts`（无条件，防全新任务误复用旧产物） |
 | 6 | fresh 调用守卫放行（fresh_start=true） | skill_turbo_tools.py `_fresh_call_artifacts_guard` | 清 node_artifacts（**显式全新任务**：拦截本身不清库，仅 fresh_start=true 才清 + 放行；见 P5 末小节） |
+| 7 | fresh 调用守卫放行（[[B_04]] 后续交付物） | skill_turbo_tools.py `_fresh_call_artifacts_guard` 顶部快路径 | **不清库**——`outer_todo_completed_before` 通道 ≥1（清单推进的后续交付物）直接放行，产物清理交 #5 executor stale 清盘 |
 | — | 轮次正常收尾（无新卡） | interface_deep.py `_mark_round_end_inmemory` | 相位回 idle + 全部活卡转死卡 |
 
-六处入口、三套组合，靠注释与测试守护一致性。**新增清理入口或改动任一处，必须对照 N1 全表核查"哪些退出路径还没清、哪些路径多清了"**；重构方向候选是"中断状态单一 owner"（resume_context.py 已开先例）。
+七处入口、三套组合，靠注释与测试守护一致性。**新增清理入口或改动任一处，必须对照 N1 全表核查"哪些退出路径还没清、哪些路径多清了"**；重构方向候选是"中断状态单一 owner"（resume_context.py 已开先例）。
 
 #### cancel 保留产物的消费方：fresh 调用守卫（skill_turbo_tools.py `_fresh_call_artifacts_guard`）
 
@@ -372,13 +373,14 @@ P5 步 5 cancel 保留的 `node_artifacts` 需要消费方，否则"停止后继
 - **读**：isolated session（`create_agent_session` + `set_skill_turbo_id`，同 `_inherit_node_artifacts_for_replay` 范式）→ `load_node_artifacts`。
 - **拦截（机制性）**：有产物记录且未携带 `fresh_start=true` → 返回 `success=False` + 产物摘要 + 引导（继续走 skill_tool / read_file 基于产物文件；明确全新任务则携带 `fresh_start=true` 重调）。**拦截不清库**——产物记录是 P2-2 hash 继承与后续拦截的共享数据源，任何调用者（外层 / 子代理 / 其它入口）重复调用均持续被拦。
 - **放行（显式）**：仅 `fresh_start=true`（工具 schema 参数，LLM 明确全新任务）→ `clear_node_artifacts` + 放行；清库失败仅 warning（executor #5 `_clear_stale_node_artifacts` 仍是 fresh run 的机制性兜底）。
+- **放行（后续交付物，[[B_04]]，收紧 [[B_05]]）**：守卫最顶部快路径（免开 session）读第 9 通道 `outer_todo_completed_before`——早于当前 todo 绑定项存在已完成项（≥1，completed/cancelled 均计）**且绑定项相较上次放行已切换**（`get_current_task_id()` ≠ 本会话上次放行登记的绑定项 id）时，残留产物属于已收尾的上一交付物而非本任务，直接放行且**不在守卫内清库**（交 #5 executor 开跑时 stale 清盘，与 fresh_start 清库失败的兜底同序）；同绑定项重复 fresh 调用（同一交付物已成功后的盲目重跑）落回产物检查、命中残留即拦并提示 `fresh_start=true`；`fresh_start=true` 与本分支同时命中时显式清库语义优先。无绑定（None）或绑定项之前无已完成项（0）不触发——F_01 对"同任务盲目重跑"的保护不放松。信号链：task_execution_rail 绑定分支 `_completed_items_before` 计算 → extra → StreamEventRail rebind → context_binding（仅 int 绑定，0 是有效信号）→ 守卫读取（详见 [[S_09]] 4.2 通道表第 9 行）；绑定项切换登记为模块级跨请求单例（上限淘汰，同 task_slot_guard 先例，见 [[B_05]]）。
 - **fail-open**：session 打不开 / 读库 / 清库任何异常均放行 fresh 执行，不阻断主流程（守卫是引导性前置防线 + 机制性拦截兜底——即便 LLM 不理解文案反复盲调，产物记录仍在、持续被拦，不会击穿到清盘重跑）。
 - **配套**：暂停占位文案（`_SKILL_TURBO_HITL_PLACEHOLDER`）是相位盲的（写入于 HITL 暂停、被所有后续相位读取），必须按用户意图分叉——作答→自动恢复勿重调本工具恢复（防子代理"重调即续跑"）；非作答消息（停止/取消/调整/新任务）→ 暂停已终止、必须按意图行动、可基于产物继续（防 cancel 后被动空转）。v1/v2 历史文案保留为 `_SKILL_TURBO_HITL_PLACEHOLDER_LEGACY` / `_LEGACY_V2` 供历史 tool_msg 识别；planner 侧曾有的 `__skill_turbo_prior_artifacts__` 增量判定规则已删（字段注入随 bbc64b25c 消失，规则悬空，拦截职责由本守卫承接）。
-- **不覆盖的场景**：resume 路径（resume_ctx 非 None 时守卫不执行，产物由 hash 门禁继承）；成功完成后残留的产物记录同样会被守卫拦（措辞中性"已有产物"，与被删旧实现的已知接受面一致）。
+- **不覆盖的场景**：resume 路径（resume_ctx 非 None 时守卫不执行，产物由 hash 门禁继承）；**无 todo 纪律**的会话（模型未建清单 → 通道 None → 成功完成后残留的产物记录同样被拦，F_01 原语义——[[F_03]] 指南的清单纪律是 B_04 放行分支的生效前提，两者配套部署）。
 
 **设计教训（为什么不是"一次性拦截"）**：首版守卫拦一次即清库，被外层派发的子代理隔层重试击穿——子代理看不到外层的拒绝 tool_result，一次性语义对跨 agent 失效。机制性拦截把状态放进数据记录本身（在即拦，显式参数才放），不依赖被拒方"记住"任何东西。
 
-## 异常分支与边界 case（30 条全矩阵）
+## 异常分支与边界 case（31 条全矩阵）
 
 | # | 场景 | 当前处理 | 测试覆盖 |
 |---|---|---|---|
@@ -412,6 +414,7 @@ P5 步 5 cancel 保留的 `node_artifacts` 需要消费方，否则"停止后继
 | 28 | **session_id 缺失** | inputs 无 session_id / conversation_id → 随机 UUID sid，恢复按 request.session_id 无法命中（warning 提示查 metadata 绑定链路）；无 card → pre_run / post_run 崩溃无法持久化 | —（无单测） |
 | 29 | **cancel 后纯文本"继续" → LLM fresh 重调 turbo** | fresh 调用守卫机制性拦截（success=False + 产物摘要 + 引导改走 skill_tool / read_file）；未带参数的重复调用（含子代理隔层重试）持续被拦；携带 `fresh_start=true`（显式全新任务）清库放行；正常首跑（无产物）零影响 | test_fresh_call_artifacts_guard（拦截 / 重复拦截 / fresh_start 放行 / 无产物 no-op） |
 | 30 | **fresh_start 清库失败 / 守卫自身异常** | 清库失败仍放行（executor `_clear_stale_node_artifacts` 兜底清）；守卫读库任何异常 fail-open 放行 fresh 执行 | test_fresh_call_artifacts_guard（clear 失败 / fail-open） |
+| 31 | **多交付物清单第 2+ 项 turbo 调用**（[[B_04]]，收紧 [[B_05]]） | `outer_todo_completed_before` ≥1（早于绑定项有已完成项）**且绑定项相较上次放行已切换** → 守卫快路径放行、不在守卫内清库（executor stale 清盘兜底）；同绑定项重复 fresh 调用（同项盲目重跑）落回产物检查仍拦；=0（首项 / 同任务重跑）与 None（无清单纪律，含 2026-10-21 14:23 事件形态）仍机制性拦截 | test_fresh_call_artifacts_guard（后续交付物放行 / 同项重跑仍拦 / 绑定项切换放行 / 0 仍拦 / None 仍拦）+ test_task_execution_todo_create_defer_start（completed_before 计数与绑定导出） |
 
 ## 修改检查单
 
@@ -431,7 +434,7 @@ P5 步 5 cancel 保留的 `node_artifacts` 需要消费方，否则"停止后继
 12. **改 `_clear_pending_skill_turbo_hitl` → 五步完整性与键空间**（DeepAgent 键 vs 隔离键；保留 node_artifacts；save_contexts + commit）。为什么：漏一步即"清了一半"——弹消息 / 清中断键 / 清断点三者任一缺失都让下一条消息进错误分支。
 13. **改 TIE 重写 → 三生存性约束重验**（AbilityManager 链 / 跨执行上下文 / deepcopy 安全）。为什么：标记 dict 的三个约束各挡一个运行环境，任一退化都在不同部署形态下爆炸（错误包装 / ContextVar 不可见 / tracer 崩溃），本地测试常只覆盖其一。
 14. **改作答路由 / 权限账本 → 豁免与 `#n` 后缀语义**（ask_user continuation 不进 ledger、不剥后缀；回传侧 `_build_inputs` 剥后缀还原）。为什么：`#n` 同时承载"同 base 第 N 个权限门"语义，归一化时机错位（入站剥 vs 回传剥）会死锁或串卡。
-15. **改 fresh 调用守卫 → 核对机制性拦截语义与 fail-open 边界**（拦截不清库；仅 fresh_start=true 清 + 放行；未带参数的重复调用持续被拦——这是特性不是 bug，子代理隔层重试全靠它挡；任何异常放行；resume_ctx 非 None 时不得执行守卫）。为什么：守卫失效 = "停止后继续"回退全量重跑（F_01 要修的原始故障）；守卫退回一次性语义 = 被跨 agent 隔层重试击穿（F_01 修订的原始故障）；守卫过强（fail-close / 阻断正常首跑 / 误伤 resume）= 全新任务无法进入 turbo。
+15. **改 fresh 调用守卫 → 核对机制性拦截语义与 fail-open 边界**（拦截不清库；仅 fresh_start=true 清 + 放行；[[B_04]] 后续交付物放行分支：仅 `outer_todo_completed_before` ≥1 **且绑定项相较上次放行切换**（[[B_05]]）触发、0/None 仍拦、同绑定项重复 fresh 调用落回产物检查仍拦、放行不在守卫内清库——既不能松到"有外层 todo 就放"（同任务重跑丢产物），也不能漏掉清单推进的正常流程（多交付物降级标准流程），还不能让"绑定项切换"登记误伤同一交付物失败后的无产物重试；未带参数的重复调用持续被拦——这是特性不是 bug，子代理隔层重试全靠它挡；任何异常放行；resume_ctx 非 None 时不得执行守卫）。为什么：守卫失效 = "停止后继续"回退全量重跑（F_01 要修的原始故障）；守卫退回一次性语义 = 被跨 agent 隔层重试击穿（F_01 修订的原始故障）；放行分支过松 = F_01 保护面失守；放行分支过紧 = 多交付物清单流程（F_03）端到端断裂；守卫过强（fail-close / 阻断正常首跑 / 误伤 resume）= 全新任务无法进入 turbo。
 
 ## 与其它 spec 的关系
 
@@ -444,4 +447,4 @@ P5 步 5 cancel 保留的 `node_artifacts` 需要消费方，否则"停止后继
 | [[S_05]] dynamic-package-and-facade | resume 重放时 `_prepare_root_node` → `_load_plan_namespace` 的动态包自愈重注册保证 plan_code import 可解析；断点跨进程存活依赖该机制。 |
 | [[S_07]] fallback-and-degradation | AbortError 不进 fallback 是两 spec 的共同边界：plan_node 模板方法中 AbortError / FallbackContractError 直通，fallback_handler validator 内 AbortError 也原样上抛。本 spec P1 步 6 的透传链在 S_07 有降级矩阵视角。 |
 | [[S_08]] event-stream-protocol | 三件套事件（tool_call(pending_approval) / tool_update / ask_user_question）与 invocation_paused 终结帧的字段定义、前端消费契约归 S_08；本 spec 只定"何时发、谁发、发几张"。 |
-| [[S_09]] outer-integration | ContextVar 桥（8 通道 bind / reset、`skill_turbo_resume_answers` / `skill_turbo_hitl_tic` 等）的机制细节归 S_09；本 spec 引用其结论：跨上下文主信号走工具返回值，ContextVar 仅同上下文兜底。 |
+| [[S_09]] outer-integration | ContextVar 桥（9 通道 bind / reset、`skill_turbo_resume_answers` / `skill_turbo_hitl_tic` 等）的机制细节归 S_09；本 spec 引用其结论：跨上下文主信号走工具返回值，ContextVar 仅同上下文兜底。 |

@@ -2862,8 +2862,10 @@ async def test_tool_error_enrichment_uses_agentcore_context_without_otel_attachm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_seconds", [0.01, 0, -1])
 async def test_token_count_timeout_only_drops_context_breakdown(
     monkeypatch: pytest.MonkeyPatch,
+    timeout_seconds: float,
 ) -> None:
     def slow_count(messages, tools):
         del messages, tools
@@ -2878,7 +2880,7 @@ async def test_token_count_timeout_only_drops_context_breakdown(
     callbacks = RichTelemetryCallbacks(
         span_registry=SpanRegistryProcessor(max_spans=8, ttl_seconds=60),
         metrics=metrics,
-        config=SimpleNamespace(token_count_timeout_seconds=0.01),
+        config=SimpleNamespace(token_count_timeout_seconds=timeout_seconds),
     )
     framework = AsyncCallbackFramework()
     await callbacks.register(framework)
@@ -3105,6 +3107,32 @@ async def test_context_token_metrics_are_emitted_without_a_recording_span(
             ),
         ),
     }
+
+
+@pytest.mark.asyncio
+async def test_token_count_completion_does_not_swallow_external_cancel(telemetry_env, monkeypatch):
+    loop = asyncio.get_running_loop()
+    finished = loop.create_future()
+    started = asyncio.Event()
+
+    def pending_executor(*args):
+        started.set()
+        return finished
+
+    monkeypatch.setattr(loop, "run_in_executor", pending_executor)
+    baseline = telemetry_env.registry.active_count()
+    task = asyncio.create_task(telemetry_env.framework.trigger(
+        LLMCallEvents.LLM_INVOKE_INPUT, messages=[], model="cancel-race-model",
+    ))
+    async with asyncio.timeout(5):
+        await started.wait()
+    finished.set_result(ContextTokenBreakdown())
+    assert task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert telemetry_env.callbacks._metric_state.active_count() == 0
+    assert telemetry_env.callbacks._span_state.active_count() == 0
+    assert telemetry_env.registry.active_count() == baseline
 
 
 @pytest.mark.parametrize(

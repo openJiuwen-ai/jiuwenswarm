@@ -42,6 +42,17 @@ _FILE_LOCK = threading.Lock()
 # 内存缓存: key = f"{sessions_root}\n{session_id}"，避免多租户同 session_id 串缓存
 _METADATA_CACHE: dict[str, dict[str, Any]] = {}
 _CACHE_LOCK = threading.Lock()
+# 缓存容量帽:键空间随累计会话数增长,无帽则每会话一条永驻(issue#5240 残余:
+# 受控 census 实测 ≈+2-3 obj/会话,adapter 逐出不删会话目录故无自然回收)。
+# FIFO 逐最旧;miss 只退化为一次 metadata.json 小文件读,无正确性影响。
+_METADATA_CACHE_MAX = 8192
+
+
+def _evict_metadata_cache_locked() -> None:
+    """容量帽驱逐;调用方必须已持有 ``_CACHE_LOCK``(threading.Lock 不可重入)。"""
+    if len(_METADATA_CACHE) < _METADATA_CACHE_MAX:
+        return
+    _METADATA_CACHE.pop(next(iter(_METADATA_CACHE)), None)
 
 # 会话标题自动生成的截取长度
 _TITLE_MAX_LEN = 50
@@ -894,6 +905,7 @@ def _ensure_worker_started() -> None:
                     if preserve_pin_fields:
                         cache_key = _metadata_cache_key(sid, sessions_root)
                         with _CACHE_LOCK:
+                            _evict_metadata_cache_locked()
                             _METADATA_CACHE[cache_key] = written.copy()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("metadata 异步写入失败: %s", exc)
@@ -930,6 +942,7 @@ def _enqueue_write(
             session_id, metadata, sessions_root=root_s
         )
     with _CACHE_LOCK:
+        _evict_metadata_cache_locked()
         _METADATA_CACHE[cache_key] = metadata.copy()
     if sync_write:
         written = _write_metadata_sync(
@@ -940,6 +953,7 @@ def _enqueue_write(
         )
         if preserve_pin_fields:
             with _CACHE_LOCK:
+                _evict_metadata_cache_locked()
                 _METADATA_CACHE[cache_key] = written.copy()
         return
     _ensure_worker_started()
@@ -953,6 +967,7 @@ def _enqueue_write(
                 session_id, metadata, sessions_root=root_s
             )
             with _CACHE_LOCK:
+                _evict_metadata_cache_locked()
                 _METADATA_CACHE[cache_key] = metadata.copy()
         written = _write_metadata_sync(
             session_id,
@@ -962,6 +977,7 @@ def _enqueue_write(
         )
         if preserve_pin_fields:
             with _CACHE_LOCK:
+                _evict_metadata_cache_locked()
                 _METADATA_CACHE[cache_key] = written.copy()
 
 

@@ -67,6 +67,14 @@ class _InactiveTeamRuntimeManagerMixin:
         self._workflow_completed: dict[str, bool] = {}
         self._round_complete_emitted: dict[str, bool] = {}
 
+    @staticmethod
+    def owns_stream_task(session_id: str, task: asyncio.Task | None) -> bool:
+        return True
+
+    @staticmethod
+    def get_session_runtime_epoch(session_id: str) -> int:
+        return 0
+
     def mark_seen_team_events(self, session_id: str) -> None:
         self._seen_team_events[session_id] = True
 
@@ -1282,6 +1290,7 @@ async def test_consume_stream_with_query_launches_watcher_after_runtime_ready(mo
 @pytest.mark.anyio
 async def test_consume_stream_clears_initialized_only_after_aclose_succeeds(monkeypatch):
     """Paused-team follow-up depends on this marker surviving a failed aclose."""
+    monkeypatch.setattr(team_helpers, "_await_runner_pool_release", lambda *args: asyncio.sleep(0))
     cleared: list[str] = []
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
@@ -5410,7 +5419,8 @@ async def test_finish_round_if_settled_broadcasts_once_when_settled(monkeypatch)
         )
         async def get_team_snapshot(self):
             return {"members": [{"member_id": "leader", "status": "ready"}], "tasks": []}
-    class _FakeManager:
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         _claimed = {}
         @staticmethod
         def get_monitor_handler(session_id):
@@ -5702,3 +5712,116 @@ def test_truncate_team_tool_result_clips_top_level_list_and_tuple() -> None:
     assert clipped_tuple["raw_output"][1] == "ok"
     assert clipped_tuple["original_size"] == (limit + 3) + len("ok")
     assert raw_tuple[0] == "z" * (limit + 3)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("pending, settled, stopping", [(True, False, False), (False, True, True), (True, True, True)])
+async def test_followup_rejects_stopping_before_snapshot_or_waiter(monkeypatch, pending, settled, stopping):
+    class Manager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def has_stream_task(session_id):
+            return True
+
+        @staticmethod
+        def has_pending_cancel(session_id):
+            return pending
+
+        @staticmethod
+        async def wait_for_cancel_settled(session_id, timeout_sec):
+            return settled
+
+        @staticmethod
+        async def is_runtime_stopping(session_id):
+            return stopping
+
+        def add_waiter(self, *args):
+            pytest.fail("stopping runtime must retain its existing waiter")
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            return SimpleNamespace(team_name="unit-team")
+
+        @staticmethod
+        async def interact(*args):
+            pytest.fail("unsettled cancellation must reject delivery")
+
+        @staticmethod
+        async def prepare_runtime_activation(*args):
+            pytest.fail("unsettled cancellation must reject rebuild")
+
+    from unittest.mock import AsyncMock
+    snapshot = AsyncMock(side_effect=AssertionError("stopping runtime must not read snapshots"))
+    monkeypatch.setattr(team_helpers, "_broadcast_team_state_snapshot", snapshot)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel: Manager())
+    request = SimpleNamespace(session_id="s", request_id="r", channel_id="web",
+                              metadata=None, params={"mode": "team"})
+    chunks = [chunk async for chunk in team_helpers.process_team_message_stream(
+        request, {"query": "continue"}, object())]
+    assert any(chunk.payload and chunk.payload.get("code") == "team_stopping" for chunk in chunks)
+    assert chunks[-1].is_complete
+
+    snapshot.assert_not_awaited()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("replacement_stage", ["close", "chunks", "first", "error"])
+async def test_old_stream_close_cannot_complete_or_clear_replacement(monkeypatch, replacement_stage):
+    class Manager(_InactiveTeamRuntimeManagerMixin):
+        owner = None
+        cleared = []
+
+        def owns_stream_task(self, session_id, task):
+            return self.owner is task
+
+        def clear_pending_runtime(self, session_id):
+            self.cleared.append("pending")
+
+        def clear_active_runtime(self, session_id):
+            self.cleared.append("active")
+
+        def pop_stream_task(self, session_id):
+            self.cleared.append("stream")
+
+    manager = Manager()
+    replacement = object()
+    events = []
+
+    class Stream:
+        chunks = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if replacement_stage == "close":
+                raise StopAsyncIteration
+            self.chunks += 1
+            replace_at = 3 if replacement_stage == "chunks" else 1
+            if self.chunks == replace_at:
+                manager.owner = replacement
+                if replacement_stage == "error":
+                    raise RuntimeError("old stream failed")
+            return SimpleNamespace(
+                type="llm_reasoning", payload={"content": f"old-{self.chunks}"}, role="leader",
+            )
+
+        async def aclose(self):
+            # Reproduce a replacement registered while the old generator closes.
+            manager.owner = replacement
+
+    async def no_wait(*args):
+        pass
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel: manager)
+    monkeypatch.setattr(team_helpers, "_run_agent_team_streaming", lambda **kwargs: Stream())
+    monkeypatch.setattr(team_helpers, "_await_runner_pool_release", no_wait)
+    monkeypatch.setattr(team_helpers, "_broadcast_event", lambda channel, session, event: events.append(event))
+    monkeypatch.setattr(team_helpers.time, "monotonic", lambda: 0.0)
+    manager.owner = asyncio.current_task()
+    await _TeamHelpersTestApi.consume_stream_with_query("web", "s", SimpleNamespace(team_name="t"), "q")
+    assert manager.owner is replacement
+    assert not manager.cleared
+    assert not any(event.get("event_type") == "team.completed" for event in events)
+    assert not any(event.get("content") == "old-2" for event in events)
+    errors = [event for event in events if event.get("event_type") == "chat.error"]
+    assert len(errors) == (1 if replacement_stage == "close" else 0)

@@ -98,6 +98,21 @@ select {
   background: var(--color-border-strong);
 }
 
+.resize-divider--workspace::after {
+  position: absolute;
+  inset: 0 -2px;
+  content: '';
+}
+
+body.workspace-resize-active {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.workspace-resize-active iframe {
+  pointer-events: none;
+}
+
 /* ===========================================
    Animations
    =========================================== */

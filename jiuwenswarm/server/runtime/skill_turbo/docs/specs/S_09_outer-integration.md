@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / outer-integration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（外层接缝：`server/runtime/agent_adapter/interface_deep.py`、`agents/harness/common/rails/*`、`server/agent_ws_server.py`、`common/e2a/gateway_normalize.py`；双仓部署边界见附录） |
-| 最近一次修订日期 | 2026-10-16 |
-| 关联 feature | [[F_02]]（outer_todo_pending 第 8 通道 / 附件注入链 / resume 入口统一 / 发卡去重收口） |
+| 最近一次修订日期 | 2026-10-21 |
+| 关联 feature | [[F_02]]（outer_todo_pending 第 8 通道 / 附件注入链 / resume 入口统一 / 发卡去重收口）、[[F_03]]（指南多交付物清单编排与串行契约，4.3 规则要点 ⑦）；关联 bugfix [[B_04]]（outer_todo_completed_before 第 9 通道，fresh 守卫后续交付物放行） |
 
 ## 范围 / 边界
 
@@ -17,7 +17,7 @@
 skill_turbo 模块与外层体系之间的**全部接缝**：
 
 - **装配路径**：`interface_deep.py` 的启用开关、初始化链、`build_skill_turbo_config` 全字段、3 个外层 rail 的挂载与 priority、请求期绑定；`interface_deep.py` 之外的 16 处外层集成点。
-- **ContextVar 桥**：`context_binding.py` 的 8 个通道统一 bind/reset、条件语义、新增通道规范。
+- **ContextVar 桥**：`context_binding.py` 的 9 个通道统一 bind/reset、条件语义、新增通道规范。
 - **外层 3 rail 契约**：SkillTurboPromptRail / SkillTurboDeliverySummaryRail / SkillTurboPermissionRail 的挂载条件、时序与内容约束。
 - **事件桥接与 WS 边界**：AgentWebSocketServer（E2A 边界）、`send_push` 唯一推送路径与送达数语义、`gateway_normalize` 转换规则、心跳与 backpressure 现状。
 - **路径与工作区规范**：`workspace_base` 唯一来源、`effective_project_dir` 与 `workspace_base` 两套语义、`get_workspace_base_path` 回退链。
@@ -42,7 +42,7 @@ skill_turbo 模块与外层体系之间的**全部接缝**：
 
 任意时刻，skill_turbo 与外层的接缝必须满足：
 
-1. **N1 八通道统一收口**：ContextVar 桥的全部 **8 个通道**（adapter / request_metadata / workspace / interactive_ask / subagent_parent / resume_answers / outer_todo / outer_todo_pending）只经 `context_binding.bind_skill_turbo_context` 绑定、`reset_skill_turbo_context` 复位；禁止任何调用点散落逐通道 set/reset。
+1. **N1 九通道统一收口**：ContextVar 桥的全部 **9 个通道**（adapter / request_metadata / workspace / interactive_ask / subagent_parent / resume_answers / outer_todo / outer_todo_pending / outer_todo_completed_before）只经 `context_binding.bind_skill_turbo_context` 绑定、`reset_skill_turbo_context` 复位；禁止任何调用点散落逐通道 set/reset。
 2. **N2 请求期绑定必做**：每次进入请求处理必须执行 `set_current_request_metadata` + `set_skill_turbo_request_metadata`（`interface_deep.py` 请求期绑定段）。漏绑后果可判定：executor 建会话落到随机 session_id，HITL 断点存错位置，作答无法恢复。
 3. **N3 绑定条件语义与复位隔离**：bind 仅对非缺失值（None / 非 bool 视为缺失）产生 token；token 挂在 ctx 的 task-local 属性 `_jiuwenswarm_skill_turbo_bind_tokens`，不进共享 extra dict；reset 幂等（无 token 跳过）且单通道复位失败不影响其余通道。
 4. **N4 推送唯一路径 + 送达数语义**：AgentServer 侧的带外推送只走 `AgentWebSocketServer.send_push`（经 `PushRegistry` 扇出 Gateway WS 连接与 `GET /api/v1/events/stream` HTTP 订阅者）；返回值为送达订阅者数，**0 = 未投递**（无订阅者 / 编码失败 / 过滤后无人匹配 / sink 全部失败），调用方必须按 0 判失败，不得把 warning 当成功。
@@ -112,9 +112,9 @@ skill_turbo 模块与外层体系之间的**全部接缝**：
 | `agent_adapter/interface.py` | 3583 | 行为约束：SkillTurbo write_stream 任务列表推流确认 |
 | `common/utils.py` | 2379 / 2474 / 616 | `resolve_agent_registered_skill_dirs` / `resolve_tenant_agent_workspace_dir` / `get_user_workspace_dir` |
 
-### 4.2 ContextVar 桥（`context_binding.py`，8 个通道 / 6 个 bind 形参）
+### 4.2 ContextVar 桥（`context_binding.py`，9 个通道 / 7 个 bind 形参）
 
-`bind_skill_turbo_context(ctx, *, adapter, request_metadata, parent_session, resume_answers, outer_todo_active, outer_todo_pending)` 由 `stream_event_rail.before_tool_call` 调用，统一绑定 8 个通道（`request_metadata` 一参带出 3 个通道）：
+`bind_skill_turbo_context(ctx, *, adapter, request_metadata, parent_session, resume_answers, outer_todo_active, outer_todo_pending, outer_todo_completed_before)` 由 `stream_event_rail.before_tool_call` 调用，统一绑定 9 个通道（`request_metadata` 一参带出 3 个通道）：
 
 | # | 通道 | setter | 来源 | 消费方 |
 |---|---|---|---|---|
@@ -126,6 +126,7 @@ skill_turbo 模块与外层体系之间的**全部接缝**：
 | 6 | resume_answers | `set_skill_turbo_resume_answers` | harness resume 重放（RESUME_USER_INPUT_KEY）经 StreamEventRail bind | 工具体 resume 分支（[[S_06]] P3） |
 | 7 | outer_todo | `set_skill_turbo_outer_todo_active`（仅 bool） | TaskExecutionRail before_tool_call 导出（extra） | 工具体内部 task 事件抑制判定 |
 | 8 | outer_todo_pending | `set_skill_turbo_outer_todo_pending`（仅 dict） | TaskExecutionRail `_pending_items_after` 导出（extra：`{count, next_summary}` 或缺失） | `_wrap_skill_turbo_result` 停止提示 CONTINUE/POST 拆分（[[S_07]] P12） |
+| 9 | outer_todo_completed_before | `set_skill_turbo_outer_todo_completed_before`（仅 int；**0 是有效信号**，None 不绑） | TaskExecutionRail `_completed_items_before` 导出（extra：int 或缺失，[[B_04]]） | `_fresh_call_artifacts_guard` 后续交付物放行（≥1 且绑定项相较上次放行切换才放行、同项盲目重跑仍拦；0/None 仍拦，[[S_06]] P5 / [[B_05]]） |
 
 - **条件语义**：值缺失（None / 非 bool）不绑、不产生 token（N3）。
 - **token 存放**：ctx 的 task-local 属性 `_jiuwenswarm_skill_turbo_bind_tokens`，随 ctx 生命周期，不进共享 extra dict。
@@ -138,7 +139,7 @@ skill_turbo 模块与外层体系之间的**全部接缝**：
 
 **SkillTurboPromptRail**（priority=8，`rails/skill_prompt_rail.py`，指南全文归 [[S_02]]）
 
-- 六条规则要点：① 默认优先——意图匹配时第一个工具调用必须是 `skill_acceleration_exec`（唯一例外是用户显式要求的、加速通道不会自行处理的前置操作；搜索/读文件不算例外）；② 已误触 `skill_tool` 加载技能正文后仍须立即调用加速通道；③ 加速成功后禁止用 skill_tool 重复同一任务，失败/未处理必须转 skill_tool 标准流程；④ **暂停不是失败**——返回"技能加速已暂停"/弹补充问题卡片/含 `__skill_turbo_hitl__` 标记时必须停止后续工具调用等待用户回答，禁止改走标准流程从头重跑；⑤ 选区/编辑已有 PPT 排除（region_edit 关键词，只支持从零生成）；⑥ tool_result 提示"检测到上一轮留下的已完成产物"时不调用。
+- 七条规则要点：① 默认优先——意图匹配时第一个工具调用必须是 `skill_acceleration_exec`（唯一例外是用户显式要求的、加速通道不会自行处理的前置操作；搜索/读文件不算例外）；② 已误触 `skill_tool` 加载技能正文后仍须立即调用加速通道；③ 加速成功后禁止用 skill_tool 重复同一任务，失败/未处理必须转 skill_tool 标准流程；④ **暂停不是失败**——返回"技能加速已暂停"/弹补充问题卡片/含 `__skill_turbo_hitl__` 标记时必须停止后续工具调用等待用户回答，禁止改走标准流程从头重跑；⑤ 选区/编辑已有 PPT 排除（region_edit 关键词，只支持从零生成）；⑥ tool_result 提示"检测到上一轮留下的已完成产物"时不调用；⑦ **多交付物清单编排**（[[F_03]]）——单轮多份交付物必须先 `todo_create` 建清单（每份一项），**串行契约**：等 `todo_create` / `todo_modify` 返回成功后再进加速通道（严禁同批并行），全部完成后再一次性统一总结。
 - **清单动态化双同源**：`before_model_call` 每次模型调用前调 `refresh_skill_acceleration_description()`（`skill_turbo_tools.py:181-213`）——同一次扫描同时重建 ToolCard.description 与指南技能清单（N7）。
 - **缓存与兜底**：60s TTL `_entries_cache`（key=根目录集合）+ `_last_good_entries` 进程级兜底（N8）。
 - **注入方式**：`system_prompt_builder.add_section(PromptSection(name="skill_turbo_guide", priority=PromptPriority.SKILL_PROTOCOL))`；uninit / disabled / 空清单时 `remove_section`。
@@ -214,7 +215,7 @@ request_id / channel_id / session_id / user_id / output_dir / language / routing
 
 ### tool 层模块级 ContextVar（`skill_turbo_tools.py`）
 
-`_current_skill_turbo_adapter` / `_current_request_metadata` / `_skill_turbo_hitl_tic`（TIE 旧路径兜底，主信号是工具返回值 `__skill_turbo_hitl__` 标记）/ `_skill_turbo_resume_answers` / `_skill_turbo_outer_todo_active` / `_skill_turbo_outer_todo_pending` / `_pending_ppt_delivery_summary`（DeliverySummaryRail 消费）。绑定/复位经 4.2 的统一桥（tool 层自有的在 stream_event_rail 复位点 token 复位 + clear）。
+`_current_skill_turbo_adapter` / `_current_request_metadata` / `_skill_turbo_hitl_tic`（TIE 旧路径兜底，主信号是工具返回值 `__skill_turbo_hitl__` 标记）/ `_skill_turbo_resume_answers` / `_skill_turbo_outer_todo_active` / `_skill_turbo_outer_todo_pending` / `_skill_turbo_outer_todo_completed_before`（[[B_04]]）/ `_pending_ppt_delivery_summary`（DeliverySummaryRail 消费）。绑定/复位经 4.2 的统一桥（tool 层自有的在 stream_event_rail 复位点 token 复位 + clear）。
 
 ### adapter 实例内存态（不持久化，重启即失）
 
@@ -236,7 +237,7 @@ request_id / channel_id / session_id / user_id / output_dir / language / routing
 
 ### P3 加速工具调用期
 
-外层 LLM 决策调用 `skill_acceleration_exec` → `StreamEventRail.before_tool_call` → `bind_skill_turbo_context`（8 通道）→ 工具体 `skill_turbo(query)`：读 ContextVar 组装 inputs（`workspace_base` 按 N5 条件设置；`files` 见 4.7）→ `adapter.build_skill_turbo_config()` → `SkillTurbo(config)` **每请求新建实例** → `run_stream` / `resume_stream`。
+外层 LLM 决策调用 `skill_acceleration_exec` → `StreamEventRail.before_tool_call` → `bind_skill_turbo_context`（9 通道）→ 工具体 `skill_turbo(query)`：读 ContextVar 组装 inputs（`workspace_base` 按 N5 条件设置；`files` 见 4.7）→ `adapter.build_skill_turbo_config()` → `SkillTurbo(config)` **每请求新建实例** → `run_stream` / `resume_stream`。
 
 ### P4 事件回流主路（FIFO）
 
@@ -284,7 +285,7 @@ AbortError 透传到工具层 → 返回 `__skill_turbo_hitl__` 标记 dict → 
 
 ## 修改检查单
 
-1. **改 adapter 集成**（interface_deep.py 任意 skill_turbo 装配点）→ 必查 8 通道 bind/reset 对称性：新增通道时 `bind_skill_turbo_context` 加一段 + `_RESETTERS` 加一行；三处复位触发点（after_tool_call / after_invoke / on_model_exception）全覆盖。
+1. **改 adapter 集成**（interface_deep.py 任意 skill_turbo 装配点）→ 必查 9 通道 bind/reset 对称性：新增通道时 `bind_skill_turbo_context` 加一段 + `_RESETTERS` 加一行；三处复位触发点（after_tool_call / after_invoke / on_model_exception）全覆盖。
 2. **改 WS server** → 必查：心跳（10s keepalive + sequence=-1 + agent_ref 回带 + 发送锁互斥）→ backpressure（legacy `max_queue=None` 与新 API 分支同步）→ `send_push` 返回值的所有消费方（0=失败）。
 3. **改路径解析** → 必查唯一 owner 原则：`workspace_base` 只出自 `metadata["output_dir"]`；不得新增 agent workspace 兜底；`effective_project_dir` 与 `workspace_base` 语义不得互换。
 4. **改 rail 挂载** → 必查 priority 时序（8 < 80 < 90）+ enabled 门禁 + `react.disabled_tools` 含工具时 rail 仍建但 `acceleration_disabled=True` 不注入。

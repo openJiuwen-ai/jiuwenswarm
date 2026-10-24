@@ -2864,6 +2864,8 @@ class JiuWenSwarmDeepAdapter:
         self._model_identity_to_keys: dict[str, list[str]] = {}
         # 同 identity 下「凭证指纹 → cache key」：等价 owner 复用同一 key，不重复 append。
         self._model_identity_owners: dict[str, dict[str, str]] = {}
+        self._model_entry_by_ref: dict[str, dict[str, Any]] = {}
+        self._applied_model_refs: set[str] = set()
         # Optional lite/pro mapping from models.defaults[].tier for task_tool.
         self._tier_model_cache: dict[str, Model] = {}
         # Cache system prompt to avoid re-building on every btw/recap call.
@@ -6672,6 +6674,7 @@ class JiuWenSwarmDeepAdapter:
             self._model_cache[cache_key] = model
             self._model_name_to_keys.setdefault(model_name, []).append(cache_key)
             self._model_identity_to_keys.setdefault(model_ref, []).append(cache_key)
+            self._model_entry_by_ref.setdefault(model_ref, copy.deepcopy(entry))
         else:
             logger.info("[JiuWenSwarmDeepAdapter] 复用等价模型登记 %s (%s)", model_name, cache_key)
 
@@ -6789,10 +6792,16 @@ class JiuWenSwarmDeepAdapter:
             )
             return self._model
 
+        previous_entries: dict[str, dict[str, Any]] = {}
+        for ref in self._applied_model_refs:
+            entry = self._model_entry_by_ref.get(ref)
+            if entry is not None and len(self._model_identity_to_keys.get(ref, [])) == 1:
+                previous_entries[ref] = entry
         self._model_cache.clear()
         self._model_name_to_keys.clear()
         self._model_identity_to_keys.clear()
         self._model_identity_owners.clear()
+        self._model_entry_by_ref.clear()
         self._tier_model_cache.clear()
         self._inject_attribution_to_config(config)
         self._build_model_cache_from_defaults(config)
@@ -6837,7 +6846,40 @@ class JiuWenSwarmDeepAdapter:
         self._model_client_config = self._model.model_client_config
         self._model_request_config = self._model.model_config
         self._last_models_config_fingerprint = new_fp
+        self._retain_dropped_models(previous_entries)
         return self._model
+
+    def _retain_dropped_models(self, previous_entries: dict[str, dict[str, Any]]) -> None:
+        retained: list[str] = []
+        for model_ref, entry in previous_entries.items():
+            if model_ref in self._model_identity_to_keys:
+                continue
+            mcc = entry.get("model_client_config") or {}
+            model_name = str(mcc.get("model_name") or "")
+            try:
+                model = self._build_model_from_entry(mcc, entry.get("model_config_obj") or {})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] 保留重载前模型失败 %s: %s", model_name, exc
+                )
+                continue
+            idx = 0
+            while f"{model_name}#{idx}" in self._model_cache:
+                idx += 1
+            cache_key = f"{model_name}#{idx}"
+            self._model_cache[cache_key] = model
+            self._model_identity_to_keys[model_ref] = [cache_key]
+            self._model_identity_owners[model_ref] = {
+                build_model_credential_fingerprint(model.model_client_config): cache_key
+            }
+            self._model_entry_by_ref[model_ref] = entry
+            if model_name not in self._model_name_to_keys and model_name not in self._model_cache:
+                self._model_name_to_keys[model_name] = [cache_key]
+            retained.append(cache_key)
+        if retained:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] 保留重载前模型 %s", retained
+            )
 
     @staticmethod
     def _models_config_fingerprint(config: dict) -> str:
@@ -6917,6 +6959,11 @@ class JiuWenSwarmDeepAdapter:
             resolved = self._model_cache.get(keys[0])
             if resolved is not None:
                 return resolved
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] 请求模型 %r 未登记，回退默认模型 %s",
+            requested,
+            getattr(getattr(self._model, "model_config", None), "model_name", ""),
+        )
         return self._model
 
     def _lookup_model_by_name(self, requested_model_name: str = "") -> Model | None:
@@ -7231,6 +7278,11 @@ class JiuWenSwarmDeepAdapter:
         # Keep adapter default + DeepAgent parent model in sync so omitted
         # task_tool model_* selectors inherit the currently switched model.
         self._model = model
+        self._applied_model_refs.update(
+            ref
+            for ref, keys in self._model_identity_to_keys.items()
+            if any(self._model_cache.get(key) is model for key in keys)
+        )
         deep_config = getattr(self._instance, "_deep_config", None) or getattr(
             self._instance, "deep_config", None
         )
@@ -10675,6 +10727,10 @@ class JiuWenSwarmDeepAdapter:
         # Disabled tools are enforced by DisabledToolsRail on parent + inherited
         # onto general-purpose (stock agent-core copies non-SubagentRail rails);
         # do not pass disabled_tools= here — older openjiuwen factory rejects it.
+        from jiuwenswarm.agents.harness.common.tools.subagent_executor.excluded_spawn_tools import (
+            filter_excluded_spawn_tools,
+        )
+
         configured_subagents = _inject_general_purpose_subagent(
             configured_subagents,
             add_general_purpose_agent=should_add_general_agent,
@@ -10683,7 +10739,8 @@ class JiuWenSwarmDeepAdapter:
             system_prompt=build_agent_identity_prompt(
                 language=self._resolve_prompt_language(),
             ),
-            tools=normalized_tool_cards,
+            # 子 Agent 不得继承 send_file_to_user 等主 Agent 专属工具。
+            tools=filter_excluded_spawn_tools(normalized_tool_cards),
             mcps=None,
             model=model,
             skills=None,
@@ -18891,6 +18948,14 @@ class JiuWenSwarmDeepAdapter:
         deepresearch_followup = _extract_deepresearch_followup(request)
 
         if not self._is_session_scoped_adapter:
+            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import get_team_stopping_error
+
+            stopping_error = await get_team_stopping_error(request, inputs.get("query"))
+            if stopping_error is not None:
+                return AgentResponse(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    ok=False, payload=stopping_error, metadata=request.metadata,
+                )
             # 提前绑定 LLM trace ContextVar，使 supervisor task（由
             # _get_or_create_session_adapter → start_interaction →
             # self._instance.start() 经 asyncio.create_task 创建）继承正确的
@@ -18922,18 +18987,25 @@ class JiuWenSwarmDeepAdapter:
             )
 
             request_mcp = None
-            if not is_team_control_continuation(request, inputs.get("query")):
-                try:
-                    request_mcp = await session_adapter.register_request_scoped_office_claw_mcp(request)
-                except McpRegistryChatError as mcp_err:
-                    return AgentResponse(
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        ok=False,
-                        payload={"error": str(mcp_err)},
-                        metadata=request.metadata,
-                    )
             try:
+                # Session preparation can yield while cancellation begins.
+                stopping_error = await get_team_stopping_error(request, inputs.get("query"))
+                if stopping_error is not None:
+                    return AgentResponse(
+                        request_id=request.request_id, channel_id=request.channel_id,
+                        ok=False, payload=stopping_error, metadata=request.metadata,
+                    )
+                if not is_team_control_continuation(request, inputs.get("query")):
+                    try:
+                        request_mcp = await session_adapter.register_request_scoped_office_claw_mcp(request)
+                    except McpRegistryChatError as mcp_err:
+                        return AgentResponse(
+                            request_id=request.request_id,
+                            channel_id=request.channel_id,
+                            ok=False,
+                            payload={"error": str(mcp_err)},
+                            metadata=request.metadata,
+                        )
                 with bind_active_office_claw_mcp_tools(
                     request_mcp.tool_ids if request_mcp is not None else ()
                 ):
@@ -19686,6 +19758,15 @@ class JiuWenSwarmDeepAdapter:
             )
             return
         if not self._is_session_scoped_adapter:
+            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import get_team_stopping_error
+
+            stopping_error = await get_team_stopping_error(request, inputs.get("query"))
+            if stopping_error is not None:
+                yield AgentResponseChunk(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    payload=stopping_error, is_complete=True, metadata=request.metadata or {},
+                )
+                return
             # 提前绑定 LLM trace ContextVar，使 supervisor task（由
             # _get_or_create_session_adapter → start_interaction →
             # self._instance.start() 经 asyncio.create_task 创建）继承正确的
@@ -19719,19 +19800,27 @@ class JiuWenSwarmDeepAdapter:
             )
 
             request_mcp = None
-            if not is_team_control_continuation(request, inputs.get("query")):
-                try:
-                    request_mcp = await session_adapter.register_request_scoped_office_claw_mcp(request)
-                except McpRegistryChatError as mcp_err:
+            try:
+                # Session preparation can yield while cancellation begins.
+                stopping_error = await get_team_stopping_error(request, inputs.get("query"))
+                if stopping_error is not None:
                     yield AgentResponseChunk(
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        payload={"event_type": "chat.error", "error": str(mcp_err)},
-                        is_complete=True,
-                        metadata=request.metadata or {},
+                        request_id=request.request_id, channel_id=request.channel_id,
+                        payload=stopping_error, is_complete=True, metadata=request.metadata or {},
                     )
                     return
-            try:
+                if not is_team_control_continuation(request, inputs.get("query")):
+                    try:
+                        request_mcp = await session_adapter.register_request_scoped_office_claw_mcp(request)
+                    except McpRegistryChatError as mcp_err:
+                        yield AgentResponseChunk(
+                            request_id=request.request_id,
+                            channel_id=request.channel_id,
+                            payload={"event_type": "chat.error", "error": str(mcp_err)},
+                            is_complete=True,
+                            metadata=request.metadata or {},
+                        )
+                        return
                 with bind_active_office_claw_mcp_tools(
                     request_mcp.tool_ids if request_mcp is not None else ()
                 ):

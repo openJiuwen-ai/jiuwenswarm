@@ -11,6 +11,7 @@ from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
+    SKILL_TURBO_OUTER_TODO_COMPLETED_BEFORE_EXTRA_KEY,
     TaskExecutionRail,
     get_current_task_id,
 )
@@ -150,6 +151,74 @@ async def test_skill_turbo_tool_call_exports_outer_todo_display_ownership() -> N
 
     assert get_current_task_id() == "todo:create_ppt"
     assert ctx.extra[SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY] is True
+
+
+def test_completed_items_before_counts_earlier_done_items() -> None:
+    """B_04 放行信号口径：早于绑定项的已完成项数（completed/cancelled 均计）。"""
+    rail = TaskExecutionRail()
+    rail._todo_map = {
+        "ppt_libai": {"content": "李白PPT", "status": "completed", "index": 0, "total": 3},
+        "ppt_dufu": {"content": "杜甫PPT", "status": "in_progress", "index": 1, "total": 3},
+        "ppt_baiyi": {"content": "白居易PPT", "status": "cancelled", "index": 2, "total": 3},
+        "ppt_dumu": {"content": "杜牧PPT", "status": "pending", "index": 3, "total": 3},
+    }
+
+    # 绑定第 2 项：早前 1 个 completed → 后续交付物信号
+    assert rail._completed_items_before("todo:ppt_dufu") == 1
+    # 绑定第 4 项：早前 completed/cancelled 各一计 2（in_progress 不是终态不计）
+    assert rail._completed_items_before("ppt_dumu") == 2
+    # 绑定首项：早前无已完成项 → 0（非 None，绑定存在但无前驱）
+    assert rail._completed_items_before("todo:ppt_libai") == 0
+    # 无绑定 / 项不在清单 → None
+    assert rail._completed_items_before(None) is None
+    assert rail._completed_items_before("todo:not_in_map") is None
+
+
+@pytest.mark.asyncio
+async def test_skill_turbo_tool_call_exports_completed_before_extra() -> None:
+    """B_04 绑定导出链：skill_acceleration_exec 绑定后续项时导出 completed_before。
+
+    多交付物清单（F_03 流程）第二项 in_progress、首项 completed：绑定分支
+    必须导出 completed_before=1，供 StreamEventRail → context_binding →
+    fresh 守卫放行后续交付物。
+    """
+    rail = TaskExecutionRail()
+    rail._todo_map = {
+        "ppt_libai": {
+            "content": "生成李白PPT",
+            "status": "completed",
+            "index": 0,
+            "total": 2,
+        },
+        "ppt_dufu": {
+            "content": "生成杜甫PPT",
+            "status": "in_progress",
+            "index": 1,
+            "total": 2,
+        },
+    }
+    tool_call = SimpleNamespace(
+        id="call-skill-turbo-2nd",
+        name="skill_acceleration_exec",
+        arguments={"query": "生成杜甫PPT"},
+    )
+    ctx = SimpleNamespace(
+        session=_FakeSession(),
+        inputs=ToolCallInputs(
+            tool_call=tool_call,
+            tool_name=tool_call.name,
+            tool_args=tool_call.arguments,
+            tool_result=None,
+        ),
+        extra={},
+    )
+
+    await rail.before_tool_call(ctx)
+
+    # 绑定到清单推进的第二项（唯一非终态项），并导出后续交付物信号
+    assert get_current_task_id() == "todo:ppt_dufu"
+    assert ctx.extra[SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY] is True
+    assert ctx.extra[SKILL_TURBO_OUTER_TODO_COMPLETED_BEFORE_EXTRA_KEY] == 1
 
 
 @pytest.mark.asyncio

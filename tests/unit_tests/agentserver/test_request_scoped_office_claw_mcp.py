@@ -24,6 +24,7 @@ from jiuwenswarm.common.mcp_config import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
@@ -889,7 +890,9 @@ def _interactive_input_query() -> "InteractiveInput":
 
 
 @pytest.mark.asyncio
-async def test_stream_team_control_continuation_skips_request_mcp() -> None:
+@pytest.mark.parametrize("mode", ["team", "team.plan", "code.team"])
+@pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt"])
+async def test_stream_team_control_continuation_skips_request_mcp(monkeypatch, mode, source) -> None:
     """team 模式 ask_user 作答不得注册 request-scoped MCP（会与暂停中的原始请求死锁）。"""
     parent = object.__new__(JiuWenSwarmDeepAdapter)
     parent._is_session_scoped_adapter = False
@@ -908,11 +911,12 @@ async def test_stream_team_control_continuation_skips_request_mcp() -> None:
     child = _Child()
     parent._get_or_create_session_adapter = AsyncMock(return_value=child)
     parent._evict_idle_session_adapters = AsyncMock()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _: pytest.fail("control answer must bypass preflight"))
 
     chunks = [
         item
         async for item in parent.process_message_stream_impl(
-            _team_answer_request(),
+            _team_answer_request(mode=mode, source=source),
             {"query": _interactive_input_query()},
         )
     ]
@@ -922,7 +926,9 @@ async def test_stream_team_control_continuation_skips_request_mcp() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unary_team_control_continuation_skips_request_mcp() -> None:
+@pytest.mark.parametrize("mode", ["team", "team.plan", "code.team"])
+@pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt"])
+async def test_unary_team_control_continuation_skips_request_mcp(monkeypatch, mode, source) -> None:
     parent = object.__new__(JiuWenSwarmDeepAdapter)
     parent._is_session_scoped_adapter = False
     response = AgentResponse(request_id="req-answer-1", channel_id="officeclaw")
@@ -935,9 +941,10 @@ async def test_unary_team_control_continuation_skips_request_mcp() -> None:
     )
     parent._get_or_create_session_adapter = AsyncMock(return_value=child)
     parent._evict_idle_session_adapters = AsyncMock()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _: pytest.fail("control answer must bypass preflight"))
 
     result = await parent.process_message_impl(
-        _team_answer_request(),
+        _team_answer_request(mode=mode, source=source),
         {"query": _interactive_input_query()},
     )
 
@@ -971,8 +978,15 @@ async def test_agent_mode_answer_still_registers_request_mcp() -> None:
 
 
 @pytest.mark.asyncio
-async def test_team_normal_followup_still_registers_request_mcp() -> None:
-    """team 模式普通文本消息（非作答投递）仍需注册。"""
+@pytest.mark.parametrize("mode", ["team", "team.plan", "code.team"])
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("pending,stopping,during_prepare", [
+    (True, False, False), (False, True, False), (False, False, False), (False, True, True),
+])
+async def test_team_followup_checks_stopping_before_request_mcp(
+    monkeypatch, mode, streaming, pending, stopping, during_prepare,
+) -> None:
+    """Reject stopping sessions before MCP registration; healthy follow-ups retain it."""
     parent = object.__new__(JiuWenSwarmDeepAdapter)
     parent._is_session_scoped_adapter = False
     registration = OfficeClawMcpRegistration("req-follow-1", ("tool-id",), ("tool",))
@@ -982,16 +996,51 @@ async def test_team_normal_followup_still_registers_request_mcp() -> None:
         process_message_impl=AsyncMock(return_value=response),
         cleanup_request_scoped_office_claw_mcp=AsyncMock(),
     )
-    parent._get_or_create_session_adapter = AsyncMock(return_value=child)
+    prepared = False
+
+    async def prepare(*args, **kwargs):
+        nonlocal prepared
+        prepared = True
+        return child
+
+    parent._get_or_create_session_adapter = AsyncMock(side_effect=prepare)
     parent._evict_idle_session_adapters = AsyncMock()
+    manager = SimpleNamespace(
+        has_pending_cancel=lambda _: pending,
+        is_runtime_stopping=AsyncMock(side_effect=lambda _: stopping and (not during_prepare or prepared)),
+    )
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _: manager)
+
+    async def stream(request, inputs):
+        yield AgentResponseChunk(request_id=request.request_id, channel_id=request.channel_id)
+
+    child.process_message_stream_impl = stream
 
     request = _request(_valid_config(), request_id="req-follow-1")
-    request.params["mode"] = "team"
-    result = await parent.process_message_impl(request, {"query": "继续上一步"})
+    request.params["mode"] = mode
+    trace_before = (interface_deep._LLM_TRACE_SESSION_ID.get(), interface_deep._LLM_TRACE_REQUEST_ID.get())
+    if streaming:
+        result = [chunk async for chunk in parent.process_message_stream_impl(request, {"query": "继续上一步"})][0]
+    else:
+        result = await parent.process_message_impl(request, {"query": "继续上一步"})
 
-    assert result is response
-    child.register_request_scoped_office_claw_mcp.assert_awaited_once()
-    child.cleanup_request_scoped_office_claw_mcp.assert_awaited_once_with(registration)
+    if pending or stopping:
+        assert result.payload["code"] == "team_stopping"
+        if streaming:
+            assert result.is_complete
+        else:
+            assert result.ok is False
+        child.register_request_scoped_office_claw_mcp.assert_not_awaited()
+        if during_prepare:
+            parent._get_or_create_session_adapter.assert_awaited_once()
+            child.cleanup_request_scoped_office_claw_mcp.assert_awaited_once_with(None)
+        else:
+            parent._get_or_create_session_adapter.assert_not_awaited()
+            child.cleanup_request_scoped_office_claw_mcp.assert_not_awaited()
+    else:
+        child.register_request_scoped_office_claw_mcp.assert_awaited_once()
+        child.cleanup_request_scoped_office_claw_mcp.assert_awaited_once_with(registration)
+    assert (interface_deep._LLM_TRACE_SESSION_ID.get(), interface_deep._LLM_TRACE_REQUEST_ID.get()) == trace_before
 
 
 def test_carrier_stores_on_ability_manager_and_rebinds() -> None:

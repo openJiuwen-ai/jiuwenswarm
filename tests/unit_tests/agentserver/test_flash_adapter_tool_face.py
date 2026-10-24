@@ -76,10 +76,10 @@ def test_keep_whitelist_retains_skill_and_security_rails() -> None:
         "_disabled_tools_rail",
         "_permission_rail",
         "_filesystem_rail",
+        "_skill_turbo_prompt_rail",
     ]
     drop = [
         "_skill_evolution_rail",
-        "_skill_turbo_prompt_rail",
         "_a2a_outbound_toolkit_rail",
         "_symphony_orchestration_rail",
     ]

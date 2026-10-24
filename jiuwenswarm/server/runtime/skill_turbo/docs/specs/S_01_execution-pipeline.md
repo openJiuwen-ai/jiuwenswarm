@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / execution-pipeline |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：agent.py / executor.py / skill_turbo_tools.py；environment.py / planner.py 仅涉执行链一侧） |
-| 最近一次修订日期 | 2026-10-16 |
-| 关联 feature | [[F_02]]（回调槽 12→11 / resume 横幅不再抑制） |
+| 最近一次修订日期 | 2026-10-23 |
+| 关联 feature | [[F_02]]（回调槽 12→11 / resume 横幅不再抑制）；[[F_04]]（inputs 注入 python_cmd） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
 
@@ -93,7 +93,7 @@ def validate(self, plan_code: str) -> list[str]
 
 ### execute_plan_stream 内部 10 步序列（executor.py `execute_plan_stream`）
 
-1. `_merge_env_config_to_inputs`：注入 `skill_root` / `skill_name`，均带 "not in merged" 保护（resume inputs 已有则不覆盖）。
+1. `_merge_env_config_to_inputs`：注入 `skill_root` / `skill_name`（"not in merged" 保护，resume inputs 已有则不覆盖）与 `python_cmd`（缺省 / 空白时注入 `sys.executable`，显式非空值保留，[[F_04]]）。
 2. `env.register_tools`：静态工具幂等加载 + send_file 工具每请求刷新（先 remove 旧 tool_id 再 add）+ `_export_tool_info` 导出。
 3. `_setup_execution_context`：`create_agent_session`（`set_skill_turbo_id` 隔离键）+ 8 组 ContextVar 绑定（session/request_id/channel/task 队列/task_states/current_task_holder/send_file/interactive_ask）+ trace 创建 + `_tool_call_counter` 重置。
 4. 产物分支：`not _resume_replay` → `_clear_stale_node_artifacts()`（清 session 持久层残留）；else → `_inherit_node_artifacts_for_replay(plan_code)`（hash 门禁，fail-open）。
@@ -293,7 +293,7 @@ pending ──_before_subplan_execute──▶ in_progress ──_after_subplan_
 6. 改节点遍历或回调绑定 → 检查 depth==1 假设（task 事件/跳过判定只对二层生效）与 execute_subplan 钩子序列完整性。
 7. 改 `_prepare_root_node` / deepcopy → 检查 PlanNode 树不可持有不可深拷贝资源；校验逻辑不得复制第二份。
 8. 改 tool_call_id 生成（`_next_tool_call_id`）→ 连带检查 `_parse_call_idx_from_call_id` / `_parse_tool_name_from_call_id` 与 resume 回退命中链（N13）。
-9. 改 inputs 注入 → 保持 "not in merged" 保护（resume 不覆盖持久化值）+ workspace_base 显式性（N11）。
+9. 改 inputs 注入 → 保持 "not in merged" 保护（resume 不覆盖持久化值）+ workspace_base 显式性（N11）+ python_cmd 守卫语义（缺省 / 空白才注入 `sys.executable`，显式非空保留，[[F_04]]）。
 10. 改并发模型 → LLM Semaphore 懒初始化必须绑定运行时事件循环；不得引入跨请求实例状态（N1）。
 11. 改 session 创建 / checkpointer 读写 → session_id 稳定性（inputs.session_id 优先）+ `set_skill_turbo_id` 键隔离（N7/N8）。
 12. 改 use_tool → AbortError 分支 `save_resume_ctx` 四元组（plan_code / inputs / tcid / task_states）完整性；瞬时失败不得清断点。

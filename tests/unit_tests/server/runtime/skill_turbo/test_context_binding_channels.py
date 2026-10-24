@@ -1,12 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""skill_turbo ContextVar 7 通道 bind/reset 契约（S_09 N1-N3，架构铁律 9/10）。
+"""skill_turbo ContextVar 通道 bind/reset 契约（S_09 N1-N3，架构铁律 9/10）。
 
 防护意图：ContextVar 通道断裂是"契约接线与配置债"根因（11 个 PR）的
 高发形态——bind 漏绑通道、reset 漏复位导致跨请求状态泄漏（PR 5015
 parent session 绑定缺失事故、PR 5093 interactive_ask 未绑定事故）。
-此前 7 通道仅 outer_todo 有测试，本文件补齐全部通道的绑定/复位/条件
-语义/隔离性。
+此前通道仅 outer_todo 有测试，本文件补齐全部通道的绑定/复位/条件
+语义/隔离性（F_02 增 outer_todo_pending 第 8 通道、B_04 增
+outer_todo_completed_before 第 9 通道，均在此同步覆盖）。
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from jiuwenswarm.server.runtime.skill_turbo import context_binding
 
 
 def _read_all_channels() -> dict[str, Any]:
-    """读取 7 通道当前值（各通道权威 getter）。"""
+    """读取 9 通道当前值（各通道权威 getter）。"""
     from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
         get_effective_request_workspace_dir,
         get_interactive_ask,
@@ -28,6 +29,8 @@ def _read_all_channels() -> dict[str, Any]:
         get_current_request_metadata,
         get_current_skill_turbo_adapter,
         get_skill_turbo_outer_todo_active,
+        get_skill_turbo_outer_todo_completed_before,
+        get_skill_turbo_outer_todo_pending,
         get_skill_turbo_resume_answers,
     )
 
@@ -39,12 +42,14 @@ def _read_all_channels() -> dict[str, Any]:
         "subagent_parent": get_subagent_parent_session(),
         "resume_answers": get_skill_turbo_resume_answers(),
         "outer_todo": get_skill_turbo_outer_todo_active(),
+        "outer_todo_pending": get_skill_turbo_outer_todo_pending(),
+        "outer_todo_completed_before": get_skill_turbo_outer_todo_completed_before(),
     }
 
 
 class TestBindAndResetAllChannels:
-    def test_full_bind_sets_all_seven_channels(self):
-        """全量 bind：7 通道各自可读到绑定值。"""
+    def test_full_bind_sets_all_nine_channels(self):
+        """全量 bind：9 通道各自可读到绑定值。"""
         ctx = SimpleNamespace()
         adapter = SimpleNamespace(name="adapter")
         metadata = {"effective_project_dir": "D:/ws/proj", "interactive_ask": True}
@@ -58,6 +63,8 @@ class TestBindAndResetAllChannels:
             parent_session=parent,
             resume_answers=resume_answers,
             outer_todo_active=True,
+            outer_todo_pending={"count": 1, "next_summary": "生成杜甫PPT"},
+            outer_todo_completed_before=1,
         )
         try:
             values = _read_all_channels()
@@ -68,11 +75,13 @@ class TestBindAndResetAllChannels:
             assert values["subagent_parent"] is parent
             assert values["resume_answers"] is resume_answers
             assert values["outer_todo"] is True
+            assert values["outer_todo_pending"] == {"count": 1, "next_summary": "生成杜甫PPT"}
+            assert values["outer_todo_completed_before"] == 1
         finally:
             context_binding.reset_skill_turbo_context(ctx)
 
     def test_reset_restores_all_channels_to_defaults(self):
-        """reset 后 7 通道回到默认（无跨用例泄漏）。"""
+        """reset 后 9 通道回到默认（无跨用例泄漏）。"""
         ctx = SimpleNamespace()
         context_binding.bind_skill_turbo_context(
             ctx,
@@ -81,6 +90,8 @@ class TestBindAndResetAllChannels:
             parent_session=SimpleNamespace(),
             resume_answers=[],
             outer_todo_active=False,
+            outer_todo_pending={"count": 2, "next_summary": "下一项"},
+            outer_todo_completed_before=0,
         )
         context_binding.reset_skill_turbo_context(ctx)
 
@@ -92,6 +103,8 @@ class TestBindAndResetAllChannels:
         assert values["subagent_parent"] is None
         assert values["resume_answers"] is None
         assert values["outer_todo"] is None
+        assert values["outer_todo_pending"] is None
+        assert values["outer_todo_completed_before"] is None
 
 
 class TestConditionalBindSemantics:
@@ -128,6 +141,34 @@ class TestConditionalBindSemantics:
             assert get_skill_turbo_outer_todo_active() is None
         finally:
             context_binding.reset_skill_turbo_context(ctx)
+
+    def test_outer_todo_completed_before_requires_int(self):
+        """B_04 completed_before 仅 int 绑定：0 是有效信号须绑，None 不绑。"""
+        ctx = SimpleNamespace()
+        # 0 = 绑定项之前无已完成项（首交付物）——有效信号，必须产生 token
+        context_binding.bind_skill_turbo_context(ctx, outer_todo_completed_before=0)
+        try:
+            from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+                get_skill_turbo_outer_todo_completed_before,
+            )
+
+            assert get_skill_turbo_outer_todo_completed_before() == 0
+        finally:
+            context_binding.reset_skill_turbo_context(ctx)
+
+        # None / 非 int：不绑、不产生 token（无外层 todo 绑定的缺省形态）
+        ctx2 = SimpleNamespace()
+        context_binding.bind_skill_turbo_context(
+            ctx2, outer_todo_completed_before="1"
+        )
+        try:
+            from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+                get_skill_turbo_outer_todo_completed_before,
+            )
+
+            assert get_skill_turbo_outer_todo_completed_before() is None
+        finally:
+            context_binding.reset_skill_turbo_context(ctx2)
 
     def test_parent_session_unwraps_parent_attr(self):
         """parent_session 解包 _parent：绑定的必须是 DeepAgent 主会话本体。"""
