@@ -18,6 +18,7 @@ from openjiuwen.core.extension.management import QueryResult
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2.assembly import get_extension_manager
+from jiuwenswarm.extensions_v2.management.recovery import query_after_error
 from jiuwenswarm.extensions_v2.management.registry import CODE_MANAGER_NOT_INITIALIZED, ExtensionManager
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
 
@@ -60,10 +61,10 @@ class PackageManagementAdapter(GatewayAdapter):
             else:
                 key, result = "reports", [await manager.reload(package_id)]
         except ExtensionFailure as exc:
-            return _error_response(request, exc.message, code=exc.status.name)
+            return await _failed_request(request, manager, package_id, exc.message, code=exc.status.name)
         except Exception:  # noqa: BLE001 - keep management failures at the request boundary
             logger.exception("[ExtensionsV2] management request failed: %s", method)
-            return _error_response(request, "V2 package management failed")
+            return await _failed_request(request, manager, package_id, "V2 package management failed")
         try:
             payload = {key: _encode(result)}
             if install_reports is not None:
@@ -154,6 +155,29 @@ def _error_response(
     response = build_error_response(request, error, code=code, extra=extra)
     response.agent_ref = request.agent_ref
     return response
+
+
+async def _failed_request(
+    request: AgentRequest,
+    manager: ExtensionManager,
+    package_id: str,
+    error: str,
+    *,
+    code: str = "INTERNAL_ERROR",
+) -> AgentResponse:
+    if request.req_method in (ReqMethod.EXTENSIONS_V2_QUERY, ReqMethod.EXTENSIONS_V2_QUERY.value):
+        return _error_response(request, error, code=code)
+    extra: dict[str, Any] = {"outcome": "unknown"}
+    state, query_error = await query_after_error(manager, package_id or None)
+    if query_error is not None:
+        extra["query_error"] = query_error
+    else:
+        try:
+            extra["state"] = _encode(state)
+        except Exception:  # noqa: BLE001 - keep the original operation error if state encoding fails
+            logger.exception("[ExtensionsV2] could not encode current package state")
+            extra["query_error"] = "Current package state could not be confirmed"
+    return _error_response(request, error, code=code, extra=extra)
 
 
 def _encode(value: object) -> Any:

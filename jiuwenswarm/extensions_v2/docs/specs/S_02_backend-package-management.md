@@ -7,7 +7,7 @@
 | 类型 / 编号 | spec / S_02 |
 | 最近修订 | 2026-10-24 |
 | 所属模块 | `extensions_v2/management/adapter.py` |
-| 特性依据 | [F_09](../features/F_09_backend-management-requests.md) |
+| 特性依据 | [F_09](../features/F_09_backend-management-requests.md)、[F_10](../features/F_10_management-failure-recovery.md) |
 
 门面契约沿用 [S_01](S_01_extension-management-facade.md)。
 
@@ -40,7 +40,9 @@
 | 调用抛错 | false | `code`、`error`，不得伪造成功 Report |
 
 Report 字段沿用 Core，`error` 编码为 `{code, message, params}`，不发送 StatusCode 枚举对象。
-正常失败 Report 不补查、不重试。调用抛错时保留错误，不伪造成功 Report。取消继续传播。
+正常失败 Report 不补查、不重试。写操作抛错且未取得 Report 时返回 `outcome=unknown`；
+核对成功附 `state`，核对失败附 `query_error`，原始 `code` 和 `error` 保留。
+查询到当前状态不表示原操作成功，不补发 Report。查询请求失败不递归核对，取消继续传播。
 
 安装响应另含 `installed_packages` 数组，各项为
 `{package_id: str, version: str, install_path: str, generation: int}`。
