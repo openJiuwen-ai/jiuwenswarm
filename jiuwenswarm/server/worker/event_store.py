@@ -208,12 +208,23 @@ class WorkerEventStore:
     def snapshot(self, request: AgentRequest, *, after: int = 0) -> dict[str, Any]:
         scope = request_scope(request)
         records = [record for record in self.records.values() if record.scope == scope]
+        # Execution is a property of the Session, not of the channel that
+        # happens to ask. A turn started by the ``__cron__`` scheduler (or any
+        # other transport) is registered under that channel's scope, so a
+        # ``session.get_metadata`` from another channel would otherwise report
+        # the Session as idle while it is still running. Replay and ``dispatches``
+        # stay channel-scoped: only the caller's own transport may reattach.
+        session_id = scope[-1]
+        work_records = (
+            (record for record in self.records.values() if record.scope[-1] == session_id)
+            if session_id else (record for record in records)
+        )
         return {
             "worker_instance": self.instance,
             "cursor": self._sequence,
             "history_required": after < self._expired_sequence,
             "is_processing": any(
-                record.active or record.is_processing for record in records if not record.is_passive_subscription
+                record.active or record.is_processing for record in work_records if not record.is_passive_subscription
             ),
             "dispatches": [{
                 "dispatch_id": record.dispatch_id,
