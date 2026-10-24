@@ -66,8 +66,12 @@ export function safeAttachmentUrl(value: unknown): string | undefined {
 }
 
 export function executionResult(execution: GroupExecution, messages: GroupMessage[]): GroupMessage | undefined {
-  return messages.find((message) => message.sender === execution.member_name
-    && (message.execution_id === execution.execution_id || message.message_id === execution.message_id));
+  return messages.find((message) => {
+    const sameMessage = Boolean(execution.message_id) && message.message_id === execution.message_id;
+    const sameExecution = Boolean(message.execution_id) && message.execution_id === execution.execution_id;
+    if (message.sender === execution.member_name && (sameExecution || sameMessage)) return true;
+    return Boolean(execution.owner_member) && message.sender === execution.owner_member && sameMessage;
+  });
 }
 
 export interface GroupMemberCandidate {

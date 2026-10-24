@@ -13,6 +13,10 @@ export function expertTeamId(payload: Record<string, unknown>, sessionId: string
   const event = (payload.event ?? (payload.payload as Record<string, unknown> | undefined)?.event) as Record<string, unknown> | undefined;
   const teamId = String(payload.team_id || payload.team_name || event?.team_id || event?.team_name || '').trim();
   if (!teamId || teamId === ownerTeamId(sessionId)) return null;
+  // Swarm group chat runs the prompt on the organization owner instance.
+  // That instance is not the outer group team, but its reply belongs in the
+  // main conversation the user is reading.
+  if (payload.swarm_group_owner === true) return null;
   const source = String(payload.source ?? '');
   // Root follow-up events can originate from any Team. Preserve legacy
   // routing when disabled; when enabled, Team identity determines the owner.

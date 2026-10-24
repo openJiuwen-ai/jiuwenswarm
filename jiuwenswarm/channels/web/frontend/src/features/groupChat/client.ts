@@ -126,7 +126,8 @@ export const groupChatClient = {
 export interface GroupExecution {
   group_id?: string;
   execution_id: string;
-  member_name: string;
+  member_name: string | null;
+  owner_member?: string | null;
   display_name: string;
   execution_kind: 'agent' | 'team' | 'organization';
   title: string;

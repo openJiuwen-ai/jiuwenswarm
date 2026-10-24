@@ -55,9 +55,90 @@ class GroupExecutions:
 
     def active(self, member_name: str | None) -> dict | None:
         for record in self.read().values():
-            if record["member_name"] == member_name and record["status"] not in TERMINAL:
+            # An organization card has no member slot. It must not block a proxy
+            # or be treated as the outer group leader's active execution.
+            if record.get("execution_kind") == "organization":
+                continue
+            if record.get("member_name") == member_name and record["status"] not in TERMINAL:
                 return copy.deepcopy(record)
         return None
+
+    async def upsert_organization_card(
+        self,
+        execution_id: str,
+        *,
+        title: str,
+        task: str,
+        organization_id: str,
+        owner_member: str,
+        team_id: str,
+        root_task_id: str,
+        tasks: dict,
+        task_details: dict,
+        status: str,
+        phase: str,
+        message_id: str | None = None,
+    ) -> dict:
+        """Write one organization card. Re-entry updates that record and never posts."""
+        if not isinstance(execution_id, str) or not execution_id:
+            raise GroupError("BAD_REQUEST", "execution_id must be nonempty text")
+        title = str(title or "")[:200]
+        task = str(task or "")[:20000]
+        async with group_lock(self.group_id):
+            records = self.read()
+            current = records.get(execution_id)
+            if current is not None and current["status"] in TERMINAL:
+                return copy.deepcopy(current)
+            now = time.time()
+            created = current is None
+            record = {
+                "execution_id": execution_id,
+                "reply_id": execution_id,
+                "presentation": "card",
+                "owner": lifecycle.current_runtime_owner(),
+                "delivery_status": "pending",
+                "member_kind": "agent_group",
+                "id": None,
+                "display_name": "",
+                "execution_kind": "organization",
+                "member_name": None,
+                "title": title,
+                "task": task,
+                "status": status,
+                "phase": phase,
+                "progress": {
+                    "completed": sum(value == "completed" for value in tasks.values()),
+                    "total": len(tasks),
+                },
+                "tasks": tasks,
+                "task_details": task_details,
+                "team_id": team_id,
+                "organization_id": organization_id,
+                "owner_member": owner_member,
+                "root_task_id": root_task_id,
+                "revision": 1 if created else current["revision"] + 1,
+                "created_at": now if created else current["created_at"],
+                "updated_at": now,
+                "result": None,
+                "attachments": [],
+                "message_id": message_id if message_id is not None else (
+                    None if created else current.get("message_id")
+                ),
+            }
+            if not created and (
+                current.get("status") == record["status"]
+                and current.get("phase") == record["phase"]
+                and current.get("tasks") == record["tasks"]
+                and current.get("task_details") == record["task_details"]
+                and current.get("message_id") == record["message_id"]
+                and current.get("title") == record["title"]
+            ):
+                return copy.deepcopy(current)
+            records[execution_id] = record
+            self.save(records)
+            snapshot = copy.deepcopy(record)
+        await self.publish(snapshot, "created" if created else "updated")
+        return snapshot
 
     def save(self, records: dict) -> None:
         with lifecycle.resource_lock("session", self.group_id):
@@ -334,6 +415,8 @@ class GroupExecutions:
             if execution_id not in records:
                 raise GroupError("NOT_FOUND", "execution not found")
             record = records[execution_id]
+            if record.get("execution_kind") == "organization":
+                return
             if record["status"] in TERMINAL:
                 return
             tasks = dict(record.get("tasks", {}))
