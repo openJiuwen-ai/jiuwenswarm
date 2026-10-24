@@ -5,6 +5,8 @@ from copy import deepcopy
 import pytest
 
 from jiuwenswarm.common.config import dump_yaml_round_trip, load_yaml_round_trip
+from jiuwenswarm.common.permission_profile import resolve_permission_profile_rules
+from jiuwenswarm.common.security_config_compose import validate_source
 from jiuwenswarm.common.security_config_service import SecurityConfigService
 
 
@@ -285,7 +287,26 @@ def test_package_template_can_be_adopted_without_mutating_live(tmp_path):
     candidate = service.get_candidate()
     assert candidate["local"]["permissions"]["rules"]
     assert candidate["permissions"]["rules"]
+    delete_rule = next(
+        rule for rule in candidate["permissions"]["rules"]
+        if rule["id"] == "shell_delete_files" and rule["layer"] == "user"
+    )
+    assert delete_rule["profile_actions"] == {"full_access": "allow"}
+    assert resolve_permission_profile_rules({"enabled": False, "rules": [delete_rule]})["rules"][0]["action"] == "allow"
+    assert resolve_permission_profile_rules({"enabled": True, "rules": [delete_rule]})["rules"][0]["action"] == "ask"
     assert path.read_bytes() == template
+
+
+@pytest.mark.parametrize("profile_actions", [
+    [], {}, {"auto_approve": "allow"}, {"full_access": []}, {"full_access": "invalid"},
+])
+def test_rule_profile_actions_rejects_invalid_values(profile_actions):
+    source = {"permissions": {"rules": [{
+        "id": "delete", "tools": ["shell"], "pattern": "rm *", "action": "ask",
+        "profile_actions": profile_actions,
+    }]}}
+    with pytest.raises(ValueError, match="invalid rule profile_actions"):
+        validate_source(source)
 
 
 def test_lost_state_and_interrupted_source_write_get_fresh_revision(service):

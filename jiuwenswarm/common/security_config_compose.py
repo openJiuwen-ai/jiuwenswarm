@@ -19,7 +19,8 @@ from jiuwenswarm.common.file_guard_config import validate_paths
 
 DEFAULT_SOURCES = DEFAULT_SOURCE_ORDER
 _LEVELS = frozenset({"allow", "ask", "deny"})
-_RULE_FIELDS = frozenset({"id", "tools", "pattern", "severity", "action", "description", "match_type"})
+_RULE_FIELDS = frozenset({"id", "tools", "pattern", "severity", "action", "description", "match_type", "profile_actions"})
+_PROFILE_ACTIONS = frozenset({"default", "full_access"})
 
 
 def validate_settings(settings: Any) -> dict[str, Any]:
@@ -70,6 +71,11 @@ def validate_source(source: Any, *, cloud: bool = False) -> dict[str, Any]:
             if not rule["tools"] or not isinstance(rule.get("pattern"), str) or not rule["pattern"].strip():
                 raise ValueError("rule requires tools and pattern")
             _normalize_rule_severity_action(rule)
+            if "profile_actions" in rule:
+                actions = rule["profile_actions"]
+                if (not isinstance(actions, dict) or not actions or set(actions) - _PROFILE_ACTIONS
+                        or any(not isinstance(action, str) or action not in _LEVELS for action in actions.values())):
+                    raise ValueError("invalid rule profile_actions")
             _validate_rule_regex(rule)
     if "file_guard" in perms:
         guard = perms["file_guard"]

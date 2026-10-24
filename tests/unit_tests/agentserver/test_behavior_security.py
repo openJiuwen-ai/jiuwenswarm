@@ -1,6 +1,5 @@
 import asyncio
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -85,16 +84,32 @@ async def test_unknown_one_waited_request_and_no_second_report(decision, expecte
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('fail_closed,expected', [
-    (True, PermissionLevel.DENY), (False, PermissionLevel.ALLOW),
+@pytest.mark.parametrize('fail_closed,stored_enabled,permission_mode,expected', [
+    (True, True, 'strict', PermissionLevel.ASK),
+    (True, True, 'normal', PermissionLevel.ASK),
+    (True, False, 'normal', PermissionLevel.ALLOW),
+    (True, False, 'strict', PermissionLevel.ALLOW),
+    (False, True, 'strict', PermissionLevel.ALLOW),
+    (False, False, 'normal', PermissionLevel.ALLOW),
 ])
-async def test_cloud_unavailable_respects_total_fail_closed_switch(fail_closed, expected):
+async def test_cloud_unavailable_respects_fail_closed_and_effective_profile(
+        fail_closed, stored_enabled, permission_mode, expected):
     b, _ = bridge(decision='unavailable')
     b.config['security'] = {'fail_closed': {'enabled': fail_closed}}
-    b.config['permissions']['permission_mode'] = 'strict'
-    result = await b.decide(raw_event(context(), 'tool.before'), PermissionResult(PermissionLevel.UNDETERMINED))
-    assert result.permission == expected
-    await b.close()
+    b.config['permissions']['enabled'] = stored_enabled
+    b.config['permissions']['permission_mode'] = permission_mode
+    try:
+        result = await b.decide(raw_event(context(), 'tool.before'), PermissionResult(PermissionLevel.UNDETERMINED))
+        assert result.permission == expected
+    finally:
+        await b.close()
+
+
+def test_behavior_policy_revision_changes_with_saved_profile():
+    b, _ = bridge()
+    default_revision = b.policy_revision()
+    b.config['permissions']['enabled'] = False
+    assert b.policy_revision() != default_revision
 
 
 @pytest.mark.asyncio
@@ -222,12 +237,11 @@ def test_cloud_switch_requires_a_boolean(enabled, expected):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('stage', ['tool.before', 'skill.before_install'])
 @pytest.mark.parametrize('default,expected', [
     ('allow', PermissionLevel.ALLOW), ('deny', PermissionLevel.DENY),
     ('ask', PermissionLevel.ASK), (None, PermissionLevel.ASK), ('invalid', PermissionLevel.ASK),
 ])
-async def test_cloud_switch_off_reports_and_uses_core_defaults(stage, default, expected):
+async def test_cloud_switch_off_keeps_install_core_defaults(default, expected):
     b, events = bridge(enabled=False)
     b.config['permissions']['defaults'] = {} if default is None else {'*': default}
     wait = asyncio.Event()
@@ -237,7 +251,7 @@ async def test_cloud_switch_off_reports_and_uses_core_defaults(stage, default, e
         return {'decision': 'deny'}
     b._send = AsyncMock(side_effect=delayed)
     result = await asyncio.wait_for(
-        b.decide(raw_event(context(), stage), PermissionResult(PermissionLevel.UNDETERMINED)), .2,
+        b.decide(raw_event(context(), 'skill.before_install'), PermissionResult(PermissionLevel.UNDETERMINED)), .2,
     )
     assert result.permission == expected
     assert result.matched_rule == ('tiered_policy:defaults.*' if default in {'allow', 'deny', 'ask'}
@@ -245,6 +259,30 @@ async def test_cloud_switch_off_reports_and_uses_core_defaults(stage, default, e
     await asyncio.sleep(0)
     assert len(events) == 1 and events[0]['mode'] == 'report'
     await b.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cloud_enabled', [False, True])
+@pytest.mark.parametrize('default', ['allow', 'ask', 'deny'])
+@pytest.mark.parametrize('fail_closed,expected', [
+    (True, PermissionLevel.ASK), (False, PermissionLevel.ALLOW),
+])
+async def test_unmatched_tool_uses_one_fallback_when_cloud_off_or_unavailable(
+        cloud_enabled, default, fail_closed, expected):
+    b, events = bridge(enabled=cloud_enabled, decision='unavailable')
+    b.config['permissions']['defaults'] = {'*': default}
+    b.config['security'] = {'fail_closed': {'enabled': fail_closed}}
+    try:
+        result = await b.decide(
+            raw_event(context(), 'tool.before'), PermissionResult(PermissionLevel.UNDETERMINED),
+        )
+        assert result.permission == expected
+        assert result.matched_rule is None
+        await asyncio.gather(*b.tasks)
+        assert len(events) == 1
+        assert events[0]['mode'] == ('authorize' if cloud_enabled else 'report')
+    finally:
+        await b.close()
 
 
 @pytest.mark.asyncio
@@ -669,28 +707,39 @@ async def test_actual_builtin_install_checkpoint(tmp_path, monkeypatch, decision
 
 
 @pytest.mark.asyncio
-async def test_desktop_permission_factory_fail_opens_when_cloud_unavailable(monkeypatch):
+@pytest.mark.parametrize('stored_enabled,fail_closed,expected', [
+    (True, True, 'ask'),
+    (False, True, 'allow'),
+    (True, False, 'allow'),
+])
+async def test_desktop_permission_factory_cloud_unavailable_follows_saved_profile(
+        monkeypatch, stored_enabled, fail_closed, expected):
     from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
     from jiuwenswarm.agents.harness.common.channel_runtime_context import CURRENT_CHANNEL_ID
+    from openjiuwen.harness.rails.interrupt.interrupt_base import InterruptResult
+
     monkeypatch.setenv('CLAW_BEHAVIOR_SECURITY', '1')
     monkeypatch.setenv('CLAW_SKILL_TOKEN', 'test-token')
-    cfg = {'enabled': True, 'package_builtin_rules': False, 'defaults': {'*': 'allow'}}
+    cfg = {'enabled': stored_enabled, 'package_builtin_rules': False, 'defaults': {'*': 'allow'}}
     monkeypatch.setattr('jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist.get_permissions_with_session_overlay',
                         lambda **_: cfg.copy())
     b, events = bridge(decision='unavailable')
+    b.config['permissions'] = cfg
+    b.config['security'] = {'fail_closed': {'enabled': fail_closed}}
     ctx = context()
     rail = BehaviorSecurityRail(b)
-    await rail.before_tool_call(ctx)
     channel = CURRENT_CHANNEL_ID.set('desktop')
     try:
+        await rail.before_tool_call(ctx)
         permission = build_permission_rail({**b.config, 'permissions': cfg})
         assert permission is not None
         result = await permission.resolve_interrupt(ctx, ctx.inputs.tool_call, None)
-        assert isinstance(result, ApproveResult)
+        assert isinstance(result, InterruptResult if expected == 'ask' else ApproveResult)
         assert len(events) == 1 and events[0]['mode'] == 'authorize'
     finally:
         CURRENT_CHANNEL_ID.reset(channel)
         await rail.after_tool_call(ctx)
+        await b.close()
 
 
 @pytest.mark.asyncio
@@ -757,10 +806,10 @@ async def test_skillnet_worker_stops_before_force_replace(tmp_path, monkeypatch,
 @pytest.mark.parametrize('permission_enabled', [False, True])
 @pytest.mark.parametrize('cloud_reply', ['allow', 'deny', 'clarify', 'unavailable'])
 @pytest.mark.parametrize('enabled,default,explicit,expected,mode,matched', [
-    (False, 'allow', None, 'allow', 'report', 'tiered_policy:defaults.*'),
-    (False, 'deny', None, 'deny', 'report', 'tiered_policy:defaults.*'),
-    (False, 'ask', None, 'ask', 'report', 'tiered_policy:defaults.*'),
-    (False, None, None, 'ask', 'report', 'default'),
+    (False, 'allow', None, 'ask', 'report', 'tiered_policy:unmatched'),
+    (False, 'deny', None, 'ask', 'report', 'tiered_policy:unmatched'),
+    (False, 'ask', None, 'ask', 'report', 'tiered_policy:unmatched'),
+    (False, None, None, 'ask', 'report', 'tiered_policy:unmatched'),
     (False, 'allow', 'deny', 'deny', 'report', 'tools.install_skill'),
     (False, 'allow', 'ask', 'ask', 'report', 'tools.install_skill'),
     (False, 'deny', 'allow', 'allow', 'report', 'tools.install_skill'),
@@ -769,7 +818,7 @@ async def test_skillnet_worker_stops_before_force_replace(tmp_path, monkeypatch,
     (True, 'allow', 'deny', 'deny', 'report', 'tools.install_skill'),
     (True, 'deny', 'allow', 'allow', 'report', 'tools.install_skill'),
 ])
-async def test_permission_factory_uses_defaults_only_when_cloud_is_off(
+async def test_permission_factory_uses_shared_fallback_for_unmatched_tools(
         monkeypatch, permission_enabled, cloud_reply, enabled, default, explicit, expected, mode, matched):
     from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
     from jiuwenswarm.agents.harness.common.channel_runtime_context import CURRENT_CHANNEL_ID
@@ -785,6 +834,7 @@ async def test_permission_factory_uses_defaults_only_when_cloud_is_off(
     )
     b, events = bridge(enabled=enabled, decision=cloud_reply)
     b.config['permissions'] = cfg
+    b.config['security'] = {'fail_closed': {'enabled': True}}
     ctx = context()
     rail = BehaviorSecurityRail(b)
     await rail.before_tool_call(ctx)
@@ -795,13 +845,15 @@ async def test_permission_factory_uses_defaults_only_when_cloud_is_off(
         permission = build_permission_rail(b.config)
         assert permission is not None
         # The refreshed snapshot must preserve the switch as well as the initial config.
-        assert permission._host.get_permissions_snapshot()['defer_unmatched'] is enabled
+        assert permission._host.get_permissions_snapshot()['defer_unmatched'] is True
         assert permission._host.get_permissions_snapshot()['strict_tool_command_merge'] is enabled
         assert permission._host.get_permissions_snapshot()['enabled'] is True
         assert cfg['enabled'] is permission_enabled
         result = await permission.resolve_interrupt(ctx, ctx.inputs.tool_call, None)
         if mode == 'authorize':
-            expected = {'allow': 'allow', 'deny': 'deny', 'clarify': 'ask', 'unavailable': 'allow'}[cloud_reply]
+            expected = {'allow': 'allow', 'deny': 'deny', 'clarify': 'ask', 'unavailable': 'ask'}[cloud_reply]
+        if explicit is None and not permission_enabled and (not enabled or cloud_reply == 'unavailable'):
+            expected = 'allow'
         assert isinstance(result, {'allow': ApproveResult, 'deny': RejectResult, 'ask': InterruptResult}[expected])
         assert ctx.extra['behavior.local_permission'].matched_rule == matched
         await asyncio.gather(*b.tasks)
@@ -853,7 +905,7 @@ def test_strict_merge_is_owned_by_desktop_cloud_host(monkeypatch, desktop, cloud
     runtime = runtime_permission_config(cfg)
     assert runtime.get('strict_tool_command_merge') is expected
     if desktop:
-        assert runtime['defer_unmatched'] is expected
+        assert runtime['defer_unmatched'] is True
     assert cfg == original
 
 
@@ -884,7 +936,7 @@ async def test_cloud_hot_reload_survives_session_snapshot_refresh(monkeypatch, c
         rail = adapter._permission_rail
         snapshot = rail._host.get_permissions_snapshot('test-session')
         assert snapshot['strict_tool_command_merge'] is enabled
-        assert snapshot['defer_unmatched'] is enabled
+        assert snapshot['defer_unmatched'] is True
         rail.update_config(snapshot)
         result = await rail._engine.check_permission('bash', {'command': 'demo x'})
         assert result.permission == (PermissionLevel.UNDETERMINED if enabled else PermissionLevel.ALLOW)
@@ -922,11 +974,13 @@ async def test_composed_snapshot_reads_live_cloud_switch_before_rail_reload(monk
     for enabled in (True, False, True):
         live_config['xiaoyi_work_security']['cloud_authorization']['enabled'] = enabled
         snapshot = rail._host.get_permissions_snapshot('test-session')
-        assert snapshot['defer_unmatched'] is enabled
+        assert snapshot['defer_unmatched'] is True
         assert snapshot['strict_tool_command_merge'] is enabled
         result = await PermissionEngine(snapshot).check_permission('bash', {'command': 'demo x'})
         assert result.permission == (PermissionLevel.UNDETERMINED if enabled else PermissionLevel.ALLOW)
-    assert rail._engine.config['defer_unmatched'] is False
+        unmatched = await PermissionEngine(snapshot).check_permission('unlisted_tool', {})
+        assert unmatched.permission == PermissionLevel.UNDETERMINED
+    assert rail._engine.config['defer_unmatched'] is True
     assert 'strict_tool_command_merge' not in live_config['permissions']
 
 
