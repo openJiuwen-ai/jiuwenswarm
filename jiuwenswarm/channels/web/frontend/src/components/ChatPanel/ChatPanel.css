@@ -4495,8 +4495,9 @@
   align-items: flex-start;
   gap: 0.5rem;
   width: min(100%, 768px);
-  margin-top: clamp(2rem, 5vh, 3.5rem);
-  margin-bottom: 1rem;
+  /* Below the composer, which already keeps its own bottom margin. */
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 .chat-suggestions__label {
@@ -4709,10 +4710,6 @@
 @media (max-height: 760px) {
   .chat-welcome {
     padding-top: 1.5rem;
-  }
-
-  .chat-suggestions {
-    margin-top: 1.5rem;
   }
 }
 
