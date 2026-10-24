@@ -585,7 +585,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 manager=self._skill_manager,
                 service_id=self._service_id,
                 agent_id=self._agent_id,
-                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
+                on_installed_skills_changed=self._on_installed_skills_changed,
             )
             skill_tool_names: list[str] = []
             for tool in skill_toolkit.get_tools():
@@ -670,7 +670,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 manager=self._skill_manager,
                 service_id=self._service_id,
                 agent_id=self._agent_id,
-                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
+                on_installed_skills_changed=self._on_installed_skills_changed,
             )
             slim_names: list[str] = []
             for tool in slim_toolkit.get_tools():

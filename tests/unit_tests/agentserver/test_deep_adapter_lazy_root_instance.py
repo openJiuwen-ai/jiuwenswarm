@@ -27,6 +27,10 @@ def _make_adapter(session_id: str | None) -> JiuWenSwarmDeepAdapter:
     adapter._session_instance_config = {"agent_name": "main_agent"}
     adapter._session_instance_mode = "agent"
     adapter._session_instance_sub_mode = None
+    # Skill allow-list stamp bookkeeping (mirrors __init__; __new__ skips it).
+    adapter._skill_enabled_version = 0
+    adapter._session_skill_versions = {}
+    adapter._session_skill_refresh_failures = {}
     return adapter
 
 
@@ -176,6 +180,40 @@ async def test_session_child_reuses_authoritative_config_snapshot() -> None:
 
     assert await adapter._get_or_create_session_adapter("sess_a") is child
     assert calls == [tenant_config]
+    assert adapter._session_skill_versions.get("sess_a") == 0
+
+
+@pytest.mark.asyncio
+async def test_new_session_marks_skill_version_captured_before_create_awaits() -> None:
+    """Concurrent bump during create must not sticky-mark the new session current."""
+    adapter = _make_adapter(None)
+    adapter._config_base_cache = {}
+    adapter._session_adapters = {}
+    adapter._session_adapter_locks = {}
+    adapter._skill_enabled_version = 3
+
+    class FakeChild:
+        async def create_instance(self, _config=None, **_kwargs):
+            # Simulate an install completing (ledger write + bump) while this
+            # session is still building its SkillUseRail from the pre-bump view.
+            adapter._skill_enabled_version = 4
+
+        async def start_interaction(self, session_id=None):
+            return None
+
+    child = FakeChild()
+    adapter._new_session_scoped_adapter = lambda _sid, **_kw: child
+
+    async def _reload_noop(_sid, _child):
+        return None
+
+    adapter._reload_session_adapter_if_stale = _reload_noop
+    adapter._touch_session_adapter = lambda _sid: None
+
+    assert await adapter._get_or_create_session_adapter("sess_race") is child
+    assert adapter._skill_enabled_version == 4
+    # Stamped with create-time version so the next turn refreshes to catch up.
+    assert adapter._session_skill_versions.get("sess_race") == 3
 
 
 @pytest.mark.asyncio
