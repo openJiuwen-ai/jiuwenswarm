@@ -1527,7 +1527,7 @@ def test_rail_set_office_claw_binding_stores_thread_and_invocation() -> None:
     assert rail._office_claw_invocation_id is None
 
 
-@pytest.fixture(params=[True, False], ids=["current-core", "legacy-core"])
+@pytest.fixture(params=[True, False], ids=["installed-core", "forced-fallback"])
 def batch_logging_available(request, monkeypatch):
     if not request.param:
         import builtins
@@ -1540,7 +1540,16 @@ def batch_logging_available(request, monkeypatch):
             return original_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", import_without_batch_logging)
-    return request.param
+
+    # The installed core may already be old; the parameter only controls fault injection.
+    try:
+        from openjiuwen.core.runner.resources_manager.registration_logging import batch_registration_logging
+    except ModuleNotFoundError as exc:
+        if exc.name != "openjiuwen.core.runner.resources_manager.registration_logging":
+            raise
+        return False
+    assert callable(batch_registration_logging)
+    return True
 
 
 @pytest.mark.asyncio
@@ -1576,9 +1585,15 @@ async def test_batch_registration_uses_real_resources_and_one_summary(monkeypatc
             call.kwargs.get("resource_id") for call in resource_details.call_args_list
             if call.args and call.args[0] == "add resource succeed"
         } == set(registration.tool_ids)
+        # Old core formats eagerly; new core passes the template and arguments separately.
+        tag_messages = [
+            str(call.args[0]) % call.args[1:] if len(call.args) > 1 else str(call.args[0])
+            for call in tag_details.call_args_list if call.args
+        ]
+        tag_prefix = "Added tags to resource. resource_id="
         assert {
-            call.args[1] for call in tag_details.call_args_list
-            if len(call.args) > 1 and call.args[0].startswith("Added tags to resource.")
+            message.removeprefix(tag_prefix).split(",", 1)[0]
+            for message in tag_messages if message.startswith(tag_prefix)
         } == set(registration.tool_ids)
         summaries = [c for c in adapter_log.info.call_args_list if "MCP registered:" in c.args[0]]
         assert len(summaries) == 1
