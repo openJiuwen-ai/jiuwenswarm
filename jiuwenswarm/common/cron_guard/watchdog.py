@@ -133,8 +133,6 @@ def cron_guard_begin(
     soft_timer = None
     if (cfg.get("deadline") or {}).get("enabled", True):
         try:
-            import asyncio
-
             loop = asyncio.get_running_loop()
 
             def _soft_fire() -> None:
