@@ -1,0 +1,97 @@
+/* Host Diagnostics plugin styles.
+ *
+ * Colours come exclusively from the shared semantic theme tokens so the
+ * panel follows light/dark themes without plugin-specific overrides.
+ */
+
+.host-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.host-diagnostics-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.host-diagnostics-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.host-diagnostics-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.host-diagnostics-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.host-diagnostics-actions button {
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.host-diagnostics-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.host-diagnostics-error {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--color-danger);
+  border-radius: 6px;
+  color: var(--color-danger);
+  font-size: 13px;
+}
+
+.host-diagnostics-section h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.host-diagnostics-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.host-diagnostics-json {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
