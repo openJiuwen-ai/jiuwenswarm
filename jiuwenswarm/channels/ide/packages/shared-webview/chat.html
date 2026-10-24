@@ -5045,31 +5045,44 @@ function openToolFile(ev) {
   if (path) send({ type: 'open_file', path: path, line: 0 });
 }
 
+function applyInlineEmphasis(html) {
+  // Protect code spans and file links: filenames often contain underscores,
+  // which must not be turned into <em> tags.
+  return html.split(/(<a\b[^>]*>[\s\S]*?<\/a>|<code>[\s\S]*?<\/code>)/g)
+    .map(function(part, idx) {
+      if (idx % 2 === 1) return part;
+      return part
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        .replace(/_([^_]+)_/g, '<em>$1</em>');
+    }).join('');
+}
+
 function renderInline(line) {
-  line = line.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  line = line.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  line = line.replace(/_([^_]+)_/g, '<em>$1</em>');
   // Pattern 1: backtick-wrapped file paths — run before generic backtick handler
-  line = line.replace(/`((?:(?:\.{1,2}\/)?(?:[\w\-]+\/)+)?[\w.\-]+\.\w{2,6}(?::\d+)?)`/g, function(_, raw) {
-    var m = raw.match(/^(.*?):(\d+)$/);
-    var filePath = m ? m[1] : raw;
+  line = line.replace(/`([^`\n]+)`/g, function(_, raw) {
+    var text = raw.trim();
+    if (!text || text.indexOf('://') !== -1) {
+      return '<code>' + escapeHtml(raw) + '</code>';
+    }
+    var m = text.match(/^(.*?):(\d+)$/);
+    var filePath = m ? m[1] : text;
     var lineNum = m ? m[2] : '0';
-    var hasSlash = filePath.indexOf('/') !== -1;
+    var hasSlash = /[\/\\]/.test(filePath);
     var hasLine = !!m;
-    if (!hasSlash && !hasLine) return '<code>' + escapeHtml(raw) + '</code>';
+    var looksLikeFile = /\.[A-Za-z0-9]{2,10}$/.test(filePath);
+    if (!looksLikeFile || (!hasSlash && !hasLine)) {
+      return '<code>' + escapeHtml(raw) + '</code>';
+    }
     return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
          + '" onclick="openFileLink(this)"><code>' + escapeHtml(raw) + '</code></a>';
-  });
-  // Generic backtick handler for remaining non-file spans
-  line = line.replace(/`([^`]+)`/g, function(_, c) {
-    return '<code>' + escapeHtml(c) + '</code>';
   });
   // Pattern 2: bare path/to/file.ext:N outside backticks and existing HTML
   line = line.replace(/(?<![<>"'`\w\/])((?:\.{1,2}\/)?(?:[\w\-]+\/)+[\w.\-]+\.\w{2,6}):(\d+)(?!\w)/g, function(_, filePath, lineNum) {
     return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
          + '" onclick="openFileLink(this)">' + escapeHtml(filePath) + ':' + lineNum + '</a>';
   });
-  return line;
+  return applyInlineEmphasis(line);
 }
 
 // ─────────────────────────────────────────────
