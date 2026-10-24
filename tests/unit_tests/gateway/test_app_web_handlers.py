@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import json
+import os
 import sys
 import threading
 import time
@@ -4610,17 +4611,17 @@ def test_resolve_external_cli_path_replaces_windows_script_shim_with_executable(
     exe.parent.mkdir()
     exe.write_bytes(b"MZ")
     monkeypatch.setattr(
-        _gw_config_set_handlers,
+        config_set_handlers,
         "os",
         SimpleNamespace(name="nt", environ={"PATH": str(exe.parent)}, pathsep=os.pathsep),
     )
     monkeypatch.setattr(
-        _gw_config_set_handlers.shutil,
+        config_set_handlers.shutil,
         "which",
         lambda name: str(shim) if name == "claude" else None,
     )
 
-    resolved, error, reason = _gw_config_set_handlers.resolve_external_cli_path("claude", "")
+    resolved, error, reason = config_set_handlers.resolve_external_cli_path("claude", "")
 
     assert resolved == str(exe)
     assert error == ""
@@ -4632,17 +4633,17 @@ def test_detect_external_cli_agent_reports_windows_script_shim_without_executabl
     shim.parent.mkdir()
     shim.write_text("@echo off\n", encoding="utf-8")
     monkeypatch.setattr(
-        _gw_config_set_handlers,
+        config_set_handlers,
         "os",
         SimpleNamespace(name="nt", environ={"PATH": str(shim.parent)}, pathsep=os.pathsep),
     )
     monkeypatch.setattr(
-        _gw_config_set_handlers.shutil,
+        config_set_handlers.shutil,
         "which",
         lambda name: str(shim) if name == "claude" else None,
     )
 
-    resolved, error, reason = _gw_config_set_handlers.resolve_external_cli_path("claude", "")
+    resolved, error, reason = config_set_handlers.resolve_external_cli_path("claude", "")
     assert resolved == ""
     assert reason == "windows_script"
 
