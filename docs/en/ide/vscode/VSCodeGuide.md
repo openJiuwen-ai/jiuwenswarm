@@ -233,9 +233,11 @@ File paths in agent responses become clickable links that open the file at the r
 |---------|---------|--------|
 | Backtick path with directory | `` `src/api/handler.py` `` | Opens file at line 1 |
 | Backtick path with line | `` `src/api/handler.py:42` `` | Opens file at line 42 |
+| Backtick filename with line | `` `check_model_cfg.py:12` `` | Opens file at line 12 |
+| Backtick Windows path | `` `E:/项目/check_model_cfg.py:12` `` | Preserves the drive, Unicode directory and line number |
 | Bare `path/to/file.ext:N` | `src/auth/router.py:87` | Opens file at line 87 |
 
-Plain identifiers in backticks (no `/` and no `:N`) are not linkified as files. Paths inside fenced code blocks are rendered verbatim.
+Links are rendered in both streamed replies and restored history. Backtick paths preserve underscores and support `/` or `\` separators, Unicode characters and spaces. Plain identifiers in backticks (no path separator and no `:N`) are not linkified as files. Paths inside fenced code blocks are rendered verbatim.
 
 ---
 
