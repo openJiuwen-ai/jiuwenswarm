@@ -202,7 +202,7 @@ def test_tree_get_merges_provider_snapshot_without_erasing_workspace_details(tmp
     assert nodes["C2"]["parent_id"] == "C1"
 
 
-def test_running_task_becomes_paused_and_can_be_enqueued_for_resume(tmp_path: Path) -> None:
+def test_running_task_is_terminated_and_cannot_resume_after_restart(tmp_path: Path) -> None:
     tasks_root = tmp_path / "tasks"
     original, task_id = _create_task(tasks_root, TaskStatus.RUNNING)
     _persist_rich_tree(original, task_id)
@@ -214,14 +214,12 @@ def test_running_task_becomes_paused_and_can_be_enqueued_for_resume(tmp_path: Pa
     handlers = RsiAgentServerHandlers(restarted)
 
     recovered = restarted.store.get(task_id)
-    assert recovered.status == TaskStatus.PAUSED.value
-    assert recovered.status_history[-1]["cause"] == "agentserver_restart.execution_detached"
+    assert recovered.status == TaskStatus.TERMINATED.value
+    assert recovered.status_history[-1]["cause"] == "agentserver_restart.execution_interrupted"
 
-    restarted.worker._ensure_runner = lambda: None  # noqa: SLF001 - assert queueing, not engine resume
     response = handlers.handle(FakeRequest(ReqMethod.RSI_TRAINING_RESUME, {"task_id": task_id}))
-    assert response["ok"] is True
-    assert response["payload"]["status"] == TaskStatus.QUEUED.value
-    assert restarted.worker._queue.qsize() == 1  # noqa: SLF001 - durable recovery must not auto-enqueue
+    assert response["ok"] is False
+    assert restarted.worker._queue.qsize() == 0  # noqa: SLF001 - terminal tasks cannot be re-enqueued
 
 
 def test_running_task_uses_provider_terminal_status_during_recovery(tmp_path: Path) -> None:
@@ -262,7 +260,7 @@ def test_running_task_preserves_provider_failure_reason_during_recovery(tmp_path
     assert detail["payload"]["failure_reason"] == "Harness 评测配置缺少 evaluator"
 
 
-def test_queued_task_becomes_paused_once_without_being_requeued(tmp_path: Path) -> None:
+def test_queued_task_is_terminated_once_without_being_requeued(tmp_path: Path) -> None:
     tasks_root = tmp_path / "tasks"
     _, task_id = _create_task(tasks_root, TaskStatus.QUEUED)
     restarted = build_rsi_service_context(tasks_root)
@@ -272,7 +270,7 @@ def test_queued_task_becomes_paused_once_without_being_requeued(tmp_path: Path) 
     restarted.recover_workspace()
 
     recovered = restarted.store.get(task_id)
-    assert recovered.status == TaskStatus.PAUSED.value
+    assert recovered.status == TaskStatus.TERMINATED.value
     assert recovered.status_history == history_after_first_recovery
     assert recovered.status_history[-1]["cause"] == "agentserver_restart.queue_lost"
-    assert restarted.worker._queue.qsize() == 0  # noqa: SLF001 - explicit resume is required
+    assert restarted.worker._queue.qsize() == 0  # noqa: SLF001 - restart-lost work is terminal
