@@ -11,8 +11,12 @@ from openjiuwen.harness.prompts.sections.todo import build_todo_section
 from openjiuwen.harness.rails.base import DeepAgentRail
 
 from jiuwenswarm.agents.harness.flash.tools.flash_todo import (
-    UnifiedTodoTool,
     _TODO_NAME_REPLACEMENTS,
+    UnifiedTodoTool,
+)
+from jiuwenswarm.common.todo_protocol import (
+    bind_todo_tool_context,
+    prepare_todo_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,8 +134,24 @@ class FlashTodoRail(DeepAgentRail):
         except Exception as exc:
             logger.warning("[FlashTodoRail] uninit failed: %s", exc)
 
+    async def before_invoke(self, ctx) -> None:
+        creator = self.engines.get("create")
+        if creator is not None and ctx.session is not None:
+            creator.reset_invoke_marker(ctx.session.get_session_id())
+            binding = await prepare_todo_context(creator, ctx.session, new_execution=True)
+            if binding is not None:
+                ctx.extra["todo_call_context_v2"] = binding
+
+    async def before_tool_call(self, ctx) -> None:
+        bind_todo_tool_context(self.engines.get("create"), ctx)
+
     async def before_model_call(self, ctx) -> None:
         """Inject the todo anchor section with unified tool names."""
+        creator = self.engines.get("create")
+        if creator is not None and ctx.session is not None:
+            binding = await prepare_todo_context(creator, ctx.session)
+            if binding is not None:
+                ctx.extra["todo_call_context_v2"] = binding
         if self.system_prompt_builder is None:
             return
         section = build_todo_section(

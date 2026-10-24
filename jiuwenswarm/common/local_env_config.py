@@ -57,6 +57,7 @@ SPAWN_ENV_KEYS: frozenset[str] = frozenset(
         "JIUWENSWARM_DATA_DIR",
         "JIUWENSWARM_AGENT_ROOT",
         "PYTHONUNBUFFERED",
+        "OPENJIUWEN_TODO_V2",
         "WEB_HOST",
         # Align with relay-claw launchEnv / sync_agents_configs shared_env (short names).
         "OFFICE_CLAW_MCP_SERVER_PATH",

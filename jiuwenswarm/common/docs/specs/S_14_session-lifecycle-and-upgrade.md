@@ -6,9 +6,9 @@
 |---|---|
 | 类型 | spec |
 | 编号 / slug | S_14 / session-lifecycle-and-upgrade |
-| 关联模块 | jiuwenswarm/common/{todo_generation, todo_snapshot, cleanup, cron_team_completion, git_safe_directory, updater, updater_restart_helper, upgrade_executor, version, version_source}.py |
-| 最近一次修订日期 | 2026-10-13 |
-| 关联 feature | 暂无 |
+| 关联模块 | jiuwenswarm/common/{todo_generation, todo_snapshot, todo_protocol, cleanup, cron_team_completion, git_safe_directory, updater, updater_restart_helper, upgrade_executor, version, version_source}.py |
+| 最近一次修订日期 | 2026-10-24 |
+| 关联 feature | [F_01_todo-consistency](../features/F_01_todo-consistency.md) |
 
 ## 范围 / 边界
 
@@ -36,11 +36,9 @@ version.__version__（唯一版本真源）
 - **N1 todo 代际过滤向后兼容**：`filter_todos_by_generation` 对**无 token 的旧条目一律
   保留**；token 为空则原样返回；兼容 dict 与对象两种形态。bump / get token 的逻辑在
   `todo_resume.py`（agents 侧）。
-- **N2 todo 快照安全读取**：session_id 严格白名单正则（防路径穿越，`_SAFE_SESSION_ID`）；
-  任何读取 / 解析失败**静默返回 `[]`**（fail-open，快照是增强非关键路径）；cancelled
-  项剔除；状态新旧别名归一（running → in_progress 等）；串行遮罩
-  `overlay_serial_todo_statuses` 把乱序的已完成 / 进行中行重置为 pending（UI 单线推进
-  观感契约）。
+- **N2 Todo 快照双读与失败边界**：session_id 保持白名单校验。旧 list helper 为兼容仍将读取失败转换为 `[]`；实时与历史协议改用 `load_todo_event_for_frontend`，失败返回 `None` 并跳过快照，历史结束帧仍发送。v1 保留状态别名、代际过滤和串行遮罩；v2 使用已提交 `store_id/plan_id/revision/writer_epoch`，固定 display 投影包含持久提醒、剔除取消项，不做串行遮罩。合法空表携带元信息；损坏不能伪装空表。
+- **N2a v2 激活**：`OPENJIUWEN_TODO_V2=1` 默认关闭。激活须有支持事务的 SDK、后端明确 `atomic_compare_replace` 能力及全部配套 reader/writer；未知远端能力拒绝写入。已有 v2 文件不能回退为数组。SDK 更新后的本地 v1 写入同样使用事务/CAS，保留数组格式。
+- **N2b 发布与恢复**：`publish_todo_receipt` 只发提交快照、不再次读取；通知在存储锁外，最多三次入流尝试，失败保存 `todo_snapshot_resync_pending`，后续模型轮/轮末或历史恢复重读，不重放业务修改。入流成功不等于外部送达。
 - **N3 后台清理尽力而为**：保留期默认 30 天（`CLEANUP_PERIOD_DAYS`）；首次延迟 10min、
   之后每 24h 一轮；按目录 mtime 判过期；阻塞操作丢线程池且单步失败不中断循环；
   rmtree `ignore_errors=True`（可重复执行幂等）。装配点：`app_gateway` 启动。
@@ -75,7 +73,7 @@ version.__version__（唯一版本真源）
 | 模块 | 关键符号 | 语义要点 |
 |---|---|---|
 | `todo_generation.py` | `todo_item_generation_token` / `filter_todos_by_generation` | N1 |
-| `todo_snapshot.py` | `load_todo_snapshot_for_frontend` / `format_todos_for_frontend` / `overlay_serial_todo_statuses` / `_SAFE_SESSION_ID` | N2 |
+| `todo_snapshot.py` | `load_todo_event_for_frontend` / `load_todo_snapshot_for_frontend` / `publish_todo_receipt` / `format_todos_for_frontend` / `overlay_serial_todo_statuses` / `_SAFE_SESSION_ID` | N2 |
 | `cleanup.py` | `start_background_cleanup` / `cleanup_loop` / `cleanup_old_sessions` / `cleanup_orphan_file_ops` | N3 |
 | `cron_team_completion.py` | `new_cron_team_round_state` / `apply_cron_team_round_event` / `cron_team_round_should_end` / `is_cron_leader_placeholder_text` / `CRON_LEADER_PLACEHOLDER_MARKERS` | N4 |
 | `git_safe_directory.py` | `is_dubious_ownership_error` / `safe_directory_value` / `safe_directory_hint` | N5 |

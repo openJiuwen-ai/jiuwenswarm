@@ -10,17 +10,17 @@ import logging
 from typing import Any, Mapping
 
 from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
 from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
-from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.rails.interrupt.ask_user_rail import AskUserRequest
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
     _IN_FLIGHT_PHASES,
-    _query_matches_stopped_claim,
     EXECUTION_SCHEMA,
+    _query_matches_stopped_claim,
     bind_deepresearch_execution_context,
     reset_deepresearch_execution_context,
 )
@@ -270,8 +270,12 @@ class DeepResearchExecutionRail(DeepAgentRail):
         super().__init__()
         self._model_provider = model_provider
         self._agent_id = "jiuwenswarm"
+        self._todo_agent = None
+        self._todo_tool = None
 
     def init(self, agent: Any) -> None:
+        self._todo_agent = agent
+        self._todo_tool = None
         card = getattr(agent, "card", None)
         self._agent_id = str(
             getattr(card, "id", "")
@@ -308,6 +312,26 @@ class DeepResearchExecutionRail(DeepAgentRail):
         )
         request_id = str((request_context or {}).get("request_id") or "").strip()
         requested_report_type = (request_context or {}).get("requested_report_type")
+        from openjiuwen.harness.tools.todo import TodoModifyTool
+        from openjiuwen.harness.workspace.workspace import WorkspaceNode
+
+        from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import capture_deepresearch_todo_binding
+
+        config = getattr(self._todo_agent or getattr(ctx, "agent", None), "deep_config", None)
+        if config is not None and getattr(config, "sys_operation", None) is not None and hasattr(TodoModifyTool, "todo_store"):
+            workspace = str(config.workspace.get_node_path(WorkspaceNode.TODO))
+            key = (id(config.sys_operation), workspace)
+            if getattr(self, "_todo_tool_key", None) != key:
+                self._todo_tool = TodoModifyTool(config.sys_operation, workspace)
+                self._todo_tool_key = key
+        else:
+            self._todo_tool = None
+        saved = states.get(workflow_id)
+        todo_binding = await capture_deepresearch_todo_binding(
+            self._todo_tool, extract_session_id_from_callback(ctx) or "", workflow_id,
+            previous=saved.get("todo_binding") if isinstance(saved, dict) else None,
+            fresh=ctx.extra.get("todo_call_context_v2"), allow_initialize=not saved,
+        )
         token = bind_deepresearch_execution_context(
             tool_call_id=workflow_id,
             state=states.get(workflow_id),
@@ -317,6 +341,9 @@ class DeepResearchExecutionRail(DeepAgentRail):
             agent_id=self._agent_id,
             request_id=request_id,
             requested_report_type=requested_report_type,
+            todo_binding=todo_binding,
+            todo_tool=self._todo_tool,
+            todo_session=ctx.session,
         )
         tokens = ctx.extra.setdefault(_TOKENS_KEY, {})
         tokens[tool_call_id] = token

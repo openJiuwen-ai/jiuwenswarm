@@ -15,15 +15,15 @@ the agent can use them.
 
 from __future__ import annotations
 
-import logging
-import time
 import hashlib
 import json
+import logging
+import time
 from copy import copy
 
 from openjiuwen.core.runner import Runner
-from openjiuwen.harness.rails import SysOperationRail
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
+from openjiuwen.harness.rails import SysOperationRail
 from openjiuwen.harness.rails.task_planning_rail import TaskPlanningRail
 from openjiuwen.harness.schema.task import TaskPlan
 from openjiuwen.harness.tools import BashTool
@@ -133,8 +133,8 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
     """
 
     def init(self, agent) -> None:
-        from openjiuwen.harness.deep_agent import DeepAgent
         from openjiuwen.core.foundation.tool import ToolCard
+        from openjiuwen.harness.deep_agent import DeepAgent
 
         if not (
             isinstance(agent, DeepAgent)
@@ -279,6 +279,14 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
 
         session_id = ctx.session.get_session_id()
 
+        sync = getattr(tool, "sync_plan_statuses", None)
+        if callable(sync):
+            result = await sync(session_id, {task.id: task.status for task in plan.tasks}, session=ctx.session,
+                                expected={todo.id: todo.status for todo in self._todos_cache.get(session_id, [])})
+            from jiuwenswarm.common.todo_snapshot import publish_todo_receipt
+            await publish_todo_receipt(ctx.session, getattr(result, "todo_receipt", None))
+            return
+
         try:
             todos = await tool.load_todos(session_id)
         except Exception:
@@ -347,6 +355,7 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
         if not todos:
             return
         execution_todos = [todo for todo in todos if not is_persistent_todo(todo)]
+        self._todos_cache[session_id] = [todo.model_copy(deep=True) for todo in todos]
         if not execution_todos:
             await self._clear_task_plan(ctx)
             return

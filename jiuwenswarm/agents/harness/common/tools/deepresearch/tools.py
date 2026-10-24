@@ -31,16 +31,16 @@ from typing import Any
 from openjiuwen.core.foundation.tool import tool
 from openjiuwen.core.sys_operation.cwd import get_cwd
 
+from jiuwenswarm.agents.harness.common.tools.deepresearch.path_safety import (
+    is_direct_directory,
+    is_direct_regular_file,
+    private_mode_is_compatible,
+)
 from jiuwenswarm.agents.harness.common.tools.deepresearch.runtime import (
     DeepResearchRuntimeError,
     build_child_env,
     resolve_python_executable,
     stylize_report_archive,
-)
-from jiuwenswarm.agents.harness.common.tools.deepresearch.path_safety import (
-    is_direct_directory,
-    is_direct_regular_file,
-    private_mode_is_compatible,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
     FINAL_REPORT_NODES,
@@ -61,7 +61,7 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.tls import (
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import (
     deepresearch_todo_path,
-    persist_deepresearch_task_update,
+    persist_deepresearch_task_update_transactional,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.usage import (
     normalize_workflow_llm_token_usage,
@@ -342,6 +342,8 @@ def _get_route() -> dict[str, object]:
         "session_id": route.get("session_id", ""),
         "service_id": route.get("service_id", "default") or "default",
         "agent_id": route.get("agent_id", "default") or "default",
+        "workspace_key": route.get("workspace_key", "default") or "default",
+        "output_dir": route.get("output_dir", ""),
     }
 
 
@@ -3138,6 +3140,25 @@ async def _deliver_salvaged_report(
     return outcome
 
 
+async def _persist_todo_progress(payload, *, todo_path, route, push):
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
+        deepresearch_todo_context,
+    )
+    from jiuwenswarm.common.todo_snapshot import todo_snapshot_payload
+    tool, binding, session = deepresearch_todo_context()
+    receipt = await persist_deepresearch_task_update_transactional(
+        payload, todo_path=todo_path, tool=tool, binding=binding, session=session,
+    )
+    if receipt is not None and getattr(receipt, "changed", False):
+        snapshot = receipt.snapshot
+        await push.send_push({
+            "request_id": route.get("request_id", ""), "channel_id": route["channel_id"],
+            "session_id": route["session_id"], "is_complete": False,
+            "payload": {"event_type": "todo.updated", **todo_snapshot_payload(snapshot.todos, snapshot.metadata)},
+        })
+    return receipt
+
+
 async def _deliver_race_completed_report(
     *,
     route: dict[str, object],
@@ -3196,7 +3217,7 @@ async def _deliver_race_completed_report(
             return False
         if todo_path is not None and safe_payload.get("event_type") == "task.update":
             try:
-                persist_deepresearch_task_update(safe_payload, todo_path=todo_path)
+                await _persist_todo_progress(safe_payload, todo_path=todo_path, route=route, push=push)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning(
                     "[deepresearch_stream] persist todo failed type=%s",
@@ -3442,9 +3463,7 @@ async def _consume_stream(
             raise _StreamProtocolInvalid("Gateway payload is not an object")
         if todo_path is not None and safe_payload.get("event_type") == "task.update":
             try:
-                persist_deepresearch_task_update(
-                    safe_payload, todo_path=todo_path
-                )
+                await _persist_todo_progress(safe_payload, todo_path=todo_path, route=route, push=push)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning(
                     "[deepresearch_stream] persist todo failed type=%s",

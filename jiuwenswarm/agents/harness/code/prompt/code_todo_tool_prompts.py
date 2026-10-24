@@ -66,7 +66,8 @@ Update todo items for the current session.
 - cancel / delete: remove items that are no longer needed
 - insert_after / insert_before: only for mid-plan scope changes, not file-by-file progress
 
-To replace the entire plan, call todo_create instead of many inserts.
+Continue and adjust the current plan with todo_modify. Only start an explicit new plan
+with todo_create(plan_action=new), or explicitly rebuild with plan_action=rebuild.
 
 Do not create a new todo for each file written or each verification command.
 """.strip()
@@ -100,6 +101,10 @@ def get_code_todo_create_input_params() -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
+            "plan_action": {
+                "type": "string", "enum": ["initialize", "new", "rebuild"],
+                "description": "Explicit plan boundary; use modify for ordinary changes.",
+            },
             "tasks": {
                 "type": "array",
                 "description": (

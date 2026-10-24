@@ -37,6 +37,7 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     filter_todos_for_display,
     filter_todos_for_execution,
     get_todo_generation_token,
+    is_persistent_todo,
     remember_turn_user_query,
     snapshot_includes_persistent_todos,
 )
@@ -1261,7 +1262,6 @@ async def fire_artifact_hook(
     失败后永久跳过该文件。
     """
     try:
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
         from jiuwenswarm.extensions.hook_event import (
             AgentServerHookEvents,
         )
@@ -1269,6 +1269,7 @@ async def fire_artifact_hook(
             ArtifactPostProcessHookContext,
             ImageArtifactHookContext,
         )
+        from jiuwenswarm.extensions.registry import ExtensionRegistry
     except ImportError as exc:
         logger.warning(
             "%s skip artifact post-process hook, import failed: %s",
@@ -1380,6 +1381,9 @@ class TaskExecutionRail(DeepAgentRail):
         self._skill_turbo_request_metadata: dict | None = None
         # 并行工作工具同时 auto_advance 写 todo.json 时串行化，避免丢更新
         self._todo_write_lock = asyncio.Lock()
+        self._todo_commit_tool = None
+        self._todo_commit_binding = None
+        self._todo_snapshot_metadata = None
         # 后项已在磁盘标 completed/in_progress、但前面还有未完成项时
         # 暂不发 task.start/complete，等前缀完成后按列表顺序补发。
         self._todo_complete_deferred: set[str] = set()
@@ -1888,6 +1892,31 @@ class TaskExecutionRail(DeepAgentRail):
         session_id = session.get_session_id()
         parent_request_id = self._extract_request_id(ctx)
 
+        transaction_tool = self._transaction_todo_tool()
+        if transaction_tool is not None:
+            def advance(todos):
+                runnable = [todo for todo in todos if not is_persistent_todo(todo)]
+                first_open = next((todo for todo in runnable
+                                   if todo.status.value not in self._TODO_DONE_STATUSES), None)
+                if first_open is None or first_open.id != raw_id or first_open.status.value not in self._BINDING_PENDING:
+                    return False
+                first_open.status = type(first_open.status)("in_progress")
+                return True
+
+            result = await transaction_tool.update_todos(session_id, advance, session=session)
+            if not result.get("changed"):
+                return
+            from jiuwenswarm.common.todo_snapshot import publish_todo_receipt
+            await publish_todo_receipt(session, getattr(result, "todo_receipt", None))
+            if raw_id not in self._todo_started:
+                task["status"] = "in_progress"
+                await self._emit_task_start_event(session, raw_id, task, parent_request_id, source="todo")
+                self._todo_started.add(raw_id)
+            self._todo_map[raw_id]["status"] = "in_progress"
+            _ACTIVE_TASK_ID.set(f"todo:{raw_id}")
+            await self._emit_task_update_event(session, parent_request_id)
+            return
+
         todo_path = self._get_todo_workspace_path(session_id)
         if todo_path is None or not todo_path.exists():
             return
@@ -2097,15 +2126,62 @@ class TaskExecutionRail(DeepAgentRail):
                 exc,
             )
 
+    def _transaction_todo_tool(self):
+        config = getattr(self._deep_agent, "deep_config", None)
+        operation = getattr(config, "sys_operation", None)
+        if operation is None or config is None:
+            return None
+        from jiuwenswarm.common.todo_protocol import todo_v2_enabled
+        if not todo_v2_enabled() and getattr(type(operation.fs()), "supports_atomic_compare_replace", False) is not True:
+            return None
+        from openjiuwen.harness.tools.todo import TodoModifyTool
+        if not hasattr(TodoModifyTool, "update_todos"):
+            from jiuwenswarm.common.todo_protocol import todo_v2_enabled
+            if todo_v2_enabled():
+                raise RuntimeError("Todo v2 requires the transaction-capable SDK")
+            return None
+        workspace = str(config.workspace.get_node_path(WorkspaceNode.TODO))
+        binding = (id(operation), workspace)
+        if self._todo_commit_binding != binding:
+            self._todo_commit_tool = TodoModifyTool(operation, workspace)
+            self._todo_commit_binding = binding
+        return self._todo_commit_tool
+
     def _read_todo_file(self, session_id: str) -> list[dict[str, Any]]:
         todo_path = self._get_todo_workspace_path(session_id)
         if todo_path is None or not todo_path.exists():
             return []
         with open(todo_path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
-        if not isinstance(data, list):
-            return []
-        return data
+        from jiuwenswarm.common.todo_protocol import decode_todo_document
+        items, metadata = decode_todo_document(data)
+        if metadata is not None:
+            previous = self._todo_snapshot_metadata
+            if previous is not None and previous.get("plan_id") != metadata.get("plan_id"):
+                self._active_tasks = {}
+                self._todo_started = set()
+                self._todo_start_deferred = set()
+                self._todo_complete_deferred = set()
+            self._todo_snapshot_metadata = metadata
+            self._todo_generation_token = metadata.get("generation_token")
+        return items
+
+    def _todo_plan_fields(self, session):
+        from jiuwenswarm.common.todo_protocol import (
+            todo_plan_event_fields,
+            todo_v2_enabled,
+        )
+        if not todo_v2_enabled():
+            return {}
+        return todo_plan_event_fields(self._transaction_todo_tool(), session)
+
+    def _current_plan_matches(self, fields):
+        scope = fields.get("todo_scope")
+        if not scope:
+            return True
+        current = self._todo_snapshot_metadata
+        return not scope or not current or (scope.get("store_id"), scope.get("plan_id")) == (
+            current.get("store_id"), current.get("plan_id"))
 
     def _load_todo_from_json(
         self, session_id: str
@@ -2523,6 +2599,9 @@ class TaskExecutionRail(DeepAgentRail):
         parent_request_id: str,
         source: Literal["todo"],
     ) -> None:
+        plan_fields = self._todo_plan_fields(session)
+        if not self._current_plan_matches(plan_fields):
+            return
         full_task_id = f"{source}:{task_id}"
 
         if full_task_id in self._active_tasks:
@@ -2560,6 +2639,8 @@ class TaskExecutionRail(DeepAgentRail):
                         "parent_request_id": context.parent_request_id,
                         "timestamp": context.start_time,
                         "source": source,
+                        **plan_fields,
+                        **({"todo_item_id": task_id} if plan_fields else {}),
                     },
                 )
             )
@@ -2579,8 +2660,9 @@ class TaskExecutionRail(DeepAgentRail):
         error: str | None = None,
         parent_request_id: str = "",
     ) -> None:
+        plan_fields = self._todo_plan_fields(session)
         full_task_id = f"todo:{task_id}"
-        context = self._active_tasks.pop(full_task_id, None)
+        context = self._active_tasks.pop(full_task_id, None) if self._current_plan_matches(plan_fields) else None
         timestamp = time.time()
 
         if context:
@@ -2620,6 +2702,8 @@ class TaskExecutionRail(DeepAgentRail):
                         "timestamp": timestamp,
                         "source": source,
                         "parent_request_id": parent_request_id,
+                        **plan_fields,
+                        **({"todo_item_id": task_id} if plan_fields else {}),
                     },
                 )
             )
@@ -2635,6 +2719,7 @@ class TaskExecutionRail(DeepAgentRail):
         task_id: str,
         *,
         parent_request_id: str = "",
+        todo_binding: dict | None = None,
     ) -> list[OutputSchema]:
         """Build task events for a completed todo outside the normal rail hooks."""
         normalized_task_id = str(task_id or "").removeprefix("todo:")
@@ -2642,6 +2727,11 @@ class TaskExecutionRail(DeepAgentRail):
             return []
 
         todo_items = self._load_todo_from_json(session_id)
+        meta = getattr(self, "_todo_snapshot_metadata", None)
+        if meta and (not todo_binding or any(todo_binding.get(key) != meta.get(key)
+                     for key in ("store_id", "plan_id", "writer_epoch"))):
+            return []
+        fields = {"todo_scope": {key: meta[key] for key in ("store_id", "plan_id", "revision", "writer_epoch", "legacy_plan") if key in meta}} if meta else {}
         task = next(
             (
                 item
@@ -2668,13 +2758,15 @@ class TaskExecutionRail(DeepAgentRail):
         self._todo_start_deferred.discard(normalized_task_id)
 
         tasks = self._format_tasks_for_update(
-            self._overlay_serial_todo_statuses(todo_items), source="todo"
+            todo_items if meta else self._overlay_serial_todo_statuses(todo_items), source="todo"
         )
         complete = OutputSchema(
             type="task.complete",
             index=0,
             payload={
                 "task_id": full_task_id,
+                "todo_item_id": normalized_task_id,
+                **fields,
                 "task_content": (
                     context.task_content
                     if context
@@ -2697,6 +2789,7 @@ class TaskExecutionRail(DeepAgentRail):
             index=0,
             payload={
                 "tasks": tasks,
+                **fields,
                 "total_tasks": len(tasks),
                 "completed_tasks": sum(
                     task["status"] == "completed" for task in tasks
@@ -2728,7 +2821,11 @@ class TaskExecutionRail(DeepAgentRail):
             todo_items = self._load_todo_for_display(session_id)
         else:
             todo_items = self._load_todo_from_json(session_id)
-        todo_items = self._overlay_serial_todo_statuses(todo_items)
+        plan_fields = self._todo_plan_fields(session)
+        if not self._current_plan_matches(plan_fields):
+            return
+        if self._todo_snapshot_metadata is None:
+            todo_items = self._overlay_serial_todo_statuses(todo_items)
         todo_tasks = self._format_tasks_for_update(
             todo_items, source="todo"
         )
@@ -2749,6 +2846,7 @@ class TaskExecutionRail(DeepAgentRail):
         )
 
         payload: dict[str, Any] = {
+            **plan_fields,
             "tasks": all_tasks,
             "total_tasks": total,
             "completed_tasks": completed,

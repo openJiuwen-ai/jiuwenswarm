@@ -6,14 +6,13 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
 from openjiuwen.core.single_agent import create_agent_session
 from openjiuwen.harness.schema.state import DeepAgentState
 from openjiuwen.harness.schema.task import TodoItem, TodoStatus
-
 
 PlanTaskStatus = TodoStatus
 
@@ -339,6 +338,10 @@ def pause_todo_items(todos: list[TodoItem]) -> bool:
 
 async def pause_pending_todos_on_tool(modify_tool: Any, session_id: str) -> bool:
     """Persist in_progress -> pending on the session todo file."""
+    update = getattr(modify_tool, "update_todos", None)
+    if callable(update):
+        result = await update(session_id, pause_todo_items)
+        return bool(result.get("changed"))
     todos = await modify_tool.load_todos(session_id)
     if not todos:
         return False
@@ -349,6 +352,21 @@ async def pause_pending_todos_on_tool(modify_tool: Any, session_id: str) -> bool
 
 
 async def snapshot_and_isolate_unfinished_todos(modify_tool: Any, session_id: str) -> dict[str, Any] | None:
+    transaction = getattr(modify_tool, "transact", None)
+    if callable(transaction):
+        async def apply():
+            snapshot = await _snapshot_and_isolate_unfinished_todos(modify_tool, session_id)
+            return {"snapshot": snapshot}
+        result = await transaction(session_id, apply)
+        snapshot = result["snapshot"]
+        receipt = getattr(result, "todo_receipt", None)
+        if snapshot is not None and receipt and receipt.snapshot.metadata:
+            snapshot["todo_binding"] = receipt.snapshot.binding()
+        return snapshot
+    return await _snapshot_and_isolate_unfinished_todos(modify_tool, session_id)
+
+
+async def _snapshot_and_isolate_unfinished_todos(modify_tool: Any, session_id: str) -> dict[str, Any] | None:
     """Snapshot cancel state, then remove unfinished todos from file (keep completed only).
 
     Prevents todo_list from exposing runnable pending items on the next turn, so a
@@ -390,6 +408,11 @@ async def delete_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, sess
     """
     if not ids:
         return
+    if callable(getattr(modify_tool, "update_todos", None)):
+        def remove(items):
+            items[:] = [item for item in items if item.id not in ids or (item.meta_data or {}).get("persistent")]
+        await modify_tool.update_todos(session_id, remove)
+        return
     current = await modify_tool.load_todos(session_id)
     await modify_tool._delete_todos(session_id, ids, current)  # pylint: disable=protected-access
 
@@ -397,6 +420,13 @@ async def delete_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, sess
 async def cancel_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, session_id: str) -> None:
     """Cancel todos by id, bypassing ``invoke`` (same reason as delete above)."""
     if not ids:
+        return
+    if callable(getattr(modify_tool, "update_todos", None)):
+        def cancel(items):
+            for item in items:
+                if item.id in ids and not (item.meta_data or {}).get("persistent") and item.status != TodoStatus.COMPLETED:
+                    item.status = TodoStatus.CANCELLED
+        await modify_tool.update_todos(session_id, cancel)
         return
     current = await modify_tool.load_todos(session_id)
     await modify_tool._cancel_todos(session_id, ids, current)  # pylint: disable=protected-access

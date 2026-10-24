@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -259,7 +260,8 @@ def _reminder_and_plan() -> tuple[TodoItem, TodoItem]:
 
 
 def _modify_tool(todos: list[TodoItem]) -> CompatibleTodoModifyTool:
-    tool = object.__new__(CompatibleTodoModifyTool)
+    # The public invoke path owns transaction state initialized by the constructor.
+    tool = CompatibleTodoModifyTool(SimpleNamespace(fs=lambda: SimpleNamespace()))
 
     async def load_todos(_session_id: str) -> list[TodoItem]:
         return todos

@@ -325,7 +325,9 @@ async def merge_persistent_list_items(tool: Any, session: Any, result: Any) -> A
         if isinstance(item, dict) and isinstance(item.get("id"), str):
             seen.add(item["id"])
     extras: list[dict[str, Any]] = []
-    todos = await tool.load_todos(session_id)
+    receipt = getattr(result, "todo_receipt", None)
+    snapshot = getattr(receipt, "snapshot", None)
+    todos = [TodoItem.from_dict(item) for item in snapshot.todos] if snapshot is not None else await tool.load_todos(session_id)
     for todo in todos:
         entry = _persistent_list_entry(todo)
         if entry is None or entry["id"] in seen:
@@ -336,6 +338,9 @@ async def merge_persistent_list_items(tool: Any, session: Any, result: Any) -> A
         return result
     merged = dict(result)
     merged["tasks"] = [*tasks, *extras]
+    if receipt is not None:
+        from openjiuwen.harness.tools.todo_store import TodoResult
+        return TodoResult(merged, receipt)
     return merged
 
 
@@ -376,13 +381,45 @@ def _install_backlog_create_patch(tool_cls: type) -> None:
     async def invoke(self: Any, inputs: Any, **kwargs: Any) -> Any:
         session = kwargs.get("session")
         session_id = _session_id_of(session)
-        before: list[TodoItem] = []
-        if session_id is not None:
-            before = await _load_todos_or_empty(self, session_id)
-        result = await original(self, inputs, **kwargs)
-        if session_id is not None:
-            await restore_persistent_reminders(self, session_id, before)
-        return await persist_backlog_create(self, session, result)
+        created = False
+        prepared_inputs = self._stable_new_ids(inputs) if hasattr(self, "_stable_new_ids") else inputs
+
+        async def apply():
+            nonlocal created
+            before = await _load_todos_or_empty(self, session_id) if session_id is not None else []
+            store = self.todo_store(session_id) if session_id and hasattr(self, "todo_store") else None
+            transaction = store.active() if store else None
+            if transaction is not None and transaction.metadata is not None:
+                prepared = prepared_inputs
+                tasks = prepared.get("tasks")
+                if isinstance(tasks, list) and tasks:
+                    if is_backlog_todo_query(read_turn_user_query(session)):
+                        reminders = []
+                        for task in tasks:
+                            if not isinstance(task, dict) or not task.get("content"):
+                                raise build_error(StatusCode.TOOL_TODOS_VALIDATION_INVALID,
+                                                  reason="Reminder content is required")
+                            reminder = TodoItem.from_dict({**task, "status": "pending"})
+                            mark_persistent_todo(reminder)
+                            reminders.append(reminder)
+                        await self.save_todos(session_id, [*before, *reminders])
+                        return {"message": f"Added {len(reminders)} reminder(s).{_REMINDER_CREATE_SUFFIX}"}
+                    reminder_ids = {todo.id for todo in before if _is_active_reminder(todo)}
+                    if any(task.get("id") in reminder_ids for task in tasks if isinstance(task, dict)):
+                        raise build_error(StatusCode.TOOL_TODOS_VALIDATION_INVALID,
+                                          reason="New plan task IDs must not replace persistent reminders")
+            result = await original(self, prepared_inputs, **kwargs)
+            created = True
+            if session_id is not None:
+                await restore_persistent_reminders(self, session_id, before)
+            return await persist_backlog_create(self, session, result)
+
+        if session_id is not None and callable(getattr(self, "transact", None)):
+            result = await self.transact(session_id, apply, session=session)
+            if created:
+                self._created_in_invoke.add(session_id)
+            return result
+        return await apply()
 
     invoke.backlog_create_patched = True  # type: ignore[attr-defined]
     tool_cls.invoke = invoke

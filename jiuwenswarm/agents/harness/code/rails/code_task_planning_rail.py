@@ -20,6 +20,7 @@ from jiuwenswarm.agents.harness.code.tools.code_todo_tools import (
     CodeTodoListTool,
     CodeTodoModifyTool,
 )
+from jiuwenswarm.common.todo_protocol import prepare_todo_context
 
 _TASK_REMINDER_SECTION = "task_reminder"
 _TASK_REMINDER_KIND = PromptAttachmentKind.TODO_REMINDER
@@ -67,6 +68,11 @@ class CodeTaskPlanningRail(TaskPlanningRail):
         runtime prompt attachment that reminds it of the task tools and includes
         current todos.
         """
+        creator = self._find_todo_create_tool()
+        if creator is not None and ctx.session is not None:
+            binding = await prepare_todo_context(creator, ctx.session)
+            if binding is not None:
+                ctx.extra["todo_call_context_v2"] = binding
         await self._inject_pending_todo_reminder(ctx)
         await self._switch_model_if_needed(ctx)
 

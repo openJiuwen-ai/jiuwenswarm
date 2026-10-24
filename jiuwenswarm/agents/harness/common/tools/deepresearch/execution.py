@@ -67,6 +67,9 @@ class DeepResearchExecutionContext:
     save_state: Callable[[dict[str, Any]], None]
     request_id: str = ""
     requested_report_type: DeepResearchReportType | None = None
+    todo_binding: dict[str, Any] | None = None
+    todo_tool: Any = None
+    todo_session: Any = None
 
 
 _execution_context: ContextVar[DeepResearchExecutionContext | None] = ContextVar(
@@ -84,6 +87,9 @@ def bind_deepresearch_execution_context(
     agent_id: str = "jiuwenswarm",
     request_id: str = "",
     requested_report_type: DeepResearchReportType | None = None,
+    todo_binding: dict[str, Any] | None = None,
+    todo_tool: Any = None,
+    todo_session: Any = None,
 ) -> Token:
     """Bind state and resume input for one outer tool execution."""
     return _execution_context.set(
@@ -96,6 +102,9 @@ def bind_deepresearch_execution_context(
             save_state=save_state,
             request_id=request_id.strip(),
             requested_report_type=requested_report_type,
+            todo_binding=dict(todo_binding) if todo_binding else None,
+            todo_tool=todo_tool,
+            todo_session=todo_session,
         )
     )
 
@@ -106,6 +115,11 @@ def reset_deepresearch_execution_context(token: Token | None) -> None:
         _execution_context.reset(token)
 
 
+def deepresearch_todo_context() -> tuple[Any, dict | None, Any]:
+    context = _execution_context.get()
+    return (context.todo_tool, context.todo_binding, context.todo_session) if context else (None, None, None)
+
+
 def _persist(
     context: DeepResearchExecutionContext,
     state: dict[str, Any],
@@ -114,6 +128,8 @@ def _persist(
 ) -> dict[str, Any]:
     next_state = dict(state)
     next_state.update(updates)
+    if context.todo_binding is not None:
+        next_state["todo_binding"] = dict(context.todo_binding)
     next_state["schema_version"] = _STATE_SCHEMA_VERSION
     next_state["phase"] = phase
     next_state["revision"] = int(next_state.get("revision") or 0) + 1

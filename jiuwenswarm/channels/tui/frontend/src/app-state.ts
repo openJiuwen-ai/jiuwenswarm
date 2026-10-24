@@ -1,3 +1,4 @@
+import { beginTodoHistory } from "./core/todo-snapshot.js";
 import { addError, addInfo } from "./core/commands/helpers.js";
 import type { CommandContext, PreferredLanguage } from "./core/commands/types.js";
 import type {
@@ -1412,6 +1413,7 @@ export class CliPiAppState {
     timeoutMs?: number,
   ): Promise<T> => {
     const id = `tui_${Date.now().toString(16)}_${Math.random().toString(36).slice(2, 6)}`;
+    if (method === "history.get") beginTodoHistory(this.eventDelegate, String(params.session_id ?? this.sessionId), id);
     // 记录当前命令请求 ID，以便 Ctrl+C 时能立即取消 WS 请求
     this.activeCommandRequestId = id;
     const trustedDirs = getTrustedDirs();

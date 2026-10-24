@@ -6,6 +6,7 @@ import {
   parseHistoryJsonFileToTimelinePreview,
 } from '../../features/historyRestore';
 import { isHistoryPreviewFile, parseHistoryFileContent } from '../../features/historyFilePreview';
+import { todoFileItems } from '../../stores/todoSnapshot';
 import { ChatTimelineList } from '../ChatPanel/MessageList';
 import '../ChatPanel/ChatPanel.css';
 
@@ -22,10 +23,11 @@ interface TodoPreviewItem {
 }
 
 function parseTodoJsonFileToPreview(parsed: unknown): TodoPreviewItem[] {
-  if (!Array.isArray(parsed)) {
+  const items = todoFileItems(parsed);
+  if (!items) {
     return [];
   }
-  return parsed
+  return items
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
     .map((item) => ({
       id: typeof item.id === 'string' ? item.id : String(item.id ?? ''),
@@ -140,7 +142,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
   }, [historyPreview?.mode, isHistoryJson, jsonParseResult.parsed]);
 
   const todoItems = useMemo(() => {
-    if (!isTodoJson || !Array.isArray(jsonParseResult.parsed)) {
+    if (!isTodoJson) {
       return [] as TodoPreviewItem[];
     }
     return parseTodoJsonFileToPreview(jsonParseResult.parsed);

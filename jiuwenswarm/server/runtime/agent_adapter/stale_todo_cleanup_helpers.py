@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from typing import Any
 
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
@@ -21,6 +22,7 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     bump_todo_generation_token,
     is_resume_user_query,
 )
+from jiuwenswarm.common.todo_protocol import todo_v2_enabled
 from jiuwenswarm.server.runtime.agent_adapter.interrupt_resume_helpers import (
     set_todo_resume_snapshot_pending,
 )
@@ -115,6 +117,26 @@ async def prepare_stale_todo_cleanup_for_request(
             session_id,
         )
         return False
+
+    if todo_v2_enabled():
+        # 请求换代不再隐藏/替换计划。只给真正的新执行登记写入身份，
+        # 由 Todo rail 在存储事务中建立 fence；HITL/补充沿用原执行。
+        if session_id.startswith("heartbeat") or str(params.get("mode", "agent.plan")) not in {"agent", "agent.plan"}:
+            return False
+        if params.get("is_supplement") or params.get("answers") or isinstance(params.get("query"), InteractiveInput):
+            return False
+        execution_id = str(getattr(request, "request_id", "") or uuid.uuid4())
+        if runtime_session is not None:
+            runtime_session.update_state({"todo_execution_id_v2": execution_id})
+            return True
+        saved = create_agent_session(session_id=session_id, card=agent_card)
+        await saved.pre_run(inputs=None)
+        try:
+            saved.update_state({"todo_execution_id_v2": execution_id})
+            await post_agent_execute_for_session(saved)
+            return True
+        finally:
+            await saved.post_run()
 
     if not should_cancel_stale_active_todos(request, params):
         logger.debug(

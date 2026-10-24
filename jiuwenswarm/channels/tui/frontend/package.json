@@ -17,7 +17,8 @@
     "lint": "oxlint --deny-warnings src",
     "format": "oxfmt --write src package.json tsconfig.json",
     "format:check": "oxfmt --check src package.json tsconfig.json",
-    "check": "npm run typecheck && npm run lint && npm run format:check"
+    "check": "npm run typecheck && npm run lint && npm run format:check",
+    "test:todo-snapshot": "node tests/todo-snapshot.test.mjs"
   },
   "dependencies": {
     "@mariozechner/pi-tui": "^0.65.2",

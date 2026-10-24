@@ -4,23 +4,23 @@
 
 from __future__ import annotations
 
-import json
 import os
-import secrets
 import stat
-import threading
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from openjiuwen.core.common.exception.errors import BaseError
+
 from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
     DEEPRESEARCH_STAGES,
 )
+from jiuwenswarm.common.todo_protocol import todo_v2_enabled
 from jiuwenswarm.common.utils import get_tenant_agent_workspace_dir
 
-_TODO_WRITE_LOCK = threading.Lock()
 _TODO_STATUSES = frozenset({"pending", "in_progress", "completed", "cancelled"})
 _INVALID_PATH = "deepresearch_todo_invalid_path"
 _MAX_COMPONENT_BYTES = 255
@@ -232,77 +232,6 @@ def _read_existing_todo(
         os.close(fd)
 
 
-def _existing_created_at(
-    todo_path: Path, trusted: _TrustedParent
-) -> dict[str, str]:
-    try:
-        raw = _read_existing_todo(todo_path, trusted)
-        if raw is None:
-            return {}
-        data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    if not isinstance(data, list):
-        return {}
-    created_at_by_id = {}
-    for item in data:
-        if (
-            isinstance(item, dict)
-            and isinstance(item.get("id"), str)
-            and isinstance(item.get("createdAt"), str)
-        ):
-            created_at_by_id[str(item.get("id"))] = item["createdAt"]
-    return created_at_by_id
-
-
-def _allocate_temp(
-    todo_path: Path, trusted: _TrustedParent
-) -> tuple[str, int, tuple[int, int]]:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    for _ in range(32):
-        name = f".deepresearch-todo-{secrets.token_hex(16)}.json"
-        try:
-            if trusted.fd is None:
-                fd = os.open(todo_path.parent / name, flags, 0o600)
-            else:
-                fd = os.open(name, flags, 0o600, dir_fd=trusted.fd)
-        except FileExistsError:
-            continue
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
-            os.close(fd)
-            raise OSError("unsafe todo temp")
-        return name, fd, (opened.st_dev, opened.st_ino)
-    raise OSError("todo temp allocation failed")
-
-
-def _cleanup_owned_temp(
-    todo_path: Path,
-    trusted: _TrustedParent,
-    name: str,
-    identity: tuple[int, int],
-) -> None:
-    try:
-        if trusted.fd is None:
-            current = (todo_path.parent / name).lstat()
-        else:
-            current = os.stat(
-                name, dir_fd=trusted.fd, follow_symlinks=False
-            )
-    except FileNotFoundError:
-        return
-    if (
-        stat.S_ISREG(current.st_mode)
-        and current.st_nlink == 1
-        and (current.st_dev, current.st_ino) == identity
-    ):
-        if trusted.fd is None:
-            os.unlink(todo_path.parent / name)
-        else:
-            os.unlink(name, dir_fd=trusted.fd)
-
-
 def _deepresearch_tasks(payload: dict[str, Any]) -> list[dict[str, str]] | None:
     if payload.get("event_type") != "task.update":
         return None
@@ -330,62 +259,164 @@ def _deepresearch_tasks(payload: dict[str, Any]) -> list[dict[str, str]] | None:
     return normalized
 
 
-def persist_deepresearch_task_update(
-    payload: dict[str, Any],
-    *,
-    todo_path: Path,
-) -> bool:
-    """Retain a completed canonical task.update in the standard todo file."""
+def persist_deepresearch_task_update(payload: dict[str, Any], *, todo_path: Path) -> bool:
+    """拒绝没有宿主归属的旧同步写入口；纯工作流事件仍可正常交付。"""
     tasks = _deepresearch_tasks(payload)
     if tasks is None or any(task["status"] != "completed" for task in tasks):
         return False
+    raise RuntimeError("DeepResearch Todo writes require a captured owner and the async transaction API")
 
-    todo_path = Path(todo_path)
-    with _TODO_WRITE_LOCK:
-        trusted = _open_trusted_parent(todo_path)
-        temp_name = ""
-        temp_identity: tuple[int, int] | None = None
+
+async def capture_deepresearch_todo_binding(
+    tool: Any, session_id: str, workflow_id: str, *, previous: dict | None = None,
+    fresh: dict | None = None, allow_initialize: bool = True,
+) -> dict | None:
+    """在工作开始前冻结真实存储对象；旧无归属状态不能事后认领父计划。"""
+    if tool is None or not callable(getattr(tool, "todo_store", None)):
+        return None
+    store = tool.todo_store(session_id)
+    if not await store.capable():
+        return None
+    binding = dict(previous) if isinstance(previous, dict) else None
+    if binding and binding.get("store_key", store.key) != store.key:
+        return None
+    if todo_v2_enabled():
+        if binding is not None:
+            if isinstance(fresh, dict) and binding.get("store_id") == fresh.get("store_id") and fresh.get("plan_id") in {
+                binding.get("plan_id"), binding.get("planned_plan_id"),
+            }:
+                binding.update(fresh)
+        elif allow_initialize and isinstance(fresh, dict):
+            binding = dict(fresh)
+        if not binding or not binding.get("store_id"):
+            return None
+        binding.setdefault("planned_plan_id", str(uuid.uuid5(uuid.NAMESPACE_OID, f"{binding['store_id']}:{workflow_id}")))
+    elif binding is None:
+        if not allow_initialize:
+            return None
+        trusted = _open_trusted_parent(Path(store.path)) if store.key.startswith("local:") else None
         try:
-            created_at = _existing_created_at(todo_path, trusted)
-            now = datetime.now(timezone.utc).isoformat()
-            items = [
-                {
-                    **task,
-                    "createdAt": created_at.get(task["id"], now),
-                    "updatedAt": now,
-                }
-                for task in tasks
-            ]
-            temp_name, temp_fd, temp_identity = _allocate_temp(
-                todo_path, trusted
-            )
-            with os.fdopen(temp_fd, "w", encoding="utf-8") as temp_file:
-                json.dump(items, temp_file, ensure_ascii=False, indent=2)
-                temp_file.write("\n")
-                temp_file.flush()
-                opened = os.fstat(temp_file.fileno())
-                if (
-                    not stat.S_ISREG(opened.st_mode)
-                    or opened.st_nlink != 1
-                    or (opened.st_dev, opened.st_ino) != temp_identity
-                ):
-                    raise OSError("unsafe todo temp")
-            _verify_named_parent(todo_path, trusted)
-            if trusted.fd is not None:
-                os.replace(
-                    temp_name,
-                    todo_path.name,
-                    src_dir_fd=trusted.fd,
-                    dst_dir_fd=trusted.fd,
-                )
-            else:
-                os.replace(todo_path.parent / temp_name, todo_path)
-                _verify_named_parent(todo_path, trusted)
+            if trusted is not None:
+                _read_existing_todo(Path(store.path), trusted)
+                _verify_named_parent(Path(store.path), trusted)
+            snapshot = await store.read(protect_path=trusted is not None)
+            if trusted is not None:
+                _verify_named_parent(Path(store.path), trusted)
         finally:
-            if temp_name and temp_identity is not None:
-                _cleanup_owned_temp(
-                    todo_path, trusted, temp_name, temp_identity
-                )
+            if trusted is not None and trusted.fd is not None:
+                os.close(trusted.fd)
+        if snapshot.metadata is not None:
+            return None
+        binding = {"initial_exists": snapshot.exists, "initial_content_sha256": snapshot.content_sha256}
+    elif binding.get("store_id"):
+        return None
+    binding.update(store_key=store.key, session_id=session_id, workflow_id=workflow_id)
+    return binding
+
+
+async def persist_deepresearch_task_update_transactional(
+    payload: dict[str, Any], *, todo_path: Path, tool: Any = None,
+    binding: dict[str, Any] | None = None, session: Any = None,
+) -> Any:
+    """Only a captured workflow owner may update its existing stage rows.
+
+    An unrelated parent plan is never replaced. An empty/finished plan may be
+    explicitly initialized by a new research workflow; the planned identity is
+    recorded before commit so an interrupted response can resume safely.
+    """
+    tasks = _deepresearch_tasks(payload)
+    if tasks is None or tool is None or not binding or not binding.get("workflow_id") or not binding.get("session_id"):
+        return None
+    session_id = binding["session_id"]
+    store = tool.todo_store(session_id)
+    if binding.get("store_key", store.key) != store.key:
+        return None
+    versioned = todo_v2_enabled()
+    if versioned and not binding.get("store_id"):
+        return None
+    expected = dict(binding) if versioned else None
+    owner = str(binding["workflow_id"])
+    planned = binding.setdefault("planned_plan_id", str(uuid.uuid5(uuid.NAMESPACE_OID, f"{binding['store_id']}:{owner}"))) if versioned else None
+    now = datetime.now(timezone.utc).isoformat()
+    trusted = None
+    path = Path(store.path)
+    if store.key.startswith("local:"):
+        trusted = _open_trusted_parent(path)
+        try:
+            _read_existing_todo(path, trusted)
+        except BaseException:
             if trusted.fd is not None:
                 os.close(trusted.fd)
-    return True
+            raise
+
+    async def apply():
+        if trusted is not None:
+            _verify_named_parent(path, trusted)
+        transaction = store.active()
+        owned = [item for item in transaction.todos
+                 if (item.get("meta_data") or {}).get("deepresearch_workflow_id") == owner]
+        initialized = bool(owned) or binding.get("owns_stages") or (transaction.metadata is not None and transaction.metadata.get("plan_id") == planned)
+        if not initialized:
+            if not versioned and (transaction.original.exists != binding.get("initial_exists") or
+                                  transaction.original.content_sha256 != binding.get("initial_content_sha256")):
+                return {"owned": False}
+            plan = [item for item in transaction.todos if not (item.get("meta_data") or {}).get("persistent")]
+            if any(item.get("status", "pending") not in {"completed", "cancelled"} for item in plan):
+                return {"owned": False}
+            invoke_id = str(binding.get("invoke_id") or owner)
+            if transaction.metadata and transaction.metadata.get("last_create_invoke_id") == invoke_id:
+                return {"owned": False}
+            reminders = [item for item in transaction.todos if (item.get("meta_data") or {}).get("persistent")
+                         and item.get("status", "pending") not in {"completed", "cancelled"}]
+            if {item.get("id") for item in reminders} & {task["id"] for task in tasks}:
+                raise ValueError("DeepResearch stage IDs conflict with persistent reminders")
+            new_items = [{**task, "generation_token": (transaction.metadata or {}).get("generation_token"),
+                          "createdAt": now, "updatedAt": now,
+                          "meta_data": {"deepresearch_workflow_id": owner}} for task in tasks]
+            if versioned:
+                transaction.todos = new_items + reminders
+                transaction.metadata.update(plan_id=planned, last_create_invoke_id=invoke_id, legacy_plan=False)
+            else:
+                # 数组没有计划版本边界；保留所有既有条目，只在冻结的初始快照上追加自己的阶段。
+                if {item.get("id") for item in transaction.todos} & {item["id"] for item in new_items}:
+                    return {"owned": False}
+                transaction.todos.extend(new_items)
+        else:
+            desired = {item["id"]: item["status"] for item in tasks}
+            rank = {"pending": 0, "in_progress": 1, "completed": 2, "cancelled": 3}
+            for item in owned:
+                status = desired.get(item.get("id"))
+                if status is not None and rank.get(status, 0) > rank.get(item.get("status"), 0):
+                    item["status"] = status
+                    item["updatedAt"] = now
+        return {"owned": True}
+
+    try:
+        async def commit():
+            return await store.transact(apply, binding=expected, invoke_id=str(binding.get("invoke_id") or owner),
+                                        expected_parent_identity=trusted.identity if trusted else None)
+        try:
+            result = await commit()
+        except BaseError as exc:
+            if not versioned or not isinstance(exc.details, dict) or exc.details.get("todo_error") != "stale_plan":
+                raise
+            # Read-confirm a previously initialized plan whose response was lost.
+            # The writer epoch must still match; this cannot revive a superseded execution.
+            snapshot = await store.read(protect_path=trusted is not None)
+            meta = snapshot.metadata or {}
+            if meta.get("store_id") != expected.get("store_id") or meta.get("plan_id") != planned \
+                    or meta.get("writer_epoch") != expected.get("writer_epoch"):
+                raise
+            expected["plan_id"] = planned
+            result = await commit()
+        if not result.get("owned"):
+            return None
+        receipt = result.todo_receipt
+        binding["owns_stages"] = True
+        if receipt.snapshot.metadata is not None:
+            binding.update(receipt.snapshot.binding(), revision=receipt.snapshot.metadata["revision"])
+            tool.publish_commit_context(session_id, receipt, session=session, invoke_id=str(binding.get("invoke_id") or owner))
+        return receipt
+    finally:
+        if trusted is not None and trusted.fd is not None:
+            os.close(trusted.fd)

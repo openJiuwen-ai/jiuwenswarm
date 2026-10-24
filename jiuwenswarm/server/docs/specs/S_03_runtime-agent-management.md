@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / runtime-agent-management |
 | 关联模块 | jiuwenswarm/server/runtime/{agent_manager.py, tenant_agent_pool.py, agent_warm_pool.py, agent_adapter/, a2ui/, debug_trace/, session/, skill/, workspace/, agent_config_service.py, prewarm.py, proactive_adapter.py, team_binding_store.py, team_entity_store.py, team_snapshot_refresh.py} |
-| 最近一次修订日期 | 2026-10-22 |
-| 关联 feature | 暂无 |
+| 最近一次修订日期 | 2026-10-24 |
+| 关联 feature | [F_01_todo-consistency](../features/F_01_todo-consistency.md) |
 
 ## 范围 / 边界
 
@@ -177,3 +177,12 @@ UsageReconciler:    start_usage_reconciler()（启动周期回收）
 
 - [[S_02]] 默认路径 fallback（_handle_stream / _handle_unary）是 AgentManager 的调用入口
 - [[S_04]] sandbox 由 AgentWebSocketServer.start() 按条件 auto-start，runtime 不碰
+
+
+## Todo 计划与执行归属（FE20261014380870）
+
+v2 激活时，`stale_todo_cleanup_helpers` 为真正新请求设置 `todo_execution_id_v2`；补充、交互回答和续跑保留原执行身份。普通新一轮不推进条目 generation token、不隐藏上一计划。计划仅由明确 create/new/rebuild 改变，`todo_call_context_v2` 在 model/tool callback 上冻结；session 保存最近副本，旧工具任务不得从它取得新执行权限。
+
+暂停/取消通过 SDK `update_todos` 或整段 `transact` 修改最新列表。暂停快照与删除在同一事务内完成，保留提醒，快照含 Todo binding。旧 SDK/未激活路径维持原兼容行为；不可据旧快照盲写 v2。暂停恢复提示中的“参考快照”不是覆盖磁盘的授权。
+
+历史 handler 读取 common 的双格式 event loader，包含版本化空表；不可读时仍发 history done。验证入口：`test_history_todo_restore.py`、`test_stale_todo_skip_flag_on_runtime_session.py`、`test_todo_v2_integration.py`。服务重启、真实 Windows 包及远程沙箱配套另行验收。

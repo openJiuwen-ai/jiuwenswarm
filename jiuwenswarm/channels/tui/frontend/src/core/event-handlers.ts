@@ -1,3 +1,4 @@
+import { acceptTodoSnapshot, resetTodoRecovery, todoStartTime } from "./todo-snapshot.js";
 import {
   parseHistoryFrame,
   createAttachmentInfoEntry,
@@ -976,7 +977,11 @@ function isTodoPayloadItem(item: unknown): item is Record<string, unknown> {
   return Boolean(item && typeof item === "object" && !Array.isArray(item));
 }
 
-function handleTodoUpdated(delegate: AppEventDelegate, payload: Record<string, unknown>): boolean {
+function handleTodoUpdated(delegate: AppEventDelegate, payload: Record<string, unknown>, streamId?: string): boolean {
+  const decision = acceptTodoSnapshot(delegate, delegate.getSessionId(), payload,
+    typeof payload.request_id === "string" ? payload.request_id : streamId);
+  if (decision.recover) delegate.safeRestoreHistory(delegate.getSessionId());
+  if (!decision.accept) return false;
   const todos = Array.isArray(payload.todos) ? payload.todos : [];
   delegate.setTodos(
     todos
@@ -992,7 +997,7 @@ function handleTodoUpdated(delegate: AppEventDelegate, payload: Record<string, u
           activeForm: typeof item.activeForm === "string" ? item.activeForm : "",
           status,
           createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
-          updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : new Date().toISOString(),
+          updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : todoStartTime(delegate, delegate.getSessionId(), String(item.id), status),
         };
       })
       .filter((item): item is TodoItem => item !== null && item.id.length > 0),
@@ -1121,6 +1126,7 @@ function handleWorkflowUpdated(
 
 export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFrame): boolean {
   const connectionChanged = handleConnectionAck(delegate, frame);
+  if (connectionChanged) resetTodoRecovery(delegate);
 
   const payload = frame.payload;
   const effectiveEvent = typeof payload.event_type === "string" ? payload.event_type : frame.event;
@@ -1384,7 +1390,7 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
       return true;
 
     case "todo.updated":
-      return handleTodoUpdated(delegate, payload);
+      return handleTodoUpdated(delegate, payload, frame.stream_id);
 
     case "session.updated": {
       const mode = typeof payload.mode === "string" ? payload.mode : "";

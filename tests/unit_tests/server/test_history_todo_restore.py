@@ -64,7 +64,7 @@ async def test_history_first_page_emits_todo_snapshot_before_done(monkeypatch, _
     def _load(_session_id, *, todo_root, generation_token):
         captured["todo_root"] = todo_root
         captured["generation_token"] = generation_token
-        return [{"id": "t1", "status": "pending"}]
+        return {"todos": [{"id": "t1", "status": "pending"}]}
 
     monkeypatch.setattr(
         session_handlers,
@@ -78,7 +78,7 @@ async def test_history_first_page_emits_todo_snapshot_before_done(monkeypatch, _
     )
     monkeypatch.setattr(
         session_handlers,
-        "load_todo_snapshot_for_frontend",
+        "load_todo_event_for_frontend",
         _load,
     )
     ctx, sink = _context(1)
@@ -104,7 +104,7 @@ async def test_history_later_page_does_not_load_todo(monkeypatch, _history):
         called = True
         return []
 
-    monkeypatch.setattr(session_handlers, "load_todo_snapshot_for_frontend", _load)
+    monkeypatch.setattr(session_handlers, "load_todo_event_for_frontend", _load)
     ctx, sink = _context(2)
 
     await session_handlers.handle_history_get_stream(ctx)

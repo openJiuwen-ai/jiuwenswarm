@@ -53,7 +53,7 @@ import {
 } from '../features/subagent/subagentNormalizer';
 import { isPlanWireMode, resolvePlanWireMode, stripPlanSuffix } from '../features/planMode/wireMode';
 import { normalizeTaskEvent } from '../stores/teamTaskNormalize';
-import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
+import { webClient, webRequest, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import {
   getRuntimeScope,
   RUNTIME_SCOPE_CHANGED_EVENT,
@@ -933,6 +933,17 @@ function makeEventDedupKey(eventName: string, payload: Record<string, unknown>):
     typeof payload.event_type === 'string' ? payload.event_type : '';
   const payloadSnapshot = stringifyPayloadForDedup(payload);
   return `${eventName}::${payloadSessionId}::${payloadEventType}::${payloadSnapshot}`;
+}
+
+function requestTodoResync(sessionId: string): void {
+  const requestId = useTodoStore.getState().beginRecovery(sessionId);
+  if (!requestId) return;
+  void webRequest('history.get', { session_id: sessionId, page_idx: 1 }, { requestId, isStream: true })
+    .catch(() => undefined)
+    .finally(() => {
+      useTodoStore.getState().finishRecovery(sessionId, requestId);
+      if (useTodoStore.getState().getRuntime(sessionId)?.needsSync) requestTodoResync(sessionId);
+    });
 }
 
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
@@ -3632,15 +3643,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         );
       }),
-      webClient.on('todo.updated', ({ payload }) => {
+      webClient.on('todo.updated', ({ payload, request_id }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('todo.updated', payload)) return;
         if (isTeamPanelClearedForPayload(payload)) {
           return;
         }
-        const todos = Array.isArray(payload.todos) ? payload.todos : [];
-        useTodoStore.getState().setTodos(sessionId, todos as Parameters<ReturnType<typeof useTodoStore.getState>['setTodos']>[1]);
+        useTodoStore.getState().applySnapshot(sessionId, payload,
+          request_id ?? (typeof payload.request_id === 'string' ? payload.request_id : undefined));
+        requestTodoResync(sessionId);
       }),
       webClient.on('goal.snapshot', ({ payload }) => {
         if (shouldDropDuplicatedEvent('goal.snapshot', payload)) return;
@@ -4984,6 +4996,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // get 一次，把 GoalBar 从 disconnected 收敛回真实状态。只挑非 completed 的目标查，
       // completed 不需要（也不参与下面的 1 分钟无更新巡检）。
       if (connected && !wasConnectedRef.current) {
+        useTodoStore.getState().resetRecovery();
+        for (const sid of Object.keys(useTodoStore.getState().runtimes)) requestTodoResync(sid);
         const runtimes = useGoalStore.getState().runtimes;
         for (const [sid, runtime] of Object.entries(runtimes)) {
           if (!runtime.goal || runtime.goal.status === 'completed') continue;

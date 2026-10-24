@@ -34,14 +34,11 @@ from openjiuwen.harness.rails.skills.skill_use_rail import get_current_skill_nam
 from openjiuwen.harness.tools import TodoListTool
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
-from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
-    convert_interactions_to_ask_user_question,
-)
 from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
     strip_image_content_from_model_context,
 )
-from jiuwenswarm.agents.harness.common.rails.symphony import (
-    SymphonyToolStreamHandler,
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    convert_interactions_to_ask_user_question,
 )
 from jiuwenswarm.agents.harness.common.rails.path_whitespace_fix import (
     WHITESPACE_FIX_TOOL_NAMES,
@@ -53,6 +50,9 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     handle_read_file_before_tool_call,
     is_read_file_tool,
     normalize_read_file_tool_outcome,
+)
+from jiuwenswarm.agents.harness.common.rails.symphony import (
+    SymphonyToolStreamHandler,
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
@@ -66,14 +66,14 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     get_todo_generation_token,
     snapshot_includes_persistent_todos,
 )
+from jiuwenswarm.common.todo_snapshot import (
+    format_todos_for_frontend,
+    overlay_serial_todo_statuses,
+)
 from jiuwenswarm.common.tool_display import (
     build_tool_display_name,
     extract_call_goal,
     inject_call_goal_schema,
-)
-from jiuwenswarm.common.todo_snapshot import (
-    format_todos_for_frontend,
-    overlay_serial_todo_statuses,
 )
 from jiuwenswarm.common.utils import fix_json_arguments, logger
 
@@ -716,13 +716,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         content: str,
         tool_name: str,
     ) -> bool:
+        from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
+            DEEPRESEARCH_INTERACTION_PLACEHOLDER,
+        )
         from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
             _SKILL_TURBO_HITL_PLACEHOLDER,
             _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY,
             _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2,
-        )
-        from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
-            DEEPRESEARCH_INTERACTION_PLACEHOLDER,
         )
 
         legacy_templates = [
@@ -969,6 +969,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         self._rebind_runtime_cwd(replace=True)
 
     async def after_invoke(self, ctx: AgentCallbackContext) -> None:
+        await self._resync_pending_todo(ctx)
         token = ctx.extra.pop(self._SHELL_SID_TOKEN_KEY, None)
         if token is None:
             return
@@ -1009,6 +1010,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         await self._get_pause_event(sid).wait()
         if self._abort_requested.get(sid, False):
             raise asyncio.CancelledError("Agent abort requested")
+        await self._resync_pending_todo(ctx)
 
         # Some task-loop paths reach model call without before_invoke; keep cwd
         # aligned for any rail/tool that reads get_cwd during the model turn.
@@ -1023,6 +1025,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             await self._fix_incomplete_tool_context(ctx)
 
         await self._maybe_early_checkpoint(ctx)
+
+    async def _resync_pending_todo(self, ctx: AgentCallbackContext) -> None:
+        session = ctx.session
+        getter = getattr(session, "get_state", None)
+        if callable(getter) and getter("todo_snapshot_resync_pending") is True:
+            sid = self._resolve_sid(ctx, session)
+            if sid:
+                await self._emit_todo_updated(session, self._conversation_ids.get(sid) or sid)
 
     async def _maybe_early_checkpoint(self, ctx: AgentCallbackContext) -> None:
         """Persist context + agent state once per invoke before the first LLM call.
@@ -1207,6 +1217,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         await coro
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
+        from jiuwenswarm.common.todo_protocol import (
+            bind_todo_tool_context,
+            todo_v2_enabled,
+        )
+        if todo_v2_enabled():
+            bind_todo_tool_context(self._get_todo_tool(), ctx)
         sid = self._resolve_sid(ctx, ctx.session)
         await self._get_pause_event(sid).wait()
         if self._abort_requested.get(sid, False):
@@ -1254,7 +1270,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             extra = getattr(ctx, "extra", None)
             if not isinstance(extra, dict):
                 extra = {}
-            from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+            from openjiuwen.core.single_agent.interrupt.state import (
+                RESUME_USER_INPUT_KEY,
+            )
             skip_resume_tool_call = (
                 tool_name == "skill_acceleration_exec"
                 and extra.get(RESUME_USER_INPUT_KEY) is not None
@@ -1282,7 +1300,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             _resume_answers = None
             extra = getattr(ctx, "extra", None)
             if isinstance(extra, dict):
-                from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+                from openjiuwen.core.single_agent.interrupt.state import (
+                    RESUME_USER_INPUT_KEY,
+                )
 
                 _resume_answers = extra.get(RESUME_USER_INPUT_KEY)
             _outer_todo_active = None
@@ -1490,6 +1510,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     todo_sid,
                     tool_name=tool_name,
                     arguments=getattr(tc, "arguments", None),
+                    receipt=getattr(ctx.inputs.tool_result, "todo_receipt", None),
                 )
 
     # ------------------------------------------------------------------
@@ -1634,6 +1655,24 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         except Exception:
             logger.debug("tool_update emit failed", exc_info=True)
 
+    def _sync_todo_perf(self, todos_data, session_id):
+        if not self._member_name:
+            from jiuwenswarm.perf.guard import run_perf_safe
+            from jiuwenswarm.perf.todo_tracker import (
+                sync_main_agent_todos,
+                todos_from_items,
+            )
+
+            run_perf_safe(
+                "StreamEventRail",
+                "perf sync main-agent todos",
+                lambda: sync_main_agent_todos(
+                    todos_from_items(todos_data),
+                    session_id=session_id,
+                ),
+            )
+
+
     async def _emit_todo_updated(
         self,
         session: Session,
@@ -1641,8 +1680,20 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         *,
         tool_name: str = "",
         arguments: Any = None,
+        receipt: Any = None,
     ) -> None:
         """Load the main agent's todo list and push a todo.updated event to the frontend."""
+        from jiuwenswarm.common.todo_snapshot import (
+            publish_todo_payload,
+            publish_todo_receipt,
+            todo_snapshot_payload,
+        )
+
+        committed = getattr(receipt, "snapshot", None)
+        if isinstance(getattr(committed, "metadata", None), dict):
+            self._sync_todo_perf(committed.todos, session_id)
+            await publish_todo_receipt(session, receipt)
+            return
         todo_tool = self._get_todo_tool()
         if todo_tool is None:
             logger.debug("[StreamEventRail] TodoListTool not available")
@@ -1654,6 +1705,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             logger.debug(
                 "[StreamEventRail] Failed to load todos: %s", exc
             )
+            return
+
+        snapshot = getattr(todos_data, "todo_snapshot", None)
+        if isinstance(getattr(snapshot, "metadata", None), dict):
+            self._sync_todo_perf(snapshot.todos, session_id)
+            await publish_todo_payload(session, todo_snapshot_payload(snapshot.todos, snapshot.metadata))
             return
 
         # 请求隔离：todo.updated 是全量快照旁路（todo 工具 after_tool_call
@@ -1685,21 +1742,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # Serial overlay is applied after format (same helper as task.update)
         # so todo.updated cannot leak a later completed row while an earlier
         # item is still open.
-        if not self._member_name:
-            from jiuwenswarm.perf.guard import run_perf_safe
-            from jiuwenswarm.perf.todo_tracker import (
-                sync_main_agent_todos,
-                todos_from_items,
-            )
-
-            run_perf_safe(
-                "StreamEventRail",
-                "perf sync main-agent todos",
-                lambda: sync_main_agent_todos(
-                    todos_from_items(todos_data),
-                    session_id=session_id,
-                ),
-            )
+        self._sync_todo_perf(todos_data, session_id)
 
         todos = overlay_serial_todo_statuses(
             self._format_todos_for_frontend(todos_data)

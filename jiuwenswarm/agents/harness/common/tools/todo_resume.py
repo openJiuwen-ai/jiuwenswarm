@@ -20,6 +20,8 @@ from openjiuwen.harness.tools.todo import TODO_GENERATION_TOKEN_SESSION_KEY
 
 from jiuwenswarm.common.todo_generation import (
     filter_todos_by_generation as filter_todos_by_generation,
+)
+from jiuwenswarm.common.todo_generation import (
     todo_item_generation_token as todo_item_generation_token,
 )
 
@@ -40,13 +42,13 @@ _RESUME_QUERY_PATTERNS = (
 TODO_CREATE_BLOCKED_CN = (
     "Error: 当前会话已有未完成任务（pending/in_progress）。"
     "请先 todo_list，再用 todo_modify 续跑；勿 todo_create 覆盖。"
-    "仅当用户明确要求重来/重规划时，todo_create（ force=true）。"
+    "仅当用户明确要求重来/重规划时，todo_create（plan_action=rebuild）；独立新计划用 plan_action=new。"
 )
 
 TODO_CREATE_BLOCKED_EN = (
     "Error: This session has unfinished tasks (pending/in_progress). "
     "Call todo_list first, then todo_modify to resume; do not todo_create over them. "
-    "Call todo_create (force=true) only when the user explicitly asks to replan or restart planning."
+    "Call todo_create (plan_action=rebuild) only for explicit replanning; use plan_action=new for an independent new plan."
 )
 
 TODO_CREATE_READ_FAILED_CN = (

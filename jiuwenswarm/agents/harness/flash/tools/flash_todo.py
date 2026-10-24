@@ -44,7 +44,7 @@ def _unified_todo_description(language: str) -> str:
     if str(language).lower().startswith("en"):
         return (
             "Unified todo management tool. Select the operation via `action`:\n"
-            "- create: create the task list (REPLACES the current list). `tasks` is a JSON array; "
+            "- create: initialize a task list; use explicit plan_action=new/rebuild for an active plan. `tasks` is a JSON array; "
             "each item requires content / activeForm / description and a short unique `id` "
             "(the id is the sole key for cross-turn status updates; do not use random strings). "
             "The first task is auto-set to in_progress; only one task can be in_progress at a time.\n"
@@ -67,7 +67,7 @@ def _unified_todo_description(language: str) -> str:
         )
     return (
         "待办任务统一管理工具，通过 action 指定操作：\n"
-        "- create：创建任务列表（覆盖当前列表）。tasks 为 JSON 数组，每项必含 content / "
+        "- create：初始化任务列表；已有活动计划须明确 plan_action=new/rebuild。tasks 为 JSON 数组，每项必含 content / "
         "activeForm / description，并提供简短唯一的 id（id 是跨轮更新状态的唯一依据，"
         "禁止随机字符串或 UUID）。首个任务自动设为 in_progress，同一时间仅一个 in_progress。\n"
         "- list：列出全部未完成（非 completed/cancelled）任务的 id/content/status 概要。\n"
@@ -107,10 +107,16 @@ def _unified_todo_input_params(language: str) -> dict:
                 "items": {"type": "object"},
                 "description": d(
                     "create 必填：任务数组 [{id, content, activeForm, description, "
-                    "selected_model_id?}]；覆盖当前列表",
+                    "selected_model_id?}]；已有活动计划用 plan_action=new/rebuild",
                     "create: task array [{id, content, activeForm, description, "
-                    "selected_model_id?}]; replaces the current list",
+                    "selected_model_id?}]; use plan_action=new/rebuild for an active plan",
                 ),
+            },
+            "plan_action": {
+                "type": "string",
+                "enum": ["initialize", "new", "rebuild"],
+                "description": d("create 可选：默认初始化；明确新计划选 new，重建选 rebuild；普通调整使用 modify",
+                                 "create: initialize by default; use new/rebuild only for an explicit plan boundary"),
             },
             "id": {
                 "type": "string",
@@ -186,7 +192,10 @@ class UnifiedTodoTool(Tool):
                     success=False,
                     error="'tasks' is required for action=create and must be a JSON array",
                 )
-            return await self._engines["create"].invoke({"tasks": tasks}, **kwargs)
+            inner = {"tasks": tasks}
+            if "plan_action" in data:
+                inner["plan_action"] = data["plan_action"]
+            return await self._engines["create"].invoke(inner, **kwargs)
 
         if action == "list":
             return await self._engines["list"].invoke({}, **kwargs)

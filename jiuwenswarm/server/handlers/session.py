@@ -21,16 +21,16 @@ from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_response_for_wire,
 )
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
+from jiuwenswarm.common.todo_snapshot import load_todo_event_for_frontend
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
     _agent_workspace_dir_for_request,
     _background_session_kvc_tasks,
-    _sessions_dir_for_request,
     _is_team_metadata_mode,
     _log_background_session_kvc_failure,
     _plan_active_sessions,
     _plan_exited_sessions,
+    _sessions_dir_for_request,
     send_error_wire,
 )
 from jiuwenswarm.server.runtime.session.session_history import (
@@ -38,7 +38,9 @@ from jiuwenswarm.server.runtime.session.session_history import (
     history_exists,
     load_history_records,
 )
-from jiuwenswarm.server.runtime.session.session_metadata import remove_session_metadata_cache
+from jiuwenswarm.server.runtime.session.session_metadata import (
+    remove_session_metadata_cache,
+)
 from jiuwenswarm.server.wire_truncate import (
     _HISTORY_PAGE_SIZE,
     _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
@@ -274,7 +276,9 @@ async def handle_session_list(ctx: RequestContext) -> None:
     ``{"sessions": [...], "total": int, "limit": int, "offset": int}``,
     确保按新接口接入分页的 Web 前端能拿到分页元信息。
     """
-    from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        get_all_sessions_metadata,
+    )
 
     params = ctx.params
     limit = max(1, min(_coerce_int(params.get("limit"), _LIMIT_DEFAULT), _LIMIT_MAX))
@@ -429,8 +433,9 @@ async def handle_session_delete(ctx: RequestContext) -> None:
     """Delete a single session and its recoverable runtime state."""
     request = ctx.request
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
     from jiuwenswarm.agents.harness.team import get_team_manager
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
     params = request.params if isinstance(request.params, dict) else {}
     target = str(params.get("session_id") or "").strip()
@@ -443,7 +448,9 @@ async def handle_session_delete(ctx: RequestContext) -> None:
             metadata=request.metadata,
         )
     else:
-        from jiuwenswarm.server.runtime.session.session_history import resolve_session_dir
+        from jiuwenswarm.server.runtime.session.session_history import (
+            resolve_session_dir,
+        )
 
         sessions_root = _sessions_dir_for_request(request)
         session_dir, invalid_reason = resolve_session_dir(
@@ -548,7 +555,9 @@ async def handle_session_delete(ctx: RequestContext) -> None:
                     )
                     if is_team_mode:
                         try:
-                            from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
+                            from jiuwenswarm.server.runtime.team_binding_store import (
+                                get_team_binding_store,
+                            )
 
                             get_team_binding_store().unbind_session(
                                 team_name=team_name or None,
@@ -611,7 +620,9 @@ async def handle_session_rewind_full(ctx: RequestContext, restore_files: bool = 
         # Step 1: Optionally restore files first
         restore_result: dict[str, Any] = {}
         if restore_files:
-            from jiuwenswarm.agents.harness.common.session_ops_service import restore_session_files
+            from jiuwenswarm.agents.harness.common.session_ops_service import (
+                restore_session_files,
+            )
             restore_result = restore_session_files(session_id=target_sid, turn_index=turn_index)
 
         # Step 2: Truncate history.json (local file operation)
@@ -619,7 +630,9 @@ async def handle_session_rewind_full(ctx: RequestContext, restore_files: bool = 
         # compact_partial_session handles this correctly (rewind_session only supports
         # the "from" direction — keeping the prefix and truncating the tail).
         if compact and direction == "up_to":
-            from jiuwenswarm.agents.harness.common.session_ops_service import compact_partial_session
+            from jiuwenswarm.agents.harness.common.session_ops_service import (
+                compact_partial_session,
+            )
             rewind_result = compact_partial_session(
                 session_id=target_sid,
                 turn_index=turn_index,
@@ -682,9 +695,12 @@ async def handle_session_rewind_full(ctx: RequestContext, restore_files: bool = 
         # Step 4: For compact mode, append boundary + rewind_summary + compact_summary records.
         # compact_partial_session already writes these for "up_to", so only append for "from".
         if compact and direction == "from":
-            import uuid as _uuid
             import time as _time
-            from jiuwenswarm.server.runtime.session.session_history import append_history_record
+            import uuid as _uuid
+
+            from jiuwenswarm.server.runtime.session.session_history import (
+                append_history_record,
+            )
             request_id = str(_uuid.uuid4())
             now = _time.time()
 
@@ -966,35 +982,27 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
             normalized_session_id,
         )
         todo_root = _agent_workspace_dir_for_request(request) / "todo"
-        todos = load_todo_snapshot_for_frontend(
+        todo_payload = load_todo_event_for_frontend(
             normalized_session_id,
             todo_root=todo_root,
             generation_token=generation_token,
         )
-        todo_chunk = AgentResponseChunk(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            payload={
-                "event_type": "todo.updated",
-                "todos": todos,
-                "session_id": session_id.strip(),
-            },
-            is_complete=False,
-        )
-        wire_todo = encode_agent_chunk_for_wire(
-            todo_chunk,
-            response_id=request.request_id,
-            sequence=next_sequence,
-        )
-        if not await ctx.sink.send_wire(wire_todo):
-            logger.warning(
-                "[history.get] todo snapshot send failed: request_id=%s "
-                "session_id=%s todo_count=%s",
-                request.request_id,
-                session_id.strip(),
-                len(todos),
+        if todo_payload is None:
+            logger.warning("[history.get] Todo snapshot unavailable: session_id=%s", normalized_session_id)
+        else:
+            todo_chunk = AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"event_type": "todo.updated", **todo_payload, "session_id": session_id.strip()},
+                is_complete=False,
             )
-        next_sequence += 1
+            wire_todo = encode_agent_chunk_for_wire(
+                todo_chunk, response_id=request.request_id, sequence=next_sequence,
+            )
+            if not await ctx.sink.send_wire(wire_todo):
+                logger.warning("[history.get] todo snapshot send failed: request_id=%s session_id=%s",
+                               request.request_id, session_id.strip())
+            next_sequence += 1
 
     done_chunk = AgentResponseChunk(
         request_id=request.request_id,

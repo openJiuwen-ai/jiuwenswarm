@@ -1391,7 +1391,6 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     const todoState = useTodoStore.getState();
     const todoRuntime = todoState.getRuntime(sessionId);
     const todos = todoRuntime?.todos ?? [];
-    const setTodos = todoState.setTodos;
 
     const matchingTodo = todos.find(
       (todo: TodoItem) =>
@@ -1411,12 +1410,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       }
 
       if (activeForm || payload.status === 'completed') {
-        const updatedTodos = todos.map((todo: TodoItem) =>
-          todo.id === matchingTodo.id
-            ? { ...todo, activeForm }
-            : todo
-        );
-        setTodos(sessionId, updatedTodos);
+        todoState.setActiveForm(sessionId, matchingTodo.id, activeForm);
       }
     }
   },

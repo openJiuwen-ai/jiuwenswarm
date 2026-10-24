@@ -119,6 +119,10 @@ class TestLocalEnvConfig:
         assert key not in SPAWN_ENV_KEYS
         assert is_sensitive_env_name(key) is False
 
+    def test_todo_v2_switch_is_spawn_shared(self):
+        assert "OPENJIUWEN_TODO_V2" in SPAWN_ENV_KEYS
+        assert "OPENJIUWEN_TODO_V2" not in BUSINESS_MIRROR_KEYS
+
     def test_code_coauthor_header_switch_is_spawn_shared(self):
         assert "JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED" in SPAWN_ENV_KEYS
 

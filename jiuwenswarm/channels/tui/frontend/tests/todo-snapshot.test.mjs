@@ -1,0 +1,21 @@
+import assert from "node:assert/strict";
+import { handleIncomingFrame } from "../dist/core/event-handlers.js";
+import { beginTodoHistory } from "../dist/core/todo-snapshot.js";
+let rows = [], recoveries = 0, session = "one";
+const delegate = { getSessionId: () => session, setTodos: next => { rows = next; }, safeRestoreHistory: () => { recoveries++; } };
+const meta = (revision, store = "store") => ({ schema_version: 2, store_id: store, plan_id: "plan", revision, view: "display" });
+const task = { id: "A", content: "A", status: "in_progress" };
+const send = (revision, todos, extra = {}, store = "store") => handleIncomingFrame(delegate,
+  { type: "event", event: "todo.updated", payload: { session_id: session, todos, todo_meta: meta(revision, store), ...extra } });
+send("2", [task]); const previous = rows;
+send("2", [task]); assert.equal(rows, previous);
+send("1", []); assert.equal(rows.length, 1);
+send("3", []); send("2", [task]); assert.deepEqual(rows, []);
+send("3", [task]); assert.equal(recoveries, 1); assert.deepEqual(rows, []);
+send("1", [task], {}, "other"); assert.deepEqual(rows, []); assert.equal(recoveries, 1);
+beginTodoHistory(delegate, session, "recovery");
+send("1", [task], { request_id: "recovery" }, "other"); assert.equal(rows.length, 1);
+session = "two"; send("1", []); assert.deepEqual(rows, []);
+session = "one"; send("2", [{ ...task, status: "completed" }], {}, "other");
+send("3", [task], {}, "other"); assert.equal(rows[0].status, "in_progress");
+console.log("TUI Todo ordering, empty snapshots, recovery, session isolation and reopen passed");

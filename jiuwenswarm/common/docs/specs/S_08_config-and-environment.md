@@ -135,3 +135,8 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 - [[S_10]]：模型段（models.defaults / react.model_client_config）的校验与归因消费。
 - [[S_09]]：mcp 段的 schema 与准入消费。
 - [[S_03]]：Mode 枚举终值。
+
+
+### Todo 版本化写入的启动边界
+
+`OPENJIUWEN_TODO_V2` 是进程共享的 Track A 启动开关，默认 0。Relay 的 shared_env、launchEnv 与最终 spawn 环境必须一致；Python `SPAWN_ENV_KEYS` 明确登记，不能作为按用户热更新的 Track B 配置。修改该开关需要配套版本与文件后端能力确认以及正确的实例重启；仅在宿主设置但子进程未收到，不算启用成功。
