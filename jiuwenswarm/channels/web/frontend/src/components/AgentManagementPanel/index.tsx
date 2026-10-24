@@ -256,6 +256,7 @@ export function AgentManagementPanel({
   const [detailOrigin, setDetailOrigin] = useState<'catalog' | 'mine'>('catalog');
   const [groupDetailOrigin, setGroupDetailOrigin] = useState<'teams' | 'mine'>('teams');
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [actionNoticeError, setActionNoticeError] = useState(false);
   const [connectorFlowId, setConnectorFlowId] = useState<string | null>(null);
   const [pendingInstallQueue, setPendingInstallQueue] = useState<PendingInstallQueue>(() =>
     createPendingInstallQueue(),
@@ -332,19 +333,23 @@ export function AgentManagementPanel({
     (error: unknown, fallback: string) => getFriendlyErrorMessage(error, fallback, t),
     [t],
   );
-  const showActionNotice = useCallback((notice: string) => {
+  const showActionNotice = useCallback((notice: string, isError = false) => {
     if (actionNoticeTimerRef.current !== null) {
       window.clearTimeout(actionNoticeTimerRef.current);
     }
     setActionNotice(notice);
+    setActionNoticeError(isError);
     actionNoticeTimerRef.current = window.setTimeout(() => {
       setActionNotice(current => (current === notice ? null : current));
       actionNoticeTimerRef.current = null;
     }, 3000);
   }, []);
-  const showActionError = useCallback((message: string) => {
+  const showActionError = useCallback((message: string, options: { inline?: boolean } = {}) => {
     toast.open({ id: 'agent-management-action-error', content: message, variant: 'error' });
-  }, []);
+    if (options.inline !== false) {
+      showActionNotice(message, true);
+    }
+  }, [showActionNotice]);
   const markBusy = useCallback((id: string) => {
     setBusyIds((current) => {
       if (current.has(id)) return current;
@@ -888,7 +893,7 @@ export function AgentManagementPanel({
     t,
   ]);
 
-  const handleInstall = async (id: string, options: { includeTeamCompatibility?: boolean } = {}) => {
+  const handleInstall = async (id: string, options: { includeTeamCompatibility?: boolean } = {}): Promise<boolean> => {
     markBusy(id);
     setActionNotice(null);
     clearConnectorError();
@@ -903,6 +908,7 @@ export function AgentManagementPanel({
       } else {
         await refreshAfterAction(id);
       }
+      return true;
     } catch (error) {
       if (error instanceof AgentInstallPendingError) {
         queuedForConnect = true;
@@ -913,9 +919,10 @@ export function AgentManagementPanel({
             pendingConnectors: error.pendingConnectors,
           }),
         );
-        return;
+        return true;
       }
       showActionError(formatActionError(error, t('agentManagement.states.actionError')));
+      return false;
     } finally {
       if (!queuedForConnect) clearBusy(id);
     }
@@ -933,7 +940,7 @@ export function AgentManagementPanel({
       } else {
         await refreshAfterAction(id);
       }
-      if (result.notice) setActionNotice(result.notice);
+      if (result.notice) { setActionNoticeError(false); setActionNotice(result.notice); }
     } catch (error) {
       showActionError(formatActionError(error, t('agentManagement.states.actionError')));
     } finally {
@@ -998,7 +1005,7 @@ export function AgentManagementPanel({
       } else if (fromDetail) {
         await openGroupDetail(id);
       }
-      if (result.notice) setActionNotice(result.notice);
+      if (result.notice) { setActionNoticeError(false); setActionNotice(result.notice); }
     } catch (error) {
       showActionError(formatActionError(error, t('agentManagement.group.states.actionError')));
     } finally {
@@ -1169,13 +1176,22 @@ export function AgentManagementPanel({
       const result = kind === 'group'
         ? await groupClient.importGroup(path)
         : await client.importAgentTemplate(path);
+      let installFailed = false;
       if (kind === 'group') {
-        await groupClient.installGroup(result.id);
+        try {
+          await groupClient.installGroup(result.id);
+        } catch (installError) {
+          // The package is already imported at this point; keep the imported
+          // group visible and report "imported but install failed" instead of
+          // bubbling up as a misleading upload failure (#5431 PR review).
+          installFailed = true;
+          showActionError(formatActionError(installError, t('agentManagement.states.actionError')), { inline: false });
+        }
         await loadGroups('mine');
         setMineKind('group');
         setGroupMineQuery('');
       } else {
-        await handleInstall(result.id);
+        installFailed = !(await handleInstall(result.id));
         await loadCatalog();
         setMineKind('agent');
         setMineQuery('');
@@ -1184,7 +1200,19 @@ export function AgentManagementPanel({
       setUploadError(null);
       setGroupUploadDialogOpen(false);
       setView('mine');
-      showActionNotice(t(kind === 'group' ? 'agentManagement.group.states.uploadSuccess' : 'agentManagement.states.uploadSuccess', { id: result.id }));
+      if (installFailed) {
+        showActionNotice(
+          t(
+            kind === 'group'
+              ? 'agentManagement.group.states.uploadImportedInstallFailed'
+              : 'agentManagement.states.uploadImportedInstallFailed',
+            { id: result.id },
+          ),
+          true,
+        );
+      } else {
+        showActionNotice(t(kind === 'group' ? 'agentManagement.group.states.uploadSuccess' : 'agentManagement.states.uploadSuccess', { id: result.id }));
+      }
     } catch (error) {
       const message = formatActionError(error, t(kind === 'group' ? 'agentManagement.group.states.uploadError' : 'agentManagement.states.uploadError'));
       if (kind === 'group') setGroupUploadError(message);
@@ -1377,7 +1405,11 @@ export function AgentManagementPanel({
             </div>
           </div>
           {actionNotice ? (
-            <div className="agent-management-inline-notice" role="status" data-testid="agent-management-inline-notice">
+            <div
+              className={`agent-management-inline-notice${actionNoticeError ? ' agent-management-inline-notice--error' : ''}`}
+              role="status"
+              data-testid="agent-management-inline-notice"
+            >
               {actionNotice}
             </div>
           ) : null}
@@ -1445,6 +1477,7 @@ export function AgentManagementPanel({
           fileStatus={state.fileStatus}
           fileError={state.fileError}
           actionNotice={actionNotice}
+          actionNoticeError={actionNoticeError}
           busy={Boolean(selectedId && busyIds.has(selectedId))}
           onBack={goBackToCatalog}
           onRetry={() => selectedId && void openDetail(selectedId)}
@@ -1510,6 +1543,7 @@ export function AgentManagementPanel({
           fileStatus={groupFileStatus}
           fileError={groupFileError}
           actionNotice={actionNotice}
+          actionNoticeError={actionNoticeError}
           busy={Boolean(groupSelectedId && busyIds.has(groupSelectedId))}
           onBack={goBackToGroupCatalog}
           onRetry={() => groupSelectedId && void openGroupDetail(groupSelectedId)}
@@ -1537,7 +1571,7 @@ export function AgentManagementPanel({
           onReloadSkills={() => { void loadSkills({ includeTeamMarketplace: true }); }}
           onInstallSkill={(skill) => handleInstallSkill(skill, showActionError)}
           installingSkillId={busySkillId}
-          onInstallAgent={(id) => handleInstall(id, { includeTeamCompatibility: true })}
+          onInstallAgent={(id) => { void handleInstall(id, { includeTeamCompatibility: true }); }}
           installingAgentIds={busyIds}
           onCreateAgent={openCreate}
           onCancel={() => { setActionNotice(null); setView('mine'); setMineKind('group'); }}
