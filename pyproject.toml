@@ -132,6 +132,7 @@ shell-ast = []
 # Same packages as [dependency-groups] test (pip install -e ".[test]")
 test = [
     "a2a-sdk[http-server]==1.0.0",
+    "cryptography>=44.0.0",
     "asyncssh>=2.14.0,<2.24",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",
@@ -219,6 +220,7 @@ openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git
 # Testing (keep in sync with optional-dependencies.test)
 test = [
     "a2a-sdk[http-server]==1.0.0",
+    "cryptography>=44.0.0",
     "asyncssh>=2.14.0,<2.24",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",
