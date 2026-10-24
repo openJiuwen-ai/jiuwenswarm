@@ -278,6 +278,34 @@ async def test_web_command_parameters_cross_the_real_gateway_proxy_and_adapter(
     assert len(envelopes) == 4
 
 
+async def test_gateway_preserves_unknown_outcome_and_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(manager, "install", AsyncMock(side_effect=RuntimeError("lost report")))
+    adapter = PackageManagementAdapter()
+    handlers: dict[str, Any] = {}
+
+    async def send_request(envelope: E2AEnvelope) -> AgentResponse:
+        return await adapter.handle(e2a_to_agent_request(envelope))
+
+    channel = SimpleNamespace(
+        channel_id="web", send_response=AsyncMock(),
+        register_method=lambda method, handler: handlers.setdefault(method, handler),
+    )
+    proxy_module.register_extension_package_handlers(channel, lambda: SimpleNamespace(send_request=send_request))
+    source = archive_package(write_package(tmp_path / "source"))
+    await handlers[ReqMethod.EXTENSIONS_V2_INSTALL.value](
+        "socket", "install-unknown", {"session_id": "session", "paths": [str(source)]}, "session",
+    )
+
+    response = channel.send_response.await_args.kwargs
+    assert response["ok"] is False
+    assert response["payload"]["outcome"] == "unknown"
+    assert response["payload"]["state"]["active"] == []
+    manager.install.assert_awaited_once()
+
+
 @pytest.mark.parametrize("source_kind", ["directory", "zip_directory", "text_file", "missing_zip"])
 async def test_external_install_rejects_non_zip_files_before_runtime_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_kind: str,
