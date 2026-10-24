@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import time
 from typing import Any, Mapping
 
 from openjiuwen.core.foundation.llm import ToolMessage
@@ -35,6 +36,7 @@ from jiuwenswarm.perf.context import (
 
 DEEPRESEARCH_EXECUTION_STATE_KEY = "deepresearch_execution_states"
 DEEPRESEARCH_EXECUTION_ALIAS_KEY = "deepresearch_execution_aliases"
+DEEPRESEARCH_DELIVERY_INDEX_KEY = "deepresearch_delivery_index"
 _TOKENS_KEY = "__deepresearch_execution_context_tokens__"
 _TOOL_NAME = "deepresearch_execute"
 
@@ -102,6 +104,72 @@ def _load_aliases(session: Any) -> dict[str, str]:
 def _save_aliases(session: Any, aliases: dict[str, str]) -> None:
     if session is not None:
         session.update_state({DEEPRESEARCH_EXECUTION_ALIAS_KEY: aliases})
+
+
+def _normalize_topic(query: str) -> str:
+    return " ".join(str(query or "").strip().split()).lower()
+
+
+def _load_delivery_index(session: Any) -> dict[str, dict[str, Any]]:
+    if session is None:
+        return {}
+    value = session.get_state(DEEPRESEARCH_DELIVERY_INDEX_KEY)
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        str(key): dict(entry)
+        for key, entry in value.items()
+        if isinstance(entry, Mapping)
+    }
+
+
+def _save_delivery_index(session: Any, idx: dict[str, dict[str, Any]]) -> None:
+    if session is not None:
+        session.update_state({DEEPRESEARCH_DELIVERY_INDEX_KEY: idx})
+
+
+def _record_delivery(
+    session: Any,
+    workflow_id: str,
+    *,
+    query: str,
+    file_name: str,
+    conversation_id: str,
+    html_style_status: str | None,
+) -> None:
+    idx = _load_delivery_index(session)
+    idx[workflow_id] = {
+        "query": _normalize_topic(query),
+        "file_name": str(file_name or ""),
+        "conversation_id": str(conversation_id or ""),
+        "html_style_status": html_style_status,
+        "delivered_at": time.time(),
+    }
+    _save_delivery_index(session, idx)
+    logger.info(
+        "[deepresearch_execution_rail] recorded delivery workflow_id=%s "
+        "conversation_id=%s",
+        workflow_id,
+        str(conversation_id or ""),
+    )
+
+
+def _lookup_delivery(
+    session: Any, *, query: str, file_name: str
+) -> dict[str, Any] | None:
+    """同会话×同主题×同 file_name 已交付则返回交付条目，否则 None。
+
+    主题按 _normalize_topic 归一化后比较（两侧均归一化），消除大小写/空白差异。
+    """
+    topic = _normalize_topic(query)
+    fname = str(file_name or "")
+    for entry in _load_delivery_index(session).values():
+        if (
+            _normalize_topic(str(entry.get("query") or "")) == topic
+            and entry.get("file_name") == fname
+        ):
+            return dict(entry)
+    return None
 
 
 def _workflow_id(session: Any, tool_call_id: str) -> str:
@@ -226,6 +294,13 @@ def _interaction_tool_call(tool_call: Any, interaction_id: str) -> Any:
     return cloned
 
 
+def _clone_tool_call_with_id(tool_call: Any, new_id: str) -> Any:
+    model_copy = getattr(tool_call, "model_copy", None)
+    cloned = model_copy(deep=True) if callable(model_copy) else copy.deepcopy(tool_call)
+    cloned.id = new_id
+    return cloned
+
+
 def _resume_input(ctx: AgentCallbackContext, tool_call_id: str) -> Any:
     value = getattr(ctx, "extra", {}).get(RESUME_USER_INPUT_KEY)
     if isinstance(value, InteractiveInput):
@@ -302,6 +377,47 @@ class DeepResearchExecutionRail(DeepAgentRail):
             current[workflow_id] = dict(state)
             _save_states(ctx.session, current)
 
+        # 幂等守卫：同会话×同主题×同 file_name 已交付则短路返回「已完成」，
+        # 不进入 bind_deepresearch_execution_context，阻止报告交付后重复执行（issue #5131）。
+        args = _tool_args(ctx)
+        hit = _lookup_delivery(
+            ctx.session,
+            query=str(args.get("query") or ""),
+            file_name=str(args.get("file_name") or ""),
+        )
+        if hit is not None:
+            from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
+                _completion_content,
+                _persist_delivered_state,
+                _result,
+            )
+
+            short_state = _persist_delivered_state(
+                ctx,
+                workflow_id=_workflow_id(ctx.session, tool_call_id),
+                conversation_id=str(hit.get("conversation_id") or ""),
+            )
+            ctx.inputs.tool_result = _result(
+                "completed",
+                short_state,
+                content=_completion_content(short_state, hit.get("html_style_status")),
+            )
+            ctx.request_force_finish(
+                {
+                    "output": str(ctx.inputs.tool_result.get("content", "") or ""),
+                    "result_type": "answer",
+                }
+            )
+            logger.info(
+                "[deepresearch_execution_rail] idempotent short-circuit "
+                "tool_call_id=%s conversation_id=%s",
+                tool_call_id,
+                str(hit.get("conversation_id") or ""),
+            )
+            # 标记短路供 after_tool_call early-return，避免二次 force_finish 与空 delivery 记录
+            ctx.extra["_deepresearch_short_circuit"] = workflow_id
+            return
+
         model = self._model_provider() if callable(self._model_provider) else None
         request_context = get_request_context(
             session_id=extract_session_id_from_callback(ctx)
@@ -318,6 +434,21 @@ class DeepResearchExecutionRail(DeepAgentRail):
             request_id=request_id,
             requested_report_type=requested_report_type,
         )
+        # B: 打断续跑时 harness 用 interaction_id 续跑，终端 chat.tool_result 会携带
+        # interaction_id，原始 tool_call_id 的 chat.tool_call 永远等不到配对结果，
+        # open_calls/pending 泄漏 -> 下一轮 LLM 误判「研究未完成」触发重弹问题/重跑。
+        # 这里把 tool_call.id 重写回 workflow_id（经 alias 解析的原始 id），使
+        # StreamEventRail(priority=80) 发出的 chat.tool_call/chat.tool_result 都对齐原始 id。
+        original_workflow_id = workflow_id
+        if tool_call_id != original_workflow_id:
+            try:
+                ctx.inputs.tool_call.id = original_workflow_id
+            except (AttributeError, TypeError):
+                # 不可变 tool_call 兜底：clone 一份再赋 id（参考 _interaction_tool_call 的 model_copy/deepcopy）
+                ctx.inputs.tool_call = _clone_tool_call_with_id(
+                    ctx.inputs.tool_call, original_workflow_id
+                )
+            tool_call_id = original_workflow_id  # 后续 tokens/cleanup 都用原始 id
         tokens = ctx.extra.setdefault(_TOKENS_KEY, {})
         tokens[tool_call_id] = token
 
@@ -325,6 +456,8 @@ class DeepResearchExecutionRail(DeepAgentRail):
         if _tool_name(ctx) != _TOOL_NAME:
             return
         try:
+            if ctx.extra.pop("_deepresearch_short_circuit", None) is not None:
+                return
             payload = _result_payload(ctx.inputs.tool_result)
             if payload is None or payload.get("schema_version") != EXECUTION_SCHEMA:
                 return
@@ -404,6 +537,18 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 )
                 return
 
+            # 幂等守卫：completed 终态在清理 state 前记录交付索引，供下一轮
+            # 同主题×同 file_name 调用 before_tool_call 短路返回「已交付」，
+            # 阻止深度研究报告交付后再次对话重复执行（issue #5131）。
+            if payload.get("kind") == "completed" and isinstance(state, Mapping):
+                _record_delivery(
+                    ctx.session,
+                    workflow_id,
+                    query=str(state.get("query") or ""),
+                    file_name=str(state.get("file_name") or ""),
+                    conversation_id=str(state.get("conversation_id") or ""),
+                    html_style_status=payload.get("html_style_status"),
+                )
             states.pop(workflow_id, None)
             _save_states(ctx.session, states)
             aliases = {
@@ -438,6 +583,11 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 )
 
             if isinstance(content, str) and content.strip():
+                ctx.inputs.tool_msg = ToolMessage(
+                    content=content.strip(),
+                    tool_call_id=tool_call_id,
+                )
+                ctx.inputs.tool_result = content.strip()
                 ctx.request_force_finish(
                     {"output": content.strip(), "result_type": "answer"}
                 )
@@ -451,6 +601,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
 
 
 __all__ = [
+    "DEEPRESEARCH_DELIVERY_INDEX_KEY",
     "DEEPRESEARCH_EXECUTION_ALIAS_KEY",
     "DEEPRESEARCH_EXECUTION_STATE_KEY",
     "DEEPRESEARCH_INTERACTION_PLACEHOLDER",
