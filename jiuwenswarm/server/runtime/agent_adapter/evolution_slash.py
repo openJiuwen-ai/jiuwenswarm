@@ -17,7 +17,6 @@ from openjiuwen.harness.rails.evolution.commands import (
 )
 
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
-    filter_evolution_eligible_skill_names,
     validate_evolution_log_writable,
     validate_evolution_skill,
     validate_team_evolution_skill,
@@ -159,9 +158,7 @@ def _format_rollback_usage(
     _ = context
     rollbackable: list[str] = []
     try:
-        skill_names = filter_evolution_eligible_skill_names(
-            filter_visible_skill_names(store.list_skill_names())
-        )
+        skill_names = filter_visible_skill_names(store.list_skill_names())
     except Exception:
         skill_names = []
 
@@ -197,11 +194,9 @@ async def _handle_evolve(
 ) -> dict[str, Any]:
     parts = query.split(maxsplit=2)
     if len(parts) < 2:
-        skill_names = filter_evolution_eligible_skill_names(
-            filter_visible_skill_names(store.list_skill_names())
-        )
+        skill_names = filter_visible_skill_names(store.list_skill_names())
         if not skill_names:
-            return _answer("当前 skills_base_dir 下未找到可参与自演进的 Skill 目录。")
+            return _answer("当前 skills_base_dir 下未找到任何 Skill 目录。")
         summary = await store.list_pending_summary(skill_names)
         return _answer(f"**Skills 演进记录：**\n\n{summary}")
 
