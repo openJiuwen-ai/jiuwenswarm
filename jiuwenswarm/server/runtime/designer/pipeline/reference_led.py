@@ -1285,6 +1285,21 @@ def _job_plan(
     character = has(ROLE_CHARACTER)
     style = has(ROLE_STYLE)
     video_binding = _resolve_video_binding(analysis, slots)
+    if not motion and video_binding == VIDEO_ANIMATE_IMAGE:
+        # The classifier can name the binding without tagging a motion_source
+        # role. The user still asked to animate that upload, so the first still
+        # that is not style-only becomes the opening frame instead of a soft R2V
+        # reference the clip never holds on to.
+        animated = [
+            slot for slot in slots if ROLE_STYLE not in (slot.get("roles") or [])
+        ]
+        if animated:
+            promoted = animated[0]
+            roles = list(promoted.get("roles") or [])
+            if ROLE_MOTION not in roles:
+                roles.append(ROLE_MOTION)
+            promoted["roles"] = roles
+            motion = [promoted]
 
     # Covered = any still that already supplies that cast/set id (verbatim or
     # condition). Companions are always analysis entries minus that covered set.
@@ -1498,7 +1513,18 @@ def _reference_plan(
         )
     for plate_id in plate_ids:
         plan.append({"role": ROLE_SCENE, "path": "", "node_id": plate_id})
-    return _cap_plan(plan)
+    # One upload can carry several roles (e.g. the animate frame that is also
+    # the product); it still occupies exactly one Wan slot.
+    unique: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in plan:
+        key = str(entry.get("node_id") or entry.get("path") or "")
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        unique.append(entry)
+    return _cap_plan(unique)
 
 
 def _on_screen_character_keys(analysis: dict[str, Any] | None) -> set[str]:
