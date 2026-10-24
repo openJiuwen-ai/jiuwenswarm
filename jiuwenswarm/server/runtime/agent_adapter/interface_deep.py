@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 from collections import Counter
+from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -40,7 +41,6 @@ from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.core.foundation.tool import ToolCard, McpServerConfig
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.core.runner import Runner
-from openjiuwen.core.runner.resources_manager.registration_logging import batch_registration_logging
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
 from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerConfig
 from openjiuwen.core.session.checkpointer.persistence import PersistenceCheckpointerProvider
@@ -4889,7 +4889,18 @@ class JiuWenSwarmDeepAdapter:
 
     def _install_staged_request_mcp_tools(self, buffers: _RequestMcpToolBuffers) -> None:
         """Install a fully discovered generation without yielding to another request."""
-        with batch_registration_logging():
+        # Older agent-core versions keep per-tool INFO logs without this optimization.
+        logging_scope: AbstractContextManager[None]
+        try:
+            from openjiuwen.core.runner.resources_manager.registration_logging import batch_registration_logging
+        except ModuleNotFoundError as exc:
+            if exc.name != "openjiuwen.core.runner.resources_manager.registration_logging":
+                raise
+            logging_scope = nullcontext()
+        else:
+            logging_scope = batch_registration_logging()
+
+        with logging_scope:
             for tool, strict in buffers.pending_tools:
                 card = tool.card
                 result = Runner.resource_mgr.add_tool(tool, tag="office-claw")
