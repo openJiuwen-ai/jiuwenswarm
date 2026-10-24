@@ -1119,7 +1119,10 @@ class MemoryIndexManager:
             lines: Optional[int] = None
     ) -> Dict[str, Any]:
         """Read file content."""
-        full_path = os.path.join(self.workspace_dir, rel_path)
+        base_dir = os.path.realpath(self.workspace_dir)
+        full_path = os.path.realpath(os.path.join(base_dir, rel_path))
+        if full_path != base_dir and not full_path.startswith(base_dir + os.sep):
+            raise PermissionError("path escapes the workspace")
 
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"File not found: {rel_path}")
