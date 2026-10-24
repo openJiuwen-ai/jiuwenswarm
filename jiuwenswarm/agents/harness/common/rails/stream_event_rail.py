@@ -205,6 +205,13 @@ def _infer_tool_result_error(value: Any) -> bool | None:
             exit_failed = _nonzero_exit(value.get(key))
             if exit_failed is not None:
                 return exit_failed
+        # ``sdd_advance`` and the shipped skill scripts state a failure as
+        # ``ok`` with ``error`` beside it. This reads last, so a payload that
+        # also states one of the keys above is still classified by that key.
+        if _boolish_false(value.get("ok")):
+            return True
+        if _boolish_true(value.get("ok")):
+            return False
         for key in ("data", "raw_output", "rawOutput", "result"):
             nested = value.get(key)
             if isinstance(nested, (dict, list)):
