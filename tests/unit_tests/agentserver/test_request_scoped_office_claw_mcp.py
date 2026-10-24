@@ -1525,3 +1525,144 @@ def test_rail_set_office_claw_binding_stores_thread_and_invocation() -> None:
     rail.set_office_claw_active_tool_ids(None)
     assert rail._office_claw_delivery_thread_id is None
     assert rail._office_claw_invocation_id is None
+
+
+@pytest.fixture(params=[True, False], ids=["installed-core", "forced-fallback"])
+def batch_logging_available(request, monkeypatch):
+    if not request.param:
+        import builtins
+
+        original_import = builtins.__import__
+
+        def import_without_batch_logging(name, *args, **kwargs):
+            if name == "openjiuwen.core.runner.resources_manager.registration_logging":
+                raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", import_without_batch_logging)
+
+    # The installed core may already be old; the parameter only controls fault injection.
+    try:
+        from openjiuwen.core.runner.resources_manager.registration_logging import batch_registration_logging
+    except ModuleNotFoundError as exc:
+        if exc.name != "openjiuwen.core.runner.resources_manager.registration_logging":
+            raise
+        return False
+    assert callable(batch_registration_logging)
+    return True
+
+
+@pytest.mark.asyncio
+async def test_batch_registration_uses_real_resources_and_one_summary(monkeypatch, batch_logging_available):
+    from unittest.mock import Mock
+
+    from openjiuwen.core.runner.resources_manager import resource_manager, tag_manager
+    from openjiuwen.core.runner.resources_manager.resource_manager import ResourceMgr
+
+    for key, value in _startup_env().items():
+        monkeypatch.setenv(key, value)
+    manager = ResourceMgr()
+    resource_log, tag_log, adapter_log = Mock(), Mock(), Mock()
+    monkeypatch.setattr(resource_manager, "logger", resource_log)
+    monkeypatch.setattr(tag_manager, "logger", tag_log)
+    monkeypatch.setattr(interface_deep, "logger", adapter_log)
+    monkeypatch.setattr(interface_deep, "Runner", SimpleNamespace(resource_mgr=manager))
+    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", AsyncMock(return_value=_tool_list()))
+    adapter = _bare_session_adapter()
+    registration = await adapter.register_request_scoped_office_claw_mcp(_request(_valid_config()))
+    try:
+        assert len(registration.tool_ids) == 2
+        for tool in registration.tool_instances:
+            assert manager.get_tool(tool.card.id) is tool
+            assert manager.resource_has_tag(tool.card.id, "office-claw")
+            assert adapter._instance.ability_manager.get(tool.card.name).id == tool.card.id
+        if batch_logging_available:
+            resource_log.info.assert_not_called()
+            tag_log.info.assert_not_called()
+        resource_details = resource_log.debug if batch_logging_available else resource_log.info
+        tag_details = tag_log.debug if batch_logging_available else tag_log.info
+        assert {
+            call.kwargs.get("resource_id") for call in resource_details.call_args_list
+            if call.args and call.args[0] == "add resource succeed"
+        } == set(registration.tool_ids)
+        # Old core formats eagerly; new core passes the template and arguments separately.
+        tag_messages = [
+            str(call.args[0]) % call.args[1:] if len(call.args) > 1 else str(call.args[0])
+            for call in tag_details.call_args_list if call.args
+        ]
+        tag_prefix = "Added tags to resource. resource_id="
+        assert {
+            message.removeprefix(tag_prefix).split(",", 1)[0]
+            for message in tag_messages if message.startswith(tag_prefix)
+        } == set(registration.tool_ids)
+        summaries = [c for c in adapter_log.info.call_args_list if "MCP registered:" in c.args[0]]
+        assert len(summaries) == 1
+        assert summaries[0].args[4:6] == (2, 0)
+        assert summaries[0].args[6] >= 0
+    finally:
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+    assert adapter._instance.ability_manager.cards == {}
+    assert all(manager.get_tool(tool_id) is None for tool_id in registration.tool_ids)
+
+
+@pytest.mark.asyncio
+async def test_batch_registration_failure_rolls_back_and_restores_logging(monkeypatch, batch_logging_available):
+    from unittest.mock import Mock
+
+    from openjiuwen.core.runner.resources_manager import resource_manager, tag_manager
+    from openjiuwen.core.runner.resources_manager.resource_manager import ResourceMgr
+
+    for key, value in _startup_env().items():
+        monkeypatch.setenv(key, value)
+    manager = ResourceMgr()
+    resource_log, tag_log, adapter_log = Mock(), Mock(), Mock()
+    monkeypatch.setattr(resource_manager, "logger", resource_log)
+    monkeypatch.setattr(tag_manager, "logger", tag_log)
+    monkeypatch.setattr(interface_deep, "logger", adapter_log)
+    monkeypatch.setattr(interface_deep, "Runner", SimpleNamespace(resource_mgr=manager))
+    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", AsyncMock(return_value=_tool_list()))
+    adapter = _bare_session_adapter()
+    attempted = []
+    original_add = manager.add_tool
+
+    def fail_second(tool, **kwargs):
+        attempted.append(tool)
+        if len(attempted) == 2:
+            raise RuntimeError("second registration failed")
+        return original_add(tool, **kwargs)
+
+    monkeypatch.setattr(manager, "add_tool", fail_second)
+    registration = await adapter.register_request_scoped_office_claw_mcp(_request(_valid_config()))
+    try:
+        assert len(attempted) == 2
+        assert registration.tool_ids == ()
+        assert adapter._instance.ability_manager.cards == {}
+        assert all(manager.get_tool(tool.card.id) is None for tool in attempted)
+        assert any("registration failed" in c.args[0] for c in adapter_log.warning.call_args_list)
+        assert not any("MCP registered:" in c.args[0] for c in adapter_log.info.call_args_list)
+        resource_log.info.reset_mock()
+        assert original_add(attempted[0], tag="office-claw").is_ok()
+        resource_log.info.assert_called_once()  # Scope did not leak after failure.
+    finally:
+        for tool in attempted:
+            if manager.get_tool(tool.card.id) is tool:
+                manager.remove_tool(tool.card.id)
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+
+
+def test_batch_registration_does_not_hide_transitive_import_failure(monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+    failure = ModuleNotFoundError("missing logging dependency", name="missing_logging_dependency")
+
+    def import_with_broken_dependency(name, *args, **kwargs):
+        if name == "openjiuwen.core.runner.resources_manager.registration_logging":
+            raise failure
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_with_broken_dependency)
+    adapter = _bare_session_adapter()
+    with pytest.raises(ModuleNotFoundError) as captured:
+        adapter._install_staged_request_mcp_tools(interface_deep._RequestMcpToolBuffers())
+    assert captured.value is failure
