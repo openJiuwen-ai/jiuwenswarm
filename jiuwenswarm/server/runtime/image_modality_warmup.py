@@ -45,6 +45,7 @@ from jiuwenswarm.common.config import (
     get_configured_read_image_multimodal,
     get_default_models,
 )
+from jiuwenswarm.common.model_config_validation import is_placeholder_model_entry
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,9 @@ def _build_probe_models(config_base: dict[str, Any]) -> list[Model]:
             continue
         model_client_config = entry.get("model_client_config") or {}
         if not model_client_config.get("model_name"):
+            continue
+        if is_placeholder_model_entry(model_client_config):
+            logger.warning("[ImageModalityWarmup] skipping placeholder model configuration")
             continue
         try:
             model = build_model_from_entry(
