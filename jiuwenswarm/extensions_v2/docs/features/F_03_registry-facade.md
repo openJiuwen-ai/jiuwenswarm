@@ -9,7 +9,7 @@
 | 关联计划 | EXTV2-03 包管理门面与生命周期 |
 | 所属模块 | `jiuwenswarm/extensions_v2/management/registry.py`、`extensions_v2/config.py` |
 | 设计依据 | [F_02 控制面复用](F_02_control-plane.md)、agent-core [Registry](../../../../../agent-core/openjiuwen/core/extension/registry.py) |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-23 |
 | 方案状态 | 已实现，单元验证通过 |
 
 ## 1. 问题与目标
@@ -125,11 +125,11 @@ manifest 不可读或版本非法的目录记录告警后忽略，不影响其�
 
 ### 5.4 停机
 
-按 `requires_packages` 计算依赖叶子，先撤销没有剩余依赖方的包，再逐层向上。每个包调用 `Runtime.unpublish`，仅移除 EventBus Handler 与生效记录，不删除安装目录。单个包失败记日志后继续，保证进程退出不被阻塞。
+按 `requires_packages` 计算依赖叶子，先撤销没有剩余依赖方的包，再逐层向上。先核对 Core 的公开卸载判断，再调用 `Runtime.unpublish`，不删除安装目录。失败时继续处理独立包，只通知撤销成功的包；仍有失败则保留门面并抛错，全部成功才解除上下文。
 
 ## 6. 并发与状态边界
 
-- 门面不承诺重入；`install`、`uninstall`、`reload` 的串行由 AgentServer 装配与调用方保证，agent-core 内部对共享状态加锁。
+- 同一门面的根写操作由宿主写锁串行，查询不占锁，包退出通知在锁外执行。
 - `init` 幂等：同一门面重复调用不会重复注册事件或重复触发 `ops.build`。
 - `shutdown` 后门面回到未初始化状态；再次使用必须重新 `init`。
 - 生效包事实只来自 `Runtime`，门面不做缓存。

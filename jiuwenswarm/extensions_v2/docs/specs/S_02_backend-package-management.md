@@ -1,0 +1,87 @@
+# 后端包管理协议
+
+## 元信息
+
+| 项 | 内容 |
+| --- | --- |
+| 类型 / 编号 | spec / S_02 |
+| 最近修订 | 2026-10-24 |
+| 所属模块 | `extensions_v2/management/adapter.py` |
+| 特性依据 | [F_09](../features/F_09_backend-management-requests.md) |
+
+门面契约沿用 [S_01](S_01_extension-management-facade.md)。
+
+## 1. 请求
+
+沿用 `AgentRequest` / `AgentResponse`，由已有认证、用户路由和 E2A 链路传递。
+
+| 方法 | params | 行为 |
+| --- | --- | --- |
+| `extensions.v2.query` | 可选 `package_id: str` | 查询全部或一个包 |
+| `extensions.v2.install` | `paths: list[str]`，非空，每项为现有 ZIP 文件的绝对路径 | 安装 ZIP 扩展包，拒绝目录 |
+| `extensions.v2.uninstall` | `package_id: str` | 卸载包或未生效副本 |
+| `extensions.v2.reload` | `package_id: str` | 从安装副本热重载，不先卸载 |
+
+包标识沿用 Core 约束：1～128 个字符，首位为英文字母或数字，其余可包含英文字母、数字、点、
+下划线和连字符，不允许空格或连续两个点。未知参数拒绝，不接受自建 Plan 或修改安装目录的参数。
+外部安装请求先校验绝对路径、`.zip` 后缀和文件类型，再交给 Core 校验归档、manifest 与依赖。
+此限制只在外部请求入口生效；启动通过 `load_installed()` 加载安装目录内的解压副本，不受影响。
+
+## 2. 响应
+
+保留原 `request_id`、`channel_id`、`metadata` 和 `agent_ref`；路径编码为字符串，元组编码为数组。
+
+| 场景 | ok | payload |
+| --- | --- | --- |
+| 查询完成 | true | `state`：active、installed、installed_packages、inflight、published |
+| 取得写操作结果 | true | `reports`：Core ActivationReport 数组 |
+| 方法或参数错误 | false | `code=INVALID_PARAMS`、`error` |
+| 门面尚不可用 | false | `code=EXTENSION_MANAGER_NOT_INITIALIZED`、`error` |
+| 调用抛错 | false | `code`、`error`，不得伪造成功 Report |
+
+Report 字段沿用 Core，`error` 编码为 `{code, message, params}`，不发送 StatusCode 枚举对象。
+正常失败 Report 不补查、不重试。调用抛错时保留错误，不伪造成功 Report。取消继续传播。
+
+安装响应另含 `installed_packages` 数组，各项为
+`{package_id: str, version: str, install_path: str, generation: int}`。
+只收录本次成功 Report 对应的生效记录，包 ID 和 generation 均须匹配。
+`install_path` 是目标 AgentServer 上的实际安装绝对路径，来自记录的 `root`；不是最初的来源路径。
+未取得匹配记录时不伪造目录，原始 Report 仍保留。失败 Report 不产生安装成功提示。
+
+查询的 `state` 另含 `installed_packages`，各项为 `{package_id, version, install_path}`。
+它从安装目录的固定布局取得 ID、版本和实际路径，不执行包代码；因此未生效的副本也可以展示 ID。
+generation 保留为内部校验字段，不出现在命令结果中。
+
+## 3. Web 命令
+
+Web 在单 Agent 模式中解析 `/extension`，新建对话与已有会话均可使用，直接发起上述请求，不进入普通对话。
+命令管理当前路由到的 AgentServer 进程内的扩展包，不只影响当前会话。
+
+| 输入 | 请求与参数 |
+| --- | --- |
+| `/extension` | 显示帮助，不发请求 |
+| `/extension install <ZIP 文件的绝对路径>` | `extensions.v2.install`，`paths` 为一个 ZIP 路径组成的数组 |
+| `/extension query [package_id]` | `extensions.v2.query`，可选包 ID |
+| `/extension uninstall <package_id>` | `extensions.v2.uninstall`，必填包 ID |
+| `/extension reload <package_id>` | `extensions.v2.reload`，必填包 ID |
+
+子命令不区分大小写，包 ID 和路径保留原文。单次命令安装一个 ZIP；install 后的完整内容作为一个路径，
+允许直接粘贴含空格的路径，也兼容路径外的一对引号。反斜杠原样保留，不执行 shell 命令。
+路径必须是运行服务可读取的绝对路径，最终校验由后端负责。
+
+已有会话时 Web 携带 `session_id` 供 Gateway 路由；新建对话不携带前端占位标识 `new`，
+不要求先创建聊天会话。两种情况都沿用连接认证和用户路由，不能因没有聊天会话绕过认证。
+Gateway 将路由使用的会话标识移入 E2A 会话字段，不传入管理器业务参数。
+Gateway 保留失败 payload。Web 按 Report.status 判断成功或失败；超时、断连或 `outcome=unknown`
+显示结果未确认和查询用法，不自动重试。查询失败不展示为空列表。
+安装、查询、卸载和重载结果明确标注 `package_id`。安装成功展示版本和安装目录，
+提示修改安装副本后执行热重载；查询展示版本、状态和目录，不向用户显示进程名称或 generation。
+
+## 4. 不变量与边界
+
+1. 只使用已装配门面，不创建第二个 Bus 或 Registry。
+2. 网络方法名与 Core 事件名分开，不接收候选对象或管理事件输入。
+3. 查询不触发安装、回滚或重载；失败报告与没有报告的异常分开处理。
+4. 不提供已发布版本回退或跨进程锁；Web 仅提供命令入口，不提供管理页面。
+
+验证入口：`tests/unit_tests/extensions_v2/management/test_management_adapter.py`。

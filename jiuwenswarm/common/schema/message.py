@@ -179,6 +179,10 @@ _ensure_req_method("SKILLDEV_FILE_READ", "skilldev.file.read")
 _ensure_req_method("SESSION_ASSETS_REMOVE", "session.assets.remove")
 # WebUI extension events share the protocol package's request enum.
 _ensure_req_method("WEBUI_DISPATCH", "webui.dispatch")
+_ensure_req_method("EXTENSIONS_V2_QUERY", "extensions.v2.query")
+_ensure_req_method("EXTENSIONS_V2_INSTALL", "extensions.v2.install")
+_ensure_req_method("EXTENSIONS_V2_UNINSTALL", "extensions.v2.uninstall")
+_ensure_req_method("EXTENSIONS_V2_RELOAD", "extensions.v2.reload")
 # Hub expert/equipment catalog served by AgentServer (dispatch.py / methods.py /
 # http_invoke.py reference this member); 协议包当前 pin 尚未定义。
 _ensure_req_method("HUB_EXPERT_PACKAGES_CATALOG", "hub.expert_packages.catalog")

@@ -538,7 +538,7 @@ report = await manager.load_installed()
 
 #### 4.1.2 包来源配置与加载准入
 
-AgentServer 使用 `resolve_install_dir()` 解析 `extensions.install_dir`、环境变量或默认目录 `~/.jiuwenswarm/extension_pkgs`，创建管理门面。门面在 core `Registry.init` 成功后调用 `open_install_dir`；随后 AgentServer 调用 `manager.load_installed()`，由门面选择已安装版本并交给 core 安装。用户上传目录或 zip 时也通过门面安装，不另建一套发现或生效记录。来源解析、声明校验、依赖排序和计划执行归 agent-core。
+AgentServer 使用 `resolve_install_dir()` 解析 `extensions.install_dir`、环境变量或默认目录 `~/.jiuwenswarm/extension_pkgs`，创建管理门面。门面在 core `Registry.init` 成功后调用 `open_install_dir`；随后 AgentServer 调用 `manager.load_installed()`，由门面选择已安装版本并交给 core 安装。启动不再扫描或自动安装 `examples/`。外部安装请求只接受 ZIP 文件的绝对路径，在请求入口拒绝目录，再通过同一门面安装；安装目录中的解压副本仍由启动加载和热重载使用。来源解析、声明校验、依赖排序和计划执行归 agent-core。
 
 | 配置主题 | 当前要求 | 待确定的来源与启动规则 |
 | --- | --- | --- |
@@ -552,6 +552,10 @@ AgentServer 核对管理入口返回的逐包结果与实际生效、残留后�
 <a id="412-管理入口与资源责任"></a>
 
 #### 4.1.3 管理入口与资源责任
+
+运行中的后端通过 `extensions.v2.query/install/uninstall/reload` 管理 V2 包。Gateway 只转发，AgentServer 的管理适配器调用已装配的唯一 `ExtensionManager`；与旧 `extensions.*` 分开。协议见 [S_02](../specs/S_02_backend-package-management.md)，入口与验证见 [F_09](../features/F_09_backend-management-requests.md)。
+
+门面串行执行根写操作，查询不占写锁，包退出通知在锁外执行。
 
 AgentServer 通过 Registry 便捷方法或受控事件请求包管理，按公共接口提交操作并读取结果。公共入口见[Extension 第 4.1 节](../../../../../agent-core/openjiuwen/core/extension/docs/designs/extension-architecture.md#41-registry统一管理入口)。
 

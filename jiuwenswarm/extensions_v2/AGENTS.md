@@ -50,6 +50,8 @@
 - [界面项与交互](docs/features/F_07_ui-contributions.md)：`manifest.yaml ui` 段、槽位目录与 `webui.dispatch`。
 - [前端渲染](docs/features/F_08_frontend-render.md)：槽位宿主、组件映射、store 与交互回传。
 - [门面规约](docs/specs/S_01_extension-management-facade.md)：当前对外契约、不变量、错误码与验证索引。
+- [后端管理入口](docs/features/F_09_backend-management-requests.md)：V2 包管理请求、Web `/extension` 命令及实际安装目录返回。
+- [后端包管理协议](docs/specs/S_02_backend-package-management.md)：`extensions.v2.*` 参数、响应及错误边界。
 - [内置事件开发模板](docs/designs/builtin-event-development-guide.md)：面向 WebClient、Gateway 和 AgentServer 开发者，按当前实现说明事件定义、Core Handler、BUILTIN Handler、Ops 能力登记及真实触发；新增代码示例明确标注为开发模板。
 
 新增内置事件或 Handler 时，先阅读内置事件开发模板，再根据涉及的模块查阅规约与特性方案；需要了解完整协作与生命周期时，再查阅详细架构。

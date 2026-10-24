@@ -9,14 +9,14 @@
 | 关联计划 | EXTV2-01 启动装配与包来源 |
 | 所属模块 | `jiuwenswarm/extensions_v2/{assembly,config}.py`、`server/worker/lifecycle.py` |
 | 设计依据 | [F_02](F_02_control-plane.md)、[F_03](F_03_registry-facade.md)、agent-core [Registry](../../../../../agent-core/openjiuwen/core/extension/registry.py) |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-24 |
 | 方案状态 | 已实现，单元验证通过 |
 
 ## 1. 问题与目标
 
 AgentServer 在一次进程启动中只应创建一套扩展运行时。装配必须保证 EventBus、宿主事件、包管理和 WebUI 运行时彼此引用同一实例，并在任一步失败时不影响会话主流程。
 
-一句话概括：**装配入口按固定顺序创建单例组件，把宿主注册函数交给 Registry 调用，再激活已安装包与内置示例包。**
+一句话概括：**装配入口创建单例组件，把宿主注册函数交给 Registry 调用，再激活配置安装目录中的包。**
 
 ## 2. 范围
 
@@ -25,7 +25,7 @@ AgentServer 在一次进程启动中只应创建一套扩展运行时。装配�
 - `install_extensions(server)` 单例装配与 `shutdown_extensions()`。
 - EventBus 创建、宿主事件与 Handler 注册回调。
 - 安装目录解析与宿主版本读取。
-- 已安装包激活、内置示例包安装。
+- 配置安装目录中的已安装包激活。
 - 装配失败时扩展能力降级，不阻断 AgentServer。
 
 ### 2.2 非目标
@@ -57,7 +57,6 @@ sequenceDiagram
     R->>R: trigger(ops.build) 一次
     M->>R: open_install_dir(install_dir, host_version)
     A->>M: load_installed()
-    A->>M: install(examples/token_weather)
     A-->>L: ExtensionAssembly
 ```
 
@@ -89,9 +88,11 @@ sequenceDiagram
 
 `manager.load_installed()` 选择每个包的最高未生效版本批量安装。单个包失败只记录 `ActivationReport`，不阻断其他包。
 
-### 4.3 内置示例包
+### 4.3 新包来源
 
-`examples/token_weather` 随代码发布，包标识 `webui.token-weather`。启动时若该包未生效且源目录存在，则调用 `install`。示例包失败只记日志，不影响宿主能力。
+启动只加载 `config.yaml` 中 `extensions.install_dir` 指定的安装目录，默认是
+`~/.jiuwenswarm/extension_pkgs`；不扫描源码中的 `examples/`，也不从中复制或补装包。
+新包通过 `/extension install` 或对应管理请求传入 ZIP 文件。已有安装副本由启动加载和热重载复用。
 
 ## 5. 失败与停机
 
@@ -100,7 +101,6 @@ sequenceDiagram
 | 组件创建 | 记录异常，返回 `None`，扩展能力不可用 |
 | `Registry.init` | 解除已绑定上下文，返回 `None` |
 | 已安装包激活 | 逐包失败，继续启动 |
-| 示例包安装 | 记录日志，继续启动 |
 
 停机顺序：
 
@@ -120,13 +120,16 @@ sequenceDiagram
 
 | 场景 | 结果 |
 | --- | --- |
-| 重复装配返回同一实例，示例包只激活一次 | 通过 |
+| 重复装配返回同一实例，只激活安装目录中的包 | 通过 |
+| 空安装目录不复制或加载源码示例 | 通过 |
 | 装配失败返回 `None`，服务器仍可启动 | 通过 |
 | 停机后单例清空 | 通过 |
 | 安装目录优先级、环境变量与相对路径基准 | 通过 |
 
+2026-10-24 随完整 V2、Gateway E2A 和命令清单回归验证，180 项通过。
+WebUI 示例相关测试自行安装夹具，不依赖启动自动安装。
+
 ## 8. 风险与遗留
 
 - 装配单例按进程持有；同一进程多个 Agent 模式共享一套包与视图目录，若后续需要按模式隔离，应改为按模式注入独立实例。
-- 内置示例包用于联调，正式发布前需确认是否随产品分发。
 - V2 与旧 `extensions/` 目录的互斥扫描尚无独立用例，当前依赖两套目录与配置键分离。

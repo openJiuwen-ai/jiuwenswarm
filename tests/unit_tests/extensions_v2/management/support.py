@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from zipfile import ZipFile
 
 import yaml
 
@@ -144,6 +145,16 @@ def write_package(
         entry.parent.mkdir(parents=True, exist_ok=True)
         entry.write_text(module_source or EMPTY_EXTENSION, encoding="utf-8")
     return package
+
+
+def archive_package(root: Path, *, suffix: str = ".zip") -> Path:
+    """Create a flat ZIP source accepted by the external management API."""
+    archive = root.parent / f"{root.name}{suffix}"
+    with ZipFile(archive, "w") as package_zip:
+        for file in root.rglob("*"):
+            if file.is_file():
+                package_zip.write(file, file.relative_to(root))
+    return archive
 
 
 def make_bus() -> ExtensionEventBus:
