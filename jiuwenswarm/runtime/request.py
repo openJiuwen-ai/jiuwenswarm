@@ -22,6 +22,7 @@ from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 
 logger = logging.getLogger(__name__)

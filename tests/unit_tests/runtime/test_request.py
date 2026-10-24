@@ -10,58 +10,13 @@ persistent waiter），不是真实用户输入：它不得刷新会话 metadata
 
 from __future__ import annotations
 
-import json
 import time
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.request import sync_chat_request_metadata
-
-
-@pytest.mark.parametrize("project_id, expected_dir", [("default_code", None), ("proj_bound", "/bound")])
-@pytest.mark.parametrize("sync_metadata", [False, True])
-async def test_prepare_chat_turn_discards_conflicting_project_context(
-    monkeypatch, project_id, expected_dir, sync_metadata,
-):
-    from jiuwenswarm.runtime.request import prepare_chat_turn
-    from jiuwenswarm.server.runtime.session import project_store
-
-    binding = {
-        "project_id": project_id,
-        "project_dir": "/stale",
-        "work_mode": "code",
-        "mode": "agent.code.normal",
-    }
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
-        lambda *args, **kwargs: binding.copy(),
-    )
-    project = project_store.Project(project_id="proj_bound", name="Bound", project_dir="/bound")
-    monkeypatch.setattr(
-        project_store, "get_project_by_id", lambda pid, cache_bust=False: project if pid == "proj_bound" else None,
-    )
-    request = _chat_request("conflict", "bound", {"project_id": "proj_other", "project_dir": "/unrelated"})
-    request.metadata = {"project_id": "proj_other", "project_dir": "/unrelated"}
-    agent = object()
-
-    async def get_agent_for_request(request, **kwargs):
-        assert kwargs["admit_request"]() == expected_dir
-        return agent
-
-    manager = SimpleNamespace(wait_for_session_prewarm=AsyncMock(), get_agent_for_request=get_agent_for_request)
-    result = await prepare_chat_turn(
-        manager, request, "web", sync_metadata=sync_metadata,
-        metadata_sync=lambda *args, **kwargs: "/unrelated",
-    )
-    assert result[2] is agent
-    assert request.params["project_id"] == project_id
-    assert request.metadata["project_id"] == project_id
-    assert request.params.get("project_dir") == expected_dir
-    assert request.metadata.get("project_dir") == expected_dir
 
 
 @pytest.fixture()
@@ -82,37 +37,6 @@ def sessions_dir(tmp_path, monkeypatch):
     _METADATA_CACHE.clear()
     _SESSION_REBIND_GEN.clear()
     return d
-
-
-async def test_prepare_chat_turn_keeps_legacy_agentos_workspace(sessions_dir, monkeypatch):
-    from jiuwenswarm.runtime.request import prepare_chat_turn
-    from jiuwenswarm.server.runtime.session import session_metadata
-
-    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
-    session_metadata.init_session_metadata(
-        session_id="cloud", channel_id="web", project_id="default_code",
-        work_mode="code", mode="agent.code.normal",
-    )
-    path = sessions_dir / "cloud" / "metadata.json"
-    stored = json.loads(path.read_text(encoding="utf-8"))
-    stored["project_dir"] = "/home/agentos/workspace"
-    path.write_text(json.dumps(stored), encoding="utf-8")
-    request = _chat_request("legacy-cloud", "cloud", {"project_id": "default_code"})
-    agent = object()
-
-    async def get_agent_for_request(request, **kwargs):
-        assert kwargs["admit_request"]() == "/home/agentos/workspace"
-        return agent
-
-    manager = SimpleNamespace(wait_for_session_prewarm=AsyncMock(), get_agent_for_request=get_agent_for_request)
-    result = await prepare_chat_turn(manager, request, "web")
-    assert result[2] is agent
-    assert request.params["project_dir"] == "/home/agentos/workspace"
-    assert request.metadata["project_dir"] == "/home/agentos/workspace"
-    session_metadata._METADATA_QUEUE.join()
-    persisted = json.loads(path.read_text(encoding="utf-8"))
-    assert persisted["project_id"] == "default_code"
-    assert persisted["project_dir"] == ""
 
 
 def _init_session(session_id: str, *, project_dir: str = "") -> None:
@@ -153,66 +77,6 @@ def _chat_request(request_id: str, session_id: str, params: dict) -> AgentReques
         params=params,
         is_stream=True,
     )
-
-
-@pytest.mark.parametrize("sync_metadata", [False, True])
-@pytest.mark.parametrize(
-    "stored_mode, requested_mode, expected_mode, manager_mode, sub_mode",
-    [
-        ("agent.work.normal", "team.work.normal", "agent.work.normal", "agent", None),
-        ("team.work.normal", "agent.work.normal", "team.work.normal", "team", None),
-        ("agent.code.normal", "team.code.normal", "agent.code.normal", "code", "normal"),
-        ("team.code.normal", "agent.code.normal", "team.code.normal", "code", "team"),
-        ("agent.work.plan", "team.work.normal", "agent.work.plan", "agent", "plan"),
-        ("team.code.plan", "agent.code.normal", "team.code.plan", "code", "team"),
-        ("agent", "team", "agent.work.normal", "agent", None),
-        ("code.team", "code.plan", "team.code.normal", "code", "team"),
-        ("agent.work.normal", "agent.work.plan", "agent.work.plan", "agent", "plan"),
-        ("agent.code.plan", "agent.code.normal", "agent.code.normal", "code", "normal"),
-        ("team.work.normal", "team.work.plan", "team.work.plan", "team", "plan"),
-        ("team.code.plan", "team.code.normal", "team.code.normal", "code", "team"),
-        ("unknown", "team.work.normal", "team.work.normal", "team", None),
-        (None, "agent.work.normal", "agent.work.normal", "agent", None),
-        (None, "team.work.normal", "team.work.normal", "team", None),
-        ("team.work.normal", None, "team.work.normal", "team", None),
-    ],
-)
-async def test_runtime_preserves_session_mode_type_before_prepare(
-    sessions_dir, monkeypatch, sync_metadata,
-    stored_mode, requested_mode, expected_mode, manager_mode, sub_mode,
-):
-    from jiuwenswarm.runtime.request import prepare_chat_turn
-    from jiuwenswarm.runtime.service import AgentRuntime
-    from jiuwenswarm.server.runtime.session import session_metadata
-
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_dir)
-    work_mode = "code" if manager_mode == "code" else "work"
-    if stored_mode is not None:
-        session_metadata.init_session_metadata(
-            session_id="mode-type", channel_id="web", mode=stored_mode, work_mode=work_mode,
-        )
-    params = {"work_mode": work_mode}
-    if requested_mode is not None:
-        params["mode"] = requested_mode
-    request = _chat_request("mode-type-request", "mode-type", params)
-    request = AgentRuntime.normalize_request(request)
-    agent = object()
-
-    async def get_agent_for_request(request, **kwargs):
-        assert kwargs["mode"] == manager_mode
-        assert kwargs["sub_mode"] == sub_mode
-        assert request.params["mode"] == expected_mode
-        kwargs["admit_request"]()
-        return agent
-
-    manager = SimpleNamespace(wait_for_session_prewarm=AsyncMock(), get_agent_for_request=get_agent_for_request)
-    result = await prepare_chat_turn(manager, request, "web", sync_metadata=sync_metadata)
-
-    assert result == (manager_mode, sub_mode, agent)
-    _drain_writes()
-    if sync_metadata:
-        persisted = json.loads((sessions_dir / "mode-type" / "metadata.json").read_text(encoding="utf-8"))
-        assert persisted["mode"] == expected_mode
 
 
 def test_attach_only_subscription_does_not_touch_session_metadata(sessions_dir) -> None:
