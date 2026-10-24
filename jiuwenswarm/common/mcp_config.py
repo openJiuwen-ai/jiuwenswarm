@@ -217,9 +217,18 @@ def build_enabled_mcp_server_configs(
 
 
 async def preflight_mcp_server_reachable(
-    cfg: McpServerConfig, *, timeout: float | None = None
+    cfg: McpServerConfig,
+    *,
+    timeout: float | None = None,
+    dynamic_token_url: str | None = None,
 ) -> tuple[bool, str]:
-    """Probe HTTP MCP reachability and authentication without entering its SDK task group."""
+    """Probe HTTP MCP reachability and authentication without entering its SDK task group.
+
+    ``dynamic_token_url`` 非空时（条目携带动态 token 端点 + 实例凭据已下发），
+    先实时取一次凭证并入探活头；**取不到不判失败**——动态头置空照常探活，
+    由网关响应决定可达性（与运行时"取不到照样调用、头置空"语义一致）。
+    默认 None：请求级/未启用路径行为与原来完全一致。
+    """
     transport = (getattr(cfg, "client_type", "") or "").strip().lower()
     if transport not in _HTTP_MCP_TRANSPORTS:
         return True, ""
@@ -258,6 +267,31 @@ async def preflight_mcp_server_reachable(
         if isinstance(auth_query, dict)
         else None
     )
+
+    if dynamic_token_url:
+        # 动态 token（mcp_dynamic_token_patch）：先实时取一次凭证并入探活头。
+        # 取不到不阻断：动态头置空照常探活（与运行时语义一致），网关响应决定
+        # 可达性；token 服务自身的不可达不会让网关被误判为不可注册。
+        from jiuwenswarm.common.mcp_dynamic_token_patch import (
+            TOKEN_HEADER_NAME,
+            TOKEN_HEADER_PREFIX,
+            TOKEN_TIMEOUT_S,
+            fetch_dynamic_token,
+            read_instance_credentials,
+        )
+
+        creds = read_instance_credentials()
+        if creds is not None:
+            try:
+                token = await fetch_dynamic_token(
+                    token_url=dynamic_token_url,
+                    creds=creds,
+                    timeout_s=min(TOKEN_TIMEOUT_S, read_timeout),
+                )
+            except Exception:  # noqa: BLE001 - 探活不因 token 服务失败而失败
+                headers[TOKEN_HEADER_NAME] = ""
+            else:
+                headers[TOKEN_HEADER_NAME] = TOKEN_HEADER_PREFIX + token
 
     try:
         from mcp.types import LATEST_PROTOCOL_VERSION
