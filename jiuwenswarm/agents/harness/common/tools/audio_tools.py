@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import contextlib
 import hashlib
@@ -16,7 +17,7 @@ from mutagen import File as MutagenFile
 from openai import OpenAI
 from openjiuwen.core.foundation.tool import tool
 from openjiuwen.core.runner import Runner
-import requests
+import aiohttp
 
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import apply_audio_model_config_from_yaml
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
@@ -97,29 +98,33 @@ def _load_audio_as_base64(file_path: str) -> tuple[str, str]:
     return b64_str, fmt
 
 
-def _download_audio_to_tempfile(url: str) -> str:
+async def _download_audio_to_tempfile(url: str) -> str:
     hdrs = {"User-Agent": DEFAULT_USER_AGENT}
-    resp = requests.get(url, headers=hdrs, timeout=HTTP_TIMEOUT, stream=True, verify=get_requests_verify())
-    resp.raise_for_status()
-    ct = resp.headers.get("content-type", "")
-    ext = _resolve_audio_extension(url, ct)
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
-    total = 0
-    try:
-        for chunk in resp.iter_content(chunk_size=64 * 1024):
-            if chunk:
-                total += len(chunk)
-                if total > MAX_AUDIO_BYTES:
-                    tmp.close()
+    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url, headers=hdrs, timeout=timeout, ssl=get_requests_verify()
+        ) as resp:
+            resp.raise_for_status()
+            ct = resp.headers.get("content-type", "")
+            ext = _resolve_audio_extension(url, ct)
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+            total = 0
+            try:
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    if chunk:
+                        total += len(chunk)
+                        if total > MAX_AUDIO_BYTES:
+                            tmp.close()
+                            os.remove(tmp.name)
+                            raise ValueError("Audio file exceeds size limit (25MB).")
+                        tmp.write(chunk)
+            except Exception:
+                tmp.close()
+                if os.path.exists(tmp.name):
                     os.remove(tmp.name)
-                    raise ValueError("Audio file exceeds size limit (25MB).")
-                tmp.write(chunk)
-    except Exception:
-        tmp.close()
-        if os.path.exists(tmp.name):
-            os.remove(tmp.name)
-        raise
-    tmp.close()
+                raise
+            tmp.close()
     return tmp.name
 
 
@@ -176,7 +181,7 @@ async def audio_question_answering(audio_path_or_url: str, question: str) -> str
         elif "home/user" in audio_path_or_url:
             return _build_sandbox_unavailable_msg("audio_question_answering")
         else:
-            target_path = _download_audio_to_tempfile(audio_path_or_url)
+            target_path = await _download_audio_to_tempfile(audio_path_or_url)
             cleanup_needed = True
 
         try:
@@ -241,7 +246,7 @@ async def audio_metadata(audio_path_or_url: str) -> str:
                 "the local path instead."
             )
         else:
-            local_path = _download_audio_to_tempfile(audio_path_or_url)
+            local_path = await _download_audio_to_tempfile(audio_path_or_url)
             cleanup = True
 
         duration = _compute_audio_length_seconds(local_path)
@@ -279,7 +284,6 @@ async def audio_metadata(audio_path_or_url: str) -> str:
         else:
             upload_fmt = "mp3"
 
-        files_payload = [("sample", (fname, open(local_path, "rb"), upload_fmt))]
         form_data = {
             "access_key": ACR_ACCESS_KEY,
             "sample_bytes": fsize,
@@ -289,15 +293,22 @@ async def audio_metadata(audio_path_or_url: str) -> str:
             "signature_version": "1",
         }
 
-        r = requests.post(
-            ACR_BASE_URL,
-            files=files_payload,
-            data=form_data,
-            timeout=HTTP_TIMEOUT,
-            verify=get_requests_verify(),
-        )
-        r.encoding = "utf-8"
-        parsed = json.loads(r.text)
+        timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT)
+        with open(local_path, "rb") as sample_file:
+            form = aiohttp.FormData()
+            form.add_field("sample", sample_file, filename=fname, content_type=upload_fmt)
+            for key, value in form_data.items():
+                form.add_field(key, str(value))
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    ACR_BASE_URL,
+                    data=form,
+                    timeout=timeout,
+                    ssl=get_requests_verify(),
+                ) as r:
+                    r.raise_for_status()
+                    text = await r.text()
+        parsed = json.loads(text)
 
         meta = parsed.get("metadata", {})
         if "humming" in meta:

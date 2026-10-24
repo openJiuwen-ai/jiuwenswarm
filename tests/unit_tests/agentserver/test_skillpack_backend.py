@@ -369,6 +369,51 @@ async def test_uninstalling_member_keeps_pack_and_blocks_it(
     assert "missing" in str(log_info.call_args_list)
 
 
+def test_container_member_backup_replaces_existing_backup(manager: SkillManager) -> None:
+    """Re-capturing a member backup must delete the previous copy first.
+
+    ``_capture_container_member_backup`` is sync and used to call the now-async
+    ``_safe_rmtree`` without awaiting, so a second capture left the old backup in
+    place and ``shutil.copytree`` raised FileExistsError (swallowed -> None).
+    """
+    _install_container_pack(manager)
+    member_dir = manager._skills_dir / "container-pack" / "skills" / "first-skill"
+
+    assert manager._capture_container_member_backup("first-skill", member_dir) is not None
+
+    # The backup dir already exists on the second capture.
+    second = manager._capture_container_member_backup("first-skill", member_dir)
+    assert second is not None
+    assert (second / "SKILL.md").is_file()
+
+
+@pytest.mark.asyncio
+async def test_container_member_restore_replaces_existing_dir(manager: SkillManager) -> None:
+    """Restoring over an existing member dir must delete it first.
+
+    ``handle_skills_pack_member_install`` is async and used to call the async
+    ``_safe_rmtree`` without awaiting, so the existing dir survived and
+    ``shutil.copytree`` raised FileExistsError.
+    """
+    _install_container_pack(manager)
+    skills_root = manager._skills_dir / "container-pack" / "skills"
+
+    backup = skills_root / "_member_backup" / "first-skill"
+    _write_skill(backup, "first-skill", description="backup")
+    dest = skills_root / "first-skill"
+    (dest / "SKILL.md").write_text(
+        "---\nname: first-skill\ndescription: stale\n---\nSTALE\n",
+        encoding="utf-8",
+    )
+
+    result = await manager.handle_skills_pack_member_install(
+        {"pack": "container-pack", "name": "first-skill"}
+    )
+
+    assert result["success"] is True, result
+    assert "STALE" not in (dest / "SKILL.md").read_text(encoding="utf-8")
+
+
 @pytest.mark.asyncio
 async def test_uninstalling_pack_keeps_members(manager: SkillManager) -> None:
     _install_demo_pack(manager, graph=False)
