@@ -177,6 +177,11 @@ class ReqMethod(Enum):
     # WebUI 扩展：上行事件统一入口，事件名在 params.event。
     WEBUI_DISPATCH = "webui.dispatch"
 
+    EXTENSIONS_V2_QUERY = "extensions.v2.query"
+    EXTENSIONS_V2_INSTALL = "extensions.v2.install"
+    EXTENSIONS_V2_UNINSTALL = "extensions.v2.uninstall"
+    EXTENSIONS_V2_RELOAD = "extensions.v2.reload"
+
     PROACTIVE_TICK = "proactive.tick"  # Trigger proactive recommendation tick (from Cron)
     PROACTIVE_FEEDBACK = "proactive.feedback"  # User feedback on proactive recommendation (like/dislike)
     COMMAND_GOAL = "command.goal"

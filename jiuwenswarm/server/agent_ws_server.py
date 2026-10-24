@@ -207,6 +207,7 @@ from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
     reload_runtime_after_config_save,
 )
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
+from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
 
 logger = logging.getLogger(__name__)
 _MANUAL_COMPACT_PROCESSOR_TYPES = [
@@ -1199,6 +1200,7 @@ class AgentWebSocketServer:
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
             WebUIDispatchAdapter(),
+            PackageManagementAdapter(),
         ):
             self._adapter_registry.register(adapter)
         # AgentServer-side tokenizer cache/download service. The Gateway only
@@ -2087,6 +2089,7 @@ class AgentWebSocketServer:
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
                     WebUIDispatchAdapter(),
+                    PackageManagementAdapter(),
                 ):
                     self._adapter_registry.register(adapter)
 

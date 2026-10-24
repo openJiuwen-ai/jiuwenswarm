@@ -8,7 +8,6 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
-from pathlib import Path
 from typing import Any
 
 from openjiuwen.core.events import ExtensionEventBus
@@ -21,9 +20,6 @@ from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
 from jiuwenswarm.extensions_v2.webui.transport import RenderTransport
 
 logger = logging.getLogger(__name__)
-
-EXAMPLE_PACKAGE_ID = "webui.token-weather"
-EXAMPLES_DIR = Path(__file__).resolve().parent / "examples" / "token_weather"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +56,6 @@ async def install_extensions(server: Any = None) -> ExtensionAssembly | None:
             return None
 
         await _activate_installed(assembly.manager)
-        await _install_example(assembly.manager)
         _ASSEMBLY = assembly
         logger.info("[ExtensionsV2] assembly ready")
         return assembly
@@ -108,21 +103,6 @@ async def _activate_installed(manager: ExtensionManager) -> None:
         await manager.load_installed()
     except Exception:  # noqa: BLE001 - one bad package must not disable the rest
         logger.exception("[ExtensionsV2] failed to activate installed packages")
-
-
-async def _install_example(manager: ExtensionManager) -> None:
-    """Install the Token Weather example when it is neither active nor already copied."""
-
-    active = {record.package_id for record in manager.active_packages()}
-    if EXAMPLE_PACKAGE_ID in active:
-        return
-    if not EXAMPLES_DIR.is_dir():
-        logger.warning("[ExtensionsV2] example package is missing: %s", EXAMPLES_DIR)
-        return
-    try:
-        await manager.install([EXAMPLES_DIR])
-    except Exception:  # noqa: BLE001 - the example is optional
-        logger.exception("[ExtensionsV2] failed to install example package %s", EXAMPLE_PACKAGE_ID)
 
 
 def _push_from(server: Any) -> Any:

@@ -30,6 +30,9 @@ async def test_ready_dispatches_to_the_example_panel(tmp_path: Path, monkeypatch
     installed = await assembly.install_extensions(server)
     assert installed is not None
     try:
+        example = Path(assembly.__file__).parent / "examples" / "token_weather"
+        reports = await installed.manager.install([example])
+        assert reports[0].status == "SUCCESS"
         await installed.bus.trigger(
             Event(
                 CONTEXT_USAGE_EVENT,
@@ -139,8 +142,12 @@ async def test_session_mismatch_is_rejected(tmp_path: Path, monkeypatch) -> None
 async def test_press_on_inactive_instance_is_rejected(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(assembly, "_ASSEMBLY", None)
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path)
-    await assembly.install_extensions(FakeServer())
+    installed = await assembly.install_extensions(FakeServer())
+    assert installed is not None
     try:
+        example = Path(assembly.__file__).parent / "examples" / "token_weather"
+        reports = await installed.manager.install([example])
+        assert reports[0].status == "SUCCESS"
         response = await WebUIDispatchAdapter().handle(
             AgentRequest(
                 request_id="r4",
