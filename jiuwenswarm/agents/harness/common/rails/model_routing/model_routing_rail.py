@@ -16,6 +16,7 @@ from .types import (
     _agent_model_name, _extract_agent_info, _new_trace_id,
     _unwrap_user_message,
 )
+from ..request_identity_rail import bind_request_id_from_run_context
 
 
 # auto 档（relay 下发 enable_routing=True）的分类器阈值与切换目标：
@@ -134,21 +135,10 @@ class ModelRoutingRail(DeepAgentRail):
         已被证明逐请求正确），这里在 invoke 起点重新绑定，使 rail 及同 task 后续日志
         带上正确的 ``[req=]`` 标签。
 
-        绑定失败（openjiuwen 未暴露该 API）只降级为 debug 日志，不影响路由决策。
+        实现与常挂的 :class:`~jiuwenswarm.agents.harness.common.rails.request_identity_rail.RequestIdentityRail`
+        共享（``bind_request_id_from_run_context``，幂等），避免两处漂移。
         """
-        run_context = getattr(getattr(ctx, "inputs", None), "run_context", None)
-        extra = getattr(run_context, "extra", None)
-        rid = extra.get("request_id") if isinstance(extra, dict) else None
-        if not rid:
-            return
-        try:
-            from openjiuwen.extensions.observability.span_context import (
-                set_current_request_id,
-            )
-
-            set_current_request_id(str(rid))
-        except Exception as exc:  # noqa: BLE001 - 重绑失败不影响路由
-            logger.debug("[ModelRouting] rebind request_id failed: %s", exc)
+        bind_request_id_from_run_context(ctx)
 
     def _resolve_classifier(self) -> Optional[Any]:
         """取本次打分用的分类器：显式注入优先，未注入（``_UNSET``）则懒加载内置实现。"""

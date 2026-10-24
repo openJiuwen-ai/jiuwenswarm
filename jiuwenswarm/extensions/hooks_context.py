@@ -84,11 +84,19 @@ class ModelHttpHookContext:
       ``enable_thinking``、``reasoning_effort`` 扩展写了也丢弃）；
     - 未写的口袋保持原样。
 
-    ``api_base`` / ``model_name`` 只读，供扩展自行判断要不要填。
+    ``api_base`` / ``model_name`` / ``request_id`` / ``session_id`` 只读，供扩展
+    自行判断要不要填。``request_id`` / ``session_id`` 是本次调用所属的请求身份，
+    并发下逐调用取自请求作用域上下文、互不串扰，扩展可放心按
+    ``dict[request_id, tags]`` 键控状态；脱离请求上下文（后台任务 / 子进程等
+    未归因调用）为空串，扩展需按空串降级，不得假定非空。
     """
 
     api_base: str = ""
     model_name: str = ""
+    # 只读：本次调用所属请求的 request_id（未归因调用为空串）
+    request_id: str = ""
+    # 只读：本次调用所属会话的 session_id（未归因调用为空串）
+    session_id: str = ""
     # 扩展可写：并进本次请求 custom_headers
     headers: dict[str, str] = field(default_factory=dict)
     # 扩展可写：并进请求正文 extra_body

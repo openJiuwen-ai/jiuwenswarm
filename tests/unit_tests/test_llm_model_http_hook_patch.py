@@ -7,6 +7,8 @@
   （含 CR/LF 的头、不可序列化的正文字段）跳过、调用方显式值优先、未写的
   口袋保持原样；
 * 触发链路：invoke / stream 出口触发事件并合并口袋；
+* 请求身份：ctx 携带所属请求的 request_id / session_id（并发 task 隔离、
+  openjiuwen → ``_LLM_TRACE`` 兜底链、无上下文空串降级）；
 * 失败语义：handler 抛错、registry 未初始化时请求照常发出（零新增字段）；
 * 幂等：独立标志，重复安装不二次包装。
 """
@@ -15,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import sys
+from contextvars import ContextVar
 from types import SimpleNamespace
 from typing import Any
 
@@ -462,3 +466,126 @@ def test_registry_not_initialized_is_noop(
     assert result == "ok"
     assert "custom_headers" not in recorded[0]
     assert "extra_body" not in recorded[0]
+
+
+# ── 请求身份：request_id / session_id 透传 ──────────────────────────
+
+
+def test_model_http_ctx_defaults_request_identity_empty() -> None:
+    """新字段默认空串：不传身份的旧构造路径完全向后兼容。"""
+    from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
+
+    ctx = ModelHttpHookContext()
+    assert ctx.request_id == ""
+    assert ctx.session_id == ""
+
+
+def test_invoke_ctx_carries_request_identity(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    """埋点 ctx 带上本次调用所属的 request_id / session_id，扩展按其精确归因。"""
+    async def _fake_orig_invoke(self: Any, *args: Any, **kwargs: Any):
+        return "ok"
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "invoke", _fake_orig_invoke)
+    patch_mod.apply_before_model_http_hook_patch()
+    calls = _install_fake_trigger(monkeypatch)
+
+    async def _invoke_bound() -> None:
+        from openjiuwen.extensions.observability.span_context import (
+            set_current_request_id,
+        )
+
+        from jiuwenswarm.common.log_context import set_log_session_id
+
+        # 模拟 handler / agent task 上已绑定的请求身份（ContextVar 逐 task 隔离，
+        # set 只落在本 task 的上下文副本里，不污染其他用例）
+        set_current_request_id("req-42")
+        set_log_session_id("sess-7")
+        await oai_mod.OpenAIModelClient.invoke(_fake_client(), messages="hi")
+
+    asyncio.run(_invoke_bound())
+
+    assert calls[0]["context"].request_id == "req-42"
+    assert calls[0]["context"].session_id == "sess-7"
+
+
+def test_request_identity_falls_back_to_llm_trace_vars(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    """openjiuwen 通道为空时，兜底读 interface_deep 的 ``_LLM_TRACE_REQUEST_ID``。"""
+    fake_deep = SimpleNamespace(
+        _LLM_TRACE_REQUEST_ID=ContextVar("_LLM_TRACE_REQUEST_ID", default=""),
+        _LLM_TRACE_SESSION_ID=ContextVar("_LLM_TRACE_SESSION_ID", default=""),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+        fake_deep,
+    )
+
+    async def _fake_orig_invoke(self: Any, *args: Any, **kwargs: Any):
+        return "ok"
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "invoke", _fake_orig_invoke)
+    patch_mod.apply_before_model_http_hook_patch()
+    calls = _install_fake_trigger(monkeypatch)
+
+    async def _invoke_bound() -> None:
+        fake_deep._LLM_TRACE_REQUEST_ID.set("req-trace-1")
+        await oai_mod.OpenAIModelClient.invoke(_fake_client(), messages="hi")
+
+    asyncio.run(_invoke_bound())
+
+    assert calls[0]["context"].request_id == "req-trace-1"
+
+
+def test_request_identity_isolated_between_concurrent_tasks(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    """并发模型调用各自读到所属请求的 request_id，互不串扰。
+
+    扩展侧把标签改成 ``dict[request_id, tags]`` 键控的前提：两次并发调用
+    的 ctx 身份各自正确，绝不出现同一个 request_id 被读到两次。
+    """
+    async def _fake_orig_invoke(self: Any, *args: Any, **kwargs: Any):
+        return "ok"
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "invoke", _fake_orig_invoke)
+    patch_mod.apply_before_model_http_hook_patch()
+    calls = _install_fake_trigger(monkeypatch)
+
+    async def _invoke_as(request_id: str) -> None:
+        from openjiuwen.extensions.observability.span_context import (
+            set_current_request_id,
+        )
+
+        set_current_request_id(request_id)
+        await oai_mod.OpenAIModelClient.invoke(_fake_client(), messages="hi")
+
+    async def _main() -> None:
+        await asyncio.gather(_invoke_as("req-a"), _invoke_as("req-b"))
+
+    asyncio.run(_main())
+
+    assert sorted(c["context"].request_id for c in calls) == ["req-a", "req-b"]
+
+
+def test_request_identity_empty_without_request_context(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    """脱离请求上下文的调用（后台任务 / 子进程）身份为空串，不阻塞请求。"""
+    async def _fake_orig_invoke(self: Any, *args: Any, **kwargs: Any):
+        return "ok"
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "invoke", _fake_orig_invoke)
+    patch_mod.apply_before_model_http_hook_patch()
+    calls = _install_fake_trigger(monkeypatch)
+
+    result = asyncio.run(
+        oai_mod.OpenAIModelClient.invoke(_fake_client(), messages="hi")
+    )
+
+    assert result == "ok"
+    assert calls[0]["context"].request_id == ""
+    assert calls[0]["context"].session_id == ""

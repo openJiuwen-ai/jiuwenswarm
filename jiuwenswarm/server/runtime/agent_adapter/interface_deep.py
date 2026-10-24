@@ -10053,6 +10053,28 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] ModelRoutingRail create failed: %s", exc)
             return None
 
+    @staticmethod
+    def _build_request_identity_rail() -> Any | None:
+        """构建 RequestIdentityRail（请求身份重绑，无条件常挂）。
+
+        在 round task 上把 ``run_context.extra["request_id"]`` 重绑进请求身份
+        ContextVar：model_routing 关闭的 session-scoped agent 里，round task
+        继承的是 supervisor 创建时的首请求值，``before_model_http`` 埋点与
+        llm_io_trace 会读到陈旧 request_id（归因串号）。构建失败仅告警跳过
+        （fail-open），绝不阻塞 agent 装配。
+        """
+        try:
+            from jiuwenswarm.agents.harness.common.rails.request_identity_rail import (
+                RequestIdentityRail,
+            )
+
+            rail = RequestIdentityRail()
+            logger.info("[JiuWenSwarmDeepAdapter] RequestIdentityRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] RequestIdentityRail create failed: %s", exc)
+            return None
+
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
         """Build RuntimePromptRail for per-model-call time/channel/runtime injection."""
         try:
@@ -10412,6 +10434,12 @@ class JiuWenSwarmDeepAdapter:
     ) -> list[Any]:
         """Build DeepAgent rails consistently for cold start and hot reload."""
         rail_infos = [
+            # 请求身份重绑：无条件常挂（计费/归因正确性不系于 model_routing 开关）；
+            # deep 系三 profile 均挂载（code 固定表首位 / flash 白名单同名保留）；
+            # priority=100 保证回调先于所有 rail 执行。
+            _RailBuildInfo(
+                "_request_identity_rail", self._build_request_identity_rail
+            ),
             _RailBuildInfo("_request_summary_rail", self._build_request_summary_rail),
             _RailBuildInfo("_model_routing_rail", self._build_model_routing, {"config": config_base}),
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),

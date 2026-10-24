@@ -121,6 +121,21 @@ def test_model_routing_rail_is_in_flash_keep():
     assert [info.attr_name for info in filtered] == ["_model_routing_rail"]
 
 
+def test_request_identity_rail_is_in_flash_keep():
+    """Flash must keep the request-identity rail (attribution, not routing).
+
+    PR8595 审查 P2 补齐：计费/归因正确性不系于 model_routing 开关。flash 的
+    round task 同样依赖该 rail 从 ``run_context.extra`` 重绑 request_id——
+    不保留则埋点/llm_io_trace 读到 supervisor 创建时冻结的首请求值（串号）。
+    无状态 fail-open，与 flash 精简目标不冲突。
+    """
+    adapter = JiuwenSwarmFlashAdapter()
+    assert "_request_identity_rail" in adapter._FLASH_RAIL_KEEP
+
+    filtered = adapter._filter_rail_infos_by_keep([_info("_request_identity_rail")])
+    assert [info.attr_name for info in filtered] == ["_request_identity_rail"]
+
+
 def test_skill_execution_rails_are_in_keep():
     """#2 (corrected): flash must keep skill *execution*, not just search/install.
 
