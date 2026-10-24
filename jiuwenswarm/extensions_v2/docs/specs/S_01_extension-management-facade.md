@@ -211,6 +211,7 @@ async def shutdown() -> None
 | 装配顺序 | `tests/unit_tests/extensions_v2/test_assembly.py` |
 | 安装目录配置 | `tests/unit_tests/extensions_v2/test_config.py` |
 | 管理写操作串行与取消 | `tests/unit_tests/extensions_v2/management/test_management_serialization.py` |
+| 停机依赖、失败保留与解绑 | `tests/unit_tests/extensions_v2/management/test_management_shutdown.py` |
 
 ## 9. 兼容与变更
 
