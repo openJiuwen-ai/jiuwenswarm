@@ -131,6 +131,10 @@ def dashscope_video_slot(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_generation_problem_explains_each_gap(monkeypatch: pytest.MonkeyPatch, dashscope_video_slot: None) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"preferred_language": "en"},
+    )
     assert mg.generation_problem("video") is None
     monkeypatch.setenv("VIDEO_GEN_PROTOCOL", "bytedance")
     monkeypatch.setenv("VIDEO_GEN_API_BASE", "https://openrouter.ai/api/v1")
