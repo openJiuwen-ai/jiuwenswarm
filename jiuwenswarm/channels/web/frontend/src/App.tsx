@@ -3261,7 +3261,10 @@ function AppContent({
                   : code === 'unsupported'
                     ? t('designer.chat.unsupported')
                     : '';
-          window.alert(referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')));
+          toast.open({
+            content: referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')),
+            variant: 'error',
+          });
         } finally {
           creatingSessionRef.current = false;
           useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);

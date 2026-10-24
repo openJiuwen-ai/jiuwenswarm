@@ -7,6 +7,7 @@ import { buildConversationModelPayload } from '../../multi-session/state/convers
 import { useDesignerStore } from './designerStore';
 import { useDesignerChatStore, type DesignerChatMessage } from './designerChatStore';
 import { designerWorkspaceClient } from './designerGraphClient';
+import { findDesignModelsProblem } from './designModelsReadiness';
 import {
   mediaItemsToBootstrapReferences,
   type DesignerBootstrapReference,
@@ -172,6 +173,13 @@ export async function submitDesignComposer(params: {
   if (!prompt && checked.refs.length === 0) {
     throw new Error('empty');
   }
+  // Design landing gate (frontend-only): fail on the prompt itself when the
+  // chat / video / image models are missing or switched off, before any
+  // session or graph is created.
+  const modelProblem = await findDesignModelsProblem();
+  if (modelProblem) {
+    throw new Error(modelProblem);
+  }
   const modelChoice = resolveDesignerModelChoice();
   const projectId = resolveDesignComposerProjectId();
   const created = await designerWorkspaceClient.createSession({ projectId });
@@ -208,6 +216,12 @@ export async function composeDesignerSession(params: {
   if (!prompt && references.length === 0) return;
   const leaderPrompt = prompt || '根据参考素材创作';
   try {
+    // Same design landing gate as ``submitDesignComposer``: the first message
+    // on an empty canvas must fail before the director builds the graph.
+    const modelProblem = await findDesignModelsProblem();
+    if (modelProblem) {
+      throw new Error(modelProblem);
+    }
     const workspace = await designerWorkspaceClient.composeSession({
       projectId: params.projectId,
       sessionId: params.sessionId,

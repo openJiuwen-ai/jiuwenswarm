@@ -75,6 +75,13 @@
     "loadErrorTitle": "Failed to load",
     "loadErrorFallback": "Could not load the design workflow. Please try again later.",
     "attachmentsBlocked": "Design mode does not support attachments yet. Remove attachments and try again.",
+    "models": {
+      "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
+      "videoOff": "Video generation is switched off in Settings > Agent.",
+      "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "imageOff": "Image generation is switched off in Settings > Agent.",
+      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent."
+    },
     "activity": {
       "thinking": "Thinking",
       "toolCall": "Using {{tool}}",
