@@ -4306,7 +4306,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                             ? t('chat.teamSkillsGroupLocked')
                                             : existingTeamGroupSelectionDisabled
                                             ? t('chat.agentGroupFirstBuildOnly')
-                                            : item.description || t('chat.agentGroupBinding')
+                                            : item.description || t('chat.agentGroupNoDescription')
                                       }
                                       {...agentTooltipHandlers}
                                       onClick={async () => {

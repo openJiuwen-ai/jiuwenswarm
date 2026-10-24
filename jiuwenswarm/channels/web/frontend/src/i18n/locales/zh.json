@@ -1651,6 +1651,7 @@
     "agentGroupRuntimeDisabledTitle": "请先启用三方 Agent",
     "agentGroupRuntimeDisabledConfirm": "知道了",
     "agentGroupBinding": "当前对话已绑定专家团，暂不可更换",
+    "agentGroupNoDescription": "该专家团暂无描述",
     "agentGroupFirstBuildOnly": "专家团只能在首次创建 Team 时选择",
     "agentOnlyInSingleAgentMode": "专家仅支持在单 Agent 模式下选择",
     "externalAgentRequiresNewSession": "三方专家需在新会话中使用，请新建会话后再选择",

@@ -1667,6 +1667,7 @@
     "agentGroupRuntimeDisabledTitle": "Enable external agents first",
     "agentGroupRuntimeDisabledConfirm": "Got it",
     "agentGroupBinding": "This conversation is bound to an Expert Team and cannot be changed",
+    "agentGroupNoDescription": "No description available for this expert team",
     "agentGroupFirstBuildOnly": "Expert Teams can only be selected when a Team is first created",
     "agentOnlyInSingleAgentMode": "Experts can only be selected in single-Agent mode",
     "externalAgentRequiresNewSession": "External experts require a new conversation. Start a new session to use one.",
