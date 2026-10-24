@@ -47,14 +47,36 @@ DEFAULT_EXTENSION_DIR = "jiuwenswarm/extensions"
 BAD_REQUEST = "BAD_REQUEST"
 PATH_NOT_ALLOWED = "PATH_NOT_ALLOWED"
 
+try:  # PyYAML 可用性：PD005 必须按真实环境判断，不能在引擎里写死成「可用」
+    import yaml as _yaml  # noqa: F401 - 只用于探测能否导入
+
+    _YAML_AVAILABLE = True
+except ImportError:  # pragma: no cover - 环境缺 PyYAML 时才走到
+    _YAML_AVAILABLE = False
+
 
 def running_jiuwenswarm_version() -> str:
-    """尽力拿到当前宿主版本；拿不到就返回空串（引擎会因此跳过版本比较，不臆测）。"""
+    """尽力拿到当前宿主版本；拿不到就返回空串（引擎会因此跳过版本比较，不臆测）。
 
+    优先用宿主的权威来源 ``jiuwenswarm.common.version.get_runtime_version()``：
+    发行包名是 ``workswarm``，用 ``importlib.metadata.version("jiuwenswarm")`` 在安装环境里
+    必然查不到，会退化成读 ``pyproject.toml``，而装成 wheel 后源码树并不存在。
+    """
+
+    try:
+        from jiuwenswarm.common.version import get_runtime_version
+
+        found = str(get_runtime_version() or "").strip()
+        if found:
+            return found
+    except Exception:  # noqa: BLE001 - 宿主模块不可用时退化到本地兜底
+        pass
     try:
         from importlib.metadata import version
 
-        return version("jiuwenswarm")
+        found = str(version("workswarm") or "").strip()
+        if found:
+            return found
     except Exception:  # noqa: BLE001 - 未安装 dist-info（源码直跑）时退化
         pass
     for candidate in (
@@ -227,7 +249,7 @@ class PluginDoctorApplicationPlugin(ApplicationPluginExtension):
         target = Path(raw_path.strip()).expanduser()
         if not target.is_absolute():
             target = self._user_plugin_dir() / target
-        resolved = Path(os.path.abspath(str(target)))
+        resolved = target.resolve()
         allowed = self._resolve_search_paths(None)
         if not self._is_within(resolved, allowed):
             await self._respond(
@@ -242,6 +264,7 @@ class PluginDoctorApplicationPlugin(ApplicationPluginExtension):
             resolved,
             running_version=running_jiuwenswarm_version(),
             is_installed=self._dependency_installed,
+            yaml_available=_YAML_AVAILABLE,
         )
         await self._respond(ws, req_id, ok=True, payload=report.to_dict())
 
@@ -251,7 +274,10 @@ class PluginDoctorApplicationPlugin(ApplicationPluginExtension):
         del session_id
         params = params if isinstance(params, dict) else {}
         fmt = str(params.get("format", "json")).strip().lower()
-        report = self._cached or self._scan(None)
+        report = self._cached
+        if report is None:  # 未先调 report 就直接导出时，把这次扫描结果写回缓存
+            report = self._scan(None)
+            self._cached = report
         if fmt == "markdown":
             content = doctor_engine.render_markdown(report)
             filename, mime = "plugin-doctor-report.md", "text/markdown"
@@ -289,6 +315,7 @@ class PluginDoctorApplicationPlugin(ApplicationPluginExtension):
             paths,
             running_version=running_jiuwenswarm_version(),
             is_installed=self._dependency_installed,
+            yaml_available=_YAML_AVAILABLE,
         )
         if len(report.plugins) > MAX_PLUGINS:
             trimmed = report.plugins[:MAX_PLUGINS]

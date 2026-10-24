@@ -673,17 +673,16 @@ def _validate_manifest(
                 )
             )
 
-    if (
-        "requires_transport" in manifest
-        and manifest.get("requires_transport") is not True
-    ):
+    requires_transport = manifest.get("requires_transport")
+    # 布尔值都是合法声明：显式 false 就是「不要求 transport」，宿主 is True 判为 False 正是预期。
+    if "requires_transport" in manifest and not isinstance(requires_transport, bool):
         findings.append(
             _finding(
                 "PD022",
                 target,
-                f"requires_transport={manifest.get('requires_transport')!r} 不是布尔真值，"
+                f"requires_transport={requires_transport!r} 不是布尔值，"
                 "宿主用 is True 判断，因此该声明不会生效",
-                "改成布尔 true，或删掉该字段",
+                "改成布尔 true/false，或删掉该字段",
             )
         )
 
@@ -1099,12 +1098,9 @@ def inspect_directory(
             )
         )
     elif source is not None and manifest_path.exists():
+        # 清单读不出来（PD002-PD005 已报根因）：不再拿空 dict 去校验，避免叠加
+        # PD017/PD019 这类「字段缺失」结论把根因盖住。
         manifest = {}
-        findings.extend(
-            _validate_manifest(
-                root, manifest, has_entry=True, running_version=running_version or ""
-            )
-        )
     else:
         manifest = {}
 
@@ -1175,7 +1171,9 @@ def _build_plugin_report(
     kind: str,
 ) -> PluginReport:
     manifest = manifest or {}
-    plugin_id = str(manifest.get("id", "") or "").strip() or entry_id
+    # 与宿主 registry 的取值顺序一致：类属性 plugin_id 优先，清单 id 只在缺类属性时兜底
+    # （registry.py:144-151 以该值作 _application_plugins 的唯一键，PD016 判重靠它）。
+    plugin_id = entry_id.strip() or str(manifest.get("id", "") or "").strip()
     deduped = _dedupe_findings(findings)
     return PluginReport(
         root=str(root),

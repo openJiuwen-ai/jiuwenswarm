@@ -426,6 +426,57 @@ async def test_export_markdown_uses_cached_report(
 
 
 @pytest.mark.asyncio
+async def test_export_writes_back_the_scan_to_the_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没有先调 report 就直接导出时，这次扫描要写回缓存，连续导出不再重复扫盘。"""
+
+    root = write_parent(tmp_path)
+    write_plugin(root)
+    plugin = PluginDoctorApplicationPlugin()
+    monkeypatch.setattr(plugin, "_user_plugin_dir", lambda: root)
+    channel, responses = bind(plugin)
+    scans: list[Any] = []
+    original = plugin._scan
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        scans.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(plugin, "_scan", counting)
+
+    first = await call(channel, responses, "export", {"format": "json"})
+    second = await call(channel, responses, "export", {"format": "json"})
+
+    assert first["ok"] is True and second["ok"] is True
+    assert len(scans) == 1
+    assert plugin._cached is not None
+
+
+@pytest.mark.asyncio
+async def test_report_passes_the_real_yaml_availability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PD005 不能是死代码：插件要把真实的 PyYAML 可用性传给引擎。"""
+
+    root = write_parent(tmp_path)
+    write_plugin(root)
+    plugin = PluginDoctorApplicationPlugin()
+    monkeypatch.setattr(plugin, "_user_plugin_dir", lambda: root)
+    monkeypatch.setattr(plugin_module, "_YAML_AVAILABLE", False)
+    channel, responses = bind(plugin)
+
+    payload = (await call(channel, responses, "report"))["payload"]
+
+    ids = {
+        finding["rule_id"]
+        for item in payload["plugins"]
+        for finding in item["findings"]
+    }
+    assert "PD005" in ids
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("bad", ["pdf", "", "JSON5"])
 async def test_export_handler_rejects_unknown_format(bad: str) -> None:
     channel, responses = bind(PluginDoctorApplicationPlugin())

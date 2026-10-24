@@ -539,6 +539,39 @@ def test_requires_transport_true_is_not_pd022(tmp_path: Path) -> None:
     assert "PD022" not in ids_of(doctor_engine.inspect_directory(root))
 
 
+def test_requires_transport_false_is_not_pd022(tmp_path: Path) -> None:
+    """显式 false 是合法声明（宿主 is True 判为 False 正是「不要求 transport」）。"""
+
+    root = make_plugin(tmp_path)
+    write(root, "extension.yaml", (root / "extension.yaml").read_text("utf-8") + "requires_transport: false\n")
+
+    assert "PD022" not in ids_of(doctor_engine.inspect_directory(root))
+
+
+def test_broken_manifest_does_not_pile_up_field_findings(tmp_path: Path) -> None:
+    """清单读不出来时只报根因（PD003），不再叠加 PD017/PD019 这类字段缺失结论。"""
+
+    root = make_plugin(tmp_path, manifest="id: [unclosed\n")
+
+    ids = ids_of(doctor_engine.inspect_directory(root))
+
+    assert "PD003" in ids
+    assert "PD017" not in ids
+    assert "PD019" not in ids
+
+
+def test_plugin_id_prefers_the_class_attribute_over_the_manifest(tmp_path: Path) -> None:
+    """宿主 registry 的取值顺序是「类属性 plugin_id → 清单 id」，体检报告要跟它一致。"""
+
+    manifest = HEALTHY_MANIFEST.replace("__ID__", "manifest-id")
+    entry = HEALTHY_ENTRY.replace("__ID__", "class-id")
+    root = make_plugin(tmp_path, "id-mismatch", manifest=manifest, entry=entry)
+
+    report = doctor_engine.inspect_directory(root)
+
+    assert report.plugin_id == "class-id"
+
+
 def test_relative_import_is_pd023(tmp_path: Path) -> None:
     entry = "from . import sibling\n\n\nasync def register_extensions(registry):\n    return []\n"
     root = make_plugin(tmp_path, entry=entry)
