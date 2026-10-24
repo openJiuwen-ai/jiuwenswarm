@@ -81,11 +81,9 @@ async def shutdown_extensions() -> None:
         assembly = _ASSEMBLY
         if assembly is None:
             return
-        _ASSEMBLY = None
-    try:
-        await assembly.webui.shutdown()
-    finally:
         await assembly.manager.shutdown()
+        await assembly.webui.shutdown()
+        _ASSEMBLY = None
 
 
 def _build_assembly(server: Any) -> ExtensionAssembly:
