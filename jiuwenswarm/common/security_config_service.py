@@ -139,14 +139,56 @@ class SecurityConfigService:
                 os.unlink(temp)
 
     @staticmethod
-    def _pending_state() -> dict[str, Any]:
-        return {
+    def _pending_state(previous: dict[str, Any] | None = None) -> dict[str, Any]:
+        state = {
             "revision": f"sec-{uuid.uuid4()}",
             "status": "applying",
             "saved": True,
             "applied": False,
             "targets": {"rail": "pending", "host_exit": "pending", "sandbox": "pending"},
         }
+        for key in ("sandbox_pending", "sandbox_retry"):
+            if previous and previous.get(key):
+                state[key] = deepcopy(previous[key])
+        return state
+
+    def _pending_after_edit(self) -> dict[str, Any]:
+        # Carry only an unfinished sandbox target; do not recompute the old
+        # candidate after settings may have disabled a source.
+        try:
+            with self.state_path.open(encoding="utf-8") as stream:
+                previous = json.load(stream)
+        except (FileNotFoundError, json.JSONDecodeError, UnicodeError):
+            previous = None
+        return self._pending_state(previous if isinstance(previous, dict) else None)
+
+    @staticmethod
+    def _sandbox_changed_axes(before: dict[str, Any], after: dict[str, Any]) -> dict[str, bool]:
+        old = before.get("permissions") or {}
+        new = after.get("permissions") or {}
+        return {
+            axis: (old.get(module) or {}).get(field) != (new.get(module) or {}).get(field)
+            or (old.get(module) or {}).get("enabled") != (new.get(module) or {}).get("enabled")
+            for axis, module, field in (("file", "file_guard", "paths"), ("network", "net_guard", "urls"))
+        }
+
+    def _compose_checked(self, settings, local, cloud, state, validator=None):
+        revision = state["revision"]
+        candidate = compose_candidate(settings, self._sources(settings, local, cloud), revision)
+        live = self._read_yaml(self.config_path)
+        if validator is not None:
+            from openjiuwen.harness.security.permission_engine import core as permission_core
+
+            if getattr(permission_core, "COMPOSITION_SCHEMA_VERSION", None) != 1:
+                raise RuntimeError("installed core does not support security composition v1")
+            permission_core.prepare_permissions_for_engine(candidate)
+            validator(candidate, live)
+        if (live.get("sandbox") or {}).get("enabled"):
+            changed = self._sandbox_changed_axes(live, {"permissions": candidate})
+            pending = state.setdefault("sandbox_pending", {})
+            for axis, value in changed.items():
+                pending[axis] = bool(pending.get(axis) or value)
+        return candidate
 
     def _load_sources(self, settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         selected = {item["id"] for item in settings["security"]["policy_sources"] if item["enabled"]}
@@ -183,8 +225,8 @@ class SecurityConfigService:
             result = mutate(settings, local)
             settings = validate_settings(settings)
             local = validate_source(local)
-            state = self._pending_state()
-            compose_candidate(settings, self._sources(settings, local, cloud), state["revision"])
+            state = self._pending_after_edit()
+            self._compose_checked(settings, local, cloud, state)
             dump_yaml_round_trip(self.settings_path, settings)
             dump_yaml_round_trip(self.local_path, local)
             self._write_state(state)
@@ -196,7 +238,7 @@ class SecurityConfigService:
             sources[SOURCE_BUILTIN] = self._builtin_reader()
         return sources
 
-    def initialize_from_live(self) -> dict[str, Any]:
+    def initialize_from_live(self, *, validator=None) -> dict[str, Any]:
         """Adopt the old config once; never extract from a derived snapshot again."""
         with self._thread_lock, self._locked():
             if any(path.exists() for path in (
@@ -222,7 +264,7 @@ class SecurityConfigService:
             })
             local = validate_source({"permissions": local_permissions})
             state = self._pending_state()
-            compose_candidate(settings, self._sources(settings, local, {"permissions": {}}), state["revision"])
+            self._compose_checked(settings, local, {"permissions": {}}, state, validator)
             from jiuwenswarm.server.sandbox_policy_render import initialize_native_sandbox_network
             initialize_native_sandbox_network(self.config_path, (live.get("sandbox") or {}).get("urls") or {})
             dump_yaml_round_trip(self.initial_snapshot_path, live)
@@ -296,11 +338,66 @@ class SecurityConfigService:
                     dump_yaml_round_trip(self.config_path, published)
             state.update(status="applying", saved=True, applied=False)
             state["targets"] = {"rail": "pending", "host_exit": "pending", "sandbox": "pending"}
+            if (published.get("sandbox") or {}).get("enabled"):
+                changed = self._sandbox_changed_axes(
+                    {"permissions": previous["permissions"]}, published,
+                )
+                pending = state.setdefault("sandbox_pending", {})
+                for axis, value in changed.items():
+                    pending[axis] = bool(pending.get(axis) or value)
+            state.pop("sandbox_file_skipped", None)
+            state.pop("sandbox_network_skipped", None)
             state["effective_hash"] = self._effective_hash(published)
             self._write_state(state)
             return {"config": published, "previous": previous, "apply": deepcopy(state)}
 
-    def record_apply(self, revision: str, targets: dict[str, str]) -> dict[str, Any]:
+    def snapshot_for_rollback(self) -> dict[str, Any]:
+        """Capture the last accepted files before a managed update changes them."""
+        with self._thread_lock, self._locked():
+            paths = (self.config_path, self.settings_path, self.local_path, self.cloud_path)
+            return {
+                "files": {path: path.read_bytes() if path.is_file() else None for path in paths},
+                "state": deepcopy(self._state()) if self.state_path.is_file() else None,
+            }
+
+    def restore_snapshot(self, snapshot: dict[str, Any], *, expected_revision: str) -> dict[str, Any] | None:
+        """Discard a failed revision and restore its predecessor's disk state."""
+        from jiuwenswarm.common.config import _atomic_replace, _config_lock_path
+
+        with self._thread_lock, self._locked():
+            if self._state()["revision"] != expected_revision:
+                raise ValueError("VERSION_CONFLICT")
+
+            def restore(path: Path, contents: bytes | None) -> None:
+                if contents is None:
+                    path.unlink(missing_ok=True)
+                    return
+                temp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+                try:
+                    temp.write_bytes(contents)
+                    _atomic_replace(temp, path)
+                finally:
+                    temp.unlink(missing_ok=True)
+
+            files = snapshot["files"]
+            with portalocker.Lock(str(_config_lock_path(self.config_path)), timeout=10):
+                restore(self.config_path, files[self.config_path])
+            for path in (self.settings_path, self.local_path, self.cloud_path):
+                restore(path, files[path])
+            old_state = snapshot["state"]
+            if old_state is None:
+                self.state_path.unlink(missing_ok=True)
+                self.initial_snapshot_path.unlink(missing_ok=True)
+            else:
+                self._write_state(old_state)
+            return deepcopy(old_state)
+
+    def record_apply(
+        self, revision: str, targets: dict[str, str],
+        *, sandbox_file_skipped: list[dict[str, str]] | None = None,
+        sandbox_network_skipped: list[dict[str, str]] | None = None,
+        sandbox_retry: dict[str, bool] | None = None,
+    ) -> dict[str, Any]:
         """Record acknowledgements for one revision; a newer save cannot be overwritten."""
         with self._thread_lock, self._locked():
             state = self._state()
@@ -309,7 +406,16 @@ class SecurityConfigService:
             if set(targets) != {"rail", "host_exit", "sandbox"}:
                 raise ValueError("all apply targets must be reported")
             state["targets"] = deepcopy(targets)
-            state["applied"] = all(value in {"applied", "not_required"} for value in targets.values())
+            state["sandbox_file_skipped"] = deepcopy(sandbox_file_skipped or [])
+            state["sandbox_network_skipped"] = deepcopy(sandbox_network_skipped or [])
+            state["sandbox_retry"] = deepcopy(state.get("sandbox_retry", {}) if sandbox_retry is None else sandbox_retry)
+            if targets["sandbox"] == "applied" or sandbox_retry is not None:
+                state["sandbox_pending"] = {}
+            state["applied"] = (
+                all(value in {"applied", "not_required"} for value in targets.values())
+                and not any((state.get("sandbox_pending") or {}).values())
+                and not any((state.get("sandbox_retry") or {}).values())
+            )
             state["status"] = "applied" if state["applied"] else "failed"
             self._write_state(state)
             return deepcopy(state)
@@ -318,7 +424,7 @@ class SecurityConfigService:
         if expected_revision is not None and self._state()["revision"] != expected_revision:
             raise ValueError("VERSION_CONFLICT")
 
-    def update_settings(self, patch: dict[str, Any], *, expected_revision: str | None = None) -> dict[str, Any]:
+    def update_settings(self, patch: dict[str, Any], *, expected_revision: str | None = None, validator=None) -> dict[str, Any]:
         if not isinstance(patch, dict) or set(patch) - {"policy_sources", "fail_closed"}:
             raise ValueError("settings patch accepts policy_sources/fail_closed only")
         with self._thread_lock, self._locked():
@@ -327,13 +433,13 @@ class SecurityConfigService:
             settings["security"].update(deepcopy(patch))
             settings = validate_settings(settings)
             local, cloud = self._load_sources(settings)
-            state = self._pending_state()
-            compose_candidate(settings, self._sources(settings, local, cloud), state["revision"])
+            state = self._pending_after_edit()
+            self._compose_checked(settings, local, cloud, state, validator)
             dump_yaml_round_trip(self.settings_path, settings)
             self._write_state(state)
             return deepcopy(state)
 
-    def update_local(self, module: str, value: Any, *, expected_revision: str | None = None) -> dict[str, Any]:
+    def update_local(self, module: str, value: Any, *, expected_revision: str | None = None, validator=None) -> dict[str, Any]:
         """Replace one module's user rules; native validation remains in the helpers."""
         with self._thread_lock, self._locked():
             self._check_revision(expected_revision)
@@ -353,13 +459,13 @@ class SecurityConfigService:
             else:
                 raise ValueError(f"unknown security module: {module}")
             local = validate_source(local)
-            state = self._pending_state()
-            compose_candidate(settings, self._sources(settings, local, cloud), state["revision"])
+            state = self._pending_after_edit()
+            self._compose_checked(settings, local, cloud, state, validator)
             dump_yaml_round_trip(self.local_path, local)
             self._write_state(state)
             return deepcopy(state)
 
-    def update_module_settings(self, module: str, patch: dict[str, Any], *, expected_revision: str | None = None) -> dict[str, Any]:
+    def update_module_settings(self, module: str, patch: dict[str, Any], *, expected_revision: str | None = None, validator=None) -> dict[str, Any]:
         """Route module switches/defaults to their native configuration shape."""
         if not isinstance(patch, dict):
             raise ValueError("settings patch must be an object")
@@ -398,13 +504,13 @@ class SecurityConfigService:
                 settings.setdefault("permissions", {}).update(deepcopy(patch))
             else:
                 raise ValueError(f"unknown security module: {module}")
-            state = self._pending_state()
-            compose_candidate(settings, self._sources(settings, local, cloud), state["revision"])
+            state = self._pending_after_edit()
+            self._compose_checked(settings, local, cloud, state, validator)
             dump_yaml_round_trip(self.settings_path, settings)
             self._write_state(state)
             return deepcopy(state)
 
-    def update_permission_profile(self, patch: dict[str, Any], *, expected_revision: str | None = None) -> dict[str, Any]:
+    def update_permission_profile(self, patch: dict[str, Any], *, expected_revision: str | None = None, validator=None) -> dict[str, Any]:
         """Apply the desktop permission preset to settings and user tool baselines together."""
         fields = {"enabled", "permission_mode", "bash_level", "network_level", "file_guard_default_rw"}
         if not isinstance(patch, dict) or set(patch) != fields:
@@ -440,8 +546,8 @@ class SecurityConfigService:
             })
             settings = validate_settings(settings)
             local = validate_source(local)
-            state = self._pending_state()
-            compose_candidate(settings, self._sources(settings, local, cloud), state["revision"])
+            state = self._pending_after_edit()
+            self._compose_checked(settings, local, cloud, state, validator)
             dump_yaml_round_trip(self.settings_path, settings)
             dump_yaml_round_trip(self.local_path, local)
             self._write_state(state)
@@ -459,20 +565,23 @@ class SecurityConfigService:
             grants[:] = [item for item in grants if item.get("id") != grant["id"]]
             grants.append(deepcopy(grant))
             local = validate_source(local)
-            state = self._pending_state()
-            compose_candidate(settings, self._sources(settings, local, cloud), state["revision"])
+            state = self._pending_after_edit()
+            self._compose_checked(settings, local, cloud, state)
             dump_yaml_round_trip(self.local_path, local)
             self._write_state(state)
         try:
             self.publish_candidate(expected_revision=state["revision"])
+            sandbox_pending = any((state.get("sandbox_pending") or {}).values())
+            sandbox_retry = any((state.get("sandbox_retry") or {}).values())
             self.record_apply(state["revision"], {
-                "rail": "applied", "host_exit": "not_required", "sandbox": "not_required",
+                "rail": "applied", "host_exit": "not_required",
+                "sandbox": "pending" if sandbox_pending or sandbox_retry else "not_required",
             })
         except Exception:
             return False
         return True
 
-    def replace_cloud_policy(self, policy_version: int, permissions: dict[str, Any]) -> dict[str, Any]:
+    def replace_cloud_policy(self, policy_version: int, permissions: dict[str, Any], *, validator=None) -> dict[str, Any]:
         """Trusted internal adapter only; do not register this as a public RPC."""
         cloud = validate_source({"policy_version": policy_version, "permissions": permissions}, cloud=True)
         if policy_version < 1:
@@ -488,8 +597,8 @@ class SecurityConfigService:
                 if cloud == current:
                     return deepcopy(self._state())
                 raise ValueError("conflicting cloud policy_version")
-            state = self._pending_state()
-            compose_candidate(settings, self._sources(settings, local, cloud), state["revision"])
+            state = self._pending_after_edit()
+            self._compose_checked(settings, local, cloud, state, validator)
             dump_yaml_round_trip(self.cloud_path, cloud)
             self._write_state(state)
             return deepcopy(state)

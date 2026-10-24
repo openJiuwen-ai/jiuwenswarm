@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 
 from jiuwenswarm.common.config import dump_yaml_round_trip, load_yaml_round_trip
+from jiuwenswarm.common.security_config_compose import validate_source
 from jiuwenswarm.common.security_config_service import SecurityConfigService
 
 
@@ -286,6 +287,34 @@ def test_package_template_can_be_adopted_without_mutating_live(tmp_path):
     assert candidate["local"]["permissions"]["rules"]
     assert candidate["permissions"]["rules"]
     assert path.read_bytes() == template
+    assert any(rule.get("profile_actions") for rule in candidate["local"]["permissions"]["rules"])
+    assert service.publish_candidate()["config"]["permissions"]["rules"]
+
+
+def test_profile_actions_are_preserved_and_validated(service):
+    live = load_yaml_round_trip(service.config_path)
+    live["permissions"]["rules"][0]["profile_actions"] = {"full_access": "allow"}
+    dump_yaml_round_trip(service.config_path, live)
+    service.initialize_from_live()
+    assert service.get_candidate()["local"]["permissions"]["rules"][0]["profile_actions"] == {
+        "full_access": "allow",
+    }
+    with pytest.raises(ValueError, match="invalid profile_actions"):
+        service.update_local("command", [{
+            "id": "invalid-profile", "tools": ["bash"], "pattern": "bad *",
+            "action": "ask", "profile_actions": {"full_access": []},
+        }])
+
+
+def test_profile_actions_preserve_template_rule_and_reject_invalid_overrides():
+    rule = {
+        "id": "delete-files", "tools": ["shell"], "pattern": "rm *",
+        "action": "ask", "profile_actions": {"full_access": "allow"},
+    }
+    source = validate_source({"permissions": {"rules": [rule]}})
+    assert source["permissions"]["rules"][0]["profile_actions"] == {"full_access": "allow"}
+    with pytest.raises(ValueError, match="invalid profile_actions"):
+        validate_source({"permissions": {"rules": [{**rule, "profile_actions": {"full_access": "skip"}}]}})
 
 
 def test_lost_state_and_interrupted_source_write_get_fresh_revision(service):
@@ -353,6 +382,47 @@ def test_composed_permanent_approval_stays_in_user_source(service):
     assert [item["id"] for item in service._read_yaml(service.local_path)["permissions"]["approval_overrides"]] == [
         "approved-1", "remembered",
     ]
+
+
+def test_legacy_edit_keeps_sandbox_retry_for_unchanged_network_axis(service):
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+    service.initialize_from_live()
+    pending = service.update_local("network", {"pending.example": "deny"})
+    service.publish_candidate(expected_revision=pending["revision"])
+    service.record_apply(
+        pending["revision"], {"rail": "applied", "host_exit": "applied", "sandbox": "failed: unavailable"},
+        sandbox_retry={"network": True},
+    )
+
+    _, edited = service.edit_native(
+        lambda _settings, local: local["permissions"].setdefault("tools", {}).update({"bash": "ask"}),
+    )
+    assert edited["sandbox_retry"] == {"network": True}
+    assert service.get_candidate()["apply"]["sandbox_retry"] == {"network": True}
+
+
+def test_permanent_approval_does_not_mark_unfinished_sandbox_projection_applied(service):
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+    service.initialize_from_live()
+    pending = service.update_local("network", {"pending.example": "deny"})
+    service.publish_candidate(expected_revision=pending["revision"])
+    service.record_apply(
+        pending["revision"], {"rail": "applied", "host_exit": "applied", "sandbox": "failed: unavailable"},
+        sandbox_retry={"network": True},
+    )
+
+    grant = {"id": "remembered", "tools": ["bash"], "match_type": "command",
+             "pattern": "safe *", "action": "allow"}
+    assert service.persist_user_approval(grant)
+    state = service.get_candidate()["apply"]
+    assert not state["applied"]
+    assert state["targets"]["sandbox"] == "pending"
+    assert state["sandbox_retry"] == {"network": True}
+    assert load_yaml_round_trip(service.config_path)["permissions"]["approval_overrides"][-1] == grant
 
 
 def test_composed_file_projection_accepts_read_deny_implied_exec_on_windows(tmp_path):
