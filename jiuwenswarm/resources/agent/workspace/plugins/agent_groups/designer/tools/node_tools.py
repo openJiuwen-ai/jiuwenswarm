@@ -408,7 +408,11 @@ async def generate_node_output(
     if lead and lead not in focused:
         focused = f"{lead}\n{focused}"
     injected: dict[str, Any] = {"prompt": focused}
-    if duration_seconds is not None and duration_seconds > 0:
+    authored_duration = (node.get("config") or {}).get("duration_sec")
+    has_authored_duration = isinstance(authored_duration, (int, float)) and not isinstance(
+        authored_duration, bool
+    )
+    if duration_seconds is not None and duration_seconds > 0 and not has_authored_duration:
         injected["duration_sec"] = int(round(duration_seconds))
     attempts = _GENERATE_ATTEMPTS_BY_KIND.get(kind, 1)
     result: Any = None
