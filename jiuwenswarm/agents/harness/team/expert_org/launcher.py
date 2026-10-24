@@ -6,13 +6,15 @@ from __future__ import annotations
 
 import logging
 import asyncio
-import time
 import uuid
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
 from jiuwenswarm.server.runtime.team_organization_identity_store import save_organization_team_identity
+
+if TYPE_CHECKING:
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _UnattendedTeamRoundHistoryWriter
 
 logger = logging.getLogger(__name__)
 _recovery_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -561,50 +563,24 @@ class JiuwenExpertTeamLauncher:
             return False
         finally:
             try:
-                try:
-                    if source in {"org_root_background", "org_root_delivery"} and registered:
-                        if owner_is_stopped(session_id, team_id):
-                            from jiuwenswarm.server.runtime.organization_owner_results import queue_owner_notification
-
-                            try:
-                                await queue_owner_notification(session_id, team_id, source, inputs)
-                            except Exception:
-                                logger.warning("[ExpertTeamLauncher] cleanup notification failed team=%s session=%s",
-                                               team_id, session_id, exc_info=True)
-                    await self._flush_expert_history(session_id, team_id, round_id)
-                finally:
-                    if ran_turn and activation is not None:
-                        if not finalized:
-                            logger.info(
-                                "[ExpertTeamLauncher] org turn finalize team=%s session=%s "
-                                "source=%s trigger=finally",
-                                team_id,
-                                session_id,
-                                source,
-                            )
-                            await runtime.finalize(team_name=team_id, session_id=session_id)
-                        current = await runtime.pool.get(team_id)
-                        interact_gate = getattr(current, "interact_gate", None)
-                        close_and_drain = getattr(interact_gate, "close_and_drain", None)
-                        if callable(close_and_drain):
-                            await close_and_drain()
-                        await activation.session.post_run()
+                await self._flush_expert_history(session_id, team_id, round_id)
             finally:
-                try:
-                    if registered:
-                        await self.push_expert_payload(
-                            {"event_type": "chat.processing_status", "is_processing": False},
-                            team_id=team_id, session_id=session_id, channel_id=resolved_channel_id,
-                            round_id=round_id, frame_sequence=frame_sequence, source=source,
+                if ran_turn and activation is not None:
+                    if not finalized:
+                        logger.info(
+                            "[ExpertTeamLauncher] org turn finalize team=%s session=%s "
+                            "source=%s trigger=finally",
+                            team_id,
+                            session_id,
+                            source,
                         )
-                except Exception:
-                    # Cleanup delivery must not replace the turn's outcome.
-                    logger.warning("[ExpertTeamLauncher] turn cleanup status delivery failed team=%s session=%s",
-                                   team_id, session_id, exc_info=True)
-                finally:
-                    if registered:
-                        # Both operations are keyed by asyncio.current_task().
-                        unregister_turn()
+                        await runtime.finalize(team_name=team_id, session_id=session_id)
+                    current = await runtime.pool.get(team_id)
+                    interact_gate = getattr(current, "interact_gate", None)
+                    close_and_drain = getattr(interact_gate, "close_and_drain", None)
+                    if callable(close_and_drain):
+                        await close_and_drain()
+                    await activation.session.post_run()
 
     async def _relay_expert_chunk(
         self,
@@ -690,10 +666,6 @@ class JiuwenExpertTeamLauncher:
         parsed["request_id"] = round_id
         parsed["source"] = source
         parsed = _tag_team_output_origin(parsed, team_id)
-        # Lifecycle frames are outside the model-output tagger's allowlist.
-        # They still need the same team identity as the corresponding output.
-        parsed["team_id"] = team_id
-        parsed["team_name"] = team_id
         await self._persist_expert_history(
             parsed,
             team_id=team_id,

@@ -205,6 +205,6 @@ Also check the experimental switch and Team isolation:
 4. Stop an expert request and confirm that the owner's running task is not cancelled. Targeted expert requests do not support pause/resume; unsupported intentions must not fall back to controlling the owner.
 5. Disable the switch and confirm that organization views and event subscriptions are removed. Fully restart the backend and create a new Team session to confirm Organization tools are absent. Re-enable and rebuild runtimes to test Organization collaboration again.
 
-Dissolving an Organization stops its temporary expert and Summary Teams and returns the selector to the Owner. The Owner remains available for chat or another Organization. Independently existing invited Teams are unbound. Installed templates, saved messages, and written artifacts remain; Organization task, review, and summary-execution data are removed.
+Expert message history is isolated. Completed reply segments from background expert and Summary Teams are saved even while the browser is disconnected; refreshing and selecting the Team restores those replies. Text still being generated becomes restorable at the next output boundary or when the turn ends. Restoring expert tool execution history is not covered by this UI iteration. Automated regression tests do not replace this real-model acceptance run.
 
 These checks do not replace real-model integration testing. After automated regressions pass, run the flow with a working model, valid AgentGroup packages, and a separate test session.
