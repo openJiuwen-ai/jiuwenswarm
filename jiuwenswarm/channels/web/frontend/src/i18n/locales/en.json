@@ -4086,6 +4086,7 @@
       }
     },
     "toolResult": {
+      "answersInSummary": "See the answers in the clarification card. Sensitive input is hidden.",
       "success": "done",
       "failed": "failed",
       "timeout": "Execution timed out",
