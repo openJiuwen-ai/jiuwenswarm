@@ -153,8 +153,8 @@ export class SessionManager {
   }
 
   /** Enable/disable a skill */
-  async toggleSkill(skillId: string, enabled: boolean): Promise<void> {
-    await this.request('skills.toggle', { skill_id: skillId, enabled });
+  async toggleSkill(name: string, enabled: boolean): Promise<Record<string, unknown>> {
+    return this.request('skills.toggle', { name, enabled });
   }
 
   /** Delete a session */

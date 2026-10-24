@@ -229,10 +229,11 @@ export class ChatPanel implements vscode.Disposable {
       }
 
       case 'toggle_skill': {
-        const skillId = msg.skillId as string;
+        const skillId = (msg.skillId as string) || '';
+        const skillName = (msg.name as string) || skillId;
         const enabled = msg.enabled as boolean;
-        if (skillId !== undefined && enabled !== undefined) {
-          this.toggleSkill(skillId, enabled);
+        if (skillName && enabled !== undefined) {
+          this.toggleSkill(skillName, enabled, skillId || skillName);
         }
         break;
       }
@@ -817,11 +818,14 @@ export class ChatPanel implements vscode.Disposable {
     }
   }
 
-  private async toggleSkill(skillId: string, enabled: boolean): Promise<void> {
+  private async toggleSkill(skillName: string, enabled: boolean, key: string): Promise<void> {
     try {
-      this.debug(`ACTION→ toggle_skill ${skillId} enabled=${enabled}`);
-      await this.session.toggleSkill(skillId, enabled);
-      this.postToWebview({ type: 'skill_toggled', skillId, enabled });
+      this.debug(`ACTION toggle_skill ${skillName} enabled=${enabled}`);
+      const payload = await this.session.toggleSkill(skillName, enabled);
+      if (payload && payload.success === false) {
+        throw new Error(String(payload.detail || 'Failed to toggle skill'));
+      }
+      this.postToWebview({ type: 'skill_toggled', skillId: key, enabled });
     } catch (e) {
       this.debug(`toggle_skill failed: ${e}`);
       this.postToWebview({ type: 'skills_error', message: String(e) });

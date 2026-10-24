@@ -437,13 +437,21 @@ class ChatPanel(
                     }
                 }
                 "toggle_skill" -> {
-                    val skillId = msg.get("skillId")?.asString ?: return
+                    val key = msg.get("skillId")?.asString ?: ""
+                    val name = msg.get("name")?.asString ?: key
                     val enabled = msg.get("enabled")?.asBoolean ?: return
+                    if (name.isBlank()) return
+                    val resultKey = key.ifBlank { name }
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
-                            debug("ACTION→ toggle_skill $skillId enabled=$enabled")
-                            service.session.toggleSkill(skillId, enabled)
-                            dispatchToWebview(mapOf("type" to "skill_toggled", "skillId" to skillId, "enabled" to enabled))
+                            debug("ACTION toggle_skill $name enabled=$enabled")
+                            val payload = service.session.toggleSkill(name, enabled)
+                            if (payload.get("success")?.asBoolean == false) {
+                                throw IllegalStateException(
+                                    payload.get("detail")?.asString ?: "Failed to toggle skill"
+                                )
+                            }
+                            dispatchToWebview(mapOf("type" to "skill_toggled", "skillId" to resultKey, "enabled" to enabled))
                         } catch (e: Exception) {
                             LOG.warn("toggle_skill failed", e)
                             dispatchToWebview(mapOf("type" to "skills_error", "message" to (e.message ?: "Failed to toggle skill")))

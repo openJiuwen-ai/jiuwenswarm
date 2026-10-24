@@ -2363,13 +2363,28 @@ function updateSkills(skills) {
         (skill.trigger    ? '<div class="skill-trigger">' + escapeHtml(skill.trigger)    + '</div>' : '') +
       '</div>' +
       '<button class="skill-toggle-btn' + (enabled ? ' enabled' : '') + '" ' +
-        'onclick="toggleSkill(' + JSON.stringify(skill.skill_id) + ',' + !enabled + ')" ' +
+        'data-skill-key="' + escapeHtml(skillKey(skill)) + '" ' +
+        'data-enable="' + (!enabled ? '1' : '0') + '" ' +
         'title="' + (enabled ? 'Disable' : 'Enable') + '">' +
         (enabled ? 'ON' : 'OFF') +
       '</button>';
     el.appendChild(item);
   });
 }
+
+// Delegate the toggle click instead of embedding skill names in inline JS.
+// Names can contain quotes/HTML; data attributes go through escapeHtml().
+(function initSkillToggleDelegation() {
+  var list = document.getElementById('skills-list');
+  if (!list) return;
+  list.addEventListener('click', function(e) {
+    var btn = e.target && e.target.closest ? e.target.closest('.skill-toggle-btn') : null;
+    if (!btn || !list.contains(btn)) return;
+    var key = btn.getAttribute('data-skill-key') || '';
+    if (!key) return;
+    toggleSkill(key, btn.getAttribute('data-enable') === '1');
+  });
+})();
 
 function showSkillsError(message) {
   var msg = escapeHtml(message || 'Failed to load skills');
@@ -2384,19 +2399,30 @@ function showSkillsError(message) {
     '</div>';
 }
 
+// The server's skills.toggle expects `name`; the list's skill_id may be empty
+// for local/builtin skills, so use name as the stable key.
+function skillKey(skill) {
+  return (skill && (skill.skill_id || skill.name)) || '';
+}
+
 function toggleSkill(skillId, enable) {
+  var skill = (state.skills || []).find(function(s) { return skillKey(s) === skillId; });
   // Optimistic update: reflect change immediately before server confirms
-  var idx = state.skills.findIndex(function(s) { return s.skill_id === skillId; });
-  if (idx >= 0) {
-    state.skills[idx] = Object.assign({}, state.skills[idx], { enabled: enable });
+  if (skill) {
+    skill.enabled = enable;
     updateSkills(state.skills);
   }
-  send({ type: 'toggle_skill', skillId: skillId, enabled: enable });
+  send({
+    type: 'toggle_skill',
+    skillId: skillId,
+    name: (skill && (skill.name || skill.skill_id)) || skillId,
+    enabled: enable,
+  });
 }
 
 function onSkillToggled(skillId, enabled) {
   // Update in-memory state and re-render
-  var idx = state.skills.findIndex(function(s) { return s.skill_id === skillId; });
+  var idx = state.skills.findIndex(function(s) { return skillKey(s) === skillId; });
   if (idx >= 0) {
     state.skills[idx] = Object.assign({}, state.skills[idx], { enabled: enabled });
     updateSkills(state.skills);
