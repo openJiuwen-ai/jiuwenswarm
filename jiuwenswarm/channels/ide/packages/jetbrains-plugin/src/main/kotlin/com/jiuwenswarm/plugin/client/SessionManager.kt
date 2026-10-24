@@ -120,12 +120,14 @@ class SessionManager(
         sessionTitle = payload.get("title")?.asString ?: title
     }
 
-    fun switchSession(sid: String, mode: String? = null) {
+    /** Switch to an existing session. Returns the server-resolved session mode. */
+    fun switchSession(sid: String, mode: String? = null): String? {
         val params = mutableMapOf("session_id" to sid)
         if (mode != null) params["mode"] = mode
         val payload = request("session.switch", params, sid)
         setSessionId(sid)
         sessionTitle = payload.get("title")?.asString ?: sid
+        return payload.get("mode")?.asString
     }
 
     /**

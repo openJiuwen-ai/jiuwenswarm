@@ -210,9 +210,9 @@ export class ChatPanel implements vscode.Disposable {
       case 'switch_session': {
         const sid = msg.sessionId as string;
         if (sid) {
-          // session.switch is a team-mode server operation — the user's
-          // chat mode (code.plan / code.normal / code.team) is sent per-message.
-          this.switchSession(sid, 'code.team');
+          // Let the server resolve the target session's stored mode; it returns
+          // the canonical mode in the session.switch response.
+          this.switchSession(sid);
         }
         break;
       }
@@ -734,16 +734,19 @@ export class ChatPanel implements vscode.Disposable {
   private async switchSession(sessionId: string, mode?: string): Promise<void> {
     try {
       this.debug(`ACTION→ switch_session ${sessionId} mode=${mode || 'default'}`);
-      await this.session.switchSession(sessionId, mode);
+      const serverMode = await this.session.switchSession(sessionId, mode);
       this.resetSessionMetrics();
-      // The session change already fired onSessionChange → sendCurrentStatus,
+      // The session change already fired onSessionChange �+' sendCurrentStatus,
       // which loads the new session's history exactly once (guarded by
-      // historyLoadedForSession) — no separate loadHistory call here.
+      // historyLoadedForSession) - no separate loadHistory call here.
       this.postToWebview({
         type: 'connected',
         sessionId: this.session.sessionId!,
         sessionTitle: this.session.sessionTitle,
       });
+      if (serverMode) {
+        this.postToWebview({ type: 'mode_updated', mode: serverMode });
+      }
     } catch (e) {
       this.postToWebview({ type: 'error', message: String(e) });
     }

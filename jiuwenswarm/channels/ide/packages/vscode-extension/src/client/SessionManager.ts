@@ -56,13 +56,14 @@ export class SessionManager {
     }));
   }
 
-  /** Switch to an existing session */
-  async switchSession(sid: string, mode?: string): Promise<void> {
+  /** Switch to an existing session. Returns the server-resolved session mode. */
+  async switchSession(sid: string, mode?: string): Promise<string | null> {
     const params: Record<string, unknown> = { session_id: sid };
     if (mode) params.mode = mode;
     const payload = await this.request('session.switch', params, sid);
     this.setSessionId(sid);
     this._sessionTitle = (payload.title as string) || sid;
+    return (payload.mode as string) || null;
   }
 
   /**
