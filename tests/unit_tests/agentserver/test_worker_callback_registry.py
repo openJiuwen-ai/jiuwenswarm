@@ -12,7 +12,7 @@ import pytest
 
 from openjiuwen.core.runner.callback import AsyncCallbackFramework
 from jiuwenswarm.server.worker.callback_registry import bind_callback_registry_owner
-from jiuwenswarm.server.worker.runtime_host import WorkerRuntime
+from jiuwenswarm.server.worker.lifecycle import WorkerRuntime
 
 
 @pytest.mark.asyncio
@@ -267,8 +267,10 @@ async def test_close_prevents_queued_sync_registration_from_running(monkeypatch)
 async def test_runtime_keeps_registry_open_through_teardown_then_closes_it(failed):
     framework = AsyncCallbackFramework(enable_logging=False)
     owner = bind_callback_registry_owner(framework)
-    server = SimpleNamespace(worker_callback_registry_owner=owner)
-    runtime = WorkerRuntime(server=server, stop_event=asyncio.Event())
+    runtime = WorkerRuntime(
+        server=SimpleNamespace(), stop_event=asyncio.Event(),
+        callback_registry_owner=owner,
+    )
 
     async def teardown():
         await framework.unregister_event("event")
@@ -286,36 +288,122 @@ async def test_runtime_keeps_registry_open_through_teardown_then_closes_it(faile
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("published", [False, True])
-async def test_failed_construction_leaves_registry_with_its_cleanup_owner(monkeypatch, published):
-    from openjiuwen.core.runner import Runner
-    from jiuwenswarm.server.worker import runtime_bootstrap
+@pytest.mark.parametrize("constructed", [False, True])
+async def test_failed_startup_closes_registry_after_partial_runtime_cleanup(
+    monkeypatch, worker_callback_framework, constructed,
+):
+    from jiuwenswarm.server.worker import lifecycle
 
-    framework = AsyncCallbackFramework(enable_logging=False)
-    monkeypatch.setattr(Runner, "callback_framework", framework)
-    server = SimpleNamespace()
+    framework = worker_callback_framework
     retained = []
+    stopped = []
 
-    async def construct(_host, _port, *, on_constructed, telemetry):
-        if published:
+    async def stop():
+        # Partial startup must still let SDK teardown remove callbacks.
+        await framework.unregister_event("event")
+        stopped.append(True)
+
+    server = SimpleNamespace(stop=stop)
+
+    async def start(_host, _port, _signals, *, runtime, on_constructed, startup_t0):
+        assert startup_t0 > 0
+        assert runtime.callback_registry_owner is not None
+        if constructed:
+            runtime.server = server
             await on_constructed(server)
         raise OSError("construction failed")
 
     async def retain(value):
         retained.append(value)
 
-    monkeypatch.setattr(runtime_bootstrap, "_construct_runtime_server", construct)
+    monkeypatch.setattr(lifecycle, "_preload_runtime_backend", lambda: None)
+    monkeypatch.setattr(lifecycle, "_start_worker_runtime", start)
     with pytest.raises(OSError, match="construction failed"):
-        await runtime_bootstrap.construct_runtime_server(
-            "127.0.0.1", 18000, on_constructed=retain, telemetry=None,
+        await lifecycle.start_worker_runtime(
+            "127.0.0.1", 18000, SimpleNamespace(), on_constructed=retain,
         )
-    owner = getattr(framework.register, "_worker_callback_registry_owner")
-    if published:
-        assert retained == [server]
-        assert server.worker_callback_registry_owner is owner
-        assert not framework.has_subscribers("event")
-        await owner.aclose()
-    else:
-        assert retained == []
+    assert retained == ([server] if constructed else [])
+    assert stopped == ([True] if constructed else [])
     with pytest.raises(RuntimeError, match="owner is closed"):
         framework.has_subscribers("event")
+
+
+@pytest.mark.asyncio
+async def test_worker_binds_registry_before_loading_extensions(monkeypatch, worker_callback_framework):
+    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from jiuwenswarm.server.worker import lifecycle
+
+    framework = worker_callback_framework
+    owner_loop = asyncio.get_running_loop()
+
+    def create_registry(*, callback_framework, config, logger):
+        assert callback_framework is framework
+        owner = getattr(framework.register, "_worker_callback_registry_owner")
+        owner.check_owner_loop()
+        assert asyncio.get_running_loop() is owner_loop
+        raise OSError("extension loading failed")
+
+    monkeypatch.setattr(lifecycle, "_preload_runtime_backend", lambda: None)
+    monkeypatch.setattr(ExtensionRegistry, "create_instance", create_registry)
+    with pytest.raises(OSError, match="extension loading failed"):
+        await lifecycle.start_worker_runtime("127.0.0.1", 18000, SimpleNamespace())
+    with pytest.raises(RuntimeError, match="owner is closed"):
+        framework.has_subscribers("event")
+
+
+@pytest.mark.asyncio
+async def test_worker_shutdown_keeps_registry_open_for_server_stop(worker_callback_framework):
+    framework = worker_callback_framework
+    owner = bind_callback_registry_owner(framework)
+    stopped = []
+
+    async def stop():
+        await asyncio.to_thread(lambda: asyncio.run(framework.unregister_event("event")))
+        stopped.append(True)
+
+    runtime = WorkerRuntime(
+        server=SimpleNamespace(stop=stop), stop_event=asyncio.Event(),
+        callback_registry_owner=owner,
+    )
+    await runtime.shutdown()
+    assert stopped == [True]
+    assert runtime.stop_event.is_set()
+    with pytest.raises(RuntimeError, match="owner is closed"):
+        await framework.register("event", lambda: None)
+
+
+def test_simulated_worker_lifetimes_restore_the_process_registry(monkeypatch):
+    from openjiuwen.core.runner import Runner
+    from jiuwenswarm.server.worker import lifecycle
+
+    original = Runner.callback_framework
+    frameworks = []
+
+    async def run_worker():
+        framework = AsyncCallbackFramework(enable_logging=False)
+        frameworks.append(framework)
+
+        async def stop():
+            await framework.unregister_event("event")
+
+        async def start(_host, _port, _signals, *, runtime, on_constructed, startup_t0):
+            runtime.server = SimpleNamespace(stop=stop)
+            await asyncio.to_thread(lambda: asyncio.run(framework.register("event", stop)))
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Runner, "callback_framework", framework)
+            patch.setattr(lifecycle, "_preload_runtime_backend", lambda: None)
+            patch.setattr(lifecycle, "_start_worker_runtime", start)
+            runtime = await lifecycle.start_worker_runtime("127.0.0.1", 18000, SimpleNamespace())
+            assert framework.has_subscribers("event")
+            await runtime.shutdown()
+            with pytest.raises(RuntimeError, match="owner is closed"):
+                framework.has_subscribers("event")
+        assert Runner.callback_framework is original
+
+    # Each process boundary gets a new framework, even when tests simulate
+    # successive Workers in distinct event loops within one Python process.
+    asyncio.run(run_worker())
+    asyncio.run(run_worker())
+    assert frameworks[0] is not frameworks[1]
+    assert Runner.callback_framework is original
