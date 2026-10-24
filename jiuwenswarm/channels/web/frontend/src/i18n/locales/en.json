@@ -1469,6 +1469,7 @@
       "contextEngine": { "label": "Context Compression", "hint": "Enable or disable dialogue context compression" },
       "kvCacheAffinity": { "label": "Compute Affinity", "hint": "Control Ascend KV Cache affinity" },
       "permissions": { "label": "Tool Safety Guardrail", "hint": "Enable or disable permission checks for tool calls" },
+      "sandbox": { "label": "Sandbox", "hint": "Run commands inside the sandbox when enabled. Off by default." },
       "a2ui": { "label": "A2UI", "hint": "Enable or disable generated UI rendering and A2UI runtime prompts." },
       "trajectoryUi": { "label": "Trajectory UI", "hint": "Show the chat/trajectory switch in single-agent and team modes and enable trajectory observation." },
       "diagnosis": { "label": "Trajectory Diagnosis", "hint": "When enabled, auto-analyze session issues in \"Diagnose\". Online mode requires Trajectory UI enabled; offline mode only needs uploaded/imported logs." },
