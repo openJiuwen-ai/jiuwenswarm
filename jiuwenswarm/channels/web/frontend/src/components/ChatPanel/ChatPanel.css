@@ -3264,13 +3264,6 @@
   opacity: 0.7;
 }
 
-.chat-swarmflow-config-panel__worktree-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
 .chat-skill-select__trigger {
   display: inline-flex;
   align-items: center;

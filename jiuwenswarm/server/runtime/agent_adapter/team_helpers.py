@@ -781,6 +781,7 @@ class _FirstTeamRequestPreparation:
     query: Any
     hide_dm: bool
     debug: bool
+    interrupt_input: Any | None = None
     error_chunks: list[AgentResponseChunk] | None = None
 
 
@@ -791,13 +792,13 @@ async def _prepare_first_team_request(
     channel_id: str | None,
     request_id: str,
     query: Any,
+    allow_cold_ask_user_resume: bool = False,
 ) -> _FirstTeamRequestPreparation:
     """Apply first-request preprocessing shared by cold starts and fallback starts."""
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
     hide_dm = False
     debug = False
-
     if isinstance(query, InteractiveInput):
         wait_for_resumable = getattr(team_manager, "wait_for_resumable_runtime", None)
         restored = False
@@ -824,6 +825,21 @@ async def _prepare_first_team_request(
                 query=query,
                 hide_dm=hide_dm,
                 debug=debug,
+            )
+
+        if allow_cold_ask_user_resume:
+            logger.warning(
+                "[TeamHelpers] interactive input will cold-resume team runtime: "
+                "channel_id=%s session_id=%s",
+                _resolve_channel_id(channel_id),
+                session_id,
+            )
+            return _FirstTeamRequestPreparation(
+                recovered_runtime=False,
+                query="",
+                hide_dm=hide_dm,
+                debug=debug,
+                interrupt_input=query,
             )
 
         logger.warning(
@@ -1094,36 +1110,20 @@ def _coerce_budget(value) -> int | None:
     return n if n > 0 else None
 
 
-def _resolve_session_worktree_flag(
-    params: dict | None,
-    persisted: dict | None,
-) -> bool | None:
-    """Resolve the session worktree flag per-key: params > persisted > unset.
-
-    Unlike ``enable_swarmflow`` (whole-dict per source), the worktree flag
-    falls through independently so a client that omits it (older frontend,
-    TUI, cron) keeps the session's persisted value; ``None`` means "not
-    specified" and the team config's ``worktree`` section stands.
-    """
-    if params is not None and params.get("swarmflow_worktree") is not None:
-        return bool(params.get("swarmflow_worktree"))
-    if persisted is not None and persisted.get("swarmflow_worktree") is not None:
-        return bool(persisted.get("swarmflow_worktree"))
-    return None
-
-
 def _resolve_session_swarmflow_config(
     params: dict | None,
     config_base: dict,
     *,
     session_id: str,
+    project_dir: str | None = None,
 ) -> dict:
     """Resolve session-level swarmflow config by priority:
 
     request params > metadata persisted > config.yaml.
 
-    ``swarmflow_worktree`` resolves per-key (params > persisted, else None =
-    follow the team config's ``worktree`` section).
+    ``swarmflow_worktree`` is not a client choice: it follows the project
+    directory (selected → isolation armed, absent → withheld), so the
+    worktree capability and the work context can never disagree.
     """
     team_cfg = ((config_base.get("modes") or {}).get("team") or {}).get("jiuwen_team") or {}
     config_enabled = bool(team_cfg.get("enable_swarmflow", False))
@@ -1133,20 +1133,13 @@ def _resolve_session_swarmflow_config(
         if isinstance(config_budget_raw, (int, float)) and config_budget_raw > 0
         else None
     )
+    worktree_flag = bool(str(project_dir or "").strip())
 
     if params and params.get("enable_swarmflow") is not None:
-        # Fast path: current clients send the worktree key alongside
-        # enable_swarmflow, so the metadata read is skipped unless the key is
-        # absent (older client) and a sticky value may exist.
-        persisted = (
-            restore_session_swarmflow_config(session_id)
-            if params.get("swarmflow_worktree") is None
-            else None
-        )
         result = {
             "enable_swarmflow": bool(params.get("enable_swarmflow")),
             "swarmflow_budget": _coerce_budget(params.get("swarmflow_budget")),
-            "swarmflow_worktree": _resolve_session_worktree_flag(params, persisted),
+            "swarmflow_worktree": worktree_flag,
         }
         logger.info(
             "[TeamHelpers] swarmflow config (source=request params, session=%s): %s",
@@ -1159,7 +1152,7 @@ def _resolve_session_swarmflow_config(
         result = {
             "enable_swarmflow": bool(persisted.get("enable_swarmflow", False)),
             "swarmflow_budget": _coerce_budget(persisted.get("swarmflow_budget")),
-            "swarmflow_worktree": _resolve_session_worktree_flag(params, persisted),
+            "swarmflow_worktree": worktree_flag,
         }
         logger.info(
             "[TeamHelpers] swarmflow config (source=metadata, session=%s): %s",
@@ -1170,7 +1163,7 @@ def _resolve_session_swarmflow_config(
     result = {
         "enable_swarmflow": config_enabled,
         "swarmflow_budget": config_budget,
-        "swarmflow_worktree": _resolve_session_worktree_flag(params, None),
+        "swarmflow_worktree": worktree_flag,
     }
     logger.info(
         "[TeamHelpers] swarmflow config (source=config.yaml, session=%s): %s",
@@ -2723,6 +2716,7 @@ async def _start_team_stream_round(
     request_scoped_waiter: bool = False,
     run_context: object | None = None,
     cross_session_marker: dict[str, Any] | None = None,
+    interrupt_input: Any | None = None,
 ) -> asyncio.Queue | None:
     """Start a team stream round and register its waiter queue."""
     # Sync team observability with current config before streaming.
@@ -2784,6 +2778,7 @@ async def _start_team_stream_round(
         query,
         generation=generation,
         run_context=run_context,
+        interrupt_input=interrupt_input,
         **stream_kwargs,
     )
     stream_task = asyncio.create_task(stream)
@@ -3228,6 +3223,14 @@ async def _process_team_message_stream(
 
     hide_dm = False
     debug = False
+    interrupt_input: Any | None = None
+    request_params = getattr(request, "params", None)
+    if isinstance(request_params, dict):
+        from .interface import _is_ask_user_answer_resume
+
+        allow_cold_ask_user_resume = _is_ask_user_answer_resume(request_params)
+    else:
+        allow_cold_ask_user_resume = False
     if is_first_request:
         preparation = await _prepare_first_team_request(
             team_manager=team_manager,
@@ -3235,6 +3238,7 @@ async def _process_team_message_stream(
             channel_id=channel_id,
             request_id=rid,
             query=query,
+            allow_cold_ask_user_resume=allow_cold_ask_user_resume,
         )
         if preparation.error_chunks is not None:
             for chunk in preparation.error_chunks:
@@ -3245,6 +3249,7 @@ async def _process_team_message_stream(
             await startup.aclose()
         else:
             query = preparation.query
+            interrupt_input = preparation.interrupt_input
             query_text = query if isinstance(query, str) else ""
             hide_dm = preparation.hide_dm
             debug = preparation.debug
@@ -3415,11 +3420,13 @@ async def _process_team_message_stream(
         runtime_model_selection = model_selection
         # Provider-based assembly: build members from the shared config source,
         # no pre-built parent DeepAgent required.
-        # 会话级 swarmflow 配置：请求 params > metadata > config.yaml
+        # 会话级 swarmflow 配置：请求 params > metadata > config.yaml；
+        # worktree 跟随 project_dir（选了项目目录即隔离可用，未选即关闭）
         swarmflow_config = _resolve_session_swarmflow_config(
             params_obj if isinstance(params_obj, dict) else None,
             get_config(),
             session_id=session_id,
+            project_dir=inputs.get("project_dir") or request_metadata.get("project_dir"),
         )
         team_dispatch_mode = _resolve_session_team_dispatch_mode(
             params_obj if isinstance(params_obj, dict) else None,
@@ -3476,13 +3483,12 @@ async def _process_team_message_stream(
                             team_name=team_name,
                             selection=model_selection,
                         )
-        # 请求携带了会话级配置时持久化（刷新恢复用）
+        # 请求携带了会话级配置时持久化（刷新恢复用）。dict 里的
+        # swarmflow_worktree 是本次按 project_dir 推导的值，落盘仅为快照，
+        # 恢复时不读它（每条消息重新按 project_dir 推导）。
         if (
             isinstance(params_obj, dict)
-            and (
-                params_obj.get("enable_swarmflow") is not None
-                or params_obj.get("swarmflow_worktree") is not None
-            )
+            and params_obj.get("enable_swarmflow") is not None
         ):
             persist_session_swarmflow_config(session_id, swarmflow_config)
         if (
@@ -3775,6 +3781,7 @@ async def _process_team_message_stream(
                             channel_id=channel_id,
                             request_id=rid,
                             query=query,
+                            allow_cold_ask_user_resume=allow_cold_ask_user_resume,
                         )
                         if preparation.error_chunks is not None:
                             for chunk in preparation.error_chunks:
@@ -3786,6 +3793,7 @@ async def _process_team_message_stream(
                         if is_first_request:
                             first_request_source = "follow-up fallback"
                             query = preparation.query
+                            interrupt_input = preparation.interrupt_input
                             hide_dm = preparation.hide_dm
                             debug = preparation.debug
                             logger.info(
@@ -3987,6 +3995,7 @@ async def _process_team_message_stream(
                     cross_session_marker=(
                         cross_session_marker if isinstance(cross_session_marker, dict) else None
                     ),
+                    interrupt_input=interrupt_input,
                 )
             except BaseException:
                 _remove_team_waiter(
@@ -4287,6 +4296,22 @@ async def _finalize_org_bound_team_after_idle(
         )
 
 
+_TEAM_RESUME_TOTAL_TIMEOUT_SECONDS = 120.0
+
+
+def _is_team_recovered_chunk(chunk: Any) -> bool:
+    """Whether a raw runner chunk is the team.recovered interact gate.
+
+    The marker is enqueued at the tail of the leader's coordination start
+    (session state restored, bus subscribed, paused round resumed); reading
+    it means an interact can be submitted safely. Kept local instead of
+    importing the core helper so older installed openjiuwen versions do not
+    break at import time.
+    """
+    payload = getattr(chunk, "payload", None)
+    return isinstance(payload, dict) and payload.get("event_type") == "team.recovered"
+
+
 async def _consume_stream_with_query(
     channel_id: str | None,
     session_id: str,
@@ -4300,6 +4325,7 @@ async def _consume_stream_with_query(
     run_context: object | None = None,
     round_request_id: str | None = None,
     cross_session_marker: dict[str, Any] | None = None,
+    interrupt_input: Any | None = None,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
     _envs = envs or {}
@@ -4407,7 +4433,65 @@ async def _consume_stream_with_query(
             session_id=session_id,
             kv_cache_runtime=get_kv_cache_runtime(),
         )
-        if run_context is None:
+        # Interrupt-resume wait state: the no-input runtime stream is driven
+        # with a frame budget and an overall budget until the team.recovered
+        # marker is read, then the interrupt answer is submitted once via
+        # interact and the same loop keeps forwarding frames.
+        resume_pending = interrupt_input is not None
+        resume_deadline: float = (
+            (time.monotonic() + _TEAM_RESUME_TOTAL_TIMEOUT_SECONDS) if resume_pending else 0.0
+        )
+
+        async def _fail_resume_wait(error_msg: str) -> None:
+            """Report a failed interrupt-resume wait to the frontend."""
+            nonlocal terminal_broadcasted
+            logger.warning(
+                "[TeamHelpers] interrupt resume wait failed: "
+                "channel_id=%s session_id=%s error=%s",
+                _resolve_channel_id(channel_id),
+                session_id,
+                error_msg,
+            )
+            await _deliver(
+                {
+                    "event_type": "chat.error",
+                    "error": error_msg,
+                    "session_id": session_id,
+                    "rid": round_id,
+                },
+            )
+            await _deliver(
+                {
+                    "event_type": "chat.processing_status",
+                    "session_id": session_id,
+                    "rid": round_id,
+                    "is_processing": False,
+                    "is_complete": True,
+                },
+            )
+            terminal_broadcasted = True
+
+        async def _close_resume_stream() -> None:
+            """Close the runner stream after a failed resume wait."""
+            try:
+                await runner_stream.aclose()
+            except Exception:
+                logger.debug(
+                    "[TeamHelpers] closing runner stream after resume failure failed: "
+                    "session_id=%s",
+                    session_id,
+                )
+
+        if interrupt_input is not None:
+            runner_stream = Runner.start_agent_team_streaming(
+                agent_team=team_spec,
+                session=team_session,
+                envs=envs,
+                stream_logger=lg,
+                background_task_controller=get_background_task_controller(session_id),
+                run_context=run_context,
+            )
+        elif run_context is None:
             runner_stream = Runner.run_agent_team_streaming(
                 agent_team=team_spec,
                 inputs={"query": initial_query},
@@ -4426,8 +4510,74 @@ async def _consume_stream_with_query(
                 background_task_controller=get_background_task_controller(session_id),
                 run_context=run_context,
             )
-        async for chunk in runner_stream:
+        while True:
+            if resume_pending:
+                # Interrupt-resume wait: no frame may arrive later than the
+                # frame budget after the previous one, and the whole wait for
+                # team.recovered may not exceed the total budget.
+                remaining = resume_deadline - time.monotonic()
+                if remaining <= 0:
+                    await _fail_resume_wait("Team recovery timed out before the runtime was ready")
+                    await _close_resume_stream()
+                    break
+                try:
+                    # Keep iteration in this task: wait_for would split the
+                    # execution-subject contextvar scope across tasks.
+                    async with asyncio.timeout(remaining):
+                        chunk = await anext(runner_stream)
+                except asyncio.TimeoutError:
+                    await _fail_resume_wait("Team recovery timed out before the runtime was ready")
+                    await _close_resume_stream()
+                    break
+                except StopAsyncIteration:
+                    await _fail_resume_wait("Team stream ended before the runtime was recovered")
+                    break
+            else:
+                try:
+                    chunk = await anext(runner_stream)
+                except StopAsyncIteration:
+                    break
             received_chunks += 1
+            if resume_pending and _is_team_recovered_chunk(chunk):
+                # The leader runtime is fully live; submit the interrupt
+                # answer once. A rejected delivery is reported to the
+                # frontend but the stream keeps running -- the runtime is
+                # recovered either way and may re-ask on its own.
+                resume_pending = False
+                result = await Runner.interact_agent_team(
+                    interrupt_input,
+                    team_name=team_spec.team_name,
+                    session_id=session_id,
+                    run_context=run_context,
+                )
+                if not result:
+                    reason = str(getattr(result, "reason", None) or "interrupt_resume_rejected")
+                    logger.warning(
+                        "[TeamHelpers] interrupt resume interact rejected: "
+                        "channel_id=%s session_id=%s reason=%s",
+                        _resolve_channel_id(channel_id),
+                        session_id,
+                        reason,
+                    )
+                    await _deliver(
+                        {
+                            "event_type": "chat.error",
+                            "error": "Failed to resume the pending question",
+                            "reason": reason,
+                            "session_id": session_id,
+                            "rid": round_id,
+                        },
+                    )
+                    await _deliver(
+                        {
+                            "event_type": "chat.processing_status",
+                            "session_id": session_id,
+                            "rid": round_id,
+                            "is_processing": False,
+                            "is_complete": True,
+                        },
+                    )
+                    terminal_broadcasted = True
             # First event of any kind from the runner — usually a framework
             # control event (team.runtime_ready and friends), not model output.
             # It marks how long team startup took before the stream came alive.

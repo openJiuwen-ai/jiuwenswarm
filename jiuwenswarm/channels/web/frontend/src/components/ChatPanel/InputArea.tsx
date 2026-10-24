@@ -62,7 +62,6 @@ import {
   validateAssetName,
 } from '../../features/sessionAssets/assetReferences';
 import { useSessionArtifacts } from '../ArtifactsPanel';
-import { WorktreeProjectGuide } from './WorktreeProjectGuide';
 import {
   parseSlashLine,
   parseGoalSlashArgs,
@@ -1466,49 +1465,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
     return selectedProject && !isDefaultInputProject(selectedProject) ? selectedProject : null;
   }, [activeSession, projects, selectedProject, t, workMode]);
-
-  // Worktree 隔离开关的显示默认值：全局 config（团队模板的 worktree.enabled），
-  // 仅在会话未显式拨过（swarmflowWorktree === undefined）时用于展示。
-  // 挂载时读一次，配置面板每次打开时刷新；会话自身的值存 sessionStore。
-  const [swarmflowWorktreeDefault, setSwarmflowWorktreeDefault] = useState<boolean | null>(null);
-  const refreshSwarmflowWorktreeDefault = useCallback(() => {
-    webRequest<Record<string, unknown>>('config.get')
-      .then((config) => {
-        const raw = (config as { swarmflow_worktree?: unknown } | undefined)?.swarmflow_worktree;
-        setSwarmflowWorktreeDefault(raw === true || String(raw ?? '').trim().toLowerCase() === 'true');
-      })
-      .catch(() => {});
-  }, []);
-  useEffect(() => {
-    refreshSwarmflowWorktreeDefault();
-  }, [refreshSwarmflowWorktreeDefault]);
-  // 会话级 worktree 值（undefined=未拨过）；有效值 = 会话值 ?? 全局默认
-  const swarmflowWorktreeValue = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.swarmflowWorktree,
-  );
-  const swarmflowWorktreeEffective = swarmflowWorktreeValue ?? (swarmflowWorktreeDefault ?? false);
-  // Worktree 无项目目录的聚光灯引导。动态工作流的"+"菜单/配置面板还开着时会挡住
-  // 项目下拉，先挂起，等它们全部关闭后再弹；弹出后选好项目自动消失。
-  const [worktreeGuideOpen, setWorktreeGuideOpen] = useState(false);
-  const [worktreeGuidePending, setWorktreeGuidePending] = useState(false);
-  useEffect(() => {
-    if (worktreeGuideOpen && displayedProject) setWorktreeGuideOpen(false);
-  }, [worktreeGuideOpen, displayedProject]);
-  useEffect(() => {
-    if (!worktreeGuidePending || attachMenuOpen || swarmflowConfigPanelOpen) return;
-    setWorktreeGuidePending(false);
-    if (!displayedProject && swarmflowWorktreeEffective) setWorktreeGuideOpen(true);
-  }, [worktreeGuidePending, attachMenuOpen, swarmflowConfigPanelOpen, displayedProject, swarmflowWorktreeEffective]);
-  const toggleSwarmflowWorktree = useCallback(
-    (next: boolean) => {
-      if (!activeSessionId || swarmflowToggleDisabled) return;
-      useSessionStore.getState().setSwarmflowWorktree(activeSessionId, next);
-      if (next && !displayedProject) {
-        setWorktreeGuidePending(true);
-      }
-    },
-    [activeSessionId, swarmflowToggleDisabled, displayedProject],
-  );
 
   const appendTaskAsrTranscript = useCallback(
     (transcript: string) => {
@@ -4569,10 +4525,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 usePlanStore.getState().setActive(activeSessionId, false);
                               }
                               useSessionStore.getState().setSwarmflowActive(activeSessionId, next);
-                              // worktree 有效开启且未选项目目录时，等菜单关闭后再弹聚光灯引导
-                              if (next && swarmflowWorktreeEffective && !displayedProject) {
-                                setWorktreeGuidePending(true);
-                              }
                             };
                             return (
                               <div
@@ -4612,7 +4564,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                       e.stopPropagation();
                                       if (!swarmflowActive) return;
                                       if (!swarmflowConfigPanelOpen) {
-                                        refreshSwarmflowWorktreeDefault();
                                         if (swarmflowConfigBtnRef.current) {
                                           setSwarmflowConfigAnchor(
                                             swarmflowConfigBtnRef.current.getBoundingClientRect(),
@@ -5583,21 +5534,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       );
                     })()}
                   </div>
-                  <div className="chat-swarmflow-config-panel__field">
-                    <div
-                      className="chat-swarmflow-config-panel__worktree-row"
-                      data-testid="chat-panel-swarmflow-worktree-row"
-                    >
-                      <label className="chat-swarmflow-config-panel__label">
-                        {t('swarmflow.worktreeToggleLabel')}
-                      </label>
-                      <Switch
-                        checked={swarmflowWorktreeEffective}
-                        disabled={swarmflowToggleDisabled}
-                        onChange={toggleSwarmflowWorktree}
-                      />
-                    </div>
-                  </div>
                   {swarmflowToggleDisabled && (
                     <span className="chat-swarmflow-config-panel__readonly-hint">
                       {t('swarmflow.configReadonlyHint')}
@@ -5607,9 +5543,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 document.body,
               );
             })()}
-          {worktreeGuideOpen && (
-            <WorktreeProjectGuide onAcknowledge={() => setWorktreeGuideOpen(false)} />
-          )}
         </div>
       </div>
 

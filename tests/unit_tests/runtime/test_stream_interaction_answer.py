@@ -359,7 +359,14 @@ async def test_original_eof_before_old_ack_preserves_next_permission(harness) ->
 
 
 @pytest.mark.asyncio
-async def test_wrong_or_completed_interaction_never_reaches_agent(harness) -> None:
+async def test_wrong_interaction_rejected_and_completed_duplicate_reroutes_to_chat(harness) -> None:
+    """Wrong-id answers stay coordinator-rejected while an interaction waits.
+
+    A duplicate answer for an already-completed interaction instead routes
+    to a chat round on the idle session; in production the adapter's resume
+    validation (prepare_nonpermission_resume) rejects it there. The harness
+    mocks the adapter, so the chat path reaches the mocked agent.
+    """
     await _seed_waiting(harness)
     delivered = Mock(wraps=harness.agent.deliver_control_input)
     harness.agent.deliver_control_input = delivered
@@ -367,8 +374,8 @@ async def test_wrong_or_completed_interaction_never_reaches_agent(harness) -> No
         await _collect(harness.client.stream_interaction_answer(_answer("wrong")))
     delivered.assert_not_called()
     await _collect(harness.client.stream_interaction_answer(_answer()))
-    with pytest.raises(RuntimeError, match="no active execution"):
-        await _collect(harness.client.stream_interaction_answer(_answer()))
+    events = await _collect(harness.client.stream_interaction_answer(_answer()))
+    assert [event.event_type for event in events] == ["chat.ask_user_question"]
     assert delivered.call_count == 1
 
 
