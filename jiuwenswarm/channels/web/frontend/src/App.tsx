@@ -1543,6 +1543,9 @@ function AppContent({
     if (result.contextUsageSnapshot) {
       useSessionStore.getState().receiveContextUsage(result.contextUsageSnapshot);
     }
+    if (result.tokenUsageSnapshot) {
+      useSessionStore.getState().receiveSessionTokenUsage(result.tokenUsageSnapshot);
+    }
     for (const item of result.toolReplay) {
       if (item.kind === 'tool_call') {
         const n = normalizeToolCallPayload(item.payload);
@@ -2587,6 +2590,9 @@ function AppContent({
       },
       onContextUsage: (payload) => {
         useSessionStore.getState().receiveContextUsage(payload);
+      },
+      onSessionTokenUsage: (payload) => {
+        useSessionStore.getState().receiveSessionTokenUsage(payload);
       },
       onEmpty: (cursorMeta) => {
         replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(sessionId, []));

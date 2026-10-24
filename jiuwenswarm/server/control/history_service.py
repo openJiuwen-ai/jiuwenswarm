@@ -1,9 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""History query Control Service. Reads session history files only."""
+"""History query Control Service. Reads durable session history and snapshots."""
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
@@ -23,6 +24,8 @@ from jiuwenswarm.server.wire_truncate import (
     _sanitize_history_record_for_wire,
     split_history_record_for_stream,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _is_restorable_history_record(record: Any) -> bool:
@@ -135,6 +138,21 @@ def load_history_cursor_page(
     if normalized_subagent_id:
         result["subagent_id"] = normalized_subagent_id
     return result
+
+
+def load_history_session_usage(session_id: str) -> dict[str, Any] | None:
+    """Read recorded cumulative usage independently of the selected history page."""
+    from jiuwenswarm.server.runtime.session.session_token_usage import get_session_token_usage
+
+    try:
+        snapshot = get_session_token_usage(session_id)
+        revision = snapshot.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
+            return None
+        return snapshot
+    except Exception:
+        logger.warning("[History] cumulative session usage unavailable", exc_info=True)
+        return None
 
 
 def load_history_todo_snapshot(session_id: str) -> list[dict[str, Any]]:

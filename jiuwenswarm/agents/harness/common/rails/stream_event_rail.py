@@ -67,6 +67,9 @@ from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyToolStreamHandler,
 )
+from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import (
+    record_model_token_usage,
+)
 from jiuwenswarm.common.tool_display import (
     extract_call_goal,
     inject_call_goal_schema,
@@ -1049,6 +1052,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 )
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        build_context = getattr(self._deep_agent, "_build_context", None)
+        usage_role = self._role or getattr(build_context, "role", None)
+        await record_model_token_usage(
+            ctx,
+            fallback_role=usage_role,
+            product_session_id=getattr(build_context, "session_id", None),
+        )
         # New agent-core versions emit the complete pre/post context usage
         # snapshots themselves.  The report on the callback context is the
         # capability marker; emitting the legacy rail event as well would add
