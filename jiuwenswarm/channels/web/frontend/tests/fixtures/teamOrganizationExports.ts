@@ -12,3 +12,4 @@ export { TeamSelector } from '../../src/components/ChatPanel/TeamSelector';
 export { resolveOrganizationTeamIdentity, resolveOrganizationTeamLabel } from '../../src/features/teamOrganization/teamIdentity';
 export { useSettingsConfig } from '../../src/features/settings/services/useSettingsConfig';
 export { SettingsServicesProvider } from '../../src/features/settings/services/SettingsServicesProvider';
+export { parseHistoryJsonFileToPreviewMessages } from '../../src/features/historyRestore';
