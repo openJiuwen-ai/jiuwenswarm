@@ -216,6 +216,10 @@ File scopes can be a specific file or a file-name pattern under a fixed director
 
 A validity period can be specified when requesting; cron jobs should cover the planned execution duration. The user confirmation wait time is 3 minutes.
 
+### Continuing After a Page Refresh
+
+If you refresh while authorization is pending, return to the original session to approve or reject it. Once the background task finishes, the page automatically reloads its execution results and final reply from history; you do not need to submit the task again. If a newer task is running in the same session, history reconciliation waits until that execution finishes to preserve its live reply.
+
 ## Design Trade-offs
 
 - **Intent authorization only**: Per-operation authorization in the A4P SDK is already covered by the regular tool approval flow, so no duplicate interaction is added.

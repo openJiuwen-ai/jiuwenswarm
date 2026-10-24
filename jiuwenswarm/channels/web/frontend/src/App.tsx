@@ -1,4 +1,5 @@
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
+import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
   applyMultiModelCollaborationSnapshot,
   getMultiModelCollaborationRevision,
@@ -633,11 +634,15 @@ function AppContent({
   );
   /** 仅用于强制重跑「首屏 history」effect：从会话列表恢复时若 sessionId 未变，也要重新拉 history 并恢复 historyPagerMeta */
   const [historyBootstrapKey, setHistoryBootstrapKey] = useState(0);
+  const historyRefreshQueueRef = useRef(new HistoryRefreshQueue());
+  const forcedHistoryRefreshRef = useRef(new Set<string>());
+  const [historyRecoveryRevision, setHistoryRecoveryRevision] = useState(0);
   const sessionIdRef = useRef(sessionId);
   useEffect(() => webClient.on('runtime.history_required', (event) => {
-    if (event.payload.session_id === sessionIdRef.current) {
-      setHistoryBootstrapKey((key) => key + 1);
-    }
+    const targetSessionId = event.payload.session_id;
+    if (typeof targetSessionId !== 'string' || !targetSessionId) return;
+    historyRefreshQueueRef.current.request(targetSessionId);
+    setHistoryRecoveryRevision((revision) => revision + 1);
   }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
@@ -1126,6 +1131,7 @@ function AppContent({
   }, [setHistoryRetryAvailable, setLoadingHistory]);
 
   useEffect(() => () => disposeInFlightHistoryHandles(), [disposeInFlightHistoryHandles]);
+
   const todos = useTodoStore((s) => s.runtimes[sessionId]?.todos ?? []);
   const subagentCount = useSubagentStore((s) => Object.keys(s.runtimes[sessionId]?.subagentsById ?? {}).length);
   const subagentStatusSignature = useSubagentStore((s) => Object.values(s.runtimes[sessionId]?.subagentsById ?? {})
@@ -2413,6 +2419,24 @@ function AppContent({
     void loadSessionMetadata(routeSessionId);
   }, [isConnected, loadSessionMetadata, routeSessionId]);
 
+  useEffect(() => {
+    if (!isConnected || !sessionId) return;
+    // A recovered old request must not clear a newer turn's stream buffers.
+    if (!historyRefreshQueueRef.current.take(sessionId, isProcessing || isLoadingHistory)) return;
+    disposeInFlightHistoryHandles(sessionId);
+    setHistoryPagerMeta(sessionId, null);
+    forcedHistoryRefreshRef.current.add(sessionId);
+    setHistoryBootstrapKey((key) => key + 1);
+  }, [
+    disposeInFlightHistoryHandles,
+    historyRecoveryRevision,
+    isConnected,
+    isLoadingHistory,
+    isProcessing,
+    sessionId,
+    setHistoryPagerMeta,
+  ]);
+
   // 聊天处理完成后更新本地会话元数据，以便拾取自动生成的标题等更新。
   const prevProcessingBySessionRef = useRef(new Map<string, boolean>());
   useEffect(() => {
@@ -2459,8 +2483,9 @@ function AppContent({
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
+    const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
     
-    if (sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
+    if (!forceRefresh && sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
       setHistoryPagerMeta(sessionId, null);
       setHistoryLoadingMore(false);
       setLoadingHistory(sessionId, false);
@@ -2469,7 +2494,7 @@ function AppContent({
 
     // 新建会话时跳过历史加载
     const isNew = useChatStore.getState().runtimes[sessionId]?.isNewSession ?? false;
-    if (isNew) {
+    if (isNew && !forceRefresh) {
       useChatStore.getState().setNewSession(sessionId, false);
       setHistoryPagerMeta(sessionId, null);  // 新会话无历史，不显示分页栏
       setLoadingHistory(sessionId, false);
@@ -2481,7 +2506,7 @@ function AppContent({
     const existingRuntime = useChatStore.getState().getRuntime(sessionId);
     const subagentRuntime = useSubagentStore.getState().getRuntime(sessionId);
     const hasStorageOnlySubagentCache = Object.keys(subagentRuntime?.cacheOnlySubagentIds ?? {}).length > 0;
-    if (existingRuntime && existingRuntime.historyPagerMeta) {
+    if (!forceRefresh && existingRuntime && existingRuntime.historyPagerMeta) {
       if (hasStorageOnlySubagentCache) {
         useSubagentStore.getState().removeRuntime(sessionId);
       } else {
