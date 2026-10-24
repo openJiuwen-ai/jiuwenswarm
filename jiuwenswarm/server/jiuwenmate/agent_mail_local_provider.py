@@ -11,6 +11,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -28,6 +29,8 @@ _AUTH_URL = re.compile(r'https://[^\s<>"\'\x1b]+')
 _OPERATION_ID = re.compile(r'^[a-f0-9]{16}\.[a-f0-9]{32}$')
 _MAX_OUTPUT_BYTES = 240 * 1024
 _MAX_ATTACHMENT_BYTES = 128 * 1024
+_AUTH_TIMEOUT_SECONDS = 300
+_FRONTEND_AUTH_PLATFORMS = frozenset({'darwin', 'linux'})
 _FLAG_OPTIONS = {
     'limit': '--limit',
     'cursor': '--cursor',
@@ -131,7 +134,7 @@ class LocalAgentMailRuntime:
     def _scope_root(self, scope: AgentMailScope) -> Path:
         return self._root / self._scope_digest(scope)
 
-    def _environment(self, scope: AgentMailScope) -> dict[str, str]:
+    def _environment(self, scope: AgentMailScope, *, suppress_browser: bool = False) -> dict[str, str]:
         home = self._scope_root(scope) / 'home'
         config = home / '.config'
         data = home / '.local' / 'share'
@@ -152,6 +155,13 @@ class LocalAgentMailRuntime:
         # npx is a node script on macOS/Linux. Its sibling node binary must be
         # visible to its /usr/bin/env shebang even for GUI-launched services.
         environment['PATH'] = f"{self._npx_path.parent}{os.pathsep}{environment.get('PATH', '')}"
+        if suppress_browser and sys.platform in _FRONTEND_AUTH_PLATFORMS:
+            browser_bin = self._scope_root(scope) / 'home' / '.agent-mail-bin'
+            browser_bin.mkdir(parents=True, exist_ok=True)
+            opener = browser_bin / ('open' if sys.platform == 'darwin' else 'xdg-open')
+            opener.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+            opener.chmod(0o755)
+            environment['PATH'] = f"{browser_bin}{os.pathsep}{environment['PATH']}"
         return environment
 
     @staticmethod
@@ -272,6 +282,9 @@ class LocalAgentMailRuntime:
     def _current_auth_path(self, scope: AgentMailScope) -> Path:
         return self._scope_root(scope) / 'auth' / 'current'
 
+    def _frontend_auth_marker(self, scope: AgentMailScope, operation_id: str) -> Path:
+        return self._scope_root(scope) / 'auth' / f'{operation_id}.frontend'
+
     def _current_operation(self, scope: AgentMailScope) -> str | None:
         try:
             operation_id = self._current_auth_path(scope).read_text(encoding='utf-8').strip()
@@ -323,8 +336,19 @@ class LocalAgentMailRuntime:
                 self._clear_auth(scope, operation_id)
             return result
         if operation_id:
-            _, _, exit_path = self._auth_paths(scope, operation_id)
+            _, pid_path, exit_path = self._auth_paths(scope, operation_id)
+            frontend_marker = self._frontend_auth_marker(scope, operation_id)
+            if sys.platform in _FRONTEND_AUTH_PLATFORMS and not frontend_marker.is_file():
+                self._cancel_auth(scope, operation_id)
+                return result
             if not exit_path.exists():
+                try:
+                    expired = time.time() - pid_path.stat().st_mtime >= _AUTH_TIMEOUT_SECONDS
+                except OSError:
+                    expired = True
+                if expired:
+                    self._cancel_auth(scope, operation_id)
+                    return result
                 return {'status': 'authorizing', 'cli_version': _CLI_VERSION, 'operation_id': operation_id}
             self._clear_auth(scope, operation_id)
         return result
@@ -343,6 +367,8 @@ class LocalAgentMailRuntime:
         operation_id = f'{self._scope_digest(scope)}.{uuid.uuid4().hex}'
         log_path, pid_path, exit_path = self._auth_paths(scope, operation_id)
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        if sys.platform in _FRONTEND_AUTH_PLATFORMS:
+            self._frontend_auth_marker(scope, operation_id).write_text('managed', encoding='utf-8')
         self._current_auth_path(scope).write_text(operation_id, encoding='utf-8')
         with log_path.open('wb') as log:
             try:
@@ -351,7 +377,7 @@ class LocalAgentMailRuntime:
                     stdin=subprocess.DEVNULL,
                     stdout=log,
                     stderr=subprocess.STDOUT,
-                    env=self._environment(scope),
+                    env=self._environment(scope, suppress_browser=True),
                     start_new_session=True,
                 )
             except OSError as exc:
@@ -390,6 +416,7 @@ class LocalAgentMailRuntime:
             'cli_version': _CLI_VERSION,
             'operation_id': operation_id,
             'auth_url': match.group(0),
+            'frontend_opens_auth': self._frontend_auth_marker(scope, operation_id).is_file(),
         }
 
     def _validate_operation(self, scope: AgentMailScope, operation_id: str) -> str:
@@ -433,6 +460,10 @@ class LocalAgentMailRuntime:
                 path.unlink()
             except OSError:
                 pass
+        try:
+            self._frontend_auth_marker(scope, operation_id).unlink()
+        except OSError:
+            pass
         current = self._current_auth_path(scope)
         try:
             if current.read_text(encoding='utf-8').strip() == operation_id:

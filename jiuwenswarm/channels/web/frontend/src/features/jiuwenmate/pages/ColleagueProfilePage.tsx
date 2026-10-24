@@ -18,7 +18,7 @@ import {
   UsersRound,
   type LucideIcon,
 } from 'lucide-react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import feishuIcon from '../../../assets/jiuwenmate/icons/feishu.svg';
 import autoModelIcon from '../../../assets/jiuwenmate/icons/auto.svg';
@@ -134,7 +134,7 @@ interface ColleagueProfilePageProps {
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
   onLoadAgentMailStatus?: (agentId: string) => Promise<{ status: string; cli_version: string | null; operation_id?: string }>;
   connectionEpoch?: number;
-  onBeginAgentMailAuth?: (agentId: string) => Promise<{ status: string; operation_id?: string; auth_url?: string }>;
+  onBeginAgentMailAuth?: (agentId: string) => Promise<{ status: string; operation_id?: string; auth_url?: string; frontend_opens_auth?: boolean }>;
   onPollAgentMailAuth?: (agentId: string, operationId: string) => Promise<{ status: string; cli_version: string | null }>;
   onCancelAgentMailAuth?: (agentId: string, operationId: string) => Promise<{ status: string; cli_version: string | null }>;
   onDisconnectAgentMail?: (agentId: string) => Promise<{ status: string; cli_version: string | null }>;
@@ -210,6 +210,7 @@ export function ColleagueProfilePage({
   const [agentMailEmail, setAgentMailEmail] = useState('');
   const [agentMailOperation, setAgentMailOperation] = useState('');
   const [agentMailError, setAgentMailError] = useState('');
+  const agentMailAuthWindow = useRef<Window | null>(null);
   const applyAgentMailStatus = (status: { status: string; email?: string }) => {
     setAgentMailStatus(status.status);
     setAgentMailEmail(status.email ?? '');
@@ -220,27 +221,45 @@ export function ColleagueProfilePage({
   const startMailAuthorization = async () => {
     if (!onBeginAgentMailAuth) return;
     setAgentMailError('');
-    const authorizationTab = window.open('about:blank', '_blank');
-    if (!authorizationTab) {
-      setAgentMailError(t('jiuwenmate.profile.mail.popupBlocked'));
-      return;
+    const authWindow = window.open('about:blank', '_blank');
+    if (authWindow) {
+      authWindow.document.title = t('jiuwenmate.profile.mail.preparing');
+      authWindow.document.body.textContent = t('jiuwenmate.profile.mail.preparing');
     }
     try {
       const authorization = await onBeginAgentMailAuth(colleague.id);
       setAgentMailError('');
       applyAgentMailStatus(authorization);
       if (authorization.status === 'connected') {
+        authWindow?.close();
         setAgentMailOperation('');
-        authorizationTab.close();
         return;
       }
-      if (!authorization.operation_id || !authorization.auth_url) {
+      if (!authorization.operation_id) {
         throw new Error('The Agent Mail authorization response is incomplete.');
       }
+      if (authorization.frontend_opens_auth && authWindow?.closed) {
+        await onCancelAgentMailAuth?.(colleague.id, authorization.operation_id);
+        applyAgentMailStatus({ status: 'not_connected' });
+        setAgentMailOperation('');
+        agentMailAuthWindow.current = null;
+        return;
+      }
+      if (authorization.frontend_opens_auth && !authWindow) {
+        await onCancelAgentMailAuth?.(colleague.id, authorization.operation_id);
+        applyAgentMailStatus({ status: 'not_connected' });
+        setAgentMailError(t('jiuwenmate.profile.mail.popupBlocked'));
+        return;
+      }
+      if (authorization.frontend_opens_auth && authorization.auth_url && authWindow) {
+        agentMailAuthWindow.current = authWindow;
+        authWindow.location.href = authorization.auth_url;
+      } else {
+        authWindow?.close();
+      }
       setAgentMailOperation(authorization.operation_id);
-      authorizationTab.location.href = authorization.auth_url;
     } catch (error) {
-      authorizationTab?.close();
+      authWindow?.close();
       handleAgentMailError(error);
     }
   };
@@ -263,6 +282,8 @@ export function ColleagueProfilePage({
       setAgentMailError('');
       applyAgentMailStatus(result);
       setAgentMailOperation('');
+      agentMailAuthWindow.current?.close();
+      agentMailAuthWindow.current = null;
     } catch (error) {
       handleAgentMailError(error);
     }
@@ -280,7 +301,7 @@ export function ColleagueProfilePage({
         if (!active) return;
         setAgentMailError('');
         applyAgentMailStatus(status);
-        if (status.status === 'authorizing' && status.operation_id) setAgentMailOperation(status.operation_id);
+        setAgentMailOperation(status.status === 'authorizing' && status.operation_id ? status.operation_id : '');
       })
       .catch((error: unknown) => {
         if (!active) return;
@@ -291,17 +312,55 @@ export function ColleagueProfilePage({
   }, [colleague.id, connectionEpoch, onLoadAgentMailStatus, section]);
   useEffect(() => {
     if (!agentMailOperation || !onPollAgentMailAuth) return;
+    let active = true;
     const timer = window.setInterval(() => {
       void onPollAgentMailAuth(colleague.id, agentMailOperation)
-        .then((status) => {
+        .then(async (status) => {
+          if (!active) return;
+          if (status.status === 'authorizing' && agentMailAuthWindow.current?.closed) {
+            const result = onCancelAgentMailAuth
+              ? await onCancelAgentMailAuth(colleague.id, agentMailOperation)
+              : { status: 'not_connected', cli_version: status.cli_version };
+            if (!active) return;
+            applyAgentMailStatus(result);
+            setAgentMailOperation('');
+            agentMailAuthWindow.current = null;
+            return;
+          }
           setAgentMailError('');
           applyAgentMailStatus(status);
-          if (status.status !== 'authorizing') setAgentMailOperation('');
+          if (status.status !== 'authorizing') {
+            setAgentMailOperation('');
+            agentMailAuthWindow.current?.close();
+            agentMailAuthWindow.current = null;
+          }
         })
-        .catch(handleAgentMailError);
+        .catch(async (error: unknown) => {
+          if (!active) return;
+          if (!onLoadAgentMailStatus) {
+            handleAgentMailError(error);
+            return;
+          }
+          try {
+            const status = await onLoadAgentMailStatus(colleague.id);
+            if (!active) return;
+            setAgentMailError('');
+            applyAgentMailStatus(status);
+            setAgentMailOperation(status.status === 'authorizing' && status.operation_id ? status.operation_id : '');
+            if (status.status !== 'authorizing') {
+              agentMailAuthWindow.current?.close();
+              agentMailAuthWindow.current = null;
+            }
+          } catch {
+            if (active) handleAgentMailError(error);
+          }
+        });
     }, 2500);
-    return () => window.clearInterval(timer);
-  }, [agentMailOperation, colleague.id, onPollAgentMailAuth]);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [agentMailOperation, colleague.id, onLoadAgentMailStatus, onPollAgentMailAuth]);
   useEffect(() => {
     if (section !== 'persona' || !onLoadSettings) return;
     let active = true;
