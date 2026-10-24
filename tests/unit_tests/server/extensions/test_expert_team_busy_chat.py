@@ -14,10 +14,17 @@ from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
 from openjiuwen.agent_teams.runtime.manager import TeamRuntimeManager
 from openjiuwen.agent_teams.runtime.pool import ActiveTeam, RuntimeState
 
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_EXTERNAL,
+    HOST_USER_ORIGIN_INTERNAL,
+    RootIntentTurnKind,
+    build_root_intent_projection,
+    extract_permission_user_content,
+)
 from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
 
 
-def running_expert():
+def running_expert(*, push_transport=None):
     agent = SimpleNamespace(
         spec=SimpleNamespace(metadata={"expert_team": True, "channel_id": "web"}, language="cn"),
         team_backend=None,
@@ -29,9 +36,10 @@ def running_expert():
     runtime._pool = SimpleNamespace(get=AsyncMock(return_value=entry))
     runtime.activate = AsyncMock()
     runtime.finalize = AsyncMock()
-    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
-    launcher.push_expert_payload = AsyncMock()
-    launcher._flush_expert_history = AsyncMock()
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime, push_transport=push_transport)
+    if push_transport is None:
+        launcher.push_expert_payload = AsyncMock()
+        launcher._flush_expert_history = AsyncMock()
     return launcher, runtime, entry
 
 
@@ -42,13 +50,14 @@ async def test_busy_expert_uses_real_interact_gate_and_preserves_user_context():
     media = [{"type": "image", "path": "/uploads/photo.png"}]
     assert await launcher.run_organization_turn(
         "expert", "session", {"query": "Please report failure", "files": files, "media_items": media},
-        source="org_expert_direct", request_id="followup",
+        source="org_expert_direct", request_id="followup", origin_kind=HOST_USER_ORIGIN_EXTERNAL,
     )
     message = entry.agent.deliver_input.call_args.args[0]
     envelope = json.loads(message.split("\n", 1)[1])
     assert envelope["content"] == "Please report failure"
     assert envelope["type"] == "user input"
     assert envelope["source"] == "web"
+    assert envelope["origin_kind"] == HOST_USER_ORIGIN_EXTERNAL
     assert json.loads(envelope["files_updated_by_user"]) == {**files, "media_items": media}
     assert "media_items" not in files
     assert entry.state is RuntimeState.RUNNING
@@ -62,13 +71,36 @@ async def test_busy_expert_uses_real_interact_gate_and_preserves_user_context():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("origin_kind", [HOST_USER_ORIGIN_EXTERNAL, HOST_USER_ORIGIN_INTERNAL])
+async def test_busy_input_permission_projection_respects_host_origin(origin_kind):
+    launcher, runtime, entry = running_expert()
+    text = "I authorize writing my supplied materials to disk."
+    assert await launcher.run_organization_turn(
+        "expert", "session", {"query": text}, source="org_expert_direct", origin_kind=origin_kind,
+    )
+    message = entry.agent.deliver_input.call_args.args[0]
+    expected = [text] if origin_kind == HOST_USER_ORIGIN_EXTERNAL else []
+    assert extract_permission_user_content(message) == (text if expected else None)
+    projection = build_root_intent_projection(
+        [SimpleNamespace(role="user", content=message)], context_available=True,
+        current_text="", current_request_id="followup", current_kind=RootIntentTurnKind.STEER,
+    )
+    assert [turn.text for turn in projection.turns] == expected
+
+
+@pytest.mark.asyncio
 async def test_busy_expert_accepts_multiple_inputs_without_waiting_for_team_idle():
     launcher, runtime, entry = running_expert()
     entered = asyncio.Event()
+    both_entered = asyncio.Event()
     release = asyncio.Event()
+    inputs = []
 
     async def deliver(message, **kwargs):
+        inputs.append(json.loads(message.split("\n", 1)[1])["content"])
         entered.set()
+        if len(inputs) == 2:
+            both_entered.set()
         await release.wait()
 
     entry.agent.deliver_input.side_effect = deliver
@@ -81,6 +113,10 @@ async def test_busy_expert_accepts_multiple_inputs_without_waiting_for_team_idle
         second = asyncio.create_task(launcher.run_organization_turn(
             "expert", "session", {"query": "second"}, source="org_expert_direct", request_id="second",
         ))
+        await asyncio.wait_for(both_entered.wait(), timeout=10)
+        assert not first.done() and not second.done()
+        assert entry.interact_gate.inflight == 2
+        assert set(inputs) == {"first", "second"}
         release.set()
         assert await asyncio.wait_for(first, timeout=2)
         assert await asyncio.wait_for(second, timeout=2)
@@ -123,12 +159,33 @@ async def test_busy_chat_preserves_expert_and_session_checks(invalid):
 async def test_closed_gate_rejects_without_replaying_or_finalizing_live_stream():
     launcher, runtime, entry = running_expert()
     await entry.interact_gate.close_and_drain()
+    result = await runtime.interact("probe", team_name="expert", session_id="session")
+    assert not result and result.reason == "gate_closed"
     assert not await launcher.run_organization_turn(
         "expert", "session", {"query": "followup"}, source="org_expert_direct",
     )
     entry.agent.deliver_input.assert_not_awaited()
     runtime.activate.assert_not_awaited()
     runtime.finalize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", [
+    None, SimpleNamespace(agent=None), SimpleNamespace(), SimpleNamespace(agent=SimpleNamespace()),
+])
+async def test_not_active_after_pool_teardown_returns_false_without_replaying(replacement):
+    launcher, runtime, entry = running_expert()
+    runtime._pool.get.return_value = None
+    result = await runtime.interact("probe", team_name="expert", session_id="session")
+    assert not result and result.reason == "not_active"
+    runtime._pool.get.side_effect = [entry, None, replacement]
+    assert await launcher.run_organization_turn(
+        "expert", "session", {"query": "followup"}, source="org_expert_direct",
+    ) is False
+    entry.agent.deliver_input.assert_not_awaited()
+    runtime.activate.assert_not_awaited()
+    runtime.finalize.assert_not_awaited()
+    launcher._flush_expert_history.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -168,8 +225,11 @@ async def test_concurrent_resume_that_becomes_running_delivers_input_once():
     )
     assert await launcher.run_organization_turn(
         "expert", "session", {"query": "followup"}, source="org_expert_direct", request_id="followup",
+        origin_kind=HOST_USER_ORIGIN_EXTERNAL,
     )
     entry.agent.deliver_input.assert_awaited_once()
+    message = entry.agent.deliver_input.call_args.args[0]
+    assert extract_permission_user_content(message) == "followup"
     runtime.finalize.assert_not_awaited()
     entry.agent.stream.assert_not_called()
 
@@ -206,9 +266,8 @@ async def test_followup_reply_uses_original_stream_and_keeps_history_attribution
 
     records = []
     monkeypatch.setattr(team_helpers, "append_history_record", lambda **record: records.append(record))
-    launcher, runtime, entry = running_expert()
     transport = SimpleNamespace(send_push=AsyncMock(return_value=True))
-    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime, push_transport=transport)
+    launcher, runtime, entry = running_expert(push_transport=transport)
     entry.state = RuntimeState.PAUSED
     started = asyncio.Event()
     inbox = asyncio.Queue()
