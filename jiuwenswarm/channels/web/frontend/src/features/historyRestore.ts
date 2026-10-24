@@ -1038,13 +1038,23 @@ function parseHistoryTimelineEntry(
   sessionId: string,
   subagentId?: string,
 ): HistoryTimelineEntry | null {
-  const teamId = expertTeamId({ ...buildEventPayloadForRecord(record), ...record }, sessionId);
+  const payload = buildEventPayloadForRecord(record);
+  const teamId = expertTeamId({ ...payload, ...record }, sessionId);
   if (teamId && !isTeamOrganizationUiEnabled()) return null;
-  const entry = parseSessionHistoryTimelineEntry(record, sessionId, subagentId);
+  const expertTeammate = Boolean(teamId && isTeamTeammateMessageRecord(record));
+  const entry = parseSessionHistoryTimelineEntry(
+    expertTeammate ? { ...record, role: 'assistant' } : record,
+    sessionId,
+    subagentId,
+  );
   if (teamId && entry) {
     // Expert history never replays tools or lifecycle into the owner's runtime.
     if (entry.kind !== 'message') return null;
     entry.message.teamId = teamId;
+    if (expertTeammate && record.event_type === 'chat.final') {
+      entry.message.id = `team-member-${String(payload.member_name ?? '')}@${entry.message.id}`;
+      entry.message.content = normalizeFinalContent(payload);
+    }
   }
   return entry;
 }

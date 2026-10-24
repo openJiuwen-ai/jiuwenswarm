@@ -5452,12 +5452,15 @@ class _UnattendedTeamRoundHistoryWriter:
         request_id: str,
         cross_session_marker: dict[str, Any] | None,
         mode: str = "team",
+        event_metadata: dict[str, Any] | None = None,
     ) -> None:
         self._channel_id = channel_id
         self._session_id = session_id
         self._request_id = str(request_id or "").strip()
         self._cross_session_marker = cross_session_marker
         self._mode = mode
+        self._event_metadata = dict(event_metadata or {})
+        self._record_sequence = 0
         self._pending_final_chunks: list[str] = []
         self._pending_final_started_at: float | None = None
         self._pending_final_order: Any = None
@@ -5588,7 +5591,7 @@ class _UnattendedTeamRoundHistoryWriter:
             event_type="chat.final",
             content=pending_text,
             timestamp=record_timestamp,
-            extra=extra_fields if extra_fields else None,
+            extra=self._with_event_metadata(extra_fields),
             mode=self._mode,
         )
         self._durable_final_content = pending_text
@@ -5622,7 +5625,7 @@ class _UnattendedTeamRoundHistoryWriter:
             event_type="chat.reasoning",
             content="",
             timestamp=timestamp,
-            extra=extra_fields if extra_fields else None,
+            extra=self._with_event_metadata(extra_fields),
             mode=self._mode,
         )
 
@@ -5668,11 +5671,21 @@ class _UnattendedTeamRoundHistoryWriter:
             event_type=evt_type,
             content=event.get("content") or event.get("error") or "",
             timestamp=record_timestamp,
-            extra=extra_fields if extra_fields else None,
+            extra=self._with_event_metadata(extra_fields),
             mode=self._mode,
         )
         if evt_type == "chat.final":
             self._durable_final_content = str(event.get("content") or "")
+
+    def _with_event_metadata(self, extra_fields: dict[str, Any]) -> dict[str, Any] | None:
+        """Keep buffered organization records attributable and uniquely identified."""
+        if not self._event_metadata:
+            return extra_fields if extra_fields else None
+        result = dict(self._event_metadata)
+        result.update(extra_fields)
+        self._record_sequence += 1
+        result["id"] = f"{self._request_id}:{self._record_sequence}:assistant"
+        return result
 
     def _attach_reasoning_content(
         self, extra_fields: dict[str, Any] | None = None

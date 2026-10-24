@@ -23,6 +23,7 @@ import {
   useTeamOrganizationUiEnabled,
   useSettingsConfig,
   SettingsServicesProvider,
+  parseHistoryJsonFileToPreviewMessages,
 } from '../node_modules/.cache/team-organization/organization.mjs';
 
 function seed() {
@@ -717,6 +718,39 @@ test('history is routed to independent conversations without polluting owner', (
     useChatStore.getState().runtimes['session::expert'].messages.map((m) => m.id),
     ['expert'],
   );
+});
+
+test('refresh restores background expert and member replies into their own conversations', () => {
+  seed();
+  setTeamOrganizationUiEnabled(true);
+  const records = [
+    { id: 'owner', role: 'user', content: 'owner task', timestamp: 1792800000 },
+    ...['leader', 'teammate'].map((role, index) => ({
+      id: `background-${role}`, role, member_name: role === 'leader' ? 'team_leader' : 'analyst',
+      content: `${role} reply`, event_type: 'chat.final', source: 'org_expert_background',
+      team_id: 'expert', mode: 'team', timestamp: 1792800001 + index,
+    })),
+    { id: 'summary', role: 'leader', content: 'summary reply', event_type: 'chat.final',
+      source: 'org_summary_background', team_id: 'summary', mode: 'team', timestamp: 1792800003 },
+    { id: 'owner-member', role: 'teammate', content: 'hidden owner member', event_type: 'chat.final',
+      source: 'org_root_background', team_id: 'owner', mode: 'team', timestamp: 1792800004 },
+    { id: 'expert-tool', role: 'leader', event_type: 'chat.tool_call', tool_name: 'read_file',
+      source: 'org_expert_background', team_id: 'expert', mode: 'team', timestamp: 1792800005 },
+  ];
+  // A browser reload has no in-memory expert conversation to fall back to.
+  useChatStore.getState().removeRuntime('session::expert');
+  useChatStore.getState().removeRuntime('session::summary');
+  const messages = parseHistoryJsonFileToPreviewMessages(records, 'session');
+  useChatStore.getState().replaceHistoryMessages('session', messages);
+  assert.equal(useChatStore.getState().runtimes.session.messages.length, 1);
+  const expert = useChatStore.getState().runtimes['session::expert'].messages;
+  assert.equal(expert.length, 2);
+  assert.match(expert[0].content, /leader reply/);
+  assert.equal(expert[1].content, 'teammate reply');
+  assert.match(expert[1].id, /^team-member-analyst@/);
+  assert.equal(useChatStore.getState().runtimes['session::summary'].messages.length, 1);
+  setTeamOrganizationUiEnabled(false);
+  assert.deepEqual(parseHistoryJsonFileToPreviewMessages(records, 'session').map((message) => message.id), ['owner']);
 });
 
 test('disabled UI has no organization event subscriptions; disabling unsubscribes', async () => {
