@@ -40,6 +40,7 @@ from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.core.foundation.tool import ToolCard, McpServerConfig
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.core.runner import Runner
+from openjiuwen.core.runner.resources_manager.registration_logging import batch_registration_logging
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
 from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerConfig
 from openjiuwen.core.session.checkpointer.persistence import PersistenceCheckpointerProvider
@@ -4888,39 +4889,40 @@ class JiuWenSwarmDeepAdapter:
 
     def _install_staged_request_mcp_tools(self, buffers: _RequestMcpToolBuffers) -> None:
         """Install a fully discovered generation without yielding to another request."""
-        for tool, strict in buffers.pending_tools:
-            card = tool.card
-            result = Runner.resource_mgr.add_tool(tool, tag="office-claw")
-            is_ok = getattr(result, "is_ok", None)
-            succeeded = bool(is_ok()) if callable(is_ok) else result is not False
-            if not succeeded:
-                if strict:
-                    raise RuntimeError(f"failed to register OfficeClaw MCP tool: {card.name}")
-                logger.warning("[JiuWenSwarmDeepAdapter] MCP add_tool failed: tool_id=%s", card.id)
-                continue
-            # Track before installing the card so failures can roll back only our resources.
-            buffers.tool_ids.append(card.id)
-            buffers.tool_names.append(card.name)
-            buffers.registered_tools.append(tool)
-            try:
-                self._install_office_claw_ability_card(card)
-            except OfficeClawMcpBuiltinNameConflict:
-                if strict:
-                    raise
-                # A user connector's built-in collision skips just that tool.
+        with batch_registration_logging():
+            for tool, strict in buffers.pending_tools:
+                card = tool.card
+                result = Runner.resource_mgr.add_tool(tool, tag="office-claw")
+                is_ok = getattr(result, "is_ok", None)
+                succeeded = bool(is_ok()) if callable(is_ok) else result is not False
+                if not succeeded:
+                    if strict:
+                        raise RuntimeError(f"failed to register OfficeClaw MCP tool: {card.name}")
+                    logger.warning("[JiuWenSwarmDeepAdapter] MCP add_tool failed: tool_id=%s", card.id)
+                    continue
+                # Track before installing the card so failures can roll back only our resources.
+                buffers.tool_ids.append(card.id)
+                buffers.tool_names.append(card.name)
+                buffers.registered_tools.append(tool)
                 try:
-                    Runner.resource_mgr.remove_tool(card.id)
-                except Exception as exc:
+                    self._install_office_claw_ability_card(card)
+                except OfficeClawMcpBuiltinNameConflict:
+                    if strict:
+                        raise
+                    # A user connector's built-in collision skips just that tool.
+                    try:
+                        Runner.resource_mgr.remove_tool(card.id)
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuWenSwarmDeepAdapter] MCP shadow-skip resource cleanup failed: "
+                            "tool_id=%s error=%s", card.id, exc,
+                        )
+                    buffers.tool_ids.pop()
+                    buffers.tool_names.pop()
+                    buffers.registered_tools.pop()
                     logger.warning(
-                        "[JiuWenSwarmDeepAdapter] MCP shadow-skip resource cleanup failed: "
-                        "tool_id=%s error=%s", card.id, exc,
+                        "[JiuWenSwarmDeepAdapter] MCP tool shadows a built-in, skipped: tool_id=%s", card.id,
                     )
-                buffers.tool_ids.pop()
-                buffers.tool_names.pop()
-                buffers.registered_tools.pop()
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] MCP tool shadows a built-in, skipped: tool_id=%s", card.id,
-                )
 
     def _activate_empty_request_scoped_mcp_registration(
         self, registration: OfficeClawMcpRegistration,
@@ -4998,7 +5000,9 @@ class JiuWenSwarmDeepAdapter:
                 return generation
             # There must be no await from this guard through publication: a slow
             # old discovery must never overwrite a newer request's tool bindings.
+            install_started = time.perf_counter()
             self._install_staged_request_mcp_tools(buffers)
+            install_ms = (time.perf_counter() - install_started) * 1000
             registration = _registration()
             if not replace_request_scoped_mcp_registration(generation, registration):
                 raise RuntimeError("request-scoped MCP generation superseded during install")
@@ -5014,8 +5018,9 @@ class JiuWenSwarmDeepAdapter:
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] request-scoped MCP registered: "
-                "request_id=%s session_id=%s tools=%s", request.request_id,
-                request.session_id, buffers.tool_names,
+                "request_id=%s session_id=%s tools=%s registered=%s skipped=%s install_ms=%.1f",
+                request.request_id, request.session_id, buffers.tool_names,
+                len(buffers.tool_ids), len(buffers.pending_tools) - len(buffers.tool_ids), install_ms,
             )
             logger.info("[latency] stage=2 name=mcp request_id=%s", request.request_id)
             return registration

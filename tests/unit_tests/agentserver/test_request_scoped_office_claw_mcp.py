@@ -1525,3 +1525,83 @@ def test_rail_set_office_claw_binding_stores_thread_and_invocation() -> None:
     rail.set_office_claw_active_tool_ids(None)
     assert rail._office_claw_delivery_thread_id is None
     assert rail._office_claw_invocation_id is None
+
+
+@pytest.mark.asyncio
+async def test_batch_registration_uses_real_resources_and_one_summary(monkeypatch):
+    from unittest.mock import Mock
+
+    from openjiuwen.core.runner.resources_manager import resource_manager, tag_manager
+    from openjiuwen.core.runner.resources_manager.resource_manager import ResourceMgr
+
+    for key, value in _startup_env().items():
+        monkeypatch.setenv(key, value)
+    manager = ResourceMgr()
+    resource_log, tag_log, adapter_log = Mock(), Mock(), Mock()
+    monkeypatch.setattr(resource_manager, "logger", resource_log)
+    monkeypatch.setattr(tag_manager, "logger", tag_log)
+    monkeypatch.setattr(interface_deep, "logger", adapter_log)
+    monkeypatch.setattr(interface_deep, "Runner", SimpleNamespace(resource_mgr=manager))
+    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", AsyncMock(return_value=_tool_list()))
+    adapter = _bare_session_adapter()
+    registration = await adapter.register_request_scoped_office_claw_mcp(_request(_valid_config()))
+    try:
+        assert len(registration.tool_ids) == 2
+        for tool in registration.tool_instances:
+            assert manager.get_tool(tool.card.id) is tool
+            assert manager.resource_has_tag(tool.card.id, "office-claw")
+            assert adapter._instance.ability_manager.get(tool.card.name).id == tool.card.id
+        resource_log.info.assert_not_called()
+        tag_log.info.assert_not_called()
+        assert resource_log.debug.call_count == 2
+        assert tag_log.debug.call_count == 2
+        summaries = [c for c in adapter_log.info.call_args_list if "MCP registered:" in c.args[0]]
+        assert len(summaries) == 1
+        assert summaries[0].args[4:6] == (2, 0)
+        assert summaries[0].args[6] >= 0
+    finally:
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+    assert adapter._instance.ability_manager.cards == {}
+    assert all(manager.get_tool(tool_id) is None for tool_id in registration.tool_ids)
+
+
+@pytest.mark.asyncio
+async def test_batch_registration_failure_rolls_back_and_restores_logging(monkeypatch):
+    from unittest.mock import Mock
+
+    from openjiuwen.core.runner.resources_manager import resource_manager, tag_manager
+    from openjiuwen.core.runner.resources_manager.resource_manager import ResourceMgr
+
+    for key, value in _startup_env().items():
+        monkeypatch.setenv(key, value)
+    manager = ResourceMgr()
+    resource_log, tag_log, adapter_log = Mock(), Mock(), Mock()
+    monkeypatch.setattr(resource_manager, "logger", resource_log)
+    monkeypatch.setattr(tag_manager, "logger", tag_log)
+    monkeypatch.setattr(interface_deep, "logger", adapter_log)
+    monkeypatch.setattr(interface_deep, "Runner", SimpleNamespace(resource_mgr=manager))
+    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", AsyncMock(return_value=_tool_list()))
+    adapter = _bare_session_adapter()
+    attempted = []
+    original_add = manager.add_tool
+
+    def fail_second(tool, **kwargs):
+        attempted.append(tool)
+        if len(attempted) == 2:
+            raise RuntimeError("second registration failed")
+        return original_add(tool, **kwargs)
+
+    monkeypatch.setattr(manager, "add_tool", fail_second)
+    registration = await adapter.register_request_scoped_office_claw_mcp(_request(_valid_config()))
+    try:
+        assert registration.tool_ids == ()
+        assert adapter._instance.ability_manager.cards == {}
+        assert all(manager.get_tool(tool.card.id) is None for tool in attempted)
+        assert any("registration failed" in c.args[0] for c in adapter_log.warning.call_args_list)
+        assert not any("MCP registered:" in c.args[0] for c in adapter_log.info.call_args_list)
+        resource_log.info.reset_mock()
+        assert original_add(attempted[0], tag="office-claw").is_ok()
+        resource_log.info.assert_called_once()  # Scope did not leak after failure.
+    finally:
+        manager.remove_tool(attempted[0].card.id)
+        await adapter.cleanup_request_scoped_office_claw_mcp(registration)
