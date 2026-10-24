@@ -91,7 +91,4 @@ You must strictly follow the output format. You can begin your task now.'''
             stop_sequences=['<|eot_id|>', '<|end_of_text|>', '<|eom_id|>'],
             verbose=self.config['verbose']
         )
-        if self.config['verbose']:
-            print_bold('Final LLM output: ')
-            print_bold(output)
         return output

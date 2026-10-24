@@ -29,6 +29,10 @@ class ToolOptimizerBase(BaseOptimizer):
         self.llm_api_key = kwargs.get("llm_api_key", "")
         self.config_eg = kwargs.get("config_eg", default_config_eg)
         self.config_desc = kwargs.get("config_desc", default_config_desc)
+        if kwargs.get("api_keys") is not None:
+            # Both stages need the same execution credentials, outside LLM prompts.
+            self.config_eg = {**self.config_eg, "api_keys": kwargs["api_keys"]}
+            self.config_desc = {**self.config_desc, "api_keys": kwargs["api_keys"]}
         self.path_save_dir = kwargs.get("path_save_dir", "./tool_optimizer_results")
         self.config_eg['save_dir'] = os.path.join(self.path_save_dir, "examples")
         self.config_desc['save_dir'] = os.path.join(self.path_save_dir, "descriptions")

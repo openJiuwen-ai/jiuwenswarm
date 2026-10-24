@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
+import copy
 import json
 from typing import Any, Dict, List, Tuple
 import anyio
@@ -9,6 +10,9 @@ import numpy as np
 # from openai import OpenAI
 
 from openjiuwen.agent_evolving.optimizer.tool.utils.rits import rits_response
+from openjiuwen.agent_evolving.optimizer.tool.utils.sensitive_data import (
+    argument_dict, credential_values, is_credential_name, redact,
+)
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.llm import (
     ModelClientConfig,
@@ -23,6 +27,8 @@ class SimpleEval:
     and evaluates both function call accuracy and output effectiveness.
     """
     
+    supports_execution_credentials = True
+
     def __init__(
             self, 
             api_wrapper=None, 
@@ -54,6 +60,7 @@ class SimpleEval:
         description: str,
         examples: List[Tuple[str, Any, str, str]],
         runs: int = 1,
+        execution_credentials: Dict[str, Any] = None,
     ):
         """
         Evaluate a tool with given examples.
@@ -67,6 +74,10 @@ class SimpleEval:
         Returns:
             Dict with 'score_avg', 'score_std', 'fn_call_accuracy', 'output_effectiveness', and 'results'
         """
+        if execution_credentials and any(
+            not is_credential_name(name) for name in execution_credentials
+        ):
+            raise ValueError("execution_credentials contains a non-credential argument name")
         all_scores = []
         all_fn_call_scores = []
         all_output_scores = []
@@ -88,6 +99,7 @@ class SimpleEval:
                         "expected_output": fn_output,
                         "answer": answer,
                         "example_id": i,
+                        "execution_credentials": execution_credentials,
                     }
                 )
                 run_results.append(result)
@@ -129,12 +141,21 @@ class SimpleEval:
         expected_output = example["expected_output"]
         answer = example["answer"]
         example_id = example["example_id"]
+        execution_credentials = example.get("execution_credentials") or {}
+        known_secrets = credential_values(tool, expected_fn_call, execution_credentials)
         try:
             # Step 1: Generate function call based on instruction and tool description
-            generated_fn_call = self._generate_function_call(tool, description, instruction)
+            generated_fn_call = self._generate_function_call(
+                redact(tool, known_secrets),
+                redact(description, known_secrets),
+                redact(instruction, known_secrets),
+            )
             
             # Step 2: Evaluate function call accuracy
-            fn_call_score = self._evaluate_function_call_accuracy(generated_fn_call, expected_fn_call)
+            fn_call_score = self._evaluate_function_call_accuracy(
+                redact(generated_fn_call, known_secrets),
+                redact(expected_fn_call, known_secrets),
+            )
             
             # Step 3: Execute the generated function call
             execution_result = None
@@ -143,7 +164,15 @@ class SimpleEval:
             
             if self.api_wrapper:
                 try:
-                    actual_output, status_code = self.api_wrapper(tool, generated_fn_call)
+                    execution_call = copy.deepcopy(generated_fn_call)
+                    execution_args = argument_dict(execution_call)
+                    if execution_args is None:
+                        raise ValueError("Generated tool-call arguments are not a JSON object")
+                    execution_call["arguments"] = execution_args
+                    if execution_credentials:
+                        for name, value in execution_credentials.items():
+                            execution_args[name] = value
+                    actual_output, status_code = self.api_wrapper(tool, execution_call)
                     if status_code == 0:
                         execution_result = json.loads(actual_output)
                     else:
@@ -157,8 +186,8 @@ class SimpleEval:
                             'arguments': generated_fn_call.get('arguments', {}),
                             'error_msg': str(execution_error)
                         })
-                except Exception as e:
-                    execution_error = {"error": str(e)}
+                except Exception:
+                    execution_error = {"error": "Tool execution failed"}
                     if generated_fn_call:
                         function_name = generated_fn_call.get(
                             "name",
@@ -173,7 +202,7 @@ class SimpleEval:
                         {
                             "function_name": function_name,
                             "arguments": arguments,
-                            "error_msg": str(e),
+                            "error_msg": "Tool execution failed",
                         }
                     )
             else:
@@ -186,9 +215,17 @@ class SimpleEval:
                 })
                 raise ValueError(error_msg)
             
+            secrets = credential_values(
+                tool, expected_fn_call, generated_fn_call, execution_credentials,
+                execution_result, execution_error
+            )
+            safe_execution_result = redact(execution_result, secrets)
+            safe_execution_error = redact(execution_error, secrets)
+
             # Step 4: Evaluate output effectiveness
             output_effectiveness_score = self._evaluate_output_effectiveness(
-                instruction, execution_result, execution_error, answer
+                redact(instruction, secrets), safe_execution_result,
+                safe_execution_error, redact(answer, secrets)
             )
             
             # Calculate weighted score
@@ -197,35 +234,35 @@ class SimpleEval:
             
             # Format according to expected structure for output['results']
             return {
-                'instruction': instruction,
-                'expected_fn_call': expected_fn_call,
-                'generated_fn_call': generated_fn_call,
+                'instruction': redact(instruction, secrets),
+                'expected_fn_call': redact(expected_fn_call, secrets),
+                'generated_fn_call': redact(generated_fn_call, secrets),
                 'fn_call_score': fn_call_score,
-                'execution_result': execution_result,
-                'execution_error': execution_error,
+                'execution_result': safe_execution_result,
+                'execution_error': safe_execution_error,
                 'output_effectiveness_score': output_effectiveness_score,
                 'weighted_score': weighted_score,
-                'answer': answer,
-                'errors': errors
+                'answer': redact(answer, secrets),
+                'errors': redact(errors, secrets)
             }
                 
-        except Exception as e:
-            logger.error(f"Error evaluating example {example_id}: {str(e)}")
+        except Exception:
+            logger.error(f"Error evaluating example {example_id}")
             # Format error according to expected structure
             return {
-                'instruction': instruction,
-                'expected_fn_call': expected_fn_call,
+                'instruction': redact(instruction, known_secrets),
+                'expected_fn_call': redact(expected_fn_call, known_secrets),
                 'generated_fn_call': None,
                 'fn_call_score': 0.0,
                 'execution_result': None,
-                'execution_error': {"error": str(e)},
+                'execution_error': {"error": "Example evaluation failed"},
                 'output_effectiveness_score': 0.0,
                 'weighted_score': 0.0,
-                'answer': answer,  # This is what the original format expects in result['answer']
+                'answer': redact(answer, known_secrets),
                 'errors': [{
                     'function_name': tool.get('name', 'unknown'),
                     'arguments': {},
-                    'error_msg': str(e)
+                    'error_msg': "Example evaluation failed"
                 }]
             }
 
@@ -233,6 +270,7 @@ class SimpleEval:
         """
         Generate a function call using LLM agent's built-in tool calling capability.
         """
+        function_name = tool.get("name", "unknown")
         try:
             # client = OpenAI()
             model_config = ModelRequestConfig(
@@ -278,12 +316,10 @@ class SimpleEval:
             function_name = api_response.tool_calls[0].name
             function_call = {"name": function_name, "arguments": fn_args}
 
-            # try to load str arguments to dict
-            if isinstance(function_call, str):
-                try:
-                    function_call = json.loads(function_call)
-                except json.JSONDecodeError:
-                    pass
+            arguments = argument_dict(function_call)
+            if arguments is None:
+                raise ValueError("Generated tool-call arguments are not a JSON object")
+            function_call["arguments"] = arguments
             # Return the first generated call, or handle multiple calls as needed
             if function_call and len(function_call) > 0:
                 return function_call
@@ -294,8 +330,8 @@ class SimpleEval:
                     "arguments": {}
                 }
                 
-        except Exception as e:
-            logger.error(f"Error generating function call: {str(e)}")
+        except Exception:
+            logger.error("Error generating function call")
             # Fallback: return basic function call structure
             return {
                 "name": function_name,
@@ -354,8 +390,8 @@ class SimpleEval:
             
             return score / max_score if max_score > 0 else 0.0
             
-        except Exception as e:
-            logger.error(f"Error evaluating function call accuracy: {str(e)}")
+        except Exception:
+            logger.error("Error evaluating function call accuracy")
             return 0.0
     
     @staticmethod
@@ -421,8 +457,8 @@ Respond with only a number between 0 and 100. Do not include explanations.
             )
             score = float(response.strip())
             return min(max(score, 0.0), 100.0) / 100.0
-        except Exception as e:
-            logger.error(f"Error evaluating output effectiveness: {str(e)}")
+        except Exception:
+            logger.error("Error evaluating output effectiveness")
             return self._simple_output_comparison(execution_result, expected_answer)
     
     @staticmethod
@@ -447,6 +483,6 @@ Respond with only a number between 0 and 100. Do not include explanations.
             else:
                 return 0.3  # Partial credit for having some result
                 
-        except Exception as e:
-            logger.error(f"Error in simple output comparison: {str(e)}")
+        except Exception:
+            logger.error("Error in simple output comparison")
             return 0.0
