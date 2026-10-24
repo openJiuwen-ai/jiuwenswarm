@@ -210,6 +210,7 @@ async def shutdown() -> None
 | 发布与归属 | `tests/unit_tests/extensions_v2/management/test_activation_publish.py` |
 | 装配顺序 | `tests/unit_tests/extensions_v2/test_assembly.py` |
 | 安装目录配置 | `tests/unit_tests/extensions_v2/test_config.py` |
+| 管理写操作串行与取消 | `tests/unit_tests/extensions_v2/management/test_management_serialization.py` |
 
 ## 9. 兼容与变更
 
