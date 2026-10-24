@@ -1,19 +1,13 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-import { conversationKey, useChatStore, useSessionStore, useTeamSelectorStore } from '../../stores';
+import { conversationKey, useChatStore, useTeamSelectorStore } from '../../stores';
 import { isTeamOrganizationUiEnabled, useTeamOrganizationUiEnabled } from './featureConfig';
 import { generateUuidV4 } from '../../utils/uuid';
 import type { MediaItem } from '../../types';
-import { finishExpertRequest, startExpertRequest } from './processing';
+import { finishExpertRequest, isOrganizationProcessing, startExpertRequest } from './processing';
 
-export function ownerTeamId(sessionId: string): string | undefined {
-  const state = useSessionStore.getState();
-  return (
-    state.currentSession?.session_id === sessionId
-      ? state.currentSession
-      : state.sessions.find((session) => session.session_id === sessionId)
-  )?.team_name?.trim();
-}
+import { ownerTeamId } from './ownerIdentity';
+export { ownerTeamId } from './ownerIdentity';
 
 export function expertTeamId(payload: Record<string, unknown>, sessionId: string): string | null {
   const teamId = String(payload.team_id || payload.team_name || '').trim();
@@ -32,6 +26,15 @@ export function selectedExpertTeamId(sessionId: string): string | null {
   const runtime = useTeamSelectorStore.getState().runtimes[sessionId];
   const selected = runtime?.teams.find((team) => team.team_id === runtime.selectedTeamId);
   return selected && !selected.is_owner && selected.team_id !== ownerTeamId(sessionId) ? selected.team_id : null;
+}
+
+export function organizationOwnerStopTarget(sessionId: string): string | null {
+  if (!isTeamOrganizationUiEnabled()) return null;
+  const runtime = useTeamSelectorStore.getState().runtimes[sessionId];
+  const owner = runtime?.teams.find((team) => team.is_owner);
+  const ownerId = owner?.team_id || ownerTeamId(sessionId);
+  return ownerId && isOrganizationProcessing(sessionId) &&
+    (!runtime?.selectedTeamId || runtime.selectedTeamId === ownerId) ? ownerId : null;
 }
 
 export function useOrganizationConversationKey(sessionId: string | null): string {

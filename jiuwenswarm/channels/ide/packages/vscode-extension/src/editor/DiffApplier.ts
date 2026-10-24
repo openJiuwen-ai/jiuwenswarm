@@ -344,7 +344,7 @@ export async function performRewind(
         const { oldStr, newStr } = edits[i];
         if (!newStr) continue;
         if (!content.includes(newStr)) throw new Error(`cannot reverse edit in ${filePath}`);
-        content = content.replace(newStr, oldStr);
+        content = content.replace(newStr, () => oldStr);
       }
       await writeFileThroughEditor(filePath, content);
       restored++;

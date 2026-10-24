@@ -2587,7 +2587,9 @@ class JiuWenSwarm:
                 await package_manager.install_agent_group_with_hub(params)
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
-                package_manager.uninstall_agent_group(params)
+                from jiuwenswarm.server.runtime.organization_packages import uninstall_organization_agent_group
+
+                await uninstall_organization_agent_group(params)
                 payload = {}
             elif method == ReqMethod.AGENT_TEMPLATES_LIST:
                 cards = await package_manager.list_agent_templates_with_hub(params)

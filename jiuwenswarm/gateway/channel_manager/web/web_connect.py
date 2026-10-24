@@ -1261,11 +1261,7 @@ class WebChannel(BaseWsChannel):
         # interrupt_result 根据 intent 决定 is_processing 状态
         # (busy 映射已在 send() 入口 _track_session_busy 统一维护,此处仅补发
         #  合成的 processing_status 事件让前端同步状态)
-        # pause 不合成任何帧: 服务端在 pause_session_runtime 成功 park 后显式
-        # 广播 processing_status{is_processing:false, paused:true}, 此处合成
-        # true 会在服务端权威帧前后到达, 把帧式消费方的状态翻回 true.
-        # pause 失败时也不合成 false — 状态未变, 合成会误报.
-        if event_name == "chat.interrupt_result" and payload.get("source") != "org_expert_direct":
+        if event_name == "chat.interrupt_result" and not str(payload.get("source") or "").startswith("org_"):
             intent = payload.get("intent", "cancel") if isinstance(payload, dict) else "cancel"
             if intent == "pause":
                 return
@@ -1421,18 +1417,37 @@ class WebChannel(BaseWsChannel):
             event_name = event_type.value
         else:
             event_name = str(payload.get("event_type") or "") if payload is not None else ""
-        if payload is not None and payload.get("source") == "org_expert_direct":
+        if payload is not None and payload.get("source") == "org_stop":
+            sid = payload.get("session_id") or msg.session_id
+            if sid and payload.get("success") is True:
+                self._session_busy[sid] = False
+                requests = self._expert_processing_requests.get(sid, set())
+                items = payload.get("cancelled_requests")
+                if isinstance(items, list):
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        team_id = item.get("team_id")
+                        request_id = item.get("request_id")
+                        if isinstance(team_id, str) and isinstance(request_id, str):
+                            requests.discard((team_id, request_id))
+                if not requests:
+                    self._expert_processing_requests.pop(sid, None)
+            return
+        if payload is not None and str(payload.get("source") or "").startswith("org_"):
             # Expert terminals cannot clear the owner's busy flag. Keep the
             # aggregate for Git write guards until every expert request exits.
             sid = payload.get("session_id") or msg.session_id
             team_id = str(payload.get("team_id") or payload.get("team_name") or "")
-            if sid and team_id and event_name in {"chat.processing_status", "org.turn_completed", "chat.error"}:
-                request_id = payload.get("request_id")
-                if not isinstance(request_id, str) or not request_id.strip():
+            terminal = event_name in {"org.turn_completed", "chat.error"}
+            is_processing_event = event_name == "chat.processing_status" or terminal
+            if sid and team_id and is_processing_event:
+                request_id = str(payload.get("request_id") or "").strip()
+                if not request_id:
                     return
                 request = (team_id, request_id)
                 requests = self._expert_processing_requests.setdefault(sid, set())
-                if payload.get("is_processing") is True:
+                if not terminal and payload.get("is_processing") is True:
                     requests.add(request)
                 else:
                     requests.discard(request)
@@ -1476,10 +1491,11 @@ class WebChannel(BaseWsChannel):
                 params={"session_id": session_id}, session_id=session_id,
                 user_id=user_id, channel_id=self.channel_id, timeout_seconds=2,
             )
-            if not ok or not isinstance(payload.get("expert_requests"), list):
+            snapshot = payload.get("organization_requests", payload.get("expert_requests"))
+            if not ok or not isinstance(snapshot, list):
                 return
             live = set()
-            for item in payload["expert_requests"]:
+            for item in snapshot:
                 if not isinstance(item, dict):
                     continue
                 team_id = item.get("team_id")
