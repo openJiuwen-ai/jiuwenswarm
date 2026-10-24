@@ -1411,6 +1411,17 @@ class WebChannel(BaseWsChannel):
                 exc_info=True,
             )
 
+    def clear_session_busy(self, session_id: str) -> None:
+        """Drop the cached busy flag for a Session stopped outside the event flow.
+
+        Archive/delete stop a running turn in the AgentServer without emitting
+        ``chat.processing_status(false)``.  Without this, a later
+        ``session.get_metadata`` (for example after unarchive) would report a
+        stopped Session as still processing.
+        """
+        if session_id:
+            self._session_busy.pop(str(session_id), None)
+
     def get_metadata(self) -> ChannelMetadata:
         """获取 Channel 元数据."""
         return ChannelMetadata(

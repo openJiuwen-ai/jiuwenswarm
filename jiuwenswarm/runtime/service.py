@@ -3250,7 +3250,6 @@ class AgentRuntime:
         session_id: str,
         generation: int | None = None,
         stop_runner: bool = False,
-        request: AgentRequest | None = None,
     ) -> None:
         """Drain runtime writers for a lifecycle action.
 
@@ -3273,8 +3272,11 @@ class AgentRuntime:
         # CHAT_CANCEL(wait_for_stop) shares this drain path but owns no delete.
         if session_delete_pending(session_id):
             await self._session_provisioner.prepare_session_delete(session_id)
-        await self._stop_team_runtime_for_delete(
-            channel_id=channel_id, session_id=session_id
+        await self._stop_team_runtime_for_lifecycle(
+            channel_id=channel_id,
+            session_id=session_id,
+            stop_runner=stop_runner,
+            generation=generation,
         )
         closed = await self._session_coordinator.close_session(
             session_id, wait_timeout=10, generation=generation

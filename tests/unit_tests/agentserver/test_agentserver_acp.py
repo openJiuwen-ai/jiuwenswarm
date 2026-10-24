@@ -38,7 +38,6 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 from jiuwenswarm.server.runtime.agent_manager import ACP_DEFAULT_CAPABILITIES
 from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStoreError
 from jiuwenswarm.server.runtime.session import lifecycle as session_lifecycle
-from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
 
 
 class FakeWebSocket:
