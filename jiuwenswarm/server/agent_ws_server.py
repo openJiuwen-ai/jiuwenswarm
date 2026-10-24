@@ -5931,21 +5931,27 @@ class AgentWebSocketServer:
                 payload["hidden"] = bool(project is not None and project.hidden)
                 payload["operation"] = value.get("operation")
                 if params.get("running_sessions"):
-                    # project.remove 的移除前预检专用;cron 准入的常规查询不
-                    # 带该参数,不付全量会话扫描的成本。判定与 project.remove
-                    # 的 busy 扫描(_project_busy_sessions)完全一致。
+                    # Compatibility shim for Gateways that still run the old
+                    # project.remove precheck. New Gateways never send this
+                    # parameter, so it is not part of the new removal path.
                     if project is None or project.hidden:
                         payload["has_running_sessions"] = False
                     else:
                         from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
-                            _project_busy_sessions,
+                            _project_conversation_state,
                         )
-                        payload["has_running_sessions"] = bool(
-                            await asyncio.to_thread(
-                                _project_busy_sessions,
-                                project_id,
-                                self._execution_runtime(),
+
+                        def _has_running_sessions() -> bool:
+                            return bool(
+                                _project_conversation_state(
+                                    project_id,
+                                    self._execution_runtime(),
+                                    ignore_heartbeats=True,
+                                )[1]
                             )
+
+                        payload["has_running_sessions"] = await asyncio.to_thread(
+                            _has_running_sessions
                         )
             elif method.startswith("session."):
                 ids = lc.parse_ids(params, delete=method == "session.delete")
@@ -5963,10 +5969,25 @@ class AgentWebSocketServer:
                     ok = results[0]["ok"]
                     # project_id 超出 §5.10.5 单条字段表，但 Gateway 需要
                     # 它发出符合 §5.10.11 契约的 session.deleted 事件。
-                    payload = {"session_id": ids[0], "project_id": results[0].get("project_id", "")} if ok else {
-                        key: value for key, value in results[0].items()
-                        if key not in {"session_id", "ok"}
-                    }
+                    payload = (
+                        {
+                            "session_id": ids[0],
+                            "project_id": results[0].get("project_id", ""),
+                            # Deletion is accepted before its background
+                            # cleanup; keep the same completion contract as the
+                            # batch form so callers can tell the two apart.
+                            **{
+                                key: results[0][key]
+                                for key in ("accepted", "finalizing", "stop_pending")
+                                if key in results[0]
+                            },
+                        }
+                        if ok
+                        else {
+                            key: value for key, value in results[0].items()
+                            if key not in {"session_id", "ok"}
+                        }
+                    )
                 else:
                     succeeded = sum(item["ok"] for item in results)
                     payload = dict(succeeded_count=succeeded, failed_count=len(results) - succeeded, results=results)
