@@ -4293,6 +4293,7 @@
     "pauseFailed": "Pause failed",
     "cancelFailed": "Cancel failed",
     "supplementFailed": "Supplement failed",
+    "supplementAttachmentsUnsupported": "Messages with attachments cannot be sent immediately. Click \"Edit\" to remove the attachments, then send again.",
     "resumeFailed": "Resume failed",
     "submitAnswerFailed": "Failed to submit answer",
     "unknownError": "Unknown error",
