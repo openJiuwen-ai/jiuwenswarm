@@ -93,6 +93,11 @@ def build_rsi_adapters(
 
             paper_provider = PaperArtifactProviderImpl()
         if paper_provider is not None:
+            # agent-core's coding agent is otherwise capped at 15 ReAct steps per cycle,
+            # whatever code_implementation.max_iterations says (see paper_pipeline.code_agent_budget).
+            from jiuwenswarm.agents.harness.common.paper_pipeline import install_code_agent_iteration_fix
+
+            install_code_agent_iteration_fix()
             adapters["ARTIFACT:PAPER"] = ArtifactEngineAdapter(
                 "PAPER",
                 paper_provider,
