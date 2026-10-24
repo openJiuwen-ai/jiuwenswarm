@@ -23,17 +23,6 @@ const {
   selectedExpertTeamId,
   expertTeamId,
   sendExpertMessage,
-  organizationOwnerStopTarget,
-  isOrganizationProcessing,
-  useOrganizationProcessing,
-  clearOrganizationRequests,
-  startExpertRequest,
-  finishExpertRequest,
-  reconcileOrganizationRequests,
-  organizationProcessingRevision,
-  organizationOwnerStateRevision,
-  useOrganizationConversationKey,
-  isReachableTeamMemberStatus,
   useOrganizationEvents,
   useChatStore,
   useSessionStore,
@@ -71,11 +60,38 @@ function seed() {
   });
 }
 
+// Execute the production callbacks with injected dependencies, without mounting the full App.
+function loadCallback(path, name, bindings) {
+  const source = ts.createSourceFile(
+    path,
+    readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  let callback;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === name) {
+      const initializer = node.initializer;
+      if (
+        initializer && ts.isCallExpression(initializer) && initializer.expression.getText(source) === 'useCallback'
+      ) {
+        callback = initializer.arguments[0].getText(source);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(callback, `${path}: ${name} callback must exist`);
+  const { outputText } = ts.transpileModule(`const callback = ${callback};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  });
+  return new Function(...Object.keys(bindings), `${outputText}\nreturn callback;`)(...Object.values(bindings));
+}
 
 for (const scenario of [
   { name: 'expert team', mode: 'team', enabled: true, teamId: 'expert', intent: 'cancel' },
-  { name: 'owner foreground', mode: 'team', enabled: true, teamId: 'owner', intent: 'cancel' },
-  { name: 'owner team', mode: 'team', enabled: true, teamId: 'owner', intent: 'cancel' },
+  { name: 'owner team', mode: 'team', enabled: true, teamId: 'owner', intent: 'pause' },
   { name: 'disabled organization UI', mode: 'team', enabled: false, teamId: 'expert', intent: 'pause' },
   { name: 'agent', mode: 'agent', enabled: false, teamId: 'owner', intent: 'cancel' },
 ]) {
@@ -84,11 +100,8 @@ for (const scenario of [
     setTeamOrganizationUiEnabled(scenario.enabled);
     useSessionStore.getState().setMode('session', scenario.mode);
     useTeamSelectorStore.setState((state) => ({
-      runtimes: { session: { ...state.runtimes.session, selectedTeamId: scenario.teamId,
-        teams: state.runtimes.session.teams.map((team) => ({ ...team, organization_id: 'org' })) } },
+      runtimes: { session: { ...state.runtimes.session, selectedTeamId: scenario.teamId } },
     }));
-    if (scenario.name === 'owner team') startExpertRequest('session', 'background', 'org_root_background');
-    if (scenario.name === 'owner foreground') useChatStore.getState().setProcessing('session', true);
     const calls = [];
     const pending = [];
     const originalRequest = webClient.request;
@@ -107,11 +120,6 @@ for (const scenario of [
     const fail = (error) => assert.fail(error);
     const interrupt = loadCallback('hooks/useWebSocket.ts', 'interrupt', {
       selectedExpertTeamId,
-      organizationOwnerStopTarget,
-      setOrganizationOwnerStopped,
-      isOrganizationOwnerStopped,
-      useChatStore,
-      closeActiveTeamLeaderMessages() {},
       sendExpertMessage,
       request: loadCallback('hooks/useWebSocket.ts', 'request', { webClient }),
       useSessionStore,
@@ -123,7 +131,6 @@ for (const scenario of [
     const controls = Object.fromEntries(['pause', 'cancel'].map((intent) => {
       const callback = loadCallback('hooks/useWebSocket.ts', intent, {
         interrupt,
-        organizationOwnerStopTarget,
         useSubagentStore: { getState: () => ({ markRunningSubagentsCancelled() {} }) },
         onErrorRef: { current: fail },
         t: (key) => key,
@@ -140,7 +147,6 @@ for (const scenario of [
       useGoalStore: { getState: () => ({ runtimes: {} }) },
       useChatStore,
       mode: scenario.mode,
-      organizationOwnerStopTarget,
       ...controls,
     });
     const onClick = loadCallback('components/ChatPanel/InputArea.tsx', 'handleSendButtonClick', {
@@ -163,12 +169,8 @@ for (const scenario of [
       assert.equal(calls[0].params.mode, scenario.mode);
       assert.equal(
         calls[0].params.target_team_id,
-        scenario.enabled && scenario.mode === 'team' ? scenario.teamId : undefined,
+        scenario.enabled && scenario.teamId === 'expert' ? 'expert' : undefined,
       );
-      if (scenario.enabled && scenario.teamId === 'owner') {
-        assert.equal(calls[0].params.organization_owner_stop, true);
-        assert.equal(calls[0].params.organization_stop, undefined);
-      }
     } finally {
       await act(async () => root.unmount());
       webClient.request = originalRequest;
@@ -180,148 +182,6 @@ for (const scenario of [
     }
   });
 }
-
-for (const source of ['org_expert_background', 'org_summary_background', 'org_root_background', 'org_root_delivery']) {
-  test(`background lifecycle stays busy across Team selection: ${source}`, async () => {
-    seed();
-    clearOrganizationRequests('session');
-    useChatStore.getState().setProcessing('session', false);
-    const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
-    globalThis.window = dom.window;
-    globalThis.document = dom.window.document;
-    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-    const listeners = new Map();
-    const original = webClient.on;
-    webClient.on = (event, handler) => { listeners.set(event, handler); return () => listeners.delete(event); };
-    const root = createRoot(document.getElementById('root'));
-    function Probe() {
-      useOrganizationEvents();
-      const key = useOrganizationConversationKey('session');
-      const teamBusy = useChatStore((state) => state.runtimes[key]?.isProcessing ?? false);
-      const organizationBusy = useOrganizationProcessing('session');
-      return React.createElement('output', null, `${key}:${key === 'session' ? organizationBusy || teamBusy : teamBusy}`);
-    }
-    const emit = (event, requestId, extra = {}) => listeners.get(event)({ payload: {
-      session_id: 'session', team_id: 'expert', source, request_id: requestId, ...extra,
-    } });
-    const select = (team) => useTeamSelectorStore.setState((state) => ({ runtimes: {
-      ...state.runtimes, session: { ...state.runtimes.session, selectedTeamId: team },
-    } }));
-    try {
-      await act(async () => { setTeamOrganizationUiEnabled(true); root.render(React.createElement(Probe)); });
-      await act(async () => emit('chat.processing_status', 'background-a', { is_processing: true }));
-      assert.equal(document.querySelector('output').textContent, 'session::expert:true');
-      await act(async () => select('owner'));
-      assert.equal(document.querySelector('output').textContent, 'session:true');
-      assert.equal(organizationOwnerStopTarget('session'), 'owner');
-      assert.equal(useChatStore.getState().getRuntime('session').isProcessing, true);
-      await act(async () => {
-        emit('chat.processing_status', 'background-b', { is_processing: true });
-        emit('org.turn_completed', 'background-a');
-        emit('chat.processing_status', 'background-a', { is_processing: false });
-      });
-      assert.equal(isOrganizationProcessing('session'), true);
-      await act(async () => select('expert'));
-      assert.equal(document.querySelector('output').textContent, 'session::expert:true');
-      // Every matching error releases its request, including member and legacy frames.
-      await act(async () => emit('chat.error', 'background-b', { role: 'teammate', error: 'member failed' }));
-      assert.equal(useChatStore.getState().getRuntime('session::expert').isProcessing, false);
-      await act(async () => emit('chat.processing_status', 'background-b', { is_processing: false }));
-      assert.equal(document.querySelector('output').textContent, 'session::expert:false');
-      assert.equal(isOrganizationProcessing('session'), false);
-      // Owner background work uses the Owner key and also settles correctly.
-      await act(async () => {
-        select('owner');
-        emit('chat.processing_status', 'owner-round', { team_id: 'owner', source: 'org_root_background', is_processing: true });
-      });
-      assert.equal(document.querySelector('output').textContent, 'session:true');
-      await act(async () => emit('chat.processing_status', 'owner-round', {
-        team_id: 'owner', source: 'org_root_background', is_processing: false,
-      }));
-      assert.equal(document.querySelector('output').textContent, 'session:false');
-    } finally {
-      await act(async () => root.unmount());
-      clearOrganizationRequests('session');
-      setTeamOrganizationUiEnabled(false);
-      webClient.on = original;
-      dom.window.close();
-      delete globalThis.window;
-      delete globalThis.document;
-    }
-  });
-}
-
-test('authoritative Team list restores active rounds and rejects a snapshot racing a new send', async () => {
-  seed();
-  clearOrganizationRequests('session');
-  setTeamOrganizationUiEnabled(true);
-  const original = webClient.request;
-  const teams = useTeamSelectorStore.getState().runtimes.session.teams;
-  const runtimes = { ...useChatStore.getState().runtimes };
-  delete runtimes['session::expert'];
-  useChatStore.setState({ runtimes });
-  try {
-    webClient.request = async () => ({ teams, organization_requests: [
-      { team_id: 'expert', request_id: 'recovered', source: 'org_expert_background' },
-      { team_id: 'owner', request_id: 'root', source: 'org_root_delivery' },
-    ] });
-    await useTeamSelectorStore.getState().fetchTeams('session');
-    assert.equal(isOrganizationProcessing('session'), true);
-    assert.equal(useChatStore.getState().getRuntime('session::expert').isProcessing, true);
-    let finish;
-    webClient.request = () => new Promise((resolve) => { finish = resolve; });
-    const pending = useTeamSelectorStore.getState().fetchTeams('session');
-    startExpertRequest('session::expert', 'newer');
-    finish({ teams, organization_requests: [] });
-    await pending;
-    assert.equal(useChatStore.getState().getRuntime('session::expert').isProcessing, true);
-    webClient.request = async () => ({ teams, organization_requests: [], expert_requests: [] });
-    await useTeamSelectorStore.getState().fetchTeams('session');
-    assert.equal(isOrganizationProcessing('session'), false);
-    assert.equal(useChatStore.getState().getRuntime('session::expert').isProcessing, false);
-    // A direct question to an expert must not make an idle Owner look active.
-    startExpertRequest('session::expert', 'direct');
-    assert.equal(isOrganizationProcessing('session'), false);
-  } finally {
-    clearOrganizationRequests('session');
-    setTeamOrganizationUiEnabled(false);
-    webClient.request = original;
-  }
-});
-
-test('organization composer preserves Send for a follow-up draft', () => {
-  const source = ts.createSourceFile('InputArea.tsx', readFileSync(
-    new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8',
-  ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  let expression;
-  let runningWork;
-  function visit(node) {
-    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'showStop') expression = node.initializer.getText(source);
-    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'hasRunningWork') {
-      runningWork = node.initializer.getText(source);
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(source);
-  assert.ok(expression);
-  const bindings = {
-    designLandingSubmitting: false, isProcessing: true, isPaused: false, isTeamMode: true,
-    ownerOrganizationIsProcessing: false, organizationEnabled: true, hasDraft: true, hasPendingQuestion: false,
-  };
-  const evaluate = (overrides) => {
-    const values = { ...bindings, ...overrides };
-    const body = `const hasRunningWork = ${runningWork}; return ${expression};`;
-    return new Function(...Object.keys(values), body)(...Object.values(values));
-  };
-  assert.equal(evaluate({}), false);
-  assert.equal(evaluate({ hasPendingQuestion: true }), true);
-  assert.equal(evaluate({ hasDraft: false }), true);
-  assert.equal(evaluate({ isProcessing: false }), false);
-  assert.equal(evaluate({ organizationEnabled: false }), false);
-  assert.equal(evaluate({ isTeamMode: false }), false);
-  assert.equal(evaluate({ isPaused: true, hasDraft: false }), false);
-  assert.equal(evaluate({ isPaused: true, hasDraft: false, ownerOrganizationIsProcessing: true }), true);
-});
 
 test('missing/false config cannot select an expert, enabling makes selection explicit', () => {
   seed();
@@ -438,9 +298,8 @@ test('expert processing survives ACKs and selection changes, and settles only ma
   }
 });
 
-for (const { endedWhileOffline, organizationSnapshot } of [true, false].flatMap((endedWhileOffline) =>
-  [true, false].map((organizationSnapshot) => ({ endedWhileOffline, organizationSnapshot })))) {
-  test(`expert reconnect reconciles ACKed requests, ended offline=${endedWhileOffline}, organization snapshot=${organizationSnapshot}`, async () => {
+for (const endedWhileOffline of [true, false]) {
+  test(`expert reconnect reconciles ACKed requests, ended offline=${endedWhileOffline}`, async () => {
     seed();
     const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
     globalThis.window = dom.window;
@@ -462,11 +321,7 @@ for (const { endedWhileOffline, organizationSnapshot } of [true, false].flatMap(
     webClient.request = async (method, params, options) => {
       if (method === 'team.list') {
         if (delayedSnapshot) return new Promise((resolve) => { delayedSnapshot.resolve = resolve; });
-        return organizationSnapshot ? {
-          expert_requests: [],
-          teams: useTeamSelectorStore.getState().runtimes.session.teams,
-          organization_requests: serverRequests.map((item) => ({ ...item, source: 'org_expert_background' })),
-        } : { expert_requests: serverRequests };
+        return { expert_requests: serverRequests };
       }
       options.onRequestId(`reconnect-${++sequence}`);
       return { accepted: true };
@@ -487,7 +342,6 @@ for (const { endedWhileOffline, organizationSnapshot } of [true, false].flatMap(
       serverRequests = endedWhileOffline ? [] : [{ team_id: 'expert', request_id: 'reconnect-1' }];
       await act(async () => { state = 'ready'; stateChanged(state); });
       assert.equal(busy(), !endedWhileOffline);
-      assert.equal(isOrganizationProcessing('session'), organizationSnapshot && !endedWhileOffline);
       // If it was still running, a lost terminal is repaired by the periodic query.
       serverRequests = [];
       await act(async () => tick());
@@ -497,8 +351,6 @@ for (const { endedWhileOffline, organizationSnapshot } of [true, false].flatMap(
       assert.equal(busy(), true);
       emit('chat.interrupt_result', { success: true, cancelled_request_ids: ['reconnect-2'] });
       assert.equal(busy(), false);
-
-      assert.equal(isOrganizationProcessing('session'), false);
 
       // A snapshot started before a new send must not clear the newer request.
       await sendExpertMessage('third question', 'session');
@@ -1627,7 +1479,7 @@ test('disabled UI has no organization event subscriptions; disabling unsubscribe
     await act(async () => root.render(React.createElement(Probe)));
     assert.equal(subscriptions.length, 0);
     await act(async () => setTeamOrganizationUiEnabled(true));
-    assert.equal(subscriptions.length, 10);
+    assert.ok(subscriptions.some((entry) => entry.name === 'chat.processing_status'));
     assert.ok(subscriptions.some((entry) => entry.name === 'org.turn_completed'));
     await act(async () => setTeamOrganizationUiEnabled(false));
     assert.equal(subscriptions.length, 0);

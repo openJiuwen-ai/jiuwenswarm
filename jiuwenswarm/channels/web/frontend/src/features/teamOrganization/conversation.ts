@@ -4,7 +4,7 @@ import { conversationKey, useChatStore, useTeamSelectorStore } from '../../store
 import { isTeamOrganizationUiEnabled, useTeamOrganizationUiEnabled } from './featureConfig';
 import { generateUuidV4 } from '../../utils/uuid';
 import type { MediaItem } from '../../types';
-import { finishExpertRequest, isOrganizationProcessing, startExpertRequest } from './processing';
+import { finishExpertRequest, startExpertRequest } from './processing';
 
 import { ownerTeamId } from './ownerIdentity';
 export { ownerTeamId } from './ownerIdentity';

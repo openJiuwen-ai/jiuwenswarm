@@ -3200,16 +3200,7 @@ class AgentWebSocketServer:
                 await self._handle_agents_tools_list(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
-                params = request.params if isinstance(request.params, dict) else {}
-                # Runtime owns exact execution cancellation for a
-                # target_request_id. Do not first terminate every response
-                # stream in the Session bucket.
-                owner_stop = params.get("organization_owner_stop") is True or params.get("organization_stop") is True
-                if (
-                    params.get("target_request_id")
-                    or owner_stop
-                    or self._is_targeted_expert_cancel_request(request)
-                ):
+                if self._is_targeted_expert_request(request):
                     await self._handle_cancel(ws, request, send_lock)
                     return
                 if isinstance(request.params, dict) and request.params.get("wait_for_stop"):
@@ -3524,9 +3515,7 @@ class AgentWebSocketServer:
         ``_cancel_targeted_expert`` 的 "never the owner turn" 相悖。
         """
         params = request.params if isinstance(request.params, dict) else {}
-        if params.get("organization_owner_stop") is True or params.get("organization_stop") is True:
-            resp = await self._cancel_organization(request)
-        elif self._is_targeted_expert_cancel_request(request):
+        if self._is_targeted_expert_request(request):
             resp = await self._cancel_targeted_expert(request)
         else:
             from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
@@ -4640,15 +4629,6 @@ class AgentWebSocketServer:
             )
         try:
             if targeted_expert:
-                from jiuwenswarm.server.runtime.organization_execution import (
-                    OrganizationTurn,
-                    register_turn,
-                )
-
-                register_turn(OrganizationTurn(
-                    str(request.session_id or ""), str(request.params["target_team_id"]),
-                    request.request_id, "org_expert_direct",
-                ))
                 runtime_stream = self._targeted_expert_runtime_stream(request)
             else:
                 runtime_stream = self._execution_runtime().stream(
@@ -6878,115 +6858,6 @@ class AgentWebSocketServer:
             if AgentWebSocketServer._is_targeted_expert_request(request) else session_id
         )
 
-    @staticmethod
-    async def _stop_organization_team(session_id: str, team_id: str) -> None:
-        from openjiuwen.core.runner.runner import GLOBAL_RUNNER
-
-        runtime = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
-        if runtime is not None:
-            # stop_team releases the organization's queued wakes and workers,
-            # then stops coordination. Durable team/organization data survives.
-            await runtime.stop_team(team_name=team_id, session_id=session_id)
-
-    async def _cancel_organization(self, request: AgentRequest) -> AgentResponse:
-        """Stop the Owner alone or, for legacy callers, its entire organization."""
-        from dataclasses import replace
-
-        from openjiuwen.core.runner.runner import GLOBAL_RUNNER
-
-        from jiuwenswarm.server.runtime.organization_execution import stopping_teams
-        from jiuwenswarm.server.runtime.team_organization_history import (
-            organization_enabled,
-        )
-
-        params = request.params if isinstance(request.params, dict) else {}
-        session_id = str(request.session_id or "").strip()
-        owner_id = str((get_session_metadata(session_id) or {}).get("team_name") or "").strip()
-        target_id = str(params.get("target_team_id") or "").strip()
-        owner = self._resolve_team_backend(session_id, owner_id)
-        organization_id = getattr(getattr(owner, "org_task_manager", None), "organization_id", None)
-        is_owner_target = bool(owner_id and target_id == owner_id)
-        is_team_request = is_team_mode(params.get("mode"))
-        recovery_error = ""
-        if not organization_id and is_owner_target and is_team_request:
-            try:
-                persisted = await self._load_persisted_organization(session_id, owner_id)
-                if persisted is not None:
-                    organization_id = persisted[1].organization_id
-            except Exception as exc:
-                recovery_error = str(exc)
-                logger.warning("[AgentWebSocketServer] organization stop membership lookup failed: %s", exc)
-        can_cancel_organization = organization_enabled() and is_team_request
-        has_owner_binding = is_owner_target and bool(organization_id)
-        intent = str(params.get("intent") or "cancel")
-        owner_only = params.get("organization_owner_stop") is True
-        success = can_cancel_organization and has_owner_binding and intent == "cancel"
-        cancelled = []
-        owner_was_stopped = False
-        inbox_was_enabled = None
-        if success:
-            if owner_only:
-                from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
-
-                owner_was_stopped = owner_is_stopped(session_id)
-                from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
-
-                store = owner_inbox()
-                inbox_was_enabled = await asyncio.to_thread(store.enabled_at, session_id, owner_id)
-                await asyncio.to_thread(store.enable, session_id, owner_id)
-                set_owner_stopped(session_id, True)
-            runtime = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
-            team_ids = {owner_id}
-            if runtime is not None and not owner_only:
-                for entry in await runtime.pool.teams_for_session(session_id):
-                    backend = getattr(entry.agent, "team_backend", None)
-                    org_id = getattr(getattr(backend, "org_task_manager", None), "organization_id", None)
-                    if org_id == organization_id and getattr(backend, "is_leader", True):
-                        team_ids.add(entry.team_name)
-            async with stopping_teams(session_id, team_ids) as cancelled:
-                owner_params = {
-                    key: value for key, value in params.items()
-                    if key not in {"target_team_id", "organization_stop", "organization_owner_stop"}
-                }
-                owner_params["intent"] = "cancel"
-                owner_request = replace(request, params=owner_params)
-                try:
-                    owner_response = await self._execution_runtime().cancel_request(owner_request, allow_create=False)
-                    success = bool(success and owner_response.ok)
-                    if not success:
-                        recovery_error = "Owner execution could not be cancelled"
-                except Exception as exc:
-                    success = False
-                    recovery_error = str(exc) or "Owner execution cancellation failed"
-                    logger.warning("[AgentWebSocketServer] organization Owner cancellation failed: %s", exc)
-                finally:
-                    for team_id in team_ids:
-                        try:
-                            await self._stop_organization_team(session_id, team_id)
-                        except Exception as exc:
-                            if not owner_only:
-                                raise
-                            success = False
-                            recovery_error = str(exc) or "Owner runtime could not be stopped"
-                            logger.warning("[AgentWebSocketServer] organization Owner stop failed: %s", exc)
-            if owner_only and not success:
-                set_owner_stopped(session_id, owner_was_stopped)
-                if inbox_was_enabled is None:
-                    await asyncio.to_thread(store.disable, session_id, owner_id)
-        return AgentResponse(
-            request_id=request.request_id, channel_id=request.channel_id, ok=success,
-            payload={
-                "event_type": "chat.interrupt_result", "session_id": session_id,
-                "team_id": owner_id, "source": "org_owner_stop" if owner_only else "org_stop", "intent": "cancel",
-                "success": success, "has_active_task": False, "cancelled_requests": cancelled,
-                **({"organization_owner_stopped": True} if owner_only and success else {}),
-                **(
-                    {"error": recovery_error or "organization stop requires its Owner in Team mode"}
-                    if not success else {}
-                ),
-            },
-        )
-
     async def _cancel_targeted_expert(self, request: AgentRequest) -> AgentResponse:
         """Cancel only a same-organization expert stream, never the owner turn."""
         params = request.params if isinstance(request.params, dict) else {}
@@ -6998,29 +6869,24 @@ class AgentWebSocketServer:
         owner_org = getattr(getattr(owner, "org_task_manager", None), "organization_id", None)
         target_org = getattr(getattr(target, "org_task_manager", None), "organization_id", None)
         recovery_error = ""
-        is_expert_target = bool(owner_id and team_id != owner_id)
-        valid_target = is_team_mode(params.get("mode")) and is_expert_target
-        needs_recovery = not owner_org or not target_org
-        if needs_recovery and valid_target:
+        if not owner_org and target_org:
             try:
-                # Resolve each missing side separately; never replace a known
-                # live binding with the other Team's persisted organization.
-                if not owner_org:
-                    persisted_owner = await self._load_persisted_organization(session_id, owner_id)
-                    if persisted_owner is not None:
-                        owner_org = persisted_owner[1].organization_id
-                if not target_org:
-                    persisted_target = await self._load_persisted_organization(session_id, team_id)
-                    if persisted_target is not None:
-                        target_org = persisted_target[1].organization_id
+                persisted = await self._load_persisted_organization(session_id, team_id)
+                if persisted is not None:
+                    owner_org = persisted[1].organization_id
             except Exception as exc:
-                recovery_error = str(exc)
-                logger.warning("[AgentWebSocketServer] expert stop membership lookup failed: %s", exc)
+                logger.exception(
+                    "[AgentWebSocketServer] expert cancel lookup failed: session=%s team=%s",
+                    session_id,
+                    team_id,
+                )
+                recovery_error = f"expert organization lookup failed: {exc}"
         intent = str(params.get("intent") or "cancel")
-        same_organization = bool(owner_org and owner_org == target_org)
-        success = valid_target and same_organization and intent == "cancel"
+        success = bool(
+            self._is_targeted_expert_request(request)
+            and owner_org and owner_org == target_org and intent == "cancel"
+        )
         cancelled_requests = []
-        cancelled = []
         if success:
             from jiuwenswarm.server.runtime.organization_execution import stopping_teams
 
@@ -7041,6 +6907,9 @@ class AgentWebSocketServer:
             tasks = []
             for task, stop in streams:
                 if not task.done():
+                    active_request = getattr(self, "_expert_stream_requests", {}).get(task)
+                    if active_request is not None:
+                        cancelled_requests.append(active_request)
                     stop.set()
                     task.cancel()
                     tasks.append(task)
@@ -7059,17 +6928,6 @@ class AgentWebSocketServer:
                     },
                     "metadata": request.metadata,
                 })
-        cancelled_request_ids = {item.request_id for item in cancelled_requests}
-        cancelled_request_ids.update(item["request_id"] for item in cancelled)
-        # owner 未知时给明确原因：这是「拒绝定向取消」而不是「目标不合法」，客户端据此
-        # 可以提示会话尚未就绪，而不是重试一次取消（重试仍会被拒）。
-        if owner_id:
-            failure_reason = recovery_error or "expert target is invalid or intent is unsupported"
-        else:
-            failure_reason = (
-                "session metadata has no team_name (owner unknown); "
-                "refused to fall back to a session-level cancel"
-            )
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -7079,8 +6937,11 @@ class AgentWebSocketServer:
                 "success": success,
                 "team_id": team_id,
                 "source": "org_expert_direct",
-                "cancelled_request_ids": sorted(cancelled_request_ids),
-                **({"error": failure_reason} if not success else {}),
+                "cancelled_request_ids": [item.request_id for item in cancelled_requests],
+                **(
+                    {"error": recovery_error or "expert target is invalid or intent is unsupported"}
+                    if not success else {}
+                ),
             },
         )
 
@@ -7092,12 +6953,10 @@ class AgentWebSocketServer:
         return AgentWebSocketServer._is_targeted_expert_request(request)
 
     @staticmethod
-    def _team_target_and_owner(request: AgentRequest) -> tuple[str, str] | None:
-        """取 ``(target_team_id, owner_team_id)``；非 team 模式或没给 target 时返回 None。
-
-        下面两个判定的公共部分：只说「这个请求有没有形成一个合法的 team 目标」，
-        至于 owner 该不该参与比较、怎么兜底，由调用方按各自语义决定。
-        """
+    def _is_targeted_expert_request(request: AgentRequest) -> bool:
+        """Recognize a Team target only when the durable owner is known."""
+        if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_CANCEL):
+            return False
         params = request.params if isinstance(request.params, dict) else {}
         if not is_team_mode(params.get("mode")):
             return None
@@ -7108,36 +6967,7 @@ class AgentWebSocketServer:
         owner_team_id = str(
             (get_session_metadata(session_id) or {}).get("team_name") or ""
         ).strip()
-        return team_id, owner_team_id
-
-    @staticmethod
-    def _is_targeted_expert_request(request: AgentRequest) -> bool:
-        """Recognize a Team target only when the durable owner is known."""
-        if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_CANCEL):
-            return False
-        pair = AgentWebSocketServer._team_target_and_owner(request)
-        if pair is None:
-            return False
-        team_id, owner_team_id = pair
         return bool(owner_team_id and team_id != owner_team_id)
-
-    @staticmethod
-    def _is_targeted_expert_cancel_request(request: AgentRequest) -> bool:
-        """CHAT_CANCEL 专用：owner 未知时也按「定向」处理，不降级为会话级取消。
-
-        与 `_is_targeted_expert_request` 的唯一差异是**兜底方向**：那边要求 owner 已知
-        且与被取消的 team 不同（用于 chat.send 路由，owner 未知就按普通会话走），这边
-        owner 未知时保守判为定向——交给 `_cancel_targeted_expert` 明确报错，而不是回落
-        `cancel_request(...)` 的会话级取消，把 owner 团队正在跑的 turn 一起取消
-        （违反同一次提交里 `_cancel_targeted_expert` 文档写明的 "never the owner turn"）。
-        """
-        if request.req_method != ReqMethod.CHAT_CANCEL:
-            return False
-        pair = AgentWebSocketServer._team_target_and_owner(request)
-        if pair is None:
-            return False
-        team_id, owner_team_id = pair
-        return not owner_team_id or team_id != owner_team_id
 
     def _expert_request_snapshot(self, session_id: str) -> list[dict[str, str]]:
         return [
@@ -7841,10 +7671,6 @@ class AgentWebSocketServer:
             payload={
                 "session_id": session_id, "teams": teams, "default_team_id": default_team_id,
                 "expert_requests": self._expert_request_snapshot(session_id),
-                "organization_requests": self._organization_request_snapshot(session_id),
-                "organization_owner_stopped": (get_session_metadata(session_id) or {}).get(
-                    "organization_owner_stopped", False,
-                ),
             },
         )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
