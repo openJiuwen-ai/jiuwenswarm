@@ -20,6 +20,7 @@ from typing import Iterator
 from urllib.parse import quote
 
 from markdown_it import MarkdownIt
+from markdown_it.common.utils import unescapeAll
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch.path_safety import (
     is_direct_directory,
@@ -640,7 +641,8 @@ def _citation_index(
                 or field_size(value) > CITATION_FIELD_MAX_BYTES
             ):
                 raise RewriteError("DOCUMENT_NOT_FOUND", "report citation data is invalid")
-        key = f"{reference_index}\0{url}"
+        # Body destinations receive the same single CommonMark unescape pass.
+        key = f"{reference_index}\0{unescapeAll(url)}"
         if source_id in by_id:
             raise RewriteError("DOCUMENT_NOT_FOUND", "report citation data is ambiguous")
         by_id[source_id] = item
