@@ -368,6 +368,7 @@ export class RealtimeDuplexSession {
       this.socket = socket;
       let initSent = false;
       let settled = false;
+      let lastServiceError = '';
       const initTimeout = window.setTimeout(() => {
         if (settled) return;
         settled = true;
@@ -412,15 +413,28 @@ export class RealtimeDuplexSession {
         try {
           const event = JSON.parse(data) as Record<string, unknown>;
           const type = String(event.type || '');
-          if (type === 'session.closed' && !this.sessionReady) {
-            const closeReason = readableError(event.reason || event.error || '远端在初始化阶段主动关闭');
+          if (type === 'error') {
+            const error = event.error as Record<string, unknown> | undefined;
+            // The gateway's close notice must not erase the provider's quota/auth error.
+            if (lastServiceError && error?.code === 'qwen_gateway_upstream_closed') return;
+            lastServiceError = readableError(event.error || event);
+          }
+          const response = event.response as Record<string, unknown> | undefined;
+          if (type === 'response.done' && response?.status === 'failed') {
+            const details = response.status_details as Record<string, unknown> | undefined;
+            lastServiceError = readableError(details?.error || details || 'Realtime 模型响应失败，服务端未提供具体原因');
+          }
+          if (type === 'session.closed') {
+            const closeReason = readableError(event.error || event.reason || lastServiceError || '远端已结束会话，未提供具体原因');
             const startupAlreadyResolved = settled;
             this.emitDiagnostic('realtime_websocket_error', {
               url: url.toString(),
               message: closeReason,
             });
-            rejectOnce(new Error(`Realtime 会话初始化失败：${closeReason}`));
-            if (startupAlreadyResolved) this.callbacks.onError(`Realtime 会话初始化失败：${closeReason}`);
+            const message = `${this.sessionReady ? 'Realtime 会话已结束' : 'Realtime 会话初始化失败'}：${closeReason}`;
+            rejectOnce(new Error(message));
+            if (startupAlreadyResolved) this.callbacks.onError(message);
+            this.stop();
             return;
           }
           if (type === 'session.queue_done' || type === 'queue_done') {
@@ -441,7 +455,10 @@ export class RealtimeDuplexSession {
         this.emitDiagnostic('realtime_websocket_error', {
           url: url.toString(),
         });
-        rejectOnce(new Error(`Realtime WebSocket 连接失败：${url}`));
+        const message = lastServiceError || 'Realtime 网络连接异常，浏览器未提供具体原因，请检查网络或模型服务。';
+        const startupAlreadyResolved = settled;
+        rejectOnce(new Error(message));
+        if (startupAlreadyResolved) this.callbacks.onError(message);
       };
       socket.onclose = ({ code, reason }) => {
         if (this.socket !== socket) return;
@@ -451,12 +468,12 @@ export class RealtimeDuplexSession {
           message: reason,
         });
         if (!this.sessionReady) {
-          const closeReason = reason || (code === 1000 ? '远端在初始化阶段主动关闭' : `关闭代码 ${code}`);
+          const closeReason = lastServiceError || reason || `远端在初始化阶段关闭连接（${code}），未提供具体原因`;
           const startupAlreadyResolved = settled;
           rejectOnce(new Error(`Realtime 会话初始化失败：${closeReason}`));
           if (startupAlreadyResolved) this.callbacks.onError(`Realtime 会话初始化失败：${closeReason}`);
-        } else if (code !== 1000) {
-          this.callbacks.onError(`Realtime 连接已断开（${code}），请确认远端模型服务仍可用。`);
+        } else {
+          this.callbacks.onError(lastServiceError || `Realtime 连接已断开（${code}）：${reason || '服务端未提供具体原因，请检查网络或模型服务。'}`);
         }
         // Release media on remote disconnect as well. Conversation-owned work continues outside this session.
         this.stop();
@@ -673,6 +690,10 @@ export class RealtimeDuplexSession {
       this.enqueueAudioDelta(event, encoded, responseId);
     } else if (type === 'response.audio.done' || type === 'response.output_audio.done' || type === 'response.done') {
       const affectsActive = !eventResponseId || eventResponseId === this.responseId;
+      if (type === 'response.done' && response?.status === 'failed') {
+        const details = response.status_details as Record<string, unknown> | undefined;
+        this.callbacks.onError(readableError(details?.error || details || 'Realtime 模型响应失败，服务端未提供具体原因'));
+      }
       if (type === 'response.done' && affectsActive) {
         if (this.assistantTranscript) this.finishAssistantText();
         this.responseActive = false;
