@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.common.auth.model_catalog import LoginModel
-from jiuwenswarm.gateway.cron.models import (
+from gateway.cron.models import (
     CronJob,
     normalize_cron_job_mcp,
     resolve_cron_model,

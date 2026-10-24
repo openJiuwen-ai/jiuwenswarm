@@ -14,9 +14,9 @@ def _gateway_process(connection, directory):
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
         from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.cron.controller import CronController
-        from jiuwenswarm.gateway.cron.store import CronJobStore
-        from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+        from gateway.cron.controller import CronController
+        from gateway.cron.store import CronJobStore
+        from gateway.message_handler.message_handler import MessageHandler
 
         store = CronJobStore(path=Path(directory) / "jobs.json")
         await store.create_job(job_id="remote", name="remote", cron_expr="0 9 * * *",

@@ -25,7 +25,7 @@ export { isDefaultLikeProject } from './cronProjectDisplay';
 // 等后端接口交付后再打开——代码/state（`CronTaskFormValue.effectiveDate`）都保留，不用重写
 const CRON_EFFECTIVE_DATE_UI_ENABLED = false;
 
-// 名称/描述最大长度：需与后端 jiuwenswarm/gateway/cron/models.py 里的
+// 名称/描述最大长度：需与后端 gateway/cron/models.py 里的
 // CRON_JOB_NAME_MAX_LENGTH / CRON_JOB_DESCRIPTION_MAX_LENGTH 保持一致，
 // 前端负责提前拦截+提示，后端负责兜底校验（防止绕过前端直接调 API/MCP 工具）。
 const CRON_NAME_MAX_LENGTH = 64;

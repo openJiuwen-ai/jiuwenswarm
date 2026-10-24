@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_streaming_card import (
+from gateway.channel_manager.im_platforms.feishu.feishu_streaming_card import (
     FeishuStreamingSession,
 )
 

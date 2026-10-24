@@ -393,7 +393,7 @@ function clipboardHasFileItems(clipboardData: DataTransfer | null | undefined): 
 
 const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 /**
- * Keep in sync with jiuwenswarm/gateway/document_attachments.py
+ * Keep in sync with gateway/document_attachments.py
  * FORBIDDEN_DOCUMENT_EXTENSIONS.
  */
 const FORBIDDEN_DOCUMENT_EXTENSIONS = new Set([

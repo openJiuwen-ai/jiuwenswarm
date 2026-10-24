@@ -2999,6 +2999,15 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
         handler.close()
         root.removeHandler(handler)
 
+    # M0-c：gateway 升为顶层包后，其模块 logger（``gateway.*``）不再位于
+    # ``jiuwenswarm`` 命名空间之下——std logging 无 reparent 机制，显式把
+    # ``gateway`` logger 挂回 ``jiuwenswarm`` 树，保持 gateway.log / 控制台
+    # 路由不变（否则 gateway 日志全部丢失）。
+    gateway_logger = logging.getLogger("gateway")
+    gateway_logger.setLevel(logging.NOTSET)
+    gateway_logger.propagate = True
+    gateway_logger.parent = root
+
     formatter = logging.Formatter(
         fmt="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",

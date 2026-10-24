@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.routing.agent_request_timeout import (
+from gateway.routing.agent_request_timeout import (
     AGENT_SERVER_TIMEOUT_CODE,
     AGENT_SERVER_TIMEOUT_ERROR,
     AgentRequestTimeoutError,

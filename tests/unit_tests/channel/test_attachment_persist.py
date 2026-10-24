@@ -15,13 +15,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.im_platforms.errors import (
+from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
 
 
 def _feishu_service(tmp_path) -> object:
-    from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
+    from gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
         FeishuFileService,
     )
 
@@ -81,7 +81,7 @@ class _FakeMessageHandlerWithClient:
 @pytest.fixture
 def persist_hook():
     """构造一个已注入 IM 附件落盘钩子的通道 hook（三平台 file_service 共用）。"""
-    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+    from gateway.channel_manager.channel_manager import ChannelManager
 
     channel = _FakePersistChannel()
     manager = ChannelManager(_FakeMessageHandlerWithClient(agent_client=object()))
@@ -102,7 +102,7 @@ async def test_persist_hook_large_attachment_uses_e2a_chunks(monkeypatch, persis
     import base64 as _b64
 
     from jiuwenswarm.common.schema.message import ReqMethod
-    from jiuwenswarm.gateway.routing.agent_http_bridge import (
+    from gateway.routing.agent_http_bridge import (
         _E2A_UPLOAD_CHUNK_BYTES,
         E2A_PAYLOAD_MAX_BYTES,
     )
@@ -123,7 +123,7 @@ async def test_persist_hook_large_attachment_uses_e2a_chunks(monkeypatch, persis
         }
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.fetch_agent_unary",
+        "gateway.routing.e2a_proxy.fetch_agent_unary",
         fake_fetch_agent_unary,
     )
 
@@ -165,7 +165,7 @@ async def test_persist_hook_small_attachment_uses_base64_e2a(monkeypatch, persis
         }
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.fetch_agent_unary",
+        "gateway.routing.e2a_proxy.fetch_agent_unary",
         fake_fetch_agent_unary,
     )
 
@@ -184,7 +184,7 @@ async def test_persist_hook_small_attachment_uses_base64_e2a(monkeypatch, persis
 @pytest.mark.asyncio
 async def test_enterprise_feishu_bot_uses_safe_attachment_storage_platform(monkeypatch):
     """企业飞书多 Bot 的 channel_id 可安全映射到附件目录标识。"""
-    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+    from gateway.channel_manager.channel_manager import ChannelManager
 
     captured = {}
 
@@ -193,7 +193,7 @@ async def test_enterprise_feishu_bot_uses_safe_attachment_storage_platform(monke
         return True, {"path": "/tmp/x.png"}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.fetch_agent_unary",
+        "gateway.routing.e2a_proxy.fetch_agent_unary",
         fake_fetch_agent_unary,
     )
     channel = _FakePersistChannel()
@@ -209,14 +209,14 @@ async def test_enterprise_feishu_bot_uses_safe_attachment_storage_platform(monke
 @pytest.mark.asyncio
 async def test_persist_hook_e2a_upload_failure_raises(monkeypatch, persist_hook):
     """E2A 分块上传失败按决策 D6 抛错（整条消息按可重试错误失败）。"""
-    from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
+    from gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
 
     async def fake_fetch_agent_unary(*, req_method, params, **_kwargs):
         del req_method, params
         return False, {"error": "AgentServer is unavailable", "code": "SERVICE_UNAVAILABLE"}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.fetch_agent_unary",
+        "gateway.routing.e2a_proxy.fetch_agent_unary",
         fake_fetch_agent_unary,
     )
 
@@ -227,7 +227,7 @@ async def test_persist_hook_e2a_upload_failure_raises(monkeypatch, persist_hook)
 
 def test_legacy_single_user_keeps_file_service_local_persistence():
     """A1g 后 legacy 单用户也装真 hook（E2A IM_FILE_PERSIST），不再本地写盘。"""
-    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+    from gateway.channel_manager.channel_manager import ChannelManager
 
     channel = _FakePersistChannel()
     manager = ChannelManager(_FakeMessageHandlerWithClient(agent_client=object()))
@@ -244,10 +244,10 @@ async def test_agentos_attachment_never_falls_back_to_gateway_workspace(monkeypa
     该安全路径在 A1g 中保留，此处防止回归。
     """
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.is_agentos_routing_client",
+        "gateway.routing.e2a_proxy.is_agentos_routing_client",
         lambda _client: True,
     )
-    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+    from gateway.channel_manager.channel_manager import ChannelManager
 
     channel = _FakePersistChannel()
     manager = ChannelManager(_FakeMessageHandlerWithClient(agent_client=object()))

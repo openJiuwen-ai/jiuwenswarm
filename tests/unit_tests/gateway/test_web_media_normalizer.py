@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.web.media.normalizer import (
+from gateway.channel_manager.web.media.normalizer import (
     normalize_chat_media_attachments,
 )
 
@@ -38,7 +38,7 @@ def _params() -> dict[str, Any]:
 @pytest.mark.asyncio
 async def test_upload_failure_keeps_original_base64_item(monkeypatch):
     """E2A 上传失败：原 base64 项保留在 media_items，不进 uploaded_images。"""
-    from jiuwenswarm.gateway.routing import agent_http_bridge
+    from gateway.routing import agent_http_bridge
 
     async def _fail(_data, _rel_path, **_kwargs):
         return False, {"error": "AgentServer is unavailable"}
@@ -71,7 +71,7 @@ async def test_missing_agent_client_keeps_original_base64_item():
 @pytest.mark.asyncio
 async def test_upload_success_replaces_base64_with_path(monkeypatch):
     """上传成功：base64 项替换为落盘记录，并填充 files.uploaded_images。"""
-    from jiuwenswarm.gateway.routing import agent_http_bridge
+    from gateway.routing import agent_http_bridge
 
     async def _ok(data, rel_path, **_kwargs):
         return True, {"path": f"/data/{rel_path}"}
@@ -97,7 +97,7 @@ async def test_mixed_success_and_failure_only_uploaded_records_in_uploaded_image
     回归守护：推导式曾误遍历 stored（含 _KEEP_ORIGINAL_ITEM 原始项），
     生成 path/mime_type/size_bytes 全 None 的条目。
     """
-    from jiuwenswarm.gateway.routing import agent_http_bridge
+    from gateway.routing import agent_http_bridge
 
     async def _ok_first_only(data, rel_path, **_kwargs):
         if "ok.png" in rel_path:
