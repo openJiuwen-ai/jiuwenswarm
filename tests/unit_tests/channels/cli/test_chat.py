@@ -32,6 +32,7 @@ from jiuwenswarm.channels.cli.chat import (
 )
 from jiuwenswarm.channels.cli.events import (
     event_kind,
+    extract_macro_routing,
     is_terminal_event,
     needs_user_input,
 )
@@ -47,6 +48,7 @@ class TestResolveMode:
         assert resolve_mode("code.plan") == "code.plan"
         assert resolve_mode("code.team") == "code.team"
         assert resolve_mode("team") == "team"
+        assert resolve_mode("auto") == "auto"
         assert resolve_mode("team.plan.normal") == "team.plan.normal"
         assert resolve_mode("team.plan.code") == "team.plan.code"
 
@@ -58,6 +60,8 @@ class TestResolveMode:
         assert resolve_mode("agent.fast") == "agent"
         assert resolve_mode("code") == "code.normal"
         assert resolve_mode("team.plan") == "team.plan.normal"
+        assert resolve_mode("agent.auto") == "auto"
+        assert resolve_mode("macro.auto") == "auto"
 
     @staticmethod
     def test_case_insensitive():
@@ -79,6 +83,30 @@ class TestResolveMode:
     def test_alias_set_is_complete():
         for alias, canonical in MODE_ALIASES.items():
             assert canonical in VALID_MODES
+
+
+class TestExtractMacroRouting:
+    @staticmethod
+    def test_direct_event():
+        routing = extract_macro_routing(
+            "macro.routing",
+            {"routing": {"mode": "team", "source": "rules"}},
+        )
+        assert routing is not None
+        assert routing["mode"] == "team"
+
+    @staticmethod
+    def test_inner_event_type():
+        routing = extract_macro_routing(
+            "chat.final",
+            {"event_type": "macro.routing", "routing": {"mode": "agent"}},
+        )
+        assert routing is not None
+        assert routing["mode"] == "agent"
+
+    @staticmethod
+    def test_unrelated_event():
+        assert extract_macro_routing("chat.delta", {"content": "hi"}) is None
 
 
 class TestGatewayUrl:
@@ -279,6 +307,13 @@ class TestValidateArgs:
                                   show_reasoning=False, show_tools=False, timeout=None)
         assert _validate_args(args) is None
         assert args.mode == "agent"
+
+    @staticmethod
+    def test_mode_auto_kept():
+        args = argparse.Namespace(mode="auto", json=False, jsonl=False,
+                                  show_reasoning=False, show_tools=False, timeout=None)
+        assert _validate_args(args) is None
+        assert args.mode == "auto"
 
 
 class TestParser:

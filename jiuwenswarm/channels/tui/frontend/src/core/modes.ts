@@ -1,4 +1,5 @@
 export type ClientMode =
+  | "auto"
   | "agent.work.normal"
   | "agent.work.plan"
   | "agent.code.normal"
@@ -8,8 +9,12 @@ export type ClientMode =
   | "team.code.normal"
   | "team.code.plan";
 
+/** Concrete MACRO lane after Auto classifies (Web Agent vs Cluster). */
+export type MacroLaneMode = "agent" | "team";
+
 export function isClientMode(value: string): value is ClientMode {
   return (
+    value === "auto" ||
     value === "agent.work.normal" ||
     value === "agent.work.plan" ||
     value === "agent.code.normal" ||
@@ -65,7 +70,38 @@ export function isTeamMode(mode: ClientMode): boolean {
   return mode.startsWith("team.");
 }
 
-/** Present the runtime mode in lowercase two-segment form, dropping the trailing `.normal`.
+/** Team stream UX while Auto stays selected (do not rewrite local mode). */
+export function isEffectiveTeamMode(
+  mode: ClientMode,
+  lastMacroRoutedMode?: MacroLaneMode | null,
+): boolean {
+  if (mode === "auto") {
+    return lastMacroRoutedMode === "team";
+  }
+  return isTeamMode(mode);
+}
+
+export function normalizeMacroLaneMode(raw: unknown): MacroLaneMode | null {
+  if (typeof raw !== "string") return null;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "team" || normalized === "cluster" || normalized === "agent.team") {
+    return "team";
+  }
+  if (
+    normalized === "agent" ||
+    normalized === "agent.fast" ||
+    normalized === "fast" ||
+    normalized === "performance" ||
+    normalized === "agent.plan" ||
+    normalized === "plan" ||
+    normalized === "planning"
+  ) {
+    return "agent";
+  }
+  return null;
+}
+
+/** Present the runtime mode in lowercase two-segment form, dropping `.normal`.
  *
  * `.normal` 是默认状态，写在 UI 上是噪音；`.plan` 仍保留以提示正处于规划。
  * 例：`agent.code.normal` → `agent.code`；`agent.code.plan` → `agent.code.plan`。
