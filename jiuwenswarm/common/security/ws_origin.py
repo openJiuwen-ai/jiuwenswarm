@@ -13,17 +13,35 @@ _ENABLE_ORIGIN_CHECK_ENV = "JIUWENSWARM_ENABLE_ORIGIN_CHECK"
 _ALLOWED_ORIGIN_HOSTS_ENV = "JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS"
 _FORBIDDEN_BODY = b"Forbidden: Origin not allowed\n"
 
+# Default-secure allowlist for local-mode deployments: the loopback hostnames
+# the packaged desktop/web UI actually runs on, plus "none" for native/
+# embedded clients that send no Origin header at all. An operator who serves
+# the UI from a different hostname (a LAN IP, a reverse-proxy domain) must
+# opt in explicitly via JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS, same as before.
+_DEFAULT_ALLOWED_ORIGIN_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "none"})
+
 
 def is_origin_check_enabled() -> bool:
-    """Return whether WebSocket Origin validation is enabled."""
-    return os.getenv(_ENABLE_ORIGIN_CHECK_ENV, "").strip() == "1"
+    """Return whether WebSocket Origin validation is enabled.
+
+    Defaults to enabled: an unset handshake Origin check combined with no
+    default handshake authentication (see ``ChannelBase.authenticate_handshake``)
+    lets any cross-site page open this WebSocket and invoke privileged local
+    RPCs. Set JIUWENSWARM_ENABLE_ORIGIN_CHECK=0 to opt back out.
+    """
+    return os.getenv(_ENABLE_ORIGIN_CHECK_ENV, "1").strip() == "1"
 
 
 def get_allowed_origin_hosts() -> set[str]:
-    """Return the global WebSocket Origin hostname allowlist from environment."""
+    """Return the global WebSocket Origin hostname allowlist from environment.
+
+    Defaults to the loopback hostnames the local-mode UI runs on when unset,
+    rather than an empty set that would allow nothing once the check above
+    defaults to enabled.
+    """
     raw = os.getenv(_ALLOWED_ORIGIN_HOSTS_ENV)
     if raw is None:
-        return set()
+        return set(_DEFAULT_ALLOWED_ORIGIN_HOSTS)
     return {item.strip().lower() for item in raw.split(",") if item.strip()}
 
 

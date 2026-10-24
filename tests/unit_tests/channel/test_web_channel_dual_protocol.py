@@ -280,6 +280,47 @@ async def test_origin_rejected_when_enabled(monkeypatch: pytest.MonkeyPatch) -> 
     websocket.send_denial_response.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_origin_rejected_by_default_without_env_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cross-site page's Origin must be rejected with no env vars set.
+
+    Origin checking previously defaulted to disabled, so this handshake would
+    have been accepted (CWE-346): any page could open this WebSocket.
+    """
+    monkeypatch.delenv("JIUWENSWARM_ENABLE_ORIGIN_CHECK", raising=False)
+    monkeypatch.delenv("JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS", raising=False)
+
+    websocket = MagicMock()
+    websocket.headers = {"origin": "https://evil.example"}
+    websocket.url.path = "/ws"
+    websocket.send_denial_response = AsyncMock()
+
+    rejected = await _reject_disallowed_origin(websocket)
+    assert rejected is True
+    websocket.send_denial_response.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_origin_allowed_by_default_for_loopback_and_no_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default allowlist must not lock out the local desktop/web UI."""
+    monkeypatch.delenv("JIUWENSWARM_ENABLE_ORIGIN_CHECK", raising=False)
+    monkeypatch.delenv("JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS", raising=False)
+
+    for origin in ("http://localhost:5173", "http://127.0.0.1:8181", None):
+        websocket = MagicMock()
+        websocket.headers = {"origin": origin} if origin is not None else {}
+        websocket.url.path = "/ws"
+        websocket.send_denial_response = AsyncMock()
+
+        rejected = await _reject_disallowed_origin(websocket)
+        assert rejected is False, origin
+        websocket.send_denial_response.assert_not_awaited()
+
+
 def test_starlette_adapter_path_includes_query() -> None:
     websocket = MagicMock()
     websocket.url.path = "/ws"
