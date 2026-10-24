@@ -1,0 +1,47 @@
+{
+  "version": "1.0.0",
+  "package_type": "mcp",
+  "id": "tencent-docs",
+  "name": "腾讯文档",
+  "description": "接入腾讯文档官方 MCP：创建、编辑和协作腾讯文档，用自然语言管理在线文档、表格和幻灯片，完成内容查询、数据整理、分享与团队协同。",
+  "display_name": {
+    "zh": "腾讯文档",
+    "en": "Tencent Docs"
+  },
+  "display_description": {
+    "zh": "接入腾讯文档官方 MCP：创建与编辑在线文档、表格、幻灯片，搜索文档空间，整理数据，生成分享链接并设置权限。需在腾讯文档空间内生成个人 MCP Token（有效期一年）。",
+    "en": "Connect to the official Tencent Docs MCP: create and edit docs, sheets and slides, search your doc space, organize data, and generate share links with permissions. A personal MCP token generated inside a Tencent Docs space is required (valid for one year)."
+  },
+  "integration": {
+    "type": "remote-mcp",
+    "file": "mcp.json"
+  },
+  "credentials": {
+    "type": "token",
+    "file": "token-schema.json"
+  },
+  "icon": "icon.png",
+  "skills": [
+    {
+      "dir": "skills/tencent-docs-guide",
+      "mode": "all"
+    }
+  ],
+  "category": "办公与生产力",
+  "examples": {
+    "zh": [
+      "把这段会议纪要整理成一篇腾讯文档",
+      "帮我在腾讯文档里找一下上个月的项目排期表",
+      "把这份待办清单做成在线表格，并按负责人分组统计",
+      "根据这份大纲帮我生成一套汇报幻灯片",
+      "把这个文档生成只读分享链接发给我"
+    ],
+    "en": [
+      "Turn these meeting notes into a Tencent Doc",
+      "Find last month's project schedule sheet in my Tencent Docs",
+      "Turn this todo list into an online sheet, grouped and counted by owner",
+      "Generate a slide deck from this outline",
+      "Create a read-only share link for this document"
+    ]
+  }
+}
