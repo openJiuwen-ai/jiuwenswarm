@@ -478,7 +478,7 @@ unexpected = sorted(
     name for name in sys.modules
     if name.startswith('jiuwenswarm.runtime')
     or name == 'jiuwenswarm.channels.process_cli.client'
-    or name.startswith('jiuwenswarm.gateway')
+    or name.startswith('gateway')
 )
 print('UNEXPECTED=' + repr(unexpected))
 """

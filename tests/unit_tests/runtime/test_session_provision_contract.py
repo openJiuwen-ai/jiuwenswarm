@@ -130,7 +130,7 @@ assert SessionForkInput and SessionForkResult
 assert SessionProvisionState
 unexpected = sorted(
     name for name in sys.modules
-    if name.startswith("jiuwenswarm.gateway")
+    if name.startswith("gateway")
     or name.startswith("jiuwenswarm.server.agent_ws_server")
     or name.startswith("jiuwenswarm.common.e2a.wire_codec")
     or name == "websockets"

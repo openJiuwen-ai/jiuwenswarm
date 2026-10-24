@@ -15,8 +15,8 @@ from jiuwenswarm.common.schema import Message
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.message_handler.message_handler import ChannelMode, MessageHandler
-from jiuwenswarm.gateway.routing.session_sharing import SubRole
+from gateway.message_handler.message_handler import ChannelMode, MessageHandler
+from gateway.routing.session_sharing import SubRole
 
 
 class _FakeAgentClient:
@@ -181,7 +181,7 @@ async def _wait_for_sent_request_count(count: int, timeout: float = 0.2) -> None
 async def test_tui_non_stream_request_times_out_before_frontend_request(monkeypatch) -> None:
     handler = _TestMessageHandler.create_with_client(_HangingAgentClient())
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.agent_request_timeout._TUI_DEFAULT_UNARY_TIMEOUT_SECONDS",
+        "gateway.routing.agent_request_timeout._TUI_DEFAULT_UNARY_TIMEOUT_SECONDS",
         0.01,
         raising=False,
     )

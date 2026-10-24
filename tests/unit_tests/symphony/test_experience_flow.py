@@ -32,7 +32,7 @@ from jiuwenswarm.common.host_services import (
     restore_runtime_push_handler,
 )
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+from gateway.channel_manager.web.app_web_handlers import (
     _FORWARD_NO_LOCAL_HANDLER_METHODS,
     _FORWARD_REQ_METHODS,
 )

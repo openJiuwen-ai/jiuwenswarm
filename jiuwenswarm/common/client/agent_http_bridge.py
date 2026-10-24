@@ -7,7 +7,7 @@
 
 本模块为**保留侧多个调用方**（Web 静态服务 ``channels/web/app_web``）提供基址解析与
 上传执行，避免各处重复推导。E2A 分片上传变体（``upload_file_bytes_via_e2a``）依赖
-Gateway 的 E2A 路由，留在 ``jiuwenswarm/gateway/routing/agent_http_bridge.py``。
+Gateway 的 E2A 路由，留在 ``gateway/routing/agent_http_bridge.py``。
 
 传输取舍：大文件走受认证 HTTP bridge（Gateway 仅鉴权转发、不落盘），避免大 base64
 帧压垮 Gateway ↔ AgentServer 内部 WebSocket（``AGENT_WS_MAX_MESSAGE_BYTES`` 帧限制）；

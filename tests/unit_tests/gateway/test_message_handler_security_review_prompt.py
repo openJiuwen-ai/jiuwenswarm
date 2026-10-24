@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from jiuwenswarm.gateway.message_handler.prompts.security_review_prompt import (
+from gateway.message_handler.prompts.security_review_prompt import (
     GitPreExecError,
     _run_security_review_git,
     build_security_review_prompt,
@@ -20,7 +20,7 @@ _GIT = shutil.which("git") or "git"
 @pytest.fixture(autouse=True)
 def _english_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.prompts.get_config",
+        "gateway.message_handler.prompts.get_config",
         lambda: {"preferred_language": "en"},
     )
 
@@ -49,7 +49,7 @@ def test_build_security_review_prompt_chinese_from_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.prompts.get_config",
+        "gateway.message_handler.prompts.get_config",
         lambda: {"preferred_language": "zh"},
     )
     prompt = build_security_review_prompt("")

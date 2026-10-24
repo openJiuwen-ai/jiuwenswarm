@@ -428,8 +428,8 @@ async def test_config_status_rpc_uses_backend_directory(monkeypatch, moa_config)
 @pytest.mark.parametrize("remote", [False, True])
 async def test_web_status_rpc_dispatches_through_e2a(monkeypatch, moa_config, remote):
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
-    from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+    from gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+    from gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry
     from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import ConfigAdapter
 
@@ -473,8 +473,8 @@ async def test_web_status_rpc_dispatches_through_e2a(monkeypatch, moa_config, re
 @pytest.mark.asyncio
 @pytest.mark.parametrize("missing_client", [False, True])
 async def test_web_status_rpc_requires_available_agent_server(monkeypatch, missing_client):
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
-    from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+    from gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+    from gateway.routing.agent_client import WebSocketAgentServerClient
 
     def unexpected_config_read():
         raise AssertionError("Gateway must not read local MoA configuration")
