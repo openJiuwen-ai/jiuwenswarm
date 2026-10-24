@@ -2748,6 +2748,8 @@ function beginTurn(requestId, userContent) {
     textContent: '',
     thinkingEl: null,
     typingEl: typingEl,
+    // Set on this turn only when the user clicks the stop button.
+    stopRequested: false,
     // metrics tracking
     startTime: Date.now(),
     firstTokenTime: null,
@@ -3113,6 +3115,10 @@ function renderAskUserQuestion(rid, payload) {
 
 function sendAnswerForInterrupt(pt, rid, source, optionValue) {
   pt.questionAnswered = true;
+  // The user chose to continue this turn, so a previous stop click no longer
+  // applies; let the resumed stream finish as completed.
+  pt.stopRequested = false;
+  pt.stopped = false;
   const statusEl = pt.pendingQuestion ? pt.pendingQuestion.querySelector('.question-status') : null;
   if (statusEl) statusEl.textContent = 'Answer sent — waiting for the agent to continue…';
   send({
@@ -3500,7 +3506,9 @@ function finalizeTurn(rid, payload) {
 
     // ── Live metrics ──
     pt.hasFinal = true;
-    if (payload.stopped) pt.stopped = true;
+    // The local stop click may race the server's final; the flag makes sure the
+    // turn is still classified as stopped if the final arrives afterwards.
+    if (payload.stopped || pt.stopRequested) pt.stopped = true;
 
     // Record the final response text as a 'final' event so the trajectory
     // shows the turn's response as its own entry. Live streaming never emits a
@@ -3987,6 +3995,8 @@ sendBtn.addEventListener('click', function() {
     // Without this, the UI stays stuck in streaming mode because the Gateway's
     // interrupt_result event is not handled by the webview.
     Object.keys(state.pendingTurns).forEach(function(rid) {
+      var pt = state.pendingTurns[rid];
+      if (pt) pt.stopRequested = true;
       finalizeTurn(rid, { stopped: true });
     });
   } else {
