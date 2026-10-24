@@ -1,0 +1,944 @@
+[
+  {
+    "name": "desktop-1",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "desktop-320",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 320
+    },
+    "valid": true
+  },
+  {
+    "name": "desktop-4096",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": true
+  },
+  {
+    "name": "desktop-invalid-size-0",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 0
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-invalid-size--1",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": -1
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-invalid-size-4097",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4097
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-invalid-size-1.5",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 1.5
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-invalid-size-True",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": true
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-invalid-size-None",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": null
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-invalid-size-320",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": "320"
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-missing-operation",
+    "request": {
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-missing-target",
+    "request": {
+      "operation": "op",
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-missing-kind",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-missing-maxDimension",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop"
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-missing-target-session",
+    "request": {
+      "operation": "op",
+      "target": {
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-missing-target-instance",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-missing-target-rootWindow",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-missing-target-surface",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-missing-target-node",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-missing-target-capture",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-bound-node",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": "wrong",
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-bound-capture",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": "wrong"
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-wrong-instance",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "wrong",
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-wrong-rootWindow",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": "wrong",
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-wrong-surface",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": "wrong",
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-unknown-option",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096,
+      "skipValidation": true
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-empty-operation",
+    "request": {
+      "operation": "",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "desktop-empty-session",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "desktop",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-1",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "window-320",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 320
+    },
+    "valid": true
+  },
+  {
+    "name": "window-4096",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": true
+  },
+  {
+    "name": "window-invalid-size-0",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 0
+    },
+    "valid": false
+  },
+  {
+    "name": "window-invalid-size--1",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": -1
+    },
+    "valid": false
+  },
+  {
+    "name": "window-invalid-size-4097",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4097
+    },
+    "valid": false
+  },
+  {
+    "name": "window-invalid-size-1.5",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 1.5
+    },
+    "valid": false
+  },
+  {
+    "name": "window-invalid-size-True",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": true
+    },
+    "valid": false
+  },
+  {
+    "name": "window-invalid-size-None",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": null
+    },
+    "valid": false
+  },
+  {
+    "name": "window-invalid-size-320",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": "320"
+    },
+    "valid": false
+  },
+  {
+    "name": "window-missing-operation",
+    "request": {
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-missing-target",
+    "request": {
+      "operation": "op",
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-missing-kind",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-missing-maxDimension",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window"
+    },
+    "valid": false
+  },
+  {
+    "name": "window-missing-target-session",
+    "request": {
+      "operation": "op",
+      "target": {
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-missing-target-instance",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-missing-target-rootWindow",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-missing-target-surface",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-missing-target-node",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-missing-target-capture",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-bound-node",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": "wrong",
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-bound-capture",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": "wrong"
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-wrong-instance",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-wrong-rootWindow",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": null,
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-wrong-surface",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-unknown-option",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096,
+      "skipValidation": true
+    },
+    "valid": false
+  },
+  {
+    "name": "window-empty-operation",
+    "request": {
+      "operation": "",
+      "target": {
+        "session": "s",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "window-empty-session",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "",
+        "instance": "i",
+        "rootWindow": "w",
+        "surface": "s",
+        "node": null,
+        "capture": null
+      },
+      "kind": "window",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "overview-is-not-a-desktop",
+    "request": {
+      "operation": "op",
+      "target": {
+        "session": "s",
+        "instance": null,
+        "rootWindow": null,
+        "surface": null,
+        "node": null,
+        "capture": null
+      },
+      "kind": "overview",
+      "maxDimension": 4096
+    },
+    "valid": false
+  },
+  {
+    "name": "null-request",
+    "request": null,
+    "valid": false
+  }
+]
