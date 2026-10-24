@@ -1,0 +1,24 @@
+# Build outputs
+bin/
+dist/
+/credential-router
+*.exe
+
+# Local data (e2e tests write sqlite + lock files here)
+data/
+
+# Local config (may contain stub secrets)
+config.yaml
+*.local.yaml
+
+# Go / IDE
+*.test
+*.out
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Python (docs/proxy.py)
+__pycache__/
+*.pyc
