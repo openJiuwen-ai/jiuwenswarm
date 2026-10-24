@@ -201,65 +201,166 @@ def _project_conversation_state(
     return count, busy
 
 
-def _project_heartbeat_blocked(project_id: str, runtime: Any) -> bool:
-    """Whether live Heartbeats are the only thing keeping a removal blocked.
+def _project_running_sessions(project_id: str, runtime: Any) -> list[str]:
+    """Sessions that still own work when a project is removed.
 
-    移除会先停掉这些心跳再重扫,所以真实工作仍在跑时必须返回 False:那份工作
-    无论如何都会把移除挡下,为一次注定被拒的移除去取消心跳是对会话的无谓副作用。
-    """
-    if runtime is None:
-        return False
-    controller = getattr(runtime, "_admission_controller", None)
-    active = getattr(controller, "active_heartbeat_sessions", None)
-    if not callable(active) or not active():
-        # No Heartbeat runs anywhere: nothing to stop, and no second scan.
-        return False
-    busy = _project_conversation_state(project_id, runtime)[1]
-    if not busy:
-        return False
-    running = getattr(runtime, "is_session_running", None)
-    if not callable(running):
-        return False
-    # Re-read only the blockers: real work among them keeps the removal busy
-    # either way, so those Heartbeats must not be cancelled for it.
-    return not any(running(sid, ignore_heartbeats=True) for sid in busy)
-
-
-async def _stop_project_heartbeats(project_id: str, runtime: Any) -> None:
-    """Stop the project's Heartbeat runs before removal rescans them.
-
-    移除只是软隐藏:心跳继续在会话上跑的话,结果会写进一个已从工作区消失的
-    会话里,无处呈现。移除先停掉这些心跳(与 archive/delete 一致),随后的
-    busy 扫描读到的就是已落定的会话。停不掉只记日志,扫描仍把会话判为 busy,
-    移除照常报 SESSION_BUSY,不会隐藏仍在跑的工作。
+    Removal is accepted first; these sessions are stopped in the background.
+    Heartbeat sessions are excluded from ``collect_all_sessions_metadata``, so
+    they are added from the admission controller and filtered by project.
     """
     if runtime is None or not project_id:
-        return
-    stopper = getattr(runtime, "stop_heartbeat_runs", None)
-    if not callable(stopper):
-        return
-    for session in collect_all_sessions_metadata():
-        session_id = str(session.get("session_id") or "")
-        if not session_id or str(session.get("project_id") or "") != project_id:
+        return []
+    sessions = list(
+        _project_conversation_state(
+            project_id, runtime, ignore_heartbeats=False
+        )[1]
+    )
+    controller = getattr(runtime, "_admission_controller", None)
+    active = getattr(controller, "active_heartbeat_sessions", None)
+    if not callable(active):
+        return sessions
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    for session_id in list(active() or ()):
+        if session_id in sessions:
             continue
         try:
-            await stopper(session_id)
+            meta = lc.raw_metadata(session_id)
         except Exception:  # noqa: BLE001
-            logger.warning(
-                "[ProjectAdapter] could not stop heartbeat runs: session_id=%s",
-                session_id,
+            continue
+        if str(meta.get("project_id") or "") == project_id:
+            sessions.append(session_id)
+    return sessions
+
+
+def _project_stop_snapshot(
+    project_id: str, runtime: Any
+) -> list[tuple[str, str, int | None]]:
+    """Capture (session, channel, generation) before the project is hidden."""
+    if runtime is None or not project_id:
+        return []
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    coordinator = getattr(runtime, "_session_coordinator", None)
+    snapshot: list[tuple[str, str, int | None]] = []
+    for session_id in _project_running_sessions(project_id, runtime):
+        try:
+            meta = lc.raw_metadata(session_id)
+        except Exception:  # noqa: BLE001
+            meta = {}
+        channel_id = str(meta.get("channel_id") or "")
+        generation: int | None = None
+        probe = getattr(coordinator, "snapshot_session", None)
+        if callable(probe):
+            try:
+                generation = getattr(probe(session_id), "generation", None)
+            except Exception:  # noqa: BLE001
+                generation = None
+        snapshot.append((session_id, channel_id, generation))
+    return snapshot
+
+
+# Project removal starts a best-effort stop after the project is hidden.  It is
+# not a durable operation: a restart simply forgets these sessions, which are
+# already invisible and will be stopped on their next lifecycle action.
+_PROJECT_STOP_TASKS: set[asyncio.Task] = set()
+_PROJECT_STOP_MAX_ATTEMPTS = 2
+_PROJECT_STOP_BACKOFF_SECONDS = (5.0, 30.0)
+
+
+def _schedule_project_stop(
+    runtime: Any,
+    snapshot: list[tuple[str, str, int | None]],
+    project_id: str,
+) -> None:
+    if runtime is None or not project_id:
+        return
+    try:
+        task = asyncio.create_task(
+            _stop_project_sessions(runtime, snapshot, project_id)
+        )
+    except RuntimeError:
+        logger.debug("[ProjectAdapter] no running loop for project stop task")
+        return
+    _PROJECT_STOP_TASKS.add(task)
+    task.add_done_callback(_PROJECT_STOP_TASKS.discard)
+
+
+async def _stop_project_sessions(
+    runtime: Any,
+    snapshot: list[tuple[str, str, int | None]],
+    project_id: str,
+) -> None:
+    """Stop removed-project sessions with a fixed, small retry budget."""
+    # Best-effort second snapshot: a turn admitted just after the pre-hide
+    # snapshot would otherwise never be stopped.  Existing entries keep the
+    # generation captured before hiding, so a Session reopened after a project
+    # restore is never stopped by the stale removal intent.
+    merged = {sid: (sid, channel, generation) for sid, channel, generation in snapshot}
+    try:
+        project = await asyncio.to_thread(
+            project_store.get_project_by_id, project_id, cache_bust=True
+        )
+    except Exception:  # noqa: BLE001
+        project = None
+    if project is None or project.hidden:
+        try:
+            refreshed = await asyncio.to_thread(
+                _project_stop_snapshot, project_id, runtime
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[ProjectAdapter] project stop rescan failed: project_id=%s",
+                project_id,
                 exc_info=True,
             )
+            refreshed = []
+        for sid, channel, generation in refreshed:
+            # Never overwrite a pre-hide generation: a newer one belongs to a
+            # runtime created after the project was restored.
+            merged.setdefault(sid, (sid, channel, generation))
+    else:
+        logger.debug(
+            "[ProjectAdapter] project restored before cleanup; not expanding "
+            "stop set: project_id=%s",
+            project_id,
+        )
+    snapshot = list(merged.values())
 
+    semaphore = asyncio.Semaphore(4)
 
-def _project_busy_sessions(project_id: str, runtime: Any) -> list[str]:
-    """project.remove 预检专用的阻塞会话列表。
+    async def _one(
+        session_id: str, channel_id: str, generation: int | None
+    ) -> None:
+        async with semaphore:
+            for attempt in range(1, _PROJECT_STOP_MAX_ATTEMPTS + 1):
+                try:
+                    await runtime.stop_session_for_lifecycle(
+                        channel_id=channel_id,
+                        session_id=session_id,
+                        generation=generation,
+                        # The project is hidden, not permanently deleted: stop
+                        # the Team Runner instead of deferring it to a delete.
+                        stop_runner=True,
+                    )
+                    return
+                except Exception:  # noqa: BLE001
+                    if attempt >= _PROJECT_STOP_MAX_ATTEMPTS:
+                        logger.warning(
+                            "[ProjectAdapter] giving up on session stop after "
+                            "project removal: session_id=%s attempts=%d",
+                            session_id,
+                            attempt,
+                            exc_info=True,
+                        )
+                        return
+                    await asyncio.sleep(
+                        _PROJECT_STOP_BACKOFF_SECONDS[attempt - 1]
+                    )
 
-    预检只回答"移除会不会被挡",不执行移除,因此不负责停心跳——它按"心跳已被
-    停掉"来读,与真正的移除(停心跳后再严格扫描)保持同向:预检放行、移除停掉
-    心跳后成功;心跳真的停不掉时,由移除那一次扫描报 SESSION_BUSY。
-    """
-    return _project_conversation_state(project_id, runtime, ignore_heartbeats=True)[1]
+    await asyncio.gather(
+        *(_one(sid, channel, gen) for sid, channel, gen in snapshot)
+    )
 
 
 def _remove_project(
@@ -268,8 +369,8 @@ def _remove_project(
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
     """Hide a project, reporting how many active conversations it takes with it.
 
-    有会话仍在执行时拒绝移除(SESSION_BUSY):移除只是软隐藏,执行中的
-    会话不会随之停止,只会连同项目一起从前端列表消失,结果无处呈现。
+    Running conversations no longer block removal: the project is hidden
+    immediately and its live sessions are stopped in the background.
     """
     project_id = str(params.get("project_id") or "").strip()
     if not project_id:
@@ -282,13 +383,7 @@ def _remove_project(
     if project.hidden:
         return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None
 
-    affected, busy = _project_conversation_state(project_id, runtime)
-    if busy:
-        return (
-            None,
-            "project has running sessions; stop them before removing",
-            "SESSION_BUSY",
-        )
+    affected, _busy = _project_conversation_state(project_id, runtime)
 
     hidden = project_store.hide_project(project_id)
     if hidden is None:
@@ -1265,14 +1360,36 @@ class ProjectAdapter(GatewayAdapter):
         if method == ReqMethod.PROJECT_REMOVE:
             runtime = self._runtime_probe() if self._runtime_probe is not None else None
             project_id = str(params.get("project_id") or "").strip()
-            if _project_heartbeat_blocked(project_id, runtime):
-                # Heartbeats are the only blocker: stop them, and let the
-                # removal's own scan read a settled session.
-                await _stop_project_heartbeats(project_id, runtime)
-            return await _run_threaded(
+            # Snapshot before hiding: the removal response must not wait for
+            # these sessions, and new work must not join the stop set.  The
+            # scan reads every session's metadata, so it must leave the event
+            # loop; a failed scan degrades to the post-hide rescan instead of
+            # blocking a removal the user already asked for.
+            try:
+                stop_snapshot = await asyncio.to_thread(
+                    _project_stop_snapshot, project_id, runtime
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[ProjectAdapter] project stop snapshot failed; removal "
+                    "proceeds: project_id=%s",
+                    project_id,
+                    exc_info=True,
+                )
+                stop_snapshot = []
+            response = await _run_threaded(
                 request, "project.remove", _remove_project, params,
                 runtime=runtime,
             )
+            if response.ok:
+                _schedule_project_stop(runtime, stop_snapshot, project_id)
+                if isinstance(response.payload, dict):
+                    # The Gateway owns the client-visible busy cache; hand it
+                    # the sessions this removal stops so it can clear them.
+                    response.payload["stopped_sessions"] = [
+                        session_id for session_id, _channel, _generation in stop_snapshot
+                    ]
+            return response
         if method == ReqMethod.PROJECT_RESTORE:
             return await _run_threaded(request, "project.restore", _restore_project, params)
         if method == ReqMethod.PROJECT_PINNED_SESSIONS:

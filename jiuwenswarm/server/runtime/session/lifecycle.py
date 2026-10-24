@@ -285,6 +285,112 @@ def complete(
         save_locked(kind, resource_id, value)
 
 
+def logically_deleted(value: dict) -> bool:
+    """Whether a Session was accepted for deletion and is only awaiting cleanup."""
+    return bool(value.get("deleted"))
+
+
+def logically_archived(value: dict) -> bool:
+    """Whether a Session leaves the active area even before its directory moves.
+
+    Archive is accepted synchronously and finalized in the background, so the
+    listing must hide it while the directory is still under ``sessions/``.
+    Failed and abandoned archives keep the same logical result: the user asked
+    for the Session to be archived, and cleanup only decides where the bytes
+    live.
+    """
+    operation = value.get("operation") or {}
+    return bool(
+        operation
+        and operation.get("kind") == "archive"
+        and operation.get("status") != "completed"
+    )
+
+
+def mark_finalizing(
+    kind: str,
+    resource_id: str,
+    *,
+    deleted: bool = False,
+    **changes: Any,
+) -> dict:
+    """Record the logical result and hand physical cleanup to a background task.
+
+    ``write_blocked`` is deliberately untouched: writes already accepted by the
+    metadata/history queues still have to drain.  The background finalizer
+    fences writes after it flushes them.
+    """
+    with resource_lock(kind, resource_id):
+        value = state(kind, resource_id)
+        operation = value.get("operation")
+        if not operation or operation.get("status") == "completed":
+            return operation or {}
+        if deleted:
+            value["deleted"] = True
+        value["blocked"] = True
+        operation.update(
+            status="running",
+            phase="finalizing",
+            stop_pending=True,
+            retryable=True,
+            cleanup_attempts=0,
+            cleanup_next_at=0,
+            cleanup_exhausted=False,
+            **changes,
+        )
+        save_locked(kind, resource_id, value)
+        return operation
+
+
+def abandon_failed_operation(kind: str, resource_id: str, expected_kind: str) -> bool:
+    """Close a failed/abandoned operation so the reverse action can take over.
+
+    A failed archive leaves the Session logically archived with its directory
+    still active.  Unarchiving must be able to recover from that state instead
+    of being blocked forever by the leftover operation.
+    """
+    with resource_lock(kind, resource_id):
+        value = state(kind, resource_id)
+        operation = value.get("operation")
+        if not operation or operation.get("status") == "completed":
+            return False
+        if (
+            operation.get("kind") != expected_kind
+            or operation.get("status") not in {"failed", "abandoned"}
+        ):
+            return False
+        archived = (
+            session_paths(resource_id)[1].exists() if kind == "session" else False
+        )
+        value.update(blocked=archived, write_blocked=archived, deleted=False)
+        operation.update(status="completed", stop_pending=False, result={})
+        save_locked(kind, resource_id, value)
+        return True
+
+
+def set_visibility(
+    kind: str,
+    resource_id: str,
+    *,
+    blocked: bool,
+    write_blocked: bool | None = None,
+    deleted: bool = False,
+) -> None:
+    """Rewrite the logical visibility flags without touching the operation.
+
+    Restore paths use this after a physical move succeeded or failed: an
+    unarchived Session must be visible whenever its directory is back in the
+    active area, even if a later cleanup step failed.
+    """
+    with resource_lock(kind, resource_id):
+        value = state(kind, resource_id)
+        value["blocked"] = blocked
+        value["write_blocked"] = blocked if write_blocked is None else write_blocked
+        if not blocked:
+            value["deleted"] = deleted
+        save_locked(kind, resource_id, value)
+
+
 def session_paths(
     session_id: str, *, sessions_root: Path | None = None
 ) -> tuple[Path, Path]:

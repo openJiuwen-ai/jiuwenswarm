@@ -1016,8 +1016,20 @@ class AgentRuntime:
         """
         if self._closed:
             raise RuntimeStateError("runtime is already closed")
-        from jiuwenswarm.server.runtime.session.lifecycle import claim_runtime
+        from jiuwenswarm.server.runtime.session.lifecycle import claim_runtime, guard
 
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is not None and snapshot.state is RuntimeSessionState.QUIESCING:
+            # Undoing a failed archive releases the durable fence, but a stop
+            # timeout can leave the old generation quiescing after its work
+            # exits. Drain its retained resources before adopting a new one.
+            guard(session_id)
+            await self.stop_session_for_archive(
+                channel_id=channel_id,
+                session_id=session_id,
+                generation=snapshot.generation,
+                stop_runner=True,
+            )
         claim_runtime(session_id)
         await self._session_coordinator.register_session(
             session_id,
@@ -2611,14 +2623,25 @@ class AgentRuntime:
 
         return team_session_has_parked_request(session_id, requests)
 
-    async def stop_heartbeat_runs(self, session_id: str) -> bool:
+    async def stop_heartbeat_runs(
+        self,
+        session_id: str,
+        *,
+        generation: int | None = None,
+    ) -> bool:
         """Cancel the Session's active Heartbeat run so lifecycle work can proceed.
 
         Archive and delete stop a background Heartbeat instead of waiting it
         out; neither may move a Session out from under a live run.  Returns
         False when no Heartbeat owns the Session.  A run that refuses to
         cancel raises, leaving the caller its ordinary busy fallback.
+        An explicit generation never cancels a replacement Session's work.
         """
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if generation is not None and (
+            snapshot is None or snapshot.generation != generation
+        ):
+            return False
         controller = getattr(self, "_admission_controller", None)
         stopper = getattr(controller, "stop_active_heartbeat", None)
         stopped = bool(await stopper(session_id)) if callable(stopper) else False
@@ -2626,7 +2649,9 @@ class AgentRuntime:
         # marker alone does not settle the Session: cancel the Heartbeat
         # execution too, or the ordinary busy check still sees a live run.
         snapshot = self._session_coordinator.snapshot_session(session_id)
-        if not snapshot:
+        if not snapshot or (
+            generation is not None and snapshot.generation != generation
+        ):
             return stopped
         executions = []
         for execution in snapshot.executions:
@@ -2641,7 +2666,11 @@ class AgentRuntime:
         if not callable(cancel):
             return stopped
         for execution in executions:
-            await cancel(session_id, execution_id=execution.execution_id)
+            await cancel(
+                session_id,
+                execution_id=execution.execution_id,
+                generation=snapshot.generation,
+            )
         return True
 
     async def stop_subagent_runtimes(
@@ -2704,9 +2733,19 @@ class AgentRuntime:
         return team_round_finishing_after_flow(session_id)
 
     async def stop_session_for_archive(
-        self, *, channel_id: str, session_id: str
+        self,
+        *,
+        channel_id: str,
+        session_id: str,
+        generation: int | None = None,
+        stop_runner: bool = False,
     ) -> None:
-        """Drain runtime writers for deletion; archive now only checks state."""
+        """Drain runtime writers for a lifecycle action.
+
+        ``generation`` binds the stop to the runtime the caller saw.  A Session
+        reopened while cleanup was queued has a newer generation, and this
+        method must not tear that newer runtime down.
+        """
         from jiuwenswarm.server.runtime.session.lifecycle import (
             LifecycleError,
             assert_runtime_owner,
@@ -2714,16 +2753,27 @@ class AgentRuntime:
             session_delete_pending,
         )
 
+        if generation is not None:
+            snapshot = self._session_coordinator.snapshot_session(session_id)
+            if snapshot is None or snapshot.generation != generation:
+                return
         assert_runtime_owner(session_id)
         # CHAT_CANCEL(wait_for_stop) shares this drain path but owns no delete.
         if session_delete_pending(session_id):
             await self._session_provisioner.prepare_session_delete(session_id)
-        await self._stop_team_runtime_for_delete(
-            channel_id=channel_id, session_id=session_id
+        await self._stop_team_runtime_for_lifecycle(
+            channel_id=channel_id,
+            session_id=session_id,
+            stop_runner=stop_runner,
+            generation=generation,
         )
         closed = await self._session_coordinator.close_session(
-            session_id, wait_timeout=10
+            session_id, wait_timeout=10, generation=generation
         )
+        if generation is not None and not closed.existed:
+            # The generation was already closed or replaced.  Leaving the new
+            # runtime alone also means its owner record must stay untouched.
+            return
         if closed.timed_out:
             raise LifecycleError("STOP_TIMEOUT", "runtime executions have not stopped")
         await self._agent_manager.release_subagent_runtime_for_session(
@@ -2741,20 +2791,52 @@ class AgentRuntime:
         )
         release_runtime(session_id)
 
-    async def _stop_team_runtime_for_delete(
-        self, *, channel_id: str, session_id: str
+    async def stop_session_for_lifecycle(
+        self,
+        *,
+        channel_id: str,
+        session_id: str,
+        generation: int | None = None,
+        stop_runner: bool = False,
     ) -> None:
-        """Stop response streams, retaining Runner until delete releases resources."""
+        """Best-effort stop used by archive/delete background cleanup."""
+        await self.stop_heartbeat_runs(session_id, generation=generation)
+        await self.stop_session_for_archive(
+            channel_id=channel_id,
+            session_id=session_id,
+            generation=generation,
+            stop_runner=stop_runner,
+        )
+
+    async def _stop_team_runtime_for_lifecycle(
+        self,
+        *,
+        channel_id: str,
+        session_id: str,
+        stop_runner: bool = True,
+        generation: int | None = None,
+    ) -> None:
+        """Stop response streams, optionally retaining Runner for delete.
+
+        Permanent delete keeps the Runner alive until
+        ``Runner.delete_agent_team(force=True)`` snapshots member bindings.
+        Archive has no later delete, so it stops the Runner immediately.
+        """
         try:
             from jiuwenswarm.agents.harness.team import get_team_manager
 
             team_manager = get_team_manager(channel_id)
             stopper = getattr(team_manager, "stop_session_runtime", None)
             if callable(stopper):
-                await stopper(session_id, "session.delete: ", stop_runner=False)
+                await stopper(
+                    session_id,
+                    "session.lifecycle: ",
+                    stop_runner=stop_runner,
+                    generation=generation,
+                )
         except Exception:
             logger.warning(
-                "[AgentRuntime] team runtime stop failed before delete: "
+                "[AgentRuntime] team runtime stop failed before lifecycle action: "
                 "session_id=%s",
                 session_id,
                 exc_info=True,
@@ -3387,7 +3469,11 @@ class AgentRuntime:
     async def _ensure_session_registered(self, request: AgentRequest) -> None:
         """Idempotently adopt direct callers that already own a product ID."""
         session_id = str(request.session_id or "").strip()
-        if self._owns_session(session_id):
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is not None and snapshot.state not in {
+            RuntimeSessionState.QUIESCING,
+            RuntimeSessionState.CLOSED,
+        }:
             return
         await self._register_session(
             session_id=session_id,

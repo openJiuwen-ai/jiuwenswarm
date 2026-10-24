@@ -4410,7 +4410,9 @@
         "archiveFailed": "The archive operation failed. Please try again later.",
         "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first.",
         "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
-        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again."
+        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again.",
+        "archiveSessionFinalizing": "This conversation is still finishing up. Try archiving again shortly.",
+        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"

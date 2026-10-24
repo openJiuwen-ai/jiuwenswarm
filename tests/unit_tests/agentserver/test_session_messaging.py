@@ -1088,6 +1088,9 @@ async def test_agentserver_pauses_mailbox_around_online_delete(
     ordering = []
 
     class _Service:
+        def block_target_delete(self, session_id):
+            ordering.append(("block", session_id))
+
         async def begin_target_delete(self, session_id):
             ordering.append(("pause", session_id))
 
@@ -1144,18 +1147,39 @@ async def test_agentserver_pauses_mailbox_around_online_delete(
         )
         service = SessionArchiveService(_Runtime())
 
-        if delete_ok:
-            await service.session("target-1", "delete", "web")
-        else:
-            with pytest.raises(lc.LifecycleError):
-                await service.session("target-1", "delete", "web")
+        async def _drain_finalizers() -> None:
+            for _ in range(50):
+                tasks = [
+                    task
+                    for task in service._finalizing.values()
+                    if task is not None and not task.done()
+                ]
+                if not tasks:
+                    return
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.sleep(0)
 
-        expected_resolution = "commit" if delete_ok else "abort"
-        assert ordering[0:3] == [
-            ("pause", "target-1"),
-            ("delete", "target-1"),
-            (expected_resolution, "target-1"),
-        ]
+        result = await service.session("target-1", "delete", "web")
+        assert result["ok"] is True
+        assert result["finalizing"] is True
+        await _drain_finalizers()
+
+        if delete_ok:
+            assert ordering[0:4] == [
+                ("block", "target-1"),
+                ("pause", "target-1"),
+                ("delete", "target-1"),
+                ("commit", "target-1"),
+            ]
+        else:
+            # A failed background delete keeps the mailbox barrier for the
+            # retry instead of aborting it and letting new work start.
+            assert ordering[0:3] == [
+                ("block", "target-1"),
+                ("pause", "target-1"),
+                ("delete", "target-1"),
+            ]
+            assert lc.state("session", "target-1")["operation"]["status"] == "failed"
     finally:
         project_store.invalidate_cache()
         sm._METADATA_CACHE.clear()
@@ -4007,4 +4031,149 @@ async def test_steer_idle_fallback_remains_owned_during_shutdown(tmp_path, monke
         assert not service._running_fallbacks
         assert not service._executing_workers
     finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_delete_waits_for_inflight_enqueue(tmp_path):
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    service = SessionMessageService(
+        store=store,
+        admission=_RecordingAdmission(),
+        execute=lambda record: asyncio.sleep(0),
+        available=False,
+    )
+    await service.start()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold_enqueue_critical_section():
+        # send_message holds this lock across its durable enqueue.
+        async with service._target_state_lock:
+            entered.set()
+            await release.wait()
+
+    holder = asyncio.create_task(hold_enqueue_critical_section())
+    await entered.wait()
+    drain = asyncio.create_task(service.begin_target_delete("target-1"))
+    await asyncio.sleep(0)
+
+    # The synchronous barrier is visible immediately so new sends are rejected,
+    # but worker cancellation waits for the in-flight enqueue to finish.
+    assert "target-1" in service._blocked_targets
+    assert drain.done() is False
+
+    release.set()
+    await holder
+    await drain
+    assert "target-1" in service._blocked_targets
+
+
+@pytest.mark.asyncio
+async def test_aborted_delete_restarts_consumer_after_slow_cancellation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.session import session_message_service as module
+
+    monkeypatch.setattr(module, "_TARGET_DELETE_STOP_TIMEOUT_SECONDS", 0.01)
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    service = SessionMessageService(
+        store=store, admission=_RecordingAdmission(), execute=AsyncMock(
+            return_value=SessionMessageExecutionResult(status="succeeded"),
+        ), available=False,
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    consume = service._consume_target
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_first_consumer(target_session_id: str, input_mode: str) -> None:
+        if input_mode == "" and not started.is_set():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await release.wait()
+        else:
+            await consume(target_session_id, input_mode)
+
+    monkeypatch.setattr(service, "_consume_target", slow_first_consumer)
+    try:
+        sent = await service.send_message(
+            _source("slow-delete-abort"), input_mode="follow_up", target_session_id="target-1", message="queued",
+        )
+        await asyncio.wait_for(started.wait(), 1)
+        worker = service._workers[("target-1", "")]
+        with pytest.raises(SessionMessagingError) as error:
+            await service.begin_target_delete("target-1")
+        assert error.value.code == "STOP_TIMEOUT"
+        assert service._workers[("target-1", "")] is worker
+
+        await service.abort_target_delete("target-1")
+        await service.set_available(True)
+        assert service._workers[("target-1", "")] is worker
+        release.set()
+        await asyncio.gather(worker, return_exceptions=True)
+        await _wait_for_status(store, sent["message_id"], "succeeded")
+        service._execute.assert_awaited_once()
+    finally:
+        release.set()
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_target_deleted_cleanup_retries_after_enqueue_lock_timeout(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.session import session_message_service as module
+
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    service = SessionMessageService(
+        store=store, admission=_RecordingAdmission(), execute=AsyncMock(), available=False,
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    try:
+        sent = await service.send_message(
+            _source("commit-retry"), input_mode="follow_up", target_session_id="target-1", message="queued",
+        )
+        await service.begin_target_delete("target-1")
+        monkeypatch.setattr(module, "_TARGET_DELETE_STOP_TIMEOUT_SECONDS", 0.01)
+        async with service._target_state_lock:
+            with pytest.raises(SessionMessagingError) as error:
+                await service.on_target_deleted("target-1")
+        assert error.value.code == "STOP_TIMEOUT"
+        assert store.get(sent["message_id"]).status == "queued"
+        assert "target-1" in service._blocked_targets
+
+        monkeypatch.setattr(module, "_TARGET_DELETE_STOP_TIMEOUT_SECONDS", 1)
+        assert await service.on_target_deleted("target-1") == 1
+        assert store.get(sent["message_id"]).status == "cancelled"
+        assert store.get(sent["message_id"]).content == ""
+        assert "target-1" not in service._blocked_targets
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["begin_target_delete", "abort_target_delete"])
+async def test_target_delete_lock_wait_is_bounded(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, action: str,
+) -> None:
+    from jiuwenswarm.server.runtime.session import session_message_service as module
+
+    monkeypatch.setattr(module, "_TARGET_DELETE_STOP_TIMEOUT_SECONDS", 0.01)
+    service = SessionMessageService(
+        store=SessionMessageStore(tmp_path / "messages.sqlite3"),
+        admission=_RecordingAdmission(),
+        execute=AsyncMock(),
+    )
+    service.block_target_delete("target-1")
+    await service._target_state_lock.acquire()
+    try:
+        with pytest.raises(SessionMessagingError) as error:
+            await asyncio.wait_for(getattr(service, action)("target-1"), 1)
+        assert error.value.code == "STOP_TIMEOUT"
+        assert "target-1" in service._blocked_targets
+    finally:
+        service._target_state_lock.release()
         await service.stop()

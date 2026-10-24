@@ -3574,7 +3574,12 @@ class _RecordingTeamManager:
         self.channel_ids: list[str | None] = []
 
     async def stop_session_runtime(
-        self, session_id: str, reason: str = "", *, stop_runner: bool = True
+        self,
+        session_id: str,
+        reason: str = "",
+        *,
+        stop_runner: bool = True,
+        generation: int | None = None,
     ) -> bool:
         self._order.append("team_stop")
         self.stop_calls.append((session_id, reason, stop_runner))
@@ -3620,7 +3625,7 @@ async def test_stop_session_for_archive_stops_parked_team_runtime_first(
         channel_id="web", session_id="web_parked_1"
     )
 
-    assert team_manager.stop_calls == [("web_parked_1", "session.delete: ", False)]
+    assert team_manager.stop_calls == [("web_parked_1", "session.lifecycle: ", False)]
     assert team_manager.channel_ids == ["web"]
     assert order == [
         "team_stop",
@@ -3662,8 +3667,266 @@ async def test_stop_session_for_archive_survives_team_stop_failure(
         channel_id="web", session_id="web_parked_2"
     )
 
-    assert team_manager.stop_calls == [("web_parked_2", "session.delete: ", False)]
+    assert team_manager.stop_calls == [("web_parked_2", "session.lifecycle: ", False)]
     assert manager.cleanup_session_calls == [("web", "web_parked_2")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_archive", [False, True])
+async def test_unarchive_after_stop_timeout_accepts_a_new_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    finish_archive: bool,
+) -> None:
+    from jiuwenswarm.runtime.session import RuntimeSessionState
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService
+
+    sid = "web_archive_timeout"
+    directory = lc.session_paths(sid)[0]
+    directory.mkdir(parents=True)
+    lc.atomic_json(
+        directory / "metadata.json",
+        {"session_id": sid, "channel_id": "web", "project_id": "default"},
+    )
+    manager = _ArchiveStopAgentManager([])
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+    monkeypatch.setattr(runtime, "_stop_team_runtime_for_lifecycle", AsyncMock())
+    await runtime.start()
+    await runtime._register_session(session_id=sid, channel_id="web")
+    coordinator = runtime._session_coordinator
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def resistant() -> None:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    old_turn = asyncio.create_task(
+        coordinator.run_unary(sid, "old", SessionWorkKind.CHAT_UNARY, resistant)
+    )
+    service = SessionArchiveService(runtime)
+    try:
+        await started.wait()
+        lc.begin("session", sid, "archive")
+        result = await coordinator.close_session(sid, wait_timeout=0.01)
+        assert result.timed_out
+        lc.update("session", sid, status="failed", errors=["stop timed out"])
+        release.set()
+        await old_turn
+        assert coordinator.snapshot_session(sid).state is RuntimeSessionState.QUIESCING
+
+        if finish_archive:
+            await service._finalize_session(sid, "archive", "web", "default", 1)
+            assert lc.state("session", sid)["operation"]["status"] == "completed"
+            assert coordinator.snapshot_session(sid).state is RuntimeSessionState.CLOSED
+        restored = await service.session(sid, "unarchive", "web")
+        assert restored["restored"] is True
+        request = AgentRequest(
+            request_id="after-unarchive",
+            channel_id="web",
+            session_id=sid,
+            req_method=ReqMethod.CHAT_SEND,
+            is_stream=True,
+            params={"query": "continue", "mode": "agent.work.normal"},
+        )
+        events = await _collect_events(runtime.stream(request, trigger_hook=False))
+
+        assert events[-1].event_type == "chat.final"
+        assert coordinator.snapshot_session(sid).generation == 2
+        assert manager.cleanup_session_calls == [("web", sid)]
+    finally:
+        release.set()
+        await old_turn
+        await service.close()
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_quiescing_session_cannot_resume_through_archive_fence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.runtime.session import RuntimeSessionState
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    sid = "web_archive_fenced"
+    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
+    await runtime.start()
+    await runtime._register_session(session_id=sid, channel_id="web")
+    await runtime._session_coordinator.quiesce_session(sid)
+    stopper = AsyncMock()
+    monkeypatch.setattr(runtime, "stop_session_for_archive", stopper)
+    lc.begin("session", sid, "archive")
+    request = AgentRequest(
+        request_id="still-archiving",
+        channel_id="web",
+        session_id=sid,
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "continue"},
+    )
+    try:
+        with pytest.raises(lc.LifecycleError) as error:
+            await runtime.invoke(request)
+        assert error.value.code == "OPERATION_IN_PROGRESS"
+        stopper.assert_not_awaited()
+        snapshot = runtime._session_coordinator.snapshot_session(sid)
+        assert snapshot.state is RuntimeSessionState.QUIESCING
+        assert snapshot.generation == 1
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("generation", [1, 2])
+async def test_lifecycle_stop_only_cancels_its_heartbeat_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    generation: int,
+) -> None:
+    from jiuwenswarm.runtime.session import RuntimeSessionState
+
+    sid = "web_restored_heartbeat"
+    manager = _ArchiveStopAgentManager([])
+    runtime = AgentRuntime(agent_manager=manager, initializer=AsyncMock())
+    monkeypatch.setattr(runtime, "_stop_team_runtime_for_lifecycle", AsyncMock())
+    await runtime.start()
+    await runtime._register_session(session_id=sid, channel_id="web")
+    await runtime._session_coordinator.close_session(sid)
+    await runtime._register_session(session_id=sid, channel_id="web")
+    heartbeat_stop = AsyncMock(return_value=False)
+    runtime._admission_controller = SimpleNamespace(stop_active_heartbeat=heartbeat_stop)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def heartbeat() -> None:
+        entered.set()
+        await release.wait()
+
+    task = asyncio.create_task(runtime._session_coordinator.run_unary(
+        sid, "new-heartbeat", SessionWorkKind.HEARTBEAT, heartbeat
+    ))
+    try:
+        await entered.wait()
+        await runtime.stop_session_for_lifecycle(
+            channel_id="web", session_id=sid, generation=generation, stop_runner=True
+        )
+
+        snapshot = runtime._session_coordinator.snapshot_session(sid)
+        assert snapshot.generation == 2
+        if generation == 1:
+            heartbeat_stop.assert_not_awaited()
+            runtime._stop_team_runtime_for_lifecycle.assert_not_awaited()
+            assert snapshot.state is RuntimeSessionState.ACTIVE
+            assert not task.done()
+            assert manager.cleanup_session_calls == []
+        else:
+            heartbeat_stop.assert_awaited_once_with(sid)
+            assert snapshot.state is RuntimeSessionState.CLOSED
+            assert task.done()
+            assert manager.cleanup_session_calls == [("web", sid)]
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_stop_rechecks_generation_after_heartbeat_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.runtime.session import RuntimeSessionState
+
+    sid = "web_replaced_during_heartbeat_stop"
+    manager = _ArchiveStopAgentManager([])
+    runtime = AgentRuntime(agent_manager=manager, initializer=AsyncMock())
+    monkeypatch.setattr(runtime, "_stop_team_runtime_for_lifecycle", AsyncMock())
+    await runtime.start()
+    await runtime._register_session(session_id=sid, channel_id="web")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    tasks = []
+
+    async def new_heartbeat() -> None:
+        entered.set()
+        await release.wait()
+
+    async def replace_while_stopping(session_id: str) -> bool:
+        await runtime._session_coordinator.close_session(session_id, generation=1)
+        await runtime._register_session(session_id=session_id, channel_id="web")
+        tasks.append(asyncio.create_task(runtime._session_coordinator.run_unary(
+            sid, "new-heartbeat", SessionWorkKind.HEARTBEAT, new_heartbeat
+        )))
+        await entered.wait()
+        return True
+
+    runtime._admission_controller = SimpleNamespace(stop_active_heartbeat=replace_while_stopping)
+    try:
+        await runtime.stop_session_for_lifecycle(
+            channel_id="web", session_id=sid, generation=1, stop_runner=True
+        )
+
+        snapshot = runtime._session_coordinator.snapshot_session(sid)
+        assert snapshot.generation == 2
+        assert snapshot.state is RuntimeSessionState.ACTIVE
+        assert not tasks[0].done()
+        runtime._stop_team_runtime_for_lifecycle.assert_not_awaited()
+        assert manager.cleanup_session_calls == []
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_stop_does_not_select_replacement_admission_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sid = "web_heartbeat_admission_replaced"
+    runtime = AgentRuntime(
+        agent_manager=_ArchiveStopAgentManager([]), initializer=AsyncMock()
+    )
+    monkeypatch.setattr(runtime, "_stop_team_runtime_for_lifecycle", AsyncMock())
+    await runtime.start()
+    await runtime._register_session(session_id=sid, channel_id="web")
+    admission = SessionRunAdmission()
+    runtime._admission_controller = admission
+
+    async def preempt(run_id: str) -> bool:
+        await admission.end_heartbeat(sid, run_id)
+        return True
+
+    preemptor = AsyncMock(side_effect=preempt)
+    admission.set_heartbeat_preemptor(preemptor)
+    assert await admission.try_begin_heartbeat(sid, "old-run")
+    await admission._condition.acquire()
+    task = asyncio.create_task(runtime.stop_session_for_lifecycle(
+        channel_id="web", session_id=sid, generation=1, stop_runner=True
+    ))
+    try:
+        await asyncio.sleep(0)
+        assert not task.done()
+        await runtime._session_coordinator.close_session(sid, generation=1)
+        await runtime._register_session(session_id=sid, channel_id="web")
+        # Model the lock holder replacing its admission marker before release.
+        admission._states[sid].heartbeat_run_id = "new-run"
+        admission._condition.release()
+        await asyncio.wait_for(task, 1)
+
+        preemptor.assert_not_awaited()
+        assert admission._states[sid].heartbeat_run_id == "new-run"
+        assert runtime._session_coordinator.snapshot_session(sid).generation == 2
+        runtime._stop_team_runtime_for_lifecycle.assert_not_awaited()
+    finally:
+        if admission._condition.locked():
+            admission._condition.release()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await runtime.close()
 
 
 @pytest.mark.asyncio

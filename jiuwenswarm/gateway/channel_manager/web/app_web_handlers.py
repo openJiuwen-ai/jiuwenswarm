@@ -3248,40 +3248,29 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
 
-        # 移除前先问 AgentServer 项目下是否有会话在执行:必须在 hide_project_jobs
-        # 之前拦截,否则定时任务已被停用、移除却被取消,留下任务全部停用的
-        # 半残状态。预检失败或旧版 AgentServer 不认识该参数时不触碰 cron;
-        # 通过预检后仍由 commit 侧重新扫描,覆盖期间新启动的会话。
-        precheck_ok, precheck_payload = await fetch_agent_unary(
-            agent_client=_resolve(agent_client),
-            req_method=ReqMethod.PROJECT_LIFECYCLE,
-            params={"project_id": project_id, "running_sessions": True},
-            session_id=session_id,
-            user_id=user_id,
-            channel_id="web",
-            label="project.remove.precheck",
-            timeout_seconds=10,
-        )
-        if not precheck_ok or "has_running_sessions" not in precheck_payload:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error=str(precheck_payload.get("error") or "project remove precheck unavailable"),
-                code=str(precheck_payload.get("code") or "SERVICE_UNAVAILABLE"),
-            )
-            return
-        if precheck_payload["has_running_sessions"]:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error="project has running sessions; stop them before removing",
-                code="SESSION_BUSY",
-            )
-            return
-
+        # Removal is accepted immediately; running sessions no longer block it.
+        # The AgentServer hides the project and stops those sessions in the
+        # background, so this path goes straight to the cron-safe commit.
         async def _after_remove() -> None:
             registry = getattr(channel, "git_watcher_registry", None)
             if registry is not None and project_id:
                 registry.cleanup_project(project_id)
             _schedule_agent_prewarm_sync("project.remove")
+            # The AgentServer stops these Sessions in the background.  Settle
+            # the Gateway's busy cache now: otherwise a later restore would
+            # surface them as "still processing" on session.get_metadata.
+            stopped = (
+                remove_payload.get("stopped_sessions")
+                if isinstance(remove_payload, dict)
+                else None
+            )
+            if isinstance(stopped, list):
+                clear_busy = getattr(channel, "clear_session_busy", None)
+                if callable(clear_busy):
+                    for raw_sid in stopped:
+                        sid = str(raw_sid or "")
+                        if sid:
+                            clear_busy(sid)
             await _broadcast_project_event("project.removed", project_id, user_id)
 
         class _RemoveCommitError(Exception):

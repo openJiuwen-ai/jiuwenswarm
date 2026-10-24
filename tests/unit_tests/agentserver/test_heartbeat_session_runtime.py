@@ -1670,6 +1670,34 @@ def delete_chain(make_chain, tmp_path, monkeypatch):
         chain.manager.cleanup_session_runtime = AsyncMock(side_effect=strict_cleanup)
         chain.service = session_archive.SessionArchiveService(chain.runtime)
         chain.service.poke_recovery = Mock()
+
+        async def _drain_finalizers() -> None:
+            for _ in range(50):
+                tasks = [
+                    task
+                    for task in chain.service._finalizing.values()
+                    if task is not None and not task.done()
+                ]
+                if not tasks:
+                    return
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.sleep(0)
+
+        original_session = chain.service.session
+        original_batch = chain.service.project_batch
+
+        async def session_and_drain(*args, **kwargs):
+            result = await original_session(*args, **kwargs)
+            await _drain_finalizers()
+            return result
+
+        async def batch_and_drain(*args, **kwargs):
+            result = await original_batch(*args, **kwargs)
+            await _drain_finalizers()
+            return result
+
+        chain.service.session = session_and_drain
+        chain.service.project_batch = batch_and_drain
         chain.directory = directory
         if state == "running":
             await chain.heartbeat.scheduler._tick_once()
@@ -1813,8 +1841,11 @@ async def test_product_delete_retry_keeps_one_preparation(delete_chain, failure)
             asyncio.CancelledError if failure == "cancel" else RuntimeError("cleanup failed")
         )
     try:
-        with pytest.raises(asyncio.CancelledError if failure in {"cancel", "policy_cancel"} else lc.LifecycleError):
-            await chain.service.session(SESSION, "delete", "web")
+        result = await chain.service.session(SESSION, "delete", "web")
+        # Delete is accepted immediately; the preparation failure is recorded
+        # on the durable operation instead of surfacing to the caller.
+        assert result["ok"] is True
+        assert lc.state("session", SESSION)["operation"]["status"] == "failed"
         assert lc.state("session", SESSION)["blocked"]
         assert SESSION in chain.heartbeat.scheduler._suspended_sessions
         assert not await chain.heartbeat.should_retain_session(SESSION)
@@ -1851,8 +1882,9 @@ async def test_failed_heartbeat_prepare_stays_suspended_until_delete_retry(delet
         side_effect=asyncio.CancelledError if cancel else RuntimeError("prepare failed")
     )
     try:
-        with pytest.raises(asyncio.CancelledError if cancel else lc.LifecycleError):
-            await chain.service.session(SESSION, "delete", "web")
+        result = await chain.service.session(SESSION, "delete", "web")
+        assert result["ok"] is True
+        assert lc.state("session", SESSION)["operation"]["status"] == "failed"
         assert lc.state("session", SESSION)["blocked"]
         assert SESSION in chain.heartbeat.scheduler._suspended_sessions
         assert SESSION not in chain.runtime._session_provisioner._prepared_session_deletes
