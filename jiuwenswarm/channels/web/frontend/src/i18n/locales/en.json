@@ -246,16 +246,6 @@
     "edge": {
       "delete": "Delete connection"
     },
-    "revision": {
-      "title": "Choose which version to keep",
-      "hint": "{{label}} was regenerated. The original is still here — pick which one to keep.",
-      "original": "Original",
-      "incoming": "New version",
-      "keepOriginal": "Keep original",
-      "keepIncoming": "Use new version",
-      "pending": "Needs choice",
-      "compare": "Compare versions"
-    },
     "materials": {
       "title": "Outputs",
       "hint": "Brief and storyboard can be edited by hand. Rerun downstream nodes to pick up the new text.",

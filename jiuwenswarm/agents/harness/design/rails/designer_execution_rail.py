@@ -107,11 +107,9 @@ def _run_summary(run: dict[str, Any]) -> str:
         if not isinstance(state, dict):
             continue
         entry: dict[str, Any] = {"status": state.get("status")}
-        text = str(state.get("text") or state.get("candidate_text") or "")
+        text = str(state.get("text") or "")
         if text:
             entry["text"] = text[:_NODE_TEXT_PREVIEW_CHARS]
-        if state.get("candidate_text"):
-            entry["note"] = "candidate pending user choice"
         error = str(state.get("error") or "")
         if error:
             entry["error"] = error[:200]

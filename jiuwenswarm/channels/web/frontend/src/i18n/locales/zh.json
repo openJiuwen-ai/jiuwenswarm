@@ -246,16 +246,6 @@
     "edge": {
       "delete": "删除连线"
     },
-    "revision": {
-      "title": "选择要保留的版本",
-      "hint": "{{label}} 已重新生成。原版还在，请选择保留哪一份。",
-      "original": "原版",
-      "incoming": "新内容",
-      "keepOriginal": "保留原版",
-      "keepIncoming": "采用新内容",
-      "pending": "待选择",
-      "compare": "比较版本"
-    },
     "materials": {
       "title": "产出物料",
       "hint": "Brief 和分镜表可手动编辑。保存后重跑下游节点会读到新内容。",
