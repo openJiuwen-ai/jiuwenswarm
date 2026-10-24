@@ -169,38 +169,50 @@ function invalidateDetail(detailCache: Record<string, ConnectorDetail>, name: st
   return next;
 }
 
-// 2026-08-20 MCP 连接错误提示友好化（见 MCP连接错误提示友好化-接口对接说明.md）：CLI 驱动型
-// MCP（飞书/钉钉/企微等）连接失败时，后端在 mcp.connect/mcp.wait_auth 的 ok:false payload 里新增
-// code（MCP_RUNTIME_MISSING/MCP_INSTALL_NETWORK/MCP_CLI_INCOMPLETE/MCP_INSTALL_SCRIPT_DEP 四种
-// 可分类失败）+ runtime + install_cmd 结构化字段，替代原来直接透传的底层报错串（如 `[WinError 2]`）。
-// 这里按 code 选 i18n key 拼出用户可读文案；非这几种 code（如 MCP_BAD_REQUEST、非 CLI 路径失败）走
-// error.message 兜底，不受影响。只有 connect/waitAuth 两个 action 的 catch 分支会用到——文档明确
-// 只有这两个 RPC 的 CLI 边界失败会下发新字段，disconnect/deleteConnector/registerCustom 等不受影响。
+// 2026-08-20 MCP 连接错误提示友好化：CLI 型 MCP 失败时后端下发
+// code（MCP_RUNTIME_MISSING 等四种）+ runtime + install_cmd；这里按 code
+// 映射 i18n 文案，其余错误回退 error.message。
+// mcp.install 内联的 connect_failed 复用同一套映射。
 const RUNTIME_LABELS: Record<string, string> = { node: 'Node.js', python: 'Python' };
 
-function friendlyCliError(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
-  const code = (error as WebError).code;
-  const payload = (error as WebError).payload as { runtime?: string; install_cmd?: string } | undefined;
-  const runtime = payload?.runtime ?? '';
-  const label = (runtime && RUNTIME_LABELS[runtime]) || runtime;
-  const installCmd = payload?.install_cmd ?? '';
+interface McpFailureFields {
+  code?: string;
+  runtime?: string;
+  installCmd?: string;
+  message?: string;
+}
 
-  if (code === 'MCP_RUNTIME_MISSING') {
+function friendlyMcpFailure(fields: McpFailureFields): string {
+  const runtime = fields.runtime ?? '';
+  const label = (runtime && RUNTIME_LABELS[runtime]) || runtime;
+  const installCmd = fields.installCmd ?? '';
+
+  if (fields.code === 'MCP_RUNTIME_MISSING') {
     return label
       ? i18n.t('connectorMarket.errors.runtimeMissingNamed', { runtime: label })
       : i18n.t('connectorMarket.errors.runtimeMissing');
   }
-  if (code === 'MCP_INSTALL_NETWORK') return i18n.t('connectorMarket.errors.installNetwork');
-  if (code === 'MCP_INSTALL_SCRIPT_DEP') {
+  if (fields.code === 'MCP_INSTALL_NETWORK') return i18n.t('connectorMarket.errors.installNetwork');
+  if (fields.code === 'MCP_INSTALL_SCRIPT_DEP') {
     return i18n.t('connectorMarket.errors.installScriptDep');
   }
-  if (code === 'MCP_CLI_INCOMPLETE') {
+  if (fields.code === 'MCP_CLI_INCOMPLETE') {
     return installCmd
       ? i18n.t('connectorMarket.errors.cliIncompleteNamed', { command: installCmd })
       : i18n.t('connectorMarket.errors.cliIncomplete');
   }
-  return error.message; // 兜底：非 CLI 边界失败，展示原文
+  return fields.message ?? ''; // 兜底：非 CLI 边界失败，展示原文
+}
+
+function friendlyCliError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const payload = (error as WebError).payload as { runtime?: string; install_cmd?: string } | undefined;
+  return friendlyMcpFailure({
+    code: (error as WebError).code,
+    runtime: payload?.runtime,
+    installCmd: payload?.install_cmd,
+    message: error.message,
+  });
 }
 
 // 连接、断开或删除完成后补一次快速刷新，将乐观更新校准为后端真实状态。
@@ -300,6 +312,18 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       const response = await connectorApi.install(assetId);
       const runtimeName = response.item.name;
       const connectResult = response.connect;
+      // mcp.install 下载成功后内联 connect；connect_failed 需转成可见错误态，
+      // 否则卡片停在未连接且无重试入口（如钉钉缺少 CLI）。
+      const connectFailed = connectResult?.type === 'connect_failed';
+      let connectState: ConnectorSummary['connectionState'] | null = null;
+      let successMessage: string | null = successKey.mcpInstalled;
+      if (connectResult?.type === 'connected') {
+        connectState = 'connected';
+        successMessage = successKey.mcpConnected;
+      } else if (connectFailed) {
+        connectState = 'error';
+        successMessage = null;
+      }
       const patchInstalled = (items: ConnectorSummary[]) =>
         items.map((item) =>
           item.id === assetId || item.runtimePackageName === runtimeName
@@ -308,7 +332,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
                 name: runtimeName,
                 runtimePackageName: runtimeName,
                 installed: true,
-                connectionState: connectResult?.type === 'connected' ? 'connected' : item.connectionState,
+                connectionState: connectState ?? item.connectionState,
               }
             : item,
         );
@@ -318,10 +342,24 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
         myConnectors: patchInstalled(state.myConnectors),
         detailCache: invalidateDetail(state.detailCache, runtimeName),
         busyMap: { ...state.busyMap, [assetId]: undefined },
-        successMessage: connectResult?.type === 'connected' ? successKey.mcpConnected : successKey.mcpInstalled,
+        successMessage,
+        ...(connectFailed
+          ? {
+              error: friendlyMcpFailure({
+                code: connectResult.code,
+                runtime: connectResult.runtime,
+                installCmd: connectResult.installCmd,
+                message: connectResult.error,
+              }),
+            }
+          : {}),
       }));
-      void get().loadList('builtin', { silent: true });
-      void get().loadList('local', { silent: true });
+      // 连接失败时保持 error 态（按钮「重试」）直到用户再次操作：立刻回拉 list 会拿到
+      // 后端的 disconnected 快照，把刚写下的失败态覆盖掉，失败反馈就消失了。
+      if (!connectFailed) {
+        void get().loadList('builtin', { silent: true });
+        void get().loadList('local', { silent: true });
+      }
       return response;
     } catch (error) {
       set((state) => ({
