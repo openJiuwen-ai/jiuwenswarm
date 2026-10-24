@@ -2805,12 +2805,7 @@ function handleJiuwenEvent(evt) {
     // Team mode emits one chat.final per leader segment (delegation, progress,
     // result), each under a rid that may not match the chat.send turn. They are
     // milestones, not end-of-turn; the turn ends on chat.processing_status.
-    if (!teammateChat) {
-      finalizeTurn(rid, payload);
-      // The history file is created/updated by the turn; refresh so the menu's
-      // "Copy Logs Path"/"Export" items get the current path without reopening.
-      send({ type: 'list_sessions' });
-    }
+    if (!teammateChat) finalizeTurn(rid, payload);
   } else if (et === 'chat.processing_status' && payload.is_processing === false) {
     // Stream ended but no chat.final was sent by gateway - release the UI
     if (state.streaming) {
@@ -3674,20 +3669,15 @@ function displayTextFromFinalPayload(payload) {
 
 function appendRawTurnText(pt, text) {
   if (!text) return;
-  var target;
   var lastChild = pt.streamEl.lastElementChild;
   if (lastChild && lastChild.classList.contains('chunk-text')) {
-    target = lastChild;
-    target.__markdownSource = (target.__markdownSource || '') + text;
+    lastChild.textContent += text;
   } else {
-    target = document.createElement('span');
-    target.className = 'chunk-text';
-    target.__markdownSource = text;
-    pt.streamEl.appendChild(target);
+    var span = document.createElement('span');
+    span.className = 'chunk-text';
+    span.textContent = text;
+    pt.streamEl.appendChild(span);
   }
-  // This path is used for final text that never streamed (and team leader
-  // segments), so render it immediately instead of waiting for finalize.
-  renderChunkMarkdown(target);
   pt.textContent += text;
 }
 
