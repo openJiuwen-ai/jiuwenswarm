@@ -104,9 +104,9 @@ sequenceDiagram
 
 停机顺序：
 
-1. `WebUIRuntime.shutdown()` 下发清除帧并释放视图；
-2. `ExtensionManager.shutdown()` 逆依赖撤销 Handler；
-3. 清空单例，允许同一进程重新装配。
+1. 调用方停止新业务入口；`ExtensionManager.shutdown()` 先撤销依赖方，再撤销依赖包；
+2. 失败则保留单例和未退出包，供查询及重试；成功退出包通过回调清理自身视图；
+3. 全部撤销成功后，`WebUIRuntime.shutdown()` 清理剩余视图，再清空单例；重新装配创建新 Bus。
 
 ## 6. 实施影响
 
