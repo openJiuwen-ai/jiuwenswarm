@@ -61,15 +61,18 @@ def _write_native_sandbox_state(service: SecurityConfigService, state: dict[str,
         temp.unlink(missing_ok=True)
 
 
-def _check_sandbox_coverage(permissions: dict[str, Any], live: dict[str, Any]) -> None:
-    """Reject unrepresentable changes before publishing only one enforcement plane."""
+def _check_sandbox_coverage(
+    permissions: dict[str, Any], live: dict[str, Any], *, retry_axes: dict[str, bool] | None = None,
+) -> None:
+    """Reject rules the sandbox cannot apply with the same meaning."""
     from jiuwenswarm.common.behavior_security import runtime_permission_config
     from jiuwenswarm.common.file_guard_config import project_file_guard_to_sandbox, sandbox_file_buckets
     from jiuwenswarm.common.net_guard_config import project_net_guard_to_sandbox
 
     previous = live.get("permissions") or {}
-    file_changed = _sandbox_rule_fields_changed(previous, permissions, "file_guard", "paths")
-    net_changed = _sandbox_rule_fields_changed(previous, permissions, "net_guard", "urls")
+    retry_axes = retry_axes or {}
+    file_changed = retry_axes.get("file", False) or _sandbox_rule_fields_changed(previous, permissions, "file_guard", "paths")
+    net_changed = retry_axes.get("network", False) or _sandbox_rule_fields_changed(previous, permissions, "net_guard", "urls")
     sandbox = live.get("sandbox") or {}
     if not sandbox.get("enabled") or not (file_changed or net_changed):
         return
@@ -79,33 +82,22 @@ def _check_sandbox_coverage(permissions: dict[str, Any], live: dict[str, Any]) -
     if not runtime.get("enabled"):
         raise ValueError("UNSUPPORTED_COVERAGE permissions disabled for sandbox sync")
     if file_changed:
-        previous_files, previous_skipped = project_file_guard_to_sandbox(previous.get("file_guard") or {})
-        if previous_skipped or (sandbox.get("files") or []) != previous_files:
-            raise ValueError("UNSUPPORTED_COVERAGE existing sandbox files are independently managed")
         guard = permissions.get("file_guard") or {}
         if guard.get("enabled") is False:
             raise ValueError("UNSUPPORTED_COVERAGE disabled FileGuard cannot replace sandbox rules")
         try:
-            files, skipped = project_file_guard_to_sandbox(guard)
+            files, _ = project_file_guard_to_sandbox(guard)
         except NotImplementedError as exc:
             raise ValueError(f"UNSUPPORTED_COVERAGE file: {exc}") from exc
-        if skipped:
-            raise ValueError(f"UNSUPPORTED_COVERAGE file: {skipped}")
         sandbox_file_buckets(files)
     if net_changed:
-        previous_network, previous_skipped = project_net_guard_to_sandbox(previous.get("net_guard") or {})
-        previous_urls = {domain: "allow" for domain in previous_network["allow_domains"]}
-        previous_urls.update({domain: "deny" for domain in previous_network["deny_domains"]})
-        if previous_skipped or (sandbox.get("urls") or {}) != previous_urls:
-            raise ValueError("UNSUPPORTED_COVERAGE existing sandbox URLs are independently managed")
         guard = permissions.get("net_guard") or {}
-        if guard.get("enabled") is False:
-            raise ValueError("UNSUPPORTED_COVERAGE disabled NetGuard cannot replace sandbox rules")
-        if any("*" in pattern or "?" in pattern for pattern in (guard.get("urls") or {})):
+        if not (runtime.get("net_guard") or {}).get("enabled"):
+            raise ValueError("UNSUPPORTED_COVERAGE NetGuard must be enabled before sandbox sync")
+        projected, _ = project_net_guard_to_sandbox(guard)
+        projected_domains = (*projected["allow_domains"], *projected["deny_domains"])
+        if any("*" in domain or "?" in domain for domain in projected_domains):
             raise ValueError("UNSUPPORTED_COVERAGE wildcard domains differ between Rail and sandbox")
-        _, skipped = project_net_guard_to_sandbox(guard)
-        if skipped:
-            raise ValueError(f"UNSUPPORTED_COVERAGE network: {skipped}")
 
 
 def _sandbox_rule_fields_changed(before: dict[str, Any], after: dict[str, Any], module: str, field: str) -> bool:
@@ -309,18 +301,29 @@ async def dispatch_security_config_request(
     expected = params.get("expected_revision")
     if expected is not None and not isinstance(expected, str):
         raise ValueError("expected_revision must be a string")
+    prior_state = service.get_candidate()["apply"] if method != ReqMethod.SECURITY_CONFIG_INITIALIZE else {}
+    retry_axes = prior_state.get("sandbox_retry") or {}
+    rollback_snapshot = (
+        service.snapshot_for_rollback()
+        if method == ReqMethod.SECURITY_CONFIG_INITIALIZE
+        or (method != ReqMethod.SECURITY_CONFIG_APPLY and prior_state.get("applied")) else None
+    )
+
+    def validate_coverage(permissions, live):
+        _check_sandbox_coverage(permissions, live, retry_axes=retry_axes)
+
     if method == ReqMethod.SECURITY_CONFIG_INITIALIZE:
         if params:
             raise ValueError("security.config.initialize accepts no parameters")
-        state = service.initialize_from_live()
+        state = service.initialize_from_live(validator=validate_coverage)
     elif method == ReqMethod.SECURITY_CONFIG_SETTINGS_UPDATE:
-        state = service.update_settings(params.get("patch"), expected_revision=expected)
+        state = service.update_settings(params.get("patch"), expected_revision=expected, validator=validate_coverage)
     elif method == ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE:
-        state = service.update_local(params.get("module"), params.get("value"), expected_revision=expected)
+        state = service.update_local(params.get("module"), params.get("value"), expected_revision=expected, validator=validate_coverage)
     elif method == ReqMethod.SECURITY_CONFIG_MODULE_UPDATE:
-        state = service.update_module_settings(params.get("module"), params.get("patch"), expected_revision=expected)
+        state = service.update_module_settings(params.get("module"), params.get("patch"), expected_revision=expected, validator=validate_coverage)
     elif method == ReqMethod.SECURITY_CONFIG_PROFILE_UPDATE:
-        state = service.update_permission_profile(params.get("patch"), expected_revision=expected)
+        state = service.update_permission_profile(params.get("patch"), expected_revision=expected, validator=validate_coverage)
     elif method == ReqMethod.SECURITY_CONFIG_APPLY:
         state = service.get_candidate()["apply"]
         if expected is not None and state["revision"] != expected:
@@ -332,7 +335,7 @@ async def dispatch_security_config_request(
     targets = {"rail": "pending", "host_exit": "pending", "sandbox": "pending"}
     try:
         published = service.publish_candidate(
-            expected_revision=revision, validator=_check_sandbox_coverage,
+            expected_revision=revision, validator=validate_coverage,
         )
     except Exception as exc:
         if str(exc) == "VERSION_CONFLICT":
@@ -347,8 +350,13 @@ async def dispatch_security_config_request(
     before = previous.get("permissions") or {}
     after = config.get("permissions") or {}
     sandbox = config.get("sandbox") or {}
-    file_changed = _sandbox_rule_fields_changed(before, after, "file_guard", "paths")
-    net_changed = _sandbox_rule_fields_changed(before, after, "net_guard", "urls")
+    planned_axes = published["apply"].get("sandbox_pending") or {}
+    file_changed = (planned_axes.get("file", False) or retry_axes.get("file", False)
+                    or _sandbox_rule_fields_changed(before, after, "file_guard", "paths"))
+    net_changed = (planned_axes.get("network", False) or retry_axes.get("network", False)
+                   or _sandbox_rule_fields_changed(before, after, "net_guard", "urls"))
+    sandbox_file_skipped = []
+    sandbox_network_skipped = []
 
     from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
         publish_host_exit_policy_from_config,
@@ -375,14 +383,15 @@ async def dispatch_security_config_request(
                 from jiuwenswarm.common.file_guard_config import sync_file_guard_to_sandbox
 
                 file_result = sync_file_guard_to_sandbox()
-                if file_result["skipped"]:
-                    raise ValueError(f"UNSUPPORTED_COVERAGE file: {file_result['skipped']}")
+                sandbox_file_skipped = file_result["skipped"]
             if net_changed:
                 from jiuwenswarm.common.net_guard_config import sync_net_guard_to_sandbox
 
                 net_result = sync_net_guard_to_sandbox()
-                if net_result["skipped"]:
-                    raise ValueError(f"UNSUPPORTED_COVERAGE network: {net_result['skipped']}")
+                # The sandbox applies the domain projection; NetGuard still owns
+                # entries that the sandbox cannot express. Preserve the omitted
+                # entries in the apply receipt instead of failing the projection.
+                sandbox_network_skipped = net_result["skipped"]
             restarted = await restart_sandboxes({})
             if restarted.get("network_status") == "externally_managed" and net_changed:
                 targets["sandbox"] = "external_pending"
@@ -391,7 +400,50 @@ async def dispatch_security_config_request(
         except Exception as exc:
             targets["sandbox"] = f"failed: {exc}"
 
-    result = service.record_apply(revision, targets)
+    if rollback_snapshot is not None and targets["sandbox"].startswith("failed:"):
+        try:
+            restored = service.restore_snapshot(rollback_snapshot, expected_revision=revision)
+            old_config = service._read_yaml(service.config_path)
+            rollback_targets = {"rail": "applied", "host_exit": "applied", "sandbox": "applied"}
+            try:
+                publish_host_exit_policy_from_config(old_config)
+            except Exception as exc:
+                rollback_targets["host_exit"] = f"failed: {exc}"
+            try:
+                await agent_manager.reload_agents_config(old_config, None)
+            except Exception as exc:
+                rollback_targets["rail"] = f"failed: {exc}"
+            try:
+                await restart_sandboxes({})
+            except Exception as exc:
+                rollback_targets["sandbox"] = f"failed: {exc}"
+            rollback_applied = all(value in {"applied", "not_required"} for value in rollback_targets.values())
+            if restored is not None and not rollback_applied:
+                restored = service.record_apply(
+                    restored["revision"], rollback_targets,
+                    sandbox_retry={"file": bool(file_changed), "network": bool(net_changed)}
+                    if rollback_targets["sandbox"].startswith("failed:") else {},
+                )
+            if restored is None:
+                restored = {
+                    "revision": None, "status": "uninitialized", "saved": False,
+                    "applied": False, "targets": rollback_targets,
+                }
+            return {
+                "saved": False, "applied": False,
+                "rolled_back": rollback_applied,
+                "failed_targets": targets, "apply": restored,
+            }
+        except Exception as exc:
+            targets["sandbox"] = f"{targets['sandbox']}; rollback failed: {exc}"
+
+    result = service.record_apply(
+        revision, targets,
+        sandbox_file_skipped=sandbox_file_skipped,
+        sandbox_network_skipped=sandbox_network_skipped,
+        sandbox_retry={"file": bool(file_changed), "network": bool(net_changed)}
+        if targets["sandbox"].startswith("failed:") else {},
+    )
     return {"saved": True, "applied": result["applied"], "apply": result}
 
 
@@ -401,7 +453,12 @@ async def apply_trusted_cloud_policy(
 ) -> dict[str, Any]:
     """Trusted cloud ingress only; intentionally absent from public ReqMethod."""
     service = service or SecurityConfigService()
-    state = service.replace_cloud_policy(policy_version, permissions)
+    prior = service.get_candidate()["apply"] if service.is_initialized() else {}
+    retry_axes = prior.get("sandbox_retry") or {}
+    state = service.replace_cloud_policy(
+        policy_version, permissions,
+        validator=lambda candidate, live: _check_sandbox_coverage(candidate, live, retry_axes=retry_axes),
+    )
     if state["applied"]:
         return {"saved": True, "applied": True, "apply": state}
     return await dispatch_security_config_request(

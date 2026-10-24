@@ -7,6 +7,7 @@ import pytest
 from jiuwenswarm.common.config import dump_yaml_round_trip, load_yaml_round_trip
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.security_config_service import SecurityConfigService
+from jiuwenswarm.common.utils import get_package_resources_dir
 from jiuwenswarm.server.security_config_rpc import (
     apply_trusted_cloud_policy,
     dispatch_managed_sandbox_request,
@@ -21,6 +22,10 @@ class Manager:
 
     async def reload_agents_config(self, config, env):
         self.configs.append(deepcopy(config))
+
+
+def _package_sandbox_limits():
+    return load_yaml_round_trip(get_package_resources_dir() / "config.yaml")["sandbox"]["limits"]
 
 
 @pytest.fixture
@@ -130,27 +135,36 @@ async def test_profile_defaults_change_does_not_restart_sandbox(service, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_initialization_keeps_existing_sandbox_when_builtin_paths_cannot_project(service):
+async def test_initialization_reports_unprojectable_builtin_paths_without_blocking(service, monkeypatch):
+    from jiuwenswarm.common import config as config_module
+
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
     service._builtin_reader = lambda: {"permissions": {"file_guard": {"paths": [
         {"path": "**/.ssh/**", "match": "glob", "read": "deny", "write": "deny", "exec": "deny"},
     ]}}}
     live = load_yaml_round_trip(service.config_path)
     live["sandbox"].update(enabled=True, files=[])
     live["permissions"]["file_guard"] = {"enabled": True, "paths": []}
+    live["permissions"]["net_guard"] = {"enabled": True, "defaults": "allow", "urls": {}}
     dump_yaml_round_trip(service.config_path, live)
     manager = Manager()
 
-    async def unexpected_restart(_params):
-        pytest.fail("unrepresentable builtins must not restart the sandbox")
+    async def restart(_params):
+        return {"status": "applied"}
 
     result = await dispatch_security_config_request(
         ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=manager,
-        restart_sandboxes=unexpected_restart, service=service,
+        restart_sandboxes=restart, service=service,
     )
-    assert result["saved"] and not result["applied"]
-    assert "UNSUPPORTED_COVERAGE" in result["apply"]["targets"]["sandbox"]
-    assert load_yaml_round_trip(service.config_path) == live
-    assert not manager.configs
+    assert result["saved"] and result["applied"], result["apply"]["targets"]
+    assert result["apply"]["targets"]["sandbox"] == "applied"
+    assert result["apply"]["sandbox_file_skipped"][0]["path"] == "**/.ssh/**"
+    assert load_yaml_round_trip(service.config_path)["sandbox"]["files"] == []
+    assert manager.configs
 
 
 @pytest.mark.asyncio
@@ -264,7 +278,7 @@ async def test_host_exit_failure_stays_saved_but_not_applied(service, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_old_core_reports_saved_but_not_published(service, monkeypatch):
+async def test_old_core_rejects_before_saving_sources(service, monkeypatch):
     from openjiuwen.harness.security.permission_engine import core
 
     monkeypatch.setattr(core, "COMPOSITION_SCHEMA_VERSION", 0)
@@ -272,19 +286,22 @@ async def test_old_core_reports_saved_but_not_published(service, monkeypatch):
     async def unexpected_restart(_params):
         pytest.fail("incompatible core must not apply")
 
-    result = await dispatch_security_config_request(
-        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
-        restart_sandboxes=unexpected_restart, service=service,
-    )
-    assert result["saved"] and not result["applied"]
-    assert "does not support" in result["apply"]["targets"]["rail"]
+    with pytest.raises(RuntimeError, match="does not support"):
+        await dispatch_security_config_request(
+            ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
+            restart_sandboxes=unexpected_restart, service=service,
+        )
+    assert not service.settings_path.exists()
+    assert not service.local_path.exists()
     assert "composition" not in load_yaml_round_trip(service.config_path)["permissions"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pattern", ["https://example.org/path", "*.example.org"])
-async def test_unrepresentable_sandbox_rule_is_not_published(service, monkeypatch, pattern):
+async def test_non_equivalent_sandbox_wildcard_is_not_published(service, monkeypatch):
     manager = Manager()
+    live = load_yaml_round_trip(service.config_path)
+    live["permissions"]["net_guard"] = {"enabled": True, "defaults": "allow", "urls": {}}
+    dump_yaml_round_trip(service.config_path, live)
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
         lambda _config: None,
@@ -301,26 +318,326 @@ async def test_unrepresentable_sandbox_rule_is_not_published(service, monkeypatc
     live["sandbox"]["enabled"] = True
     dump_yaml_round_trip(service.config_path, live)
     before = service.config_path.read_bytes()
-    result = await dispatch_security_config_request(
+    before_source = service.local_path.read_bytes()
+    before_revision = service.get_candidate()["apply"]["revision"]
+    with pytest.raises(ValueError, match="wildcard domains differ"):
+        await dispatch_security_config_request(
+            ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+            {"module": "network", "value": {"*.example.org": "deny"}},
+            agent_manager=manager, restart_sandboxes=unexpected_restart, service=service,
+        )
+    assert service.config_path.read_bytes() == before
+    assert service.local_path.read_bytes() == before_source
+    assert service.get_candidate()["apply"]["revision"] == before_revision
+    assert len(manager.configs) == 1
+    recovered = await dispatch_security_config_request(
         ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
-        {"module": "network", "value": {pattern: "deny"}},
+        {"module": "tool", "value": {"bash": "deny"}},
         agent_manager=manager, restart_sandboxes=unexpected_restart, service=service,
     )
-    assert result["saved"] and not result["applied"]
-    assert "UNSUPPORTED_COVERAGE" in result["apply"]["targets"]["sandbox"]
-    assert service.config_path.read_bytes() == before
-    assert len(manager.configs) == 1
+    assert recovered["applied"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_at", ["sync", "restart"])
+async def test_failed_sandbox_update_discards_new_rules(service, monkeypatch, fail_at):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common import net_guard_config
+
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+    live = load_yaml_round_trip(service.config_path)
+    live["permissions"]["net_guard"] = {"enabled": True, "defaults": "allow", "urls": {}}
+    dump_yaml_round_trip(service.config_path, live)
+    async def restart(_params):
+        return {"status": "applied"}
+    initialized = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
+        restart_sandboxes=restart, service=service,
+    )
+    assert initialized["applied"]
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+
+    calls = []
+    original_sync = net_guard_config.sync_net_guard_to_sandbox
+    def sync():
+        calls.append("sync")
+        if fail_at == "sync" and calls.count("sync") == 1:
+            raise RuntimeError("temporary sync failure")
+        return original_sync()
+    monkeypatch.setattr(net_guard_config, "sync_net_guard_to_sandbox", sync)
+    async def restart_once(_params):
+        calls.append("restart")
+        if fail_at == "restart" and calls.count("restart") == 1:
+            raise RuntimeError("temporary restart failure")
+        return {"status": "applied"}
+
+    old_config = service.config_path.read_bytes()
+    old_source = service.local_path.read_bytes()
+    old_revision = service.get_candidate()["apply"]["revision"]
+    failed = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "network", "value": {"retry.example": "deny"}},
+        agent_manager=Manager(), restart_sandboxes=restart_once, service=service,
+    )
+    assert not failed["saved"] and not failed["applied"] and failed["rolled_back"]
+    assert failed["apply"]["revision"] == old_revision
+    assert service.config_path.read_bytes() == old_config
+    assert service.local_path.read_bytes() == old_source
+    assert (await resume_managed_security_on_start(
+        agent_manager=Manager(), restart_sandboxes=restart_once, service=service,
+    ))["applied"]
+    assert calls.count("sync") == 1
+    assert calls.count("restart") == (1 if fail_at == "sync" else 2)
+    retried = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "network", "value": {"retry.example": "deny"}},
+        agent_manager=Manager(), restart_sandboxes=restart_once, service=service,
+    )
+    assert retried["applied"]
+    assert calls.count("sync") == 2
+    assert load_yaml_round_trip(service.config_path)["sandbox"]["urls"] == {"retry.example": "deny"}
+
+
+@pytest.mark.asyncio
+async def test_failed_initial_projection_restores_uninitialized_config(service, monkeypatch):
+    from jiuwenswarm.common import config as config_module
+
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+    service._builtin_reader = lambda: {"permissions": {"net_guard": {"urls": {"builtin.example": "deny"}}}}
+    live = load_yaml_round_trip(service.config_path)
+    live["permissions"]["net_guard"] = {"enabled": True, "defaults": "allow", "urls": {}}
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+    old_config = service.config_path.read_bytes()
+
+    def fail_sync():
+        raise RuntimeError("temporary sync failure")
+
+    monkeypatch.setattr("jiuwenswarm.common.net_guard_config.sync_net_guard_to_sandbox", fail_sync)
+
+    async def restart(_params):
+        return {"status": "applied"}
+
+    result = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
+        restart_sandboxes=restart, service=service,
+    )
+    assert not result["saved"] and not result["applied"] and result["rolled_back"]
+    assert result["apply"]["status"] == "uninitialized"
+    assert result["apply"]["targets"]["sandbox"] == "applied"
+    assert service.config_path.read_bytes() == old_config
+    assert not service.settings_path.exists()
+    assert not service.local_path.exists()
+    assert not service.state_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_rollback_restart_failure_keeps_old_rules_for_startup_recovery(service, monkeypatch):
+    from jiuwenswarm.common import config as config_module
+
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+    live = load_yaml_round_trip(service.config_path)
+    live["permissions"]["net_guard"] = {"enabled": True, "defaults": "allow", "urls": {}}
+    dump_yaml_round_trip(service.config_path, live)
+
+    async def restart_ok(_params):
+        return {"status": "applied"}
+
+    await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
+        restart_sandboxes=restart_ok, service=service,
+    )
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+    old_source = service.local_path.read_bytes()
+
+    async def restart_failed(_params):
+        raise RuntimeError("sandbox unavailable")
+
+    failed = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "network", "value": {"new.example": "deny"}},
+        agent_manager=Manager(), restart_sandboxes=restart_failed, service=service,
+    )
+    assert not failed["saved"] and not failed["rolled_back"]
+    assert service.local_path.read_bytes() == old_source
+    assert load_yaml_round_trip(service.config_path)["sandbox"].get("urls", {}) == {}
+    assert not service.get_candidate()["apply"]["applied"]
+    restored = await resume_managed_security_on_start(
+        agent_manager=Manager(), restart_sandboxes=restart_ok, service=service,
+    )
+    assert restored["applied"]
+    assert load_yaml_round_trip(service.config_path)["permissions"]["net_guard"]["urls"] == {}
+
+
+@pytest.mark.asyncio
+async def test_external_management_after_rollback_is_not_a_retry_failure(service, monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+    live = load_yaml_round_trip(service.config_path)
+    live["permissions"]["net_guard"] = {"enabled": True, "defaults": "allow", "urls": {}}
+    dump_yaml_round_trip(service.config_path, live)
+
+    async def restart_ok(_params):
+        return {"status": "applied"}
+
+    await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
+        restart_sandboxes=restart_ok, service=service,
+    )
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+    old_revision = service.get_candidate()["apply"]["revision"]
+    monkeypatch.setattr(
+        "jiuwenswarm.common.net_guard_config.sync_net_guard_to_sandbox",
+        lambda: {"skipped": [], "urls": {}},
+    )
+    restarts = 0
+
+    async def restart_then_external(_params):
+        nonlocal restarts
+        restarts += 1
+        if restarts == 1:
+            raise RuntimeError("temporary restart failure")
+        return {"network_status": "externally_managed"}
+
+    result = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "network", "value": {"new.example": "deny"}},
+        agent_manager=Manager(), restart_sandboxes=restart_then_external, service=service,
+    )
+    assert restarts == 2
+    assert result["rolled_back"]
+    assert result["apply"]["revision"] == old_revision
+    assert service.get_candidate()["apply"]["sandbox_retry"] == {}
+
+
+@pytest.mark.asyncio
+async def test_startup_completes_projection_interrupted_after_publication(service, monkeypatch):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common import net_guard_config
+    from jiuwenswarm.server.security_config_rpc import _check_sandbox_coverage
+
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+    live = load_yaml_round_trip(service.config_path)
+    live["permissions"]["net_guard"] = {"enabled": True, "defaults": "allow", "urls": {}}
+    dump_yaml_round_trip(service.config_path, live)
+
+    async def restart(_params):
+        return {"status": "applied"}
+
+    initialized = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
+        restart_sandboxes=restart, service=service,
+    )
+    assert initialized["applied"]
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+
+    state = service.update_local(
+        "network", {"interrupted.example": "deny"}, validator=_check_sandbox_coverage,
+    )
+    assert state["sandbox_pending"]["network"]
+    service.publish_candidate(expected_revision=state["revision"], validator=_check_sandbox_coverage)
+    assert load_yaml_round_trip(service.config_path)["sandbox"].get("urls") != {"interrupted.example": "deny"}
+
+    calls = []
+    original_sync = net_guard_config.sync_net_guard_to_sandbox
+
+    def sync():
+        calls.append("sync")
+        return original_sync()
+
+    monkeypatch.setattr(net_guard_config, "sync_net_guard_to_sandbox", sync)
+    resumed = await resume_managed_security_on_start(
+        agent_manager=Manager(), restart_sandboxes=restart, service=service,
+    )
+    assert resumed["applied"]
+    assert calls == ["sync"]
+    assert load_yaml_round_trip(service.config_path)["sandbox"]["urls"] == {"interrupted.example": "deny"}
+
+
+@pytest.mark.asyncio
+async def test_startup_retries_network_after_permanent_approval(service, monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+    live = load_yaml_round_trip(service.config_path)
+    live["permissions"]["net_guard"] = {"enabled": True, "defaults": "allow", "urls": {}}
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+
+    async def restart(_params):
+        return {"status": "applied"}
+
+    await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
+        restart_sandboxes=restart, service=service,
+    )
+    pending = service.update_local("network", {"pending.example": "deny"})
+    service.publish_candidate(expected_revision=pending["revision"])
+    service.record_apply(
+        pending["revision"], {"rail": "applied", "host_exit": "applied", "sandbox": "failed: unavailable"},
+        sandbox_retry={"network": True},
+    )
+    grant = {"id": "remembered", "tools": ["bash"], "match_type": "command",
+             "pattern": "safe *", "action": "allow"}
+    assert service.persist_user_approval(grant)
+    assert not service.get_candidate()["apply"]["applied"]
+    synced = []
+    monkeypatch.setattr(
+        "jiuwenswarm.common.net_guard_config.sync_net_guard_to_sandbox",
+        lambda: synced.append("network") or {"skipped": [], "urls": {"pending.example": "deny"}},
+    )
+
+    resumed = await resume_managed_security_on_start(
+        agent_manager=Manager(), restart_sandboxes=restart, service=service,
+    )
+    assert resumed["applied"]
+    assert resumed["sandbox_retry"] == {}
+    assert synced == ["network"]
 
 
 @pytest.mark.asyncio
 async def test_external_sandbox_network_is_pending(service, monkeypatch):
     manager = Manager()
+    live = load_yaml_round_trip(service.config_path)
+    live["permissions"]["net_guard"] = {"enabled": True, "defaults": "allow", "urls": {}}
+    dump_yaml_round_trip(service.config_path, live)
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
         lambda _config: None,
     )
 
+    restarts = 0
+
     async def restart(_params):
+        nonlocal restarts
+        restarts += 1
         return {"network_status": "externally_managed"}
 
     await dispatch_security_config_request(
@@ -345,6 +662,24 @@ async def test_external_sandbox_network_is_pending(service, monkeypatch):
     )
     assert result["saved"] and not result["applied"]
     assert result["apply"]["targets"]["sandbox"] == "external_pending"
+    assert result["apply"]["sandbox_retry"] == {}
+    assert restarts == 1
+
+    async def unexpected_restart(_params):
+        pytest.fail("tool-only edit must not retry externally managed sandbox")
+
+    resumed = await resume_managed_security_on_start(
+        agent_manager=manager, restart_sandboxes=unexpected_restart, service=service,
+    )
+    assert resumed["applied"]
+
+    edited = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "tool", "value": {"bash": "deny"}},
+        agent_manager=manager, restart_sandboxes=unexpected_restart, service=service,
+    )
+    assert edited["applied"]
+    assert edited["apply"]["targets"]["sandbox"] == "not_required"
 
 
 @pytest.mark.asyncio
@@ -501,6 +836,244 @@ async def test_network_source_uses_native_sandbox_sync(service, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unprojectable_network_rules_do_not_block_domain_updates(service, monkeypatch):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.net_guard_config import sync_net_guard_to_sandbox
+
+    builtin = {
+        "169.254.169.254": "deny",
+        "metadata.google.internal": "deny",
+        "localhost": "deny",
+        "127.0.0.1": "deny",
+    }
+    service._builtin_reader = lambda: {"permissions": {"net_guard": {"urls": builtin}}}
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+    restarts = []
+
+    async def restart(_params):
+        restarts.append(True)
+        return {"status": "applied"}
+
+    manager = Manager()
+    initialized = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=manager,
+        restart_sandboxes=restart, service=service,
+    )
+    assert initialized["applied"]
+    enabled = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_MODULE_UPDATE,
+        {"module": "network", "patch": {"enabled": True}},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert enabled["applied"]
+    seeded = sync_net_guard_to_sandbox()
+    assert seeded["urls"] == {"metadata.google.internal": "deny"}
+    assert {item["pattern"] for item in seeded["skipped"]} == {
+        "169.254.169.254", "localhost", "127.0.0.1",
+    }
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+
+    updated = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "network", "value": {
+            "example.org": "deny", "192.0.2.10": "deny",
+            "https://example.org/path?token=1": "deny",
+            "ask.example.org": "ask",
+        }},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert updated["applied"], updated["apply"]["targets"]
+    assert updated["apply"]["targets"]["sandbox"] == "applied"
+    assert {item["pattern"] for item in updated["apply"]["sandbox_network_skipped"]} == {
+        "169.254.169.254", "localhost", "127.0.0.1", "192.0.2.10",
+        "https://example.org/path?token=1", "ask.example.org",
+    }
+    live = load_yaml_round_trip(service.config_path)
+    assert live["sandbox"]["urls"] == {
+        "metadata.google.internal": "deny", "example.org": "deny",
+    }
+    assert live["permissions"]["net_guard"]["urls"]["192.0.2.10"] == "deny"
+    assert restarts == [True]
+
+    builtin["198.51.100.9"] = "deny"
+    pending = service.get_candidate()["apply"]
+    assert pending["applied"] is False
+    reapplied = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_APPLY, {"expected_revision": pending["revision"]},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert reapplied["applied"]
+    assert {item["pattern"] for item in reapplied["apply"]["sandbox_network_skipped"]} == {
+        "169.254.169.254", "localhost", "127.0.0.1", "192.0.2.10", "198.51.100.9",
+        "https://example.org/path?token=1", "ask.example.org",
+    }
+    assert load_yaml_round_trip(service.config_path)["sandbox"]["urls"] == {
+        "metadata.google.internal": "deny", "example.org": "deny",
+    }
+    assert restarts == [True, True]
+
+    del builtin["127.0.0.1"]
+    builtin["127.0.0.2"] = "deny"
+    pending = service.get_candidate()["apply"]
+    replaced = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_APPLY, {"expected_revision": pending["revision"]},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert replaced["applied"]
+    skipped_patterns = {item["pattern"] for item in replaced["apply"]["sandbox_network_skipped"]}
+    assert "127.0.0.2" in skipped_patterns and "127.0.0.1" not in skipped_patterns
+    assert load_yaml_round_trip(service.config_path)["sandbox"]["urls"] == {
+        "metadata.google.internal": "deny", "example.org": "deny",
+    }
+    assert restarts == [True, True, True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled_before_initialize", [False, True])
+async def test_default_builtin_network_updates_after_enabling_empty_sandbox(
+    service, monkeypatch, tmp_path, enabled_before_initialize,
+):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.security_config_service import read_builtin_source
+    from jiuwenswarm.server import sandbox_policy_render as render
+
+    service._builtin_reader = read_builtin_source
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(render, "_config_dir", lambda: tmp_path)
+    service.config_path.write_bytes((get_package_resources_dir() / "config.yaml").read_bytes())
+    if enabled_before_initialize:
+        live = load_yaml_round_trip(service.config_path)
+        live["sandbox"].update(enabled=True, files=[], urls={})
+        dump_yaml_round_trip(service.config_path, live)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+
+    async def restart(_params):
+        return {"status": "applied"}
+
+    async def enabled_change(_kind, *, strict=False):
+        assert strict
+
+    monkeypatch.setattr("jiuwenswarm.server.sandbox_config_rpc._apply_sandbox_change", enabled_change)
+    manager = Manager()
+    initialized = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=manager,
+        restart_sandboxes=restart, service=service,
+    )
+    assert initialized["applied"]
+    if not enabled_before_initialize:
+        enabled = await dispatch_security_config_request(
+            ReqMethod.SECURITY_CONFIG_SANDBOX_UPDATE,
+            {"config": {
+                "enabled": True,
+                "filesystem": {key: [] for key in ("allow_read", "allow_write", "deny_read", "deny_write")},
+                "network": {"disable_all": False, "allow_domains": [], "deny_domains": []},
+            }},
+            agent_manager=manager, restart_sandboxes=restart, service=service,
+        )
+        assert enabled["applied"]
+    initial_urls = load_yaml_round_trip(service.config_path)["sandbox"].get("urls", {})
+    assert initial_urls == ({"metadata.google.internal": "deny"} if enabled_before_initialize else {})
+
+    updated = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "network", "value": {"sync.example": "deny"}},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert updated["applied"], updated["apply"]["targets"]
+    assert updated["apply"]["targets"]["sandbox"] == "applied"
+    assert {item["pattern"] for item in updated["apply"]["sandbox_network_skipped"]} == {
+        "169.254.169.254", "localhost", "127.0.0.1",
+    }
+    live = load_yaml_round_trip(service.config_path)
+    assert live["sandbox"]["urls"] == {
+        "metadata.google.internal": "deny", "sync.example": "deny",
+    }
+    assert live["permissions"]["net_guard"]["urls"]["localhost"] == "deny"
+    reapplied = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_APPLY,
+        {"expected_revision": updated["apply"]["revision"]},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert reapplied["applied"], reapplied["apply"]["targets"]
+    assert load_yaml_round_trip(service.config_path)["sandbox"]["urls"] == live["sandbox"]["urls"]
+
+    # The builtin IP skips no longer mask the distinct wildcard incompatibility.
+    before_wildcard = service.config_path.read_bytes()
+    with pytest.raises(ValueError, match="wildcard domains differ"):
+        await dispatch_security_config_request(
+            ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+            {"module": "network", "value": {"*.sync.example": "deny"}},
+            agent_manager=manager, restart_sandboxes=restart, service=service,
+        )
+    assert service.config_path.read_bytes() == before_wildcard
+    assert service.get_candidate()["apply"]["applied"]
+
+
+@pytest.mark.asyncio
+async def test_default_builtin_file_updates_after_enabling_empty_sandbox(service, monkeypatch, tmp_path):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.security_config_service import read_builtin_source
+    from jiuwenswarm.server import sandbox_policy_render as render
+
+    service._builtin_reader = read_builtin_source
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(render, "_config_dir", lambda: tmp_path)
+    service.config_path.write_bytes((get_package_resources_dir() / "config.yaml").read_bytes())
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+
+    async def restart(_params):
+        return {"status": "applied"}
+
+    async def enabled_change(_kind, *, strict=False):
+        assert strict
+
+    monkeypatch.setattr("jiuwenswarm.server.sandbox_config_rpc._apply_sandbox_change", enabled_change)
+    manager = Manager()
+    initialized = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=manager,
+        restart_sandboxes=restart, service=service,
+    )
+    assert initialized["applied"]
+    enabled = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_SANDBOX_UPDATE,
+        {"config": {
+            "enabled": True,
+            "filesystem": {key: [] for key in ("allow_read", "allow_write", "deny_read", "deny_write")},
+            "network": {"disable_all": False, "allow_domains": [], "deny_domains": []},
+        }},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert enabled["applied"]
+    assert load_yaml_round_trip(service.config_path)["sandbox"].get("files", []) == []
+
+    target = tmp_path / "blocked"
+    target.mkdir()
+    updated = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "file", "value": [{"path": str(target), "read": "deny"}]},
+        agent_manager=manager, restart_sandboxes=restart, service=service,
+    )
+    assert updated["applied"], updated["apply"]["targets"]
+    assert updated["apply"]["targets"]["sandbox"] == "applied"
+    assert updated["apply"]["sandbox_file_skipped"]
+    live = load_yaml_round_trip(service.config_path)
+    assert any(item["path"] == str(target) for item in live["sandbox"]["files"])
+    assert any(item["path"] == str(target) for item in live["permissions"]["file_guard"]["paths"])
+
+
+@pytest.mark.asyncio
 async def test_cloud_network_source_switch_updates_sandbox_projection(service, monkeypatch):
     from jiuwenswarm.common import config as config_module
 
@@ -591,7 +1164,7 @@ async def test_native_sandbox_facade_preserves_four_axes_and_reports_apply(servi
     )
     assert queried["config"] == {
         **config, "startup_mode": "internal",
-        "limits": {"max_file_mb": 100, "exec_timeout_seconds": 600},
+        "limits": _package_sandbox_limits(),
     }
     assert render.get_sandbox_files_axes() == files
     assert service.get_candidate()["apply"]["revision"] == source_revision
@@ -666,7 +1239,7 @@ async def test_managed_legacy_sandbox_set_uses_native_facade(service, monkeypatc
         restart_sandboxes=no_restart, service=service,
     )
     assert limits["applied"] and limits["limits"] == {
-        "max_file_mb": 12, "exec_timeout_seconds": 600,
+        "max_file_mb": 12, "exec_timeout_seconds": _package_sandbox_limits()["exec_timeout_seconds"],
     }
     queried_limits = await dispatch_managed_sandbox_request(
         ReqMethod.SANDBOX_LIMITS_GET, {}, restart_sandboxes=no_restart, service=service,
@@ -845,31 +1418,111 @@ async def test_native_file_acl_is_rejected_on_non_windows(service, monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_independent_sandbox_urls_are_not_overwritten(service, monkeypatch):
+async def test_unified_network_update_replaces_old_sandbox_urls(service, monkeypatch):
+    from jiuwenswarm.common import config as config_module
+
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
         lambda _config: None,
     )
 
-    async def unexpected_restart(_params):
-        pytest.fail("independently managed sandbox URLs must not be replaced")
+    restarts = []
+
+    async def restart(_params):
+        restarts.append(True)
+        return {"status": "applied"}
+
+    live = load_yaml_round_trip(service.config_path)
+    live["permissions"]["net_guard"] = {"enabled": True, "defaults": "allow", "urls": {}}
+    dump_yaml_round_trip(service.config_path, live)
 
     await dispatch_security_config_request(
         ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
-        restart_sandboxes=unexpected_restart, service=service,
+        restart_sandboxes=restart, service=service,
     )
     live = load_yaml_round_trip(service.config_path)
     live["sandbox"].update(enabled=True, urls={"manual.example": "deny"})
     dump_yaml_round_trip(service.config_path, live)
-    before = service.config_path.read_bytes()
-    result = await dispatch_security_config_request(
+    updated = await dispatch_security_config_request(
         ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
         {"module": "network", "value": {"example.org": "deny"}},
-        agent_manager=Manager(), restart_sandboxes=unexpected_restart, service=service,
+        agent_manager=Manager(), restart_sandboxes=restart, service=service,
     )
-    assert not result["applied"]
-    assert "independently managed" in result["apply"]["targets"]["sandbox"]
-    assert service.config_path.read_bytes() == before
+    assert updated["applied"], updated["apply"]["targets"]
+    assert load_yaml_round_trip(service.config_path)["sandbox"]["urls"] == {"example.org": "deny"}
+    assert restarts == [True]
+    tool_update = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "tool", "value": {"bash": "deny"}},
+        agent_manager=Manager(), restart_sandboxes=restart, service=service,
+    )
+    assert tool_update["applied"]
+    assert restarts == [True]
+
+
+@pytest.mark.asyncio
+async def test_network_rule_with_disabled_guard_is_rejected_before_save(service, monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+
+    async def no_restart(_params):
+        pytest.fail("disabled NetGuard must not reach sandbox")
+
+    await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
+        restart_sandboxes=no_restart, service=service,
+    )
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+    before_source = service.local_path.read_bytes()
+    before_revision = service.get_candidate()["apply"]["revision"]
+    with pytest.raises(ValueError, match="NetGuard must be enabled"):
+        await dispatch_security_config_request(
+            ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+            {"module": "network", "value": {"example.org": "deny"}},
+            agent_manager=Manager(), restart_sandboxes=no_restart, service=service,
+        )
+    assert service.local_path.read_bytes() == before_source
+    assert service.get_candidate()["apply"]["revision"] == before_revision
+
+
+@pytest.mark.asyncio
+async def test_unified_file_update_replaces_old_sandbox_files(service, tmp_path, monkeypatch):
+    from jiuwenswarm.common import config as config_module
+
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+
+    async def restart(_params):
+        return {"status": "applied"}
+
+    await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=Manager(),
+        restart_sandboxes=restart, service=service,
+    )
+    (tmp_path / "manual").mkdir()
+    (tmp_path / "new").mkdir()
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"].update(enabled=True, files=[{
+        "path": str(tmp_path / "manual"), "read": "deny", "write": "deny",
+    }])
+    dump_yaml_round_trip(service.config_path, live)
+    updated = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_LOCAL_UPDATE,
+        {"module": "file", "value": [{"path": str(tmp_path / "new"), "read": "deny"}]},
+        agent_manager=Manager(), restart_sandboxes=restart, service=service,
+    )
+    assert updated["applied"], updated["apply"]["targets"]
+    files = load_yaml_round_trip(service.config_path)["sandbox"]["files"]
+    assert not updated["apply"]["sandbox_file_skipped"], updated["apply"]["sandbox_file_skipped"]
+    assert [item["path"] for item in files] == [str(tmp_path / "new")], updated["apply"]
 
 
 @pytest.mark.asyncio

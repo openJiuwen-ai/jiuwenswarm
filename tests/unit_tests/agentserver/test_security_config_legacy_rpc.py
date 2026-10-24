@@ -104,3 +104,32 @@ async def test_legacy_file_network_and_shell_split_settings_from_rules(managed, 
     assert candidate["local"]["permissions"]["net_guard"]["urls"] == {"example.org": "deny"}
     assert candidate["settings"]["permissions"]["shell_guard"]["builtin_rules_enabled"] is False
     assert (await _request(managed, ReqMethod.PERMISSIONS_NET_GUARD_GET))["net_guard"]["urls"] == {"example.org": "deny"}
+
+
+@pytest.mark.asyncio
+async def test_legacy_tool_edit_retries_unfinished_network_projection(managed, monkeypatch):
+    live = load_yaml_round_trip(managed.config_path)
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(managed.config_path, live)
+    pending = managed.update_local("network", {"pending.example": "deny"})
+    managed.publish_candidate(expected_revision=pending["revision"])
+    managed.record_apply(
+        pending["revision"], {"rail": "applied", "host_exit": "applied", "sandbox": "failed: unavailable"},
+        sandbox_retry={"network": True},
+    )
+    synced = []
+    monkeypatch.setattr(
+        "jiuwenswarm.common.net_guard_config.sync_net_guard_to_sandbox",
+        lambda: synced.append("network") or {"skipped": [], "urls": {"pending.example": "deny"}},
+    )
+
+    async def restart(_params):
+        return {"status": "applied"}
+
+    result = await dispatch_managed_permissions_request(
+        ReqMethod.PERMISSIONS_TOOLS_UPDATE, {"tool": "bash", "level": "ask"},
+        agent_manager=Manager(), restart_sandboxes=restart, service=managed,
+    )
+    assert result["applied"]
+    assert synced == ["network"]
+    assert result["apply"]["sandbox_retry"] == {}
