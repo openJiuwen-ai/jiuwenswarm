@@ -381,11 +381,11 @@ tools:
 
 Users typically begin using Swarm Skills through the following steps:
 
-**Step 1: Acquire a Swarm Skill from Team Skills Hub**
+**Step 1: Acquire a Swarm Skill from Swarm Skills Hub**
 
 1. Open JiuwenSwarm's "Skills" panel
-2. Click "Team Skills Hub Online Search"
-3. Enter keywords to search for the team skill you need (e.g., "medical consultation", "research report")
+2. Click "Swarm Skills Hub Online Search"
+3. Enter keywords to search for the Swarm Skill you need (e.g., "medical consultation", "research report")
 4. Click "Install" to add the skill to the global skill library
 
 You can also search and install via command line:
@@ -401,7 +401,7 @@ You can also search and install via command line:
 /teamskills install <asset_id> --version 1.0.0
 ```
 
-> **Tip**: `<asset_id>` is the unique skill identifier on Team Skills Hub (e.g., `sk-123`), shown in search results.
+> **Tip**: `<asset_id>` is the unique skill identifier on Swarm Skills Hub (e.g., `sk-123`), shown in search results.
 
 > **Where skills are installed**: Swarm Skills and ordinary Agent Skills alike exist in exactly one place after installation — the global skill library `~/.jiuwenswarm/agent/workspace/skills/`. Neither the team nor its members get their own copy; each holds only a visibility declaration deciding which skills in that library it may see (inheriting the whole library by default). Installing once therefore applies to the whole team, with nothing to distribute inside the team.
 
@@ -441,7 +441,7 @@ The core value of Swarm Skills lies in: **choosing the right Swarm Skill and let
 
 Three key principles when using Swarm Skills:
 
-1. **Choose the right Swarm Skill**: Select a team skill that matches your task characteristics. If existing skills don't perfectly match, you can modify an existing skill or create a new one using `swarmskill-creator`.
+1. **Choose the right Swarm Skill**: Select a Swarm Skill that matches your task characteristics. If existing skills don't perfectly match, you can modify an existing skill or create a new one using `swarmskill-creator`.
 2. **Provide clear input**: Provide complete task information as required by the skill. Clearer input leads to higher collaboration output quality.
 3. **Understand the output structure**: Know the skill's output format for easier downstream processing and usage.
 
@@ -460,7 +460,7 @@ Swarm Skills use a standardized structure definition (5-file specification) with
 - Collaboration standards are based on a universal role-workflow-boundary model, not dependent on specific framework implementation details
 - Adaptable to other AI Agent platforms supporting similar collaboration standards
 - Facilitates migration and sharing of team collaboration experience across different frameworks
-- Team Skills Hub serves as a community sharing platform, promoting cross-framework skill ecosystem development
+- Swarm Skills Hub serves as a community sharing platform, promoting cross-framework skill ecosystem development
 
 ***
 
@@ -568,7 +568,7 @@ Participating experts: Cardiology Dr. Zhang, Respiratory Dr. Li, Radiology Dr. W
 
 The screenshot below shows the actual execution result of the medical consultation Swarm Skill in JiuwenSwarm, including the completed task list and generated consultation report file:
 
-![Medical Consultation Execution Result](../assets/images/jiuwenswarm医疗报告生成.png)
+![Medical Consultation Swarm Skill Execution Result](../assets/images/jiuwenswarm专家评估.png)
 
 #### Swarm Skills Advantage Demonstration
 
@@ -654,7 +654,7 @@ JiuwenSwarm provides the `swarmskill-creator` skill to help users create, conver
 
 | Mode        | Use Case                                                                | Output                                                          |
 | ----------- | ----------------------------------------------------------------------- | --------------------------------------------------------------- |
-| **CREATE**  | Create a new team skill from scratch                                    | New `<swarmskill-name>/` directory with the complete 5-file set |
+| **CREATE**  | Create a new Swarm Skill from scratch                                    | New `<swarmskill-name>/` directory with the complete 5-file set |
 | **CONVERT** | Convert an existing single-Agent Skill to a Swarm Skill                  | Transformed `<swarmskill-name>/` directory + delta report       |
 | **MODIFY**  | Modify an existing Swarm Skill (add/remove roles, adjust workflow, etc.) | Updated files                                                   |
 
@@ -760,19 +760,21 @@ Run the automated validator to ensure the Swarm Skill complies with the specific
 
 ```bash
 # Method 1: Use TUI built-in command (recommended, note: use absolute path in TUI, ~ is not expanded)
-# Replace <skill_path> with the absolute path to your TeamSkill directory
-# Example: Validate the built-in swarmskill-creator
-/teamskills validate /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator --type teamskills
-# For custom skills: /teamskills validate /root/.jiuwenswarm/agent/workspace/skills/<your-skill-dir> --type teamskills
+# Replace <skill_path> with the absolute path to your SwarmSkill directory
+# Note: ~ is not expanded in TUI; use full absolute path such as /root/.jiuwenswarm/agent/workspace/skills/my-swarm-skill
+# General template: /teamskills validate <your-skill-absolute-path> --type teamskills
 
-# Method 2: Use standalone validation script
-# Example: Validate swarmskill-creator
-python3 /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator/scripts/validate_swarmskill.py /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator
+# Example: Note: swarmskill-creator is a single-agent skill, not a valid Swarm Skill for validation
+# Use your own created Swarm Skill path instead
+/teamskills validate /root/.jiuwenswarm/agent/workspace/skills/<your-swarm-skill> --type teamskills
+
+# Method 2: Use standalone validation script (~ is expanded in shell)
+python3 /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator/scripts/validate_swarmskill.py /root/.jiuwenswarm/agent/workspace/skills/<your-swarm-skill>
 ```
 
 > **Tips**:
-> 1. Replace the paths in examples with your actual TeamSkill directory path
-> 2. Your TeamSkill is stored at `~/.jiuwenswarm/agent/workspace/skills/<your-skill-dir>`
+> 1. Replace `<your-swarm-skill>` placeholder with your actual skill directory name
+> 2. Your created skills are stored at: `~/.jiuwenswarm/agent/workspace/skills/<your-skill-dir>`
 > 3. Use absolute paths (e.g., `/root/.jiuwenswarm/...`) in TUI commands, as `~` is not automatically expanded
 > 4. Built-in skills available: `swarmskill-creator`, `skill-creator`
 
@@ -794,15 +796,15 @@ The validator checks:
 
 Use `swarmskill-creator`'s MODIFY mode to modify existing Swarm Skills:
 
-| Change Type                            | Stages to Re-run             | Files to Update                                   |
-| -------------------------------------- | ---------------------------- | ------------------------------------------------- |
-| Edit role Identity / Boundary / Schema | Stage 2 (affected role only) | `roles/<id>.md`                                   |
-| Add or remove a role                   | Stage 1a + 2 + 3 + 4 + 5     | All 5 files                                       |
-| Change workflow steps / topology       | Stage 3                      | `workflow.md` + `bind.md` (if constraints change) |
-| Change bind constraints                | Stage 4                      | `bind.md`                                         |
-| Change dependencies                    | Stage 2 (auto-match) + 5     | `dependencies.yaml` + `SKILL.md` frontmatter      |
+| Change Type                            | Steps to Re-run                  | Files to Update                                   |
+| -------------------------------------- | -------------------------------- | ------------------------------------------------- |
+| Edit role Identity / Boundary / Schema | Step 3 (affected role only)      | `roles/<id>.md`                                   |
+| Add or remove a role                   | Step 1 + 2 + 3 + 4 + 5           | All 5 files                                       |
+| Change workflow steps / topology       | Step 4                           | `workflow.md` + `bind.md` (if constraints change) |
+| Change bind constraints                | Step 5                           | `bind.md`                                         |
+| Change dependencies                    | Step 3 (auto-match) + 6          | `dependencies.yaml` + `SKILL.md`                  |
 
-**Important**: Regardless of edit size, Stage 7 (validation) must always be executed.
+**Important**: Regardless of edit size, Step 7 (validation) must always be executed.
 
 ### 5.3 Converting a Single-Agent Skill to a Swarm Skill
 
@@ -815,22 +817,21 @@ Use `swarmskill-creator`'s CONVERT mode to transform an existing single-Agent Sk
 2. **Articulate the conversion value**: What is lost in single-Agent form? This becomes the Swarm Skill's "why"
 3. **Continue from Step 2** following the CREATE workflow
 
-### 5.4 Publishing to Team Skills Hub
+### 5.4 Publishing to Swarm Skills Hub
 
-After creation, you can share your Swarm Skill with the community to build the team skill ecosystem together:
+After creation, you can share your Swarm Skill with the community to build the Swarm Skills ecosystem together:
 
 **Step 1: Validate completeness**
 
 ```bash
 # Method 1: Use TUI built-in command (recommended, use absolute path in TUI)
-# Example: Validate swarmskill-creator
-/teamskills validate /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator --type teamskills
+/teamskills validate /root/.jiuwenswarm/agent/workspace/skills/<your-swarm-skill> --type teamskills
 
-# Method 2: Use standalone validation script
-python3 /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator/scripts/validate_swarmskill.py /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator
+# Method 2: Use standalone validation script (script provided with swarmskill-creator skill)
+python3 /root/.jiuwenswarm/agent/workspace/skills/swarmskill-creator/scripts/validate_swarmskill.py /root/.jiuwenswarm/agent/workspace/skills/<your-swarm-skill>
 ```
 
-> **Note**: Replace the paths with your actual TeamSkill directory path. Your skills are stored at `~/.jiuwenswarm/agent/workspace/skills/<your-skill-dir>`.
+> **Note**: Replace `<your-swarm-skill>` with your actual Swarm Skill directory name. Your skills are stored at `~/.jiuwenswarm/agent/workspace/skills/<your-skill-dir>`.
 
 Ensure exit code is 0 (compliant).
 
@@ -838,22 +839,22 @@ Ensure exit code is 0 (compliant).
 
 In JiuwenSwarm's "Skills" panel:
 
-1. Click "Team Skills Hub"
+1. Click "Swarm Skills Hub"
 2. Select the Swarm Skill to publish
 3. Click "Upload"
-4. First-time use requires authentication (enter your Team Skills Hub Token)
+4. First-time use requires authentication (enter your Swarm Skills Hub Token)
 
 You can also publish via command line:
 
 ```
-# Publish to Team Skills Hub (requires authentication)
+# Publish to Swarm Skills Hub (requires authentication)
 /teamskills publish path/to/<swarmskill-name> --version 1.0.0 --token <TOKEN>
 
 # To overwrite an existing version, add --force
 /teamskills publish path/to/<swarmskill-name> --version 1.0.1 --token <TOKEN> --force
 ```
 
-> **Authentication note**: Publish and delete operations require `--token` (user Token) or `--system-token` (system Token), and you must choose exactly one. You can pre-configure your token via `/teamskills config --token <TOKEN>` to avoid entering it manually each time.
+> **Authentication note**: Publish and delete operations require `--token` (user Token) or `--system-token` (system Token), and you must choose exactly one. You can pre-configure your token via `/teamskills config --token <TOKEN>` to avoid entering it manually each time. Tokens can be obtained by registering at [Swarm Skills Hub](https://swarmskills.openjiuwen.com) and visiting your personal settings page.
 
 **Step 3: Maintain and update**
 
@@ -892,7 +893,7 @@ After publishing, you can continuously iterate:
 | Validate Swarm Skill            | `/teamskills validate <path> --type teamskills`                  |
 | Pack Swarm Skill                | `/teamskills pack <path> --output <dir>`                          |
 | Configure Hub URL and Token     | `/teamskills config --market-url <url> --token <TOKEN>`           |
-| Publish to Team Skills Hub      | `/teamskills publish <path> --version <x.y.z> --token <TOKEN>`    |
+| Publish to Swarm Skills Hub      | `/teamskills publish <path> --version <x.y.z> --token <TOKEN>`    |
 | Delete skill from Hub           | `/teamskills delete <skill_id> --version <x.y.z> --token <TOKEN>` |
 | Create with swarmskill-creator  | Use `swarmskill-creator` skill's CREATE mode                       |
 | Modify with swarmskill-creator  | Use `swarmskill-creator` skill's MODIFY mode                       |
@@ -916,9 +917,9 @@ A: Yes. Use `swarmskill-creator`'s MODIFY mode to edit the local copy. After mod
 
 A: Yes. SKILL.md, roles/, workflow\.md, bind.md, and dependencies.yaml are all required files. The validator checks that all 5 files are present. Extension directories like `examples/`, `templates/`, and `assets/` are optional.
 
-**Q: What is the default Team Skills Hub URL?**
+**Q: What is the default Swarm Skills Hub URL?**
 
-A: The default URL is `https://teamskills.openjiuwen.com`, which can be overridden via the `TEAM_SKILLS_HUB_BASE_URL` environment variable.
+A: The default URL is `https://swarmskills.openjiuwen.com`, which can be overridden via the `TEAM_SKILLS_HUB_BASE_URL` environment variable.
 
 ***
 
