@@ -858,6 +858,28 @@ def external_cli_managed_cli_path(cli_agent: str) -> str:
     return str(candidate) if candidate.is_file() else ""
 
 
+def _resolve_windows_cli_executable_from_path(cli_agent: str) -> str:
+    """PATH lookup restricted to real executables.
+
+    npm-style global installs drop `claude`, `claude.cmd` and `claude.ps1`
+    side by side; the PATHEXT-driven `shutil.which` resolves the script shim,
+    which the detector rejects as unsupported and the path dropdown would
+    then offer as a dead entry (#5678). Only an `.exe` is launchable through
+    CreateProcess, so scan PATH for that instead. Windows-only: other
+    platforms have no `.exe` and their `shutil.which` never resolves the
+    script shims.
+    """
+    if not is_windows_platform():
+        return ""
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.strip():
+            continue
+        candidate = Path(entry) / f"{cli_agent}.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
 def resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str, str]:
     from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
 
@@ -874,6 +896,17 @@ def resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, 
         return "", f"{requested} not found", "not_found"
 
     resolved = shutil.which(cli_agent)
+    if resolved and is_windows_platform() and Path(resolved).suffix.lower() in UNSUPPORTED_WINDOWS_CLI_SUFFIXES:
+        # The PATHEXT lookup hit a script shim (.cmd/.bat/.ps1) that this
+        # detector cannot run; prefer a real executable from the same PATH so
+        # the UI does not offer the shim as a dead path option (#5678).
+        resolved = _resolve_windows_cli_executable_from_path(cli_agent)
+        if not resolved:
+            # npm-style installs often ship only the shim without a native
+            # .exe; report the known windows-script situation instead of a
+            # misleading "not found" so the UI can show the accurate
+            # unsupported-shim message (#5678).
+            return "", "windows_script", "windows_script"
     if resolved:
         return resolved, "", ""
     return "", f"{cli_agent} not found in PATH", "not_found"
@@ -962,7 +995,7 @@ def _detect_cli_at(normalized_agent: str, cli_path: str, use_builtin: bool = Fal
     if not resolved_path:
         return {
             "cli_agent": normalized_agent,
-            "status": "unsupported" if path_reason == "directory" else "missing",
+            "status": "unsupported" if path_reason in ("directory", "windows_script") else "missing",
             "path": "",
             "version": "",
             "reference_version": reference_version,

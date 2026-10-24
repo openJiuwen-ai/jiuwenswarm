@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import json
+import os
 import sys
 import threading
 import time
@@ -3629,6 +3630,57 @@ def test_detect_external_cli_agent_rejects_windows_script_path(monkeypatch, tmp_
 
     assert result["status"] == "unsupported"
     assert result["path"] == str(script_path)
+
+
+def test_resolve_external_cli_path_replaces_windows_script_shim_with_executable(monkeypatch, tmp_path) -> None:
+    shim = tmp_path / "npm" / "claude.cmd"
+    shim.parent.mkdir()
+    shim.write_text("@echo off\n", encoding="utf-8")
+    exe = tmp_path / "bin" / "claude.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"MZ")
+    monkeypatch.setattr(
+        config_set_handlers,
+        "os",
+        SimpleNamespace(name="nt", environ={"PATH": str(exe.parent)}, pathsep=os.pathsep),
+    )
+    monkeypatch.setattr(
+        config_set_handlers.shutil,
+        "which",
+        lambda name: str(shim) if name == "claude" else None,
+    )
+
+    resolved, error, reason = config_set_handlers.resolve_external_cli_path("claude", "")
+
+    assert resolved == str(exe)
+    assert error == ""
+    assert reason == ""
+
+
+def test_detect_external_cli_agent_reports_windows_script_shim_without_executable(monkeypatch, tmp_path) -> None:
+    shim = tmp_path / "npm" / "claude.cmd"
+    shim.parent.mkdir()
+    shim.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(
+        config_set_handlers,
+        "os",
+        SimpleNamespace(name="nt", environ={"PATH": str(shim.parent)}, pathsep=os.pathsep),
+    )
+    monkeypatch.setattr(
+        config_set_handlers.shutil,
+        "which",
+        lambda name: str(shim) if name == "claude" else None,
+    )
+
+    resolved, error, reason = config_set_handlers.resolve_external_cli_path("claude", "")
+    assert resolved == ""
+    assert reason == "windows_script"
+
+    result = _detect_external_cli_agent("claude", "")
+
+    assert result["status"] == "unsupported"
+    assert result["reason"] == "windows_script"
+    assert ".cmd" not in result["path"].lower()
 
 
 def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
