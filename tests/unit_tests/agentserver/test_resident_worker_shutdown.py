@@ -35,8 +35,11 @@ async def test_request_shutdown_sends_shutdown_and_returns_pid() -> None:
 
     async def _serve() -> dict:
         conn = await server.accept()
-        await conn.send({"kind": KIND_HELLO, "protocol": 1, "pid": 4321, "generation": 1})
-        return await conn.recv()
+        try:
+            await conn.send({"kind": KIND_HELLO, "protocol": 1, "pid": 4321, "generation": 1})
+            return await conn.recv()
+        finally:
+            await conn.close()
 
     serve_task = asyncio.create_task(_serve())
     try:
@@ -55,7 +58,10 @@ async def test_request_shutdown_rejects_non_worker_endpoint() -> None:
 
     async def _serve() -> None:
         conn = await server.accept()
-        await conn.send({"kind": "something-else"})
+        try:
+            await conn.send({"kind": "something-else"})
+        finally:
+            await conn.close()
 
     serve_task = asyncio.create_task(_serve())
     try:

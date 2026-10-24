@@ -159,6 +159,8 @@ def _copy_fork_history_value(
 
     copied: dict[str, Any] = {}
     for key, item in value.items():
+        if key == "session_usage":
+            continue
         if key in _FORK_HISTORY_SESSION_KEYS and item == source_session_id:
             copied[key] = target_session_id
             continue

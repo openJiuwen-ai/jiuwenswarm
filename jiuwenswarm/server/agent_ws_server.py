@@ -7857,6 +7857,14 @@ class AgentWebSocketServer:
                 )
             next_seq += 1
 
+        session_usage = None
+        if not subagent_id and isinstance(session_id, str) and session_id.strip():
+            from jiuwenswarm.server.control.history_service import load_history_session_usage
+
+            session_usage = await asyncio.to_thread(
+                load_history_session_usage, session_id.strip()
+            )
+
         done_chunk = AgentResponseChunk(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -7872,6 +7880,7 @@ class AgentWebSocketServer:
                 "has_more": has_more,
                 "snapshot_id": snapshot_id,
                 "snapshot_end": snapshot_end,
+                **({"session_usage": session_usage} if session_usage is not None else {}),
             },
             is_complete=True,
         )

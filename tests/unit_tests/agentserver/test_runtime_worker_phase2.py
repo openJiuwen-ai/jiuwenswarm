@@ -162,13 +162,17 @@ async def test_ipc_request_stream_and_cancel() -> None:
     async def _serve() -> None:
         conn = await server.accept()
         holder.open_session(conn)
-        await dispatcher.bind_runtime(runtime)
-        while True:
-            message = await conn.recv()
-            if not await dispatcher.handle(message, conn):
-                break
+        try:
+            await dispatcher.bind_runtime(runtime)
+            while True:
+                message = await conn.recv()
+                if not await dispatcher.handle(message, conn):
+                    break
+        finally:
+            await conn.close()
 
     serve_task = asyncio.create_task(_serve())
+    client = None
     try:
         client = await connect(path)
         request = _request(ReqMethod.CHAT_SEND, is_stream=True)
@@ -202,6 +206,8 @@ async def test_ipc_request_stream_and_cancel() -> None:
         if not serve_task.done():
             serve_task.cancel()
             await asyncio.gather(serve_task, return_exceptions=True)
+        if client is not None:
+            await client.close()
         await server.close()
 
 
@@ -647,6 +653,8 @@ async def _serve_one_session(server: IpcServer, holder: ConnHolder, dispatcher: 
         await _read_session(conn, dispatcher)
     except (OSError, asyncio.IncompleteReadError):
         await _retire_session(holder, dispatcher)
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio

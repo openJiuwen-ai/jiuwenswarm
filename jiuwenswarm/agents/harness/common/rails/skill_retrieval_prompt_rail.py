@@ -210,6 +210,7 @@ class SkillRetrievalPromptRail(DeepAgentRail):
                 name=self.CANDIDATE_SECTION_NAME,
                 content={language: candidate_appendix},
                 priority=self.CANDIDATE_SECTION_PRIORITY,
+                category="skills",
             )
         )
 
