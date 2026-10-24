@@ -328,7 +328,7 @@ async def test_launch_creates_resolvable_team(
     pooled = await runtime.pool.get(launched.team_id)
     assert pooled is not None
     assert pooled.agent.team_backend.team_name == launched.team_id
-    assert agent_group_loader == {"resolve": 1, "load": 1}
+    assert agent_group_loader == {"resolve": 2, "load": 1}
 
 
 @pytest.mark.asyncio
@@ -795,16 +795,18 @@ async def test_org_turn_closes_only_owner_processing(
 
     pushes = [call.args[0] for call in transport.send_push.call_args_list]
     event_types = [push["payload"]["event_type"] for push in pushes]
-    assert event_types == ["chat.final", "org.turn_completed"] + (
-        ["chat.processing_status"] if ends_owner_processing else []
-    )
+    assert event_types == ["chat.processing_status", "chat.final", "org.turn_completed", "chat.processing_status"]
+    assert pushes[0]["payload"]["is_processing"] is True
+    assert pushes[-1]["payload"]["is_processing"] is False
+    assert pushes[0]["payload"]["request_id"] == pushes[-1]["payload"]["request_id"]
+    assert pushes[-1]["payload"]["source"] == source
     if ends_owner_processing:
         wire = build_server_push_wire(pushes[-1])
         chunk = parse_agent_server_wire_chunk(wire)
         message = MessageHandler._chunk_to_message(chunk, "sess-1")
         browser_event = WebChannel._build_event_payload(message, "chat.processing_status")
         assert browser_event["is_processing"] is False
-        assert browser_event["is_complete"] is True
+        assert browser_event.get("is_complete", False) is False
         assert browser_event["team_id"] == team_id
 
 
@@ -857,9 +859,10 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
     assert ok is (ending != "error")
     pushes = [call.args[0] for call in transport.send_push.call_args_list]
     assert [push["payload"]["event_type"] for push in pushes] == [
-        "chat.final", "chat.reasoning", "chat.error" if ending == "error" else "org.turn_completed",
+        "chat.processing_status", "chat.final", "chat.reasoning",
+        "chat.error" if ending == "error" else "org.turn_completed", "chat.processing_status",
     ]
-    terminal = pushes[-1]
+    terminal = pushes[-2]
     assert terminal["is_complete"] is False  # Do not close the shared Owner subscription.
     chunk = parse_agent_server_wire_chunk(build_server_push_wire(terminal))
     message = MessageHandler._chunk_to_message(chunk, "session")
@@ -870,7 +873,41 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
     if ending != "error":
         channel = object.__new__(WebChannel)
         channel._session_busy = {"session": True}
+        channel._expert_processing_requests = {}
         channel._track_session_busy(message)
         assert channel.is_session_busy("session") is True
     runtime.finalize.assert_awaited_once()
     runtime.activate.return_value.session.post_run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("source", ["org_expert_direct", "org_expert_background"])
+async def test_cleanup_push_failure_preserves_turn_result_and_unregisters(monkeypatch, failed, source):
+    from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+    from jiuwenswarm.server.runtime.organization_execution import active_turns
+
+    async def stream(inputs, session):
+        if failed:
+            raise RuntimeError("model failed")
+        if False:
+            yield None
+    agent = SimpleNamespace(spec=SimpleNamespace(metadata={"expert_team": True, "channel_id": "web"}), stream=stream)
+    entry = SimpleNamespace(agent=agent, current_session_id="session", state=RuntimeState.PAUSED)
+    runtime = SimpleNamespace(pool=SimpleNamespace(get=AsyncMock(return_value=entry)), finalize=AsyncMock(),
+                              activate=AsyncMock(return_value=SimpleNamespace(agent=agent,
+                                  action=SimpleNamespace(kind=RunActionKind.RESUME_FROM_PAUSE),
+                                  session=SimpleNamespace(post_run=AsyncMock()))))
+    async def send(push):
+        if push["payload"].get("is_processing") is False:
+            raise OSError("connection closed during cleanup")
+        return True
+    transport = SimpleNamespace(send_push=AsyncMock(side_effect=send))
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime, push_transport=transport)
+    monkeypatch.setattr(launcher, "_flush_expert_history", AsyncMock())
+    monkeypatch.setattr(launcher, "_persist_expert_history", AsyncMock())
+    assert await launcher.run_organization_turn("expert", "session", {}, source=source) is not failed
+    assert active_turns("session") == []
+    ids = [call.args[0]["request_id"] for call in transport.send_push.call_args_list]
+    assert len(ids) == len(set(ids))
