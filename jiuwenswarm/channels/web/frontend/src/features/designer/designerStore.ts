@@ -107,6 +107,10 @@ type DesignerStore = {
   flushSave: () => Promise<void>;
   /** Server-validated canvas video / image settings; rejects with the server message. */
   patchMediaSettings: (patch: DesignerMediaSettingsPatch) => Promise<void>;
+  /** Stamp the chat model the design pipeline (leader + director chain) must
+   * use. The canvas model switcher writes here so a mid-session change takes
+   * effect on the next leader round (#5394). */
+  setChatModel: (modelName: string) => void;
   reset: () => void;
 };
 
@@ -631,6 +635,21 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     saveTimer = setTimeout(() => {
       void get().flushSave();
     }, SAVE_DEBOUNCE_MS);
+  },
+
+  setChatModel: (modelName) => {
+    const graph = get().domainGraph;
+    const name = String(modelName || '').trim();
+    if (!graph || !name || get().bootstrapInProgress || isDesignerPreviewGraph(graph)) return;
+    if (String((graph.metadata ?? {}).model_name || '').trim() === name) return;
+    set({
+      domainGraph: {
+        ...graph,
+        updated_at: Date.now(),
+        metadata: { ...(graph.metadata ?? {}), model_name: name },
+      },
+    });
+    get().scheduleSave();
   },
 
   flushSave: async () => {

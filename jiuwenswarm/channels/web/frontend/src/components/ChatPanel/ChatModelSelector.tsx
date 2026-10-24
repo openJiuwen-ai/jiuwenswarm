@@ -30,26 +30,36 @@ function sameModelSelection(left: ModelSelection | null, right: ModelSelection |
     && (left.type !== 'model_group' || left.route_id === right.route_id);
 }
 
-export default function ChatModelSelector({ disabled = false }: { disabled?: boolean }): JSX.Element | null {
+export default function ChatModelSelector({
+  disabled = false,
+  sessionId,
+}: {
+  disabled?: boolean;
+  /** Session this selector edits. Surfaces that own a session (the design
+   * canvas) pass it explicitly: `activeSessionId` follows the app route and can
+   * point at another conversation while the surface stays mounted (#5394). */
+  sessionId?: string;
+}): JSX.Element | null {
   const { t } = useTranslation();
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelGroups = useSessionStore((state) => state.availableModelGroups);
   const activeSessionId = useChatStore((state) => state.activeSessionId);
+  const boundSessionId = sessionId || activeSessionId;
   const selectedModelName = useSessionStore(
-    (state) => state.runtimes[activeSessionId ?? '']?.selectedModelName ?? null,
+    (state) => state.runtimes[boundSessionId ?? '']?.selectedModelName ?? null,
   );
   const selectedModelSelection = useSessionStore(
-    (state) => state.runtimes[activeSessionId ?? '']?.selectedModelSelection ?? null,
+    (state) => state.runtimes[boundSessionId ?? '']?.selectedModelSelection ?? null,
   );
   const defaultModelName = useSessionStore((state) => state.defaultModelName);
   const setSelectedModelName = useSessionStore((state) => state.setSelectedModelName);
   const setSelectedModelSelection = useSessionStore((state) => state.setSelectedModelSelection);
   const [selectionError, setSelectionError] = useState('');
-  const mode = useSessionStore((state) => state.runtimes[activeSessionId ?? '']?.mode);
+  const mode = useSessionStore((state) => state.runtimes[boundSessionId ?? '']?.mode);
   const cronId = useSessionStore((state) =>
-    state.currentSession?.session_id === activeSessionId
+    state.currentSession?.session_id === boundSessionId
       ? state.currentSession.cron_id
-      : state.sessions.find((session) => session.session_id === activeSessionId)?.cron_id,
+      : state.sessions.find((session) => session.session_id === boundSessionId)?.cron_id,
   );
   const collaborationEnabled = useMultiModelCollaborationEnabled();
   const singleAgent = supportsMultiModelCollaboration(mode, cronId);
@@ -63,21 +73,21 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
 
   // Deleted/disabled model groups must fall back and be written back (#5424).
   useEffect(() => {
-    if (!activeSessionId || disabled || groupBlocked) return;
+    if (!boundSessionId || disabled || groupBlocked) return;
     if (!selectedModelSelection) return;
     if (isModelSelectionAvailable(selectedModelSelection, models, modelGroups)) return;
-    if (useChatStore.getState().getRuntime(activeSessionId)?.isProcessing) return;
+    if (useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
     const next = resolveAvailableModelSelection(selectedModelSelection, models, modelGroups);
     if (sameModelSelection(next, selectedModelSelection)) return;
     setSelectionError('');
     if (!next) {
-      setSelectedModelSelection(activeSessionId, null);
+      setSelectedModelSelection(boundSessionId, null);
       return;
     }
-    setSelectedModelSelection(activeSessionId, next);
-    if (activeSessionId === NEW_CONVERSATION_ID) return;
+    setSelectedModelSelection(boundSessionId, next);
+    if (boundSessionId === NEW_CONVERSATION_ID) return;
     void webRequest('session.selection.set', {
-      session_id: activeSessionId,
+      session_id: boundSessionId,
       model_selection: next,
     }).catch((error: unknown) => {
       setSelectionError(
@@ -85,7 +95,7 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
       );
     });
   }, [
-    activeSessionId,
+    boundSessionId,
     disabled,
     groupBlocked,
     selectedModelSelection,
@@ -114,13 +124,13 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
   if (!selected && !pickerSelection && models.length === 0 && !hasSelectableGroup && !singleAgent) return null;
 
   const persistSelection = async (next: ModelSelection) => {
-    if (!activeSessionId || disabled || useChatStore.getState().getRuntime(activeSessionId)?.isProcessing) return;
+    if (!boundSessionId || disabled || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
     setSelectionError('');
-    setSelectedModelSelection(activeSessionId, next);
-    if (activeSessionId === NEW_CONVERSATION_ID) return;
+    setSelectedModelSelection(boundSessionId, next);
+    if (boundSessionId === NEW_CONVERSATION_ID) return;
     try {
       await webRequest('session.selection.set', {
-        session_id: activeSessionId,
+        session_id: boundSessionId,
         model_selection: next,
       });
     } catch (error) {
@@ -139,9 +149,9 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
         includeModelGroups={includeModelGroups}
         unavailableSelectionLabel={groupBlocked ? t('chat.modelSelector.selectOrdinaryModel') : undefined}
         onChange={(modelName) => {
-          if (!activeSessionId || disabled || useChatStore.getState().getRuntime(activeSessionId)?.isProcessing) return;
+          if (!boundSessionId || disabled || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
           setSelectionError('');
-          setSelectedModelName(activeSessionId, modelName);
+          setSelectedModelName(boundSessionId, modelName);
         }}
         onSelectionChange={(next) => {
           void persistSelection(next);
