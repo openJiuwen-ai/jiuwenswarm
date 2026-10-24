@@ -8,12 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.web_connect import (
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
 )
-from jiuwenswarm.gateway.routing import base_ws_channel
+from gateway.routing import base_ws_channel
 
 
 def _channel() -> WebChannel:
@@ -22,7 +22,7 @@ def _channel() -> WebChannel:
 
 @pytest.mark.asyncio
 async def test_register_ws_bounds_the_outbound_queue():
-    from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
+    from gateway.routing.keys import AgentRef, RoutingKey
 
     channel = _channel()
     ws = SimpleNamespace(closed=False)

@@ -124,7 +124,7 @@ def install_runtime_log_filter() -> None:
     """Install once per emitting logger, before its console/file fan-out."""
     for name in (
         "common", "team", "runner", *_BROWSER_LOGGERS,
-        "jiuwenswarm.gateway.message_handler.message_handler",
+        "gateway.message_handler.message_handler",
         "jiuwenswarm.server.runtime.agent_adapter.team_helpers",
     ):
         logging.getLogger(name).addFilter(_FILTER)

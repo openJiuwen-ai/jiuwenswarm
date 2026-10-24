@@ -19,7 +19,7 @@ from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveSer
 
 
 def test_gateway_recovery_owners_survive_empty_cron_store(tmp_path):
-    from jiuwenswarm.gateway.cron.lifecycle_owners import LifecycleOwners
+    from gateway.cron.lifecycle_owners import LifecycleOwners
 
     path = tmp_path / "cron_jobs.json"
     first = LifecycleOwners(path)
@@ -32,7 +32,7 @@ def test_gateway_recovery_owners_survive_empty_cron_store(tmp_path):
 
 @pytest.mark.asyncio
 async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
-    from jiuwenswarm.gateway.channel_manager.web import lifecycle_handlers
+    from gateway.channel_manager.web import lifecycle_handlers
 
     service, create, root, _ = archive
     create()

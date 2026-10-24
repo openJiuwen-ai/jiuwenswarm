@@ -70,7 +70,7 @@ def test_gateway_does_not_import_a4p_implementation():
 def test_a4p_implementation_does_not_import_gateway():
     _assert_boundary(
         set(PACKAGE.rglob("a4p*.py")) | set((PACKAGE / "agents/harness/common/a4p").rglob("*.py")),
-        lambda name: name == "jiuwenswarm.gateway" or name.startswith("jiuwenswarm.gateway."),
+        lambda name: name == "gateway" or name.startswith("gateway."),
     )
 
 
@@ -99,4 +99,4 @@ def test_authorizer_broker_does_not_discover_server_singleton():
     "__import__('a4p.types')",
 ])
 def test_import_scanner_detects_boundary_bypasses(source):
-    assert any(_a4p_implementation(name) for _, name in _imports(source, "jiuwenswarm.gateway.example"))
+    assert any(_a4p_implementation(name) for _, name in _imports(source, "gateway.example"))

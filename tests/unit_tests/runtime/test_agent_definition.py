@@ -288,7 +288,7 @@ def test_runtime_contract_has_no_execution_or_transport_dependencies() -> None:
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"), filename=str(SOURCE))
     forbidden_imports = (
         "jiuwenswarm.channels.process_cli",
-        "jiuwenswarm.gateway",
+        "gateway",
         "jiuwenswarm.server",
         "websocket",
         "websockets",

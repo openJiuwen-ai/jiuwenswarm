@@ -96,10 +96,10 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
     bind_southbound_trace_id,
 )
 from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
-from jiuwenswarm.gateway import ChannelManager
-from jiuwenswarm.gateway.channel_manager.base import ChannelType
+from gateway import ChannelManager
+from gateway.channel_manager.base import ChannelType
 from jiuwenswarm.common.attachment_safety import is_forbidden_document
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+from gateway.routing.agent_client import WebSocketAgentServerClient
 from jiuwenswarm.common.attachment_safety import safe_upload_filename
 
 
@@ -2907,7 +2907,7 @@ class AgentOSRouterClient(AgentServerClient):
                 "JIUWENSWARM_RUNTIME_PROFILE": "agentos",
                 **self._tool_sandbox_env(),
             }
-            from jiuwenswarm.gateway.runtime.cron.factory import load_cron_store_settings
+            from gateway.runtime.cron.factory import load_cron_store_settings
             import json
 
             endpoints = load_cron_store_settings(self._server_config).endpoints

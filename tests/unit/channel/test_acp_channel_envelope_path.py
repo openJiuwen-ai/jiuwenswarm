@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect import (
+from gateway.channel_manager.protocol.acp.acp_connect import (
     AcpChannel,
     AcpChannelConfig,
 )
