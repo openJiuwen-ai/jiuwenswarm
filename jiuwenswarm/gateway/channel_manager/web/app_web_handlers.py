@@ -4980,6 +4980,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if enabled is None:
             await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
             return
+        if not isinstance(enabled, bool):
+            # 拒绝 "false"/1/{} 等非布尔值，避免 bool() 强转导致语义反转（#5725）。
+            await channel.send_response(ws, req_id, ok=False, error="enabled must be a boolean", code="BAD_REQUEST")
+            return
         # proactive.tick job 的 enabled 由 config 开关驱动，禁止面板手动切换。
         existing = await _get_owned_cron_job(cc, job_id, user_id)
         if existing is None:
@@ -4993,7 +4997,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            job = await cc.toggle_job(job_id, bool(enabled))
+            job = await cc.toggle_job(job_id, enabled)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")

@@ -47,6 +47,19 @@ def resolve_agent_cron_model(raw: Any) -> str | None:
         raise
 
 
+def _require_bool_enabled(value: Any) -> bool:
+    """``enabled`` 必须是布尔值，拒绝隐式强转（#5725）。
+
+    ``bool("false")`` 为 True，LLM 生成的工具参数不保证是 JSON 布尔，
+    与 Gateway ``CronController`` 保持同一契约：非布尔值直接报错。
+    """
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"enabled must be a boolean, got {type(value).__name__}"
+        )
+    return value
+
+
 def _cron_next_push_dt(cron_expr: str, base_dt: datetime) -> datetime:
     """Compute the next cron time without importing the Gateway scheduler."""
     from croniter import croniter  # type: ignore
@@ -637,7 +650,7 @@ class CronTools:
             timezone=str(normalized.get("timezone") or "Asia/Shanghai").strip() or "Asia/Shanghai",
             description=str(normalized.get("description") or ""),
             targets=targets_str,
-            enabled=bool(normalized.get("enabled", True)),
+            enabled=_require_bool_enabled(normalized.get("enabled", True)),
             wake_offset_seconds=normalized.get("wake_offset_seconds"),
             delete_after_run=normalized.get("delete_after_run"),
             project_id=resolved_project_id,
@@ -660,6 +673,8 @@ class CronTools:
     async def update_job(self, job_id: str, patch: dict[str, Any]) -> Any:
         normalized_patch = dict(patch or {})
         normalized_patch.pop("session_id", None)
+        if "enabled" in normalized_patch:
+            normalized_patch["enabled"] = _require_bool_enabled(normalized_patch.get("enabled"))
         if "cron_expr" in normalized_patch:
             normalized_patch["cron_expr"] = normalize_cron_expr(str(normalized_patch["cron_expr"]).strip())
         if "targets" in normalized_patch:
@@ -751,6 +766,7 @@ class CronTools:
         return True
 
     async def toggle_job(self, job_id: str, enabled: bool) -> Any:
+        enabled = _require_bool_enabled(enabled)
         # proactive.tick job 的开关由 config 的 proactive_recommendation.enabled 驱动，
         # 禁止手动 toggle——否则会与 config 开关不一致。引导用户去设置关开关。
         existing = await self._view_job(job_id)
@@ -761,20 +777,20 @@ class CronTools:
             )
         if existing is None:
             if remote_gateway:
-                return (await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})).get("data")
+                return (await self._send("toggle", {"job_id": job_id, "enabled": enabled})).get("data")
             # See delete_job: do not turn a missing best-effort AgentOS snapshot
             # into a false "job not found" result.
             if self._agentos_snapshot_unavailable():
-                await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})
+                await self._send("toggle", {"job_id": job_id, "enabled": enabled})
                 return {
                     "id": job_id,
-                    "enabled": bool(enabled),
+                    "enabled": enabled,
                     "gateway_mutation_status": "submitted",
                 }
             # 与迁移前 store.toggle_job 契约一致：job 不存在抛 KeyError。
             raise KeyError("job not found")
-        await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})
-        updated = self._merge_pending_job(existing, {"enabled": bool(enabled)})
+        await self._send("toggle", {"job_id": job_id, "enabled": enabled})
+        updated = self._merge_pending_job(existing, {"enabled": enabled})
         self._pending_view_for_route()[updated.id] = updated
         result = updated.to_dict()
         result["gateway_mutation_status"] = "submitted"
