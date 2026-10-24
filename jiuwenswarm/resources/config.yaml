@@ -969,7 +969,9 @@ channels:
 #
 # 三种动作: allow / ask / deny
 # 小艺 Work 主进程行为接入。仅桌面声明支持该协议时生效。
-# 明确 allow/deny/ask 仅异步上报；未匹配时，开启则等待云端授权，关闭则沿用 permissions.defaults。
+# 明确 allow/deny/ask 仅异步上报；未匹配时，在线云授权开启则等待云端。
+# 在线云授权关闭或无有效结果时，小艺受管宿主统一按 security.fail_closed 兜底；
+# permissions.defaults.* 保留给其他宿主及旧接口，不决定该宿主的未命中结果。
 xiaoyi_work_security:
   cloud_authorization:
     enabled: true

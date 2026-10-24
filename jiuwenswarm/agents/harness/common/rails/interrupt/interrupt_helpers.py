@@ -602,11 +602,11 @@ def build_permission_rail(
                 cloud_enabled = (
                     cloud_authorization_enabled(get_config())
                     if isinstance(snapshot.get("composition"), dict)
-                    else runtime_config.get("defer_unmatched") is True
+                    else runtime_config.get("strict_tool_command_merge") is True
                 )
                 snapshot.update({
                     "enabled": True,
-                    "defer_unmatched": cloud_enabled,
+                    "defer_unmatched": True,
                     "strict_tool_command_merge": cloud_enabled,
                 })
             return build_trusted_dirs_permission_config(

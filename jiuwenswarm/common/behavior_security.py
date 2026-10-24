@@ -17,7 +17,12 @@ from openjiuwen.harness.security import PermissionLevel, PermissionResult, Skill
 from openjiuwen.harness.security.permission_engine.toolguard.tool_policy import evaluate_tiered_policy
 from jiuwenswarm.agents.harness.common.channel_runtime_context import CURRENT_SESSION_ID
 from jiuwenswarm.common.np_transport import named_pipe_transport_for
-from jiuwenswarm.common.permission_profile import resolve_permission_profile_rules
+from jiuwenswarm.common.permission_profile import (
+    PERMISSION_PROFILE_DEFAULT,
+    PERMISSION_PROFILE_FULL_ACCESS,
+    current_permission_profile,
+    resolve_permission_profile_rules,
+)
 from jiuwenswarm.common.utils import logger
 
 ACTIVE_BEHAVIOR: contextvars.ContextVar[tuple | None] = contextvars.ContextVar("active_behavior", default=None)
@@ -137,6 +142,16 @@ def cloud_authorization_enabled(config: dict) -> bool:
     return config.get("xiaoyi_work_security", {}).get("cloud_authorization", {}).get("enabled") is True
 
 
+def _effective_permission_profile(config: dict) -> str:
+    profile = current_permission_profile()
+    if profile is not None:
+        return profile
+    permissions = config.get("permissions", {})
+    if isinstance(permissions, dict) and permissions.get("enabled") is False:
+        return PERMISSION_PROFILE_FULL_ACCESS
+    return PERMISSION_PROFILE_DEFAULT
+
+
 def runtime_permission_config(config: dict) -> dict:
     """Keep desktop policy checks active even in the full-access UI mode.
 
@@ -149,7 +164,9 @@ def runtime_permission_config(config: dict) -> dict:
     if desktop_security_active():
         permissions["enabled"] = True
         cloud_enabled = cloud_authorization_enabled(config)
-        permissions["defer_unmatched"] = cloud_enabled
+        # Let the host resolve unmatched tools through one fallback policy,
+        # whether cloud authorization is disabled or temporarily unavailable.
+        permissions["defer_unmatched"] = True
         permissions["strict_tool_command_merge"] = cloud_enabled
     return permissions
 
@@ -214,6 +231,7 @@ class BehaviorSecurityBridge:
             composition.get("revision") if isinstance(composition, dict) else None,
             cloud_authorization_enabled(self.config),
             self.config.get("security", {}).get("fail_closed", {}).get("enabled") is True,
+            _effective_permission_profile(self.config),
         )
         return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
@@ -221,6 +239,14 @@ class BehaviorSecurityBridge:
         self.config = config
         self.decisions.clear()
         self.local_decisions.clear()
+
+    def _unmatched_tool_fallback(self, *, cloud_unavailable: bool) -> PermissionResult:
+        fail_closed = self.config.get("security", {}).get("fail_closed", {}).get("enabled") is True
+        if fail_closed and _effective_permission_profile(self.config) != PERMISSION_PROFILE_FULL_ACCESS:
+            reason = "云端不可用，请授权本次操作" if cloud_unavailable else "本地规则未命中，请授权本次操作"
+            return PermissionResult(PermissionLevel.ASK, reason=reason)
+        reason = "cloud:unavailable" if cloud_unavailable else "cloud:disabled"
+        return PermissionResult(PermissionLevel.ALLOW, reason=reason)
 
     async def _send(self, event: dict) -> dict:
         section = self.config.get("xiaoyi_work_security", {}).get("cloud_authorization", {})
@@ -328,20 +354,22 @@ class BehaviorSecurityBridge:
             result = local
         elif not cloud_enabled:
             self.report(event)
-            # Normal tool checks already use Core defaults when cloud is off.
-            # Installation hooks may still arrive without a prior local result.
-            tool = event["tool"]
-            args = tool.get("arguments", {})
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except ValueError:
-                    args = {}
-            permissions = {**self.config.get("permissions", {}), "defer_unmatched": False}
-            level, matched_rule = evaluate_tiered_policy(
-                permissions, tool["name"], args if isinstance(args, dict) else {},
-            )
-            result = PermissionResult(level, matched_rule=matched_rule)
+            if event.get("stage") == "skill.before_install":
+                # Skill installation retains its separate confirmation policy.
+                tool = event["tool"]
+                args = tool.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except ValueError:
+                        args = {}
+                permissions = {**self.config.get("permissions", {}), "defer_unmatched": False}
+                level, matched_rule = evaluate_tiered_policy(
+                    permissions, tool["name"], args if isinstance(args, dict) else {},
+                )
+                result = PermissionResult(level, matched_rule=matched_rule)
+            else:
+                result = self._unmatched_tool_fallback(cloud_unavailable=False)
         else:
             reply = await self._send({**event, "mode": "authorize"})
             decision = reply.get("decision")
@@ -365,14 +393,11 @@ class BehaviorSecurityBridge:
                         event["eventId"]),
                 )
             else:
-                fail_closed = self.config.get("security", {}).get("fail_closed", {}).get("enabled") is True
-                if fail_closed:
-                    result = PermissionResult(PermissionLevel.DENY, reason="云端不可用，拒绝本次操作")
-                elif event.get("stage") == "skill.before_install":
+                if event.get("stage") == "skill.before_install":
                     # Installation still asks; tool authorize fail-opens like inspect.
                     result = PermissionResult(PermissionLevel.ASK, reason="云端不可用，请授权本次操作")
                 else:
-                    result = PermissionResult(PermissionLevel.ALLOW, reason="cloud:unavailable")
+                    result = self._unmatched_tool_fallback(cloud_unavailable=True)
         if revision != self.policy_revision():
             return PermissionResult(PermissionLevel.DENY, reason="安全策略已变更，请重新发起操作")
         self.decisions[key] = result
