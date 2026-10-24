@@ -11,9 +11,13 @@ from pathlib import Path
 import sys
 import tempfile
 
+from openjiuwen.core.sys_operation import SysOperation, SysOperationCard
+from openjiuwen.core.sys_operation.cwd import init_cwd
+
 from jiuwenswarm.agents.harness.common.cua_defaults import build_cua_agent_card
 from jiuwenswarm.agents.harness.common.cua_factory import build_cua_agent_config
 from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
+from jiuwenswarm.cua_engine.execution import CodeExecutionSession
 from jiuwenswarm.cua_engine.hosting import engine_root, prepare_native
 from jiuwenswarm.cua_engine.runtime import ReplRuntime
 
@@ -55,7 +59,9 @@ async def verify_computer_use_bundle() -> None:
         previous_env = dict(os.environ)
         os.environ.clear()
         os.environ.update(env)
-        runtime = ReplRuntime()
+        init_cwd(temporary)
+        backend = CodeExecutionSession(SysOperation(SysOperationCard()), "bundle-verification")
+        runtime = ReplRuntime(execution_backend=backend)
         try:
             result = await runtime.execute(PROBE)
             if result.isError:
