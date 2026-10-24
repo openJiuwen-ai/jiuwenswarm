@@ -30,6 +30,64 @@ def _is_cron_leader_final_event(event: dict[str, Any]) -> bool:
     return not member_name
 
 
+def _is_leader_tool_event(event: dict[str, Any]) -> bool:
+    """Tool traffic counts toward completion only when the leader produced it."""
+    role = str(event.get("role") or "").strip().lower()
+    if role == "teammate":
+        return False
+    return not str(event.get("member_name") or "").strip()
+
+
+def _leader_tool_payload(event: dict[str, Any]) -> dict[str, Any]:
+    for key in ("tool_call", "tool_result"):
+        nested = event.get(key)
+        if isinstance(nested, dict):
+            return nested
+    return event
+
+
+def _leader_tool_call_id(event: dict[str, Any]) -> str:
+    """Resolve the tool_call id from the same fields the web client normalizes."""
+    payload = _leader_tool_payload(event)
+    for container, key in (
+        (payload, "id"),
+        (payload, "tool_call_id"),
+        (payload, "toolCallId"),
+        (event, "tool_call_id"),
+        (event, "toolCallId"),
+    ):
+        value = str(container.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+# Statuses that mean the call will not run any longer. A ``chat.tool_update``
+# without one of these is a progress ping and keeps the call open.
+_TOOL_TERMINAL_STATUSES = frozenset(
+    {
+        "completed",
+        "complete",
+        "success",
+        "succeeded",
+        "finished",
+        "failed",
+        "failure",
+        "error",
+        "timeout",
+        "timed_out",
+        "cancelled",
+        "canceled",
+    }
+)
+
+
+def _tool_update_is_running(event: dict[str, Any]) -> bool:
+    payload = _leader_tool_payload(event)
+    status = str(payload.get("status") or event.get("status") or "").strip().lower()
+    return status not in _TOOL_TERMINAL_STATUSES
+
+
 def new_cron_team_round_state() -> dict[str, Any]:
     return {
         "workflow_started": False,
@@ -40,9 +98,15 @@ def new_cron_team_round_state() -> dict[str, Any]:
         "tasks_ever_created": False,
         "open_team_tasks": {},
         "active_team_members": {},
+        "open_leader_tool_calls": {},
         "leader_text": "",
         "workflow_text": "",
     }
+
+
+def cron_team_round_has_open_tool_calls(state: dict[str, Any]) -> bool:
+    open_calls = state.get("open_leader_tool_calls")
+    return bool(open_calls) if isinstance(open_calls, dict) else False
 
 
 def cron_team_round_has_open_tasks(state: dict[str, Any]) -> bool:
@@ -68,6 +132,7 @@ def _harness_round_can_end(state: dict[str, Any]) -> bool:
         and not state.get("workflow_completed")
         and not cron_team_round_has_open_tasks(state)
         and not cron_team_round_has_active_members(state)
+        and not cron_team_round_has_open_tool_calls(state)
         and state.get("leader_final_seen")
         and bool(leader)
         and not is_cron_leader_placeholder_text(leader)
@@ -81,6 +146,8 @@ def _cron_solo_harness_end_pending(state: dict[str, Any]) -> bool:
     if state.get("tasks_ever_created"):
         return False
     if cron_team_round_has_open_tasks(state) or cron_team_round_has_active_members(state):
+        return False
+    if cron_team_round_has_open_tool_calls(state):
         return False
     leader = str(state.get("leader_text") or "").strip()
     return (
@@ -119,6 +186,12 @@ def cron_team_round_should_end(
     *,
     chunk_complete: bool = False,
 ) -> bool:
+    # A leader tool call is real in-flight work: the round cannot be over while
+    # one is still running (#5410 / GitHub #8675). Design mode hits this with
+    # ``designer_graph_autorun``, whose six serial director-chain calls run for
+    # minutes after the leader's "I'll build the graph now" final.
+    if cron_team_round_has_open_tool_calls(state):
+        return False
     if chunk_complete:
         if state.get("workflow_completed") and state.get("leader_final_after_workflow"):
             return True
@@ -216,8 +289,38 @@ def apply_cron_team_round_event(state: dict[str, Any], event: dict[str, Any]) ->
             elif (
                 not cron_team_round_has_open_tasks(state)
                 and not cron_team_round_has_active_members(state)
+                and not cron_team_round_has_open_tool_calls(state)
             ):
                 state["leader_final_seen"] = True
+    elif event_type == "chat.tool_call":
+        if not _is_leader_tool_event(event):
+            return
+        call_id = _leader_tool_call_id(event)
+        if not call_id:
+            return
+        open_calls = state.get("open_leader_tool_calls")
+        if not isinstance(open_calls, dict):
+            open_calls = {}
+            state["open_leader_tool_calls"] = open_calls
+        open_calls[call_id] = True
+        # The final that precedes a tool call is that tool round's summary
+        # ("I'll build the graph now"), not the round result: drop the harness
+        # completion latch so the round keeps reporting processing until the
+        # tool returns and the leader writes its post-tool final.
+        state["leader_final_seen"] = False
+    elif event_type in ("chat.tool_result", "chat.tool_update"):
+        if not _is_leader_tool_event(event):
+            return
+        open_calls = state.get("open_leader_tool_calls")
+        if not isinstance(open_calls, dict) or not open_calls:
+            return
+        if event_type == "chat.tool_update" and _tool_update_is_running(event):
+            return
+        call_id = _leader_tool_call_id(event)
+        if call_id:
+            open_calls.pop(call_id, None)
+        else:
+            open_calls.clear()
     elif event_type == "team.task":
         nested = event.get("event")
         if isinstance(nested, dict):
@@ -238,3 +341,4 @@ def apply_cron_team_round_event(state: dict[str, Any], event: dict[str, Any]) ->
         state["leader_final_seen"] = True
         state["open_team_tasks"] = {}
         state["active_team_members"] = {}
+        state["open_leader_tool_calls"] = {}

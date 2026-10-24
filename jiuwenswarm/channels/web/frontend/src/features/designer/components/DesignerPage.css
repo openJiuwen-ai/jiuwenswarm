@@ -1267,6 +1267,21 @@
   background-color: #D9D9D9;
 }
 
+/*
+ * Running state: the leader round is still processing (e.g. the graph autorun
+ * tool is in flight), so the button must not look like the idle send plane
+ * (#5410). It stays disabled — the panel has no cancel affordance — but the
+ * spinner and the darker glyph make "working" unambiguous.
+ */
+.designer-chat-panel__send[data-variant='running']:disabled {
+  color: var(--color-text-primary);
+}
+
+.designer-chat-panel__send-spinner {
+  display: block;
+  flex-shrink: 0;
+}
+
 .designer-node {
   position: relative;
   display: flex;
