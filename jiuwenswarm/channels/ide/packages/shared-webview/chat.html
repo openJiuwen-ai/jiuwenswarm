@@ -1859,6 +1859,11 @@ function handleHostMessage(msg) {
       if (msg.models) { state.models = msg.models; }
       updateModelDisplay(state.models, state.activeModel);
       break;
+    case 'models_updated':
+      if (msg.models) { state.models = msg.models; }
+      if (msg.activeModel) { state.activeModel = msg.activeModel; }
+      updateModelDisplay(state.models, state.activeModel);
+      break;
     case 'memory':
       renderMemoryChip(msg);
       break;
@@ -1975,7 +1980,11 @@ function updateModelDisplay(models, activeModel) {
 function toggleModelDropdown() {
   var dd = document.getElementById('model-dropdown');
   if (!dd) return;
+  var opening = !dd.classList.contains('visible');
   dd.classList.toggle('visible');
+  // Models are configured outside the IDE. Re-fetch when the picker opens so a
+  // session created before the model was configured does not keep the placeholder.
+  if (opening) send({ type: 'refresh_models' });
 }
 
 function closeModelDropdown() {
