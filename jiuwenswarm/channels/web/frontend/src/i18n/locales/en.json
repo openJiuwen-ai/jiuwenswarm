@@ -232,6 +232,7 @@
       "preview": "Preview",
       "previewOrEdit": "Preview or edit",
       "download": "Download",
+      "downloadFailed": "Could not download “{{name}}”. Check your connection and save location, then try again.",
       "delete": "Delete",
       "replace": "Upload & Replace",
       "replaceHint": "Upload a new file to replace this node's content.",

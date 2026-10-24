@@ -232,6 +232,7 @@
       "preview": "预览",
       "previewOrEdit": "预览或编辑",
       "download": "下载",
+      "downloadFailed": "“{{name}}”下载失败，请检查网络和保存位置后重试。",
       "delete": "删除",
       "replace": "上传替换",
       "replaceHint": "上传新文件替换此节点的内容。",
