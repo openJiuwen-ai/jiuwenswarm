@@ -1,4 +1,3 @@
-import { hasPendingDesignerRevision } from './designerMaterials';
 import type { DesignerExecutionRun, DesignerNodeState } from './executionGraphTypes';
 import { DESIGNER_RUN_STATUS_FAILED } from './executionGraphTypes';
 
@@ -50,7 +49,6 @@ export function mergeRunStatesIntoNodes<
       outputRef?: unknown;
       outputRefs?: unknown;
       error?: string | null;
-      pendingRevision?: boolean;
     };
   },
 >(nodes: T[], run: DesignerExecutionRun | null | undefined): T[] {
@@ -64,7 +62,6 @@ export function mergeRunStatesIntoNodes<
         outputRef: state?.output_ref ?? node.data.outputRef,
         outputRefs: state?.output_refs ?? node.data.outputRefs,
         error: state?.error ?? node.data.error ?? null,
-        pendingRevision: hasPendingDesignerRevision(state),
       },
     };
   });

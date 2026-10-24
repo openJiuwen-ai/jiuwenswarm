@@ -4,10 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { NodeResizeControl, NodeToolbar, Position, type Node, type NodeProps } from '@xyflow/react';
 import { isComfyuiNodeConfig } from '../../comfyuiWorkflow';
 import { designerAssetPreviewUrl, designerAssetTextUrl } from '../../designerAssetUrl';
-import {
-  DESIGNER_MATERIAL_SAVED_EVENT,
-  preferredDesignerPreviewRef,
-} from '../../designerMaterials';
+import { DESIGNER_MATERIAL_SAVED_EVENT } from '../../designerMaterials';
 import {
   DESIGNER_NODE_STATUS_COMPLETED,
   DESIGNER_NODE_STATUS_FAILED,
@@ -279,13 +276,7 @@ function useDesignerAssetText(uri: string | null | undefined): string | null {
 }
 
 function useNodePreviewUri(nodeId: string): string | null {
-  const outputUri = useDesignerRunStore((state) => {
-    const nodeState = state.nodeStates[nodeId];
-    return preferredDesignerPreviewRef(
-      nodeState?.output_ref,
-      nodeState?.candidate_output_ref,
-    )?.uri ?? null;
-  });
+  const outputUri = useDesignerRunStore((state) => state.nodeStates[nodeId]?.output_ref?.uri ?? null);
   const domainOutputUri = useDesignerStore(
     (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.output_ref?.uri ?? null,
   );

@@ -452,15 +452,12 @@ class DesignerNodeState(TypedDict, total=False):
     completed_at: int | None
     output_ref: AssetRef | None
     output_refs: list[AssetRef]
-    candidate_output_ref: AssetRef | None
-    candidate_output_refs: list[AssetRef]
     error: str | None
     blocked_by: list[str]
     activity: DesignerNodeActivity
     activity_tail: list[str]
     activity_log: list[DesignerNodeActivity]
     text: str
-    candidate_text: str
     history: list[dict[str, Any]]
     # Content-iteration version of the node's output (starts at 1, +1 per
     # single-node rerun / cascade execution of the node). The compiler encodes
@@ -1347,17 +1344,6 @@ def normalize_node_state(raw: Any) -> DesignerNodeState:
             for ref in (normalize_asset_ref(item) for item in raw_refs)
             if ref is not None
         ]
-    if "candidate_output_ref" in raw:
-        state["candidate_output_ref"] = normalize_asset_ref(raw.get("candidate_output_ref"))
-    if "candidate_output_refs" in raw:
-        raw_candidates = raw.get("candidate_output_refs")
-        if not isinstance(raw_candidates, list):
-            raise DesignerGraphValidationError("node_state.candidate_output_refs must be an array")
-        state["candidate_output_refs"] = [
-            ref
-            for ref in (normalize_asset_ref(item) for item in raw_candidates)
-            if ref is not None
-        ]
     error = raw.get("error")
     if isinstance(error, str):
         state["error"] = error
@@ -1392,14 +1378,13 @@ def normalize_node_state(raw: Any) -> DesignerNodeState:
             if item is not None
         ][-ACTIVITY_LOG_LIMIT:]
     # team.design execution state: the node's output text snapshot (feeds
-    # compile-time upstream inlining), the single-node rerun candidate text,
-    # and the per-node rerun history (one entry per trigger).
-    for text_key in ("text", "candidate_text"):
-        text_val = raw.get(text_key)
-        if text_val is not None:
-            if not isinstance(text_val, str):
-                raise DesignerGraphValidationError(f"node_state.{text_key} must be a string")
-            state[text_key] = text_val  # type: ignore[literal-required]
+    # compile-time upstream inlining) and the per-node rerun history (one
+    # entry per trigger).
+    text_val = raw.get("text")
+    if text_val is not None:
+        if not isinstance(text_val, str):
+            raise DesignerGraphValidationError("node_state.text must be a string")
+        state["text"] = text_val
     history = raw.get("history")
     if history is not None:
         if not isinstance(history, list):

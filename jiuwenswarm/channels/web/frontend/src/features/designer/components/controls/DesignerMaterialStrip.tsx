@@ -2,7 +2,7 @@ import { Headphones, Image as ImageIcon, Sheet, Video, X } from 'lucide-react';
 import { useCallback, useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { designerAssetPreviewUrl } from '../../designerAssetUrl';
-import { designerImagePreviewUrl, preferredDesignerPreviewRef } from '../../designerMaterials';
+import { designerImagePreviewUrl } from '../../designerMaterials';
 import { useDesignerAssetLibraryStore } from '../../designerAssetLibraryStore';
 import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
@@ -88,10 +88,7 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
       const allowTextLike =
         nodeType === DESIGNER_NODE_TYPE_VIDEO && isTextLikeNodeType(sourceType);
       if (!isMediaNodeType(sourceType) && !allowTextLike) continue;
-      const previewRef = preferredDesignerPreviewRef(
-        nodeStates[source.id]?.output_ref,
-        nodeStates[source.id]?.candidate_output_ref,
-      );
+      const previewRef = nodeStates[source.id]?.output_ref;
       items.push({
         kind: 'linked',
         key: `linked:${edge.id}`,

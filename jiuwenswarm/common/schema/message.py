@@ -173,7 +173,6 @@ class ReqMethod(Enum):
     DESIGNER_RUN_GET = "designer.run.get"
     DESIGNER_RUN_PAUSE = "designer.run.pause"
     DESIGNER_RUN_CANCEL = "designer.run.cancel"
-    DESIGNER_RUN_CHOOSE_OUTPUT = "designer.run.choose_output"
 
     PROACTIVE_TICK = "proactive.tick"  # Trigger proactive recommendation tick (from Cron)
     PROACTIVE_FEEDBACK = "proactive.feedback"  # User feedback on proactive recommendation (like/dislike)

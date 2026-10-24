@@ -3,12 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { useReactFlow } from '@xyflow/react';
 import SendPlaneIcon from '../../../../assets/send_plane.svg?react';
 import { isComfyuiNodeConfig } from '../../comfyuiWorkflow';
-import { hasPendingDesignerRevision } from '../../designerMaterials';
 import { designerToolbarRevealShift } from '../../designerToolbarVisibility';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
 import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerStore } from '../../designerStore';
-import { useDesignerUiStore } from '../../designerUiStore';
 import {
   isMediaNodeType,
   isUploadedMediaNode,
@@ -37,9 +35,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   const rerunNode = useDesignerRunStore((state) => state.rerunNode);
   const isRunning = useDesignerRunStore((state) => state.isRunning);
   const editingLocked = useDesignerGraphEditingLocked();
-  const nodeState = useDesignerRunStore((state) => state.nodeStates[nodeId]);
   const domainGraph = useDesignerStore((state) => state.domainGraph);
-  const openRevision = useDesignerUiStore((state) => state.openRevision);
   const config = useDesignerStore(
     (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.config ?? {},
   );
@@ -56,8 +52,6 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
     promptFocusedRef.current = false;
     setPromptDraft(storePrompt);
   }, [nodeId, storePrompt]);
-
-  const pendingRevision = hasPendingDesignerRevision(nodeState);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const { getViewport, setViewport } = useReactFlow();
@@ -96,8 +90,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
     void rerunNode(domainGraph, nodeId);
   }, [domainGraph, editingLocked, isRunning, nodeId, rerunNode]);
 
-  // Audio no longer has upload; only revision compare remains when needed.
-  if (isMedia && !canGenerate && !pendingRevision) {
+  if (isMedia && !canGenerate) {
     return null;
   }
 
@@ -116,17 +109,6 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
       onMouseDown={(event) => event.stopPropagation()}
       onWheel={(event) => event.stopPropagation()}
     >
-      {pendingRevision ? (
-        <button
-          type="button"
-          className="designer-node-toolbar__compare"
-          data-testid="designer-node-toolbar-tab-compare"
-          onClick={() => openRevision(nodeId)}
-        >
-          {t('designer.revision.compare')}
-        </button>
-      ) : null}
-
       {canGenerate ? (
         <div
           className="designer-node-toolbar__panel"
