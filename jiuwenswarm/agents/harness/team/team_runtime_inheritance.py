@@ -35,6 +35,7 @@ from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+from jiuwenswarm.agents.harness.common.plugins.tool_idempotency_rail import ToolIdempotencyRail
 from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
     symphony_retrieval_compact_processor_spec,
 )
@@ -256,6 +257,14 @@ def build_member_rails(
     except Exception as exc:
         logger.warning("[TeamRuntime] AvatarPromptRail failed: %s", exc)
 
+    # A15: 工具层幂等 —— 在工具调用边界短路重复的 send_message / view_task /
+    # read_file：只省下游执行与回填 payload，不省"模型决定调用"的那次往返。
+    try:
+        rail = ToolIdempotencyRail()
+        rails_list.append(rail)
+        logger.info("[TeamRuntime] ToolIdempotencyRail created")
+    except Exception as exc:
+        logger.warning("[TeamRuntime] ToolIdempotencyRail failed: %s", exc)
     if team_ws_root:
         try:
             rail = TeamWorkspaceReportPathRail(
