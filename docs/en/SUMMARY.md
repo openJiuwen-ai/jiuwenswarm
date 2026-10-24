@@ -15,6 +15,7 @@
 - [Agent Team Human in the Team (HITT)](AgentTeamHumanInTheTeam.md)
 - [Multi-Instance](MultiInstance.md)
 - [Auto Harness Feature Overview](AutoHarness.md)
+- [Paper evidence contract and PaperEvidenceRail](PaperEvidenceRail.md)
 - [User guide](../README_EN.md)
   - [Conversation](Conversation.md)
   - [Design](Design.md)
