@@ -22,7 +22,7 @@ DESKTOP_APP_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "desktop_a
 MAIN_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "main.cjs"
 PRELOAD_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "preload.cjs"
 FILE_PICKER_PY = (
-    REPO_ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "file_picker.py"
+    REPO_ROOT / "gateway" / "channel_manager" / "web" / "file_picker.py"
 )
 APP_WEB_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "app_web.py"
 VITE_ENV_DTS = (

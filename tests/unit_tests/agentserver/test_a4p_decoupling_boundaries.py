@@ -12,6 +12,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = ROOT / "jiuwenswarm"
+# M0-c：gateway 已升为顶层包（与 jiuwenswarm 并列），边界扫描需覆盖两者
+GATEWAY_PACKAGE = ROOT / "gateway"
 
 
 def _imports(source: str, module: str):
@@ -25,7 +27,15 @@ def _imports(source: str, module: str):
                 yield node.lineno, item.name
         elif isinstance(node, ast.ImportFrom):
             name = "." * node.level + (node.module or "")
-            base = resolve_name(name, package) if node.level else name
+            if node.level:
+                # 相对导入做纯字符串解析（包无需真实存在——扫描器检测
+                # import 语句本身；越界相对导入在此抛错时回落原始名）
+                try:
+                    base = resolve_name(name, package)
+                except ImportError:
+                    base = name
+            else:
+                base = name
             yield node.lineno, base
             for item in node.names:
                 target = f"{base}.{item.name}"
@@ -45,8 +55,9 @@ def _imports(source: str, module: str):
 
 
 def _a4p_implementation(name: str) -> bool:
+    # M0-c：gateway 为顶层包，扫描锚可为 gateway.* 或 jiuwenswarm.*
     return name == "a4p" or name.startswith("a4p.") or (
-        name.startswith("jiuwenswarm.")
+        (name.startswith("jiuwenswarm.") or name.startswith("gateway."))
         and any(part == "a4p" or part.startswith("a4p_") for part in name.split("."))
     )
 
@@ -64,13 +75,13 @@ def _assert_boundary(paths, forbidden):
 
 
 def test_gateway_does_not_import_a4p_implementation():
-    _assert_boundary((PACKAGE / "gateway").rglob("*.py"), _a4p_implementation)
+    _assert_boundary(GATEWAY_PACKAGE.rglob("*.py"), _a4p_implementation)
 
 
 def test_a4p_implementation_does_not_import_gateway():
     _assert_boundary(
         set(PACKAGE.rglob("a4p*.py")) | set((PACKAGE / "agents/harness/common/a4p").rglob("*.py")),
-        lambda name: name == "jiuwenswarm.gateway" or name.startswith("jiuwenswarm.gateway."),
+        lambda name: name == "gateway" or name.startswith("gateway."),
     )
 
 
@@ -99,4 +110,6 @@ def test_authorizer_broker_does_not_discover_server_singleton():
     "__import__('a4p.types')",
 ])
 def test_import_scanner_detects_boundary_bypasses(source):
-    assert any(_a4p_implementation(name) for _, name in _imports(source, "jiuwenswarm.gateway.example"))
+    # M0-c：gateway 是真实顶层包，锚点用其不存在的子包（resolve 仅做
+    # 字符串拼接，相对导入 "..agents" 正确解析为越界错误路径）
+    assert any(_a4p_implementation(name) for _, name in _imports(source, "gateway.example.scanner"))

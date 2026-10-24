@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from jiuwenswarm.gateway.message_handler.evolution_approval import (
+from gateway.message_handler.evolution_approval import (
     SKILL_EVOLUTION_APPROVAL_SCHEMA,
     SKILL_EVOLUTION_APPROVAL_SOURCE,
     EvolutionApprovalCoordinator,

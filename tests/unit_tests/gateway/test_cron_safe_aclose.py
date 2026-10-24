@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jiuwenswarm.gateway.cron.scheduler import _safe_aclose
+from gateway.cron.scheduler import _safe_aclose
 
 
 @pytest.mark.asyncio
@@ -14,7 +14,7 @@ async def test_safe_aclose_success_does_not_log(monkeypatch: pytest.MonkeyPatch)
     stream.aclose = AsyncMock(return_value=None)
     warning = MagicMock()
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.cron.scheduler.logger.warning",
+        "gateway.cron.scheduler.logger.warning",
         warning,
     )
 
@@ -32,7 +32,7 @@ async def test_safe_aclose_logs_failure_with_request_id(
     stream.aclose = AsyncMock(side_effect=RuntimeError("boom"))
     warning = MagicMock()
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.cron.scheduler.logger.warning",
+        "gateway.cron.scheduler.logger.warning",
         warning,
     )
 

@@ -3,7 +3,7 @@ import base64
 import httpx
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.web.task_asr import (
+from gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     task_asr_endpoint,
     transcribe_task_audio,

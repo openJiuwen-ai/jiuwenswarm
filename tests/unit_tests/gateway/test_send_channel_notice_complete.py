@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.common.schema.message import EventType
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.message_handler.message_handler import MessageHandler
 
 
 class _FakeAgentClient:

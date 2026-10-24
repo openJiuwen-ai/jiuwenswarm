@@ -58,8 +58,8 @@ async def test_organization_stream_keeps_round_id_through_web_gateway(source: st
     import json
 
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     transport = SimpleNamespace(send_push=AsyncMock(return_value=True))
@@ -737,8 +737,8 @@ async def test_org_turn_closes_only_owner_processing(
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
     from jiuwenswarm.server.runtime.session import session_metadata
 
@@ -816,8 +816,8 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     class Agent:

@@ -965,7 +965,7 @@ class TestCleanupStaleOpenjiuwenDescs:
         "relative_path",
         (
             "jiuwenswarm/app.py",
-            "jiuwenswarm/gateway/app_gateway.py",
+            "gateway/app_gateway.py",
         ),
     )
     def test_startup_entrypoints_clean_before_openjiuwen_import(relative_path):
