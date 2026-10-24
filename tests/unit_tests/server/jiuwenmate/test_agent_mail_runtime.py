@@ -105,6 +105,7 @@ async def test_agent_mail_status_and_auth_are_scoped_per_employee(tmp_path):
         "cli_version": None,
         "operation_id": "op-1",
         "auth_url": "https://agent.qq.com/auth",
+        "frontend_opens_auth": False,
     }
     assert await service.status(second) == {"status": "not_connected", "cli_version": "1.0.18"}
     assert await service.poll_auth(first, "op-1") == {

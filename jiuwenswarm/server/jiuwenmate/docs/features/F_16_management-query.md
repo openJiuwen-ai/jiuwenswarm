@@ -12,7 +12,7 @@
 | 状态 | 进行中（与开发计划一致；任务中心不在本轮） |
 | 设计依据 | [JiuwenMate 服务端架构设计](../designs/jiuwenmate-architecture.md) 第 4.4 节；开发计划 JM-16 |
 | 关联 feature | 前置：[F_02](F_02_colleague-management.md)、[F_06](F_06_budget-port.md)、[F_09](F_09_web-and-feishu-result-delivery.md) |
-| 验证摘要 | 查询测试 4 项通过；前端办公室与接口测试通过。任务中心未接入。 |
+| 验证摘要 | 本次查询专项测试 9 项通过；活跃数据页面继续使用现有标题字段。任务中心未接入。 |
 | Refs | 无独立 issue；需求来源为开发计划 JM-16 |
 
 ## 2. 背景、目标与范围
@@ -91,6 +91,8 @@ flowchart LR
 | `channels` | 按 Session 的 `channel` 汇总调用、Token、任务、回复和失败 |
 | `groups` | `kind = group` 的会话；产物是该会话上状态为 `delivered` 或 `available` 的文件投递 |
 
+私聊执行历史按 Request 显示各自的请求文本作为简短任务名；当旧记录缺少可用请求文本时，回退到会话标题。该文本仅用于历史行标题，不返回完整消息正文或额外上下文。定时任务仍显示计划名称，群聊仍显示群标识。
+
 群名称使用 `group_details` 中已保存的群名；没有群名时使用平台会话标识，再没有映射时使用 `group_chat_id`。Web 方法不接受调用方传入的命名空间，只查询 `local`。
 
 ## 6. 影响面与实施设计
@@ -104,7 +106,7 @@ flowchart LR
 
 | 验收 | 场景 | 预期 | 结果 |
 | --- | --- | --- | --- |
-| JM-16-V-02 | ignored、失败、已结算与未知用量 | ignored 不进入任务、回复、失败；未知用量按结算值计入 | `test_management_query.py` 4 passed |
+| JM-16-V-02 | ignored、失败、已结算与未知用量；私聊历史按 Request 区分标题 | ignored 不进入任务、回复、失败；私聊请求显示各自文本，旧数据回退会话标题 | `uv run pytest -o 'addopts=-v --strict-markers --tb=short --asyncio-mode=auto' tests/unit_tests/server/jiuwenmate/test_management_query.py -q`：9 passed |
 | JM-16-V-03 | Web 查询 | 只读本地命名空间，响应不含凭据和设置 | 查询结果无设置字段；方法固定 `local`，前端不传命名空间 |
 | JM-16-V-01 | 任务中心 | 本轮不验收 | 未执行 |
 
@@ -115,6 +117,12 @@ flowchart LR
 - 群名只读取已经写入 `group_details` 的名称。尚未同步到群名时，表中仍显示平台会话标识。
 
 ## 9. 设计演进与修订
+
+### 2026-10-24 私聊执行历史使用每条请求的标题
+
+- 发现：同一私聊会话中的多个 Request 共用一个 `web_conversations.title`，因此办公室执行历史把不同任务显示成相同名称。
+- 变化：私聊历史行优先使用该 Request 的 `request_input.text`，规范化空白并截断为简短标题；缺少或无法解析请求文本时仍使用会话标题。定时任务与群聊标题规则不变。
+- 验证：`uv run pytest -o 'addopts=-v --strict-markers --tb=short --asyncio-mode=auto' tests/unit_tests/server/jiuwenmate/test_management_query.py -q`，9 passed；其中包含组装逻辑回归测试和数据库查询集成测试。默认覆盖率清理在本机环境挂起，因此本次定向验证未启用覆盖率报告。
 
 ### 2026-10-19 时段热力图保留短任务活动
 

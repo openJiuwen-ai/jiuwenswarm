@@ -67,6 +67,7 @@ export interface JiuwenMateAgentMailStatus {
 export interface JiuwenMateAgentMailAuthorization extends JiuwenMateAgentMailStatus {
   operation_id?: string;
   auth_url?: string;
+  frontend_opens_auth?: boolean;
 }
 
 export type JiuwenMateSchedule = Schedule;

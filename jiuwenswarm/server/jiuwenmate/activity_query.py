@@ -4,7 +4,7 @@ A Request counts as work only after an Execution has started and its outcome is
 not ``ignored``. An ignored Request is neither a reply nor a failure. Token
 totals count settled model calls only; unknown usage keeps the charged amount
 already stored at settlement and is never treated as zero. The query does not
-write, and it does not return settings, credentials or message text.
+write, and it does not return settings, credentials or full message bodies.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES
 _FILE_DELIVERED = frozenset({"delivered", "available"})
 _HISTORY_LIMIT = 200
 _CHANNEL_KINDS = frozenset({"group", "im_direct"})
+_HISTORY_TITLE_LIMIT = 120
 
 
 def _aware(value: str) -> datetime:
@@ -57,6 +58,27 @@ def _optional(row: Mapping[str, str | None], key: str) -> str | None:
 def _plan_id(source_ref: str) -> str:
     parts = source_ref.split(":", 2)
     return parts[1] if len(parts) >= 2 and parts[0] == "schedule" else ""
+
+
+def _request_title(request: Mapping[str, str | None]) -> str:
+    """Return a compact title from a private web request, if one is available."""
+    record_json = _optional(request, "record_json")
+    if not record_json:
+        return ""
+    try:
+        record = json.loads(record_json)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    request_input = record.get("request_input") if isinstance(record, Mapping) else None
+    if not isinstance(request_input, Mapping) or request_input.get("kind") != "direct_message":
+        return ""
+    text = request_input.get("text")
+    if not isinstance(text, str):
+        return ""
+    title = " ".join(text.split())
+    if len(title) > _HISTORY_TITLE_LIMIT:
+        return title[: _HISTORY_TITLE_LIMIT - 1].rstrip() + "…"
+    return title
 
 
 def _work_kind(source_ref: str, session: Mapping[str, str] | None) -> str:
@@ -184,18 +206,21 @@ def assemble_activity(
             hour_tasks[(day, started.hour)] += 1
             source_ref = _optional(request, "source_ref") or ""
             kind = _work_kind(source_ref, session)
+            title = _history_title(
+                source_ref,
+                session,
+                conversation_titles=titles,
+                plan_names=plans,
+                group_names=group_names,
+            )
+            if source_ref.startswith("web:") and session is not None and session["kind"] == "web_direct":
+                title = _request_title(request) or title
             day_kinds[day][kind] += 1
             updated_at = _optional(request, "updated_at")
             history_rows.append(
                 {
                     "request_id": request_id,
-                    "title": _history_title(
-                        source_ref,
-                        session,
-                        conversation_titles=titles,
-                        plan_names=plans,
-                        group_names=group_names,
-                    ),
+                    "title": title,
                     "kind": kind,
                     "channel": channel_name,
                     "status": str(outcome or request["status"] or ""),
@@ -329,7 +354,7 @@ class ActivityQuery:
                     (namespace_id,),
                 ).fetchall()
                 requests = conn.execute(
-                    "SELECT request_id, agent_id, session_id, source_ref, status, outcome, updated_at "
+                    "SELECT request_id, agent_id, session_id, source_ref, status, outcome, record_json, updated_at "
                     "FROM requests WHERE namespace_id = ?",
                     (namespace_id,),
                 ).fetchall()

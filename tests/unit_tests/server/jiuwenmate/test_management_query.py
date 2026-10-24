@@ -195,7 +195,7 @@ def test_subminute_execution_keeps_its_hourly_activity_and_tokens():
     assert report["members"][0]["hours"] == [{"date": "2026-10-16", "hour": 10, "minutes": 0, "tasks": 1, "tokens": 42}]
 
 
-def test_history_names_the_plan_and_conversation_without_the_message_text():
+def test_history_falls_back_to_plan_and_conversation_titles_when_request_text_is_missing():
     report = assemble_activity(
         colleagues=[{"agent_id": "mate_a", "created_at": "2026-10-16T00:00:00+00:00"}],
         requests=[
@@ -266,7 +266,80 @@ def test_history_names_the_plan_and_conversation_without_the_message_text():
             "tokens": 12,
         },
     ]
+
+
+def test_private_chat_history_uses_each_request_text_instead_of_the_shared_conversation_title():
+    report = assemble_activity(
+        colleagues=[{"agent_id": "mate_a", "created_at": "2026-10-16T00:00:00+00:00"}],
+        requests=[
+            {
+                "request_id": "req_first",
+                "agent_id": "mate_a",
+                "session_id": "sess_a",
+                "source_ref": "web:first",
+                "status": "ended",
+                "outcome": "completed",
+                "updated_at": "2026-10-16T10:01:00+00:00",
+                "record_json": json.dumps({"request_input": {"kind": "direct_message", "text": "整理第一份案件材料"}}),
+            },
+            {
+                "request_id": "req_second",
+                "agent_id": "mate_a",
+                "session_id": "sess_a",
+                "source_ref": "web:second",
+                "status": "ended",
+                "outcome": "completed",
+                "updated_at": "2026-10-16T10:02:00+00:00",
+                "record_json": json.dumps({"request_input": {"kind": "direct_message", "text": "计算十万元案件的受理费"}}),
+            },
+        ],
+        executions=[
+            {"execution_id": "exe_first", "request_id": "req_first", "started_at": "2026-10-16T10:00:00+00:00"},
+            {"execution_id": "exe_second", "request_id": "req_second", "started_at": "2026-10-16T10:02:00+00:00"},
+        ],
+        sessions=[{"session_id": "sess_a", "agent_id": "mate_a", "kind": "web_direct", "channel": "web", "conversation_key": "conv"}],
+        calls=[],
+        deliveries=[],
+        groups=[],
+        conversation_titles={("mate_a", "conv"): "整理第一份案件材料"},
+        now=NOW,
+    )
+
+    history = report["members"][0]["history"]
+    assert [(item["request_id"], item["title"]) for item in history] == [
+        ("req_second", "计算十万元案件的受理费"),
+        ("req_first", "整理第一份案件材料"),
+    ]
     assert "提醒我喝水" not in json.dumps(report)
+
+
+def test_activity_query_reads_request_text_for_private_history_title(tmp_path):
+    db = _store(tmp_path)
+    _colleague(db, "mate_a", "2026-10-16T00:00:00+00:00")
+    _insert(
+        db,
+        "INSERT INTO sessions VALUES (?, 'sess_a', 'mate_a', 'web_direct', 'web', 'conv_a', 2, ?)",
+        (NS, "2026-10-16T00:00:00+00:00"),
+    )
+    _insert(
+        db,
+        "INSERT INTO requests VALUES (?, 'req_a', 'mate_a', 'sess_a', 'web:message', 1, 'ended', 'completed', ?, ?)",
+        (
+            NS,
+            json.dumps({"request_input": {"kind": "direct_message", "text": "整理合同证据"}}),
+            "2026-10-16T10:01:00+00:00",
+        ),
+    )
+    _insert(db, "INSERT INTO executions VALUES (?, 'exe_a', 'req_a', NULL, ?)", (NS, "2026-10-16T10:00:00+00:00"))
+    _insert(
+        db,
+        "INSERT INTO web_conversations VALUES (?, 'mate_a', 'conv_a', '首条消息的会话标题', ?, ?, NULL)",
+        (NS, "2026-10-16T00:00:00+00:00", "2026-10-16T10:01:00+00:00"),
+    )
+
+    history = ActivityQuery(db).report(NS, now=NOW)["members"][0]["history"]
+
+    assert history[0]["title"] == "整理合同证据"
 
 
 def test_group_file_delivery_is_an_artifact_and_other_namespace_is_hidden(tmp_path):
