@@ -1,3 +1,4 @@
+import asyncio
 import io
 import shutil
 import zipfile
@@ -210,3 +211,71 @@ async def test_import_local_rejects_untrusted_remote_zip_host(tmp_path):
 
     assert result["success"] is False
     assert "example.com" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_remote_import_download_goes_through_to_thread(monkeypatch, tmp_path):
+    """R-SB2: remote import_local download+extract+import must leave the event loop via to_thread."""
+    manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    zip_content = _zip_bytes(
+        {
+            "offload-demo/SKILL.md": (
+                "---\nname: offload-demo\ndescription: offload test\nversion: 1.0.0\n---\nbody\n"
+            ),
+        }
+    )
+    calls: list[object] = []
+    inside_to_thread = False
+    extract_inside_to_thread = False
+    import_inside_to_thread = False
+
+    real_extract = SkillManager._extract_archive_bytes_to_dir
+    real_import = SkillManager._import_local_from_path
+
+    def tracking_extract(self, body, dest_dir):  # noqa: ANN001
+        nonlocal extract_inside_to_thread
+        extract_inside_to_thread = inside_to_thread
+        return real_extract(self, body, dest_dir)
+
+    def tracking_import(self, src, *, force, origin):  # noqa: ANN001
+        nonlocal import_inside_to_thread
+        import_inside_to_thread = inside_to_thread
+        return real_import(self, src, force=force, origin=origin)
+
+    async def spy_to_thread(func, /, *args, **kwargs):
+        nonlocal inside_to_thread
+        calls.append(func)
+        name = getattr(func, "__name__", "")
+        if name == "_download_with_requests":
+            # Do not hit the network; still prove which callable was offloaded.
+            return zip_content
+        inside_to_thread = True
+        try:
+            return func(*args, **kwargs)
+        finally:
+            inside_to_thread = False
+
+    monkeypatch.setattr(asyncio, "to_thread", spy_to_thread)
+    monkeypatch.setattr(SkillManager, "_extract_archive_bytes_to_dir", tracking_extract)
+    monkeypatch.setattr(SkillManager, "_import_local_from_path", tracking_import)
+    monkeypatch.setattr(
+        SkillManager,
+        "_assert_import_local_download_url_allowed",
+        staticmethod(lambda download_url: None),
+    )
+
+    result = await manager._import_skill_from_remote_archive(
+        download_url="https://example.com/skills/offload-demo.zip",
+        force=False,
+    )
+
+    assert any(getattr(fn, "__name__", "") == "_download_with_requests" for fn in calls)
+    non_download = [
+        fn for fn in calls if getattr(fn, "__name__", "") != "_download_with_requests"
+    ]
+    assert non_download, "extract+import must also go through asyncio.to_thread"
+    assert extract_inside_to_thread is True
+    assert import_inside_to_thread is True
+    assert result["success"] is True
+    assert result["skill"]["name"] == "offload-demo"
+    assert (tmp_path / "workspace" / "skills" / "offload-demo" / "SKILL.md").is_file()
