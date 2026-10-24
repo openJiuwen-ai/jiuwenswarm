@@ -540,6 +540,16 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
         "language_lock": cfg.get("language_lock"),
         "speech_line": cfg.get("speech_line"),
         "speech_by_character": cfg.get("speech_by_character"),
+        "bgm_lock": cfg.get("bgm_lock"),
+        "include_speech": cfg.get("include_speech"),
+        "include_music": cfg.get("include_music"),
+        "clip_embedded_audio": cfg.get("clip_embedded_audio"),
+        "continuity_lock": cfg.get("continuity_lock"),
+        "style_lock": cfg.get("style_lock"),
+        "time_of_day_lock": cfg.get("time_of_day_lock"),
+        "crowd_lock": cfg.get("crowd_lock"),
+        "axis_clause": cfg.get("axis_clause"),
+        "director_lock_notes": cfg.get("director_lock_notes"),
         "first_of_setting": cfg.get("first_of_setting"),
         "prompt_char_limit": cfg.get("prompt_char_limit"),
         "media_prompt_limits": cfg.get("media_prompt_limits"),
@@ -648,6 +658,13 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
         "director_prompt_reviewed": locks["director_prompt_reviewed"],
     }
     snapshot.update(extra)
+    from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+        POSITIVE_VISUAL_RULE,
+        authoring_language_rule,
+        current_content_language,
+    )
+
+    content_language = current_content_language()
     prior_lead = str(extra.get("previous_clip_story_state") or "").strip()
     prior_section = ""
     if prior_lead:
@@ -689,7 +706,8 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
         "storyboards). Your own node prompt is the task instruction, not a content "
         "source — when the embedded upstream text describes a character or scene, "
         "generate THAT content (e.g. the embedded 人物设定 defines the person to "
-        "draw), never an older or inferred variant of it.\n\n"
+        "draw), never an older or inferred variant of it.\n"
+        f"{authoring_language_rule(content_language)}{POSITIVE_VISUAL_RULE}\n\n"
         f"{prior_section}"
         f"```json\n{json.dumps(snapshot, ensure_ascii=False, indent=2)}\n```"
     )
@@ -875,11 +893,17 @@ class DesignerGraphToolkit:
             model_text_or_raise,
         )
 
+        from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+            authoring_language_rule,
+            current_content_language,
+        )
+
         node = _node_from_ctx(self.ctx)
         cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+        base_system = str(system or cfg.get("director_task") or "You are a Designer node agent.")
         result = await call_model_tool(
             prompt=str(prompt or graph_prompt(self.ctx.graph, node) or ""),
-            system=str(system or cfg.get("director_task") or "You are a Designer node agent."),
+            system=base_system + " " + authoring_language_rule(current_content_language()),
             max_tokens=16384,
         )
         return model_text_or_raise(result)

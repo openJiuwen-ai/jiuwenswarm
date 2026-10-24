@@ -65,6 +65,7 @@ def graph_prompt(graph: DesignerExecutionGraph, node: DesignerGraphNode | None =
                     "STAGING LOCK",
                     "SAME-SCENE CONSISTENCY GATE",
                     "Film shot",
+                    "仅拍第",
                     "CLOTHING LOCK",
                     "LANGUAGE LOCK",
                 )
@@ -97,17 +98,7 @@ def graph_prompt(graph: DesignerExecutionGraph, node: DesignerGraphNode | None =
                     duration_sec=dur,
                     on_screen=list(config.get("on_screen") or config.get("cast_names") or []),
                 )
-                lock_bits: list[str] = [assignment]
-                for key, label in (
-                    ("costume_lock", "CLOTHING LOCK"),
-                    ("positioning_lock", "STAGING LOCK"),
-                    ("language_lock", "LANGUAGE LOCK"),
-                    ("speech_line", "SPEECH"),
-                ):
-                    val = str(config.get(key) or "").strip()
-                    if val:
-                        lock_bits.append(f"{label}: {val[:400]}")
-                return "\n".join(lock_bits)
+                return assignment
             return str(config.get("clip_action") or "")[:500] or "this storyboard shot only"
         if node_prompt:
             return node_prompt
