@@ -5155,42 +5155,30 @@ function applyInlineEmphasis(html) {
 }
 
 function renderInline(line) {
-  function renderText(text) {
-    return escapeHtml(text)
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-      .replace(/_([^_]+)_/g, '<em>$1</em>');
-  }
-
-  var out = '';
-  var cursor = 0;
-  // Consume code spans and bare file references in one pass. Never process
-  // generated HTML again: underscores and slashes belong to paths literally.
-  line.replace(/`([^`]+)`|(?<![<>"'`\w\/])((?:\.{1,2}\/)?(?:[\w\-]+\/)+[\w.\-]+\.\w{2,6}):(\d+)(?!\w)/g,
-    function(match, code, filePath, lineNum, offset) {
-      out += renderText(line.slice(cursor, offset));
-      cursor = offset + match.length;
-      var label;
-      if (code !== undefined) {
-        label = '<code>' + escapeHtml(code) + '</code>';
-        var ref = code.match(/^(.*?)(?::(\d+))?$/);
-        filePath = ref[1];
-        lineNum = ref[2] || '0';
-        // Backticks delimit paths containing spaces, Unicode, drive letters or
-        // backslashes. Exclude URL schemes and non-file code expressions.
-        var isPath = /^(?:[A-Za-z]:)?[^:*?"<>|`\r\n]+\.[A-Za-z0-9]{1,10}$/.test(filePath);
-        if (!isPath || (!/[\/\\]/.test(filePath) && !ref[2])) {
-          out += label;
-          return match;
-        }
-      } else {
-        label = escapeHtml(filePath + ':' + lineNum);
-      }
-      out += '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
-           + '" onclick="openFileLink(this)">' + label + '</a>';
-      return match;
-    });
-  return out + renderText(line.slice(cursor));
+  // Pattern 1: backtick-wrapped file paths — run before generic backtick handler
+  line = line.replace(/`([^`\n]+)`/g, function(_, raw) {
+    var text = raw.trim();
+    if (!text || text.indexOf('://') !== -1) {
+      return '<code>' + escapeHtml(raw) + '</code>';
+    }
+    var m = text.match(/^(.*?):(\d+)$/);
+    var filePath = m ? m[1] : text;
+    var lineNum = m ? m[2] : '0';
+    var hasSlash = /[\/\\]/.test(filePath);
+    var hasLine = !!m;
+    var looksLikeFile = /\.[A-Za-z0-9]{2,10}$/.test(filePath);
+    if (!looksLikeFile || (!hasSlash && !hasLine)) {
+      return '<code>' + escapeHtml(raw) + '</code>';
+    }
+    return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
+         + '" onclick="openFileLink(this)"><code>' + escapeHtml(raw) + '</code></a>';
+  });
+  // Pattern 2: bare path/to/file.ext:N outside backticks and existing HTML
+  line = line.replace(/(?<![<>"'`\w\/])((?:\.{1,2}\/)?(?:[\w\-]+\/)+[\w.\-]+\.\w{2,6}):(\d+)(?!\w)/g, function(_, filePath, lineNum) {
+    return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
+         + '" onclick="openFileLink(this)">' + escapeHtml(filePath) + ':' + lineNum + '</a>';
+  });
+  return applyInlineEmphasis(line);
 }
 
 // ─────────────────────────────────────────────
