@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -70,6 +71,7 @@ _force_ever_enabled: bool = False
 # so local jsonl output stops. Attaching the file exporter as a fan-out span
 # processor keeps jsonl flowing alongside the unified OTLP export.
 _file_exporter_fanout: Any | None = None
+_file_exporter_fanout_config: tuple[Path, int] | None = None
 _file_exporter_fanout_users: set[str] = set()
 _file_exporter_fanout_lock = Lock()
 
@@ -82,8 +84,20 @@ def _attach_file_exporter_fanout(
 
 
 def _attach_file_exporter_fanout_locked(traces_dir: str, cfg: Any, runtime: str) -> None:
-    global _file_exporter_fanout
+    global _file_exporter_fanout, _file_exporter_fanout_config
     if _file_exporter_fanout is not None:
+        # File output follows the shared provider's first-writer configuration.
+        # Warn once when a new user asks for settings we cannot apply to it.
+        if runtime not in _file_exporter_fanout_users and _file_exporter_fanout_config is not None:
+            active_dir, active_retention = _file_exporter_fanout_config
+            requested = (Path(traces_dir).resolve(), int(cfg.get("file_retention_days", 7)))
+            if requested != _file_exporter_fanout_config:
+                logger.warning(
+                    "[AgentObservability] %s requested traces_dir=%s retention_days=%s, "
+                    "but the shared file exporter uses traces_dir=%s retention_days=%s; "
+                    "the first configuration remains active",
+                    runtime, traces_dir, requested[1], active_dir, active_retention,
+                )
         _file_exporter_fanout_users.add(runtime)
         return
     try:
@@ -96,9 +110,11 @@ def _attach_file_exporter_fanout_locked(traces_dir: str, cfg: Any, runtime: str)
 
         if not is_initialized():
             return
+        retention_days = int(cfg.get("file_retention_days", 7))
+        exporter_config = (Path(traces_dir).resolve(), retention_days)
         exporter = TraceFileExporter(
             root_dir=traces_dir,
-            retention_days=int(cfg.get("file_retention_days", 7)),
+            retention_days=retention_days,
         )
         # 注册并持有包装层（SafeSpanProcessor）而非内层 BatchSpanProcessor：
         # provider 上真正挂的是适配器，on_end 只在适配器自身的 _shutdown_called
@@ -109,6 +125,7 @@ def _attach_file_exporter_fanout_locked(traces_dir: str, cfg: Any, runtime: str)
         adapter = SafeSpanProcessor(BatchSpanProcessor(exporter))
         trace.get_tracer_provider().add_span_processor(adapter)
         _file_exporter_fanout = adapter
+        _file_exporter_fanout_config = exporter_config
         _file_exporter_fanout_users.add(runtime)
         logger.info(
             "[AgentObservability] file exporter attached as fan-out processor: traces_dir=%s",
@@ -119,7 +136,7 @@ def _attach_file_exporter_fanout_locked(traces_dir: str, cfg: Any, runtime: str)
 
 
 def _release_file_exporter_fanout(runtime: str) -> None:
-    global _file_exporter_fanout
+    global _file_exporter_fanout, _file_exporter_fanout_config
     with _file_exporter_fanout_lock:
         _file_exporter_fanout_users.discard(runtime)
         if _file_exporter_fanout_users or _file_exporter_fanout is None:
@@ -129,6 +146,7 @@ def _release_file_exporter_fanout(runtime: str) -> None:
             # remove API, so its registered adapter must stop accepting spans.
             _file_exporter_fanout.shutdown()
             _file_exporter_fanout = None
+            _file_exporter_fanout_config = None
         except Exception as exc:
             # Retain the adapter on failure to avoid stacking another exporter.
             logger.warning("[AgentObservability] file exporter fan-out shutdown failed: %s", exc)

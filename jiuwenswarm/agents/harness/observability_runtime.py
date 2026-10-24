@@ -38,19 +38,19 @@ def bind_agentarts_tracer_provider(config: Any) -> bool:
     provider = trace.get_tracer_provider()
     if not isinstance(provider, TracerProvider):
         return False
-    if is_initialized():
-        # The SDK validates provider identity/ownership without reinitializing.
-        # Return True for an existing host binding so Team can reacquire file
-        # output after a toggle or join an Agent that initialized first.
-        try:
-            init_observability(config, tracer_provider_override=provider, owns_provider=False)
-        except RuntimeError:
-            # An existing private/other provider keeps its original lifecycle.
-            return False
-        return True
     # The wheel owns export and shutdown. SDK demand registration below still
     # installs the agent/team callbacks and trajectory processors as usual.
-    init_observability(config, tracer_provider_override=provider, owns_provider=False)
+    # Let the SDK check identity/ownership under its initialization lock instead
+    # of choosing an error-handling path from a stale is_initialized() snapshot.
+    try:
+        init_observability(config, tracer_provider_override=provider, owns_provider=False)
+    except RuntimeError:
+        if not is_initialized():
+            # A real initialization failure must reach the caller's error path.
+            raise
+        # An existing private/other provider, including one initialized while
+        # we were binding, keeps its original lifecycle.
+        return False
     return True
 
 
