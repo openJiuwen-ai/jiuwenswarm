@@ -37,6 +37,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_pipeline,
     utc_now_ms,
 )
+from jiuwenswarm.server.runtime.designer.pipeline.content_language import node_task
 from jiuwenswarm.server.runtime.designer.skills_loader import attach_skills_metadata
 
 _MAX_SPLIT_CHARS = 12
@@ -314,17 +315,45 @@ def _ensure_characters_referenced(
             continue
 
 
+_CAST_PHRASES: dict[str, dict[str, str]] = {
+    "en": {
+        "canonical_look": "canonical look for {name}",
+        "named_desc": "{name}: {desc}.",
+        "wearing": "Wearing {costume}.",
+    },
+    "zh": {
+        "canonical_look": "{name}的标准造型",
+        "named_desc": "{name}：{desc}。",
+        "wearing": "身穿{costume}。",
+    },
+}
+
+
 def _plan_cast_sheets(
     characters: list[dict[str, Any]],
     shots: list[dict[str, Any]],
     *,
     prompt: str = "",
+    content_language: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]], str]:
     """Plan character spec nodes and per-shot node refs.
 
     Identity rule: one character spec sheet per character (canonical look). Combined
     multi-person sheets are not used — quality path always composes from character specs.
     """
+    from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
+        enrich_character_clothing,
+        wearable_phrase,
+    )
+    from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+        join_sentences,
+        phrase,
+        current_content_language,
+        sentence,
+        strip_phrase,
+    )
+
+    lang = content_language or current_content_language()
     id_to_char = {str(c.get("id")): c for c in characters if str(c.get("id") or "")}
     sheets: list[dict[str, Any]] = []
     budget = max(_MAX_SPLIT_CHARS, len(characters))
@@ -337,12 +366,14 @@ def _plan_cast_sheets(
             break
         name = _character_display_name(ch, prompt) or cid
         desc = str(ch.get("description") or "").strip()
-        from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
-            enrich_character_clothing,
-        )
-
         costume = enrich_character_clothing(ch) or (
-            desc[:240] if desc else f"canonical look for {name}"
+            desc[:240] if desc else phrase(_CAST_PHRASES, lang, "canonical_look", name=name)
+        )
+        wearing = phrase(
+            _CAST_PHRASES,
+            lang,
+            "wearing",
+            costume=wearable_phrase(costume, name=name, lang=lang),
         )
         sheets.append(
             {
@@ -351,12 +382,17 @@ def _plan_cast_sheets(
                 "combined_cast": False,
                 "identity_source": True,
                 "label": name[:48],
-                "prompt_body": (
-                    f"{name}: {desc}. Wearing {costume}."
-                    if desc
-                    else f"{name}. Wearing {costume}."
+                "prompt_body": join_sentences(
+                    [
+                        phrase(_CAST_PHRASES, lang, "named_desc", name=name, desc=strip_phrase(desc))
+                        if desc
+                        else sentence(name, lang),
+                        wearing,
+                    ],
+                    lang,
                 ),
                 "costume_lock": costume[:320],
+                "clothing_parts": dict(ch.get("clothing_parts") or {}),
             }
         )
 
@@ -609,11 +645,15 @@ def build_smart_video_graph(
     )
 
     prompt_text = prompt.strip()
+    from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+        current_content_language,
+    )
     from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
         build_reference_led_video_graph,
         reference_led_active,
     )
 
+    content_language = current_content_language()
     if reference_led_active(analysis):
         graph = build_reference_led_video_graph(
             project_id=project_id,
@@ -709,7 +749,7 @@ def build_smart_video_graph(
     analysis["scene_consistency_mode"] = "scene_specs_plus_clips"
 
     cast_sheets, shot_cast_nodes, cast_layout = _plan_cast_sheets(
-        characters, shots, prompt=prompt_text
+        characters, shots, prompt=prompt_text, content_language=content_language
     )
     try:
         from jiuwenswarm.server.runtime.designer.pipeline.production_specs import (
@@ -802,12 +842,16 @@ def build_smart_video_graph(
         label = label_character(i, display)
         from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
             extract_clothing_parts,
+            normalize_clothing_parts,
+        )
+        from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+            clause_separator,
         )
 
-        wardrobe_parts = extract_clothing_parts(
+        wardrobe_parts = normalize_clothing_parts(sheet.get("clothing_parts")) or extract_clothing_parts(
             f"{sheet.get('costume_lock') or ''} {sheet.get('prompt_body') or ''}"
         )
-        wardrobe = ", ".join(
+        wardrobe = clause_separator(content_language).join(
             str(v).strip() for v in wardrobe_parts.values() if str(v).strip()
         )
         try:
@@ -1615,9 +1659,7 @@ def build_smart_video_graph(
                 "audio_policy": audio.get("policy"),
                 "tools": ["ffmpeg_compose", "mix_audio", "read_upstream", "call_model"],
                 "delegate": "agent",
-                "director_task": (
-                    "Output a real non-empty .mp4 only — never markdown. Use ffmpeg_compose tool."
-                ),
+                "director_task": node_task("compose"),
             },
             "layout": {"x": 1620, "y": 180, "width": 260, "height": 150},
         }

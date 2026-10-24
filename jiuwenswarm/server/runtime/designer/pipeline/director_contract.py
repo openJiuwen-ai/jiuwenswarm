@@ -778,6 +778,11 @@ async def enrich_analysis_with_llm(
         call_model_tool,
         model_text_or_raise,
     )
+    from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+        POSITIVE_VISUAL_RULE,
+        authoring_language_rule,
+        current_content_language,
+    )
 
     # Structural floor for merge — not a product substitute when the LLM fails.
     base = enrich_analysis_heuristically(prompt, analysis)
@@ -814,7 +819,7 @@ async def enrich_analysis_with_llm(
             "(7) off_camera people are NOT deleted — camera simply excludes them. "
             "Schema: "
             '{"clips":[...],"spatial_lock":{...},"target_clip_count":N,"notes":"..."}'
-        )
+        ) + authoring_language_rule(current_content_language()) + POSITIVE_VISUAL_RULE
         user_payload = {
             "user_prompt": prompt,
             "characters": characters,

@@ -172,8 +172,10 @@ def test_same_scene_gate_in_handoff_and_graph_prompt_keeps_locks() -> None:
     }
     text = graph_prompt(graph, node)
     assert "Dad sits by the window" in text
-    assert "navy sweater" in text
-    assert "LANGUAGE LOCK" in text
+    assert LONG_STORY not in text
+    # Locks reach the agent through the structured snapshot, not a second pasted copy.
+    assert "navy sweater" not in text
+    assert "LANGUAGE LOCK" not in text
 
 
 def test_empty_actions_are_time_windows_not_angle_restages() -> None:
