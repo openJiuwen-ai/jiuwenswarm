@@ -56,6 +56,7 @@ from jiuwenswarm.common.config import (
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled
 from jiuwenswarm.common.kv_cache_affinity_config import (
     build_kv_cache_affinity_config,
     get_kv_cache_control_model_client_config,
@@ -993,9 +994,9 @@ def build_member_subagent_specs(
         )
 
     # cua_agent drives the host desktop, which is not a code-profile concern,
-    # so it is offered in every mode when the operator opts in explicitly.
-    if isinstance(subagents_cfg, dict) and _is_subagent_enabled(
-        subagents_cfg.get("cua_agent")
+    # so every mode uses the same release default and explicit user preference.
+    if is_cua_agent_enabled(
+        subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
     ):
         specs.append(
             _code_subagent_spec("cua_agent", registry.SWARM_CUA_AGENT, react, language)

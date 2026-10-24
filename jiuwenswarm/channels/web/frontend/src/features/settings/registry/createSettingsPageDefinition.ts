@@ -95,6 +95,10 @@ function validateModule(module: SettingsModuleDefinition): void {
   );
   for (const section of module.sections) {
     assertId('Section', section.id);
+    if (section.visibleWhen !== undefined) {
+      assertId('Section visibility key', section.visibleWhen);
+      if (!module.source) throw new Error(`Section ${module.id}/${section.id} visibility requires a settings source`);
+    }
     if (section.titleKey !== undefined && !section.titleKey.trim())
       throw new Error(`Section ${module.id}/${section.id} has an empty titleKey`);
     const flattenedItems = flattenItems(section.items);

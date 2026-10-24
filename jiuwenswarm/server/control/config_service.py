@@ -21,6 +21,7 @@ import yaml
 from dotenv import dotenv_values
 
 from jiuwenswarm.common.browser_settings import project_browser_decision
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
@@ -390,6 +391,7 @@ def get_panel() -> dict[str, Any]:
     )
     payload["runtime_platform"] = runtime_platform
     payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
+    payload["cua_backend_available"] = "true" if is_cua_backend_available() else "false"
     try:
         raw = _read_raw_config()
         setup_guide_cfg = raw.get("setup_guide") or {}
@@ -397,6 +399,9 @@ def get_panel() -> dict[str, Any]:
             setup_guide_cfg.get("enabled", True), True
         )
         react_cfg = raw.get("react") or {}
+        payload["cua_agent_enabled"] = (
+            "true" if is_cua_agent_enabled(_nested(raw, ("react", "subagents", "cua_agent"), {})) else "false"
+        )
         ctx_cfg = react_cfg.get("context_engine_config") or {}
         payload["context_engine_enabled"] = _bool_text(ctx_cfg.get("enabled"), False)
         payload["kv_cache_affinity_enabled"] = (
@@ -465,6 +470,7 @@ def get_panel() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config_service] panel yaml merge failed: %s", exc)
         payload.setdefault("context_engine_enabled", "false")
+        payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
         payload.setdefault("setup_guide_enabled", "true")

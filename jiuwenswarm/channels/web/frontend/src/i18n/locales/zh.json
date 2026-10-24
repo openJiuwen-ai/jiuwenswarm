@@ -738,6 +738,7 @@
       "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
     "experimental": {
+      "computerControl": "电脑操控",
       "taskAsr": "语音转写",
       "taskFullDuplex": "任务对话全双工",
       "externalCliAgents": "三方 Agent",
@@ -917,6 +918,10 @@
       "rsi_enabled": {
         "title": "启用 RSI",
         "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
+      },
+      "cua_agent_enabled": {
+        "title": "启用电脑操控",
+        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。"
       },
       "trajectory_ui_enabled": {
         "title": "启用轨迹界面",
