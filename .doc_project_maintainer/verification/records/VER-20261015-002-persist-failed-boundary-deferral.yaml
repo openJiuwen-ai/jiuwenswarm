@@ -1,0 +1,28 @@
+id: VER-20261015-002-persist-failed-boundary-deferral
+applies_to:
+  source_revision: working-tree-2026-10-15
+  modules: [persist-session-rail]
+  flows: [eternal-conversation-memory]
+  symbols:
+    - EternalConversationRail.after_invoke
+    - EternalConversationRail.on_model_exception
+    - SessionCoordinator._extract_loop
+  paths:
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/rail.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/coordinator.py
+    - tests/unit_tests/agentserver/rails/test_eternal_conversation_rail.py
+evidence:
+  level: unit
+  scenario: failed-worker-boundary-and-missing-exact-fork-recovery
+  environment: local Windows Python 3.12
+  command: .venv/Scripts/python.exe -m pytest --no-cov -q tests/unit_tests/agentserver/rails/test_eternal_conversation_rail.py tests/unit_tests/agentserver/rails/test_eternal_conversation_deep_agents.py
+  repetitions: 1
+  successes: 99
+  warnings: 1
+result: passed
+status: active
+recorded_at: 2026-10-15T17:03:00+08:00
+supersedes: []
+evidence_paths:
+  - D:/jiuwenswarm-persist-acceptance/20261015-dispatchlab-r1/evidence/web-code-eternal-web-code-dispatchlab-20261015-r1
+notes: The pre-fix live run failed after a Worker WinError 1450 produced a null result and an unforked Extractor request that entered the legacy response-JSON path. Unit evidence verifies the corrected boundary and deferred recovery. The same-session real-model 200-task resume is active, so this record does not yet close the live acceptance failure.

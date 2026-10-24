@@ -5,6 +5,8 @@ include OPEN_SOURCE_SOFTWARE_NOTICE.md
 include third_party/playwright-mcp/package.json
 include third_party/playwright-mcp/package-lock.json
 prune jiuwenswarm/resources/agent/workspace/skills/project-maintainer
+prune jiuwenswarm/resources/agent/workspace/skills/persist-session-builder
+prune jiuwenswarm/resources/agent/workspace/skills/persist-session-extractor
 
 # DesignRail 内嵌声明式状态机 config.yaml + 内嵌 skills 方法论（wave-1 SDD）
 recursive-include jiuwenswarm/agents/harness/code/rails/sdd/design_rail *.yaml

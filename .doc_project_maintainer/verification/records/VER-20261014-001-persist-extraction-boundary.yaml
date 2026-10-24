@@ -1,0 +1,28 @@
+id: VER-20261014-001-persist-extraction-boundary
+applies_to:
+  source_revision: working-tree-2026-10-14
+  modules: [agent-harness]
+  flows: [eternal-conversation-memory]
+  symbols:
+    - ExtractorForkContext.extraction_boundary_reached
+    - BackgroundAgentRunner.call_json
+    - SessionCoordinator.request_extract
+  paths:
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/background_agents.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/coordinator.py
+    - tests/unit_tests/agentserver/rails/test_eternal_conversation_deep_agents.py
+    - tests/unit_tests/agentserver/rails/test_eternal_conversation_rail.py
+evidence:
+  level: unit
+  scenario: persist-over-boundary-extractor-fork-remains-valid
+  environment: local Windows Python 3.12
+  command: uv run pytest tests/unit_tests/agentserver/rails/test_eternal_conversation_deep_agents.py tests/unit_tests/agentserver/rails/test_eternal_conversation_rail.py -q --tb=short --no-cov
+  repetitions: 1
+  successes: 94
+  warnings: 1
+result: passed
+status: active
+recorded_at: 2026-10-14T10:25:00+08:00
+supersedes: []
+evidence_paths: []
+notes: The former hard rejection above 70% was removed from both coordinator admission and background invocation. At or above the boundary the fork is accepted, audited with boundary_reached=true, and accompanied only by a warning. The warning reported by pytest is an unrelated Authlib deprecation warning.
