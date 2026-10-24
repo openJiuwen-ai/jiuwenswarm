@@ -5463,11 +5463,17 @@ async def test_cancelled_team_round_cold_recovery_binds_a_fresh_monitor(monkeypa
     assert rebound_handler is not old_handler
     assert rebound_handler.is_running is True
     assert recovered_monitor.started is True
-    get_monitor.assert_awaited_once_with(
-        team_name="unit-team",
-        session_id=session_id,
-        hide_dm=False,
-    )
+    # The UI handler and TeamPulse each bind their own monitor.
+    assert get_monitor.await_count == 2
+    for awaited in get_monitor.await_args_list:
+        assert awaited.kwargs == {
+            "team_name": "unit-team",
+            "session_id": session_id,
+            "hide_dm": False,
+        }
+    pulse = manager.get_team_pulse(session_id)
+    if pulse is not None:
+        await pulse.stop()
     await rebound_handler.stop()
 
 
@@ -5563,8 +5569,13 @@ async def test_ensure_monitor_keeps_handler_bound_to_current_leader(monkeypatch)
     assert manager.get_monitor(session_id) is handler
     assert handler.is_running is True
     assert created[0].stopped is False
+    # created[1] is TeamPulse's listener from the first lookup.
     # The probe monitor for the second lookup is never started.
-    assert created[1].started is False
+    assert created[1].started is True
+    assert created[-1].started is False
+    pulse = manager.get_team_pulse(session_id)
+    if pulse is not None:
+        await pulse.stop()
     await handler.stop()
 
 
