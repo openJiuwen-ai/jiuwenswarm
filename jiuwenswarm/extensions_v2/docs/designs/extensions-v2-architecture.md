@@ -555,7 +555,7 @@ AgentServer 核对管理入口返回的逐包结果与实际生效、残留后�
 
 运行中的后端通过 `extensions.v2.query/install/uninstall/reload` 管理 V2 包。Gateway 只转发，AgentServer 的管理适配器调用已装配的唯一 `ExtensionManager`；与旧 `extensions.*` 分开。协议见 [S_02](../specs/S_02_backend-package-management.md)，入口与验证见 [F_09](../features/F_09_backend-management-requests.md)。
 
-门面串行执行根写操作，查询不占写锁，包退出通知在锁外执行。取得失败 Report 就按报告处理；只有未取得 Report 时才查询，不重放原操作或另发回滚。失败核对见 [F_10](../features/F_10_management-failure-recovery.md)。
+门面串行执行根写操作，查询不占写锁，包退出通知在锁外执行。取得失败 Report 就按报告处理；只有未取得 Report 时才查询，不重放原操作或另发回滚。失败核对见 [F_10](../features/F_10_management-failure-recovery.md)。串行与取消见 [F_11](../features/F_11_management-serialization.md)。
 
 AgentServer 通过 Registry 便捷方法或受控事件请求包管理，按公共接口提交操作并读取结果。公共入口见[Extension 第 4.1 节](../../../../../agent-core/openjiuwen/core/extension/docs/designs/extension-architecture.md#41-registry统一管理入口)。
 
