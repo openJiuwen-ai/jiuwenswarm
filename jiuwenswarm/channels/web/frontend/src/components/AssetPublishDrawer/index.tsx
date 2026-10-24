@@ -643,7 +643,7 @@ function AssetPublishDrawer({
         >
           <fieldset
             className="asset-publish-form-fields"
-            disabled={state.busy || (state.loggedIn && !state.description)}
+            disabled={state.busy || !state.description}
           >
             <section
               className="asset-publish-form-section"

@@ -37,12 +37,16 @@ const SENSITIVE_QUESTION_MARKERS = [
   '秘钥',
 ];
 
+export function isSensitiveQuestion(question: string): boolean {
+  return SENSITIVE_QUESTION_MARKERS.some((marker) => question.toLocaleLowerCase().includes(marker));
+}
+
 function maskSensitiveSummary(data: QaSummaryData): QaSummaryData {
   return {
     ...data,
     items: data.items.map((item) => ({
       ...item,
-      answers: SENSITIVE_QUESTION_MARKERS.some((marker) => item.question.toLocaleLowerCase().includes(marker))
+      answers: isSensitiveQuestion(item.question)
         ? item.answers.map((answer, index) => {
             const source = Array.isArray(item.answerSources) ? item.answerSources[index] : undefined;
             return source === 'option' || source === 'skipped' ? answer : MASKED_ANSWER;

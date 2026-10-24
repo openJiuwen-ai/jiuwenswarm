@@ -20,6 +20,7 @@ import {
   type TeamLeaderIdentity,
 } from '../../features/teamLeaderIdentity';
 import { AutoReviewerDetails } from './AutoReviewerStatus';
+import { isSensitiveQuestion } from '../InteractionSlot/qaSummary';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
@@ -179,6 +180,13 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
   const isPending = Boolean(result?.pending);
   const failed = isToolExecutionFailed(execution);
   const resultSuccess = Boolean(result) && !failed && !isPending;
+  // Keep raw answers available to tools; display sensitive answers only through the safe summary card.
+  const questions = Array.isArray(toolCall.arguments.questions) ? toolCall.arguments.questions : [];
+  const useAnswerSummary = toolCall.name === 'ask_user' && result?.success && !isPending && !isTimeout && (
+    (typeof toolCall.arguments.query === 'string' && isSensitiveQuestion(toolCall.arguments.query)) ||
+    questions.some((question) => typeof question?.question === 'string' && isSensitiveQuestion(question.question))
+  );
+  const displayedResult = useAnswerSummary ? t('chatUi.toolResult.answersInSummary') : result?.result || '';
   const hasArguments = Object.keys(toolCall.arguments).length > 0;
   const toolNameLabel = toolCall.name?.trim() || result?.toolName || 'tool';
   const resultWordCount = isSymphonyCommandTool(toolCall.name) && result
@@ -255,7 +263,7 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
                   result.skillTree && 'mt-2'
                 )}
               >
-                {formatToolResult(result.result)}
+                {formatToolResult(displayedResult)}
               </pre>
               <div className="tool-tree-item__detail-raw" data-testid="chat-panel-tool-result-mermaid">
                 <div className="tool-tree-item__detail-label">
@@ -276,7 +284,7 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
                 result.skillTree && 'mt-2'
               )}
             >
-              {formatToolResult(result.result)}
+              {formatToolResult(displayedResult)}
             </pre>
           )}
         </div>
