@@ -186,6 +186,12 @@ async def _ensure_server_initialized_async() -> None:
     except Exception as exc:
         logger.warning("[clawee] proactive engine init failed: %s", exc)
 
+    import os
+    server._host = os.getenv("AGENT_SERVER_HOST", "0.0.0.0")  # pylint: disable=protected-access
+    server._port = int(os.getenv("AGENT_SERVER_PORT", "18092"))  # pylint: disable=protected-access
+    await server.start()
+    logger.info("[clawee] ws listener opened: ws://%s:%s", server._host, server._port)
+
     _server_initialized = True
     logger.info("[clawee] AgentWebSocketServer initialized (faas mode) ready")
 
