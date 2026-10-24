@@ -8,7 +8,6 @@ import asyncio
 import base64
 import json
 import logging
-import math
 import sqlite3
 import time
 import uuid
@@ -1058,7 +1057,8 @@ class TrajectoryStore:
             connection.rollback()
             raise
         if removed > 0:
-            connection.execute("PRAGMA incremental_vacuum").fetchall()
+            # Python 3.11 cursors stop after the first zero-column vacuum row.
+            connection.executescript("PRAGMA incremental_vacuum;")
         return removed
 
     def _retire_expired_pages(self, connection: sqlite3.Connection, cutoff: int) -> int:

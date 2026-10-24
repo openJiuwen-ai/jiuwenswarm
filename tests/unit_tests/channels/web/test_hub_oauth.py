@@ -192,7 +192,7 @@ def test_desktop_opens_only_hub_authorization_in_system_browser(monkeypatch):
     monkeypatch.setenv("SKILLHUB_OAUTH_BASE_URL", "https://hub.example")
     opened = []
     monkeypatch.setattr(desktop_app.webbrowser, "open", lambda url: opened.append(url) or True)
-    api = desktop_app._WindowApi(None)
+    api = desktop_app._WindowApi
     assert api.open_external_url("https://hub.example/api/v1/auth/oauth/gitcode/start?redirect_to=x") is True
     assert api.open_external_url("https://evil.example/api/v1/auth/oauth/gitcode/start") is False
     assert api.open_external_url("https://hub.example/other") is False
@@ -206,5 +206,5 @@ def test_desktop_browser_uses_publishing_hub_when_oauth_override_is_absent(monke
     monkeypatch.delenv("SKILLHUB_OAUTH_BASE_URL", raising=False)
     monkeypatch.setenv("TEAM_SKILLS_HUB_BASE_URL", "http://119.8.233.112:8080")
     monkeypatch.setattr(desktop_app.webbrowser, "open", lambda _url: True)
-    api = desktop_app._WindowApi(None)
+    api = desktop_app._WindowApi
     assert api.open_external_url("http://119.8.233.112:8080/api/v1/auth/oauth/github/start?redirect_to=x") is True
