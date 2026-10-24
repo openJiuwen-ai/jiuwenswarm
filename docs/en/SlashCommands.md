@@ -1,6 +1,6 @@
 # Slash Commands Reference
 
-This document categorizes commands by **parsing location**: `TUI Local Parsing` and `Gateway / Agent Parsing`.
+Commands are grouped by entry point: `TUI Local Parsing`, `Web Local Parsing`, and `Gateway / Agent Parsing`.
 For quick reference of current behavior; final implementation follows the code.
 
 ---
@@ -43,6 +43,42 @@ Executed locally in the terminal UI, not through Gateway control pipeline.
 | `/swarmflows` | Full-screen SwarmFlow run tree viewer (alias `/swarmworkflows`, same guide) |
 
 > Note: `/mode` controlled switching logic is primarily on Gateway side, see "`/mode` and `/switch`" below. The TUI local command additionally supports `/mode plan` and `/mode team.normal`; see the TUI guide for details.
+
+### Web Local Parsing (Chat Input)
+
+Use `/extension` in a single-agent Web conversation to manage V2 extension packages.
+It also works immediately in a new conversation, before sending the first chat message.
+The browser sends structured management requests directly. These commands do not start a model turn.
+This entry is unavailable in TUI, IM, or Team chats.
+
+| Command | Description |
+| --- | --- |
+| `/extension` | Show usage |
+| `/extension install <absolute ZIP file path>` | Install one ZIP; show its package_id, version and installation directory |
+| `/extension query [package_id]` | Query all packages or one package; show package_id, version, status and directory |
+| `/extension uninstall <package_id>` | Uninstall a package and delete its installed copy |
+| `/extension reload <package_id>` | Hot-reload the installed copy without uninstalling first |
+
+```text
+/extension install "D:\extension packages\demo.zip"
+/extension query demo.pkg
+```
+
+Installation accepts only existing `.zip` files at absolute paths; directories are rejected.
+Paths containing spaces can be pasted directly; surrounding quotes are also supported.
+This reads a file by path and does not upload it through the browser. For remote deployments,
+place the ZIP where the running service can read it first.
+After installation, edit code in the returned **Installation directory**, then run `/extension reload demo.pkg`.
+The directory is configured by `extensions.install_dir` in `config.yaml`, defaulting to
+`~/.jiuwenswarm/extension_pkgs/<package_id>/<version>/`; use the actual path in the response.
+Editing the original ZIP does not update the installed copy. Startup loads packages from the configured store
+and no longer installs repository examples automatically.
+
+Uninstalling deletes the installed copy; save any edits you need to keep first.
+Use the explicitly labeled `package_id` from query results for uninstall and reload.
+It has 1–128 characters, starts with an ASCII letter or digit, and permits ASCII letters, digits, dots,
+underscores and hyphens. Spaces and consecutive dots are forbidden. It differs from an extension unit ID.
+Failures show their cause. If the result is unconfirmed or times out, query the current state before repeating an operation.
 
 ### Gateway / Agent Parsing (Controlled Channel)
 

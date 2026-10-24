@@ -568,6 +568,21 @@ BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
         "requires_session": False,
         "available_modes": None,
     },
+    {
+        "name": "extension",
+        "description_i18n": {
+            "zh": "安装、查询、卸载或热重载 V2 扩展包",
+            "en": "Install, query, uninstall, or hot-reload V2 extension packages",
+        },
+        "usage": "/extension <install|query|uninstall|reload> [args]",
+        "example": r'/extension install "D:\extensions\demo.zip"',
+        "kind": "built-in",
+        "takesArgs": True,
+        "scope": "client",
+        "execution": "rpc",
+        "requires_session": False,
+        "available_modes": None,
+    },
 )
 
 

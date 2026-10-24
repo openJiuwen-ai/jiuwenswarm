@@ -1,6 +1,6 @@
 # Slash 命令速查表
 
-本文档按**解析位置**拆分：`TUI 本地解析` 与 `Gateway / Agent 侧解析`。  
+本文档按**入口与解析位置**拆分：`TUI 本地解析`、`Web 本地解析` 与 `Gateway / Agent 侧解析`。
 用于快速查阅当前行为，最终实现以代码为准。
 
 ---
@@ -43,6 +43,40 @@
 | `/swarmflows` | 全屏 SwarmFlow 运行树查看器（别名 `/swarmworkflows`，同上） |
 
 > 说明：本页的 `/mode` 与 `/switch` 以 Gateway 受控通道行为为主。TUI 本地命令另支持 `/mode plan`、`/mode team.normal`，详见 [TUI 使用指南](TUI使用指南.md)。
+
+### Web 本地解析（输入框命令）
+
+在单 Agent 模式的输入框输入 `/extension`，可管理 V2 扩展包。
+新建对话后即可使用，无需先发送聊天消息。
+命令由浏览器解析后直接调用管理接口，不作为普通对话交给模型。
+本入口暂不接入 TUI、IM 和 Team 会话。
+
+| 命令 | 说明 |
+| --- | --- |
+| `/extension` | 显示用法 |
+| `/extension install <ZIP 文件的绝对路径>` | 安装一个 ZIP 扩展包，成功后显示 package_id、版本和安装目录 |
+| `/extension query [package_id]` | 查询全部或指定包，显示 package_id、版本、状态和安装目录 |
+| `/extension uninstall <package_id>` | 卸载指定包并删除安装副本 |
+| `/extension reload <package_id>` | 从安装副本热重载，不先卸载 |
+
+例如，先安装并查询：
+
+```text
+/extension install "D:\extension packages\demo.zip"
+/extension query demo.pkg
+```
+
+安装只接受现有 `.zip` 文件的绝对路径，不接受目录。支持直接粘贴含空格的路径，也兼容外层引号。
+这是按路径读取文件，不会通过浏览器上传文件；远程部署时，需要先将 ZIP 放到运行服务能读取的位置。
+安装成功后，按响应中的“安装目录”修改代码，再执行 `/extension reload demo.pkg`。
+安装位置由 `config.yaml` 的 `extensions.install_dir` 决定，默认是
+`~/.jiuwenswarm/extension_pkgs/<package_id>/<version>/`，以响应的实际路径为准。
+修改最初的 ZIP 不会改变安装副本。启动只加载配置安装目录中的包，不再自动安装源码中的示例包。
+
+卸载会删除安装副本，需要保留的修改请先保存。`package_id` 是查询结果中明确标注的扩展包标识，
+卸载和重载时使用该值。它由 1～128 个字符组成，以英文字母或数字开头，只允许英文字母、数字、
+点、下划线和连字符，不允许空格或连续两个点；它与包内扩展单元的 ID 不同。
+操作失败时展示错误原因；结果未确认或超时时先查询核对，不自动重复操作。
 
 ### Gateway / Agent 侧解析（受控通道）
 

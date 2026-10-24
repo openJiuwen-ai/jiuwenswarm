@@ -6,6 +6,9 @@ import { isSessionBusyForPlanToggle } from '../../../features/planMode/planModeG
 import { evaluateGoalArm } from '../../../features/goalMode/goalModeGate';
 import { NEW_CONVERSATION_ID } from '../../../multi-session/state/newConversationLifecycle';
 import { resolvePlanGoalInterlock } from './semantics';
+import i18n from '../../../i18n';
+import { runExtensionCommand } from './extension';
+import type { ExtensionManagementResult } from './extension';
 
 /**
  * 斜杠命令注册表（/fork、/compact、/plan、/goal、/persist）。
@@ -411,10 +414,31 @@ const persistCommand: SlashCommand = {
   },
 };
 
+const extensionCommand: SlashCommand = {
+  name: 'extension',
+  // Package management is available before the first chat turn creates a session.
+  requiresSession: false,
+  execute: async (ctx, args) => {
+    // The shared slash parser trims the separator, including a newline after the command name.
+    if (/[\r\n]/.test(ctx.inputLine)) {
+      ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, i18n.t('extensionCommand.singleLineOnly')));
+      return;
+    }
+    const output = await runExtensionCommand(
+      args,
+      ctx.sessionId === NEW_CONVERSATION_ID ? undefined : ctx.sessionId,
+      (method, params, options) => webRequest<ExtensionManagementResult>(method, params, options),
+      (key, values) => String(i18n.t(key, values)),
+    );
+    ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, output));
+  },
+};
+
 export const SLASH_COMMANDS: SlashCommand[] = [
   forkCommand,
   compactCommand,
   planCommand,
   goalCommand,
   persistCommand,
+  extensionCommand,
 ];
