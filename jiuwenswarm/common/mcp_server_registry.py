@@ -26,8 +26,12 @@ from jiuwenswarm.common.mcp_config import (
     _normalize_mcp_client_type,
     _run_mcp_worker,
     _validate_request_scoped_remote_mcp,
+    classify_mcp_connector_error,
     create_mcp_tool,
     list_request_mcp_server_tools,
+    MCP_CONNECTOR_ERROR_KIND_OTHER,
+    MCP_CONNECTOR_ERROR_KIND_TIMEOUT,
+    McpConnectorDiscoveryError,
     retire_pooled_mcp_worker,
     shutdown_pooled_mcp_worker,
 )
@@ -104,6 +108,7 @@ class CachedServerRecord:
     last_scan_at: float
     last_scan_ok: bool
     last_error: str = ""
+    last_error_kind: str = ""
     connect_params: dict[str, Any] = field(default_factory=dict)
     scan_fail_count: int = 0
 
@@ -436,9 +441,14 @@ class McpServerRegistry:
 
         async def _scan_and_commit(name: str, config: dict[str, Any]) -> dict[str, Any]:
             async with sem:
-                tools, params, error = await self._discover(name, config)
+                tools, params, error, error_kind = await self._discover(name, config)
                 if error:
-                    return {"name": name, "ok": False, "error": error}
+                    return {
+                        "name": name,
+                        "ok": False,
+                        "error": error,
+                        "error_kind": error_kind or MCP_CONNECTOR_ERROR_KIND_OTHER,
+                    }
                 now = time.monotonic()
                 entry = McpServerEntry(
                     name=name,
@@ -543,9 +553,16 @@ class McpServerRegistry:
                         }
                     )
                     continue
-            tools, params, error = await self._discover(name, config)
+            tools, params, error, error_kind = await self._discover(name, config)
             if error:
-                results.append({"name": name, "ok": False, "error": error})
+                results.append(
+                    {
+                        "name": name,
+                        "ok": False,
+                        "error": error,
+                        "error_kind": error_kind or MCP_CONNECTOR_ERROR_KIND_OTHER,
+                    }
+                )
                 continue
             now = time.monotonic()
             async with self._lock:
@@ -630,6 +647,7 @@ class McpServerRegistry:
                 "last_scan_at": cached.last_scan_at if cached is not None else 0.0,
                 "last_scan_ok": cached.last_scan_ok if cached is not None else False,
                 "last_error": cached.last_error if cached is not None else "",
+                "last_error_kind": cached.last_error_kind if cached is not None else "",
             }
 
     def _invoke_connect_params_locked(self, name: str) -> dict[str, Any]:
@@ -683,10 +701,14 @@ class McpServerRegistry:
 
     async def snapshot_for_chat(
         self, names: list[str]
-    ) -> list[tuple[str, list[dict[str, Any]], dict[str, Any]]]:
-        """按名称读取工具快照。缺省/停用抛错。无 IO。"""
+    ) -> list[tuple[str, list[dict[str, Any]], dict[str, Any], str]]:
+        """按名称读取工具快照。缺省/停用抛错。无 IO。
 
-        snapshots: list[tuple[str, list[dict[str, Any]], dict[str, Any]]] = []
+        第 4 元带 ``last_error_kind``（最近一次发现失败的分类）；无失败记录为空串，
+        供调用方区分「真失败空集」与「全关/未扫空集」。
+        """
+
+        snapshots: list[tuple[str, list[dict[str, Any]], dict[str, Any], str]] = []
         unknown: list[str] = []
         disabled: list[str] = []
         async with self._lock:
@@ -703,7 +725,12 @@ class McpServerRegistry:
                     disabled.append(name)
                     continue
                 snapshots.append(
-                    (name, copy.deepcopy(cached.tools), copy.deepcopy(cached.connect_params))
+                    (
+                        name,
+                        copy.deepcopy(cached.tools),
+                        copy.deepcopy(cached.connect_params),
+                        cached.last_error_kind,
+                    )
                 )
         if unknown:
             raise UnknownMcpServerError(unknown)
@@ -746,7 +773,7 @@ class McpServerRegistry:
                 async with self._lock:
                     if self._registry.get(entry.name) is not entry:
                         return
-                tools, params, error = await self._discover(entry.name, entry.config)
+                tools, params, error, error_kind = await self._discover(entry.name, entry.config)
                 async with self._lock:
                     if self._registry.get(entry.name) is not entry:
                         return
@@ -758,6 +785,7 @@ class McpServerRegistry:
                             current.last_scan_at = now
                             current.last_scan_ok = False
                             current.last_error = error
+                            current.last_error_kind = error_kind or MCP_CONNECTOR_ERROR_KIND_OTHER
                             current.scan_fail_count = fail_count
                         if fail_count >= self.settings.scan_fail_threshold:
                             logger.error(
@@ -771,6 +799,7 @@ class McpServerRegistry:
                         current.last_scan_at = now
                         current.last_scan_ok = True
                         current.last_error = ""
+                        current.last_error_kind = ""
                         current.scan_fail_count = 0
                         if params:
                             current.connect_params = copy.deepcopy(params)
@@ -824,7 +853,8 @@ class McpServerRegistry:
 
     async def _discover(
         self, name: str, config: Mapping[str, Any]
-    ) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], str, str]:
+        """发现工具并返回 ``(tools, params, error, error_kind)``；成功时 error 为空串。"""
         timeout_s = _discover_timeout_s(config)
         try:
             tools, params = await asyncio.wait_for(
@@ -832,12 +862,14 @@ class McpServerRegistry:
                 timeout=timeout_s,
             )
         except asyncio.TimeoutError:
-            return [], {}, f"connect timeout after {int(timeout_s)}s"
+            return [], {}, f"connect timeout after {int(timeout_s)}s", MCP_CONNECTOR_ERROR_KIND_TIMEOUT
+        except McpConnectorDiscoveryError as exc:
+            return [], {}, str(exc), exc.error_kind
         except Exception as exc:
-            return [], {}, str(exc)
+            return [], {}, str(exc), classify_mcp_connector_error(exc)
         if not params:
-            return [], {}, "discovery failed"
-        return list(tools or []), dict(params), ""
+            return [], {}, "discovery failed", MCP_CONNECTOR_ERROR_KIND_OTHER
+        return list(tools or []), dict(params), "", ""
 
 
 _REGISTRY: McpServerRegistry | None = None
