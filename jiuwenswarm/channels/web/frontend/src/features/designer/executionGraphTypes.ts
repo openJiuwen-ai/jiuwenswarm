@@ -359,6 +359,8 @@ export type DesignerExecutionGraph = {
 
 export type DesignerNodeState = {
   status: string;
+  /** Bumped by the run coordinator on every trigger that executes this node. */
+  version?: number;
   started_at?: number | null;
   completed_at?: number | null;
   output_ref?: AssetRef | null;

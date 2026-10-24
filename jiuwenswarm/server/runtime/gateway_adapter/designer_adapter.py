@@ -1341,6 +1341,84 @@ def _launch_run_trigger(
     task.add_done_callback(_RUN_TASKS.discard)
 
 
+async def _launch_run_trigger_and_ack(
+    coordinator: RunCoordinator,
+    payload: dict[str, Any],
+    on_update: Any,
+    *,
+    timeout_seconds: float = 10.0,
+    failure_grace_seconds: float = 0.8,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Launch the trigger and acknowledge the snapshot this round persisted.
+
+    ``designer.run.start`` used to answer with the graph's previous
+    lifelong-run record (or a synthesized draft placeholder), so consecutive
+    regenerations could read a stale ``run_id``/node version in the start
+    response. ``RunCoordinator._execute`` persists the armed 'running'
+    snapshot (with every executing node's version bumped) and emits it through
+    ``on_update`` *before* compiling, so awaiting that first update is cheap.
+
+    Returns ``(snapshot, None)`` for the real first record, ``(None, error)``
+    when the trigger crashes before persisting anything (prompt start error),
+    or ``(None, None)`` when no snapshot arrived in time (caller falls back to
+    the legacy accept-and-trigger placeholder). A short grace window also
+    catches a terminal failure that lands immediately after the snapshot
+    (compile refusal / setup crash) so the caller sees it instead of only a
+    push.
+    """
+    first: dict[str, Any] = {}
+    latest: dict[str, Any] = {}
+    started = asyncio.Event()
+
+    def _capture(run: dict[str, Any]) -> None:
+        snapshot = dict(run)
+        latest.clear()
+        latest.update(snapshot)
+        if not first:
+            first.update(snapshot)
+        started.set()
+        if on_update is not None:
+            on_update(snapshot)
+
+    async def _run() -> None:
+        try:
+            await coordinator.start(
+                payload["graph"],
+                node_ids=payload["node_ids"],
+                cascade=bool(payload.get("cascade")),
+                on_update=_capture,
+            )
+        except Exception as exc:  # noqa: BLE001 — background task must never raise
+            if not first:
+                latest.setdefault("error", str(exc) or exc.__class__.__name__)
+                started.set()
+            logger.exception(
+                "[DesignerAdapter] run trigger crashed: graph_id=%s",
+                payload.get("graph_id"),
+            )
+
+    task = asyncio.create_task(_run())
+    _RUN_TASKS.add(task)
+    task.add_done_callback(_RUN_TASKS.discard)
+    try:
+        await asyncio.wait_for(started.wait(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        return None, None
+    if not first:
+        return None, str(latest.get("error") or "design run failed to start")
+    if failure_grace_seconds > 0:
+        try:
+            # shield: the grace window must never cancel the live generation.
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=failure_grace_seconds
+            )
+        except Exception:  # noqa: BLE001 — timeout or already-logged crash
+            pass
+        if str(latest.get("status") or "") == "failed":
+            return None, str(latest.get("error") or "design run failed")
+    return dict(first), None
+
+
 def _initial_running_run(payload: dict[str, Any]) -> dict[str, Any]:
     """The 'running' snapshot the run.start response answers with.
 
@@ -1498,18 +1576,27 @@ class DesignerAdapter(GatewayAdapter):
                     # (server restarted since the last chat round); warm the
                     # design context so the trigger finds its worker base spec.
                     await _ensure_design_context(payload["graph"])
-                    _launch_run_trigger(coordinator, payload, _run_update_callback(request))
-                    run_out = _initial_running_run(payload)
-                    # Accept-and-trigger contract: answer with a RUNNING
-                    # snapshot. The stored record can still carry the previous
-                    # trigger's terminal status (the background task may not
-                    # have taken the coordinator lock yet), and the frontend's
-                    # applyRun only starts its 400ms poll on an active status —
-                    # a stale 'completed' leaves a rerun with no feedback
-                    # channel at all (pushes are its only other leg).
-                    if run_out is not None:
+                    # Acknowledge the snapshot THIS trigger persisted rather
+                    # than the previous lifelong-run record (or a synthesized
+                    # draft), and surface a start-time crash immediately.
+                    run_out, start_error = await _launch_run_trigger_and_ack(
+                        coordinator, payload, _run_update_callback(request)
+                    )
+                    if start_error:
+                        return build_error_response(
+                            request, start_error, code="RUN_START_FAILED"
+                        )
+                    if run_out is None:
+                        # Timeout fallback keeps the legacy contract: answer
+                        # with a running placeholder; pushes report progress.
+                        run_out = _initial_running_run(payload)
                         run_out["status"] = "running"
                         run_out["current_node_ids"] = []
+                        await _push_designer_event(
+                            request=request,
+                            event_type=EventType.DESIGNER_RUN_UPDATED.value,
+                            payload={"run": run_out},
+                        )
                     warning = str(payload.get("warning") or "").strip()
                     warnings = [
                         str(x)
@@ -1522,11 +1609,6 @@ class DesignerAdapter(GatewayAdapter):
                             warnings = [warning, *warnings]
                     if warnings:
                         run_out["warnings"] = warnings[:8]
-                    await _push_designer_event(
-                        request=request,
-                        event_type=EventType.DESIGNER_RUN_UPDATED.value,
-                        payload={"run": run_out},
-                    )
                     return _ok_response(
                         request,
                         {
