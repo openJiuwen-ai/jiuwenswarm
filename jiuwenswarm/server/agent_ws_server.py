@@ -237,6 +237,7 @@ from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
     reload_runtime_after_config_save,
 )
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
+from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
 from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
@@ -1385,6 +1386,7 @@ class AgentWebSocketServer:
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
             WebUIDispatchAdapter(),
+            PackageManagementAdapter(),
             MultimodalConfigAdapter(on_config_saved=self._reload_after_config_save),
             self._jiuwenmate_web,
         ):
@@ -2438,6 +2440,7 @@ class AgentWebSocketServer:
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
                     WebUIDispatchAdapter(),
+                    PackageManagementAdapter(),
                     MultimodalConfigAdapter(on_config_saved=self._reload_after_config_save),
                     self._jiuwenmate_web,
                 ):

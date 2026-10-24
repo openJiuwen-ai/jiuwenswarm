@@ -9,6 +9,7 @@ publication and active records stay in agent-core.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
@@ -42,6 +43,7 @@ class ExtensionManager:
     def __init__(self, install_dir: Path) -> None:
         self.install_dir = Path(install_dir).expanduser().resolve()
         self._registry = Registry()
+        self._operation_lock = asyncio.Lock()
         self._bus: ExtensionEventBus | None = None
         self._inactive_callback: Callable[[str], Awaitable[None]] | None = None
 
@@ -67,53 +69,56 @@ class ExtensionManager:
         single ``ops.build``. Callers must not trigger it again.
         """
 
-        if self._bus is not None:
-            return
-        try:
-            await self._registry.init(
-                event_bus,
-                host_event_types=host_event_types,
-                host_handlers=host_handlers,
-            )
-            self._registry.open_install_dir(self.install_dir, host_version=host_version)
-        except Exception:
-            if self._registry.is_ready:
-                unbind_context(event_bus)
-            self._registry = Registry()
-            raise
-        self._bus = event_bus
+        async with self._operation_lock:
+            if self._bus is not None:
+                return
+            try:
+                await self._registry.init(
+                    event_bus,
+                    host_event_types=host_event_types,
+                    host_handlers=host_handlers,
+                )
+                self._registry.open_install_dir(self.install_dir, host_version=host_version)
+            except Exception:
+                if self._registry.is_ready:
+                    unbind_context(event_bus)
+                self._registry = Registry()
+                raise
+            self._bus = event_bus
 
     async def install(self, paths: Sequence[Path]) -> list[ActivationReport]:
         """Install each source through ``package.install``."""
 
-        self._require_ready()
-        package_manager = self._registry.package_manager
-        before = set(package_manager.list_installed())
-        reports = list(await self._registry.install(list(paths)))
-        self._remove_failed_copies(reports, set(package_manager.list_installed()) - before)
-        return reports
+        async with self._operation_lock:
+            self._require_ready()
+            package_manager = self._registry.package_manager
+            before = set(package_manager.list_installed())
+            reports = list(await self._registry.install(list(paths)))
+            self._remove_failed_copies(reports, set(package_manager.list_installed()) - before)
+            return reports
 
     async def load_installed(self) -> list[ActivationReport]:
         """Activate the highest installed version of every inactive package."""
 
-        self._require_ready()
-        roots = self._pending_roots()
-        if not roots:
-            return []
-        return list(await self._registry.install(roots))
+        async with self._operation_lock:
+            self._require_ready()
+            roots = self._pending_roots()
+            if not roots:
+                return []
+            return list(await self._registry.install(roots))
 
     async def uninstall(self, package_id: str) -> ActivationReport:
         """Remove an active package, or delete an installed-only copy."""
 
-        self._require_ready()
-        report = await self._registry.uninstall(package_id)
-        if _is_not_active(report):
-            removed, error = self._remove_inactive(package_id)
-            if removed:
-                await self._notify_inactive(package_id)
-                return _success(package_id, "uninstall")
-            if error is not None:
-                return _failure(package_id, "uninstall", error)
+        async with self._operation_lock:
+            self._require_ready()
+            report = await self._registry.uninstall(package_id)
+            if _is_not_active(report):
+                removed, error = self._remove_inactive(package_id)
+                if removed:
+                    report = _success(package_id, "uninstall")
+                elif error is not None:
+                    report = _failure(package_id, "uninstall", error)
         if report.status == "SUCCESS":
             await self._notify_inactive(package_id)
         return report
@@ -121,8 +126,9 @@ class ExtensionManager:
     async def reload(self, package_id: str) -> ActivationReport:
         """Hot-switch an active package from its installed copy."""
 
-        self._require_ready()
-        return await self._registry.reload(package_id)
+        async with self._operation_lock:
+            self._require_ready()
+            return await self._registry.reload(package_id)
 
     async def query(self, package_id: str | None = None) -> QueryResult:
         """Return the facts agent-core can confirm for this process."""
@@ -153,33 +159,55 @@ class ExtensionManager:
     async def shutdown(self) -> None:
         """Release active handlers without deleting install copies."""
 
-        if self._bus is None:
-            return
-        bus = self._bus
-        runtime = self._registry.runtime
-        active = {record.package_id: record for record in runtime.active_packages()}
-        remaining = set(active)
-        while remaining:
-            ready = [
-                package_id
-                for package_id in sorted(remaining)
-                if not any(
-                    dependency.package_id in remaining
-                    for dependency in active[package_id].requires_packages
-                    if dependency.package_id != package_id
-                )
-            ]
-            if not ready:
-                ready = sorted(remaining)
-            for package_id in ready:
-                try:
-                    runtime.unpublish(package_id, bus)
-                except Exception:  # noqa: BLE001 - shutdown is best effort
-                    logger.exception("[ExtensionsV2] failed to release package %s", package_id)
-                remaining.discard(package_id)
-                await self._notify_inactive(package_id)
-        self._bus = None
-        self._registry = Registry()
+        notifications: list[str] = []
+        failed: list[str] = []
+        async with self._operation_lock:
+            if self._bus is None:
+                return
+            bus = self._bus
+            runtime = self._registry.runtime
+            active = {record.package_id: record for record in runtime.active_packages()}
+            remaining = set(active)
+            while remaining:
+                ready = [
+                    package_id
+                    for package_id in sorted(remaining)
+                    if not any(
+                        dependency.package_id == package_id
+                        for dependent_id in remaining
+                        if dependent_id != package_id
+                        for dependency in active[dependent_id].requires_packages
+                    )
+                ]
+                if not ready:
+                    ready = sorted(remaining)
+                for package_id in ready:
+                    try:
+                        decision = runtime.uninstall_decision(package_id)
+                        if decision is not None:
+                            logger.warning("[ExtensionsV2] cannot release %s: %s", package_id, decision.code)
+                            failed.append(package_id)
+                            continue
+                        runtime.unpublish(package_id, bus)
+                    except Exception:  # noqa: BLE001 - continue releasing independent packages
+                        logger.exception("[ExtensionsV2] failed to release package %s", package_id)
+                        failed.append(package_id)
+                    else:
+                        notifications.append(package_id)
+                    finally:
+                        remaining.discard(package_id)
+            if not failed:
+                unbind_context(bus)
+                self._bus = None
+                self._registry = Registry()
+
+        for package_id in notifications:
+            await self._notify_inactive(package_id)
+        if failed:
+            raise ExtensionFailure(
+                StatusCode.EXTENSION_LOAD_FAILED,
+                reason=f"shutdown could not release packages: {', '.join(failed)}",
+            )
 
     def _pending_roots(self) -> list[Path]:
         active = {record.package_id for record in self._registry.runtime.active_packages()}

@@ -8,7 +8,7 @@
 | 编号 / slug | `S_01 / extension-management-facade` |
 | 关联特性 | [F_03](../features/F_03_registry-facade.md) |
 | 所属模块 | `jiuwenswarm/extensions_v2/management/registry.py` |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-23 |
 | 方案状态 | 当前实现契约 |
 
 ## 1. 范围与责任
@@ -171,10 +171,11 @@ def active_packages() -> tuple[ActivePackageRecord, ...]
 async def shutdown() -> None
 ```
 
-- 按依赖逆序调用 `Runtime.unpublish`。
+- 按依赖方在前的顺序检查 Core 的 `uninstall_decision` 并调用公开 `Runtime.unpublish`。
 - 不删除安装副本。
-- 单个包失败记录日志后继续。
-- 完成后门面回到未初始化状态。
+- 单个包失败记录日志后继续处理独立包；只为成功撤销的包发送退出通知。
+- 仍有失败包时抛出 `ExtensionFailure` 并保留门面及上下文，允许查询和再次关闭。
+- 全部成功后解除 Core 上下文，门面回到未初始化状态；重新装配使用新 Bus。
 
 ## 6. 错误码
 
@@ -195,7 +196,8 @@ async def shutdown() -> None
 
 ## 7. 并发与部署限制
 
-- 门面不提供跨协程互斥；调用方需保证安装、卸载、重载不同时进行。
+- 同一门面的初始化、启动加载、安装、卸载、重载和停机串行执行；查询不占用写锁。
+- 包退出通知在写锁外执行。排队期间取消的请求不进入 Core；已开始操作的取消不表示副作用撤销。
 - 一个 EventBus 只能绑定一个 Registry；同一进程可以有多个独立 EventBus。
 - 安装目录不提供跨进程锁，多 AgentServer 部署需外部串行化。
 - agent-core 的 `begin_calls/end_calls` 尚未接入事件调用路径，`inflight` 当前恒为 0。
