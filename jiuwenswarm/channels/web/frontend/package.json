@@ -89,6 +89,7 @@
     "@codemirror/legacy-modes": "6.5.3",
     "@codemirror/state": "6.7.1",
     "@codemirror/view": "6.43.7",
+    "@fontsource/material-symbols-outlined": "^5.3.9",
     "@shikijs/langs": "^4.3.1",
     "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-virtual": "^3.14.9",

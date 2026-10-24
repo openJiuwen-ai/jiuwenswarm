@@ -22,10 +22,13 @@ from jiuwenswarm.server.runtime.a2ui.integration import (
 )
 
 
-def test_a2ui_channel_policy_is_web_only():
-    """A2UI should only be active for the controlled Web channel."""
+def test_a2ui_channel_policy_covers_web_and_officeclaw():
+    """A2UI native channels are the controlled Web channel + officeclaw (relay-claw);
+    all other channels stay off."""
     assert is_a2ui_channel("web") is True
     assert is_a2ui_channel("WEB") is True
+    assert is_a2ui_channel("officeclaw") is True
+    assert is_a2ui_channel("OfficeClaw") is True
     assert is_a2ui_channel("feishu") is False
     assert is_a2ui_channel("wechat") is False
     assert is_a2ui_channel(None) is False

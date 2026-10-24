@@ -11,6 +11,10 @@ import './styles/foundation.css'
 import './styles/themes/default/light.css'
 import './index.css'
 import './features/a2ui/a2ui.css'
+// Material Symbols Outlined 字体（@fontsource 静态切片 latin-400）：@a2ui/react 的 Icon
+// 组件靠字体连字（ligature）把 "favorite" 等名称渲染为图标；宿主缺字体时连字不生效，
+// 界面显示裸文字。静态切片随包自带，离线可用。
+import '@fontsource/material-symbols-outlined/latin-400.css';
 import { getApiPrefix, resolveApiUrl } from './utils/env';
 /**
 * 安装全局 fetch 拦截器：配置了 VITE_API_PREFIX 时，自动为指向同源的相对路径请求

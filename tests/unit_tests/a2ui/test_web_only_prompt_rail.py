@@ -8,7 +8,10 @@ import pytest
 from openjiuwen.core.single_agent.rail.base import InvokeInputs, ModelCallInputs
 
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import LocalSectionName
-from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
+from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import (
+    ResponsePromptRail,
+    _BROWSER_WORKFLOW_ENABLED,
+)
 from jiuwenswarm.server.runtime.a2ui.config import A2UIConfig
 
 
@@ -58,6 +61,13 @@ async def test_response_prompt_rail_keeps_a2ui_for_web_channel(monkeypatch):
     assert "browser_preflight_submit" not in content["en"]
 
 
+@pytest.mark.skipif(
+    not _BROWSER_WORKFLOW_ENABLED,
+    reason="browser-workflow feature gate off (_BROWSER_WORKFLOW_ENABLED=False "
+    "in response_prompt_rail; requires fixing 3 latent prompt issues + env "
+    "PLAYWRIGHT_RUNTIME_MCP_ENABLED before re-enabling). Test auto-reactivates "
+    "when the gate flips True.",
+)
 @pytest.mark.asyncio
 async def test_response_prompt_rail_scopes_browser_rules_to_browser_request(monkeypatch):
     """Browser A2UI flows remain available without polluting ordinary A2UI requests."""
@@ -301,3 +311,55 @@ async def test_response_prompt_rail_does_not_inject_a2ui_for_tui_session_prefix(
 
     assert "response" in rail.system_prompt_builder.sections
     assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
+async def test_a2ui_boost_injected_only_for_officeclaw_channel(monkeypatch):
+    """A2UI_BOOST(117) targets officeclaw (relay-claw) to counteract soul's
+    structured-output bias; other channels must not receive it."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+
+    await rail.before_model_call(SimpleNamespace(inputs={"channel": "officeclaw"}))
+
+    assert LocalSectionName.A2UI in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI_BOOST in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
+async def test_a2ui_boost_not_injected_for_web_channel(monkeypatch):
+    """Web already renders A2UI natively without the boost counterweight."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+
+    await rail.before_model_call(SimpleNamespace(inputs={"channel": "web"}))
+
+    assert LocalSectionName.A2UI in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI_BOOST not in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
+async def test_a2ui_boost_removed_when_a2ui_disabled(monkeypatch):
+    """With A2UI off, both the main section and a stale boost section must be
+    removed from the prompt builder."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=False),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+    rail.system_prompt_builder.sections[LocalSectionName.A2UI] = object()
+    rail.system_prompt_builder.sections[LocalSectionName.A2UI_BOOST] = object()
+
+    await rail.before_model_call(SimpleNamespace(inputs={"channel": "officeclaw"}))
+
+    assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI_BOOST not in rail.system_prompt_builder.sections

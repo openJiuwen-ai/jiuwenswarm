@@ -28,6 +28,7 @@ class PromptPriority(IntEnum):
     TODO = 85
     # thinking_discipline 紧挨最终可见回复之前：思考与 tool_calls 职责分工，高于 RESPONSE。
     THINKING_DISCIPLINE = 115
+    A2UI_BOOST = 117
     # final_visible_reply 放在 system 最末，强调约束工具/todo 结束后必须再发一轮完整纯文本 final；
     # UI 主要展示「最后一轮无 tool_calls」的正文。
     FINAL_VISIBLE_REPLY = 120
@@ -37,6 +38,7 @@ class LocalSectionName:
     """Local section names for optional JiuwenSwarm prompt sections."""
 
     A2UI = "a2ui"
+    A2UI_BOOST = "a2ui_boost"
     THINKING_DISCIPLINE = "thinking_discipline"
     FINAL_VISIBLE_REPLY = "final_visible_reply"
 

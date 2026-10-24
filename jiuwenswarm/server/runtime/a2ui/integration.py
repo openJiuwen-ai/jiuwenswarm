@@ -26,10 +26,13 @@ _A2UI_CONFIG_DEFAULT_PAYLOAD: dict[str, str] = {
 
 _A2UI_CHANNEL_ID = "web"
 
+# relay-claw 走 officeclaw channel，a2ui 对其原生生效（与 web 同等）。
+_A2UI_CHANNEL_IDS = frozenset({"web", "officeclaw"})
+
 
 def is_a2ui_channel(channel: str | None) -> bool:
     """Return whether the channel can natively run A2UI."""
-    return str(channel or "").strip().lower() == _A2UI_CHANNEL_ID
+    return str(channel or "").strip().lower() in _A2UI_CHANNEL_IDS
 
 
 def _to_bool(value: Any) -> bool:
