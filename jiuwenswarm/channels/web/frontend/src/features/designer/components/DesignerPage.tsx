@@ -6,6 +6,7 @@ import {
   collectDesignerMaterials,
   collectPendingRevisions,
 } from '../designerMaterials';
+import { designerRevisionAdoptionKey } from '../designerRevisionKey';
 import { useDesignerChatStore } from '../designerChatStore';
 import { seedDesignerChatHistory } from '../designerEntry';
 import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
@@ -208,7 +209,10 @@ export function DesignerPage({
     const runId = run?.run_id;
     if (!runId || run?.status === 'running') return;
     for (const item of pendingRevisions) {
-      const key = `${runId}:${item.nodeId}`;
+      // run_id is lifelong for the graph, so the key must also carry the node
+      // version and the candidate assets of THIS round; otherwise a second
+      // regeneration of the same node is deduped away (issue #5326).
+      const key = designerRevisionAdoptionKey(runId, item, run?.node_states?.[item.nodeId]);
       if (item.requiresSelection || autoPromotedRef.current.has(key)) continue;
       // Brief/storyboard versions remain pending until the user chooses one.
       autoPromotedRef.current.add(key);

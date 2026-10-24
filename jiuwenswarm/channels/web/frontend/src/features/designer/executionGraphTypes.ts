@@ -359,6 +359,8 @@ export type DesignerExecutionGraph = {
 
 export type DesignerNodeState = {
   status: string;
+  /** Round counter the coordinator bumps on every trigger for a node. */
+  version?: number;
   started_at?: number | null;
   completed_at?: number | null;
   output_ref?: AssetRef | null;
