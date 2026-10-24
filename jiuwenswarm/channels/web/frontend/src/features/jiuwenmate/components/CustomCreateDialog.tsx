@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next';
 import customDefault from '../../../assets/jiuwenmate/bees/custom-default.png';
 import { pickAvatarHue } from '../avatarHue';
 import { customAvatarHue } from '../colleaguePortraits';
-import sparkleIcon from '../../../assets/jiuwenmate/icons/sparkle.svg';
 import { JIUWENMATE_CUSTOM_SUGGESTIONS } from '../mockData';
 import { JiuwenMateDialog } from './JiuwenMateDialog';
 
@@ -57,10 +56,6 @@ export function CustomCreateDialog({ usedHues = [], onCancel, onConfirm, onOpenP
         >
           <img src={customDefault} alt="" />
         </span>
-        <span className="jiuwenmate-avatar-row__generate" aria-hidden>
-          <img src={sparkleIcon} alt="" />
-        </span>
-        <small>{t('jiuwenmate.create.avatarHint')}</small>
       </div>
       <label className="jiuwenmate-field">
         <span>{t('jiuwenmate.create.dialogName')}</span>

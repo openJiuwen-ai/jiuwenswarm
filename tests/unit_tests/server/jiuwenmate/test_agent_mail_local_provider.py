@@ -194,8 +194,12 @@ async def test_local_runtime_starts_official_cli_and_returns_its_oauth_url(tmp_p
     def runner(args, *, env, input_text=None, timeout=None, cwd):
         return subprocess.CompletedProcess(args, 0, '{"ok":true,"data":{"logged_in":false}}', '')
 
-    def popen(args, *, stdout, **kwargs):
+    def popen(args, *, stdout, env, **kwargs):
         assert args == ['npx', '--yes', '--package=@tencent-qqmail/agently-cli@1.0.18', 'agently-cli', 'auth', 'login']
+        assert '.agent-mail-bin' in env['PATH']
+        opener = Path(env['PATH'].split(':', 1)[0]) / 'open'
+        assert opener.read_text(encoding='utf-8') == '#!/bin/sh\nexit 0\n'
+        assert len(list((tmp_path / 'd29deebbd3878c9a' / 'auth').glob('*.frontend'))) == 1
         stdout.write(('请访问 https://agent.qq.com/oauth?ticket=opaque-token' + chr(10)).encode())
         stdout.flush()
         return Process()
@@ -205,5 +209,63 @@ async def test_local_runtime_starts_official_cli_and_returns_its_oauth_url(tmp_p
 
     assert result['status'] == 'authorizing'
     assert result['auth_url'] == 'https://agent.qq.com/oauth?ticket=opaque-token'
+    assert result['frontend_opens_auth'] is True
     assert result['operation_id'].startswith('d29deebbd3878c9a.')
+
+
+@pytest.mark.asyncio
+async def test_local_runtime_expires_abandoned_authorization(tmp_path, monkeypatch):
+    import os
+    import time
+
+    scope = AgentMailScope(namespace_id='local', agent_id='employee-1')
+
+    def runner(args, *, env, input_text=None, timeout=None, cwd):
+        return subprocess.CompletedProcess(args, 0, '{"ok":true,"data":{"logged_in":false}}', '')
+
+    runtime = LocalAgentMailRuntime(root=tmp_path, npx_path=Path('npx'), runner=runner)
+    operation_id = f'{runtime._scope_digest(scope)}.0123456789abcdef0123456789abcdef'
+    log_path, pid_path, exit_path = runtime._auth_paths(scope, operation_id)
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text('auth url', encoding='utf-8')
+    pid_path.write_text('4321', encoding='utf-8')
+    runtime._frontend_auth_marker(scope, operation_id).write_text('managed', encoding='utf-8')
+    runtime._current_auth_path(scope).write_text(operation_id, encoding='utf-8')
+    old_time = time.time() - 301
+    os.utime(pid_path, (old_time, old_time))
+    killed = []
+    monkeypatch.setattr(os, 'killpg', lambda process_id, sig: killed.append((process_id, sig)))
+
+    result = await runtime.status(scope)
+
+    assert result == {'status': 'not_connected', 'cli_version': '1.0.18'}
+    assert killed and killed[0][0] == 4321
+    assert not runtime._current_auth_path(scope).exists()
+    assert not exit_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_local_runtime_cleans_up_legacy_untracked_authorization(tmp_path, monkeypatch):
+    import os
+
+    scope = AgentMailScope(namespace_id='local', agent_id='employee-1')
+
+    def runner(args, *, env, input_text=None, timeout=None, cwd):
+        return subprocess.CompletedProcess(args, 0, '{"ok":true,"data":{"logged_in":false}}', '')
+
+    runtime = LocalAgentMailRuntime(root=tmp_path, npx_path=Path('npx'), runner=runner)
+    operation_id = f'{runtime._scope_digest(scope)}.0123456789abcdef0123456789abcdef'
+    log_path, pid_path, _ = runtime._auth_paths(scope, operation_id)
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text('https://agent.qq.com/oauth', encoding='utf-8')
+    pid_path.write_text('4321', encoding='utf-8')
+    runtime._current_auth_path(scope).write_text(operation_id, encoding='utf-8')
+    killed = []
+    monkeypatch.setattr(os, 'killpg', lambda process_id, sig: killed.append((process_id, sig)))
+
+    result = await runtime.status(scope)
+
+    assert result == {'status': 'not_connected', 'cli_version': '1.0.18'}
+    assert killed
+    assert runtime._current_operation(scope) is None
 

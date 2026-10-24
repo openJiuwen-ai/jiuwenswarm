@@ -18,7 +18,7 @@
 npx --yes --package=@tencent-qqmail/agently-cli@1.0.18 agently-cli <command>
 ```
 
-运行，不执行全局 `npm install`。授权时后端后台启动 `auth login`、从原始输出中提取腾讯授权 URL，页面在已打开的新窗口中跳转；完成后轮询 `auth status` 和 `+me`，只有两者均成功才将状态更新为 `connected`。
+运行，不执行全局 `npm install`。授权时后端后台启动 `auth login`、从原始输出中提取腾讯授权 URL；macOS/Linux 下通过员工私有 PATH shim 阻止 CLI 自行开浏览器，由前端在用户点击时打开并跟踪授权窗口。等待页显示准备提示；若用户在授权 URL 返回前关闭窗口，前端立即取消该员工的 CLI 授权进程且不再导航到腾讯页。窗口关闭且授权仍未完成时，前端立即取消授权并恢复未连接状态。完成授权后轮询 `auth status` 和 `+me`，只有两者均成功才将状态更新为 `connected`。
 
 ```mermaid
 sequenceDiagram
@@ -41,6 +41,10 @@ sequenceDiagram
 Web RPC 为 `jiuwenmate.agent_mail.status`、`auth.begin`、`auth.poll`、`auth.cancel`、`disconnect`。状态为 `not_connected`、`authorizing`、`connected`、`unavailable` 和 `error`。连接成功时状态还返回经 `+me` 核验的邮箱地址。Swarm 另用 `agent_mail_bindings` 保存员工与邮箱地址的唯一映射；同一命名空间内邮箱按去除首尾空白并忽略大小写后唯一，一个邮箱只能绑定一名员工，一名员工只登记一个邮箱。OAuth URL、token 和邮件正文不写入 JiuwenMate 数据库。
 
 管理页邮箱说明只保留一句：为该员工单独连接腾讯邮箱，授权后即可在新对话中使用。状态为 `connected` 时，同一页标注已绑定地址。服务重新连上后，停留在邮箱页也会重新读取状态。同一邮箱再次授权给另一名员工时，先退出原员工的 CLI 登录，再把映射转到新员工，不拒绝本次连接，也不弹窗。取消授权、断开连接、确认未连接及删除员工时释放对应映射。
+
+授权操作最多等待 5 分钟。macOS/Linux 前端检测到 OAuth 页面关闭会立即取消授权；旧版本遗留且未被前端接管的授权进程会在下一次状态查询时清理。若页面未能上报关闭或客户端不支持受控授权窗口，后端仍会在状态轮询发现超时后终止 CLI 进程、删除授权临时文件并返回 `not_connected`。
+
+若授权轮询的操作 ID 已失效，管理页会重新查询邮箱状态并清除旧操作；轮询请求完成前若页面状态已更新，则忽略旧请求结果，防止过期错误把界面留在“取消授权”。
 
 员工的后续 Execution 在状态为 `connected` 时注入 `agent_mail` 工具。支持 `mail.list`、`mail.search`、`mail.read`、`mail.attachment.read`、`mail.send`、`mail.reply`、`mail.forward` 和 `mail.delete`；参数经固定 allowlist 校验后转换为 CLI 参数，未知操作返回 `AGENT_MAIL_OPERATION_UNSUPPORTED`。发送、回复、转发与删除命令处理 CLI 返回的二次确认令牌；`mail.delete` 只将邮件移入废纸篓，不开放不可逆的永久删除。工具说明要求员工仅在用户明确要求时执行写操作。删除员工时删除其本地 CLI 目录和状态记录。
 
@@ -65,6 +69,7 @@ Web RPC 为 `jiuwenmate.agent_mail.status`、`auth.begin`、`auth.poll`、`auth.
 ## 验证
 
 - 官方 CLI 的空目录 `auth status` 已实际运行，确认其前置提示和 JSON 响应均可被解析。
+- `test_local_runtime_expires_abandoned_authorization` 验证未完成授权过期后进程会被终止且临时状态被清理。
 - `test_agent_mail_local_provider.py` 覆盖员工目录隔离、官方命令和 OAuth URL 提取。
 - `test_agent_mail_runtime.py`、`test_web_adapter.py` 覆盖默认本地 provider、RPC 生命周期和工具门控。
 - 前端 API/Profile 测试及生产构建覆盖页面调用和文案。

@@ -280,6 +280,7 @@ class AgentMailRuntimeService:
             "cli_version": safe.get("cli_version"),
             "operation_id": operation_id,
             "auth_url": auth_url,
+            "frontend_opens_auth": result.get("frontend_opens_auth") is True,
         }
 
     async def poll_auth(self, scope: AgentMailScope, operation_id: str) -> dict[str, Any]:

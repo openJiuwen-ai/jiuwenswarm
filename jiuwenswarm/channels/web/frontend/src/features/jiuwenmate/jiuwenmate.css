@@ -993,36 +993,6 @@
   height: 44px;
 }
 
-.jiuwenmate-avatar-row > button.jiuwenmate-avatar {
-  cursor: pointer;
-}
-
-.jiuwenmate-avatar-row__generate {
-  display: inline-grid;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  padding: 0;
-  border: 1px solid var(--jm-border);
-  border-radius: 6px;
-  background: #fff;
-  cursor: pointer;
-}
-
-.jiuwenmate-avatar-row__generate img {
-  width: 14px;
-  height: 14px;
-}
-
-.jiuwenmate-avatar-row small {
-  color: var(--jm-text-3);
-  font-size: 11px;
-}
-
-.jiuwenmate-avatar-row small[data-error='true'] {
-  color: var(--jm-danger);
-}
-
 .jiuwenmate-suggestions {
   display: grid;
   gap: 4px;

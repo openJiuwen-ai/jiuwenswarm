@@ -132,6 +132,280 @@ test('the employee mail page shows the connected mailbox address', async () => {
   }
 });
 
+test('reloading an expired Agent Mail authorization clears the cancel state', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  let statusCall = 0;
+  const props = {
+    colleague,
+    initialSection: 'mail',
+    resourceCatalog: catalog,
+    onSaveSettings: noop,
+    onOpenOffice: noop,
+    onChat: noop,
+    onConfigureIm: noop,
+    onToggleDisabled: noop,
+    onDelete: noop,
+    onLoadAgentMailStatus: async () => {
+      statusCall += 1;
+      return statusCall === 1
+        ? { status: 'authorizing', cli_version: '1.0.18', operation_id: 'old-operation' }
+        : { status: 'not_connected', cli_version: '1.0.18' };
+    },
+  };
+  try {
+    await act(async () => {
+      root.render(React.createElement(ColleagueProfilePage, props));
+      await Promise.resolve();
+    });
+    assert.ok(container.querySelector('[data-testid="jiuwenmate-profile-mail-cancel"]'));
+
+    await act(async () => {
+      root.render(React.createElement(ColleagueProfilePage, { ...props, connectionEpoch: 1 }));
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+
+    assert.equal(container.querySelector('[data-testid="jiuwenmate-profile-mail-cancel"]'), null);
+    assert.ok(container.querySelector('[data-testid="jiuwenmate-profile-mail-start"]'));
+    assert.match(container.querySelector('[data-testid="jiuwenmate-profile-mail-status"]').textContent, /未连接/);
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    if (previous.window === undefined) delete globalThis.window;
+    else globalThis.window = previous.window;
+    if (previous.document === undefined) delete globalThis.document;
+    else globalThis.document = previous.document;
+    if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+  }
+});
+
+test('a stale Agent Mail poll refreshes status instead of staying in cancel state', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  globalThis.window = dom.window;
+  dom.window.open = () => null;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(React.createElement(ColleagueProfilePage, {
+        colleague,
+        initialSection: 'mail',
+        resourceCatalog: catalog,
+        onSaveSettings: noop,
+        onOpenOffice: noop,
+        onChat: noop,
+        onConfigureIm: noop,
+        onToggleDisabled: noop,
+        onDelete: noop,
+        onLoadAgentMailStatus: async () => ({ status: 'not_connected', cli_version: '1.0.18' }),
+        onBeginAgentMailAuth: async () => ({ status: 'authorizing', operation_id: 'stale-operation' }),
+        onPollAgentMailAuth: async () => { throw new Error('Agent Mail runtime operation failed'); },
+      }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="jiuwenmate-profile-mail-start"]').click();
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+    assert.ok(container.querySelector('[data-testid="jiuwenmate-profile-mail-cancel"]'));
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2600));
+    });
+
+    assert.equal(container.querySelector('[data-testid="jiuwenmate-profile-mail-cancel"]'), null);
+    assert.ok(container.querySelector('[data-testid="jiuwenmate-profile-mail-start"]'));
+    assert.equal(container.querySelector('[role="alert"]'), null);
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    if (previous.window === undefined) delete globalThis.window;
+    else globalThis.window = previous.window;
+    if (previous.document === undefined) delete globalThis.document;
+    else globalThis.document = previous.document;
+    if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+  }
+});
+
+test('closing the tracked Agent Mail authorization tab cancels the pending operation', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  const openedUrls = [];
+  let popup;
+  let cancelCalls = 0;
+  dom.window.open = (url) => {
+    openedUrls.push(url);
+    popup = {
+      closed: false,
+      close() {},
+      document: { title: '', body: { textContent: '' } },
+      location: { set href(value) { openedUrls.push(value); } },
+    };
+    return popup;
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(React.createElement(ColleagueProfilePage, {
+        colleague,
+        initialSection: 'mail',
+        resourceCatalog: catalog,
+        onSaveSettings: noop,
+        onOpenOffice: noop,
+        onChat: noop,
+        onConfigureIm: noop,
+        onToggleDisabled: noop,
+        onDelete: noop,
+        onLoadAgentMailStatus: async () => ({ status: 'not_connected', cli_version: '1.0.18' }),
+        onBeginAgentMailAuth: async () => ({
+          status: 'authorizing',
+          operation_id: 'operation-1',
+          auth_url: 'https://agent.qq.com/oauth',
+          frontend_opens_auth: true,
+        }),
+        onCancelAgentMailAuth: async () => {
+          cancelCalls += 1;
+          return { status: 'not_connected', cli_version: '1.0.18' };
+        },
+        onPollAgentMailAuth: async () => ({ status: 'authorizing', cli_version: '1.0.18' }),
+      }));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      container.querySelector('[data-testid="jiuwenmate-profile-mail-start"]').click();
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+
+    assert.deepEqual(openedUrls, ['about:blank', 'https://agent.qq.com/oauth']);
+    popup.closed = true;
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2600));
+    });
+
+    assert.ok(container.querySelector('[data-testid="jiuwenmate-profile-mail-start"]'));
+    assert.equal(container.querySelector('[data-testid="jiuwenmate-profile-mail-cancel"]'), null);
+    assert.equal(cancelCalls, 1);
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    if (previous.window === undefined) delete globalThis.window;
+    else globalThis.window = previous.window;
+    if (previous.document === undefined) delete globalThis.document;
+    else globalThis.document = previous.document;
+    if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+  }
+});
+
+test('closing the pending Agent Mail tab before the URL arrives never opens the OAuth page', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  const openedUrls = [];
+  let popup;
+  let resolveAuthorization;
+  let cancelCalls = 0;
+  dom.window.open = (url) => {
+    openedUrls.push(url);
+    popup = {
+      closed: false,
+      close() {},
+      document: { title: '', body: { textContent: '' } },
+      location: { set href(value) { openedUrls.push(value); } },
+    };
+    return popup;
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(React.createElement(ColleagueProfilePage, {
+        colleague,
+        initialSection: 'mail',
+        resourceCatalog: catalog,
+        onSaveSettings: noop,
+        onOpenOffice: noop,
+        onChat: noop,
+        onConfigureIm: noop,
+        onToggleDisabled: noop,
+        onDelete: noop,
+        onLoadAgentMailStatus: async () => ({ status: 'not_connected', cli_version: '1.0.18' }),
+        onBeginAgentMailAuth: () => new Promise((resolve) => { resolveAuthorization = resolve; }),
+        onCancelAgentMailAuth: async () => {
+          cancelCalls += 1;
+          return { status: 'not_connected', cli_version: '1.0.18' };
+        },
+      }));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      container.querySelector('[data-testid="jiuwenmate-profile-mail-start"]').click();
+      await Promise.resolve();
+    });
+    assert.match(popup.document.body.textContent, /正在准备腾讯邮箱授权/);
+    popup.closed = true;
+
+    await act(async () => {
+      resolveAuthorization({
+        status: 'authorizing',
+        operation_id: 'operation-2',
+        auth_url: 'https://agent.qq.com/oauth',
+        frontend_opens_auth: true,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+
+    assert.deepEqual(openedUrls, ['about:blank']);
+    assert.equal(cancelCalls, 1);
+    assert.equal(container.querySelector('[data-testid="jiuwenmate-profile-mail-cancel"]'), null);
+    assert.ok(container.querySelector('[data-testid="jiuwenmate-profile-mail-start"]'));
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    if (previous.window === undefined) delete globalThis.window;
+    else globalThis.window = previous.window;
+    if (previous.document === undefined) delete globalThis.document;
+    else globalThis.document = previous.document;
+    if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+  }
+});
+
 test('the employee mail page does not explain a duplicate mailbox as a blocking dialog', () => {
   const markup = renderProfile({ initialSection: 'mail' });
   assert.doesNotMatch(markup, /role="alertdialog"/);

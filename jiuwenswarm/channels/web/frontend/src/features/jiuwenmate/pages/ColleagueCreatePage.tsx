@@ -1,7 +1,6 @@
 import { ArrowRightLeft, Check, ChevronDown, Plus, Trash2, X } from 'lucide-react';
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import sparkleIcon from '../../../assets/jiuwenmate/icons/sparkle.svg';
 import { ActionMenu } from '../components/ActionMenu';
 import { CapabilitySection, CollapsibleSection, type CapabilityKind } from '../components/CapabilitySection';
 import { ColleagueCard } from '../components/ColleagueCard';
@@ -11,7 +10,6 @@ import { TemplateDetailDrawer } from '../components/TemplateDetailDrawer';
 import { colleaguePortrait, customAvatarHue } from '../colleaguePortraits';
 import type { JiuwenMateModelCatalog } from '../jiuwenmateApi';
 import {
-  selectGeneratedColleagueCapabilities,
   type ColleagueCapabilityCatalog,
   type MutableColleagueCapabilitySelections,
   type SkillInstallCandidate,
@@ -19,7 +17,6 @@ import {
 } from '../colleagueCapabilities';
 import { ModelLabel } from '../components/ModelLabel';
 import {
-  JIUWENMATE_GENERATED_CAPABILITIES,
   JIUWENMATE_TEMPLATES,
   JIUWENMATE_WORK_DOMAINS,
 } from '../mockData';
@@ -32,8 +29,6 @@ import type {
 } from '../types';
 
 const DESCRIPTION_LIMIT = 200;
-const AVATAR_SIZE_LIMIT = 200 * 1024;
-const AVATAR_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/jpg'];
 const CAPABILITY_KINDS: readonly CapabilityKind[] = ['skills', 'connectors', 'plugins', 'knowledge'];
 
 export interface ColleagueCreatePageProps {
@@ -168,41 +163,12 @@ function ColleagueRefineForm({
   onComplete,
 }: ColleagueRefineFormProps) {
   const { t } = useTranslation();
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [avatarError, setAvatarError] = useState<string | null>(null);
   const [installingSkill, setInstallingSkill] = useState<string | null>(null);
   const [skillInstallError, setSkillInstallError] = useState<string | null>(null);
   const canSubmit = !submitting && draft.name.trim().length > 0 && draft.description.trim().length > 0;
   const hue = customAvatarHue(draft);
   const updateCapabilities = (patch: Partial<JiuwenMateCapabilities>) =>
     onDraftChange({ capabilities: { ...draft.capabilities, ...patch } });
-
-  const handleAvatarFile = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-    if (!AVATAR_TYPES.includes(file.type) || file.size > AVATAR_SIZE_LIMIT) {
-      setAvatarError(t('jiuwenmate.create.avatarInvalid'));
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      setAvatarError(null);
-      onDraftChange({ avatarUrl: String(reader.result) });
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const generateCapabilities = () => {
-    const merge = (current: readonly string[], extra: readonly string[]) => [...new Set([...current, ...extra])];
-    const generated = selectGeneratedColleagueCapabilities(JIUWENMATE_GENERATED_CAPABILITIES, resourceCatalog);
-    updateCapabilities({
-      skills: merge(draft.capabilities.skills, generated.skills),
-      connectors: merge(draft.capabilities.connectors, generated.connectors),
-      plugins: merge(draft.capabilities.plugins, generated.plugins),
-      knowledge: merge(draft.capabilities.knowledge, generated.knowledge),
-    });
-  };
 
   const installRecommendedSkill = async (skill: SkillInstallCandidate) => {
     setInstallingSkill(skill.identifier);
@@ -265,29 +231,13 @@ function ColleagueRefineForm({
           <div className="jiuwenmate-create__basic">
             <h2>{t('jiuwenmate.create.basicInfo')}</h2>
             <div className="jiuwenmate-avatar-row">
-              <button
-                type="button"
+              <span
                 className="jiuwenmate-avatar jiuwenmate-avatar--medium"
-                aria-label={t('jiuwenmate.create.changeAvatar')}
                 data-hue={hue ?? undefined}
                 style={hue === null ? undefined : { ['--jm-avatar-hue' as string]: `${hue}deg` }}
-                onClick={() => fileInputRef.current?.click()}
               >
                 <img src={colleaguePortrait(draft)} alt="" />
-              </button>
-              <button
-                type="button"
-                className="jiuwenmate-avatar-row__generate"
-                aria-label={t('jiuwenmate.create.resetAvatar')}
-                onClick={() => {
-                  setAvatarError(null);
-                  onDraftChange({ avatarUrl: undefined });
-                }}
-              >
-                <img src={sparkleIcon} alt="" aria-hidden />
-              </button>
-              <small data-error={avatarError ? 'true' : undefined}>{avatarError ?? t('jiuwenmate.create.avatarHint')}</small>
-              <input ref={fileInputRef} type="file" accept=".png,.jpeg,.jpg,.gif" hidden onChange={handleAvatarFile} />
+              </span>
             </div>
             <label className="jiuwenmate-field">
               <span>{t('jiuwenmate.create.name')}</span>
@@ -338,12 +288,7 @@ function ColleagueRefineForm({
             <header>
               <div>
                 <h2>{t('jiuwenmate.create.capabilities')}</h2>
-                <p>{t('jiuwenmate.create.capabilitiesHint')}</p>
               </div>
-              <button type="button" className="jiuwenmate-outline-button jiuwenmate-outline-button--icon" onClick={generateCapabilities}>
-                <img src={sparkleIcon} alt="" aria-hidden />
-                {t('jiuwenmate.create.generate')}
-              </button>
             </header>
             {source === 'template' && CAPABILITY_KINDS.some((kind) => missingTemplateCapabilities[kind].length > 0) ? (
               <section className="jiuwenmate-create__unavailable" data-testid="jiuwenmate-template-missing-capabilities">
