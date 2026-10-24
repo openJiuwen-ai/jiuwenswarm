@@ -1,6 +1,10 @@
 import { generateUuidV4 } from '../../utils/uuid';
 import type { DesignerLibraryAsset } from './designerAssetLibraryStore';
 import {
+  designerConnectionSources,
+  designerConnectionTargets,
+} from './designerConnectionRules';
+import {
   DESIGNER_CONFIG_DELEGATE_HANDLER,
   DESIGNER_NODE_ROLE_AUDIO,
   DESIGNER_NODE_ROLE_IMAGE,
@@ -76,35 +80,19 @@ export const DESIGNER_ADD_TEMPLATES: DesignerAddTemplate[] = [
   },
 ];
 
-const PORT_ADD_TYPES: Record<string, Record<DesignerNodePortSide, DesignerNodeType[]>> = {
-  [DESIGNER_NODE_TYPE_TEXT]: {
-    predecessor: [DESIGNER_NODE_TYPE_IMAGE],
-    successor: [DESIGNER_NODE_TYPE_IMAGE, DESIGNER_NODE_TYPE_VIDEO],
-  },
-  [DESIGNER_NODE_TYPE_TABLE]: {
-    predecessor: [DESIGNER_NODE_TYPE_IMAGE],
-    successor: [DESIGNER_NODE_TYPE_IMAGE, DESIGNER_NODE_TYPE_VIDEO],
-  },
-  [DESIGNER_NODE_TYPE_IMAGE]: {
-    predecessor: [DESIGNER_NODE_TYPE_IMAGE],
-    successor: [DESIGNER_NODE_TYPE_IMAGE, DESIGNER_NODE_TYPE_VIDEO],
-  },
-  [DESIGNER_NODE_TYPE_VIDEO]: {
-    predecessor: [DESIGNER_NODE_TYPE_IMAGE, DESIGNER_NODE_TYPE_VIDEO],
-    successor: [DESIGNER_NODE_TYPE_VIDEO],
-  },
-  [DESIGNER_NODE_TYPE_AUDIO]: {
-    predecessor: [],
-    successor: [DESIGNER_NODE_TYPE_VIDEO],
-  },
-};
-
-/** Templates a node's side port may add; unknown node types allow nothing. */
+/**
+ * Templates a node's side port may add, derived from the shared wire matrix in
+ * `designerConnectionRules` so the menu can only offer connections that free
+ * dragging accepts too (#5382). Unknown node types allow nothing.
+ */
 export function portAddTemplatesFor(
   nodeType: string,
   side: DesignerNodePortSide,
 ): DesignerAddTemplate[] {
-  const allowed = PORT_ADD_TYPES[nodeType]?.[side] ?? [];
+  const allowed: readonly DesignerNodeType[] =
+    side === 'successor'
+      ? designerConnectionTargets(nodeType)
+      : designerConnectionSources(nodeType);
   return DESIGNER_ADD_TEMPLATES.filter((item) => allowed.includes(item.type));
 }
 
