@@ -81,6 +81,7 @@ from jiuwenswarm.server.runtime.a2ui.integration import (
     finalize_assistant_response_if_a2ui,
     is_a2ui_channel,
 )
+from jiuwenswarm.server.runtime.a2ui.protocol import is_a2ui_client_event
 from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
 from jiuwenswarm.agents.harness.common.auto_memory import (
     _execute_auto_memory_extraction,
@@ -130,6 +131,30 @@ def _permission_response_key(request: AgentRequest) -> str | None:
     if not isinstance(request_id, str):
         return None
     return request_id or None
+
+
+def _is_a2ui_client_event_request(request: AgentRequest) -> bool:
+    """True when this request carries an A2UI client event in params.content.
+
+    此类请求的 inputs["query"] 已由 build_user_prompt 转成可读 a2ui prompt；
+    team 分支若再用 raw_query 覆写会把成品打回原始 dict（max评审#2）。
+    """
+    params = request.params if isinstance(request.params, dict) else {}
+    return is_a2ui_client_event(params.get("content"))
+
+
+def _should_skip_team_raw_override(inputs: dict[str, Any], request: AgentRequest) -> bool:
+    """team raw_query 覆写的豁免判定（可单测纯函数）。
+
+    豁免两类结构化请求：
+    - InteractiveInput：ask_user/HITL 续答（既有先例）
+    - A2UI client_event：query 已是转换后 a2ui prompt，覆写将退回原始 dict
+    """
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    if isinstance(inputs.get("query"), InteractiveInput):
+        return True
+    return _is_a2ui_client_event_request(request)
 
 
 def _is_team_permission_interactive_resume(
@@ -3461,7 +3486,8 @@ class JiuWenSwarm:
             from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
             team_query_is_interactive_input = isinstance(inputs.get("query"), InteractiveInput)
-            if not team_query_is_interactive_input:
+            # a2ui client_event / InteractiveInput 请求豁免 raw_query 覆写（max评审#2，判定见纯函数）
+            if not _should_skip_team_raw_override(inputs, request):
                 inputs["query"] = raw_query
             logger.info(
                 "[JiuWenSwarm] Team模式使用原始query: %s",
