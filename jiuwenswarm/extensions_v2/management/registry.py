@@ -79,6 +79,10 @@ class ExtensionManager:
                     host_handlers=host_handlers,
                 )
                 self._registry.open_install_dir(self.install_dir, host_version=host_version)
+            except asyncio.CancelledError:
+                unbind_context(event_bus)
+                self._registry = Registry()
+                raise
             except Exception:
                 if self._registry.is_ready:
                     unbind_context(event_bus)

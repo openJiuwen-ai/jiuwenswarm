@@ -52,6 +52,7 @@
 - [门面规约](docs/specs/S_01_extension-management-facade.md)：当前对外契约、不变量、错误码与验证索引。
 - [后端管理入口](docs/features/F_09_backend-management-requests.md)：V2 包管理请求、Web `/extension` 命令及实际安装目录返回。
 - [失败核对](docs/features/F_10_management-failure-recovery.md)：Core 回滚与没有 Report 时的状态查询。
+- [管理串行](docs/features/F_11_management-serialization.md)：根写操作互斥、取消及退出通知。
 - [后端包管理协议](docs/specs/S_02_backend-package-management.md)：`extensions.v2.*` 参数、响应及错误边界。
 - [内置事件开发模板](docs/designs/builtin-event-development-guide.md)：面向 WebClient、Gateway 和 AgentServer 开发者，按当前实现说明事件定义、Core Handler、BUILTIN Handler、Ops 能力登记及真实触发；新增代码示例明确标注为开发模板。
 
