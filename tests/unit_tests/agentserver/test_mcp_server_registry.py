@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -550,6 +551,196 @@ async def test_chat_empty_list_without_office_claw_skips() -> None:
     assert result is not None
     assert result.tool_ids == ()
     await adapter.cleanup_request_scoped_office_claw_mcp(result)
+
+
+@pytest.mark.asyncio
+async def test_chat_request_mcp_office_claw_routed_to_identity_pinned(monkeypatch) -> None:
+    """Regression: relay fallback branch places office-claw in request_mcp_servers
+    without an office_claw_mcp field. Source-2 must route that connector through
+    identity-pinned registration so office_claw_* tools (e.g. scheduled-task
+    tools) actually register — never silently become 'no tools'."""
+
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    _stub_office_claw_system_tools(
+        monkeypatch,
+        tools=[
+            {
+                "name": "office_claw_post_message",
+                "description": "post",
+                "input_params": {},
+            },
+            {
+                "name": "office_claw_register_scheduled_task",
+                "description": "schedule",
+                "input_params": {},
+            },
+        ],
+    )
+
+    generic_discover_calls: list[str] = []
+
+    async def generic_discover(name, config):
+        generic_discover_calls.append(name)
+        return (
+            [{"name": "unexpected_generic_tool", "description": "x", "input_params": {}}],
+            {"_mcp_client_type": "stdio", "command": "node", "args": ["x.js"]},
+        )
+
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", generic_discover)
+
+    adapter = _bare_session_adapter()
+    request = AgentRequest(
+        request_id="r1",
+        channel_id="officeclaw",
+        session_id="s1",
+        params={
+            "request_mcp_servers": {
+                "mcpServers": {
+                    "office-claw": {
+                        "command": "node",
+                        "args": ["mcp.js"],
+                        "cwd": "/tmp",
+                        "env": {"OFFICE_CLAW_INVOCATION_ID": "inv-1"},
+                    }
+                }
+            }
+        },
+    )
+    result = await adapter.register_request_scoped_office_claw_mcp(request)
+    assert result is not None
+    assert "office_claw_post_message" in result.tool_names
+    assert "office_claw_register_scheduled_task" in result.tool_names
+    assert "unexpected_generic_tool" not in result.tool_names
+    assert result.invocation_id == "inv-1"
+    assert generic_discover_calls == [], (
+        "office-claw must not be discovered via the generic "
+        "list_request_mcp_server_tools path when Source-1 is absent"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_request_mcp_office_claw_failure_logs_error(monkeypatch, caplog) -> None:
+    """If identity-pinned registration for a Source-2 office-claw connector
+    fails, the agent must skip it with an ERROR (not silent 'no tools')."""
+
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+
+    def bad_validate(config, **_kwargs):
+        raise ValueError("simulated identity validation failure")
+
+    monkeypatch.setattr(interface_deep, "validate_office_claw_mcp_config", bad_validate)
+
+    generic_discover_calls: list[str] = []
+
+    async def generic_discover(name, config):
+        generic_discover_calls.append(name)
+        return ([], {"_mcp_client_type": "stdio"})
+
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", generic_discover)
+
+    with caplog.at_level(logging.ERROR, logger="jiuwenswarm.server.runtime.agent_adapter.interface_deep"):
+        adapter = _bare_session_adapter()
+        request = AgentRequest(
+            request_id="r1",
+            channel_id="officeclaw",
+            session_id="s1",
+            params={
+                "request_mcp_servers": {
+                    "mcpServers": {
+                        "office-claw": {
+                            "command": "node",
+                            "args": ["mcp.js"],
+                            "cwd": "/tmp",
+                        }
+                    }
+                }
+            },
+        )
+        result = await adapter.register_request_scoped_office_claw_mcp(request)
+    assert result is not None
+    assert result.tool_ids == (), (
+        "a failed identity-pinned registration must leave the agent with "
+        "NO office_claw_* tools (empty generation), never silently "
+        "falling back to generic discovery"
+    )
+    assert generic_discover_calls == [], (
+        "office-claw Source-2 must never fall back to the generic path; "
+        "we should fail loud (no silent generic discovery)"
+    )
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any("identity-pinned registration failed" in r.getMessage() for r in error_records), (
+        "the fail-loud ERROR diagnostic must be logged so the office-claw "
+        "tool loss is not silent"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_request_mcp_office_claw_failure_keeps_other_connectors(
+    monkeypatch, caplog
+) -> None:
+    """Relay fallback payload mixes office-claw with other connectors (pptx-mcp,
+    user connectors). When office-claw identity-pinned registration fails, the
+    failure must NOT roll back the whole registration: the other connectors'
+    tools still register (per-connector skip)."""
+
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+
+    def bad_validate(config, **_kwargs):
+        raise ValueError("simulated identity validation failure")
+
+    monkeypatch.setattr(interface_deep, "validate_office_claw_mcp_config", bad_validate)
+
+    generic_discover_calls: list[str] = []
+
+    async def generic_discover(name, config):
+        generic_discover_calls.append(name)
+        if name == "pptx-mcp":
+            return (
+                [{"name": "pptx_edit", "description": "edit pptx", "input_params": {}}],
+                {"_mcp_client_type": "stdio", "command": "node", "args": ["pptx.js"]},
+            )
+        return ([], {"_mcp_client_type": "stdio"})
+
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", generic_discover)
+
+    with caplog.at_level(logging.ERROR, logger="jiuwenswarm.server.runtime.agent_adapter.interface_deep"):
+        adapter = _bare_session_adapter()
+        request = AgentRequest(
+            request_id="r1",
+            channel_id="officeclaw",
+            session_id="s1",
+            params={
+                "request_mcp_servers": {
+                    "mcpServers": {
+                        "office-claw": {
+                            "command": "node",
+                            "args": ["mcp.js"],
+                            "cwd": "/tmp",
+                        },
+                        "pptx-mcp": {
+                            "command": "node",
+                            "args": ["pptx.js"],
+                            "cwd": "/tmp",
+                        },
+                    }
+                }
+            },
+        )
+        result = await adapter.register_request_scoped_office_claw_mcp(request)
+    assert result is not None
+    assert "pptx_edit" in result.tool_names, (
+        "a failed office-claw connector must not roll back the sibling "
+        "pptx-mcp tools registered in the same payload"
+    )
+    assert "office_claw_post_message" not in result.tool_names
+    assert generic_discover_calls == ["pptx-mcp"], (
+        "only the non-office-claw connector may go through generic discovery"
+    )
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any("identity-pinned registration failed" in r.getMessage() for r in error_records)
 
 
 @pytest.mark.asyncio

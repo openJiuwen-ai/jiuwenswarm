@@ -947,3 +947,38 @@ class TestSeedTenantAgentWorkspace:
 
         for name in self._TEMPLATES:
             assert (workspace / name).stat().st_mtime_ns == mtimes[name]
+
+
+class TestSafeRotatingFileHandler:
+    """日志目录自建与目录被并发删除后的重建重试。"""
+
+    def test_creates_missing_parent_dir(self, tmp_path: Path):
+        log_file = tmp_path / "nested" / "logs" / "app.log"
+        handler = utils.SafeRotatingFileHandler(str(log_file))
+        try:
+            assert log_file.parent.is_dir()
+            assert log_file.is_file()
+        finally:
+            handler.close()
+
+    def test_recreates_parent_dir_vanished_between_mkdir_and_open(
+        self, tmp_path: Path, monkeypatch
+    ):
+        log_file = tmp_path / "logs" / "app.log"
+        real_mkdir = Path.mkdir
+        calls = {"n": 0}
+
+        def flaky_mkdir(self, *args, **kwargs):
+            real_mkdir(self, *args, **kwargs)
+            calls["n"] += 1
+            if calls["n"] == 1 and self == log_file.parent:
+                shutil.rmtree(self, ignore_errors=True)
+
+        monkeypatch.setattr(Path, "mkdir", flaky_mkdir)
+        handler = utils.SafeRotatingFileHandler(str(log_file))
+        try:
+            assert calls["n"] >= 2, "first open should have hit the retry path"
+            assert log_file.parent.is_dir()
+            assert log_file.is_file()
+        finally:
+            handler.close()
