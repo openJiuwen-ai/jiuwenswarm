@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
-
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
-
 
 _MAX_YEARS_BETWEEN_MATCHES = 130
 
@@ -37,6 +35,7 @@ def iso_to_seven_field_cron(at_iso: str, *, timezone: str) -> str:
     second minute hour day month dow year.
 
     If the input has no timezone, interpret it in `timezone`.
+    Reject local times that do not exist during a timezone transition.
     """
     s = (at_iso or "").strip()
     if not s:
@@ -47,6 +46,12 @@ def iso_to_seven_field_cron(at_iso: str, *, timezone: str) -> str:
     tz = ZoneInfo(timezone)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=tz)
+        # ZoneInfo allows imaginary wall times; do not silently shift a reminder.
+        round_trip = dt.astimezone(UTC).astimezone(tz)
+        if round_trip.replace(tzinfo=None) != dt.replace(tzinfo=None):
+            raise ValueError(
+                f"local time '{s}' does not exist in timezone '{timezone}'"
+            )
     else:
         dt = dt.astimezone(tz)
     return f"{dt.second} {dt.minute} {dt.hour} {dt.day} {dt.month} ? {dt.year}"
