@@ -250,6 +250,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.FILE_IMPORT_URL: handle_gateway_adapter,
     ReqMethod.FILE_UPLOAD_CHUNK: handle_gateway_adapter,
     ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK: handle_gateway_adapter,
+    ReqMethod.FILE_READ_UPLOAD_CHUNK: handle_gateway_adapter,
     ReqMethod.WORKSPACE_TREE: handle_gateway_adapter,
     ReqMethod.WORKSPACE_PREVIEW: handle_gateway_adapter,
     ReqMethod.WORKSPACE_USAGE: handle_gateway_adapter,

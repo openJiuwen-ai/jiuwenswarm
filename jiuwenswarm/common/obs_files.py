@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from minio import Minio
+from minio.error import S3Error
 from urllib3 import PoolManager, Timeout
 
 MAX_FILE_BYTES = 50 * 1024 * 1024
@@ -93,11 +94,23 @@ class AttachmentStore:
         )
         return cls(client, bucket, origin)
 
+    def _ensure_bucket(self) -> None:
+        if self.client.bucket_exists(self.bucket):
+            return
+        try:
+            self.client.make_bucket(self.bucket)
+        except S3Error as exc:
+            # Another Gateway/AgentServer may have created it after the check.
+            if exc.code not in {"BucketAlreadyOwnedByYou", "BucketAlreadyExists"}:
+                raise
+            if not self.client.bucket_exists(self.bucket):
+                raise
+
     def upload(self, data: bytes, filename: str, prefix: str) -> dict:
         if not data or len(data) > MAX_FILE_BYTES:
             raise ValueError("file must contain 1..50 MiB")
         key = f"{prefix}{uuid.uuid4().hex}/{filename}"
-        # Buckets and lifecycle policies are deployment configuration, not user operations.
+        self._ensure_bucket()
         self.client.put_object(self.bucket, key, BytesIO(data), len(data))
         try:
             url = self.client.presigned_get_object(
@@ -128,6 +141,7 @@ class AttachmentStore:
             digest = f"sha256:{checksum.hexdigest()}"
             source.seek(0)
             reader = _DigestReader(source)
+            self._ensure_bucket()
             result = self.client.put_object(
                 self.bucket, key, reader, size, metadata={"sha256": digest}
             )

@@ -696,7 +696,9 @@ class SendFileToolkit:
 
             return [
                 {"path": file_path,
-                 **build_object_file_download_info(Path(file_path), envelope.session_id, envelope.user_id),
+                 **build_object_file_download_info(
+                     Path(file_path), envelope.session_id, envelope.user_id, metadata=envelope.metadata
+                 ),
                  "is_skill_package": looks_like_skill_package(file_path)}
                 for file_path in valid_files
             ]

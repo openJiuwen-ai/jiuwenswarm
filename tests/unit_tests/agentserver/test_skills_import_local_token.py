@@ -143,10 +143,11 @@ async def test_import_object_delivery_without_local_snapshot(manager, tmp_path, 
     from types import SimpleNamespace
     from jiuwenswarm.agents.harness.common.tools.obs_file_delivery import build_object_file_download_info
     from jiuwenswarm.common.obs_files import AttachmentStore
+    from jiuwenswarm.common.utils import build_tenant_key
     from jiuwenswarm.server.runtime.tenant_context import TenantContext
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    monkeypatch.setattr(TenantContext, "current_tenant_key", lambda: "g::b::u")
+    monkeypatch.setattr(TenantContext, "current_tenant_key", lambda: build_tenant_key("g", "b", "u"))
     package = _zip_skill(tmp_path, name="object-delivery", filename="object-delivery.skill")
     data = package.read_bytes()
     restored = []
@@ -157,12 +158,14 @@ async def test_import_object_delivery_without_local_snapshot(manager, tmp_path, 
         "size":len(data), "digest":"sha256:"+hashlib.sha256(data).hexdigest(), "etag":"etag"
     }, download_file=download)
     monkeypatch.setattr(AttachmentStore, "from_env", lambda: store)
-    file = build_object_file_download_info(package, "object-session", "u")
+    file = build_object_file_download_info(package, "object-session", "u", metadata={
+        "user_id": "u", "routing": {"group_id": "g", "bot_id": "b"},
+    })
     package.unlink()
     result = await manager.handle_skills_import_local({"download_token": file["download_token"], "_session_id": "object-session"})
     assert result["success"] and result["skill"]["name"] == "object-delivery"
     assert restored == ["obs_asset_v1"]
-    monkeypatch.setattr(TenantContext, "current_tenant_key", lambda: "g::b::other")
+    monkeypatch.setattr(TenantContext, "current_tenant_key", lambda: build_tenant_key("g", "b", "other"))
     with pytest.raises(SkillRpcError, match="租户不匹配"):
         await manager.handle_skills_import_local({"download_token": file["download_token"], "_session_id": "object-session"})
     assert len(restored) == 1

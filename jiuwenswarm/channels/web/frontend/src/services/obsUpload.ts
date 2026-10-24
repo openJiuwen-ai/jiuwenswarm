@@ -1,5 +1,6 @@
 import type { MediaItem } from '../types';
 import { buildRuntimeIdentityHeaders, getRuntimeScope } from './runtimeScope';
+import { generateUuidV4 } from '../utils/uuid';
 
 type FileRecord = { path: string; filename: string; mime_type: string; size_bytes: number };
 type Request = <T>(method: string, params: Record<string, unknown>, options?: { timeoutMs: number }) => Promise<T>;
@@ -33,7 +34,7 @@ export async function persistEnterpriseAttachments(
       assertScope();
       const response = await fetch('/file-api/upload-obs', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...buildRuntimeIdentityHeaders(crypto.randomUUID(), {}, scope) },
+        headers: { 'Content-Type': 'application/json', ...buildRuntimeIdentityHeaders(generateUuidV4(), {}, scope) },
         body: JSON.stringify(file),
       });
       const uploaded = (await response.json()) as { ok?: boolean; url?: string; error?: string; name?: string };
@@ -79,7 +80,7 @@ export async function persistEnterpriseAttachments(
           signal: AbortSignal.timeout(10_000),
           headers: {
             'Content-Type': 'application/json',
-            ...buildRuntimeIdentityHeaders(crypto.randomUUID(), {}, scope),
+            ...buildRuntimeIdentityHeaders(generateUuidV4(), {}, scope),
           },
           body: JSON.stringify({ url }),
         });

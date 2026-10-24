@@ -85,6 +85,19 @@ def test_session_and_agent_methods_use_dedicated_urls() -> None:
     assert removed.url == "http://10.0.0.8:8766/api/v1/sessions/sess-1"
 
 
+def test_session_upload_reader_has_dedicated_route_and_identity_headers() -> None:
+    envelope = _envelope("file.read_upload_chunk", user_id="u", channel_context={
+        "routing": {"group_id": "g", "bot_id": "b"},
+    })
+    envelope.params = {"path": "/tenant/agent/sessions/sess-1/uploads/photo.png", "offset": 2, "limit": 512}
+    request = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766")
+    assert request.verb == "GET"
+    assert request.url == "http://10.0.0.8:8766/api/v1/sessions/sess-1/files/upload-content"
+    assert request.headers["X-User-Id"] == "u"
+    assert request.headers["X-Group-Id"] == "g" and request.headers["X-Bot-Id"] == "b"
+    assert request.query["path"] == envelope.params["path"]
+
+
 def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
     expected = {
         "mcp.list": "/api/v1/mcp/actions/list",

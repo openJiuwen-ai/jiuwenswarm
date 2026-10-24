@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { build } from 'esbuild';
+import { webcrypto } from 'node:crypto';
 
 await build({
   stdin: {
     contents:
-      "export { persistEnterpriseAttachments } from './src/services/obsUpload'; export { setRuntimeScope } from './src/services/runtimeScope'; export { fileDownloadHead, prepareFileDownload } from './src/services/fileDownload';",
+      "export { persistEnterpriseAttachments } from './src/services/obsUpload'; export { setRuntimeScope } from './src/services/runtimeScope'; export { fileDownloadHead, prepareFileDownload } from './src/services/fileDownload'; export { uploadFileUrl } from './src/services/uploadFileUrl';",
     resolveDir: process.cwd(),
   },
   bundle: true,
@@ -14,7 +15,7 @@ await build({
   define: { 'import.meta.env': '{}' },
   outfile: 'node_modules/.cache/enterprise/files.mjs',
 });
-const { persistEnterpriseAttachments, setRuntimeScope, fileDownloadHead, prepareFileDownload } =
+const { persistEnterpriseAttachments, setRuntimeScope, fileDownloadHead, prepareFileDownload, uploadFileUrl } =
   await import('../node_modules/.cache/enterprise/files.mjs');
 const item = { filename: '中文.txt', base64Data: 'aGVsbG8=' };
 function setup() {
@@ -40,6 +41,71 @@ function setup() {
   };
   setRuntimeScope({ userId: 'u', groupId: 'g', botId: 'b' });
   globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, url: 'http://obs/signed', name: '中文.txt' }));
+}
+
+test('enterprise original image URL carries existing tenant and upload session, not credentials', () => {
+  setup();
+  const path = '/tenant/agent/sessions/s/uploads/中文 图片.png';
+  const result = new URL(uploadFileUrl(path), 'http://localhost');
+  assert.equal(result.pathname, '/file-api/raw-file');
+  assert.equal(result.searchParams.get('path'), path);
+  assert.equal(result.searchParams.get('session_id'), 's');
+  assert.equal(result.searchParams.get('user_id'), 'u');
+  assert.equal(result.searchParams.get('group_id'), 'g');
+  assert.equal(result.searchParams.get('bot_id'), 'b');
+  assert.equal(result.searchParams.has('token'), false);
+  assert.equal(result.searchParams.has('access_token'), false);
+});
+
+test('enterprise original image URL follows context switches and excludes non-upload paths', () => {
+  setup();
+  const path = '/tenant/agent/sessions/s/uploads/photo.png';
+  setRuntimeScope({ userId: 'other', groupId: 'other-g', botId: 'other-b' });
+  const result = new URL(uploadFileUrl(path), 'http://localhost');
+  assert.equal(result.searchParams.get('user_id'), 'other');
+  assert.equal(result.searchParams.get('group_id'), 'other-g');
+  assert.equal(result.searchParams.get('bot_id'), 'other-b');
+  for (const outside of ['/etc/passwd', '/tenant/agent/jiuwenclaw_workspace/photo.png',
+    '/tenant/agent/sessions/../uploads/photo.png']) assert.equal(uploadFileUrl(outside), undefined);
+});
+
+test('personal original image URL remains byte-for-byte unchanged', () => {
+  setup();
+  window.__JIUWENSWARM_EDITION__ = 'personal';
+  const path = '/local/project/中文 图片.png';
+  assert.equal(uploadFileUrl(path), `/file-api/raw-file?path=${encodeURIComponent(path)}`);
+});
+
+for (const kind of ['image', 'document']) {
+  test(`${kind} upload and cleanup work over non-secure HTTP without randomUUID`, async () => {
+    setup();
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: { getRandomValues: webcrypto.getRandomValues.bind(webcrypto) },
+    });
+    const requests = [];
+    globalThis.fetch = async (url, init) => {
+      requests.push({ method: init.method, headers: new Headers(init.headers) });
+      return new Response(JSON.stringify({ ok: true, url: 'http://obs/signed', name: item.filename }));
+    };
+    try {
+      await persistEnterpriseAttachments(
+        async (method) => method === 'file.import_url'
+          ? { files: [{ path: '/tenant/a', filename: item.filename }] }
+          : {},
+        '', 's', [item], kind,
+      );
+      assert.deepEqual(requests.map((request) => request.method), ['POST', 'DELETE']);
+      const ids = requests.map((request) => request.headers.get('X-Request-Id'));
+      for (const id of ids) assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      assert.notEqual(ids[0], ids[1]);
+      for (const request of requests) assert.equal(request.headers.get('X-User-Id'), 'u');
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'crypto', descriptor);
+      else delete globalThis.crypto;
+    }
+  });
 }
 
 test('signed URL stays in import; persist/chat receive only AS paths', async () => {
