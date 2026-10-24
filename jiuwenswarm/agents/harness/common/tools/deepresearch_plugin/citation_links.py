@@ -27,12 +27,9 @@ def parse_citation(
     if prefix is None:
         return None
     destination = parseLinkDestination(source, prefix.end(), len(source))
-    if (
-        not destination.ok
-        or not destination.str.startswith(("http://", "https://"))
-        or destination.pos >= len(source)
-        or source[destination.pos] != ")"
-    ):
+    if not destination.ok or not destination.str.startswith(("http://", "https://")):
+        return None
+    if destination.pos >= len(source) or source[destination.pos] != ")":
         return None
     end = destination.pos + 1
     if full and end != len(source):
