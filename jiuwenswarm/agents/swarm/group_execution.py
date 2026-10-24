@@ -42,7 +42,11 @@ TASK_RULES = (
     "Call run_team to consult the private team context. It does not create a card until actual work starts. "
     "run_team returns immediately after accepting background work. Do not submit its result yourself. "
     "Stay available for ordinary chat. Use run_team action=update or cancel on its execution_id for changes. "
-    "A follow-up after completion is run_team action=continue with a new run_id and the old execution_id. "
+    "A follow-up after a private-team completion is run_team action=continue with a new run_id and the old execution_id. "
+    "After a Team Organization, a message that mentions only you is a follow-up: "
+    "answer it yourself with group_send_message when one agent can do it, "
+    "or call run_team when the expert team should do it. "
+    "That run_team resumes the same instance and loads the context from its earlier child task. "
     "If important requirements are missing, ask_user before work; do not invent user preferences. "
     "For ambiguous references ask which task; do not guess."
 )
