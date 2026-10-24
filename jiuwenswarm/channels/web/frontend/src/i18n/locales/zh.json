@@ -94,6 +94,7 @@
       "bootstrapError": "搭建工作流失败，请稍后重试。",
       "notImplemented": "未实现",
       "send": "发送",
+      "running": "设计团长正在执行…",
       "attach": "添加参考素材",
       "removeAttachment": "移除参考素材",
       "attachHint": "支持图片、视频、音频。最多 5 张图、1 个视频、1 段音频。",

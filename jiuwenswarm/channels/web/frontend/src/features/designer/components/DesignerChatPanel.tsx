@@ -1,4 +1,4 @@
-import { PanelRight, X } from 'lucide-react';
+import { LoaderCircle, PanelRight, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import SendPlaneIcon from '../../../assets/send_plane.svg?react';
@@ -410,10 +410,23 @@ export function DesignerChatPanel() {
                   className="designer-chat-panel__send"
                   disabled={chatBusy || !canSend}
                   onClick={handleSend}
-                  aria-label={t('designer.chat.send')}
+                  aria-label={chatBusy ? t('designer.chat.running') : t('designer.chat.send')}
+                  aria-busy={chatBusy}
+                  title={chatBusy ? t('designer.chat.running') : undefined}
                   data-testid="designer-chat-panel-send"
+                  data-variant={chatBusy ? 'running' : 'idle'}
                 >
-                  <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
+                  {/* A leader round can run for minutes (graph autorun); the button
+                      must read as "working", never as the idle send plane (#5410). */}
+                  {chatBusy ? (
+                    <LoaderCircle
+                      className="designer-chat-panel__send-spinner animate-spin"
+                      size={18}
+                      aria-hidden
+                    />
+                  ) : (
+                    <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
+                  )}
                 </button>
               }
             />
