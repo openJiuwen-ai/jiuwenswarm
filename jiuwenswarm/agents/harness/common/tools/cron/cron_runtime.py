@@ -553,7 +553,8 @@ def _extract_legacy_params(
         if "id" in data:
             out["id"] = str(data.get("id") or "").strip()
         if "enabled" in data:
-            out["enabled"] = bool(data.get("enabled"))
+            # 原值透传，由 CronTools 严格校验拒绝非布尔值（#5725）。
+            out["enabled"] = data.get("enabled")
         if "wake_offset_seconds" in data:
             out["wake_offset_seconds"] = data.get("wake_offset_seconds")
         if "deleteAfterRun" in data:

@@ -3632,7 +3632,8 @@ class MessageHandler(ABC):
                 job_id = str(params.get("job_id") or "")
                 if await _get_owned_job(job_id) is None:
                     raise KeyError("job not found")
-                data = await cc.toggle_job(job_id, bool(params.get("enabled")))
+                # 原值透传，由 controller 严格校验拒绝非布尔值（#5725）。
+                data = await cc.toggle_job(job_id, params.get("enabled"))
             elif action == "preview":
                 job_id = str(params.get("job_id") or "")
                 if await _get_owned_job(job_id) is None:
