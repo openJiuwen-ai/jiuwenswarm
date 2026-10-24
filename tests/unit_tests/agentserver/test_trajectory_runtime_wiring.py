@@ -33,6 +33,7 @@ def reset_observability_demands():
         agent_observability._agent_observability_active = False
         agent_observability._force_ever_enabled = False
         agent_observability._file_exporter_fanout = None
+        agent_observability._file_exporter_fanout_users.clear()
         team_manager._observability_active = False
 
     _reset()
