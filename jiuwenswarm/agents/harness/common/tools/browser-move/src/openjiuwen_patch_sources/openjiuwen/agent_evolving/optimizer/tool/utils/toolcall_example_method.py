@@ -9,6 +9,9 @@ from typing import Any, Dict, List, Optional, Union
 from openjiuwen.agent_evolving.optimizer.tool.utils.base_method import BaseMethod
 from openjiuwen.agent_evolving.optimizer.tool.utils.format import format_prompt_llama, parse_json
 from openjiuwen.agent_evolving.optimizer.tool.utils.rits import get_rits_response
+from openjiuwen.agent_evolving.optimizer.tool.utils.sensitive_data import (
+    argument_dict, credential_values, is_credential_name, redact,
+)
 from openjiuwen.core.common.logging import logger
 
 
@@ -22,6 +25,10 @@ class APICallToExampleMethod(BaseMethod):
         non_opt_params=None,
     ):
         super().__init__(config)
+        if api_keys and not isinstance(api_keys, dict):
+            raise TypeError("api_keys must map credential argument names to values")
+        if api_keys and any(not is_credential_name(name) for name in api_keys):
+            raise ValueError("api_keys contains a non-credential argument name")
         self.run_tool_with_api_call = api_call_fn
         self.eval_fn = eval_fn
         self.api_keys = api_keys
@@ -36,11 +43,7 @@ class APICallToExampleMethod(BaseMethod):
     ):
         logger.info("Inside method, trying to step")
         prev_outputs = copy.copy(prev_outputs) if prev_outputs is not None else []
-        description = self.get_original_description(tool) # get original descriptions for toolbench
-        logger.info(f"Original desc obtained: {description}")
-
         tool_for_opt = copy.deepcopy(tool)
-        logger.info(f"Tool_for_opt: {tool_for_opt}")
         
         # 1. Rejection sampling:
         # for initial loop, generate candidate api call, run tool, and determine
@@ -48,27 +51,37 @@ class APICallToExampleMethod(BaseMethod):
         for _ in range(self.config['num_init_loop']):
             fn_call = self.generate_api_call_from_description(tool_for_opt, num_gen=1, prev_output=prev_outputs)
             logger.info("API call generation completed")
-            logger.info(f"API call params: {fn_call}")
+            if not isinstance(fn_call, dict):
+                raise ValueError("API call generation did not return a function call")
+            arguments = argument_dict(fn_call)
+            if arguments is None:
+                raise ValueError("API call arguments must be a JSON object")
+            fn_call["arguments"] = arguments
+            secrets = credential_values(fn_call, self.api_keys, tool_for_opt)
+            safe_fn_call = redact(fn_call, secrets)
+            safe_tool = redact(tool_for_opt, secrets)
+            safe_description = self.get_original_description(safe_tool)
 
             tool_res, status_code = self.run_tool_with_api_call(tool_for_opt, fn_call)
+            safe_tool_res = redact(tool_res, secrets)
             outputs = {
-                'fn_call': fn_call,
-                'tool_results': tool_res,
+                'fn_call': safe_fn_call,
+                'tool_results': safe_tool_res,
                 'status_code': status_code,
                 'score': status_code,
             }
-            logger.info(f"Run tool with api call completed, status code {status_code}")
+            logger.info("Run tool with api call completed")
 
-            api_analysis = self.critique_api_call(tool_for_opt, fn_call, tool_res)
-            logger.info(f"critique_api_call finished, results: {api_analysis}")
+            api_analysis = self.critique_api_call(safe_tool, safe_fn_call, safe_tool_res)
+            api_analysis = redact(api_analysis, secrets)
+            logger.info("critique_api_call finished")
             if api_analysis['err_code'] == -1:
                 outputs['status_code'] = -1
                 outputs['score'] = -1
                 outputs['api_reflection'] = api_analysis['analysis']
                 prev_outputs.append(outputs)
                 if self.verbose:
-                    logger.info(json.dumps(fn_call))
-                    logger.info(api_analysis['analysis'])
+                    logger.info("API call rejected by critique")
                 continue
             break
         
@@ -82,9 +95,12 @@ class APICallToExampleMethod(BaseMethod):
         insts, scores, analyses, answers, refls = [], [], [], [], []
         inst_output = None
         for n_refine in range(self.config['num_refine_steps']):
-            inst = self.generate_instruction_from_api_call(tool_for_opt, fn_call, tool_res, inst_output)
-            ans = self.produce_answer_from_api_call(inst, json.dumps(tool_for_opt), tool_res)
-            inst_eval = self.critique_instruction(tool_for_opt, inst, fn_call, tool_res, ans)
+            inst = redact(self.generate_instruction_from_api_call(
+                safe_tool, safe_fn_call, safe_tool_res, inst_output), secrets)
+            ans = redact(self.produce_answer_from_api_call(
+                inst, json.dumps(safe_tool), safe_tool_res), secrets)
+            inst_eval = redact(self.critique_instruction(
+                safe_tool, inst, safe_fn_call, safe_tool_res, ans), secrets)
 
             insts.append(inst)
             answers.append(ans)
@@ -92,12 +108,13 @@ class APICallToExampleMethod(BaseMethod):
             analyses.append(inst_eval['analysis'])
 
             batch_refl = self.batch_reflection_with_scores(
-                tool_for_opt,
-                fn_call,
+                safe_tool,
+                safe_fn_call,
                 insts[-self.config['num_feedback_steps']:],
                 scores[-self.config['num_feedback_steps']:],
                 analyses[-self.config['num_feedback_steps']:],
             ).strip()
+            batch_refl = redact(batch_refl, secrets)
             refls.append(batch_refl)
 
             inst_output = {
@@ -113,9 +130,26 @@ class APICallToExampleMethod(BaseMethod):
         if self.config['score_eval_weight'] > 0.:
             logger.info("Eval step: Using eval fn")
             if isinstance(insts[-1], str) and isinstance(answers[-1], str):
-                examples = [(insts[-1].strip(), fn_call, tool_res, answers[-1].strip())]
-                eval_res = self.eval_fn(tool, description, examples, runs=1)
-                eval_score = eval_res['score_avg'] / 100.
+                examples = [(insts[-1].strip(), safe_fn_call, safe_tool_res, answers[-1].strip())]
+                credential_args = {
+                    name: value for name, value in arguments.items()
+                    if is_credential_name(name)
+                }
+                if secrets and not (
+                    credential_args and getattr(self.eval_fn, 'supports_execution_credentials', False)
+                ):
+                    # Unknown evaluators may persist or log the call; fail closed.
+                    eval_score = 1.
+                    outputs['eval_skipped_reason'] = 'Evaluator does not support safe credential injection'
+                    logger.info('Optional scoring skipped: evaluator lacks safe credential injection')
+                else:
+                    eval_kwargs = {'runs': 1}
+                    if secrets and credential_args:
+                        eval_kwargs['execution_credentials'] = credential_args
+                    eval_res = self.eval_fn(
+                        safe_tool, safe_description, examples, **eval_kwargs
+                    )
+                    eval_score = eval_res['score_avg'] / 100.
             else:
                 eval_score = 1.
         else:
@@ -138,6 +172,7 @@ class APICallToExampleMethod(BaseMethod):
         prev_output: Optional[Dict[str, List[Any]]] = None,
     ) -> List[Dict[str, Any]]:
         function_name = tool['name']
+        tool = redact(tool, credential_values(tool, self.api_keys))
         doc_str = json.dumps(tool, ensure_ascii=False)
         user_prompt = f'''A tool is an API. 
 You are given an API tool with the following 
@@ -148,16 +183,16 @@ Documentation:
 {doc_str}
 '''
         if example_calls is not None and len(example_calls) > 0:
+            example_calls = redact(example_calls, credential_values(example_calls, self.api_keys))
             user_prompt += f'''
 Example use cases for this API tool are: 
 {os.linesep.join(f'"{api_call}"' for api_call in example_calls)}
 
 '''
-        if self.api_keys is not None and len(self.api_keys) > 0:
+        if self.api_keys:
             user_prompt += (
-                f"You have access to the following API keys:"
-                f" {json.dumps(self.api_keys)}. You must use real API keys"
-                f" instead of placeholders when creating an API call.\n\n"
+                "For credential parameters, use a placeholder. Credentials are "
+                "supplied by the execution layer; do not invent them.\n\n"
             )
         user_prompt += f'''Your task is to write {num_gen} example API call 
 for the given API tool given its purpose and parameters list. 
@@ -172,7 +207,8 @@ edge-case API calls that are valid, executable, and reveal subtle
 limits in the system (e.g., language-restricted fields, domestic-only 
 locations, silent defaults, etc.). The generated API call MUST be 
 executable and real. Parameter values must be filled in and not 
-placeholding text. You must include the required parameters, 
+placeholding text, except credential parameters which must use a placeholder.
+You must include the required parameters,
 and optionally give parameters that are labeled as "optional 
 parameters". Do not hallucinate and produce parameters that 
 are not under "required" or "optional". Produce diverse 
@@ -191,6 +227,7 @@ You can only use the given function {function_name} and not anything else. Creat
 You must strictly follow the output format, including "name", "arguments", and parameters.\n'''
 
         if prev_output is not None and len(prev_output) > 0:
+            prev_output = redact(prev_output, credential_values(prev_output, self.api_keys))
             user_prompt += 'Previously you generated the following API calls for this '
             user_prompt += f'function {function_name}, which where then executed and critiqued:\n'
             for i, output in enumerate(prev_output, 1):
@@ -251,6 +288,13 @@ You must strictly follow the output format, including "name", "arguments", and p
             ], 
             verbose=self.verbose
         )
+        if self.api_keys:
+            arguments = argument_dict(result)
+            if arguments is None:
+                raise ValueError("API call arguments must be a JSON object")
+            result['arguments'] = arguments
+            for name, value in self.api_keys.items():
+                arguments[name] = value
         return result
 
     def critique_api_call(self, tool: Dict[str, Any], fn_call: Dict[str, Any], fn_response: str):
@@ -343,7 +387,7 @@ You can begin your task now.'''
         2. The problem can be complex and require other tools or APIs, but you must include the given API function. 
         3. You should not directly or explicitly ask for the function to be called; the problem itself must inherently be solved by the function.
         4. Based on the function, function call, its parameters, parameter values, and function execution responses, you should produce a real and reasonable instruction. 
-        5. You must use information from the parameter values of the function call to create the response. You must include the value of every parameter from the given function call in the user instruction you generated, including each list/dict element of the parameter values. Do not ignore any parameters/values from the function call.
+        5. Use non-sensitive parameter values to create the response. Never include credentials or their placeholders in the user instruction.
         6. You must NOT include specific function calls in your response. You should not explicitly show the function names. You should also never explicitly name the parameter names in your response. You should not show any variable names.
         7. Your response has to be in natural language. Do not show any variables, function calls, or code. 
         8. The instruction must not be longer than 3 sentences. It should not be longer than 300 letters. Be succinct and do not spend too much on describing irrelevant background. 
@@ -352,11 +396,6 @@ You can begin your task now.'''
         11. Remember, you are asking a question, so do not answer your own question in the response. Your goal is to give a querying instruction or question, not producing answers or function calls.
         12. Be creative and think about what users will ask in real-world scenarios.
         '''
-        if self.api_keys is not None and len(self.api_keys) > 0:
-            user_prompt += (f'13. The instruction should include '
-            f'which API key to use if an API key is required. '
-            f'You have access to the following API key'
-            f's: {json.dumps(self.api_keys)}.')
 
         user_prompt += '''
         Your output should be in the following JSON format:
@@ -429,9 +468,8 @@ conditions is met (for instruction only):
     problem to be solved; or 
     (7) instruction is not in first-person perspective (not using "I" as pronoun), 
     or is in the perspective of an AI assistant instead of a user; or 
-    (8) any parameter value in the function call is not present in the instruction'''
-        if self.api_keys is not None and len(self.api_keys) > 0:
-            user_prompt += f'; or (9) instruction does include the corresponding API key when an API key is required'
+    (8) any non-sensitive parameter value in the function call is not present in the instruction; or
+    (9) the instruction includes a credential or credential placeholder'''
 
         user_prompt += f'''
 . An instruction that satisfies any of these conditions 
