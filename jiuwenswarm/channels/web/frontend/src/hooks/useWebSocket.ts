@@ -127,7 +127,8 @@ import {
   withUploadDocumentBlock,
 } from '../utils/documentMessage';
 import { useSubagentStore } from '../stores/subagentStore';
-import { expertTeamId, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
+import { expertTeamId, organizationOwnerStopTarget, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
+import { isTeamOrganizationUiEnabled } from '../features/teamOrganization/featureConfig';
 import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
 import {
   normalizeSubagentActivityEvent,
@@ -2444,6 +2445,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...getSessionWorkContext(sessionId),
         };
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
+        const ownerStopTarget = currentMode === 'team' && ['pause', 'cancel'].includes(intent)
+          ? organizationOwnerStopTarget(sessionId) : null;
+        if (ownerStopTarget) {
+          params.intent = 'cancel';
+          params.target_team_id = ownerStopTarget;
+          params.organization_stop = true;
+        }
         if (['pause', 'resume', 'cancel', 'supplement'].includes(intent)) {
           // 出站 mode 与普通消息/队列重发同一套组合逻辑（resolveOutgoingMode）：
           // Plan 打开时补全三段命名 `agent.{work|code}.plan` / `team.{work|code}.plan`，
@@ -4553,6 +4561,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         usePlanStore.getState().setActive(sessionId, false);
       }),
       webClient.on('chat.processing_status', ({ payload }) => {
+        // Organization background rounds own their lifecycle in useOrganizationEvents.
+        // They must not close a concurrent foreground Owner request.
+        if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&
+          payload.source !== 'org_expert_direct' && payload.team_id) return;
         // A supplemental request never owns the original execution's lifecycle.
         if (handleTaskInputReceipt('chat.processing_status', payload)) return;
         const sessionId = resolveEventSessionId(payload);

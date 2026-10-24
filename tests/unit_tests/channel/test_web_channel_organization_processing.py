@@ -60,10 +60,11 @@ def test_missing_request_id_never_uses_message_frame_id():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("live", [[], [{"team_id": "expert", "request_id": "request"}]])
-async def test_disconnect_reconciles_live_requests_instead_of_clearing_work(monkeypatch, live):
+@pytest.mark.parametrize("snapshot_key", ["expert_requests", "organization_requests"])
+async def test_disconnect_reconciles_live_requests_instead_of_clearing_work(monkeypatch, live, snapshot_key):
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter(), agent_client=object())
     channel._track_session_busy(status("request", True, "expert"))
-    fetch = AsyncMock(return_value=(True, {"expert_requests": live}))
+    fetch = AsyncMock(return_value=(True, {snapshot_key: live, **({"expert_requests": []} if snapshot_key == "organization_requests" else {})}))
     monkeypatch.setattr("jiuwenswarm.gateway.routing.e2a_proxy.fetch_agent_unary", fetch)
     await channel.reconcile_expert_processing("session", "user")
     assert channel.is_session_busy("session") is bool(live)
@@ -92,6 +93,32 @@ async def test_session_close_cleans_records_only_after_completion(monkeypatch, o
     assert channel.is_session_busy("session") is busy
 
 
+@pytest.mark.parametrize("source", ["org_expert_background", "org_summary_background", "org_root_background", "org_root_delivery"])
+def test_background_round_cannot_clear_another_round_or_owner(source):
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    channel._track_session_busy(status("foreground", True))
+    for round_id in ("a", "b"):
+        event = status(round_id, True, "expert")
+        event.payload["source"] = source
+        channel._track_session_busy(event)
+    ended = status("a", False, "expert")
+    ended.payload["source"] = source
+    channel._track_session_busy(ended)
+    channel._track_session_busy(status("foreground", False))
+    assert channel.is_session_busy("session")
+    ended.payload["request_id"] = "b"
+    channel._track_session_busy(ended)
+    assert not channel.is_session_busy("session")
+
+
+def test_missing_round_identity_does_not_create_an_unmatched_busy_entry():
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    event = status("frame-id", True, "expert")
+    event.payload.pop("request_id")
+    channel._track_session_busy(event)
+    assert not channel._expert_processing_requests
+
+
 @pytest.mark.asyncio
 async def test_expert_cancel_result_never_synthesizes_owner_status(monkeypatch):
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
@@ -109,3 +136,21 @@ async def test_expert_cancel_result_never_synthesizes_owner_status(monkeypatch):
     assert any(frame.get("event") == "chat.interrupt_result" for frame in frames)
     assert not any(frame.get("event") == "chat.processing_status" for frame in frames)
     assert channel.is_session_busy("session") is True
+
+
+@pytest.mark.parametrize("event,role,terminal", [
+    ("org.turn_completed", "leader", True), ("chat.error", "leader", True),
+    ("chat.error", None, True), ("chat.error", "teammate", False),
+])
+def test_organization_terminal_fallback_preserves_other_rounds(event, role, terminal):
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    channel._track_session_busy(status("first", True, "expert"))
+    channel._track_session_busy(status("second", True, "expert"))
+    ended = status("first", False, "expert")
+    ended.event_type = None if event == "org.turn_completed" else EventType.CHAT_ERROR
+    ended.payload.update({"event_type": event, "role": role})
+    ended.payload.pop("is_processing")
+    channel._track_session_busy(ended)
+    requests = channel._expert_processing_requests["session"]
+    assert (("expert", "first") in requests) is not terminal
+    assert ("expert", "second") in requests
