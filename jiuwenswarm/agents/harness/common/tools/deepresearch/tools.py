@@ -2530,6 +2530,10 @@ async def _call_deepresearch_stream_impl(
 @tool(
     name="deepresearch_stream",
     description=(
+        "Low-level compatibility interface, not a substitute for loading the skill. "
+        "For requests to use the deepresearch skill, including the DeepResearch "
+        "capsule, first call skill_tool(skill_name=\"deepresearch\") and follow "
+        "the skill's deepresearch_execute entry instead of calling this tool. "
         "Run or resume DeepResearch through the isolated external skill runner. "
         "Progress is pushed to the current Gateway route; only a terminal "
         "interrupted, completed, or structured error outcome is returned. "
