@@ -18,22 +18,62 @@ const EDIT_TOOLS = new Set(['str_replace_editor', 'write_file', 'create_file', '
 /** Snapshot of a file before it was edited. `null` means the file did not exist. */
 export type FileSnapshot = string | null;
 
+export type InverseEdit = { oldStr: string; newStr: string };
+
 /** Maps file path → snapshot content before first edit this turn. */
 let currentTurnSnapshots = new Map<string, FileSnapshot>();
 /** Promoted from currentTurnSnapshots on chat.final; used for rewind. */
 let lastTurnSnapshots = new Map<string, FileSnapshot>();
+/** Files captured before the turn was sent (open documents / mentioned paths). */
+let turnBaseline = new Map<string, FileSnapshot>();
+/** Edits that can only be undone by reversing the tool's old/new strings. */
+let currentTurnInverseEdits = new Map<string, InverseEdit[]>();
+let lastTurnInverseEdits = new Map<string, InverseEdit[]>();
+/** Epoch ms when the current user turn was sent. */
+let currentTurnStartedAt = 0;
 
-/** Clear snapshots at the start of a new user turn. */
+function readSnapshot(filePath: string): FileSnapshot {
+  try {
+    return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Clear snapshots at the start of a new session / on disconnect. */
 export function clearSnapshots(): void {
   currentTurnSnapshots.clear();
   lastTurnSnapshots.clear();
+  turnBaseline.clear();
+  currentTurnInverseEdits.clear();
+  lastTurnInverseEdits.clear();
+  currentTurnStartedAt = 0;
+}
+
+/**
+ * Start a user turn and capture a baseline for files that can plausibly be
+ * edited (open documents, active file, mentioned files). The backend executes
+ * file tools before it emits `chat.tool_call`, so a snapshot taken then would
+ * already contain the agent's change.
+ */
+export function beginTurn(paths: string[]): void {
+  clearSnapshots();
+  currentTurnStartedAt = Date.now();
+  for (const filePath of paths) {
+    if (!filePath || turnBaseline.has(filePath)) continue;
+    turnBaseline.set(filePath, readSnapshot(filePath));
+  }
 }
 
 /** Promote current turn snapshots to last turn (called on chat.final). Returns true if there are files to rewind. */
 export function promoteSnapshots(): boolean {
-  if (currentTurnSnapshots.size === 0) return false;
+  if (currentTurnSnapshots.size === 0 && currentTurnInverseEdits.size === 0) return false;
   lastTurnSnapshots = new Map(currentTurnSnapshots);
-  currentTurnSnapshots.clear();
+  lastTurnInverseEdits = new Map(
+    Array.from(currentTurnInverseEdits, ([path, edits]) => [path, edits.map((e) => ({ ...e }))]),
+  );
+  // Keep the current maps: a turn can emit several chat.final milestones. Undo
+  // must use the earliest snapshot for every file touched during the turn.
   return true;
 }
 
@@ -42,25 +82,52 @@ export function getLastTurnSnapshots(): Map<string, FileSnapshot> {
   return new Map(lastTurnSnapshots);
 }
 
+/** Get the last turn reverse-edits for files without a baseline snapshot. */
+export function getLastTurnInverseEdits(): Map<string, InverseEdit[]> {
+  return new Map(Array.from(lastTurnInverseEdits, ([path, edits]) => [path, edits.map((e) => ({ ...e }))]));
+}
+
 /** Clear last turn snapshots after rewind. */
 export function clearLastTurnSnapshots(): void {
   lastTurnSnapshots.clear();
+  lastTurnInverseEdits.clear();
 }
 
 /**
- * Snapshot a file before it is edited, if not already snapshotted this turn.
+ * Record a file-edit tool call. Prefers the pre-turn baseline; falls back to
+ * detecting a newly created file, then to an inverse edit for old/new pairs.
  */
-export function ensureSnapshot(filePath: string): void {
-  if (currentTurnSnapshots.has(filePath)) return;
+export function noteFileEdit(filePath: string, oldStr?: string, newStr?: string): void {
+  if (!filePath || currentTurnSnapshots.has(filePath) || currentTurnInverseEdits.has(filePath)) return;
+
+  if (turnBaseline.has(filePath)) {
+    currentTurnSnapshots.set(filePath, turnBaseline.get(filePath) ?? null);
+    return;
+  }
+
   try {
-    if (fs.existsSync(filePath)) {
-      currentTurnSnapshots.set(filePath, fs.readFileSync(filePath, 'utf-8'));
-    } else {
+    const stat = fs.statSync(filePath);
+    if (currentTurnStartedAt > 0 && stat.birthtimeMs >= currentTurnStartedAt - 2_000) {
+      // Created during this turn: undo means deleting it.
       currentTurnSnapshots.set(filePath, null);
+      return;
     }
   } catch {
     currentTurnSnapshots.set(filePath, null);
+    return;
   }
+
+  if (typeof oldStr === 'string' && typeof newStr === 'string' && oldStr !== newStr) {
+    const edits = currentTurnInverseEdits.get(filePath) || [];
+    edits.push({ oldStr, newStr });
+    currentTurnInverseEdits.set(filePath, edits);
+  }
+}
+
+/** @deprecated Kept for callers that snapshot a file before an edit. */
+export function ensureSnapshot(filePath: string): void {
+  if (currentTurnSnapshots.has(filePath)) return;
+  currentTurnSnapshots.set(filePath, readSnapshot(filePath));
 }
 
 /**
@@ -175,7 +242,6 @@ async function applyStrReplace(
     }
   }
 
-  ensureSnapshot(filePath);
   const proposed = original.substring(0, idx) + newStr + original.substring(idx + oldStr.length);
 
   try {
@@ -210,8 +276,6 @@ async function writeEntireFile(
     }
   }
 
-  ensureSnapshot(filePath);
-
   try {
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) {
@@ -242,20 +306,62 @@ async function writeEntireFile(
 // Rewind
 // ──────────────────────────────────────────
 
-export async function performRewind(snapshots: Map<string, FileSnapshot>): Promise<{ restored: number; failed: number }> {
+/** Write through the editor pipeline so open tabs refresh immediately. */
+async function writeFileThroughEditor(filePath: string, content: string): Promise<void> {
+  const uri = vscode.Uri.file(filePath);
+  try {
+    if (!fs.existsSync(filePath)) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, '', 'utf-8');
+    }
+    const applied = await replaceWholeFile(uri, content);
+    if (!applied) fs.writeFileSync(filePath, content, 'utf-8');
+  } catch {
+    // Not open in an editor / not a text document — write directly.
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content, 'utf-8');
+  }
+}
+
+export async function performRewind(
+  snapshots: Map<string, FileSnapshot>,
+  inverseEdits: Map<string, InverseEdit[]> = new Map(),
+): Promise<{ restored: number; failed: number }> {
   let restored = 0;
   let failed = 0;
+
+  // Files without a pre-turn baseline: reverse the recorded old/new pairs in
+  // reverse order against the current content.
+  for (const [filePath, edits] of inverseEdits) {
+    if (snapshots.has(filePath)) continue;
+    try {
+      if (!fs.existsSync(filePath)) {
+        failed++;
+        continue;
+      }
+      let content = fs.readFileSync(filePath, 'utf-8');
+      for (let i = edits.length - 1; i >= 0; i--) {
+        const { oldStr, newStr } = edits[i];
+        if (!newStr) continue;
+        if (!content.includes(newStr)) throw new Error(`cannot reverse edit in ${filePath}`);
+        content = content.replace(newStr, oldStr);
+      }
+      await writeFileThroughEditor(filePath, content);
+      restored++;
+    } catch {
+      failed++;
+    }
+  }
 
   for (const [filePath, originalContent] of snapshots) {
     try {
       if (originalContent === null) {
-        // File didn't exist before edit — delete it
+        // File didn't exist before edit — delete it.
         if (fs.existsSync(filePath)) {
           fs.unlinkSync(filePath);
         }
       } else {
-        // Restore original content
-        fs.writeFileSync(filePath, originalContent, 'utf-8');
+        await writeFileThroughEditor(filePath, originalContent);
       }
       restored++;
     } catch {

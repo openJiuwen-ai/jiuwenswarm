@@ -95,13 +95,14 @@ export function computeProposedContent(args: {
   new_str?: string;
   new_string?: string;
   content?: string;
+  file_text?: string;
   command?: string;
 }): string | undefined {
   const command = args.command ?? 'str_replace';
   const original = readOriginalContent(args.file_path || args.path || '');
 
   if (command === 'create' || !original) {
-    return args.content ?? args.new_string ?? args.new_str ?? '';
+    return args.file_text ?? args.content ?? args.new_string ?? args.new_str ?? '';
   }
 
   if (command === 'str_replace') {
@@ -113,7 +114,7 @@ export function computeProposedContent(args: {
   }
 
   if (command === 'write_file') {
-    return args.content ?? args.new_string ?? args.new_str ?? '';
+    return args.file_text ?? args.content ?? args.new_string ?? args.new_str ?? '';
   }
 
   return undefined;
