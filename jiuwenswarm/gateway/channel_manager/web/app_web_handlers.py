@@ -66,6 +66,8 @@ from jiuwenswarm.common.config import (
     update_proactive_recommendation_in_config,
     update_trajectory_ui_in_config,
     update_diagnosis_in_config,
+    get_sandbox_runtime,
+    update_sandbox_runtime,
 )
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.request_identity import (
@@ -1008,6 +1010,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "kv_cache_release_enabled",
     "kv_cache_affinity_enabled",
     "permissions_enabled",
+    "sandbox_enabled",
     "memory_forbidden_enabled",
     "memory_forbidden_description",
     "a2ui_enabled",
@@ -2379,6 +2382,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             perm_cfg = raw.get("permissions") or {}
             payload["permissions_enabled"] = "true" if perm_cfg.get("enabled", False) else "false"
+            payload["sandbox_enabled"] = (
+                "true" if get_sandbox_runtime().get("enabled") else "false"
+            )
             # skill_create: tip 优先，fallback to config.yaml
             evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
             payload["evolution_enabled"] = "true" if get_evolution_enabled(raw) else "false"
@@ -2417,6 +2423,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("kv_cache_release_enabled", "false")
             payload.setdefault("kv_cache_affinity_enabled", "false")
             payload.setdefault("permissions_enabled", "false")
+            payload.setdefault("sandbox_enabled", "false")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("trajectory_ui_enabled", "false")
             payload.setdefault("diagnosis_enabled", "false")
@@ -2619,6 +2626,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_kv_cache_affinity_enabled_in_config(parsed)
                 elif param_key == "permissions_enabled":
                     await update_permissions_enabled_in_config(parsed)
+                elif param_key == "sandbox_enabled":
+                    update_sandbox_runtime({"enabled": parsed})
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
                 elif param_key == "trajectory_ui_enabled":
