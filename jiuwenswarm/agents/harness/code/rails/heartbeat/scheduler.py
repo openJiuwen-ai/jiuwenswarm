@@ -154,7 +154,11 @@ class HeartbeatSchedulerService:
             self._task.cancel()
             try:
                 await self._task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
+                if not self._task.cancelled():
+                    # 外层调用方被取消，不要吞掉
+                    raise
+            except Exception:
                 pass
             self._task = None
 
