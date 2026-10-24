@@ -3,6 +3,14 @@
  *
  * Windows user-mode soft delete. Loaded once into an agent or sandbox
  * process; the CreateProcessInternalW hook then loads it into children.
+ * An ordinary 64-bit Windows child is created suspended and its import
+ * table is patched so the loader maps this DLL before main. A 32-bit child
+ * cannot load this x64 DLL and is left unhooked. If the patch fails, the
+ * child is resumed anyway:
+ * the command must run, and soft-delete simply does not apply there.
+ * Those processes install hooks with Detours. Git Bash delete tools do not:
+ * Detours patches break cygwin fork and rm, so rm/rmdir/unlink/shred keep
+ * the inline hooks and are loaded from the debug loop below.
  * MSYS/Cygwin shells such as Git Bash are not injected: any extra DLL
  * makes their fork wait forever. They are started under a debug loop
  * that loads this DLL into Windows descendants before main runs, and
@@ -37,6 +45,7 @@
 
 #include <windows.h>
 #include <shellapi.h>
+#include <detours.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -74,22 +83,169 @@ static void soft_wcat(wchar_t *dst, size_t cap, const wchar_t *src) {
     soft_wcopy(dst + used, cap - used, src);
 }
 
+static void format_unsigned(wchar_t *tmp, int *n, unsigned long value, int width) {
+    int i = 0;
+    wchar_t rev[32];
+    if (value == 0) {
+        rev[i++] = L'0';
+    }
+    while (value > 0 && i < 31) {
+        rev[i++] = (wchar_t)(L'0' + (value % 10));
+        value /= 10;
+    }
+    while (i < width && i < 31) {
+        rev[i++] = L'0';
+    }
+    *n = i;
+    while (i > 0) {
+        tmp[(*n) - i] = rev[i - 1];
+        i--;
+    }
+}
+
+static int append_text(wchar_t *dst, size_t cap, size_t *used, const wchar_t *src) {
+    if (src == NULL) {
+        src = L"";
+    }
+    while (*src != L'\0') {
+        if (*used + 1 >= cap) {
+            if (cap > 0) {
+                dst[cap - 1] = L'\0';
+            }
+            return -1;
+        }
+        dst[(*used)++] = *src++;
+    }
+    return 0;
+}
+
+/* %s, %d/%ld, %u/%lu, and zero-padded %04u only. No C runtime formatter. */
+static int soft_vswprintf(wchar_t *dst, size_t cap, const wchar_t *fmt, va_list args) {
+    size_t used = 0;
+    if (dst == NULL || cap == 0) {
+        return -1;
+    }
+    dst[0] = L'\0';
+    if (fmt == NULL) {
+        return -1;
+    }
+    while (*fmt != L'\0') {
+        if (*fmt != L'%') {
+            wchar_t one[2];
+            one[0] = *fmt;
+            one[1] = L'\0';
+            if (append_text(dst, cap, &used, one) < 0) {
+                return -1;
+            }
+            fmt++;
+            continue;
+        }
+        fmt++;
+        if (*fmt == L'%') {
+            if (append_text(dst, cap, &used, L"%") < 0) {
+                return -1;
+            }
+            fmt++;
+            continue;
+        }
+        {
+            int width = 0;
+            wchar_t num[32];
+            int n = 0;
+            if (*fmt == L'0') {
+                fmt++;
+            }
+            while (*fmt >= L'0' && *fmt <= L'9') {
+                width = width * 10 + (int)(*fmt - L'0');
+                fmt++;
+            }
+            if (*fmt == L'l') {
+                fmt++;
+            }
+            if (*fmt == L's') {
+                if (append_text(dst, cap, &used, va_arg(args, const wchar_t *)) < 0) {
+                    return -1;
+                }
+            } else if (*fmt == L'd') {
+                long value = va_arg(args, long);
+                unsigned long mag;
+                if (value < 0) {
+                    if (append_text(dst, cap, &used, L"-") < 0) {
+                        return -1;
+                    }
+                    mag = (unsigned long)(-(value + 1)) + 1;
+                } else {
+                    mag = (unsigned long)value;
+                }
+                format_unsigned(num, &n, mag, width);
+                num[n] = L'\0';
+                if (append_text(dst, cap, &used, num) < 0) {
+                    return -1;
+                }
+            } else if (*fmt == L'u') {
+                format_unsigned(num, &n, va_arg(args, unsigned long), width);
+                num[n] = L'\0';
+                if (append_text(dst, cap, &used, num) < 0) {
+                    return -1;
+                }
+            } else {
+                dst[0] = L'\0';
+                return -1;
+            }
+            if (*fmt != L'\0') {
+                fmt++;
+            }
+        }
+    }
+    if (used >= cap) {
+        dst[cap - 1] = L'\0';
+        return -1;
+    }
+    dst[used] = L'\0';
+    return (int)used;
+}
+
 static int soft_swprintf(wchar_t *dst, size_t cap, const wchar_t *fmt, ...) {
     va_list args;
     int wrote;
     va_start(args, fmt);
-    wrote = vswprintf(dst, cap, fmt, args);
+    wrote = soft_vswprintf(dst, cap, fmt, args);
     va_end(args);
-    if (wrote < 0 && dst != NULL && cap > 0) {
-        dst[0] = L'\0';
-    }
     return wrote;
+}
+
+static int soft_sprintf(char *dst, size_t cap, const char *fmt, ...) {
+    wchar_t wide_fmt[256];
+    wchar_t wide_out[256];
+    size_t i;
+    int wrote;
+    va_list args;
+    if (dst == NULL || cap == 0 || fmt == NULL) {
+        return -1;
+    }
+    for (i = 0; fmt[i] != '\0' && i + 1 < 256; i++) {
+        wide_fmt[i] = (wchar_t)(unsigned char)fmt[i];
+    }
+    wide_fmt[i] = L'\0';
+    va_start(args, fmt);
+    wrote = soft_vswprintf(wide_out, 256, wide_fmt, args);
+    va_end(args);
+    if (wrote < 0) {
+        dst[0] = '\0';
+        return -1;
+    }
+    for (i = 0; wide_out[i] != L'\0' && i + 1 < cap; i++) {
+        dst[i] = (char)wide_out[i];
+    }
+    dst[i] = '\0';
+    return (int)i;
 }
 
 #define wcscpy_s(dst, cap, src) soft_wcopy((dst), (cap), (src))
 #define wcsncpy_s(dst, cap, src, trunc) soft_wcopy((dst), (cap), (src))
 #define wcscat_s(dst, cap, src) soft_wcat((dst), (cap), (src))
 #define swprintf_s soft_swprintf
+#define sprintf_s soft_sprintf
 #endif
 
 static int memory_ok(const void *ptr, size_t bytes, int writable) {
@@ -137,6 +293,10 @@ static int memory_ok(const void *ptr, size_t bytes, int writable) {
 #define FILE_RENAME_INFORMATION 10UL
 #define FILE_RENAME_INFORMATION_EX 65UL
 #define FILE_RENAME_REPLACE_IF_EXISTS 0x00000001UL
+/* NtCreateFile option. Windows SDK puts this in winternl.h only. */
+#ifndef FILE_DELETE_ON_CLOSE
+#define FILE_DELETE_ON_CLOSE 0x00001000UL
+#endif
 
 #define ENV_ENABLED L"JIUWENBOX_SOFT_DELETE"
 #define ENV_ARCHIVE L"JIUWENBOX_SOFT_DELETE_ARCHIVE"
@@ -206,16 +366,47 @@ static wchar_t g_self_path[PATH_CAP];
 static CRITICAL_SECTION g_lock;
 static int g_lock_ready;
 #if defined(__GNUC__)
-#define SOFT_TLS __thread
 #define SOFT_EXPORT __attribute__((dllexport))
 #else
-#define SOFT_TLS __declspec(thread)
 #define SOFT_EXPORT __declspec(dllexport)
 #endif
-static SOFT_TLS int t_bypass;
+
+/* Windows TLS, not compiler thread-local. MinGW's __thread needs a runtime
+ * callback that this process may not have, and a missing callback makes the
+ * DLL fail to load. */
+typedef struct SoftTls {
+    int bypass;
+    int worker;
+} SoftTls;
+
+static DWORD g_tls_slot = TLS_OUT_OF_INDEXES;
+static SoftTls g_tls_fallback;
+
+static SoftTls *soft_tls(void) {
+    SoftTls *slot;
+    if (g_tls_slot == TLS_OUT_OF_INDEXES) {
+        return &g_tls_fallback;
+    }
+    slot = (SoftTls *)TlsGetValue(g_tls_slot);
+    if (slot != NULL) {
+        return slot;
+    }
+    slot = (SoftTls *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(SoftTls));
+    if (slot == NULL || !TlsSetValue(g_tls_slot, slot)) {
+        if (slot != NULL) {
+            HeapFree(GetProcessHeap(), 0, slot);
+        }
+        return &g_tls_fallback;
+    }
+    return slot;
+}
+
+#define t_bypass (soft_tls()->bypass)
+#define t_worker_creating (soft_tls()->worker)
 
 static Hook g_hooks[HOOK_MAX];
 static int g_hook_count;
+static int g_detours;
 static FnNtClose g_nt_close;
 static FnNtDeleteFile g_nt_delete_file;
 static FnNtSetInformationFile g_nt_set_info;
@@ -645,7 +836,7 @@ static int install_hook(void *target, void *hook_fn, const wchar_t **reason) {
     return 1;
 }
 
-static void remove_hooks(void) {
+static void remove_inline_hooks(void) {
     int i;
     for (i = g_hook_count - 1; i >= 0; i--) {
         Hook *hook = &g_hooks[i];
@@ -1747,10 +1938,147 @@ static int soft_delete_path(const wchar_t *dos_path) {
     }
 }
 
+static int ensure_dir(const wchar_t *dir) {
+    wchar_t buf[1024];
+    wchar_t *cursor;
+    if (dir == NULL || dir[0] == L'\0') {
+        return 0;
+    }
+    if (swprintf_s(buf, 1024, L"%s", dir) < 0) {
+        return 0;
+    }
+    for (cursor = buf + 3; *cursor != L'\0'; cursor++) {
+        if (*cursor != L'\\' && *cursor != L'/') {
+            continue;
+        }
+        *cursor = L'\0';
+        if (GetFileAttributesW(buf) == INVALID_FILE_ATTRIBUTES) {
+            if (!CreateDirectoryW(buf, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+                return 0;
+            }
+        }
+        *cursor = L'\\';
+    }
+    if (GetFileAttributesW(buf) == INVALID_FILE_ATTRIBUTES) {
+        if (!CreateDirectoryW(buf, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Same directory as full.log: JIUWENSWARM_LOG_DIR, or the dated layout when
+ * JIUWENSWARM_LOG_DATE_ROOT is set. No separate temp log. */
+static int resolve_soft_log_path(wchar_t *out, size_t cch) {
+    wchar_t log_dir[1024];
+    wchar_t date_root[1024];
+    wchar_t data_dir[1024];
+    wchar_t day[16];
+    SYSTEMTIME st;
+    DWORD n;
+    DWORD root_n;
+    size_t root_len;
+    const wchar_t *rel;
+    GetLocalTime(&st);
+    if (swprintf_s(day, 16, L"%04u-%02u-%02u", st.wYear, st.wMonth, st.wDay) < 0) {
+        return 0;
+    }
+    n = GetEnvironmentVariableW(L"JIUWENSWARM_LOG_DIR", log_dir, 1024);
+    if (n == 0 || n >= 1024) {
+        DWORD data_n = GetEnvironmentVariableW(L"JIUWENSWARM_DATA_DIR", data_dir, 1024);
+        if (data_n == 0 || data_n >= 1024) {
+            DWORD home_n = GetEnvironmentVariableW(L"USERPROFILE", data_dir, 1024);
+            if (home_n == 0 || home_n >= 900) {
+                return 0;
+            }
+            if (swprintf_s(log_dir, 1024, L"%s\\.jiuwenswarm\\logs", data_dir) < 0) {
+                return 0;
+            }
+        } else if (swprintf_s(log_dir, 1024, L"%s\\logs", data_dir) < 0) {
+            return 0;
+        }
+    }
+    root_n = GetEnvironmentVariableW(L"JIUWENSWARM_LOG_DATE_ROOT", date_root, 1024);
+    root_len = (root_n > 0 && root_n < 1024) ? wcslen(date_root) : 0;
+    while (root_len > 0 && (date_root[root_len - 1] == L'\\' || date_root[root_len - 1] == L'/')) {
+        date_root[--root_len] = L'\0';
+    }
+    if (root_len > 0 && _wcsnicmp(log_dir, date_root, root_len) == 0
+        && (log_dir[root_len] == L'\\' || log_dir[root_len] == L'/' || log_dir[root_len] == L'\0')) {
+        rel = log_dir + root_len;
+        while (*rel == L'\\' || *rel == L'/') {
+            rel++;
+        }
+        if (*rel == L'\0') {
+            return swprintf_s(out, cch, L"%s\\%s\\softdelete.log", date_root, day) > 0;
+        }
+        return swprintf_s(out, cch, L"%s\\%s\\%s\\softdelete.log", date_root, day, rel) > 0;
+    }
+    return swprintf_s(out, cch, L"%s\\%s\\softdelete.log", log_dir, day) > 0;
+}
+
 static void log_line(const wchar_t *text) {
-    /* Debugger only. Writing a log file would create the archive directory. */
+    wchar_t path[1024];
+    wchar_t parent[1024];
+    wchar_t *slash;
+    HANDLE file;
+    DWORD written = 0;
+    char utf8[2048];
+    char prefix[80];
+    int n;
+    int saved_bypass;
+    SYSTEMTIME st;
+    if (text == NULL) {
+        return;
+    }
     OutputDebugStringW(text);
     OutputDebugStringW(L"\n");
+    if (!resolve_soft_log_path(path, 1024)) {
+        return;
+    }
+    if (swprintf_s(parent, 1024, L"%s", path) < 0) {
+        return;
+    }
+    slash = wcsrchr(parent, L'\\');
+    if (slash == NULL) {
+        return;
+    }
+    *slash = L'\0';
+    saved_bypass = t_bypass;
+    t_bypass = 1;
+    if (!ensure_dir(parent)) {
+        t_bypass = saved_bypass;
+        return;
+    }
+    file = CreateFileW(
+        path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    t_bypass = saved_bypass;
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    GetLocalTime(&st);
+    n = sprintf_s(
+        prefix, sizeof prefix, "%04u-%02u-%02u %02u:%02u:%02u.%03u pid=%lu ",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+        st.wMilliseconds, GetCurrentProcessId());
+    if (n > 0) {
+        WriteFile(file, prefix, (DWORD)n, &written, NULL);
+    }
+    n = WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8, (int)sizeof utf8, NULL, NULL);
+    if (n > 1) {
+        WriteFile(file, utf8, (DWORD)(n - 1), &written, NULL);
+    }
+    WriteFile(file, "\r\n", 2, &written, NULL);
+    CloseHandle(file);
+}
+
+static void log_win(const wchar_t *api, DWORD err, DWORD pid, const wchar_t *detail) {
+    wchar_t msg[1024];
+    swprintf_s(
+        msg, 1024, L"%s failed winerror=%lu target_pid=%lu %s",
+        api != NULL ? api : L"api", err, pid, detail != NULL ? detail : L"");
+    log_line(msg);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2229,96 +2557,10 @@ static NTSTATUS NTAPI hook_NtOpenFile(
     return status;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Child inject. The shellcode stores the full 64-bit module handle.         */
-/* -------------------------------------------------------------------------- */
-
-#define LOADER_PATH_OFF 0x100
-#define LOADER_RESULT_OFF 0x80
-#define LOADER_ERROR_OFF 0x88
-
-static void patch_lea(uint8_t *code, int at, int target) {
-    int32_t disp = (int32_t)(target - (at + 7));
-    memcpy(code + at + 3, &disp, sizeof disp);
-}
-
-static int build_loader(uint8_t *code, uint64_t load_library, uint64_t get_last_error) {
-    int lea_path;
-    int lea_res;
-    int jnz_at;
-    int lea_err;
-    int done;
-    int n = 0;
-    code[n++] = 0x48;
-    code[n++] = 0x83;
-    code[n++] = 0xEC;
-    code[n++] = 0x28;
-    lea_path = n;
-    code[n++] = 0x48;
-    code[n++] = 0x8D;
-    code[n++] = 0x0D;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0x48;
-    code[n++] = 0xB8;
-    memcpy(code + n, &load_library, sizeof load_library);
-    n += 8;
-    code[n++] = 0xFF;
-    code[n++] = 0xD0;
-    lea_res = n;
-    code[n++] = 0x48;
-    code[n++] = 0x8D;
-    code[n++] = 0x0D;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0x48;
-    code[n++] = 0x89;
-    code[n++] = 0x01;
-    code[n++] = 0x48;
-    code[n++] = 0x85;
-    code[n++] = 0xC0;
-    jnz_at = n;
-    code[n++] = 0x75;
-    code[n++] = 0x00;
-    code[n++] = 0x48;
-    code[n++] = 0xB8;
-    memcpy(code + n, &get_last_error, sizeof get_last_error);
-    n += 8;
-    code[n++] = 0xFF;
-    code[n++] = 0xD0;
-    lea_err = n;
-    code[n++] = 0x48;
-    code[n++] = 0x8D;
-    code[n++] = 0x0D;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0;
-    code[n++] = 0x89;
-    code[n++] = 0x01;
-    done = n;
-    code[jnz_at + 1] = (uint8_t)(done - (jnz_at + 2));
-    code[n++] = 0x31;
-    code[n++] = 0xC0;
-    code[n++] = 0x48;
-    code[n++] = 0x83;
-    code[n++] = 0xC4;
-    code[n++] = 0x28;
-    code[n++] = 0xC3;
-    patch_lea(code, lea_path, LOADER_PATH_OFF);
-    patch_lea(code, lea_res, LOADER_RESULT_OFF);
-    patch_lea(code, lea_err, LOADER_ERROR_OFF);
-    return n;
-}
-
 /* The thread stopped at the initial breakpoint still owns the loader lock.
  * LoadLibrary on a second thread never returns. This stub runs on the
  * stopped thread: load, record the result, then jump back to the saved
- * instruction. A failed load spins, so the program does not start. */
+ * instruction. A failed load jumps back too, so the program still starts. */
 #define STOP_DONE_OFF 0x80
 #define STOP_RESULT_OFF 0x88
 #define STOP_RSP_OFF 0x90
@@ -2327,7 +2569,6 @@ static int build_loader(uint8_t *code, uint64_t load_library, uint64_t get_last_
 static int build_stopped_loader(uint8_t *code, uint64_t load_library, uint64_t resume) {
     int n = 0;
     int at;
-    int jz_at;
     int32_t disp;
     code[n++] = 0x48;
     code[n++] = 0x89;
@@ -2375,12 +2616,6 @@ static int build_stopped_loader(uint8_t *code, uint64_t load_library, uint64_t r
     code[n++] = 0;
     code[n++] = 0;
     code[n++] = 0x48;
-    code[n++] = 0x85;
-    code[n++] = 0xC0;
-    jz_at = n;
-    code[n++] = 0x74;
-    code[n++] = 0;
-    code[n++] = 0x48;
     code[n++] = 0x8B;
     code[n++] = 0x25;
     at = n;
@@ -2393,74 +2628,75 @@ static int build_stopped_loader(uint8_t *code, uint64_t load_library, uint64_t r
     n += (int)sizeof resume;
     code[n++] = 0xFF;
     code[n++] = 0xE0;
-    code[jz_at + 1] = (uint8_t)(n - (jz_at + 2));
-    code[n++] = 0xEB;
-    code[n++] = 0xFE;
     return n;
 }
 
-static int inject_dll(HANDLE process) {
-    wchar_t self_path[PATH_CAP];
-    uint8_t code[128];
-    uint8_t *remote;
-    SIZE_T written = 0;
-    SIZE_T path_bytes;
-    HANDLE thread = NULL;
-    DWORD wait_rc;
-    uint64_t loaded = 0;
-    uint32_t remote_error = 0;
+/* Patch the suspended child's import table so the loader maps this DLL.
+ * DetourCreateProcessWithDll is not used: it would call CreateProcess again.
+ * A failed patch does not terminate the child. Returns 0 when this child
+ * will not be hooked. The thread argument is unused; callers still pass it. */
+static int inject_dll(HANDLE process, HANDLE thread) {
+    wchar_t *wide = NULL;
+    wchar_t *short_path = NULL;
+    char *ansi = NULL;
+    LPCSTR dlls[1];
     BOOL wow = FALSE;
-    HMODULE kernel;
-    FARPROC load_library;
-    FARPROC get_last_error;
-    int code_len;
-    DWORD exit_code = 0;
-    if (GetModuleFileNameW(g_module, self_path, PATH_CAP) == 0) {
+    BOOL used_default = FALSE;
+    int ok = 0;
+    (void)thread;
+    if (process == NULL || g_module == NULL) {
         return 0;
     }
     if (IsWow64Process(process, &wow) && wow) {
+        log_win(
+            L"inject_dll", ERROR_NOT_SUPPORTED, GetProcessId(process),
+            L"32-bit child left unhooked; process continues");
+        SetLastError(ERROR_NOT_SUPPORTED);
         return 0;
     }
-    kernel = GetModuleHandleW(L"kernel32.dll");
-    load_library = GetProcAddress(kernel, "LoadLibraryW");
-    get_last_error = GetProcAddress(kernel, "GetLastError");
-    if (load_library == NULL || get_last_error == NULL) {
-        return 0;
+    wide = (wchar_t *)HeapAlloc(GetProcessHeap(), 0, PATH_CAP * sizeof(wchar_t));
+    short_path = (wchar_t *)HeapAlloc(GetProcessHeap(), 0, PATH_CAP * sizeof(wchar_t));
+    ansi = (char *)HeapAlloc(GetProcessHeap(), 0, PATH_CAP);
+    if (wide == NULL || short_path == NULL || ansi == NULL) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        goto done;
     }
-    code_len = build_loader(code, (uint64_t)(uintptr_t)load_library, (uint64_t)(uintptr_t)get_last_error);
-    remote = (uint8_t *)VirtualAllocEx(
-        process, NULL, 8192, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-    if (remote == NULL) {
-        return 0;
+    if (GetModuleFileNameW(g_module, wide, PATH_CAP) == 0) {
+        log_win(L"GetModuleFileNameW", GetLastError(), GetProcessId(process), L"import patch skipped");
+        goto done;
     }
-    path_bytes = (wcslen(self_path) + 1) * sizeof(wchar_t);
-    if (LOADER_PATH_OFF + path_bytes > 8192) {
-        VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-        return 0;
+    if (WideCharToMultiByte(
+            CP_ACP, WC_NO_BEST_FIT_CHARS, wide, -1, ansi, PATH_CAP, NULL, &used_default) == 0) {
+        log_win(L"WideCharToMultiByte", GetLastError(), GetProcessId(process), wide);
+        goto done;
     }
-    if (!WriteProcessMemory(process, remote, code, (SIZE_T)code_len, &written)
-        || !WriteProcessMemory(process, remote + LOADER_PATH_OFF, self_path, path_bytes, &written)) {
-        VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-        return 0;
+    if (used_default) {
+        DWORD short_n = GetShortPathNameW(wide, short_path, PATH_CAP);
+        used_default = FALSE;
+        if (short_n == 0 || short_n >= PATH_CAP
+            || WideCharToMultiByte(
+                CP_ACP, WC_NO_BEST_FIT_CHARS, short_path, -1, ansi, PATH_CAP, NULL, &used_default) == 0
+            || used_default) {
+            log_win(
+                L"DLL path ANSI conversion", ERROR_INVALID_NAME, GetProcessId(process),
+                L"path is not representable in the system code page; child left unhooked");
+            SetLastError(ERROR_INVALID_NAME);
+            goto done;
+        }
     }
-    thread = CreateRemoteThread(process, NULL, 0, (LPTHREAD_START_ROUTINE)remote, NULL, 0, NULL);
-    if (thread == NULL) {
-        VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-        return 0;
+    dlls[0] = ansi;
+    if (!DetourUpdateProcessWithDll(process, dlls, 1)) {
+        log_win(
+            L"DetourUpdateProcessWithDll", GetLastError(), GetProcessId(process),
+            L"child left unhooked and will be resumed");
+        goto done;
     }
-    wait_rc = WaitForSingleObject(thread, 15000);
-    GetExitCodeThread(thread, &exit_code);
-    CloseHandle(thread);
-    if (wait_rc != WAIT_OBJECT_0) {
-        VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-        return 0;
-    }
-    ReadProcessMemory(process, remote + LOADER_RESULT_OFF, &loaded, sizeof loaded, &written);
-    ReadProcessMemory(process, remote + LOADER_ERROR_OFF, &remote_error, sizeof remote_error, &written);
-    VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-    (void)exit_code;
-    (void)remote_error;
-    return loaded != 0;
+    ok = 1;
+done:
+    HeapFree(GetProcessHeap(), 0, wide);
+    HeapFree(GetProcessHeap(), 0, short_path);
+    HeapFree(GetProcessHeap(), 0, ansi);
+    return ok;
 }
 
 /* Any DLL mapped into Git Bash breaks its fork, so this process must not
@@ -2603,22 +2839,27 @@ static int child_is_posix_image(LPCWSTR app, LPCWSTR cmd) {
     return image_is_posix(full);
 }
 
-static void fail_created_process(LPPROCESS_INFORMATION pi) {
-    if (pi == NULL) {
-        return;
+/* Returns 1 only after the process has actually exited. A failed kill must
+ * not be followed by a second CreateProcess: that would run the command twice. */
+static int retire_suspended_process(LPPROCESS_INFORMATION pi) {
+    DWORD waited;
+    if (pi == NULL || pi->hProcess == NULL) {
+        return 0;
     }
-    if (pi->hProcess != NULL) {
-        TerminateProcess(pi->hProcess, 1);
-        CloseHandle(pi->hProcess);
-        pi->hProcess = NULL;
+    TerminateProcess(pi->hProcess, 1);
+    waited = WaitForSingleObject(pi->hProcess, 3000);
+    if (waited != WAIT_OBJECT_0) {
+        return 0;
     }
+    CloseHandle(pi->hProcess);
+    pi->hProcess = NULL;
     if (pi->hThread != NULL) {
         CloseHandle(pi->hThread);
         pi->hThread = NULL;
     }
     pi->dwProcessId = 0;
     pi->dwThreadId = 0;
-    SetLastError(ERROR_ACCESS_DENIED);
+    return 1;
 }
 
 /* A debug event has to be continued before the next one can be read.
@@ -2772,7 +3013,7 @@ static void on_debug_create(DebugTree *tree, DEBUG_EVENT *ev) {
     int skip = created_image_skip_inject(info->hProcess, info->hFile);
     tree->live += 1;
     if (!skip && !remember_debug_child(tree, ev->dwProcessId, info->hProcess, info->hThread)) {
-        TerminateProcess(info->hProcess, 1);
+        log_line(L"softdelete: debug child was not hooked, it continues without the DLL");
     }
     close_create_handles(info);
 }
@@ -2791,6 +3032,8 @@ static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
     SIZE_T path_bytes;
     int code_len;
     int continued = 0;
+    int suspended = 0;
+    int resumed = 0;
     BOOL wow = FALSE;
     FARPROC load_library;
     memset(&ctx, 0, sizeof ctx);
@@ -2807,9 +3050,14 @@ static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
      * 调试事件马上放行，后面的装载事件才能送到，bash 也不会停住。 */
     if (slot->process == NULL || thread == NULL || load_library == NULL
         || g_self_path[0] == L'\0'
-        || (IsWow64Process(slot->process, &wow) && wow)
-        || SuspendThread(thread) == (DWORD)-1
-        || !GetThreadContext(thread, &ctx)) {
+        || (IsWow64Process(slot->process, &wow) && wow)) {
+        goto stop_child;
+    }
+    if (SuspendThread(thread) == (DWORD)-1) {
+        goto stop_child;
+    }
+    suspended = 1;
+    if (!GetThreadContext(thread, &ctx)) {
         goto stop_child;
     }
     code_len = build_stopped_loader(
@@ -2832,6 +3080,7 @@ static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
     if (!SetThreadContext(thread, &ctx) || ResumeThread(thread) == (DWORD)-1) {
         goto stop_child;
     }
+    resumed = 1;
     ContinueDebugEvent(held->dwProcessId, held->dwThreadId, DBG_CONTINUE);
     continued = 1;
     if (opened != NULL) {
@@ -2844,11 +3093,11 @@ static int inject_at_breakpoint(DebugChild *slot, DEBUG_EVENT *held) {
     slot->injecting = 1;
     return 1;
 stop_child:
+    if (suspended && !resumed && thread != NULL) {
+        ResumeThread(thread);
+    }
     if (watch != NULL) {
-        TerminateProcess(watch, 1);
         CloseHandle(watch);
-    } else if (slot->process != NULL) {
-        TerminateProcess(slot->process, 1);
     }
     if (!continued) {
         ContinueDebugEvent(held->dwProcessId, held->dwThreadId, DBG_CONTINUE);
@@ -2857,18 +3106,13 @@ stop_child:
         CloseHandle(opened);
     }
     close_debug_child_handles(slot);
-    log_line(L"softdelete: breakpoint inject failed, child was stopped");
+    log_line(L"softdelete: breakpoint inject failed, child continues without the DLL");
     return 1;
 }
 
 static void finish_debug_inject(DebugChild *slot, int ok) {
     if (!ok) {
-        if (slot->watch != NULL) {
-            TerminateProcess(slot->watch, 1);
-        } else if (slot->process != NULL) {
-            TerminateProcess(slot->process, 1);
-        }
-        log_line(L"softdelete: breakpoint inject failed, child was stopped");
+        log_line(L"softdelete: breakpoint inject failed, child continues without the DLL");
     }
     close_debug_child_handles(slot);
 }
@@ -2955,7 +3199,6 @@ static int debug_tree_finished(DebugTree *tree) {
  * DEBUG_PROCESS only inside CreateProcessInternalW does not, and it
  * leaves Git Bash stuck. Each Bash is created on its own thread, so the
  * debug port belongs to that thread and one tree cannot block the next. */
-static SOFT_TLS int t_worker_creating;
 
 typedef struct PosixStart {
     HANDLE token;
@@ -3008,17 +3251,14 @@ static DWORD WINAPI posix_debug_thread(LPVOID arg) {
     if (!DuplicateHandle(
             GetCurrentProcess(), pi->hProcess, GetCurrentProcess(), &tree.root_process,
             0, FALSE, DUPLICATE_SAME_ACCESS)) {
-        TerminateProcess(pi->hProcess, 1);
-        CloseHandle(pi->hProcess);
-        if (pi->hThread != NULL) {
-            CloseHandle(pi->hThread);
-        }
-        pi->hProcess = NULL;
-        pi->hThread = NULL;
-        pi->dwProcessId = 0;
-        pi->dwThreadId = 0;
-        req->ok = FALSE;
-        req->error = ERROR_NOT_ENOUGH_MEMORY;
+        /* The shell already exists. Detach the debugger and let it run.
+         * Soft-delete will not cover this bash tree. */
+        log_win(
+            L"DuplicateHandle", GetLastError(), pi->dwProcessId,
+            L"bash continues without debug inject");
+        DebugActiveProcessStop(pi->dwProcessId);
+        req->ok = TRUE;
+        req->error = 0;
         SetEvent(req->created);
         return 0;
     }
@@ -3233,42 +3473,54 @@ static BOOL WINAPI hook_CreateProcessInternalW(
     }
     if (env != NULL && (recycle_delegation_configured()
         || GetEnvironmentVariableW(ENV_ARCHIVE, NULL, 0) > 1)) {
+        int merge = 1;
         wide_env = (const wchar_t *)env;
         if ((flags & CREATE_UNICODE_ENVIRONMENT) == 0) {
             converted_env = ansi_env_to_wide((const char *)env);
             if (converted_env == NULL) {
-                log_line(L"softdelete: ANSI environment could not be converted, child was not started");
-                SetLastError(ERROR_INVALID_PARAMETER);
-                return FALSE;
+                log_line(L"softdelete: ANSI environment could not be converted; child starts with the original environment");
+                merge = 0;
+            } else {
+                wide_env = converted_env;
             }
-            wide_env = converted_env;
         }
-        owned_env = merge_child_soft_env(wide_env, &env_ok);
-        if (!env_ok) {
-            HeapFree(GetProcessHeap(), 0, converted_env);
-            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-            return FALSE;
+        if (merge) {
+            owned_env = merge_child_soft_env(wide_env, &env_ok);
+            if (!env_ok) {
+                log_line(L"softdelete: could not merge soft-delete environment; child starts with the original environment");
+                HeapFree(GetProcessHeap(), 0, converted_env);
+                converted_env = NULL;
+                owned_env = NULL;
+            } else {
+                if (owned_env != NULL) {
+                    use_env = owned_env;
+                    HeapFree(GetProcessHeap(), 0, converted_env);
+                    converted_env = NULL;
+                } else if (converted_env != NULL) {
+                    use_env = converted_env;
+                    owned_env = converted_env;
+                    converted_env = NULL;
+                }
+                used |= CREATE_UNICODE_ENVIRONMENT;
+            }
         }
-        if (owned_env != NULL) {
-            use_env = owned_env;
-            HeapFree(GetProcessHeap(), 0, converted_env);
-            converted_env = NULL;
-        } else if (converted_env != NULL) {
-            use_env = converted_env;
-            owned_env = converted_env;
-            converted_env = NULL;
-        }
-        used |= CREATE_UNICODE_ENVIRONMENT;
     }
     if (child_is_posix_image(app, cmd)) {
         ok = submit_posix_create(
             token, app, cmd, process_attr, thread_attr, inherit, used, use_env, cwd, startup, pi);
-        HeapFree(GetProcessHeap(), 0, owned_env);
         if (!ok) {
-            log_line(L"softdelete: debug start failed, bash child was not started");
-            return FALSE;
+            log_line(L"softdelete: debug start failed; starting bash without soft-delete");
+            if (pi->hProcess == NULL) {
+                ok = g_create_process(
+                    token, app, cmd, process_attr, thread_attr, inherit, used, use_env, cwd, startup, pi,
+                    new_token);
+            } else {
+                log_line(L"softdelete: bash process already exists after debug setup failed; it is left running");
+                ok = TRUE;
+            }
         }
-        return TRUE;
+        HeapFree(GetProcessHeap(), 0, owned_env);
+        return ok;
     }
     {
         wchar_t image[1024];
@@ -3291,14 +3543,36 @@ static BOOL WINAPI hook_CreateProcessInternalW(
     if (!ok || pi == NULL || pi->hProcess == NULL) {
         return ok;
     }
-    if (!inject_dll(pi->hProcess)) {
-        fail_created_process(pi);
-        return FALSE;
+    if (!inject_dll(pi->hProcess, pi->hThread)) {
+        log_win(
+            L"inject_dll", GetLastError(), pi->dwProcessId,
+            L"child continues without the soft-delete DLL");
     }
     if (added_suspend) {
-        if (ResumeThread(pi->hThread) == (DWORD)-1) {
-            fail_created_process(pi);
-            return FALSE;
+        DWORD resumed = ResumeThread(pi->hThread);
+        if (resumed == (DWORD)-1) {
+            DWORD resume_err = GetLastError();
+            log_win(
+                L"ResumeThread", resume_err, pi->dwProcessId,
+                L"suspended child could not be resumed; retrying the original create without soft-delete");
+            if (!retire_suspended_process(pi)) {
+                log_win(
+                    L"TerminateProcess", GetLastError(), pi->dwProcessId,
+                    L"suspended child is still alive; not starting a second copy");
+                SetLastError(resume_err);
+                return FALSE;
+            }
+            ok = g_create_process(
+                token, app, cmd, process_attr, thread_attr, inherit, flags, env, cwd, startup, pi,
+                new_token);
+            if (ok) {
+                SetLastError(0);
+            } else {
+                log_win(
+                    L"CreateProcessInternalW retry", GetLastError(), 0,
+                    L"original create also failed after ResumeThread failure");
+            }
+            return ok;
         }
     }
     return TRUE;
@@ -3397,14 +3671,18 @@ static void write_load_error(const wchar_t *text) {
     DWORD written = 0;
     char utf8[1024];
     int n;
-    OutputDebugStringW(text);
+    int saved_bypass;
+    log_line(text);
     if (GetTempPathW(MAX_PATH, dir) == 0) {
         return;
     }
     if (swprintf_s(path, MAX_PATH, L"%sjiuwen-softdelete-error.txt", dir) < 0) {
         return;
     }
+    saved_bypass = t_bypass;
+    t_bypass = 1;
     file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    t_bypass = saved_bypass;
     if (file == INVALID_HANDLE_VALUE) {
         return;
     }
@@ -3429,74 +3707,161 @@ static int install_named(void *target, void *hook_fn, const wchar_t *name) {
     return 0;
 }
 
-static int install_all(void) {
+static int resolve_hook_targets(void) {
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     HMODULE kernelbase = GetModuleHandleW(L"kernelbase.dll");
-    void *nt_close;
-    void *nt_delete;
-    void *nt_set;
-    void *nt_create;
-    void *nt_open;
-    void *create_process;
-    void *delete_file;
-    void *remove_directory;
     if (ntdll == NULL || kernelbase == NULL) {
         write_load_error(L"ntdll or kernelbase is not loaded");
         return 0;
     }
-    nt_close = (void *)GetProcAddress(ntdll, "NtClose");
-    nt_delete = (void *)GetProcAddress(ntdll, "NtDeleteFile");
-    nt_set = (void *)GetProcAddress(ntdll, "NtSetInformationFile");
-    nt_create = (void *)GetProcAddress(ntdll, "NtCreateFile");
-    nt_open = (void *)GetProcAddress(ntdll, "NtOpenFile");
-    create_process = (void *)GetProcAddress(kernelbase, "CreateProcessInternalW");
-    delete_file = (void *)GetProcAddress(kernelbase, "DeleteFileW");
-    remove_directory = (void *)GetProcAddress(kernelbase, "RemoveDirectoryW");
-    if (nt_close == NULL || nt_delete == NULL || nt_set == NULL || nt_create == NULL
-        || nt_open == NULL || create_process == NULL || delete_file == NULL
-        || remove_directory == NULL) {
+    g_nt_close = (FnNtClose)GetProcAddress(ntdll, "NtClose");
+    g_nt_delete_file = (FnNtDeleteFile)GetProcAddress(ntdll, "NtDeleteFile");
+    g_nt_set_info = (FnNtSetInformationFile)GetProcAddress(ntdll, "NtSetInformationFile");
+    g_nt_create_file = (FnNtCreateFile)GetProcAddress(ntdll, "NtCreateFile");
+    g_nt_open_file = (FnNtOpenFile)GetProcAddress(ntdll, "NtOpenFile");
+    g_create_process = (FnCreateProcessInternalW)GetProcAddress(kernelbase, "CreateProcessInternalW");
+    g_delete_file = (BOOL(WINAPI *)(LPCWSTR))GetProcAddress(kernelbase, "DeleteFileW");
+    g_remove_directory = (BOOL(WINAPI *)(LPCWSTR))GetProcAddress(kernelbase, "RemoveDirectoryW");
+    if (g_nt_close == NULL || g_nt_delete_file == NULL || g_nt_set_info == NULL
+        || g_nt_create_file == NULL || g_nt_open_file == NULL || g_create_process == NULL
+        || g_delete_file == NULL || g_remove_directory == NULL) {
         write_load_error(L"required export is missing");
         return 0;
     }
+    return 1;
+}
+
+static int install_inline(void) {
+    if (!resolve_hook_targets()) {
+        return 0;
+    }
     t_bypass = 1;
-    if (!install_named(nt_close, (void *)hook_NtClose, L"NtClose")) {
+    if (!install_named((void *)g_nt_close, (void *)hook_NtClose, L"NtClose")) {
         goto fail;
     }
     g_nt_close = (FnNtClose)g_hooks[g_hook_count - 1].trampoline;
-    if (!install_named(nt_delete, (void *)hook_NtDeleteFile, L"NtDeleteFile")) {
+    if (!install_named((void *)g_nt_delete_file, (void *)hook_NtDeleteFile, L"NtDeleteFile")) {
         goto fail;
     }
     g_nt_delete_file = (FnNtDeleteFile)g_hooks[g_hook_count - 1].trampoline;
-    if (!install_named(nt_set, (void *)hook_NtSetInformationFile, L"NtSetInformationFile")) {
+    if (!install_named((void *)g_nt_set_info, (void *)hook_NtSetInformationFile, L"NtSetInformationFile")) {
         goto fail;
     }
     g_nt_set_info = (FnNtSetInformationFile)g_hooks[g_hook_count - 1].trampoline;
-    if (!install_named(nt_create, (void *)hook_NtCreateFile, L"NtCreateFile")) {
+    if (!install_named((void *)g_nt_create_file, (void *)hook_NtCreateFile, L"NtCreateFile")) {
         goto fail;
     }
     g_nt_create_file = (FnNtCreateFile)g_hooks[g_hook_count - 1].trampoline;
-    if (!install_named(nt_open, (void *)hook_NtOpenFile, L"NtOpenFile")) {
+    if (!install_named((void *)g_nt_open_file, (void *)hook_NtOpenFile, L"NtOpenFile")) {
         goto fail;
     }
     g_nt_open_file = (FnNtOpenFile)g_hooks[g_hook_count - 1].trampoline;
-    if (!install_named(create_process, (void *)hook_CreateProcessInternalW, L"CreateProcessInternalW")) {
+    if (!install_named((void *)g_create_process, (void *)hook_CreateProcessInternalW, L"CreateProcessInternalW")) {
         goto fail;
     }
     g_create_process = (FnCreateProcessInternalW)g_hooks[g_hook_count - 1].trampoline;
-    if (!install_named(delete_file, (void *)hook_DeleteFileW, L"DeleteFileW")) {
+    if (!install_named((void *)g_delete_file, (void *)hook_DeleteFileW, L"DeleteFileW")) {
         goto fail;
     }
     g_delete_file = (BOOL(WINAPI *)(LPCWSTR))g_hooks[g_hook_count - 1].trampoline;
-    if (!install_named(remove_directory, (void *)hook_RemoveDirectoryW, L"RemoveDirectoryW")) {
+    if (!install_named((void *)g_remove_directory, (void *)hook_RemoveDirectoryW, L"RemoveDirectoryW")) {
         goto fail;
     }
     g_remove_directory = (BOOL(WINAPI *)(LPCWSTR))g_hooks[g_hook_count - 1].trampoline;
     t_bypass = 0;
     return 1;
 fail:
-    remove_hooks();
+    remove_inline_hooks();
     t_bypass = 0;
     return 0;
+}
+
+static int attach_slot(void **slot, void *hook_fn, const wchar_t *name) {
+    LONG err;
+    wchar_t msg[256];
+    err = DetourAttach(slot, hook_fn);
+    if (err == NO_ERROR) {
+        return 1;
+    }
+    swprintf_s(msg, 256, L"DetourAttach failed: %s: %ld", name, err);
+    write_load_error(msg);
+    return 0;
+}
+
+static void remove_detour_hooks(void) {
+    if (!g_detours) {
+        return;
+    }
+    if (DetourTransactionBegin() != NO_ERROR) {
+        return;
+    }
+    DetourUpdateThread(GetCurrentThread());
+    DetourDetach((PVOID *)&g_nt_close, (PVOID)hook_NtClose);
+    DetourDetach((PVOID *)&g_nt_delete_file, (PVOID)hook_NtDeleteFile);
+    DetourDetach((PVOID *)&g_nt_set_info, (PVOID)hook_NtSetInformationFile);
+    DetourDetach((PVOID *)&g_nt_create_file, (PVOID)hook_NtCreateFile);
+    DetourDetach((PVOID *)&g_nt_open_file, (PVOID)hook_NtOpenFile);
+    DetourDetach((PVOID *)&g_create_process, (PVOID)hook_CreateProcessInternalW);
+    DetourDetach((PVOID *)&g_delete_file, (PVOID)hook_DeleteFileW);
+    DetourDetach((PVOID *)&g_remove_directory, (PVOID)hook_RemoveDirectoryW);
+    DetourTransactionCommit();
+    g_detours = 0;
+}
+
+static void remove_hooks(void) {
+    if (g_detours) {
+        remove_detour_hooks();
+        return;
+    }
+    remove_inline_hooks();
+}
+
+static int install_detours(void) {
+    if (!resolve_hook_targets()) {
+        return 0;
+    }
+    t_bypass = 1;
+    if (DetourTransactionBegin() != NO_ERROR) {
+        write_load_error(L"DetourTransactionBegin failed");
+        t_bypass = 0;
+        return 0;
+    }
+    if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR) {
+        DetourTransactionAbort();
+        write_load_error(L"DetourUpdateThread failed");
+        t_bypass = 0;
+        return 0;
+    }
+    if (!attach_slot((void **)&g_nt_close, (void *)hook_NtClose, L"NtClose")
+        || !attach_slot((void **)&g_nt_delete_file, (void *)hook_NtDeleteFile, L"NtDeleteFile")
+        || !attach_slot((void **)&g_nt_set_info, (void *)hook_NtSetInformationFile, L"NtSetInformationFile")
+        || !attach_slot((void **)&g_nt_create_file, (void *)hook_NtCreateFile, L"NtCreateFile")
+        || !attach_slot((void **)&g_nt_open_file, (void *)hook_NtOpenFile, L"NtOpenFile")
+        || !attach_slot((void **)&g_create_process, (void *)hook_CreateProcessInternalW, L"CreateProcessInternalW")
+        || !attach_slot((void **)&g_delete_file, (void *)hook_DeleteFileW, L"DeleteFileW")
+        || !attach_slot((void **)&g_remove_directory, (void *)hook_RemoveDirectoryW, L"RemoveDirectoryW")) {
+        DetourTransactionAbort();
+        t_bypass = 0;
+        return 0;
+    }
+    if (DetourTransactionCommit() != NO_ERROR) {
+        DetourTransactionAbort();
+        write_load_error(L"DetourTransactionCommit failed; process continues without soft-delete hooks");
+        t_bypass = 0;
+        return 0;
+    }
+    g_detours = 1;
+    t_bypass = 0;
+    return 1;
+}
+
+static int install_all(void) {
+    wchar_t exe[1024];
+    DWORD n = GetModuleFileNameW(NULL, exe, 1024);
+    if (n > 0 && n < 1024 && image_is_posix_delete_tool(exe)) {
+        return install_inline();
+    }
+    return install_detours();
 }
 
 /* box-server sets this on the thread that calls SHFileOperation, so the
@@ -3505,8 +3870,21 @@ SOFT_EXPORT void jiuwen_softdelete_set_bypass(int on) {
     t_bypass = on ? 1 : 0;
 }
 
+/* Parent-side import-table patch. Does not resume or terminate the child. */
+SOFT_EXPORT int jiuwen_softdelete_patch_process(HANDLE process) {
+    return inject_dll(process, NULL);
+}
+
+static int patch_only_process(void) {
+    wchar_t value[4];
+    DWORD n = GetEnvironmentVariableW(L"JIUWENBOX_SOFT_DELETE_PATCH_ONLY", value, 4);
+    return n == 1 && value[0] == L'1' && value[1] == L'\0';
+}
+
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
+        int static_load;
+        g_tls_slot = TlsAlloc();
         g_module = instance;
         {
             DWORD n = GetModuleFileNameW(g_module, g_self_path, PATH_CAP);
@@ -3514,21 +3892,35 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
                 g_self_path[0] = L'\0';
             }
         }
+        /* The supervisor loads this DLL only to call the patch export.
+         * Installing hooks here would soft-delete the supervisor itself. */
+        if (patch_only_process()) {
+            return TRUE;
+        }
         DisableThreadLibraryCalls(instance);
         InitializeCriticalSection(&g_lock);
         g_lock_ready = 1;
         if (!install_all()) {
-            if (g_lock_ready) {
-                DeleteCriticalSection(&g_lock);
-                g_lock_ready = 0;
+            static_load = (reserved != NULL);
+            if (!static_load) {
+                if (g_lock_ready) {
+                    DeleteCriticalSection(&g_lock);
+                    g_lock_ready = 0;
+                }
+                return FALSE;
             }
-            return FALSE;
+            /* Import-table load: returning FALSE would abort the child. */
+            log_line(L"softdelete: hook install failed during import load; process continues without soft-delete");
         }
     } else if (reason == DLL_PROCESS_DETACH && reserved == NULL) {
         remove_hooks();
         if (g_lock_ready) {
             DeleteCriticalSection(&g_lock);
             g_lock_ready = 0;
+        }
+        if (g_tls_slot != TLS_OUT_OF_INDEXES) {
+            TlsFree(g_tls_slot);
+            g_tls_slot = TLS_OUT_OF_INDEXES;
         }
     }
     return TRUE;

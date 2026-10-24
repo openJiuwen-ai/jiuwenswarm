@@ -1,0 +1,5 @@
+LIBRARY jiuwen_softdelete
+EXPORTS
+    DetourFinishHelperProcess @1
+    jiuwen_softdelete_set_bypass
+    jiuwen_softdelete_patch_process

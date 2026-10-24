@@ -384,7 +384,7 @@ async def lifespan(_application: FastAPI):
                     start_broker(permitted_loopback_ports(_permit_start, _permit_end))
             except Exception:  # noqa: BLE001
                 logger.exception(
-                    "回收站转发启动失败; 软删除已开启时沙箱创建会被拒绝",
+                    "回收站转发启动失败; 沙箱仍会启动, 删除会留下原文件",
                 )
         # Become the subreaper for our descendant tree *before* any sandbox
         # spawns bwrap. PR_SET_CHILD_SUBREAPER only affects *future*

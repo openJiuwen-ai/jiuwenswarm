@@ -1,10 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Windows 软删除 DLL 的路径、沙箱 ACL 和挂起进程注入.
 
-DLL 本体在进程里挂钩 ntdll。本模块只负责:
+DLL 本体在普通 Windows 进程里用 Detours 挂钩删除和创建进程。
+Git Bash 不注入；它拉起的 rm 等仍由 DLL 的调试循环装入，并使用手写钩子。
+本模块负责:
 - 找到 ``jiuwen_softdelete.dll``
 - 给 jbx-sandbox 读和执行权限
-- 在 CREATE_SUSPENDED 的 runner 里装入一次
+- 在 CREATE_SUSPENDED 的 runner 上改导入表，让加载器在主线程起来前映射 DLL
 
 子进程由 DLL 里的 CreateProcessInternalW 钩子继续装, 这里不按每次删除注入.
 """
@@ -12,6 +14,7 @@ DLL 本体在进程里挂钩 ntdll。本模块只负责:
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import sys
 from ctypes import wintypes
@@ -23,14 +26,8 @@ ENV_DLL = "JIUWENBOX_SOFT_DELETE_DLL"
 ENV_RECYCLE_PORT = "JIUWENBOX_SOFT_DELETE_RECYCLE_PORT"
 ENV_RECYCLE_TOKEN = "JIUWENBOX_SOFT_DELETE_RECYCLE_TOKEN"
 _DLL_NAME = "jiuwen_softdelete.dll"
-
-_LOADER_PATH_OFF = 0x100
-_LOADER_RESULT_OFF = 0x80
-_LOADER_ERROR_OFF = 0x88
-_MEM_COMMIT = 0x1000
-_MEM_RESERVE = 0x2000
-_PAGE_EXECUTE_READWRITE = 0x40
-_WAIT_OBJECT_0 = 0
+_PATCH_ONLY = "JIUWENBOX_SOFT_DELETE_PATCH_ONLY"
+logger = logging.getLogger(__name__)
 
 
 def enabled_from_environ() -> bool:
@@ -107,153 +104,68 @@ def prepare_dll_for_sandbox_user() -> Path:
     return dll
 
 
-def _patch_lea(code: bytearray, at: int, target: int) -> None:
-    disp = target - (at + 7)
-    code[at + 3:at + 7] = int(disp).to_bytes(4, "little", signed=True)
-
-
-def build_loader_shellcode(load_library: int, get_last_error: int) -> bytes:
-    """生成远程 LoadLibraryW 桩, 把 64 位模块句柄写回同一页.
-
-    布局与 softdelete.c 的 build_loader 一致: 代码在页首, 结果在 0x80,
-    错误码在 0x88, DLL 路径 UTF-16 在 0x100.
-    """
-    code = bytearray()
-    code += b"\x48\x83\xEC\x28"
-    lea_path = len(code)
-    code += b"\x48\x8D\x0D\x00\x00\x00\x00"
-    code += b"\x48\xB8" + int(load_library).to_bytes(8, "little")
-    code += b"\xFF\xD0"
-    lea_res = len(code)
-    code += b"\x48\x8D\x0D\x00\x00\x00\x00"
-    code += b"\x48\x89\x01"
-    code += b"\x48\x85\xC0"
-    jnz_at = len(code)
-    code += b"\x75\x00"
-    code += b"\x48\xB8" + int(get_last_error).to_bytes(8, "little")
-    code += b"\xFF\xD0"
-    lea_err = len(code)
-    code += b"\x48\x8D\x0D\x00\x00\x00\x00"
-    code += b"\x89\x01"
-    done = len(code)
-    code[jnz_at + 1] = (done - (jnz_at + 2)) & 0xFF
-    code += b"\x31\xC0\x48\x83\xC4\x28\xC3"
-    _patch_lea(code, lea_path, _LOADER_PATH_OFF)
-    _patch_lea(code, lea_res, _LOADER_RESULT_OFF)
-    _patch_lea(code, lea_err, _LOADER_ERROR_OFF)
-    return bytes(code)
-
-
-def _kernel32() -> ctypes.WinDLL:
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
-    kernel.GetModuleHandleW.restype = ctypes.c_void_p
-    kernel.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-    kernel.GetProcAddress.restype = ctypes.c_void_p
-    kernel.VirtualAllocEx.argtypes = [
-        wintypes.HANDLE, ctypes.c_void_p, ctypes.c_size_t,
-        wintypes.DWORD, wintypes.DWORD,
-    ]
-    kernel.VirtualAllocEx.restype = ctypes.c_void_p
-    kernel.WriteProcessMemory.argtypes = [
-        wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t),
-    ]
-    kernel.WriteProcessMemory.restype = wintypes.BOOL
-    kernel.ReadProcessMemory.argtypes = [
-        wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t),
-    ]
-    kernel.ReadProcessMemory.restype = wintypes.BOOL
-    kernel.CreateRemoteThread.argtypes = [
-        wintypes.HANDLE, ctypes.c_void_p, ctypes.c_size_t,
-        ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    kernel.CreateRemoteThread.restype = wintypes.HANDLE
-    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-    kernel.WaitForSingleObject.restype = wintypes.DWORD
-    kernel.VirtualFreeEx.argtypes = [
-        wintypes.HANDLE, ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD,
-    ]
-    kernel.VirtualFreeEx.restype = wintypes.BOOL
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel.CloseHandle.restype = wintypes.BOOL
-    kernel.IsWow64Process.argtypes = [
-        wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL),
-    ]
-    kernel.IsWow64Process.restype = wintypes.BOOL
-    return kernel
-
-
 def inject_suspended(process_handle: int) -> None:
-    """往仍处于挂起状态的进程装入软删除 DLL.
+    """往仍处于挂起状态的进程改导入表，让加载器映射软删除 DLL.
 
-    不恢复主线程. 调用方在注入成功后再 ResumeThread.
-    32 位子进程装不了这支 64 位 DLL, 直接失败, 避免无保护地跑起来.
+    不恢复主线程. 导入表改失败或目标是 32 位进程时直接返回,
+    调用方仍按原方式 ResumeThread.
     """
     if sys.platform != "win32":
-        raise RuntimeError("soft-delete DLL injection is Windows-only")
+        logger.error("软删除注入被跳过: 非 Windows")
+        return
     dll = dll_path()
     if not dll.is_file():
         raise FileNotFoundError(f"soft-delete DLL not found: {dll}")
-    kernel = _kernel32()
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    kernel.GetModuleHandleW.restype = wintypes.HMODULE
+    kernel.LoadLibraryW.argtypes = [wintypes.LPCWSTR]
+    kernel.LoadLibraryW.restype = wintypes.HMODULE
+    kernel.FreeLibrary.argtypes = [wintypes.HMODULE]
+    kernel.FreeLibrary.restype = wintypes.BOOL
+    kernel.GetProcAddress.argtypes = [wintypes.HMODULE, ctypes.c_char_p]
+    kernel.GetProcAddress.restype = ctypes.c_void_p
+    kernel.IsWow64Process.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+    kernel.IsWow64Process.restype = wintypes.BOOL
     process = wintypes.HANDLE(process_handle)
     wow = wintypes.BOOL()
     if kernel.IsWow64Process(process, ctypes.byref(wow)) and wow.value:
-        raise RuntimeError(f"refusing to start a 32-bit process without soft-delete: {dll}")
-    k32 = kernel.GetModuleHandleW("kernel32.dll")
-    load_library = kernel.GetProcAddress(k32, b"LoadLibraryW")
-    get_last_error = kernel.GetProcAddress(k32, b"GetLastError")
-    if not load_library or not get_last_error:
-        raise RuntimeError("kernel32!LoadLibraryW is unavailable")
-    code = build_loader_shellcode(int(load_library), int(get_last_error))
-    remote = kernel.VirtualAllocEx(
-        process, None, 8192, _MEM_COMMIT | _MEM_RESERVE, _PAGE_EXECUTE_READWRITE,
-    )
-    if not remote:
-        raise ctypes.WinError(ctypes.get_last_error())
-    path_bytes = str(dll).encode("utf-16-le") + b"\x00\x00"
-    if _LOADER_PATH_OFF + len(path_bytes) > 8192:
-        kernel.VirtualFreeEx(process, remote, 0, 0x8000)
-        raise RuntimeError(f"soft-delete DLL path is too long: {dll}")
-    written = ctypes.c_size_t()
-    code_buf = ctypes.create_string_buffer(code)
-    path_buf = ctypes.create_string_buffer(path_bytes)
-    wrote_code = kernel.WriteProcessMemory(
-        process, remote, code_buf, len(code), ctypes.byref(written),
-    )
-    wrote_path = kernel.WriteProcessMemory(
-        process, remote + _LOADER_PATH_OFF, path_buf, len(path_bytes), ctypes.byref(written),
-    )
-    if not wrote_code or not wrote_path:
-        err = ctypes.get_last_error()
-        kernel.VirtualFreeEx(process, remote, 0, 0x8000)
-        raise ctypes.WinError(err)
-    thread = kernel.CreateRemoteThread(process, None, 0, remote, None, 0, None)
-    if not thread:
-        err = ctypes.get_last_error()
-        kernel.VirtualFreeEx(process, remote, 0, 0x8000)
-        raise ctypes.WinError(err)
+        logger.warning(
+            "软删除跳过 32 位进程, 进程将不带软删除继续启动 dll=%s", dll,
+        )
+        return
+    already = kernel.GetModuleHandleW(_DLL_NAME)
+    loaded_here = None
+    if not already:
+        os.environ[_PATCH_ONLY] = "1"
+        try:
+            loaded_here = kernel.LoadLibraryW(str(dll))
+        finally:
+            os.environ.pop(_PATCH_ONLY, None)
+        if not loaded_here:
+            err = ctypes.get_last_error()
+            logger.error(
+                "软删除 DLL 无法在监督进程加载, 子进程将不带软删除启动 winerror=%s dll=%s",
+                err, dll,
+            )
+            raise ctypes.WinError(err)
+    module = already or loaded_here
     try:
-        wait_rc = kernel.WaitForSingleObject(thread, 15000)
-        if wait_rc != _WAIT_OBJECT_0:
-            raise RuntimeError(f"soft-delete DLL load timed out (wait={wait_rc})")
-        result = ctypes.c_uint64()
-        remote_error = ctypes.c_uint32()
-        kernel.ReadProcessMemory(
-            process, remote + _LOADER_RESULT_OFF, ctypes.byref(result),
-            ctypes.sizeof(result), ctypes.byref(written),
-        )
-        kernel.ReadProcessMemory(
-            process, remote + _LOADER_ERROR_OFF, ctypes.byref(remote_error),
-            ctypes.sizeof(remote_error), ctypes.byref(written),
-        )
-        if result.value == 0:
+        addr = kernel.GetProcAddress(module, b"jiuwen_softdelete_patch_process")
+        if not addr:
+            logger.error("软删除 DLL 缺少 jiuwen_softdelete_patch_process, dll=%s", dll)
+            raise RuntimeError("jiuwen_softdelete_patch_process is missing")
+        patch_type = ctypes.WINFUNCTYPE(ctypes.c_int, wintypes.HANDLE, use_last_error=True)
+        patch = patch_type(addr)
+        if not patch(process):
+            err = ctypes.get_last_error()
+            logger.error(
+                "软删除导入表注入失败, 子进程将不带软删除启动 winerror=%s dll=%s",
+                err, dll,
+            )
             raise RuntimeError(
-                f"LoadLibraryW failed in suspended process "
-                f"(error={remote_error.value}, dll={dll})"
+                f"soft-delete import patch failed (winerror={err}, dll={dll})"
             )
     finally:
-        kernel.CloseHandle(thread)
-        kernel.VirtualFreeEx(process, remote, 0, 0x8000)
+        if loaded_here:
+            kernel.FreeLibrary(loaded_here)
