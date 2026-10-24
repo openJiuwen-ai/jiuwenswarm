@@ -395,6 +395,9 @@ def _kill_port(port: int) -> None:
         result = subprocess.run(
             ["/usr/sbin/lsof", "-ti", f":{port}"],
             capture_output=True, text=True, timeout=5,
+            # macOS tools emit UTF-8; decode explicitly so a non-UTF-8 locale
+            # cannot raise inside the reader thread and leave stdout empty.
+            encoding="utf-8", errors="replace",
         )
         for pid_str in result.stdout.strip().split("\n"):
             if pid_str.strip():
