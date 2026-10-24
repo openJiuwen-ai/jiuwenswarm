@@ -3261,7 +3261,11 @@ function AppContent({
                   : code === 'unsupported'
                     ? t('designer.chat.unsupported')
                     : '';
-          window.alert(referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')));
+          // A native alert leaves the Windows desktop page unable to take keyboard focus until the app is re-activated.
+          toast.open({
+            content: referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')),
+            variant: 'error',
+          });
         } finally {
           creatingSessionRef.current = false;
           useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
