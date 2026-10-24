@@ -4,6 +4,8 @@ JiuwenSwarm scans local, built-in, and resource `agent_groups` roots. A package 
 
 Scanning returns descriptors only. `org_create_and_invite_expert_team` combines the selected package's roles, prompts, skills, and capabilities with the current Team's model, storage, transport, workspace, and session defaults. Each instance receives a unique runtime Team ID; read it from `org_view_organization` rather than treating the package name as an ID.
 
+Direct messages to a running expert Team use the same `interact` channel as ordinary Teams. Acceptance means the input was delivered to the Leader runtime, not that its task has completed. Replies continue through the existing Team stream and are saved in that Team's conversation history. A paused expert still resumes through the existing execution path. Organization-internal task and Leader-message scheduling is unchanged.
+
 ## Summary Team
 
 The fixed Summary Team contains:
