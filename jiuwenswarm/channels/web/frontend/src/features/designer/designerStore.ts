@@ -16,6 +16,7 @@ import {
   connectNodeToGraph,
   removeNodesFromGraph,
 } from './designerCanvasNodes';
+import { isDesignerConnectionAllowed } from './designerConnectionRules';
 import { useDesignerUiStore } from './designerUiStore';
 import type {
   AssetRef,
@@ -430,9 +431,13 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     if (!graph) return;
     const source = String(connection.source ?? '').trim();
     const target = String(connection.target ?? '').trim();
-    if (!source || !target) return;
+    if (!source || !target || source === target) return;
     const nodeIds = new Set(graph.nodes.map((node) => node.id));
     if (!nodeIds.has(source) || !nodeIds.has(target)) return;
+    // Unsupported node-type pairs never reach the graph, whatever created the
+    // edge (free dragging, port menus, programmatic callers) — issue #5382.
+    const typeById = new Map(graph.nodes.map((node) => [String(node.id), String(node.type ?? '')]));
+    if (!isDesignerConnectionAllowed(typeById.get(source), typeById.get(target))) return;
     const duplicate = graph.edges.some(
       (edge) => edge.source === source && edge.target === target,
     );

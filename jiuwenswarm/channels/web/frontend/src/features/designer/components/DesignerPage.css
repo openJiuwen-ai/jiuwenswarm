@@ -1468,6 +1468,20 @@
   transition: color 120ms ease, opacity 120ms ease;
 }
 
+/*
+ * Anchor ports: sides that can receive a wire but have no add-node template
+ * (e.g. an image node is preceded by text/table, which are not add-menu
+ * entries). They have no plus icon, so they must stay hittable on their own or
+ * the node could never be wired from that side.
+ */
+.designer-node__card .react-flow__handle.designer-node__port--anchor {
+  pointer-events: auto;
+}
+
+.designer-node:hover .designer-node__card .react-flow__handle.designer-node__port--anchor {
+  background: var(--color-text-secondary, #8a8f98);
+}
+
 .designer-node__port-icon {
   position: absolute;
   top: 50%;
