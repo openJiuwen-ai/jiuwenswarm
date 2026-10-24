@@ -5777,6 +5777,7 @@ class AgentWebSocketServer:
         from jiuwenswarm.agents.harness.team import get_team_manager
         from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
             TeamMonitorHandler,
+            TeamNotEstablishedError,
         )
         from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
@@ -5825,6 +5826,16 @@ class AgentWebSocketServer:
                     db_snapshot = await TeamMonitorHandler.get_team_snapshot_from_db(
                         session_id, team_name
                     )
+                except TeamNotEstablishedError:
+                    # 团队从未建立（建团失败/已删除）：确定性状态而非故障，
+                    # 空面板即可——降级为 info，避免快照轮询期 WARNING 刷屏。
+                    logger.info(
+                        "[AgentWebSocketServer] team.snapshot (db) team not established: "
+                        "session_id=%s team_name=%s",
+                        session_id,
+                        team_name,
+                    )
+                    db_snapshot = None
                 except Exception as e:
                     logger.warning(
                         "[AgentWebSocketServer] team.snapshot (db) failed: "

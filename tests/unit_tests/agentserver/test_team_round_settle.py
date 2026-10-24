@@ -679,3 +679,244 @@ async def test_forced_terminal_failure_does_not_block_team_completed(monkeypatch
     )
     # 补终态失败后：raw team.completed 兜底广播仍须到达
     assert any(e.get("event_type") == "team.completed" for e in manager.events)
+
+
+from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+    TeamNotEstablishedError,
+)
+
+
+@pytest.mark.asyncio
+async def test_not_established_propagates_from_db_snapshot(monkeypatch) -> None:
+    """live 快照不可得 + DB 对照抛 TeamNotEstablishedError → 原样上抛（不归 None）。
+
+    None 会让调用方续窗重试，而"团队从未建立"
+    等到进程退出也不会好，续窗=永不收口。
+    """
+    _patch_progress(monkeypatch, None)
+
+    async def _db_raise(_cid, _sid):
+        raise TeamNotEstablishedError("team_info has no row for team 't'")
+
+    monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_raise)
+    with pytest.raises(TeamNotEstablishedError):
+        await team_helpers._team_round_settled("desktop", "s1")
+
+
+@pytest.mark.asyncio
+async def test_not_established_propagates_from_unread_check(monkeypatch) -> None:
+    """快照正常但动态消息表不存在（unread 检查抛出）→ 同样原样上抛。"""
+    _patch_progress(monkeypatch, (0, 0, False))
+
+    async def _unread_raise(_cid, _sid):
+        raise TeamNotEstablishedError("no such table: team_message_x")
+
+    monkeypatch.setattr(team_helpers, "_team_has_unread_messages", _unread_raise)
+    with pytest.raises(TeamNotEstablishedError):
+        await team_helpers._team_round_settled("desktop", "s1")
+
+
+@pytest.mark.asyncio
+async def test_transient_db_failure_still_returns_none(monkeypatch) -> None:
+    """瞬态读失败（database is locked 等普通异常）→ 维持 None 续窗语义。"""
+    _patch_progress(monkeypatch, None)
+
+    async def _db_locked(_cid, _sid):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_locked)
+    assert await team_helpers._team_round_settled("desktop", "s1") is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_db_reraises_not_established_but_swallows_transient(monkeypatch) -> None:
+    """team_progress_snapshot_db：TeamNotEstablishedError 穿透，其余异常归 None。"""
+    from jiuwenswarm.agents.harness.team.handlers import team_monitor_handler
+
+    class _Mgr:
+        @staticmethod
+        def get_active_team_name(session_id):
+            return "demo-team"
+
+    monkeypatch.setattr(team_stall_watchdog, "get_team_manager", lambda _cid: _Mgr())
+
+    async def _raise_not_established(_sid, _tname):
+        raise TeamNotEstablishedError("never built")
+
+    monkeypatch.setattr(
+        team_monitor_handler.TeamMonitorHandler,
+        "get_team_snapshot_from_db",
+        staticmethod(_raise_not_established),
+    )
+    with pytest.raises(TeamNotEstablishedError):
+        await team_stall_watchdog.team_progress_snapshot_db("desktop", "s1")
+
+    async def _raise_locked(_sid, _tname):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(
+        team_monitor_handler.TeamMonitorHandler,
+        "get_team_snapshot_from_db",
+        staticmethod(_raise_locked),
+    )
+    assert await team_stall_watchdog.team_progress_snapshot_db("desktop", "s1") is None
+
+
+@pytest.mark.asyncio
+async def test_final_emits_error_terminal_and_cascades_when_team_not_established(monkeypatch) -> None:
+    """集成：leader final 后 settle 复核撞 TeamNotEstablishedError →
+    跳过静默窗立即补带 error 的 PS 终态 + 级联 park 收流。"""
+    manager = _SettleRecordingManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)
+
+    cascaded: list[dict] = []
+
+    def _fake_cascade(channel_id, session_id, round_id, *, source):
+        cascaded.append({"session_id": session_id, "source": source})
+
+    monkeypatch.setattr(
+        team_helpers, "_cascade_park_runtime_after_terminal", _fake_cascade
+    )
+
+    async def _raise_not_established(_cid, _sid):
+        raise TeamNotEstablishedError("team_info has no row for team 'spec-team'")
+
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise_not_established)
+
+    def _fake_parse(chunk):
+        ctype = getattr(chunk, "type", None)
+        if ctype == "team.member":
+            return {
+                "event_type": "team.member",
+                "event": {"type": "team.member.status_changed", "member_id": "m1"},
+            }
+        if ctype == "tool":
+            return {
+                "event_type": "chat.tool_call",
+                "tool_call": {"name": "bash", "tool_call_id": "c1"},
+            }
+        if ctype == "answer":
+            return {"event_type": "chat.final", "content": chunk.payload}
+        return None
+
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+
+    async def _fake_stream(**kwargs):
+        # 成员状态帧（置位 seen_team_events）+ 工具调用（非干净纯文本轮）
+        # + leader final
+        yield SimpleNamespace(type="team.member", payload={}, role=TeamRole.LEADER)
+        yield SimpleNamespace(type="tool", payload={}, role=TeamRole.LEADER)
+        yield SimpleNamespace(type="answer", payload="调查结论：建团失败", role=TeamRole.LEADER)
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+    await team_helpers._consume_stream_with_query(
+        "web", "sess-never-built", SimpleNamespace(team_name="spec-team"), "问", round_id=1,
+    )
+
+    terminals = [
+        e
+        for e in manager.events
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete") is True
+    ]
+    assert len(terminals) == 1
+    assert terminals[0]["is_processing"] is False
+    assert "never built" in (terminals[0].get("error") or "") or "no row" in (
+            terminals[0].get("error") or ""
+    )
+    assert cascaded and cascaded[0]["source"] == "settle-team-not-established"
+
+
+@pytest.mark.asyncio
+async def test_forced_terminal_at_stream_end_carries_not_established_reason(monkeypatch) -> None:
+    """流末强制补终态撞上团队从未建立：异常不得逃出（finally 路径），
+    且 error 带具体原因而非通用不明文案。"""
+
+    async def _raise(_cid, _sid):
+        raise TeamNotEstablishedError("team_info has no row for team 't'")
+
+    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise)
+    broadcasted: list[dict] = []
+
+    async def _rec(_cid, _sid, event):
+        broadcasted.append(event)
+
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _rec)
+
+    await team_helpers._emit_forced_terminal_at_stream_end(
+        "web", "s1", 1, unrecovered_error=None
+    )
+    assert len(broadcasted) == 1
+    terminal = broadcasted[0]
+    assert terminal["is_complete"] is True
+    assert terminal["is_processing"] is False
+    assert "no row" in terminal["error"]
+
+
+@pytest.mark.asyncio
+async def test_unread_check_reraises_not_established_through_real_impl(monkeypatch) -> None:
+    """直接驱动真实 _team_has_unread_messages：no such table 必须穿透外层
+    except Exception（regression：内层 raise 经 finally 后会被外层吞回 None）。"""
+    from jiuwenswarm.agents.harness.team import config_loader
+    from jiuwenswarm.common import config as common_config
+    from openjiuwen.agent_teams.spawn import shared_resources
+
+    class _Mgr:
+        @staticmethod
+        def get_active_team_name(session_id):
+            return "demo-team"
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: _Mgr())
+    monkeypatch.setattr(
+        config_loader, "resolve_team_sqlite_db_path", lambda _cfg: "/tmp/team.db"
+    )
+    monkeypatch.setattr(common_config, "get_config", lambda: object())
+
+    async def _noop(*_a, **_kw):
+        return None
+
+    async def _no_such_table(_team_name):
+        raise RuntimeError("(sqlite3.OperationalError) no such table: team_message_x")
+
+    fake_db = SimpleNamespace(
+        initialize=_noop,
+        create_cur_session_tables=_noop,
+        message=SimpleNamespace(has_unread_messages=_no_such_table),
+    )
+    monkeypatch.setattr(shared_resources, "get_shared_db", lambda _cfg: fake_db)
+
+    with pytest.raises(TeamNotEstablishedError):
+        await team_helpers._team_has_unread_messages("desktop", "s1")
+
+
+@pytest.mark.asyncio
+async def test_unread_check_transient_error_still_none(monkeypatch) -> None:
+    """同一通路撞瞬态错误（database is locked）→ 仍归 None。"""
+    from jiuwenswarm.agents.harness.team import config_loader
+    from jiuwenswarm.common import config as common_config
+    from openjiuwen.agent_teams.spawn import shared_resources
+
+    class _Mgr:
+        @staticmethod
+        def get_active_team_name(session_id):
+            return "demo-team"
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: _Mgr())
+    monkeypatch.setattr(
+        config_loader, "resolve_team_sqlite_db_path", lambda _cfg: "/tmp/team.db"
+    )
+    monkeypatch.setattr(common_config, "get_config", lambda: object())
+
+    async def _noop(*_a, **_kw):
+        return None
+
+    async def _locked(_team_name):
+        raise RuntimeError("(sqlite3.OperationalError) database is locked")
+
+    fake_db = SimpleNamespace(
+        initialize=_noop,
+        create_cur_session_tables=_noop,
+        message=SimpleNamespace(has_unread_messages=_locked),
+    )
+    monkeypatch.setattr(shared_resources, "get_shared_db", lambda _cfg: fake_db)
+
+    assert await team_helpers._team_has_unread_messages("desktop", "s1") is None

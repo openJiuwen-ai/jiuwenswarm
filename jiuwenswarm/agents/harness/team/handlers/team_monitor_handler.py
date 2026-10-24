@@ -133,6 +133,16 @@ def _task_text_field(name: str, value: str | None) -> dict[str, Any]:
     return field
 
 
+class TeamNotEstablishedError(Exception):
+    """团队从未建立（team_info 无该团队行 / 会话动态表不存在）。
+
+    与瞬态读失败（``database is locked`` 等）本质不同：团队产物缺失是
+    确定性终结——等到进程退出也不会自愈。settle 复核等调用方应立即按
+    确定性失败收口（带 error 终态），而不是把本异常当 None 续窗重试
+    （锁库注入下 settle 复核永恒 None → 流永挂不收口）。
+    """
+
+
 class TeamMonitorHandler(BaseMonitorHandler):
     """Team Monitor 处理器.
 
@@ -526,8 +536,8 @@ class TeamMonitorHandler(BaseMonitorHandler):
 
     @staticmethod
     async def get_team_snapshot_from_db(
-        session_id: str,
-        team_name: str,
+            session_id: str,
+            team_name: str,
     ) -> dict[str, Any] | None:
         """monitor 不在时直查 ``team.db`` 拼出与 ``get_team_snapshot`` 同形的快照.
 
@@ -567,15 +577,32 @@ class TeamMonitorHandler(BaseMonitorHandler):
             await db.create_cur_session_tables()
 
             team_info = await db.team.get_team(tname)
+            # 确定性判定：team_info 无行 / 会话动态表不存在 = 团队
+            # 从未建立（或已被删除），不是瞬态读失败——抛 TeamNotEstablishedError
+            # 让 settle 复核立即收口；「database is locked」等瞬态错误仍走
+            # 下方通用 except 返回 None。
+            if team_info is None:
+                raise TeamNotEstablishedError(
+                    f"team_info has no row for team '{tname}' "
+                    f"(team never built or already deleted)"
+                )
             leader_name = (
                 str(getattr(team_info, "leader_member_name", "") or "").strip()
                 if team_info is not None
                 else ""
             )
-            members = await db.member.get_team_members(tname, status=None) or []
-            if leader_name:
-                members = [m for m in members if m.member_name != leader_name]
-            tasks = await db.task.get_team_tasks(tname) or []
+            try:
+                members = await db.member.get_team_members(tname, status=None) or []
+                if leader_name:
+                    members = [m for m in members if m.member_name != leader_name]
+                tasks = await db.task.get_team_tasks(tname) or []
+            except Exception as read_err:
+                if "no such table" in str(read_err):
+                    raise TeamNotEstablishedError(
+                        f"session dynamic tables missing for session '{sid}' "
+                        f"(team never built): {read_err}"
+                    ) from read_err
+                raise
 
             return {
                 "members": [
@@ -603,6 +630,9 @@ class TeamMonitorHandler(BaseMonitorHandler):
                 ],
                 "team_id": tname,
             }
+        except TeamNotEstablishedError:
+            # 确定性终结语义必须穿透给 settle 复核等调用方，不能吞成 None。
+            raise
         except Exception as e:
             logger.warning(
                 "[TeamMonitorHandler] get_team_snapshot_from_db failed: "

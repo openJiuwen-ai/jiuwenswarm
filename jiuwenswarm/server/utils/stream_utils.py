@@ -179,7 +179,16 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
                     ),
                     "任务执行失败",
                 )
-            return {"event_type": "chat.error", "error": error}
+            out = {"event_type": "chat.error", "error": error}
+            # 会话级降级标记（如 build_team 熔断后主理人单干）：透传给
+            # team_helpers——告警照发照落盘，但不进 leader 错误史、不挂死亡
+            # 探针，轮次终态保持"完成+告警"而非失败。
+            meta = getattr(payload, "metadata", None)
+            if meta is None and isinstance(payload, dict):
+                meta = payload.get("metadata")
+            if isinstance(meta, dict) and meta.get("degraded"):
+                out["degraded"] = True
+            return out
 
     if chunk_type == "llm_output":
         content = (
