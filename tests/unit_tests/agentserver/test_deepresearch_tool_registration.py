@@ -11,14 +11,15 @@ from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
-def test_formal_tool_surface_includes_single_interactive_entry():
+def test_formal_tool_surface_includes_single_interactive_entry(monkeypatch):
+    monkeypatch.setattr(dr, "enable_deepresearch", lambda: True)
     assert [tool.card.name for tool in dr.get_deepresearch_tools()] == [
         "deepresearch_execute",
-        "deepresearch_stream",
         "deepresearch_prepare_rewrite",
         "deepresearch_commit_rewrite",
         "deepresearch_generate_rewrite_html",
     ]
+    assert callable(dr.deepresearch_stream._func)
 
 
 def test_formal_tools_honor_enable_flag(monkeypatch):
@@ -54,7 +55,7 @@ def test_formal_tool_registration_does_not_import_sdk(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
     monkeypatch.setattr(dr, "enable_deepresearch", lambda: True)
-    assert len(dr.get_deepresearch_tools()) == 5
+    assert len(dr.get_deepresearch_tools()) == 4
 
 
 def test_legacy_six_interface_names_remain_absent():
@@ -74,7 +75,6 @@ def test_adapter_registers_formal_tools_as_shared(monkeypatch):
         SimpleNamespace(card=SimpleNamespace(name=name))
         for name in (
             "deepresearch_execute",
-            "deepresearch_stream",
             "deepresearch_prepare_rewrite",
             "deepresearch_commit_rewrite",
             "deepresearch_generate_rewrite_html",
