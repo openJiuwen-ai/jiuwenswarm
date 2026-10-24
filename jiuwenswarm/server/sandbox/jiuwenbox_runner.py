@@ -69,6 +69,52 @@ def _win_hidden_kwargs() -> dict:
     }
 
 
+# 一次 Get-NetTCPConnection 覆盖整个端口段. 原先每个端口各起一次 PowerShell,
+# 10 次串在事件循环上, 启用沙箱时会把保存请求拖过前端 15 秒超时.
+_WIN_PROXY_QUERY_TIMEOUT_S = 8
+_SANDBOX_PROCESS_NAMES = frozenset({"jiuwenswarm", "jiuwenbox", "jiuwenbox-server"})
+
+
+def _win_proxy_listener_command(port_start: int, port_end: int) -> str:
+    """一条 PowerShell: 查出端口段上 Listen 的 pid、进程名、端口."""
+    return (
+        "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
+        f"$range = {int(port_start)}..{int(port_end)}; "
+        "Get-NetTCPConnection -LocalPort $range -State Listen -ErrorAction SilentlyContinue | "
+        "Group-Object OwningProcess | ForEach-Object { "
+        "$owning = $_.Name; "
+        "$proc = Get-Process -Id $owning -ErrorAction SilentlyContinue; "
+        "$name = if ($null -ne $proc) { $proc.ProcessName } else { '' }; "
+        "$localPorts = (($_.Group | ForEach-Object { $_.LocalPort } | Sort-Object -Unique) -join ','); "
+        "Write-Output ($owning + '|' + $name + '|' + $localPorts) "
+        "}"
+    )
+
+
+def _parse_win_proxy_listener_output(text: str) -> dict[int, tuple[str, list[int]]]:
+    """解析 ``pid|name|port,port`` 行."""
+    found: dict[int, tuple[str, list[int]]] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.count("|") < 2:
+            continue
+        pid_str, name, ports_str = line.split("|", 2)
+        pid_str = pid_str.strip()
+        if not pid_str.isdigit():
+            continue
+        ports = [int(part) for part in ports_str.split(",") if part.strip().isdigit()]
+        if not ports:
+            continue
+        found[int(pid_str)] = (name.strip(), ports)
+    return found
+
+
+def _is_sandbox_process_name(proc_name: str) -> bool:
+    name_l = proc_name.lower()
+    # 桌面包进程名是 jiuwenswarm, 开发态是 python*.
+    return name_l.startswith("python") or name_l in _SANDBOX_PROCESS_NAMES
+
+
 def _cleanup_stale_win_proxy_ports(
     port_start: int = _WIN_PROXY_DEFAULT_PORT_START,
     port_end: int = _WIN_PROXY_DEFAULT_PORT_END,
@@ -77,55 +123,38 @@ def _cleanup_stale_win_proxy_ports(
 
     agent-server 重启后, self.process 不再持有旧 box-server 引用 → ensure_running
     的 "owned_match" 判定失效, 旧 box-server (孤儿) 不会被 stop, 仍占着
-    60080-60089 → 新 box-server win_proxy bind WinError 10048. 这里检测占用
-    这些端口的进程, kill 掉 (Windows 用 PowerShell Get-NetTCPConnection).
+    60080-60089 → 新 box-server win_proxy bind WinError 10048. 这里一次查出
+    整个端口段上的监听进程再 kill (Windows 用 PowerShell Get-NetTCPConnection).
 
-    仅 Windows internal 模式调用. best-effort: 检测/kill 失败只 warning, 不阻断
-    spawn (极端情况端口被非 jiuwenbox 第三方占, 不该误杀).
+    同步函数, 调用方放到线程里跑, 避免卡住事件循环. 仅 Windows internal 模式调用.
+    best-effort: 检测/kill 失败只 warning, 不阻断 spawn (极端情况端口被非
+    jiuwenbox 第三方占, 不该误杀).
     """
     if sys.platform != "win32":
         return
-    import subprocess
-    stale_pids: dict[int, list[int]] = {}  # pid -> ports
-    for port in range(port_start, port_end + 1):
-        try:
-            # Get-NetTCPConnection 查 Listen 状态的端口占用.
-            result = subprocess.run(
-                [_get_powershell(), "-NoProfile", "-Command",
-                 f"Get-NetTCPConnection -LocalPort {port} -State Listen "
-                 f"-ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess"],
-                capture_output=True, timeout=5,
-                **_win_hidden_kwargs(),
-            )
-            out = result.stdout.decode("utf-8", errors="replace").strip()
-            if not out:
-                continue
-            for pid_str in out.splitlines():
-                pid_str = pid_str.strip()
-                if pid_str.isdigit():
-                    pid = int(pid_str)
-                    stale_pids.setdefault(pid, []).append(port)
-        except Exception:  # noqa: BLE001
-            continue
-    if not stale_pids:
+    try:
+        start = int(port_start)
+        end = int(port_end)
+    except (TypeError, ValueError):
         return
-    for pid, ports in stale_pids.items():
-        try:
-            name_result = subprocess.run(
-                [_get_powershell(), "-NoProfile", "-Command",
-                 f"(Get-Process -Id {pid} -ErrorAction SilentlyContinue).ProcessName"],
-                capture_output=True, timeout=5,
-                **_win_hidden_kwargs(),
-            )
-            proc_name = name_result.stdout.decode("utf-8", errors="replace").strip()
-        except Exception:  # noqa: BLE001
-            proc_name = ""
-        # 桌面包进程名是 jiuwenswarm, 不只 python*.
-        name_l = proc_name.lower()
-        if not (
-            name_l.startswith("python")
-            or name_l in ("jiuwenswarm", "jiuwenbox", "jiuwenbox-server")
-        ):
+    if not (1 <= start <= end <= 65535):
+        return
+    import subprocess
+    try:
+        result = subprocess.run(
+            [_get_powershell(), "-NoProfile", "-Command", _win_proxy_listener_command(start, end)],
+            capture_output=True,
+            timeout=_WIN_PROXY_QUERY_TIMEOUT_S,
+            **_win_hidden_kwargs(),
+        )
+        listeners = _parse_win_proxy_listener_output(
+            result.stdout.decode("utf-8", errors="replace")
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[JiuwenBoxRunner] 查询 win_proxy 端口占用失败, 继续启动: %s", exc)
+        return
+    for pid, (proc_name, ports) in listeners.items():
+        if not _is_sandbox_process_name(proc_name):
             logger.warning(
                 "[JiuwenBoxRunner] 端口 %s 被非沙箱进程 PID=%d (%s) 占用, 跳过清理",
                 ports, pid, proc_name or "<unknown>",
@@ -133,8 +162,9 @@ def _cleanup_stale_win_proxy_ports(
             continue
         try:
             subprocess.run(
-                [_get_powershell(), "-NoProfile", "-Command", f"Stop-Process -Id {pid} -Force"],
-                capture_output=True, timeout=5,
+                [_get_powershell(), "-NoProfile", "-Command", f"Stop-Process -Id {int(pid)} -Force"],
+                capture_output=True,
+                timeout=5,
                 **_win_hidden_kwargs(),
             )
             logger.warning(
@@ -418,7 +448,7 @@ class JiuwenBoxRunner:
             # 上面 _stop_no_lock 清不到孤儿进程. 旧 box-server 仍占端口 → 新 win_proxy bind WinError 10048. 按默认范围兜底清理.
             # (用户改了 proxy 端口范围则默认范围清不到, 但 bind 失败日志会显示具体端口).
             if sys.platform == "win32":
-                _cleanup_stale_win_proxy_ports()
+                await asyncio.to_thread(_cleanup_stale_win_proxy_ports)
 
             self.host = host
             self.port = port

@@ -1458,6 +1458,7 @@
       "contextEngine": { "label": "上下文压缩", "hint": "控制对话上下文是否启用压缩" },
       "kvCacheAffinity": { "label": "算力亲和", "hint": "控制 Ascend KV Cache 亲和能力" },
       "permissions": { "label": "工具安全护栏", "hint": "控制工具调用时的权限检查" },
+      "sandbox": { "label": "沙箱", "hint": "打开后命令在沙箱里执行，默认关闭" },
       "a2ui": { "label": "A2UI", "hint": "开启或关闭生成式界面渲染与 A2UI 运行时提示词" },
       "trajectoryUi": { "label": "轨迹界面", "hint": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路" },
       "diagnosis": { "label": "轨迹诊断", "hint": "开启后可在「一键定位」对会话进行自动问题分析；在线诊断依赖轨迹界面已开启，离线模式仅需上传/导入日志" },
