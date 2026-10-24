@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
@@ -13,6 +12,7 @@ Object.assign(globalThis, {
   CustomEvent: dom.window.CustomEvent,
   IS_REACT_ACT_ENVIRONMENT: true,
 });
+const { createRoot } = await import('react-dom/client');
 await i18next
   .use(initReactI18next)
   .init({ lng: 'en', showSupportNotice: false, resources: { en: { translation: {} } } });
@@ -419,6 +419,44 @@ test('unconfirmed submissions keep their local variant and waiting icon', async 
   assert.equal(find('asset-publish-result'), null);
   assert.ok(find('asset-publish-form'));
   await act(async () => find('asset-publish-close').click());
+});
+test('logged-out publishing loads local names for all five kinds and preserves edits after login', async () => {
+  for (const kind of ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp']) {
+    sessionStorage.removeItem('marketplace_oauth_access_token');
+    let resolveDescription;
+    assetPublishApi.describe = () => new Promise((resolve) => {
+      resolveDescription = resolve;
+    });
+    await act(async () => openAssetPublish({ kind, local_id: '1022' }));
+    await tick();
+    try {
+      assert.equal(find('asset-publish-display-name').closest('fieldset').disabled, true);
+      assert.equal(typeof resolveDescription, 'function');
+      await act(async () => resolveDescription({
+        ...description,
+        defaults: { ...defaults, display_name: '中文资产', description: '本地介绍' },
+      }));
+      assert.equal(find('asset-publish-display-name').value, '中文资产');
+      assert.equal(find('asset-publish-description').value, '本地介绍');
+      assert.equal(find('asset-publish-prepare').disabled, true);
+      const input = find('asset-publish-display-name');
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, '用户修改名称');
+        input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+        input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+        input.dispatchEvent(new dom.window.FocusEvent('focusout', { bubbles: true }));
+      });
+      assetPublishApi.describe = async () => description;
+      await act(async () => {
+        sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+        window.dispatchEvent(new dom.window.Event('storage'));
+      });
+      await tick();
+      assert.equal(find('asset-publish-display-name').value, '用户修改名称');
+    } finally {
+      await act(async () => find('asset-publish-close').click());
+    }
+  }
 });
 test('OAuth restore contains metadata and does not auto prepare or commit', async () => {
   assetPublishApi.describe = async () => description;
