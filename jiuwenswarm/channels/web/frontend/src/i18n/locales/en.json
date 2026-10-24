@@ -1751,6 +1751,8 @@
     "configLockedHistory": "Session has messages — create a new session to change config",
     "modeSwitchDisabledProcessing": "This conversation is running. Start a new conversation to choose another mode",
     "teamSelect": {
+      "unavailable": "Unavailable",
+      "unavailableHint": "This Expert Team is unavailable. Reinstall its package to continue; history is preserved.",
       "tooltip": "Switch the Team being viewed",
       "loadingLabel": "Loading teams…",
       "fallbackLabel": "Select Team"
