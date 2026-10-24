@@ -2683,10 +2683,14 @@ function handleJiuwenEvent(evt) {
     updateTokenBar();
   } else if (et === 'chat.final') {
     finalizeTurn(rid, payload);
+    // The history file is created/updated by the turn; refresh so the menu's
+    // "Copy Logs Path"/"Export" items get the current path without reopening.
+    send({ type: 'list_sessions' });
   } else if (et === 'chat.processing_status' && payload.is_processing === false) {
-    // Stream ended but no chat.final was sent by gateway — release the UI
+    // Stream ended but no chat.final was sent by gateway - release the UI
     if (state.streaming) {
       finalizeTurn(rid, payload);
+      send({ type: 'list_sessions' });
     }
   } else if (et === 'history.message') {
     renderHistoryMessage(payload);
