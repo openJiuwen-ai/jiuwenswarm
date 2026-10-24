@@ -6887,6 +6887,12 @@ class AgentWebSocketServer:
             from jiuwenswarm.agents.harness.team.expert_org.launcher import (
                 JiuwenExpertTeamLauncher,
             )
+            from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+                HOST_USER_ORIGIN_EXTERNAL,
+                HOST_USER_ORIGIN_INTERNAL,
+            )
+            from jiuwenswarm.server.runtime.agent_adapter.interface import is_external_user_authored_dispatch
+
             query = _request_query_text(request)
             append_history_record(
                 session_id=session_id,
@@ -6913,6 +6919,13 @@ class AgentWebSocketServer:
                 source="org_expert_direct",
                 channel_id=channel_id,
                 request_id=request.request_id,
+                origin_kind=(
+                    HOST_USER_ORIGIN_EXTERNAL
+                    if is_external_user_authored_dispatch(
+                        params, channel_id=channel_id, request_method=request.req_method, metadata=request.metadata,
+                    )
+                    else HOST_USER_ORIGIN_INTERNAL
+                ),
             )
             if not succeeded:
                 error = "target expert team is unavailable or busy"

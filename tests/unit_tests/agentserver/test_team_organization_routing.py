@@ -12,6 +12,11 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server import agent_ws_server
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_EXTERNAL,
+    HOST_USER_ORIGIN_INTERNAL,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +46,42 @@ def request(method=ReqMethod.CHAT_SEND, team="expert"):
 
 def backend(org):
     return SimpleNamespace(org_task_manager=SimpleNamespace(organization_id=org))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel,params,metadata,external", [
+    ("web", {}, None, True),
+    ("feishu", {}, None, True),
+    ("cron", {}, None, False),
+    ("heartbeat", {}, None, False),
+    ("web", {"source": "background"}, None, False),
+    ("web", {"log_as_user": False}, None, False),
+    ("web", {"automation": {"kind": "heartbeat"}}, None, False),
+    ("web", {}, {"automation": {"kind": "heartbeat"}}, False),
+    ("web", {"metadata": {"automation": {"kind": "heartbeat"}}}, None, False),
+    ("web", {"origin_kind": HOST_USER_ORIGIN_EXTERNAL}, {"automation": {"kind": "heartbeat"}}, False),
+    ("web", {}, {SESSION_MESSAGE_INTERNAL_KEY: {}}, False),
+])
+async def test_expert_input_origin_is_classified_at_host_ingress(monkeypatch, channel, params, metadata, external):
+    from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
+
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(server, "_resolve_team_backend", lambda *args: backend("org"))
+    monkeypatch.setattr(agent_ws_server, "append_history_record", lambda **kwargs: None)
+    run = AsyncMock(return_value=True)
+    monkeypatch.setattr(JiuwenExpertTeamLauncher, "run_organization_turn", run)
+    req = request()
+    req.channel_id = channel
+    req.params.update(params)
+    req.params["content"] = "Use the supplied materials."
+    req.metadata = metadata
+    chunks = [chunk async for chunk in server._targeted_expert_response_stream(req)]
+    run.assert_awaited_once()
+    assert run.await_args.kwargs["origin_kind"] == (
+        HOST_USER_ORIGIN_EXTERNAL if external else HOST_USER_ORIGIN_INTERNAL
+    )
+    assert chunks[-1].payload["success"] is True
 
 
 @pytest.mark.asyncio
