@@ -41,11 +41,17 @@ def clamp_clip_duration(seconds: int | float | None, *, default: int = 5) -> int
     return snap_duration(value, active_video_capacity())
 
 
-def duration_from_timeline(timeline: str, *, default: int = 5) -> int:
+def timeline_seconds(timeline: str) -> float | None:
+    """Length of a ``start-end`` storyboard window, or None when it does not parse."""
     nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", timeline or "")]
     if len(nums) >= 2 and nums[1] > nums[0]:
-        return clamp_clip_duration(nums[1] - nums[0], default=default)
-    return clamp_clip_duration(default, default=default)
+        return nums[1] - nums[0]
+    return None
+
+
+def duration_from_timeline(timeline: str, *, default: int = 5) -> int:
+    seconds = timeline_seconds(timeline)
+    return clamp_clip_duration(seconds if seconds is not None else default, default=default)
 
 
 def user_asked_coverage(prompt: str) -> bool:

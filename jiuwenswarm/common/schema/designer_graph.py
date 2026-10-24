@@ -925,6 +925,46 @@ def node_clip_index(node: DesignerGraphNode) -> int:
     return 1
 
 
+def clip_order_problems(graph: DesignerExecutionGraph) -> list[str]:
+    """Shot numbering that would pair clips with the wrong storyboard rows.
+
+    A clip reads its storyboard row, and compose orders the film, by
+    ``node_clip_index``. Clips must therefore be numbered 1..N without repeats,
+    and a clip wired after another clip must carry the next number.
+    """
+    index_by_id = {
+        str(node.get("id") or ""): node_clip_index(node)
+        for node in graph.get("nodes") or []
+        if isinstance(node, dict) and node_pipeline(node) == PIPELINE_CLIP
+    }
+    problems: list[str] = []
+    ids_by_index: dict[int, list[str]] = {}
+    for node_id, index in index_by_id.items():
+        ids_by_index.setdefault(index, []).append(node_id)
+    for index, node_ids in sorted(ids_by_index.items()):
+        if len(node_ids) > 1:
+            problems.append(f"clip_index {index} is shared by {', '.join(node_ids)}")
+    missing = sorted(set(range(1, len(index_by_id) + 1)) - set(ids_by_index))
+    if missing:
+        problems.append(
+            f"clip_index skips {', '.join(map(str, missing))} "
+            f"(expected 1..{len(index_by_id)})"
+        )
+    for node_id, index in index_by_id.items():
+        if not 1 <= index <= len(index_by_id):
+            problems.append(f"{node_id} has clip_index {index} outside 1..{len(index_by_id)}")
+    for node_id, index in index_by_id.items():
+        previous = [
+            source for source in video_concat_source_ids(graph, node_id) if source in index_by_id
+        ]
+        if len(previous) == 1 and index != index_by_id[previous[0]] + 1:
+            problems.append(
+                f"{node_id} follows {previous[0]} (clip_index {index_by_id[previous[0]]}) "
+                f"but has clip_index {index}"
+            )
+    return problems
+
+
 def _copied_delegate(graph: DesignerExecutionGraph) -> str | None:
     for node in graph.get("nodes") or []:
         delegate = str(node_config(node).get("delegate") or "").strip()
