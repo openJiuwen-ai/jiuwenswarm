@@ -4331,6 +4331,14 @@ class JiuWenSwarmDeepAdapter:
             return self._model_request_config.model_name or "unknown"
         return "unknown"
 
+    def _resolve_usage_model_name(self) -> str:
+        """Report the active main model, including request-time Auto routing."""
+        react_agent = getattr(getattr(self, "_instance", None), "_react_agent", None)
+        model_name = getattr(getattr(react_agent, "_config", None), "model_name", None)
+        if isinstance(model_name, str) and model_name.strip():
+            return model_name.strip()
+        return self._resolve_model_name()
+
     def _resolve_session_git_snapshot(
         self,
         project_dir: str,
@@ -14678,7 +14686,7 @@ class JiuWenSwarmDeepAdapter:
             "event_type": "chat.usage_summary",
             "session_id": session_id,
             "usage": summary,
-            "model": self._resolve_model_name(),
+            "model": self._resolve_usage_model_name(),
         }
         context_usage_percent, context_window_tokens = self._context_usage_fields(session_id)
         if context_usage_percent is not None:
