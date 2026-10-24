@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import HOST_USER_ORIGIN_INTERNAL
 from jiuwenswarm.server.runtime.team_organization_identity_store import save_organization_team_identity
 
 if TYPE_CHECKING:
@@ -203,6 +204,7 @@ class JiuwenExpertTeamLauncher:
         *,
         channel_id: str,
         language: str,
+        origin_kind: str,
     ) -> DeliverResult:
         """Submit user input without taking ownership of the existing stream."""
         from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
@@ -216,6 +218,7 @@ class JiuwenExpertTeamLauncher:
             channel=channel_id,
             language="en" if language == "en" else "zh",
             files=files,
+            origin_kind=origin_kind,
         ).render()
         result = await self._get_runtime().interact(
             message, team_name=team_id, session_id=session_id,
@@ -236,6 +239,7 @@ class JiuwenExpertTeamLauncher:
         source: str = "org_expert_background",
         channel_id: str | None = None,
         request_id: str | None = None,
+        origin_kind: str = HOST_USER_ORIGIN_INTERNAL,
     ) -> bool:
         """Run an org background turn and relay expert output to its Web session."""
         runtime = self._get_runtime()
@@ -311,6 +315,7 @@ class JiuwenExpertTeamLauncher:
                 result = await self._interact_with_expert(
                     team_id, session_id, turn_inputs,
                     channel_id=resolved_channel_id, language=getattr(spec, "language", "cn"),
+                    origin_kind=origin_kind,
                 )
             except Exception:
                 logger.exception(
@@ -326,7 +331,7 @@ class JiuwenExpertTeamLauncher:
             entry = await runtime.pool.get(team_id)
             # A rejected admission is safe to resume only after the same Team
             # has paused. Never replay an input that was already accepted.
-            if entry is None or entry.agent.spec is not spec:
+            if entry is None or getattr(getattr(entry, "agent", None), "spec", None) is not spec:
                 return False
 
         if (
@@ -369,6 +374,7 @@ class JiuwenExpertTeamLauncher:
                     return bool(await self._interact_with_expert(
                         team_id, session_id, turn_inputs,
                         channel_id=resolved_channel_id, language=getattr(spec, "language", "cn"),
+                        origin_kind=origin_kind,
                     ))
                 reject_reason = (
                     "no_agent"
