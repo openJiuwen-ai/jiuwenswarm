@@ -1,15 +1,15 @@
 """Prompt boundary for progressive ``tool_search`` deferred-tool disclosure.
 
 Mirrors the skill-side ``SkillRetrievalPromptRail`` disclosure model: the
-system prompt shows only the tool category tree (static in-code categories
-plus MCP connector virtual branches), NOT a flat dump of every deferred
-tool's name+description. The full inventory is discovered on demand through
-``tool_search``.
+system prompt shows only the tool category catalogue (static in-code
+categories plus MCP connector virtual branches), NOT a flat dump of every
+deferred tool's name+description. The full inventory is discovered on
+demand through ``tool_search``.
 
 Three responsibilities each turn:
 1. Inject the disclosure section (categories with their descriptions) into
    the system prompt, built from ``ToolRetrievalToolkit.frozen_catalogue`` —
-   the static category tree frozen against the live deferred registry.
+   the static category table frozen against the live deferred registry.
 2. Keep the frozen catalogue honest: tools registered/removed after the
    freeze are reported as delta/snapshot attachments, mirroring openjiuwen
    ``ProgressiveToolRail._sync_deferred_tool_attachment``.
@@ -75,9 +75,9 @@ _DISCLOSURE_INTRO_CN = (
     "2. 用户点名了具体工具、技术或执行方式（如“用 PowerShell”“用终端”）时，以用户"
     "点名为准：即使 direct 工具（如 bash）技术上也能完成，也必须使用对应的 deferred "
     "工具；目录中没有时向用户说明，不得用 direct 工具擅自替代。\n"
-    "3. 目录每行已标注类型，按标注导航：`[category]` 行是分支，要看其下工具名单，调用 "
+    "3. 目录每行已标注类型，按标注导航：`[category]` 行是分类，要看其下工具名单，调用 "
     "`tool_search`（operation=list，category=该行名称）；`[tool]` 行已直列工具名与简述，"
-    "直接调用 `tool_search`（operation=get_schema，tool=名称），不要 list。分支名就在行"
+    "直接调用 `tool_search`（operation=get_schema，tool=名称），不要 list。分类名就在行"
     "上，永远不要 list 根分类。"
     "不能猜测 deferred 工具名称，也不要将就使用不合适的工具。list 只返回名称与简短"
     "描述，不含 schema。\n"
@@ -107,11 +107,11 @@ _DISCLOSURE_INTRO_EN = (
     "you must use the matching deferred tool; if the catalogue has no match, "
     "tell the user instead of silently substituting a direct tool.\n"
     "3. Every catalogue line carries a type mark — navigate by it: a "
-    "`[category]` line is a branch; to see its tool names, call `tool_search` "
-    "(operation=list, category=<that line's name>). A `[tool]` line already "
-    "lists the tool's name and short description — go straight to "
-    "`tool_search` (operation=get_schema, tool=<name>), do not list. The "
-    "branch name is right on the line, so "
+    "`[category]` line is a category; to see its tool names, call "
+    "`tool_search` (operation=list, category=<that line's name>). A `[tool]` "
+    "line already lists the tool's name and short description — go straight "
+    "to `tool_search` (operation=get_schema, tool=<name>), do not list. The "
+    "category name is right on the line, so "
     "never list the root. Do not guess deferred tool names and do not settle "
     "for an ill-fitting tool. list returns names and short descriptions only, "
     "no schema.\n"
@@ -430,7 +430,7 @@ class ToolRetrievalPromptRail(DeepAgentRail):
         """Render the progressive disclosure section: categories + names.
 
         Mirrors ``SkillRetrievalPromptRail._build_candidate_appendix``: only
-        the category tree is shown, never a full flat dump. Each category
+        the category catalogue is shown, never a full flat dump. Each category
         line carries only its description — tool names are discovered
         through tool_search. MCP connector tools get one virtual branch line
         per connector; tools no category line routes to (static-table misses)
