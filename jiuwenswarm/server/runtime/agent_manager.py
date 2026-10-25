@@ -95,7 +95,13 @@ def _auto_permission_request_workspace(request: Any) -> str | None:
     metadata = getattr(request, "metadata", {})
     metadata = metadata if isinstance(metadata, dict) else {}
     declared = resolve_declared_auto_workspace(params, metadata)
-    return os.path.normcase(str(declared)) if declared is not None else ""
+    # resolve_declared_auto_workspace() already returns an absolute canonical
+    # Path; str() keeps the caller's casing. normcase() would lowercase the
+    # whole path on Windows, and this value becomes the real workspace root
+    # handed to prepare_session()/create_instance(), so a lowercased drive
+    # letter would leak into adapter._project_dir, prompts and session
+    # metadata (string equality there is case-sensitive).
+    return str(declared) if declared is not None else ""
 
 
 def _resolve_request_owner_mode(
@@ -693,10 +699,19 @@ class AgentManager:
             )
         # 用并轨后的子模式装配实例，和缓存键保持同一套语义。
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
-        project_dir = _normalize_project_dir((config or {}).get("project_dir"))
+        raw_project_dir = str((config or {}).get("project_dir") or "").strip()
+        project_dir = _normalize_project_dir(raw_project_dir)
         if project_dir:
             config = dict(config or {})
-            config["project_dir"] = project_dir
+            # _normalize_project_dir() (normcase + casefold) is only valid as
+            # a cache/lookup key. Writing that form back would lowercase the
+            # whole path on Windows and leak a lowercased drive letter into
+            # the runtime value (adapter._project_dir, prompts, persisted
+            # session metadata), so the config keeps the caller's casing
+            # while still being absolutized.
+            config["project_dir"] = os.path.abspath(
+                os.path.expanduser(raw_project_dir)
+            )
         agent_cache_key = cache_key or _make_agent_cache_key(mode_key, sub_mode_key, project_dir)
         logger.info(
             "[AgentManager] Creating %s agent (mode=%s, sub_mode=%s, project_dir=%s)",
