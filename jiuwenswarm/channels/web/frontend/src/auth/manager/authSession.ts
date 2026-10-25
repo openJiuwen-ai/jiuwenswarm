@@ -50,6 +50,7 @@ export function clearManagerTokens(): void {
   if (typeof localStorage !== 'undefined') {
     localStorage.removeItem(ACCESS_KEY);
     localStorage.removeItem(REFRESH_KEY);
+    localStorage.removeItem('openjiuwen_federation');
   }
   if (typeof sessionStorage !== 'undefined') {
     sessionStorage.removeItem('jiuwenclaw_active_cluster');

@@ -49,7 +49,23 @@ export const managerAuthProvider: EnterpriseAuthProvider = {
     return redirectToManagerLogin();
   },
   // 所有 /idp、/manager-api 请求统一经 resolveApiUrl 拼接门户接口前缀后再发起（VITE_API_PREFIX 为空时原样返回）。
-  getCurrentUser: () => requestJson<EnterpriseUser>(resolveApiUrl('/idp/v1/auth/me')),
+  async getCurrentUser() {
+    const user = await requestJson<EnterpriseUser>(resolveApiUrl('/idp/v1/auth/me'));
+    // Runtime owns the OIDC client; User Web only hosts its optional lifecycle page.
+    if (
+      localStorage.getItem('openjiuwen_oidc_renew') === 'true' &&
+      localStorage.getItem('openjiuwen_oidc_connection') &&
+      !document.querySelector('[data-testid="auth-federation-session"]')
+    ) {
+      const frame = document.createElement('iframe');
+      frame.hidden = true;
+      frame.setAttribute('aria-hidden', 'true');
+      frame.dataset.testid = 'auth-federation-session';
+      frame.src = resolveApiUrl('/auth/federation/session');
+      document.body.append(frame);
+    }
+    return user;
+  },
   async listAgentContexts() {
     const result = await requestJson<ManagerResponse<{ contexts: EnterpriseAgentContext[] }>>(
       resolveApiUrl('/manager-api/v1/user-console/agent-contexts'),
@@ -59,9 +75,9 @@ export const managerAuthProvider: EnterpriseAuthProvider = {
   },
   async getManagerAccess() {
     try {
-      const result = await requestJson<
-        ManagerResponse<{ manager_access?: boolean; is_platform_admin?: boolean }>
-      >(resolveApiUrl('/manager-api/v1/authz/me'));
+      const result = await requestJson<ManagerResponse<{ manager_access?: boolean; is_platform_admin?: boolean }>>(
+        resolveApiUrl('/manager-api/v1/authz/me'),
+      );
       if (result.code !== 200) return false;
       return Boolean(result.data?.manager_access || result.data?.is_platform_admin);
     } catch {
@@ -82,6 +98,10 @@ export const managerAuthProvider: EnterpriseAuthProvider = {
     }
   },
   async logout() {
+    if (localStorage.getItem('openjiuwen_oidc_connection')) {
+      window.location.assign(resolveApiUrl('/auth/federation/logout'));
+      return;
+    }
     const refreshToken = getManagerRefreshToken();
     if (refreshToken) {
       try {
@@ -89,9 +109,7 @@ export const managerAuthProvider: EnterpriseAuthProvider = {
           method: 'POST',
           credentials: 'include',
           headers: {
-            ...(getManagerAccessToken()
-              ? { Authorization: `Bearer ${getManagerAccessToken()}` }
-              : {}),
+            ...(getManagerAccessToken() ? { Authorization: `Bearer ${getManagerAccessToken()}` } : {}),
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ refresh_token: refreshToken }),

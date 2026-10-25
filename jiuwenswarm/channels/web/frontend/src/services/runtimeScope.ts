@@ -89,6 +89,22 @@ export function buildRuntimeIdentityHeaders(
   if (groupId && isByteString(groupId)) headers['X-Group-Id'] = groupId;
   if (botId && isByteString(botId)) headers['X-Bot-Id'] = botId;
   if (token && isByteString(token)) headers.Authorization = `Bearer ${token}`;
+  if (typeof localStorage !== 'undefined' && userId) {
+    try {
+      const federation = JSON.parse(localStorage.getItem('openjiuwen_federation') || 'null');
+      if (
+        federation?.user_id === userId &&
+        federation.token_type === 'Bearer' &&
+        typeof federation.access_token === 'string' &&
+        federation.access_token &&
+        isByteString(federation.access_token)
+      ) {
+        headers['X-User-Token'] = `Bearer ${federation.access_token}`;
+      }
+    } catch {
+      // Ignore an incomplete or outdated browser session record.
+    }
+  }
   if (sessionId && isByteString(sessionId)) headers['X-Session-Id'] = sessionId;
   return headers;
 }
