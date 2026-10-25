@@ -39,7 +39,9 @@ async def create_gateway_cron_store(
         except Exception:
             config = {}
     settings = load_cron_store_settings(config)
-    path = settings.file_path or get_cron_jobs_path()
+    # 与母仓 factory 同款：load_cron_store_settings 无条件填充 file_path，
+    # 无需（也无法）回退到未导入的 get_cron_jobs_path。
+    path = settings.file_path
     if settings.backend != "etcd":
         return FileCronJobStore(path=path)
 
