@@ -677,3 +677,11 @@ test('group reply mode survives edits and defaults to adaptive for existing coll
   assert.equal(withColleagueEdit(colleague, [], { name: 'Renamed' }).group_reply_mode, 'passive');
   assert.equal(withColleagueEdit(colleague, [], { groupReplyMode: 'adaptive' }).group_reply_mode, 'adaptive');
 });
+
+
+test('a configured colleague keeps its DingTalk platform when loaded from the server', () => {
+  const item = toColleague({ ...wireColleague, im_platform: 'dingtalk' });
+  assert.equal(item.imConfigured, true);
+  assert.equal(item.imPlatform, 'dingtalk');
+  assert.equal(toColleague({ ...wireColleague, im_platform: 'unknown' }).imPlatform, undefined);
+});

@@ -409,7 +409,7 @@
 - **来源验证点与共享场景：** 无。
 - **前端独立验证：** 跨群检索首期复用现有对话入口，不新增搜索页面；新平台扩展另行评估。
 - **联合交付与开放条件：** JM-21 整项仍不参与本期节点、单独交付；已实现的跨群搜索子范围参与 JM-24 公开结果的 S2a 验证。
-- **设计索引：** [F_21 跨群搜索子范围](../features/F_21_cross-group-search.md)；存储和关系定义见 [F_11](../features/F_11_group-public-records.md)。
+- **设计索引：** [F_21 跨群搜索子范围](../features/F_21_cross-group-search.md)；存储和关系定义见 [F_11](../features/F_11_group-public-records.md)。 钉钉单聊初版的本地实施范围、独立 Agent 约束及验证记录见 [F_21_02](../features/F_21_02_dingtalk-direct-message.md)；不据此改变 JM-21 整项负责人、排期、状态或验收结论。
 
 ### JM-22 员工知识选择
 

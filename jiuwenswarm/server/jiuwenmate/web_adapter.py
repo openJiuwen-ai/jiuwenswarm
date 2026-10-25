@@ -124,7 +124,17 @@ def _configured_feishu_agent_ids() -> set[str]:
 
 def _colleague_wire(view) -> dict[str, Any]:
     payload = view.to_dict()
-    payload["im_configured"] = payload["agent_id"] in _configured_feishu_agent_ids()
+    from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import configured_dingtalk_bindings
+
+    agent_id = payload["agent_id"]
+    dingtalk_ids = {binding.agent_id for binding in configured_dingtalk_bindings()}
+    if agent_id in dingtalk_ids:
+        payload["im_platform"] = "dingtalk"
+    elif agent_id in _configured_feishu_agent_ids():
+        payload["im_platform"] = "feishu"
+    else:
+        payload["im_platform"] = None
+    payload["im_configured"] = payload["im_platform"] is not None
     return payload
 
 

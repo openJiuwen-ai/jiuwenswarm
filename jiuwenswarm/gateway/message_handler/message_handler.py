@@ -484,6 +484,25 @@ class MessageHandler(ABC):
         except (TypeError, ValueError):
             return InboundDisposition.REJECTED
 
+    async def handle_persistent_dingtalk_event(self, event) -> InboundDisposition:
+        """Forward a claimed DingTalk event without entering ordinary chat routing."""
+        from uuid import uuid4
+        from jiuwenswarm.common.e2a.models import E2AEnvelope
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        response = await self.agent_client.send_request(E2AEnvelope(
+            request_id=f"jm21_{uuid4().hex}", channel="dingtalk", user_id=event.sender_staff_id,
+            chat_id=event.conversation_id, method=ReqMethod.JIUWENMATE_DINGTALK_INBOUND.value,
+            params={"event": event.to_payload()},
+        ))
+        payload = getattr(response, "payload", None)
+        if not getattr(response, "ok", False) or not isinstance(payload, dict):
+            return InboundDisposition.REJECTED
+        try:
+            return InboundDisposition(payload.get("disposition"))
+        except (TypeError, ValueError):
+            return InboundDisposition.REJECTED
+
     async def unregister_ws_subscriptions(self, channel_id: str, ws_id: str) -> int:
         """Remove physical subscriptions owned by a disconnected WebSocket."""
         return await self._session_sharing.unregister_by_ws_id(
@@ -3629,7 +3648,7 @@ class MessageHandler(ABC):
             ack["file_key"] = file_key
         envelope = E2AEnvelope(
             request_id=f"jm09_ack_{uuid4().hex}",
-            channel="feishu",
+            channel=payload.get("channel", "feishu"),
             method=ReqMethod.JIUWENMATE_DELIVERY_ACK.value,
             params=ack,
         )

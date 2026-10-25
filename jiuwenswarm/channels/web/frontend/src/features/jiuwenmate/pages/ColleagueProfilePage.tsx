@@ -21,6 +21,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import feishuIcon from '../../../assets/jiuwenmate/icons/feishu.svg';
+import dingtalkIcon from '../../../assets/settings/channels/dingtalk.svg';
 import autoModelIcon from '../../../assets/jiuwenmate/icons/auto.svg';
 import deepseekProviderIcon from '../../../assets/providers/deepseek.svg';
 import kimiProviderIcon from '../../../assets/providers/kimi.svg';
@@ -652,8 +653,8 @@ function ProfileOverview({
           <div className="jiuwenmate-profile__im-row">
             <img src={feishuIcon} alt="" aria-hidden />
             <span>
-              <strong>{t('jiuwenmate.im.feishu')}</strong>
-              <small>{t('jiuwenmate.profile.feishuHint')}</small>
+              <strong>{t('jiuwenmate.im.channels')}</strong>
+              <small>{t('jiuwenmate.im.isolationHint')}</small>
             </span>
             <ImBindingAction configured={false} onConfigure={onConfigureIm} />
           </div>
@@ -1105,10 +1106,10 @@ function ProfileSectionDetail({
           </div>
         </div>
         <div className="jiuwenmate-profile__im-row jiuwenmate-profile__im-row--bordered">
-          <img src={feishuIcon} alt="" aria-hidden />
+          <img src={colleague.imPlatform === 'dingtalk' ? dingtalkIcon : feishuIcon} alt="" aria-hidden />
           <span>
-            <strong>{t('jiuwenmate.im.feishu')}</strong>
-            <small>{t('jiuwenmate.profile.feishuHint')}</small>
+            <strong>{t(`jiuwenmate.im.${colleague.imPlatform ?? 'feishu'}`)}</strong>
+            <small>{colleague.imPlatform === 'dingtalk' ? t('jiuwenmate.im.dingtalkHint') : t('jiuwenmate.profile.feishuHint')}</small>
           </span>
           <ImBindingAction configured={colleague.imConfigured} onConfigure={onConfigureIm} />
         </div>

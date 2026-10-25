@@ -2,7 +2,7 @@ import type { TFunction } from 'i18next';
 import type { FormItem, FormValues } from '../../../../components/form';
 import { isChannelFormFieldOptional } from './channelRequirements';
 import type {
-  DingtalkFormValues,
+  DingtalkAppDraft,
   DiscordFormValues,
   FeishuAppDraft,
   SlackFormValues,
@@ -122,13 +122,30 @@ export function createFeishuAppFormItems(t: TFunction): FormItem<FeishuAppDraft>
   ]);
 }
 
-export function createDingtalkFormItems(t: TFunction): FormItem<DingtalkFormValues>[] {
+export function createDingtalkAppFormItems(
+  t: TFunction,
+  { bound, allowFromInvalid }: { bound: boolean; allowFromInvalid: boolean },
+): FormItem<DingtalkAppDraft>[] {
   return withFieldRequirements('dingtalk', [
+    {
+      name: 'name',
+      label: t('channels.dingtalkApps.appNameLabel'),
+      component: 'input',
+      placeholder: t('channels.dingtalkApps.appNamePlaceholder'),
+    },
     {
       name: 'client_id',
       label: 'client_id',
       component: 'input',
       placeholder: t('channels.placeholders.appId'),
+      // A bound app's identity is the colleague's connection; changing it would be another robot.
+      // Another client_id is a new app, so it waits until the malformed allowlist is replaced.
+      disabled: bound || allowFromInvalid,
+      description: bound
+        ? t('channels.dingtalkApps.boundClientIdHint')
+        : allowFromInvalid
+          ? t('channels.dingtalkApps.invalidAllowFromClientIdHint')
+          : undefined,
     },
     {
       name: 'client_secret',
@@ -137,6 +154,12 @@ export function createDingtalkFormItems(t: TFunction): FormItem<DingtalkFormValu
       type: 'password',
       placeholder: t('channels.placeholders.appSecret'),
       passwordVisibilityLabels: passwordLabels(t),
+    },
+    {
+      name: 'robot_code',
+      label: 'robot_code',
+      component: 'input',
+      placeholder: t('channels.dingtalkApps.robotCodePlaceholder'),
     },
     {
       name: 'allow_from',

@@ -222,6 +222,29 @@ class ExecutionRepository(SQLiteStore):
                 row = conn.execute(query, key).fetchone()
         return self._session(row)
 
+    def has_sessions_outside_dingtalk_app(self, namespace_id: str, agent_id: str, app_id: str) -> bool:
+        """Whether the Agent already served a group, another IM platform or another DingTalk app.
+
+        Rebinding such an Agent would expose that connection's retained office. A DingTalk
+        private Session key is the JSON pair ``[app_id, conversationId]``.
+        """
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT kind, channel, conversation_key FROM sessions "
+                "WHERE namespace_id = ? AND agent_id = ? AND kind IN ('im_direct', 'group')",
+                (namespace_id, agent_id),
+            ).fetchall()
+        for row in rows:
+            if row["kind"] == "group" or row["channel"] != "dingtalk":
+                return True
+            try:
+                owner = json.loads(row["conversation_key"])[0]
+            except (ValueError, TypeError, IndexError, KeyError):
+                return True
+            if owner != app_id:
+                return True
+        return False
+
     def find_session(self, namespace_id: str, agent_id: str, conversation: ConversationRef) -> SessionRecord | None:
         """The colleague's Session for a conversation, or None before first contact; nothing is created."""
         with self._transaction() as conn:
@@ -661,11 +684,12 @@ class ExecutionRepository(SQLiteStore):
         self,
         namespace_id: str,
         *,
+        channels: frozenset[str] = frozenset({"feishu"}),
         limit: int = 100,
         exclude_delivery_ids: Sequence[str] = (),
         now: datetime,
     ) -> list[dict[str, object]]:
-        """Atomically claim Feishu deliveries and return their stored route and payload.
+        """Atomically claim the runtime's IM deliveries and return their stored route and payload.
 
         A file delivery also carries a logical key for the Agent's shared ``output/`` file
         and the ``file_key`` of an earlier upload, so a retry sends the uploaded file again
@@ -673,8 +697,13 @@ class ExecutionRepository(SQLiteStore):
         """
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError("limit must be a positive integer")
+        if not channels:
+            return []
+        if not channels <= {"feishu", "dingtalk"}:
+            raise ValueError("unsupported IM delivery channel")
+        channel_placeholders = ", ".join("?" for _ in channels)
         exclude_clause = ""
-        query_params: list[object] = [namespace_id]
+        query_params: list[object] = [namespace_id, *sorted(channels)]
         if exclude_delivery_ids:
             placeholders = ", ".join("?" for _ in exclude_delivery_ids)
             exclude_clause = f"AND d.delivery_id NOT IN ({placeholders}) "
@@ -686,7 +715,7 @@ class ExecutionRepository(SQLiteStore):
                 "SELECT d.*, r.record_json, c.payload_json FROM result_deliveries d "
                 "JOIN requests r ON r.namespace_id = d.namespace_id AND r.request_id = d.request_id "
                 "JOIN candidate_outputs c ON c.namespace_id = d.namespace_id AND c.output_id = d.output_id "
-                "WHERE d.namespace_id = ? AND d.channel = 'feishu' AND d.status = 'pending' "
+                f"WHERE d.namespace_id = ? AND d.channel IN ({channel_placeholders}) AND d.status = 'pending' "
                 + exclude_clause
                 + "ORDER BY d.created_at, d.rowid LIMIT ?",
                 query_params,
@@ -694,7 +723,7 @@ class ExecutionRepository(SQLiteStore):
             for row in rows:
                 record = RequestRecord.from_dict(json.loads(row["record_json"]))
                 route = record.route_snapshot
-                if route is None or route.channel != "feishu" or route.app_id is None:
+                if route is None or route.channel != row["channel"] or route.app_id is None:
                     conn.execute(
                         "UPDATE result_deliveries SET status = 'failed', error_code = 'ROUTE_MISSING', "
                         "updated_at = ? WHERE namespace_id = ? AND delivery_id = ? AND status = 'pending'",
@@ -845,13 +874,20 @@ class ExecutionRepository(SQLiteStore):
         with self._transaction() as conn:
             conn.execute("INSERT OR IGNORE INTO group_delivery_archives VALUES (?,?)", (namespace_id, delivery_id))
 
-    def recover_sending_result_deliveries(self, namespace_id: str, *, now: datetime) -> int:
-        """Fence deliveries interrupted after dispatch; never blindly resend an unknown outcome."""
+    def recover_sending_result_deliveries(
+        self, namespace_id: str, *, now: datetime, channels: frozenset[str] = frozenset({"feishu"}),
+    ) -> int:
+        """Fence only this runtime's interrupted sends; never blindly resend unknown outcomes."""
+        if not channels:
+            return 0
+        if not channels <= {"feishu", "dingtalk"}:
+            raise ValueError("unsupported IM delivery channel")
+        placeholders = ", ".join("?" for _ in channels)
         with self._transaction() as conn:
             cursor = conn.execute(
                 "UPDATE result_deliveries SET status = 'unknown', error_code = 'ACK_UNKNOWN', updated_at = ? "
-                "WHERE namespace_id = ? AND channel = 'feishu' AND status = 'sending'",
-                (now.isoformat(), namespace_id),
+                f"WHERE namespace_id = ? AND channel IN ({placeholders}) AND status = 'sending'",
+                (now.isoformat(), namespace_id, *sorted(channels)),
             )
             return cursor.rowcount
 
