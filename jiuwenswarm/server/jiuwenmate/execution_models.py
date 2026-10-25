@@ -134,22 +134,22 @@ class RequestRecord:
 class RequestRouteSnapshot:
     """The trusted delivery destination captured when a Request was accepted."""
 
-    channel: Literal["web", "feishu"]
+    channel: Literal["web", "feishu", "dingtalk"]
     target_id: str
     app_id: str | None = None
     source_message_id: str | None = None
     source_reply_to: str | None = None
 
     def __post_init__(self) -> None:
-        if self.channel not in ("web", "feishu"):
+        if self.channel not in ("web", "feishu", "dingtalk"):
             raise PersistentContractError("invalid Request route channel")
         _require_text("route target_id", self.target_id)
         for name in ("app_id", "source_message_id", "source_reply_to"):
             value = getattr(self, name)
             if value is not None:
                 _require_text(f"route {name}", value)
-        if self.channel == "feishu" and (self.app_id is None or self.source_message_id is None):
-            raise PersistentContractError("a Feishu route requires app_id and source_message_id")
+        if self.channel in ("feishu", "dingtalk") and (self.app_id is None or self.source_message_id is None):
+            raise PersistentContractError("an IM route requires app_id and source_message_id")
         if self.channel == "web" and self.app_id is not None:
             raise PersistentContractError("a Web route cannot name a Feishu app_id")
 

@@ -230,6 +230,13 @@
       "feishu": "Feishu",
       "welink": "WeLink",
       "dingtalk": "DingTalk",
+      "platform": "Channel",
+      "channels": "Feishu / DingTalk",
+      "clientId": "Client ID",
+      "dingtalkHint": "Assign tasks through DingTalk direct messages. Text messages are supported.",
+      "isolationHint": "Use a separate colleague for each channel. Configuration can be reused; messages and files stay separate.",
+      "robotCode": "Robot Code (optional)",
+      "robotCodePlaceholder": "Use the app robot code; defaults to Client ID",
       "appId": "API ID",
       "appIdPlaceholder": "Enter API ID",
       "secret": "API Secret",
@@ -2680,6 +2687,21 @@
       "appNameTemplate": "Lark App {{index}}",
       "appNameLabel": "App name",
       "appNamePlaceholder": "App name"
+    },
+    "dingtalkApps": {
+      "defaultAppName": "Default DingTalk App",
+      "unnamedAppName": "Unnamed DingTalk App",
+      "appNameTemplate": "DingTalk App {{index}}",
+      "appNameLabel": "App name",
+      "appNamePlaceholder": "App name",
+      "robotCodePlaceholder": "Leave empty to use client_id",
+      "boundTag": "Bound to a colleague",
+      "ordinaryHint": "An app without a colleague goes to the ordinary assistant; keep at most one. Bind colleagues from their profile page.",
+      "boundHint": "This app is bound to a colleague. You can change the secret, allowlist and enabled state; deleting it only removes this connection and keeps the colleague's history and workspace.",
+      "boundClientIdHint": "A bound app cannot change its client_id; rebind from the colleague's profile to use another app.",
+      "invalidAllowFrom": "The saved allowlist is malformed, so this app does not start. Enter the allowlist again (one staff ID per line) and save; the stored value is kept until you do.",
+      "invalidAllowFromTag": "Allowlist needs fixing",
+      "invalidAllowFromClientIdHint": "Fix the allowlist before changing the client_id."
     }
   },
   "modelSetupGuide": {

@@ -643,3 +643,15 @@ test('channel reply mode renders a compact selected state and disables changes w
   const saving = renderProfile({ initialSection: 'channels', savingResources: true });
   assert.match(saving, /aria-pressed="true"[^>]*disabled=""/);
 });
+
+
+test('a DingTalk-bound colleague shows its own platform in the channel profile', () => {
+  const markup = renderProfile({
+    initialSection: 'channels',
+    colleague: { ...colleague, imConfigured: true, imPlatform: 'dingtalk' },
+  });
+  assert.match(markup, /钉钉/);
+  assert.match(markup, /已授权/);
+  assert.match(markup, /data-testid="jiuwenmate-profile-im-modify"/);
+  assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-quick-im"/);
+});

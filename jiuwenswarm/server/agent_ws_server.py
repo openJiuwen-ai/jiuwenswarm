@@ -2122,7 +2122,7 @@ class AgentWebSocketServer:
         logger.info("[AgentWebSocketServer] 已停止")
 
     async def _ensure_persistent_group_fanout(self):
-        """Start JM-07 only when the owner's config contains a Feishu Agent binding."""
+        """Start the shared IM manager when Feishu or DingTalk has a valid Agent binding."""
         lock = getattr(self, "_feishu_runtime_lock", None)
         if lock is None:
             lock = asyncio.Lock()
@@ -2137,7 +2137,10 @@ class AgentWebSocketServer:
                 create_default_persistent_group_fanout,
             )
 
-            if not configured_feishu_bindings():
+            from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import configured_dingtalk_bindings
+
+            bindings = (*configured_feishu_bindings(), *configured_dingtalk_bindings())
+            if not bindings:
                 return None
             fanout, manager = create_default_persistent_group_fanout(
                 send_delivery=self._send_result_delivery,
@@ -2148,17 +2151,17 @@ class AgentWebSocketServer:
                 await manager.start()
                 from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_NAMESPACE
 
-                namespaces = {item.namespace_id for item in configured_feishu_bindings()} or {WEB_NAMESPACE}
+                namespaces = {item.namespace_id for item in bindings} or {WEB_NAMESPACE}
                 for namespace_id in sorted(namespaces):
                     await manager.recover(
-                        namespace_id, channels=frozenset({"feishu"}), include_unrouted=False,
+                        namespace_id, channels=frozenset({"feishu", "dingtalk"}), include_unrouted=False,
                     )
             except BaseException:
                 await manager.aclose()
                 raise
             self._feishu_group_fanout = fanout
             self._feishu_agent_manager = manager
-            logger.info("[AgentWebSocketServer] JM-08 Feishu fanout started")
+            logger.info("[AgentWebSocketServer] shared JiuwenMate IM runtime started")
             return fanout
 
     async def _close_persistent_group_fanout(self) -> None:
@@ -2297,9 +2300,11 @@ class AgentWebSocketServer:
         self._result_delivery_waiters[delivery_id] = waiter
         push = {
             "request_id": f"jm09_{delivery_id}",
-            "channel_id": "feishu",
+            "channel_id": job.get("channel", "feishu"),
             "payload": {
                 "event_type": "jiuwenmate.delivery.send",
+                "channel": job.get("channel", "feishu"),
+                "is_direct_message": job.get("is_direct_message", False),
                 "delivery_id": delivery_id,
                 "stage": "send",
                 "app_id": job.get("app_id"),
@@ -2726,6 +2731,79 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
+    async def _handle_dingtalk_inbound(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Resolve and persist a bound DingTalk event without entering personal chat routing."""
+        from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import DingTalkInboundEvent
+        from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition
+
+        disposition = InboundDisposition.REJECTED
+        try:
+            params = request.params if isinstance(request.params, dict) else {}
+            event = DingTalkInboundEvent.from_payload(params.get("event"))
+            if not isinstance(event.expected_agent_id, str) or not event.expected_agent_id.strip():
+                disposition = InboundDisposition.REJECTED
+            else:
+                fanout = await self._ensure_persistent_group_fanout()
+                if fanout is not None:
+                    disposition = await fanout.dingtalk_inbound.handle(event)
+        except Exception as exc:
+            logger.warning(
+                "[AgentWebSocketServer] JM-21 inbound event rejected: error_type=%s",
+                type(exc).__name__,
+            )
+
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"disposition": disposition.value},
+            metadata=request.metadata,
+        )
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_dingtalk_binding_check(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Tell Gateway whether a colleague may serve a DingTalk app before that binding is saved."""
+        from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
+        from jiuwenswarm.server.jiuwenmate.service import default_data_dir
+
+        params = request.params if isinstance(request.params, dict) else {}
+        agent_id, app_id = params.get("agent_id"), params.get("app_id")
+        ok, payload = False, {"error": "invalid DingTalk binding check"}
+        if all(isinstance(value, str) and value.strip() for value in (agent_id, app_id)):
+            try:
+                repository = ExecutionRepository(default_data_dir() / "agents.sqlite3")
+                served_elsewhere = await asyncio.to_thread(
+                    repository.has_sessions_outside_dingtalk_app, "local", agent_id.strip(), app_id.strip(),
+                )
+                ok, payload = True, {"allowed": not served_elsewhere}
+            except Exception as exc:  # noqa: BLE001 - an unknown answer must not approve the binding
+                logger.warning(
+                    "[AgentWebSocketServer] DingTalk binding check failed: error_type=%s", type(exc).__name__,
+                )
+                payload = {"error": "binding check unavailable"}
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=ok,
+            payload=payload,
+            metadata=request.metadata,
+        )
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
     async def dispatch_parsed_request(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
@@ -2753,6 +2831,12 @@ class AgentWebSocketServer:
             return
         if request.req_method == ReqMethod.JIUWENMATE_THINKING_NOTICE_ACK:
             await self._handle_thinking_notice_ack(ws, request, send_lock)
+            return
+        if request.req_method == ReqMethod.JIUWENMATE_DINGTALK_INBOUND:
+            await self._handle_dingtalk_inbound(ws, request, send_lock)
+            return
+        if request.req_method == ReqMethod.JIUWENMATE_DINGTALK_BINDING_CHECK:
+            await self._handle_dingtalk_binding_check(ws, request, send_lock)
             return
         if request.req_method == ReqMethod.JIUWENMATE_FEISHU_INBOUND:
             await self._handle_feishu_inbound(ws, request, send_lock)

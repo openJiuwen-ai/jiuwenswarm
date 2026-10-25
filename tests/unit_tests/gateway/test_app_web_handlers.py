@@ -1465,7 +1465,7 @@ async def test_openai_account_logout_wins_against_inflight_poll(
     ("method", "params"),
     [
         ("channel.feishu.set_conf", {"apps": [{"app_id": "app-1"}]}),
-        ("channel.dingtalk.set_conf", {"enabled": False, "client_id": "client-1"}),
+        ("channel.dingtalk.set_conf", {"apps": [{"client_id": "client-1", "enabled": False}]}),
         ("health_check.set_conf", {"every": 30, "target": "web"}),
         ("heartbeat.set_conf", {"every": 30, "target": "web"}),
     ],
@@ -1488,6 +1488,10 @@ async def test_config_save_handlers_respond_before_agent_reload_finishes(monkeyp
     monkeypatch.setattr(
         "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_health_check_in_config",
         lambda payload: persisted.append(("health_check", dict(payload))),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration.update_dingtalk_section",
+        lambda build, validate=None: persisted.append(("dingtalk", dict(build({})))) or {"apps": []},
     )
 
     _register_web_handlers(

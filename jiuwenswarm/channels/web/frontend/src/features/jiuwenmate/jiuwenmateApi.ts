@@ -438,6 +438,7 @@ export function toColleague(value: unknown): JiuwenMateColleague {
       starterPrompts: texts(capabilities.starter_prompts),
     },
     imConfigured: wire.im_configured === true,
+    imPlatform: wire.im_platform === 'feishu' || wire.im_platform === 'dingtalk' ? wire.im_platform : undefined,
     disabled: wire.enabled === false,
     joinedAt: text(wire.created_at),
     isDefault: wire.is_default === true,

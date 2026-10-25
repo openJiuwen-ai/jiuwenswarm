@@ -29,7 +29,7 @@ def _utc_now() -> datetime:
 
 
 class ResultDeliveryService:
-    """Claim Feishu outputs handed off by a final or paused event, request a Gateway send, and persist its ACK."""
+    """Claim owned IM outputs handed off by a final or paused event, request a Gateway send, and persist its ACK."""
 
     def __init__(
         self,
@@ -37,6 +37,7 @@ class ResultDeliveryService:
         *,
         namespace_id: str,
         send_delivery: GatewaySend,
+        channels: frozenset[str] = frozenset({"feishu"}),
         clock: Callable[[], datetime] = _utc_now,
         poll_interval: float = 1.0,
         send_timeout: float = 30.0,
@@ -53,6 +54,7 @@ class ResultDeliveryService:
         self._handoff_handler = handoff_handler
         self._repository = repository
         self._namespace_id = namespace_id
+        self._channels = channels
         self._send_delivery = send_delivery
         self._archive_delivery = archive_delivery
         self._archive_after: tuple[str, str] | None = None
@@ -80,6 +82,7 @@ class ResultDeliveryService:
         await asyncio.to_thread(
             self._repository.recover_sending_result_deliveries,
             self._namespace_id,
+            channels=self._channels,
             now=self._clock(),
         )
         self._task = asyncio.create_task(self._run(), name="jiuwenmate-result-delivery")
@@ -113,6 +116,7 @@ class ResultDeliveryService:
             jobs = await asyncio.to_thread(
                 self._repository.claim_pending_result_deliveries,
                 self._namespace_id,
+                channels=self._channels,
                 limit=1,
                 exclude_delivery_ids=attempted_delivery_ids,
                 now=self._clock(),

@@ -24,12 +24,18 @@ from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
 logger = logging.getLogger(__name__)
 
+# Pause before asking the token service again after a failed JiuwenMate send attempt.
+_TOKEN_RETRY_SECONDS = 30.0
+
 
 class DingTalkConfig(BaseModel):
     """钉钉通道配置（使用Stream模式）"""
     enabled: bool = False
     client_id: str = ""  # 应用ID
     client_secret: str = ""  # 应用密钥
+    agent_id: str = ""
+    robot_code: str = ""
+    is_default: bool = True
     allow_from: list[str] = Field(default_factory=list)  # 允许的员工ID
     # 文件处理配置
     max_download_size: int = 100 * 1024 * 1024  # 最大下载文件大小（默认 100MB）
@@ -163,6 +169,10 @@ class DingTalkHandler(CallbackHandler):
     async def process(self, message: CallbackMessage):
         """处理传入的流消息"""
         try:
+            if self.channel.config.agent_id:
+                # Claim JM before ordinary downloads, config writes or personal routing.
+                self.channel.enqueue_persistent_event(message.data)
+                return AckMessage.STATUS_OK, "OK"
             # 使用SDK的ChatbotMessage进行健壮解析
             chatbot_msg = ChatbotMessage.from_dict(message.data)
             raw_data = message.data
@@ -265,6 +275,8 @@ class DingTalkChannel(BaseChannel):
         self._background_tasks: set[asyncio.Task] = set()
 
         self._gateway_callback: Callable[[Message], None] | None = None
+        self._persistent_inbound_callback = None
+        self._token_retry_at = 0.0
         self._stream_task: asyncio.Task | None = None  # 用于跟踪 SDK start() 任务
 
         # 文件服务
@@ -278,6 +290,135 @@ class DingTalkChannel(BaseChannel):
     def channel_id(self) -> str:
         """返回通道的唯一标识"""
         return self.name
+
+    @property
+    def app_id(self) -> str:
+        """Routing key; the default app keeps the legacy key used by ordinary and cron messages."""
+        return "default" if self.config.is_default else self.config.client_id
+
+    @property
+    def persistent_app_id(self) -> str:
+        """The trusted receiving application that JiuwenMate routes are frozen to."""
+        return self.config.client_id
+
+    def set_persistent_inbound_callback(self, callback) -> None:
+        self._persistent_inbound_callback = callback
+
+    def enqueue_persistent_event(self, raw_data: dict) -> None:
+        """Schedule the claimed JM path; failures can never enter personal mode."""
+        from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import DingTalkInboundEvent
+
+        try:
+            event = DingTalkInboundEvent.from_callback(
+                raw_data, app_id=self.persistent_app_id, agent_id=self.config.agent_id,
+            )
+        except (TypeError, ValueError):
+            logger.info("[DingTalk] unsupported or incomplete JM event rejected")
+            return
+        if not self.is_allowed(event.sender_staff_id):
+            return
+        expected_robot = self.config.robot_code or self.persistent_app_id
+        if event.robot_code is not None and event.robot_code != expected_robot:
+            return
+        if self._persistent_inbound_callback is None:
+            logger.warning("[DingTalk] bound JM route is unavailable")
+            return
+        task = asyncio.create_task(self._dispatch_persistent_event(event))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _dispatch_persistent_event(self, event) -> None:
+        try:
+            await self._persistent_inbound_callback(event)
+        except Exception as exc:
+            logger.warning("[DingTalk] JM inbound failed: error_type=%s", type(exc).__name__)
+
+    async def send_persistent_result(
+        self, *, chat_id: str, text: str | None, source_message_id: str | None,
+        idempotency_key: str, file_path: str | None = None, file_key: str | None = None,
+        mention_targets: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Return a real robot receipt; the local key is not a platform idempotency token."""
+        if file_path or file_key or mention_targets:
+            return {"outcome": "failed", "error_code": "DINGTALK_DELIVERY_UNSUPPORTED"}
+        if not all(isinstance(value, str) and value.strip() for value in (chat_id, text, idempotency_key)):
+            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
+        if self._http is None:
+            return {"outcome": "pending", "error_code": "DINGTALK_CLIENT_UNAVAILABLE"}
+        token, fresh, token_error = await self._persistent_access_token()
+        if token_error == "DINGTALK_CREDENTIAL_REJECTED":
+            return {"outcome": "failed", "error_code": token_error}
+        if not token:
+            return {"outcome": "pending", "error_code": token_error or "DINGTALK_TOKEN_UNAVAILABLE"}
+        data = self._build_private_message_payload(chat_id, text)
+        data["robotCode"] = self.config.robot_code or self.config.client_id
+        try:
+            response = await self._http.post(
+                self._get_send_api_url("1"), json=data, headers={"x-acs-dingtalk-access-token": token},
+            )
+        except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout):
+            return {"outcome": "pending", "error_code": "DINGTALK_NOT_CONNECTED"}
+        except Exception:
+            return {"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"}
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        code = str(body.get("code") or "")
+        if code == "unknown.send.result" or response.status_code >= 500 or response.status_code == 408:
+            return {"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"}
+        if response.status_code == 401 and not fresh:
+            # A cached token can be revoked early. Nothing was sent, so the next attempt gets a new one.
+            self._access_token = None
+            return {"outcome": "pending", "error_code": "DINGTALK_TOKEN_EXPIRED"}
+        if response.status_code != 200:
+            rejected = response.status_code in {401, 403, 404, 413, 422, 429} or (
+                400 <= response.status_code < 500 and bool(code)
+            )
+            return {
+                "outcome": "failed" if rejected else "unknown",
+                "error_code": "DINGTALK_REJECTED" if rejected else "DINGTALK_SEND_UNKNOWN",
+            }
+        for field, error in (
+            ("invalidStaffIdList", "DINGTALK_TARGET_INVALID"),
+            ("flowControlledStaffIdList", "DINGTALK_RATE_LIMITED"),
+            ("filteredStaffIdList", "DINGTALK_TARGET_FILTERED"),
+        ):
+            targets = body.get(field, [])
+            if not isinstance(targets, list):
+                return {"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_INVALID"}
+            if chat_id in targets:
+                return {"outcome": "failed", "error_code": error}
+        key = body.get("processQueryKey")
+        if not isinstance(key, str) or not key.strip():
+            return {"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_MISSING"}
+        return {"outcome": "delivered", "external_message_id": key}
+
+    async def _persistent_access_token(self) -> tuple[str | None, bool, str | None]:
+        """Return ``(token, freshly issued, failure code)`` for a JiuwenMate send.
+
+        A refused credential is reported as such instead of being retried every second, and
+        an unreachable token service is asked again only after a short pause.
+        """
+        if self._is_token_valid():
+            return self._access_token, False, None
+        if time.time() < self._token_retry_at:
+            return None, False, "DINGTALK_TOKEN_UNAVAILABLE"
+        try:
+            response = await self._http.post(
+                f"{self.config.api_base}/v1.0/oauth2/accessToken", json=self._build_token_request_data(),
+            )
+            refused = response.status_code in {400, 401, 403}
+            if response.status_code == 200:
+                self._parse_token_response(response.json())
+        except (httpx.HTTPError, ValueError, TypeError):
+            refused = False
+        if self._is_token_valid():
+            return self._access_token, True, None
+        self._token_retry_at = time.time() + _TOKEN_RETRY_SECONDS
+        return None, False, "DINGTALK_CREDENTIAL_REJECTED" if refused else "DINGTALK_TOKEN_UNAVAILABLE"
 
     def on_message(self, callback: Callable[[Message], None]) -> None:
         """注册钉钉通道的回调函数"""

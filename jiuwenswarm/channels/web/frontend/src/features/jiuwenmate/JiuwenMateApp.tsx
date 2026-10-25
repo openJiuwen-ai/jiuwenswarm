@@ -181,9 +181,13 @@ export function JiuwenMateApp({
     setLoadStatus('loading');
     setLoadError('');
     try {
-      const [colleagues, bindingResult] = await Promise.all([
+      const [colleagues, bindingResult, dingtalkResult] = await Promise.all([
         api.loadColleagues(),
         webRequest<{ agent_ids?: string[] }>('channel.feishu.get_bindings').then(
+          (value) => ({ ok: true as const, value }),
+          () => ({ ok: false as const, value: null }),
+        ),
+        webRequest<{ agent_ids?: string[] }>('channel.dingtalk.get_bindings').then(
           (value) => ({ ok: true as const, value }),
           () => ({ ok: false as const, value: null }),
         ),
@@ -191,11 +195,16 @@ export function JiuwenMateApp({
       setState((current) =>
         replaceColleagues(
           current,
-          colleagues.map((colleague) =>
-            bindingResult.ok
-              ? { ...colleague, imConfigured: (bindingResult.value.agent_ids ?? []).includes(colleague.id) }
-              : colleague,
-          ),
+          colleagues.map((colleague) => {
+            const feishu = bindingResult.ok && (bindingResult.value?.agent_ids ?? []).includes(colleague.id);
+            const dingtalk = dingtalkResult.ok && (dingtalkResult.value?.agent_ids ?? []).includes(colleague.id);
+            const complete = bindingResult.ok && dingtalkResult.ok;
+            return {
+              ...colleague,
+              imConfigured: feishu || dingtalk || (!complete && colleague.imConfigured),
+              imPlatform: dingtalk ? 'dingtalk' as const : feishu ? 'feishu' as const : complete ? undefined : colleague.imPlatform,
+            };
+          }),
         ),
       );
       setLoadStatus('ready');
@@ -580,28 +589,33 @@ export function JiuwenMateApp({
   const selectedColleague = state.colleagues.find((item) => item.id === state.selectedColleagueId) ?? null;
   const authorizeColleague = state.colleagues.find((item) => item.id === state.authorizeColleagueId) ?? null;
   const [boundAppId, setBoundAppId] = useState('');
+  const [boundRobotCode, setBoundRobotCode] = useState('');
+  const authorizePlatform = authorizeColleague?.imPlatform ?? 'feishu';
   const authorizeId = authorizeColleague?.id ?? '';
   const authorizeConfigured = authorizeColleague?.imConfigured === true;
 
   useEffect(() => {
-    if (!authorizeId || !authorizeConfigured) {
-      setBoundAppId('');
-      return undefined;
-    }
+    setBoundAppId('');
+    setBoundRobotCode('');
+    if (!authorizeId || !authorizeConfigured) return undefined;
     let cancelled = false;
-    webRequest<{ config?: { apps?: { app_id?: unknown; persistent_agent_id?: unknown }[] } }>('channel.feishu.get_conf')
+    type App = { app_id?: unknown; client_id?: unknown; robot_code?: unknown; persistent_agent_id?: unknown };
+    webRequest<{ config?: App & { apps?: App[] } }>(`channel.${authorizePlatform}.get_conf`)
       .then((payload) => {
-        const match = payload.config?.apps?.find((app) => app.persistent_agent_id === authorizeId);
-        const appId = typeof match?.app_id === 'string' ? match.app_id : '';
-        if (!cancelled) setBoundAppId(appId);
+        const config = payload.config;
+        const apps = config?.apps ?? (config ? [config] : []);
+        const match = apps.find((app) => app.persistent_agent_id === authorizeId);
+        const appId = authorizePlatform === 'dingtalk' ? match?.client_id : match?.app_id;
+        if (!cancelled) {
+          setBoundAppId(typeof appId === 'string' ? appId : '');
+          setBoundRobotCode(typeof match?.robot_code === 'string' ? match.robot_code : '');
+        }
       })
       .catch(() => {
         if (!cancelled) setBoundAppId('');
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [authorizeConfigured, authorizeId]);
+    return () => { cancelled = true; };
+  }, [authorizeConfigured, authorizeId, authorizePlatform]);
 
   useEffect(() => {
     if (state.view !== 'colleague-profile' && state.view !== 'colleague-workspace') {
@@ -899,15 +913,23 @@ export function JiuwenMateApp({
         <ImAuthorizeDialog
           created={!authorizeConfigured}
           initialAppId={boundAppId}
+          initialPlatform={authorizePlatform}
+          initialRobotCode={boundRobotCode}
           onSkip={() => setState((current) => finishColleagueAuthorization(current, false))}
-          onConfirm={async ({ appId, appSecret }) => {
+          onConfirm={async ({ platform, appId, appSecret, robotCode }) => {
             if (!authorizeColleague) return;
-            await webRequest('channel.feishu.bind_agent', {
-              app_id: appId,
-              app_secret: appSecret,
+            await webRequest(`channel.${platform}.bind_agent`, {
+              ...(platform === 'dingtalk'
+                ? { client_id: appId, client_secret: appSecret, robot_code: robotCode }
+                : { app_id: appId, app_secret: appSecret }),
               persistent_agent_id: authorizeColleague.id,
             });
-            setState((current) => finishColleagueAuthorization(current, true));
+            setState((current) => {
+              const next = finishColleagueAuthorization(current, true);
+              return { ...next, colleagues: next.colleagues.map((item) =>
+                item.id === authorizeColleague.id ? { ...item, imPlatform: platform } : item,
+              ) };
+            });
           }}
         />
       ) : null}

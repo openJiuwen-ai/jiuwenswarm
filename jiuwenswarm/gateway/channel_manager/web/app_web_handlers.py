@@ -4380,6 +4380,62 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             except Exception:
                 logger.warning("[channel.feishu] CLI preparation deferred; binding saved")
 
+    def _dingtalk_binding_configuration(cm):
+        return {"channels": {
+            "feishu": cm.get_conf("feishu"), "feishu_enterprise": cm.get_conf("feishu_enterprise"),
+            "dingtalk": cm.get_conf("dingtalk"),
+        }}
+
+    def _reject_feishu_agents(cm, apps):
+        """DingTalk must not reuse an Agent bound to Feishu, even through a disabled binding."""
+        from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import has_feishu_binding
+
+        configuration = _dingtalk_binding_configuration(cm)
+        for app in apps:
+            agent_id = app["persistent_agent_id"]
+            if agent_id and has_feishu_binding(configuration, agent_id):
+                raise ValueError(
+                    "this colleague already has a Feishu connection; use a separate colleague for DingTalk"
+                )
+
+    async def _dingtalk_binding_verdict(agent_id, app_id):
+        """Ask AgentServer whether the colleague served another connection: allowed, conflict or unavailable."""
+        client = _resolve(agent_client)
+        if client is None:
+            return "unavailable"
+        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        envelope = e2a_from_agent_fields(
+            request_id=f"dingtalk-binding-{uuid.uuid4().hex}", channel_id="web",
+            req_method=ReqMethod.JIUWENMATE_DINGTALK_BINDING_CHECK,
+            params={"agent_id": agent_id, "app_id": app_id}, is_stream=False, timestamp=time.time(),
+        )
+        try:
+            response = await asyncio.wait_for(client.send_request(envelope), timeout=5)
+        except Exception:  # noqa: BLE001 - no answer is not an approval
+            return "unavailable"
+        payload = getattr(response, "payload", None)
+        if not getattr(response, "ok", False) or not isinstance(payload, dict) or not isinstance(
+            payload.get("allowed"), bool,
+        ):
+            return "unavailable"
+        return "allowed" if payload["allowed"] else "conflict"
+
+    async def _apply_dingtalk(ws, req_id, cm, section, method):
+        """Restart the DingTalk channels from a section that is already saved."""
+        _schedule_clear_agent_config_cache(method)
+        try:
+            await cm.set_conf("dingtalk", section)
+        except Exception:  # noqa: BLE001 - the file is already saved and is applied again on restart
+            logger.exception("[%s] configuration saved but the DingTalk channels were not restarted", method)
+            await channel.send_response(
+                ws, req_id, ok=False, error="configuration saved, but the DingTalk channels could not be restarted",
+                code="CHANNEL_APPLY_FAILED",
+            )
+            return False
+        return True
+
     async def _channel_feishu_bind_agent(ws, req_id, params, session_id):
         """Persist the one-to-one Feishu app and JiuwenMate colleague binding."""
         cm = _resolve(channel_manager)
@@ -4650,6 +4706,89 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             logger.exception("[channel.telegram.set_conf] %s", e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
+    async def _channel_dingtalk_get_bindings(ws, req_id, params, session_id):
+        cm = _resolve(channel_manager)
+        if cm is None:
+            await channel.send_response(
+                ws, req_id, ok=False, error="channel manager not available", code="SERVICE_UNAVAILABLE",
+            )
+            return
+        from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import configured_dingtalk_bindings
+
+        bindings = configured_dingtalk_bindings(_dingtalk_binding_configuration(cm))
+        await channel.send_response(
+            ws, req_id, ok=True, payload={"agent_ids": sorted({item.agent_id for item in bindings})},
+        )
+
+    async def _channel_dingtalk_bind_agent(ws, req_id, params, session_id):
+        """Bind one DingTalk app to one colleague; rebinding the colleague replaces its previous app."""
+        cm = _resolve(channel_manager)
+        if cm is None:
+            await channel.send_response(
+                ws, req_id, ok=False, error="channel manager not available", code="SERVICE_UNAVAILABLE",
+            )
+            return
+        if not isinstance(params, dict):
+            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
+            return
+        client_id = str(params.get("client_id") or "").strip()
+        secret = str(params.get("client_secret") or "").strip()
+        agent_id = str(params.get("persistent_agent_id") or "").strip()
+        if not client_id or not secret or not agent_id:
+            await channel.send_response(
+                ws, req_id, ok=False, error="client_id, client_secret and persistent_agent_id are required",
+                code="BAD_REQUEST",
+            )
+            return
+        from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import (
+            dingtalk_apps,
+            update_dingtalk_section,
+        )
+
+        def bind(current):
+            # Other apps are named only, so they keep every saved field, including a malformed allowlist.
+            apps = [
+                {"client_id": app["client_id"]} for app in dingtalk_apps(current)
+                if app["client_id"] and (app["persistent_agent_id"] != agent_id or app["client_id"] == client_id)
+            ]
+            matched = next((app for app in apps if app["client_id"] == client_id), None)
+            if matched is None:
+                # A newly added robot starts without an allowlist, as before.
+                matched = {"client_id": client_id, "allow_from": []}
+                apps.append(matched)
+            matched.update(client_secret=secret, persistent_agent_id=agent_id, enabled=True)
+            if "robot_code" in params:
+                matched["robot_code"] = str(params.get("robot_code") or "").strip()
+            return {"apps": apps}
+
+        try:
+            _reject_feishu_agents(cm, [{"persistent_agent_id": agent_id}])
+            # Ask before reading the configuration: the save below must start from what is on disk then.
+            verdict = await _dingtalk_binding_verdict(agent_id, client_id)
+            if verdict == "conflict":
+                raise ValueError(
+                    "this colleague already served another connection; create a separate colleague for this app"
+                )
+            if verdict != "allowed":
+                await channel.send_response(
+                    ws, req_id, ok=False, error="the colleague's existing connections could not be checked; try again",
+                    code="SERVICE_UNAVAILABLE",
+                )
+                return
+            section = update_dingtalk_section(bind, validate=lambda saved: _reject_feishu_agents(cm, saved["apps"]))
+            if not await _apply_dingtalk(ws, req_id, cm, section, "channel.dingtalk.bind_agent"):
+                return
+        except ValueError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception("[channel.dingtalk.bind_agent] binding save failed")
+            await channel.send_response(ws, req_id, ok=False, error="binding save failed", code="INTERNAL_ERROR")
+            return
+        await channel.send_response(
+            ws, req_id, ok=True, payload={"binding": {"client_id": client_id, "persistent_agent_id": agent_id}},
+        )
+
     async def _channel_dingtalk_get_conf(ws, req_id, params, session_id):
         cm = _resolve(channel_manager)
         if cm is None:
@@ -4661,14 +4800,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code="SERVICE_UNAVAILABLE",
             )
             return
+        from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_section_view
+
         try:
-            conf = cm.get_conf("dingtalk")
+            conf = dingtalk_section_view(cm.get_conf("dingtalk"))
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.dingtalk.get_conf] %s", e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
     async def _channel_dingtalk_set_conf(ws, req_id, params, session_id):
+        """Save the app list; each app is matched by client_id and keeps what the form does not send."""
         cm = _resolve(channel_manager)
         if cm is None:
             await channel.send_response(
@@ -4688,23 +4830,27 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code="BAD_REQUEST",
             )
             return
+        from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import (
+            dingtalk_section_view,
+            update_dingtalk_section,
+        )
+
         try:
-            await cm.set_conf("dingtalk", params)
-            conf = cm.get_conf("dingtalk")
-            should_clear_agent_config_cache = False
-            try:
-                update_channel_in_config("dingtalk", conf)
-                should_clear_agent_config_cache = True
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[channel.dingtalk.set_conf] 写回 config.yaml 失败: %s", e)
-            try:
-                await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-            finally:
-                if should_clear_agent_config_cache:
-                    _schedule_clear_agent_config_cache("channel.dingtalk.set_conf")
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.dingtalk.set_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+            section = update_dingtalk_section(
+                lambda _current: params, validate=lambda saved: _reject_feishu_agents(cm, saved["apps"]),
+            )
+            if not await _apply_dingtalk(ws, req_id, cm, section, "channel.dingtalk.set_conf"):
+                return
+        except ValueError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception("[channel.dingtalk.set_conf] configuration save failed")
+            await channel.send_response(
+                ws, req_id, ok=False, error="configuration save failed", code="INTERNAL_ERROR",
+            )
+            return
+        await channel.send_response(ws, req_id, ok=True, payload={"config": dingtalk_section_view(section)})
 
     async def _channel_whatsapp_get_conf(ws, req_id, params, session_id):
         cm = _resolve(channel_manager)
@@ -5651,6 +5797,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("channel.xiaoyi.set_conf", _channel_xiaoyi_set_conf)
     channel.register_method("channel.telegram.get_conf", _channel_telegram_get_conf)
     channel.register_method("channel.telegram.set_conf", _channel_telegram_set_conf)
+    channel.register_method("channel.dingtalk.get_bindings", _channel_dingtalk_get_bindings)
+    channel.register_method("channel.dingtalk.bind_agent", _channel_dingtalk_bind_agent)
     channel.register_method("channel.dingtalk.get_conf", _channel_dingtalk_get_conf)
     channel.register_method("channel.dingtalk.set_conf", _channel_dingtalk_set_conf)
     channel.register_method("channel.whatsapp.get_conf", _channel_whatsapp_get_conf)

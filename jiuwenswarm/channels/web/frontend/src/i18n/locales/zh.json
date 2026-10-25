@@ -230,6 +230,13 @@
       "feishu": "飞书",
       "welink": "WeLink",
       "dingtalk": "钉钉",
+      "platform": "渠道",
+      "channels": "飞书 / 钉钉",
+      "clientId": "Client ID",
+      "dingtalkHint": "绑定后可通过钉钉单聊分派任务，当前支持文本消息。",
+      "isolationHint": "不同渠道使用独立员工；可使用相同配置，消息和文件不会合并。",
+      "robotCode": "Robot Code（可选）",
+      "robotCodePlaceholder": "按应用配置填写，留空沿用 Client ID",
       "appId": "API ID",
       "appIdPlaceholder": "请输入API ID",
       "secret": "API Secret",
@@ -2664,6 +2671,21 @@
       "appNameTemplate": "飞书应用 {{index}}",
       "appNameLabel": "应用名称",
       "appNamePlaceholder": "应用名称"
+    },
+    "dingtalkApps": {
+      "defaultAppName": "钉钉默认应用",
+      "unnamedAppName": "未命名钉钉应用",
+      "appNameTemplate": "钉钉应用 {{index}}",
+      "appNameLabel": "应用名称",
+      "appNamePlaceholder": "应用名称",
+      "robotCodePlaceholder": "留空时沿用 client_id",
+      "boundTag": "已绑定员工",
+      "ordinaryHint": "未绑定员工的应用由普通助手接收消息，最多保留一个；绑定员工请在员工页面操作。",
+      "boundHint": "该应用已绑定员工。可修改密钥、白名单和启用状态；删除只解除这个连接，员工的历史和工作空间保留。",
+      "boundClientIdHint": "已绑定员工的应用不能更换 client_id，更换应用请在员工页面重新绑定。",
+      "invalidAllowFrom": "当前保存的白名单格式错误，该应用不会启动。请重新填写白名单（每行一个员工 ID）后保存；不修改此项时，原值保持不变。",
+      "invalidAllowFromTag": "白名单需修正",
+      "invalidAllowFromClientIdHint": "白名单修正前不能更换 client_id。"
     }
   },
   "modelSetupGuide": {
