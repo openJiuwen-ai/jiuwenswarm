@@ -16,6 +16,7 @@ export type JiuwenMateChatApi = Pick<
   | 'history'
   | 'getRequest'
   | 'abortRequest'
+  | 'decidePermission'
   | 'onStream'
   | 'listConversations'
   | 'renameConversation'
@@ -115,7 +116,14 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
   }, [api, agentId, conversationId]);
 
   const pendingIds = visibleRequests
-    .filter(isPending)
+    .filter(
+      (item) =>
+        isPending(item) ||
+        (item.status === 'ended' &&
+          item.outcome === 'paused' &&
+          item.approval !== null &&
+          ['approved', 'rejected', 'expired'].includes(item.approval.status)),
+    )
     .map((item) => item.requestId)
     .join(' ');
 
@@ -175,6 +183,19 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     [api, scope],
   );
 
+  const decidePermission = useCallback(
+    async (approvalId: string, decision: 'approve' | 'reject', toolCallId?: string): Promise<void> => {
+      setError(null);
+      try {
+        const updated = await api.decidePermission(approvalId, conversationId, decision, toolCallId);
+        if (scopeRef.current === scope) setRequests((current) => mergeChatRequest(current, updated));
+      } catch (reason) {
+        if (scopeRef.current === scope) setError(errorMessage(reason));
+      }
+    },
+    [api, conversationId, scope],
+  );
+
   const reload = useCallback(async () => {
     if (!agentId || !conversationId) return;
     const requested = scope;
@@ -190,5 +211,5 @@ export function usePrivateChat(api: JiuwenMateChatApi, agentId: string, conversa
     }
   }, [api, agentId, conversationId, scope]);
 
-  return { requests: visibleRequests, error: visibleError, loading, sending, send, abort, reload };
+  return { requests: visibleRequests, error: visibleError, loading, sending, send, abort, decidePermission, reload };
 }

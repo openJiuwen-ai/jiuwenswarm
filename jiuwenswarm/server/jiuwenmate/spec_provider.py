@@ -187,6 +187,7 @@ def build_invocation(
         raise PersistentContractError("Request belongs to another Agent")
     if request.config_version != snapshot.config_version or request.config_fingerprint != snapshot.fingerprint:
         raise PersistentContractError("Request was accepted under another configuration version")
+    spec = snapshot.load_spec()
     backend = ports.window_backend
     if ports.group_chat is not None:
         from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort
@@ -207,7 +208,8 @@ def build_invocation(
         access = getattr(ports, port_name)
         if not isinstance(access, HostWorkspaceAccess) or access.scope != colleague:
             raise PersistentContractError(f"{port_name} must be the host scope of this colleague")
-    spec = snapshot.load_spec()
+        if access.permission_profile != spec.permission_profile:
+            raise PersistentContractError(f"{port_name} must use the published employee permission profile")
     context = build_execution_context(request, execution, capability_snapshot=snapshot.enabled_features)
     session = create_agent_session(session_id=request.session_id, card=spec.card, checkpointer=NoopCheckpointer())
     try:

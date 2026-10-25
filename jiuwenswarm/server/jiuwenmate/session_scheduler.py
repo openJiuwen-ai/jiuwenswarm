@@ -13,7 +13,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from jiuwenswarm.server.jiuwenmate.execution_driver import AbortReason, ExecutionDriver, ExecutionHandle
 from jiuwenswarm.server.jiuwenmate.execution_models import RequestState, SessionRecord
@@ -59,11 +59,15 @@ class SessionScheduler:
         *,
         limits: SchedulerLimits | None = None,
         clock: Callable[[], datetime] = _utc_now,
+        has_pending_approval: Callable[[str, str], bool] | None = None,
+        is_ready_approval: Callable[[str, str, str], bool] | None = None,
     ) -> None:
         self._sessions = sessions
         self._driver = driver
         self._limits = limits or SchedulerLimits()
         self._clock = clock
+        self._has_pending_approval = has_pending_approval
+        self._is_ready_approval = is_ready_approval
         self._lock = asyncio.Lock()
         self._running: dict[SessionKey, _Running] = {}
         # Sessions that may still have queued Requests, in the order they got work.
@@ -226,6 +230,17 @@ class SessionScheduler:
                 if head is None:
                     self._waiting.pop(key, None)
                     continue
+                if self._has_pending_approval is not None and await asyncio.to_thread(
+                    self._has_pending_approval, key[0], key[1]
+                ):
+                    ready_continuation = (
+                        self._is_ready_approval is not None
+                        and await asyncio.to_thread(
+                            self._is_ready_approval, key[0], key[1], head.record.request_id
+                        )
+                    )
+                    if not ready_continuation:
+                        continue
                 agent_id = head.record.agent_id
                 if (key[0], agent_id) in self._deleting:
                     continue

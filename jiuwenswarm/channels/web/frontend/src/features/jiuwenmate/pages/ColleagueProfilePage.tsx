@@ -70,6 +70,7 @@ export type JiuwenMateProfileSection =
   | 'knowledge'
   | 'mail'
   | 'channels'
+  | 'permissions'
   | 'schedules';
 
 export const PROFILE_SECTIONS: readonly JiuwenMateProfileSection[] = [
@@ -82,6 +83,7 @@ export const PROFILE_SECTIONS: readonly JiuwenMateProfileSection[] = [
   'knowledge',
   'mail',
   'channels',
+  'permissions',
   'schedules',
 ];
 
@@ -104,6 +106,7 @@ const PENCIL_SECTIONS = ['overview'] as const;
 
 export interface ColleagueSettingsEdit {
   groupReplyMode?: 'passive' | 'adaptive';
+  permissionProfile?: 'default' | 'automatic' | 'full_access';
   name?: string;
   description?: string;
   persona?: string;
@@ -207,6 +210,9 @@ export function ColleagueProfilePage({
   const [plugins, setPlugins] = useState(colleague.capabilities.plugins);
   const [knowledge, setKnowledge] = useState(colleague.capabilities.knowledge);
   const [groupReplyMode, setGroupReplyMode] = useState<'passive' | 'adaptive'>(colleague.groupReplyMode ?? 'adaptive');
+  const [permissionProfile, setPermissionProfile] = useState<'default' | 'automatic' | 'full_access'>(
+    colleague.permissionProfile ?? 'default',
+  );
   const [agentMailStatus, setAgentMailStatus] = useState<string>('loading');
   const [agentMailEmail, setAgentMailEmail] = useState('');
   const [agentMailOperation, setAgentMailOperation] = useState('');
@@ -292,6 +298,9 @@ export function ColleagueProfilePage({
   useEffect(() => {
     setGroupReplyMode(colleague.groupReplyMode ?? 'adaptive');
   }, [colleague.groupReplyMode]);
+  useEffect(() => {
+    setPermissionProfile(colleague.permissionProfile ?? 'default');
+  }, [colleague.permissionProfile]);
   useEffect(() => {
     if (section !== 'mail' || !onLoadAgentMailStatus) return;
     let active = true;
@@ -392,6 +401,13 @@ export function ColleagueProfilePage({
     setGroupReplyMode(mode);
     void Promise.resolve(onSaveSettings?.({ groupReplyMode: mode })).catch(() => setGroupReplyMode(previous));
   };
+  const changePermissionProfile = (profile: 'default' | 'automatic' | 'full_access') => {
+    if (profile === permissionProfile || savingResources || !onSaveSettings) return;
+    if (profile === 'full_access' && !window.confirm(t('jiuwenmate.profile.permissions.fullAccessConfirm'))) return;
+    const previous = permissionProfile;
+    setPermissionProfile(profile);
+    void Promise.resolve(onSaveSettings({ permissionProfile: profile })).catch(() => setPermissionProfile(previous));
+  };
   const openSection = (next: JiuwenMateProfileSection) => {
     setSection(next);
     setEditing(false);
@@ -476,6 +492,7 @@ export function ColleagueProfilePage({
             <ProfileSectionDetail
               colleague={colleague}
               groupReplyMode={groupReplyMode}
+              permissionProfile={permissionProfile}
               modelCatalog={modelCatalog}
               section={section}
               persona={persona}
@@ -495,6 +512,7 @@ export function ColleagueProfilePage({
               onKnowledgeChange={setKnowledge}
               onSaveSettings={saveSettings}
               onGroupReplyModeChange={changeGroupReplyMode}
+              onPermissionProfileChange={changePermissionProfile}
               onConfigureIm={onConfigureIm}
               schedules={schedules}
               savingSchedule={savingSchedule}
@@ -908,6 +926,7 @@ function IdentityEditor({
 function ProfileSectionDetail({
   colleague,
   groupReplyMode,
+  permissionProfile,
   modelCatalog,
   section,
   persona,
@@ -927,6 +946,7 @@ function ProfileSectionDetail({
   onKnowledgeChange,
   onSaveSettings,
   onGroupReplyModeChange,
+  onPermissionProfileChange,
   onConfigureIm,
   schedules,
   savingSchedule,
@@ -945,6 +965,7 @@ function ProfileSectionDetail({
 }: {
   colleague: JiuwenMateColleague;
   groupReplyMode: 'passive' | 'adaptive';
+  permissionProfile: 'default' | 'automatic' | 'full_access';
   modelCatalog: JiuwenMateModelCatalog;
   section: Exclude<JiuwenMateProfileSection, 'overview'>;
   persona: string;
@@ -964,6 +985,7 @@ function ProfileSectionDetail({
   onKnowledgeChange: (items: string[]) => void;
   onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
   onGroupReplyModeChange: (mode: 'passive' | 'adaptive') => void;
+  onPermissionProfileChange: (profile: 'default' | 'automatic' | 'full_access') => void;
   onConfigureIm: () => void;
   schedules: readonly JiuwenMateSchedule[];
   savingSchedule: boolean;
@@ -1112,6 +1134,44 @@ function ProfileSectionDetail({
             <small>{colleague.imPlatform === 'dingtalk' ? t('jiuwenmate.im.dingtalkHint') : t('jiuwenmate.profile.feishuHint')}</small>
           </span>
           <ImBindingAction configured={colleague.imConfigured} onConfigure={onConfigureIm} />
+        </div>
+      </section>
+    );
+  }
+
+  if (section === 'permissions') {
+    return (
+      <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
+        <h2>{title}</h2>
+        <div className="jiuwenmate-profile__reply-mode" data-testid="jiuwenmate-profile-permissions">
+          <div className="jiuwenmate-profile__reply-mode-heading">
+            <strong>{t('jiuwenmate.profile.permissions.title')}</strong>
+            <p>{t('jiuwenmate.profile.permissions.description')}</p>
+          </div>
+          <div className="jiuwenmate-profile__reply-mode-options jiuwenmate-profile__reply-mode-options--permissions" role="radiogroup" aria-label={t('jiuwenmate.profile.permissions.title')}>
+            {(['default', 'automatic', 'full_access'] as const).map((profile) => (
+              <button
+                key={profile}
+                type="button"
+                className="jiuwenmate-profile__reply-mode-option"
+                aria-pressed={permissionProfile === profile}
+                disabled={savingResources || !onSaveSettings}
+                data-testid="jiuwenmate-profile-permission-option"
+                data-variant={profile}
+                onClick={() => onPermissionProfileChange(profile)}
+              >
+                <span className="jiuwenmate-profile__reply-mode-copy">
+                  <strong>{t(`jiuwenmate.profile.permissions.profiles.${profile}`)}</strong>
+                  <small>{t(`jiuwenmate.profile.permissions.profileHints.${profile}`)}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+          <p className="jiuwenmate-profile__permission-warning" data-testid="jiuwenmate-profile-permission-warning">
+            {permissionProfile === 'full_access'
+              ? t('jiuwenmate.profile.permissions.fullAccessWarning')
+              : t('jiuwenmate.profile.permissions.approvalTimeout')}
+          </p>
         </div>
       </section>
     );

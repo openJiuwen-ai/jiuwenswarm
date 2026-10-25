@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
@@ -95,16 +96,13 @@ class AgentMailTool(Tool):
 
 
 async def prepare_agent_mail_invocation(spec, context, service: AgentMailRuntimeService | None):
-    """Add the mail tool only when this employee's runtime reports a verified connection."""
+    """Add the mail tool only when this employee has a persisted verified connection."""
     if service is None:
         return spec
     execution = context.execution
     scope = AgentMailScope(execution.namespace_id, execution.agent_id)
-    try:
-        status = await service.status(scope)
-    except PersistentAgentError:
-        return spec
-    if status["status"] != "connected":
+    status = await asyncio.to_thread(service.cached_status, scope)
+    if status is None or status.get("status") != "connected":
         return spec
     context.extras[_CONTEXT_KEY] = (service, scope)
     tools = list(spec.tools or [])

@@ -43,6 +43,7 @@ export interface JiuwenMateColleagueDraft {
   description: string;
   persona?: string;
   groupReplyMode?: 'passive' | 'adaptive';
+  permissionProfile?: 'default' | 'automatic' | 'full_access';
   tags: string[];
   category: JiuwenMateCategory;
   avatarUrl?: string;

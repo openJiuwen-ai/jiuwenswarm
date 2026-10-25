@@ -181,16 +181,24 @@ class HostWorkspaceAccess:
         agent_id: str,
         *,
         knowledge_root: str | None = None,
+        permission_profile: str = "default",
     ) -> None:
         self._root = store.path(namespace_id, agent_id)
         self._store = store
         self._namespace_id = namespace_id
         self._agent_id = agent_id
         self._knowledge_root = self._validated_knowledge_root(knowledge_root)
+        if permission_profile not in {"default", "automatic", "full_access"}:
+            raise PersistentAgentError("invalid permission_profile")
+        self._permission_profile = permission_profile
 
     @property
     def scope(self) -> tuple[str, str]:
         return self._namespace_id, self._agent_id
+
+    @property
+    def permission_profile(self) -> str:
+        return self._permission_profile
 
     def _session_roots(self, execution: ExecutionContext) -> tuple[Path, Path]:
         if execution.namespace_id != self._namespace_id or execution.agent_id != self._agent_id:
@@ -245,8 +253,9 @@ class HostWorkspaceAccess:
             and self._granted(execution, WORKSPACE_KNOWLEDGE_READ)
             and knowledge_root is not None
         )
-        allowed_roots = (self._root,) if workspace_granted else ()
-        if knowledge_granted and knowledge_root is not None:
+        host_wide = workspace_granted and self._permission_profile == "full_access"
+        allowed_roots = (Path(self._root.anchor),) if host_wide else (self._root,) if workspace_granted else ()
+        if not host_wide and knowledge_granted and knowledge_root is not None:
             allowed_roots = (knowledge_root,)
         return WorkspaceReadScope(
             status="allowed" if workspace_granted or knowledge_granted else "forbidden",
@@ -259,20 +268,23 @@ class HostWorkspaceAccess:
             source_ref=self._source_ref(),
             policy_revision=execution.policy_revision,
             principal_ref=execution.principal_ref,
+            host_wide=host_wide,
         )
 
     async def resolve_write_scope(self, execution: ExecutionContext) -> WorkspaceWriteScope:
         sessions, current = self._session_roots(execution)
         granted = self._granted(execution, WORKSPACE_WRITE)
+        host_wide = granted and self._permission_profile == "full_access"
         return WorkspaceWriteScope(
             status="allowed" if granted else "forbidden",
             agent_id=execution.agent_id,
             session_id=execution.session_id,
             workspace_root=self._root,
-            allowed_write_roots=(self._root,) if granted else (),
+            allowed_write_roots=(Path(self._root.anchor),) if host_wide else (self._root,) if granted else (),
             private_sessions_root=sessions,
             current_session_root=current if granted else None,
             source_ref=self._source_ref(),
             policy_revision=execution.policy_revision,
             principal_ref=execution.principal_ref,
+            host_wide=host_wide,
         )

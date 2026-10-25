@@ -44,6 +44,12 @@ BASH_PROMPT = (
     "只能使用宿主为当前同事准备的飞书应用。命令超时或回执缺失表示结果未知，不自动重复创建文档。"
     "后台启动不表示完成；执行结束时后台命令会清理。文档创建成功与请求者获得访问权须分别核实。"
 )
+FULL_ACCESS_BASH_PROMPT = (
+    "\n\n## 命令使用约定\n\n"
+    "你可以使用 bash 运行必要的脚本、命令和联网操作。当前员工已启用完全访问，命令与文件工具都受服务进程的 OS 用户权限约束，"
+    "不要尝试绕过操作系统权限。执行时仍优先使用本次 Session 草稿目录，最终交付文件放到 Agent 工作空间共享的 `output/`，"
+    "并用 `share_file` 登记 `output/<文件名>`。不要读取、显示或复制 Secret、Token 和认证配置；不全局安装依赖。"
+)
 WEB_FETCH_PROMPT = (
     "\n\n## 网页读取\n\n"
     "消息中的 http 或 https 链接，先用 fetch_webpage 读取正文，再据此回答。"
@@ -86,25 +92,26 @@ def refresh_builtin_tools(fields: dict[str, Any]) -> dict[str, Any]:
             params["tools"] = nested
             updated.append({**item, "params": params})
     prompt = fields.get("system_prompt") or ""
+    bash_prompt = FULL_ACCESS_BASH_PROMPT if fields.get("permission_profile") == "full_access" else BASH_PROMPT
     if isinstance(updated, list) and any(isinstance(item, dict) and item.get("type") == PROVIDER for item in updated):
         # Replace only the host-generated section; keep the persona and other sections.
         prompt, replaced = re.subn(
             r"(?ms)^## 命令使用约定（非技术隔离）\n.*?(?=^## |^<!-- jm-feishu-cli -->|\Z)",
-            lambda _: BASH_PROMPT.lstrip("\n") + "\n\n",
+            lambda _: bash_prompt.lstrip("\n") + "\n\n",
             prompt,
             count=1,
         )
         if not replaced:
-            prompt += BASH_PROMPT
+            prompt += bash_prompt
     if WEB_FETCH_PROMPT not in prompt:
         prompt += WEB_FETCH_PROMPT
     return {**fields, "tools": updated, "system_prompt": prompt}
 
 
-def bind_bash_runtime(context, *, office: Path, cli) -> None:
+def bind_bash_runtime(context, *, office: Path, cli, permission_profile: str = "default") -> None:
     session_workspace = office / "sessions" / context.execution.session_id
     output_dir = office / "output"
-    context.extras[_KEY] = (session_workspace, output_dir, cli, context.execution, [])
+    context.extras[_KEY] = (session_workspace, output_dir, cli, context.execution, [], permission_profile)
 
 
 def _process_key(execution) -> str:
@@ -243,7 +250,7 @@ class _PersistentBash(BashTool):
 def build_bash_tool(params: dict[str, Any], context):
     if set(params) - {"tools"} or _KEY not in context.extras:
         raise ValueError("Bash requires a trusted JiuwenMate Invocation")
-    session_workspace, output_dir, cli, execution, tools = context.extras[_KEY]
+    session_workspace, output_dir, cli, execution, tools, permission_profile = context.extras[_KEY]
     parent = parent_sys_operation(context)
     if parent is not None and parent.mode != OperationMode.LOCAL:
         raise ValueError("JiuwenMate Bash requires the local operation")
@@ -252,7 +259,10 @@ def build_bash_tool(params: dict[str, Any], context):
     config = LocalWorkConfig() if parent is None else parent._run_config.model_copy(deep=True)
     if not isinstance(config, LocalWorkConfig):
         raise ValueError("Unsupported Bash operation config")
-    if config.shell_allowlist is not None:
+    if permission_profile == "full_access":
+        config.shell_allowlist = None
+        config.restrict_to_sandbox = False
+    elif config.shell_allowlist is not None:
         config.shell_allowlist = [*config.shell_allowlist, "lark-cli", "lark-cli.cmd"]
     operation = SysOperation(SysOperationCard(id=f"jm-bash:{execution.execution_id}", work_config=config))
     shell = _Shell(_OwnedShell(config), session_workspace, output_dir, cli, execution)

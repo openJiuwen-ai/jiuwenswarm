@@ -1,4 +1,5 @@
 import { ChevronDown, Plus, Send, ShieldUser, Square } from 'lucide-react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type JiuwenMateModelCatalog } from '../jiuwenmateApi';
 import { ModelLabel } from './ModelLabel';
@@ -17,6 +18,11 @@ interface ConversationComposerProps {
   modelCatalog: JiuwenMateModelCatalog;
   /** The model saved on the colleague. Empty means the server default. */
   modelId: string;
+  /** The permission profile saved on the colleague. */
+  permissionProfile: 'default' | 'automatic' | 'full_access';
+  /** Saves and publishes a new colleague permission profile. */
+  onPermissionProfileChange?: (profile: 'default' | 'automatic' | 'full_access') => void;
+  permissionProfileSaving?: boolean;
 }
 
 export function ConversationComposer({
@@ -28,8 +34,12 @@ export function ConversationComposer({
   stopping = false,
   modelCatalog,
   modelId,
+  permissionProfile,
+  onPermissionProfileChange,
+  permissionProfileSaving = false,
 }: ConversationComposerProps) {
   const { t } = useTranslation();
+  const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const canSend = Boolean(onSend) && !sending && value.trim().length > 0;
   return (
     <div className="jiuwenmate-composer" data-testid="jiuwenmate-conversation-composer">
@@ -46,16 +56,63 @@ export function ConversationComposer({
         data-testid="jiuwenmate-composer-input"
       />
       <div className="jiuwenmate-composer__toolbar">
-        <span className="jiuwenmate-composer__left">
+        <div className="jiuwenmate-composer__left">
           <button type="button" aria-label={t('jiuwenmate.workspace.attach')}>
             <Plus aria-hidden />
           </button>
-          <button type="button" className="jiuwenmate-composer__mode">
-            <ShieldUser aria-hidden />
-            <span>{t('jiuwenmate.workspace.defaultPermission')}</span>
-            <ChevronDown aria-hidden />
-          </button>
-        </span>
+          <div
+            className="jiuwenmate-composer__permission"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setPermissionMenuOpen(false);
+            }}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPermissionMenuOpen(false);
+            }}
+          >
+            <button
+              type="button"
+              className="jiuwenmate-composer__mode"
+              aria-expanded={permissionMenuOpen}
+              aria-haspopup="menu"
+              disabled={!onPermissionProfileChange || permissionProfileSaving}
+              onClick={() => setPermissionMenuOpen((open) => !open)}
+              data-testid="jiuwenmate-composer-permission-trigger"
+              data-variant={permissionProfile}
+            >
+              <ShieldUser aria-hidden />
+              <span>{t(`jiuwenmate.profile.permissions.profiles.${permissionProfile}`)}</span>
+              <ChevronDown aria-hidden />
+            </button>
+            {permissionMenuOpen ? (
+              <div
+                className="jiuwenmate-composer__permission-menu"
+                role="menu"
+                aria-label={t('jiuwenmate.profile.permissions.title')}
+                data-testid="jiuwenmate-composer-permission-menu"
+              >
+                {(['default', 'automatic', 'full_access'] as const).map((profile) => (
+                  <button
+                    key={profile}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={permissionProfile === profile}
+                    disabled={permissionProfileSaving}
+                    className="jiuwenmate-composer__permission-option"
+                    onClick={() => {
+                      setPermissionMenuOpen(false);
+                      onPermissionProfileChange?.(profile);
+                    }}
+                    data-testid="jiuwenmate-composer-permission-option"
+                    data-variant={profile}
+                  >
+                    <strong>{t(`jiuwenmate.profile.permissions.profiles.${profile}`)}</strong>
+                    <small>{t(`jiuwenmate.profile.permissions.profileHints.${profile}`)}</small>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
         <span className="jiuwenmate-composer__right">
           <span className="jiuwenmate-composer__model" data-testid="jiuwenmate-composer-model">
             <ModelLabel catalog={modelCatalog} modelId={modelId} />

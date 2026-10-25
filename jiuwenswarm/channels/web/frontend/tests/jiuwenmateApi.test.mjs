@@ -103,6 +103,7 @@ test('server colleagues map to page colleagues with the persisted enabled state'
   assert.equal(toColleague({ ...wireColleague, workspace_dir: undefined }).workspaceDir, null);
   assert.equal(colleague.imConfigured, true);
   assert.equal(colleague.disabled, false);
+  assert.equal(colleague.permissionProfile, 'default');
   assert.equal(toColleague({ ...wireColleague, enabled: false }).disabled, true);
   assert.equal(toColleague({ ...wireColleague, category: 'unknown' }).category, 'custom');
 });
@@ -676,6 +677,33 @@ test('group reply mode survives edits and defaults to adaptive for existing coll
   assert.equal(colleague.groupReplyMode, 'passive');
   assert.equal(withColleagueEdit(colleague, [], { name: 'Renamed' }).group_reply_mode, 'passive');
   assert.equal(withColleagueEdit(colleague, [], { groupReplyMode: 'adaptive' }).group_reply_mode, 'adaptive');
+  assert.equal(withColleagueEdit(colleague, [], { permissionProfile: 'automatic' }).permission_profile, 'automatic');
+  assert.equal(withColleagueEdit(toColleague({ ...wireColleague, permission_profile: 'full_access' }), [], { name: 'Renamed' }).permission_profile, 'full_access');
+});
+
+test('permission approval is mapped and one decision targets its original conversation', async () => {
+  const approval = {
+    approval_id: 'a1b2c3d4e5f6',
+    request_id: 'req-1',
+    expires_at: '2026-10-24T08:15:00+00:00',
+    status: 'pending',
+    intercepted: [{ tool_call_id: 'call-1', tool_name: 'write_file', arguments: 'path=report.md', arguments_truncated: false }],
+  };
+  const { calls, api } = recorder({
+    [JIUWENMATE_METHODS.permissionDecide]: {
+      request: { ...wireRequest, conversation_id: 'conv-1', outcome: 'paused', approval: { ...approval, status: 'approved' } },
+    },
+  });
+
+  const updated = await api.decidePermission('a1b2c3d4e5f6', 'conv-1', 'approve', 'call-1');
+
+  assert.equal(updated.approval.status, 'approved');
+  assert.deepEqual(updated.approval.intercepted, [
+    { toolCallId: 'call-1', toolName: 'write_file', arguments: 'path=report.md', argumentsTruncated: false },
+  ]);
+  assert.deepEqual(calls, [[JIUWENMATE_METHODS.permissionDecide, {
+    approval_id: 'a1b2c3d4e5f6', conversation_id: 'conv-1', decision: 'approve', tool_call_id: 'call-1',
+  }]]);
 });
 
 

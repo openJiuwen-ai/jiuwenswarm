@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from copy import deepcopy
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, publish_spec
 from jiuwenswarm.server.jiuwenmate.bash_runtime import (
     BASH_PROMPT,
+    FULL_ACCESS_BASH_PROMPT,
     WEB_FETCH_PROMPT,
     PROVIDER as BASH_PROVIDER,
     refresh_builtin_tools,
@@ -332,6 +334,27 @@ class PersistentAgentService:
         if settings.capabilities.model is not None:
             self._models.resolve(settings.capabilities.model, client_id=f"jiuwenmate:{agent_id}")
 
+    @staticmethod
+    def _permission_snapshot(profile: str) -> dict[str, Any]:
+        """Freeze the host permission policy for this employee and publication."""
+        from jiuwenswarm.common.config import get_config
+
+        config = get_config()
+        raw = config.get("permissions", {}) if isinstance(config, dict) else {}
+        permissions = deepcopy(raw) if isinstance(raw, dict) else {}
+        permissions["enabled"] = profile != "full_access"
+        permissions["mode"] = "auto" if profile == "automatic" else "manual"
+        if profile == "automatic":
+            from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
+                normalize_permissions_for_runtime,
+            )
+
+            permissions = normalize_permissions_for_runtime(permissions)
+            permissions["enabled"] = True
+        elif profile == "full_access":
+            permissions = {"enabled": False}
+        return permissions
+
     def _insert(
         self,
         namespace_id: str,
@@ -519,7 +542,7 @@ class PersistentAgentService:
                 self._templates.read_persona(agent_id)
                 + WORKSPACE_PROMPT
                 + assembled.prompt
-                + BASH_PROMPT
+                + (FULL_ACCESS_BASH_PROMPT if settings.permission_profile == "full_access" else BASH_PROMPT)
                 + WEB_FETCH_PROMPT
             ),
             "model": model,
@@ -534,6 +557,8 @@ class PersistentAgentService:
             "share_file_max_bytes": SHARE_FILE_MAX_BYTES,
             # Guarded file tools and the Invocation-local Bash adapter reuse core operations.
             "enable_sys_operation": True,
+            "permission_profile": settings.permission_profile,
+            "permissions": self._permission_snapshot(settings.permission_profile),
             # Otherwise core probes the model for image input outside the budget port.
             "enable_read_image_multimodal": False,
             **assembled.spec_fields,
@@ -572,7 +597,9 @@ class PersistentAgentService:
                                      skill_directories)
         if not any(tool.get("type") == BASH_PROVIDER for tool in (fields.get("tools") or [])):
             fields = with_bash_tool(fields)
-            fields["system_prompt"] += BASH_PROMPT
+            fields["system_prompt"] += (
+                FULL_ACCESS_BASH_PROMPT if fields.get("permission_profile") == "full_access" else BASH_PROMPT
+            )
         fields = refresh_builtin_tools(fields)
         if publish_spec(agent_id, current.config_version, fields).fingerprint == current.fingerprint:
             return self._version_view(namespace_id, agent_id, current.config_version)

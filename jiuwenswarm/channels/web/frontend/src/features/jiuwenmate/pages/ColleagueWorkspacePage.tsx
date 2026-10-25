@@ -108,6 +108,8 @@ interface ColleagueWorkspacePageProps {
   channelApi?: JiuwenMateChannelApi;
   modelCatalog?: JiuwenMateModelCatalog;
   onRenameColleague: (agentId: string, name: string) => Promise<void>;
+  onSavePermissionProfile?: (agentId: string, profile: 'default' | 'automatic' | 'full_access') => Promise<void>;
+  savingPermissionProfile?: boolean;
 }
 
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
@@ -151,6 +153,8 @@ export function ColleagueWorkspacePage({
   channelApi,
   modelCatalog = EMPTY_MODEL_CATALOG,
   onRenameColleague,
+  onSavePermissionProfile,
+  savingPermissionProfile = false,
 }: ColleagueWorkspacePageProps) {
   const { t } = useTranslation();
   const platformLabel = (platform: string) => {
@@ -176,6 +180,8 @@ export function ColleagueWorkspacePage({
   const [allRecords, setAllRecords] = useState<Array<JiuwenMateConversation & { agentId: string }>>([]);
   const [allRecordsError, setAllRecordsError] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [permissionActionId, setPermissionActionId] = useState<string | null>(null);
+  const [permissionProfileError, setPermissionProfileError] = useState<string | null>(null);
   const cancelRename = useRef(false);
   const agentId = colleague?.id ?? '';
   const conversationList = useConversations(chat, agentId, connectionEpoch);
@@ -458,13 +464,24 @@ export function ColleagueWorkspacePage({
     ]);
   };
 
+  const savePermissionProfile = async (profile: 'default' | 'automatic' | 'full_access') => {
+    if (!onSavePermissionProfile || savingPermissionProfile || profile === (colleague.permissionProfile ?? 'default')) return;
+    if (profile === 'full_access' && !window.confirm(t('jiuwenmate.profile.permissions.fullAccessConfirm'))) return;
+    setPermissionProfileError(null);
+    try {
+      await onSavePermissionProfile(colleague.id, profile);
+    } catch (error) {
+      setPermissionProfileError(errorMessage(error) || t('jiuwenmate.chat.failed', { reason: '' }));
+    }
+  };
+
   const running = privateChat.requests.find((item) => chatPhase(item) === 'running') ?? null;
 
   const composer = (
     <>
-      {privateChat.error || conversationList.error || allRecordsError ? (
+      {privateChat.error || conversationList.error || allRecordsError || permissionProfileError ? (
         <p className="jiuwenmate-chat-error" role="alert" data-testid="jiuwenmate-chat-error">
-          {t('jiuwenmate.chat.failed', { reason: privateChat.error ?? conversationList.error ?? allRecordsError })}
+          {permissionProfileError ?? t('jiuwenmate.chat.failed', { reason: privateChat.error ?? conversationList.error ?? allRecordsError })}
         </p>
       ) : null}
       <ConversationComposer
@@ -476,12 +493,16 @@ export function ColleagueWorkspacePage({
         stopping={running?.control?.status === 'accepted'}
         modelCatalog={modelCatalog}
         modelId={colleague?.capabilities.model ?? ''}
+        permissionProfile={colleague.permissionProfile ?? 'default'}
+        onPermissionProfileChange={(profile) => void savePermissionProfile(profile)}
+        permissionProfileSaving={savingPermissionProfile}
       />
     </>
   );
 
   const renderRequest = (request: JiuwenMateChatRequest) => {
     const phase = chatPhase(request);
+    const approval = request.approval;
     const control = request.control;
     const awaiting = request.recovery?.decision === 'awaiting_continuation';
     const unverified = request.recovery?.unverifiedToolCalls.length ?? 0;
@@ -503,6 +524,56 @@ export function ColleagueWorkspacePage({
     return (
       <li key={request.requestId} data-testid="jiuwenmate-chat-request" data-phase={phase}>
         <p className="jiuwenmate-chat-message jiuwenmate-chat-message--user">{request.text}</p>
+        {approval ? (
+          <article className="jiuwenmate-chat-approval" data-testid="jiuwenmate-chat-permission-approval" data-status={approval.status}>
+            <strong>{t('jiuwenmate.chat.approval.title')}</strong>
+            {approval.intercepted.map((call, index) => (
+              <div className="jiuwenmate-chat-approval__call" key={`${approval.approvalId}-${index}`}>
+                <code>{call.toolName} · {call.toolCallId}</code>
+                <pre>{call.arguments}</pre>
+                {call.argumentsTruncated ? <small>{t('jiuwenmate.chat.approval.truncated')}</small> : null}
+                {approval.status === 'pending' ? (
+                  <div className="jiuwenmate-chat-approval__actions">
+                    <button
+                      type="button"
+                      disabled={permissionActionId === approval.approvalId}
+                      onClick={() => {
+                        setPermissionActionId(approval.approvalId);
+                        void privateChat.decidePermission(approval.approvalId, 'approve', call.toolCallId)
+                          .finally(() => setPermissionActionId(null));
+                      }}
+                      data-testid="jiuwenmate-chat-permission-approve"
+                    >
+                      {t('jiuwenmate.chat.approval.approveOne')}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+            <small>
+              {approval.status === 'pending'
+                ? t('jiuwenmate.chat.approval.expires', {
+                    time: approval.expiresAt ? new Date(approval.expiresAt).toLocaleTimeString() : '',
+                  })
+                : t(`jiuwenmate.chat.approval.status.${approval.status}`)}
+            </small>
+            {approval.status === 'pending' ? (
+              <div className="jiuwenmate-chat-approval__actions">
+                <button
+                  type="button"
+                  disabled={permissionActionId === approval.approvalId}
+                  onClick={() => {
+                    setPermissionActionId(approval.approvalId);
+                    void privateChat.decidePermission(approval.approvalId, 'reject').finally(() => setPermissionActionId(null));
+                  }}
+                  data-testid="jiuwenmate-chat-permission-reject"
+                >
+                  {t('jiuwenmate.chat.approval.rejectAll')}
+                </button>
+              </div>
+            ) : null}
+          </article>
+        ) : null}
         {request.replies.map((reply, index) => (
           <article key={index} className="jiuwenmate-chat-message jiuwenmate-chat-message--colleague" data-testid="jiuwenmate-chat-reply">
             <ColleagueAvatar colleague={colleague} size="small" />

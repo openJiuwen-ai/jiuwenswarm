@@ -245,12 +245,14 @@ async def test_mail_tool_is_only_added_to_the_connected_employee_invocation(tmp_
         capability_snapshot=frozenset({"construction"}),
     )
     context = SimpleNamespace(execution=execution, extras={})
+    service = AgentMailRuntimeService(
+        store=AgentMailRuntimeStore(tmp_path / "agent_mail.sqlite3"), runtime=ConnectedRuntime()
+    )
+    await service.status(scope)
     prepared = await prepare_agent_mail_invocation(
         Spec(),
         context,
-        AgentMailRuntimeService(
-            store=AgentMailRuntimeStore(tmp_path / "agent_mail.sqlite3"), runtime=ConnectedRuntime()
-        ),
+        service,
     )
 
     assert [item.type for item in prepared.tools] == ["jiuwenmate.agent_mail"]
