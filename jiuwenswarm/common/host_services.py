@@ -107,17 +107,33 @@ def restore_runtime_push_handler(
 
 
 async def send_runtime_push(message: dict[str, Any]) -> bool:
-    """Send through the optional host adapter; return False when unavailable."""
+    """Send through the optional host adapter; return False when unavailable.
+
+    HTTP 聊天会挂一个「仅转发 chat.file」的请求级 handler。cron / 其它
+    server_push 若命中同一路由键却被它拒绝（返回 False），必须再回退到进程级
+    ``send_push``（WebSocket 或 ``events/stream`` hub），否则企业版 runtime
+    模式下定时任务永远送不到 Gateway。
+    """
     with _runtime_host_handlers_lock:
-        handler = (
-            _request_push_handlers.get(_push_route(message)) or _runtime_push_handler
-        )
-    if handler is None:
-        return False
-    result = handler(message)
-    if inspect.isawaitable(result):
-        result = await result
-    return result if isinstance(result, bool) else True
+        scoped = _request_push_handlers.get(_push_route(message))
+        host = _runtime_push_handler
+    handlers: list[RuntimePushHandler] = []
+    if scoped is not None:
+        handlers.append(scoped)
+    if host is not None and host is not scoped:
+        handlers.append(host)
+    for handler in handlers:
+        result = handler(message)
+        if inspect.isawaitable(result):
+            result = await result
+        if result is None:
+            return True
+        if isinstance(result, bool):
+            if result:
+                return True
+            continue
+        return True
+    return False
 
 
 class RuntimeHostPushTransport:

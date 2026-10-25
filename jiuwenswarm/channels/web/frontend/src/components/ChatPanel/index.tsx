@@ -1149,8 +1149,14 @@ export const ChatPanel = React.memo(function ChatPanel({
   const stickToBottomUntilStableRef = useRef(false);
   const [isSending, setIsSending] = React.useState(false);
   const isDesktopAttachmentDropEnabled = useDesktopLocalFilePickerReady();
+  const hasPendingQuestion = useChatStore(
+    (s) => Boolean(s.runtimes[activeSessionId ?? '']?.pendingQuestions[0]),
+  );
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
-  const hasConversation = Boolean(isHistoryRestoring || historyPager || hasTimelineContent);
+  // 还在等你点选时，不能退回首页欢迎语。提问卡片要留在普通聊天页里。
+  const hasConversation = Boolean(
+    isHistoryRestoring || historyPager || hasTimelineContent || hasPendingQuestion,
+  );
   const isGroupCreateWelcome = welcomeVariant === 'group-create';
   const historyLoadedBatchSeq = historyPager?.loadedBatchSeq ?? 0;
   const historyPublishedBatchSeq = historyPager?.publishedBatchSeq ?? 0;

@@ -330,12 +330,12 @@ async def resolve_agent_cron_project_binding(
     user_id: str | None,
     channel_id: str,
     session_id: str | None,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
-    """Resolve a cron's project in the routed AgentServer user directory.
+    """让 Agent 在调用者自己的工作区里核对定时任务要挂的项目。
 
-    The Gateway remains the cron job-store owner.  It only persists the
-    concrete project binding returned by the target AgentServer and never
-    probes its own deployment-side project store for AgentOS requests.
+    网关只保存 Agent 返回的项目编号和工作模式，不翻自己机器上的项目名单。
+    ``metadata`` 要带上团队、机器人、用户，Agent 才打开对应的目录。
     """
     return await fetch_agent_unary(
         agent_client=agent_client,
@@ -345,6 +345,7 @@ async def resolve_agent_cron_project_binding(
         user_id=user_id,
         channel_id=channel_id,
         label="cron.project_binding",
+        metadata=metadata,
     )
 
 

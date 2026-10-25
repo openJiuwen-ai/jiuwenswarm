@@ -16,6 +16,7 @@ from jiuwenswarm.common.work_mode import (
 from jiuwenswarm.runtime.cron.models import (
     CRON_JOB_DEFAULT_MODE,
     CronJob,
+    normalize_tenant_id,
     normalize_cron_job_mcp,
     normalize_cron_job_mode,
     normalize_cron_job_timeout_seconds,
@@ -30,6 +31,10 @@ _PROACTIVE_TICK_MODE = "proactive.tick"
 _PROACTIVE_UPDATE_ALLOWED_KEYS: frozenset[str] = frozenset(
     {"cron_expr", "timezone", "expired", "updated_at"}
 )
+# 创建时写定的身份。修改补丁里如果再带这些字段，直接丢掉，不能改掉。
+_STICKY_IDENTITY_FIELDS = frozenset(
+    {"group_id", "bot_id", "user_id", "job_id", "created_at"}
+)
 
 
 class _ProactiveJobProtected(RuntimeError):
@@ -38,6 +43,14 @@ class _ProactiveJobProtected(RuntimeError):
     所有删除路径（web handler / TUI /cron / 自然语言 cron 工具）共用 store 层，
     在此抛出可统一拦截，避免 config 开关与 cron store 不一致。
     """
+
+
+def strip_sticky_identity_fields(patch: dict[str, Any]) -> dict[str, Any]:
+    """从修改补丁里去掉创建时就定死的身份字段。"""
+    cleaned = dict(patch or {})
+    for key in _STICKY_IDENTITY_FIELDS:
+        cleaned.pop(key, None)
+    return cleaned
 
 
 def sort_cron_jobs(jobs: list[CronJob]) -> list[CronJob]:
@@ -169,6 +182,8 @@ def build_new_cron_job(
     app_id: str = "",
     work_mode: str = DEFAULT_WEB_WORK_MODE,
     user_id: str = "",
+    group_id: str = "",
+    bot_id: str = "",
     credential_ref: str = "",
 ) -> CronJob:
     """Construct and validate a ``CronJob`` without persisting it."""
@@ -226,7 +241,9 @@ def build_new_cron_job(
         mcp=normalize_cron_job_mcp(mcp),
         app_id=str(app_id or "").strip(),
         work_mode=normalize_work_mode(work_mode, default=DEFAULT_WEB_WORK_MODE),
-        user_id=str(user_id or "").strip(),
+        user_id=normalize_tenant_id(user_id),
+        group_id=normalize_tenant_id(group_id),
+        bot_id=normalize_tenant_id(bot_id),
         credential_ref=str(credential_ref or "").strip(),
     )
     CronJob.from_dict(job.to_dict())
@@ -261,6 +278,7 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
     if "_expected_legacy_model_name" in patch:
         if existing.model_selection is not None or existing.model_name != patch["_expected_legacy_model_name"]:
             return existing
+    patch = strip_sticky_identity_fields(patch)
     patch = filter_proactive_update_patch(existing, dict(patch or {}))
     updated = existing
     if "name" in patch:

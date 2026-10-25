@@ -6,7 +6,9 @@ from functools import wraps
 
 
 from datetime import datetime, timedelta
-from typing import Any, ClassVar
+from typing import Any, ClassVar, List
+
+from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 from zoneinfo import ZoneInfo
 
 
@@ -15,7 +17,12 @@ from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_WORK,
     EXECUTION_WORK_MODES,
 )
-from jiuwenswarm.gateway.cron.cron_expr import normalize_cron_expr
+from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.gateway.cron.factory import enterprise_cron_enabled
+from jiuwenswarm.runtime.cron.cron_expr import (
+    clamp_wake_offset_for_delay_seconds,
+    normalize_cron_expr,
+)
 from jiuwenswarm.gateway.cron.models import (
     CRON_JOB_DESCRIPTION_MAX_LENGTH,
     CRON_JOB_NAME_MAX_LENGTH,
@@ -26,14 +33,16 @@ from jiuwenswarm.gateway.cron.models import (
     is_valid_target_channel_id,
     normalize_cron_job_mcp,
     normalize_cron_job_mode,
+    normalize_tenant_id,
     normalize_target_channel_id,
     resolve_cron_model,
-    validate_cron_model,
 )
 from jiuwenswarm.gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
+from jiuwenswarm.runtime.cron.cron_job_mutations import strip_sticky_identity_fields
 
+logger = logging.getLogger(__name__)
 
 # 列表/调度等批量路径查询"项目准入"闸门时的最大并发数。
 _GATE_QUERY_CONCURRENCY = 8
@@ -57,6 +66,15 @@ def _login_credential_ref_from_session(auth_session: str) -> str:
             "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
         ) from exc
     return credential_ref_for_user(session.user_id)
+
+
+def _required_enterprise_tenant_id(raw: Any) -> str:
+    """企业版创建时三个身份必须都有内容，空白不补成 default。"""
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text:
+            return text
+    raise ValueError("enterprise cron requires group_id, bot_id and user_id")
 
 
 def _serialize_mutation(method):
@@ -87,9 +105,17 @@ class CronController:
         # 避免任务/项目很多时一次性打出上百个请求。
         self._gate_concurrency = asyncio.Semaphore(_GATE_QUERY_CONCURRENCY)
 
-    async def _gate_allowed(self, project_id: str | None, user_id: str | None) -> bool:
+    async def _gate_allowed(
+        self,
+        project_id: str | None,
+        user_id: str | None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+    ) -> bool:
         async with self._gate_concurrency:
-            return await self._scheduler.project_execution_allowed(project_id, user_id)
+            return await self._scheduler.project_execution_allowed(
+                project_id, user_id, group_id, bot_id
+            )
 
     @property
     def store(self) -> CronJobStore:
@@ -158,6 +184,44 @@ class CronController:
         base = datetime.now(tz=tz)
         _ = _cron_next_push_dt(cron_expr, base)
 
+    @staticmethod
+    def _clamp_wake_offset_for_upcoming_run(
+        wake_offset_seconds: Any,
+        *,
+        cron_expr: str,
+        timezone: str,
+    ) -> int:
+        """企业版创建：提前量不能超过离下次触发还剩的秒数。"""
+        try:
+            tz = ZoneInfo(timezone)
+            now = datetime.now(tz=tz)
+            push_dt = _cron_next_push_dt(cron_expr, now)
+            delay = float(push_dt.timestamp() - now.timestamp())
+            clamped = clamp_wake_offset_for_delay_seconds(wake_offset_seconds, delay)
+            if wake_offset_seconds is not None:
+                try:
+                    before: Any = int(wake_offset_seconds)
+                except (TypeError, ValueError):
+                    before = wake_offset_seconds
+            else:
+                before = None
+            if before != clamped:
+                logger.info(
+                    "[Cron] clamp wake_offset for upcoming run delay≈%.1fs: %s -> %s",
+                    delay,
+                    before,
+                    clamped,
+                )
+            return clamped
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[Cron] skip wake_offset clamp: %s", exc)
+            if wake_offset_seconds is None:
+                return 0
+            try:
+                return max(0, int(wake_offset_seconds))
+            except (TypeError, ValueError):
+                return 0
+
     _DESCRIPTION_TIME_KEYWORDS = (
         "每天",
         "每周",
@@ -212,41 +276,104 @@ class CronController:
             return raw_s
         return raw_s
 
-    async def list_jobs(self, user_id: str | None = None) -> list[dict[str, Any]]:
-        """List jobs, optionally scoped to one owner.
+    @staticmethod
+    def _matches_list_filter(
+        job: Any,
+        *,
+        project_id: str,
+        user_id: str,
+        group_id: str,
+        bot_id: str,
+    ) -> bool:
+        """用户、群、机器人都要比。项目编号可以不比。
 
-        ``user_id`` is applied before admission is queried.  Admission is a
-        cross-process RPC routed by the job owner's ``user_id``, so querying it
-        for other owners both delays this caller and may cold-start (or abort
-        the cold start of) another user's sandbox.  ``None``/empty keeps the
-        legacy all-owner behavior for callers without an identity.
+        用户、群、机器人空着等于 ``default``。``project_id is None`` 表示不按项目筛，
+        定时任务总表和侧边栏要看到每个项目下的任务。空字符串才是默认项目，
+        不收成 ``default``。
         """
-        jobs = await self._store.list_jobs()
-        owner = str(user_id or "").strip()
-        if owner:
-            # 先按属主过滤再打闸门:闸门按任务属主路由到其沙箱,过滤前全量
-            # 查询会让本请求替其他用户承担冷启动和 10s 超时。
-            jobs = [
-                job
-                for job in jobs
-                if str(getattr(job, "user_id", "") or "").strip() == owner
-            ]
-        # project_execution_allowed 是一次跨进程 RPC。同项目多任务共享同一
-        # (project_id, user_id) 判定:去重后并发查询,避免把一次列表请求
-        # 放大成逐任务串行 N 次往返(每个 10s 超时)。
-        # 同项目同属主共享一次判定;用有序列表而非集合,避免依赖集合迭代顺序
-        # 与 gather 结果逐一对应。
-        keys = list(dict.fromkeys((job.project_id, job.user_id) for job in jobs))
+        if project_id is not None:
+            current_project = str(getattr(job, "project_id", "") or "")
+            if current_project != str(project_id or ""):
+                return False
+        return CronController._matches_tenant(
+            job, user_id=user_id, group_id=group_id, bot_id=bot_id
+        )
+
+    @staticmethod
+    def _matches_tenant(job: Any, *, user_id: str, group_id: str, bot_id: str) -> bool:
+        """用户、群、机器人都要对上。空着等于 ``default``。"""
+        if normalize_tenant_id(getattr(job, "user_id", "")) != normalize_tenant_id(user_id):
+            return False
+        if normalize_tenant_id(getattr(job, "group_id", "")) != normalize_tenant_id(group_id):
+            return False
+        if normalize_tenant_id(getattr(job, "bot_id", "")) != normalize_tenant_id(bot_id):
+            return False
+        return True
+
+    @staticmethod
+    def _owns_job(job: Any, *, user_id: str, group_id: str, bot_id: str) -> bool:
+        """改、删、预览前核对三个身份。
+
+        个人版没填的收成 ``default`` 再比。企业版缺一个就当不是这条任务，不补 ``default``。
+        """
+        if is_enterprise():
+            try:
+                wanted_group = _required_enterprise_tenant_id(group_id)
+                wanted_bot = _required_enterprise_tenant_id(bot_id)
+                wanted_user = _required_enterprise_tenant_id(user_id)
+            except ValueError:
+                return False
+            if str(getattr(job, "group_id", "") or "").strip() != wanted_group:
+                return False
+            if str(getattr(job, "bot_id", "") or "").strip() != wanted_bot:
+                return False
+            if str(getattr(job, "user_id", "") or "").strip() != wanted_user:
+                return False
+            return True
+        return CronController._matches_tenant(
+            job, user_id=user_id, group_id=group_id, bot_id=bot_id
+        )
+
+    async def list_jobs(
+        self,
+        *,
+        project_id: str | None = None,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """按用户、群、机器人筛选。项目编号可以再收窄。
+
+        用户、群、机器人不传就是 ``default``。``project_id`` 不传表示这个人的全部项目。
+        传空字符串才只要默认项目。筛完后再问项目准入：项目已被隐藏或暂时不能执行的任务不出现在列表里。
+        同一个项目、同一个用户只问一次。
+        """
+        jobs = [
+            job
+            for job in await self._store.list_jobs()
+            if self._matches_list_filter(
+                job,
+                project_id=project_id,
+                user_id=user_id,
+                group_id=group_id,
+                bot_id=bot_id,
+            )
+        ]
+        # project_execution_allowed 是一次跨进程询问。同项目同用户共享一次判定，
+        # 去重后并发查询，避免一次列表变成逐任务串行往返。
+        keys = list(dict.fromkeys(
+            (job.project_id, job.user_id, job.group_id, job.bot_id) for job in jobs
+        ))
         if not keys:
             return []
         verdicts = await asyncio.gather(
-            *(self._gate_allowed(pid, uid) for pid, uid in keys)
+            *(self._gate_allowed(pid, uid, group_id, bot_id) for pid, uid, group_id, bot_id in keys)
         )
         allowed = dict(zip(keys, verdicts))
         return [
             job.to_dict()
             for job in jobs
-            if allowed[(job.project_id, job.user_id)]
+            if allowed[(job.project_id, job.user_id, job.group_id, job.bot_id)]
         ]
 
     @_serialize_mutation
@@ -297,9 +424,33 @@ class CronController:
         finally:
             self._scheduler.reopen_project_admission(project_id)
 
-    async def get_job(self, job_id: str) -> dict[str, Any] | None:
+    async def get_job(
+        self,
+        job_id: str,
+        *,
+        project_id: str | None = "",
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> dict[str, Any] | None:
+        """按编号取出一条任务，再用和列表相同的条件核对。
+
+        用户、群、机器人不传就是 ``default``。项目编号不传（这个函数的默认值）或传空字符串，
+        都表示只要默认项目。传 ``None`` 表示不按项目筛，网页上的立即执行、编辑、删除走这条。
+        对不上就当没有这条任务。这里不查项目现在能不能跑。
+        """
         job = await self._store.get_job(job_id)
-        return job.to_dict() if job else None
+        if job is None:
+            return None
+        if not self._matches_list_filter(
+            job,
+            project_id=project_id,
+            user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
+        ):
+            return None
+        return job.to_dict()
 
     @staticmethod
     def job_metadata() -> dict[str, Any]:
@@ -317,6 +468,7 @@ class CronController:
         # 登录会话 id：web handler 从创建连接上注入的服务端专有键（客户端传的
         # 会被无条件覆盖），仅用于登录免费模型的凭据绑定捕获，不落任务数据。
         auth_session = str(params.pop("_auth_session", "") or "").strip()
+        enterprise = is_enterprise()
         name = str(params.get("name") or "").strip()
         cron_expr = normalize_cron_expr(str(params.get("cron_expr") or "").strip())
         timezone = (
@@ -341,35 +493,63 @@ class CronController:
             raise ValueError(
                 "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动创建"
             )
-        model_name, model_source = resolve_cron_model(
-            params.get("model_name"),
-            zen_entries=await self._zen_entries(),
-        )
-        model_selection = params.get("model_selection")
-        if model_selection is not None:
-            from jiuwenswarm.common.model_selection import ModelSelection
-            from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
-            selection = ModelSelection.model_validate(model_selection)
-            ModelSelectionResolver().resolve(selection)
-            model_selection = selection.model_dump()
-        # 登录免费模型：把创建连接上的华为账号绑定到任务（凭据句柄）。路由
-        # user_id 与登录账号是两套独立体系，不能互相推导；没有可用登录会话就
-        # 明确拒绝（400），不留一个到点必失败的任务。自配模型（即使与登录模型
-        # 同名）不绑定，执行侧凭据注入只认绑定，不会误切到登录模型计费。
-        credential_ref = (
-            _login_credential_ref_from_session(auth_session)
-            if model_source == CRON_MODEL_SOURCE_LOGIN
-            else ""
-        )
-        # mcp：会话级 MCP 选择，随 job 落库；调度执行时注入 chat.send 的
-        # ``mcp`` 字段走 AgentServer 的 reconcile_session_mcp。只做类型
-        # 规范化（strip/去空/去重），不校验存在性（断连后 job 应降级运行）。
-        mcp = normalize_cron_job_mcp(params.get("mcp"))
+        if enterprise:
+            from jiuwenswarm.gateway.cron.enterprise_model import (
+                resolve_enterprise_cron_model,
+            )
+
+            group_id = _required_enterprise_tenant_id(params.get("group_id"))
+            bot_id = _required_enterprise_tenant_id(params.get("bot_id"))
+            user_id = _required_enterprise_tenant_id(params.get("user_id"))
+            # 企业版核对当前身份在企业库里的对话模型，不读本机 config 占位名。
+            model_name = await resolve_enterprise_cron_model(
+                params.get("model_name"),
+                group_id=group_id,
+                bot_id=bot_id,
+                user_id=user_id,
+            )
+            model_selection = None
+            mcp = None
+            credential_ref = ""
+        else:
+            group_id = normalize_tenant_id(params.get("group_id"))
+            bot_id = normalize_tenant_id(params.get("bot_id"))
+            user_id = normalize_tenant_id(params.get("user_id"))
+            model_name, model_source = resolve_cron_model(
+                params.get("model_name"),
+                zen_entries=await self._zen_entries(),
+            )
+            model_selection = params.get("model_selection")
+            if model_selection is not None:
+                from jiuwenswarm.common.model_selection import ModelSelection
+                from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
+                selection = ModelSelection.model_validate(model_selection)
+                ModelSelectionResolver().resolve(selection)
+                model_selection = selection.model_dump()
+            # 登录免费模型：把创建连接上的华为账号绑定到任务（凭据句柄）。路由
+            # user_id 与登录账号是两套独立体系，不能互相推导；没有可用登录会话就
+            # 明确拒绝（400），不留一个到点必失败的任务。自配模型（即使与登录模型
+            # 同名）不绑定，执行侧凭据注入只认绑定，不会误切到登录模型计费。
+            credential_ref = (
+                _login_credential_ref_from_session(auth_session)
+                if model_source == CRON_MODEL_SOURCE_LOGIN
+                else ""
+            )
+            # mcp：会话级 MCP 选择，随 job 落库；调度执行时注入 chat.send 的
+            # ``mcp`` 字段走 AgentServer 的 reconcile_session_mcp。只做类型
+            # 规范化（strip/去空/去重），不校验存在性（断连后 job 应降级运行）。
+            mcp = normalize_cron_job_mcp(params.get("mcp"))
 
         targets = self._normalize_targets(raw_targets)
 
         self._validate_schedule(cron_expr=cron_expr, timezone=timezone)
         description = self._normalize_description(description, name)
+        if enterprise:
+            wake_offset_seconds = self._clamp_wake_offset_for_upcoming_run(
+                wake_offset_seconds,
+                cron_expr=cron_expr,
+                timezone=timezone,
+            )
 
         routing_sid = self._routing_session_id(targets, params.get("session_id"))
         chat_type = params.get("chat_type")
@@ -417,22 +597,20 @@ class CronController:
         if work_mode not in EXECUTION_WORK_MODES:
             raise ValueError(f"cron is not supported for work_mode: {work_mode!r}")
         app_id = str(params.get("app_id") or "").strip()
-        # user_id：web 端创建定时任务时由 handler 注入 params（见 _cron_job_create），
-        # 执行时透传给 faas 的 X-Session-Context。agent 内部创建的 cron 无 user_id 即存空串。
-        user_id = str(params.get("user_id") or "").strip()
         if not await self._scheduler.project_execution_allowed(
-            resolved_project_id, user_id
+            resolved_project_id, user_id, group_id, bot_id
         ):
             raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
+        stored_wake_offset = (
+            int(wake_offset_seconds) if wake_offset_seconds is not None else None
+        )
         job = await self._store.create_job(
             job_id=str(params.get("id") or "").strip() or None,
             name=name,
             cron_expr=cron_expr,
             timezone=timezone,
             enabled=enabled,
-            wake_offset_seconds=int(wake_offset_seconds)
-            if wake_offset_seconds is not None
-            else None,
+            wake_offset_seconds=stored_wake_offset,
             description=description,
             targets=targets,
             session_id=routing_sid,
@@ -447,19 +625,39 @@ class CronController:
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
             credential_ref=credential_ref,
         )
         await self._scheduler.reload()
         return job.to_dict()
 
     @_serialize_mutation
-    async def update_job(self, job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    async def update_job(
+        self,
+        job_id: str,
+        patch: dict[str, Any],
+        *,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> dict[str, Any]:
         patch = dict(patch or {})
         allow_unresolved_project_id = bool(
             patch.pop("_agentos_project_binding_verified", False)
         )
         # 登录会话 id（服务端专有键，见 create_job）——改选登录模型时重绑凭据。
         auth_session = str(patch.pop("_auth_session", "") or "").strip()
+        # 身份只从函数参数核对，补丁改不了创建时定死的身份。
+        patch = strip_sticky_identity_fields(patch)
+        patch.pop("service_id", None)
+        patch.pop("agent_id", None)
+        existing = await self._store.get_job(job_id)
+        if existing is None or not self._owns_job(
+            existing, user_id=user_id, group_id=group_id, bot_id=bot_id
+        ):
+            raise KeyError("job not found")
+        enterprise = is_enterprise()
         if "mode" in patch:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
             # 同 create_job：内部模式只随 proactive_cron_sync 注册，不允许把
@@ -468,7 +666,22 @@ class CronController:
                 raise ValueError(
                     "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动修改"
                 )
-        if "model_name" in patch:
+        if enterprise:
+            from jiuwenswarm.gateway.cron.enterprise_model import (
+                resolve_enterprise_cron_model,
+            )
+
+            patch.pop("credential_ref", None)
+            patch.pop("model_selection", None)
+            patch.pop("mcp", None)
+            if "model_name" in patch:
+                patch["model_name"] = await resolve_enterprise_cron_model(
+                    patch.get("model_name"),
+                    group_id=str(group_id or existing.group_id or ""),
+                    bot_id=str(bot_id or existing.bot_id or ""),
+                    user_id=str(user_id or existing.user_id or ""),
+                )
+        elif "model_name" in patch:
             canonical, model_source = resolve_cron_model(
                 patch.get("model_name"),
                 zen_entries=await self._zen_entries(),
@@ -483,20 +696,32 @@ class CronController:
                 )
             else:
                 patch["credential_ref"] = ""
-        if "mcp" in patch:
+        if not enterprise and "mcp" in patch:
             # 显式传 null/[] 归 None（清除选择，执行时回到全局默认集）。
             patch["mcp"] = normalize_cron_job_mcp(patch.get("mcp"))
         if "targets" in patch:
             patch["targets"] = self._normalize_targets(patch["targets"])
-        existing = await self._store.get_job(job_id)
-        if existing is None:
-            raise KeyError("job not found")
         if "cron_expr" in patch:
             patch["cron_expr"] = normalize_cron_expr(str(patch["cron_expr"]).strip())
         if "cron_expr" in patch or "timezone" in patch:
             cron_expr = str(patch.get("cron_expr") or existing.cron_expr).strip()
             timezone = str(patch.get("timezone") or existing.timezone).strip()
             self._validate_schedule(cron_expr=cron_expr, timezone=timezone)
+        if enterprise and any(
+            key in patch for key in ("wake_offset_seconds", "cron_expr", "timezone")
+        ):
+            upcoming_expr = str(patch.get("cron_expr") or existing.cron_expr).strip()
+            upcoming_tz = str(patch.get("timezone") or existing.timezone).strip()
+            current_offset = (
+                patch["wake_offset_seconds"]
+                if "wake_offset_seconds" in patch
+                else getattr(existing, "wake_offset_seconds", 0)
+            )
+            patch["wake_offset_seconds"] = self._clamp_wake_offset_for_upcoming_run(
+                current_offset,
+                cron_expr=upcoming_expr,
+                timezone=upcoming_tz or "Asia/Shanghai",
+            )
         if "description" in patch:
             name = str(patch.get("name") or existing.name or "").strip()
             patch["description"] = self._normalize_description(
@@ -542,7 +767,10 @@ class CronController:
             key in patch for key in ("project_id", "project_dir")
         ):
             if not await self._scheduler.project_execution_allowed(
-                patch.get("project_id", existing.project_id), existing.user_id
+                patch.get("project_id", existing.project_id),
+                user_id or getattr(existing, "user_id", "") or "",
+                group_id or getattr(existing, "group_id", "") or "",
+                bot_id or getattr(existing, "bot_id", "") or "",
             ):
                 raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
         job = await self._store.update_job(job_id, patch)
@@ -550,40 +778,71 @@ class CronController:
         return job.to_dict()
 
     async def delete_job(
-        self, job_id: str, *, force: bool = False, delete_sessions: bool = True
+        self,
+        job_id: str,
+        *,
+        force: bool = False,
+        delete_sessions: bool = True,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+        skip_ownership: bool = False,
     ) -> bool:
         existing = await self._store.get_job(job_id)
         if existing is None:
             return False
-        if not force and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
-            return await self._store.delete_job(job_id)
-        if delete_sessions:
-            if existing.enabled:
-                await self._store.update_job(job_id, {"enabled": False})
-                await self._scheduler.reload()
-            await self._scheduler.stop_job_runs(job_id)
-            await self._scheduler.delete_cron_sessions(job_id, existing.user_id)
+        if not skip_ownership and not self._owns_job(
+            existing, user_id=user_id, group_id=group_id, bot_id=bot_id
+        ):
+            return False
+        if not is_enterprise():
+            if (
+                not force
+                and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick"
+            ):
+                return await self._store.delete_job(job_id)
+            if delete_sessions:
+                if existing.enabled:
+                    await self._store.update_job(job_id, {"enabled": False})
+                    await self._scheduler.reload()
+                await self._scheduler.stop_job_runs(job_id)
+                await self._scheduler.delete_cron_sessions(job_id, existing.user_id)
         deleted = await self._store.delete_job(job_id, force=force)
         if deleted:
             await self._scheduler.reload()
         return deleted
 
-    @_serialize_mutation
-    async def toggle_job(self, job_id: str, enabled: bool) -> dict[str, Any]:
-        existing = await self._store.get_job(job_id)
-        if existing is None:
-            raise KeyError("job not found")
-        if enabled and not await self._scheduler.project_execution_allowed(
-            existing.project_id, existing.user_id
-        ):
-            raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
-        job = await self._store.update_job(job_id, {"enabled": bool(enabled)})
-        await self._scheduler.reload()
-        return job.to_dict()
+    async def toggle_job(
+        self,
+        job_id: str,
+        enabled: bool,
+        *,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> dict[str, Any]:
+        """开关走修改。打开时的项目闸门和三个身份核对都在 ``update_job`` 里。"""
+        return await self.update_job(
+            job_id,
+            {"enabled": bool(enabled)},
+            user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
+        )
 
-    async def preview_job(self, job_id: str, count: int = 5) -> list[dict[str, Any]]:
+    async def preview_job(
+        self,
+        job_id: str,
+        count: int = 5,
+        *,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> list[dict[str, Any]]:
         job = await self._store.get_job(job_id)
-        if job is None:
+        if job is None or not self._owns_job(
+            job, user_id=user_id, group_id=group_id, bot_id=bot_id
+        ):
             raise KeyError("job not found")
         count = max(1, min(int(count), 50))
 
@@ -607,10 +866,532 @@ class CronController:
             out.append({"wake_at": wake_dt.isoformat(), "push_at": push_dt.isoformat()})
         return out
 
-    async def run_now(self, job_id: str) -> str:
-        run_id = await self._scheduler.trigger_run_now(job_id)
-        return run_id
+    async def run_now(
+        self,
+        job_id: str,
+        *,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> str:
+        """立刻跑一次。个人版和企业版都先核对用户、群、机器人。
 
-    async def run_now_info(self, job_id: str) -> dict[str, str]:
+        没传的按 ``default``。任务不存在，或身份对不上，都当作找不到。
+        通过之后才交给调度器。这里不查项目编号。
+        """
+        job = await self._store.get_job(job_id)
+        if job is None or not self._matches_tenant(
+            job, user_id=user_id, group_id=group_id, bot_id=bot_id
+        ):
+            raise KeyError("job not found")
+        return await self._scheduler.trigger_run_now(job_id)
+
+    async def run_now_info(self, job_id: str) -> dict[str, Any]:
         return await self._scheduler.trigger_run_now_info(job_id)
 
+    def mark_permission_resume_succeeded(self, session_id: str) -> None:
+        """人在定时任务会话里点完允许、这一轮也写完了：把「还在等」的记号抹掉。"""
+        self._scheduler.mark_permission_resume_succeeded(session_id)
+
+    async def _create_job_tool(
+        self,
+        name: str,
+        cron_expr: str,
+        timezone: str,
+        description: str,
+        targets: str = "",
+        enabled: bool = True,
+        wake_offset_seconds: int | None = None,
+        mode: str | None = None,
+        timeout_seconds: int | None = None,
+        model_name: str | None = None,
+        mcp: list[str] | None = None,
+        project_dir: str | None = None,
+        project_id: str | None = None,
+        work_mode: str | None = None,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "name": name,
+            "cron_expr": cron_expr,
+            "timezone": timezone,
+            "targets": targets,
+            "enabled": enabled,
+            "description": description,
+            "user_id": user_id,
+            "group_id": group_id,
+            "bot_id": bot_id,
+        }
+        if wake_offset_seconds is not None:
+            params["wake_offset_seconds"] = wake_offset_seconds
+        if mode is not None and str(mode).strip():
+            params["mode"] = mode
+        if timeout_seconds is not None:
+            params["timeout_seconds"] = timeout_seconds
+        # 模型只在 create_job 里校验一次。企业版不把 MCP 写进任务。
+        if model_name is not None and str(model_name).strip():
+            params["model_name"] = model_name
+        if mcp is not None and not is_enterprise():
+            params["mcp"] = mcp
+        if project_dir is not None:
+            params["project_dir"] = str(project_dir).strip()
+        if project_id is not None and str(project_id).strip():
+            params["project_id"] = str(project_id).strip()
+        if work_mode is not None and str(work_mode).strip():
+            params["work_mode"] = str(work_mode).strip()
+        return await self.create_job(params)
+
+    async def _update_job_tool(
+        self,
+        job_id: str,
+        patch: dict[str, Any],
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> dict[str, Any]:
+        return await self.update_job(
+            job_id,
+            patch,
+            user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
+        )
+
+    async def _preview_job_tool(
+        self,
+        job_id: str,
+        count: int = 5,
+        user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> list[dict[str, Any]]:
+        return await self.preview_job(
+            job_id,
+            count,
+            user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
+        )
+
+    def get_tools(self) -> List[Tool]:
+        """Return cron job tools for registration in the openJiuwen Runner.
+        Tools to be returned:
+            list_jobs
+            get_job
+            create_job
+            update_job
+            delete_job
+            toggle_job
+            preview_job
+
+        Usage:
+            toolkit = CronController(xxxxxx)
+            tools = toolkit.get_tools()
+            Runner.resource_mgr.add_tool(tools)
+            for t in tools:
+                agent.ability_manager.add(t.card)
+
+        Returns:
+            List of Tool instances (LocalFunction) ready for Runner/agent registration.
+        """
+
+        def make_tool(
+            name: str,
+            description: str,
+            input_params: dict,
+            func,
+        ) -> Tool:
+            card = ToolCard(
+                name=name,
+                description=description,
+                input_params=input_params,
+            )
+            return LocalFunction(card=card, func=func)
+
+        return [
+            make_tool(
+                name="cron_list_jobs",
+                description=(
+                    "List cron jobs for one project and one tenant. "
+                    "Omit user_id, group_id, or bot_id to use default. "
+                    "Omit project_id to use the default project (empty project id)."
+                ),
+                input_params={
+                    "type": "object",
+                    "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "Project id. Empty means the default project.",
+                        },
+                        "user_id": {
+                            "type": "string",
+                            "description": "Owner user id. Empty means default.",
+                        },
+                        "group_id": {
+                            "type": "string",
+                            "description": "Group id. Empty means default.",
+                        },
+                        "bot_id": {
+                            "type": "string",
+                            "description": "Bot id. Empty means default.",
+                        },
+                    },
+                },
+                func=self.list_jobs,
+            ),
+            make_tool(
+                name="cron_get_job",
+                description=(
+                    "Get one cron job by id for one project and one tenant. "
+                    "Returns the job, or nothing when the id is unknown or the "
+                    "project and tenant do not match. "
+                    "Omit user_id, group_id, or bot_id to use default. "
+                    "Omit project_id to use the default project (empty project id)."
+                ),
+                input_params={
+                    "type": "object",
+                    "properties": {
+                        "job_id": {
+                            "type": "string",
+                            "description": "The job id to look up",
+                        },
+                        "project_id": {
+                            "type": "string",
+                            "description": "Project id. Empty means the default project.",
+                        },
+                        "user_id": {
+                            "type": "string",
+                            "description": "Owner user id. Empty means default.",
+                        },
+                        "group_id": {
+                            "type": "string",
+                            "description": "Group id. Empty means default.",
+                        },
+                        "bot_id": {
+                            "type": "string",
+                            "description": "Bot id. Empty means default.",
+                        },
+                    },
+                    "required": ["job_id"],
+                },
+                func=self.get_job,
+            ),
+            make_tool(
+                name="cron_create_job",
+                description=(
+                    "Create a scheduled cron job.\n"
+                    "cron_expr:\n"
+                    "- Recurring (5 fields): minute hour day month day-of-week.\n"
+                    "  Example: daily 9:00 = '0 9 * * *', every Monday 9:00 = '0 9 * * 1'.\n"
+                    '- Relative time (e.g. "in X minutes"): take now in the given timezone, '
+                    "compute run_at = now + X minutes, then encode run_at as 7-field cron "
+                    "with a fixed year (second minute hour day month day-of-week year). "
+                    "Example: run_at (Mar 19, 2026 10:07:00 local) -> '0 7 10 19 3 ? 2026'.\n"
+                    "- One-shot (runs only once): must use 7 fields with a fixed year: "
+                    "second minute hour day month day-of-week year. "
+                    "Example: 2026-03-28 17:00 (local) -> '0 0 17 28 3 ? 2026'.\n"
+                    "Warning: if you use a 5-field expression with fixed day/month "
+                    "but year semantics implicitly '*', it will repeat every year; "
+                    "for a real one-shot, use the 7-field form with a fixed year.\n"
+                    "description should contain task content only (no time/frequency). "
+                    "timezone defaults to Asia/Shanghai."
+                ),
+                input_params={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": f"Job name (max {CRON_JOB_NAME_MAX_LENGTH} characters).",
+                        },
+                        "cron_expr": {
+                            "type": "string",
+                            "description": (
+                                "Cron expression. "
+                                "Recurring jobs use 5 fields: minute hour dom month day-of-week. "
+                                "One-shot jobs must use 7 fields: second minute hour dom month "
+                                "day-of-week year (fixed year). "
+                                "For relative time, treat it as one-shot: compute run_at = now + X minutes, "
+                                "then encode it as a 7-field expression with a fixed year. "
+                                "Example: 2026-03-28 17:00 (local) -> '0 0 17 28 3 ? 2026'."
+                            ),
+                        },
+                        "timezone": {
+                            "type": "string",
+                            "description": "Time zone (IANA), e.g. Asia/Shanghai",
+                            "default": "Asia/Shanghai",
+                        },
+                        "targets": {
+                            "type": "string",
+                            "enum": [e.value for e in CronTargetChannel],
+                            "description": (
+                                "Delivery channel: tui, web, feishu, dingtalk, "
+                                "whatsapp, wecom, xiaoyi, wechat. "
+                                "If omitted, use the current request source channel."
+                            ),
+                        },
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Whether the job is enabled",
+                            "default": True,
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": (
+                                "Task payload text sent to the assistant at run time. "
+                                "Do not include time or frequency. "
+                                f"Max {CRON_JOB_DESCRIPTION_MAX_LENGTH} characters."
+                            ),
+                        },
+                        "wake_offset_seconds": {
+                            "type": "integer",
+                            "description": "Seconds to wake before push. Default 0",
+                            "default": 0,
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": cron_job_modes_for_tools(),
+                            "description": (
+                                "Agent runtime mode when the job runs. "
+                                "Default agent. Use team for multi-agent team execution."
+                            ),
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "description": (
+                                "Execution timeout in seconds (60-259200). "
+                                "Default 3600 (1 hour) for both normal and team modes."
+                            ),
+                        },
+                        "model_name": {
+                            "type": "string",
+                            "description": (
+                                "Model name or alias to use when the job runs. "
+                                "If omitted, uses the AgentServer default model."
+                            ),
+                        },
+                        "mcp": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Session-scoped MCP server names to enable when "
+                                "the job runs. Omit to inherit the creating "
+                                "session's MCP selection; pass [] for none."
+                            ),
+                        },
+                        "project_dir": {
+                            "type": "string",
+                            "description": (
+                                "Absolute path to the project directory this job belongs to. "
+                                "If omitted, uses the current session's project."
+                            ),
+                        },
+                        "project_id": {
+                            "type": "string",
+                            "description": (
+                                "Explicit project id (takes priority over project_dir). "
+                                "Omit to resolve from project_dir + work_mode."
+                            ),
+                        },
+                        "work_mode": {
+                            "type": "string",
+                            "enum": ["code", "work"],
+                            "description": (
+                                "Working mode of the target project (code/work). "
+                                "Defaults to current channel default (tui->code, web->work). "
+                                "Only used when project_id is not provided; ignored if project_id "
+                                "is provided (work_mode inherited from the project)."
+                            ),
+                        },
+                        "user_id": {
+                            "type": "string",
+                            "description": "Owner user id. Empty means default.",
+                        },
+                        "group_id": {
+                            "type": "string",
+                            "description": "Group id. Empty means default.",
+                        },
+                        "bot_id": {
+                            "type": "string",
+                            "description": "Bot id. Empty means default.",
+                        },
+                    },
+                    "required": ["name", "cron_expr", "timezone", "description"],
+                },
+                func=self._create_job_tool,
+            ),
+            make_tool(
+                name="cron_update_job",
+                description=(
+                    "Update an existing cron job. Pass job_id and a patch dict with fields to update "
+                    "(name, enabled, cron_expr, timezone, description, wake_offset_seconds, "
+                    "targets, mode, model_name, mcp, project_dir, project_id). "
+                    f"name max {CRON_JOB_NAME_MAX_LENGTH} characters, "
+                    f"description max {CRON_JOB_DESCRIPTION_MAX_LENGTH} characters."
+                ),
+                input_params={
+                    "type": "object",
+                    "properties": {
+                        "job_id": {"type": "string", "description": "Job id to update"},
+                        "patch": {
+                            "type": "object",
+                            "description": (
+                                "Fields to update (name, enabled, cron_expr, timezone, "
+                                "description, wake_offset_seconds, targets, mode, model_name, "
+                                "mcp, project_dir, project_id). work_mode is not accepted as an "
+                                "independent patch field; to change work_mode, patch project_id "
+                                "or project_dir + work_mode (work_mode only disambiguates the "
+                                "target project when resolving project_dir)."
+                            ),
+                            "properties": {
+                                "targets": {
+                                    "type": "string",
+                                    "enum": [e.value for e in CronTargetChannel],
+                                    "description": (
+                                        "推送频道：web/tui/feishu/dingtalk/whatsapp/wecom/xiaoyi/wechat"
+                                    ),
+                                },
+                                "mode": {
+                                    "type": "string",
+                                    "enum": cron_job_modes_for_tools(),
+                                    "description": "Agent runtime mode (agent, team, ...)",
+                                },
+                                "model_name": {
+                                    "type": "string",
+                                    "description": "Model to use when the job runs. \
+                                        Set to empty string to reset to default.",
+                                },
+                                "mcp": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "Session-scoped MCP server names to enable when the "
+                                        "job runs. Set to [] to clear (use default set only)."
+                                    ),
+                                },
+                                "project_dir": {
+                                    "type": "string",
+                                    "description": "Absolute path to the project directory. \
+                                        Set to empty string for default project.",
+                                },
+                                "project_id": {
+                                    "type": "string",
+                                    "description": (
+                                        "Directly patch the project_id (takes priority over "
+                                        "project_dir). work_mode is re-injected from the "
+                                        "project record."
+                                    ),
+                                },
+                                "work_mode": {
+                                    "type": "string",
+                                    "enum": ["code", "work"],
+                                    "description": (
+                                        "Disambiguates target project when patching "
+                                        "project_dir. Not a standalone patchable field."
+                                    ),
+                                },
+                            },
+                        },
+                        "user_id": {
+                            "type": "string",
+                            "description": "Owner user id. Empty means default.",
+                        },
+                        "group_id": {
+                            "type": "string",
+                            "description": "Group id. Empty means default.",
+                        },
+                        "bot_id": {
+                            "type": "string",
+                            "description": "Bot id. Empty means default.",
+                        },
+                    },
+                    "required": ["job_id", "patch"],
+                },
+                func=self._update_job_tool,
+            ),
+            make_tool(
+                name="cron_delete_job",
+                description="Delete a cron job by id. Returns True if deleted, False if not found.",
+                input_params={
+                    "type": "object",
+                    "properties": {
+                        "job_id": {"type": "string", "description": "Job id to delete"},
+                        "user_id": {
+                            "type": "string",
+                            "description": "Owner user id. Empty means default.",
+                        },
+                        "group_id": {
+                            "type": "string",
+                            "description": "Group id. Empty means default.",
+                        },
+                        "bot_id": {
+                            "type": "string",
+                            "description": "Bot id. Empty means default.",
+                        },
+                    },
+                    "required": ["job_id"],
+                },
+                func=self.delete_job,
+            ),
+            make_tool(
+                name="cron_toggle_job",
+                description="Enable or disable a cron job. Pass job_id and enabled (true/false).",
+                input_params={
+                    "type": "object",
+                    "properties": {
+                        "job_id": {"type": "string", "description": "Job id"},
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Whether to enable the job",
+                        },
+                        "user_id": {
+                            "type": "string",
+                            "description": "Owner user id. Empty means default.",
+                        },
+                        "group_id": {
+                            "type": "string",
+                            "description": "Group id. Empty means default.",
+                        },
+                        "bot_id": {
+                            "type": "string",
+                            "description": "Bot id. Empty means default.",
+                        },
+                    },
+                    "required": ["job_id", "enabled"],
+                },
+                func=self.toggle_job,
+            ),
+            make_tool(
+                name="cron_preview_job",
+                description=(
+                    "Preview next N scheduled run times for a job. "
+                    "Returns list of {wake_at, push_at} timestamps."
+                ),
+                input_params={
+                    "type": "object",
+                    "properties": {
+                        "job_id": {"type": "string", "description": "Job id"},
+                        "count": {
+                            "type": "integer",
+                            "description": "Number of runs to preview (1-50, default 5)",
+                            "default": 5,
+                        },
+                        "user_id": {
+                            "type": "string",
+                            "description": "Owner user id. Empty means default.",
+                        },
+                        "group_id": {
+                            "type": "string",
+                            "description": "Group id. Empty means default.",
+                        },
+                        "bot_id": {
+                            "type": "string",
+                            "description": "Bot id. Empty means default.",
+                        },
+                    },
+                    "required": ["job_id"],
+                },
+                func=self._preview_job_tool,
+            ),
+        ]

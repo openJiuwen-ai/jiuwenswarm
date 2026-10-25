@@ -39,6 +39,9 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("session.get_metadata", "GET", "/sessions/{session_id}"),
     ("session.rename", "PATCH", "/sessions/{session_id}"),
     ("session.delete", "DELETE", "/sessions/{session_id}"),
+    # 同一条 PATCH /sessions/{id} 已经给重命名。置顶单独挂动作地址，
+    # 避免两个方法抢同一个网址。
+    ("session.pin", "POST", "/sessions/{session_id}/actions/pin"),
     ("session.switch", "POST", "/sessions/{session_id}/actions/switch"),
     ("session.fork", "POST", "/sessions/{session_id}/actions/fork"),
     ("session.rewind", "POST", "/sessions/{session_id}/actions/rewind"),
@@ -270,12 +273,20 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("project.pinned_sessions", "GET", "/projects/pinned-sessions"),
     ("project.create", "POST", "/projects"),
     ("project.restore", "POST", "/projects/actions/restore"),
+    # 固定动作地址要排在 {project_id} 前面。核对项目不改名单，只读当前租户目录。
+    ("project.cron.resolve_binding", "POST", "/projects/actions/resolve-cron-binding"),
     ("project.info", "GET", "/projects/{project_id}"),
     ("project.get_sessions", "GET", "/projects/{project_id}/sessions"),
     ("project.get_cron_sessions", "GET", "/projects/{project_id}/cron-sessions"),
     ("project.rename", "PATCH", "/projects/{project_id}"),
     ("project.pin", "POST", "/projects/{project_id}/actions/pin"),
     ("project.remove", "DELETE", "/projects/{project_id}"),
+    # 定时任务创建前问「这个项目现在能不能跑」。长连接里已有同名处理，这里补 HTTP。
+    ("project.lifecycle", "POST", "/projects/{project_id}/lifecycle"),
+    # Gateway 把 cron 工具结果 / 立即执行 run_id / 任务快照回传 Agent（runtime HTTP）。
+    ("cron.command.ack", "POST", "/cron/command-ack"),
+    ("cron.run_now.ack", "POST", "/cron/run-now-ack"),
+    ("cron.jobs.sync", "POST", "/cron/jobs-sync"),
     # 语言配置在 AgentServer 的 ConfigAdapter。个人版 WebSocket 客户端仍由 Gateway 本地读写。
     ("locale.get_conf", "GET", "/locale"),
     ("locale.set_conf", "PUT", "/locale"),

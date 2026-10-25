@@ -1577,10 +1577,10 @@ class _DictOwnedCronController:
         }
         self.update_calls: list[tuple[str, dict]] = []
 
-    async def get_job(self, job_id):
+    async def get_job(self, job_id, **_kwargs):
         return dict(self.job) if job_id == self.job["id"] else None
 
-    async def update_job(self, job_id, patch):
+    async def update_job(self, job_id, patch, **_kwargs):
         self.update_calls.append((job_id, dict(patch)))
         return {"id": job_id, **self.job, **patch}
 
@@ -1645,10 +1645,10 @@ async def test_cron_job_update_accepts_matching_owner_with_object_job() -> None:
             self.job = SimpleNamespace(id="cron-obj-owner", user_id="user-owner")
             self.update_calls = 0
 
-        async def get_job(self, job_id):
+        async def get_job(self, job_id, **_kwargs):
             return self.job if job_id == self.job.id else None
 
-        async def update_job(self, job_id, patch):
+        async def update_job(self, job_id, patch, **_kwargs):
             self.update_calls += 1
             return {"id": job_id, **patch}
 

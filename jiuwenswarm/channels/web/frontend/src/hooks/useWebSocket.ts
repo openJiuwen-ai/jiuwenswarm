@@ -82,6 +82,10 @@ import { requestLogin } from '../stores/authStore';
 import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import { getWebTransport } from '../utils/env';
+import {
+  ensureCronUserSeedFirst,
+  resolveCronPlaceholderTimestampIso,
+} from '../features/cron/cronSeedMessage';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
   fetchTtsAudio,
@@ -3941,6 +3945,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             /正在执行中，结果稍后补发/.test(content) ||
             /^\[cron\].*正在执行中/.test(content);
 
+          // 占位比任务原话先到时，用「立即执行」时记下的原文把用户气泡排到最上。
+          if (isCronPlaceholderContent) {
+            const cronJobIdForSeed =
+              typeof cronMeta?.job_id === 'string' ? cronMeta.job_id.trim() : '';
+            const pendingSeed = cronJobIdForSeed
+              ? useCronStore.getState().pendingRunSeedByJobId[cronJobIdForSeed] || ''
+              : '';
+            if (pendingSeed) {
+              ensureCronUserSeedFirst(sessionId, pendingSeed);
+            }
+          }
+          // 聊天区按时间戳排序：占位时间必须晚于任务原话，否则原话会被排到下面。
+          const messageTimestampIso = isCronPlaceholderContent
+            ? resolveCronPlaceholderTimestampIso(sessionId, completedAtIso)
+            : completedAtIso;
+
           if (!isCronPlaceholderContent) {
             let placeholderId: string | null = null;
             if (cronRunId) {
@@ -4071,23 +4091,28 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             return;
           }
 
-          const rewriteId = findAssistantSegmentIdForFinal(
-            messages,
-            content,
-            preferredSegmentId || streamId
-          );
-          if (rewriteId) {
-            useChatStore.getState().updateMessage(sessionId, rewriteId, {
+          // 定时任务推送的终稿不要并进历史里较早的助手气泡：执行中途拉过半截
+          // 历史时，findAssistantSegmentIdForFinal 可能改到上面某条，页面底部仍
+          // 像「没出结果」，一刷新才按完整历史排对。
+          if (!cronMeta) {
+            const rewriteId = findAssistantSegmentIdForFinal(
+              messages,
               content,
-              isStreaming: false,
-              completedAt: completedAtIso,
-              ...agentIdentityPatch,
-              ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
-            });
-            if (!content.includes('MEDIA:')) {
-              handleTtsPlayback(sessionId, rewriteId, content);
+              preferredSegmentId || streamId
+            );
+            if (rewriteId) {
+              useChatStore.getState().updateMessage(sessionId, rewriteId, {
+                content,
+                isStreaming: false,
+                completedAt: completedAtIso,
+                ...agentIdentityPatch,
+                ...(isProactiveRecommendation && proactiveRecId ? { proactiveRecId } : {}),
+              });
+              if (!content.includes('MEDIA:')) {
+                handleTtsPlayback(sessionId, rewriteId, content);
+              }
+              return;
             }
-            return;
           }
           const last = messages[messages.length - 1];
           if (last?.role === 'assistant' && last.content === content) {
@@ -4103,7 +4128,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             id: messageId,
             role: 'assistant',
             content,
-            timestamp: completedAtIso,
+            timestamp: messageTimestampIso,
             completedAt: completedAtIso,
             ...agentIdentityPatch,
             isProactiveRecommendation,

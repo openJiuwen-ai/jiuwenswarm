@@ -28,6 +28,7 @@ from jiuwenswarm.server.handlers.bootstrap import (
     handle_session_fork,
 )
 from jiuwenswarm.server.handlers.chat import handle_chat_cancel
+from jiuwenswarm.server.handlers.cron_gateway import handle_cron_gateway_callback
 from jiuwenswarm.server.handlers.organization import (
     handle_a4p_request,
     handle_org_snapshot,
@@ -182,6 +183,10 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.MCP_REGISTER_CUSTOM: handle_mcp_register_custom,
     ReqMethod.MCP_DELETE_CUSTOM: handle_mcp_delete_custom,
     ReqMethod.MCP_SAVE_CREDENTIALS: handle_mcp_save_credentials,
+    # Gateway → Agent 的 cron 回执 / 快照：企业版 HTTP 专用网址与 WS 共用。
+    ReqMethod.CRON_COMMAND_ACK: handle_cron_gateway_callback,
+    ReqMethod.CRON_RUN_NOW_ACK: handle_cron_gateway_callback,
+    ReqMethod.CRON_JOBS_SYNC: handle_cron_gateway_callback,
     ReqMethod.SCHEDULE_CHECK_CONFIG: handle_schedule_request,
     ReqMethod.SCHEDULE_UPDATE_CONFIG: handle_schedule_request,
     ReqMethod.SCHEDULE_CREATE: handle_schedule_request,
@@ -242,6 +247,9 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.PROJECT_PIN: handle_gateway_adapter,
     ReqMethod.PROJECT_REMOVE: handle_gateway_adapter,
     ReqMethod.PROJECT_RESTORE: handle_gateway_adapter,
+    # 核对定时任务所属项目，以及项目现在能不能跑。都在 ProjectAdapter。
+    ReqMethod.PROJECT_CRON_RESOLVE_BINDING: handle_gateway_adapter,
+    ReqMethod.PROJECT_LIFECYCLE: handle_gateway_adapter,
     # 文件 HTTP 与 WebSocket 复用同一个 WorkspaceFileAdapter。
     ReqMethod.MEDIA_PERSIST: handle_gateway_adapter,
     ReqMethod.MEDIA_DISCARD: handle_gateway_adapter,
@@ -257,8 +265,9 @@ HANDLERS: dict[ReqMethod, Handler] = {
     # 语言配置在 AgentServer 的 ConfigAdapter。企业版 runtime 客户端会转发到这里。
     ReqMethod.LOCALE_GET_CONF: handle_gateway_adapter,
     ReqMethod.LOCALE_SET_CONF: handle_gateway_adapter,
-    # 会话元数据在 AgentServer 的 SessionAdapter。
+    # 会话元数据和置顶都在 AgentServer 的 SessionAdapter。
     ReqMethod.SESSION_GET_METADATA: handle_gateway_adapter,
+    ReqMethod.SESSION_PIN: handle_gateway_adapter,
     # 技能列表在 AgentServer 的 SkillManager。WebSocket 经 process_message；
     # 这里登记是为了让 HTTP 专用网址走同一条路径。
     ReqMethod.SKILLS_LIST: handle_skills_request,

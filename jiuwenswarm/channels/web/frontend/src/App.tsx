@@ -26,6 +26,8 @@ import {
 } from './features/rsi/featureConfig';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
+import { watchCronExecutionSession } from './features/cron/cronSessionLive';
+import { ensureCronUserSeedFirst } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
@@ -671,6 +673,9 @@ function AppContent({
     useSubagentStore.getState().hydrateRuntime(sessionId);
   }, [sessionId]);
 
+  // 企业版「立即执行」打开的是执行会话。结果不走长连接，改由这条监听写进页面。
+  useEffect(() => watchCronExecutionSession(sessionId), [sessionId]);
+
   const {
     setCurrentSession,
     setAvailableModels,
@@ -1105,17 +1110,22 @@ function AppContent({
       handleModelsRefresh();
     },
     onCronResultArrived: (cronSessionId: string, cronJobId: string) => {
-      // 仅当用户当前停留在该任务的"立即执行"页面时才自动跳转：
-      // - 多个任务同时返回结果时，不会互相跳转覆盖
-      // - 用户已手动切走时不打扰
-      // - 定时调度（非"立即执行"）不自动跳转
-      // lastRunSessionId[jobId] 是点击"立即执行"时存入的会话 ID，
-      // sessionIdRef.current 是当前会话，两者一致说明用户还在等这个任务的结果。
-      if (cronJobId) {
-        const lastSid = useCronStore.getState().lastRunSessionId[cronJobId] ?? '';
-        if (lastSid && sessionIdRef.current === lastSid) {
-          void handleRestoreSession(cronSessionId);
-        }
+      // 人还停在这次执行的会话上时，把已经写好的回复读回来。
+      // 多个任务同时返回、或人已经切走时不跳。
+      // 点「立即执行」时记下的会话，和结果里的执行会话，对上当前页面都算还在等。
+      //
+      // 执行过程中页面可能已经拉过一次「半截」历史，historyPagerMeta 会让后续
+      // 恢复直接跳过。结果到了必须清掉这个标记，并取消还在飞的旧历史请求，
+      // 否则会出现：推送其实到了，但不刷新就一直看不到完整回复。
+      if (!cronSessionId) return;
+      const current = sessionIdRef.current;
+      const lastSid = cronJobId
+        ? (useCronStore.getState().lastRunSessionId[cronJobId] ?? '')
+        : '';
+      if (current === cronSessionId || (lastSid !== '' && current === lastSid)) {
+        disposeInFlightHistoryHandles(cronSessionId);
+        useChatStore.getState().setHistoryPagerMeta(cronSessionId, null);
+        void handleRestoreSession(cronSessionId);
       }
     },
   });
@@ -3294,7 +3304,7 @@ function AppContent({
   ]);
 
   const performSessionRestore = useCallback(
-    async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean }) => {
+    async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean; seedUserMessage?: string }) => {
       setChatWelcomeVariant(null);
       const previousSessionId = sessionIdRef.current;
       const previousMode =
@@ -3339,8 +3349,14 @@ function AppContent({
       if (options?.skipHistoryLoad) {
         // The session returned by cron.run_now can precede its first persisted
         // message. The sessionId effect must skip its initial history request too.
+        // 先把任务原话放进会话，否则一条消息都没有，页面会落到首页欢迎语上。
         useChatStore.getState().setNewSession(targetSessionId, true);
         historyRestoreFromPanelHintRef.current = false;
+        const seed = String(options.seedUserMessage || '').trim();
+        if (seed) {
+          // 占位若已先到，必须把原话挪到最前，不能只在「还没有用户消息」时 append。
+          ensureCronUserSeedFirst(targetSessionId, seed);
+        }
       }
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
       // 导致从会话页签恢复后前端 mode 不会切换到目标会话对应的 mode。
@@ -3382,6 +3398,7 @@ function AppContent({
       void loadSessionMetadata(targetSessionId);
     },
     [
+      addMessage,
       clearMessages,
       clearTodos,
       disposeInFlightHistoryHandles,
@@ -3409,7 +3426,7 @@ function AppContent({
       targetSessionId: string,
       targetMode?: string,
       targetSession?: Session,
-      options?: { skipHistoryLoad?: boolean },
+      options?: { skipHistoryLoad?: boolean; seedUserMessage?: string },
     ): Promise<void> => {
       // WebSocket requests are processed concurrently by AgentServer. Queue
       // navigation here so rapid A -> B -> C clicks cannot race and let an
@@ -4136,25 +4153,34 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               <CronPanel
                   sessionId={sessionId}
                   onCreateViaChat={(initialInputValue) => requestSessionNavigation('new', { initialInputValue })}
-                  onSelectSession={(session) => {
+                  onSelectSession={(session, selectOptions) => {
                   if (typeof session === 'string') {
                     // 立即执行返回的 session_id 可能还未在后端创建（agent 刚开始执行），
                     // 构造最小 Session 占位对象，让 upsertSessionMetadata 直接加入会话列表，
                     // 避免 loadSessionMetadata 立即失败导致"对话不存在或已删除"。
                     // 后续 cron 广播到达时会刷新会话列表补全完整元数据。
-                    // 跳过初始历史加载：session 是全新的，空响应的 replaceHistoryMessages
-                    // 会覆盖后续到达的广播消息。
+                    // 全新执行先不拉历史：空的历史结果会把后面直播来的内容盖掉。
+                    // 任务原话先放进会话，页面才是普通聊天，而不是首页欢迎语。
+                    // 上一轮还在等点选时，打开原来的会话并拉取已有记录。
+                    const reusePending = Boolean(selectOptions?.reusePendingApproval);
+                    const cronJob = useCronStore.getState().jobs.find((item) => {
+                      const lastSid = useCronStore.getState().lastRunSessionId[item.id];
+                      return lastSid === session;
+                    });
                     void handleRestoreSession(session, undefined, {
                       session_id: session,
-                      title: '',
-                      project_id: '',
+                      title: selectOptions?.title || '',
+                      project_id: cronJob?.project_id || '',
                       project_dir: '',
                       mode: 'agent',
                       status: 'active',
                       message_count: 0,
                       created_at: new Date().toISOString(),
                       updated_at: new Date().toISOString(),
-                    }, { skipHistoryLoad: true });
+                    }, {
+                      skipHistoryLoad: !reusePending,
+                      seedUserMessage: reusePending ? undefined : selectOptions?.seedUserMessage,
+                    });
                     return;
                   }
                   requestSessionNavigation(session);

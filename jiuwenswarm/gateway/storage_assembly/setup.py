@@ -64,7 +64,8 @@ def _create_persistent() -> PersistentStore:
 
     from jiuwenswarm.gateway.storage.backends.file_persistent import FilePersistentBackend
 
-    # 暂不注册 cron StoreLayout（无 resolve_gateway_cron_jobs_path_template）
+    # 个人版定时任务不走这里的文件表，仍由 runtime 的文件或 etcd 存储。
+    # 这里不传 cron 文件路径，注册表里的 cron_job 只留数据库布局，个人版不会去读它。
     persistent_root = get_user_workspace_dir() / "gateway" / "persistent"
     config_file = get_config_file()
     session_map_file = get_checkpoint_dir() / "session_map.json"
