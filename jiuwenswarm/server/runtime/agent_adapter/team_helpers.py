@@ -3087,6 +3087,14 @@ async def _consume_stream_with_query(
                         "session_id": session_id,
                         "rid": round_id,
                     }
+                    # The runner tags tool usage with the owning member's role too.
+                    # Preserve its scope so consumers cannot mistake it for that member's main model.
+                    usage_sources = (chunk.payload, chunk.payload.get("metadata"))
+                    for key in ("plan_name", "task_id", "stream_source_id"):
+                        for source in usage_sources:
+                            if isinstance(source, dict) and source.get(key):
+                                usage_event["metadata"][key] = source[key]
+                                break
                     _attach_usage_speaker(usage_event, chunk)
                     await delta_coalescer.submit(channel_id, session_id, usage_event)
                 continue

@@ -36,6 +36,10 @@ from jiuwenswarm.server.runtime.session import session_history
 def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     state.setdefault("_sessions_awaiting_tool_permission", set())
+    # Skill allow-list stamp bookkeeping (mirrors __init__; __new__ skips it).
+    state.setdefault("_skill_enabled_version", 0)
+    state.setdefault("_session_skill_versions", {})
+    state.setdefault("_session_skill_refresh_failures", {})
     for name, value in state.items():
         setattr(adapter, name, value)
     return adapter
