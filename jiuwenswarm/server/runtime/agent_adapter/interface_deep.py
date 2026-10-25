@@ -487,7 +487,7 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
 )
 from jiuwenswarm.agents.harness.common.tools.task_tools import clear_task_memory_service
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
-from jiuwenswarm.agents.harness.common.tools.image_generation_tool import generate_image
+from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
 
 from jiuwenswarm.agents.harness.common.tools import (
     SendFileToolkit,
@@ -2525,7 +2525,7 @@ def _session_adapter_idle_ttl_default() -> int:
 
 
 class JiuWenSwarmDeepAdapter:
-    # Flash alone defers image implementation imports until its tool is invoked.
+    # 只有实际 Flash Adapter 延迟图片 SDK 初始化，其他 Adapter 在构造时完成。
     _defer_image_sdk_imports: ClassVar[bool] = False
     SESSION_ADAPTER_IDLE_TTL_SEC = _session_adapter_idle_ttl_default()
     SESSION_ADAPTER_EVICT_BATCH_SIZE = 3
@@ -2555,7 +2555,9 @@ class JiuWenSwarmDeepAdapter:
         service_id: str | None = None,
     ) -> None:
         if not self._defer_image_sdk_imports:
-            from jiuwenswarm.agents.harness.common.tools import image_tools  # noqa: F401
+            from jiuwenswarm.agents.harness.common.tools.image_tools import _ensure_image_dependencies
+
+            _ensure_image_dependencies()
 
         # Apply the MCP per-call timeout patch once per process: remote HTTP
         # call_tool/list_tools use asyncio.wait_for (not anyio.fail_after on

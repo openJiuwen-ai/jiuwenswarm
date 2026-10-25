@@ -206,8 +206,10 @@ def _load_jw_image_gen(ctx: ToolLoaderContext) -> list[Any]:
     """图像生成：image_gen_enabled 开关（沿用 _get_tool_cards 同款写法）。"""
     if not ctx.image_gen_enabled:
         return []
-    from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
+    from jiuwenswarm.agents.harness.common.tools.image_tools import _ensure_image_dependencies, generate_image
 
+    # 此入口沿用图片工具装载时初始化的行为，不跟随 Flash 的延迟策略。
+    _ensure_image_dependencies()
     return [generate_image]
 
 

@@ -9,12 +9,10 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING as _TYPE_CHECKING
 from typing import Any, Callable
 
 from dotenv import load_dotenv
-from fastmcp import FastMCP
-from google import genai
-from google.genai import types
 from openai import OpenAI
 from openjiuwen.core.foundation.tool import McpServerConfig, tool
 from openjiuwen.core.runner import Runner
@@ -31,13 +29,50 @@ from jiuwenswarm.common.local_env_config import get_local_config
 
 
 logger = logging.getLogger(__name__)
-# This shared entrypoint owns the original one-time image dotenv setup. Reusing
-# it here must not overwrite runtime configuration when Flash invokes the tool.
-from jiuwenswarm.agents.harness.common.tools.image_generation_tool import generate_image  # noqa: E402
+# Keep dotenv before the adapter's runtime override, never in delayed SDK setup.
+load_dotenv(verbose=True, override=True)
 
 _SANDBOX_MARKER = "home/user"
 
-mcp = FastMCP("vision-mcp-server")
+if _TYPE_CHECKING:
+    from fastmcp import FastMCP
+    from google import genai
+    from google.genai import types
+
+    mcp: FastMCP
+
+_IMAGE_DEPENDENCY_EXPORTS = ("FastMCP", "genai", "types", "mcp")
+_image_dependencies_lock = threading.RLock()
+_image_dependencies_loaded = False
+
+
+def _ensure_image_dependencies() -> None:
+    """Initialize the original image SDKs once; only Flash defers this setup."""
+    global _image_dependencies_loaded
+    if _image_dependencies_loaded:
+        return
+    with _image_dependencies_lock:
+        if _image_dependencies_loaded:
+            return
+        from fastmcp import FastMCP
+        from google import genai
+        from google.genai import types
+
+        server = FastMCP("vision-mcp-server")
+        # Publish only after success so a failed initialization can be retried.
+        globals().update(FastMCP=FastMCP, genai=genai, types=types, mcp=server)
+        _image_dependencies_loaded = True
+
+
+def __getattr__(name: str) -> Any:
+    if name in _IMAGE_DEPENDENCY_EXPORTS:
+        _ensure_image_dependencies()
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_IMAGE_DEPENDENCY_EXPORTS))
 
 
 class _PathHelper:
@@ -209,6 +244,7 @@ async def _invoke_gemini_vision(src: str, q: str) -> str:
     if not gemini_key:
         return "[ERROR]: GEMINI_API_KEY is not configured for Gemini vision."
 
+    _ensure_image_dependencies()
     try:
         mime = _MimeResolver.from_path(src)
         if os.path.exists(src):
@@ -1017,7 +1053,81 @@ async def _invoke_model_image_generation(inputs: dict[str, Any]) -> dict:
         return {"error": f"[ERROR]: Image generation failed: {ex}"}
 
 
-async def _generate_image_impl(inputs: dict[str, Any], **kwargs) -> str:
+@tool(
+    name="generate_image",
+    description=(
+        "Generate an image from a text description, or edit an input image "
+        "(e.g. watermark removal, style transfer, element changes) when the "
+        "configured model supports it (Huawei MaaS qwen-image-edit). "
+        "Supports provider-specific options: DashScope (prompt_extend, negative_prompt, seed), "
+        "Huawei MaaS (seed, b64_json response), OpenAI-compatible (standard sizes). "
+        "Returns the paths to the saved generated image file(s)."
+    ),
+    # NOTE: docstring 的 "Args: inputs: Dict with keys: ..." 嵌套子键无法被
+    # schema 解析器提取（LLM 只能看到 "Dict with keys:"），因此显式声明
+    # input_params，让 LLM 直接看到每个键的名称、类型与用途。
+    input_params={
+        "type": "object",
+        "properties": {
+            "inputs": {
+                "type": "object",
+                "description": "Image generation / editing parameters",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "Required. Text description of the image to generate, "
+                            "or the editing instruction when an input image is provided"
+                        ),
+                    },
+                    "image": {
+                        "type": ["string", "array"],
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional input image for editing (e.g. watermark removal): "
+                            "a local file path, an http(s) URL, or a data: URL; a list of "
+                            "these for multi-image fusion. Huawei MaaS qwen-image-edit "
+                            "models only. When editing, size defaults to the input image "
+                            "dimensions unless specified"
+                        ),
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": 'Image size, e.g. "1024x1024", "1792x1024", "1920*1080" (DashScope uses *)',
+                    },
+                    "quality": {
+                        "type": "string",
+                        "enum": ["standard", "hd"],
+                        "description": "Image quality",
+                    },
+                    "n": {
+                        "type": "integer",
+                        "description": "Number of images to generate (1-4; Huawei MaaS forces 1)",
+                    },
+                    "negative_prompt": {
+                        "type": "string",
+                        "description": "Negative prompt to exclude elements (DashScope only)",
+                    },
+                    "prompt_extend": {
+                        "type": "boolean",
+                        "description": "Whether to extend the prompt automatically (DashScope only, default True)",
+                    },
+                    "seed": {
+                        "type": "integer",
+                        "description": "Random seed for reproducibility (DashScope, Huawei MaaS)",
+                    },
+                    "save_dir": {
+                        "type": "string",
+                        "description": "Optional directory to save images (defaults to workspace/generated_images)",
+                    },
+                },
+                "required": ["prompt"],
+            }
+        },
+        "required": ["inputs"],
+    },
+)
+async def generate_image(inputs: dict[str, Any], **kwargs) -> str:
     """
     Generate an image from text description, or edit an input image.
 
@@ -1040,6 +1150,7 @@ async def _generate_image_impl(inputs: dict[str, Any], **kwargs) -> str:
     Returns:
         Paths to the generated image file(s) or error message
     """
+    _ensure_image_dependencies()
     _ = kwargs
     from jiuwenswarm.common.config import get_config
     try:
@@ -1078,3 +1189,5 @@ async def _generate_image_impl(inputs: dict[str, Any], **kwargs) -> str:
 
     return "\n".join(response_parts)
 
+# Preserve historical wildcard exports, including the deferred SDK objects.
+__all__ = [name for name in globals() if not name.startswith("_")] + list(_IMAGE_DEPENDENCY_EXPORTS)
