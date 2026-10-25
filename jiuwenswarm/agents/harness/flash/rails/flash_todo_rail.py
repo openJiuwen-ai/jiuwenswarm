@@ -138,7 +138,7 @@ class FlashTodoRail(DeepAgentRail):
         creator = self.engines.get("create")
         if creator is not None and ctx.session is not None:
             creator.reset_invoke_marker(ctx.session.get_session_id())
-            binding = await prepare_todo_context(creator, ctx.session, new_execution=True)
+            binding = await prepare_todo_context(creator, ctx.session, new_execution=True, callback_context=ctx)
             if binding is not None:
                 ctx.extra["todo_call_context_v2"] = binding
 
@@ -149,7 +149,7 @@ class FlashTodoRail(DeepAgentRail):
         """Inject the todo anchor section with unified tool names."""
         creator = self.engines.get("create")
         if creator is not None and ctx.session is not None:
-            binding = await prepare_todo_context(creator, ctx.session)
+            binding = await prepare_todo_context(creator, ctx.session, callback_context=ctx)
             if binding is not None:
                 ctx.extra["todo_call_context_v2"] = binding
         if self.system_prompt_builder is None:

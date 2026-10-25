@@ -463,6 +463,66 @@ async def _ordered_commits(tool, session, first, second):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["normal", "flash", "code"])
+async def test_unsupported_backend_stops_actual_callback_boundary_before_model(
+    context, tmp_path, monkeypatch, mode
+):
+    import uuid
+
+    from openjiuwen.core.single_agent.agent_callback_manager import AgentCallbackManager
+    from openjiuwen.core.single_agent.rail.base import (
+        AgentCallbackContext,
+        AgentCallbackEvent,
+    )
+    from openjiuwen.core.single_agent.rail.base import rail as boundary
+
+    from jiuwenswarm.agents.harness.code.rails.code_task_planning_rail import (
+        CodeTaskPlanningRail,
+    )
+    from jiuwenswarm.agents.harness.common.rails.concurrent_safe_rails import (
+        ConcurrentSafeTaskPlanningRail,
+    )
+    from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
+
+    _tool, session, _state, operation = context
+    _state.pop("todo_call_context_v2", None)
+    creator = TodoCreateTool(operation, str(tmp_path / "unsupported"))
+    monkeypatch.setattr(
+        creator.todo_store("s"), "capable", AsyncMock(return_value=False)
+    )
+    planning = {
+        "normal": ConcurrentSafeTaskPlanningRail,
+        "flash": FlashTodoRail,
+        "code": CodeTaskPlanningRail,
+    }[mode]()
+    if mode == "flash":
+        planning.engines = {"create": creator}
+    else:
+        planning.tools = [creator]
+    callbacks = AgentCallbackManager(f"todo-preflight-{uuid.uuid4().hex}")
+    agent = SimpleNamespace(agent_callback_manager=callbacks)
+    ctx = AgentCallbackContext(agent=agent, session=session)
+    model = AsyncMock()
+
+    class ModelBoundary:
+        @boundary(before=AgentCallbackEvent.BEFORE_MODEL_CALL)
+        async def call(self, callback):
+            return await model()
+
+    await callbacks.register_rail(planning, agent)
+    try:
+        result = await ModelBoundary().call(ctx)
+        assert (
+            result["result_type"] == "error"
+            and "atomic compare-and-replace" in result["output"]
+        )
+        model.assert_not_awaited()
+        assert not (tmp_path / "unsupported").exists()
+    finally:
+        await callbacks.clear()
+
+
+@pytest.mark.asyncio
 async def test_research_native_hitl_reload_reuses_captured_store_and_stage_ownership(
     context, tmp_path
 ):

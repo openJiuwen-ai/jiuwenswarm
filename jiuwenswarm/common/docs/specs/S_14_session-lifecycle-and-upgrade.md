@@ -38,6 +38,7 @@ version.__version__（唯一版本真源）
   `todo_resume.py`（agents 侧）。
 - **N2 Todo 快照双读与失败边界**：session_id 保持白名单校验。旧 list helper 为兼容仍将读取失败转换为 `[]`；实时与历史协议改用 `load_todo_event_for_frontend`，失败返回 `None` 并跳过快照，历史结束帧仍发送。v1 保留状态别名、代际过滤和串行遮罩；v2 使用已提交 `store_id/plan_id/revision/writer_epoch`，固定 display 投影包含持久提醒、剔除取消项，不做串行遮罩。合法空表携带元信息；损坏不能伪装空表。
 - **N2a v2 激活**：`OPENJIUWEN_TODO_V2=1` 默认关闭。激活须有支持事务的 SDK、后端明确 `atomic_compare_replace` 能力及全部配套 reader/writer；未知远端能力拒绝写入。已有 v2 文件不能回退为数组。SDK 更新后的本地 v1 写入同样使用事务/CAS，保留数组格式。
+- **N2a补充：激活失败停止模型**：`prepare_todo_context(..., callback_context=ctx)`在后端/SDK准备失败时设置`force_finish(result_type="error")`并保留异常；普通TaskPlanningRail有等价处理。仅抛异常不足以阻断回调框架后续模型调用。JiuwenBox能力来自真实daemon的file-snapshot协议；服务不可用不伪装成空表或已支持。
 - **N2b 发布与恢复**：`publish_todo_receipt` 只发提交快照、不再次读取；通知在存储锁外，最多三次入流尝试，失败保存 `todo_snapshot_resync_pending`，后续模型轮/轮末或历史恢复重读，不重放业务修改。入流成功不等于外部送达。
 - **N3 后台清理尽力而为**：保留期默认 30 天（`CLEANUP_PERIOD_DAYS`）；首次延迟 10min、
   之后每 24h 一轮；按目录 mtime 判过期；阻塞操作丢线程池且单步失败不中断循环；

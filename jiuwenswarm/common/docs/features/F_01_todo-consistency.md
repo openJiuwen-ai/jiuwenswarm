@@ -13,4 +13,8 @@
 
 `OPENJIUWEN_TODO_V2` 属于 Track A 启动环境，Relay 的 shared/launch/spawn 白名单一致传递，不能在会话业务配置中热切换。启动 bootstrap 的旧读缓存跳过具备原生事务和版本读取能力的工具/rail。
 
-实现和本地证据见工作区 `Feat/req01-todo-edit/04-implementation.md` 与 `checkpoint/feat/req01-todo-edit/validation/`。已验证本地非 editable SDK wheel；正式 lock 仍需新 core 可获取版本。Linux 隔离实例曾启动，登录未成功，随后按用户要求停止并暂缓实测；远程沙箱、Windows 包与真实业务验收未完成。未创建提交或 PR。
+Todo准备失败时，宿主通过 `prepare_todo_context(..., callback_context=ctx)`设置force_finish(error)并保留异常；普通SDK rail采取等价处理。拒绝仅抛异常的方案，因为回调框架会记录异常后继续执行，导致模型重复调用必败工具。普通、Flash、Code真实回调边界均验证模型调用次数为零。
+
+JiuwenBox配套沿现有鉴权/路径策略进入daemon执行CAS，不在宿主映射路径后替换、不回退普通上传、不因响应丢失重放写入。已验证配套非editable core/Box wheel，实际独立daemon协议测试不安装namespace；Windows原生权限仍待验收。正式lock仍需可获取的新core版本。
+
+实现与证据见工作区 `Feat/req01-todo-edit/04-implementation.md` 和 `checkpoint/feat/req01-todo-edit/validation/`。WSL Chrome已登录，首次真实任务失败并停止；仓内协议缺口已补齐，实际Linux沙箱仍受网络命名空间权限阻塞，现有运行进程尚未加载新实现。宿主扩大组合296项通过、配套wheel宿主50项通过；不代表产品业务验收。执行者未创建提交或PR。

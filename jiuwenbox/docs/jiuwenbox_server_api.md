@@ -658,6 +658,22 @@ print(resp.text)
 [2026-04-25T11:30:01.000000] sandbox_started
 ```
 
+### 文件快照与原子条件提交
+
+接口：`POST /api/v1/sandboxes/{sandbox_id}/file-snapshot`。这是可选的快照协议，普通上传/下载接口不改变。请求仍经过既有 Bearer 鉴权、沙箱 READY 状态检查和路径策略；读写在现有 Linux daemon / Windows runner 的沙箱身份内执行，不把沙箱路径拿到宿主直接替换。
+
+| operation | 请求 | 成功响应的必要字段 |
+| --- | --- | --- |
+| `capabilities` | `{"operation":"capabilities"}` | `ok=true, protocol_version=1, atomic_compare_replace=true`，来自实际运行中的daemon/runner |
+| `read` | `path` 为绝对路径；`options.missing_ok` 可选 | `exists`、原字节的 `content_sha256`、`content_size`、`content_base64`；不存在与空文件分别处理 |
+| `compare_replace` | `path`、`content_base64`，以及 `options.expected_exists/expected_content_sha256` | `ok=true, atomic_replace=true, content_size`；只有收到该确认才算已提交 |
+
+`compare_replace` 在同一文件的稳定锁内核对存在性/哈希、写同目录独占临时文件、关闭后原子替换。锁文件不随目标文件替换或每次删除，保证协作进程仍竞争同一个锁；`lock_timeout` 为0–30秒，默认30秒。`permissions` 默认为`644`，新文件使用该权限；已有文件先校验写权限，并保留mode/owner/group及Linux访问ACL。Windows保留owner/group/DACL及原有继承状态，无法保留时拒绝发布。临时文件不能额外引入原目标没有的父目录默认ACL。`create_if_not_exist=false` 禁止创建缺失目标。符号链接/重解析路径、硬链接和特殊文件被拒绝，失败只清理本次拥有的临时文件。Windows首次建锁不在加锁前写初始化字节，避免与已持锁进程竞争。原生文件探针不代替完整Windows沙箱产品验收。
+
+操作失败使用 `ok=false` 和结构化 `error`：`conflict` 仅表示前置条件确定不成立；`lock_timeout`、`bad_request`、`io_error` 等不能当作冲突重试。写请求传输中断的 `outcome_unknown` 可能已经发布，只能先读回确认。HTTP 200不代替操作成功；认证/沙箱状态/请求校验仍可返回401/403/404/409/422。
+
+旧服务缺此端点，或旧daemon返回`unknown_request_type`，均不宣称支持。新版SDK只对能力查询/读取保留明确“沙箱不存在”的恢复；条件写不会自动重建沙箱或重放，也不会退回普通upload/exec。取消时收尾在途RPC worker，服务侧文件锁由实际执行者持有到操作结束。协议版本1是文件后端协议，独立于Todo文档的schema_version=2。
+
 ### 上传文件
 
 接口：`POST /api/v1/sandboxes/{sandbox_id}/upload`

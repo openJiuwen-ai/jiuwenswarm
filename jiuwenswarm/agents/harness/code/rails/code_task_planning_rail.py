@@ -70,7 +70,7 @@ class CodeTaskPlanningRail(TaskPlanningRail):
         """
         creator = self._find_todo_create_tool()
         if creator is not None and ctx.session is not None:
-            binding = await prepare_todo_context(creator, ctx.session)
+            binding = await prepare_todo_context(creator, ctx.session, callback_context=ctx)
             if binding is not None:
                 ctx.extra["todo_call_context_v2"] = binding
         await self._inject_pending_todo_reminder(ctx)

@@ -74,16 +74,23 @@ def todo_event_metadata(metadata: dict | None, view: str = "display") -> dict | 
 
 
 async def prepare_todo_context(
-    tool: Any, session: Any, *, new_execution: bool = False
+    tool: Any, session: Any, *, new_execution: bool = False, callback_context: Any = None
 ) -> dict | None:
     if not todo_v2_enabled() or tool is None or session is None:
         return
     prepare = getattr(tool, "prepare_context", None)
-    if not callable(prepare):
-        raise TypeError(
-            "OPENJIUWEN_TODO_V2 requires an SDK with Todo transaction support"
-        )
-    return await prepare(session, new_execution=new_execution)
+    try:
+        if not callable(prepare):
+            raise TypeError(
+                "OPENJIUWEN_TODO_V2 requires an SDK with Todo transaction support"
+            )
+        return await prepare(session, new_execution=new_execution)
+    except Exception as exc:
+        if callback_context is not None:
+            callback_context.request_force_finish({
+                "result_type": "error", "output": f"Todo storage is unavailable: {exc}",
+            })
+        raise
 
 
 def bind_todo_tool_context(tool: Any, ctx: Any) -> None:
