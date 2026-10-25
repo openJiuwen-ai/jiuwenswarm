@@ -5149,19 +5149,26 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     def _register_config_proxy(method_name, req_method, local_handler=None):
         # A4g：配置读写默认经目标 AgentServer 执行（ConfigAdapter 在注入目录
         # 本地执行，自带 in-process reload / zen warmup / config_changed 标记
-        # 等后置行为）。企业版 RuntimeRoutedAgentClient / 无 client 时仍走
-        # local_handler（runtime HTTP 无 config.get REST）。legacy 共享目录的
-        # 外部 CLI 依赖安装门控保留在 gateway。
+        # 等后置行为）。企业版 RuntimeRoutedAgentClient / 无 client / 无 runtime
+        # 的 legacy WebSocket 客户端仍走 local_handler（runtime HTTP 无
+        # config.get REST；企业 models.list 读 Gateway Manager 库，不能代理到
+        # AS 的 config.yaml）。个人版 legacy 仍走 E2A（A4g 主线不变）。legacy
+        # 共享目录的外部 CLI 依赖安装门控保留在 gateway。
 
         async def _handler(ws, req_id, params, session_id, user_id=None):
+            from jiuwenswarm.edition import is_enterprise
             from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
             resolved_client = _resolve(agent_client)
-            # Enterprise RuntimeRoutedAgentClient / no client: Gateway-local config
-            # (runtime HTTP has no config.get REST). AgentOS multi-user still proxies.
+            # Enterprise RuntimeRouted / no client / enterprise+legacy WebSocket:
+            # Gateway-local config. Personal WebSocket and AgentOS still proxy.
             if local_handler is not None and (
                 resolved_client is None
                 or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+                or (
+                    is_enterprise()
+                    and is_legacy_shared_directory_client(resolved_client)
+                )
             ):
                 await local_handler(ws, req_id, params, session_id)
                 return
