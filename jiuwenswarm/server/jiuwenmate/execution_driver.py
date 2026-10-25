@@ -40,6 +40,8 @@ from jiuwenswarm.server.jiuwenmate.dropped_stream_retry import install_dropped_s
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailRuntimeService
 from jiuwenswarm.server.jiuwenmate.agent_mail_tool import prepare_agent_mail_invocation
+from jiuwenswarm.server.jiuwenmate.permission_runtime import EMPLOYEE_PERMISSION_RAIL_FACTORY
+from jiuwenswarm.server.jiuwenmate.permission_approval_repository import PermissionApprovalRepository
 from jiuwenswarm.server.jiuwenmate.presentation_package import install_presentation_handoff
 from jiuwenswarm.server.jiuwenmate.workspace_relative_tools import install_office_relative_write_tools
 
@@ -133,6 +135,7 @@ class ExecutionDriver:
         clock: Callable[[], datetime] = _utc_now,
         cli: FeishuCliRuntime | None = None,
         agent_mail_runtime: AgentMailRuntimeService | None = None,
+        permission_approvals: PermissionApprovalRepository | None = None,
     ) -> None:
         self._snapshots = snapshots
         self._commit_port = commit_port
@@ -156,6 +159,7 @@ class ExecutionDriver:
         self._clock = clock
         self._cli = cli or FeishuCliRuntime(windows.db_path.parent)
         self._agent_mail_runtime = agent_mail_runtime
+        self._permission_approvals = permission_approvals
 
     def new_handle(self) -> ExecutionHandle:
         return ExecutionHandle(self._abort)
@@ -172,11 +176,13 @@ class ExecutionDriver:
             snapshot = await asyncio.to_thread(
                 self._snapshots, record.namespace_id, record.agent_id, record.config_version
             )
+            permission_profile = getattr(snapshot.load_spec(), "permission_profile", "default")
             workspace = HostWorkspaceAccess(
                 self._workspaces,
                 record.namespace_id,
                 record.agent_id,
                 knowledge_root=snapshot.knowledge_root,
+                permission_profile=permission_profile,
             )
             group_chat_port = None
             if (record.request_input.kind in ("direct_message", "group_message") and self._groups is not None and
@@ -198,6 +204,7 @@ class ExecutionDriver:
                 workspace_access=workspace,
                 workspace_write_access=workspace,
                 group_chat=group_chat_port,
+                permission_rail_factory=EMPLOYEE_PERMISSION_RAIL_FACTORY,
             )
             guidance = None
             if (
@@ -236,7 +243,12 @@ class ExecutionDriver:
                 system_prompt_addendum="\n\n".join(addenda),
             )
             spec = await prepare_agent_mail_invocation(spec, context, self._agent_mail_runtime)
-            bind_bash_runtime(context, office=office, cli=self._cli)
+            bind_bash_runtime(
+                context,
+                office=office,
+                cli=self._cli,
+                permission_profile=getattr(spec, "permission_profile", permission_profile),
+            )
             await handle._attach(context)
             inputs = record.request_input
             if record.request_input.kind == "group_message" and ports.group_chat is not None:
@@ -251,10 +263,24 @@ class ExecutionDriver:
                     "text": trigger.text or ("[附件消息]" if trigger.attachment_refs else "[群消息正文为空]"),
                     "attachment_refs": trigger.attachment_refs})
             terminal = None
-            async with aclosing(self._execute(spec, context, inputs)) as events:
+            approval = (
+                await asyncio.to_thread(
+                    self._permission_approvals.resume_reply, record.namespace_id, record.request_id
+                )
+                if self._permission_approvals is not None
+                else None
+            )
+            event_stream = (
+                core.resume_persistent_request(spec, context, approval.reply)
+                if approval is not None and approval.reply is not None
+                else self._execute(spec, context, inputs)
+            )
+            async with aclosing(event_stream) as events:
                 async for event in events:
                     if event.event_type in _TERMINAL:
                         terminal = event
+            if approval is not None and terminal is not None:
+                await asyncio.to_thread(self._permission_approvals.consume, approval.approval_id)
             if terminal is None:
                 logger.warning(
                     "[JiuwenMate] execution ended without a terminal event: request=%s execution=%s",

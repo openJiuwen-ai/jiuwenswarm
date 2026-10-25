@@ -3,12 +3,12 @@
 ## 1. 这份计划怎么读和维护
 
 - 计划范围：结合 agent-core 的 Persistent Agent 能力，在 JiuwenSwarm 独立开发新版 AI 同事。Swarm 负责同事管理、渠道接入、执行调度、会话与事件存储、结果投递和续做安排；agent-core 在指定 Session 内执行任务、管理模型上下文、产生过程事件与候选结果。
-- 范围之外：确认恢复（需要用户确认的工具调用及 `resume_persistent_request`）、知识版本撤权与来源失效、主动学习和扩展执行模式；个人版单 Agent、集群模式及个人飞书入口的既有行为不在本计划内修改。员工对已发布个人上下文页面的选择见 JM-22。
+- 范围之外：知识版本撤权与来源失效、主动学习和扩展执行模式；个人版单 Agent、集群模式及个人飞书入口的既有行为不在本计划内修改。员工确认恢复及权限模式由 JM-26 与 agent-core PA-09 协同负责；员工对已发布个人上下文页面的选择见 JM-22。
 - 所属模块：jiuwenswarm 仓 `jiuwenswarm/server/jiuwenmate/`，以及新版接入所需的 `gateway/`、`server/agent_ws_server.py` 与前端 `channels/web/frontend/src/features/jiuwenmate/`。agent-core 仓 `openjiuwen/harness/persistent_agent/` 的工作以 PA 编号登记在对端计划，本计划只引用。
-- 交付分类：本期 20 项（JM-01～JM-14、JM-16、JM-18、JM-19、JM-22～JM-24）；扩展 2 项（JM-21、JM-25）。已移出的 SW-15、SW-17、SW-20 不复用，见附录 B。
-- 本轮安排：本期 20 项均为纳入；JM-21 跨群子范围已实现，其他 IM 扩展及 JM-25 Agent Mail 隔离接入未排期，不计入本期节点。
+- 交付分类：本期 20 项（JM-01～JM-14、JM-16、JM-18、JM-19、JM-22～JM-24）；扩展 3 项（JM-21、JM-25、JM-26）。已移出的 SW-15、SW-17、SW-20 不复用，见附录 B。
+- 本轮安排：本期 20 项均为纳入；JM-21 跨群子范围已实现，JM-25 Agent Mail 隔离接入未排期；JM-26 员工权限模式、审批恢复与前端已实现并通过自动化验证，不计入本期节点；真实飞书部署验收待完成。
 - 维护人：常钰聪。
-- 更新日期：2026-10-22。
+- 更新日期：2026-10-24。
 - 设计依据：
   - 本仓：[JiuwenMate 设计概览](jiuwenmate-overview.md)、[JiuwenMate 服务端架构设计](jiuwenmate-architecture.md)。
   - 对端：agent-core 仓 `jiuwenmate` 分支 `openjiuwen/harness/persistent_agent/docs/designs/` 下的 [Persistent Agent 开发计划](https://gitcode.com/huenrui_/agent-core/blob/jiuwenmate/openjiuwen/harness/persistent_agent/docs/designs/persistent-agent-development-plan.md) 与 [Persistent Agent 架构设计](https://gitcode.com/huenrui_/agent-core/blob/jiuwenmate/openjiuwen/harness/persistent_agent/docs/designs/persistent-agent-architecture.md)。
@@ -20,7 +20,7 @@
   - `namespace_id` 映射既有用户 / 工作空间边界，具体映射规则在 JM-10 接入时确定，不影响 JM-01～JM-04 的组件验证。
   - agent-core 依赖版本的入库固定方式，待对端发布可引用版本后确定。
 - 术语与全局约束：见下文“术语”与“全局约束”。
-- 进度摘要：本期完成 0/20，待验收 10 项（JM-01～JM-08、JM-12、JM-23，宿主组件通过，联合验收待完成），进行中 9 项（JM-09、JM-10、JM-11、JM-13、JM-14、JM-16、JM-19、JM-22、JM-24）；待开始 1 项（JM-18）；扩展完成 0/2，JM-21 跨群子范围已实现；JM-25 已改为本地 CLI 运行时，真实 OAuth 与邮件读取待验收。
+- 进度摘要：本期完成 0/20，待验收 10 项（JM-01～JM-08、JM-12、JM-23，宿主组件通过，联合验收待完成），进行中 9 项（JM-09、JM-10、JM-11、JM-13、JM-14、JM-16、JM-19、JM-22、JM-24）；待开始 1 项（JM-18）；扩展完成 0/3，JM-21 跨群子范围已实现；JM-25 已改为本地 CLI 运行时，真实 OAuth 与邮件读取待验收；JM-26 代码与组件验证已完成，真实飞书消息和重启场景待验收。
 
 先读本节确认范围和完成口径，再到第 2 节了解特性与验收要求，第 3 节判断开工条件和并行机会，第 4 节确认负责人、状态和证据。迁移与接入安排见附录 A，历史变更见附录 B。
 
@@ -482,6 +482,25 @@
 - **联合交付与开放条件：** 单独交付；部署 provider、真实腾讯 OAuth、读写邮件及官方写确认路径完成验证后，方可验收闭环。
 - **设计索引：** [F_25 员工 Agent Mail 配置与隔离运行时](../features/F_25_agent-mail.md)。
 
+### JM-26 员工权限模式与审批闭环（扩展）
+
+- **目标与范围：** 为每名员工独立配置 `default`、`automatic`、`full_access`；发布后固定权限策略并用于新 Request。接入智能审批、可信人工确认、15 分钟超时、重启恢复和完全访问主机文件 / 联网命令；不修改个人版全局模式，不超出服务进程 OS 权限。
+- **责任与契约：** 本仓 `models.py`、`repository.py`、`service.py`、`spec_provider.py`、`execution_driver.py`、审批仓储、Web RPC、Feishu 入站 / 卡片处理及员工详情前端；core `PersistentAgentSpec`、权限 Rail、中断恢复和 workspace scope 由 PA-09 / F_24 提供。审批记录绑定原 Request、Execution、员工、可信渠道和发起人。
+- **开工硬前置：** JM-02 员工设置与发布；agent-core PA-09 权限快照与原生确认恢复契约。
+- **独立验证入口：** `tests/unit_tests/server/jiuwenmate/test_permission_approvals.py`、`test_persistent_agent_service.py`；core `tests/unit_tests/harness/persistent_agent/test_entries.py` 与 `test_workspace_access.py`；前端 `npm run test:jiuwenmate-profile`、`npm run test:jiuwenmate-api`。
+- **独立验证条件：** 真实 SQLite、core 正式执行入口和模型 / Feishu SDK 替身；真实 Feishu 卡片交互与进程重启作为联合验证。
+- **验收标准：**
+  1. JM-26-V-01：旧设置缺失 profile 时为 `default`；未知值拒绝；两名员工的模式及发布 fingerprint 互相隔离。
+  2. JM-26-V-02：`automatic` 仅批准精确评估的单次 `ask` 调用；低置信、异常和超时走人工确认。
+  3. JM-26-V-03：默认模式审批由可信发起人经 Web / Feishu 回复；错人、错 Request、重放和 15 分钟过期均不执行工具。
+  4. JM-26-V-04：进程重启后审批记录与 core 中断现场匹配才能恢复原 Request 和原 Spec；缺失、错配或过期时关闭执行。
+  5. JM-26-V-05：full 可访问服务 OS 用户有权访问的宿主文件并运行联网命令；default 仍受员工目录隔离；OS 拒绝仍有效。
+  6. JM-26-V-06：员工详情的三种模式、full 风险确认、保存 / 发布状态和中英文案均与服务端读回一致。
+- **来源验证点与共享场景：** PA-09 中断/恢复 → JM-26-V-02～04 → 主责 JM-26，协同 PA-09；员工快照 → JM-26-V-01 → 主责 JM-26、协同 JM-02；host-wide workspace scope → JM-26-V-05 → 主责 JM-26、协同 PA-09。
+- **前端独立验证：** 员工管理 → 选择员工 → 权限区；使用 JiuwenMate API 契约测试，覆盖加载、保存、full 确认和失败回滚。
+- **联合交付与开放条件：** 独立扩展交付；PA-09、JM-02 与 Web / Feishu 审批路径的身份绑定、重启恢复和宿主权限边界均通过后才验收。
+- **设计索引：** [F_26 员工权限模式与审批闭环](../features/F_26_employee-permission-profiles.md)、对端 agent-core [F_24 权限与确认恢复](../../../../../../huenrui_agent-core/openjiuwen/harness/persistent_agent/docs/features/F_24_permission-confirmation.md)。
+
 ## 3. 特性依赖关系与并行开发
 
 完整关系图覆盖第 2 节全部特性和交付节点。每条细实线对应特性定义中的一个开工硬前置，线上注明所需的最小产物；虚线表示特性参与节点的联合验收；粗实线表示约定的交付顺序或业务开工限制。
@@ -524,9 +543,10 @@ flowchart LR
         F18["JM-18 新版联合验收"]
     end
 
-    subgraph EXT["扩展（未排期）"]
+    subgraph EXT["扩展（独立交付）"]
         F21["JM-21 跨群搜索与 IM 扩展"]
         F25["JM-25 Agent Mail 配置与隔离运行时"]
+        F26["JM-26 员工权限模式与审批闭环"]
     end
 
     S0{"S0 契约与宿主基线"}
@@ -668,6 +688,7 @@ flowchart LR
 | JM-23 员工群聊回复模式 | 特性 / 本期 | 纳入 | 第 2 节全部范围 | 未评估 / 随 S2a | C / S2a | 未排期 | 待验收 | 常钰聪 | — | JM-23-V-01～V-06 的宿主部分 → 真实 SQLite 与可控入站，core 参与判断未用真实模型 → 协作、寒暄分流、群执行附加说明和等待提示投递定向测试通过，记录见 [F_23](../features/F_23_group-reply-mode.md) → 未提交；真实飞书与其他渠道未验收 | 2026-10-22；明确 @ 也做 `effort` 判断，仅 `extended` 写入 `notice`，宿主只投递 |
 | JM-24 Agent 级用户授权与个人日历查询 | 特性 / 本期 | 纳入 | Feishu Agent CLI 用户身份日历只读；群聊直接原群公开回复；按 JM-11/JM-21 既有规则归档与授权搜索 | 未评估 / 随 S2a | C / S2a | 未排期 | 进行中 | 闫祉君 | — | 已改为 JM-14 Agent CLI profile + Feishu Skill/Bash 路径；Gateway OAuth、专用日历工具及 personal-data E2A 方案已撤销。定向 CLI profile、Bash 装配和 Agent / Skill 提示测试 16 项通过；真实 Feishu 用户授权、日历 API、JM-11→JM-21 闭环与个人版回归待验证，详见 [F_24](../features/F_24_personal-data-access.md) §8 | 2026-10-22；按用户确认改为 Agent 级共享登录态 |
 | JM-25 员工 Agent Mail 配置与本地运行时 | 特性 / 扩展 | 未排期 | 每员工独立 HOME/XDG/npm cache 目录中的固定版本官方 Agent Mail CLI 授权和读写调用 | 未评估 / — | 扩展 / — | 未排期 | 进行中 | 常钰聪 | — | 本地 provider、Web RPC、授权生命周期和读写命令转发已实现；定向后端及 Web RPC 测试通过。真实 OAuth、邮箱读写及跨员工隔离待验收，详见 [F_25](../features/F_25_agent-mail.md) | 2026-10-23；改为无 Docker 的本地 CLI 运行时 |
+| JM-26 员工权限模式与审批闭环 | 特性 / 扩展 | 纳入 | 每名员工独立发布权限；Smart Approval、可信 Web / Feishu 确认、主机级文件和联网命令 | 未评估 / — | 扩展 / — | 未排期 | 待验收 | 常钰聪 | — | 员工配置、审批持久化与原 Request 恢复、权限 UI 和 core 精确调用适配已实现；JiuwenMate 服务端 270 项、core 定向 291 项、前端 49 项通过，Vite 生产构建通过。真实飞书消息、身份及重启场景待验收，见 [F_26](../features/F_26_employee-permission-profiles.md) 与 PA-09 / [F_24](../../../../../../huenrui_agent-core/openjiuwen/harness/persistent_agent/docs/features/F_24_permission-confirmation.md) | 2026-10-24；代码与组件验证完成 |
 | JM-21 跨群搜索与 IM 扩展 | 特性 / 扩展 | 未排期 | 跨群搜索宿主子范围已实现；其他 IM 扩展仍未设计 | 未评估 / — | 扩展 / — | 未排期 | 进行中 | 闫祉君 | — | 跨群授权、群名精确解析、稳定合并／分页、逐页重授权及 direct-message／group-message PA-23 接线 → 真实 SQLite、真实 core 与模型／成员服务替身；跨群、3 个执行链测试和真实 core 集成共 26 passed，JM-11 `test_group_chat_port.py` 回归 17 passed；JiuwenMate 全目录回归 345 passed、14 failed（5 项既有 Windows／本地 core 基线失败，9 项本地 agent-core PA-18 capacity 配置缺口），详见 [F_21](../features/F_21_cross-group-search.md) §8。真实飞书成员核验／Gateway 联调和其他 IM 扩展待验证／设计；扩展分类和纳入本期节点状态不变，负责人调整为闫祉君 | 2026-10-21；负责人调整为闫祉君 |
 | S0 契约与宿主基线 | 节点 / 本期 | 纳入 | JM-01～JM-06 组件验证；对端 PA-04 当前契约 | 顺序 1 | A、B / — | 未排期 | 进行中 | 常钰聪 | — | JM-01～JM-06 宿主组件均已通过，见各行证据 → 节点验收待核对替身清单与 PA-04 当前契约 | 2026-10-13 |
 | S1 私聊闭环 | 节点 / 本期 | 纳入 | JM-07、JM-10、JM-12；JM-09 Web 投递；JM-14 最小只读配置 | 顺序 2 | A、B、C、D / — | 未排期 | 待开始 | 常钰聪 | — | JM-07、JM-10、JM-12 已接入，并在 core `9eb336b4` 下以模型替身跑通收消息、回复、停止与取消；JM-14 最小只读配置已在工作区实现，Web 请求可读取同事办公目录；JM-09 Web 投递未开始；浏览器验收与节点联合验收未完成 | 2026-10-15 |
@@ -677,7 +698,7 @@ flowchart LR
 | S2c 续做 | 节点 / 本期 | 纳入 | JM-13；对端 core M2c | 顺序 3 | E / — | 未排期 | 待开始 | 常钰聪 | — | 未执行；异常、重启、停止后继续及配置保持 | 2026-10-13 |
 | S3 新版交付 | 节点 / 本期 | 纳入 | JM-18；对应 core 能力已联合验收 | 顺序 4 | E / — | 未排期 | 待开始 | 常钰聪 | — | 未执行；从空数据启动、独立存储、个人版回归与飞书联调 | 2026-10-13 |
 
-本期进度只统计交付分类为“本期”、类型为“特性”的 20 行：完成 0/20，待验收 10 项（JM-01～JM-08、JM-12、JM-23），进行中 9 项（JM-09、JM-10、JM-11、JM-13、JM-14、JM-16、JM-19、JM-22、JM-24），待开始 1 项（JM-18）；扩展 JM-21、JM-25 单独统计为 0/2。节点状态按真实联合交付边界判断；特性的宿主组件通过，不代表 S0、S1、S2a 或整项完成。
+本期进度只统计交付分类为“本期”、类型为“特性”的 20 行：完成 0/20，待验收 10 项（JM-01～JM-08、JM-12、JM-23），进行中 9 项（JM-09、JM-10、JM-11、JM-13、JM-14、JM-16、JM-19、JM-22、JM-24），待开始 1 项（JM-18）；扩展 JM-21、JM-25、JM-26 单独统计为 0/3。节点状态按真实联合交付边界判断；特性的宿主组件通过，不代表 S0、S1、S2a 或整项完成。
 
 ## 附录 A. 迁移与接入安排
 

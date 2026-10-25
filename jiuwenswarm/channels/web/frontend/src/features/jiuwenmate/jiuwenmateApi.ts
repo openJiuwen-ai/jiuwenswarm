@@ -35,6 +35,7 @@ export const JIUWENMATE_METHODS = {
   chatHistory: 'jiuwenmate.chat.history',
   requestGet: 'jiuwenmate.request.get',
   requestAbort: 'jiuwenmate.request.abort',
+  permissionDecide: 'jiuwenmate.permission.decide',
   conversationList: 'jiuwenmate.conversation.list',
   conversationRename: 'jiuwenmate.conversation.rename',
   conversationPin: 'jiuwenmate.conversation.pin',
@@ -110,6 +111,7 @@ export interface JiuwenMateWireSettings {
   category: string;
   avatar_url: string;
   group_reply_mode?: 'passive' | 'adaptive';
+  permission_profile?: 'default' | 'automatic' | 'full_access';
   capabilities: JiuwenMateWireCapabilities;
 }
 
@@ -150,6 +152,15 @@ export interface JiuwenMateChatRequest {
   draft: JiuwenMateChatDraft | null;
   control: JiuwenMateRequestControl | null;
   recovery: JiuwenMateRequestRecovery | null;
+  approval: JiuwenMatePermissionApproval | null;
+}
+
+export interface JiuwenMatePermissionApproval {
+  approvalId: string;
+  requestId: string;
+  expiresAt: string;
+  status: 'pending' | 'approved' | 'rejected' | 'expired' | 'consumed';
+  intercepted: { toolCallId: string; toolName: string; arguments: string; argumentsTruncated: boolean }[];
 }
 
 /** A file the colleague handed off with its answer; ``downloadUrl`` is null while its copy is unavailable. */
@@ -383,6 +394,7 @@ export function withColleagueEdit(
     description?: string;
     persona?: string;
     groupReplyMode?: 'passive' | 'adaptive';
+    permissionProfile?: 'default' | 'automatic' | 'full_access';
     tags?: readonly string[];
     model?: string;
     skills?: readonly string[];
@@ -398,6 +410,7 @@ export function withColleagueEdit(
       description: edit.description ?? colleague.description,
       persona: edit.persona ?? colleague.persona,
       groupReplyMode: edit.groupReplyMode ?? colleague.groupReplyMode,
+      permissionProfile: edit.permissionProfile ?? colleague.permissionProfile,
       tags: [...(edit.tags ?? colleague.tags)],
       capabilities: {
         ...colleague.capabilities,
@@ -423,6 +436,9 @@ export function toColleague(value: unknown): JiuwenMateColleague {
     name: text(wire.name),
     description: text(wire.description),
     groupReplyMode: wire.group_reply_mode === 'passive' ? 'passive' : 'adaptive',
+    permissionProfile: wire.permission_profile === 'automatic' || wire.permission_profile === 'full_access'
+      ? wire.permission_profile
+      : 'default',
     ...(typeof wire.persona === 'string' ? { persona: wire.persona } : {}),
     tags: texts(wire.tags),
     category: CATEGORIES.includes(category) ? category : 'custom',
@@ -461,6 +477,7 @@ export function toWireSettings(
     name: draft.name.trim(),
     description: draft.description.trim(),
     group_reply_mode: draft.groupReplyMode ?? 'adaptive',
+    permission_profile: draft.permissionProfile ?? 'default',
     ...(draft.persona !== undefined ? { persona: draft.persona.trim() } : {}),
     tags: filled(draft.tags),
     category: draft.category,
@@ -551,6 +568,29 @@ export function toChatRequest(value: unknown): JiuwenMateChatRequest {
     draft: status === 'ended' ? null : toDraft(wire.draft),
     control: toControl(wire.control),
     recovery: toRecovery(wire.recovery),
+    approval: toPermissionApproval(wire.approval),
+  };
+}
+
+function toPermissionApproval(value: unknown): JiuwenMatePermissionApproval | null {
+  const wire = record(value);
+  const approvalId = text(wire.approval_id);
+  const status = text(wire.status);
+  if (!approvalId || !['pending', 'approved', 'rejected', 'expired', 'consumed'].includes(status)) return null;
+  const intercepted = rows(wire.intercepted).flatMap((item) => {
+    const call = record(item);
+    const toolCallId = text(call.tool_call_id);
+    const toolName = text(call.tool_name);
+    return toolCallId && toolName
+      ? [{ toolCallId, toolName, arguments: text(call.arguments), argumentsTruncated: call.arguments_truncated === true }]
+      : [];
+  });
+  return {
+    approvalId,
+    requestId: text(wire.request_id),
+    expiresAt: text(wire.expires_at),
+    status: status as JiuwenMatePermissionApproval['status'],
+    intercepted,
   };
 }
 
@@ -1063,6 +1103,19 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     },
     async getRequest(requestId: string): Promise<JiuwenMateChatRequest> {
       return toChatRequest(record(await request(JIUWENMATE_METHODS.requestGet, { request_id: requestId })).request);
+    },
+    async decidePermission(
+      approvalId: string,
+      conversationId: string,
+      decision: 'approve' | 'reject',
+      toolCallId?: string,
+    ): Promise<JiuwenMateChatRequest> {
+      return toChatRequest(record(await request(JIUWENMATE_METHODS.permissionDecide, {
+        approval_id: approvalId,
+        conversation_id: conversationId,
+        decision,
+        ...(toolCallId ? { tool_call_id: toolCallId } : {}),
+      })).request);
     },
     /** Receives pushed reply steps; without a push connection nothing arrives and querying still works. */
     onStream(handler: (event: JiuwenMateStreamEvent) => void): () => void {
