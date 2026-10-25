@@ -320,6 +320,31 @@ async def test_web_channel_cron_push_targets_only_its_agentos_user(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_web_channel_cron_push_default_user_reaches_personal_client(monkeypatch):
+    """个人版任务没填用户时 user_id 是占位 default，结果要送到当前网页。"""
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    personal = FakeWebSocket(query_user_id="zhangsan")
+    monkeypatch.setattr(WebChannel, "clients", property(lambda _: {personal}))
+    sent: list[object] = []
+    monkeypatch.setattr(channel, "_enqueue_send", lambda ws, frame: sent.append(ws))
+    msg = Message(
+        id="cron-default",
+        type="event",
+        channel_id="web",
+        session_id=None,
+        params={},
+        timestamp=0,
+        ok=True,
+        payload={"content": "你好", "user_id": "default", "cron": {"job_id": "job-d"}},
+        event_type=EventType.CHAT_FINAL,
+    )
+
+    await channel.send(msg)
+
+    assert sent == [personal]
+
+
+@pytest.mark.asyncio
 async def test_openai_account_unexpected_error_uses_method_dispatcher(monkeypatch):
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     _register_web_handlers(WebHandlersBindParams(channel=channel))

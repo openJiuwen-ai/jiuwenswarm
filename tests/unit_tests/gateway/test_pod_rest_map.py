@@ -139,6 +139,56 @@ def test_methods_without_handlers_are_not_sent_anywhere() -> None:
             )
 
 
+def test_project_cron_binding_and_lifecycle_use_dedicated_urls() -> None:
+    binding = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="project.cron.resolve_binding",
+            params={"project_id": "proj_1", "project_dir": "/work/zxy"},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    lifecycle = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="project.lifecycle",
+            params={"project_id": "proj_1"},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert binding.verb == "POST"
+    assert binding.url == "http://10.0.0.8:8766/api/v1/projects/actions/resolve-cron-binding"
+    assert binding.used_rpc_fallback is False
+    assert lifecycle.verb == "POST"
+    assert lifecycle.url == "http://10.0.0.8:8766/api/v1/projects/proj_1/lifecycle"
+    dispatch = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server" / "dispatch.py"
+    text = dispatch.read_text(encoding="utf-8")
+    assert "ReqMethod.PROJECT_CRON_RESOLVE_BINDING: handle_gateway_adapter" in text
+    assert "ReqMethod.PROJECT_LIFECYCLE: handle_gateway_adapter" in text
+
+
+def test_session_pin_uses_the_dedicated_url() -> None:
+    sent = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="session.pin",
+            session_id="sess-1",
+            params={"session_id": "sess-1", "pinned": True},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert sent.verb == "POST"
+    assert sent.url == "http://10.0.0.8:8766/api/v1/sessions/sess-1/actions/pin"
+    assert sent.used_rpc_fallback is False
+    assert sent.json_body == {"pinned": True}
+    dispatch = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server" / "dispatch.py"
+    text = dispatch.read_text(encoding="utf-8")
+    assert "ReqMethod.SESSION_PIN: handle_gateway_adapter" in text
+
+
 def test_session_delete_is_registered_for_rpc() -> None:
     dispatch = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server" / "dispatch.py"
     text = dispatch.read_text(encoding="utf-8")

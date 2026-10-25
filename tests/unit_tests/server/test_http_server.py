@@ -644,19 +644,62 @@ async def test_events_stream_starts_with_push_ready() -> None:
 async def test_events_stream_stays_open_until_the_client_leaves(monkeypatch) -> None:
     from jiuwenswarm.server.agent_http_routes import _event_frames
 
-    state = {"asleep": 0}
+    state = {"ticks": 0}
 
-    async def _sleep(_seconds: float) -> None:
-        state["asleep"] += 1
+    async def _wait_for(awaitable, timeout=None):
+        _ = timeout
+        state["ticks"] += 1
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()
+        raise asyncio.TimeoutError
 
     async def _gone() -> bool:
-        return state["asleep"] >= 2
+        return state["ticks"] >= 2
 
-    monkeypatch.setattr("jiuwenswarm.server.agent_http_routes.asyncio.sleep", _sleep)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.agent_http_routes.asyncio.wait_for",
+        _wait_for,
+    )
     request = SimpleNamespace(is_disconnected=_gone)
     frames = [frame async for frame in _event_frames(request)]
     assert "gateway.push_ready" in frames[0]
-    assert frames[1:] == [": keepalive\n\n"]
+    # 先等超时发 keepalive，再检查断开；因此至少两轮超时才会离开。
+    assert frames[1:] == [": keepalive\n\n", ": keepalive\n\n"]
+
+
+@pytest.mark.asyncio
+async def test_events_stream_forwards_http_hub_server_push() -> None:
+    from jiuwenswarm.server.agent_http_routes import _event_frames
+    from jiuwenswarm.server.gateway_push.http_hub import get_http_push_hub
+
+    hub = get_http_push_hub()
+    # 清掉其它测试可能留下的订阅，避免串扰。
+    for leftover in list(getattr(hub, "_subscribers")):
+        hub.unsubscribe(leftover)
+
+    seen: list[str] = []
+
+    async def _gone() -> bool:
+        return len(seen) >= 2
+
+    async def _consume() -> None:
+        request = SimpleNamespace(is_disconnected=_gone)
+        async for frame in _event_frames(request):
+            seen.append(frame)
+            if len(seen) >= 2:
+                break
+
+    task = asyncio.create_task(_consume())
+    for _ in range(50):
+        if hub.subscriber_count() >= 1:
+            break
+        await asyncio.sleep(0.01)
+    assert hub.subscriber_count() >= 1
+    assert hub.publish({"metadata": {"x-jiuwen-server-push": True}, "ok": True}) == 1
+    await asyncio.wait_for(task, timeout=2)
+    assert "gateway.push_ready" in seen[0]
+    assert "x-jiuwen-server-push" in seen[1]
 
 
 @pytest.mark.asyncio

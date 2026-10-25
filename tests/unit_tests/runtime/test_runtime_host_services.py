@@ -25,6 +25,26 @@ async def test_request_push_is_concurrent_and_restores_resident_host():
 
 
 @pytest.mark.asyncio
+async def test_scoped_false_falls_back_to_host_push() -> None:
+    """HTTP 聊天 scoped 只认 chat.file 时，cron 等推送应回退到进程级 send_push。"""
+    calls: list[str] = []
+
+    async def host(_message: dict) -> bool:
+        calls.append("host")
+        return True
+
+    async def scoped_reject(_message: dict) -> bool:
+        calls.append("scoped")
+        return False
+
+    host_services.install_runtime_push_handler(host)
+    message = {"request_id": "cron-1", "channel_id": "web", "session_id": "s"}
+    with host_services.scoped_runtime_push_handler(message, scoped_reject):
+        assert await host_services.send_runtime_push(message) is True
+    assert calls == ["scoped", "host"]
+
+
+@pytest.mark.asyncio
 async def test_reused_sdk_task_finds_current_route_without_cross_tenant_delivery():
     calls = []
     queue = asyncio.Queue()

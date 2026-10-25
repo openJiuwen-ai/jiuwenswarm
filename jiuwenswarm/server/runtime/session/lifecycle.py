@@ -367,6 +367,23 @@ def project_id_for(
     )
 
 
+def project_admission_snapshot(project_id: str) -> dict:
+    """定时任务准入要的项目快照：还在不在、有没有被隐藏、现在能不能跑。
+
+    读的是当前租户工作区里的项目名单和生命周期文件。调用方要先绑好租户。
+    """
+    project_id = validate_id(project_id)
+    value = state("project", project_id)
+    from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
+
+    project = get_project_by_id(project_id, cache_bust=True)
+    payload = projection("project", project_id, value=value)
+    payload["exists"] = project is not None
+    payload["hidden"] = bool(project is not None and project.hidden)
+    payload["operation"] = value.get("operation")
+    return payload
+
+
 def projection(
     kind: str,
     resource_id: str,

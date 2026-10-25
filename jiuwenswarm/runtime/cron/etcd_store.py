@@ -178,6 +178,8 @@ class EtcdCronJobStore:
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
+        group_id: str = "",
+        bot_id: str = "",
         credential_ref: str = "",
     ) -> CronJob:
         job = build_new_cron_job(
@@ -201,6 +203,8 @@ class EtcdCronJobStore:
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
             credential_ref=credential_ref,
         )
         async with self._lock:

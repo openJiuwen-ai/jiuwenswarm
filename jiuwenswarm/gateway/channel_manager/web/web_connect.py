@@ -1150,8 +1150,8 @@ class WebChannel(BaseWsChannel):
             return
 
         # ── 定时任务推 web：不绑定旧 session_id，以支持关闭 tab/换设备；但在
-        # AgentOS 下必须按 job.user_id 限定接收者。空 user_id 是历史单用户任务，
-        # 仍保持原有广播行为。
+        # AgentOS 下必须按 job.user_id 限定接收者。空 user_id，以及个人版没填
+        # 用户时落下的占位 default，都按单用户任务广播给当前网页连接。
         if (
             msg.event_type == EventType.CHAT_FINAL
             and isinstance(msg.payload, dict)
@@ -1159,18 +1159,28 @@ class WebChannel(BaseWsChannel):
         ):
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             cron_user_id = str(msg.payload.get("user_id") or "").strip()
-            clients = (
-                [ws for ws in self.clients if self.connection_user_id(ws) == cron_user_id]
-                if cron_user_id
-                else self.clients
-            )
+            # ``default`` 是个人版没填用户时写进任务的占位，不是登录名。
+            # 按它过滤会和当前网页连接对不上，结果只留在历史里，不刷新就看不到。
+            if not cron_user_id or cron_user_id == "default":
+                clients = list(self.clients)
+            else:
+                clients = [
+                    ws for ws in self.clients
+                    if self.connection_user_id(ws) == cron_user_id
+                ]
             for w in clients:
                 self._enqueue_send(w, frame)
-            logger.debug(
-                "[WebChannel] cron push broadcast to %d client(s) id=%s run_id=%s",
-                len(clients), getattr(msg, "id", ""),
-                (msg.payload.get("cron") or {}).get("run_id", ""),
-            )
+            run_id = (msg.payload.get("cron") or {}).get("run_id", "")
+            if not clients and self.clients:
+                logger.warning(
+                    "[WebChannel] cron push matched 0/%d client(s) id=%s run_id=%s user_id=%r",
+                    len(self.clients), getattr(msg, "id", ""), run_id, cron_user_id,
+                )
+            else:
+                logger.debug(
+                    "[WebChannel] cron push broadcast to %d client(s) id=%s run_id=%s",
+                    len(clients), getattr(msg, "id", ""), run_id,
+                )
             return
 
         # ── 主动推荐系统通知推 web：与 cron 推送同理——后端主动推、无前端 session_id 绑定，

@@ -655,6 +655,11 @@ class WebClient {
     this.sessionEventGate.dispatch(event);
   }
 
+  /** 把定时任务监听流上的帧送进现有 chat.* 处理。长连接模式用不到。 */
+  injectEvent(event: WsEvent): void {
+    this.dispatchEvent(event);
+  }
+
   private dispatchEventNow(event: WsEvent): void {
     const handlers = this.handlers.get(event.event);
     if (!handlers || handlers.size === 0) {

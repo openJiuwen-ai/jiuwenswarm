@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from jiuwenswarm.common.request_identity import apply_routing_metadata
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.gateway.routing.agent_client import DuplicateRequestIdError
 from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
@@ -13,7 +14,15 @@ from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
 def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
     watchers = {}
 
-    async def call(method, params, session_id, user_id):
+    async def call(method, params, session_id, user_id, ws=None):
+        # 企业版会话放在「群::机器人::用户」目录下。删除、归档只带用户时，
+        # 执行端会去 default 目录找，真实会话就报 session not found。
+        routing = getattr(ws, "_web_routing", None) if ws is not None else None
+        metadata = (
+            apply_routing_metadata(None, routing)
+            if isinstance(routing, dict)
+            else None
+        )
         return await fetch_agent_unary(
             agent_client=resolve_client(),
             req_method=ReqMethod(method),
@@ -22,6 +31,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
             user_id=user_id,
             channel_id=channel.channel_id,
             timeout_seconds=120,
+            metadata=metadata,
         )
 
     async def watch(user_id):
@@ -116,7 +126,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                     "completed_cron_job_ids",
                 }:
                     public[k] = v
-            ok, payload = await call(method, public, session_id, user_id)
+            ok, payload = await call(method, public, session_id, user_id, ws)
             await channel.send_response(
                 ws,
                 req_id,

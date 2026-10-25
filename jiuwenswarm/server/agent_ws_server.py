@@ -12097,11 +12097,10 @@ class AgentWebSocketServer:
 
         payload 格式与 AgentResponse.payload 一致，
         可含 event_type 等字段供 Gateway 转为 Message 派发到 Channel。
-        """
-        if self._current_ws is None or self._current_send_lock is None:
-            self._warn_push_without_gateway()
-            return False
 
+        企业版 runtime 模式没有 Gateway WebSocket：同一帧还会写入
+        ``events/stream`` 的 HttpPushHub，供 Gateway 的 SSE 推送环拉取。
+        """
         try:
             payload = msg.get("payload") if isinstance(msg, dict) else None
             if isinstance(payload, dict) and payload.get("event_type") == "chat.error":
@@ -12109,30 +12108,51 @@ class AgentWebSocketServer:
                 msg = {**msg, "payload": dict(payload)}
                 self._annotate_model_error(msg["payload"], msg.get("session_id"))
             wire = build_server_push_wire(msg)
-            async with self._current_send_lock:
-                sent_original = await send_wire_payload(self._current_ws, wire)
-            if not sent_original:
-                logger.warning(
-                    "[AgentWebSocketServer] send_push 内容过大已降级为错误帧: channel_id=%s",
-                    msg.get("channel_id", ""),
-                )
-                return False
-            response_kind = str(msg.get("response_kind") or "").strip()
-            if response_kind:
-                logger.info(
-                    "[AgentWebSocketServer] send_push response_kind wire sent: channel_id=%s kind=%s",
-                    msg.get("channel_id", ""),
-                    response_kind,
-                )
-            else:
-                logger.info(
-                    "[AgentWebSocketServer] send_push 已发送(E2A wire): channel_id=%s",
-                    msg.get("channel_id", ""),
-                )
-            return True
         except Exception as e:
-            logger.warning("[AgentWebSocketServer] send_push 失败: %s", e)
+            logger.warning("[AgentWebSocketServer] send_push 编码失败: %s", e)
             return False
+
+        delivered = False
+        if self._current_ws is not None and self._current_send_lock is not None:
+            try:
+                async with self._current_send_lock:
+                    sent_original = await send_wire_payload(self._current_ws, wire)
+                if sent_original:
+                    delivered = True
+                else:
+                    logger.warning(
+                        "[AgentWebSocketServer] send_push 内容过大已降级为错误帧: channel_id=%s",
+                        msg.get("channel_id", ""),
+                    )
+            except Exception as e:
+                logger.warning("[AgentWebSocketServer] send_push WS 失败: %s", e)
+
+        try:
+            from jiuwenswarm.server.gateway_push.http_hub import get_http_push_hub
+
+            if get_http_push_hub().publish(wire) > 0:
+                delivered = True
+        except Exception as e:
+            logger.warning("[AgentWebSocketServer] send_push HTTP hub 失败: %s", e)
+
+        if not delivered:
+            self._warn_push_without_gateway()
+            return False
+
+        self._reset_push_no_gateway_warning()
+        response_kind = str(msg.get("response_kind") or "").strip()
+        if response_kind:
+            logger.info(
+                "[AgentWebSocketServer] send_push response_kind wire sent: channel_id=%s kind=%s",
+                msg.get("channel_id", ""),
+                response_kind,
+            )
+        else:
+            logger.info(
+                "[AgentWebSocketServer] send_push 已发送(E2A wire): channel_id=%s",
+                msg.get("channel_id", ""),
+            )
+        return True
 
     def _warn_push_without_gateway(self) -> None:
         """无活跃 Gateway 连接时限流告警，避免生产者重试刷屏。"""

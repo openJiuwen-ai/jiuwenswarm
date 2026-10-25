@@ -4632,20 +4632,97 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     def _get_cron():
         return _resolve(cron_controller)
 
-    async def _get_owned_cron_job(cc, job_id: str, user_id: str | None):
-        """Return a job only when it belongs to the authenticated Web user.
+    _DEFAULT_CRON_PROJECT_IDS = {"default", "default_code"}
 
-        Empty ``user_id`` preserves the legacy unauthenticated single-user
-        behavior.  Authenticated connections must never access a different
-        user's job, including historical jobs whose owner is empty.
+    def _cron_requests_real_project(params) -> bool:
+        """选了具体项目才需要问 Agent。空编号和默认项目不用问。"""
+        raw = params if isinstance(params, dict) else {}
+        project_id = str(raw.get("project_id") or "").strip()
+        if project_id and project_id not in _DEFAULT_CRON_PROJECT_IDS:
+            return True
+        project_dir = raw.get("project_dir")
+        return isinstance(project_dir, str) and bool(project_dir.strip())
 
-        ``cc.get_job`` returns a plain dict (``CronJob.to_dict()``), so the
-        owner field must be read with ``dict.get``; ``getattr`` on a dict
-        always yields the empty default and would reject every authenticated
-        access with "job not found".  Keep the object fallback for tests and
-        callers that return ``CronJob``-like objects.
+    def _cron_agent_routing_metadata(ws):
+        """把这次网页连接上的三个身份交给 Agent，用来打开对应工作区。"""
+        from jiuwenswarm.common.request_identity import apply_routing_metadata
+
+        routing = getattr(ws, "_web_routing", None)
+        if not isinstance(routing, dict):
+            return None
+        return apply_routing_metadata(None, routing)
+
+    async def _bind_cron_project_on_agent(ws, params, user_id, session_id):
+        """问 Agent 核对项目。成功时把编号和工作模式写回 params。
+
+        返回 None 表示已经核对完。返回一条响应字典表示要直接回给网页。
         """
-        job = await cc.get_job(job_id)
+        from jiuwenswarm.gateway.routing.e2a_proxy import (
+            resolve_agent_cron_project_binding,
+        )
+
+        bound, binding = await resolve_agent_cron_project_binding(
+            agent_client=_resolve(agent_client),
+            params=params,
+            user_id=user_id,
+            channel_id="web",
+            session_id=session_id,
+            metadata=_cron_agent_routing_metadata(ws),
+        )
+        if not bound:
+            return {
+                "ok": False,
+                "error": str(binding.get("error") or "cron project binding failed"),
+                "code": str(binding.get("code") or "SERVICE_UNAVAILABLE"),
+            }
+        resolved_project_id = binding.get("project_id")
+        resolved_work_mode = binding.get("work_mode")
+        if (
+            not isinstance(resolved_project_id, str)
+            or not isinstance(resolved_work_mode, str)
+            or not resolved_work_mode.strip()
+        ):
+            return {
+                "ok": False,
+                "error": "invalid cron project binding",
+                "code": "BAD_REQUEST",
+            }
+        params.update({
+            "project_id": resolved_project_id,
+            "work_mode": resolved_work_mode,
+        })
+        params.pop("project_dir", None)
+        params["_agentos_project_binding_verified"] = True
+        return None
+
+    def _cron_owner_ids(user_id, params):
+        """修改、删除、开关、预览时传给控制器的三个身份。用户以连接为准。"""
+        raw = params if isinstance(params, dict) else {}
+        return {
+            "user_id": str(user_id or ""),
+            "group_id": str(raw.get("group_id") or ""),
+            "bot_id": str(raw.get("bot_id") or ""),
+        }
+
+    async def _get_owned_cron_job(cc, job_id: str, user_id: str | None, params=None):
+        """按用户、群、机器人取出一条任务。项目编号可以再收窄。
+
+        用户以这次连接为准，不采用请求参数里自报的用户。没登录时用户是空，
+        控制器会把它当成 default。群、机器人没写就是 default。
+        立即执行、编辑、停止、删除通常只带任务编号，这时不按项目筛，
+        否则绑了真实项目的任务会被当成不存在。请求里写了 project_id（含空串）才按那一个项目核对。
+
+        ``cc.get_job`` 返回的是字典。后面再对一次用户，是为了测试里的假控制器
+        即使忽略筛选参数，也不能让别的用户改这条任务。
+        """
+        raw = params if isinstance(params, dict) else {}
+        job = await cc.get_job(
+            job_id,
+            project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
+            user_id=str(user_id or ""),
+            group_id=str(raw.get("group_id") or ""),
+            bot_id=str(raw.get("bot_id") or ""),
+        )
         owner = str(user_id or "").strip()
         if job is None:
             return None
@@ -4661,13 +4738,20 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
-        # 按 web 连接 user_id 过滤:只返回该用户创建的定时任务(隔离)。
-        # 过滤在 controller 内进行,先于按属主路由的准入闸门,避免为其他
-        # 用户的沙箱冷启动/超时买单。user_id 为空(连接未带)时维持原行为
-        # (返回全部);agent 内部创建的 cron(user_id 空串)在带 user_id 的
-        # 连接下被过滤掉(对人类用户不可见)。
+        raw = params if isinstance(params, dict) else {}
+        # 总表和侧边栏不带项目编号，要这个人在每个项目下的任务。
+        # 显式带了 project_id（含空串）才按那一个项目收窄。
+        jobs = await cc.list_jobs(
+            project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
+            user_id=str(user_id or ""),
+            group_id=str(raw.get("group_id") or ""),
+            bot_id=str(raw.get("bot_id") or ""),
+        )
+        # 连接上带了用户时再对一下，避免列表里混进别的用户。
+        # 没带用户时，list_jobs 已经按 default 筛过。
         uid_str = str(user_id or "").strip()
-        jobs = await cc.list_jobs(user_id=uid_str or None)
+        if uid_str:
+            jobs = [j for j in jobs if str(j.get("user_id") or "").strip() == uid_str]
         # 可选按 project_id 过滤(支持 default/default_code 虚拟项目)
         if isinstance(params, dict):
             raw_pid = params.get("project_id")
@@ -4725,7 +4809,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        job = await _get_owned_cron_job(cc, job_id, user_id)
+        job = await _get_owned_cron_job(cc, job_id, user_id, params)
         if job is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -4741,7 +4825,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         try:
             from jiuwenswarm.gateway.routing.e2a_proxy import (
-                is_agentos_routing_client,
                 is_legacy_shared_directory_client,
             )
 
@@ -4755,11 +4838,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 登录免费模型绑定华为账号凭据句柄（与路由 user_id 是两套独立用户
             # 体系），用后即弃、不落任务数据。
             params["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
-            is_agentos = is_agentos_routing_client(_resolve(agent_client))
             # 仅共享目录单用户可由 Gateway 从 session metadata 补 project_dir。
-            # AgentOS 下 metadata 在目标 AgentServer 用户目录，Gateway 读部署目录会
-            # 误把任务归到默认项目；缺省时让目标 AgentServer / 显式 project_id 决定。
-            # 注意：显式传空串 "" 等价于归默认项目，不可覆盖——用 key presence 区分。
+            # 显式传空串 "" 等价于归默认项目，不可覆盖——用 key presence 区分。
             if (
                 is_legacy_shared_directory_client(_resolve(agent_client))
                 and "project_dir" not in params
@@ -4774,41 +4854,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                             params["project_dir"] = pd.strip()
                 except Exception:  # noqa: BLE001
                     pass
-            if is_agentos:
-                from jiuwenswarm.gateway.routing.e2a_proxy import (
-                    resolve_agent_cron_project_binding,
+            # 选了具体项目时，个人版和企业版都让 Agent 在调用者的工作区里核对。
+            # 没选项目不问，空编号由控制器当成默认项目。
+            if _cron_requests_real_project(params):
+                rejected = await _bind_cron_project_on_agent(
+                    ws, params, user_id, session_id
                 )
-
-                bound, binding = await resolve_agent_cron_project_binding(
-                    agent_client=_resolve(agent_client), params=params,
-                    user_id=user_id, channel_id="web", session_id=session_id,
-                )
-                if not bound:
+                if rejected is not None:
                     await channel.send_response(
                         ws, req_id, ok=False,
-                        error=str(binding.get("error") or "cron project binding failed"),
-                        code=str(binding.get("code") or "SERVICE_UNAVAILABLE"),
+                        error=rejected["error"], code=rejected["code"],
                     )
                     return
-                resolved_project_id = binding.get("project_id")
-                resolved_work_mode = binding.get("work_mode")
-                if (
-                    not isinstance(resolved_project_id, str)
-                    or not isinstance(resolved_work_mode, str)
-                    or not resolved_work_mode.strip()
-                ):
-                    await channel.send_response(
-                        ws, req_id, ok=False,
-                        error="invalid cron project binding",
-                        code="BAD_REQUEST",
-                    )
-                    return
-                params.update({
-                    "project_id": resolved_project_id,
-                    "work_mode": resolved_work_mode,
-                })
-                params.pop("project_dir", None)
-                params["_agentos_project_binding_verified"] = True
             job = await cc.create_job(params)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except Exception as e:  # noqa: BLE001
@@ -4831,26 +4888,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="patch must be object", code="BAD_REQUEST")
             return
         try:
-            from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-
-            if await _get_owned_cron_job(cc, job_id, user_id) is None:
+            if await _get_owned_cron_job(cc, job_id, user_id, params) is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
             patch = dict(patch)
-            # 仅当 patch 涉及 project 字段时才解析项目绑定（避免非项目字段的
-            # update 因用户侧项目解析失败而被整体拒绝；单用户不 resolve）。
-            has_project_fields = "project_id" in patch or "project_dir" in patch
-            if (
-                is_agentos_routing_client(_resolve(agent_client))
-                and has_project_fields
-            ):
-                from jiuwenswarm.gateway.routing.e2a_proxy import (
-                    resolve_agent_cron_project_binding,
-                )
-
-                existing = await _get_owned_cron_job(cc, job_id, user_id)
-                # 与 _get_owned_cron_job 相同的 dict/object 双态读取：
-                # 真实 CronController.get_job 返回 to_dict() 的 dict。
+            # 补丁里选了具体项目才问 Agent。只改时间、名称时不核对项目名单。
+            if _cron_requests_real_project(patch):
+                existing = await _get_owned_cron_job(cc, job_id, user_id, params)
                 existing_work_mode = str(
                     existing.get("work_mode", "")
                     if isinstance(existing, dict)
@@ -4863,40 +4907,25 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 )
                 binding_params = dict(patch)
                 binding_params.setdefault("work_mode", existing_work_mode)
-                bound, binding = await resolve_agent_cron_project_binding(
-                    agent_client=_resolve(agent_client), params=binding_params,
-                    user_id=user_id, channel_id="web", session_id=existing_session_id,
+                rejected = await _bind_cron_project_on_agent(
+                    ws, binding_params, user_id, existing_session_id
                 )
-                if not bound:
+                if rejected is not None:
                     await channel.send_response(
                         ws, req_id, ok=False,
-                        error=str(binding.get("error") or "cron project binding failed"),
-                        code=str(binding.get("code") or "SERVICE_UNAVAILABLE"),
-                    )
-                    return
-                resolved_project_id = binding.get("project_id")
-                resolved_work_mode = binding.get("work_mode")
-                if (
-                    not isinstance(resolved_project_id, str)
-                    or not isinstance(resolved_work_mode, str)
-                    or not resolved_work_mode.strip()
-                ):
-                    await channel.send_response(
-                        ws, req_id, ok=False,
-                        error="invalid cron project binding",
-                        code="BAD_REQUEST",
+                        error=rejected["error"], code=rejected["code"],
                     )
                     return
                 patch.update({
-                    "project_id": resolved_project_id,
-                    "work_mode": resolved_work_mode,
+                    "project_id": binding_params.get("project_id"),
+                    "work_mode": binding_params.get("work_mode"),
+                    "_agentos_project_binding_verified": True,
                 })
                 patch.pop("project_dir", None)
-                patch["_agentos_project_binding_verified"] = True
             # 登录会话 id（服务端专有键，见 _cron_job_create）：改选登录免费模型时
             # 重绑华为账号凭据句柄；无条件覆盖客户端传值。
             patch["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
-            job = await cc.update_job(job_id, patch)
+            job = await cc.update_job(job_id, patch, **_cron_owner_ids(user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -4916,7 +4945,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
         # proactive.tick job 由主动推荐开关自动创建/删除，禁止面板删除。
-        existing = await _get_owned_cron_job(cc, job_id, user_id)
+        existing = await _get_owned_cron_job(cc, job_id, user_id, params)
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -4928,7 +4957,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            deleted = await cc.delete_job(job_id)
+            deleted = await cc.delete_job(job_id, **_cron_owner_ids(user_id, params))
         except Exception as exc:
             from jiuwenswarm.gateway.embedded.runtime.session.lifecycle import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
@@ -4958,7 +4987,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
             return
         # proactive.tick job 的 enabled 由 config 开关驱动，禁止面板手动切换。
-        existing = await _get_owned_cron_job(cc, job_id, user_id)
+        existing = await _get_owned_cron_job(cc, job_id, user_id, params)
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -4970,7 +4999,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            job = await cc.toggle_job(job_id, bool(enabled))
+            job = await cc.toggle_job(job_id, bool(enabled), **_cron_owner_ids(user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -4989,10 +5018,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
         try:
-            if await _get_owned_cron_job(cc, job_id, user_id) is None:
+            if await _get_owned_cron_job(cc, job_id, user_id, params) is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
-            next_runs = await cc.preview_job(job_id, int(count) if count is not None else 5)
+            next_runs = await cc.preview_job(
+                job_id,
+                int(count) if count is not None else 5,
+                **_cron_owner_ids(user_id, params),
+            )
             await channel.send_response(ws, req_id, ok=True, payload={"next": next_runs})
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -5015,19 +5048,20 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 先取 job 拿 last_session_id（回退值），再触发 run_now 取 run_id
             # 对齐 chat.send 的 {accepted, session_id} 语义；首次执行 last_session_id
             # 为 None → session_id 空串（会话尚未就绪，前端轮询 cron.job.get 获取）
-            job = await _get_owned_cron_job(cc, job_id, user_id)
+            job = await _get_owned_cron_job(cc, job_id, user_id, params)
             if job is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
             run_info = await cc.run_now_info(job_id)
-            await channel.send_response(
-                ws, req_id, ok=True,
-                payload={
-                    "accepted": True,
-                    "run_id": run_info.get("run_id", ""),
-                    "session_id": run_info.get("session_id", ""),
-                },
-            )
+            payload = {
+                "accepted": True,
+                "run_id": run_info.get("run_id", ""),
+                "session_id": run_info.get("session_id", ""),
+            }
+            if run_info.get("reused_pending_session") or run_info.get("awaiting_approval"):
+                payload["awaiting_approval"] = True
+                payload["reused_pending_session"] = True
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
         except Exception as e:  # noqa: BLE001

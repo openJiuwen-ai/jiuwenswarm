@@ -87,6 +87,43 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
     assert payload["project_id"] == "default"
 
 
+@pytest.mark.asyncio
+async def test_session_delete_forwards_group_and_bot(monkeypatch):
+    """删除会话时把网页上的群、机器人交给执行端，否则企业版会去默认目录里找。"""
+    from jiuwenswarm.gateway.channel_manager.web import lifecycle_handlers
+
+    seen: dict = {}
+
+    async def fetch(**kwargs):
+        seen["metadata"] = kwargs.get("metadata")
+        return True, {"session_id": "sess_a", "project_id": "default"}
+
+    monkeypatch.setattr(lifecycle_handlers, "fetch_agent_unary", fetch)
+    methods = {}
+    channel = SimpleNamespace(
+        channel_id="web",
+        clients=[],
+        register_method=lambda name, fn: methods.update({name: fn}),
+        send_response=AsyncMock(),
+        send_event=AsyncMock(),
+    )
+    lifecycle_handlers.register_lifecycle_handlers(
+        channel, lambda: object(), lambda: None
+    )
+    ws = SimpleNamespace(
+        _web_routing={
+            "user_id": "zxy",
+            "group_id": "group-1",
+            "bot_id": "bot-1",
+        }
+    )
+    await methods["session.delete"](
+        ws, "req", {"session_id": "sess_a"}, None, "zxy"
+    )
+    assert seen["metadata"]["user_id"] == "zxy"
+    assert seen["metadata"]["routing"] == {"group_id": "group-1", "bot_id": "bot-1"}
+
+
 @pytest.fixture
 def archive(tmp_path, monkeypatch):
     root = tmp_path / "agent"

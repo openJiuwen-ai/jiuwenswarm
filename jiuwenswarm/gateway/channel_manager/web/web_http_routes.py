@@ -7,6 +7,7 @@ Registers onto the FastAPI app from ``web_channel_app``; does not build an app.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -318,6 +319,51 @@ def register_web_http_api_routes(
         if "text/event-stream" in accept:
             return await _stream(request, channel, "history.get", params)
         return await _history_json(request, channel, params)
+
+    @app.get(
+        "/api/v1/sessions/{session_id}/live",
+        tags=["sessions"],
+        summary="订阅正在执行的定时任务会话",
+    )
+    async def session_live(session_id: str, request: Request) -> Response:
+        """把定时任务的执行结果以 SSE 推给已经打开的会话页。
+
+        企业版页面没有个人版那种常驻长连接。执行会话编号以 ``cron_`` 或
+        ``__cron__`` 开头时才允许订阅，其它会话直接 404。登录校验由企业版
+        中间件完成。
+        """
+        sid = str(session_id or "").strip()
+        if not sid.startswith("cron_") and not sid.startswith("__cron__"):
+            return JSONResponse({"error": "not_cron_session"}, status_code=404)
+
+        from jiuwenswarm.gateway.cron.live_bus import cron_live_bus
+
+        queue = cron_live_bus.subscribe(sid, replay=True)
+
+        async def _frames() -> AsyncIterator[str]:
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        frame = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    event_name = str(frame.get("event") or "message")
+                    data = frame.get("payload") if isinstance(frame.get("payload"), dict) else frame
+                    yield _sse_pack(sid, event_name, data)
+            finally:
+                cron_live_bus.unsubscribe(sid, queue)
+
+        return StreamingResponse(
+            _frames(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.post(
         "/api/v1/chat/completions",

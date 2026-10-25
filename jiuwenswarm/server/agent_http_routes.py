@@ -347,13 +347,27 @@ def _stream_response(ctx: RequestContext, handler) -> StreamingResponse:
 
 
 async def _event_frames(request: Request):
-    """先告诉 Gateway 这条推送流已经接上，然后一直留着，直到对方断开。"""
-    yield _sse_frame({"event_type": "gateway.push_ready"})
-    while True:
-        await asyncio.sleep(15)
-        if await request.is_disconnected():
-            break
-        yield ": keepalive\n\n"
+    """Gateway 长连接：先报 push_ready，再转发本进程 ``send_push`` 的 wire。
+
+    runtime 模式下 Gateway 没有 WebSocket，cron / 主动推送都靠这条 SSE。
+    """
+    from jiuwenswarm.server.gateway_push.http_hub import get_http_push_hub
+
+    hub = get_http_push_hub()
+    queue = hub.subscribe()
+    try:
+        yield _sse_frame({"event_type": "gateway.push_ready"})
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                wire = await asyncio.wait_for(queue.get(), timeout=15.0)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            yield _sse_frame(wire)
+    finally:
+        hub.unsubscribe(queue)
 
 
 def _sse_frame(payload: dict[str, Any]) -> str:
