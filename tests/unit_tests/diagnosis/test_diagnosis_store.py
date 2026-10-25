@@ -39,7 +39,7 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
     assert not list((tmp_path / SESSION_ID / "diagnosis").glob("*.tmp"))
 
 
-def test_load_reads_records_written_before_signal_and_task_fields(tmp_path: Path) -> None:
+def test_load_reads_records_written_before_the_interface_switch(tmp_path: Path) -> None:
     import json
 
     store = DiagnosisStore(tmp_path)
@@ -47,17 +47,23 @@ def test_load_reads_records_written_before_signal_and_task_fields(tmp_path: Path
     store.save(record)
     path = next((tmp_path / SESSION_ID / "diagnosis").glob("*.json"))
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload.pop("task_description", None)
-    for cause in payload.get("root_causes", []):
-        cause.pop("signal", None)
+    payload.pop("trajectory_summary", None)
+    payload.pop("reward_failure_causes", None)
+    payload.pop("evolution_judge", None)
+    # Fields of the old contract are ignored instead of breaking the load.
+    payload["root_causes"] = [{"id": "rc-1", "category": "other", "summary": "old"}]
+    payload["suggestions"] = {"skills": []}
+    payload["headline"] = "old headline"
+    payload["task_description"] = "old task"
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     loaded = store.load(SESSION_ID, record.diagnosis_id)
 
     assert loaded is not None
-    assert loaded.task_description is None
+    assert loaded.trajectory_summary is None
+    assert loaded.reward_failure_causes == []
+    assert loaded.evolution_judge == []
     assert loaded.reward is None
-    assert all(cause.signal is None for cause in loaded.root_causes)
 
 
 def test_load_retries_a_read_that_overlaps_an_atomic_replace(
