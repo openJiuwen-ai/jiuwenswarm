@@ -11874,7 +11874,7 @@ class AgentWebSocketServer:
         )
         scopes = (reload_options or {}).get("reload_scopes") or []
         if applied and (not scopes or "model" in scopes):
-            return await self._jiuwenmate_web.refresh_models(config_payload)
+            self._jiuwenmate_web.schedule_model_refresh(config_payload)
         return applied
 
     async def _handle_agent_reload_config(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
@@ -11992,20 +11992,13 @@ class AgentWebSocketServer:
                 except Exception as exc:
                     logger.warning("[AgentWebSocketServer] proactive agent rebuild failed: %s", exc)
 
-            persistent_applied = True
-            if should_warm_tokenizers:
-                persistent_applied = await self._jiuwenmate_web.refresh_models(config_payload)
             payload = {"reloaded": True}
-            if not persistent_applied:
-                payload.update({
-                    "code": "PERSISTENT_MODELS_NOT_APPLIED",
-                    "error": "Model settings were saved, but some Persistent Agent configurations could not be "
-                             "applied; check unpublished edits or model availability.",
-                })
+            if should_warm_tokenizers:
+                payload["persistent_model_refresh"] = self._jiuwenmate_web.schedule_model_refresh(config_payload)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
-                ok=persistent_applied,
+                ok=True,
                 payload=payload,
             )
         except Exception as e:

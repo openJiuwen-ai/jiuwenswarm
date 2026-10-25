@@ -405,3 +405,11 @@ uv run --no-sync python -u -m pytest --no-cov -q -o log_cli=false --tb=short tes
 2026-10-21：一次独立只读审查指出共享凭据库副作用、准备中换绑通知丢失、配置变更与解绑恢复遗漏、二进制就绪核验不足及旧发布版本未补 Bash 的问题。核实后采用官方文件 SecretRef，不再执行共享凭据初始化；补齐新旧 Agent 通知、准备重跑、启动核对、版本检查及保留草稿的旧版本升级。取舍是额外维护办公目录外的私有凭据文件并在解绑 / 删除时清理，而不是引入宿主 Token 服务或修改个人版 CLI 驱动。
 
 2026-10-21：补充跨飞书私聊与群聊共享的 Agent 工作空间布局。发布 / 建立工作空间时确保 `output/` 存在；每次执行在构建 Invocation 前创建 `sessions/<session_id>/`，Bash 默认 cwd 和相对工作目录以该 Session 为基准，并向当前进程提供 `JIUWENMATE_OUTPUT_DIR`。普通中间文件放 Session 根目录，`.lark-slides/` 仅作为其中的 Lark Slides 专用目录，最终文件由 Agent 复制或移动到 `output/` 后通过 `share_file` 引用 `output/<文件名>`。Feishu 私聊与群聊的 `startup_scope` / `source_scope` 均授予 `workspace_read`、不授予 `workspace_write`；私聊原有 `workspace_knowledge_read` 保持不变。授权与工作空间仍按 namespace + Agent，不按群拆分。提示词和 cwd 不是 Bash 沙箱；旧的 Agent 根目录 `.lark-slides/` 不自动迁移或删除；宿主不自动提升最终文件或清理中间文件。实现与测试状态见本节后续记录及 JM-14-V-04。
+
+### 12.8 2026-10-23 内置系统提示词标题统一
+
+- **确认与方案：** 用户要求内置章节统一 H1，内部小节依次下级。办公目录、命令约定、网页读取、装配资源、飞书 CLI 与本次执行目录的生成入口统一改用 H1。上下文管理正文由 agent-core 按用户确认的五部分中英文指引注入，不在宿主复制。
+- **兼容边界：** 新发布在原人设之后加入 `<!-- jiuwenmate-host-guidance -->` 区域标记；旧配置按完整的宿主办公目录开头识别生成后缀，而非仅匹配标题。`refresh_builtin_tools` 只在生成区域升级已知章节，跳过其中的围栏示例，不改写人设中的同名标题，围栏状态也不从人设传入。命令章节同时识别 H1/H2 边界，防止覆盖相邻用户章节。能力刷新先处理内置章节，再替换自动飞书章节，避免首次补网页说明后，第二次刷新仅因顺序改变又生成新版本。未发布草稿和旧快照不变；不修改个人版、目录授权或文件交付。
+- **先红后绿与审查：** 两个 H1/H2 刷新用例和一个实际发布仓储用例先失败，再通过。独立只读审查指出仅凭标题会覆盖同名人设、未闭合人设围栏会导致不断追加章节；新增四个回归先失败，再用生成区域标记修复。验证章节不重复、用户人设 / 相邻章节 / 围栏原文不丢失、刷新幂等、草稿不被发布和旧快照不变。两个既有发布测试同步接受人设与宿主说明之间的区域标记。
+- **扩大回归：** 对 `test_bash_runtime.py`、`test_cli_capability_publication.py`、`test_resource_assembly.py`、`test_persistent_agent_service.py`、`test_session_scheduler.py` 执行 `python -m pytest <上述路径> --asyncio-mode=auto -o addopts='' -o log_cli=false -q --tb=short --show-capture=no`：最终 110 passed，5 failed。Bash / CLI 发布 / 调度三个文件独立回归 62 passed。未加 `--asyncio-mode=auto` 的首次运行另有 34 项未标记 async 测试运行失败；修正运行参数后消失，未改产品代码绕过。
+- **未通过项：** `test_each_colleague_gets_its_own_skill_copy_and_deletion_keeps_the_others`、`test_selected_knowledge_pages_are_copied_and_other_pages_stay_out`、`test_installed_catalog_lists_only_regular_pages_inside_the_context_root` 报 Windows 1314；`test_public_views_never_carry_model_credentials` 的 POSIX 0600 断言在 Windows 不成立；`test_an_unpublished_knowledge_page_refuses_publication` 报既有 IndexError。与本文件已有遗留类别一致，不计为通过。真实服务、模型和飞书未启动或调用。

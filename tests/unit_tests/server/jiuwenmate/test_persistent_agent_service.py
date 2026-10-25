@@ -337,7 +337,9 @@ def test_custom_colleague_gets_its_own_core_template_and_first_version(tmp_path)
     assert view.current_version == "v1" and not view.has_unpublished_changes
     assert template.agent_card.id == view.agent_id
     assert spec.card.id == view.agent_id
-    assert spec.system_prompt.startswith("你是研发同事。\n\n负责整理研发进展。" + WORKSPACE_PROMPT)
+    assert spec.system_prompt.startswith(
+        "你是研发同事。\n\n负责整理研发进展。\n\n<!-- jiuwenmate-host-guidance -->" + WORKSPACE_PROMPT
+    )
     assert spec.skills == ["report-writer"] and "已装配技能" in spec.system_prompt
     assert "群聊必须先由提问者私聊确认" not in spec.system_prompt
     assert set(spec.enabled_features) == {
@@ -456,7 +458,9 @@ def test_settings_change_only_affects_requests_after_publication(tmp_path):
 
     assert published.config_version == "v2"
     assert not service.get_colleague(NS, view.agent_id).has_unpublished_changes
-    assert v2.load_spec().system_prompt.startswith("你是研发同事，只输出要点。" + WORKSPACE_PROMPT)
+    assert v2.load_spec().system_prompt.startswith(
+        "你是研发同事，只输出要点。\n\n<!-- jiuwenmate-host-guidance -->" + WORKSPACE_PROMPT
+    )
     old_spec, _ = build_invocation(
         service.snapshot(NS, view.agent_id, pinned.config_version),
         pinned,
@@ -513,11 +517,7 @@ def test_publication_fills_the_formal_capacity_check(tmp_path):
     assert limits.available_input == spec.model_input_limit_tokens
 
 
-def test_publication_records_an_exact_tokenizer_for_a_known_model(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "jiuwenswarm.server.jiuwenmate.service.cache_formal_tokenizer",
-        lambda config: None,
-    )
+def test_publication_records_optional_offline_tokenizer_metadata(tmp_path):
     service = make_service(tmp_path, FakeModels(selections=("deepseek-flash#0",), default="deepseek-flash#0"))
     view = service.create_colleague(NS, settings(capabilities=CapabilitySelection(model="deepseek-flash#0")))
     config = service.current_snapshot(NS, view.agent_id).load_spec().context_engine_config
@@ -544,18 +544,21 @@ def test_publication_records_an_exact_tokenizer_for_a_known_model(tmp_path, monk
     ]
 
 
-def test_publication_refuses_a_tokenizer_that_cannot_be_cached(tmp_path, monkeypatch):
-    def unavailable(config):
-        raise PersistentAgentError("tokenizer artifact is unavailable: tokenizer_json_missing", code="INVALID_CONFIG")
+def test_publication_does_not_require_tokenizer_download_or_cache(tmp_path, monkeypatch):
+    from openjiuwen.core.context_engine.token.tokenizer_manager import TokenizerArtifactManager
 
-    monkeypatch.setattr("jiuwenswarm.server.jiuwenmate.service.cache_formal_tokenizer", unavailable)
+    def unavailable(*args, **kwargs):
+        pytest.fail("publication must not prepare or download tokenizer artifacts")
+
+    monkeypatch.setattr(TokenizerArtifactManager, "resolve", unavailable)
     service = make_service(tmp_path, FakeModels(selections=("deepseek-flash#0",), default="deepseek-flash#0"))
 
-    with pytest.raises(PersistentAgentError) as caught:
-        service.create_colleague(NS, settings(capabilities=CapabilitySelection(model="deepseek-flash#0")))
+    colleague = service.create_colleague(NS, settings(capabilities=CapabilitySelection(model="deepseek-flash#0")))
+    spec = service.current_snapshot(NS, colleague.agent_id).load_spec()
 
-    assert caught.value.code == "INVALID_CONFIG"
-    assert service.list_colleagues(NS) == []
+    assert spec.context_engine_config["enable_tokenizer_download"] is False
+    assert spec.context_engine_config["tokenizer_offline"] is True
+    assert spec.model.model_client_config.model_name == "deepseek-flash"
 
 
 def test_publication_keeps_a_configured_output_reserve(tmp_path):

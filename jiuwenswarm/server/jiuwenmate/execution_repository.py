@@ -30,6 +30,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import (
     SessionRecord,
 )
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError, require_identifier
+from jiuwenswarm.server.jiuwenmate.failure_notices import failure_notice_text
 from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, shared_output_file_name, workspace_output_key
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
@@ -114,6 +115,7 @@ CREATE TABLE IF NOT EXISTS result_deliveries (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     file_key TEXT,
+    notice_text TEXT,
     PRIMARY KEY (namespace_id, delivery_id),
     UNIQUE (namespace_id, request_id, output_id, channel, target_id)
 );
@@ -153,6 +155,16 @@ def _uuid_ids(prefix: str) -> Callable[[], str]:
     return lambda: prefix + uuid.uuid4().hex
 
 
+def _failure_of(event: AgentEvent) -> tuple[str, str | None] | None:
+    if event.event_type == EventType.EXECUTION_PAUSED and event.payload.reason in {
+        "error", "context_unfit", "budget_denied",
+    }:
+        return event.payload.reason, event.payload.detail
+    if event.event_type == EventType.EXECUTION_FINAL and event.payload.status == "failed":
+        return "error", event.payload.reason
+    return None
+
+
 class ExecutionRepository(SQLiteStore):
     """Session lookup, the per-Session Request queue and Execution attempts."""
 
@@ -171,6 +183,8 @@ class ExecutionRepository(SQLiteStore):
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(result_deliveries)")}
             if "file_key" not in columns:
                 conn.execute("ALTER TABLE result_deliveries ADD COLUMN file_key TEXT")
+            if "notice_text" not in columns:
+                conn.execute("ALTER TABLE result_deliveries ADD COLUMN notice_text TEXT")
         self._session_id = session_ids or _uuid_ids("sess_")
         self._request_id = request_ids or _uuid_ids("req_")
         self._execution_id = execution_ids or _uuid_ids("exe_")
@@ -571,6 +585,11 @@ class ExecutionRepository(SQLiteStore):
         record = RequestRecord.from_dict(json.loads(request["record_json"]))
         route = record.route_snapshot
         if route is None:
+            failure = _failure_of(event)
+            if failure is not None:
+                ExecutionRepository._enqueue_failure_notice(
+                    conn, record, event.execution_id, reason=failure[0], detail=failure[1], now=now,
+                )
             return
 
         for output_id in event.payload.output_refs:
@@ -599,6 +618,61 @@ class ExecutionRepository(SQLiteStore):
                     now.isoformat(),
                     now.isoformat(),
                 ),
+            )
+
+        failure = _failure_of(event)
+        if failure is not None:
+            ExecutionRepository._enqueue_failure_notice(
+                conn, record, event.execution_id, reason=failure[0], detail=failure[1], now=now,
+            )
+
+    @staticmethod
+    def _enqueue_failure_notice(
+        conn: sqlite3.Connection, record: RequestRecord, execution_id: str, *,
+        reason: str, detail: str | None, now: datetime,
+    ) -> None:
+        route = record.route_snapshot
+        # Missing external routing must not hide local status or invent a Feishu destination.
+        channel = route.channel if route is not None else "web"
+        target_id = route.target_id if route is not None else record.session_id
+        # Host status belongs to the outbox, not to agent candidate outputs.
+        conn.execute(
+            "INSERT OR IGNORE INTO result_deliveries (namespace_id, delivery_id, request_id, execution_id, "
+            "output_id, channel, target_id, status, idempotency_key, created_at, updated_at, notice_text) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.namespace_id, f"del_failure_{execution_id}", record.request_id, execution_id,
+                f"notice_{uuid.uuid4().hex}", channel, target_id,
+                "available" if channel == "web" else "pending", str(uuid.uuid4()),
+                now.isoformat(), now.isoformat(),
+                failure_notice_text(record.request_id, reason=reason, detail=detail),
+            ),
+        )
+
+    def record_execution_failure(
+        self, namespace_id: str, request_id: str, execution_id: str, *,
+        reason: str, detail: str | None, now: datetime,
+    ) -> None:
+        """Atomically close a host-failed request and save its notice, without fabricating a core event."""
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT r.record_json FROM requests r JOIN executions e "
+                "ON e.namespace_id=r.namespace_id AND e.request_id=r.request_id "
+                "WHERE r.namespace_id=? AND r.request_id=? AND e.execution_id=?",
+                (namespace_id, request_id, execution_id),
+            ).fetchone()
+            if row is None:
+                raise PersistentAgentError("failure does not belong to a stored Execution", code="NOT_FOUND")
+            self._enqueue_failure_notice(
+                conn, RequestRecord.from_dict(json.loads(row[0])), execution_id,
+                reason=reason, detail=detail, now=now,
+            )
+            # Recovery must not resume a known host failure between notice persistence
+            # and the scheduler's (idempotent) finish_request call.
+            conn.execute(
+                "UPDATE requests SET status = 'ended', outcome = 'failed', updated_at = ? "
+                "WHERE namespace_id = ? AND request_id = ? AND status = 'dispatched'",
+                (now.isoformat(), namespace_id, request_id),
             )
 
     @staticmethod
@@ -674,7 +748,7 @@ class ExecutionRepository(SQLiteStore):
         with self._transaction() as conn:
             rows = conn.execute(
                 "SELECT delivery_id, request_id, execution_id, output_id, channel, target_id, status, "
-                "idempotency_key, attempt_count, external_message_id, error_code, created_at, updated_at "
+                "idempotency_key, attempt_count, external_message_id, error_code, created_at, updated_at, notice_text "
                 "FROM result_deliveries WHERE namespace_id = ? AND request_id = ? ORDER BY rowid",
                 (namespace_id, request_id),
             ).fetchall()
@@ -714,7 +788,8 @@ class ExecutionRepository(SQLiteStore):
             rows = conn.execute(
                 "SELECT d.*, r.record_json, c.payload_json FROM result_deliveries d "
                 "JOIN requests r ON r.namespace_id = d.namespace_id AND r.request_id = d.request_id "
-                "JOIN candidate_outputs c ON c.namespace_id = d.namespace_id AND c.output_id = d.output_id "
+                "LEFT JOIN candidate_outputs c ON c.namespace_id = d.namespace_id AND c.output_id = d.output_id "
+                "AND c.request_id = d.request_id AND d.notice_text IS NULL "
                 f"WHERE d.namespace_id = ? AND d.channel IN ({channel_placeholders}) AND d.status = 'pending' "
                 + exclude_clause
                 + "ORDER BY d.created_at, d.rowid LIMIT ?",
@@ -730,7 +805,10 @@ class ExecutionRepository(SQLiteStore):
                         (now.isoformat(), namespace_id, row["delivery_id"]),
                     )
                     continue
-                payload = json.loads(row["payload_json"])
+                payload = (
+                    json.loads(row["payload_json"]) if row["payload_json"] is not None
+                    else {"share_mode": "message", "text": row["notice_text"]}
+                )
                 share_mode = payload.get("share_mode")
                 text = payload.get("text")
                 if not _deliverable(share_mode, payload):
@@ -863,12 +941,17 @@ class ExecutionRepository(SQLiteStore):
             rows = conn.execute(
                 "SELECT d.*, r.record_json, c.payload_json FROM result_deliveries d "
                 "JOIN requests r ON r.namespace_id=d.namespace_id AND r.request_id=d.request_id "
-                "JOIN candidate_outputs c ON c.namespace_id=d.namespace_id AND c.output_id=d.output_id "
+                "LEFT JOIN candidate_outputs c ON c.namespace_id=d.namespace_id AND c.output_id=d.output_id "
+                "AND c.request_id=d.request_id AND d.notice_text IS NULL "
                 "LEFT JOIN group_delivery_archives a ON a.namespace_id=d.namespace_id AND a.delivery_id=d.delivery_id "
                 "WHERE d.namespace_id=? AND d.status='delivered' AND d.channel='feishu' "
                 "AND a.delivery_id IS NULL " + position + "ORDER BY d.updated_at,d.delivery_id LIMIT ?", params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        jobs = [dict(row) for row in rows]
+        for job in jobs:
+            if job["payload_json"] is None and job["notice_text"] is not None:
+                job["payload_json"] = json.dumps({"share_mode": "message", "text": job["notice_text"]})
+        return jobs
 
     def mark_delivery_archived(self, namespace_id: str, delivery_id: str) -> None:
         with self._transaction() as conn:

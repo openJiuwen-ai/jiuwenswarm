@@ -5623,6 +5623,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     channel.register_method("config.moa_status", _config_moa_status)
+
+    async def _models_refresh_status(ws, req_id, params, session_id, user_id=None):
+        # Even shared-directory hosts must ask the worker that owns the queue.
+        await _proxy_config_request(
+            ws, req_id, params, session_id, user_id,
+            req_method=_ConfigReq.MODELS_REFRESH_STATUS,
+        )
+
+    channel.register_method("models.refresh_status", _models_refresh_status)
     _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
     _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)

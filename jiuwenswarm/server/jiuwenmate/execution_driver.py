@@ -25,7 +25,7 @@ from jiuwenswarm.server.jiuwenmate.conversation_search import ConversationSearch
 from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
 from jiuwenswarm.server.jiuwenmate.group_collaboration import build_group_execution_guidance
 from jiuwenswarm.server.jiuwenmate.group_search_cursor_repository import GroupSearchCursorRepository
-from jiuwenswarm.server.jiuwenmate.execution_models import ExecutionRecord, RequestState
+from jiuwenswarm.server.jiuwenmate.execution_models import ExecutionRecord, RequestRecord, RequestState
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.ports.budget import HostBudgetPort
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
@@ -83,7 +83,7 @@ def outcome_of(terminal: core.AgentEvent | None) -> str:
 def _session_workspace_guidance(session_id: str, session_workspace: Path, output_dir: Path) -> str:
     """Describe the per-Session draft directory and shared final-output directory to this Invocation."""
     return (
-        "## 本次执行的文件目录\n\n"
+        "# 本次执行的文件目录\n\n"
         f"本次 Session 的中间产物目录是 `{session_workspace}`（工作空间相对路径 `sessions/{session_id}/`）。"
         "普通中间文件直接放在该目录根下；仅 Lark Slides 专用的计划、截图等放在该目录的 `.lark-slides/`。"
         "不要读取或修改其他 Session 的草稿。\n"
@@ -287,6 +287,7 @@ class ExecutionDriver:
                     record.request_id,
                     execution.execution_id,
                 )
+                await self._record_failure(record, execution, reason="missing_terminal", detail=None)
             return outcome_of(terminal)
         except Exception as exc:
             logger.warning(
@@ -295,6 +296,7 @@ class ExecutionDriver:
                 execution.execution_id,
                 exc,
             )
+            await self._record_failure(record, execution, reason="error", detail=f"{type(exc).__name__}: {exc}")
             return "failed"
         finally:
             try:
@@ -311,3 +313,18 @@ class ExecutionDriver:
                         execution.execution_id,
                         exc,
                     )
+
+    async def _record_failure(
+        self, record: RequestRecord, execution: ExecutionRecord, *, reason: str, detail: str | None,
+    ) -> None:
+        if self._sessions is None:
+            return
+        try:
+            await asyncio.to_thread(
+                self._sessions.record_execution_failure,
+                record.namespace_id, record.request_id, execution.execution_id,
+                reason=reason, detail=detail, now=self._clock(),
+            )
+        except Exception:
+            logger.exception("[JiuwenMate] execution failure notice could not be persisted: request=%s",
+                             record.request_id)

@@ -142,6 +142,70 @@ def test_bash_publication_includes_webpage_fetch():
     assert module().refresh_builtin_tools(upgraded) == upgraded
 
 
+@pytest.mark.parametrize("level", ["#", "##"])
+def test_refresh_upgrades_host_headings_without_duplicating_or_consuming_user_sections(level):
+    runtime = module()
+    persona = "## 用户人设\n\n保留用户人设。\n"
+    example = "```markdown\n## 办公目录\n# 命令使用约定（非技术隔离）\n示例原文。\n```\n"
+    user_section = "# 用户补充约定\n\n保留用户约定。\n\n## 用户子标题\n保留子标题。\n"
+    fields = {
+        "tools": [{"type": "jiuwenmate.bash", "params": {"tools": []}}],
+        "system_prompt": (
+            persona + example + f"\n\n{level} 办公目录\n\n"
+            "你可以用 list_files 和 read_file 查看办公目录中的文件，用 write_file 和 edit_file 创建或修改文件。\n"
+            + f"\n{level} 命令使用约定（非技术隔离）\n\n过期命令约定。\n\n"
+            + user_section
+            + runtime.WEB_FETCH_PROMPT.replace("## 网页读取", "# 网页读取").replace(
+                "# 网页读取", f"{level} 网页读取"
+            )
+        ),
+    }
+    refreshed = runtime.refresh_builtin_tools(fields)
+    prompt = refreshed["system_prompt"]
+    assert prompt.startswith(persona + example)
+    assert user_section in prompt
+    assert "过期命令约定" not in prompt
+    host_prompt = prompt.split("<!-- jiuwenmate-host-guidance -->", 1)[1]
+    assert "\n# 办公目录\n" in host_prompt
+    assert host_prompt.count("\n# 命令使用约定（非技术隔离）\n") == 1
+    assert host_prompt.count("\n# 网页读取\n") == 1
+    assert "\n## 网页读取\n" not in host_prompt
+    assert runtime.refresh_builtin_tools(refreshed) == refreshed
+    assert "过期命令约定" in fields["system_prompt"]
+
+
+@pytest.mark.parametrize("level", ["#", "##"])
+def test_refresh_never_rewrites_persona_chapters_with_host_titles(level):
+    runtime = module()
+    persona = (
+        f"{level} 命令使用约定（非技术隔离）\n\n用户自定义命令约定。\n\n"
+        f"{level} 网页读取\n\n用户自定义网页约定。"
+    )
+    fields = {
+        "tools": [{"type": "jiuwenmate.bash", "params": {"tools": []}}],
+        "system_prompt": persona + "\n\n<!-- jiuwenmate-host-guidance -->"
+        + runtime.BASH_PROMPT + runtime.WEB_FETCH_PROMPT,
+    }
+    refreshed = runtime.refresh_builtin_tools(fields)
+    assert refreshed["system_prompt"].startswith(persona + "\n\n<!-- jiuwenmate-host-guidance -->")
+    assert runtime.refresh_builtin_tools(refreshed) == refreshed
+
+
+@pytest.mark.parametrize("fence", ["```python", "~~~~markdown"])
+def test_unclosed_persona_fence_does_not_duplicate_host_guidance(fence):
+    runtime = module()
+    persona = f"用户人设原文。\n{fence}\n尚未闭合的示例。"
+    fields = {
+        "tools": [{"type": "jiuwenmate.bash", "params": {"tools": []}}],
+        "system_prompt": persona + "\n\n<!-- jiuwenmate-host-guidance -->"
+        + runtime.BASH_PROMPT + runtime.WEB_FETCH_PROMPT,
+    }
+    refreshed = runtime.refresh_builtin_tools(fields)
+    assert refreshed["system_prompt"].startswith(persona)
+    assert refreshed["system_prompt"].count("\n# 命令使用约定（非技术隔离）\n") == 1
+    assert runtime.refresh_builtin_tools(refreshed) == refreshed
+
+
 def test_duplicate_bash_tool_is_rejected():
     from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
     with pytest.raises(PersistentAgentError):

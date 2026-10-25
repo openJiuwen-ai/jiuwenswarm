@@ -25,7 +25,7 @@ _KEY = "jiuwenmate.bash_runtime"
 PROVIDER = "jiuwenmate.bash"
 WEB_FETCH_PROVIDER = "core.web_fetch"
 BASH_PROMPT = (
-    "\n\n## 命令使用约定（非技术隔离）\n\n"
+    "\n\n# 命令使用约定（非技术隔离）\n\n"
     "可以使用 bash 运行必要的脚本和已准备的 CLI，默认工作目录为本次 Session 的私有草稿目录。"
     "普通中间文件直接放在本次 Session 目录；只有 Lark Slides 专用计划、截图等放在其中的 `.lark-slides/`。"
     "最终交付文件放到 Agent 工作空间共享的 `output/`，并用 `share_file` 登记 `output/<文件名>`。"
@@ -45,16 +45,76 @@ BASH_PROMPT = (
     "后台启动不表示完成；执行结束时后台命令会清理。文档创建成功与请求者获得访问权须分别核实。"
 )
 FULL_ACCESS_BASH_PROMPT = (
-    "\n\n## 命令使用约定\n\n"
+    "\n\n# 命令使用约定\n\n"
     "你可以使用 bash 运行必要的脚本、命令和联网操作。当前员工已启用完全访问，命令与文件工具都受服务进程的 OS 用户权限约束，"
     "不要尝试绕过操作系统权限。执行时仍优先使用本次 Session 草稿目录，最终交付文件放到 Agent 工作空间共享的 `output/`，"
     "并用 `share_file` 登记 `output/<文件名>`。不要读取、显示或复制 Secret、Token 和认证配置；不全局安装依赖。"
 )
 WEB_FETCH_PROMPT = (
-    "\n\n## 网页读取\n\n"
+    "\n\n# 网页读取\n\n"
     "消息中的 http 或 https 链接，先用 fetch_webpage 读取正文，再据此回答。"
     "读取失败时说明工具返回的原因，不要声称没有联网能力。不要用 bash 去访问网页。"
 )
+
+HOST_PROMPT_MARKER = "\n\n<!-- jiuwenmate-host-guidance -->"
+_LEGACY_WORKSPACE_START = re.compile(
+    r"\n\n#{1,2} 办公目录\n\n"
+    r"(?=你可以用 list_files 和 read_file 查看办公目录中的文件，用 write_file 和 edit_file 创建或修改文件。)"
+)
+
+_HOST_PROMPT_HEADINGS = frozenset({
+    "办公目录", "命令使用约定（非技术隔离）", "命令使用约定", "网页读取", "飞书 CLI",
+    "已装配技能", "已装配插件", "已装配连接器", "连接器附带说明", "已装配知识",
+})
+
+
+def _refresh_host_prompt(prompt: str, *, has_bash: bool, bash_prompt: str = BASH_PROMPT) -> str:
+    """Upgrade owned chapters, keeping custom headings and fenced examples intact."""
+    persona, marker, host_prompt = prompt.partition(HOST_PROMPT_MARKER)
+    if not marker:
+        # Older publications have no marker. The last canonical office block
+        # starts the generated suffix; a matching title alone proves no ownership.
+        legacy = list(_LEGACY_WORKSPACE_START.finditer(prompt))
+        if legacy:
+            start = legacy[-1].start()
+            persona, host_prompt = prompt[:start], prompt[start:]
+        else:
+            persona, host_prompt = prompt, ""
+    lines = host_prompt.splitlines(keepends=True)
+    boundaries: list[tuple[int, str]] = []
+    fence = ""
+    for index, line in enumerate(lines):
+        match = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line.rstrip("\r\n"))
+        if match:
+            marker, suffix = match.groups()
+            if not fence:
+                fence = marker
+            elif marker[0] == fence[0] and len(marker) >= len(fence) and not suffix.strip():
+                fence = ""
+            continue
+        if fence:
+            continue
+        heading = re.match(r"^#{1,2} (.+?)\r?\n?$", line)
+        if heading:
+            title = heading.group(1)
+            boundaries.append((index, title))
+            if title in _HOST_PROMPT_HEADINGS and line.startswith("## "):
+                lines[index] = line[1:]
+        elif line.startswith("<!-- jm-feishu-cli -->"):
+            boundaries.append((index, ""))
+    found_bash = False
+    for position in reversed(range(len(boundaries))):
+        start, title = boundaries[position]
+        if has_bash and title in {"命令使用约定（非技术隔离）", "命令使用约定"}:
+            end = boundaries[position + 1][0] if position + 1 < len(boundaries) else len(lines)
+            lines[start:end] = [bash_prompt.lstrip("\n") + "\n\n"]
+            found_bash = True
+    prompt = "".join(lines)
+    if has_bash and not found_bash:
+        prompt += bash_prompt
+    if WEB_FETCH_PROMPT not in prompt:
+        prompt += WEB_FETCH_PROMPT
+    return persona + HOST_PROMPT_MARKER + prompt
 
 
 def _without_web_fetch(tools: list[Any]) -> list[Any]:
@@ -92,19 +152,11 @@ def refresh_builtin_tools(fields: dict[str, Any]) -> dict[str, Any]:
             params["tools"] = nested
             updated.append({**item, "params": params})
     prompt = fields.get("system_prompt") or ""
+    has_bash = isinstance(updated, list) and any(
+        isinstance(item, dict) and item.get("type") == PROVIDER for item in updated
+    )
     bash_prompt = FULL_ACCESS_BASH_PROMPT if fields.get("permission_profile") == "full_access" else BASH_PROMPT
-    if isinstance(updated, list) and any(isinstance(item, dict) and item.get("type") == PROVIDER for item in updated):
-        # Replace only the host-generated section; keep the persona and other sections.
-        prompt, replaced = re.subn(
-            r"(?ms)^## 命令使用约定（非技术隔离）\n.*?(?=^## |^<!-- jm-feishu-cli -->|\Z)",
-            lambda _: bash_prompt.lstrip("\n") + "\n\n",
-            prompt,
-            count=1,
-        )
-        if not replaced:
-            prompt += bash_prompt
-    if WEB_FETCH_PROMPT not in prompt:
-        prompt += WEB_FETCH_PROMPT
+    prompt = _refresh_host_prompt(prompt, has_bash=has_bash, bash_prompt=bash_prompt)
     return {**fields, "tools": updated, "system_prompt": prompt}
 
 

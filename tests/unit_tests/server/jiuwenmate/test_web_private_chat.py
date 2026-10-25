@@ -365,7 +365,7 @@ async def test_proposed_outputs_are_not_shown_before_the_final_event(host):
 
 
 @pytest.mark.parametrize(("mode", "outcome"), [("ignored", "ignored"), ("raise", "failed")])
-async def test_unsuccessful_requests_show_no_reply(host, mode, outcome):
+async def test_failed_requests_show_a_notice_while_ignored_requests_stay_silent(host, mode, outcome):
     agent_id = await host.colleague()
     host.core.modes["今天进展"] = mode
     host.core.release("今天进展")
@@ -373,7 +373,12 @@ async def test_unsuccessful_requests_show_no_reply(host, mode, outcome):
     request = (await host.send(agent_id, "今天进展")).payload["request"]
     done = await host.settled(request["request_id"])
 
-    assert done["outcome"] == outcome and done["replies"] == []
+    assert done["outcome"] == outcome
+    if mode == "raise":
+        assert len(done["replies"]) == 1
+        assert "RuntimeError" in done["replies"][0] and request["request_id"] in done["replies"][0]
+    else:
+        assert done["replies"] == []
 
 
 async def test_a_shared_file_is_listed_with_a_download_link_to_its_retained_copy(host, monkeypatch):

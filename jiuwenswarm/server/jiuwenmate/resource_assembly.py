@@ -161,7 +161,7 @@ def assemble_resources(
             *plugin_rails,
         ]
         prompt += (
-            "\n\n## 已装配技能\n\n"
+            "\n\n# 已装配技能\n\n"
             f"所选技能和插件的副本在办公目录的 `{relative}/` 下，用相对路径读取。"
             "这些副本只属于这个同事，修改它们不会改动技能库原件。"
             "需要运行脚本或 CLI 时遵守命令使用约定，不使用 code 工具。"
@@ -172,20 +172,20 @@ def assemble_resources(
         fields["tools"] = list(plugin_tools)
     if plugin_tools or plugin_rails:
         prompt += (
-            "\n\n## 已装配插件\n\n"
+            "\n\n# 已装配插件\n\n"
             "所选插件的工具和护栏已经写入这个同事的当前发布版本，文件仍在已安装的插件包内。"
         )
     if configs:
         fields["mcps"] = configs
         prompt += (
-            "\n\n## 已装配连接器\n\n"
+            "\n\n# 已装配连接器\n\n"
             "所选连接器的配置和凭据只属于这个同事的当前发布版本，不写入进程环境变量，也不替换其他同事的连接。"
         )
     if manuals:
         manual_root = _materialize_skills(office, manuals, directory_name=_CONNECTOR_SKILL_DIR)
         relative = manual_root.relative_to(office).as_posix()
         prompt += (
-            "\n\n## 连接器附带说明\n\n"
+            "\n\n# 连接器附带说明\n\n"
             f"所选连接器附带的操作说明在办公目录的 `{relative}/` 下。"
             "这些说明只在执行对应连接器的任务时按相对路径读取。"
             "用户询问这个员工有哪些技能时，不要列举或清点这些说明，也不要把个人技能库里没有分配给这个员工的技能说成这个员工的技能。"
@@ -197,7 +197,7 @@ def assemble_resources(
         knowledge_root_relative = relative
         names = "、".join(f"`{item.name}`" for item in pages)
         prompt += (
-            "\n\n## 已装配知识\n\n"
+            "\n\n# 已装配知识\n\n"
             f"所选个人上下文页面的副本在办公目录的 `{relative}/` 下，页面为 {names}。"
             "用相对路径读取这些副本。未选择的个人上下文页面不在这个目录中，不要到个人上下文目录里继续读取。"
             "飞书私聊仅可读取本目录中的已选知识副本，不能读取办公目录其他内容；飞书群聊没有文件读取权限。"
@@ -248,7 +248,7 @@ def apply_feishu_skills(fields: dict[str, Any], office: Path, directories: tuple
         names = list(dict.fromkeys([*names, *chosen]))
         relative = root.relative_to(office).as_posix()
         prompt += (
-            "\n<!-- jm-feishu-cli -->\n## 飞书 CLI\n"
+            "\n<!-- jm-feishu-cli -->\n# 飞书 CLI\n"
             f"当前同事已绑定飞书应用，可使用 lark-cli。配套技能位于 `{relative}/`。"
             "先读取 `lark-shared` 和相关业务 Skill 的 SKILL.md。飞书应用级操作默认使用 bot；"
             "读取用户个人相关信息时，按 Skill 指引在当前同事独立的 CLI 配置中完成一次 `auth login`，并显式使用 `--as user`。"

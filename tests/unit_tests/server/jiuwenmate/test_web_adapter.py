@@ -293,7 +293,8 @@ def test_configured_model_catalog_carries_no_secret(monkeypatch):
 
 
 def test_web_gateway_does_not_forward_internal_jiuwenmate_methods():
-    methods = JiuwenMateWebAdapter.methods
+    # Refresh status has its own worker proxy, not the jiuwenmate.* forwarder.
+    methods = JiuwenMateWebAdapter.methods - {ReqMethod.MODELS_REFRESH_STATUS.value}
     internal_methods = {
         ReqMethod.JIUWENMATE_FEISHU_INBOUND.value,
         ReqMethod.JIUWENMATE_DINGTALK_INBOUND.value,

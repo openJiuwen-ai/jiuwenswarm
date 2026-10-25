@@ -1657,7 +1657,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.doesNotMatch(generalDefinition, /groupedRows|separatedRows/);
   assert.match(modelsDefinition, /id: 'model-manager',[\s\S]{0,80}separatedRows: true/);
   assert.doesNotMatch(modelsDefinition, /id: 'limited-free-models'|id: 'free-models'/);
-  assert.match(modelsSettings, /<FreeModelsSettings\s*\/>/);
+  assert.match(modelsSettings, /<FreeModelsSettings\b/);
   assert.match(modelsSettings, /settingsPanel\.models\.customModels/);
   assert.ok(
     modelsSettings.indexOf('<FreeModelsSettings') < modelsSettings.indexOf("settingsPanel.models.customModels"),
