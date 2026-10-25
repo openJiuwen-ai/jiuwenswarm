@@ -230,3 +230,26 @@ def test_sanitize_review_ui_value_handles_deep_non_traversal_path_promptly(
 
     assert sanitized["path"] == nested_path
     assert monotonic() - started_at < 1.0
+
+
+def test_sanitize_visible_text_redacts_windows_sandbox_artifact_paths():
+    """Windows drive-qualified stale paths must be redacted too.
+
+    The pattern used to accept only a ``/`` or ``~/`` prefix and ``/``
+    separators, so on Windows every stale ``.sandbox-artifacts`` path reached
+    model- and user-visible tool output unredacted.
+    """
+    for path in (
+        r"C:\ws\.sandbox-artifacts\sess_old\reports\old.pptx",
+        r"D:\work\proj\.sandbox-artifacts\sess_old\secret report.pdf",
+        "/tmp/ws/.sandbox-artifacts/sess_old/old.pptx",
+        r"C:\ws\.sandbox-artifacts/sess_old/mixed-separators.pptx",
+    ):
+        assert workspace_paths.sanitize_visible_text(
+            f"stale={path}", r"C:\ws"
+        ) == f"stale={STALE_SANDBOX_ARTIFACT_PATH}"
+
+    # Current workspace paths stay readable.
+    assert workspace_paths.sanitize_visible_text(
+        r"created C:\ws\reports\out.pptx", r"C:\ws"
+    ) == r"created C:\ws\reports\out.pptx"

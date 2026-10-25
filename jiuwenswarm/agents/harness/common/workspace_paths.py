@@ -42,11 +42,19 @@ _PATH_KEYS = frozenset(
     }
 )
 _SANDBOX_ARTIFACT_PATTERN = re.compile(
-    r"(?<![\w:/])"
-    r"(?:~/?|/)"
+    # Either a POSIX absolute / ~-relative form, or a Windows drive-qualified
+    # form. Both separator styles are accepted afterwards: on Windows the
+    # paths arrive as ``D:\ws\.sandbox-artifacts\...`` and the POSIX-only
+    # pattern never matched them, so stale sandbox paths leaked unredacted
+    # into model- and user-visible tool output.
+    r"(?:"
+    r"(?<![\w:/\\])(?:~?[\\/]|[\\/])"
+    r"|"
+    r"\b[A-Za-z]:[\\/]"
+    r")"
     r"[^'\"<>)\],;:\s\r\n]*"
-    r"\.sandbox-artifacts/[^'\"<>)\],;:\r\n]+"
-    r"(?:/[^'\"<>)\],;:\r\n]*)?"
+    r"\.sandbox-artifacts[\\/][^'\"<>)\],;:\r\n]+"
+    r"(?:[\\/][^'\"<>)\],;:\r\n]*)?"
 )
 _REVIEW_UI_POSIX_ABSOLUTE_PATH_PATTERN = re.compile(
     r"(?<![\w:/*])/(?!/)[^'\"<>)\],;:\s\r\n]+"
