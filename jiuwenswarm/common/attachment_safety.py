@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 _UNSAFE_FILENAME_CHARS = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]+')
 
@@ -36,7 +36,10 @@ _MAX_SESSION_ID_CHARS = 120
 
 def _sanitize_name(filename: str) -> str:
     """Strip directories and unsafe characters; return "" when nothing is left."""
-    name = Path(str(filename or "")).name.strip()
+    # PurePosixPath keeps this platform-independent: on Windows pathlib would
+    # treat "\" as a separator and silently drop directory parts, while the
+    # _UNSAFE_FILENAME_CHARS pass below is meant to replace them instead.
+    name = PurePosixPath(str(filename or "")).name.strip()
     name = _BIDI_CONTROL_CHARS.sub("", name)
     name = _UNSAFE_FILENAME_CHARS.sub("_", name)
     # Windows silently drops trailing dots and spaces; strip them so the stored
