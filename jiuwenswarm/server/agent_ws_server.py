@@ -7919,6 +7919,9 @@ class AgentWebSocketServer:
             if cursor_protocol:
                 if request_cursor is not None and not isinstance(request_cursor, str):
                     raise InvalidHistoryCursor("history cursor must be null or a string")
+                # Query-string / gateway may pass "" for a dropped null; treat as first page.
+                if isinstance(request_cursor, str) and not request_cursor.strip():
+                    request_cursor = None
                 data = await asyncio.to_thread(
                     self.get_conversation_history_cursor,
                     session_id,
