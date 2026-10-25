@@ -10,8 +10,9 @@ import type {
   DiagnosisStage,
   DiagnosisStatusEvent,
   DiagnosisSummary,
-  RootCause,
-  RootCauseCategory,
+  EvolutionJudge,
+  LegacyRootCause,
+  LegacyRootCauseCategory,
   StepRef,
   TtseTriggerResult,
 } from './diagnosisTypes';
@@ -28,37 +29,45 @@ export function stepRefKey(ref: Pick<StepRef, 'trace_id' | 'span_id'>): string {
   return `${ref.trace_id}:${ref.span_id}`;
 }
 
+function keysOf(refs: readonly StepRef[]): string[] {
+  return refs.map(stepRefKey);
+}
+
 /**
  * Return the span keys named by a diagnosis.
  *
- * Without `rootCauseIds`, this is every root-cause ref. Lane emphasis does
- * not use that set: see `laneHighlightKeys`.
+ * Without `findingIds`, this is every failure-cause and evolution-item ref
+ * (plus legacy root causes of older records). Lane emphasis does not use that
+ * set: see `laneHighlightKeys`.
  */
-export function highlightKeysOf(record: DiagnosisRecord | null, rootCauseIds?: readonly string[]): Set<string> {
+export function highlightKeysOf(record: DiagnosisRecord | null, findingIds?: readonly string[]): Set<string> {
   const keys = new Set<string>();
   if (record === null) return keys;
-  const wanted = rootCauseIds === undefined ? null : new Set(rootCauseIds);
-  for (const cause of record.root_causes) {
+  const wanted = findingIds === undefined ? null : new Set(findingIds);
+  for (const cause of record.reward_failure_causes ?? []) {
     if (wanted !== null && !wanted.has(cause.id)) continue;
-    for (const ref of cause.refs) keys.add(stepRefKey(ref));
+    for (const key of keysOf(cause.evidence)) keys.add(key);
+  }
+  for (const judge of record.evolution_judge ?? []) {
+    if (wanted !== null && !wanted.has(judge.id)) continue;
+    for (const key of keysOf(judge.evidence)) keys.add(key);
+  }
+  for (const cause of record.root_causes ?? []) {
+    if (wanted !== null && !wanted.has(cause.id)) continue;
+    for (const key of keysOf(cause.refs)) keys.add(key);
   }
   return keys;
 }
 
-/**
- * Span keys to emphasise on the trajectory lanes.
- *
- * Empty until the user focuses root causes. Highlighting every diagnosed
- * step as soon as a run finishes would fade the rest of the lane.
- */
+/** Span keys highlighted when one finding is focused from the diagnosis cards. */
 export function laneHighlightKeys(
   record: DiagnosisRecord | null,
-  focusedRootCauseIds: readonly string[] | null,
+  focusedFindingIds: readonly string[] | null,
 ): Set<string> {
-  if (record === null || focusedRootCauseIds === null || focusedRootCauseIds.length === 0) {
+  if (record === null || focusedFindingIds === null || focusedFindingIds.length === 0) {
     return new Set();
   }
-  return highlightKeysOf(record, focusedRootCauseIds);
+  return highlightKeysOf(record, focusedFindingIds);
 }
 
 function replaceStage(
@@ -73,12 +82,12 @@ function replaceStage(
   return next;
 }
 
-/** Replace the root causes of one signal with its latest set, keeping the rest in order. */
+/** Legacy per-signal root-cause update: replace one signal's causes, keep the rest in order. */
 function replaceSignalCauses(
-  causes: readonly RootCause[],
+  causes: readonly LegacyRootCause[],
   signalId: string | undefined,
-  latest: readonly RootCause[],
-): RootCause[] {
+  latest: readonly LegacyRootCause[],
+): LegacyRootCause[] {
   const rest = signalId === undefined ? causes : causes.filter(cause => cause.signal?.id !== signalId);
   return [...rest, ...latest];
 }
@@ -93,12 +102,25 @@ export function applyProgressEvent(record: DiagnosisRecord, event: DiagnosisProg
   if (event.diagnosis_id !== record.diagnosis_id) return { record, refetch: false };
   if (event.seq <= record.seq) return { record, refetch: false };
   if (event.seq !== record.seq + 1) return { record, refetch: true };
+  if (event.kind === 'reward_failure_causes') {
+    return {
+      record: { ...record, seq: event.seq, reward_failure_causes: event.reward_failure_causes ?? [] },
+      refetch: false,
+    };
+  }
+  if (event.kind === 'evolution_judge') {
+    return {
+      record: { ...record, seq: event.seq, evolution_judge: event.evolution_judge ?? [] },
+      refetch: false,
+    };
+  }
   if (event.kind === 'root_causes') {
+    // Legacy event of a record written before the switch.
     return {
       record: {
         ...record,
         seq: event.seq,
-        root_causes: replaceSignalCauses(record.root_causes, event.signal_id, event.root_causes ?? []),
+        root_causes: replaceSignalCauses(record.root_causes ?? [], event.signal_id, event.root_causes ?? []),
       },
       refetch: false,
     };
@@ -160,18 +182,19 @@ export function summaryOf(record: DiagnosisRecord): DiagnosisSummary {
     scope_kind: record.scope_kind,
     evaluate_artifact: record.evaluate_artifact,
     artifact_eval_applied: record.artifact_eval_applied,
+    trajectory_summary: record.trajectory_summary,
     headline: record.headline,
   };
 }
 
-/** Whether a root cause category reports the TTSE experience verdict. */
-export function isTtseCategory(category: RootCauseCategory): boolean {
-  return category === 'ttse_success' || category === 'ttse_partial' || category === 'ttse_fail';
+/** The experience evolution item of a record (at most one), the one TTSE can be triggered with. */
+export function experienceJudge(record: DiagnosisRecord): EvolutionJudge | null {
+  return (record.evolution_judge ?? []).find(judge => judge.category === 'experience') ?? null;
 }
 
-/** The experience root causes of a record, the ones TTSE can be triggered with. */
-export function ttseRootCauses(record: DiagnosisRecord): RootCause[] {
-  return record.root_causes.filter(cause => isTtseCategory(cause.category));
+/** The skill evolution items of a record, one per skill. */
+export function skillJudges(record: DiagnosisRecord): EvolutionJudge[] {
+  return (record.evolution_judge ?? []).filter(judge => judge.category === 'skill');
 }
 
 /** Merge TTSE trigger results into a record without touching other fields. */
@@ -198,6 +221,16 @@ export function resolveStepIds(
     (known.has(stepRefKey(ref)) ? found : missing).push(ref);
   }
   return { found, missing };
+}
+
+/** Legacy: whether a root-cause category reports the TTSE experience verdict. */
+export function isTtseCategory(category: LegacyRootCauseCategory): boolean {
+  return category === 'ttse_success' || category === 'ttse_partial' || category === 'ttse_fail';
+}
+
+/** Legacy: the experience root causes of a record written before the switch. */
+export function ttseRootCauses(record: DiagnosisRecord): LegacyRootCause[] {
+  return (record.root_causes ?? []).filter(cause => isTtseCategory(cause.category));
 }
 
 /** Convert a wall-clock hull in Unix milliseconds to an inclusive Unix-nanosecond range. */

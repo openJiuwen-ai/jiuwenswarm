@@ -95,15 +95,15 @@ export async function deleteDiagnosis(sessionId: string, diagnosisId: string): P
   await readResponse(await sendJson('DELETE', diagnosesPath(sessionId, `/${encodeURIComponent(diagnosisId)}`)));
 }
 
-/** Trigger TTSE experience generation with the selected experience root causes on the user's request. */
+/** Trigger TTSE experience generation with the experience evolution item on the user's request. */
 export async function triggerDiagnosisTtse(
   sessionId: string,
   diagnosisId: string,
-  rootCauseIds: string[],
+  evolutionJudgeId: string,
 ): Promise<Record<string, TtseTriggerResult>> {
   const payload = await readResponse(
     await sendJson('POST', diagnosesPath(sessionId, `/${encodeURIComponent(diagnosisId)}/ttse`), {
-      root_cause_ids: rootCauseIds,
+      evolution_judge_id: evolutionJudgeId,
     }),
   );
   if (!object(payload) || !object(payload.results)) throw invalid('TTSE result');

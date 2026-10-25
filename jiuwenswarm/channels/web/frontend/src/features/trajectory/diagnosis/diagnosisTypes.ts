@@ -1,8 +1,8 @@
 /**
  * Wire types of the trajectory diagnosis API.
  *
- * Mirrors docs/ai/design/轨迹诊断/01-接口与数据契约.md. Time points are
- * Unix-nanosecond decimal strings and every step is a span anchor.
+ * Mirrors 适配参考/12-诊断引擎接口.md. Time points are Unix-nanosecond
+ * decimal strings and every step is a span anchor.
  */
 
 export interface StepRef {
@@ -16,15 +16,7 @@ export interface StepRef {
 export type DiagnosisStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export type StageStatus = 'running' | 'completed' | 'failed' | 'skipped';
 export type ModeProfile = 'agent.work' | 'agent.code' | 'team';
-export type RootCauseCategory =
-  | 'skill_defect'
-  | 'ttse_success'
-  | 'ttse_partial'
-  | 'ttse_fail'
-  | 'tool_or_env'
-  | 'model_capability'
-  | 'requirement_unclear'
-  | 'other';
+export type EvolutionCategory = 'skill' | 'experience';
 
 export interface SelectionRange {
   subject_id: string;
@@ -49,6 +41,9 @@ export interface DiagnosisSummary {
   scope_kind: 'full' | 'selection';
   evaluate_artifact: boolean;
   artifact_eval_applied: boolean;
+  /** Narrative of the trajectory; also the record-row label. */
+  trajectory_summary?: string;
+  /** Legacy field of records written before the switch; used only as a fallback. */
   headline?: string;
 }
 
@@ -63,23 +58,11 @@ export interface DiagnosisStage {
   elapsed_ms?: number;
 }
 
-export interface DiagnosisEvidence {
-  artifact_eval?: {
-    applied: boolean;
-    skipped_reason?: string;
-    verdict?: 'pass' | 'partial' | 'fail';
-    score?: number;
-    summary?: string;
-    issues: Array<{ description: string; refs: StepRef[] }>;
-  };
-}
-
 /** Where a signal came from: a rule hit in tool output or a user message, or a Reward dimension. */
-export type SignalSource = 'keyword_tool' | 'keyword_user' | 'reward';
+export type SignalSource = 'keyword_tool' | 'keyword_user' | 'reward' | 'user';
 
-/** The diagnostic signal a root cause answers; absent on experience verdicts and on older records. */
+/** The diagnostic signal a failure cause answers (frontend badge only). */
 export interface SignalRef {
-  /** Root causes of one signal share the id. */
   id: string;
   source: SignalSource | string;
   /** `perfect` / `fair` / `weak` for Reward signals, `uncertain` for rule signals. */
@@ -90,43 +73,51 @@ export interface SignalRef {
   category?: string | null;
   /** Nodes where the problem surfaced (a hint, not the cause). */
   node_ids?: string[];
+  /** Original signal text, shown in the evidence fold; empty on older records. */
+  text?: string;
 }
 
-export interface RootCause {
+/** One deliverable-evaluation failure cause (interface section 4.3). */
+export interface RewardFailureCause {
   id: string;
-  category: RootCauseCategory;
-  subject_id: string;
-  refs: StepRef[];
+  /** The reward dimension requirement this cause answers. */
+  dimension: string;
   summary: string;
-  /** Text of the signal; plain text (raw tool output in rule mode), not Markdown. */
-  evidence: string;
-  /** Nullable: engines without a confidence model leave it unset. */
-  confidence?: number | null;
+  evidence: StepRef[];
+  suggestion: string[];
   signal?: SignalRef | null;
 }
 
-export interface SkillSuggestion {
-  id: string;
-  skill_name: string;
-  change_summary: string;
-  rationale: string;
-  message: string;
-  root_cause_ids: string[];
-  confidence: number;
-  selectable: boolean;
-  blocked_reason?: string;
+/** Per-signal detail behind one evolution item. */
+export interface RelatedSignalAttribution {
+  signal_id: string;
+  source: string;
+  tier: string;
+  category?: string | null;
+  score?: number | null;
+  node_ids: string[];
+  entries: Array<{ text_md: string; refs: StepRef[] }>;
 }
 
-/** Result of triggering TTSE with one experience root cause (`ttse_*` category). */
+/** One evolution item (interface section 4.4). */
+export interface EvolutionJudge {
+  id: string;
+  category: EvolutionCategory;
+  summary: string;
+  evidence: StepRef[];
+  suggestion: string[];
+  /** Skill: confidence 0-1; experience: 1.0 / 0.5 / 0.0. */
+  score: number;
+  target?: string | null;
+  outcome?: 'success' | 'partial' | 'fail' | null;
+  related_signals?: RelatedSignalAttribution[];
+}
+
+/** Result of triggering TTSE with one experience evolution item. */
 export interface TtseTriggerResult {
   result: 'triggered' | 'failed';
   message?: string;
   triggered_at: string;
-}
-
-export interface DiagnosisSuggestions {
-  artifact_fix?: { instruction: string; root_cause_ids: string[] };
-  skills: SkillSuggestion[];
 }
 
 export interface DiagnosisInput {
@@ -145,15 +136,69 @@ export interface DiagnosisRecord extends DiagnosisSummary {
   input: DiagnosisInput;
   seq: number;
   stages: DiagnosisStage[];
-  evidence: DiagnosisEvidence;
-  root_causes: RootCause[];
-  suggestions: DiagnosisSuggestions;
+  reward_failure_causes: RewardFailureCause[];
+  evolution_judge: EvolutionJudge[];
+  /** Experimental artifact-fix text (whole markdown block, A/B path). */
+  artifact_improvement?: string | null;
   ttse_trigger: Record<string, TtseTriggerResult>;
   error?: { code: string; message: string };
   /** Full Reward evaluation payload (``attribution.reward.v1``); absent in rule mode. */
   reward?: RewardPayload | null;
-  /** The task as the engine understood it; absent on older records. */
+
+  // ── legacy fields of records written before the switch (read-only fallback) ──
+  root_causes?: LegacyRootCause[];
+  suggestions?: LegacySuggestions;
+  evidence?: { artifact_eval?: LegacyArtifactEval };
   task_description?: string | null;
+}
+
+// ── legacy shapes (records written before the new interface) ──────────────────
+
+export type LegacyRootCauseCategory =
+  | 'skill_defect'
+  | 'ttse_success'
+  | 'ttse_partial'
+  | 'ttse_fail'
+  | 'tool_or_env'
+  | 'model_capability'
+  | 'requirement_unclear'
+  | 'other';
+
+export interface LegacyArtifactEval {
+  applied: boolean;
+  skipped_reason?: string;
+  verdict?: 'pass' | 'partial' | 'fail';
+  score?: number;
+  summary?: string;
+  issues: Array<{ description: string; refs: StepRef[] }>;
+}
+
+export interface LegacyRootCause {
+  id: string;
+  category: LegacyRootCauseCategory;
+  subject_id: string;
+  refs: StepRef[];
+  summary: string;
+  evidence: string;
+  confidence?: number | null;
+  signal?: SignalRef | null;
+}
+
+export interface LegacySkillSuggestion {
+  id: string;
+  skill_name: string;
+  change_summary: string;
+  rationale: string;
+  message: string;
+  root_cause_ids: string[];
+  confidence: number;
+  selectable: boolean;
+  blocked_reason?: string;
+}
+
+export interface LegacySuggestions {
+  artifact_fix?: { instruction: string; root_cause_ids: string[] };
+  skills: LegacySkillSuggestion[];
 }
 
 /** One Reward evaluation dimension carried by the ``reward`` payload. */
@@ -228,16 +273,19 @@ export interface DiagnosisProgressEvent {
   diagnosis_id: string;
   seq: number;
   stage_id: string;
-  kind: 'stage_started' | 'output_delta' | 'stage_finished' | 'root_causes';
+  kind: 'stage_started' | 'output_delta' | 'stage_finished' | 'reward_failure_causes' | 'evolution_judge' | 'root_causes';
   title?: string;
   text_delta?: string;
   status?: 'completed' | 'failed' | 'skipped';
   summary?: string;
   skip_reason?: string;
   elapsed_ms?: number;
-  /** `root_causes` events: the signal whose causes `root_causes` now holds in full. */
+  /** Whole-table replacement events: every item known so far. */
+  reward_failure_causes?: RewardFailureCause[];
+  evolution_judge?: EvolutionJudge[];
+  // legacy per-signal root-cause event
   signal_id?: string;
-  root_causes?: RootCause[];
+  root_causes?: LegacyRootCause[];
 }
 
 export interface DiagnosisStatusEvent {

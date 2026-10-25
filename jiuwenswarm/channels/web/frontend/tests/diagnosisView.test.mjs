@@ -2,25 +2,27 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  artifactSuggestion,
+  artifactSuggestionItems,
   causeNodeLabel,
   commentPoints,
   diagnosisTarget,
+  evidenceNodeLabel,
   filterRecords,
   findingCounts,
-  findingEvidence,
-  findingTag,
   formatElapsed,
   formatRecordTime,
   formatTimeWindow,
   isStageExpanded,
+  legacyArtifactInstruction,
   looksLikePath,
-  orderFindings,
   processSummary,
   recordIconKind,
   recordLabel,
   rewardOverview,
   rewardTier,
-  showCategoryBadge,
+  signalEvidenceBody,
+  signalEvidenceText,
   signalTier,
   splitLeadParagraph,
   splitRewardSignalText,
@@ -28,8 +30,9 @@ import {
   stageViews,
   stripLeadingHeading,
   suggestionsState,
-  ttseTier,
+  skillSuggestionText,
   unixNanoToMs,
+  usesLegacyFindings,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisView.mjs';
 
 const stage = (stageId, status) => ({ stage_id: stageId, title: stageId, status, output: '' });
@@ -98,7 +101,11 @@ test('record time is shown in local time and tolerates bad input', () => {
   assert.equal(formatRecordTime('not a date'), '');
 });
 
-test('a record row falls back to the scope label without a headline', () => {
+test('a record row prefers the trajectory summary, then the legacy headline, then the scope label', () => {
+  assert.equal(
+    recordLabel({ trajectory_summary: 'Ran the tests', headline: 'Tool failed', scope_kind: 'full' }, 'Entire'),
+    'Ran the tests',
+  );
   assert.equal(recordLabel({ headline: 'Tool failed', scope_kind: 'full' }, 'Entire'), 'Tool failed');
   assert.equal(recordLabel({ headline: '', scope_kind: 'full' }, 'Entire'), 'Entire');
   assert.equal(recordLabel({ scope_kind: 'selection' }, 'Selected'), 'Selected');
@@ -187,6 +194,21 @@ test('only Reward signals carry a tier, rule signals do not', () => {
   assert.equal(signalTier({ id: 's', source: 'reward' }), null);
 });
 
+test('the evidence text of a finding comes from the signal, empty when absent', () => {
+  assert.equal(signalEvidenceText({ id: 's', source: 'reward', text: ' 要求\n评语 ' }), '要求\n评语');
+  assert.equal(signalEvidenceText({ id: 's', source: 'reward' }), '');
+  assert.equal(signalEvidenceText(null), '');
+});
+
+test('the evidence body drops the requirement already shown as the dimension', () => {
+  const signal = { id: 's', source: 'reward', text: '要求 A\n评语 B' };
+  assert.equal(signalEvidenceBody(signal, '要求 A'), '评语 B');
+  assert.equal(signalEvidenceBody(signal, '要求 B'), '评语 B');
+  assert.equal(signalEvidenceBody({ id: 's', source: 'reward', text: '只有要求' }, '只有要求'), '');
+  assert.equal(signalEvidenceBody({ id: 's', source: 'reward', text: '原始命中' }, '别的维度'), '原始命中');
+  assert.equal(signalEvidenceBody(null, 'x'), '');
+});
+
 test('a Reward signal text splits into requirement and comment', () => {
   assert.deepEqual(splitRewardSignalText('测试应当通过\n仍有 2 个用例失败'), {
     requirement: '测试应当通过',
@@ -216,66 +238,92 @@ test('a heading the suggestion opens with is dropped, but never the only content
   assert.equal(stripLeadingHeading('  正文  '), '正文');
 });
 
-test('the category badge hides when it says nothing', () => {
-  assert.equal(showCategoryBadge({ category: 'other' }), false);
-  assert.equal(showCategoryBadge({ category: 'other', confidence: null }), false);
-  assert.equal(showCategoryBadge({ category: 'other', confidence: 0.4 }), true);
-  assert.equal(showCategoryBadge({ category: 'skill_defect' }), true);
-  assert.equal(showCategoryBadge({ category: 'ttse_fail' }), false);
-});
-
-test('findings keep the reported order and close with the experience verdict', () => {
-  const findings = orderFindings([
-    cause('a'),
-    cause('b', { category: 'ttse_partial' }),
-    cause('c'),
-  ]);
-  assert.deepEqual(findings.map(item => item.id), ['a', 'c', 'b']);
-});
-
-test('only attribution findings count as problems, the experience verdict is counted apart', () => {
-  assert.deepEqual(
-    findingCounts([cause('a'), cause('b', { category: 'ttse_fail' }), cause('c')]),
-    { issues: 2, experience: 1 },
+test('the node label joins the evidence refs of a failure cause', () => {
+  const ref = (spanId, nodeId) => ({ trace_id: 't', span_id: spanId, subject_id: 'main', node_id: nodeId });
+  assert.equal(
+    evidenceNodeLabel({ evidence: [ref('1', 'main:23'), ref('2', 'main:30'), ref('3', 'main:23')] }),
+    'main:23 → main:30',
   );
-  assert.deepEqual(findingCounts([]), { issues: 0, experience: 0 });
+  assert.equal(evidenceNodeLabel({ evidence: [] }), '');
 });
 
-test('a comment breaks into points at line breaks and full-width semicolons only', () => {
-  assert.deepEqual(commentPoints('画面一致；细节丰富\n - 色调温暖\n\n'), ['画面一致', '细节丰富', '色调温暖']);
-  assert.deepEqual(commentPoints('run a; b; c'), ['run a; b; c']);
-  assert.deepEqual(commentPoints('  '), []);
-});
-
-test('the lead tag is the verdict, the signal tier, or the signal source', () => {
-  assert.deepEqual(findingTag(cause('a', { category: 'ttse_partial' })), {
-    kind: 'experience',
-    tier: 'fair',
-    outcome: 'partial',
-  });
-  assert.deepEqual(findingTag(cause('b', { signal: { id: 's', source: 'reward', score: 60 } })), {
-    kind: 'signal',
-    tier: 'weak',
-    source: null,
-  });
-  assert.deepEqual(findingTag(cause('c', { signal: { id: 's', source: 'keyword_tool', tier: 'uncertain' } })), {
-    kind: 'signal',
-    tier: null,
-    source: 'keyword_tool',
-  });
-  assert.equal(findingTag(cause('d')), null);
-});
-
-test('the evidence of a finding is its signal: the Reward requirement and comment, or the raw rule hit', () => {
+test('findingCounts separates reward causes, skill suggestions and experience verdicts', () => {
   assert.deepEqual(
-    findingEvidence(cause('a', { signal: { id: 's', source: 'reward' }, evidence: '测试应当通过\n仍有 2 个失败' })),
-    { requirement: '测试应当通过', text: '仍有 2 个失败' },
+    findingCounts({
+      reward_failure_causes: [{}, {}],
+      evolution_judge: [{ category: 'skill' }, { category: 'skill' }, { category: 'experience' }],
+    }),
+    { causes: 2, skill: 2, experience: 1, legacy: false },
   );
+  assert.deepEqual(findingCounts({ reward_failure_causes: [], evolution_judge: [] }), {
+    causes: 0,
+    skill: 0,
+    experience: 0,
+    legacy: false,
+  });
   assert.deepEqual(
-    findingEvidence(cause('b', { signal: { id: 's', source: 'keyword_tool' }, evidence: 'Error: boom' })),
-    { requirement: '', text: 'Error: boom' },
+    findingCounts({ root_causes: [cause('a'), cause('b', { category: 'ttse_fail' })], reward_failure_causes: [], evolution_judge: [] }),
+    { causes: 1, skill: 0, experience: 1, legacy: true },
   );
-  assert.equal(findingEvidence(cause('c', { category: 'ttse_fail', evidence: '' })), null);
+});
+
+test('legacy records are detected when only root causes exist', () => {
+  assert.equal(usesLegacyFindings({ reward_failure_causes: [], evolution_judge: [], root_causes: [cause('a')] }), true);
+  assert.equal(
+    usesLegacyFindings({ reward_failure_causes: [{}], evolution_judge: [], root_causes: [cause('a')] }),
+    false,
+  );
+});
+
+test('artifactSuggestion joins cause suggestions, or uses the experimental whole block', () => {
+  const record = {
+    reward_failure_causes: [
+      { suggestion: ['first', ' '] },
+      { suggestion: ['second'] },
+    ],
+    artifact_improvement: 'legacy block',
+  };
+  assert.equal(artifactSuggestion(record, false), 'first\n\nsecond');
+  assert.equal(artifactSuggestion(record, true), 'legacy block');
+});
+
+test('a legacy artifact fix has its own outlet and never doubles the new card', () => {
+  const legacy = { reward_failure_causes: [], evolution_judge: [], suggestions: { artifact_fix: { instruction: 'old' } } };
+  assert.equal(artifactSuggestion(legacy, false), '');
+  assert.equal(legacyArtifactInstruction(legacy), 'old');
+  const current = {
+    reward_failure_causes: [{ suggestion: ['new'] }],
+    evolution_judge: [],
+    suggestions: { artifact_fix: { instruction: 'old' } },
+  };
+  assert.equal(legacyArtifactInstruction(current), '');
+});
+
+test('artifactSuggestionItems keeps cause order and the full attribution fields', () => {
+  const items = artifactSuggestionItems({
+    reward_failure_causes: [
+      {
+        id: 'rfc-1',
+        dimension: '正确性',
+        summary: '问题一',
+        evidence: [{ trace_id: 't', span_id: 's', subject_id: 'main', node_id: 'main:1' }],
+        suggestion: ['先修 A', ' ', '再修 B'],
+        signal: { id: 'diag-1', source: 'reward', score: 60 },
+      },
+      { id: 'rfc-2', dimension: '完整性', summary: '问题二', evidence: [], suggestion: [] },
+    ],
+  });
+  assert.deepEqual(items.map(item => item.id), ['rfc-1', 'rfc-2']);
+  assert.equal(items[0].text, '先修 A\n\n再修 B');
+  assert.equal(items[0].dimension, '正确性');
+  assert.equal(items[0].summary, '问题一');
+  assert.equal(items[0].signal.id, 'diag-1');
+  assert.equal(items[1].text, '问题二'); // defensive: an empty suggestion shows the summary
+});
+
+test('skillSuggestionText keeps the whole md_string block', () => {
+  assert.equal(skillSuggestionText({ suggestion: ['# a\n\n- b'] }), '# a\n\n- b');
+  assert.equal(skillSuggestionText({ suggestion: [] }), '');
 });
 
 test('the node label joins distinct node ids with an arrow', () => {
@@ -323,12 +371,6 @@ test('model request lines are split from the rest of a stage output', () => {
   assert.equal(view.requestLines.length, 3);
   assert.equal(view.body, '任务描述：装好依赖\n消息产物 main:0：先看 README');
   assert.deepEqual(splitStageOutput(''), { body: '', requestLines: [], requestCount: 0 });
-});
-
-test('ttseTier reads success as met, partial as fair and failure as missed', () => {
-  assert.equal(ttseTier('ttse_success'), 'perfect');
-  assert.equal(ttseTier('ttse_partial'), 'fair');
-  assert.equal(ttseTier('ttse_fail'), 'weak');
 });
 
 test('processSummary counts stages and adds their durations', () => {
