@@ -175,6 +175,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     ——复用父类按 mode 构建的 rail 表，只在其实例化前用白名单裁剪。
     """
 
+    # Keep image SDK initialization out of Flash's first model call path.
+    _defer_image_sdk_imports = True
+
     # ── flash 行为定义（类常量，仿 CodeAdapter._FIXED_RAIL_NAMES） ─────────
     # react/evolution 覆盖：深合并进 config_base 的 react 段。这些是 flash「单轮、
     # 无 task loop、无自演进」的定义性属性，非可调参数。
