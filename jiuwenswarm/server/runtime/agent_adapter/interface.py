@@ -1624,6 +1624,7 @@ class JiuWenSwarm:
         """Reload the agent and refresh active team shared skill links after async install."""
         await self.create_instance()
         self._refresh_team_shared_skill_links()
+        self.bump_skill_enabled_version()
 
     @staticmethod
     def _refresh_team_shared_skill_links(session_id: str | None = None) -> None:
@@ -1634,6 +1635,21 @@ class JiuWenSwarm:
             refresh_team_shared_skill_links_across_managers(session_id)
         except Exception as exc:
             logger.warning("[JiuWenSwarm] team shared skill link refresh failed: %s", exc)
+
+    def bump_skill_enabled_version(self) -> int | None:
+        """Mark live session SkillUseRail allow-lists stale after skill install/uninstall.
+
+        Session adapters catch up lazily on their next turn; see DeepAdapter
+        ``bump_skill_enabled_version`` / ``_refresh_session_skills_if_stale``.
+
+        Returns:
+            The new root stamp after a successful bump, or ``None`` when unused.
+        """
+        adapter = self._ensure_adapter()
+        bump = getattr(adapter, "bump_skill_enabled_version", None)
+        if callable(bump):
+            return bump()
+        return None
 
     async def refresh_enabled_skills_from_db(self) -> None:
         """企业账本变更后轻量刷新启用集（直读 DB + 重建 SkillUseRail）。
@@ -2406,15 +2422,23 @@ class JiuWenSwarm:
             _enterprise_web_handler = handler_name in _SKILLS_WEB_HANDLERS
             if handler_name == "handle_skills_skillnet_install" and payload.get("pending"):
                 _reload_after_skills = False
+            skills_changed = False
             if _enterprise_web_handler and payload.get("success") is not False:
                 if is_enterprise():
                     await self.refresh_enabled_skills_from_db()
+                    skills_changed = True
             elif _reload_after_skills and payload.get("success") is not False:
                 await self.create_instance()
                 self._refresh_team_shared_skill_links(request.session_id)
+                skills_changed = True
             elif handler_name == "handle_skills_uninstall" and payload.get("success"):
                 await self._refresh_skill_rails_after_change()
                 self._refresh_team_shared_skill_links(request.session_id)
+                skills_changed = True
+            if skills_changed:
+                # Root create_instance / refresh often no-ops on the chat path;
+                # bump so existing session adapters lazily rebuild SkillUseRail.
+                self.bump_skill_enabled_version()
         except Exception as exc:
             logger.error("[JiuWenSwarm] skills 请求处理失败: %s", exc)
             return AgentResponse(

@@ -489,3 +489,37 @@ async def test_scene_allow_does_not_bypass_aggregate_action_ask():
         await rail.resolve_interrupt(ctx, ctx.inputs.tool_call, None), InterruptResult
     )
     hook.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("permission_first", [True, False])
+async def test_todo_close_nudge_skips_action_projection(permission_adapter, permission_first):
+    from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
+        TODO_CLOSE_NUDGE_ID_PREFIX,
+    )
+    from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
+
+    _, rail = permission_adapter({"todo": "allow"})
+    todo_rail = FlashTodoRail()
+    todo_rail._open_todos = [("deliver", {"content": "发送 PPTX"})]
+    ctx = tool_context("todo", {}, call_id=f"{TODO_CLOSE_NUDGE_ID_PREFIX}abc")
+    order = [rail, todo_rail] if permission_first else [todo_rail, rail]
+    for each in order:
+        await each.before_tool_call(ctx)
+
+    assert ctx.extra.get("_skip_tool") is True
+    assert "[TODO_CLOSE_REQUIRED]" in str(ctx.inputs.tool_result)
+    assert "PERMISSION_DENIED" not in str(ctx.inputs.tool_result)
+
+
+@pytest.mark.asyncio
+async def test_forged_nudge_id_on_other_tool_still_checked(permission_adapter):
+    from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
+        TODO_CLOSE_NUDGE_ID_PREFIX,
+    )
+
+    _, rail = permission_adapter({"todo": "allow"})
+    ctx = tool_context("cron_flash", {"list": {}, "run": {"job_id": "a"}}, call_id=f"{TODO_CLOSE_NUDGE_ID_PREFIX}x")
+    await rail.before_tool_call(ctx)
+    assert ctx.extra.get("_skip_tool") is True
+    assert "PERMISSION_DENIED" in str(ctx.inputs.tool_result)

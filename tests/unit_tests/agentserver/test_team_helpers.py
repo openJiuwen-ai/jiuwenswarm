@@ -3616,7 +3616,8 @@ async def test_member_settle_edge_closes_stream_without_second_leader_final(monk
 
 
 @pytest.mark.anyio
-async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch):
+@pytest.mark.parametrize("usage_scope_location", ["payload", "metadata"])
+async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch, usage_scope_location):
     broadcasted: list[dict] = []
     ready_calls: list[tuple[str, str]] = []
 
@@ -3638,10 +3639,34 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
                         "input_tokens": 12,
                         "output_tokens": 3,
                         "total_tokens": 15,
+                        "model_name": "glm-5.3",
                     },
                 },
             },
             role=TeamRole.LEADER,
+            source_member="planner",
+        )
+        yield SimpleNamespace(
+            type="llm_usage",
+            payload={"usage_metadata": {
+                "model_name": "deepseek-v4.1-flash", "input_tokens": 10,
+                "output_tokens": 2, "total_tokens": 12,
+            }},
+            role=TeamRole.TEAMMATE,
+            source_member="analyst",
+        )
+        tool_usage = {
+            "usage_metadata": {
+                "model_name": "tool-model", "input_tokens": 8,
+                "output_tokens": 1, "total_tokens": 9,
+            },
+            "plan_name": "slides", "task_id": "task-slides", "stream_source_id": "pptxpage_1",
+        }
+        yield SimpleNamespace(
+            type="llm_usage",
+            payload=tool_usage if usage_scope_location == "payload" else {"metadata": tool_usage},
+            role=TeamRole.LEADER,
+            source_member="planner",
         )
         yield SimpleNamespace(
             type="answer",
@@ -3761,6 +3786,8 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
         "chat.processing_status",
         "team.runtime_ready",
         "chat.usage_metadata",
+        "chat.usage_metadata",
+        "chat.usage_metadata",
         'chat.final',
         'chat.reasoning',
         'chat.tool_call',
@@ -3778,11 +3805,26 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
                 "input_tokens": 12,
                 "output_tokens": 3,
                 "total_tokens": 15,
+                "model_name": "glm-5.3",
             },
         },
         "session_id": "sess-leader-only",
         "rid": 1,
         "role": TeamRole.LEADER.value,
+        "member_name": "planner",
+    }
+    assert [
+        (event["role"], event["member_name"], event["metadata"]["usage_metadata"]["model_name"])
+        for event in broadcasted if event["event_type"] == "chat.usage_metadata"
+    ] == [
+        ("leader", "planner", "glm-5.3"),
+        ("teammate", "analyst", "deepseek-v4.1-flash"),
+        ("leader", "planner", "tool-model"),
+    ]
+    tool_event = [event for event in broadcasted if event["event_type"] == "chat.usage_metadata"][-1]
+    assert tool_event["metadata"] == {
+        "usage_metadata": {"model_name": "tool-model", "input_tokens": 8, "output_tokens": 1, "total_tokens": 9},
+        "plan_name": "slides", "task_id": "task-slides", "stream_source_id": "pptxpage_1",
     }
     assert not any(event["event_type"] == "chat.llm_usage" for event in broadcasted)
     reasoning_event = next(event for event in broadcasted if event["event_type"] == "chat.reasoning")

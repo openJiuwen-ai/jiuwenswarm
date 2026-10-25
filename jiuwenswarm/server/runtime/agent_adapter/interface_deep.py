@@ -2532,6 +2532,17 @@ class _RequestMcpToolBuffers:
 
 
 _SESSION_ADAPTER_IDLE_TTL_ENV = "JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC"
+# Kill switch for lazy per-session SkillUseRail whitelist refresh after install.
+# Default on; set to 0/false/off/no to restore pre-fix behavior.
+_SKILL_SESSION_LAZY_REFRESH_ENV = "JIUWEN_SKILL_SESSION_LAZY_REFRESH"
+
+
+def _skill_session_lazy_refresh_enabled() -> bool:
+    """Whether install/uninstall should lazily refresh session SkillUseRail allow-lists."""
+    raw = os.environ.get(_SKILL_SESSION_LAZY_REFRESH_ENV)
+    if raw is None or not str(raw).strip():
+        return True
+    return str(raw).strip().lower() not in {"0", "false", "off", "no"}
 
 
 def _session_adapter_idle_ttl_default() -> int:
@@ -2808,6 +2819,12 @@ class JiuWenSwarmDeepAdapter:
         self._session_adapter_config_version: int = 0
         self._session_adapter_versions: dict[str, int] = {}
         self._session_adapter_reload_failures: dict[str, tuple[int, float]] = {}
+        # Skill allow-list stamp for enterprise prebuilt tenants: install bumps
+        # the root version; existing session adapters catch up lazily on the
+        # next turn (see ``_refresh_session_skills_if_stale``). No fan-out push.
+        self._skill_enabled_version: int = 0
+        self._session_skill_versions: dict[str, int] = {}
+        self._session_skill_refresh_failures: dict[str, tuple[int, float]] = {}
         self._pending_session_reload_config_base: dict[str, Any] | None = None
         self._pending_session_reload_env_overrides: dict[str, Any] | None = None
         # Hot-reload deferral: (config_base, env_overrides) while this adapter is busy.
@@ -3145,6 +3162,8 @@ class JiuWenSwarmDeepAdapter:
         self._session_adapter_last_used.pop(session_id, None)
         self._session_adapter_versions.pop(session_id, None)
         self._session_adapter_reload_failures.pop(session_id, None)
+        self._session_skill_versions.pop(session_id, None)
+        self._session_skill_refresh_failures.pop(session_id, None)
         clear_session_skill_state(session_id, local_only=True)
         self._forget_skill_sleep_session(session_id, adapter)
         if not remove_runtime_state:
@@ -3222,6 +3241,136 @@ class JiuWenSwarmDeepAdapter:
             return
         self._session_adapter_versions[session_id] = current_version
         self._session_adapter_reload_failures.pop(session_id, None)
+
+    def bump_skill_enabled_version(self) -> int | None:
+        """Mark session SkillUseRail allow-lists stale after workspace skill changes.
+
+        Root adapters own the stamp. Session-scoped children forward to the parent
+        so in-session install tools and facade RPCs share one counter per tenant.
+
+        Returns:
+            The new root stamp after a successful bump, or ``None`` when the
+            bump is a no-op (kill switch / non-prebuilt / missing parent).
+        """
+        if self._is_session_scoped_adapter:
+            parent = getattr(self, "_session_parent_adapter", None)
+            if parent is not None:
+                return parent.bump_skill_enabled_version()
+            return None
+        if not _skill_session_lazy_refresh_enabled():
+            return None
+        if not is_skill_prebuilt_tenant(self._agent_id, self._service_id):
+            return None
+        self._skill_enabled_version += 1
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] skill enabled version bumped to %s "
+            "(live_sessions=%s)",
+            self._skill_enabled_version,
+            len(self._session_adapters),
+        )
+        return self._skill_enabled_version
+
+    async def _on_installed_skills_changed(self) -> None:
+        """SkillToolkit callback after a successful ledger install/uninstall.
+
+        Bump the root stamp *before* awaiting refresh so a concurrent install
+        during the refresh window cannot make this session mark a newer stamp
+        than the allow-list it actually built. On success, stamp only
+        ``version_at_bump``; if the root moved further meanwhile, the session
+        stays stale and the next turn refreshes again.
+
+        Web/facade paths already call ``bump_skill_enabled_version`` after their
+        own refresh; keep bump out of ``refresh_enabled_skills_from_db`` to avoid
+        double-counting there.
+        """
+        # Ledger already changed before this notify; claim a stamp first.
+        version_at_bump = self.bump_skill_enabled_version()
+        refreshed = await self.refresh_enabled_skills_from_db()
+        if refreshed is False or version_at_bump is None:
+            return
+        if not self._is_session_scoped_adapter:
+            return
+        parent = getattr(self, "_session_parent_adapter", None)
+        if parent is None:
+            return
+        parent.mark_session_skills_current(
+            self._session_adapter_key(self._parent_session_id),
+            version_at_bump,
+        )
+
+    async def _refresh_session_skills_if_stale(
+        self,
+        session_id: str,
+        adapter: "JiuWenSwarmDeepAdapter",
+    ) -> None:
+        """Rebuild a session SkillUseRail when the root skill allow-list stamp moved.
+
+        Called at turn boundaries for an already-cached session adapter. New
+        sessions rebuild from the ledger in ``create_instance`` and only need
+        version bookkeeping (see ``mark_session_skills_current``).
+        """
+        if self._is_session_scoped_adapter:
+            return
+        if not _skill_session_lazy_refresh_enabled():
+            return
+        if not is_skill_prebuilt_tenant(self._agent_id, self._service_id):
+            return
+        current_version = self._skill_enabled_version
+        if self._session_skill_versions.get(session_id, 0) >= current_version:
+            return
+        failed = self._session_skill_refresh_failures.get(session_id)
+        if failed is not None:
+            failed_version, failed_at = failed
+            if (
+                failed_version == current_version
+                and time.monotonic() - failed_at
+                < self.SESSION_ADAPTER_RELOAD_RETRY_INTERVAL_SEC
+            ):
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] lazy session skill refresh retry suppressed: "
+                    "session_id=%s version=%s",
+                    session_id,
+                    current_version,
+                )
+                return
+        try:
+            refreshed = await adapter.refresh_enabled_skills_from_db()
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] lazy session skill refresh failed: "
+                "session_id=%s error=%s",
+                session_id,
+                exc,
+            )
+            self._session_skill_refresh_failures[session_id] = (
+                current_version,
+                time.monotonic(),
+            )
+            return
+        if refreshed is False:
+            self._session_skill_refresh_failures[session_id] = (
+                current_version,
+                time.monotonic(),
+            )
+            return
+        self.mark_session_skills_current(session_id, current_version)
+
+    def mark_session_skills_current(
+        self,
+        session_id: str,
+        version: int | None = None,
+    ) -> None:
+        """Record that ``session_id`` matches the root skill allow-list stamp.
+
+        Public so session-scoped children can stamp currency on the parent root
+        after an in-session install refresh (same pattern as
+        ``bump_skill_enabled_version``).
+        """
+        if self._is_session_scoped_adapter:
+            return
+        current = self._skill_enabled_version if version is None else version
+        self._session_skill_versions[session_id] = current
+        self._session_skill_refresh_failures.pop(session_id, None)
 
     async def _evict_idle_session_adapters(self) -> None:
         if self._is_session_scoped_adapter:
@@ -3444,9 +3593,15 @@ class JiuWenSwarmDeepAdapter:
                 existing = None
             if existing is not None:
                 await self._reload_session_adapter_if_stale(sid, existing)
+                await self._refresh_session_skills_if_stale(sid, existing)
                 self._touch_session_adapter(sid)
                 return existing
 
+            # Capture before create_instance awaits: a concurrent install may bump
+            # the root stamp while this session still builds SkillUseRail from the
+            # pre-bump ledger. Marking with the post-await stamp would sticky-skip
+            # lazy refresh; recording the create-time stamp self-heals on next turn.
+            version_at_create = self._skill_enabled_version
             adapter = self._new_session_scoped_adapter(
                 sid,
                 thread_id=(getattr(request, "thread_id", None) if request is not None else None),
@@ -3479,6 +3634,9 @@ class JiuWenSwarmDeepAdapter:
             # ``_reload_session_adapter_if_stale`` owns the version bookkeeping
             # (including the no-pending case, where it silently catches up).
             await self._reload_session_adapter_if_stale(sid, adapter)
+            # New session already rebuilt SkillUseRail from the ledger seen at
+            # create time; stamp that version (not the possibly-bumped current).
+            self.mark_session_skills_current(sid, version_at_create)
             # 服务重启 / adapter 被驱逐后重建时，context_engine 内存池为空，
             # 而 chat.send 主路径不会回灌磁盘 history.jsonl——继续历史会话时
             # 模型将拿到空上下文。这里在新建 adapter 后从磁盘恢复上下文
@@ -4370,6 +4528,14 @@ class JiuWenSwarmDeepAdapter:
         if self._model_request_config and hasattr(self._model_request_config, "model_name"):
             return self._model_request_config.model_name or "unknown"
         return "unknown"
+
+    def _resolve_usage_model_name(self) -> str:
+        """Report the active main model, including request-time Auto routing."""
+        react_agent = getattr(getattr(self, "_instance", None), "_react_agent", None)
+        model_name = getattr(getattr(react_agent, "_config", None), "model_name", None)
+        if isinstance(model_name, str) and model_name.strip():
+            return model_name.strip()
+        return self._resolve_model_name()
 
     def _resolve_session_git_snapshot(
         self,
@@ -9266,15 +9432,20 @@ class JiuWenSwarmDeepAdapter:
                 evolution_triggers["signal_trigger"],
             )
 
-    async def refresh_enabled_skills_from_db(self) -> None:
-        """workspace Skill 状态变更后刷新启用集并热替换 ``SkillUseRail``。"""
+    async def refresh_enabled_skills_from_db(self) -> bool:
+        """workspace Skill 状态变更后刷新启用集并热替换 ``SkillUseRail``。
+
+        Returns:
+            True when the allow-list is up to date (refreshed or not applicable);
+            False when a needed refresh could not be applied (caller may retry).
+        """
         if not is_skill_prebuilt_tenant(self._agent_id, self._service_id):
-            return
+            return True
         if self._instance is None:
             logger.debug(
                 "[JiuWenSwarmDeepAdapter] refresh_enabled_skills_from_db skipped: instance not ready"
             )
-            return
+            return False
 
         try:
             manager = self._skill_manager or SkillManager(
@@ -9288,7 +9459,7 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] list workspace enabled skills failed: %s",
                 exc,
             )
-            return
+            return False
 
         self._enabled_skills = [str(name) for name in names if str(name).strip()]
 
@@ -9329,7 +9500,7 @@ class JiuWenSwarmDeepAdapter:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] refresh_enabled_skills_from_db: SkillUseRail rebuild failed"
             )
-            return
+            return False
 
         old_unregistered = False
         if old_rail is not None:
@@ -9357,13 +9528,14 @@ class JiuWenSwarmDeepAdapter:
                         "[JiuWenSwarmDeepAdapter] restore old SkillUseRail after refresh failure failed: %s",
                         restore_exc,
                     )
-            return
+            return False
 
         self._skill_rail = new_rail
         logger.info(
             "[JiuWenSwarmDeepAdapter] enabled_skills refreshed from DB: count=%s",
             len(self._enabled_skills),
         )
+        return True
 
     async def _unconfigure_active_evolution_rails(self) -> None:
         """Remove cached single-agent evolution rails before rebuilding them."""
@@ -11417,7 +11589,7 @@ class JiuWenSwarmDeepAdapter:
                 manager=self._skill_manager,
                 service_id=self._service_id,
                 agent_id=self._agent_id,
-                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
+                on_installed_skills_changed=self._on_installed_skills_changed,
             )
             skill_tool_names: list[str] = []
             for tool in skill_toolkit.get_tools():
@@ -14718,7 +14890,7 @@ class JiuWenSwarmDeepAdapter:
             "event_type": "chat.usage_summary",
             "session_id": session_id,
             "usage": summary,
-            "model": self._resolve_model_name(),
+            "model": self._resolve_usage_model_name(),
         }
         context_usage_percent, context_window_tokens = self._context_usage_fields(session_id)
         if context_usage_percent is not None:
