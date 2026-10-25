@@ -11,10 +11,9 @@ import './styles/foundation.css'
 import './styles/themes/default/light.css'
 import './index.css'
 import './features/a2ui/a2ui.css'
-// Material Symbols Outlined 字体（@fontsource 静态切片 latin-400）：@a2ui/react 的 Icon
-// 组件靠字体连字（ligature）把 "favorite" 等名称渲染为图标；宿主缺字体时连字不生效，
-// 界面显示裸文字。静态切片随包自带，离线可用。
-import '@fontsource/material-symbols-outlined/latin-400.css';
+// Material Symbols Outlined 字体 import 已移至 features/a2ui/rendererRegistry.tsx
+// （与 Icon 渲染的消费方同处归置，对齐 relay-claw 侧结构；当前前端 a2ui 为静态引入链，
+// 字体仍在主 bundle，未来若做 a2ui 懒加载可随 chunk 一起拆出）
 import { getApiPrefix, resolveApiUrl } from './utils/env';
 /**
 * 安装全局 fetch 拦截器：配置了 VITE_API_PREFIX 时，自动为指向同源的相对路径请求

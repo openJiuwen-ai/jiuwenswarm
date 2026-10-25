@@ -246,6 +246,12 @@ def format_a2ui_for_text_channel(content: str, version: str = VERSION_0_8) -> st
 
 
 def format_content_for_channel(content: str, channel_id: str | None) -> str:
+    # web/officeclaw 是原生 a2ui 渲染渠道：直接透传原始 <a2ui-json> 块（前端自行提取渲染）。
+    # 注意 1：本函数当前全仓无生产调用方（历史遗留导出，网关侧
+    #   apply_non_web_text_fallback_to_payload 已是 no-op）；未来若接线，调用方必须先过
+    #   a2ui.enabled 配置门控，否则关闭态下 officeclaw 会把协议原文直接透传给用户。
+    # 注意 2：渠道集合与 integration._A2UI_CHANNEL_IDS 保持同步（protocol 不能反向
+    #   import integration——循环依赖，故此处内联字面量并加本注释锚定）。
     if str(channel_id or "").lower() in {"web", "officeclaw"}:
         return content
     spec = get_protocol_spec()

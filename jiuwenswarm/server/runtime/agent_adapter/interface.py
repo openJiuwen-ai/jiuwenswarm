@@ -80,6 +80,7 @@ from jiuwenswarm.common.utils import (
 from jiuwenswarm.server.runtime.a2ui.integration import (
     finalize_assistant_response_if_a2ui,
     is_a2ui_channel,
+    is_a2ui_probe_channel,
 )
 from jiuwenswarm.server.runtime.a2ui.protocol import is_a2ui_client_event
 from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
@@ -3487,12 +3488,20 @@ class JiuWenSwarm:
 
             team_query_is_interactive_input = isinstance(inputs.get("query"), InteractiveInput)
             # a2ui client_event / InteractiveInput 请求豁免 raw_query 覆写（max评审#2，判定见纯函数）
-            if not _should_skip_team_raw_override(inputs, request):
+            skip_raw_override = _should_skip_team_raw_override(inputs, request)
+            if not skip_raw_override:
                 inputs["query"] = raw_query
-            logger.info(
-                "[JiuWenSwarm] Team模式使用原始query: %s",
-                raw_query[:100] if isinstance(raw_query, str) and raw_query else type(inputs.get("query")).__name__,
-            )
+                logger.info(
+                    "[JiuWenSwarm] Team模式使用原始query: %s",
+                    raw_query[:100] if isinstance(raw_query, str) and raw_query else type(inputs.get("query")).__name__,
+                )
+            else:
+                # 豁免分支单独文案：此时 query 是转换后的成品 prompt（a2ui client_event）
+                # 或 InteractiveInput，若仍打「使用原始query」会误导排障
+                logger.info(
+                    "[JiuWenSwarm] Team模式豁免raw_query覆写(a2ui client_event/InteractiveInput)，保留转换后query: type=%s",
+                    type(inputs.get("query")).__name__,
+                )
 
         # cloud memory: before chat hook
         if memory_mode == "cloud":
@@ -3740,10 +3749,11 @@ class JiuWenSwarm:
         suppress_a2ui_stream = False
         a2ui_pending_render_sent = False
         a2ui_stream_probe = ""
-        a2ui_probe_enabled = str(cid or "").strip().lower() == "web"
+        # probe 渠道白名单收口在 integration._A2UI_PROBE_CHANNEL_IDS（当前仅 web）。
         # officeclaw (relay-claw) 不发 a2ui probe pending chunk：relay-claw 前端用
         # parseA2UIContent 从文本提取 <a2ui-json> 块，probe 插入的 <a2ui-json>\n
-        # 会与 agent 原始块重复，污染累积 content 致前端提取失败。probe 仅 web channel 需要。
+        # 会与 agent 原始块重复，污染累积 content 致前端提取失败。
+        a2ui_probe_enabled = is_a2ui_probe_channel(cid)
         _yielded_from_queue = 0
         logger.info(
             "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s is_first=%s",
