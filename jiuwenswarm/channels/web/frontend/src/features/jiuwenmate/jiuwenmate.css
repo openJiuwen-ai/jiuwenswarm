@@ -2162,6 +2162,52 @@
   justify-content: space-between;
 }
 
+.jiuwenmate-composer__permission {
+  position: relative;
+}
+
+.jiuwenmate-composer__permission-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  display: grid;
+  width: 260px;
+  max-width: calc(100vw - 40px);
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--jm-border);
+  border-radius: 10px;
+  background: var(--jm-surface);
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__permission-option {
+  display: flex;
+  width: 100%;
+  height: auto;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.jiuwenmate-composer__permission-option[aria-checked='true'] {
+  background: var(--jm-muted);
+}
+
+.jiuwenmate-composer__permission-option strong {
+  color: var(--jm-text);
+  font-size: 12px;
+}
+
+.jiuwenmate-composer__permission-option small {
+  color: var(--jm-text-3);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
 .jiuwenmate-composer__toolbar button,
 .jiuwenmate-composer__model {
   display: inline-flex;
@@ -2332,6 +2378,65 @@
   flex-shrink: 0;
   color: var(--jm-text-3);
   font-size: 12px;
+}
+
+.jiuwenmate-chat-approval {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 520px);
+  margin-left: 30px;
+  padding: 12px;
+  border: 1px solid var(--jm-border-strong);
+  border-radius: 10px;
+  background: var(--jm-surface-muted);
+  font-size: 12px;
+}
+
+.jiuwenmate-chat-approval > strong {
+  font-size: 13px;
+}
+
+.jiuwenmate-chat-approval__call {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--jm-surface);
+}
+
+.jiuwenmate-chat-approval__call pre {
+  max-height: 120px;
+  overflow: auto;
+  margin: 0;
+  color: var(--jm-text-2);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.jiuwenmate-chat-approval__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.jiuwenmate-chat-approval__actions button {
+  padding: 6px 10px;
+  border: 1px solid var(--jm-border-strong);
+  border-radius: 6px;
+  background: var(--jm-surface);
+  color: var(--jm-text-1);
+  cursor: pointer;
+}
+
+.jiuwenmate-chat-approval__actions button:first-child {
+  border-color: var(--jm-blue);
+  background: var(--jm-blue);
+  color: #fff;
+}
+
+.jiuwenmate-chat-approval__actions button:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .jiuwenmate-chat-status {
@@ -4281,6 +4386,19 @@
 .jiuwenmate-profile__reply-mode-copy small {
   font-size: 11px;
   line-height: 1.4;
+}
+
+.jiuwenmate-profile__reply-mode-options--permissions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: min(100%, 720px);
+}
+
+.jiuwenmate-profile__permission-warning {
+  width: min(100%, 720px);
+  margin: 4px 0 0;
+  color: var(--jm-text-2);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .jiuwenmate-profile__resource-grid {

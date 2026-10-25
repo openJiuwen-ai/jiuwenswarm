@@ -114,6 +114,19 @@
         "awaiting": "Interrupted by a server restart; waiting to continue",
         "awaitingUnverified": "Interrupted by a server restart; waiting to continue. {{count}} tool call results are unconfirmed"
       },
+      "approval": {
+        "title": "The employee requests permission for these tool calls",
+        "expires": "Approve before {{time}}. The request is denied after it expires.",
+        "truncated": "Arguments are truncated. Approval still applies only to this complete call.",
+        "approveOne": "Allow this call once",
+        "rejectAll": "Reject all calls",
+        "status": {
+          "approved": "Approved; resuming",
+          "rejected": "Rejected",
+          "expired": "Expired and rejected",
+          "consumed": "Finished"
+        }
+      },
       "control": {
         "stopping": "Stopping…",
         "cancelling": "Cancelling…",
@@ -256,6 +269,7 @@
         "knowledge": "Knowledge",
         "mail": "Email",
         "channels": "Channels",
+        "permissions": "Permissions",
         "schedules": "Scheduled tasks"
       },
       "edit": "Edit persona",
@@ -303,6 +317,23 @@
         "passiveHint": "Reply only when mentioned in a Feishu group.",
         "adaptive": "Adaptive",
         "adaptiveHint": "Reply when mentioned, and assess other group messages based on the agent's role and responsibilities."
+      },
+      "permissions": {
+        "title": "Employee permissions",
+        "description": "Permissions are stored per employee and apply to new tasks after publishing.",
+        "profiles": {
+          "default": "Default",
+          "automatic": "Smart approval",
+          "full_access": "Full access"
+        },
+        "profileHints": {
+          "default": "Restricted workspace access. The task initiator confirms requests for additional access.",
+          "automatic": "Evaluates each tool call; low confidence or evaluation failures require human approval.",
+          "full_access": "Can access files available to the host account and run network commands."
+        },
+        "approvalTimeout": "Manual approval applies to the current tool calls only and is denied after 15 minutes.",
+        "fullAccessWarning": "Full access opens all files available to the host OS account and permits network commands. Enable only for trusted employees.",
+        "fullAccessConfirm": "Full access opens all files available to the host OS account and permits network commands. Enable it for this employee?"
       },
       "feishuHint": "Authorize the agent and monitor its activity.",
       "authorize": "Authorize",

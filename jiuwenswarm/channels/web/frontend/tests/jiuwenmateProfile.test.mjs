@@ -88,6 +88,21 @@ test('the employee mail page gives a short connection note', () => {
   assert.match(markup, /<button[^>]*disabled=""[^>]*data-testid="jiuwenmate-profile-mail-start"/);
 });
 
+test('employee permission settings show the three individual profiles and explain full access', () => {
+  const markup = renderProfile({ initialSection: 'permissions' });
+  const fullAccess = renderProfile({
+    initialSection: 'permissions',
+    colleague: { ...colleague, permissionProfile: 'full_access' },
+  });
+
+  assert.match(markup, /data-testid="jiuwenmate-profile-permissions"/);
+  assert.match(markup, /默认权限/);
+  assert.match(markup, /智能审批/);
+  assert.match(markup, /完全访问/);
+  assert.match(markup, /15 分钟未确认会自动拒绝/);
+  assert.match(fullAccess, /宿主 OS 账户可访问的所有文件和联网命令/);
+});
+
 test('the employee mail page shows the connected mailbox address', async () => {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
   const previous = {

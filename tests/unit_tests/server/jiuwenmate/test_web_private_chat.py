@@ -18,6 +18,7 @@ from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
 from jiuwenswarm.server.jiuwenmate.execution_models import ConversationRef
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
+from jiuwenswarm.server.jiuwenmate.permission_approval_repository import PermissionApprovalRepository
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
@@ -27,6 +28,7 @@ from jiuwenswarm.server.jiuwenmate.web_adapter import (
     WEB_NAMESPACE,
     JiuwenMateWebAdapter,
     _coalesce,
+    WEB_ACCESS,
 )
 from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
 
@@ -97,6 +99,19 @@ class ReplyCore:
             )
             await context.ports.commit.record(execution, event)
             return event
+
+        if self.modes.get(text) == "permission":
+            yield await emit(
+                core.EventType.EXECUTION_PAUSED,
+                {
+                    "reason": "awaiting_confirmation",
+                    "intercepted": [
+                        {"tool_call_id": "call-1", "tool_name": "read_file", "arguments": "path=report.md"},
+                        {"tool_call_id": "call-2", "tool_name": "write_file", "arguments": "path=result.md"},
+                    ],
+                },
+            )
+            return
 
         for call, fragments in enumerate(self.streams.get(text, ())):
             for fragment in fragments:
@@ -185,6 +200,20 @@ class Host:
             abort=self.core.abort,
             reservation_tokens=1000,
             on_event=on_event,
+        )
+        self.managers.append(manager)
+        return manager
+
+    def restarted_manager(self) -> AgentManager:
+        service = self._service()
+        manager = AgentManager(
+            service,
+            ExecutionRepository(self.db),
+            WindowBackendStore(self.db),
+            BudgetRepository(self.db),
+            execute=self.core.execute,
+            abort=self.core.abort,
+            reservation_tokens=1000,
         )
         self.managers.append(manager)
         return manager
@@ -372,6 +401,162 @@ async def test_a_shared_file_is_listed_with_a_download_link_to_its_retained_copy
     WebFileDownloadManager.reset_instance()
     assert path.is_relative_to(host.tmp_path / "outputs")
     assert path.read_bytes() == "周报正文".encode()
+
+
+async def test_permission_approval_resumes_only_the_selected_call_in_the_original_conversation(host, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate import execution_driver
+
+    agent_id = await host.colleague()
+    host.core.modes["需要授权"] = "permission"
+    paused = (await host.send(agent_id, "需要授权")).payload["request"]
+    request = None
+    for _ in range(2000):
+        request = await host.request(paused["request_id"])
+        if request["status"] == "ended" and not request["running"]:
+            break
+        await asyncio.sleep(0.01)
+    assert request is not None and request["status"] == "ended" and not request["running"], request
+    approval = request["approval"]
+    assert approval["status"] == "pending"
+    assert [item["tool_call_id"] for item in approval["intercepted"]] == ["call-1", "call-2"]
+
+    resumed_replies = []
+
+    async def resume(_spec, context, reply):
+        from openjiuwen.harness.persistent_agent import ConfirmReply
+
+        parsed = ConfirmReply.model_validate(reply)
+        resumed_replies.append(parsed.model_dump(mode="json"))
+        event = core.AgentEvent.create(
+            context.execution,
+            event_type=core.EventType.EXECUTION_FINAL,
+            local_seq=1,
+            occurred_at=NOW,
+            payload={"status": "completed", "output_refs": ()},
+        )
+        await context.ports.commit.record(context.execution, event)
+        yield event
+
+    monkeypatch.setattr(execution_driver.core, "resume_persistent_request", resume)
+    approved = await host.call(
+        ReqMethod.JIUWENMATE_PERMISSION_DECIDE,
+        approval_id=approval["approval_id"],
+        conversation_id=CONVERSATION,
+        decision="approve",
+        tool_call_id="call-1",
+    )
+    assert approved.ok, approved.payload
+    final = None
+    for _ in range(2000):
+        final = await host.request(paused["request_id"])
+        if resumed_replies and final["outcome"] == "completed":
+            break
+        await asyncio.sleep(0.01)
+
+    assert resumed_replies and final is not None
+    assert final["outcome"] == "completed"
+    assert [
+        (item["tool_call_id"], item["choice"])
+        for item in resumed_replies[0]["responses"]
+    ] == [("call-1", "approve"), ("call-2", "reject")]
+
+
+async def test_pending_permission_approval_can_be_completed_after_manager_restart(host, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate import execution_driver
+
+    agent_id = await host.colleague()
+    host.core.modes["需要授权"] = "permission"
+    paused = (await host.send(agent_id, "需要授权")).payload["request"]
+    request = await host.settled(paused["request_id"])
+    approval_id = request["approval"]["approval_id"]
+
+    await host.managers[0].aclose()
+    manager = host.restarted_manager()
+    await manager.start()
+    restored = await manager.request_view(WEB_NAMESPACE, paused["request_id"])
+    assert restored.approval["status"] == "pending"
+
+    resumed = []
+
+    async def resume(_spec, context, reply):
+        event = core.AgentEvent.create(
+            context.execution,
+            event_type=core.EventType.EXECUTION_FINAL,
+            local_seq=1,
+            occurred_at=NOW,
+            payload={"status": "completed", "output_refs": ()},
+        )
+        await context.ports.commit.record(context.execution, event)
+        resumed.append(context.execution.request_id)
+        yield event
+
+    monkeypatch.setattr(execution_driver.core, "resume_persistent_request", resume)
+    await manager.decide_permission_approval(
+        approval_id,
+        decision="approve",
+        access=WEB_ACCESS,
+        channel="web",
+        target_id=CONVERSATION,
+        tool_call_id="call-1",
+    )
+
+    for _ in range(400):
+        state = await asyncio.to_thread(manager.sessions.get_request, WEB_NAMESPACE, paused["request_id"])
+        if state.status == "ended" and state.outcome == "completed":
+            break
+        await asyncio.sleep(0.005)
+    assert resumed == [paused["request_id"]]
+    assert state.status == "ended" and state.outcome == "completed"
+    await manager.aclose()
+
+
+async def test_decision_made_before_restart_resumes_the_original_request(host, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate import execution_driver
+
+    agent_id = await host.colleague()
+    host.core.modes["需要授权"] = "permission"
+    paused = (await host.send(agent_id, "需要授权")).payload["request"]
+    request = await host.settled(paused["request_id"])
+    approval_id = request["approval"]["approval_id"]
+    repository = PermissionApprovalRepository(host.db)
+    repository.decide(
+        approval_id,
+        decision="approve",
+        principal_ref=WEB_ACCESS.principal_ref,
+        channel="web",
+        target_id=CONVERSATION,
+        app_id=None,
+        tool_call_id="call-1",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    await host.managers[0].aclose()
+    manager = host.restarted_manager()
+    resumed = []
+
+    async def resume(_spec, context, _reply):
+        event = core.AgentEvent.create(
+            context.execution,
+            event_type=core.EventType.EXECUTION_FINAL,
+            local_seq=1,
+            occurred_at=NOW,
+            payload={"status": "completed", "output_refs": ()},
+        )
+        await context.ports.commit.record(context.execution, event)
+        resumed.append(context.execution.request_id)
+        yield event
+
+    monkeypatch.setattr(execution_driver.core, "resume_persistent_request", resume)
+    await manager.start()
+
+    for _ in range(400):
+        state = await asyncio.to_thread(manager.sessions.get_request, WEB_NAMESPACE, paused["request_id"])
+        if state.status == "ended" and state.outcome == "completed":
+            break
+        await asyncio.sleep(0.005)
+    assert resumed == [paused["request_id"]]
+    assert state.status == "ended" and state.outcome == "completed"
+    await manager.aclose()
 
 
 # refusals keep their error codes

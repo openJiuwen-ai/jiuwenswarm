@@ -86,6 +86,7 @@ _RUNTIME_METHODS = frozenset(
         ReqMethod.JIUWENMATE_CHAT_HISTORY.value,
         ReqMethod.JIUWENMATE_REQUEST_GET.value,
         ReqMethod.JIUWENMATE_REQUEST_ABORT.value,
+        ReqMethod.JIUWENMATE_PERMISSION_DECIDE.value,
         ReqMethod.JIUWENMATE_CONVERSATION_LIST.value,
         ReqMethod.JIUWENMATE_CONVERSATION_RENAME.value,
         ReqMethod.JIUWENMATE_CONVERSATION_PIN.value,
@@ -420,6 +421,19 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         if method == ReqMethod.JIUWENMATE_REQUEST_ABORT.value:
             view = await manager.control_request(
                 WEB_NAMESPACE, _text_param(params, "request_id"), reason=params.get("reason"), access=WEB_ACCESS
+            )
+            return {"request": view.to_dict()}
+        if method == ReqMethod.JIUWENMATE_PERMISSION_DECIDE.value:
+            decision = params.get("decision")
+            if decision not in ("approve", "reject"):
+                raise PersistentAgentError("invalid permission decision")
+            view = await manager.decide_permission_approval(
+                _text_param(params, "approval_id"),
+                decision=decision,
+                access=WEB_ACCESS,
+                channel="web",
+                target_id=_text_param(params, "conversation_id"),
+                tool_call_id=params.get("tool_call_id") if isinstance(params.get("tool_call_id"), str) else None,
             )
             return {"request": view.to_dict()}
         if method == ReqMethod.JIUWENMATE_KNOWLEDGE_LIST.value:

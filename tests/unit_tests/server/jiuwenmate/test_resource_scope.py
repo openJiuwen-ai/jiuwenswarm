@@ -9,6 +9,7 @@ from itertools import count
 from types import SimpleNamespace
 
 import pytest
+from openjiuwen.core.common.exception.errors import BaseError
 from jiuwenswarm.server.jiuwenmate import service as service_module
 from jiuwenswarm.server.jiuwenmate.execution_models import (
     ExecutionRecord,
@@ -108,13 +109,17 @@ def execution(agent_id: str = AGENT, scope: frozenset[str] = WEB_ACCESS.startup_
     return core.ExecutionContext(**fields)
 
 
-async def resolve(access: HostWorkspaceAccess, context, path: str):
-    scope = validate_read_scope(await access.resolve_read_scope(context), context)
+async def resolve(access: HostWorkspaceAccess, context, path: str, *, permission_profile="default"):
+    scope = validate_read_scope(
+        await access.resolve_read_scope(context), context, permission_profile=permission_profile
+    )
     return resolve_read_path(scope, path)
 
 
-async def resolve_write(access: HostWorkspaceAccess, context, path: str):
-    scope = validate_write_scope(await access.resolve_write_scope(context), context)
+async def resolve_write(access: HostWorkspaceAccess, context, path: str, *, permission_profile="default"):
+    scope = validate_write_scope(
+        await access.resolve_write_scope(context), context, permission_profile=permission_profile
+    )
     return resolve_write_path(scope, path)
 
 
@@ -449,6 +454,25 @@ async def test_the_write_scope_needs_both_startup_and_source_scope(office):
     granted = await access.resolve_write_scope(execution(source_scope=frozenset({"direct_message", "workspace_read"})))
 
     assert granted.status == "forbidden"
+
+
+async def test_full_access_opens_host_paths_only_for_that_published_profile(office, tmp_path):
+    store, root = office
+    outside = tmp_path / "outside.txt"
+    outside.write_text("host file", encoding="utf-8")
+    full = HostWorkspaceAccess(store, NS, AGENT, permission_profile="full_access")
+    default = HostWorkspaceAccess(store, NS, AGENT)
+
+    read = await resolve(full, execution(), str(outside), permission_profile="full_access")
+    written = await resolve_write(full, execution(), str(tmp_path / "new.txt"), permission_profile="full_access")
+
+    assert read.path == outside.resolve()
+    assert written.path == (tmp_path / "new.txt").resolve()
+    assert read.source_ref.startswith(f"workspace://{NS}/{AGENT}:")
+    with pytest.raises(WorkspacePathError):
+        await resolve(default, execution(), str(outside))
+    with pytest.raises(BaseError):
+        await resolve(full, execution(), str(outside))
 
 
 @pytest.mark.parametrize("path", ["../mate_other/secret.md", "资料/../../mate_other/x.md", "/tmp/x.md", "C:\\x.md"])

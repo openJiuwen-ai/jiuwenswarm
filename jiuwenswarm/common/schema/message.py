@@ -422,6 +422,7 @@ class ReqMethod(Enum):
     JIUWENMATE_CHAT_HISTORY = "jiuwenmate.chat.history"
     JIUWENMATE_REQUEST_GET = "jiuwenmate.request.get"
     JIUWENMATE_REQUEST_ABORT = "jiuwenmate.request.abort"
+    JIUWENMATE_PERMISSION_DECIDE = "jiuwenmate.permission.decide"
     JIUWENMATE_CONVERSATION_LIST = "jiuwenmate.conversation.list"
     JIUWENMATE_CONVERSATION_RENAME = "jiuwenmate.conversation.rename"
     JIUWENMATE_CONVERSATION_PIN = "jiuwenmate.conversation.pin"

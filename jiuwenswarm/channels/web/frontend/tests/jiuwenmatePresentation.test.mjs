@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import i18n from 'i18next';
-import React from 'react';
+import React, { act } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { createRoot } from 'react-dom/client';
 import { initReactI18next } from 'react-i18next';
+import { JSDOM } from 'jsdom';
 
 import {
   JIUWENMATE_CHANNELS,
@@ -141,11 +143,13 @@ test('year heatmap renders weekday labels, month labels and the design legend', 
   assert.match(markup, /工作时长：3.1h/);
 });
 
-test('private chat composer shows the colleague model instead of Auto', () => {
+test('private chat composer reflects the saved employee permission profile', () => {
   const markup = renderToStaticMarkup(
     React.createElement(ConversationComposer, {
       value: '',
       onChange() {},
+      permissionProfile: 'automatic',
+      onPermissionProfileChange() {},
       modelCatalog: {
         models: [{ id: 'deepseek-flash#0', label: 'DeepSeek Flash', provider: 'deepseek' }],
         defaultModelId: 'other',
@@ -157,6 +161,50 @@ test('private chat composer shows the colleague model instead of Auto', () => {
 
   assert.match(markup, /data-testid="jiuwenmate-composer-model"/);
   assert.match(markup, /DeepSeek Flash/);
+  assert.match(markup, /data-testid="jiuwenmate-composer-permission-trigger"[^>]*data-variant="automatic"/);
+  assert.match(markup, /智能审批/);
   assert.doesNotMatch(markup, />Auto</);
   assert.doesNotMatch(markup, /jiuwenmate-composer__usage/);
+});
+
+test('private chat composer can change the employee permission profile', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  const changes = [];
+  try {
+    await act(async () => {
+      root.render(React.createElement(ConversationComposer, {
+        value: '',
+        onChange() {},
+        permissionProfile: 'default',
+        onPermissionProfileChange: (profile) => changes.push(profile),
+        modelCatalog: { models: [], defaultModelId: '', defaultModelLabel: '' },
+        modelId: '',
+      }));
+    });
+
+    await act(async () => {
+      container.querySelector('[data-testid="jiuwenmate-composer-permission-trigger"]').click();
+    });
+    const automaticOption = container.querySelector('[data-testid="jiuwenmate-composer-permission-option"][data-variant="automatic"]');
+    assert.ok(automaticOption);
+    await act(async () => automaticOption.click());
+
+    assert.deepEqual(changes, ['automatic']);
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    globalThis.window = previous.window;
+    globalThis.document = previous.document;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+  }
 });

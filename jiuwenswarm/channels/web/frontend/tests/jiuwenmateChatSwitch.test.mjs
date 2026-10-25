@@ -73,4 +73,55 @@ test('does not render previous conversation while the newly selected history loa
   await act(async () => root.unmount());
 });
 
+test('keeps polling while a manually reviewed request resumes', async () => {
+  const paused = {
+    ...requestA,
+    status: 'ended',
+    outcome: 'paused',
+    replies: [],
+    approval: {
+      approvalId: 'approval-1',
+      requestId: 'request-a',
+      expiresAt: '2026-10-22T00:15:00Z',
+      status: 'pending',
+      intercepted: [{ toolCallId: 'call-1', toolName: 'write_file', arguments: 'path=report.md' }],
+    },
+  };
+  const approved = { ...paused, approval: { ...paused.approval, status: 'approved' } };
+  const completed = { ...requestA, replies: ['resumed reply'], approval: null };
+  const calls = [];
+  let chat;
+  const approvalApi = {
+    history: async () => [paused],
+    onStream: () => () => {},
+    getRequest: async () => {
+      calls.push('get');
+      return completed;
+    },
+    decidePermission: async () => {
+      return approved;
+    },
+  };
+  function ApprovalView() {
+    chat = usePrivateChat(approvalApi, 'agent', 'conversation-a', 0);
+    return React.createElement('div', null, chat.requests[0]?.outcome ?? 'loading');
+  }
+
+  const root = createRoot(document.getElementById('root'));
+  await act(async () => {
+    root.render(React.createElement(ApprovalView));
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await chat.decidePermission('approval-1', 'approve', 'call-1');
+    await Promise.resolve();
+  });
+  await act(async () => new Promise((resolve) => window.setTimeout(resolve, 1600)));
+
+  assert.deepEqual(calls, ['get']);
+  assert.equal(chat.requests[0].outcome, 'success');
+  assert.equal(chat.requests[0].replies[0], 'resumed reply');
+  await act(async () => root.unmount());
+});
+
 test.after(() => dom.window.close());

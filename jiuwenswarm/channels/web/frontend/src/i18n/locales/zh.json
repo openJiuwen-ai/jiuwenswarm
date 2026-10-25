@@ -114,6 +114,19 @@
         "awaiting": "服务重启时中断，待续做",
         "awaitingUnverified": "服务重启时中断，待续做；{{count}} 个工具调用结果未确认"
       },
+      "approval": {
+        "title": "员工请求执行以下工具操作",
+        "expires": "请在 {{time}} 前确认；超时会自动拒绝。",
+        "truncated": "参数内容已截断，批准仍适用于完整的这次调用。",
+        "approveOne": "允许这一次调用",
+        "rejectAll": "拒绝全部调用",
+        "status": {
+          "approved": "已确认，正在继续",
+          "rejected": "已拒绝",
+          "expired": "已超时并拒绝",
+          "consumed": "处理完成"
+        }
+      },
       "control": {
         "stopping": "正在停止…",
         "cancelling": "正在取消…",
@@ -256,6 +269,7 @@
         "knowledge": "知识",
         "mail": "邮箱",
         "channels": "渠道",
+        "permissions": "权限",
         "schedules": "定时任务"
       },
       "edit": "编辑人设",
@@ -303,6 +317,23 @@
         "passiveHint": "仅在飞书群聊中被 @ 时回复。",
         "adaptive": "自适应",
         "adaptiveHint": "被 @ 时回复，其他群消息根据身份职责自主判断是否参与。"
+      },
+      "permissions": {
+        "title": "员工权限",
+        "description": "权限配置按员工独立保存，并在发布后应用于该员工的新任务。",
+        "profiles": {
+          "default": "默认权限",
+          "automatic": "智能审批",
+          "full_access": "完全访问"
+        },
+        "profileHints": {
+          "default": "受限工作区权限。需要额外权限时，由发起任务的用户确认。",
+          "automatic": "系统评估单次工具调用；低置信度或无法评估时转人工确认。",
+          "full_access": "可访问宿主账户可访问的文件，并运行联网命令。"
+        },
+        "approvalTimeout": "人工确认仅对当前工具调用生效，15 分钟未确认会自动拒绝。",
+        "fullAccessWarning": "完全访问会开放宿主 OS 账户可访问的所有文件和联网命令。请仅对可信员工启用。",
+        "fullAccessConfirm": "完全访问将开放宿主 OS 账户可访问的所有文件，并允许联网命令。确定为该员工启用吗？"
       },
       "feishuHint": "授权使用智能体，并监控活动。",
       "authorize": "授权",

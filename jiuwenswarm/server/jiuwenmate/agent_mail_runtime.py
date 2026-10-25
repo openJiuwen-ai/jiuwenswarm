@@ -228,6 +228,10 @@ class AgentMailRuntimeService:
             )
         return self._runtime
 
+    def cached_status(self, scope: AgentMailScope) -> dict[str, Any] | None:
+        """Return the last persisted connection state without starting the external CLI."""
+        return self._store.get(scope)
+
     @staticmethod
     async def _invoke(call):
         try:

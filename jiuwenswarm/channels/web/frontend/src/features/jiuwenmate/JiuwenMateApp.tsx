@@ -858,6 +858,33 @@ export function JiuwenMateApp({
             onLoadScheduleHistory={loadScheduleHistory}
             channelApi={api}
             modelCatalog={modelCatalog}
+            savingPermissionProfile={savingResources}
+            onSavePermissionProfile={(agentId, permissionProfile) => {
+              const colleague = state.colleagues.find((item) => item.id === agentId);
+              if (!colleague) return Promise.reject(new Error('Colleague not found'));
+              setSavingResources(true);
+              setActionError('');
+              const settings = withColleagueEdit(colleague, modelCatalog.models, { permissionProfile });
+              return api
+                .updateSettings(agentId, settings)
+                .then(() => api.publish(agentId))
+                .then(() => api.getColleague(agentId))
+                .then((fresh) => {
+                  setState((current) => ({
+                    ...current,
+                    colleagues: current.colleagues.map((item) =>
+                      item.id === fresh.id
+                        ? { ...fresh, imConfigured: item.imConfigured, disabled: item.disabled }
+                        : item,
+                    ),
+                  }));
+                })
+                .catch((error: unknown) => {
+                  setActionError(errorMessage(error));
+                  throw error;
+                })
+                .finally(() => setSavingResources(false));
+            }}
             onRenameColleague={async (agentId, name) => {
               const settings = await api.readSettings(agentId);
               await api.updateSettings(agentId, { ...settings, name: name.trim() });

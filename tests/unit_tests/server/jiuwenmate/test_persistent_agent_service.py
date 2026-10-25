@@ -471,6 +471,33 @@ def test_settings_change_only_affects_requests_after_publication(tmp_path):
     assert new_spec.model.model_client_config.model_name == "kimi"
 
 
+def test_permission_profile_is_employee_scoped_and_published_into_spec(tmp_path):
+    service = make_service(tmp_path)
+    first = service.create_colleague(NS, settings())
+    second = service.create_colleague(NS, settings(name="运营同事"))
+    first_v1 = service.current_snapshot(NS, first.agent_id)
+    second_v1 = service.current_snapshot(NS, second.agent_id)
+
+    updated = service.update_settings(NS, first.agent_id, settings(permission_profile="automatic"))
+    assert updated.has_unpublished_changes
+    assert service.read_settings(NS, first.agent_id).permission_profile == "automatic"
+    assert service.read_settings(NS, second.agent_id).permission_profile == "default"
+    assert service.current_snapshot(NS, first.agent_id).fingerprint == first_v1.fingerprint
+
+    published = service.publish(NS, first.agent_id)
+    first_v2 = service.current_snapshot(NS, first.agent_id)
+    first_spec = first_v2.load_spec()
+    second_spec = second_v1.load_spec()
+
+    assert published.config_version == "v2"
+    assert first_v2.fingerprint != first_v1.fingerprint
+    assert first_spec.permission_profile == "automatic"
+    assert first_spec.permissions["enabled"] is True
+    assert first_spec.permissions["mode"] == "auto"
+    assert second_spec.permission_profile == "default"
+    assert second_spec.permissions["mode"] == "manual"
+
+
 def test_publication_fills_the_formal_capacity_check(tmp_path):
     service = make_service(tmp_path)
     view = service.create_colleague(NS, settings())
@@ -670,6 +697,18 @@ def test_public_views_never_carry_model_credentials(tmp_path):
 def test_malformed_settings_are_rejected(data):
     with pytest.raises(PersistentAgentError):
         ColleagueSettings.from_dict(data)
+
+
+def test_legacy_settings_default_permission_profile_to_default():
+    settings = ColleagueSettings.from_dict({"name": "旧员工"})
+
+    assert settings.permission_profile == "default"
+    assert ColleagueSettings.from_dict(settings.to_dict()) == settings
+
+
+def test_unknown_permission_profile_is_rejected():
+    with pytest.raises(PersistentAgentError, match="permission_profile"):
+        ColleagueSettings.from_dict({"name": "员工", "permission_profile": "unrestricted"})
 
 
 def test_configured_model_provider_uses_the_existing_model_catalog():

@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
@@ -54,10 +55,19 @@ from jiuwenswarm.server.jiuwenmate.execution_models import (
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, WorkspaceOutputFiles
+from jiuwenswarm.server.jiuwenmate.permission_approval_repository import (
+    PermissionApproval,
+    PermissionApprovalRepository,
+)
 from jiuwenswarm.server.jiuwenmate.ports.budget import DEFAULT_RESERVATION_TOKENS, HostBudgetPort
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
-from jiuwenswarm.server.jiuwenmate.recovery_service import RecoveryService, RecoveryStore, RequestRecovery
+from jiuwenswarm.server.jiuwenmate.recovery_service import (
+    RecoveryService,
+    RecoveryStore,
+    RequestRecovery,
+    unverified_tool_calls,
+)
 from jiuwenswarm.server.jiuwenmate.scheduled_requests import DEFAULT_SCHEDULE_INTERVAL, ScheduleService
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService, default_data_dir
 from jiuwenswarm.server.jiuwenmate.session_scheduler import SchedulerLimits, SessionScheduler
@@ -132,6 +142,7 @@ class RequestView:
     deliveries: tuple[dict[str, object], ...] = ()
     recovery: RequestRecovery | None = None
     files: tuple[dict[str, object], ...] = ()
+    approval: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         record = self.state.record
@@ -149,6 +160,7 @@ class RequestView:
             "running": self.running,
             "replies": list(self.replies),
             "files": [dict(item) for item in self.files],
+            "approval": None if self.approval is None else dict(self.approval),
             "reason": self.reason,
             "draft": None if self.draft is None else self.draft.to_dict(),
             "control": None if self.control is None else self.control.to_dict(),
@@ -186,6 +198,7 @@ class AgentManager:
         schedule_interval: timedelta = DEFAULT_SCHEDULE_INTERVAL,
         cli: FeishuCliRuntime | None = None,
         agent_mail_runtime: AgentMailRuntimeService | None = None,
+        permission_approvals: PermissionApprovalRepository | None = None,
     ) -> None:
         if purge_interval <= timedelta(0) or schedule_interval <= timedelta(0):
             raise ValueError("purge_interval and schedule_interval must be positive")
@@ -210,6 +223,8 @@ class AgentManager:
         self._delivery_service = delivery_service
         self._thinking_notice_sender = thinking_notice_sender
         self._thinking_notices_sent: set[str] = set()
+        self._permission_approvals = permission_approvals or PermissionApprovalRepository(sessions.db_path)
+        self._permission_resume_tasks: dict[str, asyncio.Task] = {}
         self.group_chats = GroupChatRepository(sessions.db_path)
         self.group_archive = ConversationArchive(sessions.db_path.parent / "group_messages", self.group_chats)
         if self._delivery_service is not None:
@@ -224,7 +239,7 @@ class AgentManager:
                 sessions,
                 self._queue,
                 clock=clock,
-                observer=self._observe_event if on_event is not None or delivery_service is not None else None,
+                observer=self._observe_event,
                 files=self._files,
             ),
             queue=self._queue,
@@ -243,11 +258,20 @@ class AgentManager:
             clock=clock,
             cli=self.cli_runtime,
             agent_mail_runtime=self.agent_mail_runtime,
+            permission_approvals=self._permission_approvals,
         )
-        self._scheduler = SessionScheduler(sessions, driver, limits=limits, clock=clock)
+        self._scheduler = SessionScheduler(
+            sessions,
+            driver,
+            limits=limits,
+            clock=clock,
+            has_pending_approval=self._permission_approvals.has_pending_session,
+            is_ready_approval=self._permission_approvals.is_ready_for_request,
+        )
         self._control = ExecutionControlService(sessions, self._scheduler, ControlStore(sessions.db_path), clock=clock)
+        self._recoveries = RecoveryStore(sessions.db_path)
         self._recovery = RecoveryService(
-            sessions, self._scheduler, RecoveryStore(sessions.db_path), control_of=self._control.control_of, clock=clock
+            sessions, self._scheduler, self._recoveries, control_of=self._control.control_of, clock=clock
         )
         self._schedules = ScheduleService(
             sessions,
@@ -258,6 +282,7 @@ class AgentManager:
         )
         self._purge_task: asyncio.Task[None] | None = None
         self._schedule_task: asyncio.Task[None] | None = None
+        self._permission_task: asyncio.Task[None] | None = None
 
     def group_participant_roster(self, namespace_id: str, group_id: str) -> list[dict[str, Any]]:
         """Return every published colleague with an active Bot binding in this group."""
@@ -347,6 +372,10 @@ class AgentManager:
         self._scheduler.start()
         self._purge_task = asyncio.create_task(self._purge_loop(), name="jiuwenmate-window-purge")
         self._schedule_task = asyncio.create_task(self._schedule_loop(), name="jiuwenmate-schedules")
+        self._permission_task = asyncio.create_task(
+            self._permission_approval_loop(), name="jiuwenmate-permission-approvals"
+        )
+        await self._recover_permission_approvals()
         agents = set(self.cli_runtime.bound_agents())
         list_colleagues = getattr(self._service, "list_colleagues", None)
         if list_colleagues is not None:
@@ -401,6 +430,16 @@ class AgentManager:
         await asyncio.gather(*tasks, return_exceptions=True)
         self._cli_tasks.clear()
         self._cli_requested.clear()
+        if self._permission_task is not None:
+            self._permission_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._permission_task
+            self._permission_task = None
+        resume_tasks = tuple(self._permission_resume_tasks.values())
+        for task in resume_tasks:
+            task.cancel()
+        await asyncio.gather(*resume_tasks, return_exceptions=True)
+        self._permission_resume_tasks.clear()
         await self._scheduler.aclose()
         if self._delivery_service is not None:
             await self._delivery_service.aclose()
@@ -499,6 +538,66 @@ class AgentManager:
         session = await asyncio.to_thread(self._sessions.get_session, namespace_id, state.record.session_id)
         return await self._view(state, session.conversation.key)
 
+    async def decide_permission_approval(
+        self,
+        approval_id: str,
+        *,
+        decision: Literal["approve", "reject"],
+        access: AccessSnapshot,
+        channel: str,
+        target_id: str,
+        app_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> RequestView:
+        """Accept a confirmation only from the original initiator and route, then resume its Request."""
+        approval = await asyncio.to_thread(
+            self._permission_approvals.decide,
+            approval_id,
+            decision=decision,
+            principal_ref=access.principal_ref,
+            channel=channel,
+            target_id=target_id,
+            app_id=app_id,
+            tool_call_id=tool_call_id,
+            now=self._clock(),
+        )
+        self._schedule_permission_resume(approval)
+        return await self.request_view(approval.namespace_id, approval.request_id)
+
+    async def handle_feishu_permission_reply(
+        self,
+        text: str,
+        *,
+        access: AccessSnapshot,
+        target_id: str,
+        app_id: str,
+    ) -> bool:
+        """Consume an explicit Feishu approval command before it can become a new Agent Request."""
+        match = re.fullmatch(
+            r"\s*(approve|批准|同意|reject|拒绝)\s+([a-f0-9]{12})(?:\s+([^\s]+))?\s*",
+            text,
+            re.IGNORECASE,
+        )
+        if match is None:
+            return False
+        decision = "approve" if match.group(1).lower() in ("approve", "批准", "同意") else "reject"
+        tool_call_id = match.group(3)
+        if (decision == "approve") != (tool_call_id is not None):
+            return True
+        try:
+            await self.decide_permission_approval(
+                match.group(2),
+                decision=decision,
+                access=access,
+                channel="feishu",
+                target_id=target_id,
+                app_id=app_id,
+                tool_call_id=tool_call_id,
+            )
+        except PersistentAgentError as exc:
+            logger.info("[JiuwenMate] Feishu permission reply was refused: code=%s", exc.code)
+        return True
+
     async def recover(
         self,
         namespace_id: str,
@@ -507,6 +606,7 @@ class AgentManager:
         include_unrouted: bool = True,
     ) -> list[RequestRecovery]:
         """Resume scheduling after a restart: queued Requests run again, ones left dispatched are closed."""
+        await self._recover_permission_approvals()
         return await self._recovery.recover(
             namespace_id, channels=channels, include_unrouted=include_unrouted,
         )
@@ -541,6 +641,9 @@ class AgentManager:
         recovery = await asyncio.to_thread(
             self._recovery.recovery_of, state.record.namespace_id, state.record.request_id
         )
+        approval = await asyncio.to_thread(
+            self._permission_approvals.pending_for_request, state.record.namespace_id, state.record.request_id
+        )
         return RequestView(
             state=state,
             running=running,
@@ -552,16 +655,132 @@ class AgentManager:
             deliveries=tuple(deliveries),
             recovery=recovery,
             files=files,
+            approval=None if approval is None else approval.to_view(),
         )
 
     def _observe_event(self, event: core.AgentEvent) -> None:
         try:
+            self._observe_permission_approval(event)
             if self._external_event_observer is not None:
                 self._external_event_observer(event)
         finally:
             if self._delivery_service is not None:
                 self._delivery_service.observe(event)
             self._schedule_thinking_notice(event)
+
+    def _observe_permission_approval(self, event: core.AgentEvent) -> None:
+        if event.event_type != core.EventType.EXECUTION_PAUSED or event.payload.reason != "awaiting_confirmation":
+            return
+        try:
+            state = self._sessions.get_request(event.namespace_id, event.request_id)
+            execution = next(
+                item
+                for item in self._sessions.executions(event.namespace_id, event.request_id)
+                if item.execution_id == event.execution_id
+            )
+            log = self._sessions.read_execution_log(
+                event.namespace_id, state.record.session_id, event.request_id, event.execution_id
+            )
+            self._recoveries.claim(
+                event.namespace_id,
+                RequestRecovery(
+                    request_id=event.request_id,
+                    execution_id=event.execution_id,
+                    decision="awaiting_continuation",
+                    outcome="paused",
+                    unverified_tool_calls=unverified_tool_calls(log),
+                    decided_at=self._clock(),
+                ),
+            )
+            approval = self._permission_approvals.create(state, event, now=self._clock())
+            if approval.route is None:
+                approval = self._permission_approvals.reject_unrouted(approval.approval_id)
+                self._schedule_permission_resume(approval)
+            else:
+                self._schedule_permission_notice(approval)
+        except Exception as exc:
+            logger.warning(
+                "[JiuwenMate] permission approval could not be persisted: request=%s error_type=%s",
+                event.request_id,
+                type(exc).__name__,
+            )
+
+    def _schedule_permission_notice(self, approval: PermissionApproval) -> None:
+        if approval.route is None or approval.route.channel == "web" or self._thinking_notice_sender is None:
+            return
+        route = approval.route
+        calls = "\n".join(
+            f"- {item.get('tool_call_id', 'call')}: {item.get('tool_name', 'tool')}: "
+            f"{str(item.get('arguments') or '')[:500]}"
+            for item in approval.intercepted
+        )
+        task = asyncio.create_task(
+            self._send_permission_notice({
+                "channel": route.channel,
+                "app_id": route.app_id,
+                "chat_id": route.target_id,
+                "source_message_id": route.source_message_id,
+                "idempotency_key": f"permission:{approval.approval_id}",
+                "text": (
+                    f"该员工需要确认一次工具操作（15 分钟内有效）：\n{calls}\n"
+                    f"请在本会话逐个确认：批准 {approval.approval_id} <工具调用ID>；"
+                    f"拒绝全部调用：拒绝 {approval.approval_id}。"
+                ),
+            }),
+            name="jiuwenmate-permission-notice",
+        )
+        task.add_done_callback(_log_thinking_notice)
+
+    async def _send_permission_notice(self, message: dict[str, object]) -> None:
+        sender = self._thinking_notice_sender
+        if sender is not None:
+            await sender(message)
+
+    def _schedule_permission_resume(self, approval: PermissionApproval) -> None:
+        if approval.approval_id in self._permission_resume_tasks:
+            return
+        task = asyncio.create_task(self._resume_permission_approval(approval), name="jiuwenmate-permission-resume")
+        self._permission_resume_tasks[approval.approval_id] = task
+
+        def clear(_task):
+            self._permission_resume_tasks.pop(approval.approval_id, None)
+
+        task.add_done_callback(clear)
+
+    async def _resume_permission_approval(self, approval: PermissionApproval) -> None:
+        while True:
+            state = await asyncio.to_thread(self._sessions.get_request, approval.namespace_id, approval.request_id)
+            if state.status == "queued":
+                await self._scheduler.wake(approval.namespace_id, approval.session_id)
+                return
+            if state.status == "ended":
+                try:
+                    self._scheduler.resume(state)
+                except PersistentAgentError as exc:
+                    if exc.code == "CONTINUATION_NOT_READY":
+                        await asyncio.sleep(0.05)
+                        continue
+                    raise
+                await self._scheduler.wake(approval.namespace_id, approval.session_id)
+                return
+            await asyncio.sleep(0.05)
+
+    async def _permission_approval_loop(self) -> None:
+        while True:
+            expired = await asyncio.to_thread(self._permission_approvals.expire_pending, now=self._clock())
+            for approval in expired:
+                self._schedule_permission_resume(approval)
+            await asyncio.sleep(2)
+
+    async def _recover_permission_approvals(self) -> None:
+        for approval in await asyncio.to_thread(self._permission_approvals.pending, "local"):
+            if approval.route is None:
+                approval = await asyncio.to_thread(self._permission_approvals.reject_unrouted, approval.approval_id)
+                self._schedule_permission_resume(approval)
+            else:
+                self._schedule_permission_notice(approval)
+        for approval in await asyncio.to_thread(self._permission_approvals.ready, "local"):
+            self._schedule_permission_resume(approval)
 
     def _schedule_thinking_notice(self, event: core.AgentEvent) -> None:
         """Forward the waiting line participation already wrote. Ignore and a missing notice stay silent."""
