@@ -136,8 +136,9 @@ def _history_params_from_request(
     """按页面实际发来的参数组装 history.get。
 
     当前页面用游标拉历史：``cursor=null`` 加 ``limit``。查询串会丢掉 null，
-    所以只看到 ``limit``、没有 ``page_idx`` 时也按游标协议转发。空白 cursor
-    写成空串，避免南向组查询串时把这个键丢掉。
+    所以只看到 ``limit``、没有 ``page_idx`` 时也按游标协议转发。缺失或空白
+    cursor 必须转发为 ``None``（首页），不能写成空串——agentserver 会把
+    ``""`` 当成非法游标并返回 ``INVALID_HISTORY_CURSOR``。
     """
     query = request.query_params
     use_cursor = "cursor" in query or (
@@ -153,7 +154,7 @@ def _history_params_from_request(
         limit = 50
     params: dict[str, Any] = {
         "session_id": session_id,
-        "cursor": raw_cursor,
+        "cursor": raw_cursor or None,
         "limit": limit,
     }
     subagent_id = str(query.get("subagent_id") or "").strip()

@@ -125,44 +125,21 @@ class TenantAgentPool:
         """从请求三元组拼出 tenant_key（有则用、无则 default）.
 
         个人版忽略请求身份，固定返回默认 ``build_tenant_key()``，保证单 Manager。
+        实现见 :mod:`tenant_identity`（Front 控制面可安全复用，不拉 AgentManager）。
         """
-        if not is_enterprise():
-            return build_tenant_key()
-        group_id, bot_id, user_id = cls.extract_triple(request)
-        return build_tenant_key(group_id, bot_id, user_id)
+        from jiuwenswarm.server.runtime.tenant_identity import extract_tenant_key
+
+        return extract_tenant_key(request)
 
     @classmethod
     def extract_triple(cls, request: Any) -> tuple[str, str, str]:
         """从请求提取 (group_id, bot_id, user_id)，缺省补 default.
 
-        字段来源：
-        - group_id: ``group_id`` / ``chat_id`` / metadata
-        - bot_id: ``bot_id`` / ``app_id`` / metadata
-        - user_id: ``user_id`` / metadata
+        见 :func:`jiuwenswarm.server.runtime.tenant_identity.extract_triple`。
         """
-        meta = getattr(request, "metadata", None)
-        meta = meta if isinstance(meta, dict) else {}
-        routing = meta.get("routing") if isinstance(meta.get("routing"), dict) else {}
+        from jiuwenswarm.server.runtime.tenant_identity import extract_triple
 
-        def _pick(*names: str) -> str | None:
-            for name in names:
-                val = getattr(request, name, None)
-                if val is not None and str(val).strip():
-                    return str(val).strip()
-                for src in (meta, routing):
-                    mval = src.get(name)
-                    if mval is not None and str(mval).strip():
-                        return str(mval).strip()
-            return None
-
-        group_id = _pick("group_id", "chat_id")
-        bot_id = _pick("bot_id", "app_id")
-        user_id = _pick("user_id")
-        return (
-            cls.normalize_part(group_id),
-            cls.normalize_part(bot_id),
-            cls.normalize_part(user_id),
-        )
+        return extract_triple(request)
 
     async def _ensure_agent_manager(self, tenant_key: str) -> AgentManager:
         """确保 ``tenant_key`` 对应的 AgentManager 已创建（双检锁 + LRU）."""

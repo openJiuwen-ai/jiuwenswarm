@@ -521,6 +521,37 @@ def test_history_json_collects_messages(app_with_mock):
     assert dispatch.await_args.kwargs["params"]["page_idx"] == 1
 
 
+def test_history_stream_omitted_cursor_forwards_null(app_with_mock):
+    """Frontend drops cursor=null from query; gateway must not forward \"\"."""
+    app, dispatch = app_with_mock
+
+    async def _disp(*args, **kwargs):
+        rid = kwargs.get("request_id") or "r"
+        peer = _FakePeer([
+            {"type": "res", "id": rid, "ok": True, "payload": {"accepted": True}},
+            {
+                "type": "event",
+                "event": "history.message",
+                "payload": {
+                    "status": "done",
+                    "has_more": False,
+                    "next_cursor": None,
+                    "snapshot_id": "snap",
+                },
+            },
+        ])
+        return peer, rid, "web_sid"
+
+    dispatch.side_effect = _disp
+    client = TestClient(app)
+    r = client.get("/api/v1/sessions/web_sid/history", params={"limit": 50})
+    assert r.status_code == 200
+    params = dispatch.await_args.kwargs["params"]
+    assert "cursor" in params
+    assert params["cursor"] is None
+    assert params["limit"] == 50
+
+
 def test_openapi_lists_core_routes(app_with_mock):
     app, _dispatch = app_with_mock
     client = TestClient(app, follow_redirects=False)
