@@ -33,6 +33,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("file.import_url", "POST", "/sessions/{session_id}/files/import"),
     ("file.upload_chunk", "POST", "/sessions/{session_id}/files/chunks"),
     ("file.download_verified_chunk", "POST", "/sessions/{session_id}/files/download"),
+    ("file.read_upload_chunk", "GET", "/sessions/{session_id}/files/upload-content"),
     ("initialize", "POST", "/initialize"),
     ("session.list", "GET", "/sessions"),
     ("session.create", "POST", "/sessions"),

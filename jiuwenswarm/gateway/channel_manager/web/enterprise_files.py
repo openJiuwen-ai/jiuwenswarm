@@ -34,6 +34,7 @@ def file_routing_identity(request: Request, token_payload: dict | None = None) -
         {key: request.headers.get(f"x-{key.replace('_', '-')}")
          for key in ("group_id", "bot_id", "user_id")},
         request.query_params,
+        (token_payload or {}).get("identity"),
         token_route,
     )
 
@@ -57,7 +58,10 @@ async def serve_object_download(
     if (
         not payload
         or payload.get("kind") != OBJECT_ASSET_KIND
-        or payload.get("tenant_key") != tenant
+        or payload.get("tenant_key") not in {
+            tenant,
+            "::".join(identity[key] for key in ("group_id", "bot_id", "user_id")),
+        }
     ):
         return JSONResponse({"error": "invalid_download_token"}, status_code=403)
     try:
@@ -149,6 +153,41 @@ async def serve_object_download(
 
 
 def register_enterprise_file_routes(app: FastAPI, channel) -> None:
+    @app.api_route("/file-api/raw-file", methods=["GET", "HEAD"])
+    async def raw_file(request: Request) -> Response:
+        from jiuwenswarm.common.request_identity import apply_routing_metadata
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.channel_manager.web.container_file_http import (
+            _decode_verified_chunk, _error_json, serve_file_chunks,
+        )
+        from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
+
+        identity = file_routing_identity(request)
+        session_id = request.query_params.get("session_id", "")
+        path = request.query_params.get("path", "")
+        if not all(identity.get(key) for key in ("group_id", "bot_id", "user_id")) or not session_id or not path:
+            return JSONResponse({"error": "upload_identity_session_path_required"}, status_code=400)
+
+        async def read_chunk(offset: int, limit: int):
+            ok, result = await fetch_agent_unary(
+                agent_client=getattr(channel, "agent_client", None),
+                req_method=ReqMethod.FILE_READ_UPLOAD_CHUNK,
+                params={"path": path, "offset": offset, "limit": limit},
+                metadata=apply_routing_metadata(None, identity),
+                session_id=session_id, user_id=identity["user_id"],
+                channel_id=channel.channel_id, label="file.read_upload_chunk",
+            )
+            if not ok:
+                code = str(result.get("code") or "SERVICE_UNAVAILABLE")
+                return _error_json(
+                    error="upload read failed", code=code,
+                    status_code=503 if code == "SERVICE_UNAVAILABLE" else None,
+                )
+            decoded = _decode_verified_chunk(result, expected_offset=offset, expected_limit=limit)
+            return decoded if decoded is not None else JSONResponse({"error": "invalid_upload_response"}, status_code=502)
+
+        return await serve_file_chunks(request, read_chunk, inline=True)
+
     @app.post("/file-api/upload-obs")
     async def upload(request: Request) -> JSONResponse:
         identity = file_routing_identity(request)

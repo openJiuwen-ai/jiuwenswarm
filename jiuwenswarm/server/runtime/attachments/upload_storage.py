@@ -9,8 +9,12 @@ live here instead of being duplicated per attachment kind.
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 import os
 import re
+import stat
+from contextlib import ExitStack
 from pathlib import Path
 
 # Characters no mainstream filesystem accepts inside a name: ASCII control
@@ -20,6 +24,51 @@ from jiuwenswarm.common.attachment_safety import (  # noqa: F401
     safe_session_dirname,
     safe_upload_filename,
 )
+
+UPLOAD_READ_CHUNK_BYTES = 512 * 1024
+
+
+def read_session_upload_chunk(session_id: str, raw_path: str, offset: int, limit: int) -> dict:
+    """Read a bounded chunk from this tenant's direct session-upload children."""
+    from jiuwenswarm.common.obs_files import MAX_FILE_BYTES
+    from jiuwenswarm.common.utils import get_agent_sessions_dir
+    from jiuwenswarm.server.runtime.tenant_context import TenantContext
+
+    if not session_id or safe_session_dirname(session_id) != session_id:
+        raise ValueError("invalid session_id")
+    if offset < 0 or not 0 < limit <= UPLOAD_READ_CHUNK_BYTES:
+        raise ValueError("invalid offset or limit")
+    root = TenantContext.current_tenant_root()
+    uploads = get_agent_sessions_dir() / session_id / "uploads"
+    path = Path(raw_path)
+    if (
+        root is None or not path.is_absolute() or path.parent != uploads
+        or path.name in {"", ".", ".."} or not uploads.is_relative_to(root)
+    ):
+        raise PermissionError("path outside tenant session uploads")
+    # Anchor every directory and the leaf by descriptor; never follow a symlink.
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    with ExitStack() as stack:
+        directory = os.open(root, directory_flags)
+        stack.callback(os.close, directory)
+        for part in uploads.relative_to(root).parts:
+            directory = os.open(part, directory_flags, dir_fd=directory)
+            stack.callback(os.close, directory)
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        stack.callback(os.close, descriptor)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise PermissionError("upload must be a single-link regular file")
+        if info.st_size > MAX_FILE_BYTES or offset > info.st_size:
+            raise ValueError("invalid upload size or offset")
+        os.lseek(descriptor, offset, os.SEEK_SET)
+        data = os.read(descriptor, min(limit, info.st_size - offset))
+    return {
+        "data_base64": base64.b64encode(data).decode("ascii"),
+        "offset": offset, "chunk_size": len(data), "size": info.st_size,
+        "eof": offset + len(data) >= info.st_size,
+        "name": path.name, "mime_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+    }
 
 
 def unique_upload_path(path: Path) -> Path:

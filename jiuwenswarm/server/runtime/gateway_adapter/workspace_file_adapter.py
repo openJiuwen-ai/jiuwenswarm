@@ -117,6 +117,7 @@ class WorkspaceFileAdapter(GatewayAdapter):
             ReqMethod.FILE_IMPORT_URL.value,
             ReqMethod.FILE_UPLOAD_CHUNK.value,
             ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK.value,
+            ReqMethod.FILE_READ_UPLOAD_CHUNK.value,
             ReqMethod.IM_FILE_PERSIST.value,
             ReqMethod.WORKSPACE_TREE.value,
             ReqMethod.WORKSPACE_PREVIEW.value,
@@ -172,6 +173,8 @@ class WorkspaceFileAdapter(GatewayAdapter):
             return await self._handle_upload_chunk(request)
         if method == ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK:
             return await self._handle_verified_download_chunk(request)
+        if method == ReqMethod.FILE_READ_UPLOAD_CHUNK:
+            return await self._handle_read_upload_chunk(request)
         if method == ReqMethod.IM_FILE_PERSIST:
             return await self._handle_im_file_persist(request)
         return build_error_response(
@@ -523,6 +526,30 @@ class WorkspaceFileAdapter(GatewayAdapter):
             ok=True,
             payload={"path": str(target), "size": size, "upload_id": upload_id, "final": is_final},
             metadata=request.metadata,
+        )
+
+    async def _handle_read_upload_chunk(self, request: AgentRequest) -> AgentResponse:
+        from jiuwenswarm.server.runtime.attachments.upload_storage import (
+            UPLOAD_READ_CHUNK_BYTES, read_session_upload_chunk,
+        )
+
+        params = request.params or {}
+        try:
+            payload = await asyncio.to_thread(
+                read_session_upload_chunk, request.session_id or "", str(params.get("path") or ""),
+                int(params.get("offset", 0)), int(params.get("limit", UPLOAD_READ_CHUNK_BYTES)),
+            )
+        except PermissionError:
+            return build_error_response(request, "upload access denied", code="FORBIDDEN")
+        except FileNotFoundError:
+            return build_error_response(request, "upload not found", code="NOT_FOUND")
+        except (ValueError, TypeError):
+            return build_error_response(request, "invalid upload request", code="BAD_REQUEST")
+        except OSError:
+            return build_error_response(request, "upload is unavailable", code="FORBIDDEN")
+        return AgentResponse(
+            request_id=request.request_id, channel_id=request.channel_id,
+            ok=True, payload=payload, metadata=request.metadata,
         )
 
     async def _handle_verified_download_chunk(

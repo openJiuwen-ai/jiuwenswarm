@@ -205,6 +205,7 @@ class ReqMethod(Enum):
     # Smart Approval sealed assets: validate and read one bounded chunk in the
     # routed AgentServer. Gateway must never authorize these from token paths.
     FILE_DOWNLOAD_VERIFIED_CHUNK = "file.download_verified_chunk"
+    FILE_READ_UPLOAD_CHUNK = "file.read_upload_chunk"
 
     # IM 平台附件落盘（Phase 3：Gateway 下载字节后经 base64 交给 AgentServer
     # 落盘至其注入目录的 <平台>_files/downloads/，Gateway 不直写用户目录）

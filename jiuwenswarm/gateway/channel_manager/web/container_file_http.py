@@ -9,6 +9,7 @@ import json
 import logging
 import mimetypes
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, Any, Mapping
 from urllib.parse import quote
 
@@ -474,9 +475,6 @@ async def serve_verified_download(
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.common.request_identity import apply_routing_metadata
     from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
-    from jiuwenswarm.gateway.embedded.runtime.file_download import (
-        _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES,
-    )
 
     session_id_value = token_payload.get("sid")
     if not isinstance(session_id_value, str):
@@ -519,7 +517,18 @@ async def serve_verified_download(
             )
         return decoded
 
-    first_result = await _verified_chunk(0, 1)
+    return await serve_file_chunks(request, _verified_chunk)
+
+
+async def serve_file_chunks(
+    request: Request,
+    read_chunk: Callable[[int, int], Awaitable[tuple[bytes, int, str, str, bool] | JSONResponse]],
+    *, inline: bool | None = None,
+) -> Response:
+    """Stream a bounded AgentServer reader with shared HEAD/Range semantics."""
+    from jiuwenswarm.gateway.embedded.runtime.file_download import _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES
+
+    first_result = await read_chunk(0, 1)
     if isinstance(first_result, JSONResponse):
         return first_result
     _, total_size, file_name, mime_type, _ = first_result
@@ -542,10 +551,8 @@ async def serve_verified_download(
 
     start, end = byte_range or (0, max(total_size - 1, 0))
     content_length = 0 if total_size == 0 else end - start + 1
-    inline = str(request.query_params.get("inline") or "").strip().lower() in {
-        "1",
-        "true",
-    }
+    if inline is None:
+        inline = str(request.query_params.get("inline") or "").strip().lower() in {"1", "true"}
     safe_inline = mime_type.startswith(("image/", "audio/", "video/")) and mime_type != "image/svg+xml"
     disposition = "inline" if inline and safe_inline else "attachment"
     headers = {
@@ -575,18 +582,18 @@ async def serve_verified_download(
                 _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES,
                 end - offset + 1,
             )
-            result = await _verified_chunk(offset, limit)
+            result = await read_chunk(offset, limit)
             if isinstance(result, JSONResponse):
-                raise RuntimeError("verified download authorization expired")
+                raise RuntimeError("AgentServer file read failed")
             data, size, name, content_type, _ = result
             if size != total_size:
-                raise RuntimeError("verified download asset changed")
+                raise RuntimeError("AgentServer file changed")
             if name != file_name:
-                raise RuntimeError("verified download asset changed")
+                raise RuntimeError("AgentServer file changed")
             if content_type != mime_type:
-                raise RuntimeError("verified download asset changed")
+                raise RuntimeError("AgentServer file changed")
             if not data:
-                raise RuntimeError("verified download asset changed")
+                raise RuntimeError("AgentServer file changed")
             yield data
             offset += len(data)
 

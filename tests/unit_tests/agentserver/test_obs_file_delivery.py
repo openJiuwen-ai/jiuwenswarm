@@ -67,6 +67,7 @@ async def test_enterprise_tool_keeps_execution_authorization(
         session_id="tool-session",
         channel_id="web",
         user_id="u",
+        metadata={"user_id": "u", "routing": {"group_id": "g", "bot_id": "b"}},
         project_dir=str(tmp_path),
         require_execution_authorization=scenario != "full_access",
         asset_owner=delivery.owner,
@@ -101,6 +102,9 @@ class ObjectClient:
         self.reads = []
         self.closed = False
         self.released = False
+
+    def bucket_exists(self, bucket):
+        return True
 
     def put_object(self, bucket, key, reader, length, metadata):
         data = b""
@@ -164,7 +168,8 @@ def delivery(tmp_path, monkeypatch):
     owner = VerifiedDownloadAssetOwner(root=tmp_path / "sealed", start_sweeper=False)
     source = tmp_path / "中文.txt"
     source.write_bytes(b"workspace file\n")
-    info = build_object_file_download_info(source, "session", "u")
+    metadata = {"user_id": "u", "routing": {"group_id": "g", "bot_id": "b"}}
+    info = build_object_file_download_info(source, "session", "u", metadata=metadata)
     return SimpleNamespace(
         client=client,
         store=store,
@@ -174,6 +179,7 @@ def delivery(tmp_path, monkeypatch):
         info=info,
         identity=identity,
         tenant=tenant,
+        metadata=metadata,
     )
 
 
@@ -201,7 +207,7 @@ def test_workspace_change_during_upload_is_not_delivered(delivery, monkeypatch):
 
     monkeypatch.setattr(delivery.client, "put_object", changed)
     with pytest.raises(RuntimeError, match="object-store delivery failed") as error:
-        build_object_file_download_info(delivery.source, "session", "u")
+        build_object_file_download_info(delivery.source, "session", "u", metadata=delivery.metadata)
     assert isinstance(error.value.__cause__, ValueError)
     assert "source changed" in str(error.value.__cause__)
     assert len(delivery.client.objects) == 1
@@ -306,6 +312,34 @@ async def test_missing_object_is_404(delivery):
         transport=httpx.ASGITransport(app=app), base_url="http://gateway"
     ) as client:
         assert (await client.get(delivery.info["download_url"])).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_history_token_with_delimited_tenant_still_downloads(delivery):
+    payload = delivery.manager.validate_token(delivery.info["download_token"])
+    old_key = (delivery.store.bucket, payload["object_key"])
+    payload.pop("identity")
+    payload["tenant_key"] = "g::b::u"
+    from jiuwenswarm.common.obs_files import download_object_key
+
+    payload["object_key"] = download_object_key(payload["tenant_key"], payload["asset_id"], payload["name"])
+    delivery.client.objects[(delivery.store.bucket, payload["object_key"])] = delivery.client.objects[old_key]
+    token = delivery.manager._sign_payload(payload)
+    app = FastAPI()
+    register_enterprise_file_routes(app, SimpleNamespace())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://gateway") as client:
+        url = delivery.manager.generate_download_url(token, "u")
+        response = await client.get(url)
+        assert response.status_code == 200 and response.content == b"workspace file\n"
+        assert (await client.get(url, headers={"X-User-Id": "other"})).status_code == 403
+
+
+@pytest.mark.parametrize("identity", [{}, {"user_id": "other", "routing": {"group_id": "g", "bot_id": "b"}}])
+def test_delivery_rejects_missing_or_mismatched_identity_before_upload(delivery, identity):
+    count = len(delivery.client.objects)
+    with pytest.raises(ValueError, match="identity must match"):
+        build_object_file_download_info(delivery.source, "session", identity.get("user_id", "u"), metadata=identity)
+    assert len(delivery.client.objects) == count
 
 
 @pytest.mark.parametrize(
