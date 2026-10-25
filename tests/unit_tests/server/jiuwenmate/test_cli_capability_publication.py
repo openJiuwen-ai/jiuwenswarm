@@ -44,6 +44,38 @@ def test_identical_cli_assets_do_not_create_another_version(tmp_path):
     assert first.config_version == second.config_version
 
 
+def test_heading_refresh_preserves_persona_draft_and_pinned_publication(tmp_path):
+    host, skill = prepare(tmp_path)
+    old = host.current_snapshot("local", "agent-a")
+    fields = json.loads(old.spec_json)
+    persona = "## 用户人设\n\n保留人设原文。"
+    fields["system_prompt"] = (
+        persona + "\n\n## 办公目录\n\n"
+        "你可以用 list_files 和 read_file 查看办公目录中的文件，用 write_file 和 edit_file 创建或修改文件。"
+        "\n\n## 已装配知识\n\n原知识约定。"
+        "\n\n## 命令使用约定（非技术隔离）\n\n过期命令约定。"
+        "\n\n# 用户补充约定\n\n保留用户约定。"
+    )
+    repo = host._repository
+    legacy = publish_spec("agent-a", repo.next_version("local", "agent-a"), fields)
+    repo.save_capability_version("local", legacy, previous_version=old.config_version, published_at=host._clock())
+    draft = replace(host.read_settings("local", "agent-a"), persona="未发布的人设")
+    host.update_settings("local", "agent-a", draft)
+
+    result = refresh(host, skill)
+    prompt = host.current_snapshot("local", "agent-a").load_spec().system_prompt
+    assert prompt.startswith(persona)
+    for heading in ("办公目录", "已装配知识", "命令使用约定（非技术隔离）", "网页读取", "飞书 CLI"):
+        assert prompt.count(f"\n# {heading}\n") == 1
+        assert f"\n## {heading}\n" not in prompt
+    assert "# 用户补充约定\n\n保留用户约定。" in prompt
+    assert "未发布的人设" not in prompt
+    assert host.read_settings("local", "agent-a").persona == draft.persona
+    assert host.get_colleague("local", "agent-a").has_unpublished_changes
+    assert host.snapshot("local", "agent-a", legacy.config_version) == legacy
+    assert refresh(host, skill).config_version == result.config_version
+
+
 @pytest.mark.parametrize("nested", [True, False])
 def test_refresh_removes_retired_calendar_without_publishing_draft(tmp_path, nested):
     from jiuwenswarm.server.jiuwenmate.bash_runtime import BASH_PROMPT

@@ -256,7 +256,20 @@ class SessionScheduler:
     async def _execute(self, key: SessionKey, run: _Running, execution) -> None:
         record = run.state.record
         try:
-            outcome = await self._driver.run(run.state, execution, run.handle)
+            try:
+                outcome = await self._driver.run(run.state, execution, run.handle)
+            except Exception as exc:
+                outcome = "failed"
+                logger.exception("[JiuwenMate] execution driver interrupted: request=%s", record.request_id)
+                try:
+                    await asyncio.to_thread(
+                        self._sessions.record_execution_failure,
+                        record.namespace_id, record.request_id, execution.execution_id,
+                        reason="error", detail=f"{type(exc).__name__}: {exc}", now=self._clock(),
+                    )
+                except Exception:
+                    logger.exception("[JiuwenMate] driver failure notice could not be persisted: request=%s",
+                                     record.request_id)
             try:
                 await asyncio.to_thread(
                     self._sessions.finish_request, record.namespace_id, record.request_id, outcome, now=self._clock()

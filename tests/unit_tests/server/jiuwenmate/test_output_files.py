@@ -254,7 +254,10 @@ async def test_a_later_execution_may_propose_the_same_output_only_with_the_same_
 
     await host.port.record(second, _file_event(second, 1))
     await host.port.record(second, _final(second, 2))
-    assert len(host.repository.result_deliveries(NS, state.record.request_id)) == 1
+    deliveries = host.repository.result_deliveries(NS, state.record.request_id)
+    assert len(deliveries) == 2
+    assert len([row for row in deliveries if row["notice_text"] is None]) == 1
+    assert len([row for row in deliveries if row["notice_text"] is not None]) == 1
 
     other = _file_event(second, 3, caption="另一份说明")
     with pytest.raises(PersistentAgentError) as caught:
@@ -271,6 +274,10 @@ async def test_paused_hands_off_files_and_feishu_claims_the_shared_workspace_out
     await host.port.record(execution, _paused(execution, 2))
 
     jobs = host.repository.claim_pending_result_deliveries(NS, now=NOW)
+    assert len(jobs) == 2
+    notices = [job for job in jobs if "file" not in job]
+    assert len(notices) == 1 and "暂停" in notices[0]["text"]
+    jobs = [job for job in jobs if "file" in job]
     assert len(jobs) == 1
     file = jobs[0]["file"]
     assert file["name"] == "周报.md"
@@ -302,9 +309,11 @@ async def test_delivery_service_wakes_on_paused_and_keeps_the_uploaded_file_key(
         return {"delivery_id": job["delivery_id"], "stage": "send", "outcome": "pending", "file_key": "fk_up"}
 
     service = ResultDeliveryService(host.repository, namespace_id=NS, send_delivery=send)
-    assert await service.dispatch_pending() == 1
-    assert sent[0]["file"]["file_key"] is None
-    assert host.repository.claim_pending_result_deliveries(NS, now=NOW)[0]["file"]["file_key"] == "fk_up"
+    assert await service.dispatch_pending() == 2
+    files = [job for job in sent if "file" in job]
+    assert len(files) == 1 and files[0]["file"]["file_key"] is None
+    pending_files = [job for job in host.repository.claim_pending_result_deliveries(NS, now=NOW) if "file" in job]
+    assert len(pending_files) == 1 and pending_files[0]["file"]["file_key"] == "fk_up"
 
 
 def test_workspace_output_key_rejects_paths_outside_output():

@@ -38,6 +38,7 @@ from jiuwenswarm.server.jiuwenmate.bash_runtime import (
     BASH_PROMPT,
     FULL_ACCESS_BASH_PROMPT,
     WEB_FETCH_PROMPT,
+    HOST_PROMPT_MARKER,
     PROVIDER as BASH_PROVIDER,
     refresh_builtin_tools,
     with_bash_tool,
@@ -67,7 +68,7 @@ DEFAULT_COLLEAGUE = ColleagueSettings(
 
 # Write and edit parameter text is rewritten to these office-relative paths when the tool is registered.
 WORKSPACE_PROMPT = (
-    "\n\n## 办公目录\n\n"
+    "\n\n# 办公目录\n\n"
     "你可以用 list_files 和 read_file 查看办公目录中的文件，用 write_file 和 edit_file 创建或修改文件。"
     "路径一律写成相对于办公目录的路径，不要使用绝对路径。"
     "新建文件默认放在办公目录根下，路径写文件名本身，例如 `test.txt`；"
@@ -180,10 +181,10 @@ def _model_identity(model: TeamModelConfig) -> tuple[str, str]:
 
 
 def formal_context_engine(model: TeamModelConfig) -> Any | None:
-    """Publish the tokenizer spec formal execution needs to count a final request.
+    """Describe optional local counting resources, without preparing or downloading them.
 
-    The capacity check accepts only an exact native count. A known model therefore
-    publishes that tokenizer. An unknown alias publishes no context configuration.
+    Core can fall back to model usage and character estimates when a native
+    tokenizer is unavailable. An unknown alias needs no tokenizer registry.
     """
     provider, model_name = _model_identity(model)
     if not model_name:
@@ -206,32 +207,6 @@ def formal_context_engine(model: TeamModelConfig) -> Any | None:
         enable_tokenizer_download=False,
         tokenizer_offline=True,
     )
-
-
-def cache_formal_tokenizer(config: Any) -> None:
-    """Put the published tokenizer artifact in the local cache.
-
-    Request time never downloads. Without the file, the capacity check treats the
-    count as unknown and pauses the request.
-    """
-    from openjiuwen.core.context_engine.token.tokenizer_manager import TokenizerArtifactManager
-    from openjiuwen.core.context_engine.token.tokenizer_spec import TokenizerSpec
-
-    registry = list(getattr(config, "tokenizer_registry", None) or [])
-    if not registry:
-        return
-    manager = TokenizerArtifactManager(
-        cache_dir=getattr(config, "tokenizer_cache_dir", None),
-        enable_download=True,
-        offline=False,
-    )
-    for item in registry:
-        spec = item if isinstance(item, TokenizerSpec) else TokenizerSpec.model_validate(item)
-        if manager.resolve(spec) is None:
-            raise PersistentAgentError(
-                f"tokenizer artifact is unavailable: {manager.last_error}",
-                code="INVALID_CONFIG",
-            )
 
 
 def show_agent_template(template_id: str) -> Mapping[str, Any] | None:
@@ -534,12 +509,11 @@ class PersistentAgentService:
             (models or self._models).resolve(settings.capabilities.model, client_id=f"jiuwenmate:{agent_id}")
         )
         context_engine = formal_context_engine(model)
-        if context_engine is not None:
-            cache_formal_tokenizer(context_engine)
         fields = with_bash_tool({
             "card": {"id": agent_id, "name": settings.name, "description": settings.description},
             "system_prompt": (
                 self._templates.read_persona(agent_id)
+                + HOST_PROMPT_MARKER
                 + WORKSPACE_PROMPT
                 + assembled.prompt
                 + (FULL_ACCESS_BASH_PROMPT if settings.permission_profile == "full_access" else BASH_PROMPT)
@@ -593,14 +567,14 @@ class PersistentAgentService:
         if definition.current_version is None:
             return None
         current = self.current_snapshot(namespace_id, agent_id)
-        fields = apply_feishu_skills(json.loads(current.spec_json), self._workspaces.path(namespace_id, agent_id),
-                                     skill_directories)
+        fields = json.loads(current.spec_json)
         if not any(tool.get("type") == BASH_PROVIDER for tool in (fields.get("tools") or [])):
             fields = with_bash_tool(fields)
             fields["system_prompt"] += (
                 FULL_ACCESS_BASH_PROMPT if fields.get("permission_profile") == "full_access" else BASH_PROMPT
             )
         fields = refresh_builtin_tools(fields)
+        fields = apply_feishu_skills(fields, self._workspaces.path(namespace_id, agent_id), skill_directories)
         if publish_spec(agent_id, current.config_version, fields).fingerprint == current.fingerprint:
             return self._version_view(namespace_id, agent_id, current.config_version)
         snapshot = publish_spec(agent_id, self._repository.next_version(namespace_id, agent_id), fields,

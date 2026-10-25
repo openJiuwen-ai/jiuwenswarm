@@ -30,6 +30,7 @@ from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import configured_feishu_
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, ConversationRef, PersistentContractError
 from jiuwenswarm.server.jiuwenmate.models import ColleagueSettings, PersistentAgentError
+from jiuwenswarm.server.jiuwenmate.model_refresh import ModelRefreshQueue
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WORKSPACE_WRITE
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
@@ -282,7 +283,9 @@ def _channel_records(manager: AgentManager) -> ChannelRecords:
 
 
 class JiuwenMateWebAdapter(GatewayAdapter):
-    methods = _COLLEAGUE_METHODS | _RUNTIME_METHODS | {ReqMethod.JIUWENMATE_MODELS_LIST.value}
+    methods = _COLLEAGUE_METHODS | _RUNTIME_METHODS | {
+        ReqMethod.JIUWENMATE_MODELS_LIST.value, ReqMethod.MODELS_REFRESH_STATUS.value,
+    }
 
     def __init__(
         self,
@@ -300,6 +303,8 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         self._manager: AgentManager | None = None
         self._conversations: WebConversationStore | None = None
         self._manager_lock = asyncio.Lock()
+        self._model_refresh_lock = asyncio.Lock()
+        self._model_refresh = ModelRefreshQueue(lambda payload: self.refresh_models(payload))
 
     def _colleagues(self) -> PersistentAgentService:
         with self._service_lock:
@@ -314,8 +319,9 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         """
         async with self._manager_lock:
             if self._manager is None:
+                await self.wait_model_refresh()
                 service = await asyncio.to_thread(self._colleagues)
-                await asyncio.to_thread(service.refresh_published, WEB_NAMESPACE)
+                await self.refresh_models()
                 observer = self._stream.observe if self._stream is not None else _ignore
                 manager = await asyncio.to_thread(self._manager_factory, service, on_event=observer)
                 if self._stream is not None:
@@ -328,6 +334,20 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             return self._manager
 
     async def refresh_models(self, config_payload: dict[str, Any] | None = None) -> bool:
+        async with self._model_refresh_lock:
+            return await self._refresh_models(config_payload)
+
+    def schedule_model_refresh(self, config_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        models = config_payload if isinstance(config_payload, dict) and "models" in config_payload else None
+        return self._model_refresh.schedule(models)
+
+    def model_refresh_status(self) -> dict[str, Any]:
+        return self._model_refresh.status()
+
+    async def wait_model_refresh(self) -> None:
+        await self._model_refresh.wait()
+
+    async def _refresh_models(self, config_payload: dict[str, Any] | None = None) -> bool:
         """Refresh published models for future Web and Feishu Requests, without starting either runtime."""
         from jiuwenswarm.common.config import get_default_models
         from jiuwenswarm.server.jiuwenmate.service import ConfiguredModelProvider, default_data_dir
@@ -351,6 +371,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
 
     async def aclose(self) -> None:
         """Stop running Executions with the host; a later call starts a new runtime."""
+        await self._model_refresh.aclose()
         async with self._manager_lock:
             manager, self._manager = self._manager, None
         if manager is not None:
@@ -362,7 +383,9 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         method = request.req_method.value if request.req_method is not None else ""
         params = request.params if isinstance(request.params, dict) else {}
         try:
-            if method in _RUNTIME_METHODS:
+            if method == ReqMethod.MODELS_REFRESH_STATUS.value:
+                payload = self.model_refresh_status()
+            elif method in _RUNTIME_METHODS:
                 self._watch(method, params.get("agent_id"), request)
                 payload = await self._run(method, params)
                 view = payload.get("request")
