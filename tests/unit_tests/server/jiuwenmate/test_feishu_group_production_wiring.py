@@ -675,7 +675,7 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     assert await server._ensure_persistent_group_fanout() is fanout
     manager.start.assert_awaited_once()
     manager.recover.assert_awaited_once_with(
-        "local", channels=frozenset({"feishu"}), include_unrouted=False,
+        "local", channels=frozenset({"feishu", "dingtalk"}), include_unrouted=False,
     )
     assert factory.call_args.kwargs["send_delivery"] == server._send_result_delivery
 

@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  createDingtalkFormItems,
   createDiscordFormItems,
   createSlackFormItems,
   createTelegramFormItems,
@@ -9,7 +8,6 @@ import {
 } from '../channelFormItems';
 import { createChannelFormRules } from '../channelRequirements';
 import type {
-  DingtalkFormValues,
   DiscordFormValues,
   SlackFormValues,
   TelegramFormValues,
@@ -17,13 +15,6 @@ import type {
 } from '../channelTypes';
 import type { ChannelFormController } from '../useChannelForm';
 import { StandardChannelForm } from './StandardChannelForm';
-
-export function DingtalkChannelForm({ controller }: { controller: ChannelFormController<DingtalkFormValues> }) {
-  const { t } = useTranslation();
-  const items = useMemo(() => createDingtalkFormItems(t), [t]);
-  const rules = useMemo(() => createChannelFormRules('dingtalk', t('settingsPanel.validation.required')), [t]);
-  return <StandardChannelForm controller={controller} items={items} rules={rules} />;
-}
 
 export function TelegramChannelForm({ controller }: { controller: ChannelFormController<TelegramFormValues> }) {
   const { t } = useTranslation();

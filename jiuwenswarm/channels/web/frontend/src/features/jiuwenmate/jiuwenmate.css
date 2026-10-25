@@ -3876,6 +3876,17 @@
   background: var(--jm-muted);
 }
 
+.jiuwenmate-im-dialog__panel select {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--jm-border-strong);
+  border-radius: 8px;
+  background: var(--jm-surface);
+  color: var(--jm-text);
+  font: inherit;
+}
+
 .jiuwenmate-im-dialog__panel > strong {
   font-size: 13px;
   font-weight: 600;

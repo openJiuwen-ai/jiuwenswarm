@@ -275,7 +275,10 @@ def create_default_persistent_group_fanout(
         await asyncio.to_thread(resources.archive_delivery, job)
 
     delivery_service = (
-        ResultDeliveryService(sessions, namespace_id="local", send_delivery=send_delivery, archive_delivery=archive_delivery)
+        ResultDeliveryService(
+            sessions, namespace_id="local", channels=frozenset({"feishu", "dingtalk"}),
+            send_delivery=send_delivery, archive_delivery=archive_delivery,
+        )
         if send_delivery is not None
         else None
     )
@@ -365,6 +368,8 @@ def create_default_persistent_group_fanout(
             return tuple(updated)
 
         manager.refresh_group_messages = refresh
+    from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import DingTalkInboundHandler
+
     fanout = PersistentGroupFanout(
         service=service,
         groups=groups,
@@ -372,6 +377,7 @@ def create_default_persistent_group_fanout(
         agent_manager=manager,
         resolve_bindings=resolve_configured_feishu_bindings,
         resolve_access=resolve_feishu_access,
+        dingtalk_inbound=DingTalkInboundHandler(service=service, sessions=sessions, agent_manager=manager),
     )
     if delivery_service is not None:
         delivery_service.set_handoff_handler(fanout.continue_handoff)
@@ -401,6 +407,7 @@ class PersistentGroupFanout:
         resolve_bindings: BindingResolver,
         resolve_access: AccessResolver,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        dingtalk_inbound: Any = None,
     ) -> None:
         self._service = service
         self._groups = groups
@@ -409,6 +416,7 @@ class PersistentGroupFanout:
         self._resolve_bindings = resolve_bindings
         self._resolve_access = resolve_access
         self._clock = clock
+        self.dingtalk_inbound = dingtalk_inbound
 
     async def handle(self, event: FeishuInboundEvent) -> InboundDisposition:
         """Claim the event only when exactly one configured app binding matches."""

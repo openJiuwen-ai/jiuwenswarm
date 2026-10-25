@@ -60,6 +60,7 @@ export interface JiuwenMateColleagueDraft {
 export interface JiuwenMateColleague extends JiuwenMateColleagueDraft {
   id: string;
   imConfigured: boolean;
+  imPlatform?: 'feishu' | 'dingtalk';
   disabled: boolean;
   joinedAt: string;
   isDefault?: boolean;
