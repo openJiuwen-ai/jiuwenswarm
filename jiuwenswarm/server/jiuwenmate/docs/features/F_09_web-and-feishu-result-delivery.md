@@ -44,7 +44,7 @@
 ## 3. 设计约束、假设与待决问题
 
 - **已确认约束与依赖：** JM-04 的候选输出已由 `HostCommitPort` / `ExecutionRepository` 持久化，final 缺少已保存候选时会被拒绝；JM-08 绑定按实际接收 `app_id` 匹配；JM-10.02 已提供 Web 请求查询与历史视图。Web 成功口径已确认：服务端持久化且可从会话历史查询即成功，WebSocket 不要求浏览器 ACK。
-- **已确认的 Agent Core 输出边界：** `output.proposed` 提供 `output_id`、`target_ref`、`share_mode`、文本或 `file_ref`；final 只引用 `output_refs`。JM-09 只消费 final 明确引用的候选，不从 `reply.delta`、reasoning、工具日志或未被 final 采用的候选推断外发内容。文件模式以 agent-core 的 PA-08 / S_02 为准，不在 JiuwenSwarm 重新解释。
+- **已确认的 Agent Core 输出边界：** `output.proposed` 提供 `output_id`、`target_ref`、`share_mode`、文本或 `file_ref`；终态通过 `output_refs` 交付候选。JM-09 的 Agent 业务结果只消费终态明确引用的候选，不从 `reply.delta`、reasoning、工具日志或未被终态采用的候选推断外发内容。宿主异常状态通知使用独立 outbox 文本，不伪造 core 候选、终态或输出引用，见 2026-10-23 修订。文件模式以 agent-core 的 PA-08 / S_02 为准，不在 JiuwenSwarm 重新解释。
 - **硬依赖：** JM-04 是投递账本创建的前置；飞书文本 / 文件依赖 JM-08 绑定和 Request 路由快照；群内接力依赖当前群有效成员记录、目标员工的 Feishu 绑定和 JM-08 入站链路；文件处理依赖 agent-core PA-08 输出契约，已接入宿主校验和投递路径。
 - **关键假设：** 每条飞书 Request 可保留唯一的接收 `app_id` 与 `chat_id`；绑定变更后仍按请求受理时的快照发送，不临时改用另一个 Bot。若该 Bot 已停用或无法访问目标群，投递失败 / 待核实，不自动切换身份。
 - **待核实事项：** 当前 Feishu SDK / Open API 的消息幂等字段及适用边界、文件上传在回执丢失时的查询能力，需在 JM-09 实现和真实联调时按实际版本核验。飞书官方接口参考：[发送消息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/create)、[回复消息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/reply)、[上传文件](https://open.feishu.cn/document/server-docs/im-v1/file/create)、[获取会话历史消息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)。不能因文档链接存在就假定当前 SDK 已提供对应字段或权限。
@@ -144,7 +144,7 @@ flowchart LR
 
 核心不变量：
 
-1. 只有 final 的 `output_refs` 可创建终态投递；`ignored`、`paused`、`failed` 等没有引用可见输出的结局不发群消息。
+1. Agent 业务结果只投递终态 `output_refs` 明确交付的候选。宿主对 `paused(error/context_unfit/budget_denied)`、`final(failed)` 和无有效终态的执行异常补发独立状态通知；`ignored`、用户取消 / 停止、正常等待确认不会因此发送失败通知。状态通知不授权未交付候选外发。
 2. 投递失败只推进或暂停投递状态，不重新执行模型、工具或 Request。
 3. Web `available` 表示服务端查询接口可取到已提交结果；WebSocket 成功与否不改变状态。
 4. Feishu `delivered` 必须有已保存的外部回执；请求入队、Gateway 收到请求或 SDK 调用开始都不算送达。
@@ -202,16 +202,17 @@ await ResultDeliveryService.apply_ack(ack)
 
 ### 5.4 数据模型与事实归属
 
-JM-04 同一 `agents.sqlite3` 已新增 `result_deliveries` 表，不复制候选正文：
+JM-04 同一 `agents.sqlite3` 的 `result_deliveries` 保存投递状态，不复制 Agent 候选正文；宿主异常通知的安全正文单独保存在 `notice_text`：
 
 | 数据 | 隔离范围 | 权威位置 | 创建、更新与释放 |
 | --- | --- | --- | --- |
 | 来源路由快照 | `(namespace_id, request_id)` | Request 持久记录 | JM-08 校验通过、Request 受理时一次写入；不可在投递时改写 |
 | 投递记录 | `(namespace_id, delivery_id)`；唯一键 `(namespace_id, request_id, output_id, channel, target_id)` | `result_deliveries` | final 事件与候选引用在同一 SQLite 事务内创建；状态由 DeliveryService 以事务 / CAS 更新 |
 | 候选正文 / 文件引用 | `(namespace_id, output_id)` | JM-04 `candidate_outputs` / core output event | JM-09 只读引用；投递记录不复制正文或本地文件路径 |
+| 宿主异常通知 | `(namespace_id, execution_id)`；每次 Execution 最多一条 | `result_deliveries.notice_text` | 异常终态同事务写入；宿主执行 / 收尾失败状态与通知同事务保存，防止重启误续跑。不是 core 输出，查询和归档时不得用同名候选替换正文 |
 | 外部回执 | `(namespace_id, delivery_id)` | `result_deliveries.external_message_id` / `file_key` / `error_code` | 收到 Gateway ACK 后保存；重试复用已有 `file_key`，不重复上传 |
 
-当前 `result_deliveries` 包含 `delivery_id`、`request_id`、`execution_id`、`output_id`、`channel`、`target_id`、`status`、`idempotency_key`、`attempt_count`、`external_message_id`、`file_key`、`error_code` 和时间戳。数据库不保存文件正文或物理路径；凭据与未脱敏平台响应不落库。上传与文件消息发送在一次 Gateway 调用中完成，若已有 `file_key` 则只复用该 key，不重新上传。
+当前 `result_deliveries` 包含 `delivery_id`、`request_id`、`execution_id`、`output_id`、`channel`、`target_id`、`status`、`idempotency_key`、`attempt_count`、`external_message_id`、`file_key`、`error_code`、可空的 `notice_text` 和时间戳。旧库初始化时只补充可空列，不回填历史失败通知、不改旧投递状态。通知行的 `output_id` 只是 outbox 内部引用，不指向或创建 core 候选；正文由 `notice_text` 提供。数据库不保存文件正文或物理路径；凭据与未脱敏平台响应不落库。上传与文件消息发送在一次 Gateway 调用中完成，若已有 `file_key` 则只复用该 key，不重新上传。
 
 ### 5.5 状态机与生命周期
 
@@ -451,6 +452,14 @@ uv run pytest `
 | Feishu 群内消息接力 | 在动态群成员范围内把终态文本交接标记转成原生 Bot @，目标通过自己的 JM-08 / PA-07 入站链路继续 | 宿主替身验证已通过；真实 Feishu 群和真实 Agent 联调未执行 |
 
 ## 10. 设计演进与修订
+
+### 2026-10-23 异常中断通知
+
+用户要求异常时不再静默结束。真实请求的 `execution.paused(error)` 没有 `output_refs`，旧投递器因此没有消息可发。现有 outbox 增加独立的宿主通知文本，不伪造 core 候选或改变其输出引用；异常终态同事务入队，构建失败 / 无终态等宿主异常共用同一入口，以 Execution 去重。公开消息只提供安全的异常类型、分类原因和请求编号，不广播原始响应、密钥、路径或堆栈。普通结果与文件、原始路由、ACK、未知结果不盲重发及个人版保持不变。Web 通过已有请求视图展示宿主通知，Feishu 复用原 app / 聊天投递；已结束历史请求不自动补发。
+
+实现还覆盖收尾阶段抛错：Scheduler 将逃出 Driver 的异常记为失败并尝试通知，避免 Request 留在 dispatched 而阻塞后续排队。宿主失败状态与通知在同一事务持久化，即使随后进程退出，恢复扫描也不会把已知失败任务误当成意外断流而自动续跑；不伪造 core 终态。通知不声称已回滚副作用，不自动重跑业务任务。已交付的部分文件或文本保留，同时补充异常状态。完整内部诊断仍在原事件 / 日志中；Web 公开视图有通知时使用安全原因，不将原始异常正文再次作为消息返回。缺少路由快照的旧请求仍保存本地 `available` 提示供请求视图查询，但不创建飞书外发任务、不猜测接收人。
+
+定向执行异常通知、事件提交、调度、恢复、文件和 Web 私聊六个测试文件，最终 **155 passed**；个人版飞书上传 / 流式卡片兼容性检查 **18 passed**。全量 JiuwenMate **556 passed / 8 failed / 1 skipped**，未通过项仍为 Windows 权限位 / 符号链接特权、既有知识选择断言和 thinking-notice Web 方法白名单差异，未改动这些无关问题。独立审查发现的原子结束和无路由本地可见性问题已用失败回归复现并修复；补充重启后不重跑失败任务的验证。存储无法写入、缺失外部路由或渠道本身不可用时，不能保证聊天中即时可见：不猜测或切换其他 app / 聊天；持久化失败记录服务日志，渠道拒绝、暂不可用及未知回执沿既有 failed / pending / unknown 状态处理。未启动或重启用户服务、未写入用户现用数据库、未调用真实模型或发送真实飞书消息，本次不修复模型压缩响应解码问题。实现与验证记录见 [执行计划](../../../../../docs/superpowers/plans/2026-10-23-execution-failure-notices.md)。
 
 ### 2026-10-22 二维码等图片在聊天内展示
 

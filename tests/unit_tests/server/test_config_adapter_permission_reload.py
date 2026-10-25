@@ -1,4 +1,4 @@
-"""Config saves in AgentServer publish the runtime snapshot before success."""
+"""Config saves acknowledge legacy reload, then publish Persistent snapshots in background."""
 
 from __future__ import annotations
 
@@ -126,6 +126,7 @@ async def test_config_save_refreshes_persistent_models_without_starting_a_runtim
     )
 
     assert applied is True
+    await adapter.wait_model_refresh()
     current = service.current_snapshot(WEB_NAMESPACE, colleague.agent_id).load_spec()
     assert current.model.model_request_config.context_window == expected_window
     assert adapter._manager is None
@@ -142,22 +143,27 @@ async def test_model_reload_does_not_create_persistent_data_for_personal_agents(
     assert await AgentWebSocketServer._reload_after_config_save(
         server, {"models.defaults"}, reload_options={"reload_scopes": ["model"]},
     ) is True
+    await server._jiuwenmate_web.wait_model_refresh()
     assert server._jiuwenmate_web._service is None
     assert not (tmp_path / "absent").exists()
 
 
 @pytest.mark.asyncio
-async def test_model_reload_does_not_claim_application_when_persistent_refresh_fails():
+async def test_model_reload_reports_persistent_failure_separately_from_save():
+    adapter = JiuwenMateWebAdapter()
+    adapter.refresh_models = AsyncMock(return_value=False)
     server = SimpleNamespace(
         _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()),
-        _jiuwenmate_web=SimpleNamespace(refresh_models=AsyncMock(return_value=False)),
+        _jiuwenmate_web=adapter,
     )
 
     applied = await AgentWebSocketServer._reload_after_config_save(
         server, {"models.defaults"}, reload_options={"reload_scopes": ["model"]},
     )
 
-    assert applied is False
+    assert applied is True
+    await adapter.wait_model_refresh()
+    assert adapter.model_refresh_status()["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -186,6 +192,7 @@ async def test_model_reload_opens_an_existing_persistent_store_once(tmp_path, mo
             server, {"models.defaults"}, reload_options={"reload_scopes": ["model"]},
         ) is True
 
+    await adapter.wait_model_refresh()
     assert created == [service]
     current = service.current_snapshot(WEB_NAMESPACE, colleague.agent_id)
     assert current.config_version == "v2"
@@ -228,16 +235,18 @@ async def test_explicit_reload_updates_persistent_models_or_reports_unapplied_dr
     )
 
     wire = send.await_args.args[1]
-    assert wire["response_kind"] == ("e2a.error" if pending_edits else "e2a.complete")
+    assert wire["response_kind"] == "e2a.complete"
     response = parse_agent_server_wire_unary(wire)
-    assert response.ok is not pending_edits
+    assert response.ok
+    assert response.payload["persistent_model_refresh"]["status"] == "pending"
+    await adapter.wait_model_refresh()
+    assert adapter.model_refresh_status()["status"] == ("failed" if pending_edits else "applied")
     # Runtime initialization repeats this refresh without a payload.
     assert service.refresh_published(WEB_NAMESPACE) is not pending_edits
     current = service.current_snapshot(WEB_NAMESPACE, colleague.agent_id)
     expected_window = 1048576 if pending_edits else 131072
     assert current.load_spec().model.model_request_config.context_window == expected_window
     if pending_edits:
-        assert response.payload["code"] == "PERSISTENT_MODELS_NOT_APPLIED"
         assert service.get_colleague(WEB_NAMESPACE, colleague.agent_id).has_unpublished_changes
         service.publish(WEB_NAMESPACE, colleague.agent_id)
         published = service.current_snapshot(WEB_NAMESPACE, colleague.agent_id).load_spec()
@@ -293,6 +302,7 @@ async def test_proxied_model_save_notifies_persistent_agents_with_the_saved_conf
     response = await ConfigAdapter(on_config_saved=on_saved).handle(_request(ReqMethod.MODELS_UPSERT, {"model": {}}))
 
     assert response.ok and response.payload["applied_without_restart"] is True
+    await adapter.wait_model_refresh()
     current = service.current_snapshot(WEB_NAMESPACE, colleague.agent_id).load_spec()
     assert current.model.model_request_config.context_window == 131072
 

@@ -105,6 +105,23 @@ async def test_a_saved_final_closes_the_request_without_running_it_again(tmp_pat
     assert host.status(left.queued) == ("ended", "completed")
 
 
+async def test_host_failure_notice_closes_request_before_restart_without_rerunning_it(tmp_path, restart):
+    left = Left(tmp_path)
+    repo = Host(tmp_path).sessions
+    repo.record_execution_failure(
+        NS, left.interrupted.record.request_id, left.execution_id,
+        reason="error", detail="RuntimeError: interrupted", now=NOW,
+    )
+
+    host, recovered = await restart(left)
+
+    assert recovered == []
+    assert host.status(left.interrupted) == ("ended", "failed")
+    assert host.core.started == ["排队"]
+    assert host.status(left.queued) == ("ended", "completed")
+    assert len(host.sessions.result_deliveries(NS, left.interrupted.record.request_id)) == 1
+
+
 async def test_a_saved_stop_closes_the_request_as_stopped(tmp_path, restart):
     left = Left(tmp_path, [STOPPED])
 

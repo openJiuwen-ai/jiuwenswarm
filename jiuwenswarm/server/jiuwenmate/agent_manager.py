@@ -827,12 +827,17 @@ class AgentManager:
         if not executions:
             return (), (), None, None
         latest = executions[-1]
+        notices = tuple(
+            row["notice_text"]
+            for row in self._sessions.result_deliveries(record.namespace_id, record.request_id)
+            if row["execution_id"] == latest.execution_id and row.get("notice_text")
+        )
         log = self._sessions.read_execution_log(
             record.namespace_id, record.session_id, record.request_id, latest.execution_id
         )
         terminal = next((event for event in log if event.event_type in _TERMINAL_EVENTS), None)
         if terminal is None:
-            return (), (), None, None if state.status == "ended" else reply_draft(latest.execution_id, log)
+            return notices, (), None, None if state.status == "ended" else reply_draft(latest.execution_id, log)
         payload = terminal.payload
         replies: list[str] = []
         files: list[dict[str, object]] = []
@@ -845,7 +850,9 @@ class AgentManager:
             elif output.payload.share_mode in FILE_SHARE_MODES:
                 files.append(self._file_view(record, output.payload))
         reason = payload.detail if terminal.event_type == core.EventType.EXECUTION_PAUSED else payload.reason
-        return tuple(replies), tuple(files), reason, None
+        if notices:
+            reason = notices[-1]
+        return (*replies, *notices), tuple(files), reason, None
 
     def _file_view(self, record, output: core.OutputPayload) -> dict[str, object]:
         """A handed-off file as a page may show it: name, size, caption and a signed download link."""

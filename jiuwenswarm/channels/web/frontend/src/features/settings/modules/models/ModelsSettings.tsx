@@ -9,6 +9,7 @@ import { buildModelValidationPayload } from '../../services/settingsContract';
 import type { SettingsSaveErrorScope } from '../../services/SettingsSaveQueue';
 import {
   SettingsConfirmDialog,
+  SettingRow,
   SettingsSection,
   SettingsTabLayout,
   type SettingsTabDefinition,
@@ -33,6 +34,7 @@ import {
 } from './modelGroupAdapters';
 import { useSessionStore } from '../../../../stores/sessionStore';
 import { getEditableModels, isRuntimeGrantedModel } from './modelListOperations';
+import { useModelRefreshStatus } from './useModelRefreshStatus';
 
 const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
   reasoning: null,
@@ -40,6 +42,13 @@ const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
   coding_plan: [],
   custom_api: [],
 };
+
+const MODEL_REFRESH_MESSAGES = {
+  pending: 'settingsPanel.models.refreshPending',
+  applied: 'settingsPanel.models.refreshApplied',
+  failed: 'settingsPanel.models.refreshFailed',
+  unavailable: 'settingsPanel.models.refreshUnavailable',
+} as const;
 
 type ModelConfirmation =
   | { type: 'delete-model'; model: ModelEntry; message: string }
@@ -162,6 +171,7 @@ export function parseModelsPayload(payload: unknown): {
 export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSettingsProps) {
   const { t } = useTranslation();
   const { isConnected, request, saveQueue } = useSettingsServices();
+  const { refreshStatus, checkRefreshStatus } = useModelRefreshStatus(isConnected, request);
   const setAvailableModels = useSessionStore((state) => state.setAvailableModels);
   const setAvailableModelGroups = useSessionStore((state) => state.setAvailableModelGroups);
   const [models, setModels] = useState<ModelEntry[]>([]);
@@ -322,13 +332,14 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
       if (typeof result.applied_without_restart !== 'boolean') {
         throw new Error(t('settingsPanel.models.saveResponseInvalid'));
       }
+      checkRefreshStatus();
       const refreshedPayload = await request('models.list');
       applyCatalog(parseModelsPayload(refreshedPayload));
       showValidationToast({
         success: true,
         message: t(
           result.applied_without_restart
-            ? 'settingsPanel.models.savedApplied'
+            ? 'settingsPanel.feedback.saved'
             : 'settingsPanel.models.savedRestartRequired',
         ),
       });
@@ -360,9 +371,12 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
     try {
       const result = await saveQueue.enqueue(
         group.model_group_id ? 'model_group.edit' : 'model_group.add',
-        () => request<{ group?: unknown }>('model_groups.upsert', { group }, { timeoutMs: 600_000 }),
+        () => request<{ group?: unknown; applied_without_restart?: boolean }>(
+          'model_groups.upsert', { group }, { timeoutMs: 600_000 },
+        ),
         { errorScope: 'caller' },
       );
+      checkRefreshStatus();
       const savedGroup = parseModelGroup(result?.group);
       if (savedGroup) {
         setModelGroups((current) => {
@@ -374,7 +388,8 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
       applyCatalog(parseModelsPayload(refreshedPayload));
       showValidationToast({
         success: true,
-        message: t('settingsPanel.models.savedApplied'),
+        message: t(result?.applied_without_restart === false
+          ? 'settingsPanel.models.savedRestartRequired' : 'settingsPanel.feedback.saved'),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed');
@@ -404,14 +419,16 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
       if (confirmation.type === 'delete-model') {
         if (!confirmation.model.model_id) throw new Error(t('settingsPanel.feedback.saveFailed'));
         setSaving(true);
-        await saveQueue.enqueue(
+        const result = await saveQueue.enqueue<ModelResourceResult>(
           'model.delete',
           () => request('models.delete', { model_id: confirmation.model.model_id }, { timeoutMs: 600_000 }),
           { errorScope: 'page' },
         );
+        checkRefreshStatus();
         const refreshedPayload = await request('models.list');
         applyCatalog(parseModelsPayload(refreshedPayload));
-        showValidationToast({ success: true, message: t('settingsPanel.models.savedApplied') });
+        showValidationToast({ success: true, message: t(result?.applied_without_restart === false
+          ? 'settingsPanel.models.savedRestartRequired' : 'settingsPanel.feedback.saved') });
       } else if (confirmation.type === 'remove-group-route') {
         const nextGroup = removeGroupRoute(confirmation.group, confirmation.routeId);
         if (nextGroup.routes.length === 0) {
@@ -420,21 +437,37 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         await saveModelGroup(nextGroup);
       } else if (confirmation.group.model_group_id) {
         setSaving(true);
-        await saveQueue.enqueue(
-          'model_group.delete',
-          () =>
-            request(
-              'model_groups.delete',
-              { model_group_id: confirmation.group.model_group_id },
-              {
-                timeoutMs: 600_000,
-              },
-            ),
-          { errorScope: 'page' },
-        );
+        let result: ModelResourceResult | undefined;
+        try {
+          result = await saveQueue.enqueue(
+            'model_group.delete',
+            () =>
+              request<ModelResourceResult>(
+                'model_groups.delete',
+                { model_group_id: confirmation.group.model_group_id },
+                {
+                  timeoutMs: 600_000,
+                },
+              ),
+            { errorScope: 'page' },
+          );
+          checkRefreshStatus();
+        } catch (error) {
+          const referenced = extractModelSelectionReferences(error);
+          if (referenced.length > 0 || (error as { code?: string })?.code === 'MODEL_SELECTION_REFERENCED') {
+            throw new Error(
+              t('settingsPanel.models.modelGroupReferenced', {
+                count: referenced.length || 1,
+                scopes: referenced.map((item) => item.scope).join(', ') || 'unknown',
+              }),
+            );
+          }
+          throw error;
+        }
         const refreshedPayload = await request('models.list');
         applyCatalog(parseModelsPayload(refreshedPayload));
-        showValidationToast({ success: true, message: t('settingsPanel.models.savedApplied') });
+        showValidationToast({ success: true, message: t(result?.applied_without_restart === false
+          ? 'settingsPanel.models.savedRestartRequired' : 'settingsPanel.feedback.saved') });
       }
       setConfirmation(null);
     } catch (error) {
@@ -581,6 +614,34 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
 
   return (
     <>
+      {refreshStatus && !(refreshStatus.status === 'applied' && refreshStatus.generation === 0) ? (
+        <SettingsSection separatedRows>
+          <div
+            role={refreshStatus.status === 'failed' || refreshStatus.status === 'unavailable' ? 'alert' : 'status'}
+            aria-live="polite"
+            data-testid="settings-models-refresh-status"
+            data-variant={refreshStatus.status}
+          >
+            <SettingRow
+              title={<span data-testid="settings-models-refresh-title">{t('settingsPanel.models.refreshTitle')}</span>}
+              description={<span data-testid="settings-models-refresh-description">
+                {t(MODEL_REFRESH_MESSAGES[refreshStatus.status])}
+              </span>}
+            >
+              {refreshStatus.status === 'failed' || refreshStatus.status === 'unavailable' ? (
+                <Button
+                  size="sm"
+                  disabled={!isConnected}
+                  onClick={checkRefreshStatus}
+                  data-testid="settings-models-refresh-retry-btn"
+                >
+                  {t('settingsPanel.models.refreshCheckStatus')}
+                </Button>
+              ) : null}
+            </SettingRow>
+          </div>
+        </SettingsSection>
+      ) : null}
       <SettingsTabLayout
         tabs={tabs}
         defaultTab={defaultTab}
@@ -589,7 +650,7 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         testIdPrefix="settings-models"
         renderPanel={(activeTab) => activeTab === 'models' ? (
         <div className={'settings-models__models-pane'}>
-          <FreeModelsSettings />
+          <FreeModelsSettings onSaved={checkRefreshStatus} />
           <SettingsSection
             title={t('settingsPanel.models.customModels')}
             separatedRows

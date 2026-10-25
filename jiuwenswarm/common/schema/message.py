@@ -78,6 +78,7 @@ def _ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None
     CONFIG_SAVE_ALL = "config.save_all"
     CONFIG_VALIDATE_MODEL = "config.validate_model"
     MODELS_LIST = "models.list"
+    MODELS_REFRESH_STATUS = "models.refresh_status"
     MODELS_ZEN_ENTRIES = "models.zen_entries"
     MODELS_ZEN_WARM = "models.zen_warm"
     MODELS_GET = "models.get"
