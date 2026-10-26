@@ -2,6 +2,29 @@
 
 These standards reflect repository source and maintained documents around commit `ceb4b200d`. They describe the mechanisms and direction a code change should respect; they do not claim that all legacy code already meets the intended boundaries. Recheck claims against the review baseline, applicable project instruction files, and approved design decisions when reviewing a later revision.
 
+## 模块规则与契约导航
+
+本节按 swarm `09582d832aa33b16f1806ddc2137f376813e1f3c` 的工作区核对（2026-10-26）；下方既有技术标准仍保留其原来源版本，使用时分别核实。
+先从变更路径向上读取适用 AGENTS，再读取相关子模块规则。模块引用的特性规则可能覆盖目录外调用方，不能只按文件所在目录判断。
+当前 `.agents/agent-docs/specs/` 仅含 `.gitkeep`，没有已建档的模块 spec；后续版本按实际目录重新发现。
+这一缺口不代表没有契约：E2A、Process CLI/SDK 文档、机器可读 schema、公开类型与现有测试都是应核对的真实依据。
+
+| 模块/场景 | AGENTS 与真实契约入口 | 检视重点 |
+|---|---|---|
+| Runtime、Server、Gateway | [根规则](../../../../AGENTS.md)；[Runtime 公共入口](../../../../jiuwenswarm/runtime/__init__.py)；[运行代次与执行](../../../../jiuwenswarm/runtime/session)；[产品会话事务](../../../../jiuwenswarm/runtime/session_provisioner.py) | 核对产品生命周期所有权、状态/持久化、取消/恢复；没有独立模块规则或 spec 时明确记录，不能据目录名补造约束。 |
+| E2A 与跨端消息 | [中文协议](../../../../docs/zh/E2A-protocol.md)；[英文协议](../../../../docs/en/E2A-protocol.md)；[E2A 模型与 codec](../../../../jiuwenswarm/common/e2a)；[共享消息 schema](../../../../jiuwenswarm/common/schema) | 协议文档、生产方、Gateway/AgentServer 转换、各渠道和旧消费者一起核对。 |
+| Process CLI 与 SDK | [SDK 协议](../../../../sdks/PROTOCOL.md)；[机器可读 schema](../../../../jiuwenswarm/channels/process_cli/protocol/schema.json)；[Python SDK](../../../../sdks/python)；[TypeScript SDK](../../../../sdks/typescript) | 检查协议版本/能力、JSONL 分帧、请求/会话身份、sequence、唯一终态与退出码；不能把 chat.final、EOF 或 ACK 当作进程成功。 |
+| Web 与前端 | [Web 规则](../../../../jiuwenswarm/channels/web/AGENTS.md)；[前端规则](../../../../jiuwenswarm/channels/web/frontend/AGENTS.md)；[测试入口](../../../../jiuwenswarm/channels/web/frontend/package.json) | 核对 data-testid、浏览器兼容、中英文文案、主题/SVG 和真实交互；依适用规则只检查本次触及范围。 |
+| 设置需求与目录外业务组件 | [Settings 规则](../../../../jiuwenswarm/channels/web/frontend/src/features/settings/AGENTS.md) | 规则可随设置需求覆盖目录外业务组件；核对字段/声明式设置/renderer/校验保存及运行时副作用，不能用 custom 绕过普通设置契约。 |
+| 共享 UI | [UI 规则](../../../../jiuwenswarm/channels/web/frontend/src/components/ui/AGENTS.md)；[公开导出](../../../../jiuwenswarm/channels/web/frontend/src/components/ui/index.ts) | 检查所有受影响调用方、键盘/焦点/无障碍/禁用与响应式行为；不把业务状态放入基础控件。 |
+| 轨迹查看器 | [轨迹规则](../../../../jiuwenswarm/channels/web/frontend/src/features/trajectory/AGENTS.md)；[应用观测实现](../../../../jiuwenswarm/observability) | 核对纯函数与 React 隔离、生成 semconv、上游许可/PROVENANCE、主题作用域、v2 回放向量与 core 读者；轨迹目录的版权规则不能被根通用约定覆盖。 |
+| 应用 Harness/Team 与 core 依赖 | [Swarm 装配](../../../../jiuwenswarm/agents/swarm/assembly.py)；[依赖声明](../../../../pyproject.toml)；[依赖锁](../../../../uv.lock) | 按基线/候选各自框架版本读取 core 模块规则/spec；保留本地 editable 与已提交依赖证据的区别，不直接套用 core 的全仓规则。 |
+| 沙箱、资源与交付 | [沙箱说明](../../../../jiuwenbox/README.md)；[运行时路径函数](../../../../jiuwenswarm/common/utils.py)；[部署目录](../../../../deploy) | 检查路径/进程/权限、配置模板与包资源；Windows/macOS/Linux 和源码/安装包路径按影响验证。 |
+
+集中规约入口为 [specs](../../../agent-docs/specs)；迁入历史资料从 [设计入口](../../../agent-docs/designs/README.md) 与 [迁移说明](../../../agent-docs/designs/migration-20261026.md) 定位。
+历史设计描述当时方案和审批，不自动替代当前 spec/协议。遇到 AGENTS、协议、schema 与代码冲突时，区分文档漂移、实现回归和未确认契约变化，报告证据并交接开发。
+本地 AGENTS.local.md 的禁止格式化/静态检查约束仍适用；模块中的构建、类型检查或 diff 检查命令不构成执行这些检查的授权。
+
 ## Languages, frameworks, and deliverables
 
 | Area | Current mechanism | Review standard |
@@ -13,8 +36,8 @@ These standards reflect repository source and maintained documents around commit
 
 ## Architecture boundaries and evolution
 
-- **One Agent Runtime.** The public surface in `jiuwenswarm/runtime/__init__.py` and `runtime/service.py` shows Process CLI and AgentServer using the same `AgentRuntime`. AgentServer owns WebSocket and control entry points; Gateway owns channel ingress and routing. For new process-style CLI work, `docs/zh/JiuwenSwarm_CLI架构原则.md` requires a direct Runtime client, without starting AgentServer or building another Runtime. Apply that document only within its stated scope.
-- **Process-local session state versus durable state.** The Coordinator, Registry, and Scheduler in `runtime/session/` own process-local executions, queuing, cancellation, and closing. Metadata, history, and checkpoint persistence still have separate implementations. `runtime/session_provisioner.py` owns product transactions for create, switch, fork, and delete. Changes here must respect a single source of truth, prepare/commit/abort, generation, idempotency, failure rollback, and cleanup. `docs/session-runtime-current-architecture.md` is a useful guide after checking its source baseline against the review baseline.
+- **One Agent Runtime.** The public surface in `jiuwenswarm/runtime/__init__.py` and `runtime/service.py` shows Process CLI and AgentServer using the same `AgentRuntime`. AgentServer owns WebSocket and control entry points; Gateway owns channel ingress and routing. For Process CLI changes, read `sdks/PROTOCOL.md`, the process-channel schema and actual Runtime entry points; do not infer its execution model from another channel. The historical `docs/zh/JiuwenSwarm_CLI架构原则.md` path is absent at the module-navigation snapshot above and is not a required review source.
+- **Process-local session state versus durable state.** The Coordinator, Registry, and Scheduler in `runtime/session/` own process-local executions, queuing, cancellation, and closing. Metadata, history, and checkpoint persistence still have separate implementations. `runtime/session_provisioner.py` owns product transactions for create, switch, fork, and delete. Changes here must respect a single source of truth, prepare/commit/abort, generation, idempotency, failure rollback, and cleanup. Inspect the actual Runtime/session implementation and relevant tests at the baseline and candidate. The historical `docs/session-runtime-current-architecture.md` path is absent at the module-navigation snapshot above; do not treat it as an available contract.
 - **Assess transitional boundaries as they exist.** `runtime/service.py` still imports `server.runtime.agent_manager`; some persistence implementations remain in `server/runtime/session/`. Determine whether a new dependency is a deliberate migration step or widens existing coupling. Do not claim full Runtime/Server separation, and do not treat old bridges as blanket exemptions.
 - **Shared channel semantics.** Web, TUI, ACP, IM, and other entry points depend on shared request, event, and session contracts. If identity, mode, readiness, cancellation, interaction reply, push, or error semantics change, check the affected channels and both Gateway and AgentServer. Unaffected channels do not require automatic retesting.
 - **Permissions and extension points.** `agents/harness/common/rails/permissions/`, AgentManager, Skill/Tool/MCP/Extension facilities, and the jiuwenbox sandbox are existing execution controls. New paths must preserve authorization, trusted-directory checks, sensitive-data protection, and tool lifecycle. Look for an existing Rail, adapter, or registration point before adding a new one.

@@ -83,7 +83,7 @@ grep -rl "<session_id>" "<root>/agent/sessions" "<root>/config/runtime_state" "<
 - `jw-coding-flow`：需求、设计、开发、检视与交付的流程入口。
 - `jw-design`：需求分析、架构/特性方案、日期评审及设计生命周期。
 - `jw-dev`：实现、行为测试、契约同步及 feature / bugfix 开发记忆。
-- `jw-review`：统一代码检视入口，按 JiuwenSwarm 技术方向与架构标准检视工作区、提交或分支差异，执行证据核对与复查交接，不限定 PR 场景。
+- `jw-review`：统一代码检视入口，按 JiuwenSwarm 技术方向、模块 AGENTS/spec 与协议依据，重点审视工作区、提交或分支的行为差异及跨端影响，执行证据核对与复查交接，不限定 PR 场景。
 - `jw-testing`：独立撰写转测资料，本地输出 `designs/testing/`，不进入设计索引。
 - `project-maintainer`：按需维护项目知识库。
 
