@@ -1434,3 +1434,85 @@ class TestBuildToolsAllowCreate:
         result = await unified._func(action="list")
 
         assert result == {"jobs": [{"id": "job-1"}]}
+
+
+_NON_BOOL_ENABLED = ["false", "true", 0, 1, None, {"not": "boolean"}, []]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", _NON_BOOL_ENABLED)
+async def test_cron_tools_toggle_rejects_non_bool_enabled(tmp_path, monkeypatch, value) -> None:
+    """#5725：bool("false") 为 True，agent 工具链路不得强转 enabled。"""
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    job = _make_job("job-live", name="live", enabled=False)
+    monkeypatch.setattr(
+        cron_tools_module, "_gateway_jobs_snapshots", {"user-a": {job.id: job}}
+    )
+    token = tools.push_cron_route(CronToolRoute(request_id="req-op", user_id="user-a"))
+    try:
+        with pytest.raises(ValueError, match="enabled must be a boolean"):
+            await tools.toggle_job("job-live", value)
+    finally:
+        tools.reset_cron_route(token)
+
+    assert push.payloads == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [True, False])
+async def test_cron_tools_toggle_forwards_real_boolean(tmp_path, monkeypatch, value) -> None:
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    job = _make_job("job-live", name="live", enabled=not value)
+    monkeypatch.setattr(
+        cron_tools_module, "_gateway_jobs_snapshots", {"user-a": {job.id: job}}
+    )
+    token = tools.push_cron_route(CronToolRoute(request_id="req-op", user_id="user-a"))
+    try:
+        toggled = await tools.toggle_job("job-live", value)
+    finally:
+        tools.reset_cron_route(token)
+
+    assert toggled["enabled"] is value
+    assert len(push.payloads) == 1
+    assert push.payloads[0]["body"]["action"] == "toggle"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", _NON_BOOL_ENABLED)
+async def test_cron_tools_create_and_update_reject_non_bool_enabled(
+    tmp_path, monkeypatch, value,
+) -> None:
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    token = tools.push_cron_route(CronToolRoute(project_dir=""))
+    try:
+        with pytest.raises(ValueError, match="enabled must be a boolean"):
+            await tools.create_job(
+                {
+                    "name": "daily",
+                    "cron_expr": "0 9 * * *",
+                    "timezone": "Asia/Shanghai",
+                    "targets": "web",
+                    "enabled": value,
+                }
+            )
+        with pytest.raises(ValueError, match="enabled must be a boolean"):
+            await tools.update_job("job-1", {"enabled": value})
+    finally:
+        tools.reset_cron_route(token)
+
+    assert push.payloads == []
+
+
+def test_extract_legacy_params_does_not_coerce_enabled() -> None:
+    context = SimpleNamespace(channel_id="web", session_id="sess-1", metadata={})
+    params = _extract_legacy_params(
+        {
+            "schedule": {"kind": "cron", "expr": "*/5 * * * *"},
+            "payload": {"kind": "agentTurn", "message": "ping"},
+            "enabled": "false",
+        },
+        context=context,
+        require_schedule=True,
+    )
+    assert params["enabled"] == "false"

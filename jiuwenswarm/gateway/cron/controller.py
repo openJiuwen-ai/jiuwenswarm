@@ -70,6 +70,19 @@ def _serialize_mutation(method):
     return serialized
 
 
+def _require_bool_enabled(value: Any) -> bool:
+    """``enabled`` 必须是 JSON 布尔值，拒绝隐式强转（#5725）。
+
+    ``bool("false")`` 为 True，会把客户端想关闭的任务打开（语义反转），
+    因此对 create / toggle / PATCH 入口做严格类型校验，非布尔值直接报错。
+    """
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"enabled must be a boolean, got {type(value).__name__}"
+        )
+    return value
+
+
 class CronController:
     """High-level cron API used by WebChannel handlers. Singleton."""
 
@@ -322,7 +335,7 @@ class CronController:
         timezone = (
             str(params.get("timezone") or "Asia/Shanghai").strip() or "Asia/Shanghai"
         )
-        enabled = bool(params.get("enabled", True))
+        enabled = _require_bool_enabled(params.get("enabled", True))
         description = str(params.get("description") or "")
         wake_offset_seconds = params.get("wake_offset_seconds", None)
         raw_targets = params.get("targets")
@@ -460,6 +473,8 @@ class CronController:
         )
         # 登录会话 id（服务端专有键，见 create_job）——改选登录模型时重绑凭据。
         auth_session = str(patch.pop("_auth_session", "") or "").strip()
+        if "enabled" in patch:
+            patch["enabled"] = _require_bool_enabled(patch.get("enabled"))
         if "mode" in patch:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
             # 同 create_job：内部模式只随 proactive_cron_sync 注册，不允许把
@@ -570,6 +585,7 @@ class CronController:
 
     @_serialize_mutation
     async def toggle_job(self, job_id: str, enabled: bool) -> dict[str, Any]:
+        enabled = _require_bool_enabled(enabled)
         existing = await self._store.get_job(job_id)
         if existing is None:
             raise KeyError("job not found")
@@ -577,7 +593,7 @@ class CronController:
             existing.project_id, existing.user_id
         ):
             raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
-        job = await self._store.update_job(job_id, {"enabled": bool(enabled)})
+        job = await self._store.update_job(job_id, {"enabled": enabled})
         await self._scheduler.reload()
         return job.to_dict()
 
