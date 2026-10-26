@@ -3129,7 +3129,7 @@ class AgentWebSocketServer:
                 await self._handle_agents_tools_list(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
-                if self._is_targeted_expert_request(request):
+                if self._is_targeted_expert_cancel_request(request):
                     await self._handle_cancel(ws, request, send_lock)
                     return
                 if isinstance(request.params, dict) and request.params.get("wait_for_stop"):
@@ -3446,11 +3446,17 @@ class AgentWebSocketServer:
         allow_create: bool = False,
         send_response: bool = True,
     ) -> AgentResponse:
-        """Cancel through the transport-independent Runtime operation."""
+        """Cancel through the transport-independent Runtime operation.
+
+        定向判定统一走 ``_is_targeted_expert_cancel_request``（owner 未知时也判为定向）。
+        这里若沿用严格版 ``_is_targeted_expert_request`` 重判，owner 未知的取消会在本函数里
+        翻成 False、掉进会话级取消，把 owner 团队正在跑的 turn 一起取消——与
+        ``_cancel_targeted_expert`` 的 "never the owner turn" 相悖。
+        """
         params = request.params if isinstance(request.params, dict) else {}
         if params.get("organization_stop") is True:
             resp = await self._cancel_organization(request)
-        elif self._is_targeted_expert_request(request):
+        elif self._is_targeted_expert_cancel_request(request):
             resp = await self._cancel_targeted_expert(request)
         else:
             resp = await self._execution_runtime().cancel_request(
@@ -6725,7 +6731,12 @@ class AgentWebSocketServer:
     @staticmethod
     def _organization_stream_key(request: AgentRequest) -> str:
         params = request.params if isinstance(request.params, dict) else {}
-        session_id = request.session_id or "default"
+        # session_id 的取法三处原本不一致（`request.session_id or "default"` 与
+        # `str(request.session_id or "").strip()` 与 `request.session_id or params.get(...)`）：
+        # 取消请求只把 session_id 放在 params 里时，注册侧算出的 key 是 `<sid>::organization::<team>`，
+        # 取消侧算出的却是 `default::organization::<team>`，查表落空——专家流没被取消，
+        # 响应还可能报成功。这里统一成「请求字段优先、params 兜底」。
+        session_id = request.session_id or params.get("session_id") or "default"
         team_id = str(params.get("target_team_id") or "").strip()
         return (
             f"{session_id}::organization::{team_id}"
@@ -6815,7 +6826,7 @@ class AgentWebSocketServer:
     async def _cancel_targeted_expert(self, request: AgentRequest) -> AgentResponse:
         """Cancel only a same-organization expert stream, never the owner turn."""
         params = request.params if isinstance(request.params, dict) else {}
-        session_id = str(request.session_id or "").strip()
+        session_id = str(request.session_id or params.get("session_id") or "").strip()
         team_id = str(params.get("target_team_id") or "").strip()
         owner_id = str((get_session_metadata(session_id) or {}).get("team_name") or "")
         owner = self._resolve_team_backend(session_id, owner_id)
@@ -6886,6 +6897,15 @@ class AgentWebSocketServer:
                 })
         cancelled_request_ids = {item.request_id for item in cancelled_requests}
         cancelled_request_ids.update(item["request_id"] for item in cancelled)
+        # owner 未知时给明确原因：这是「拒绝定向取消」而不是「目标不合法」，客户端据此
+        # 可以提示会话尚未就绪，而不是重试一次取消（重试仍会被拒）。
+        if owner_id:
+            failure_reason = recovery_error or "expert target is invalid or intent is unsupported"
+        else:
+            failure_reason = (
+                "session metadata has no team_name (owner unknown); "
+                "refused to fall back to a session-level cancel"
+            )
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -6896,10 +6916,7 @@ class AgentWebSocketServer:
                 "team_id": team_id,
                 "source": "org_expert_direct",
                 "cancelled_request_ids": sorted(cancelled_request_ids),
-                **(
-                    {"error": recovery_error or "expert target is invalid or intent is unsupported"}
-                    if not success else {}
-                ),
+                **({"error": failure_reason} if not success else {}),
             },
         )
 
@@ -6911,22 +6928,52 @@ class AgentWebSocketServer:
         return AgentWebSocketServer._is_targeted_expert_request(request)
 
     @staticmethod
-    def _is_targeted_expert_request(request: AgentRequest) -> bool:
-        """Recognize a Team target only when the durable owner is known."""
-        if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_CANCEL):
-            return False
+    def _team_target_and_owner(request: AgentRequest) -> tuple[str, str] | None:
+        """取 ``(target_team_id, owner_team_id)``；非 team 模式或没给 target 时返回 None。
+
+        下面两个判定的公共部分：只说「这个请求有没有形成一个合法的 team 目标」，
+        至于 owner 该不该参与比较、怎么兜底，由调用方按各自语义决定。
+        """
         params = request.params if isinstance(request.params, dict) else {}
         if not is_team_mode(params.get("mode")):
-            return False
+            return None
         team_id = str(params.get("target_team_id") or "").strip()
         if not team_id:
-            return False
-
+            return None
         session_id = str(request.session_id or params.get("session_id") or "").strip()
         owner_team_id = str(
             (get_session_metadata(session_id) or {}).get("team_name") or ""
         ).strip()
+        return team_id, owner_team_id
+
+    @staticmethod
+    def _is_targeted_expert_request(request: AgentRequest) -> bool:
+        """Recognize a Team target only when the durable owner is known."""
+        if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_CANCEL):
+            return False
+        pair = AgentWebSocketServer._team_target_and_owner(request)
+        if pair is None:
+            return False
+        team_id, owner_team_id = pair
         return bool(owner_team_id and team_id != owner_team_id)
+
+    @staticmethod
+    def _is_targeted_expert_cancel_request(request: AgentRequest) -> bool:
+        """CHAT_CANCEL 专用：owner 未知时也按「定向」处理，不降级为会话级取消。
+
+        与 `_is_targeted_expert_request` 的唯一差异是**兜底方向**：那边要求 owner 已知
+        且与被取消的 team 不同（用于 chat.send 路由，owner 未知就按普通会话走），这边
+        owner 未知时保守判为定向——交给 `_cancel_targeted_expert` 明确报错，而不是回落
+        `cancel_request(...)` 的会话级取消，把 owner 团队正在跑的 turn 一起取消
+        （违反同一次提交里 `_cancel_targeted_expert` 文档写明的 "never the owner turn"）。
+        """
+        if request.req_method != ReqMethod.CHAT_CANCEL:
+            return False
+        pair = AgentWebSocketServer._team_target_and_owner(request)
+        if pair is None:
+            return False
+        team_id, owner_team_id = pair
+        return not owner_team_id or team_id != owner_team_id
 
     def _expert_request_snapshot(self, session_id: str) -> list[dict[str, str]]:
         return [

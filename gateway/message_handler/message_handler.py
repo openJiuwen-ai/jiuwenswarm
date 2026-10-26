@@ -4013,7 +4013,14 @@ class MessageHandler(ABC):
                 exc_info=True,
             )
             return False
-        return bool(owner_id and route["team_id"] != owner_id)
+        # **owner 未知时保守判为「定向」**：这条分支的替代路径是会话级中断，会把 owner
+        # 团队正在跑的 turn 一起取消（AgentServer 侧 `_is_targeted_expert_cancel_request`
+        # 与本处同向；只有给 chat.send 路由用的 `_is_targeted_expert_request` 兜底方向相反，
+        # 那是另一套语义）。
+        # 交给 AgentServer 裁决更安全：它会因 owner 未知明确返回 success=false 并给出原因，
+        # 而不会取消别人的 turn。查表抛异常时不走这条（元数据服务不可用 ≠ owner 未知，
+        # 那时连 target 是否合法都无从判断，维持原有的会话级行为）。
+        return not owner_id or route["team_id"] != owner_id
 
     @staticmethod
     def _stream_method_value(msg: "Message") -> str:

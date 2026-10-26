@@ -452,12 +452,16 @@ async def test_org_root_terminal_is_the_stream_terminal(source):
 
 
 @pytest.mark.parametrize("mode,target,owner,expected", [
+    # owner 未知（metadata 里没有 team_name）时保守判为「定向」：替代路径是会话级中断，
+    # 会把 owner 团队正在跑的 turn 一起取消。交 AgentServer 裁决，由它明确报错。
     ("agent", "expert", "owner", False), ("team", "owner", "owner", False),
-    ("team", "expert", "", False), ("team", "", "owner", False),
+    ("team", "expert", "", True), ("team", "", "owner", False),
     ("team", "expert", "owner", True),
 ])
 @pytest.mark.asyncio
-async def test_targeted_cancel_requires_team_mode_and_non_owner(monkeypatch, mode, target, owner, expected):
+async def test_targeted_cancel_requires_team_mode_and_a_target_that_is_not_a_known_owner(
+    monkeypatch, mode, target, owner, expected
+):
     handler = _TestMessageHandler.create()
 
     async def _metadata(*args, **kwargs):
