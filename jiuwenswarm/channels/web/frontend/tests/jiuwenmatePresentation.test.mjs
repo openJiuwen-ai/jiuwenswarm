@@ -104,6 +104,26 @@ test('colleague card renders the identity, badge and category art', () => {
   assert.match(markup, /data-testid="jiuwenmate-colleague-avatar"/);
 });
 
+test('colleague tags paint above the portrait artwork when the tag list wraps', () => {
+  const stylesheet = readFileSync(new URL('../src/features/jiuwenmate/jiuwenmate.css', import.meta.url), 'utf8');
+  const markup = renderToStaticMarkup(
+    React.createElement(ColleagueCard, {
+      colleague: {
+        ...JIUWENMATE_TEMPLATES[0],
+        tags: ['研发管理', '质量评估', '风险控制', '流程治理', '合规审查'],
+      },
+    }),
+  );
+  const dom = new JSDOM(`<style>${stylesheet}</style>${markup}`);
+  const tags = dom.window.document.querySelector('.jiuwenmate-colleague-card__tags');
+  const artwork = dom.window.document.querySelector('.jiuwenmate-colleague-card__art');
+
+  assert.equal(dom.window.getComputedStyle(tags).position, 'relative');
+  assert.equal(dom.window.getComputedStyle(tags).zIndex, '1');
+  assert.equal(dom.window.getComputedStyle(artwork).position, 'absolute');
+  dom.window.close();
+});
+
 test('colleague card exposes the designed hover actions without nesting buttons', () => {
   const markup = renderToStaticMarkup(
     React.createElement(ColleagueCard, {
