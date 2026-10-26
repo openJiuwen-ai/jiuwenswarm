@@ -313,3 +313,38 @@ test('external experts preserve their runtime labels without changing member nam
   assert.deepEqual(choices.map((item) => item.providerLabel), ['Claude Code', 'Codex', undefined]);
   assert.ok(choices.every((item) => item.name === base.displayName));
 });
+
+
+test('single expert cards show execution status without subtask statistics', () => {
+  for (const status of ['queued', 'running', 'completed', 'failed', 'cancelled', 'timed_out', 'interrupted']) {
+    const markup = renderToStaticMarkup(createElement(ExecutionCard, {
+      execution: { ...execution('single', 1, status), execution_kind: 'agent', display_name: 'Research expert',
+        title: '对大学城咖啡消费市场进行完整调研并提出市场定位建议。后续详细任务说明',
+      },
+      result: { message_id: 'report' },
+    }));
+    assert.match(markup, /Research expert/);
+    assert.match(markup, new RegExp(`data-testid="group-chat-execution-status" data-variant="${status}"`));
+    assert.match(markup, /data-testid="group-chat-execution-title">对大学城咖啡消费市场…/);
+    assert.match(markup, /data-testid="group-chat-execution-task"[^>]*>对大学城咖啡消费市场进行完整调研并提出市场定位建议</);
+    assert.match(markup, /title="对大学城咖啡消费市场进行完整调研并提出市场定位建议。后续详细任务说明"/);
+    assert.match(markup, /data-testid="group-chat-execution-summary"/);
+    assert.match(markup, /role="status"><svg/);
+    assert.doesNotMatch(markup, /group-chat-task-counts|group-chat-no-subtasks|groupChat.noSubtasks/);
+    assert.match(markup, /href="#group-chat-message-report"/);
+  }
+});
+
+test('team and organization cards preserve subtask statistics and empty state', () => {
+  for (const execution_kind of ['team', 'organization']) {
+    const record = { ...execution('team', 1), execution_kind };
+    const empty = renderToStaticMarkup(createElement(ExecutionCard, { execution: record }));
+    assert.match(empty, /group-chat-task-counts/);
+    assert.match(empty, /groupChat.noSubtasks/);
+    const populated = renderToStaticMarkup(createElement(ExecutionCard, {
+      execution: { ...record, tasks: { research: 'completed' }, task_details: { research: { title: 'Research' } } },
+    }));
+    assert.match(populated, /data-testid="group-chat-subtask" data-variant="research"/);
+    assert.doesNotMatch(populated, /groupChat.noSubtasks/);
+  }
+});
