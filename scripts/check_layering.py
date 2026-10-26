@@ -65,15 +65,50 @@ KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 # agents.browser_config 为上游 PR #8083（Jev 集成，2026-10-13）引入，待其
 # 开发稳定后下沉 common（届时缩减此白名单）。
 KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
+    # pickers 两条已随 M0-b 迁入 gateway/ 消除；browser_config 待 #8083 稳定后下沉
     "jiuwenswarm.gateway.channel_manager.web.app_web_handlers": {
-        "jiuwenswarm.channels.web.directory_picker",
-        "jiuwenswarm.channels.web.file_picker",
         "jiuwenswarm.agents.harness.common.browser_config",
+        # 话题推荐 / 提示词推荐：面板读写开关、拉取话题卡片与反馈，历史话题解析 Zen 免费模型
+        "jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion",
+        "jiuwenswarm.agents.harness.common.recommendation.switches",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_controls",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_feedback",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_history",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_model",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_outcomes",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_pool",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_product",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_starter",
+        "jiuwenswarm.server.runtime.opencode_zen",
+    },
+    # 话题推荐 / 提示词推荐：gateway 侧驱动话题流水线（历史聚合、准备、检索、投递），
+    # 并转发提示词推荐事件；这些模块属 agents 层，拆仓前直连。
+    "jiuwenswarm.gateway.app_gateway": {
+        "jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion",
+        "jiuwenswarm.agents.harness.common.recommendation.switches",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_collector",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_controls",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_history",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_outcomes",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_pipeline",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_prepare",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_rid",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_search",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_service",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_starter",
+        "jiuwenswarm.server.runtime.session.session_history",
+        "jiuwenswarm.server.runtime.session.session_metadata",
+    },
+    "jiuwenswarm.gateway.message_handler.message_handler": {
+        "jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion",
+        "jiuwenswarm.server.runtime.session.session_history",
+    },
+    "jiuwenswarm.gateway.channel_manager.tui.tui_connect": {
+        "jiuwenswarm.server.runtime.session.session_metadata",
     },
     # 过渡桥接（B1'）：gateway 与 AgentServer 同机部署期间的直连实现，
     # gateway 独立成仓时整体删除并由 A-API HTTP 实现替代。
-    # cron_store_factory → runtime.cron.factory：B2.5 后 gateway 侧注册
-    # gateway/runtime 副本的 factory（原位 re-export common.cron_settings）。
+    # （runtime.cron.factory 一条已随 M0-a 的 router_client 改向消除）
     "jiuwenswarm.gateway.server_store_bridge": {
         "jiuwenswarm.server.runtime.mcp.state_store",
         "jiuwenswarm.server.runtime.mcp.registry",
@@ -82,7 +117,6 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
         "jiuwenswarm.server.runtime.team_binding_store",
         "jiuwenswarm.server.runtime.team_entity_store",
         "jiuwenswarm.server.runtime.session.session_metadata",
-        "jiuwenswarm.runtime.cron.factory",
     },
 }
 # 燃尽基线（--baseline 对照用；数字口径见各字段注释）

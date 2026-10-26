@@ -54,6 +54,12 @@ def _run_capture(command: list[str], *, timeout: float = 600.0) -> subprocess.Co
         check=False,
         capture_output=True,
         text=True,
+        # The dialog helpers below (osascript, zenity, kdialog, yad) print the
+        # selected path; they emit UTF-8 regardless of the interpreter's text
+        # mode. Decode explicitly so a non-UTF-8 locale cannot raise inside the
+        # reader thread and silently turn a selection into an empty stdout.
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
     )
 
@@ -294,6 +300,9 @@ def _try_tkinter_subprocess(initial_dir: str) -> str | None:
     zenity/kdialog、但已安装 ``python3-tk`` 的桌面环境。
     """
     env = os.environ.copy()
+    # The child writes the selected path to stdout; pin its stream encoding so
+    # the parent can decode it deterministically (see the run() call below).
+    env["PYTHONIOENCODING"] = "utf-8"
     env["JIUWEN_DIR_PICKER_INITIAL"] = initial_dir
     env["JIUWEN_DIR_PICKER_TITLE"] = _DIALOG_TITLE
     script = r"""
@@ -341,6 +350,9 @@ sys.exit(1)
         check=False,
         capture_output=True,
         text=True,
+        # PYTHONIOENCODING above makes the child encode its stdout as UTF-8.
+        encoding="utf-8",
+        errors="replace",
         timeout=600.0,
         env=env,
     )
@@ -355,6 +367,9 @@ sys.exit(1)
 def _try_tkinter_file_subprocess(initial_dir: str, title: str) -> str | None:
     """Run tkinter in a separate process so Tk is created on that process main thread."""
     env = os.environ.copy()
+    # The child writes the selected path to stdout; pin its stream encoding so
+    # the parent can decode it deterministically (see the run() call below).
+    env["PYTHONIOENCODING"] = "utf-8"
     env["JIUWEN_FILE_PICKER_INITIAL"] = initial_dir
     env["JIUWEN_FILE_PICKER_TITLE"] = title
     script = r"""
@@ -401,6 +416,9 @@ sys.exit(1)
         check=False,
         capture_output=True,
         text=True,
+        # PYTHONIOENCODING above makes the child encode its stdout as UTF-8.
+        encoding="utf-8",
+        errors="replace",
         timeout=600.0,
         env=env,
     )

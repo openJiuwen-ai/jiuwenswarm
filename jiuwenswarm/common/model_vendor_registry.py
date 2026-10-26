@@ -50,6 +50,13 @@ from openjiuwen.core.foundation.llm import (
     get_reasoning_capability_catalog,
 )
 
+from jiuwenswarm.common.volcengine_endpoints import (
+    ARK_ANTHROPIC_BASE,
+    ARK_API_BASE,
+    ARK_CODING_ANTHROPIC_BASE,
+    ARK_CODING_API_BASE,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -229,14 +236,14 @@ _PRESETS: list[VendorPreset] = [
     VendorPreset(
         vendor_key="volcengine", display_name="火山引擎", plan=PlanKind.CODING_PLAN,
         client_provider="OpenAI",
-        api_base="https://ark.cn-beijing.volces.com/api/coding/v3",
+        api_base=ARK_CODING_API_BASE,
         default_model="seed-2.0-mini",
         model_options=("seed-2.0-mini", "seed-2.0-lite", "seed-1.6", "seed-1.6-flash"),
         icon_key="doubao",
         # coding key 走 coding 端点;/api/v3/models 是通用端点。/api/coding/v3/models 实测 401(端点存在)。
-        models_endpoint="https://ark.cn-beijing.volces.com/api/coding/v3/models",
+        models_endpoint=f"{ARK_CODING_API_BASE}/models",
         models_needs_key=True,
-        anthropic_base="https://ark.cn-beijing.volces.com/api/coding",
+        anthropic_base=ARK_CODING_ANTHROPIC_BASE,
     ),
     VendorPreset(
         vendor_key="baidu", display_name="百度智能云", plan=PlanKind.CODING_PLAN,
@@ -420,13 +427,13 @@ _PRESETS: list[VendorPreset] = [
     VendorPreset(
         vendor_key="volcengine", display_name="火山引擎", plan=PlanKind.CUSTOM_API,
         client_provider="OpenAI",
-        api_base="https://ark.cn-beijing.volces.com/api/v3",
+        api_base=ARK_API_BASE,
         default_model="seed-2.0-mini",
         model_options=("seed-2.0-mini", "seed-2.0-lite", "seed-1.6", "seed-1.6-flash", "doubao-1.5-pro-32k"),
         icon_key="doubao",
-        models_endpoint="https://ark.cn-beijing.volces.com/api/v3/models",
+        models_endpoint=f"{ARK_API_BASE}/models",
         models_needs_key=True,
-        anthropic_base="https://ark.cn-beijing.volces.com/api/compatible",
+        anthropic_base=ARK_ANTHROPIC_BASE,
     ),
     VendorPreset(
         vendor_key="baidu", display_name="百度智能云", plan=PlanKind.CUSTOM_API,

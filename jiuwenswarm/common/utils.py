@@ -2381,6 +2381,8 @@ def resolve_git_branch(project_dir: str | None) -> str:
                 [git_bin, "rev-parse", "--abbrev-ref", "HEAD"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
                 cwd=project_dir,
             )

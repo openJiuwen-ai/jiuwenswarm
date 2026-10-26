@@ -319,7 +319,9 @@ async def test_wait_for_gateway_tasks_returns_false_when_services_finish():
     restart_request = gateway_module.GatewayRestartRequest()
 
     result = await asyncio.wait_for(
-        gateway_module._wait_for_gateway_tasks_or_restart([service_task], restart_request),
+        gateway_module._wait_for_gateway_tasks_or_restart(
+            [service_task], restart_request, asyncio.Event()
+        ),
         timeout=1.0,
     )
 
@@ -335,7 +337,9 @@ async def test_wait_for_gateway_tasks_keeps_delayed_restart_when_services_finish
 
     gateway_module._schedule_gateway_restart(restart_request, delay=1.0)
     result = await asyncio.wait_for(
-        gateway_module._wait_for_gateway_tasks_or_restart([service_task], restart_request),
+        gateway_module._wait_for_gateway_tasks_or_restart(
+            [service_task], restart_request, asyncio.Event()
+        ),
         timeout=1.0,
     )
 
@@ -354,7 +358,9 @@ async def test_wait_for_gateway_tasks_keeps_delayed_restart_when_service_fails()
 
     gateway_module._schedule_gateway_restart(restart_request, delay=1.0)
     result = await asyncio.wait_for(
-        gateway_module._wait_for_gateway_tasks_or_restart([service_task], restart_request),
+        gateway_module._wait_for_gateway_tasks_or_restart(
+            [service_task], restart_request, asyncio.Event()
+        ),
         timeout=1.0,
     )
 

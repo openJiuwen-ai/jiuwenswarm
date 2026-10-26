@@ -244,7 +244,7 @@ class WorkerDispatcher:
     def _execution_is_processing(execution: SessionExecutionSnapshot) -> bool:
         return not execution.state.terminal and execution.state is not SessionExecutionState.WAITING_FOR_INPUT
 
-    def _reconcile_execution_state(self, request: AgentRequest):
+    def _reconcile_execution_state(self, request: AgentRequest, *, across_channels: bool = False):
         """Distinguish a returned output segment from a terminal execution."""
         if self._runtime is None:
             return None
@@ -256,8 +256,10 @@ class WorkerDispatcher:
         state = snapshot_getter(request.params.get("session_id") or request.session_id or "")
         if state is None:
             return None
+        scope = request_scope(request)
         for record in list(self._bridge.events.records.values()):
-            if record.scope != request_scope(request):
+            matches_scope = record.scope[1:] == scope[1:] if across_channels else record.scope == scope
+            if not matches_scope:
                 continue
             if record.is_passive_subscription:
                 record.is_processing = False
@@ -544,17 +546,18 @@ class WorkerDispatcher:
     async def _subscribe_locked(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
         request = load_agent_request(message.get("payload") or {})
         after = max(0, int(message.get("after") or 0))
-        state = self._reconcile_execution_state(request)
+        state = self._reconcile_execution_state(request, across_channels=True)
         snapshot = self._bridge.events.snapshot(request, after=after)
         work_records = []
         scope = request_scope(request)
         for record in self._bridge.events.records.values():
-            if record.scope != scope or record.is_passive_subscription:
+            if record.scope[1:] != scope[1:] or record.is_passive_subscription:
                 continue
             if _is_session_work_request(record.request):
                 work_records.append(record)
-        # Navigation/history RPCs may overlap this query when the page reloads.
-        # Their accepted handlers do not represent conversation execution.
+        # Activity crosses channels for the same Session owner; replay and
+        # dispatch details remain caller-scoped. Navigation/history handlers
+        # do not represent conversation execution.
         snapshot["is_processing"] = any(record.active or record.is_processing for record in work_records)
         if message.get("worker_instance") not in {None, "", self._bridge.events.instance}:
             snapshot["history_required"] = True

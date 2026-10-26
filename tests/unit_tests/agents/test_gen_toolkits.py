@@ -284,21 +284,29 @@ async def test_modelark_model_not_activated_gives_account_hint_without_retry(mon
 
 
 @pytest.mark.asyncio
-async def test_modelark_region_failover_and_bad_key(monkeypatch, tmp_path):
-    data = [{"b64_json": base64.b64encode(_PNG).decode()}]
+@pytest.mark.parametrize("base", [_ARK_CN, _ARK_INTL])
+@pytest.mark.parametrize("operation", ["image", "submit", "check"])
+async def test_modelark_auth_failure_stays_on_configured_region(monkeypatch, tmp_path, base, operation):
+    seen = _patch_client(monkeypatch, lambda r: _ark_error("AuthenticationError", "bad key", 401))
+    if operation == "image":
+        result = await _image("modelark", "k", base, "m", "p", "1:1", str(tmp_path))
+    elif operation == "submit":
+        result = await _submit("modelark", "k", base, "m", "p", "16:9", "720p", 5, False, None, str(tmp_path))
+    else:
+        result = await _check("modelark", "k", base, "cgt-1", str(tmp_path))
+    assert result.startswith("[ERROR]: ModelArk request failed on the configured region")
+    assert len(seen) == 1 and str(seen[0].url).startswith(f"{base}/")
 
-    def only_intl_works(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "ark.ap-southeast.bytepluses.com":
-            return httpx.Response(200, json={"data": data})
-        return _ark_error("AuthenticationError", "bad key", 401)
 
-    seen = _patch_client(monkeypatch, only_intl_works)
-    result = await _image("modelark", "k", _ARK_CN, "m", "p", "1:1", str(tmp_path))
-    assert result.startswith("Image generated successfully!") and len(seen) == 2
-
-    seen = _patch_client(monkeypatch, lambda r: _ark_error("AuthenticationError", "bad", 401))
-    result = await _image("modelark", "k", _ARK_INTL, "m", "p", "1:1", str(tmp_path))
-    assert result.startswith("[ERROR]: ModelArk request failed on every region host tried") and len(seen) == 3
+@pytest.mark.asyncio
+@pytest.mark.parametrize("base", ["https://proxy.example/api/v3", "https://ark.cn-beijing.volces.com/api/coding/v3"])
+async def test_modelark_generation_rejects_non_regular_official_api_before_sending_key(monkeypatch, tmp_path, base):
+    seen = _patch_client(monkeypatch, lambda r: pytest.fail("unexpected request"))
+    image = await _image("modelark", "k", base, "m", "p", "1:1", str(tmp_path))
+    submit = await _submit("modelark", "k", base, "m", "p", "16:9", "720p", 5, False, None, str(tmp_path))
+    check = await _check("modelark", "k", base, "cgt-1", str(tmp_path))
+    assert all(result.startswith("[ERROR]: Use an official regional Ark") for result in (image, submit, check))
+    assert not seen
 
 
 def _ark_video_handler(statuses: list[str], *, error: Any = None) -> Handler:
