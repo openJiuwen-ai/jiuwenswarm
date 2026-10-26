@@ -29,7 +29,7 @@ from jiuwenswarm.server.jiuwenmate.service import (
     ConfiguredModelProvider,
     PersistentAgentService,
 )
-from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation
+from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation, publish_spec
 
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
 from openjiuwen.harness import persistent_agent as core
@@ -515,6 +515,50 @@ def test_publication_fills_the_formal_capacity_check(tmp_path):
     limits = capacity_limits(spec)
     assert limits is not None
     assert limits.available_input == spec.model_input_limit_tokens
+
+
+def test_invocation_identifies_configured_model_without_connection_secrets(tmp_path):
+    service = make_service(tmp_path)
+    view = service.create_colleague(NS, settings())
+    snapshot = service.current_snapshot(NS, view.agent_id)
+    request = request_for(snapshot, "model-identity")
+
+    spec, context = build_invocation(
+        snapshot,
+        request,
+        ExecutionRecord(request_id=request.request_id, execution_id="execution-1"),
+        ports=ports(tmp_path, request),
+    )
+    prompt = f"{spec.system_prompt}\n{context.system_prompt_addendum or ''}"
+
+    assert '{"model": "deepseek", "provider": "OpenAI"}' in prompt
+    assert "当前配置模型为「deepseek」，提供方为「OpenAI」" in prompt
+    assert "不要回答看不到系统配置、无法确认配置或建议用户联系管理员" in prompt
+    assert "本段事实优先于对话历史中关于模型身份的说法" in prompt
+    assert "不要披露 API 密钥、API 地址或其他连接配置" in prompt
+    assert SECRET not in prompt
+
+
+def test_invocation_adds_model_identity_to_legacy_published_snapshot(tmp_path):
+    service = make_service(tmp_path)
+    view = service.create_colleague(NS, settings())
+    published = service.current_snapshot(NS, view.agent_id)
+    fields = published.load_spec().model_dump(mode="json")
+    legacy_prompt = fields["system_prompt"].partition("# 当前模型配置")[0].rstrip()
+    fields["system_prompt"] = legacy_prompt.removesuffix("<!-- jiuwenmate-model-identity -->").rstrip()
+    legacy = publish_spec(view.agent_id, "legacy-v1", fields, knowledge_root=published.knowledge_root)
+    request = request_for(legacy, "legacy-model-identity")
+
+    spec, context = build_invocation(
+        legacy,
+        request,
+        ExecutionRecord(request_id=request.request_id, execution_id="execution-1"),
+        ports=ports(tmp_path, request),
+    )
+
+    prompt = f"{spec.system_prompt}\n{context.system_prompt_addendum or ''}"
+    assert '{"model": "deepseek", "provider": "OpenAI"}' in prompt
+    assert "当前配置模型为「deepseek」，提供方为「OpenAI」" in prompt
 
 
 def test_publication_records_optional_offline_tokenizer_metadata(tmp_path):

@@ -38,7 +38,12 @@ from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ,
 from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, TemplateStore
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog, ResourceCatalog, assemble_resources
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
-from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, publish_spec
+from jiuwenswarm.server.jiuwenmate.spec_provider import (
+    ConfigSnapshot,
+    model_identity,
+    model_identity_prompt,
+    publish_spec,
+)
 from jiuwenswarm.server.jiuwenmate.bash_runtime import (
     BASH_PROMPT,
     FULL_ACCESS_BASH_PROMPT,
@@ -179,21 +184,13 @@ def formal_model_capacity(model: TeamModelConfig) -> tuple[TeamModelConfig, int,
     )
 
 
-def _model_identity(model: TeamModelConfig) -> tuple[str, str]:
-    request = model.model_request_config
-    client = model.model_client_config
-    model_name = str(getattr(request, "model_name", "") or getattr(client, "model_name", "") or "").strip()
-    provider = getattr(client, "client_provider", "") if client is not None else ""
-    return str(getattr(provider, "value", provider) or "").strip(), model_name
-
-
 def formal_context_engine(model: TeamModelConfig) -> Any | None:
     """Describe optional local counting resources, without preparing or downloading them.
 
     Core can fall back to model usage and character estimates when a native
     tokenizer is unavailable. An unknown alias needs no tokenizer registry.
     """
-    provider, model_name = _model_identity(model)
+    provider, model_name = model_identity(model)
     if not model_name:
         return None
     from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
@@ -699,6 +696,7 @@ class PersistentAgentService:
                 + HOST_PROMPT_MARKER
                 + WORKSPACE_PROMPT
                 + assembled.prompt
+                + model_identity_prompt(model)
                 + (FULL_ACCESS_BASH_PROMPT if settings.permission_profile == "full_access" else BASH_PROMPT)
                 + WEB_FETCH_PROMPT
             ),
