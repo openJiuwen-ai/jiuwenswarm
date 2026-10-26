@@ -4,12 +4,12 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
 
 from openjiuwen.harness.schema.task import TodoStatus
+from openjiuwen.harness.tools.todo_store import decode_snapshot
 
 from jiuwenswarm.common.utils import get_deepagent_todo_dir
 from jiuwenswarm.common.todo_generation import (
@@ -99,25 +99,26 @@ def format_todos_for_frontend(todos_data: list[Any]) -> list[dict[str, Any]]:
     return formatted
 
 
+class FrontendTodos(list):
+    """Existing list interface with metadata from the same file read."""
+    def __init__(self, items, meta):
+        super().__init__(items)
+        self.todo_meta = meta
+
+
 def load_todo_snapshot_for_frontend(
-    session_id: str,
-    *,
-    todo_root: Path | None = None,
-    generation_token: str | None = None,
-) -> list[dict[str, Any]]:
-    """Read one session's Todo snapshot; invalid or unreadable input is empty."""
+    session_id: str, *, todo_root: Path | None = None, generation_token: str | None = None,
+) -> FrontendTodos | None:
+    """Return a complete snapshot; unavailable input must not clear the UI."""
     normalized = (session_id or "").strip()
     if not normalized or _SAFE_SESSION_ID.fullmatch(normalized) is None:
-        return []
+        return None
     root = todo_root if todo_root is not None else get_deepagent_todo_dir()
     path = root / normalized / "todo.json"
-    if not path.is_file():
-        return []
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return []
-    if not isinstance(raw, list):
-        return []
-    current_items = filter_todos_by_generation(raw, generation_token)
-    return overlay_serial_todo_statuses(format_todos_for_frontend(current_items))
+        snapshot = decode_snapshot(path.read_bytes())
+    except (OSError, ValueError, UnicodeError):
+        return None
+    items = snapshot.todos if snapshot.versioned else filter_todos_by_generation(snapshot.todos, generation_token)
+    return FrontendTodos(format_todos_for_frontend(items),
+                         {"plan_id": snapshot.plan_id, "revision": snapshot.revision})

@@ -12,6 +12,7 @@ from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.harness.schema.task import TodoItem, TodoStatus
 from openjiuwen.harness.tools.todo import TodoModifyTool as _OpenJiuWenTodoModifyTool
+from openjiuwen.harness.tools.todo_store import todo_operation
 
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     clear_persistent_todo,
@@ -373,6 +374,7 @@ def _install_backlog_create_patch(tool_cls: type) -> None:
         return
     original = tool_cls.invoke
 
+    @todo_operation
     async def invoke(self: Any, inputs: Any, **kwargs: Any) -> Any:
         session = kwargs.get("session")
         session_id = _session_id_of(session)
@@ -393,6 +395,7 @@ def _install_backlog_list_patch(tool_cls: type) -> None:
         return
     original = tool_cls.invoke
 
+    @todo_operation
     async def invoke(self: Any, inputs: Any, **kwargs: Any) -> Any:
         result = await original(self, inputs, **kwargs)
         return await merge_persistent_list_items(self, kwargs.get("session"), result)

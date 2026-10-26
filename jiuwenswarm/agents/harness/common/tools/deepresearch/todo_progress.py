@@ -4,11 +4,8 @@
 
 from __future__ import annotations
 
-import json
 import os
-import secrets
 import stat
-import threading
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -20,7 +17,6 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
 )
 from jiuwenswarm.common.utils import get_tenant_agent_workspace_dir
 
-_TODO_WRITE_LOCK = threading.Lock()
 _TODO_STATUSES = frozenset({"pending", "in_progress", "completed", "cancelled"})
 _INVALID_PATH = "deepresearch_todo_invalid_path"
 _MAX_COMPONENT_BYTES = 255
@@ -232,77 +228,6 @@ def _read_existing_todo(
         os.close(fd)
 
 
-def _existing_created_at(
-    todo_path: Path, trusted: _TrustedParent
-) -> dict[str, str]:
-    try:
-        raw = _read_existing_todo(todo_path, trusted)
-        if raw is None:
-            return {}
-        data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    if not isinstance(data, list):
-        return {}
-    created_at_by_id = {}
-    for item in data:
-        if (
-            isinstance(item, dict)
-            and isinstance(item.get("id"), str)
-            and isinstance(item.get("createdAt"), str)
-        ):
-            created_at_by_id[str(item.get("id"))] = item["createdAt"]
-    return created_at_by_id
-
-
-def _allocate_temp(
-    todo_path: Path, trusted: _TrustedParent
-) -> tuple[str, int, tuple[int, int]]:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    for _ in range(32):
-        name = f".deepresearch-todo-{secrets.token_hex(16)}.json"
-        try:
-            if trusted.fd is None:
-                fd = os.open(todo_path.parent / name, flags, 0o600)
-            else:
-                fd = os.open(name, flags, 0o600, dir_fd=trusted.fd)
-        except FileExistsError:
-            continue
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
-            os.close(fd)
-            raise OSError("unsafe todo temp")
-        return name, fd, (opened.st_dev, opened.st_ino)
-    raise OSError("todo temp allocation failed")
-
-
-def _cleanup_owned_temp(
-    todo_path: Path,
-    trusted: _TrustedParent,
-    name: str,
-    identity: tuple[int, int],
-) -> None:
-    try:
-        if trusted.fd is None:
-            current = (todo_path.parent / name).lstat()
-        else:
-            current = os.stat(
-                name, dir_fd=trusted.fd, follow_symlinks=False
-            )
-    except FileNotFoundError:
-        return
-    if (
-        stat.S_ISREG(current.st_mode)
-        and current.st_nlink == 1
-        and (current.st_dev, current.st_ino) == identity
-    ):
-        if trusted.fd is None:
-            os.unlink(todo_path.parent / name)
-        else:
-            os.unlink(name, dir_fd=trusted.fd)
-
-
 def _deepresearch_tasks(payload: dict[str, Any]) -> list[dict[str, str]] | None:
     if payload.get("event_type") != "task.update":
         return None
@@ -330,62 +255,47 @@ def _deepresearch_tasks(payload: dict[str, Any]) -> list[dict[str, str]] | None:
     return normalized
 
 
-def persist_deepresearch_task_update(
-    payload: dict[str, Any],
-    *,
-    todo_path: Path,
-) -> bool:
-    """Retain a completed canonical task.update in the standard todo file."""
-    tasks = _deepresearch_tasks(payload)
-    if tasks is None or any(task["status"] != "completed" for task in tasks):
-        return False
+async def capture_deepresearch_todo_target(todo_path: Path):
+    """Capture the owning plan/backend before the research stream starts."""
+    from openjiuwen.harness.tools.todo_store import bound_todo_tool, capture_plan
+    tool, session_id = bound_todo_tool()
+    if tool is None or session_id is None:
+        return None
+    if Path(tool._get_file_path(session_id)).resolve() != todo_path.resolve():
+        return None
+    return tool, session_id, await capture_plan(tool, session_id)
 
-    todo_path = Path(todo_path)
-    with _TODO_WRITE_LOCK:
-        trusted = _open_trusted_parent(todo_path)
-        temp_name = ""
-        temp_identity: tuple[int, int] | None = None
-        try:
-            created_at = _existing_created_at(todo_path, trusted)
-            now = datetime.now(timezone.utc).isoformat()
-            items = [
-                {
-                    **task,
-                    "createdAt": created_at.get(task["id"], now),
-                    "updatedAt": now,
-                }
-                for task in tasks
-            ]
-            temp_name, temp_fd, temp_identity = _allocate_temp(
-                todo_path, trusted
-            )
-            with os.fdopen(temp_fd, "w", encoding="utf-8") as temp_file:
-                json.dump(items, temp_file, ensure_ascii=False, indent=2)
-                temp_file.write("\n")
-                temp_file.flush()
-                opened = os.fstat(temp_file.fileno())
-                if (
-                    not stat.S_ISREG(opened.st_mode)
-                    or opened.st_nlink != 1
-                    or (opened.st_dev, opened.st_ino) != temp_identity
-                ):
-                    raise OSError("unsafe todo temp")
+
+async def persist_deepresearch_task_update(
+    payload: dict[str, Any], *, todo_path: Path, target=None,
+) -> bool:
+    """Update existing research stages in the captured plan; preserve other rows."""
+    from openjiuwen.harness.tools.todo_store import current_transaction, transact
+    tasks = _deepresearch_tasks(payload)
+    if tasks is None or any(task["status"] != "completed" for task in tasks) or target is None:
+        return False
+    tool, session_id, plan_id = target
+    if plan_id is None:
+        return False
+    trusted = _open_trusted_parent(todo_path)
+    try:
+        _read_existing_todo(todo_path, trusted)
+        _verify_named_parent(todo_path, trusted)
+        async def update():
             _verify_named_parent(todo_path, trusted)
-            if trusted.fd is not None:
-                os.replace(
-                    temp_name,
-                    todo_path.name,
-                    src_dir_fd=trusted.fd,
-                    dst_dir_fd=trusted.fd,
-                )
-            else:
-                os.replace(todo_path.parent / temp_name, todo_path)
-                _verify_named_parent(todo_path, trusted)
-        finally:
-            if temp_name and temp_identity is not None:
-                _cleanup_owned_temp(
-                    todo_path, trusted, temp_name, temp_identity
-                )
-            if trusted.fd is not None:
-                os.close(trusted.fd)
-    return True
+            tx = current_transaction(tool, session_id)
+            if getattr(tool.fs, "mode", None) == "local":
+                tx.write_options["expected_parent_identity"] = trusted.identity
+            updates = {item["id"]: item for item in tasks}
+            # Only the workflow's canonical, already-present stages are eligible.
+            if not all(any(row["id"] == ident and row.get("content") == change["content"]
+                           for row in tx.snapshot.todos) for ident, change in updates.items()):
+                return False
+            now = datetime.now(timezone.utc).isoformat()
+            tx.pending = [{**row, "status": "completed", "updatedAt": now}
+                          if row["id"] in updates else row for row in tx.snapshot.todos]
+            return True
+        return await transact(tool, session_id, update, expected_plan=plan_id)
+    finally:
+        if trusted.fd is not None:
+            os.close(trusted.fd)

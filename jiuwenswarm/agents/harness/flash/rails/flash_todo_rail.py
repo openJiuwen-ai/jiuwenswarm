@@ -14,6 +14,12 @@ from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.prompts.sections.todo import build_todo_section
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.schema.task import TodoStatus
+from openjiuwen.harness.tools.todo_store import (
+    bind_todo_batch,
+    prepare_todo_batch,
+    reset_todo_binding,
+    snapshot_from_result,
+)
 
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     _todo_close_nudge_message,
@@ -59,6 +65,7 @@ class FlashTodoRail(DeepAgentRail):
         self._agent: Any = None
         self._close_gate = TodoCloseGate(_UNIFIED_TODO_NAME)
         self._open_todos: list[tuple[str, dict[str, Any]]] = []
+        self._todo_revision = -1
         self._warned_unknown_iteration = False
 
     def init(self, agent) -> None:
@@ -152,14 +159,19 @@ class FlashTodoRail(DeepAgentRail):
             logger.warning("[FlashTodoRail] uninit failed: %s", exc)
 
     async def before_invoke(self, ctx) -> None:
+        reset_todo_binding()
+        if "create" in self.engines and ctx.session is not None:
+            self.engines["create"].reset_invoke_marker(ctx.session.get_session_id())
         self._close_gate.reset()
         self._open_todos = []
+        self._todo_revision = -1
 
     async def before_model_call(self, ctx) -> None:
         self._inject_todo_section()
         await self._close_gate.arm(ctx.session, can_nudge=self._can_nudge(ctx))
 
     async def after_model_call(self, ctx) -> None:
+        prepare_todo_batch(ctx)
         dropped = False
         try:
             dropped = self._close_gate.attach(
@@ -174,6 +186,7 @@ class FlashTodoRail(DeepAgentRail):
             await self._close_gate.finish(ctx.session, dropped=dropped)
 
     async def before_tool_call(self, ctx) -> None:
+        bind_todo_batch(ctx, self.engines.get("modify"))
         if not isinstance(ctx.inputs, ToolCallInputs) or not is_todo_close_nudge(ctx.inputs.tool_call):
             return
         msg = _todo_close_nudge_message(self._open_todos)
@@ -192,7 +205,15 @@ class FlashTodoRail(DeepAgentRail):
             return
         if _todo_action(ctx.inputs.tool_args) not in ("create", "modify"):
             return
-        self._open_todos = await self._load_open_todos(ctx.session)
+        snapshot = snapshot_from_result(ctx.inputs.tool_result)
+        if snapshot is not None:
+            if snapshot.revision < self._todo_revision:
+                return
+            self._todo_revision = snapshot.revision
+            self._open_todos = [(row["id"], {"content": row.get("content", "")})
+                                for row in snapshot.todos if row.get("status") == "in_progress"]
+        else:
+            self._open_todos = await self._load_open_todos(ctx.session)
 
     def _can_nudge(self, ctx) -> bool:
         return ctx.session is not None and bool(self._open_todos) and self._has_rounds_to_close_and_reply(ctx)

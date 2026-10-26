@@ -53,10 +53,10 @@ def test_load_snapshot_accepts_json_and_rejects_unsafe_session(tmp_path, monkeyp
         "activeForm": "restore",
         "status": "in_progress",
     }]
-    assert load_todo_snapshot_for_frontend("../web_session_1") == []
+    assert load_todo_snapshot_for_frontend("../web_session_1") is None
 
 
-def test_load_snapshot_filters_old_generation_and_overlays_serial_statuses(tmp_path):
+def test_load_snapshot_filters_old_generation_and_preserves_completed_status(tmp_path):
     root = tmp_path / "tenant" / "agent" / "jiuwenclaw_workspace" / "todo"
     snapshot = root / "web_session_2" / "todo.json"
     snapshot.parent.mkdir(parents=True)
@@ -91,4 +91,14 @@ def test_load_snapshot_filters_old_generation_and_overlays_serial_statuses(tmp_p
     )
 
     assert [item["id"] for item in restored] == ["current-open", "current-late"]
-    assert [item["status"] for item in restored] == ["in_progress", "pending"]
+    assert [item["status"] for item in restored] == ["in_progress", "completed"]
+
+
+def test_versioned_empty_and_read_failure_are_distinct(tmp_path):
+    path = tmp_path / "s" / "todo.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"plan_id": "new", "revision": 7, "todos": []}))
+    snapshot = load_todo_snapshot_for_frontend("s", todo_root=tmp_path)
+    assert snapshot == [] and snapshot.todo_meta == {"plan_id": "new", "revision": 7}
+    path.write_text("broken")
+    assert load_todo_snapshot_for_frontend("s", todo_root=tmp_path) is None

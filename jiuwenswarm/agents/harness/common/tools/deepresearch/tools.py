@@ -65,6 +65,7 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.tls import (
 from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import (
     deepresearch_todo_path,
     persist_deepresearch_task_update,
+    capture_deepresearch_todo_target,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.usage import (
     normalize_workflow_llm_token_usage,
@@ -3218,6 +3219,8 @@ async def _deliver_race_completed_report(
             type(exc).__name__,
         )
 
+    todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
+
     async def send(payload: dict[str, Any]) -> bool:
         try:
             safe_payload = _redact_json_value(payload, secrets)
@@ -3227,7 +3230,7 @@ async def _deliver_race_completed_report(
             return False
         if todo_path is not None and safe_payload.get("event_type") == "task.update":
             try:
-                persist_deepresearch_task_update(safe_payload, todo_path=todo_path)
+                await persist_deepresearch_task_update(safe_payload, todo_path=todo_path, target=todo_target)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning(
                     "[deepresearch_stream] persist todo failed type=%s",
@@ -3467,14 +3470,16 @@ async def _consume_stream(
                 type(exc).__name__,
             )
 
+    todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
+
     async def send(payload: dict[str, Any]) -> bool:
         safe_payload = _redact_json_value(payload, secrets)
         if not isinstance(safe_payload, dict):
             raise _StreamProtocolInvalid("Gateway payload is not an object")
         if todo_path is not None and safe_payload.get("event_type") == "task.update":
             try:
-                persist_deepresearch_task_update(
-                    safe_payload, todo_path=todo_path
+                await persist_deepresearch_task_update(
+                    safe_payload, todo_path=todo_path, target=todo_target
                 )
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning(

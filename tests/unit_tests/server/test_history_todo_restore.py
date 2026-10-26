@@ -64,7 +64,8 @@ async def test_history_first_page_emits_todo_snapshot_before_done(monkeypatch, _
     def _load(_session_id, *, todo_root, generation_token):
         captured["todo_root"] = todo_root
         captured["generation_token"] = generation_token
-        return [{"id": "t1", "status": "pending"}]
+        from jiuwenswarm.common.todo_snapshot import FrontendTodos
+        return FrontendTodos([{"id": "t1", "status": "pending"}], {"plan_id": "P", "revision": 1})
 
     monkeypatch.setattr(
         session_handlers,

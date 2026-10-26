@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / runtime-agent-management |
 | 关联模块 | jiuwenswarm/server/runtime/{agent_manager.py, tenant_agent_pool.py, agent_warm_pool.py, agent_adapter/, a2ui/, debug_trace/, session/, skill/, workspace/, agent_config_service.py, prewarm.py, proactive_adapter.py, team_binding_store.py, team_entity_store.py, team_snapshot_refresh.py} |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-26 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -177,3 +177,7 @@ UsageReconciler:    start_usage_reconciler()（启动周期回收）
 
 - [[S_02]] 默认路径 fallback（_handle_stream / _handle_unary）是 AgentManager 的调用入口
 - [[S_04]] sandbox 由 AgentWebSocketServer.start() 按条件 auto-start，runtime 不碰
+
+### Todo 增量提交边界
+
+暂停、恢复和既有清单修改复用 SDK 同对象事务，在最新清单上应用原业务意图，不能整表覆盖并发提交。旧工作保留捕获的 plan_id，冲突不能换绑新计划。历史恢复发送同一权威文件的内容和 todo_meta；合法空表可恢复，读取失败不发送清空事件。不改变请求取消、HITL 状态机或沙箱隔离策略。

@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_14 / session-lifecycle-and-upgrade |
 | 关联模块 | jiuwenswarm/common/{todo_generation, todo_snapshot, cleanup, cron_team_completion, git_safe_directory, updater, updater_restart_helper, upgrade_executor, version, version_source}.py |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-26 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -36,11 +36,10 @@ version.__version__（唯一版本真源）
 - **N1 todo 代际过滤向后兼容**：`filter_todos_by_generation` 对**无 token 的旧条目一律
   保留**；token 为空则原样返回；兼容 dict 与对象两种形态。bump / get token 的逻辑在
   `todo_resume.py`（agents 侧）。
-- **N2 todo 快照安全读取**：session_id 严格白名单正则（防路径穿越，`_SAFE_SESSION_ID`）；
-  任何读取 / 解析失败**静默返回 `[]`**（fail-open，快照是增强非关键路径）；cancelled
-  项剔除；状态新旧别名归一（running → in_progress 等）；串行遮罩
-  `overlay_serial_todo_statuses` 把乱序的已完成 / 进行中行重置为 pending（UI 单线推进
-  观感契约）。
+- **N2 todo 快照安全读取**：session_id 严格白名单正则；通过 SDK Todo 编解码读取旧数组或
+  `{plan_id, revision, todos}`。新快照保留 `todo_meta`，合法空表仍可恢复；读取失败返回
+  `None`，不发送伪空表。前端投影过滤 cancelled、归一状态，保留真实 completed 状态，
+  不应用串行显示遮罩。新计划不受旧 generation 过滤，旧数组保持 token 兼容。
 - **N3 后台清理尽力而为**：保留期默认 30 天（`CLEANUP_PERIOD_DAYS`）；首次延迟 10min、
   之后每 24h 一轮；按目录 mtime 判过期；阻塞操作丢线程池且单步失败不中断循环；
   rmtree `ignore_errors=True`（可重复执行幂等）。装配点：`app_gateway` 启动。
