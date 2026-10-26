@@ -139,6 +139,7 @@
     "test:designer-materials": "esbuild src/features/designer/designerMaterials.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/designer-materials/designerMaterials.js && node --test tests/designerMaterials.test.mjs",
     "test:designer-activity": "esbuild src/features/designer/designerActivity.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/designer-activity/designerActivity.js && node --test tests/designerActivity.test.mjs",
     "test:pending-connector-flow": "node --test tests/pendingConnectorFlow.test.mjs",
+    "test:connector-store-uninstall-guard": "node --test tests/connectorStoreUninstallGuard.test.mjs",
     "test:host-oauth-connector-modal": "node --test tests/hostOAuthConnectorModal.test.mjs",
     "test:equipment-marketplace": "esbuild src/features/equipmentMarketplace.ts src/components/ConnectorMarket/mcpState.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/equipment-marketplace && node --test tests/equipmentMarketplace.test.mjs",
     "test:market-search-client": "node --test tests/marketSearchClient.test.mjs",

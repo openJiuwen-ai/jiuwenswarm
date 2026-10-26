@@ -9841,7 +9841,7 @@ class AgentWebSocketServer:
             applied = True
             error_message = ""
             agent_manager = getattr(self, "_agent_manager", None)
-            if agent_manager is not None and name:
+            if item.get("removed", True) and agent_manager is not None and name:
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(
