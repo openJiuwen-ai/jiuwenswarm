@@ -665,6 +665,14 @@ def test_build_member_capability_specs_tool_names(role: str) -> None:
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.code"])
+def test_team_members_do_not_register_user_todos(mode: str, role: str) -> None:
+    _, tool_specs = build_member_capability_specs({}, mode, role)
+
+    assert registry.USER_TODOS not in {spec.type for spec in tool_specs}
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
 def test_design_profile_web_tools_are_leader_only(role: str) -> None:
     _, tool_specs = build_member_capability_specs({}, NEW_TEAM_DESIGN, role)
     tool_names = {spec.type for spec in tool_specs}
