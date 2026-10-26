@@ -4703,7 +4703,11 @@ async def install_agent_group_with_hub(
             package_name_validator=lambda value: _reject_package_name(value, "agent_group"),
             package_validator=validate,
             package_id_resolver=_hub_package_id_resolver(_AGENT_GROUP_KIND),
-            conflict_validator=reject_conflict,
+            conflict_validator=lambda value: _assert_package_id_available(
+                value, local_root=_local_root(_AGENT_GROUP_KIND),
+                built_in_root=_built_in_root(_AGENT_GROUP_KIND),
+                resources_root=_resources_root(_AGENT_GROUP_KIND), kind="agent_group"
+            ),
             on_committed=lambda value: upsert_agent_group_marketplace_entry(
                 value.package_id, installed=False, source="hub"
             ),
