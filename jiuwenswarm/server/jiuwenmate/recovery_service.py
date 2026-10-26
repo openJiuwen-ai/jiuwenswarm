@@ -175,7 +175,12 @@ class RecoveryService:
         return closed
 
     def recovery_of(self, namespace_id: str, request_id: str) -> RequestRecovery | None:
-        return self._recoveries.latest(namespace_id, request_id)
+        recovery = self._recoveries.latest(namespace_id, request_id)
+        if recovery is None or recovery.decision != "awaiting_continuation":
+            return recovery
+        if self._sessions.pending_continuation_ref(namespace_id, request_id) != recovery.execution_id:
+            return None
+        return recovery
 
     def _close(self, namespace_id: str, state: RequestState) -> RequestRecovery | None:
         record = state.record

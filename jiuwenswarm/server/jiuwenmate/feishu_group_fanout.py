@@ -568,6 +568,16 @@ class PersistentGroupFanout:
                     )
                     request_input = request_input.model_copy(update={"source": request_source})
                 else:
+                    is_all_mention = any(
+                        mention_id.casefold() in {"all", "@_all"}
+                        for mention_id in event.mention_ids
+                    )
+                    if event.mention_ids and not is_all_mention:
+                        logger.info(
+                            "[JiuwenMate] group message mentions another recipient: agent_id=%s",
+                            binding.agent_id,
+                        )
+                        return InboundDisposition.HANDLED
                     settings = await asyncio.to_thread(
                         self._service.read_settings, binding.namespace_id, binding.agent_id,
                     )
