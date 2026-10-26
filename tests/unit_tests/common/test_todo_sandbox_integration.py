@@ -208,10 +208,15 @@ async def test_real_sandbox_todo_updates_keep_both_changes(backend):
 @pytest.mark.asyncio
 async def test_gateway_wrapper_keeps_transaction_during_lazy_backend_binding(backend, monkeypatch):
     from openjiuwen.core.sys_operation import OperationMode
-    from openjiuwen.core.sys_operation.config import PreDeployLauncherConfig, SandboxGatewayConfig
+    from openjiuwen.core.sys_operation.config import (
+        PreDeployLauncherConfig,
+        SandboxGatewayConfig,
+    )
     from openjiuwen.core.sys_operation.sandbox.fs_operation import FsOperation
     from openjiuwen.core.sys_operation.sandbox.gateway.gateway import SandboxGateway
-    from openjiuwen.core.sys_operation.sandbox.gateway.gateway_client import SandboxGatewayClient
+    from openjiuwen.core.sys_operation.sandbox.gateway.gateway_client import (
+        SandboxGatewayClient,
+    )
     from openjiuwen.core.sys_operation.sandbox.run_config import SandboxRunConfig
     from openjiuwen.harness.tools.todo_store import _BINDING
 
