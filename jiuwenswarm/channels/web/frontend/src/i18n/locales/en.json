@@ -4334,6 +4334,7 @@
     "pipRestart": "Restart now",
     "restoreDefaults": "Restore Default Source",
     "currentVersion": "Current version",
+    "builtOn": "Built on",
     "latestVersion": "Latest version",
     "state": "Update state",
     "publishedAt": "Published at",

@@ -76,10 +76,20 @@ def test_pip_mode_uses_canonical_package_identity(monkeypatch):
 
 def test_updater_status_reports_installed_build_version(monkeypatch):
     monkeypatch.setattr(updater, "get_runtime_version", lambda: "0.2.5.beta1.dev20261009")
+    monkeypatch.setattr(updater, "get_runtime_build_date", lambda: "2026-10-09")
 
     status = updater.UpdaterService().get_status()
 
     assert status["current_version"] == "0.2.5.beta1.dev20261009"
+    assert status["current_build_date"] == "2026-10-09"
+
+
+def test_updater_does_not_replace_build_date_with_release_date(monkeypatch):
+    monkeypatch.setattr(updater, "get_runtime_build_date", lambda: "2026-10-20")
+    service = updater.UpdaterService()
+    service._update_status(published_at="2026-10-26T08:00:00Z", state="available")
+
+    assert service.get_status()["current_build_date"] == "2026-10-20"
 
 
 def test_pip_executor_installs_canonical_package_name(monkeypatch):

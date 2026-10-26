@@ -17,10 +17,31 @@ from scripts.build_config import (
     render_runtime_python,
     render_shell,
     write_expected,
+    write_build_metadata,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_build_metadata_uses_reproducible_release_date(monkeypatch, tmp_path: Path) -> None:
+    # 2026-10-25 17:00 UTC is already October 26 on the release calendar.
+    from datetime import datetime, timezone
+
+    epoch = int(datetime(2026, 10, 25, 17, tzinfo=timezone.utc).timestamp())
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", str(epoch))
+    path = tmp_path / "staging" / "build-metadata.json"
+    write_build_metadata(path, "0.2.8.dev20261026")
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "version": "0.2.8.dev20261026", "build_date": "2026-10-26",
+    }
+
+
+def test_build_metadata_rejects_invalid_reproducible_timestamp(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "invalid")
+    with pytest.raises(ValueError):
+        write_build_metadata(tmp_path / "build-metadata.json", "0.2.8")
 
 
 def _create_project_fixture(root: Path, version: str = "1.2.3.beta4") -> None:
