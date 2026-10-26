@@ -99,7 +99,9 @@ MIN_INTERVAL_SECONDS: int = 60
 
 # 名称最大长度,对齐 Cron 的 CRON_JOB_NAME_MAX_LENGTH。
 HEARTBEAT_NAME_MAX_LENGTH: int = 64
-# prompt 最大长度,对齐 Cron 的 description 上限。
+# prompt 最大长度。此前注释写的是"对齐 Cron 的 description 上限"，但两者从未相等
+# （Cron 曾是 500，现为 CRON_JOB_DESCRIPTION_MAX_LENGTH）。这里的值独立成立：
+# 与 Cron 的 description 一样是提示词而非标签，按提示词的长度来定。
 HEARTBEAT_PROMPT_MAX_LENGTH: int = 2000
 
 # ID 前缀。
