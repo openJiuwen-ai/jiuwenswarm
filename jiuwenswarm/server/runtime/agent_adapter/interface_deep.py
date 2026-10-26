@@ -77,7 +77,7 @@ from openjiuwen.core.sys_operation import (
     SysOperationCard,
     OperationMode,
 )
-from openjiuwen.core.sys_operation.cwd import init_cwd
+from openjiuwen.core.sys_operation.cwd import get_cwd, get_project_root, init_cwd
 from openjiuwen.harness import (
     AudioModelConfig,
     DeepAgent,
@@ -19867,7 +19867,9 @@ class JiuWenSwarmDeepAdapter:
                     context_window_tokens=context_window_tokens,
                     usage_percent=context_usage_percent,
                     model=payload.get("model") if isinstance(payload.get("model"), str) else None,
-                )
+                ),
+                cwd=get_cwd(),
+                project_root=get_project_root() if self._project_dir else None,
             )
 
             yield AgentResponseChunk(
