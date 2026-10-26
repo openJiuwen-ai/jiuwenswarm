@@ -3896,13 +3896,13 @@ class JiuWenSwarmDeepAdapter:
         if isinstance(awaiting, set):
             awaiting.discard(sid)
 
-    def _clear_cron_awaiting_if_interrupt_gone(self, session_id: str) -> None:
-        """审批续跑收尾：interrupt 已消费则解除 pin，允许空闲驱逐。
+    def _clear_hitl_awaiting_if_interrupt_gone(self, session_id: str) -> None:
+        """HITL 审批续跑收尾：interrupt 已消费则解除 pin，允许空闲驱逐。
 
         仍持有 live interrupt（含多工具连续审批中）时不清理。
         """
         sid = str(session_id or "").strip()
-        if not sid.startswith("cron_"):
+        if not sid:
             return
         if self._read_session_interrupt_state() is not None:
             return
@@ -13857,37 +13857,67 @@ class JiuWenSwarmDeepAdapter:
                 return sid_attr.strip()
         return ""
 
-    async def _commit_cron_hitl_pause(self, session_id: str, request_id: str) -> None:
-        """审批卡发出前先把暂停状态落盘，调度器断开读取后仍能续跑同一条命令。"""
-        if not str(session_id or "").startswith("cron_") or self._instance is None:
+    async def _commit_hitl_pause_before_card(self, session_id: str, request_id: str) -> None:
+        """审批卡发出前先把暂停状态落盘，保证恢复请求能读到本轮上下文。"""
+        if self._instance is None:
             return
         session = getattr(self._instance, "_interaction_session", None)
         if session is None:
             return
         react_agent = getattr(self._instance, "react_agent", None)
         context_engine = getattr(react_agent, "context_engine", None) if react_agent is not None else None
+        committed = False
+        msg_count = 0
         if context_engine is not None:
             try:
-                await context_engine.save_contexts(session)
+                ctx = context_engine.get_context(session_id=session_id)
+                msg_count = len(list(ctx.get_messages() or [])) if ctx is not None else 0
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "[CRON-CTX] save contexts before permission card failed: "
+                    "[HITL-CTX] context probe before permission card failed: "
                     "session_id=%s request_id=%s error=%s",
                     session_id, request_id, exc,
                 )
+                ctx = None
+                msg_count = 0
+            if ctx is None or msg_count <= 0:
+                logger.info(
+                    "[HITL-CTX] checkpoint skip: no persistable context: "
+                    "session_id=%s request_id=%s msg_count=%s",
+                    session_id, request_id, msg_count,
+                )
+            else:
+                try:
+                    await context_engine.save_contexts(session)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[HITL-CTX] save contexts before permission card failed: "
+                        "session_id=%s request_id=%s error=%s",
+                        session_id, request_id, exc,
+                    )
+                else:
+                    try:
+                        await session.commit()
+                        committed = True
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "[HITL-CTX] interrupt commit before permission card failed: "
+                            "session_id=%s request_id=%s error=%s",
+                            session_id, request_id, exc,
+                        )
         try:
-            await session.commit()
             self.mark_session_awaiting_tool_permission(session_id)
-            logger.info(
-                "[CRON-CTX] cron interrupt committed before permission card: "
-                "session_id=%s request_id=%s",
-                session_id, request_id,
-            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "[CRON-CTX] cron interrupt commit before permission card failed: "
+                "[HITL-CTX] mark awaiting permission failed: "
                 "session_id=%s request_id=%s error=%s",
                 session_id, request_id, exc,
+            )
+        if committed:
+            logger.info(
+                "[HITL-CTX] interrupt committed before permission card: "
+                "session_id=%s request_id=%s msg_count=%s",
+                session_id, request_id, msg_count,
             )
 
     async def _rehydrate_empty_cron_context(self, session_id: str, request_id: str) -> None:
@@ -19749,13 +19779,13 @@ class JiuWenSwarmDeepAdapter:
                         type(exc).__name__,
                     )
                 try:
-                    self._clear_cron_awaiting_if_interrupt_gone(session_id)
+                    self._clear_hitl_awaiting_if_interrupt_gone(session_id)
                 except BaseException as exc:
                     if cleanup_error is None:
                         cleanup_error = exc
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] cleanup failed: "
-                        "step=cron_awaiting_clear error_type=%s",
+                        "step=hitl_awaiting_clear error_type=%s",
                         type(exc).__name__,
                     )
             if active_error is None and cleanup_error is not None:
@@ -21134,7 +21164,7 @@ class JiuWenSwarmDeepAdapter:
                             continue
                         if self._is_ask_user_payload(parsed):
                             hitl_pending_stream = True
-                            await self._commit_cron_hitl_pause(session_id, rid)
+                            await self._commit_hitl_pause_before_card(session_id, rid)
                         if accumulated_text:
                             yield AgentResponseChunk(
                                 request_id=rid,
@@ -21334,7 +21364,7 @@ class JiuWenSwarmDeepAdapter:
                                 continue
                             if self._is_ask_user_payload(parsed):
                                 hitl_pending_stream = True
-                                await self._commit_cron_hitl_pause(session_id, rid)
+                                await self._commit_hitl_pause_before_card(session_id, rid)
                             if parsed.get("event_type") == "chat.final":
                                 self._stream_content_run_kind = None
                             if parsed.get("event_type") == "chat.error":
@@ -21376,7 +21406,7 @@ class JiuWenSwarmDeepAdapter:
                             continue
                         if self._is_ask_user_payload(parsed):
                             hitl_pending_stream = True
-                            await self._commit_cron_hitl_pause(session_id, rid)
+                            await self._commit_hitl_pause_before_card(session_id, rid)
                         if parsed.get("event_type") == "chat.final":
                             self._stream_content_run_kind = None
                         if parsed.get("event_type") == "chat.error":
@@ -21450,7 +21480,7 @@ class JiuWenSwarmDeepAdapter:
                         continue
                     if self._is_ask_user_payload(parsed):
                         hitl_pending_stream = True
-                        await self._commit_cron_hitl_pause(session_id, rid)
+                        await self._commit_hitl_pause_before_card(session_id, rid)
                     if parsed.get("event_type") == "chat.final":
                         self._stream_content_run_kind = None
                     if parsed.get("event_type") == "chat.error":
@@ -21822,13 +21852,13 @@ class JiuWenSwarmDeepAdapter:
                         type(exc).__name__,
                     )
                 try:
-                    self._clear_cron_awaiting_if_interrupt_gone(session_id)
+                    self._clear_hitl_awaiting_if_interrupt_gone(session_id)
                 except BaseException as exc:
                     if cleanup_error is None:
                         cleanup_error = exc
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] cleanup failed: "
-                        "step=cron_awaiting_clear error_type=%s",
+                        "step=hitl_awaiting_clear error_type=%s",
                         type(exc).__name__,
                     )
             if active_error is None and cleanup_error is not None:
