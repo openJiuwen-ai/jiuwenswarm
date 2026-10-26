@@ -197,9 +197,16 @@ def upsert_group_organization_team(
     state = read_group(group_id)
     if state is None:
         return
+    previous = str(state.get("organization_id") or "")
+    # A different organization must not keep the previous round's members.
+    # Those rows would be invited into the new organization.
+    if previous and previous != organization_id:
+        stored = []
+    else:
+        stored = state.get("organization_teams") or []
     teams = [
         item
-        for item in state.get("organization_teams") or []
+        for item in stored
         if isinstance(item, dict)
         and item.get("member_name") != entry.get("member_name")
     ]

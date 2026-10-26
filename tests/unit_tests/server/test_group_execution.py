@@ -577,6 +577,31 @@ async def test_group_message_completion_is_idempotent_and_correlates_result(serv
 
 
 @pytest.mark.asyncio
+async def test_group_message_rejects_a_teammate_during_multi_mention(service, monkeypatch):
+    from jiuwenswarm.agents.swarm import group_org_bootstrap as bootstrap
+    from jiuwenswarm.agents.swarm.group_execution import GroupMessageTool
+
+    group = await make_group(service)
+    posted = Mock()
+    backend = SimpleNamespace(
+        member_name="insight",
+        team_name="outer-team",
+        conversation_mode="group_chat",
+        append_group_message=AsyncMock(return_value=posted),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "group_reply_block_reason",
+        lambda *_args, **_kwargs: "only the owner replies",
+    )
+    tool = GroupMessageTool(backend, SimpleNamespace(session_id=group["group_id"]), "Post")
+    output = await tool.invoke({"content": "再次返回报告", "client_message_id": "arch-reply"})
+    assert not output.success
+    assert "only the owner replies" in output.error
+    backend.append_group_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_group_message_plain_chat_uses_core_path_without_finishing_task(service):
     from jiuwenswarm.agents.swarm.group_execution import GroupMessageTool
 

@@ -47,6 +47,9 @@ TASK_RULES = (
     "answer it yourself with group_send_message when one agent can do it, "
     "or call run_team when the expert team should do it. "
     "That run_team resumes the same instance and loads the context from its earlier child task. "
+    "When the same message mentions multiple expert teams, call run_team and do not reply. "
+    "Only the Owner posts the group reply. A teammate proxy and its expert-team instance "
+    "must not call group_send_message or send_file while that organization is in progress. "
     "If important requirements are missing, ask_user before work; do not invent user preferences. "
     "For ambiguous references ask which task; do not guess."
 )
@@ -124,6 +127,15 @@ class GroupMessageTool(GroupSendMessageTool):
         self.card.input_params["required"] = ["content"]
 
     async def invoke(self, inputs, **kwargs):
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import group_reply_block_reason
+
+        blocked = group_reply_block_reason(
+            self.context.session_id,
+            str(getattr(self.backend, "member_name", "") or ""),
+            str(getattr(self.backend, "team_name", "") or ""),
+        )
+        if blocked:
+            return ToolOutput(success=False, error=blocked)
         if "execution_id" not in inputs:
             return await super().invoke(inputs, **kwargs)
         store = GroupExecutions(self.context.session_id)
@@ -220,6 +232,22 @@ class GroupTaskPolicyRail(DeepAgentRail):
         if ctx.inputs.tool_name not in {"group_send_message", "send_file"}:
             return
         if read_group(self.context.session_id) is None:
+            return
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import group_reply_block_reason
+
+        backend = get_team_backend(self.context)
+        blocked = group_reply_block_reason(
+            self.context.session_id,
+            str(getattr(backend, "member_name", "") or self.context.member_name or ""),
+            str(getattr(backend, "team_name", "") or ""),
+        )
+        if blocked:
+            from openjiuwen.core.foundation.llm import ToolMessage
+
+            call = ctx.inputs.tool_call
+            ctx.extra["_skip_tool"] = True
+            ctx.inputs.tool_result = {"error": blocked}
+            ctx.inputs.tool_msg = ToolMessage(content=blocked, tool_call_id=call.id if call else "")
             return
         store = GroupExecutions(self.context.session_id)
         active = store.active(self.context.member_name)

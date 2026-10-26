@@ -152,11 +152,12 @@ def assemble_group_members(spec, members: list[dict]) -> None:
                 "Call run_team when the expert team should do it. That call resumes the same instance "
                 "and loads the context from its earlier child task. "
                 "Results are posted automatically; do not post or submit them twice. "
-                "If the same message mentions multiple expert teams, still call run_team. "
-                "That call joins your bound instance to one shared Team Organization and returns when the "
-                "organization run finishes. If its result says posted_to_group is false, do not post the "
-                "report again; the Owner proxy publishes the final report. "
-                "Use group_send_message for your own discussion. Do not build the outer group.",
+                "If the same message mentions multiple expert teams, call run_team and do not reply. "
+                "That call joins your bound instance to one shared Team Organization. "
+                "Only the Owner posts the group reply. A teammate proxy and its expert-team instance "
+                "must not call group_send_message or send_file for that message. "
+                "Use group_send_message only when this message mentions you alone. "
+                "Do not build the outer group.",
             )
         member_params = dict(
             member_name=name,
@@ -295,19 +296,54 @@ class RunTeam(_GroupTool):
             return ToolOutput(success=False, error="run_id and task must be nonempty")
         session = self.context.session_id
         from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+            closed_organization_plan_result,
+            organization_plan_for_member,
             pending_organization_plan,
+            queue_organization_plan,
+            recorded_organization_plan,
+            release_organization_plan_claim,
+            route_live_organization_plan,
             run_instance_followup,
             run_organization_member,
             saved_organization_instance,
+            triggering_plan_id,
         )
 
-        plan = pending_organization_plan(session, self.backend.member_name)
+        message_plan_id = await triggering_plan_id(self.backend, self.backend.member_name)
+        if message_plan_id:
+            recorded = recorded_organization_plan(
+                session, self.backend.member_name, message_plan_id
+            )
+            if recorded is not None and str(recorded.get("status") or "") not in {
+                "pending",
+                "running",
+            }:
+                return closed_organization_plan_result(recorded)
+            plan = organization_plan_for_member(
+                session, self.backend.member_name, message_plan_id
+            )
+        else:
+            plan = pending_organization_plan(session, self.backend.member_name)
         if plan is not None:
-            return await run_organization_member(
+            action, plan = route_live_organization_plan(
+                session, self.backend.member_name, plan
+            )
+            if action == "queue":
+                return queue_organization_plan(
+                    backend=self.backend,
+                    session_id=session,
+                    plan=plan,
+                )
+            result = await run_organization_member(
                 backend=self.backend,
                 session_id=session,
                 plan=plan,
             )
+            if getattr(result, "success", True) is False:
+                release_organization_plan_claim(
+                    session, str(plan.get("plan_id") or ""), self.backend.member_name
+                )
+            return result
         instance = await saved_organization_instance(
             self.backend, self.backend.member_name, session
         )
