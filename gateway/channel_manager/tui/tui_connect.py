@@ -382,7 +382,7 @@ class CliHandlersBindParams:
     # to Gateway a second time.
     force_local_config: bool = False
     # (project_id, session_id) -> awaitable, after a session is deleted or moved to another project;
-    # see app_web_handlers.session_left_project_follow_up.
+    # AgentServer recomputes topic sources when the session leaves a project.
     on_session_left_project: Any = None
 
 
@@ -697,10 +697,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         """
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
-        from gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-        )
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
         if not isinstance(params, dict):
             await channel.send_response(
@@ -726,21 +722,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             **{k: v for k, v in params.items() if k not in ("session_id", "project_dir")},
         }
         real_client = _resolve_agent_client(agent_client)
-        # A remote non-AgentOS extension (for example YuanRong) also has an
-        # isolated user directory.  Only the stock local WebSocket client may
-        # use the historical shared-directory fallback.
-        # A2g：legacy 本地 rebib 删除，统一走 E2A。
-        legacy_shared_dir = is_legacy_shared_directory_client(real_client)
-        # AgentServer may have written an earlier rebind, so the project is read from disk;
-        # only a client that shares this directory has the session here.
-        left_project_id = str(
-            get_session_metadata(target, cache_bust=True, enable_writeback=False).get("project_id") or ""
-        ) if legacy_shared_dir else ""
-
-        async def _left_project(joined_project_id: str) -> None:
-            if on_session_left_project is not None and left_project_id and left_project_id != joined_project_id:
-                await on_session_left_project(left_project_id, target)
-
         # 与 e2a_proxy 的判定语义对齐：兼容/扩展 client 可能不暴露
         # ``server_ready``，缺省视为可达，只有显式 False 才视为不可达。
         if real_client is None or getattr(real_client, "server_ready", True) is False:
@@ -773,7 +754,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return
         pl = resp.payload if isinstance(resp.payload, dict) else {}
         if resp.ok:
-            await _left_project(str(pl.get("project_id") or ""))
             await channel.send_response(ws, req_id, ok=True, payload=pl)
             return
         err = pl.get("error", "session.rebind_project failed")

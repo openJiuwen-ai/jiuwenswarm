@@ -485,13 +485,14 @@ class PromptSuggestionForks:
             WebSocketGatewayPushTransport,
         )
         transport = WebSocketGatewayPushTransport()
-        for shown_id, shown_text in zip(suggestion_ids, suggestions):
-            await transport.send_push({
-                "channel_id": "",
-                "session_id": session_id,
-                "request_id": request_id,
-                "payload": {"event_type": READY_EVENT, "suggestion_id": shown_id, "text": shown_text},
-            })
+        store = TopicStarterStore(get_agent_workspace_dir() / "recommendation.db")
+        await _push_checked_suggestions(
+            store=store,
+            transport=transport,
+            session_id=session_id,
+            request_id=request_id,
+            suggestions=list(zip(suggestion_ids, suggestions)),
+        )
 
 
 forks = PromptSuggestionForks()
@@ -598,16 +599,56 @@ def record_page_outcome(store: TopicStarterStore, params: dict[str, Any]) -> boo
     })
 
 
-async def deliver(channel: Any, store: TopicStarterStore, session_id: str, request_id: str,
-                  payload: dict[str, Any]) -> None:
-    """Gateway side: push the suggestion to the pages on its session while it is still current.
+async def _push_checked_suggestions(
+    *,
+    store: TopicStarterStore,
+    transport: Any,
+    session_id: str,
+    request_id: str,
+    suggestions: list[tuple[str, str]],
+) -> None:
+    """Push each current suggestion. One staging or push failure leaves the rest."""
+    for shown_id, shown_text in suggestions:
+        try:
+            shown = await asyncio.to_thread(
+                stage_delivery,
+                store,
+                session_id,
+                request_id,
+                {"suggestion_id": shown_id, "text": shown_text},
+            )
+            if shown is None:
+                continue
+            await transport.send_push({
+                "channel_id": "",
+                "session_id": session_id,
+                "request_id": request_id,
+                "payload": shown,
+            })
+        except Exception:  # noqa: BLE001 - one suggestion must not drop the others
+            logger.warning(
+                "[PromptSuggestion] delivery failed: session_id=%s suggestion_id=%s",
+                session_id,
+                shown_id,
+                exc_info=True,
+            )
 
-    With recommendations off nothing is pushed or recorded.
+
+def stage_delivery(
+    store: TopicStarterStore,
+    session_id: str,
+    request_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Record delivery and return the page payload while the request is still current.
+
+    With recommendations off nothing is recorded. A stale request is recorded as suppressed
+    and is not pushed.
     """
     if consent_epoch() is None:
-        return
+        return None
     suggestion_id = str(payload.get("suggestion_id") or "")
-    stale = await asyncio.to_thread(_latest_completed_request, session_id) != request_id
+    stale = _latest_completed_request(session_id) != request_id
     reason = "stale_request" if stale else None
     store.record_event({
         "session_id": session_id,
@@ -622,10 +663,24 @@ async def deliver(channel: Any, store: TopicStarterStore, session_id: str, reque
                     "status": "suppressed" if reason else "pushed", "reason": reason},
     })
     if reason is not None:
+        return None
+    return {
+        "event_type": READY_EVENT,
+        "session_id": session_id,
+        "request_id": request_id,
+        "suggestion_id": suggestion_id,
+        "text": str(payload.get("text") or ""),
+    }
+
+
+async def deliver(channel: Any, store: TopicStarterStore, session_id: str, request_id: str,
+                  payload: dict[str, Any]) -> None:
+    """Push one already-checked suggestion to the pages open on its session."""
+    shown = await asyncio.to_thread(stage_delivery, store, session_id, request_id, payload)
+    if shown is None:
         return
     await channel.send(Message(
-        id=f"prompt-suggestion:{suggestion_id}", type="event", channel_id=channel.channel_id,
+        id=f"prompt-suggestion:{shown['suggestion_id']}", type="event", channel_id=channel.channel_id,
         session_id=session_id, params={}, timestamp=time.time(), ok=True,
-        payload={"event_type": READY_EVENT, "session_id": session_id, "request_id": request_id,
-                 "suggestion_id": suggestion_id, "text": str(payload.get("text") or "")},
+        payload=shown,
     ))

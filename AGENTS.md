@@ -11,7 +11,7 @@ JiuwenSwarm 是多智能体协作系统，Python 包发布名为 `workswarm`。
 
 ## 安装、运行与构建
 
-使用 Python 3.11–3.13 和 `uv`，从仓库根目录执行：
+使用 Python 3.11–3.14 和 `uv`，从仓库根目录执行：
 
 ```bash
 uv sync                          # 安装依赖，默认包含测试与开发工具

@@ -1143,6 +1143,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'team_task_verification_enabled',
       'team_member_messaging_enabled',
       'proactive_recommendation_enabled',
+      'progressive_tool_optimize',
     ].sort(),
   );
   assert.deepEqual([...contractByCategory('experimental')].sort(), [
@@ -1163,6 +1164,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'proactive_recommendation_enabled',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
+    'progressive_tool_optimize',
     'rsi_enabled',
     'symphony_evolution_enabled',
     'task_asr_enabled',
@@ -1172,6 +1174,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'team_scheduled_dispatch_enabled',
     'team_task_verification_enabled',
     'trajectory_ui_diagnosis_enabled',
+    'trajectory_ui_enabled',
   ]);
 
   const channelCatalogFile = parseTsx('src/features/settings/modules/channels/channelCatalog.ts');

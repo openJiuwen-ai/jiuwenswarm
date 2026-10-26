@@ -11,6 +11,48 @@ from openjiuwen_protocol.message import ReqMethod
 
 from jiuwenswarm.common.mode_matrix import deprecate_mode
 
+# Wire names shared by gateway and AgentServer. Gateway matches these strings
+# and does not import the agents or server modules that produce them.
+SESSION_REQUEST_COMPLETED_EVENT = "chat.request_completed"
+PROMPT_SUGGESTION_READY_EVENT = "prompt_suggestion.ready"
+TOPIC_STARTERS_READY_EVENT = "topic_starters.ready"
+TOPIC_STARTERS_CONTROL_CHANGED_EVENT = "topic_starters.control_changed"
+
+
+def _ensure_req_method(name: str, value: str) -> None:
+    """Register a ReqMethod member the pinned protocol package does not ship yet.
+
+    ``openjiuwen-protocol`` owns the enum. These members are the recommendation
+    RPCs this process already speaks. Once the pinned revision defines the same
+    name and value, this registration leaves that member in place.
+    """
+    existing = ReqMethod.__members__.get(name)
+    if existing is not None:
+        if existing.value != value:
+            raise RuntimeError(
+                f"ReqMethod.{name} is {existing.value!r}, expected {value!r}"
+            )
+        return
+    if any(item.value == value for item in ReqMethod):
+        raise RuntimeError(f"ReqMethod value {value!r} is already registered")
+    # Enum exposes no public API for adding a member, so extending the pinned
+    # protocol enum requires its internal registries. Keep those accesses here.
+    member = object.__new__(ReqMethod)
+    member._name_ = name  # pylint: disable=protected-access
+    member._value_ = value  # pylint: disable=protected-access
+    type.__setattr__(ReqMethod, name, member)
+    ReqMethod._member_map_[name] = member  # pylint: disable=protected-access
+    ReqMethod._value2member_map_[value] = member  # pylint: disable=protected-access
+    ReqMethod._member_names_.append(name)  # pylint: disable=protected-access
+
+
+_ensure_req_method("PROMPT_SUGGESTION_CANCEL", "prompt_suggestion.cancel")
+_ensure_req_method("RECOMMENDATION", "recommendation.job")
+# Dispatch compares this member on every request. The pinned protocol package
+# does not define it, so a missing attribute fails chat and session creation
+# before their own handlers run.
+_ensure_req_method("MCP_OAUTH_START", "mcp.oauth.start")
+
 logger = logging.getLogger(__name__)
 
 

@@ -62,6 +62,7 @@ from jiuwenswarm.common.config import (
     update_memory_forbidden_description_in_config,
     update_memory_forbidden_enabled_in_config,
     update_permissions_profile_in_config,
+    update_progressive_tool_optimize_in_config,
     update_proactive_recommendation_in_config,
     update_rsi_enabled_in_config,
     update_setup_guide_enabled_in_config,
@@ -407,6 +408,7 @@ CONFIG_YAML_KEYS = frozenset({
     "skill_evolution",
     "ttse_enabled",
     "enable_free_models",
+    "progressive_tool_optimize",
 })
 # 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification /
 # enable_member_messaging），改动后需重载 team。
@@ -1524,6 +1526,8 @@ def apply_config_payload(
                 update_a2ui_in_config(update)
             elif param_key == "trajectory_ui_diagnosis_enabled":
                 update_trajectory_diagnosis_in_config(parsed)
+            elif param_key == "progressive_tool_optimize":
+                update_progressive_tool_optimize_in_config(parsed)
             elif param_key == "task_full_duplex_enabled":
                 update_task_full_duplex_in_config(parsed)
             elif param_key == "team_organization_ui_enabled":
@@ -1747,6 +1751,9 @@ async def config_get_handler(
         payload["team_organization_ui_enabled"] = (
             "true" if experimental_cfg.get("team_organization_ui_enabled", False) else "false"
         )
+        payload["progressive_tool_optimize"] = (
+            "true" if raw.get("progressive_tool_optimize", False) else "false"
+        )
         payload["task_full_duplex_enabled"] = (
             "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
         )
@@ -1803,6 +1810,7 @@ async def config_get_handler(
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
+        payload.setdefault("progressive_tool_optimize", "false")
         payload.setdefault("task_asr_enabled", "false")
         for key, (_, value_type, default) in {
             **SYMPHONY_CONFIG_SPECS,

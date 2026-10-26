@@ -23,11 +23,10 @@ import os
 import re
 import signal
 import sys
-import threading
 import time
 import uuid as uuid_module
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
 
@@ -91,7 +90,14 @@ from jiuwenswarm.common.utils import (
     get_user_workspace_dir,
 )
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema.message import ReqMethod, Message, Mode
+from jiuwenswarm.common.schema.message import (
+    PROMPT_SUGGESTION_READY_EVENT,
+    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+    TOPIC_STARTERS_READY_EVENT,
+    Message,
+    Mode,
+    ReqMethod,
+)
 from gateway.channel_manager.web.media import (
     normalize_chat_media_attachments,
 )
@@ -175,23 +181,6 @@ def _load_gateway_runtime_config(
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "[App] failed to migrate legacy heartbeat probe config; "
-            "continuing with the existing config: %s",
-            exc,
-        )
-
-    try:
-        # Retire the legacy topic switch key and move the consent state out of config.yaml.
-        # Both are idempotent and run here rather than in the template merge, which AgentOS skips.
-        from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-            migrate_legacy_recommendation_switches,
-            migrate_recommendation_consent_state,
-        )
-
-        migrate_legacy_recommendation_switches()
-        migrate_recommendation_consent_state()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[App] failed to migrate the recommendation config; "
             "continuing with the existing config: %s",
             exc,
         )
@@ -1814,6 +1803,49 @@ def _build_acp_route_binding(
     )
 
 
+async def sync_saved_topic_recommendation(
+    client: Any,
+    *,
+    updated_env_keys: Any,
+    reload_scopes: Any,
+    config_payload: dict[str, Any] | None,
+) -> None:
+    """Ask AgentServer to apply a saved topic switch or model.
+
+    ``fetch_agent_unary`` reports a down or rejecting AgentServer as
+    ``(False, payload)`` and does not raise. The config file is already saved,
+    so this only logs; it does not fail the save.
+    """
+    from gateway.routing.e2a_proxy import fetch_agent_unary
+
+    try:
+        ok, payload = await fetch_agent_unary(
+            agent_client=client,
+            req_method=ReqMethod.RECOMMENDATION,
+            params={
+                "action": "apply_saved_config",
+                "updated_env_keys": sorted(updated_env_keys or []),
+                "reload_scopes": sorted(reload_scopes),
+                "config": dict(config_payload or {}),
+            },
+            session_id="sess_reload",
+            user_id="agentos_test",
+            channel_id="web",
+            label="recommendation",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[App] topic recommendation config sync failed: %s", exc)
+        return
+    if ok:
+        return
+    detail = payload if isinstance(payload, dict) else {}
+    logger.warning(
+        "[App] topic recommendation config sync failed: code=%s error=%s",
+        detail.get("code"),
+        detail.get("error"),
+    )
+
+
 def _build_route_config_map(bindings: list[GatewayRouteBinding]) -> dict[str, RouteConfig]:
     return {
         binding.path: RouteConfig(
@@ -1830,260 +1862,6 @@ def _build_route_config_map(bindings: list[GatewayRouteBinding]) -> dict[str, Ro
         )
         for binding in bindings
     }
-
-
-def _build_topic_starter_services(
-    topic_starter_store: Any,
-    *,
-    active_request_ids_loader: Callable[[], Iterable[str]] | None = None,
-) -> tuple[Any, Any | None, Any]:
-    """Always build the prepare lane; leave a misconfigured product lane disabled."""
-
-    from jiuwenswarm.agents.harness.common.recommendation.topic_collector import (
-        TopicStarterOutcomeCollector,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-        load_recommendation_controls,
-        permitted_recommendation_history,
-        recommendation_model_config,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
-        load_all_session_records,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
-        NewPageOutcomeQueue,
-        TopicStarterStoreOutcomeSink,
-        migrate_dismissal_records,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
-        TopicPipeline,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_prepare import (
-        TopicPreparePipeline,
-        TopicPrepareService,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_rid import (
-        build_ark_specific_interest_matcher,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
-        OpenJiuwenNativeSearchContractError,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
-        TopicService,
-    )
-    from jiuwenswarm.server.runtime.session.session_history import load_history_records
-
-    def permitted_records():
-        # One consent read per batch rather than one per session.
-        control = load_recommendation_controls()
-        return {sid: permitted_recommendation_history(rows, control)
-                for sid, rows in load_all_session_records().items()}
-
-    topic_prepare = TopicPreparePipeline(topic_starter_store, records_loader=permitted_records)
-    topic_prepare_service = TopicPrepareService(
-        topic_starter_store,
-        generate=topic_prepare.generate_prepared,
-        prepare_state=topic_prepare.refresh_state,
-    )
-    topic_outcome_queue = NewPageOutcomeQueue()
-    topic_outcome_queue.attach_sink(
-        TopicStarterStoreOutcomeSink(topic_starter_store)
-    )
-
-    try:
-        topic_pipeline = TopicPipeline(
-            topic_starter_store,
-            records_loader=permitted_records,
-            active_request_ids_loader=active_request_ids_loader,
-        )
-        search_provider_id = topic_pipeline.search_provider_id
-    except OpenJiuwenNativeSearchContractError as exc:
-        logger.warning(
-            "[Topic] disabled at startup: %s",
-            exc,
-        )
-        return (
-            topic_prepare_service,
-            None,
-            topic_outcome_queue,
-        )
-
-    # Bounds the cross-thread wait for one RID pair, so a stalled loop cannot wedge collection.
-    summary_pair_match_timeout_seconds = 60.0
-    outcome_collection_lock = asyncio.Lock()
-
-    async def prepare_topic_outcomes() -> str:
-        async with outcome_collection_lock:
-            # Pairs on the service's model; a switch cancels this round and the next one pairs anew.
-            ark_config = topic_service.ark_config
-            stop_collection = threading.Event()
-            matcher_tasks: set[asyncio.Task] = set()
-            matcher = None
-            if ark_config is not None:
-                try:
-                    matcher = build_ark_specific_interest_matcher(
-                        topic_starter_store,
-                        ark_config,
-                    )
-                except Exception as exc:  # noqa: BLE001 - fail-closed label exclusion
-                    logger.warning(
-                        "[Topic] RID summary-pair matcher unavailable: %s",
-                        exc,
-                    )
-            collector_kwargs: dict[str, Any] = {}
-            if matcher is not None:
-                loop = asyncio.get_running_loop()
-
-                async def match_if_running(earlier: Any, later: Any) -> bool:
-                    if stop_collection.is_set():
-                        raise asyncio.CancelledError()
-                    task = asyncio.current_task()
-                    matcher_tasks.add(task)
-                    try:
-                        return await matcher.match(earlier, later)
-                    finally:
-                        matcher_tasks.discard(task)
-
-                def match_summary_pair(earlier: Any, later: Any) -> bool:
-                    if stop_collection.is_set():
-                        raise asyncio.CancelledError()
-                    future = asyncio.run_coroutine_threadsafe(
-                        match_if_running(earlier, later),
-                        loop,
-                    )
-                    # This thread is not the loop: a loop that stops scheduling (shutdown,
-                    # saturated executor) would otherwise block it forever and keep
-                    # `asyncio.shield(worker)` from ever completing.
-                    try:
-                        result = future.result(
-                            timeout=summary_pair_match_timeout_seconds
-                        )
-                    except TimeoutError:
-                        future.cancel()
-                        raise
-                    if not isinstance(result, bool):
-                        raise ValueError("RID summary-pair matcher returned invalid output")
-                    return result
-
-                collector_kwargs = {
-                    "summary_pair_matcher": match_summary_pair,
-                    "summary_pair_matcher_id": matcher.matcher_id,
-                    "summary_pair_matcher_version": matcher.matcher_version,
-                }
-            topic_outcome_collector = TopicStarterOutcomeCollector(
-                topic_starter_store,
-                history_loader=lambda sid: permitted_recommendation_history(load_history_records(sid)),
-                cancel_event=stop_collection,
-                **collector_kwargs,
-            )
-            logger.info("[Topic] outcome collection started")
-            worker = asyncio.create_task(asyncio.to_thread(topic_outcome_collector.collect))
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                stop_collection.set()
-                tasks = list(matcher_tasks)
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                await asyncio.gather(worker, return_exceptions=True)
-                logger.info("[Topic] outcome collection stopped")
-                raise
-            finally:
-                if matcher is not None:
-                    await matcher.aclose()
-            # A failed round propagates; the service logs it as failed.
-            logger.info(
-                "[Topic] outcome collection %s",
-                "stopped" if stop_collection.is_set() else "finished",
-            )
-        return ""
-
-    def history_project_ids() -> list[str]:
-        from jiuwenswarm.server.runtime.session.session_metadata import (
-            get_session_metadata,
-        )
-        records = topic_pipeline.completed_records_loader()
-        project_ids: set[str] = set()
-        # Only completed sessions contribute, so read their metadata one by one: the batch
-        # loader materialises every session on the machine just to read one field.
-        for session_id, completed in records.items():
-            if not completed:
-                continue
-            project_id = get_session_metadata(
-                str(session_id), enable_writeback=False,
-            ).get("project_id")
-            if project_id not in (None, "", "default", "default_code"):
-                project_ids.add(str(project_id))
-        return sorted(project_ids)
-
-    # Dismissals written before strikes were counted take their time from the ledger, once.
-    migrate_dismissal_records(topic_starter_store, now=time.time())
-    topic_service = TopicService(
-        topic_starter_store,
-        generate=topic_pipeline.generate,
-        refresh_news=topic_pipeline.refresh_news,
-        history_project_ids_loader=history_project_ids,
-        search_provider_id=search_provider_id,
-        prepare_state=topic_pipeline.refresh_state,
-        prepare_short_intent=topic_pipeline.refresh_short_intent,
-        prepare_outcomes=prepare_topic_outcomes,
-        input_revision_loader=topic_pipeline.scope_input_revision,
-        pending_request_loader=topic_pipeline.scope_has_pending_request,
-        config_loader=recommendation_model_config,
-        enabled=bool(load_recommendation_controls()["enabled"]),
-    )
-    topic_pipeline.on_candidates_ready = topic_service.candidate_generation_ready
-    return (
-        topic_prepare_service,
-        topic_service,
-        topic_outcome_queue,
-    )
-
-
-def _seed_topic_starter_services(
-    topic_prepare_service: Any,
-    topic_service: Any | None,
-    run_id: str,
-) -> None:
-    if topic_service is not None:
-        topic_service.schedule_seed(run_id)
-
-
-async def _topic_starter_seed_loop(seed: Callable[[str], None]) -> None:
-    """Refresh topic pools on this process, without entering the cron job queue.
-
-    The first wake is shortly after Gateway starts. Later wakes are the next
-    local midnight. A disabled recommendation switch returns immediately inside
-    ``seed``.
-    """
-
-    from datetime import datetime, timedelta, timezone
-
-    started = False
-    while True:
-        if not started:
-            await asyncio.sleep(5.0)
-        else:
-            now = datetime.now(timezone.utc).astimezone()
-            next_midnight = (now + timedelta(days=1)).replace(
-                hour=0, minute=0, second=0, microsecond=0,
-            )
-            await asyncio.sleep(max(0.0, (next_midnight - now).total_seconds()))
-        started = True
-        try:
-            seed(f"topic-starter-v6:{int(time.time())}")
-        except Exception as exc:  # noqa: BLE001 - isolated scheduled wake
-            logger.warning("[Topic] starter seed wake failed: %s", exc)
-
-
-async def _shutdown_topic_starter_services(
-    topic_prepare_service: Any,
-    topic_service: Any | None,
-) -> None:
-    await topic_prepare_service.shutdown()
-    if topic_service is not None:
-        await topic_service.shutdown()
 
 
 async def _run(
@@ -2117,7 +1895,6 @@ async def _run(
         _normalize_feishu_conf,
         _normalize_xiaoyi_conf,
         _register_web_handlers,
-        session_left_project_follow_up,
         spawn_background_task,
     )
     from gateway.channel_manager.web.web_connect import (
@@ -2227,48 +2004,6 @@ async def _run(
     message_handler.set_inbound_pipeline(im_inbound)
     message_handler.set_outbound_pipeline(im_outbound)
 
-    from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
-        TopicStarterStore,
-    )
-    from jiuwenswarm.common.utils import get_agent_workspace_dir
-
-    topic_starter_store = TopicStarterStore(
-        get_agent_workspace_dir() / "recommendation.db"
-    )
-    (
-        topic_prepare_service,
-        topic_service,
-        topic_outcome_queue,
-    ) = _build_topic_starter_services(
-        topic_starter_store,
-        active_request_ids_loader=message_handler.active_chat_request_ids,
-    )
-
-    def prepare_after_chat(session_id: str, request_id: str) -> None:
-        from jiuwenswarm.server.runtime.session.session_metadata import (
-            get_session_metadata,
-        )
-        metadata = get_session_metadata(session_id, cache_bust=True, enable_writeback=False)
-        project_id = metadata.get("project_id")
-        if topic_service is not None:
-            topic_service.schedule_successor(
-                context_scope="global_new_chat", project_id=None, visit_id=request_id,
-            )
-        if topic_service is not None and project_id not in (None, "", "default", "default_code"):
-            topic_service.schedule_successor(
-                context_scope=f"project:{project_id}",
-                project_id=project_id, visit_id=request_id,
-            )
-
-    message_handler.on_chat_completed = prepare_after_chat
-
-    def topic_starter_seed(run_id: str) -> None:
-        _seed_topic_starter_services(
-            topic_prepare_service,
-            topic_service,
-            run_id,
-        )
-
     cron_store = await create_gateway_cron_store()
     from jiuwenswarm.common.model_migration import migrate_legacy_cron_selections
     from gateway.runtime.cron.factory import load_cron_store_settings
@@ -2285,9 +2020,6 @@ async def _run(
         agent_client=client,
         message_handler=message_handler,
     )
-    topic_seed_task: asyncio.Task[None] | None = None
-    if topic_service is not None:
-        topic_seed_task = asyncio.create_task(_topic_starter_seed_loop(topic_starter_seed))
     cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
     cron_controller.bind_agent_client(client)
     message_handler.set_cron_controller(cron_controller)
@@ -2604,45 +2336,19 @@ async def _run(
             except Exception as e:  # noqa: BLE001  # 兜底：proactive 同步失败不阻断配置保存
                 logger.warning("[App] proactive.tick sync on config save failed: %s", e)
 
-        # YAML is already on disk. Pool seed and model swap must not hold config.save_all.
-        should_sync_topic = topic_service is not None and (
+        # YAML is already on disk. Pool seed and model swap run on AgentServer.
+        should_sync_topic = bool(
             (updated_env_keys and "topic_recommendation_enabled" in updated_env_keys)
             or "model" in reload_scopes
         )
         if should_sync_topic:
-            async def _sync_topic_recommendation_after_save() -> None:
-                from jiuwenswarm.agents.harness.common.recommendation.switches import (
-                    is_topic_recommendation_enabled,
-                )
-
-                # Stop work before reloading the model. Reloading first would wait out the
-                # in-flight pool, turn the service back on, and let the open homepage keep
-                # those cards. The homepage only re-reads when it hears the switch.
-                enabled_now = None
-                if updated_env_keys and "topic_recommendation_enabled" in updated_env_keys:
-                    enabled_now = is_topic_recommendation_enabled(config_payload)
-                    if enabled_now is False:
-                        try:
-                            await topic_service.set_enabled(False, persist=False)
-                        except Exception as e:  # noqa: BLE001  # 兜底：话题开关同步失败不阻断配置保存
-                            logger.warning("[App] topic recommendation enable sync on config save failed: %s", e)
-                try:
-                    await topic_service.reload_config()
-                except Exception as e:  # noqa: BLE001  # 兜底：推荐模型重载失败不阻断配置保存
-                    logger.warning("[App] topic recommendation model reload on config save failed: %s", e)
-                if enabled_now is True:
-                    try:
-                        await topic_service.set_enabled(True, persist=False)
-                    except Exception as e:  # noqa: BLE001  # 兜底：话题开关同步失败不阻断配置保存
-                        logger.warning("[App] topic recommendation enable sync on config save failed: %s", e)
-                if enabled_now is not None and web_channel is not None:
-                    await web_channel.broadcast_event(
-                        "topic_starters.control_changed",
-                        {"enabled": enabled_now},
-                    )
-
             spawn_background_task(
-                _sync_topic_recommendation_after_save(),
+                sync_saved_topic_recommendation(
+                    client,
+                    updated_env_keys=updated_env_keys,
+                    reload_scopes=reload_scopes,
+                    config_payload=config_payload,
+                ),
                 name="topic-recommendation-config-sync",
             )
         return True
@@ -2657,12 +2363,28 @@ async def _run(
     )
     web_channel = WebChannel(web_config, _DummyBus(), agent_client=client)
     register_3rdagent_web_method(web_channel)
-    from jiuwenswarm.agents.harness.common.recommendation import prompt_suggestion
 
     async def show_prompt_suggestion(session_id: str, request_id: str, payload: dict[str, Any]) -> None:
-        await prompt_suggestion.deliver(web_channel, topic_starter_store, session_id, request_id, payload)
+        """Forward a suggestion AgentServer already checked and recorded."""
+        if payload.get("event_type") != PROMPT_SUGGESTION_READY_EVENT:
+            return
+        await web_channel.send(Message(
+            id=f"prompt-suggestion:{payload.get('suggestion_id')}",
+            type="event",
+            channel_id=web_channel.channel_id,
+            session_id=session_id,
+            params={},
+            timestamp=time.time(),
+            ok=True,
+            payload=payload,
+        ))
+
+    async def show_recommendation_event(event_type: str, payload: dict[str, Any]) -> None:
+        if event_type in {TOPIC_STARTERS_READY_EVENT, TOPIC_STARTERS_CONTROL_CHANGED_EVENT}:
+            await web_channel.broadcast_event(event_type, payload)
 
     message_handler.on_prompt_suggestion = show_prompt_suggestion
+    message_handler.on_recommendation_event = show_recommendation_event
 
     # 注入 Git diff 监控注册表(设计文档阶段10):
     # 1. 让 ``_mark_git_watcher_dirty`` 能通过 ``channel.git_watcher_registry`` 唤醒轮询
@@ -2704,9 +2426,6 @@ async def _run(
             cron_controller=cron_controller,
             heartbeat_controller=heartbeat_controller,
             updater_service=updater_service,
-            topic_prepare_service=topic_prepare_service,
-            topic_service=topic_service,
-            topic_outcome_queue=topic_outcome_queue,
         )
     )
 
@@ -2844,8 +2563,6 @@ async def _run(
                 cron_controller=cron_controller,
                 heartbeat_controller=heartbeat_controller,
                 ws_channel=tui_channel,
-                on_session_left_project=session_left_project_follow_up(
-                    web_channel, topic_service),
             )
         ),
     ]
@@ -4068,17 +3785,7 @@ async def _run(
             await ssh_channel.stop()
             _set_agentos_ssh_key_issuer(None)
 
-        if topic_seed_task is not None:
-            topic_seed_task.cancel()
-            try:
-                await topic_seed_task
-            except asyncio.CancelledError:
-                pass
         await cron_scheduler.stop()
-        await _shutdown_topic_starter_services(
-            topic_prepare_service,
-            topic_service,
-        )
         await channel_manager.stop_dispatch()
         await heartbeat_service.stop()
         await message_handler.stop_forwarding()

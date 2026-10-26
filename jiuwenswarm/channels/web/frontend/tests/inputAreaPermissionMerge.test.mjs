@@ -888,3 +888,38 @@ test('work landing still offers stop and a follow-up queue while processing', as
     assert.equal(editor.getAttribute('contenteditable'), 'true');
   });
 });
+
+
+test('paused Owner retains its pause state while organization work exposes stop independently', async () => {
+  const { startExpertRequest, finishExpertRequest } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/processing.js'
+  );
+  await mount({ mode: 'team' }, async ({ sessionId, props, render }) => {
+    const actions = [];
+    props.onCancel = () => actions.push('cancel');
+    props.onInterrupt = (text) => actions.push(text);
+    props.isProcessing = true;
+    try {
+      await act(async () => {
+        useChatStore.getState().setPaused(sessionId, true);
+        setTeamOrganizationUiEnabled(true);
+        startExpertRequest(`${sessionId}::expert`, 'background', 'org_expert_background');
+      });
+      await render();
+      assert.equal(useChatStore.getState().getRuntime(sessionId).isPaused, true);
+      assert.equal(byId('chat-panel-input-send').getAttribute('data-variant'), 'stop');
+      assert.equal(byId('chat-panel-input').getAttribute('data-placeholder'), i18n.t('chat.placeholderTeamMode'));
+      await click(byId('chat-panel-input-send'));
+      assert.deepEqual(actions, ['cancel']);
+      assert.equal(useChatStore.getState().getRuntime(sessionId).isPaused, true);
+      await act(async () => finishExpertRequest(`${sessionId}::expert`, 'background'));
+      await render();
+      assert.equal(byId('chat-panel-input-send').getAttribute('data-variant'), 'send');
+    } finally {
+      await act(async () => {
+        finishExpertRequest(`${sessionId}::expert`, 'background');
+        setTeamOrganizationUiEnabled(false);
+      });
+    }
+  });
+});
