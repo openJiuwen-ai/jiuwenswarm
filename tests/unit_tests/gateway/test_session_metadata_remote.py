@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -84,9 +85,26 @@ async def test_remote_returns_empty_dict_on_error(fake_unary, result) -> None:
     assert await SessionMetadataRemoteProvider().get_session_metadata_async("sess") == {}
 
 
-def test_remote_sync_entry_is_rejected() -> None:
-    with pytest.raises(RuntimeError, match="async-only"):
-        SessionMetadataRemoteProvider().get_session_metadata("sess")
+def test_remote_sync_entry_degrades_to_empty_dict() -> None:
+    """同步入口降级返回空 dict 并告警，未迁移消费方优雅降级而非 500。"""
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record.getMessage())
+
+    # 直接挂在模块 logger 上断言：conftest 的 setup_logger 会把 gateway logger
+    # 家族重挂到 jiuwenswarm root 下，caplog（真 root）不保证能收到记录。
+    module_logger = logging.getLogger("gateway.routing.session_metadata_remote")
+    handler = _Capture()
+    module_logger.addHandler(handler)
+    try:
+        result = SessionMetadataRemoteProvider().get_session_metadata("sess")
+    finally:
+        module_logger.removeHandler(handler)
+
+    assert result == {}
+    assert any("sync entry degraded" in message for message in records)
 
 
 @pytest.mark.parametrize(

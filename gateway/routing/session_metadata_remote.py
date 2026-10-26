@@ -59,12 +59,13 @@ def bind_agent_client(client: Any) -> None:
 
 
 class SessionMetadataRemoteProvider:
-    """session_metadata 域的 WS 远端实现（async-only）。
+    """session_metadata 域的 WS 远端实现（异步为主入口）。
 
-    本地实现是同步函数；跨进程 WS 往返天然异步，故远端实现只提供
-    ``get_session_metadata_async``。尚未迁移的同步消费方（如
-    ``trajectory_http`` 的 metadata_loader 注入契约）应继续走本地桥，
-    其迁移随拆仓批次单独处理。
+    本地实现是同步函数；跨进程 WS 往返天然异步，故远端实现的真正入口是
+    ``get_session_metadata_async``。同步入口保留协议签名但降级返回空
+    dict 并告警（远端模式下没有本地桥可回落，未迁移的同步消费方——如
+    ``trajectory_http`` 的 metadata_loader 注入契约——以"读不到元数据"
+    优雅降级而非报错），其迁移随拆仓批次单独处理。
     """
 
     def get_session_metadata(
@@ -74,11 +75,14 @@ class SessionMetadataRemoteProvider:
         *,
         enable_writeback: bool = True,
     ) -> dict[str, Any]:
-        """同步入口仅为兼容 provider 协议签名，远端实现不支持。"""
-        raise RuntimeError(
-            "session_metadata remote provider is async-only; "
-            "use get_session_metadata_async"
+        """同步入口降级：无法同步等待 WS 往返，返回空 dict 并告警。"""
+        logger.warning(
+            "[session-metadata-remote] sync entry degraded in remote mode; "
+            "returning empty metadata: session_id=%s（migrate to "
+            "get_session_metadata_async）",
+            session_id,
         )
+        return {}
 
     async def get_session_metadata_async(
         self,
