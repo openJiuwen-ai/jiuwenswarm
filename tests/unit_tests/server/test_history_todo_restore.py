@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.todo_output import TODO_SNAPSHOT_MODE
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers import session as session_handlers
 
@@ -112,3 +114,37 @@ async def test_history_later_page_does_not_load_todo(monkeypatch, _history):
 
     assert called is False
     assert all(item["payload"]["event_type"] != "todo.updated" for item in sink.sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["legacy", "versioned"])
+@pytest.mark.parametrize("empty", [False, True])
+async def test_history_projects_real_file_using_the_consumer_mode(tmp_path, monkeypatch, _history, mode, empty):
+    path = tmp_path / "todo/web_todo_1/todo.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"plan_id": "P", "revision": 8,
+                               "todos": [] if empty else [{"id": "A", "content": "Task", "status": "completed"}]}))
+    monkeypatch.setattr(session_handlers, "_agent_workspace_dir_for_request", lambda _request: tmp_path)
+
+    async def generation(_ctx, _sid):
+        return None
+
+    monkeypatch.setattr(session_handlers, "_todo_generation_token_for_history", generation)
+    ctx, sink = _context(1)
+    token = TODO_SNAPSHOT_MODE.set(mode)
+    try:
+        await session_handlers.handle_history_get_stream(ctx)
+    finally:
+        TODO_SNAPSHOT_MODE.reset(token)
+    updates = [frame["payload"] for frame in sink.sent if frame["payload"]["event_type"] == "todo.updated"]
+    if mode == "legacy" and empty:
+        assert updates == []
+    else:
+        assert len(updates) == 1
+        assert isinstance(updates[0]["todos"], list)
+        if mode == "legacy":
+            assert "todo_meta" not in updates[0]
+        else:
+            assert updates[0]["todo_meta"] == {"plan_id": "P", "revision": 8}
+            if empty:
+                assert updates[0]["todos"] == []

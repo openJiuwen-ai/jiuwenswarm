@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import stat
 from contextlib import suppress
@@ -263,7 +264,8 @@ async def capture_deepresearch_todo_target(todo_path: Path):
         return None
     if Path(tool._get_file_path(session_id)).resolve() != todo_path.resolve():
         return None
-    return tool, session_id, await capture_plan(tool, session_id)
+    owner = asyncio.current_task() if getattr(tool, "snapshot_guard", None) is not None else None
+    return tool, session_id, await capture_plan(tool, session_id), owner
 
 
 async def persist_deepresearch_task_update(
@@ -272,9 +274,17 @@ async def persist_deepresearch_task_update(
     """Update existing research stages in the captured plan; preserve other rows."""
     from openjiuwen.harness.tools.todo_store import current_transaction, transact
     tasks = _deepresearch_tasks(payload)
-    if tasks is None or any(task["status"] != "completed" for task in tasks) or target is None:
+    if tasks is None or any(task["status"] != "completed" for task in tasks):
         return False
-    tool, session_id, plan_id = target
+    if target is None:
+        raise ValueError("DeepResearch Todo callback has no captured owner")
+    tool, session_id, plan_id, owner = target
+
+    def check_active():
+        if owner is not None and (owner.done() or owner.cancelling()):
+            raise ValueError("DeepResearch Todo callback belongs to an inactive request")
+
+    check_active()
     if plan_id is None:
         return False
     trusted = _open_trusted_parent(todo_path)
@@ -295,7 +305,7 @@ async def persist_deepresearch_task_update(
             tx.pending = [{**row, "status": "completed", "updatedAt": now}
                           if row["id"] in updates else row for row in tx.snapshot.todos]
             return True
-        return await transact(tool, session_id, update, expected_plan=plan_id)
+        return await transact(tool, session_id, update, expected_plan=plan_id, check_active=check_active)
     finally:
         if trusted.fd is not None:
             os.close(trusted.fd)

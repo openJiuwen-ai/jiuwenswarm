@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
 from openjiuwen.harness.schema.task import TodoStatus
 
+from jiuwenswarm.common.todo_output import TODO_SNAPSHOT_MODE
 from jiuwenswarm.common.todo_snapshot import (
     format_todos_for_frontend,
     load_todo_snapshot_for_frontend,
@@ -56,7 +58,7 @@ def test_load_snapshot_accepts_json_and_rejects_unsafe_session(tmp_path, monkeyp
     assert load_todo_snapshot_for_frontend("../web_session_1") is None
 
 
-def test_load_snapshot_filters_old_generation_and_preserves_completed_status(tmp_path):
+def test_legacy_snapshot_keeps_generation_filter_and_serial_display(tmp_path):
     root = tmp_path / "tenant" / "agent" / "jiuwenclaw_workspace" / "todo"
     snapshot = root / "web_session_2" / "todo.json"
     snapshot.parent.mkdir(parents=True)
@@ -91,14 +93,23 @@ def test_load_snapshot_filters_old_generation_and_preserves_completed_status(tmp
     )
 
     assert [item["id"] for item in restored] == ["current-open", "current-late"]
-    assert [item["status"] for item in restored] == ["in_progress", "completed"]
+    assert [item["status"] for item in restored] == ["in_progress", "pending"]
+    assert restored.todo_meta is None
 
 
-def test_versioned_empty_and_read_failure_are_distinct(tmp_path):
+@pytest.mark.parametrize("mode", ["legacy", "versioned"])
+def test_empty_and_read_failure_are_distinct(tmp_path, mode):
     path = tmp_path / "s" / "todo.json"
     path.parent.mkdir()
     path.write_text(json.dumps({"plan_id": "new", "revision": 7, "todos": []}))
-    snapshot = load_todo_snapshot_for_frontend("s", todo_root=tmp_path)
-    assert snapshot == [] and snapshot.todo_meta == {"plan_id": "new", "revision": 7}
+    token = TODO_SNAPSHOT_MODE.set(mode)
+    try:
+        snapshot = load_todo_snapshot_for_frontend("s", todo_root=tmp_path)
+    finally:
+        TODO_SNAPSHOT_MODE.reset(token)
+    assert snapshot == []
+    assert snapshot.todo_meta == ({"plan_id": "new", "revision": 7} if mode == "versioned" else None)
     path.write_text("broken")
+    assert load_todo_snapshot_for_frontend("s", todo_root=tmp_path) is None
+    path.write_text("42")
     assert load_todo_snapshot_for_frontend("s", todo_root=tmp_path) is None

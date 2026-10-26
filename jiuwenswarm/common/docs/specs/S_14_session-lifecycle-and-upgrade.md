@@ -37,9 +37,10 @@ version.__version__（唯一版本真源）
   保留**；token 为空则原样返回；兼容 dict 与对象两种形态。bump / get token 的逻辑在
   `todo_resume.py`（agents 侧）。
 - **N2 todo 快照安全读取**：session_id 严格白名单正则；通过 SDK Todo 编解码读取旧数组或
-  `{plan_id, revision, todos}`。新快照保留 `todo_meta`，合法空表仍可恢复；读取失败返回
-  `None`，不发送伪空表。前端投影过滤 cancelled、归一状态，保留真实 completed 状态，
-  不应用串行显示遮罩。新计划不受旧 generation 过滤，旧数组保持 token 兼容。
+  `{plan_id, revision, todos}`。读取失败返回`None`，不发送伪空表。默认legacy过滤generation、
+  cancelled并应用原串行状态遮罩，不输出`todo_meta`，历史空表沿原发送条件处理。
+  显式versioned保留内容对应的版本、真实状态及合法空表，不因generation隐藏已提交条目。
+  `todo_output`通过连接/请求上下文选择展示方式，不影响文件提交或写入资格。
 - **N3 后台清理尽力而为**：保留期默认 30 天（`CLEANUP_PERIOD_DAYS`）；首次延迟 10min、
   之后每 24h 一轮；按目录 mtime 判过期；阻塞操作丢线程池且单步失败不中断循环；
   rmtree `ignore_errors=True`（可重复执行幂等）。装配点：`app_gateway` 启动。

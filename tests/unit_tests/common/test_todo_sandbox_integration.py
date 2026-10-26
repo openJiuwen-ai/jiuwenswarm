@@ -50,6 +50,12 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def backend(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        init_session_metadata,
+    )
+    root = tmp_path / "sessions"
+    init_session_metadata(session_id="s", sessions_root=root, new_todo_object=True)
+    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.todo_lifecycle.get_agent_sessions_dir", lambda: root)
     monkeypatch.setenv("JIUWENBOX_API_TOKEN", "test-owned-token")
     with tempfile.TemporaryDirectory(prefix="todo-ipc-") as directory:
         control = Path(directory)
@@ -174,6 +180,11 @@ async def test_real_sandbox_todo_updates_keep_both_changes(backend):
         first, second = (
             TodoModifyTool(operation, str(root / "todos")) for _ in range(2)
         )
+        from jiuwenswarm.agents.harness.common.tools.todo_lifecycle import (
+            bind_todo_lifecycle,
+        )
+        bind_todo_lifecycle(first)
+        bind_todo_lifecycle(second)
         session = SimpleNamespace(get_session_id=lambda: "s")
         await first.invoke(
             {
@@ -244,6 +255,10 @@ async def test_gateway_wrapper_keeps_transaction_during_lazy_backend_binding(bac
     token = _BINDING.set(None)
     try:
         tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(root / 'gateway-todo'))
+        from jiuwenswarm.agents.harness.common.tools.todo_lifecycle import (
+            bind_todo_lifecycle,
+        )
+        bind_todo_lifecycle(tool)
         result = await tool.invoke({'action': 'append', 'todos': [
             {'id': 'A', 'content': 'A', 'status': 'pending'}]},
             session=SimpleNamespace(get_session_id=lambda: 's'))

@@ -1651,6 +1651,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             try:
                 items = await todo_tool.load_todos(session_id)
                 loaded = getattr(items, "snapshot", None)
+                if loaded is not None and not loaded.exists:
+                    return
                 snapshot = loaded.document() if loaded is not None else None
                 todos_data = items
             except Exception:
@@ -1658,11 +1660,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 return
         else:
             todos_data = snapshot["todos"]
+        try:
+            generation_token = get_todo_generation_token(session)
+        except Exception:
+            generation_token = None
         if snapshot is None:
-            try:
-                generation_token = get_todo_generation_token(session)
-            except Exception:
-                generation_token = None
             todos_data = filter_todos_for_display(todos_data, generation_token)
 
         # Parent StreamEventRail only: team-member rails use their own
@@ -1686,10 +1688,19 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 ),
             )
 
-        todos = self._format_todos_for_frontend(todos_data)
-        payload = {"todos": todos}
         if snapshot is not None:
-            payload["todo_meta"] = {key: snapshot[key] for key in ("plan_id", "revision")}
+            from openjiuwen.harness.tools.todo_store import decode_snapshot
+
+            from jiuwenswarm.common.todo_snapshot import project_todo_snapshot
+
+            todos = project_todo_snapshot(decode_snapshot(snapshot), generation_token)
+            payload = {"todos": todos}
+            if todos.todo_meta is not None:
+                payload["todo_meta"] = todos.todo_meta
+        else:
+            from jiuwenswarm.common.todo_snapshot import overlay_serial_todo_statuses
+
+            payload = {"todos": overlay_serial_todo_statuses(self._format_todos_for_frontend(todos_data))}
 
         try:
             await session.write_stream(

@@ -11,10 +11,11 @@ from typing import Any
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.tools.todo_store import decode_snapshot
 
-from jiuwenswarm.common.utils import get_deepagent_todo_dir
 from jiuwenswarm.common.todo_generation import (
     filter_todos_by_generation,
 )
+from jiuwenswarm.common.todo_output import versioned_todo_output
+from jiuwenswarm.common.utils import get_deepagent_todo_dir
 
 _SAFE_SESSION_ID = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9])?$"
@@ -106,6 +107,17 @@ class FrontendTodos(list):
         self.todo_meta = meta
 
 
+def project_todo_snapshot(snapshot, generation_token=None) -> FrontendTodos:
+    """同一次提交按接入方展示，旧协议不泄漏内部版本。"""
+    versioned = versioned_todo_output()
+    items = snapshot.todos if versioned else filter_todos_by_generation(snapshot.todos, generation_token)
+    todos = format_todos_for_frontend(items)
+    if not versioned:
+        todos = overlay_serial_todo_statuses(todos)
+    meta = {"plan_id": snapshot.plan_id, "revision": snapshot.revision} if versioned else None
+    return FrontendTodos(todos, meta)
+
+
 def load_todo_snapshot_for_frontend(
     session_id: str, *, todo_root: Path | None = None, generation_token: str | None = None,
 ) -> FrontendTodos | None:
@@ -117,8 +129,6 @@ def load_todo_snapshot_for_frontend(
     path = root / normalized / "todo.json"
     try:
         snapshot = decode_snapshot(path.read_bytes())
-    except (OSError, ValueError, UnicodeError):
+    except (OSError, ValueError, TypeError, UnicodeError):
         return None
-    items = snapshot.todos if snapshot.versioned else filter_todos_by_generation(snapshot.todos, generation_token)
-    return FrontendTodos(format_todos_for_frontend(items),
-                         {"plan_id": snapshot.plan_id, "revision": snapshot.revision})
+    return project_todo_snapshot(snapshot, generation_token)

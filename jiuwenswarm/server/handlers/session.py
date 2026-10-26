@@ -971,14 +971,14 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
             todo_root=todo_root,
             generation_token=generation_token,
         )
-        if todos is not None:
+        if todos is not None and (todos or todos.todo_meta is not None):
             todo_chunk = AgentResponseChunk(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 payload={
                     "event_type": "todo.updated",
                     "todos": todos,
-                    "todo_meta": todos.todo_meta,
+                    **({"todo_meta": todos.todo_meta} if todos.todo_meta is not None else {}),
                     "session_id": session_id.strip(),
                 },
                 is_complete=False,

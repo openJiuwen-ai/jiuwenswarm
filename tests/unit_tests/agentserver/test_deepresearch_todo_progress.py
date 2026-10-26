@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -14,9 +15,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-
-from openjiuwen.harness.tools.todo import TodoItem
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+from openjiuwen.harness.tools.todo import TodoItem
 
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     TaskExecutionRail,
@@ -25,8 +25,8 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
     DEEPRESEARCH_STAGES,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import (
-    _TrustedParent,
     _open_windows_parent,
+    _TrustedParent,
     _verify_named_parent,
     deepresearch_todo_path,
     persist_deepresearch_task_update,
@@ -61,7 +61,7 @@ async def _persist(payload, *, todo_path):
     fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
     tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(todo_path.parent.parent))
     return await persist_deepresearch_task_update(payload, todo_path=todo_path,
-        target=(tool, todo_path.parent.name, "P"))
+        target=(tool, todo_path.parent.name, "P", asyncio.current_task()))
 
 
 def _stage_snapshot(active_stage: int | None) -> dict:

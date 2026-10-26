@@ -31,6 +31,7 @@ from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     _install_backlog_create_patch,
 )
 from jiuwenswarm.agents.harness.common.tools.todo_resume import remember_turn_user_query
+from jiuwenswarm.common.todo_output import TODO_SNAPSHOT_MODE
 from jiuwenswarm.server.runtime.agent_adapter.plan_pause_helpers import (
     pause_pending_todos_on_tool,
 )
@@ -41,17 +42,58 @@ async def env(tmp_path, monkeypatch):
     await ReadWriteLockManager.stop()
     monkeypatch.setattr(ReadWriteLockManager, "_lock_dir", tmp_path / "locks")
     token = _BINDING.set(None)
+    output_token = TODO_SNAPSHOT_MODE.set("versioned")
     fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
     op = SimpleNamespace(fs=lambda: fs)
     session = Session("s")
+    from jiuwenswarm.agents.harness.common.tools.todo_lifecycle import (
+        bind_todo_lifecycle,
+    )
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        init_session_metadata,
+    )
+    root = tmp_path / "sessions"
+    init_session_metadata(session_id="s", sessions_root=root, new_todo_object=True)
+    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.todo_lifecycle.get_agent_sessions_dir", lambda: root)
+    creator, modifier = TodoCreateTool(op, str(tmp_path)), TodoModifyTool(op, str(tmp_path))
+    bind_todo_lifecycle(creator)
+    bind_todo_lifecycle(modifier)
     yield (
-        TodoCreateTool(op, str(tmp_path)),
-        TodoModifyTool(op, str(tmp_path)),
+        creator,
+        modifier,
         session,
         tmp_path / "s/todo.json",
     )
     _BINDING.reset(token)
+    TODO_SNAPSHOT_MODE.reset(output_token)
     await ReadWriteLockManager.stop()
+
+
+@pytest.mark.asyncio
+async def test_flash_assembly_enforces_lifecycle_on_real_unified_tool(env):
+    from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
+
+    creator, _, session, path = env
+    registered = {}
+    rail = FlashTodoRail()
+    rail.set_workspace(SimpleNamespace(get_node_path=lambda _node: creator.workspace))
+    rail.set_sys_operation(SimpleNamespace(fs=lambda: creator.fs))
+    agent = SimpleNamespace(
+        card=SimpleNamespace(id="flash-lifecycle"),
+        system_prompt_builder=SimpleNamespace(language="cn"),
+        ability_manager=SimpleNamespace(add_ability=lambda card, tool: registered.setdefault(card.name, tool)),
+    )
+    rail.init(agent)
+    ctx = SimpleNamespace(extra={}, session=session)
+    await rail.before_invoke(ctx)
+    tool = registered["todo"]
+    result = await tool.invoke({"action": "create", "tasks": [{"id": "A", "content": "Flash"}]}, session=session)
+    assert json.loads(path.read_text()) == result.todo_snapshot
+    path.unlink()
+    await rail.before_invoke(ctx)
+    with pytest.raises(Exception, match="first initialization"):
+        await tool.invoke({"action": "create", "plan_action": "rebuild", "tasks": [{"id": "A", "content": "bad"}]}, session=session)
+    assert not path.exists()
 
 
 @pytest.mark.asyncio
@@ -64,6 +106,7 @@ async def test_reminder_create_and_mark_are_one_commit(env, monkeypatch):
 
     _install_backlog_create_patch(ReminderCreator)
     tool = ReminderCreator(SimpleNamespace(fs=lambda: c.fs), c.workspace)
+    tool.snapshot_guard = c.snapshot_guard
     remember_turn_user_query(session, "提醒我明天下午提交报告")
     writes = []
     original = tool.fs.write_file
@@ -99,6 +142,67 @@ async def test_pause_and_concurrent_completion_preserve_new_state(env):
         ),
     )
     assert json.loads(path.read_text())["todos"][0]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_research_cannot_write_back_to_same_plan(env):
+    c, m, session, path = env
+    await c.invoke({"tasks": [
+        {"id": f"deepresearch_stage_{i}", "content": title}
+        for i, title in enumerate(DEEPRESEARCH_STAGES, 1)
+    ]}, session=session)
+    ready = asyncio.Event()
+    captured = []
+
+    async def research():
+        ctx = SimpleNamespace(extra={}, session=session)
+        prepare_todo_batch(ctx)
+        bind_todo_batch(ctx, m)
+        captured.append(await capture_deepresearch_todo_target(path))
+        ready.set()
+        await asyncio.Event().wait()
+
+    owner = asyncio.create_task(research())
+    await ready.wait()
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    before = path.read_bytes()
+    payload = {"event_type": "task.update", "tasks": [
+        {"task_id": f"deepresearch_stage_{i}", "task_content": title, "status": "completed"}
+        for i, title in enumerate(DEEPRESEARCH_STAGES, 1)
+    ]}
+    with pytest.raises(ValueError, match="inactive request"):
+        await persist_deepresearch_task_update(payload, todo_path=path, target=captured[0])
+    assert path.read_bytes() == before
+    with pytest.raises(ValueError, match="no captured owner"):
+        await persist_deepresearch_task_update(payload, todo_path=path)
+    # The subsequent request can continue the same plan.
+    await m.invoke({"action": "update", "todos": [
+        {"id": "deepresearch_stage_1", "status": "completed"}
+    ]}, session=session)
+    assert json.loads(path.read_text())["revision"] == json.loads(before)["revision"] + 1
+
+
+@pytest.mark.asyncio
+async def test_recreated_tools_reject_missing_file_even_with_explicit_rebuild(env):
+    from jiuwenswarm.agents.harness.common.tools.todo_lifecycle import (
+        bind_todo_lifecycle,
+    )
+
+    c, _, session, path = env
+    result = await c.invoke({"tasks": [{"id": "A", "content": "first"}]}, session=session)
+    committed = path.read_bytes()
+    path.unlink()
+    restarted = TodoCreateTool(SimpleNamespace(fs=lambda: c.fs), c.workspace)
+    bind_todo_lifecycle(restarted)
+    with pytest.raises(Exception, match="first initialization"):
+        await restarted.invoke({"plan_action": "rebuild", "tasks": [{"id": "A", "content": "bad"}]}, session=session)
+    assert not path.exists()
+    # Restoring this exact latest authoritative file keeps the version sequence.
+    path.write_bytes(committed)
+    after = await restarted.invoke({"plan_action": "rebuild", "tasks": [{"id": "A", "content": "new"}]}, session=session)
+    assert after.todo_snapshot["revision"] == result.todo_snapshot["revision"] + 1
 
 
 @pytest.mark.asyncio

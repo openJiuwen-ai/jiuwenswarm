@@ -124,6 +124,11 @@ class FlashTodoRail(DeepAgentRail):
             ),
         }
         self.engines = engines
+        from jiuwenswarm.agents.harness.common.tools.todo_lifecycle import (
+            bind_todo_lifecycle,
+        )
+        for engine in engines.values():
+            bind_todo_lifecycle(engine)
         unified_tool = UnifiedTodoTool(engines, language, agent_id)
 
         try:

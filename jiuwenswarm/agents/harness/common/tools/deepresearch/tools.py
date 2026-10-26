@@ -2798,6 +2798,27 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             ensure_ascii=False,
         )
 
+    # Flash must bind its Todo owner before starting the research process.
+    # The same target also survives the cancellation/completion delivery path.
+    from openjiuwen.harness.tools.todo_store import bound_todo_tool
+
+    bound_tool, _ = bound_todo_tool()
+    todo_context = None
+    if getattr(bound_tool, "snapshot_guard", None) is not None:
+        try:
+            todo_path = deepresearch_todo_path(
+                session_id=str(route.get("session_id") or ""),
+                workspace_key=str(route.get("workspace_key") or "default"),
+            )
+            todo_target = await capture_deepresearch_todo_target(todo_path)
+            if todo_target is None:
+                raise ValueError("Flash Todo owner is unavailable")
+            todo_context = (todo_path, todo_target)
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            logger.warning("[deepresearch_stream] Todo owner unavailable type=%s", type(exc).__name__)
+            return json.dumps({"status": "error", "error_code": "stream_failed",
+                               "error": f"DeepResearch stream failed: {type(exc).__name__}"}, ensure_ascii=False)
+
     try:
         progress_artifact = _create_progress_artifact()
     except OSError as exc:
@@ -2876,6 +2897,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                 file_name=file_name,
                 secrets=_config_secret_values(config),
                 skill_started_ns=skill_started_ns,
+                **({"todo_context": todo_context} if todo_context is not None else {}),
             )
         finally:
             if stage_hint_token is not None:
@@ -2900,6 +2922,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                         file_name=file_name,
                         conversation_id=conversation_id,
                         secrets=_config_secret_values(config),
+                        **({"todo_context": todo_context} if todo_context is not None else {}),
                     ),
                     timeout=DEEPRESEARCH_RACE_DELIVERY_TIMEOUT_SECONDS,
                 )
@@ -3177,6 +3200,7 @@ async def _deliver_race_completed_report(
     file_name: str,
     conversation_id: str,
     secrets: tuple[str, ...],
+    todo_context: tuple | None = None,
 ) -> dict[str, Any] | None:
     """修复A：交付停止-完成竞速窗口内捕获的 completed 终局帧。
 
@@ -3207,19 +3231,22 @@ async def _deliver_race_completed_report(
     resolved_cid = str(safe_chunk.get("conversation_id") or conversation_id)
 
     push = WebSocketGatewayPushTransport()
-    todo_path: Path | None = None
-    try:
-        todo_path = deepresearch_todo_path(
-            session_id=str(route["session_id"]),
-            workspace_key=str(route.get("workspace_key") or "default"),
-        )
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.warning(
-            "[deepresearch_stream] resolve todo path failed type=%s",
-            type(exc).__name__,
-        )
+    if todo_context is not None:
+        todo_path, todo_target = todo_context
+    else:
+        todo_path: Path | None = None
+        try:
+            todo_path = deepresearch_todo_path(
+                session_id=str(route["session_id"]),
+                workspace_key=str(route.get("workspace_key") or "default"),
+            )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "[deepresearch_stream] resolve todo path failed type=%s",
+                type(exc).__name__,
+            )
 
-    todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
+        todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
 
     async def send(payload: dict[str, Any]) -> bool:
         try:
@@ -3422,6 +3449,7 @@ async def _consume_stream(
     file_name: str,
     secrets: tuple[str, ...],
     skill_started_ns: int | None = None,
+    todo_context: tuple | None = None,
 ) -> dict[str, Any]:
     push = WebSocketGatewayPushTransport()
     cached_titles = (
@@ -3457,20 +3485,23 @@ async def _consume_stream(
             ),
         )
     outcome_cid = conversation_id
-    todo_path: Path | None = None
-    if route.get("session_id"):
-        try:
-            todo_path = deepresearch_todo_path(
-                session_id=str(route["session_id"]),
-                workspace_key=str(route.get("workspace_key") or "default"),
-            )
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.warning(
-                "[deepresearch_stream] resolve todo path failed type=%s",
-                type(exc).__name__,
-            )
+    if todo_context is not None:
+        todo_path, todo_target = todo_context
+    else:
+        todo_path: Path | None = None
+        if route.get("session_id"):
+            try:
+                todo_path = deepresearch_todo_path(
+                    session_id=str(route["session_id"]),
+                    workspace_key=str(route.get("workspace_key") or "default"),
+                )
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "[deepresearch_stream] resolve todo path failed type=%s",
+                    type(exc).__name__,
+                )
 
-    todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
+        todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
 
     async def send(payload: dict[str, Any]) -> bool:
         safe_payload = _redact_json_value(payload, secrets)

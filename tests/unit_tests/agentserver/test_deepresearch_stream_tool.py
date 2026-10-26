@@ -188,6 +188,53 @@ def _stream_patches(proc: _Proc, *, route: dict[str, str] | None = None):
     )
 
 
+@pytest.mark.asyncio
+async def test_flash_todo_capture_finishes_before_research_process_starts():
+    proc = _Proc([])
+    entered, release = asyncio.Event(), asyncio.Event()
+    spawn = AsyncMock(return_value=proc)
+    target = object()
+    route = {"session_id": "flash-todo", "workspace_key": "default"}
+
+    async def capture(_path):
+        entered.set()
+        await release.wait()
+        return target
+
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route=route):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+        stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target", capture))
+        stack.enter_context(patch.object(dt, "_consume_stream", consume))
+        stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+        task = asyncio.create_task(dt.deepresearch_stream._func(action="start", query="q"))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        spawn.assert_not_awaited()
+        release.set()
+        await task
+        spawn.assert_awaited_once()
+        assert consume.await_args.kwargs["todo_context"][1] is target
+
+
+@pytest.mark.asyncio
+async def test_flash_todo_capture_failure_does_not_start_research():
+    proc, spawn = _Proc([]), AsyncMock()
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route={"session_id": "flash-todo"}):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+        stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
+                                        AsyncMock(side_effect=ValueError("missing Todo"))))
+        stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+        result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+    assert result["status"] == "error" and result["error_code"] == "stream_failed"
+    spawn.assert_not_awaited()
+
+
 def test_config_frame_accepts_exact_limit_and_rejects_one_byte_over():
     base = _valid_config()
     fixed_size = len(dt._encode_deepresearch_config({**base, "padding": ""}))
