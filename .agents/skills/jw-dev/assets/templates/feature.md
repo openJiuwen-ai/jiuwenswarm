@@ -1,3 +1,15 @@
+---
+id: F_YYYYMMDD_HHMM_<slug>
+title: <文档标题>
+type: F
+author: null
+author_email: null
+modules: []
+files: []
+designs: null
+design_note: null # Explain an explicit empty designs list or an unresolved legacy relationship.
+---
+
 # 〈特性名称〉实施与决策归档
 
 ## 关联依据

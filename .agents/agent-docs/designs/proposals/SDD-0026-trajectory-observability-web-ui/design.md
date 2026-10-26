@@ -4,7 +4,6 @@ title: 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI
 slug: trajectory-observability-web-ui
 status: draft
 stage: proposals
-owner: "@alan_cheng"
 reviewers: []
 created: 2026-09-15
 updated: 2026-09-15
@@ -37,6 +36,11 @@ implementation:
     - jiuwenswarm@ca8a1c0b5
     - jiuwenswarm@4957a90c7
   tracking: "jiuwenswarm: jiuwenswarm/channels/web/frontend/src/features/trajectory/"
+author: '@alan_cheng'
+author_note: 由历史 owner 字段原值迁移
+type: D
+files: []
+author_email: null
 ---
 
 # 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI

@@ -17,7 +17,7 @@
 ## 命名与位置
 
 - spec：`.agents/agent-docs/specs/<module>/S_NN_<slug>.md`，沿用现有编号。
-- feature：`.agents/agent-docs/features/<module>/F_YYYYMMDD_HHMM_<slug>.md`。
+- feature：`.agents/agent-docs/features/F_YYYYMMDD_HHMM_<slug>.md`。
 - bugfix：`.agents/agent-docs/bugfix/<module>/B_YYYYMMDD_HHMM_<slug>.md`。
 - 时间为 Asia/Singapore、精确到分钟，slug 使用小写英文和短横线。完整名称重名先确认是否为同一记录；否则细化主题，不覆盖。
 - 已有编号和文件名不调整，不为 feature / bugfix 分配递增号；修订不改创建标识。

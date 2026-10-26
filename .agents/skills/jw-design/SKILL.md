@@ -17,7 +17,7 @@ description: 在 JiuwenSwarm 项目中分析需求、制定架构或特性方案
    - 一次行为变更的详细方案与取舍：[feature-design-template.md](references/feature-design-template.md)。
 3. 需要独立评审与阶段跟踪的设计，复制唯一模板 [design.md](assets/templates/design.md)。
    它整合了设计管理字段、详细方案与日期评审记录；reference 仅提供指导，不再包含第二套可复制正文。
-   负责人、评审人、状态、日期等管理字段统一保留在设计 frontmatter。
+   作者、评审人、状态、日期等元数据统一保留在设计 frontmatter。
 4. 评估主要备选方案，说明选择依据、失败路径、兼容与迁移影响、验证方案及未决问题。
    成稿时按 [writing-guide.md](references/writing-guide.md) 核对表达与事实边界。
 5. 根据反馈迭代；只有用户或实际评审者明确确认后才记录批准。不得自行填写审批结论或评审人。
@@ -65,3 +65,8 @@ python .agents/skills/jw-design/scripts/generate_index.py --root .agents/agent-d
 工具依赖 PyYAML，复用 JiuwenSwarm 环境，不创建独立虚拟环境。迁入的 `validate_frontmatter.py` 为可选文档工具，
 不作为流程门禁；仓库禁止静态检查时不执行。旧格式资料仍保留原路径，见 designs 的 README。
 遵循仓库的提交与权限规则，设计确认不授权提交或创建 PR。
+
+## 文档元数据与索引
+
+遵循 [作者、设计关联与索引规则](references/document-metadata.md)：受管文档以 frontmatter 标注 Git author，移除 owner；新 F 平铺在 features/，F/B 显式声明 designs。
+写作/修改后自动运行文档同步工具刷新索引；检视只报告缺口，不改写待审资料。

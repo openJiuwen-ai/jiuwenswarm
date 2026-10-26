@@ -50,3 +50,8 @@ description: 根据 JiuwenSwarm 的设计、spec、实现和已有验证证据�
 交付文档路径、用例范围、执行准备、证据、待确认项与当前状态。
 用户要求执行测试时另按授权和仓库环境执行，只更新实际覆盖的结果；
 不自动调用外部服务、提交文件、创建 PR 或写入审批结论，不运行格式化或静态检查。
+
+## 文档元数据与索引
+
+遵循 [作者、设计关联与索引规则](../jw-design/references/document-metadata.md)：受管文档以 frontmatter 标注 Git author，移除 owner；新 F 平铺在 features/，F/B 显式声明 designs。
+写作/修改后自动运行文档同步工具刷新索引；检视只报告缺口，不改写待审资料。

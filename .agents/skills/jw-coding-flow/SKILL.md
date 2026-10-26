@@ -53,3 +53,8 @@ description: 串联 JiuwenSwarm AI coding 的需求澄清、设计、开发、�
 实际文档在 `.agents/agent-docs/`，命名与存放遵循各阶段 skill。
 提交、推送、PR、分支和 worktree 遵循仓库及用户约定；本流程不扩展授权。
 不自动启动多代理，不运行格式化或静态检查。
+
+## 文档元数据与索引
+
+遵循 [作者、设计关联与索引规则](../jw-design/references/document-metadata.md)：受管文档以 frontmatter 标注 Git author，移除 owner；新 F 平铺在 features/，F/B 显式声明 designs。
+写作/修改后自动运行文档同步工具刷新索引；检视只报告缺口，不改写待审资料。

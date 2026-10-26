@@ -1,3 +1,13 @@
+---
+title: Team 模式 Permissions 设计方案
+author: null
+author_note: 历史作者待确认；未用迁入者或原 owner 推断作者
+id: team_permission_design
+type: D
+modules: []
+files: []
+---
+
 # Team 模式 Permissions 设计方案
 
 ## 1. 背景

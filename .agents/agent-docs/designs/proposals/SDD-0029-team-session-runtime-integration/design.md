@@ -4,7 +4,6 @@ title: Team 模式接入统一 Session Runtime
 slug: team-session-runtime-integration
 status: draft
 stage: proposals
-owner: "@zhanglongmin"
 reviewers: []
 created: 2026-09-17
 updated: 2026-10-09
@@ -13,6 +12,11 @@ domain: core
 modules: [agent_teams]
 tags: [agent-team, session-runtime, execution-lifecycle, cancellation, generation]
 related: [SDD-0013, SDD-0015, SDD-0018]
+author: '@zhanglongmin'
+author_note: 由历史 owner 字段原值迁移
+type: D
+files: []
+author_email: null
 ---
 
 # Team 模式接入统一 Session Runtime

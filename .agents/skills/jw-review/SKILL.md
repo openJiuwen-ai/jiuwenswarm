@@ -104,3 +104,8 @@ description: 检视 JiuwenSwarm 代码的技术方向、模块 AGENTS/spec 符�
 
 检视期间保持待审代码和文档不变，不自动提交、切换分支、改写历史或启动多代理，不运行格式化或静态检查。
 本技能不扩展远端平台操作权限；用户提供的 PR 信息可作为变更背景，不作为检视前置条件。
+
+## 文档元数据与索引
+
+遵循 [作者、设计关联与索引规则](../jw-design/references/document-metadata.md)：受管文档以 frontmatter 标注 Git author，移除 owner；新 F 平铺在 features/，F/B 显式声明 designs。
+写作/修改后自动运行文档同步工具刷新索引；检视只报告缺口，不改写待审资料。

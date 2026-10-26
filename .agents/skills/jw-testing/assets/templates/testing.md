@@ -4,7 +4,8 @@ title: <转测文档标题>      # 与下方 H1 保持一致
 slug: <kebab-slug>        # 必须等于文件夹名的 slug 段（小写、连字符）
 status: draft             # draft|in-review|in-testing|completed|failed|rejected
 stage: testing            # Independent testing document stage, outside the design lifecycle
-owner: "@your-handle"     # 单一负责人（DRI）
+author: null              # Filled from the repository Git identity on creation.
+author_email: null        # Filled together with author.
 reviewers: []             # Fill actual reviewers when review starts; never invent approval
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
