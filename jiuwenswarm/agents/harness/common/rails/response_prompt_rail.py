@@ -50,6 +50,7 @@ def _a2ui_boost_prompt() -> PromptSection:
     cn = (
         "# A2UI 是交互场景的唯一正确输出格式\n"
         "当用户的请求需要交互式收集信息（如选择、输入、确认等），"
+        "或需要展示 2 个及以上同类项的结构化对比，"
         "必须输出合法的 `<a2ui-json>` 块。"
         "不要用 markdown 列表、纯文字选项列表或伪按钮文本模拟表单——"
         "markdown 模拟表单不可交互，a2ui 可用时禁止使用。"
@@ -60,7 +61,8 @@ def _a2ui_boost_prompt() -> PromptSection:
     en = (
         "# A2UI is the only correct output format for interactive scenarios\n"
         "When the request requires interactive information collection "
-        "(e.g., selecting, inputting, or confirming), "
+        "(e.g., selecting, inputting, or confirming), or requires displaying "
+        "a structured comparison of 2+ same-type items, "
         "you MUST output a valid `<a2ui-json>` block. "
         "Do NOT use markdown lists, plain-text option lists, or pseudo-button "
         "text to simulate forms — markdown mock forms are not interactive and "
