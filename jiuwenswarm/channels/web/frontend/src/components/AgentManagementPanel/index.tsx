@@ -266,6 +266,7 @@ export function AgentManagementPanel({
   const [groupDetailOrigin, setGroupDetailOrigin] = useState<'teams' | 'mine'>('teams');
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [actionNoticeError, setActionNoticeError] = useState(false);
+  const [groupRuntimeNotice, setGroupRuntimeNotice] = useState<string | null>(null);
   const [connectorFlowId, setConnectorFlowId] = useState<string | null>(null);
   const [pendingInstallQueue, setPendingInstallQueue] = useState<PendingInstallQueue>(() =>
     createPendingInstallQueue(),
