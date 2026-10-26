@@ -165,8 +165,16 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
     # anyio task-group scope within the same call, so anyio.fail_after's cancel
     # scope stays correctly paired.
     #
-    # connect is not wrapped in fail_after: it leaves the SDK task-group scope
-    # open until disconnect(), so an outer cancel scope would break later calls.
+    # connect is deliberately NOT wrapped: connect() does
+    # ``self._exit_stack.enter_async_context(self._client)`` — it ENTERS the
+    # SDK streamable_http_client's task-group cancel scope but does not EXIT it
+    # (the exit is deferred to disconnect() via self._exit_stack.aclose()). If
+    # anyio.fail_after wrapped connect, its cancel scope would close when
+    # connect() returns, while the SDK's task-group scope it entered is still
+    # alive — anyio then raises "Attempted to exit a cancel scope that isn't
+    # the current task's current cancel scope" on the next task-group op
+    # (e.g. list_tools). connect bounds initialize() internally, so it does
+    # not need an outer cancel scope.
     for cls in (StreamableHttpClient, SseClient):
         _wrap_with_timeout(cls, "call_tool")
         _wrap_with_timeout(cls, "list_tools")
