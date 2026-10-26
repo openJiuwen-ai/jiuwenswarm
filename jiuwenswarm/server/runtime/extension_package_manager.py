@@ -4371,11 +4371,6 @@ def _validate_manifest_import_skill_paths(
         raw_dir = skill.get("dir") if isinstance(skill, dict) else skill
         if not isinstance(raw_dir, str) or not raw_dir.strip():
             continue
-        if Path(raw_dir).expanduser().is_absolute():
-            raise ValueError(f"{kind_label} skill dir must be package-relative")
-        windows_path = PureWindowsPath(raw_dir)
-        if windows_path.drive or windows_path.root:
-            raise ValueError(f"{kind_label} skill dir must be package-relative")
         rel = raw_dir.strip().replace("\\", "/")
         posix = PurePosixPath(rel)
         if posix.is_absolute() or ".." in rel.split("/") or PureWindowsPath(raw_dir).is_absolute():
