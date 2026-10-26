@@ -5273,9 +5273,12 @@ class JiuWenSwarm:
     ) -> dict[str, Any] | None:
         """Resolve one chat's runtime before any session-child side effects."""
         if request.req_method is not ReqMethod.CHAT_SEND:
+            # Stamp absence so deep-adapter paths can getattr safely.
+            request.trusted_runtime_binding = None
             return None
         resolver = getattr(adapter, "resolve_runtime_binding", None)
         if not callable(resolver):
+            request.trusted_runtime_binding = None
             return None
         params = request.params if isinstance(request.params, dict) else {}
         runtime_binding = resolver(session_id, params)
