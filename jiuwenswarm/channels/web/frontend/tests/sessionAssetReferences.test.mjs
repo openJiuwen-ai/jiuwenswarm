@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  displayFileName,
   findReferencedAssets,
   resolveAssetDisplayNames,
   samePath,
@@ -45,6 +46,13 @@ test('validates asset names like the backend', () => {
 test('compares Windows paths ignoring case and slash direction', () => {
   assert.equal(samePath('C:\\A\\b.png', 'c:/a/B.PNG'), true);
   assert.equal(samePath('C:\\A\\b.png', 'C:\\A\\c.png'), false);
+});
+
+test('display name adds the extension back without an @ prefix', () => {
+  assert.equal(displayFileName(asset('Panda_Cub')), 'Panda_Cub.png');
+  assert.equal(displayFileName(asset('metadata', 'C:\\files\\metadata.json')), 'metadata.json');
+  assert.equal(displayFileName(asset('no_ext', 'C:\\files\\no_ext')), 'no_ext');
+  assert.equal(displayFileName(asset('fox', 'C:/a/fox.PNG')), 'fox.PNG');
 });
 
 // 真实数据：会话 web_1a1102fc6e1_5e63432faddc 的 history.jsonl 与 session_assets.json。
