@@ -1423,6 +1423,46 @@ def _ui_event(
         },
     }
 
+def _register_panel(channel, *, service, store, queue) -> None:
+    """Register the panel methods against an AgentServer that owns the stub pipeline."""
+    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
+    from jiuwenswarm.common.e2a.models import E2AResponse
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.runtime.recommendation_host import RecommendationHost
+
+    host = RecommendationHost()
+    host.store = store
+    host.topic_service = service
+    host.topic_outcome_queue = queue
+    host._services_built = True
+    server = AgentWebSocketServer()
+    host.bind_active_requests(server._recommendation_active_request_ids)
+    host.bind_push(server._push_recommendation_event)
+    server._recommendation_host = host
+
+    class _Socket:
+        remote_address = ("127.0.0.1", 12345)
+
+        def __init__(self) -> None:
+            self.frames: list[dict[str, Any]] = []
+
+        async def send(self, data: str | bytes) -> None:
+            if isinstance(data, bytes):
+                data = data.decode("utf-8")
+            self.frames.append(json.loads(data))
+
+    class _Client:
+        async def send_request(self, envelope):
+            socket = _Socket()
+            await server.dispatch_parsed_request(
+                socket, e2a_to_agent_request(envelope), asyncio.Lock(),
+            )
+            return e2a_response_to_agent_response(E2AResponse.from_dict(socket.frames[-1]))
+
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=_Client()))
+
+
 @pytest.mark.asyncio
 async def test_webchannel_scopes_exposure_and_server_derived_outcomes(
     tmp_path: Any,
@@ -1437,13 +1477,7 @@ async def test_webchannel_scopes_exposure_and_server_derived_outcomes(
         WebChannelConfig(enabled=True), RobotMessageRouter()
     )
     channel.on_message(lambda _msg: False)
-    _register_web_handlers(
-        WebHandlersBindParams(
-            channel=channel,
-            topic_service=service,
-            topic_outcome_queue=queue,
-        )
-    )
+    _register_panel(channel, service=service, store=store, queue=queue)
     ws = _OpenWebSocket("/ws?user_id=alice&session_id=visit-session")
     connection = asyncio.create_task(channel.handle_connection(ws, path=ws.path))
 
@@ -1568,9 +1602,7 @@ async def test_webchannel_reports_unavailable_when_service_is_disabled(
         WebChannelConfig(enabled=True), RobotMessageRouter()
     )
     channel.on_message(lambda _msg: False)
-    _register_web_handlers(
-        WebHandlersBindParams(channel=channel, topic_service=None)
-    )
+    _register_panel(channel, service=None, store=None, queue=None)
     ws = _OpenWebSocket("/ws?user_id=alice&session_id=visit-session")
     connection = asyncio.create_task(channel.handle_connection(ws, path=ws.path))
 
@@ -1638,9 +1670,7 @@ async def test_dismissing_pausing_and_undoing_a_card_are_answered_and_refilled(
     assert queue.attach_sink(TopicStarterStoreOutcomeSink(store)) == []
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.on_message(lambda _msg: False)
-    _register_web_handlers(WebHandlersBindParams(
-        channel=channel, topic_service=service, topic_outcome_queue=queue,
-    ))
+    _register_panel(channel, service=service, store=store, queue=queue)
     ws = _OpenWebSocket("/ws?user_id=alice&session_id=visit-session")
     connection = asyncio.create_task(channel.handle_connection(ws, path=ws.path))
 
@@ -1691,7 +1721,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_rid import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
     TopicService,
 )
-from gateway import app_gateway
+from jiuwenswarm.server.runtime import recommendation_host
 
 def test_gateway_keeps_prepare_lane_when_search_is_unconfigured(
     monkeypatch,
@@ -1703,7 +1733,7 @@ def test_gateway_keeps_prepare_lane_when_search_is_unconfigured(
     store = TopicStarterStore(tmp_path / "recommendation.db")
 
     prepare_service, product_service, outcome_queue = (
-        app_gateway._build_topic_starter_services(store)
+        recommendation_host._build_topic_starter_services(store)
     )
 
     assert isinstance(prepare_service, TopicPrepareService)
@@ -1722,7 +1752,7 @@ def test_gateway_startup_seeds_product_lane() -> None:
             calls.append(("product", run_id))
 
     run_id = "topic-starter-v6:1788112805"
-    app_gateway._seed_topic_starter_services(PrepareLane(), ProductLane(), run_id)
+    recommendation_host._seed_topic_starter_services(PrepareLane(), ProductLane(), run_id)
 
     assert calls == [("product", run_id)]
 
@@ -1736,7 +1766,7 @@ def test_gateway_builds_product_lane_when_native_search_chain_is_configured(
     store = TopicStarterStore(tmp_path / "recommendation.db")
 
     prepare_service, product_service, _outcome_queue = (
-        app_gateway._build_topic_starter_services(store)
+        recommendation_host._build_topic_starter_services(store)
     )
 
     assert isinstance(prepare_service, TopicPrepareService)
@@ -1992,7 +2022,7 @@ async def test_gateway_shutdown_skips_unavailable_product_lane_and_awaits_prepar
         async def shutdown(self) -> None:
             calls.append("prepare")
 
-    await app_gateway._shutdown_topic_starter_services(PrepareLane(), None)
+    await recommendation_host._shutdown_topic_starter_services(PrepareLane(), None)
 
     assert calls == ["prepare"]
 

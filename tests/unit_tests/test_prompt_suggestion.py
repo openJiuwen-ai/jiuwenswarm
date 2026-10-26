@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
-import functools
 import json
 import sys
 import types
@@ -217,7 +216,22 @@ def product(tmp_path, monkeypatch):
     gateway = MessageHandler(SimpleNamespace())
     page = _Page()
     store = TopicStarterStore(tmp_path / "recommendation.db")
-    gateway.on_prompt_suggestion = functools.partial(prompt_suggestion.deliver, page, store)
+
+    async def show(session_id: str, request_id: str, payload: dict[str, Any]) -> None:
+        from jiuwenswarm.common.schema.message import Message
+
+        await page.send(Message(
+            id=f"prompt-suggestion:{payload.get('suggestion_id')}",
+            type="event",
+            channel_id=page.channel_id,
+            session_id=session_id,
+            params={},
+            timestamp=0.0,
+            ok=True,
+            payload=payload,
+        ))
+
+    gateway.on_prompt_suggestion = show
 
     async def push(_transport: Any, msg: dict[str, Any]) -> bool:
         await getattr(gateway, "_handle_agent_server_push")(build_server_push_wire(msg))
@@ -979,15 +993,24 @@ def _completed(request_id: str) -> None:
 
 
 async def _push_suggestion(request_id: str) -> None:
+    """Stage the suggestion in the agent process, then push only a current one."""
+    shown = await asyncio.to_thread(
+        prompt_suggestion.stage_delivery,
+        TopicStarterStore(prompt_suggestion.get_agent_workspace_dir() / "recommendation.db"),
+        SESSION,
+        request_id,
+        {"suggestion_id": uuid4().hex, "text": "导出成双语对照"},
+    )
+    if shown is None:
+        return
     await WebSocketGatewayPushTransport().send_push({
-        "channel_id": "", "session_id": SESSION, "request_id": request_id,
-        "payload": {"event_type": "prompt_suggestion.ready", "suggestion_id": uuid4().hex, "text": "导出成双语对照"},
+        "channel_id": "", "session_id": SESSION, "request_id": request_id, "payload": shown,
     })
 
 
 @pytest.mark.parametrize(("change", "deliveries"), [
     ("another request", [("suppressed", "stale_request")]),
-    # With recommendations off the gateway neither pushes nor records the suggestion.
+    # With recommendations off, staging neither pushes nor records the suggestion.
     ("consent withdrawn", []),
 ])
 async def test_gateway_drops_a_suggestion_that_is_no_longer_current(product, change, deliveries) -> None:

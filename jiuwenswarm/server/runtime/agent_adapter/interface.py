@@ -309,6 +309,20 @@ def _announce_durable_completion(
         }))
         _COMPLETION_ANNOUNCEMENTS.add(task)
         task.add_done_callback(_COMPLETION_ANNOUNCEMENTS.discard)
+        from jiuwenswarm.server.runtime.recommendation_host import (
+            active_recommendation_host,
+        )
+
+        host = active_recommendation_host()
+        if host is not None:
+            try:
+                host.on_chat_completed(session_id, request_id)
+            except Exception:  # noqa: BLE001 - replenishment must not block the receipt
+                logger.warning(
+                    "topic replenishment after completion failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
 
     # Observe the receipt with a done callback so no cancelled waiter can
     # cancel the receipt the history writer still has to resolve.
