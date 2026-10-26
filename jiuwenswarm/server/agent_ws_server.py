@@ -6887,6 +6887,12 @@ class AgentWebSocketServer:
             from jiuwenswarm.agents.harness.team.expert_org.launcher import (
                 JiuwenExpertTeamLauncher,
             )
+            from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+                HOST_USER_ORIGIN_EXTERNAL,
+                HOST_USER_ORIGIN_INTERNAL,
+            )
+            from jiuwenswarm.server.runtime.agent_adapter.interface import is_external_user_authored_dispatch
+
             query = _request_query_text(request)
             append_history_record(
                 session_id=session_id,
@@ -6913,6 +6919,13 @@ class AgentWebSocketServer:
                 source="org_expert_direct",
                 channel_id=channel_id,
                 request_id=request.request_id,
+                origin_kind=(
+                    HOST_USER_ORIGIN_EXTERNAL
+                    if is_external_user_authored_dispatch(
+                        params, channel_id=channel_id, request_method=request.req_method, metadata=request.metadata,
+                    )
+                    else HOST_USER_ORIGIN_INTERNAL
+                ),
             )
             if not succeeded:
                 error = "target expert team is unavailable or busy"
@@ -9019,6 +9032,8 @@ class AgentWebSocketServer:
             command = resolve_preserved_cli_path(server_payload.get("command", ""))
             if not command:
                 return True, "skipped: no command"
+            from jiuwenswarm.common.mcp_config import resolve_node_package_runner
+            command, _ = resolve_node_package_runner(command, [])
             # stdio 预检查改为纯静态校验,静态校验零 spawn、零 anyio。
             if not shutil.which(command):
                 return False, f"{name} (stdio) pre-check failed: command not found in PATH: {command}"

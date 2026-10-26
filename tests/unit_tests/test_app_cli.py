@@ -92,7 +92,7 @@ def test_run_acp_starts_gateway_and_prints_final_jsonrpc(monkeypatch):
     )
 
     assert exit_code == 0
-    assert captured.get("cmd") == [sys.executable, "-m", "jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect"]
+    assert captured.get("cmd") == [sys.executable, "-m", "gateway.channel_manager.protocol.acp.acp_connect"]
     proc = captured.get("proc")
     assert proc is not None
     outbound = json.loads("".join(proc.stdin.writes).strip())
@@ -130,7 +130,7 @@ def test_run_acp_passes_agent_server_url(monkeypatch):
     assert captured.get("cmd") == [
         sys.executable,
         "-m",
-        "jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect",
+        "gateway.channel_manager.protocol.acp.acp_connect",
         "--gateway-url",
         "ws://127.0.0.1:18092",
     ]

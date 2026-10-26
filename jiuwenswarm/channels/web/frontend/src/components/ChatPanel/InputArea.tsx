@@ -20,7 +20,7 @@ import {
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { AtSign, ChevronRight, CircleX, ListChecks, Loader2, Lock, Mic, Pencil, Plus, Rocket, Settings, Square, SquarePlay, Workflow, X } from 'lucide-react';
+import { AtSign, ChevronRight, CircleX, Infinity as InfinityIcon, ListChecks, Loader2, Lock, Mic, Pencil, Plus, Rocket, Settings, Square, SquarePlay, Workflow, X } from 'lucide-react';
 
 // import { stopAllTts } from '../../utils';
 import {
@@ -62,7 +62,6 @@ import {
   validateAssetName,
 } from '../../features/sessionAssets/assetReferences';
 import { useSessionArtifacts } from '../ArtifactsPanel';
-import { WorktreeProjectGuide } from './WorktreeProjectGuide';
 import {
   parseSlashLine,
   parseGoalSlashArgs,
@@ -393,7 +392,7 @@ function clipboardHasFileItems(clipboardData: DataTransfer | null | undefined): 
 
 const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 /**
- * Keep in sync with jiuwenswarm/gateway/document_attachments.py
+ * Keep in sync with gateway/document_attachments.py
  * FORBIDDEN_DOCUMENT_EXTENSIONS.
  */
 const FORBIDDEN_DOCUMENT_EXTENSIONS = new Set([
@@ -1210,6 +1209,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   };
   const canUsePlanMenu = supportsPlanMode(mode);
   const planTagVisible = canUsePlanMenu && planActive;
+  // 永续会话标记：只对真实会话展示（/persist 创建或后端会话列表带 persist_session 的会话），
+  // 欢迎页在 session.create 之前没有可展示的持久化状态。
+  const persistSessionActive = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.persistSession ?? false,
+  );
+  const persistTagVisible = Boolean(
+    activeSessionId && activeSessionId !== NEW_CONVERSATION_ID && persistSessionActive,
+  );
 
   const mentionableMembers = useMemo(() => {
     return teamMembers
@@ -1490,49 +1497,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
     return selectedProject && !isDefaultInputProject(selectedProject) ? selectedProject : null;
   }, [activeSession, projects, selectedProject, t, workMode]);
-
-  // Worktree 隔离开关的显示默认值：全局 config（团队模板的 worktree.enabled），
-  // 仅在会话未显式拨过（swarmflowWorktree === undefined）时用于展示。
-  // 挂载时读一次，配置面板每次打开时刷新；会话自身的值存 sessionStore。
-  const [swarmflowWorktreeDefault, setSwarmflowWorktreeDefault] = useState<boolean | null>(null);
-  const refreshSwarmflowWorktreeDefault = useCallback(() => {
-    webRequest<Record<string, unknown>>('config.get')
-      .then((config) => {
-        const raw = (config as { swarmflow_worktree?: unknown } | undefined)?.swarmflow_worktree;
-        setSwarmflowWorktreeDefault(raw === true || String(raw ?? '').trim().toLowerCase() === 'true');
-      })
-      .catch(() => {});
-  }, []);
-  useEffect(() => {
-    refreshSwarmflowWorktreeDefault();
-  }, [refreshSwarmflowWorktreeDefault]);
-  // 会话级 worktree 值（undefined=未拨过）；有效值 = 会话值 ?? 全局默认
-  const swarmflowWorktreeValue = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.swarmflowWorktree,
-  );
-  const swarmflowWorktreeEffective = swarmflowWorktreeValue ?? (swarmflowWorktreeDefault ?? false);
-  // Worktree 无项目目录的聚光灯引导。动态工作流的"+"菜单/配置面板还开着时会挡住
-  // 项目下拉，先挂起，等它们全部关闭后再弹；弹出后选好项目自动消失。
-  const [worktreeGuideOpen, setWorktreeGuideOpen] = useState(false);
-  const [worktreeGuidePending, setWorktreeGuidePending] = useState(false);
-  useEffect(() => {
-    if (worktreeGuideOpen && displayedProject) setWorktreeGuideOpen(false);
-  }, [worktreeGuideOpen, displayedProject]);
-  useEffect(() => {
-    if (!worktreeGuidePending || attachMenuOpen || swarmflowConfigPanelOpen) return;
-    setWorktreeGuidePending(false);
-    if (!displayedProject && swarmflowWorktreeEffective) setWorktreeGuideOpen(true);
-  }, [worktreeGuidePending, attachMenuOpen, swarmflowConfigPanelOpen, displayedProject, swarmflowWorktreeEffective]);
-  const toggleSwarmflowWorktree = useCallback(
-    (next: boolean) => {
-      if (!activeSessionId || swarmflowToggleDisabled) return;
-      useSessionStore.getState().setSwarmflowWorktree(activeSessionId, next);
-      if (next && !displayedProject) {
-        setWorktreeGuidePending(true);
-      }
-    },
-    [activeSessionId, swarmflowToggleDisabled, displayedProject],
-  );
 
   const appendTaskAsrTranscript = useCallback(
     (transcript: string) => {
@@ -4650,10 +4614,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 usePlanStore.getState().setActive(activeSessionId, false);
                               }
                               useSessionStore.getState().setSwarmflowActive(activeSessionId, next);
-                              // worktree 有效开启且未选项目目录时，等菜单关闭后再弹聚光灯引导
-                              if (next && swarmflowWorktreeEffective && !displayedProject) {
-                                setWorktreeGuidePending(true);
-                              }
                             };
                             return (
                               <div
@@ -4693,7 +4653,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                       e.stopPropagation();
                                       if (!swarmflowActive) return;
                                       if (!swarmflowConfigPanelOpen) {
-                                        refreshSwarmflowWorktreeDefault();
                                         if (swarmflowConfigBtnRef.current) {
                                           setSwarmflowConfigAnchor(
                                             swarmflowConfigBtnRef.current.getBoundingClientRect(),
@@ -5090,6 +5049,40 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                         </button>
                       );
                     })()}
+                  </div>
+                )}
+
+                {persistTagVisible && (
+                  // 永续会话标记：persist_session 是 session.create 的一次性参数，会话存续期间
+                  // 后端没有关闭入口。会话还没有任何消息时展示 ×、点击仅本地隐藏（切走再切回
+                  // 会随会话记录回灌回来），hover 沿用 agent-tag「图标换 ×」的交换交互；一旦
+                  // 发过消息（hasHistory）直接不渲染 ×，并加 --static 修饰让图标 hover 常显，
+                  // 避免悬停时图标消失又没有 × 补位、标签视觉上缺一块。
+                  <div
+                    className={hasHistory ? 'chat-agent-tag chat-agent-tag--static' : 'chat-agent-tag'}
+                    data-testid="chat-panel-persist-tag"
+                  >
+                    <span className="chat-agent-tag__avatar chat-agent-tag__avatar--plain" aria-hidden="true">
+                      <InfinityIcon size={16} aria-hidden="true" />
+                    </span>
+                    <span className="chat-agent-tag__label" data-testid="chat-panel-persist-tag-label">
+                      {t('persistSession.toolbarTag')}
+                    </span>
+                    {!hasHistory && (
+                      <button
+                        type="button"
+                        className="chat-agent-tag__close"
+                        data-testid="chat-panel-persist-tag-close"
+                        aria-label={t('persistSession.closeTag')}
+                        title={t('persistSession.closeTag')}
+                        onClick={() => {
+                          if (!activeSessionId) return;
+                          useSessionStore.getState().setPersistSession(activeSessionId, false);
+                        }}
+                      >
+                        <WorkIcon name="close" />
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -5664,21 +5657,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       );
                     })()}
                   </div>
-                  <div className="chat-swarmflow-config-panel__field">
-                    <div
-                      className="chat-swarmflow-config-panel__worktree-row"
-                      data-testid="chat-panel-swarmflow-worktree-row"
-                    >
-                      <label className="chat-swarmflow-config-panel__label">
-                        {t('swarmflow.worktreeToggleLabel')}
-                      </label>
-                      <Switch
-                        checked={swarmflowWorktreeEffective}
-                        disabled={swarmflowToggleDisabled}
-                        onChange={toggleSwarmflowWorktree}
-                      />
-                    </div>
-                  </div>
                   {swarmflowToggleDisabled && (
                     <span className="chat-swarmflow-config-panel__readonly-hint">
                       {t('swarmflow.configReadonlyHint')}
@@ -5688,9 +5666,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 document.body,
               );
             })()}
-          {worktreeGuideOpen && (
-            <WorktreeProjectGuide onAcknowledge={() => setWorktreeGuideOpen(false)} />
-          )}
         </div>
       </div>
 

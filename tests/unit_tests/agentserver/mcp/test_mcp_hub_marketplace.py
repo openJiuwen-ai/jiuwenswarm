@@ -17,7 +17,7 @@ from jiuwenswarm.server.runtime.mcp import marketplace
 
 
 def test_mcp_hub_lifecycle_methods_are_forwarded_by_web_gateway() -> None:
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+    from gateway.channel_manager.web.app_web_handlers import (
         _FORWARD_NO_LOCAL_HANDLER_METHODS,
         _FORWARD_REQ_METHODS,
     )

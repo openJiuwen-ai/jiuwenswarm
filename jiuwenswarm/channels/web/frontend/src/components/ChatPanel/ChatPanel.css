@@ -2259,6 +2259,14 @@
   opacity: 1;
 }
 
+/* 永续会话标签在已发消息阶段没有 ×（只读）：hover 不参与「图标换 ×」的交换，
+   图标保持常显，避免悬停时图标淡出又没有 × 补位、标签视觉上缺一块。
+   必须排在上面的 hover 隐藏规则之后：两条规则特异性相同，按源序后者生效 */
+.chat-agent-tag--static:hover .chat-agent-tag__avatar,
+.chat-agent-tag--static:focus-within .chat-agent-tag__avatar {
+  opacity: 1;
+}
+
 .chat-agent-tag__lock {
   flex: 0 0 auto;
   color: var(--color-text-tertiary);
@@ -3269,13 +3277,6 @@
   opacity: 0.7;
 }
 
-.chat-swarmflow-config-panel__worktree-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
 .chat-skill-select__trigger {
   display: inline-flex;
   align-items: center;
@@ -4206,10 +4207,10 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   height: 100%;
   width: 100%;
-  padding: clamp(2rem, 6vh, 4.5rem) 1.5rem 1.75rem;
+  padding: 2rem 1.5rem 6rem 1.5rem;
 }
 
 .chat-welcome__composer {
@@ -4332,9 +4333,9 @@
 }
 
 .chat-welcome__banner--bee {
-  position: static;
-  flex: 0 0 auto;
-  width: 100px;
+  top: -152px;
+  right: 0;
+  width: 200px;
   height: auto;
   z-index: 9;
   pointer-events: auto;
@@ -4342,24 +4343,15 @@
   mix-blend-mode: multiply;
 }
 
-.chat-welcome__header {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  width: min(100%, 768px);
-  margin-bottom: 20px;
-}
-
 .chat-welcome__heading {
   font-size: 32px;
   font-weight: 600;
   color: var(--color-text-strong);
   line-height: 48px;
-  margin: 0;
+  margin: 0 0 20px 0;
   text-align: left;
-  flex: 1;
-  min-width: 0;
+  align-self: flex-start;
+  width: calc(100% - 160px);
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -4395,7 +4387,6 @@
 
 /* 4.9 专家团「通过聊天创建」欢迎态：只由专家团入口挂载，普通新会话保留原首页。 */
 .chat-welcome--group-create {
-  justify-content: center;
   gap: 0;
   transform: translateY(-92px);
 }
@@ -4495,8 +4486,9 @@
   align-items: flex-start;
   gap: 0.5rem;
   width: min(100%, 768px);
-  margin-top: clamp(2rem, 5vh, 3.5rem);
-  margin-bottom: 1rem;
+  /* Below the composer, which already keeps its own bottom margin. */
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 .chat-suggestions__label {
@@ -4703,16 +4695,6 @@
 @media (hover: none) {
   .chat-suggestion-card__dismiss {
     opacity: 1;
-  }
-}
-
-@media (max-height: 760px) {
-  .chat-welcome {
-    padding-top: 1.5rem;
-  }
-
-  .chat-suggestions {
-    margin-top: 1.5rem;
   }
 }
 

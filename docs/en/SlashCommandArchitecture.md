@@ -72,7 +72,7 @@ Without clear layering and a single source of truth, the project risks: **semant
 
 ### 4.1 Module Location (Proposed)
 
-- **Python side**: Implemented as `jiuwenswarm/gateway/slash_command.py` (controlled channel parsing, `CONTROL_MESSAGE_TEXTS`, first-batch command metadata `FIRST_BATCH_REGISTRY`). May evolve into `channel_control_slash.py` etc.
+- **Python side**: Implemented as `gateway/slash_command.py` (controlled channel parsing, `CONTROL_MESSAGE_TEXTS`, first-batch command metadata `FIRST_BATCH_REGISTRY`). May evolve into `channel_control_slash.py` etc.
   - **Data**: The set of controlled commands, match rules (exact / prefix / no-multi-line), metadata (description, whether to forward to Agent).
   - **Pure functions**: Given a channel type and user text, return a **structured decision** (not hit / hit & valid / hit & invalid). **No IO** in SSOT module (no `create_task` for notifications).
 - **Naming suggestion**: If only containing Category A, the module name should avoid suggesting "all product slashes", preventing future contributors from stuffing Category B logic into the Gateway.

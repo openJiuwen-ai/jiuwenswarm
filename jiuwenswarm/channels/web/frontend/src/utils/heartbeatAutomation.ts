@@ -3,7 +3,7 @@
  * Heartbeat 自动轮的身份识别 + 独立消息归并工具。
  *
  * 后端在 Heartbeat 自动触发时把执行身份塞进 `payload.metadata.automation`（见
- * jiuwenswarm/gateway/heartbeat/scheduler.py 的 `_build_message`），结构对齐
+ * gateway/heartbeat/scheduler.py 的 `_build_message`），结构对齐
  * `HeartbeatAutomationMetadata`。这个标记会随 user/assistant 消息落盘到 session 历史，
  * 因此实时事件链路（useWebSocket.ts 的 chat.delta/final/error、processing_status、
  * execution.error）和历史恢复链路（historyRestore.ts）必须共用同一套提取逻辑读取它——

@@ -29,7 +29,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
     load_yuanrong_ssh_settings,
     resolve_client_keys_dir,
 )
-from jiuwenswarm.gateway.channel_manager.protocol.ssh.ssh_connect import SshRelaySession
+from gateway.channel_manager.protocol.ssh.ssh_connect import SshRelaySession
 
 from jiuwenswarm.extensions.yuanrong_frontend_client import YuanrongAgentApiError
 
@@ -880,7 +880,7 @@ async def test_router_disconnect_cancels_background_ssh_relay() -> None:
 @pytest.mark.asyncio
 async def test_wait_relay_done_timeout_cancels_southbound_task() -> None:
     """Northbound relay timeout must cancel the southbound relay_task."""
-    from jiuwenswarm.gateway.channel_manager.protocol.ssh.ssh_connect import (
+    from gateway.channel_manager.protocol.ssh.ssh_connect import (
         SshChannel,
         SshChannelConfig,
     )
@@ -929,7 +929,7 @@ async def test_wait_relay_done_timeout_cancels_southbound_task() -> None:
 async def test_unregister_session_cancels_southbound_task() -> None:
     """Northbound session teardown must cancel a still-running southbound
     relay, even when the pumps never notice the dead client (stdin blocked)."""
-    from jiuwenswarm.gateway.channel_manager.protocol.ssh.ssh_connect import (
+    from gateway.channel_manager.protocol.ssh.ssh_connect import (
         SshChannel,
         SshChannelConfig,
     )

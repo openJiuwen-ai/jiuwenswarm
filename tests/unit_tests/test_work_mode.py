@@ -12,7 +12,7 @@ from jiuwenswarm.common.work_mode import (
     normalize_work_mode,
     resolve_default_project_id,
 )
-from jiuwenswarm.gateway.cron.models import CronJob
+from gateway.cron.models import CronJob
 from jiuwenswarm.server.runtime.session.project_store import Project
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_TUI_WORK_MODE,

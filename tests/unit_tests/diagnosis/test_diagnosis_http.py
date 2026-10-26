@@ -23,8 +23,8 @@ from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel
 from jiuwenswarm.diagnosis.models import ERROR_STATUS_BY_CODE, ModelInfo
 from jiuwenswarm.diagnosis.service import DiagnosisService
 from jiuwenswarm.diagnosis.store import DiagnosisStore
-from jiuwenswarm.gateway.channel_manager.web.diagnosis_http import attach_diagnosis_routes, error_status
-from jiuwenswarm.gateway.channel_manager.web.trajectory_http import TRAJECTORY_API_PREFIX
+from gateway.channel_manager.web.diagnosis_http import attach_diagnosis_routes, error_status
+from gateway.channel_manager.web.trajectory_http import TRAJECTORY_API_PREFIX
 from jiuwenswarm.server.diagnosis.host import DiagnosisHost
 from tests.unit_tests.diagnosis.diagnosis_fixtures import (
     SESSION_ID,

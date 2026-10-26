@@ -8,7 +8,7 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import Message, ReqMethod
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.message_handler.message_handler import MessageHandler
 
 
 def message(rid, *, stream=False, mode=None, channel="web", **params):
