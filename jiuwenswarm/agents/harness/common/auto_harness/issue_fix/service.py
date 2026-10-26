@@ -304,7 +304,7 @@ class IssueFixService:
                 if task and str(task.get("status") or "") in RUNNING_STATUSES:
                     rejected.append({
                         "issue": number,
-                        "reason": f"任务正在执行中，运行中的任务不支持删除",
+                        "reason": "任务正在执行中，运行中的任务不支持删除",
                     })
                     continue
 

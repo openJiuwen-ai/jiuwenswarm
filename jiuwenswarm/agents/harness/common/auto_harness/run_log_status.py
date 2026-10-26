@@ -366,7 +366,6 @@ def summarize_progress_from_key_events(key_events: list[dict[str, Any]]) -> dict
     stage_messages: dict[str, list[str]] = {}
     last_error = ""
     failed_stage = ""
-    pipeline = ""
 
     # 反向读取的事件是倒序的，需要反转
     for entry in reversed(key_events):
