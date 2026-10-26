@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:update-panel": "esbuild src/components/UpdatePanel/index.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/update-panel/index.mjs && node --test tests/updatePanel.test.mjs",
     "test:desktop-file-drop": "esbuild src/features/workspace/localFilePicker.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/desktop-file-drop/localFilePicker.mjs && node --test tests/desktopFileDrop.test.mjs",
     "test:asset-name-search": "esbuild src/features/assetNameSearch.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/asset-name-search && node --test tests/assetNameSearch.test.mjs",
     "test:moa-settings": "npm run test:multi-model-collaboration-settings",

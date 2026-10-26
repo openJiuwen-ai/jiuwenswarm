@@ -13,6 +13,7 @@ import os
 import runpy
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules, copy_metadata
@@ -158,6 +159,10 @@ datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
 datas += computer_use_data
+_build_metadata_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-metadata-")
+_build_metadata_file = Path(_build_metadata_directory.name, "build-metadata.json")
+build_config_module["write_build_metadata"](_build_metadata_file, build_config.version)
+datas.append((str(_build_metadata_file), "jiuwenswarm/resources"))
 _playwright_mcp_resource_dir = os.path.join(
     project_root,
     "jiuwenswarm",
