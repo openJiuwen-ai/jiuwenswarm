@@ -5699,6 +5699,77 @@ class MessageHandler(ABC):
         self._forward_task = asyncio.create_task(self._forward_loop())
         logger.info("[MessageHandler] 转发循环已启动 (_user_messages -> AgentServer -> _robot_messages)")
 
+    async def _interrupt_in_flight_sessions_on_shutdown(self) -> None:
+        """Shutdown 前按 session 通知 AgentServer 取消，避免多副本删 pod 后空跑.
+
+        本地 ``_stream_tasks`` 只是北向 consumer；真正任务在 AgentServer。
+        必须先 interrupt（lease 仍在），再拆本地 consumer，否则只会
+        ``output_detached``，LLM/工具继续跑到写流失败才停。
+        """
+        sessions: dict[tuple[str, str], str | None] = {}
+        for rid, sid in list(self._stream_sessions.items()):
+            sid_s = (sid or "").strip()
+            if not sid_s:
+                continue
+            channel_id = (self._stream_channels.get(rid) or "").strip() or "web"
+            key = (channel_id, sid_s)
+            if key not in sessions:
+                sessions[key] = self._stream_user_ids.get(rid)
+        for item in list(self._non_stream_chat_messages.values()):
+            sid_s = (getattr(item, "session_id", None) or "").strip()
+            if not sid_s:
+                continue
+            channel_id = (getattr(item, "channel_id", None) or "").strip() or "web"
+            key = (channel_id, sid_s)
+            if key not in sessions:
+                uid = getattr(item, "user_id", None)
+                sessions[key] = str(uid).strip() if uid is not None else None
+
+        if not sessions:
+            return
+
+        logger.info(
+            "[MessageHandler] shutdown interrupt in-flight sessions: count=%d sessions=%s",
+            len(sessions),
+            [sid for _, sid in sessions.keys()],
+        )
+
+        async def _interrupt_one(
+            channel_id: str, session_id: str, user_id: str | None
+        ) -> None:
+            stub = self._build_disconnect_cancel_message(
+                channel_id, session_id, user_id=user_id
+            )
+            try:
+                # 不传 CLIENT_DISCONNECT：pod 退出后无法重连续跑，走硬取消而非 pause。
+                await asyncio.wait_for(
+                    self._cancel_agent_work_for_session(
+                        stub,
+                        session_id,
+                        publish_interrupt_result=False,
+                        channel_id=channel_id,
+                        cancel_gateway_tasks=False,
+                        agent_notify="await",
+                    ),
+                    timeout=5.0,
+                )
+            except Exception:
+                logger.warning(
+                    "[MessageHandler] shutdown interrupt failed: "
+                    "channel_id=%s session_id=%s",
+                    channel_id,
+                    session_id,
+                    exc_info=True,
+                )
+
+        await asyncio.gather(
+            *[
+                _interrupt_one(channel_id, session_id, user_id)
+                for (channel_id, session_id), user_id in sessions.items()
+            ],
+            return_exceptions=True,
+        )
+
     async def stop_forwarding(self) -> None:
         """停止转发任务."""
         self._running = False
@@ -5708,6 +5779,10 @@ class MessageHandler(ABC):
             self._forward_task.cancel()
             await asyncio.gather(self._forward_task, return_exceptions=True)
             self._forward_task = None
+
+        # 先 interrupt AgentServer，再拆本机 unary/stream；删 gateway 副本时依赖此路径。
+        await self._interrupt_in_flight_sessions_on_shutdown()
+
         unary_tasks = list(self._non_stream_chat_tasks.values())
         for task in unary_tasks:
             task.cancel()
