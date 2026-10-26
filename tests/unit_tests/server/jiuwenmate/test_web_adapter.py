@@ -120,13 +120,21 @@ async def test_opening_the_page_shows_the_default_colleague(host):
 async def test_colleague_list_restores_im_binding_status_from_owner_config(host, monkeypatch):
     created = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_CREATE, settings=settings())
     agent_id = created.payload["colleague"]["agent_id"]
-    monkeypatch.setattr(web_adapter, "_configured_feishu_agent_ids", lambda: {agent_id}, raising=False)
+    connected = (await host.adapter.attach_connection(
+        {"config_id": agent_id, "channel": "feishu", "connection_key": "app-feishu"},
+    ))["agent_id"]
+    # The owner's Feishu configuration binds the app to the agent created for it.
+    monkeypatch.setattr(web_adapter, "_bound_apps", lambda: {"feishu": {("app-feishu", connected)}})
 
     listed = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_LIST)
     fetched = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_GET, agent_id=agent_id)
 
+    assert [item["agent_id"] for item in listed.payload["colleagues"]] == [agent_id]
     assert listed.payload["colleagues"][0]["im_configured"] is True
     assert fetched.payload["colleague"]["im_configured"] is True
+    assert [(item["channel"], item["agent_id"]) for item in fetched.payload["colleague"]["connections"]] == [
+        ("web", agent_id), ("feishu", connected),
+    ]
 
 
 async def test_created_colleague_is_published_with_the_default_model(host):
@@ -180,10 +188,10 @@ async def test_deleted_colleague_is_gone(host):
         "agent_id"
     ]
 
-    deleted = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_DELETE, agent_id=agent_id)
+    deleted = await host.adapter.remove_colleague({"config_id": agent_id, "mode": "purge"})
     missing = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_GET, agent_id=agent_id)
 
-    assert deleted.ok and deleted.payload == {"deleted": True}
+    assert deleted == {"removed": True}
     assert not missing.ok and missing.payload["code"] == "NOT_FOUND"
 
 
@@ -298,20 +306,27 @@ def test_web_gateway_does_not_forward_internal_jiuwenmate_methods():
     internal_methods = {
         ReqMethod.JIUWENMATE_FEISHU_INBOUND.value,
         ReqMethod.JIUWENMATE_DINGTALK_INBOUND.value,
-        ReqMethod.JIUWENMATE_DINGTALK_BINDING_CHECK.value,
+        ReqMethod.JIUWENMATE_CONNECTION_ATTACH.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS.value,
+        ReqMethod.JIUWENMATE_COLLEAGUE_REMOVE.value,
         ReqMethod.JIUWENMATE_THINKING_NOTICE_ACK.value,
         ReqMethod.JIUWENMATE_FEISHU_PREPARE.value,
         ReqMethod.JIUWENMATE_DELIVERY_ACK.value,
         ReqMethod.JIUWENMATE_GROUP_RESPONSE.value,
         ReqMethod.JIUWENMATE_THINKING_NOTICE_ACK.value,
     }
+    # Gateway handles deletion itself: it removes the IM apps first, then asks AgentServer.
+    gateway_methods = {ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value}
     web_methods = {
         method.value
         for method in ReqMethod
         if method.value.startswith("jiuwenmate.")
-    } - internal_methods
+    } - internal_methods - gateway_methods
 
     assert web_methods == methods
+    assert gateway_methods.isdisjoint(methods)
+    assert gateway_methods.isdisjoint(app_web_handlers._FORWARD_REQ_METHODS)
+    assert gateway_methods.isdisjoint(app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS)
     assert internal_methods.isdisjoint(methods)
     assert methods <= app_web_handlers._FORWARD_REQ_METHODS
     assert methods <= app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS

@@ -82,7 +82,6 @@ _COLLEAGUE_METHODS = frozenset(
 )
 _RUNTIME_METHODS = frozenset(
     {
-        ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value,
         ReqMethod.JIUWENMATE_CHAT_SEND.value,
         ReqMethod.JIUWENMATE_CHAT_HISTORY.value,
         ReqMethod.JIUWENMATE_REQUEST_GET.value,
@@ -117,26 +116,32 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _configured_feishu_agent_ids() -> set[str]:
-    """Return the colleague IDs currently bound to an owner Feishu app."""
-    from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import configured_feishu_bindings
-
-    return {binding.agent_id for binding in configured_feishu_bindings()}
-
-
-def _colleague_wire(view) -> dict[str, Any]:
-    payload = view.to_dict()
+def _bound_apps() -> dict[str, set[tuple[str, str]]]:
+    """The ``(app, agent)`` pairs the owner's channel configuration binds now, per platform."""
     from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import configured_dingtalk_bindings
 
-    agent_id = payload["agent_id"]
-    dingtalk_ids = {binding.agent_id for binding in configured_dingtalk_bindings()}
-    if agent_id in dingtalk_ids:
-        payload["im_platform"] = "dingtalk"
-    elif agent_id in _configured_feishu_agent_ids():
-        payload["im_platform"] = "feishu"
-    else:
-        payload["im_platform"] = None
-    payload["im_configured"] = payload["im_platform"] is not None
+    return {
+        "feishu": {(binding.app_id, binding.agent_id) for binding in configured_feishu_bindings()},
+        "dingtalk": {(binding.app_id, binding.agent_id) for binding in configured_dingtalk_bindings()},
+    }
+
+
+def _colleague_wire(view, service: PersistentAgentService, bound: Mapping[str, set[tuple[str, str]]]) -> dict[str, Any]:
+    """A colleague with its connections: the Web agent first, then each IM app its configuration binds."""
+    payload = view.to_dict()
+    connections = [{"channel": "web", "connection_key": "web", "agent_id": view.agent_id,
+                    "workspace_dir": view.workspace_dir}]
+    for item in service.connections(WEB_NAMESPACE, view.agent_id):
+        # An app the configuration no longer binds keeps its agent and data, but is not shown.
+        if (item.connection_key, item.agent_id) in bound.get(item.channel, ()):
+            connections.append({
+                "channel": item.channel,
+                "connection_key": item.connection_key,
+                "agent_id": item.agent_id,
+                "workspace_dir": str(service.workspaces.path(WEB_NAMESPACE, item.agent_id)),
+            })
+    payload["connections"] = connections
+    payload["im_configured"] = len(connections) > 1
     return payload
 
 
@@ -271,7 +276,7 @@ class StreamPublisher:
 
 def _channel_records(manager: AgentManager) -> ChannelRecords:
     """Group records for the page, with colleague names and Feishu member names."""
-    colleagues = manager._service.list_colleagues("local")
+    colleagues = manager._service.list_agents("local")
     return ChannelRecords(
         manager.group_chats,
         manager.group_archive,
@@ -365,6 +370,83 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             logger.warning("[JiuwenMate] model refresh failed: error_type=%s", type(exc).__name__)
             return False
 
+    async def attach_connection(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Gateway asks for the agent of one IM app before it writes that binding."""
+        service = await asyncio.to_thread(self._colleagues)
+        agent_id = await asyncio.to_thread(
+            service.attach_connection,
+            WEB_NAMESPACE,
+            _text_param(params, "config_id"),
+            _text_param(params, "channel"),
+            _text_param(params, "connection_key"),
+        )
+        return {"agent_id": agent_id}
+
+    async def colleague_connections(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Every IM agent of a colleague, so Gateway can remove the apps bound to them.
+
+        A hidden colleague still lists them; one already purged reports ``removed`` with none,
+        so a deletion whose answer was lost can be repeated as it was sent.
+        """
+        service = await asyncio.to_thread(self._colleagues)
+        records = await asyncio.to_thread(
+            service.removal_connections, WEB_NAMESPACE, _text_param(params, "config_id"),
+        )
+        return {
+            "connections": [
+                {"channel": item.channel, "connection_key": item.connection_key, "agent_id": item.agent_id}
+                for item in records or ()
+            ],
+            "removed": records is None,
+        }
+
+    async def remove_colleague(
+        self, params: Mapping[str, Any], *, im_runtime: AgentManager | None = None,
+    ) -> dict[str, Any]:
+        """Hide a colleague and keep its data (``unbind``), or delete every agent and then the colleague (``purge``).
+
+        Gateway has already removed the IM apps bound to its agents. Work of an agent ends in both
+        runtimes before its data is removed, and each agent's rows go after its files, so after a
+        failure the remaining agents are found again. The colleague's own row goes last and keeps
+        a removal record; repeating a finished deletion succeeds.
+        """
+        config_id = _text_param(params, "config_id")
+        mode = params.get("mode")
+        if mode not in ("unbind", "purge"):
+            raise PersistentAgentError("mode must be unbind or purge")
+        service = await asyncio.to_thread(self._colleagues)
+        pending = await asyncio.to_thread(service.removal_connections, WEB_NAMESPACE, config_id)
+        if pending is None:
+            return {"removed": True}
+        if mode == "unbind":
+            await asyncio.to_thread(service.hide_colleague, WEB_NAMESPACE, config_id)
+            return {"removed": True}
+        manager = await self._runtime()
+        # Connections added while earlier ones were removed are read again; the colleague's row
+        # cannot be deleted while any remain.
+        for _ in range(3):
+            if not pending:
+                break
+            for item in pending:
+                await self._purge_agent(manager, item.agent_id, im_runtime)
+            pending = await asyncio.to_thread(service.removal_connections, WEB_NAMESPACE, config_id) or []
+        if pending:
+            raise PersistentAgentError("connections are still being added to this colleague; retry", code="CONFLICT")
+        await self._purge_agent(manager, config_id, im_runtime, record_removal=True)
+        return {"removed": True}
+
+    async def _purge_agent(
+        self, manager: AgentManager, agent_id: str, im_runtime: AgentManager | None, *, record_removal: bool = False,
+    ) -> None:
+        if im_runtime is not None:
+            await im_runtime.scheduler.end_agent(WEB_NAMESPACE, agent_id)
+        try:
+            await asyncio.to_thread(self._conversations.purge_agent, WEB_NAMESPACE, agent_id)
+            await manager.delete_colleague(WEB_NAMESPACE, agent_id, record_removal=record_removal)
+        finally:
+            if im_runtime is not None:
+                im_runtime.scheduler.release_agent(WEB_NAMESPACE, agent_id)
+
     async def prepare_feishu_cli(self, agent_id: str) -> dict[str, object]:
         manager = await self._runtime()
         return manager.schedule_feishu_cli(WEB_NAMESPACE, agent_id)
@@ -408,7 +490,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
 
         A sending connection is registered before the message is accepted, so the first fragments are not missed.
         """
-        if self._stream is None or method == ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value:
+        if self._stream is None:
             return
         if isinstance(agent_id, str) and agent_id:
             self._stream.watch(agent_id, request)
@@ -515,10 +597,6 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             await asyncio.to_thread(manager.schedules.delete, WEB_NAMESPACE, _text_param(params, "plan_id"))
             return {"deleted": True}
         agent_id = _text_param(params, "agent_id")
-        if method == ReqMethod.JIUWENMATE_COLLEAGUE_DELETE.value:
-            await manager.delete_colleague(WEB_NAMESPACE, agent_id)
-            await asyncio.to_thread(conversations.purge_agent, WEB_NAMESPACE, agent_id)
-            return {"deleted": True}
         if method == ReqMethod.JIUWENMATE_CONVERSATION_LIST.value:
             await self._list_legacy_conversation(manager, conversations, agent_id)
             listed = await asyncio.to_thread(conversations.list, WEB_NAMESPACE, agent_id)
@@ -598,11 +676,14 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         if method == ReqMethod.JIUWENMATE_MODELS_LIST.value:
             return self._model_catalog()
         service = self._colleagues()
+        bound = _bound_apps()
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT.value:
             view = service.ensure_default_colleague(WEB_NAMESPACE)
-            return {"colleague": None if view is None else _colleague_wire(view)}
+            return {"colleague": None if view is None else _colleague_wire(view, service, bound)}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_LIST.value:
-            return {"colleagues": [_colleague_wire(view) for view in service.list_colleagues(WEB_NAMESPACE)]}
+            return {"colleagues": [
+                _colleague_wire(view, service, bound) for view in service.list_colleagues(WEB_NAMESPACE)
+            ]}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_CREATE.value:
             template_id = params.get("template_id")
             if template_id is not None and not isinstance(template_id, str):
@@ -618,21 +699,27 @@ class JiuwenMateWebAdapter(GatewayAdapter):
                         template_id=template_id or None,
                         source_template_id=source_template_id or None,
                         unique_source=params.get("unique_source") is True,
-                    )
+                    ),
+                    service,
+                    bound,
                 )
             }
+        # Management works on a colleague's configuration, whose ID is its Web agent's.
         agent_id = _text_param(params, "agent_id")
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_GET.value:
-            return {"colleague": _colleague_wire(service.get_colleague(WEB_NAMESPACE, agent_id))}
+            return {"colleague": _colleague_wire(service.get_config(WEB_NAMESPACE, agent_id), service, bound)}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_GET.value:
+            service.get_config(WEB_NAMESPACE, agent_id)
             return {"settings": service.read_settings(WEB_NAMESPACE, agent_id).to_dict()}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_SETTINGS_UPDATE.value:
-            return {"colleague": _colleague_wire(service.update_settings(WEB_NAMESPACE, agent_id, _settings(params)))}
+            updated = service.update_settings(WEB_NAMESPACE, agent_id, _settings(params))
+            return {"colleague": _colleague_wire(updated, service, bound)}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_PUBLISH.value:
             return {"version": service.publish(WEB_NAMESPACE, agent_id).to_dict()}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_SET_ENABLED.value:
             enabled = params.get("enabled")
             if not isinstance(enabled, bool):
                 raise PersistentAgentError("enabled must be a boolean")
-            return {"colleague": _colleague_wire(service.set_enabled(WEB_NAMESPACE, agent_id, enabled=enabled))}
+            updated = service.set_enabled(WEB_NAMESPACE, agent_id, enabled=enabled)
+            return {"colleague": _colleague_wire(updated, service, bound)}
         raise PersistentAgentError(f"unsupported method {method!r}")

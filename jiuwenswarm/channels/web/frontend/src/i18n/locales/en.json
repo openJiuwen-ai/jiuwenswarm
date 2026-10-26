@@ -370,6 +370,10 @@
       "cancelAuthorizationTitle": "Revoke channel authorization",
       "cancelAuthorizationWarning": "After revoking, this colleague stops receiving and replying on this channel.",
       "cancelAuthorizationMessage": "Revoke the “{{channel}}” authorization? It can be authorized again later.",
+      "addConnection": "Add connection",
+      "removeConnection": "Disconnect",
+      "removeConnectionWarning": "Messages to this app no longer reach the employee. The connection's workspace and history stay and return when the same app is bound again.",
+      "removeConnectionConfirm": "Disconnect {{platform}} app {{app}} from the AI employee: ",
       "workLog": "Work log",
       "periods": {
         "7d": "Last 7 days",
@@ -480,6 +484,10 @@
       "send": "Send",
       "stop": "Stop",
       "aiDisclaimer": "AI-generated content is for reference only",
+      "connection": "Workspace",
+      "webConnection": "Web",
+      "connectionHint": "Files shared here can also be read by {{platform}} users.",
+      "webResult": "New result in the Web workspace. View it",
       "defaultPrompts": [
         "Summarize today's hot questions",
         "Review group reply quality",
@@ -603,6 +611,12 @@
       "delete": "Delete",
       "deleteWarning": "Deleting an AI employee also deletes its memories and tasks.",
       "deleteConfirm": "Delete AI employee: ",
+      "deleteModes": {
+        "unbind": "Disconnect only",
+        "unbindHint": "Removes the Feishu and DingTalk apps bound to this employee and takes it off the list. Each connection's workspace and history stay on this machine and cannot be restored from the page.",
+        "purge": "Delete everything",
+        "purgeHint": "Removes the bound apps and deletes the office folders, conversation lists, configuration versions, schedules and authorizations of all this employee's connections. Execution records are not deleted."
+      },
       "disableWarning": "A disabled employee still supports conversations but no longer responds in IM channels.",
       "disableConfirm": "Disable AI employee: ",
       "scope": "Scope",

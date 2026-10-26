@@ -116,6 +116,13 @@ class _Host:
             ColleagueSettings(name=name, capabilities=CapabilitySelection(model="deepseek#0")),
         ).agent_id
 
+    def connected(self, name: str, app_id: str) -> str:
+        """A colleague with one Feishu app; returns the agent created for that app."""
+        return self.service.attach_connection(NS, self.colleague(name), "feishu", app_id)
+
+    def config_of(self, agent_id: str) -> str:
+        return self.service.connection_of(NS, agent_id).config_id
+
     def fanout(self, bindings, *, access_resolver=None, binding_resolver=None):
         rows = tuple(bindings)
 
@@ -179,20 +186,21 @@ def _event(**overrides) -> FeishuInboundEvent:
     return FeishuInboundEvent(**fields)
 
 
-def _binding(app_id: str, agent_id: str, *, binding_id: str | None = None) -> FeishuBinding:
+def _binding(app_id: str, agent_id: str, *, binding_id: str | None = None, enterprise: bool = False) -> FeishuBinding:
     return FeishuBinding(
         binding_id=binding_id or f"binding-{app_id}",
         platform="feishu",
         app_id=app_id,
         namespace_id=NS,
         agent_id=agent_id,
+        enterprise=enterprise,
     )
 
 
 @pytest.mark.asyncio
 async def test_disabled_colleague_claims_a_feishu_message_without_starting_work(host):
-    agent_id = host.colleague("研发同事")
-    host.service.set_enabled(NS, agent_id, enabled=False)
+    agent_id = host.connected("研发同事", "app-dev")
+    host.service.set_enabled(NS, host.config_of(agent_id), enabled=False)
     fanout = host.fanout([_binding("app-dev", agent_id)])
 
     assert await fanout.handle(_event()) is InboundDisposition.HANDLED
@@ -213,7 +221,7 @@ async def test_unbound_event_is_left_for_the_personal_route_without_creating_sta
 async def test_group_archives_own_echo_before_suppressing_dispatch(host):
     from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
     source = _event(sender_type="bot", sender_app_id="app-dev")
     assert await fanout.handle(source) is InboundDisposition.HANDLED
@@ -228,7 +236,7 @@ async def test_group_archives_own_echo_before_suppressing_dispatch(host):
 async def test_group_two_agents_share_archive_but_not_request_dedup(host):
     from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 
-    first, second = host.colleague("A"), host.colleague("B")
+    first, second = host.connected("A", "app-a"), host.connected("B", "app-b")
     fanout = host.fanout([_binding("app-a", first), _binding("app-b", second)])
     await fanout.handle(_event(receiving_app_id="app-a"))
     await fanout.handle(_event(receiving_app_id="app-b"))
@@ -241,7 +249,7 @@ async def test_group_two_agents_share_archive_but_not_request_dedup(host):
 
 @pytest.mark.asyncio
 async def test_group_recall_before_original_does_not_create_a_request(host):
-    agent_id = host.colleague("A")
+    agent_id = host.connected("A", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
     await fanout.handle(_event(event_kind="recalled", event_id="recall-first", changed_at=NOW))
     assert await fanout.handle(_event()) is InboundDisposition.HANDLED
@@ -251,23 +259,23 @@ async def test_group_recall_before_original_does_not_create_a_request(host):
 @pytest.mark.asyncio
 async def test_group_rebinding_retires_only_unconfigured_bot_access(host):
     agent_id = host.colleague("A")
-    bindings = {"app-dev": _binding("app-dev", agent_id)}
+    bindings = {"app-dev": _binding("app-dev", agent_id, enterprise=True)}
     fanout = host.fanout([], binding_resolver=lambda platform, app: (bindings[app],) if app in bindings else ())
     await fanout.handle(_event())
     bindings.clear()
-    bindings["app-new"] = _binding("app-new", agent_id)
+    bindings["app-new"] = _binding("app-new", agent_id, enterprise=True)
     await fanout.handle(_event(receiving_app_id="app-new", message_id="om_new"))
     group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
     assert host.groups.access_for(NS, agent_id, group.group_chat_id).app_id == "app-new"
     bindings.clear()
-    bindings["app-dev"] = _binding("app-dev", agent_id)
+    bindings["app-dev"] = _binding("app-dev", agent_id, enterprise=True)
     assert await fanout.handle(_event(message_id="om_back")) is InboundDisposition.HANDLED
     assert host.groups.access_for(NS, agent_id, group.group_chat_id).app_id == "app-dev"
 
 
 @pytest.mark.asyncio
 async def test_group_recall_and_left_events_update_records_without_requests(host):
-    agent_id = host.colleague("A")
+    agent_id = host.connected("A", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
     await fanout.handle(_event())
     group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
@@ -282,7 +290,7 @@ async def test_group_recall_and_left_events_update_records_without_requests(host
 
 @pytest.mark.asyncio
 async def test_group_event_maps_core_fields_and_persists_one_request(host):
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
     source = _event(attachment_refs=("feishu:attachment:om_001:file_key_1",))
 
@@ -312,7 +320,7 @@ async def test_group_event_maps_core_fields_and_persists_one_request(host):
 
 @pytest.mark.asyncio
 async def test_receiver_bot_mention_adds_internal_agent_id_only_to_request_source(host):
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
     source = _event(mention_ids=("ou_dev",), receiver_bot_mentioned=True)
 
@@ -327,8 +335,8 @@ async def test_receiver_bot_mention_adds_internal_agent_id_only_to_request_sourc
 
 @pytest.mark.asyncio
 async def test_later_named_colleague_waits_for_the_first_public_reply(host):
-    life = host.colleague("生活小助手")
-    study = host.colleague("agent学习小助手")
+    life = host.connected("生活小助手", "app-life")
+    study = host.connected("agent学习小助手", "app-study")
     fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
     group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
     for agent_id, app_id in ((life, "app-life"), (study, "app-study")):
@@ -364,8 +372,8 @@ async def test_later_named_colleague_waits_for_the_first_public_reply(host):
 
 @pytest.mark.asyncio
 async def test_an_unmentioned_colleague_does_not_answer_a_named_ping(host):
-    life = host.colleague("生活小助手")
-    study = host.colleague("agent学习小助手")
+    life = host.connected("生活小助手", "app-life")
+    study = host.connected("agent学习小助手", "app-study")
     fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
     group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
     for agent_id, app_id in ((life, "app-life"), (study, "app-study")):
@@ -441,8 +449,8 @@ async def test_typed_all_does_not_override_a_specific_platform_mention(host):
 async def test_a_pure_greeting_is_accepted_only_for_one_daily_colleague(host):
     from dataclasses import replace
 
-    life = host.colleague("生活小助手")
-    study = host.colleague("agent学习小助手")
+    life = host.connected("生活小助手", "app-life")
+    study = host.connected("agent学习小助手", "app-study")
     fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
     group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
     for agent_id, app_id in ((life, "app-life"), (study, "app-study")):
@@ -466,7 +474,7 @@ async def test_a_pure_greeting_is_accepted_only_for_one_daily_colleague(host):
     assert len(host.request_states(study, task)) == 1
 
     settings = host.service.read_settings(NS, life)
-    host.service.update_settings(NS, life, replace(settings, group_reply_mode="passive"))
+    host.service.update_settings(NS, host.config_of(life), replace(settings, group_reply_mode="passive"))
     greeted = _event(
         receiving_app_id="app-study", message_id="om_again", text="在吗", mention_ids=(), reply_to=None,
     )
@@ -481,8 +489,8 @@ async def test_a_pure_greeting_is_accepted_only_for_one_daily_colleague(host):
 
 @pytest.mark.asyncio
 async def test_delivered_handoff_starts_only_the_named_colleague(host):
-    life = host.colleague("生活小助手")
-    study = host.colleague("agent学习小助手")
+    life = host.connected("生活小助手", "app-life")
+    study = host.connected("agent学习小助手", "app-study")
     fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
 
     for _ in range(2):
@@ -513,8 +521,8 @@ async def test_delivered_handoff_starts_only_the_named_colleague(host):
 
 @pytest.mark.asyncio
 async def test_delivered_handoff_starts_when_delivery_already_archived_the_reply(host):
-    life = host.colleague("生活小助手")
-    study = host.colleague("agent学习小助手")
+    life = host.connected("生活小助手", "app-life")
+    study = host.connected("agent学习小助手", "app-study")
     fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
     seeded = _event(
         receiving_app_id="app-life",
@@ -557,7 +565,7 @@ async def test_delivered_handoff_starts_when_delivery_already_archived_the_reply
 
 @pytest.mark.asyncio
 async def test_configured_agent_mismatch_is_rejected_without_personal_fallback(host):
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
 
     disposition = await fanout.handle(_event(expected_agent_id="mate_stale"))
@@ -568,7 +576,7 @@ async def test_configured_agent_mismatch_is_rejected_without_personal_fallback(h
 
 @pytest.mark.asyncio
 async def test_attachment_only_request_uses_placeholder_without_fabricating_source_text(host):
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
     source = _event(text=None, attachment_refs=("feishu:attachment:om_001:image_key_1",))
 
@@ -582,7 +590,7 @@ async def test_attachment_only_request_uses_placeholder_without_fabricating_sour
 
 @pytest.mark.asyncio
 async def test_direct_message_uses_an_isolated_im_session(host):
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
     source = _event(chat_type="p2p", chat_id="ou_alice", mention_ids=(), reply_to=None)
 
@@ -599,8 +607,8 @@ async def test_direct_message_uses_an_isolated_im_session(host):
 
 @pytest.mark.asyncio
 async def test_redelivery_is_idempotent_per_agent_but_shared_event_reaches_each_bot(host):
-    dev_id = host.colleague("研发同事")
-    qa_id = host.colleague("测试同事")
+    dev_id = host.connected("研发同事", "app-dev")
+    qa_id = host.connected("测试同事", "app-qa")
     dev_event = _event(receiving_app_id="app-dev")
     qa_event = _event(receiving_app_id="app-qa")
     fanout = host.fanout([_binding("app-dev", dev_id), _binding("app-qa", qa_id)])
@@ -624,7 +632,7 @@ async def test_redelivery_is_idempotent_per_agent_but_shared_event_reaches_each_
 
 @pytest.mark.asyncio
 async def test_concurrent_redelivery_creates_only_one_request_for_the_same_agent(host):
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
     source = _event()
 
@@ -637,7 +645,7 @@ async def test_concurrent_redelivery_creates_only_one_request_for_the_same_agent
 
 @pytest.mark.asyncio
 async def test_binding_ambiguity_and_lookup_error_fail_closed(host):
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     duplicate_bindings = [_binding("app-dev", agent_id, binding_id="one"),
                           _binding("app-dev", agent_id, binding_id="two")]
     ambiguous = host.fanout(duplicate_bindings)
@@ -652,7 +660,7 @@ async def test_binding_ambiguity_and_lookup_error_fail_closed(host):
 
 @pytest.mark.asyncio
 async def test_missing_access_snapshot_rejects_before_group_or_session_creation(host):
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     fanout = host.fanout(
         [_binding("app-dev", agent_id)], access_resolver=lambda _binding, _event: None
     )
@@ -690,7 +698,7 @@ async def test_missing_published_configuration_rejects_before_group_or_session_c
     ],
 )
 async def test_malformed_bound_events_are_rejected_without_persisting_state(host, overrides):
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
 
     disposition = await fanout.handle(_event(**overrides))
@@ -702,7 +710,7 @@ async def test_malformed_bound_events_are_rejected_without_persisting_state(host
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mentioned", [False, True])
 async def test_current_bot_echo_is_suppressed_but_unidentified_bot_is_not_guessed_to_be_self(host, mentioned):
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
 
     own_echo = await fanout.handle(
@@ -735,7 +743,7 @@ async def test_current_bot_echo_is_suppressed_but_unidentified_bot_is_not_guesse
 async def test_unmentioned_bot_group_message_is_archived_without_request(
     host, sender_type, sender_app_id, text, mention_ids, reply_to,
 ):
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     fanout = host.fanout([_binding("app-dev", agent_id)])
     event = _event(sender_type=sender_type, sender_id="ou_other_bot", sender_name="其他助手",
                    sender_app_id=sender_app_id, text=text, mention_ids=mention_ids, reply_to=reply_to)
@@ -1188,9 +1196,9 @@ async def test_group_reply_mode_controls_requests_and_preserves_context(
 ):
     from dataclasses import replace
 
-    agent_id = host.colleague("研发同事")
+    agent_id = host.connected("研发同事", "app-dev")
     settings = host.service.read_settings(NS, agent_id)
-    host.service.update_settings(NS, agent_id, replace(settings, group_reply_mode=mode))
+    host.service.update_settings(NS, host.config_of(agent_id), replace(settings, group_reply_mode=mode))
     assert host.service.read_settings(NS, agent_id).group_reply_mode == mode
     assert host.service.get_colleague(NS, agent_id).to_dict()["group_reply_mode"] == mode
     fanout = host.fanout([_binding("app-dev", agent_id)])

@@ -4207,12 +4207,20 @@ async def test_channel_feishu_bind_agent_persists_one_to_one_persistent_agent_id
     config_path = tmp_path / "config.yaml"
     config_module.dump_yaml_round_trip(config_path, {"channels": {"feishu": cm.configs["feishu"]}})
     monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
-    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    async def send_request(envelope):
+        # AgentServer answers with the agent it keeps for this app of the colleague.
+        payload = {"agent_id": "mate_new"} if envelope.method == "jiuwenmate.connection.attach" else {}
+        return SimpleNamespace(ok=True, payload=payload)
+
+    _register_web_handlers(WebHandlersBindParams(
+        channel=channel, channel_manager=cm, agent_client=SimpleNamespace(send_request=send_request),
+    ))
 
     await channel.methods["channel.feishu.bind_agent"](
         object(),
         "req-bind-agent",
-        {"app_id": "cli_new", "app_secret": "new-secret", "persistent_agent_id": "mate_new"},
+        {"app_id": "cli_new", "app_secret": "new-secret", "config_id": "mate_colleague"},
         "sess-1",
     )
 

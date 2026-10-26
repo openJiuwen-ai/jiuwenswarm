@@ -15,6 +15,8 @@ import type {
   JiuwenMateChannelMessage,
   JiuwenMateColleague,
   JiuwenMateColleagueDraft,
+  JiuwenMateConnection,
+  JiuwenMateImPlatform,
   JiuwenMateModelOption,
   JiuwenMateTraceRow,
 } from './types';
@@ -92,6 +94,7 @@ const CATEGORIES: readonly JiuwenMateCategory[] = [
 const MAX_AVATAR_URL = 2048;
 
 export type JiuwenMateRequest = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+export type JiuwenMateDeleteMode = 'unbind' | 'purge';
 export type JiuwenMateSubscribe = (event: string, handler: (payload: unknown) => void) => () => void;
 
 export interface JiuwenMateWireCapabilities {
@@ -425,14 +428,36 @@ export function withColleagueEdit(
   );
 }
 
+function toConnections(value: unknown, agentId: string, workspaceDir: string | null): JiuwenMateConnection[] {
+  const connections = rows(value).flatMap((item): JiuwenMateConnection[] => {
+    const wire = record(item);
+    const channel = wire.channel;
+    if ((channel !== 'web' && channel !== 'feishu' && channel !== 'dingtalk') || !text(wire.agent_id)) return [];
+    return [{
+      channel,
+      connectionKey: text(wire.connection_key),
+      agentId: text(wire.agent_id),
+      workspaceDir: text(wire.workspace_dir) || null,
+    }];
+  });
+  // Every colleague works on the Web page through its own agent.
+  return connections.some((item) => item.channel === 'web')
+    ? connections
+    : [{ channel: 'web', connectionKey: 'web', agentId, workspaceDir }, ...connections];
+}
+
 export function toColleague(value: unknown): JiuwenMateColleague {
   const wire = record(value);
   const capabilities = record(wire.capabilities);
   const category = text(wire.category) as JiuwenMateCategory;
   const avatarUrl = text(wire.avatar_url);
   const avatarHue = readAvatarHue(avatarUrl);
+  const id = text(wire.agent_id);
+  const workspaceDir = text(wire.workspace_dir) || null;
   return {
-    id: text(wire.agent_id),
+    id,
+    configId: text(wire.config_id) || id,
+    connections: toConnections(wire.connections, id, workspaceDir),
     name: text(wire.name),
     description: text(wire.description),
     groupReplyMode: wire.group_reply_mode === 'passive' ? 'passive' : 'adaptive',
@@ -454,13 +479,12 @@ export function toColleague(value: unknown): JiuwenMateColleague {
       starterPrompts: texts(capabilities.starter_prompts),
     },
     imConfigured: wire.im_configured === true,
-    imPlatform: wire.im_platform === 'feishu' || wire.im_platform === 'dingtalk' ? wire.im_platform : undefined,
     disabled: wire.enabled === false,
     joinedAt: text(wire.created_at),
     isDefault: wire.is_default === true,
     currentVersion: typeof wire.current_version === 'string' ? wire.current_version : null,
     hasUnpublishedChanges: wire.has_unpublished_changes === true,
-    workspaceDir: text(wire.workspace_dir) || null,
+    workspaceDir,
   };
 }
 
@@ -967,8 +991,32 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     },
     setColleagueEnabled: (agentId: string, enabled: boolean) =>
       colleague(JIUWENMATE_METHODS.setEnabled, { agent_id: agentId, enabled }),
-    async deleteColleague(agentId: string): Promise<void> {
-      await request(JIUWENMATE_METHODS.delete, { agent_id: agentId });
+    /** ``unbind`` hides the colleague and keeps every connection's data; ``purge`` deletes all of it. */
+    async deleteColleague(agentId: string, mode: JiuwenMateDeleteMode): Promise<void> {
+      await request(JIUWENMATE_METHODS.delete, { agent_id: agentId, mode });
+    },
+    /** Binds an IM app to the colleague; the server keeps one agent per app. */
+    async bindConnection(colleague: JiuwenMateColleague, platform: JiuwenMateImPlatform, credentials: {
+      appId: string;
+      appSecret: string;
+      robotCode?: string;
+    }): Promise<void> {
+      await request(`channel.${platform}.bind_agent`, platform === 'dingtalk'
+        ? {
+            config_id: colleague.configId,
+            client_id: credentials.appId,
+            client_secret: credentials.appSecret,
+            robot_code: credentials.robotCode ?? '',
+          }
+        : { config_id: colleague.configId, app_id: credentials.appId, app_secret: credentials.appSecret });
+    },
+    /** Removes the IM app; its agent keeps its data and returns if the same app is bound again. */
+    async unbindConnection(connection: JiuwenMateConnection): Promise<void> {
+      if (connection.channel === 'web') return;
+      await request(
+        `channel.${connection.channel}.unbind_agent`,
+        connection.channel === 'dingtalk' ? { client_id: connection.connectionKey } : { app_id: connection.connectionKey },
+      );
     },
     async listModels(): Promise<JiuwenMateModelCatalog> {
       return toModelCatalog(await request(JIUWENMATE_METHODS.modelsList));

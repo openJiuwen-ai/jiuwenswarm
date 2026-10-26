@@ -131,7 +131,7 @@ sequenceDiagram
 | `jiuwenmate.colleague.settings.get` | `agent_id` | `{settings}` |
 | `jiuwenmate.colleague.settings.update` | `agent_id`、`settings` | `{colleague}` |
 | `jiuwenmate.colleague.publish` | `agent_id` | `{version}` |
-| `jiuwenmate.colleague.delete` | `agent_id` | `{deleted: true}` |
+| `jiuwenmate.colleague.delete` | `agent_id`（2026-10-26 起另需 `mode`：`unbind` / `purge`，由 Gateway 先移除绑定应用再交给 AgentServer，见 [S_04](../specs/S_04_colleague-connections.md)） | `{deleted: true}` |
 | `jiuwenmate.models.list` | 无 | `{models: [{selection_key, display_name, model_name, provider, ...}], current_selection, current_display_name}` |
 
 `Colleague` 即 `ColleagueView.to_dict()`；`settings` 即 `ColleagueSettings.to_dict()`；`version` 即 `ConfigVersionView.to_dict()`。失败时 `ok=false`，`payload={error, code}`；参数缺失或类型错误返回 `BAD_REQUEST`。

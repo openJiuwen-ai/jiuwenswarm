@@ -162,7 +162,12 @@ class ColleagueSettings:
 
 @dataclass(frozen=True, kw_only=True)
 class ColleagueDefinition:
-    """The persisted colleague; ``revision`` grows on every settings change."""
+    """One row of the colleague table: a colleague's configuration or one of its IM agents.
+
+    A configuration's row is also its Web agent, so ``agent_id`` is the configuration ID.
+    ``revision`` grows on every settings change. An IM agent's row records only the
+    configuration revision its current version was built from.
+    """
 
     namespace_id: str
     agent_id: str
@@ -175,10 +180,25 @@ class ColleagueDefinition:
     current_version: str | None
     created_at: datetime
     updated_at: datetime
+    hidden: bool = False
+    # The settings, persona included, that the last publication used; new connections start from them.
+    published_settings: ColleagueSettings | None = None
 
     @property
     def has_unpublished_changes(self) -> bool:
         return self.published_revision != self.revision
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConnectionRecord:
+    """An IM agent and the one platform app it may serve, under one colleague configuration."""
+
+    namespace_id: str
+    agent_id: str
+    config_id: str
+    channel: str
+    connection_key: str
+    created_at: datetime
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -222,12 +242,14 @@ class ColleagueView:
     workspace_dir: str | None = None
     group_reply_mode: str = "adaptive"
     permission_profile: str = "default"
+    config_id: str = ""
 
     @classmethod
     def from_definition(cls, definition: ColleagueDefinition) -> ColleagueView:
         settings = definition.settings
         return cls(
             agent_id=definition.agent_id,
+            config_id=definition.agent_id,
             name=settings.name,
             description=settings.description,
             tags=settings.tags,
@@ -248,6 +270,7 @@ class ColleagueView:
     def to_dict(self) -> dict[str, Any]:
         return {
             "agent_id": self.agent_id,
+            "config_id": self.config_id,
             "name": self.name,
             "description": self.description,
             "tags": list(self.tags),

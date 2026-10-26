@@ -8,9 +8,9 @@
 | 编号 / slug | S_03 / im-direct-message-and-delivery |
 | 关联模块 | Gateway 钉钉渠道与投递选择、AgentServer 钉钉入站、jiuwenmate 请求与投递账本 |
 | 最近一次修订日期 | 2026-10-26 |
-| 关联 feature | [F_21_02 钉钉单聊](../features/F_21_02_dingtalk-direct-message.md)、[F_08](../features/F_08_feishu-group-fanout.md)、[F_09](../features/F_09_web-and-feishu-result-delivery.md) |
+| 关联 feature | [F_21_02 钉钉单聊](../features/F_21_02_dingtalk-direct-message.md)、[F_02_02 配置与连接](../features/F_02_02_colleague-connections.md)、[F_08](../features/F_08_feishu-group-fanout.md)、[F_09](../features/F_09_web-and-feishu-result-delivery.md) |
 
-本规约维护 Swarm 宿主的钉钉单聊接线契约，不改变 PA 执行协议，也不改变飞书入站与绑定契约。状态：本地实现；源码与替身验证通过不等于平台联调通过，证据见 F_21_02。
+本规约维护 Swarm 宿主的钉钉单聊接线契约，不改变 PA 执行协议。同事、连接与运行 Agent 的关系及飞书、钉钉共用的连接检查见 [S_04](S_04_colleague-connections.md)。状态：已实现，提交在个人仓，待与 [F_02_02](../features/F_02_02_colleague-connections.md) 一同合入上游；源码与替身验证通过不等于平台联调通过，证据见 F_21_02。
 
 ## 1. 范围、术语与适用条件
 
@@ -45,7 +45,7 @@
 
 1. **入站接管：** JM 应用的全部入站由 JM 认领；拒绝、失败或不支持都不进入普通 Agent，也不下载附件、不写 `last_*`。
 2. **身份完整：** 只受理带 msgId、conversationId、senderStaffId 与非空文本的单聊；事件带 robotCode 时须与配置（缺省为 client_id）一致；`senderCorpId` 与 `chatbotCorpId` 都存在时必须相同；`allow_from` 非空时按 staffId 检查。
-3. **连接不复用：** 钉钉绑定接口与入站都拒绝已绑定飞书（含停用绑定）的 Agent，以及已有群会话、其他平台单聊或其他钉钉应用单聊的 Agent；绑定时由 AgentServer 依据已有会话判断，无法判断时拒绝绑定。飞书路径不做对应检查：一个已服务钉钉的 Agent 被绑定到飞书后，钉钉入站被拒，但飞书照常运行且可读到该 Agent 原有的钉钉输出文件。该缺口由连接登记统一关闭，见第 6 节合入依赖。
+3. **连接不复用：** 每个钉钉应用由同事专属的运行 Agent 服务。入站只受理 YAML 绑定到、且登记为本钉钉应用连接的 Agent，其余一律拒绝（S_04 不变量 2）；飞书入站执行同一检查。
 4. **普通应用唯一：** 最多一个普通应用；第二个普通应用的保存被拒绝。
 5. **默认应用：** 唯一的普通应用是默认应用；没有普通应用时只保留已标记为默认的应用，不按位置提升 JM 应用。默认应用路由键为 `default`，其余为 client_id。找不到默认应用时，不带应用身份的钉钉消息被丢弃，不回退到任一实例。
 6. **cron 身份：** 默认应用换成另一 client_id 或不再存在时，`last_*` 从配置文件删除；密钥轮换保留。
@@ -54,12 +54,12 @@
 
 ## 4. 接口契约
 
-- `channel.dingtalk.bind_agent(client_id, client_secret, persistent_agent_id, robot_code?)`：创建或更新该应用的绑定；同一 Agent 原有的其他钉钉应用被移除；绑定普通应用即把它转为 JM；新应用以空白名单创建，其他应用的已保存字段（含格式错误的白名单）不变。保存前经内部方法 `jiuwenmate.dingtalk.binding_check(agent_id, app_id)` 询问 AgentServer，返回 `{allowed}`。违反不变量 3、4 返回 `BAD_REQUEST`；AgentServer 无法回答时返回 `SERVICE_UNAVAILABLE` 且不保存。落盘成功但通道重启失败返回 `CHANNEL_APPLY_FAILED`。
-- `channel.dingtalk.get_bindings`：返回有效绑定的 Agent ID，不返回凭据。
+- `channel.dingtalk.bind_agent(client_id, client_secret, config_id, robot_code?)`：先经内部方法 `jiuwenmate.connection.attach` 取得该同事这个应用的运行 Agent（S_04），再把它写入应用的 `persistent_agent_id`；绑定普通应用即把它转为 JM；新应用以空白名单创建，其他应用的已保存字段（含格式错误的白名单）不变。AgentServer 拒绝时原样返回其错误码，无法回答时返回 `SERVICE_UNAVAILABLE`，都不保存；违反不变量 4 返回 `BAD_REQUEST`；落盘成功但通道重启失败返回 `CHANNEL_APPLY_FAILED`。
+- `channel.dingtalk.unbind_agent(client_id)`：删除该应用条目，仅当它绑定了 Agent；其运行 Agent 与数据保留。
 - `channel.dingtalk.get_conf`：返回共享键与归一化的 `apps[]`。
 - `channel.dingtalk.set_conf({apps})`：只接受 `apps[]`；每项先按 client_id 合并到已保存的应用，再推导与校验，所以未提交的字段（含 `enabled`、应用级 API 地址、白名单、`persistent_agent_id`、`robot_code`）保持原值，空的 `client_secret` 表示不变；未保存过的 client_id 没有原值，必须提交 `allow_from`，否则返回 `BAD_REQUEST`；默认标志由服务端推导。列表中不存在的应用被删除，不影响其他应用和 Agent 数据。
-- 保存语义（`set_conf` 与 `bind_agent` 共用）：在配置写锁内以文件中的 `channels.dingtalk` 为基础合并、校验并写回，再用写回结果重启钉钉通道；重启串行执行，每次在旧实例停止后读取最新配置，停止旧实例不按 channel_id 注销，因此重叠的重启不会让已保存的应用缺少通道；并发保存不会互相覆盖，普通渠道写入文件的 `last_*` 不会被内存中的旧值覆盖。`bind_agent` 的 AgentServer 检查在读取配置之前完成。
-- `jiuwenmate.dingtalk.inbound`、`jiuwenmate.dingtalk.binding_check`：Gateway 到 AgentServer 的内部 E2A 方法，不对 Web 公开。入站的处置结果仅用于日志。
+- 保存语义（`set_conf` 与 `bind_agent` 共用）：在配置写锁内以文件中的 `channels.dingtalk` 为基础合并、校验并写回，再用写回结果重启钉钉通道；重启串行执行，每次在旧实例停止后读取最新配置，停止旧实例不按 channel_id 注销，因此重叠的重启不会让已保存的应用缺少通道；并发保存不会互相覆盖，普通渠道写入文件的 `last_*` 不会被内存中的旧值覆盖。`bind_agent` 取得运行 Agent 在读取配置之前完成。
+- `jiuwenmate.dingtalk.inbound`：Gateway 到 AgentServer 的内部 E2A 方法，不对 Web 公开。入站的处置结果仅用于日志。连接相关的内部方法见 S_04。
 - 投递推送：载荷携带 `channel`、`app_id`、`chat_id`、`is_direct_message`；缺少 `channel` 的旧推送按飞书处理。ACK 信封渠道与推送一致。
 
 `send_persistent_result` 的钉钉结果分类：
@@ -87,7 +87,7 @@ Stream 回调把认领的事件调度到后台后立即 ACK；ACK 不代表受�
 
 未绑定钉钉应用、普通文件与 cron 行为保持原状。已保存 `dingtalk` 路由的 Request 不能被不认识该渠道的旧版本解析。真实钉钉的重推规则、会话 ID 稳定性、robotCode 对应、401 与限流语义仍待联调。
 
-合入依赖：不变量 3 的飞书侧缺口会让飞书读取已服务钉钉的 Agent 的工作文件。在配置聚合层的连接登记交付前，本规约所述钉钉单聊不应单独合入发布；或须由飞书负责人在飞书绑定处补充对应检查。
+合入依赖（2026-10-26 已关闭）：原先飞书路径不检查跨连接复用，会读取已服务钉钉的 Agent 的工作文件。S_04 的连接登记让飞书入站执行同一检查，本规约与 S_04 一同生效。
 
 ## 7. 验证索引
 

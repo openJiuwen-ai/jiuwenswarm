@@ -138,6 +138,8 @@ class FeishuBinding:
     app_id: str
     namespace_id: str
     agent_id: str
+    # Enterprise bots are bound in configuration only and have no recorded connection yet.
+    enterprise: bool = False
 
 
 class InboundDisposition(str, Enum):
@@ -171,7 +173,7 @@ def configured_feishu_bindings(
 
     bindings: list[FeishuBinding] = []
 
-    def add_app(app: Any) -> None:
+    def add_app(app: Any, *, enterprise: bool = False) -> None:
         if not isinstance(app, Mapping):
             return
         app_id = app.get("app_id")
@@ -189,6 +191,7 @@ def configured_feishu_bindings(
                 app_id=normalized_app_id,
                 namespace_id="local",
                 agent_id=normalized_agent_id,
+                enterprise=enterprise,
             )
         )
 
@@ -201,7 +204,7 @@ def configured_feishu_bindings(
     enterprise = channels.get("feishu_enterprise")
     if isinstance(enterprise, Mapping):
         for app in enterprise.values():
-            add_app(app)
+            add_app(app, enterprise=True)
     app_counts: dict[str, int] = {}
     agent_counts: dict[str, int] = {}
     for item in bindings:
@@ -472,6 +475,8 @@ class PersistentGroupFanout:
             return InboundDisposition.REJECTED
         if _present(event.expected_agent_id) and binding.agent_id != event.expected_agent_id.strip():
             return InboundDisposition.REJECTED
+        if not await self._serves_only_this_app(binding):
+            return InboundDisposition.REJECTED
 
         if event.event_kind != "message":
             return await self._handle_group_change(binding, event)
@@ -669,6 +674,21 @@ class PersistentGroupFanout:
             return InboundDisposition.REJECTED
 
         return InboundDisposition.HANDLED
+
+    async def _serves_only_this_app(self, binding: FeishuBinding) -> bool:
+        """The bound agent must be the one created for this app, so it never serves another connection.
+
+        An enterprise bot has no recorded connection yet and is accepted unless its agent
+        belongs to another connection.
+        """
+        try:
+            connection = await asyncio.to_thread(self._service.connection_of, binding.namespace_id, binding.agent_id)
+        except Exception as exc:
+            logger.warning("[JiuwenMate] Feishu connection lookup failed closed: error_type=%s", type(exc).__name__)
+            return False
+        if connection is None:
+            return binding.enterprise
+        return connection.channel == "feishu" and connection.connection_key == binding.app_id
 
     async def _im_open(self, binding: FeishuBinding) -> bool:
         """A disabled colleague claims the event and does not start a Request."""

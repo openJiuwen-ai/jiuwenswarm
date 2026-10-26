@@ -10,6 +10,7 @@ import { initReactI18next } from 'react-i18next';
 
 import { ColleagueProfilePage } from '../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js';
 import { ScheduleBoard } from '../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js';
+import { ColleagueDeleteDialog } from '../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js';
 
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
 const profileStyles = readFileSync(new URL('../src/features/jiuwenmate/jiuwenmate.css', import.meta.url), 'utf8');
@@ -31,9 +32,13 @@ const colleague = {
     starterPrompts: [],
   },
   imConfigured: false,
+  configId: 'agent-1',
+  connections: [{ channel: 'web', connectionKey: 'web', agentId: 'agent-1', workspaceDir: null }],
   disabled: false,
   joinedAt: '2026-10-14T08:00:00+00:00',
 };
+
+const feishuConnection = { channel: 'feishu', connectionKey: 'cli-app', agentId: 'agent-feishu', workspaceDir: null };
 
 const noop = () => undefined;
 
@@ -54,6 +59,8 @@ function renderProfile(extra) {
       onOpenOffice: noop,
       onChat: noop,
       onConfigureIm: noop,
+      onConfigureWelink: noop,
+      onRemoveConnection: noop,
       onToggleDisabled: noop,
       onDelete: noop,
       ...extra,
@@ -70,13 +77,14 @@ test('the overview hides quick IM setup after the channel is configured', () => 
   };
   const channels = renderProfile({
     initialSection: 'channels',
-    colleague: authorized,
+    colleague: { ...authorized, connections: [...colleague.connections, feishuConnection] },
   });
   assert.match(channels, /data-variant="channels"/);
   assert.match(channels, /已授权/);
   assert.match(channels, /data-testid="jiuwenmate-profile-im-modify"/);
   assert.match(channels, />修改</);
-  assert.match(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="feishu"/);
+  assert.match(channels, /data-testid="jiuwenmate-profile-im-remove"/);
+  assert.doesNotMatch(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="feishu"/);
   assert.match(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="welink"/);
   assert.match(channels, />取消授权</);
 
@@ -671,13 +679,62 @@ test('channel reply mode renders a compact selected state and disables changes w
 });
 
 
-test('a DingTalk-bound colleague shows its own platform in the channel profile', () => {
+test('each bound app is listed with its own platform, and another app can be added', () => {
+  const dingtalk = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };
   const markup = renderProfile({
     initialSection: 'channels',
-    colleague: { ...colleague, imConfigured: true, imPlatform: 'dingtalk' },
+    onRemoveConnection: noop,
+    colleague: { ...colleague, imConfigured: true, connections: [...colleague.connections, feishuConnection, dingtalk] },
   });
   assert.match(markup, /钉钉/);
-  assert.match(markup, /已授权/);
-  assert.match(markup, /data-testid="jiuwenmate-profile-im-modify"/);
+  assert.match(markup, /飞书/);
+  assert.match(markup, /data-testid="jiuwenmate-profile-connection" data-variant="cli-app"/);
+  assert.match(markup, /data-testid="jiuwenmate-profile-connection" data-variant="ding-app"/);
+  assert.equal(markup.match(/data-testid="jiuwenmate-profile-im-remove"/g).length, 2);
+  assert.match(markup, /data-testid="jiuwenmate-profile-im-add"/);
   assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-quick-im"/);
+
+  const unbound = renderProfile({ initialSection: 'channels' });
+  assert.doesNotMatch(unbound, /data-testid="jiuwenmate-profile-connection"/);
+  assert.match(unbound, />授权</);
+});
+
+
+test('deleting a colleague offers to keep its data or delete everything, keeping data by default', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  const chosen = [];
+  try {
+    await act(async () => {
+      root.render(React.createElement(ColleagueDeleteDialog, {
+        name: '会计助手', onCancel: noop, onConfirm: (mode) => chosen.push(mode),
+      }));
+    });
+    const modes = [...container.querySelectorAll('[data-testid="jiuwenmate-delete-mode-input"]')];
+    assert.deepEqual(modes.map((input) => [input.value, input.checked]), [['unbind', true], ['purge', false]]);
+    assert.equal(container.querySelector('[data-testid="jiuwenmate-delete-purge-warning"]'), null);
+    await act(async () => container.querySelector('[data-testid="jiuwenmate-delete-confirm"]').click());
+    await act(async () => modes[1].click());
+    assert.ok(container.querySelector('[data-testid="jiuwenmate-delete-purge-warning"]'));
+    await act(async () => container.querySelector('[data-testid="jiuwenmate-delete-confirm"]').click());
+    assert.deepEqual(chosen, ['unbind', 'purge']);
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    if (previous.window === undefined) delete globalThis.window;
+    else globalThis.window = previous.window;
+    if (previous.document === undefined) delete globalThis.document;
+    else globalThis.document = previous.document;
+    if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+  }
 });

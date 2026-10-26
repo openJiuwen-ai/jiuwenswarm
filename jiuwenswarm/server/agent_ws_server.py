@@ -2834,53 +2834,6 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    async def _handle_welink_inbound(
-        self,
-        ws: Any,
-        request: AgentRequest,
-        send_lock: asyncio.Lock,
-    ) -> None:
-        """Accept one polled WeLink group message for the bound colleague."""
-        from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition
-        from jiuwenswarm.server.jiuwenmate.welink_inbound import (
-            WelinkInboundEvent, accept_welink_message, configured_welink_binding,
-        )
-
-        disposition = InboundDisposition.RETRYABLE
-        event = None
-        try:
-            params = request.params if isinstance(request.params, dict) else {}
-            event = WelinkInboundEvent.from_payload(params.get("event"))
-        except (TypeError, ValueError):
-            disposition = InboundDisposition.REJECTED
-        if event is not None:
-            try:
-                binding = configured_welink_binding()
-                if binding is None or (binding.account, binding.agent_id) != (
-                    event.account.strip(), event.expected_agent_id.strip(),
-                ):
-                    disposition = InboundDisposition.REJECTED
-                else:
-                    fanout = await self._ensure_persistent_group_fanout()
-                    if fanout is not None:
-                        disposition = await accept_welink_message(fanout, event)
-            except Exception as exc:
-                logger.warning(
-                    "[AgentWebSocketServer] WeLink inbound temporarily unavailable: error_type=%s",
-                    type(exc).__name__,
-                )
-
-        response = AgentResponse(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            ok=True,
-            payload={"disposition": disposition.value},
-            metadata=request.metadata,
-        )
-        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
     async def _handle_dingtalk_binding_check(
         self,
         ws: Any,
@@ -2906,6 +2859,45 @@ class AgentWebSocketServer:
                     "[AgentWebSocketServer] DingTalk binding check failed: error_type=%s", type(exc).__name__,
                 )
                 payload = {"error": "binding check unavailable"}
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=ok,
+            payload=payload,
+            metadata=request.metadata,
+        )
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_jiuwenmate_connection_request(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Answer Gateway's colleague connection requests, which it makes before changing channel bindings."""
+        from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
+        params = request.params if isinstance(request.params, dict) else {}
+        adapter = self._jiuwenmate_web
+        try:
+            if request.req_method == ReqMethod.JIUWENMATE_CONNECTION_ATTACH:
+                payload = await adapter.attach_connection(params)
+            elif request.req_method == ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS:
+                payload = await adapter.colleague_connections(params)
+            else:
+                payload = await adapter.remove_colleague(
+                    params, im_runtime=getattr(self, "_feishu_agent_manager", None),
+                )
+            ok = True
+        except PersistentAgentError as exc:
+            ok, payload = False, {"error": str(exc), "code": exc.code}
+        except Exception as exc:  # noqa: BLE001 - Gateway must not change bindings on an unknown answer
+            logger.warning(
+                "[AgentWebSocketServer] colleague connection request failed: error_type=%s", type(exc).__name__,
+            )
+            ok, payload = False, {"error": "colleague connection request failed", "code": "INTERNAL_ERROR"}
         response = AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -2948,8 +2940,12 @@ class AgentWebSocketServer:
         if request.req_method == ReqMethod.JIUWENMATE_DINGTALK_INBOUND:
             await self._handle_dingtalk_inbound(ws, request, send_lock)
             return
-        if request.req_method == ReqMethod.JIUWENMATE_DINGTALK_BINDING_CHECK:
-            await self._handle_dingtalk_binding_check(ws, request, send_lock)
+        if request.req_method in (
+            ReqMethod.JIUWENMATE_CONNECTION_ATTACH,
+            ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS,
+            ReqMethod.JIUWENMATE_COLLEAGUE_REMOVE,
+        ):
+            await self._handle_jiuwenmate_connection_request(ws, request, send_lock)
             return
         if request.req_method == ReqMethod.JIUWENMATE_FEISHU_INBOUND:
             await self._handle_feishu_inbound(ws, request, send_lock)

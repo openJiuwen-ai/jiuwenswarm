@@ -15,13 +15,14 @@ import sqlite3
 import uuid
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 
 from jiuwenswarm.server.jiuwenmate.models import (
     ColleagueDefinition,
     ColleagueSettings,
+    ConnectionRecord,
     PersistentAgentError,
 )
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
@@ -57,6 +58,22 @@ CREATE TABLE IF NOT EXISTS namespace_defaults (
     agent_id TEXT NOT NULL,
     provisioned_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS colleague_connections (
+    namespace_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    config_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    connection_key TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, agent_id),
+    UNIQUE (namespace_id, config_id, channel, connection_key)
+);
+CREATE TABLE IF NOT EXISTS removed_colleagues (
+    namespace_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    removed_at TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, agent_id)
+);
 """
 
 _TEMPLATE_DIR_NAME = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -66,7 +83,11 @@ _TEMPLATE_SAVE_LOCK = RLock()
 
 
 class PersistentAgentRepository(SQLiteStore):
-    """Colleague definitions and their published configuration versions."""
+    """Colleague configurations, their IM agents and the published configuration versions.
+
+    A configuration's row is its Web agent. Each IM agent has its own row plus one
+    ``colleague_connections`` row naming the configuration and the platform app it serves.
+    """
 
     _schema = _SCHEMA
 
@@ -76,9 +97,14 @@ class PersistentAgentRepository(SQLiteStore):
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(colleagues)")}
             if "enabled" not in columns:
                 conn.execute("ALTER TABLE colleagues ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+            if "hidden" not in columns:
+                conn.execute("ALTER TABLE colleagues ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+            if "published_settings_json" not in columns:
+                conn.execute("ALTER TABLE colleagues ADD COLUMN published_settings_json TEXT")
 
     @staticmethod
     def _definition(row: sqlite3.Row) -> ColleagueDefinition:
+        published = row["published_settings_json"]
         return ColleagueDefinition(
             namespace_id=row["namespace_id"],
             agent_id=row["agent_id"],
@@ -91,6 +117,54 @@ class PersistentAgentRepository(SQLiteStore):
             current_version=row["current_version"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+            hidden=bool(row["hidden"]),
+            published_settings=None if published is None else ColleagueSettings.from_dict(json.loads(published)),
+        )
+
+    @staticmethod
+    def _connection(row: sqlite3.Row) -> ConnectionRecord:
+        return ConnectionRecord(
+            namespace_id=row["namespace_id"],
+            agent_id=row["agent_id"],
+            config_id=row["config_id"],
+            channel=row["channel"],
+            connection_key=row["connection_key"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    @staticmethod
+    def _insert_row(conn: sqlite3.Connection, definition: ColleagueDefinition) -> None:
+        conn.execute(
+            "INSERT INTO colleagues (namespace_id, agent_id, settings_json, source_template_id, is_default, enabled,"
+            " revision, published_revision, current_version, next_version, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)",
+            (
+                definition.namespace_id,
+                definition.agent_id,
+                json.dumps(definition.settings.to_dict(), ensure_ascii=False),
+                definition.source_template_id,
+                int(definition.is_default),
+                int(definition.enabled),
+                definition.revision,
+                definition.created_at.isoformat(),
+                definition.updated_at.isoformat(),
+            ),
+        )
+
+    @staticmethod
+    def _insert_version(
+        conn: sqlite3.Connection, namespace_id: str, snapshot: ConfigSnapshot, published_at: datetime,
+    ) -> None:
+        conn.execute(
+            "INSERT INTO config_versions (namespace_id, agent_id, config_version, snapshot_json, published_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                namespace_id,
+                snapshot.agent_id,
+                snapshot.config_version,
+                json.dumps(snapshot.to_dict(), ensure_ascii=False),
+                published_at.isoformat(),
+            ),
         )
 
     def insert(self, definition: ColleagueDefinition, *, claim_default: bool = False) -> bool:
@@ -105,23 +179,67 @@ class PersistentAgentRepository(SQLiteStore):
                     "INSERT INTO namespace_defaults (namespace_id, agent_id, provisioned_at) VALUES (?, ?, ?)",
                     (definition.namespace_id, definition.agent_id, definition.created_at.isoformat()),
                 )
+            self._insert_row(conn, definition)
+        return True
+
+    def insert_connection_agent(
+        self, definition: ColleagueDefinition, connection: ConnectionRecord,
+    ) -> ConnectionRecord:
+        """Add an IM agent for one app of a configuration, or return the agent already added for it.
+
+        The configuration is checked in the same transaction, so an agent is never added to a
+        configuration that was deleted or hidden after the caller looked at it.
+        """
+        with self._transaction() as conn:
+            config = conn.execute(
+                "SELECT hidden FROM colleagues WHERE namespace_id = ? AND agent_id = ?",
+                (connection.namespace_id, connection.config_id),
+            ).fetchone()
+            if config is None or config["hidden"] or conn.execute(
+                "SELECT 1 FROM colleague_connections WHERE namespace_id = ? AND agent_id = ?",
+                (connection.namespace_id, connection.config_id),
+            ).fetchone():
+                raise PersistentAgentError("colleague not found", code="NOT_FOUND")
+            row = conn.execute(
+                "SELECT * FROM colleague_connections"
+                " WHERE namespace_id = ? AND config_id = ? AND channel = ? AND connection_key = ?",
+                (connection.namespace_id, connection.config_id, connection.channel, connection.connection_key),
+            ).fetchone()
+            if row is not None:
+                return self._connection(row)
+            self._insert_row(conn, definition)
             conn.execute(
-                "INSERT INTO colleagues (namespace_id, agent_id, settings_json, source_template_id, is_default, enabled,"
-                " revision, published_revision, current_version, next_version, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)",
+                "INSERT INTO colleague_connections"
+                " (namespace_id, agent_id, config_id, channel, connection_key, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (
-                    definition.namespace_id,
-                    definition.agent_id,
-                    json.dumps(definition.settings.to_dict(), ensure_ascii=False),
-                    definition.source_template_id,
-                    int(definition.is_default),
-                    int(definition.enabled),
-                    definition.revision,
-                    definition.created_at.isoformat(),
-                    definition.updated_at.isoformat(),
+                    connection.namespace_id,
+                    connection.agent_id,
+                    connection.config_id,
+                    connection.channel,
+                    connection.connection_key,
+                    connection.created_at.isoformat(),
                 ),
             )
-        return True
+        return connection
+
+    def connection_of(self, namespace_id: str, agent_id: str) -> ConnectionRecord | None:
+        """The app an IM agent serves; a configuration's own row has none."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM colleague_connections WHERE namespace_id = ? AND agent_id = ?", (namespace_id, agent_id)
+            ).fetchone()
+        return None if row is None else self._connection(row)
+
+    def connections(self, namespace_id: str, config_id: str | None = None) -> list[ConnectionRecord]:
+        """IM connections of one configuration, or of the whole namespace, oldest first."""
+        query = "SELECT * FROM colleague_connections WHERE namespace_id = ?"
+        args: tuple[str, ...] = (namespace_id,)
+        if config_id is not None:
+            query += " AND config_id = ?"
+            args += (config_id,)
+        with closing(self._connect()) as conn:
+            rows = conn.execute(query + " ORDER BY created_at, agent_id", args).fetchall()
+        return [self._connection(row) for row in rows]
 
     def default_agent_id(self, namespace_id: str) -> str | None:
         """The colleague provisioned as default, kept even after that colleague is deleted."""
@@ -197,42 +315,6 @@ class PersistentAgentRepository(SQLiteStore):
             raise PersistentAgentError("colleague not found", code="NOT_FOUND")
         return f"v{row['next_version']}"
 
-    def save_version(
-        self,
-        namespace_id: str,
-        snapshot: ConfigSnapshot,
-        *,
-        revision: int,
-        published_at: datetime,
-    ) -> None:
-        """Add a version and make it current, refusing if settings or numbering moved meanwhile."""
-        with self._transaction() as conn:
-            changed = conn.execute(
-                "UPDATE colleagues SET current_version = ?, published_revision = ?, next_version = next_version + 1"
-                " WHERE namespace_id = ? AND agent_id = ? AND revision = ? AND 'v' || next_version = ?",
-                (
-                    snapshot.config_version,
-                    revision,
-                    namespace_id,
-                    snapshot.agent_id,
-                    revision,
-                    snapshot.config_version,
-                ),
-            ).rowcount
-            if not changed:
-                raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
-            conn.execute(
-                "INSERT INTO config_versions (namespace_id, agent_id, config_version, snapshot_json, published_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (
-                    namespace_id,
-                    snapshot.agent_id,
-                    snapshot.config_version,
-                    json.dumps(snapshot.to_dict(), ensure_ascii=False),
-                    published_at.isoformat(),
-                ),
-            )
-
     def save_capability_version(
         self, namespace_id: str, snapshot: ConfigSnapshot, *, previous_version: str, published_at: datetime,
     ) -> None:
@@ -252,15 +334,100 @@ class PersistentAgentRepository(SQLiteStore):
                  json.dumps(snapshot.to_dict(), ensure_ascii=False), published_at.isoformat()),
             )
 
-    def mark_published(self, namespace_id: str, agent_id: str, *, revision: int) -> None:
-        """Record that ``revision`` publishes to the current version unchanged."""
+    def publish_configuration(
+        self,
+        namespace_id: str,
+        config_id: str,
+        *,
+        revision: int,
+        published_settings: ColleagueSettings,
+        changes: list[tuple[str, str | None, ConfigSnapshot | None]],
+        published_at: datetime,
+    ) -> None:
+        """Switch every agent of a configuration to one publication, or none of them.
+
+        ``changes`` names each agent with the version it had when the publication was
+        prepared and its new snapshot, or ``None`` if its version stays. The configuration
+        must still be at ``revision`` and own exactly these agents.
+        """
+        settings_json = json.dumps(published_settings.with_persona("").to_dict(), ensure_ascii=False)
         with self._transaction() as conn:
-            changed = conn.execute(
-                "UPDATE colleagues SET published_revision = ? WHERE namespace_id = ? AND agent_id = ? AND revision = ?",
-                (revision, namespace_id, agent_id, revision),
+            row = conn.execute(
+                "SELECT revision FROM colleagues WHERE namespace_id = ? AND agent_id = ?", (namespace_id, config_id)
+            ).fetchone()
+            owned = {
+                item["agent_id"] for item in conn.execute(
+                    "SELECT agent_id FROM colleague_connections WHERE namespace_id = ? AND config_id = ?",
+                    (namespace_id, config_id),
+                )
+            }
+            if row is None or row["revision"] != revision or owned | {config_id} != {item[0] for item in changes}:
+                raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
+            for agent_id, previous, snapshot in changes:
+                # The configuration's own row keeps its draft; an IM agent's row records what it now runs.
+                fields = "published_revision = ?" if agent_id == config_id else (
+                    "published_revision = ?, revision = ?, settings_json = ?"
+                )
+                values: tuple = (revision,) if agent_id == config_id else (revision, revision, settings_json)
+                condition = " WHERE namespace_id = ? AND agent_id = ? AND current_version IS ?"
+                keys: tuple = (namespace_id, agent_id, previous)
+                if snapshot is not None:
+                    fields += ", current_version = ?, next_version = next_version + 1"
+                    values += (snapshot.config_version,)
+                    condition += " AND 'v' || next_version = ?"
+                    keys += (snapshot.config_version,)
+                if not conn.execute(f"UPDATE colleagues SET {fields}{condition}", values + keys).rowcount:
+                    raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
+                if snapshot is not None:
+                    self._insert_version(conn, namespace_id, snapshot, published_at)
+            conn.execute(
+                "UPDATE colleagues SET published_settings_json = ? WHERE namespace_id = ? AND agent_id = ?",
+                (json.dumps(published_settings.to_dict(), ensure_ascii=False), namespace_id, config_id),
+            )
+
+    def publish_connection_agent(
+        self,
+        namespace_id: str,
+        snapshot: ConfigSnapshot,
+        *,
+        config_id: str,
+        config_revision: int,
+        settings: ColleagueSettings,
+        published_at: datetime,
+    ) -> None:
+        """Give a new IM agent its first version, refusing if the configuration was published meanwhile."""
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT published_revision FROM colleagues WHERE namespace_id = ? AND agent_id = ?",
+                (namespace_id, config_id),
+            ).fetchone()
+            changed = row is not None and row["published_revision"] == config_revision and conn.execute(
+                "UPDATE colleagues SET current_version = ?, next_version = next_version + 1, revision = ?,"
+                " published_revision = ?, settings_json = ?"
+                " WHERE namespace_id = ? AND agent_id = ? AND current_version IS NULL AND 'v' || next_version = ?",
+                (
+                    snapshot.config_version,
+                    config_revision,
+                    config_revision,
+                    json.dumps(settings.with_persona("").to_dict(), ensure_ascii=False),
+                    namespace_id,
+                    snapshot.agent_id,
+                    snapshot.config_version,
+                ),
             ).rowcount
             if not changed:
                 raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
+            self._insert_version(conn, namespace_id, snapshot, published_at)
+
+    def hide(self, namespace_id: str, config_id: str, *, updated_at: datetime) -> None:
+        """Take a configuration off the list and disable all its agents; its data stays."""
+        with self._transaction() as conn:
+            changed = conn.execute(
+                "UPDATE colleagues SET hidden = 1, enabled = 0, updated_at = ? WHERE namespace_id = ? AND agent_id = ?",
+                (updated_at.isoformat(), namespace_id, config_id),
+            ).rowcount
+            if not changed:
+                raise PersistentAgentError("colleague not found", code="NOT_FOUND")
 
     def get_version(
         self, namespace_id: str, agent_id: str, config_version: str
@@ -275,18 +442,42 @@ class PersistentAgentRepository(SQLiteStore):
             return None
         return ConfigSnapshot.from_dict(json.loads(row["snapshot_json"])), datetime.fromisoformat(row["published_at"])
 
-    def delete(self, namespace_id: str, agent_id: str) -> bool:
-        """Remove the colleague and all its versions; the namespace default claim stays."""
+    def delete(self, namespace_id: str, agent_id: str, *, record_removal: bool = False) -> bool:
+        """Remove the colleague and all its versions; the namespace default claim stays.
+
+        A configuration that still has IM connections is not removed, so none of them is left
+        without its colleague. ``record_removal`` keeps the ID, so a repeated deletion can tell
+        that it already happened.
+        """
         with self._transaction() as conn:
+            if conn.execute(
+                "SELECT 1 FROM colleague_connections WHERE namespace_id = ? AND config_id = ?", (namespace_id, agent_id)
+            ).fetchone():
+                raise PersistentAgentError("colleague still has connections", code="CONFLICT")
             removed = conn.execute(
                 "DELETE FROM colleagues WHERE namespace_id = ? AND agent_id = ?", (namespace_id, agent_id)
             ).rowcount
             conn.execute(
                 "DELETE FROM config_versions WHERE namespace_id = ? AND agent_id = ?", (namespace_id, agent_id)
             )
+            conn.execute(
+                "DELETE FROM colleague_connections WHERE namespace_id = ? AND agent_id = ?", (namespace_id, agent_id)
+            )
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_group_access'").fetchone():
                 conn.execute("DELETE FROM agent_group_access WHERE namespace_id=? AND agent_id=?", (namespace_id, agent_id))
+            if removed and record_removal:
+                conn.execute(
+                    "INSERT OR IGNORE INTO removed_colleagues (namespace_id, agent_id, removed_at) VALUES (?, ?, ?)",
+                    (namespace_id, agent_id, datetime.now(timezone.utc).isoformat()),
+                )
         return bool(removed)
+
+    def was_removed(self, namespace_id: str, agent_id: str) -> bool:
+        """Whether a configuration with this ID was deleted with its removal recorded."""
+        with closing(self._connect()) as conn:
+            return conn.execute(
+                "SELECT 1 FROM removed_colleagues WHERE namespace_id = ? AND agent_id = ?", (namespace_id, agent_id)
+            ).fetchone() is not None
 
 
 class TemplateStore:

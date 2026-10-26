@@ -56,7 +56,10 @@ class FakeService:
     def list_colleagues(self, namespace_id: str):
         return []
 
-    def delete_colleague(self, namespace_id: str, agent_id: str) -> None:
+    def list_agents(self, namespace_id: str):
+        return []
+
+    def delete_colleague(self, namespace_id: str, agent_id: str, *, record_removal: bool = False) -> None:
         self.deleted.append((agent_id, self._core.live))
 
 
@@ -319,7 +322,7 @@ async def test_group_collaboration_roster_contains_only_published_active_members
     host.manager.group_chats.update_membership(
         NS, "mate_left", first.group_chat_id, "app-left", status="left", observed_at=NOW, source_ref="left"
     )
-    host.service.list_colleagues = lambda namespace_id: [
+    host.service.list_agents = lambda namespace_id: [
         SimpleNamespace(agent_id="mate_peer", name="可用同事", enabled=True, current_version="v1"),
         SimpleNamespace(agent_id="mate_elsewhere", name="其他群同事", enabled=True, current_version="v1"),
         SimpleNamespace(agent_id="mate_left", name="已离群同事", enabled=True, current_version="v1"),
@@ -575,7 +578,7 @@ async def test_group_execution_preserves_verified_bot_mention_after_trigger_refr
     host.manager.group_chats.observe_access(
         NS, "mate_peer", group.group_chat_id, "app-peer", observed_at=NOW, source_ref="joined:peer"
     )
-    host.service.list_colleagues = lambda namespace_id: [
+    host.service.list_agents = lambda namespace_id: [
         SimpleNamespace(agent_id="mate_peer", name="动态同事", enabled=True, current_version="v1")
     ]
     host.manager.group_archive.append(

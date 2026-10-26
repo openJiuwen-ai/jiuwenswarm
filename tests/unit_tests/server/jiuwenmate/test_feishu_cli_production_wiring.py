@@ -57,6 +57,9 @@ async def test_saved_binding_automatically_prepares_agent_cli(tmp_path, monkeypa
     forwarded = []
 
     async def send_request(envelope):
+        if envelope.method == "jiuwenmate.connection.attach":
+            # AgentServer answers with the agent it keeps for this app.
+            return SimpleNamespace(ok=True, payload={"agent_id": "agent-a"})
         if envelope.method != "jiuwenmate.feishu.prepare":
             return SimpleNamespace(ok=True, payload={})
         forwarded.append(envelope)
@@ -68,7 +71,7 @@ async def test_saved_binding_automatically_prepares_agent_cli(tmp_path, monkeypa
                                                  agent_client=SimpleNamespace(send_request=send_request)))
     try:
         await channel.methods["channel.feishu.bind_agent"](object(), "bind-1",
-            {"app_id": "app-a", "app_secret": "test-secret", "persistent_agent_id": "agent-a"}, "session-a")
+            {"app_id": "app-a", "app_secret": "test-secret", "config_id": "colleague-a"}, "session-a")
         assert forwarded, "Saved binding did not reach the AgentServer"
         assert forwarded[0].method == "jiuwenmate.feishu.prepare"
         assert forwarded[0].params == {"agent_id": "agent-a"}
@@ -171,6 +174,8 @@ async def test_binding_changes_notify_both_previous_and_new_owner(tmp_path, monk
     forwarded = []
 
     async def send_request(envelope):
+        if envelope.method == "jiuwenmate.connection.attach":
+            return SimpleNamespace(ok=True, payload={"agent_id": "agent-b"})
         if envelope.method == "jiuwenmate.feishu.prepare":
             forwarded.append(envelope.params["agent_id"])
         return SimpleNamespace(ok=True, payload={})
@@ -178,7 +183,7 @@ async def test_binding_changes_notify_both_previous_and_new_owner(tmp_path, monk
     _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm,
                                                  agent_client=SimpleNamespace(send_request=send_request)))
     app = config("agent-b")["channels"]["feishu"]["apps"][0]
-    params = app if method.endswith("bind_agent") else {"apps": [app]}
+    params = {**app, "config_id": "colleague-b"} if method.endswith("bind_agent") else {"apps": [app]}
     await channel.methods[method](object(), "bind-2", params, "session-a")
     assert channel.responses[-1]["ok"]
     assert set(forwarded) == {"agent-a", "agent-b"}
@@ -242,13 +247,15 @@ async def test_cli_failure_does_not_undo_saved_binding(tmp_path, monkeypatch):
     config_module.dump_yaml_round_trip(path, {})
     monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", path)
 
-    async def unavailable(_envelope):
+    async def unavailable(envelope):
+        if envelope.method == "jiuwenmate.connection.attach":
+            return SimpleNamespace(ok=True, payload={"agent_id": "agent-a"})
         raise ConnectionError("AgentServer unavailable")
 
     _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm,
                                                  agent_client=SimpleNamespace(send_request=unavailable)))
     await channel.methods["channel.feishu.bind_agent"](object(), "bind-1",
-        {"app_id": "app-a", "app_secret": "test-secret", "persistent_agent_id": "agent-a"}, "session-a")
+        {"app_id": "app-a", "app_secret": "test-secret", "config_id": "colleague-a"}, "session-a")
     assert channel.responses[-1]["ok"]
     assert config_module.load_yaml_round_trip(path)["channels"]["feishu"]["apps"][0]["persistent_agent_id"] == "agent-a"
 

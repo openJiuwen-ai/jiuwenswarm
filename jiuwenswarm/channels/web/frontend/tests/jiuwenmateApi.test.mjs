@@ -170,11 +170,11 @@ test('create, enable, delete and publish send agent ids and settings without a n
 
   assert.equal((await api.publish('agent-2')).configVersion, 'v2');
   assert.equal((await api.setColleagueEnabled('agent-2', false)).disabled, true);
-  await api.deleteColleague('agent-2');
+  await api.deleteColleague('agent-2', 'unbind');
   assert.deepEqual(calls.slice(1), [
     [JIUWENMATE_METHODS.publish, { agent_id: 'agent-2' }],
     [JIUWENMATE_METHODS.setEnabled, { agent_id: 'agent-2', enabled: false }],
-    [JIUWENMATE_METHODS.delete, { agent_id: 'agent-2' }],
+    [JIUWENMATE_METHODS.delete, { agent_id: 'agent-2', mode: 'unbind' }],
   ]);
   assert.equal(
     calls.some(([, params]) => params && 'namespace_id' in params),
@@ -211,7 +211,7 @@ test('Agent Mail requests are scoped to one employee and expose authorization li
 test('server refusals reach the caller unchanged', async () => {
   const refusal = Object.assign(new Error('the default colleague cannot be deleted'), { code: 'BAD_REQUEST' });
   const { api } = recorder({ [JIUWENMATE_METHODS.delete]: refusal });
-  await assert.rejects(api.deleteColleague('agent-1'), (error) => error === refusal);
+  await assert.rejects(api.deleteColleague('agent-1', 'purge'), (error) => error === refusal);
 });
 
 const wireRequest = {
@@ -707,9 +707,49 @@ test('permission approval is mapped and one decision targets its original conver
 });
 
 
-test('a configured colleague keeps its DingTalk platform when loaded from the server', () => {
-  const item = toColleague({ ...wireColleague, im_platform: 'dingtalk' });
-  assert.equal(item.imConfigured, true);
-  assert.equal(item.imPlatform, 'dingtalk');
-  assert.equal(toColleague({ ...wireColleague, im_platform: 'unknown' }).imPlatform, undefined);
+test('a colleague lists its Web connection first and each bound IM app with its own agent', () => {
+  const item = toColleague({
+    ...wireColleague,
+    config_id: 'agent-1',
+    connections: [
+      { channel: 'web', connection_key: 'web', agent_id: 'agent-1', workspace_dir: '/data/agent-1' },
+      { channel: 'dingtalk', connection_key: 'ding-app', agent_id: 'agent-ding', workspace_dir: '/data/agent-ding' },
+      { channel: 'wecom', connection_key: 'other', agent_id: 'agent-other' },
+    ],
+  });
+  assert.equal(item.configId, 'agent-1');
+  assert.deepEqual(item.connections.map((connection) => [connection.channel, connection.connectionKey, connection.agentId]), [
+    ['web', 'web', 'agent-1'],
+    ['dingtalk', 'ding-app', 'agent-ding'],
+  ]);
+  assert.equal(item.connections[1].workspaceDir, '/data/agent-ding');
+  // A server that lists no connections still gives the colleague its Web connection.
+  const plain = toColleague(wireColleague);
+  assert.equal(plain.configId, 'agent-1');
+  assert.deepEqual(plain.connections, [
+    { channel: 'web', connectionKey: 'web', agentId: 'agent-1', workspaceDir: wireColleague.workspace_dir },
+  ]);
+});
+
+test('binding and unbinding an IM app name the colleague configuration and the app', async () => {
+  const { calls, api } = recorder({
+    'channel.dingtalk.bind_agent': { binding: {} },
+    'channel.feishu.bind_agent': { binding: {} },
+    'channel.dingtalk.unbind_agent': { unbound: true },
+    'channel.feishu.unbind_agent': { unbound: true },
+  });
+  const colleague = toColleague({ ...wireColleague, config_id: 'agent-1' });
+  await api.bindConnection(colleague, 'dingtalk', { appId: 'ding-app', appSecret: 'test-secret', robotCode: 'robot' });
+  await api.bindConnection(colleague, 'feishu', { appId: 'cli-app', appSecret: 'test-secret' });
+  await api.unbindConnection({ channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null });
+  await api.unbindConnection({ channel: 'feishu', connectionKey: 'cli-app', agentId: 'agent-feishu', workspaceDir: null });
+  await api.unbindConnection({ channel: 'web', connectionKey: 'web', agentId: 'agent-1', workspaceDir: null });
+  assert.deepEqual(calls, [
+    ['channel.dingtalk.bind_agent', {
+      config_id: 'agent-1', client_id: 'ding-app', client_secret: 'test-secret', robot_code: 'robot',
+    }],
+    ['channel.feishu.bind_agent', { config_id: 'agent-1', app_id: 'cli-app', app_secret: 'test-secret' }],
+    ['channel.dingtalk.unbind_agent', { client_id: 'ding-app' }],
+    ['channel.feishu.unbind_agent', { app_id: 'cli-app' }],
+  ]);
 });

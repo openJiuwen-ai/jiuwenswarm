@@ -58,8 +58,24 @@ export interface JiuwenMateColleagueDraft {
   capabilities: JiuwenMateCapabilities;
 }
 
+export type JiuwenMateImPlatform = 'feishu' | 'dingtalk';
+
+/** One place a colleague works: the Web page or one IM app, each served by its own agent and workspace. */
+export interface JiuwenMateConnection {
+  channel: 'web' | JiuwenMateImPlatform;
+  /** The app ID of an IM connection; "web" for the Web connection. */
+  connectionKey: string;
+  /** The agent whose conversations, files and records belong to this connection. */
+  agentId: string;
+  workspaceDir: string | null;
+}
+
 export interface JiuwenMateColleague extends JiuwenMateColleagueDraft {
+  /** The colleague's handle: its Web agent, whose ID is also the colleague's configuration ID. */
   id: string;
+  configId: string;
+  /** The Web connection first, then each IM app currently bound to the colleague. */
+  connections: JiuwenMateConnection[];
   imConfigured: boolean;
   imPlatform?: 'feishu' | 'dingtalk';
   feishuConfigured?: boolean;

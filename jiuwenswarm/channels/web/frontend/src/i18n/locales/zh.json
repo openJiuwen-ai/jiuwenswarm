@@ -370,6 +370,10 @@
       "cancelAuthorizationTitle": "取消渠道授权",
       "cancelAuthorizationWarning": "取消后，该同事会停止通过这个渠道接收和回复消息。",
       "cancelAuthorizationMessage": "确定取消「{{channel}}」的授权吗？之后可以重新授权。",
+      "addConnection": "添加连接",
+      "removeConnection": "解除连接",
+      "removeConnectionWarning": "解除后，该应用的消息不再交给这位员工；这个连接的工作空间和历史保留，重新绑定同一应用后恢复。",
+      "removeConnectionConfirm": "确定解除{{platform}}应用 {{app}} 与 AI 员工的连接：",
       "workLog": "工作日志",
       "periods": {
         "7d": "最近7天",
@@ -480,6 +484,10 @@
       "send": "发送",
       "stop": "停止",
       "aiDisclaimer": "内容由AI生成，仅供参考",
+      "connection": "工作空间",
+      "webConnection": "网页",
+      "connectionHint": "在这里生成的共享文件，{{platform}}用户也能读取。",
+      "webResult": "网页工作空间有新结果，点击查看",
       "defaultPrompts": [
         "统计今日咨询热点",
         "复盘群内回复质量",
@@ -603,6 +611,12 @@
       "delete": "删除",
       "deleteWarning": "删除 AI 员工后，其相关记忆和任务也将被删除。",
       "deleteConfirm": "确定删除 AI 员工：",
+      "deleteModes": {
+        "unbind": "仅解除连接",
+        "unbindHint": "移除该员工绑定的飞书、钉钉应用，员工从列表中移除；各连接的工作空间和历史保留在本机，页面上不能恢复。",
+        "purge": "全部删除",
+        "purgeHint": "移除绑定的应用，并删除该员工所有连接的办公目录、会话列表、配置版本、定时任务和授权资料；执行记录不随之删除。"
+      },
       "disableWarning": "停用后仍然支持会话，但 AI 员工将无法在 IM 渠道中做出响应。",
       "disableConfirm": "确定停用 AI 员工：",
       "scope": "统计范围",
