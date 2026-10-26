@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from openjiuwen.core.events import (
@@ -17,6 +18,7 @@ from openjiuwen.core.events import (
 )
 
 from jiuwenswarm.extensions_v2.event_types.matching import match_pattern_subset
+from jiuwenswarm.server.runtime.session.model_selection_store import SESSION_MODEL_INFO_KEY, sanitize_model_info
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,7 @@ def notify_context_usage(
     *,
     cwd: str | None = None,
     project_root: str | None = None,
+    model_info: Mapping[str, object] | None = None,
 ) -> asyncio.Task | None:
     """Schedule usage with workspace facts captured at the host call boundary."""
 
@@ -88,10 +91,13 @@ def notify_context_usage(
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return None
+    metadata: dict[str, object] = {"project_root": project_root} if project_root is not None else {}
+    if model_info is not None:
+        metadata[SESSION_MODEL_INFO_KEY] = sanitize_model_info(model_info)
     context = SessionContext(
         session_id=update.session_id,
         cwd=cwd,
-        metadata={"project_root": project_root} if project_root is not None else {},
+        metadata=metadata,
     )
     task = loop.create_task(_dispatch(bus, update, context))
     _PENDING.add(task)

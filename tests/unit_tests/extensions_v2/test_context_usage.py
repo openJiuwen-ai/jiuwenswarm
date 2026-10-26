@@ -19,6 +19,34 @@ from jiuwenswarm.extensions_v2.handler_ops.session_ops import register_session_o
 
 
 @pytest.mark.asyncio
+async def test_usage_model_snapshot_is_copied_before_async_dispatch(monkeypatch) -> None:
+    bus = ExtensionEventBus()
+    register_context_usage_events(bus)
+    register_session_ops(bus)
+    observed = []
+
+    async def observe(event, ops, next_handler):
+        observed.append(await ops.session.model())
+        return await next_handler(event)
+
+    bus.register_event_handler(CONTEXT_USAGE_EVENT, observe, {}, HandlerLevel.USER)
+    await bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
+    monkeypatch.setattr(assembly, "get_extension_bus", lambda: bus)
+    snapshot = {
+        "selection": None, "model_name": "before", "provider": "OpenAI",
+        "source": "runtime", "activated": True, "api_key": "discard",
+    }
+    task = notify_context_usage(ContextUsageUpdate("s1", "r1", total_tokens=1), model_info=snapshot)
+    assert task is not None
+    snapshot["model_name"] = "after"
+    await task
+    assert observed == [{
+        "selection": None, "model_name": "before", "provider": "OpenAI",
+        "source": "runtime", "activated": True,
+    }]
+
+
+@pytest.mark.asyncio
 async def test_core_handler_accepts_usage_update() -> None:
     bus = ExtensionEventBus()
     register_context_usage_events(bus)
