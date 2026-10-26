@@ -131,17 +131,30 @@ def _resolve_tool_result_display_max_chars() -> int:
     return parsed
 
 
+def _deepresearch_completed_content(result: Any) -> str | None:
+    """Return the deepresearch completed envelope's content, else None.
+
+    Matches ``schema_version == openjiuwen.deepresearch.execute.v1`` +
+    ``kind == "completed"`` with a string ``content``; falls back to None
+    for any other shape so callers can default to ``str(result)``.
+    """
+    if not isinstance(result, dict):
+        return None
+    if result.get("schema_version") != _DEEPRESEARCH_EXECUTION_SCHEMA:
+        return None
+    if result.get("kind") != "completed":
+        return None
+    content = result.get("content")
+    if not isinstance(content, str):
+        return None
+    return content
+
+
 def _format_tool_result_for_stream(result: Any) -> str:
     if result is None:
         return ""
-    if (
-        isinstance(result, dict)
-        and result.get("schema_version") == _DEEPRESEARCH_EXECUTION_SCHEMA
-        and result.get("kind") == "completed"
-        and isinstance(result.get("content"), str)
-    ):
-        text = result["content"]
-    else:
+    text = _deepresearch_completed_content(result)
+    if text is None:
         text = str(result)
     limit = _resolve_tool_result_display_max_chars()
     if limit == 0 or len(text) <= limit:
