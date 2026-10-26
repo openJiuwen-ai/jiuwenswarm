@@ -316,7 +316,7 @@ Bash 的本地文件变更不经过 `write_file/edit_file` 的 PA-16 条件写�
 
 ### 12.4 自动准备、绑定与发布
 
-- 沿用已有 `persistent_agent_id ↔ app_id`，不新增绑定 ID、绑定表或让模型选择应用。准备 CLI 时由宿主读取当前唯一有效绑定，在办公目录外生成私有 `config/app-secret`，由 CLI 官方支持的 `appSecret: {"source":"file","id":"<私有文件绝对路径>"}` 引用。Secret 不进入 Spec、Skill、普通办公文件、命令参数、子进程环境或模型输入。
+- 沿用已有 `persistent_agent_id ↔ app_id`，不新增绑定 ID、绑定表或让模型选择应用（2026-10-26 起该 Agent 为飞书连接的 IM 运行 Agent，连接登记表由 [F_02_02](F_02_02_colleague-connections.md) 引入；CLI 资料仍按该 Agent 隔离，本条其余规则不变）。准备 CLI 时由宿主读取当前唯一有效绑定，在办公目录外生成私有 `config/app-secret`，由 CLI 官方支持的 `appSecret: {"source":"file","id":"<私有文件绝对路径>"}` 引用。Secret 不进入 Spec、Skill、普通办公文件、命令参数、子进程环境或模型输入。
 - 每个 Agent 的认证单独保存在 `.jiuwenswarm/jiuwenmate/runtime/<namespace_id>/<agent_id>/lark-cli/config/`；原子创建私有文件（POSIX 为 0600，Windows 使用当前用户目录的 ACL）。每次 Shell 调用指定自己的 `LARKSUITE_CLI_CONFIG_DIR` 和 `LARKSUITE_CLI_DATA_DIR`，清除继承的飞书认证环境；配置默认身份及严格身份均为 `bot`，不导入用户登录。**不调用 `config init`**，因为其 Secret 保存会按 app_id 写入操作系统共享凭据库，单独配置目录并不能隔离该副作用。依据为 CLI v1.0.94 的 [SecretRef 解析](https://github.com/larksuite/cli/blob/v1.0.94/internal/core/secret_resolve.go) 与 [配置结构](https://github.com/larksuite/cli/blob/v1.0.94/internal/core/config.go)。这避免正常调用串号，但无沙箱时仍不能阻止 Bash 主动读取其他目录。
 - 复用现有连接器包 / Skill 安装能力与固定版本包清单，Persistent 所需 CLI 使用独立安装前缀和启动器，不升级或替换个人版全局二进制。安装及私有配置写入属于宿主准备步骤，不放进无副作用的工具构造 Provider，不在每次模型请求时重新安装。重复准备仍核验实际二进制版本；匹配的私有认证文件不重复改写。
 - 保存绑定或渠道配置后自动通知受影响的新旧 Agent；准备途中再次换绑会重新核对，不丢失后一次通知。重启时扫描已发布同事和有效绑定，包括已解绑、有未发布草稿的同事，移除过时能力声明并保留草稿。相同资源准备幂等；失败保存脱敏状态，允许修复后重试，不声称渠道绑定失败或 CLI 已就绪。

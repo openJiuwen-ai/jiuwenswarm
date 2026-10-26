@@ -28,7 +28,7 @@
 
 | 对象 | 作用域 | 事实权威 |
 | --- | --- | --- |
-| Feishu App 与 Agent 绑定 | 一个 Agent 对应其配置的 Feishu App | JiuwenSwarm 渠道配置中的 `persistent_agent_id` 与 `app_id`；沿用 JM-08/JM-14 |
+| Feishu App 与 Agent 绑定 | 一个 Agent 对应其配置的 Feishu App；该 Agent 是同事为这个应用建立的 IM 运行 Agent（[S_04](S_04_colleague-connections.md)） | JiuwenSwarm 渠道配置中的 `persistent_agent_id` 与 `app_id`；沿用 JM-08/JM-14，Agent 与应用的对应另登记在 `colleague_connections` |
 | Bot 配置 | 一个 Agent CLI profile | `runtime/<namespace_id>/<agent_id>/lark-cli/config/` 中的 CLI 配置；默认身份为 Bot |
 | 用户登录态 | 一个 Agent CLI profile | 同一 CLI 配置 / 数据上下文，由 Lark CLI 管理；允许 CLI 在 app 配置中维护用户记录 |
 | 群聊结果 | 原始群会话 | JM-09 投递结果及 JM-11 群消息记录；JM-21 按原有 Agent—群授权搜索 |

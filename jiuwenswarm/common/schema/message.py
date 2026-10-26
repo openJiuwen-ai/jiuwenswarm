@@ -161,6 +161,10 @@ _ensure_req_method("JIUWENMATE_DINGTALK_INBOUND", "jiuwenmate.dingtalk.inbound")
 _ensure_req_method("JIUWENMATE_DINGTALK_BINDING_CHECK", "jiuwenmate.dingtalk.binding_check")
 _ensure_req_method("JIUWENMATE_PERMISSION_DECIDE", "jiuwenmate.permission.decide")
 _ensure_req_method("JIUWENMATE_WELINK_INBOUND", "jiuwenmate.welink.inbound")
+# Gateway asks AgentServer about colleague connections before changing channel bindings.
+_ensure_req_method("JIUWENMATE_CONNECTION_ATTACH", "jiuwenmate.connection.attach")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_CONNECTIONS", "jiuwenmate.colleague.connections")
+_ensure_req_method("JIUWENMATE_COLLEAGUE_REMOVE", "jiuwenmate.colleague.remove")
 _ensure_req_method("MODELS_REFRESH_STATUS", "models.refresh_status")
 # The Gateway forwards an event only when the protocol EventType knows it; the
 # pinned protocol package does not define this one yet.

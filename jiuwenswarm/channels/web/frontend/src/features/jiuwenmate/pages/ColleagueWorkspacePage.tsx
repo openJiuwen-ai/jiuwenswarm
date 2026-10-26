@@ -43,7 +43,13 @@ import { ScheduleBoard } from '../schedules/ScheduleBoard';
 import { ScheduleDialog } from '../schedules/ScheduleDialog';
 import { scheduleSummary } from '../schedules/state';
 import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
-import type { JiuwenMateChannel, JiuwenMateChannelMessage, JiuwenMateColleague, JiuwenMateTraceRow } from '../types';
+import type {
+  JiuwenMateChannel,
+  JiuwenMateChannelMessage,
+  JiuwenMateColleague,
+  JiuwenMateConnection,
+  JiuwenMateTraceRow,
+} from '../types';
 
 const CHANNEL_PLATFORM_ORDER = ['feishu', 'welink', 'dingtalk'];
 
@@ -164,6 +170,13 @@ export function ColleagueWorkspacePage({
     return platform;
   };
   const colleague = colleagues.find((item) => item.id === selectedColleagueId) ?? colleagues[0];
+  const colleagueId = colleague?.id ?? '';
+  // Chats, files and group records follow the chosen connection; schedules stay with the Web agent.
+  const [workspaceAgentId, setWorkspaceAgentId] = useState(colleagueId);
+  // A Web result found while the user works in an IM workspace; opened only when the user asks.
+  const [webResult, setWebResult] = useState<{ agentId: string; conversationId: string } | null>(null);
+  const connections = colleague?.connections ?? [];
+  const workspace = connections.find((item) => item.agentId === workspaceAgentId) ?? connections[0] ?? null;
   const [state, setState] = useState(() => initialState(colleague, intent));
   const channelId = state.managementChannelId ?? state.selectedChannelId;
   const [board, setBoard] = useState(false);
@@ -183,7 +196,7 @@ export function ColleagueWorkspacePage({
   const [permissionActionId, setPermissionActionId] = useState<string | null>(null);
   const [permissionProfileError, setPermissionProfileError] = useState<string | null>(null);
   const cancelRename = useRef(false);
-  const agentId = colleague?.id ?? '';
+  const agentId = workspace?.agentId ?? colleagueId;
   const conversationList = useConversations(chat, agentId, connectionEpoch);
   const records = mergeWorkspaceConversations(
     allRecords,
@@ -193,10 +206,11 @@ export function ColleagueWorkspacePage({
   );
   const activeConversationId =
     picked?.agentId === agentId ? picked.conversationId : conversationList.loaded ? (records.find((item) => item.agentId === agentId)?.id ?? freshId) : '';
-  const colleaguePlans = schedules.filter((plan) => plan.agentId === agentId);
+  const colleaguePlans = schedules.filter((plan) => plan.agentId === colleagueId);
   const activePlan = colleaguePlans.find((plan) => plan.id === scheduleId) ?? colleaguePlans[0] ?? null;
   const chatConversationId = state.recordTab === 'schedules' && activePlan ? activePlan.conversationId : activeConversationId;
-  const privateChat = usePrivateChat(chat, agentId, chatConversationId, connectionEpoch);
+  const chatAgentId = state.recordTab === 'schedules' && activePlan ? colleagueId : agentId;
+  const privateChat = usePrivateChat(chat, chatAgentId, chatConversationId, connectionEpoch);
   const messageListRef = useRef<HTMLOListElement | null>(null);
   const boardRef = useRef(board);
   const agentIdRef = useRef(agentId);
@@ -223,6 +237,11 @@ export function ColleagueWorkspacePage({
   const [settledChannelKey, setSettledChannelKey] = useState<string | null>(null);
   const channelKey = agentId && channelId ? `${agentId}:${channelId}` : null;
   const channelRecords = channelRecordView(channelKey, settledChannelKey, channelMessages.length);
+
+  useEffect(() => {
+    setWorkspaceAgentId(colleagueId);
+    setWebResult(null);
+  }, [colleagueId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -277,11 +296,20 @@ export function ColleagueWorkspacePage({
           .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
         if (newest) {
           const same = newest.agentId === agentIdRef.current && newest.id === conversationIdRef.current;
+          // Conversations listed for every colleague are Web conversations. An IM workspace the user
+          // chose stays chosen, so later messages still go to its agent; the result is only offered.
+          const imChosen = !people.some((item) => item.id === agentIdRef.current);
           if (!scheduleEditorRef.current && (!same || boardRef.current)) {
-            if (newest.agentId !== agentIdRef.current) onSelectColleagueRef.current(newest.agentId);
-            setBoard(false);
-            setState((current) => selectRecordTab(current, 'conversations'));
-            setPicked({ agentId: newest.agentId, conversationId: newest.id });
+            if (imChosen) {
+              setWebResult({ agentId: newest.agentId, conversationId: newest.id });
+              if (!boardRef.current) void reloadChatRef.current();
+            } else {
+              if (newest.agentId !== agentIdRef.current) onSelectColleagueRef.current(newest.agentId);
+              setWorkspaceAgentId(newest.agentId);
+              setBoard(false);
+              setState((current) => selectRecordTab(current, 'conversations'));
+              setPicked({ agentId: newest.agentId, conversationId: newest.id });
+            }
           }
           if (same) void reloadChatRef.current();
         } else if (!boardRef.current) {
@@ -385,8 +413,13 @@ export function ColleagueWorkspacePage({
   const visibleArtifact = selectedArtifact
     ? artifacts.find((file) => sharedFileKey(file) === sharedFileKey(selectedArtifact)) ?? null
     : null;
+  const ownerOf = (id: string) =>
+    colleagues.find((item) => item.id === id || item.connections.some((connection) => connection.agentId === id));
   const openConversation = (conversationAgentId: string, conversationId: string) => {
-    if (conversationAgentId !== colleague.id) onSelectColleague(conversationAgentId);
+    const owner = ownerOf(conversationAgentId);
+    if (owner && owner.id !== colleague.id) onSelectColleague(owner.id);
+    setWorkspaceAgentId(conversationAgentId);
+    setWebResult(null);
     setBoard(false);
     setState((current) => clearManagementChannel(current));
     setPicked({ agentId: conversationAgentId, conversationId });
@@ -395,7 +428,7 @@ export function ColleagueWorkspacePage({
   const createSession = () => {
     const id = newId();
     setFreshId(id);
-    openConversation(colleague.id, id);
+    openConversation(agentId, id);
     setDraft('');
     setState((current) => selectRecordTab(current, 'conversations'));
   };
@@ -403,9 +436,9 @@ export function ColleagueWorkspacePage({
   const renameEmployee = (sessionAgentId: string, name: string) => {
     const nextName = name.trim();
     setRenamingId(null);
-    const current = colleagues.find((item) => item.id === sessionAgentId);
+    const current = ownerOf(sessionAgentId);
     if (!current || !nextName || nextName === current.name) return;
-    void Promise.resolve(onRenameColleague(sessionAgentId, nextName)).catch((reason: unknown) => {
+    void Promise.resolve(onRenameColleague(current.id, nextName)).catch((reason: unknown) => {
       setAllRecordsError(errorMessage(reason));
     });
   };
@@ -640,6 +673,52 @@ export function ColleagueWorkspacePage({
     </div>
   );
 
+  const connectionLabel = (connection: JiuwenMateConnection) =>
+    connection.channel === 'web'
+      ? t('jiuwenmate.workspace.webConnection')
+      : `${platformLabel(connection.channel)} · ${connection.connectionKey}`;
+
+  const renderConnectionSelect = () =>
+    connections.length > 1 ? (
+      <label className="jiuwenmate-workspace-connection" data-testid="jiuwenmate-workspace-connection">
+        <span>{t('jiuwenmate.workspace.connection')}</span>
+        <select
+          value={agentId}
+          onChange={(event) => {
+            setWorkspaceAgentId(event.target.value);
+            setWebResult(null);
+            setPicked(null);
+            setBoard(false);
+          }}
+          data-testid="jiuwenmate-workspace-connection-select"
+        >
+          {connections.map((connection) => (
+            <option key={connection.agentId} value={connection.agentId}>
+              {connectionLabel(connection)}
+            </option>
+          ))}
+        </select>
+        {workspace && workspace.channel !== 'web' ? (
+          <small data-testid="jiuwenmate-workspace-connection-hint">
+            {t('jiuwenmate.workspace.connectionHint', { platform: platformLabel(workspace.channel) })}
+          </small>
+        ) : null}
+        {webResult ? (
+          <button
+            type="button"
+            className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+            onClick={() => {
+              openConversation(webResult.agentId, webResult.conversationId);
+              setState((current) => selectRecordTab(current, 'conversations'));
+            }}
+            data-testid="jiuwenmate-workspace-web-result"
+          >
+            {t('jiuwenmate.workspace.webResult')}
+          </button>
+        ) : null}
+      </label>
+    ) : null;
+
   const renderChatPanelButtons = () => (
     <div className="jiuwenmate-main-header__actions">
       <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.artifacts')} aria-pressed={rightPanel === 'artifacts'} data-testid="jiuwenmate-open-artifacts-panel" onClick={() => setRightPanel((current) => current === 'artifacts' ? null : 'artifacts')}>
@@ -664,11 +743,11 @@ export function ColleagueWorkspacePage({
         >
           {renamingId === `${record.agentId}:${record.id}` ? (
             <div className="jiuwenmate-records__conversation">
-              <ColleagueAvatar colleague={colleagues.find((item) => item.id === record.agentId) ?? colleague} size="medium" />
+              <ColleagueAvatar colleague={ownerOf(record.agentId) ?? colleague} size="medium" />
               <span className="jiuwenmate-records__conversation-copy">
                 <input
                   autoFocus
-                  defaultValue={colleagues.find((item) => item.id === record.agentId)?.name ?? ''}
+                  defaultValue={ownerOf(record.agentId)?.name ?? ''}
                   aria-label={t('jiuwenmate.workspace.rename')}
                   onMouseDown={(event) => event.stopPropagation()}
                   onBlur={(event) => {
@@ -693,9 +772,9 @@ export function ColleagueWorkspacePage({
             </div>
           ) : (
             <button type="button" onClick={() => openConversation(record.agentId, record.id)}>
-              <ColleagueAvatar colleague={colleagues.find((item) => item.id === record.agentId) ?? colleague} size="medium" />
+              <ColleagueAvatar colleague={ownerOf(record.agentId) ?? colleague} size="medium" />
               <span className="jiuwenmate-records__conversation-copy">
-                <strong>{colleagues.find((item) => item.id === record.agentId)?.name ?? record.agentId}</strong>
+                <strong>{ownerOf(record.agentId)?.name ?? record.agentId}</strong>
                 <small>{record.lastMessage || record.title}</small>
               </span>
               <time>{new Date(record.updatedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</time>
@@ -816,6 +895,7 @@ export function ColleagueWorkspacePage({
       <section className="jiuwenmate-chat-welcome" data-testid="jiuwenmate-chat-welcome">
         <header className="jiuwenmate-main-header jiuwenmate-chat-welcome__header">
           <strong>{colleague.name}</strong>
+          {renderConnectionSelect()}
           {renderChatPanelButtons()}
         </header>
         <div className="jiuwenmate-chat-welcome__center">
@@ -857,6 +937,7 @@ export function ColleagueWorkspacePage({
         <strong>
           {colleague.name}
         </strong>
+        {renderConnectionSelect()}
         {renderChatPanelButtons()}
       </header>
       <ol

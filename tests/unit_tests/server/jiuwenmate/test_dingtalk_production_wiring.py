@@ -24,7 +24,14 @@ from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
 from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import DingTalkInboundEvent, DingTalkInboundHandler
 from jiuwenswarm.server.jiuwenmate.execution_models import ConversationRef
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
-from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition, configured_feishu_bindings
+from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
+    FeishuBinding,
+    FeishuInboundEvent,
+    InboundDisposition,
+    PersistentGroupFanout,
+)
+from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+from jiuwenswarm.server.jiuwenmate.models import ConnectionRecord
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WorkspaceStore
 from openjiuwen.harness import persistent_agent as core
@@ -52,6 +59,11 @@ def _dingtalk_channel(**config):
     return channel
 
 
+def _connection(agent_id, channel, app_id, config_id="colleague-test"):
+    return ConnectionRecord(namespace_id="local", agent_id=agent_id, config_id=config_id, channel=channel,
+                            connection_key=app_id, created_at=NOW)
+
+
 @pytest_asyncio.fixture
 async def host(tmp_path, monkeypatch):
     from jiuwenswarm.common import config as config_module
@@ -65,6 +77,8 @@ async def host(tmp_path, monkeypatch):
     repository = ExecutionRepository(tmp_path / "agents.sqlite3")
     workspaces = WorkspaceStore(tmp_path / "workspaces")
     service = FakeService(FakeCore(), workspaces)
+    connections = {"agent-dingtalk": _connection("agent-dingtalk", "dingtalk", "app-dingtalk")}
+    service.connection_of = lambda namespace_id, agent_id: connections.get(agent_id)
     contexts, sent = [], []
     channel = _dingtalk_channel(
         client_id="app-dingtalk", robot_code="robot-test", agent_id="agent-dingtalk", is_default=False,
@@ -102,7 +116,8 @@ async def host(tmp_path, monkeypatch):
     inbound = DingTalkInboundHandler(service=service, sessions=repository, agent_manager=manager, config_loader=lambda: config)
     await manager.start()
     yield SimpleNamespace(config=config, repository=repository, service=service, manager=manager, inbound=inbound,
-        contexts=contexts, sent=sent, gateway=gateway, deliveries=deliveries, workspaces=workspaces, channel=channel)
+        contexts=contexts, sent=sent, gateway=gateway, deliveries=deliveries, workspaces=workspaces, channel=channel,
+        connections=connections, db=tmp_path / "agents.sqlite3")
     await manager.aclose()
     await channel._http.aclose()
 
@@ -159,23 +174,36 @@ async def test_staff_from_another_organization_is_rejected(host):
 
 
 @pytest.mark.asyncio
-async def test_manual_feishu_reuse_is_rejected_by_dingtalk_without_changing_feishu(host):
+async def test_feishu_rejects_a_hand_written_binding_to_the_dingtalk_agent(host):
+    # The Feishu entry of the owner's configuration names the agent created for the DingTalk app.
     host.config["channels"]["feishu"]["apps"][0]["persistent_agent_id"] = "agent-dingtalk"
-    assert await host.inbound.handle(_event()) is InboundDisposition.REJECTED
-    assert [item.agent_id for item in configured_feishu_bindings(host.config)] == ["agent-dingtalk"]
-    assert not host.contexts
+    fanout = PersistentGroupFanout(
+        service=host.service, groups=GroupChatRepository(host.db), sessions=host.repository,
+        agent_manager=host.manager,
+        resolve_bindings=lambda platform, app_id: (FeishuBinding(
+            binding_id="feishu:app-feishu", platform="feishu", app_id="app-feishu", namespace_id="local",
+            agent_id="agent-dingtalk",
+        ),),
+        resolve_access=lambda binding, event: None,
+    )
+    event = FeishuInboundEvent(
+        receiving_app_id="app-feishu", message_id="om-test", chat_id="oc-test", chat_type="p2p", sender_type="user",
+        sender_id="ou-test", sender_name="Test sender", sender_app_id=None, received_at=NOW, text="test task",
+    )
+    assert await fanout.handle(event) is InboundDisposition.REJECTED
+    assert await host.inbound.handle(_event()) is InboundDisposition.HANDLED
 
 
-@pytest.mark.parametrize("conversation", [
-    ConversationRef.im_direct("feishu", "old-chat"),
-    ConversationRef.group("group-test"),
-    ConversationRef.im_direct("dingtalk", json.dumps(["other-dingtalk-app", "old-conversation"])),
+@pytest.mark.parametrize("connection", [
+    None,
+    _connection("agent-dingtalk", "dingtalk", "other-dingtalk-app"),
+    _connection("agent-dingtalk", "feishu", "app-dingtalk"),
 ])
 @pytest.mark.asyncio
-async def test_an_agent_that_served_another_connection_is_not_rebound(host, conversation):
-    host.repository.resolve_session("local", "agent-dingtalk", conversation, now=NOW)
+async def test_an_agent_not_created_for_this_app_is_rejected(host, connection):
+    host.connections["agent-dingtalk"] = connection
     assert await host.inbound.handle(_event()) is InboundDisposition.REJECTED
-    assert not host.contexts
+    assert not host.contexts and not _requests(host)
 
 
 @pytest.mark.asyncio
@@ -297,21 +325,33 @@ async def test_server_dispatches_dingtalk_without_personal_chat(monkeypatch):
 
 
 class _AgentServer:
-    """Answers Gateway's binding check; ``allowed=None`` behaves like an unreachable server."""
+    """Answers Gateway's connection requests: the agent of app X is ``agent-X``.
 
-    def __init__(self, allowed=True):
-        self.allowed = allowed
+    ``connections`` is what a colleague-connections query returns; ``refuse`` is an error code
+    to answer with; ``running=False`` behaves like an unreachable server.
+    """
+
+    def __init__(self):
         self.envelopes = []
         self.gate = None
+        self.connections = []
+        self.refuse = None
+        self.running = True
 
     async def send_request(self, envelope):
         self.envelopes.append(envelope)
         gate, self.gate = self.gate, None
         if gate is not None:
             await gate.wait()
-        if self.allowed is None:
+        if not self.running:
             raise ConnectionError("test AgentServer is not running")
-        return SimpleNamespace(ok=True, payload={"allowed": self.allowed})
+        if self.refuse is not None:
+            return SimpleNamespace(ok=False, payload={"error": "refused by test", "code": self.refuse})
+        if envelope.method == ReqMethod.JIUWENMATE_CONNECTION_ATTACH.value:
+            return SimpleNamespace(ok=True, payload={"agent_id": f"agent-{envelope.params['connection_key']}"})
+        if envelope.method == ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS.value:
+            return SimpleNamespace(ok=True, payload={"connections": self.connections})
+        return SimpleNamespace(ok=True, payload={"removed": True})
 
 
 @pytest.fixture
@@ -343,13 +383,16 @@ async def test_binding_moves_the_legacy_app_into_the_list_and_settings_edits_kee
     web.seed({"enabled": True, "client_id": "ordinary", "client_secret": "fake-old", "api_base": "https://example.invalid",
               "last_sender_id": "staff-old"})
     bound = await _call(web, "channel.dingtalk.bind_agent", {
-        "client_id": "app-dingtalk", "client_secret": "fake-secret", "persistent_agent_id": "agent-dingtalk",
+        "client_id": "app-dingtalk", "client_secret": "fake-secret", "config_id": "colleague-a",
     })
     assert bound["ok"] is True
+    attach = web.server.envelopes[-1]
+    assert attach.method == ReqMethod.JIUWENMATE_CONNECTION_ATTACH.value
+    assert attach.params == {"config_id": "colleague-a", "channel": "dingtalk", "connection_key": "app-dingtalk"}
     saved = web.saved()
     assert "client_id" not in saved and saved["last_sender_id"] == "staff-old"
     assert [app["client_id"] for app in saved["apps"]] == ["ordinary", "app-dingtalk"]
-    assert saved["apps"][1]["persistent_agent_id"] == "agent-dingtalk"
+    assert saved["apps"][1]["persistent_agent_id"] == "agent-app-dingtalk"
     edited = await _call(web, "channel.dingtalk.set_conf", {"apps": [
         {"client_id": "ordinary", "allow_from": ["staff-test"], "enabled": True},
         {"client_id": "app-dingtalk", "enabled": False},
@@ -357,39 +400,36 @@ async def test_binding_moves_the_legacy_app_into_the_list_and_settings_edits_kee
     assert edited["ok"] is True
     ordinary, jm = web.saved()["apps"]
     assert ordinary["allow_from"] == ["staff-test"] and ordinary["client_secret"] == "fake-old"
-    assert jm["persistent_agent_id"] == "agent-dingtalk" and jm["client_secret"] == "fake-secret" and jm["enabled"] is False
+    assert jm["persistent_agent_id"] == "agent-app-dingtalk" and jm["client_secret"] == "fake-secret"
+    assert jm["enabled"] is False
     assert web.cm.configs["dingtalk"] == dict(web.saved())
     listing = await _call(web, "channel.dingtalk.get_conf", {})
     assert [app["client_id"] for app in listing["payload"]["config"]["apps"]] == ["ordinary", "app-dingtalk"]
 
 
 @pytest.mark.asyncio
-async def test_deleting_one_app_keeps_the_others_and_rebinding_replaces_only_that_colleague(web):
+async def test_deleting_one_app_keeps_the_others_and_another_app_adds_a_connection(web):
     web.seed({"apps": [
         {"client_id": "ordinary", "client_secret": "fake"},
-        {"client_id": "jm-a", "client_secret": "fake", "persistent_agent_id": "agent-a"},
-        {"client_id": "jm-b", "client_secret": "fake", "persistent_agent_id": "agent-b"},
+        {"client_id": "jm-a", "client_secret": "fake", "persistent_agent_id": "agent-jm-a"},
+        {"client_id": "jm-b", "client_secret": "fake", "persistent_agent_id": "agent-jm-b"},
     ], "last_sender_id": "staff-old"})
     assert (await _call(web, "channel.dingtalk.set_conf", {"apps": [{"client_id": "jm-a"}, {"client_id": "jm-b"}]}))["ok"]
     saved = web.saved()
     assert [app["client_id"] for app in saved["apps"]] == ["jm-a", "jm-b"] and "last_sender_id" not in saved
-    rebound = await _call(web, "channel.dingtalk.bind_agent", {
-        "client_id": "jm-c", "client_secret": "fake", "persistent_agent_id": "agent-a",
+    # Another app for the same colleague is another connection with its own agent; jm-a stays.
+    added = await _call(web, "channel.dingtalk.bind_agent", {
+        "client_id": "jm-c", "client_secret": "fake", "config_id": "colleague-a",
     })
-    assert rebound["ok"] is True
+    assert added["ok"] is True
     assert [(app["client_id"], app["persistent_agent_id"]) for app in web.saved()["apps"]] == [
-        ("jm-b", "agent-b"), ("jm-c", "agent-a"),
+        ("jm-a", "agent-jm-a"), ("jm-b", "agent-jm-b"), ("jm-c", "agent-jm-c"),
     ]
 
 
 @pytest.mark.asyncio
-async def test_dingtalk_binding_refuses_an_agent_bound_to_feishu_and_a_second_ordinary_app(web):
+async def test_settings_refuse_a_second_ordinary_app(web):
     web.seed({"apps": [{"client_id": "ordinary", "client_secret": "fake"}]})
-    web.cm.configs["feishu"] = {"apps": [{"app_id": "feishu-app", "persistent_agent_id": "same-agent"}]}
-    refused = await _call(web, "channel.dingtalk.bind_agent", {
-        "client_id": "app", "client_secret": "fake", "persistent_agent_id": "same-agent",
-    })
-    assert refused["ok"] is False and refused["code"] == "BAD_REQUEST"
     second = await _call(web, "channel.dingtalk.set_conf", {"apps": [
         {"client_id": "ordinary"}, {"client_id": "two", "allow_from": []},
     ]})
@@ -403,19 +443,19 @@ async def test_concurrent_bindings_never_overwrite_each_other(web):
     gate = asyncio.Event()
     web.server.gate = gate
     first = asyncio.create_task(web.channel.methods["channel.dingtalk.bind_agent"](object(), "bind-a", {
-        "client_id": "app-a", "client_secret": "fake", "persistent_agent_id": "agent-a",
+        "client_id": "app-a", "client_secret": "fake", "config_id": "colleague-a",
     }, "test-session"))
-    # Binding A waits in the AgentServer check while binding B completes.
+    # Binding A waits for AgentServer's answer while binding B completes.
     await settle(lambda: len(web.server.envelopes) == 1)
     second = await _call(web, "channel.dingtalk.bind_agent", {
-        "client_id": "app-b", "client_secret": "fake", "persistent_agent_id": "agent-b",
+        "client_id": "app-b", "client_secret": "fake", "config_id": "colleague-b",
     })
     assert second["ok"] is True and not first.done()
     gate.set()
     await first
     assert [response["ok"] for response in web.channel.responses] == [True, True]
     assert [(app["client_id"], app["persistent_agent_id"]) for app in web.saved()["apps"]] == [
-        ("ordinary", ""), ("app-b", "agent-b"), ("app-a", "agent-a"),
+        ("ordinary", ""), ("app-b", "agent-app-b"), ("app-a", "agent-app-a"),
     ]
     assert web.cm.configs["dingtalk"]["apps"] == web.saved()["apps"]
 
@@ -424,7 +464,7 @@ async def test_concurrent_bindings_never_overwrite_each_other(web):
 async def test_a_malformed_allowlist_survives_binding_and_blocks_a_client_id_change(web):
     web.seed({"apps": [{"client_id": "ordinary", "client_secret": "fake", "allow_from": "staff-only"}]})
     bound = await _call(web, "channel.dingtalk.bind_agent", {
-        "client_id": "app-a", "client_secret": "fake", "persistent_agent_id": "agent-a",
+        "client_id": "app-a", "client_secret": "fake", "config_id": "colleague-a",
     })
     assert bound["ok"] is True
     ordinary, jm = web.saved()["apps"]
@@ -475,44 +515,86 @@ async def test_overlapping_restarts_leave_every_saved_app_registered():
     assert all((channel in registered) != (channel in stopped) for channel in created)
 
 
-@pytest.mark.parametrize("allowed,code", [(False, "BAD_REQUEST"), (None, "SERVICE_UNAVAILABLE")])
+@pytest.mark.parametrize("refuse,code", [("NOT_FOUND", "NOT_FOUND"), (None, "SERVICE_UNAVAILABLE")])
 @pytest.mark.asyncio
-async def test_binding_is_refused_when_the_colleague_served_another_connection_or_cannot_be_checked(web, allowed, code):
+async def test_nothing_is_saved_when_agent_server_refuses_or_cannot_answer(web, refuse, code):
     web.seed({"apps": [{"client_id": "ordinary", "client_secret": "fake"}]})
-    web.server.allowed = allowed
+    web.server.refuse, web.server.running = refuse, refuse is not None
     refused = await _call(web, "channel.dingtalk.bind_agent", {
-        "client_id": "app-new", "client_secret": "fake", "persistent_agent_id": "agent-used",
+        "client_id": "app-new", "client_secret": "fake", "config_id": "colleague-gone",
     })
     assert refused["ok"] is False and refused["code"] == code
-    envelope = web.server.envelopes[-1]
-    assert envelope.method == ReqMethod.JIUWENMATE_DINGTALK_BINDING_CHECK.value
-    assert envelope.params == {"agent_id": "agent-used", "app_id": "app-new"}
     assert [app["client_id"] for app in web.saved()["apps"]] == ["ordinary"]
 
 
 @pytest.mark.asyncio
-async def test_agent_server_answers_the_binding_check_from_existing_sessions(tmp_path, monkeypatch):
-    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-    from jiuwenswarm.common.e2a.models import E2AEnvelope
-    from jiuwenswarm.server import agent_ws_server as module
-    from jiuwenswarm.server.jiuwenmate import service as service_module
+async def test_unbinding_deletes_only_that_jm_app_and_leaves_the_agent_to_agent_server(web):
+    web.seed({"apps": [
+        {"client_id": "ordinary", "client_secret": "fake"},
+        {"client_id": "jm-a", "client_secret": "fake", "persistent_agent_id": "agent-jm-a"},
+        {"client_id": "jm-b", "client_secret": "fake", "persistent_agent_id": "agent-jm-b"},
+    ]})
+    assert (await _call(web, "channel.dingtalk.unbind_agent", {"client_id": "jm-a"}))["ok"]
+    # An ordinary app is not a colleague's connection and is left alone.
+    assert (await _call(web, "channel.dingtalk.unbind_agent", {"client_id": "ordinary"}))["ok"]
+    assert [app["client_id"] for app in web.saved()["apps"]] == ["ordinary", "jm-b"]
+    assert web.cm.configs["dingtalk"]["apps"] == web.saved()["apps"]
+    assert not web.server.envelopes
 
-    monkeypatch.setattr(service_module, "default_data_dir", lambda: tmp_path)
-    repository = ExecutionRepository(tmp_path / "agents.sqlite3")
-    repository.resolve_session("local", "agent-used", ConversationRef.im_direct("feishu", "old-chat"), now=NOW)
-    repository.resolve_session("local", "agent-same", ConversationRef.im_direct(
-        "dingtalk", json.dumps(["app-dingtalk", "conversation-test"], separators=(",", ":")),
-    ), now=NOW)
-    responses = []
-    monkeypatch.setattr(module, "encode_agent_response_for_wire", lambda response, response_id: response)
-    monkeypatch.setattr(module, "send_wire_payload", AsyncMock(side_effect=lambda ws, response: responses.append(response)))
-    server = object.__new__(module.AgentWebSocketServer)
-    for agent_id in ("agent-used", "agent-same", "agent-new"):
-        request = e2a_to_agent_request(E2AEnvelope(request_id=f"check-{agent_id}", channel="web",
-            method=ReqMethod.JIUWENMATE_DINGTALK_BINDING_CHECK.value,
-            params={"agent_id": agent_id, "app_id": "app-dingtalk"}))
-        await server.dispatch_parsed_request(object(), request, asyncio.Lock())
-    assert [response.payload for response in responses] == [{"allowed": False}, {"allowed": True}, {"allowed": True}]
+
+@pytest.mark.parametrize("mode", ["unbind", "purge"])
+@pytest.mark.asyncio
+async def test_deleting_a_colleague_removes_its_apps_before_agent_server_removes_it(web, mode):
+    web.seed({"apps": [
+        {"client_id": "ordinary", "client_secret": "fake"},
+        {"client_id": "jm-a", "client_secret": "fake", "persistent_agent_id": "agent-jm-a"},
+        {"client_id": "jm-b", "client_secret": "fake", "persistent_agent_id": "agent-jm-b"},
+    ]})
+    web.cm.configs["feishu"] = {"apps": [
+        {"app_id": "feishu-a", "app_secret": "fake", "persistent_agent_id": "agent-feishu-a"},
+        {"app_id": "feishu-other", "app_secret": "fake", "persistent_agent_id": "agent-other"},
+    ]}
+    web.server.connections = [
+        {"channel": "dingtalk", "connection_key": "jm-a", "agent_id": "agent-jm-a"},
+        {"channel": "feishu", "connection_key": "feishu-a", "agent_id": "agent-feishu-a"},
+    ]
+    saved_when_removed = []
+    send = web.server.send_request
+
+    async def observe(envelope):
+        if envelope.method == ReqMethod.JIUWENMATE_COLLEAGUE_REMOVE.value:
+            saved_when_removed.append([app["client_id"] for app in web.saved()["apps"]])
+        return await send(envelope)
+
+    web.server.send_request = observe
+    deleted = await _call(web, "jiuwenmate.colleague.delete", {"agent_id": "colleague-a", "mode": mode})
+    assert deleted["ok"] is True
+    steps = [envelope for envelope in web.server.envelopes if envelope.method.startswith("jiuwenmate.colleague.")]
+    assert [envelope.method for envelope in steps] == [
+        ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS.value, ReqMethod.JIUWENMATE_COLLEAGUE_REMOVE.value,
+    ]
+    assert steps[-1].params == {"config_id": "colleague-a", "mode": mode}
+    assert saved_when_removed == [["ordinary", "jm-b"]]
+    assert [app["app_id"] for app in web.cm.configs["feishu"]["apps"]] == ["feishu-other"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_removal_keeps_the_colleague_and_can_be_repeated(web):
+    web.seed({"apps": [{"client_id": "jm-a", "client_secret": "fake", "persistent_agent_id": "agent-jm-a"}]})
+    web.server.connections = [{"channel": "dingtalk", "connection_key": "jm-a", "agent_id": "agent-jm-a"}]
+    send = web.server.send_request
+
+    async def fail_removal(envelope):
+        if envelope.method == ReqMethod.JIUWENMATE_COLLEAGUE_REMOVE.value:
+            raise ConnectionError("test AgentServer stopped")
+        return await send(envelope)
+
+    web.server.send_request = fail_removal
+    failed = await _call(web, "jiuwenmate.colleague.delete", {"agent_id": "colleague-a", "mode": "purge"})
+    assert failed["ok"] is False and failed["code"] == "SERVICE_UNAVAILABLE"
+    assert web.saved()["apps"] == []
+    web.server.send_request = send
+    assert (await _call(web, "jiuwenmate.colleague.delete", {"agent_id": "colleague-a", "mode": "purge"}))["ok"]
 
 
 @pytest.mark.asyncio

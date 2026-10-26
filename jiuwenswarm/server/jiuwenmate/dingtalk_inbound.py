@@ -10,10 +10,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import (
-    dingtalk_apps,
-    has_feishu_binding,
-)
+from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_apps
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition
 
 
@@ -111,7 +108,7 @@ def configured_dingtalk_bindings(config: Mapping[str, Any] | None = None) -> tup
     bindings = []
     for app in dingtalk_apps(channels.get("dingtalk")):
         app_id, agent_id = app["client_id"], app["persistent_agent_id"]
-        if not app["enabled"] or not app_id or not agent_id or has_feishu_binding(config, agent_id):
+        if not app["enabled"] or not app_id or not agent_id:
             continue
         bindings.append(DingTalkBinding(app_id=app_id, agent_id=agent_id, robot_code=app["robot_code"] or app_id))
     return tuple(
@@ -158,14 +155,13 @@ class DingTalkInboundHandler:
                 and event.sender_corp_id != event.chatbot_corp_id
             ):
                 return InboundDisposition.REJECTED
+            # The bound agent must be the one created for this app, so it never serves another connection.
+            connection = await asyncio.to_thread(self._service.connection_of, binding.namespace_id, binding.agent_id)
+            if connection is None or (connection.channel, connection.connection_key) != ("dingtalk", binding.app_id):
+                return InboundDisposition.REJECTED
             view = await asyncio.to_thread(self._service.get_colleague, binding.namespace_id, binding.agent_id)
             if getattr(view, "enabled", True) is False:
                 return InboundDisposition.HANDLED
-            if await asyncio.to_thread(
-                self._sessions.has_sessions_outside_dingtalk_app, binding.namespace_id, binding.agent_id,
-                binding.app_id,
-            ):
-                return InboundDisposition.REJECTED
             snapshot = await asyncio.to_thread(self._service.current_snapshot, binding.namespace_id, binding.agent_id)
             conversation = ConversationRef.im_direct(
                 "dingtalk", json.dumps([binding.app_id, event.conversation_id], separators=(",", ":")),

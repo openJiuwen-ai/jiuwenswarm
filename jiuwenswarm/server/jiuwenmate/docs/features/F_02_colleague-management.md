@@ -128,7 +128,7 @@ flowchart LR
 | `publish(namespace_id, agent_id) -> ConfigVersionView` | 冻结当前设置为新版本或沿用原版本 | `MODEL_NOT_CONFIGURED`、`INVALID_CONFIG`、`CONFLICT` |
 | `current_snapshot(namespace_id, agent_id) -> ConfigSnapshot` | 供 F_03 受理时固定版本 | `NOT_PUBLISHED` |
 | `snapshot(namespace_id, agent_id, config_version) -> ConfigSnapshot` | 读取指定版本 | `NOT_FOUND` |
-| `delete_colleague(namespace_id, agent_id) -> None` | 删除同事、全部版本与 Template | 默认认领保留 |
+| `delete_colleague(namespace_id, agent_id) -> None` | 删除同事、全部版本与 Template | 默认认领保留。2026-10-26 起（[F_02_02](F_02_02_colleague-connections.md)）：先删文件与窗口并核对目录已不存在，最后删除行；仍有 IM 连接时返回 `CONFLICT`；可选 `record_removal` 记录已删除的配置 ID |
 
 ### 5.5 数据模型与事实归属
 
