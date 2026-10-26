@@ -65,6 +65,7 @@ class ResultDeliveryService:
         self._send_timeout = send_timeout
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._welink_task: asyncio.Task[None] | None = None
 
     def set_mention_roster(self, resolver: MentionRosterSource) -> None:
         """Attach the host's current-group membership resolver after runtime assembly."""
@@ -88,17 +89,22 @@ class ResultDeliveryService:
             now=self._clock(),
         )
         self._task = asyncio.create_task(self._run(), name="jiuwenmate-result-delivery")
+        self._welink_task = asyncio.create_task(
+            self._run_welink_reconciliation(), name="jiuwenmate-welink-reconciliation",
+        )
         self._wake.set()
 
     async def aclose(self) -> None:
-        task, self._task = self._task, None
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        tasks = [task for task in (self._task, self._welink_task) if task is not None]
+        self._task = None
+        self._welink_task = None
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     def observe(self, event: AgentEvent) -> None:
         """Wake the worker only after a critical final or paused event has been persisted."""
@@ -190,7 +196,6 @@ class ResultDeliveryService:
                         "[JiuwenMate] group handoff was not accepted: delivery_id=%s",
                         delivery_id,
                     )
-        await self.reconcile_welink_deliveries()
         await self.reconcile_archives()
         return dispatched
 
@@ -327,3 +332,14 @@ class ResultDeliveryService:
                 await asyncio.wait_for(self._wake.wait(), timeout=self._poll_interval)
             except TimeoutError:
                 pass
+
+    async def _run_welink_reconciliation(self) -> None:
+        """Keep slow WeLink history requests and scan failures off the delivery worker."""
+        while True:
+            try:
+                await self.reconcile_welink_deliveries()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("[JiuwenMate] WeLink reconciliation scan failed")
+            await asyncio.sleep(self._poll_interval)

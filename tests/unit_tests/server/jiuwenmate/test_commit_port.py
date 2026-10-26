@@ -963,10 +963,71 @@ async def test_welink_unknown_is_reconciled_after_restart_without_resending(host
     assert repository.result_deliveries(NS, execution.request_id)[0]['status'] == 'unknown'
     restarted = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW)
     confirmed[0] = True
-    await restarted.dispatch_pending()
+    await restarted.reconcile_welink_deliveries()
     row = repository.result_deliveries(NS, execution.request_id)[0]
     assert row['status'] == 'delivered'
     assert row['external_message_id'] == '11'
     assert row['attempt_count'] == 1
     assert operations.count('send') == 1
     assert 'reconcile' in operations
+
+
+async def test_dispatch_does_not_wait_for_welink_reconciliation(host):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel='feishu', app_id='app', target_id='group', source_message_id='source')
+    execution = accept_and_start(repository, 'normal-conv', 'normal-msg', route_snapshot=route)
+    await port.record(execution, candidate(execution, 1))
+    await port.record(execution, final(execution, 2))
+    archived = asyncio.Event()
+
+    async def gateway(job):
+        return {'delivery_id': job['delivery_id'], 'stage': 'send',
+                'outcome': 'delivered', 'external_message_id': 'normal-result'}
+
+    async def archive(job):
+        archived.set()
+
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway,
+                                    archive_delivery=archive)
+
+    async def blocked_reconciliation():
+        await asyncio.Event().wait()
+
+    service.reconcile_welink_deliveries = blocked_reconciliation
+    await asyncio.wait_for(service.dispatch_pending(), timeout=1)
+    assert archived.is_set()
+    assert repository.result_deliveries(NS, execution.request_id)[0]['status'] == 'delivered'
+
+
+async def test_welink_worker_failure_isolated_and_shutdown_cancels_wait(host):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository, _, _ = host
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=AsyncMock(), poll_interval=0.01)
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+    calls = 0
+
+    async def reconcile():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError('history storage temporarily unavailable')
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    service.reconcile_welink_deliveries = reconcile
+    try:
+        await service.start()
+        await service.start()
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert calls == 2
+        await asyncio.wait_for(service.dispatch_pending(), timeout=1)
+    finally:
+        await asyncio.wait_for(service.aclose(), timeout=1)
+    assert cancelled.is_set()
