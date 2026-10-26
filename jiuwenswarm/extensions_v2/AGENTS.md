@@ -55,7 +55,7 @@
 - [管理串行](docs/features/F_11_management-serialization.md)：根写操作互斥、取消及退出通知。
 - [停机撤销](docs/features/F_12_management-shutdown.md)：逆依赖撤销、失败保留及上下文释放。
 - [后端包管理协议](docs/specs/S_02_backend-package-management.md)：`extensions.v2.*` 参数、响应及错误边界。
-- [内置事件开发模板](docs/designs/builtin-event-development-guide.md)：面向 WebClient、Gateway 和 AgentServer 开发者，按当前实现说明事件定义、Core Handler、BUILTIN Handler、Ops 能力登记及真实触发；新增代码示例明确标注为开发模板。
+- [内置事件开发模板](docs/designs/builtin-event-development-guide.md)：面向 WebClient、Gateway 和 AgentServer 开发者，说明事件、Handler、Ops 登记与真实业务生效；第 3.7、4.7 节分别说明 WebUI 和 Gateway 经 WebSocket 到 AgentServer 适配器的往返链路，新增代码标为待实现模板。
 
 新增内置事件或 Handler 时，先阅读内置事件开发模板，再根据涉及的模块查阅规约与特性方案；需要了解完整协作与生命周期时，再查阅详细架构。
 

@@ -8,7 +8,7 @@
 - 交付分类：既有本地包装载与 WebUI 工作共 8 项，保留历史台账；本轮新增 4 项后端接入。Gateway 渠道能力与旧机制迁移不在本轮。
 - 既有安排：EXTV2-01～08 和 M1～M3 保留原范围与进度。本轮补充 EXTV2-09～12 四项后端接入，并在 EXTV2-09 追加 Web `/extension` 命令；不新增管理页面或业务内置事件任务。
 - 本轮边界：复用 Core 已有的 Registry、热重载与失败候选清理；不增加已发布版本回退，不修改 Events 内部实现，不实现自动在途计数及旧代模块回收。
-- 更新日期：2026-10-24。
+- 更新日期：2026-10-25。
 - 设计依据：[设计概览](extensions-v2-overview.md)、[详细架构](extensions-v2-architecture.md)、agent-core [扩展包加载规约](../../../../../agent-core/openjiuwen/core/extension/docs/specs/S_01_package-loading.md)、agent-core [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md)。
 - 关键口径与待确认项：见第 1.2、1.3 节；未确认前，受影响的工作项不标注完成。
 - 术语与全局约束：见第 1.1 节。
@@ -149,7 +149,7 @@
 - **来源验证点与共享场景：** 架构 EXTV2-A02、EXTV2-A03 与第 4.2、4.3、5.2.1 节；主责 EXTV2-05，参与 EXTV2-M1、M3。
 - **前端独立验证：** 不适用。
 - **联合交付与开放条件：** 参与 EXTV2-M1；真实业务触发范围由 EXTV2-M3 单独确认。
-- **设计索引：** 架构第 4.2、4.3、5.2.1 节；`extensions_v2/event_types/webui.py`、`extensions_v2/webui/core_handlers/`、`extensions_v2/handler_ops/ui.py`、`extensions_v2/webui/runtime.py`。
+- **设计索引：** 架构第 4.2、4.3、5.2.1 节；[内置事件开发模板](builtin-event-development-guide.md)第 1.4、3.7、4.7、5.7 节说明真实触发与跨进程接入；`extensions_v2/event_types/webui.py`、`extensions_v2/webui/core_handlers/`、`extensions_v2/handler_ops/ui.py`、`extensions_v2/webui/runtime.py`。
 - **特性文档：** `../features/F_05_platform-events.md`。
 
 ### EXTV2-06 渲染服务与下行帧
