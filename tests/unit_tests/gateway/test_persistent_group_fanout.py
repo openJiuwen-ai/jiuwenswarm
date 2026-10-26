@@ -171,7 +171,7 @@ def _event(**overrides) -> FeishuInboundEvent:
         "sender_app_id": None,
         "received_at": NOW,
         "text": "请看一下",
-        "mention_ids": ("ou_dev",),
+        "mention_ids": (),
         "reply_to": "om_parent",
         "attachment_refs": (),
     }
@@ -302,7 +302,7 @@ async def test_group_event_maps_core_fields_and_persists_one_request(host):
     assert request.source.sender_kind == "human"
     assert request.source.received_at == NOW
     assert request.source.text == "请看一下"
-    assert request.source.mention_ids == ("ou_dev",)
+    assert request.source.mention_ids == ()
     assert request.source.reply_to == "om_parent"
     assert states[0].record.source_ref == "feishu:message:om_001"
     route = states[0].record.route_snapshot
@@ -314,7 +314,7 @@ async def test_group_event_maps_core_fields_and_persists_one_request(host):
 async def test_receiver_bot_mention_adds_internal_agent_id_only_to_request_source(host):
     agent_id = host.colleague("研发同事")
     fanout = host.fanout([_binding("app-dev", agent_id)])
-    source = _event(receiver_bot_mentioned=True)
+    source = _event(mention_ids=("ou_dev",), receiver_bot_mentioned=True)
 
     assert await fanout.handle(source) is InboundDisposition.HANDLED
 
@@ -387,6 +387,54 @@ async def test_an_unmentioned_colleague_does_not_answer_a_named_ping(host):
     assert await fanout.handle(study_event) is InboundDisposition.HANDLED
     assert len(host.request_states(life, life_event)) == 1
     assert host.request_states(study, study_event) == []
+
+
+@pytest.mark.asyncio
+async def test_adaptive_colleague_does_not_answer_when_another_bot_is_explicitly_mentioned(host):
+    designer = host.colleague("架构设计师")
+    fanout = host.fanout([_binding("app-designer", designer)])
+    event = _event(
+        receiving_app_id="app-designer",
+        text="@闫祉君的架构设计小助手 我们昨天在换窗测试1群聊了什么？",
+        mention_ids=("ou_external_arch_bot",),
+        receiver_bot_mentioned=False,
+    )
+
+    assert await fanout.handle(event) is InboundDisposition.HANDLED
+
+    assert host.row_counts() == (1, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_adaptive_colleague_can_answer_an_all_mention(host):
+    designer = host.colleague("架构设计师")
+    fanout = host.fanout([_binding("app-designer", designer)])
+    event = _event(
+        receiving_app_id="app-designer",
+        text="@all 请大家分别介绍一下自己",
+        mention_ids=("all",),
+        receiver_bot_mentioned=False,
+    )
+
+    assert await fanout.handle(event) is InboundDisposition.HANDLED
+
+    assert len(host.request_states(designer, event)) == 1
+
+
+@pytest.mark.asyncio
+async def test_typed_all_does_not_override_a_specific_platform_mention(host):
+    designer = host.colleague("架构设计师")
+    fanout = host.fanout([_binding("app-designer", designer)])
+    event = _event(
+        receiving_app_id="app-designer",
+        text="@all 闫祉君的架构设计小助手，我们昨天在换窗测试1群聊了什么？",
+        mention_ids=("ou_external_arch_bot",),
+        receiver_bot_mentioned=False,
+    )
+
+    assert await fanout.handle(event) is InboundDisposition.HANDLED
+
+    assert host.row_counts() == (1, 0, 0)
 
 
 @pytest.mark.asyncio

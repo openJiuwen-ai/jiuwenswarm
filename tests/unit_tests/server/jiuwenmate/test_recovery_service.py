@@ -148,8 +148,31 @@ async def test_an_interrupted_request_is_paused_awaiting_continuation_and_its_se
     link = host.sessions.execution_link(NS, left.interrupted.record.request_id, continued.execution_id)
     assert link["relation"] == "continuation" and link["predecessor_id"] == left.execution_id
     view = (await host.manager.request_view(NS, left.interrupted.record.request_id)).to_dict()
-    assert view["recovery"]["decision"] == "awaiting_continuation"
-    assert view["recovery"]["execution_id"] == left.execution_id
+    assert view["status"] == "ended" and view["outcome"] == "completed"
+    assert view["recovery"] is None
+
+
+async def test_recovery_notice_disappears_when_the_continuation_starts(tmp_path):
+    left = Left(tmp_path, [(core.EventType.EXECUTION_STARTED, {"goal": "中断"})])
+    host = Host(tmp_path)
+    recovery = RequestRecovery(
+        request_id=left.interrupted.record.request_id,
+        execution_id=left.execution_id,
+        decision="awaiting_continuation",
+        outcome="paused",
+        unverified_tool_calls=(),
+        decided_at=NOW,
+    )
+    RecoveryStore(host.sessions.db_path).claim(NS, recovery)
+    host.sessions.finish_request(NS, recovery.request_id, "paused", now=NOW)
+    assert host.sessions.reopen_for_continuation(NS, recovery.request_id, now=NOW)
+
+    waiting = (await host.manager.request_view(NS, recovery.request_id)).to_dict()
+    assert waiting["recovery"]["decision"] == "awaiting_continuation"
+
+    host.sessions.start_execution(NS, recovery.request_id, now=NOW)
+    running = (await host.manager.request_view(NS, recovery.request_id)).to_dict()
+    assert running["recovery"] is None
 
 
 # JM-13-V-02 a stopped or cancelled Request is not continued; a judgment is made once per Execution
@@ -227,7 +250,7 @@ async def test_tool_calls_without_a_saved_completion_are_recorded_as_unverified(
     assert recovered[0].unverified_tool_calls == ("call-open",)
     assert host.core.started == ["中断", "排队"]
     view = (await host.manager.request_view(NS, left.interrupted.record.request_id)).to_dict()
-    assert view["recovery"]["unverified_tool_calls"] == ["call-open"]
+    assert view["recovery"] is None
 
 
 async def test_web_recovery_leaves_a_dispatched_feishu_request_for_the_feishu_runtime(tmp_path):
