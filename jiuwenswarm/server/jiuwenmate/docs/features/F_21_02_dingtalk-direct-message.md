@@ -14,7 +14,7 @@
 | 设计依据 | [S_03 IM 单聊绑定与结果投递规约](../specs/S_03_im-direct-message-and-delivery.md)；[F_03](F_03_session-request.md) 受理与幂等；[F_07](F_07_execution-driver.md) 调度；[F_09](F_09_web-and-feishu-result-delivery.md) 投递账本 |
 | 关联 feature | [F_08](F_08_feishu-group-fanout.md)（飞书入站，作为接线参照，本次不修改其运行路径）；配置聚合与“添加连接”见 [F_02_02](F_02_02_colleague-connections.md)，已替换本文 D-07 的临时检查 |
 | 验证摘要 | 2026-10-26 基线 Swarm `272e7e89`、本地 core `eaf7ca383`：钉钉四组 85 项、飞书/Web/投递回归 169 项（另 1 项既有飞书失败，干净快照复现）、兼容批次 271 项、前端 111 项及构建通过；未做浏览器核对（第 8 节）。合入依赖已由 F_02_02 关闭（第 9 节） |
-| Refs | 本 session 用户的实施与发布授权；钉钉实现为子仓提交 `1d6f9445`，本次作为 PR1 提请上游审阅，与 PR2 聚合层配套；未关联 issue，合入须用户另行审批 |
+| Refs | 本 session 用户的实施与发布授权；钉钉实现为子仓提交 `1d6f9445`，本次作为 [PR1 !76](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/76) 提请上游审阅，与 [PR2 !77 聚合层](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/77) 配套；均为草稿；未关联 issue，合入须用户另行审批 |
 
 本 session 负责人为 Song Haoran，仅对应本子范围的实施，不等于认领 JM-21 整项。
 
