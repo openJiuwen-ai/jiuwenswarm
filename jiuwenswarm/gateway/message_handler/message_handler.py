@@ -164,6 +164,32 @@ _DELIVERY_IDENTITY_METADATA_KEYS = frozenset({
 })
 
 
+async def _safe_aclose(stream_gen: Any, request_id: str = "") -> None:
+    """Best-effort close of a stream generator; log failures instead of swallowing them.
+
+    Mirrors ``gateway.cron.scheduler._safe_aclose``. A consumer that stops
+    iterating -- a client closing its session page mid-stream -- leaves the
+    generator suspended at ``yield``, so the queue de-registration in its
+    ``finally`` only runs once the async generator is finalized. Closing it
+    explicitly keeps ``WebSocketAgentServerClient._message_queues`` from
+    holding the request_id, which would reject every later chat.send that
+    reuses it as a duplicate in-flight request.
+    """
+    if stream_gen is None:
+        return
+    closer = getattr(stream_gen, "aclose", None)
+    if closer is None:
+        return
+    try:
+        await closer()
+    except Exception:  # noqa: BLE001 - best-effort cleanup
+        logger.warning(
+            "[MessageHandler] stream_gen.aclose failed request_id=%s",
+            request_id,
+            exc_info=True,
+        )
+
+
 def apply_a2ui_text_fallback_to_gateway_payload(
     payload: dict[str, Any],
     *,
@@ -5124,6 +5150,7 @@ class MessageHandler(ABC):
         completion_notified = False
         has_processing_status_false = False
         _proc_count = 0
+        stream_gen: Any = None
         logger.info(
             "[MessageHandler] process_stream started: request_id=%s channel=%s session_id=%s",
             rid, channel_id, session_id,
@@ -5132,7 +5159,8 @@ class MessageHandler(ABC):
         try:
             await self._sync_agentos_cron_jobs(env)
             await self._apply_session_login_owner(env)
-            async for chunk in self.agent_client.send_request_stream(env):
+            stream_gen = self.agent_client.send_request_stream(env)
+            async for chunk in stream_gen:
                 _proc_count += 1
                 if _proc_count <= 3:
                     _pl = getattr(chunk, "payload", None) or {}
@@ -5236,6 +5264,7 @@ class MessageHandler(ABC):
                 env, session_id, request_metadata, exc,
             )
         finally:
+            await _safe_aclose(stream_gen, rid)
             if (
                 not cancelled
                 and self._is_interrupt_evolution_approval_answer_payload(env.params)
