@@ -97,6 +97,9 @@ def run_git(root: Path, *args: str) -> str | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # git always writes UTF-8 (branch names, commits, file names).
+            encoding="utf-8",
+            errors="replace",
         )
     except (OSError, subprocess.CalledProcessError):
         return None
