@@ -20,7 +20,6 @@ import {
   type TeamLeaderIdentity,
 } from '../../features/teamLeaderIdentity';
 import { AutoReviewerDetails } from './AutoReviewerStatus';
-import { McpAppView } from './McpAppView';
 import { isSensitiveQuestion } from '../InteractionSlot/qaSummary';
 
 interface ToolGroupDisplayProps {

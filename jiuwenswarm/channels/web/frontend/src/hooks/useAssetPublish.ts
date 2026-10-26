@@ -31,7 +31,7 @@ const normalizePublishMetadata = (reference: AssetReference, metadata: PublishMe
   reference.kind === 'skillpack' ? { ...metadata, visibility: 'public' } : metadata;
 export function useAssetPublish(reference: AssetReference, restored?: PublishMetadata) {
   const [metadata, setMetadata] = useState<PublishMetadata>(
-    normalizePublishMetadata(reference, restored || { ...emptyMetadata }),
+    restored || { ...emptyMetadata },
   );
   const [targetAssetId, setTargetAssetId] = useState('');
   const [force, setForce] = useState(false);
@@ -98,6 +98,10 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
         if (!edited.current) {
           setMetadata(normalizePublishMetadata(reference, { ...emptyMetadata, ...next.defaults }));
         }
+      }
+      if (!getStoredOAuthToken()) {
+        setError('');
+        return;
       }
       if (!getStoredOAuthToken()) {
         setError('');
