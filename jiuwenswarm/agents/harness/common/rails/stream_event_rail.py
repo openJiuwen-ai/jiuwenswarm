@@ -695,12 +695,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         self._conversation_ids.pop(sid, None)
         self._main_sessions.pop(sid, None)
 
-    def cleanup_session(self, session_id: str = "") -> None:
-        """Remove ALL per-session state for *session_id*.
+    def cleanup_session(
+        self, session_id: str = "", *, preserve_tool_call_ids: bool = False,
+    ) -> None:
+        """Release stream state, optionally retaining tool replay deduplication.
 
         Called by the adapter when the last task for a session completes
-        (Counter drops to 0). Prevents unbounded growth of the per-session
-        dicts on long-lived adapters serving many unique sessions.
+        (Counter drops to 0). Suspended calls need only their emitted IDs;
+        in-flight tool metadata remains available for later stop collection.
         """
         sid = self._sid_key(session_id)
         self._abort_requested.pop(sid, None)
@@ -718,7 +720,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # Drop this session's leftover latch entries (interrupted calls that
         # never completed).  Other sessions' entries must stay: shared adapters
         # serve many sessions concurrently.
-        self._clear_emitted_tool_calls(sid)
+        if not preserve_tool_call_ids:
+            self._clear_emitted_tool_calls(sid)
 
     def _clear_emitted_tool_calls(self, sid: str) -> None:
         """Release dedup state without touching pause/abort or cancellation results."""
@@ -1140,7 +1143,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             if tc_id:
                 self._inflight_tool_calls[(sid, tc_id)] = {
                     "tool_call": tc,
-                    "session": session,
                     "session_id": sid,
                 }
 

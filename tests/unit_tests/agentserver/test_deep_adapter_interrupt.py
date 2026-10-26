@@ -1334,7 +1334,7 @@ async def test_unmark_cleans_rail_on_normal_completion() -> None:
 
     getattr(adapter, "_unmark_session_active")("sess_a")
 
-    rail.cleanup_session.assert_called_once_with("sess_a")
+    rail.cleanup_session.assert_called_once_with("sess_a", preserve_tool_call_ids=False)
     assert "sess_a" not in getattr(adapter, "_active_session_ids")
 
 

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, List
@@ -237,6 +238,68 @@ async def test_stream_cleanup_keeps_inflight_results_for_stop_collection():
     assert len(results) == 1
     assert results[0]["tool_call_id"] == "call-1"
     assert results[0]["status"] == "error"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("completion", ["suspended", "completed", "unreadable", "aborted", "other_session"])
+async def test_adapter_stream_cleanup_releases_session_references(completion: str):
+    rail = JiuSwarmStreamEventRail()
+    session = _StreamSession()
+    other_session = _StreamSession()
+    session_ref = weakref.ref(session)
+    for sid, current in (("first", session), ("second", other_session)):
+        rail._main_sessions[sid] = current
+        rail._conversation_ids[sid] = sid
+        await rail.before_tool_call(_ctx(current, "web_search", extra={rail._SID_KEY: sid}))
+        rail.pause(sid)
+        rail._cancelled_tool_results[sid] = [{"tool_call_id": "previous-call"}]
+    pause_event = rail._pause_events["first"]
+    if completion == "aborted":
+        rail._abort_requested["first"] = True
+
+    state_reads: list[str] = []
+
+    def read_state(key: str) -> Any:
+        state_reads.append(key)
+        if completion in {"unreadable", "aborted"}:
+            raise RuntimeError("interruption state unavailable")
+        if completion == "completed":
+            return None
+        return SimpleNamespace(interrupted_tools={"call-1": object()})
+
+    loop_session = SimpleNamespace(
+        get_session_id=lambda: "second" if completion == "other_session" else "first",
+        get_state=read_state,
+    )
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = SimpleNamespace(loop_session=loop_session, _loop_session=loop_session)
+    adapter._stream_event_rail = rail
+    adapter._active_session_ids = {"first": 1, "second": 1}
+
+    adapter._unmark_session_active("first")
+
+    assert adapter._active_session_ids == {"second": 1}
+    assert rail._main_sessions == {"second": other_session}
+    assert rail._conversation_ids == {"second": "second"}
+    assert set(rail._pause_events) == {"second"}
+    assert not rail._pause_events["second"].is_set()
+    assert pause_event.is_set()
+    assert not rail.is_abort_requested("first")
+    assert rail.get_cancelled_tool_results("first") == []
+    assert rail.get_cancelled_tool_results("second") == [{"tool_call_id": "previous-call"}]
+    assert bool(state_reads) == (completion not in {"aborted", "other_session"})
+    assert set(rail._inflight_tool_calls) == {("first", "call-1"), ("second", "call-1")}
+
+    await rail.before_tool_call(_ctx(session, "web_search", extra={rail._SID_KEY: "first"}))
+    assert _chunk_types(session).count("tool_call") == (
+        1 if completion in {"suspended", "unreadable"} else 2
+    )
+    del session
+    assert session_ref() is None
+    rail.collect_cancelled_tool_updates("first")
+    assert [result["tool_call_id"] for result in rail.get_cancelled_tool_results("first")] == ["call-1"]
+    assert ("second", "call-1") in rail._inflight_tool_calls
+    assert ("second", "call-1") in rail._emitted_tool_call_ids
 
 
 @pytest.mark.asyncio
