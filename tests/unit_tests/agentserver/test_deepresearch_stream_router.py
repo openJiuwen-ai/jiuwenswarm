@@ -1290,7 +1290,7 @@ def test_successful_end_result_bypasses_process_display_text_limit():
 
 
 def test_successful_end_result_keeps_json_shape_limit(monkeypatch):
-    monkeypatch.setattr(stream_router_module, "MAX_JSON_NODES", 4)
+    monkeypatch.setattr(stream_router_module, "MAX_TERMINAL_RESULT_JSON_NODES", 4)
     content = json.dumps({
         "response_content": "# Final",
         "metadata": [1, 2, 3],
@@ -1306,6 +1306,42 @@ def test_successful_end_result_keeps_json_shape_limit(monkeypatch):
             },
             RouterState(),
         )
+
+
+@pytest.mark.parametrize("event", [[], {}, None])
+def test_terminal_classifier_rejects_non_text_event(event):
+    assert stream_router_module.is_terminal_result_chunk({
+        "agent": "end", "event": event, "content": "# Report",
+    }) is False
+
+
+def test_terminal_citations_use_separate_node_budget():
+    result = {
+        "response_content": "# Final report",
+        "citations": [{"title": "source", "url": "https://example.org"}] * 6000,
+    }
+    state = RouterState()
+    route_chunk({
+        "agent": "end", "section_idx": "0", "event": "summary_response",
+        "content": json.dumps(result),
+    }, state)
+    assert state.final_report_started is True
+    assert state.report_parts == []
+    with pytest.raises(ValueError, match="deepresearch_router_limit_exceeded"):
+        route_chunk({
+            "agent": "plan_reasoning", "section_idx": "1", "content": result,
+        }, RouterState())
+
+
+@pytest.mark.parametrize("event", ["summary_response", "error"])
+def test_terminal_result_keeps_depth_and_text_bounds(monkeypatch, event):
+    monkeypatch.setattr(stream_router_module, "MAX_TERMINAL_RESULT_TEXT_CHARS", 256)
+    for content in ("x" * 257, _deep_json(65)):
+        with pytest.raises(ValueError, match="deepresearch_router_limit_exceeded"):
+            route_chunk({
+                "agent": "end", "section_idx": "0", "event": event,
+                "content": content,
+            }, RouterState())
 
 
 def test_end_result_with_error_event_does_not_crash():

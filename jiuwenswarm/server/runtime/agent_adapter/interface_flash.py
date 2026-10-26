@@ -244,6 +244,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_flash_artifact_post_process_rail",
         # Turbo 工具会缓存交付总结；保留发送组件，启用仍由父类 Turbo 开关控制。
         "_skill_turbo_delivery_summary_rail",
+        # Turbo routing must remain available when skill retrieval is disabled.
+        "_skill_turbo_prompt_rail",
         
         "_task_planning_rail",
         # auto 档动态路由：请求级 enable_routing / 进程级 model_routing.enabled
@@ -583,7 +585,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 manager=self._skill_manager,
                 service_id=self._service_id,
                 agent_id=self._agent_id,
-                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
+                on_installed_skills_changed=self._on_installed_skills_changed,
             )
             skill_tool_names: list[str] = []
             for tool in skill_toolkit.get_tools():
@@ -668,7 +670,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 manager=self._skill_manager,
                 service_id=self._service_id,
                 agent_id=self._agent_id,
-                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
+                on_installed_skills_changed=self._on_installed_skills_changed,
             )
             slim_names: list[str] = []
             for tool in slim_toolkit.get_tools():
@@ -843,6 +845,23 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         )
 
         return CodingArtifactPostProcessRail(coauthor_header_enabled=False)
+
+    def _build_skill_turbo_prompt_rail(self) -> Any | None:
+        """Use Flash guidance independently of the optional skill retriever."""
+        try:
+            turbo_config = self._config_cache.get("skill_turbo", {})
+            if not isinstance(turbo_config, dict) or not turbo_config.get("enabled", False):
+                return None
+            disabled_tools = resolve_string_or_list_config(self._config_cache.get("disabled_tools"))
+            from jiuwenswarm.agents.harness.flash.rails.flash_turbo_prompt_rail import (
+                FlashTurboPromptRail,
+            )
+
+            # Keep a disabled rail so it can remove a stale guide, as the parent does.
+            return FlashTurboPromptRail(acceleration_disabled=_FLASH_TURBO_TOOL_NAME in disabled_tools)
+        except Exception as exc:
+            logger.warning("[FlashAdapter] FlashTurboPromptRail create failed: %s", exc, exc_info=True)
+            return None
 
     def _build_skill_turbo_delivery_summary_rail(self) -> Any | None:
         """仅在 Turbo 开启时装配 Flash 专用的总结与收尾组件。"""

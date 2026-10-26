@@ -571,6 +571,7 @@ async def test_model_request_excludes_full_catalog_before_and_after_search(harne
     records.append(SimpleNamespace(name="slides", description="presentation slides"))
     callbacks = AgentCallbackManager("flash-prompt-test-" + uuid4().hex)
     agent = object.__new__(ReActAgent)
+    agent._context_usage_sequences = {}
     agent._agent_callback_manager = callbacks
     agent._config = ReActAgentConfig(model_name="offline-capture")
     agent._ability_manager = AbilityManager()

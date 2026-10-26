@@ -25,6 +25,9 @@ from openjiuwen.harness.security.patterns import (
 )
 from openjiuwen.harness.security.tiered_policy import evaluate_tiered_policy
 
+from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
+    is_todo_close_nudge,
+)
 from jiuwenswarm.common.tool_display import extract_call_goal
 from jiuwenswarm.server.runtime.skill_turbo.rails.permission_rail import (
     SkillTurboPermissionRail,
@@ -123,6 +126,12 @@ class FlashPermissionRail(SkillTurboPermissionRail):
             host=replace(host, permission_scene_hook=guarded_scene),
             **kwargs,
         )
+
+    async def before_tool_call(self, ctx):
+        tool_call = getattr(getattr(ctx, "inputs", None), "tool_call", None)
+        if getattr(tool_call, "name", None) == "todo" and is_todo_close_nudge(tool_call):
+            return
+        await super().before_tool_call(ctx)
 
     def _get_auto_confirm_key(self, tool_call):
         if tool_call and (

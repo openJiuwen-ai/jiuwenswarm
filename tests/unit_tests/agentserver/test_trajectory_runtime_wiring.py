@@ -33,6 +33,8 @@ def reset_observability_demands():
         agent_observability._agent_observability_active = False
         agent_observability._force_ever_enabled = False
         agent_observability._file_exporter_fanout = None
+        agent_observability._file_exporter_fanout_config = None
+        agent_observability._file_exporter_fanout_users.clear()
         team_manager._observability_active = False
 
     _reset()
@@ -508,3 +510,48 @@ def test_attach_registers_the_safe_span_processor_adapter(monkeypatch, tmp_path)
         mod._file_exporter_fanout = None
         if holder is not None:
             holder.shutdown()
+
+
+@pytest.mark.parametrize('conflict', ['directory', 'retention', 'none'])
+def test_shared_file_exporter_reports_conflicting_settings(monkeypatch, tmp_path, caplog, conflict):
+    """Keep first-writer configuration, but make ignored settings visible."""
+    from types import SimpleNamespace
+
+    from openjiuwen.extensions.observability import setup
+
+    registered = []
+    monkeypatch.setattr(setup, 'is_initialized', lambda: True)
+    monkeypatch.setattr(
+        'opentelemetry.trace.get_tracer_provider',
+        lambda: SimpleNamespace(add_span_processor=registered.append),
+    )
+    agent_dir = tmp_path / 'agent'
+    team_dir = tmp_path / 'team' if conflict == 'directory' else agent_dir
+    team_retention = 14 if conflict == 'retention' else 7
+    try:
+        agent_observability._attach_file_exporter_fanout(str(agent_dir), {})
+        with caplog.at_level('WARNING', logger=agent_observability.__name__):
+            for _ in range(2):
+                agent_observability._attach_file_exporter_fanout(
+                    str(team_dir), {'file_retention_days': team_retention}, runtime='team',
+                )
+        assert len(registered) == 1
+        assert agent_observability._file_exporter_fanout_users == {'agent', 'team'}
+        warnings = [r for r in caplog.records if 'shared file exporter' in r.getMessage()]
+        assert len(warnings) == (0 if conflict == 'none' else 1)
+        if warnings:
+            message = warnings[0].getMessage()
+            assert 'team' in message
+            assert str(agent_dir) in message
+            assert str(team_dir) in message
+            assert 'retention_days=7' in message
+            if conflict == 'retention':
+                assert 'retention_days=14' in message
+        agent_observability._release_file_exporter_fanout('agent')
+        assert agent_observability._file_exporter_fanout is registered[0]
+        agent_observability._release_file_exporter_fanout('team')
+        assert agent_observability._file_exporter_fanout is None
+        assert agent_observability._file_exporter_fanout_config is None
+    finally:
+        agent_observability._release_file_exporter_fanout('agent')
+        agent_observability._release_file_exporter_fanout('team')

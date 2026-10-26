@@ -1370,12 +1370,11 @@ class RichTelemetryCallbacks:
         tools = kwargs.get("tools") or []
         try:
             try:
-                state.context_tokens = await asyncio.wait_for(
-                    asyncio.to_thread(count_context_tokens, messages, tools),
-                    timeout=float(
-                        getattr(self._config, "token_count_timeout_seconds", 0.5)
-                    ),
-                )
+                timeout_seconds = float(getattr(self._config, "token_count_timeout_seconds", 0.5))
+                if timeout_seconds <= 0:
+                    raise asyncio.TimeoutError
+                async with asyncio.timeout(timeout_seconds):
+                    state.context_tokens = await asyncio.to_thread(count_context_tokens, messages, tools)
             except Exception:
                 _LOGGER.warning(warning, exc_info=True)
                 state.context_tokens = None

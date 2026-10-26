@@ -293,6 +293,9 @@ class AgentManager:
         # 上一次默认模型的连接身份快照 (diff_key -> ModelClientConfig), 用于
         # 模型热更新后关闭"已被删除/改掉凭证"的 LLM 连接 (增量关闭)。
         self._last_model_conn_configs: dict[tuple, Any] = {}
+        # create_token 幂等表容量帽(FIFO):保证 ack 丢失后同 token 重投仍命中
+        # 原 claim,同时内存上界 8192 条 ≈ 12MB(issue#5240 残余 + MR#8528 检视)。
+        self._session_create_tokens_max = 8192
         self._session_create_tokens: dict[tuple[str, str], tuple[Any, Any]] = {}
         self._session_create_token_lock = asyncio.Lock()
         from jiuwenswarm.server.runtime.agent_warm_pool import AgentWarmPool
@@ -991,6 +994,14 @@ class AgentManager:
                     "bypassed",
                 )
             if token:
+                # 容量帽而非消费式弹出:幂等窗口必须覆盖「ack 丢失/超时后的
+                # 同 token 重投」(网关接口契约),而会话激活发生在回 ack 之前,
+                # 激活即弹会令重投生成重复会话。FIFO 逐最旧保证内存有界
+                # (issue#5240 残余 + MR#8528 检视)。
+                if len(self._session_create_tokens) >= self._session_create_tokens_max:
+                    self._session_create_tokens.pop(
+                        next(iter(self._session_create_tokens)), None
+                    )
                 self._session_create_tokens[token_key] = (create_signature, claim)
             return claim
 

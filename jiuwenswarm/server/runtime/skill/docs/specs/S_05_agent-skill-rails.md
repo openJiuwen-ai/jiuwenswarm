@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_05 / agent-skill-rails |
 | 关联模块 | jiuwenswarm/agents/harness/common/rails/skill_*.py + subagent_skill_authorization_rail.py + rails/permissions/skill_authorization/（file_store + runtime） |
-| 最近一次修订日期 | 2026-10-16 |
+| 最近一次修订日期 | 2026-10-21 |
 | 关联 feature | 暂无（初版建档） |
 
 ## 范围 / 边界
@@ -133,7 +133,7 @@ swarm 子类只做四件事：
 
 段内容三部分：
 - **SKILL.md 加载规范**：必须且只能用 `skill_tool(skill_name=…, relative_file_path="SKILL.md")` 加载（禁 read_file / 拼凑）；嵌套子技能 `skill_name` 填顶层名、子技能走 `relative_file_path`；无 skill_tool 时告知用户而非替代；**历史加载内容不跨任务复用**（技能可能已卸载 / 更新）。
-- **9 条执行规范**：① 声明步骤 `[当前步骤: …]`；② todo 与工作工具**同轮搭便车**（禁独占一轮，唯一例外是纯文本最终回复的前一轮）；③ 严格顺序不跳过 / 合并 / 重排；④ 闸门等待禁止自行假设同意；⑤ 不确定时只能重调 skill_tool；⑥ 内容忠实（选项 / 参数 / 标签原样用）；⑦ 错误禁自 skip；⑧ 工具缺失先告知征得同意再替代；⑨ 用户打断按**原话**判定（"继续"类→续跑，其余视为放弃：todo 全标 cancelled）。
+- **9 条执行规范**：① 声明步骤 `[当前步骤: …]`；② todo 与工作工具**同轮搭便车**（禁独占一轮，唯一例外是纯文本最终回复的前一轮；**加速通道例外**：单份交付物走 `skill_acceleration_exec` 时**不建 todo**，仅单轮多交付物才先建外层待办清单——见 `skill_turbo_guide` 段）；③ 严格顺序不跳过 / 合并 / 重排；④ 闸门等待禁止自行假设同意；⑤ 不确定时只能重调 skill_tool；⑥ 内容忠实（选项 / 参数 / 标签原样用）；⑦ 错误禁自 skip；⑧ 工具缺失先告知征得同意再替代；⑨ 用户打断按**原话**判定（"继续"类→续跑，其余视为放弃：todo 全标 cancelled）。
 - **覆盖语义警告**：新消息默认覆盖旧任务（禁"两个都做"）。
 
 实现要点：每次从 `ctx.agent` 现取最新 `system_prompt_builder`（防热重载后指向旧 builder）；`uninit` 先同步到当前生效 builder 再 `remove_section`。

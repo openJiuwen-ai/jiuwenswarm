@@ -24,7 +24,9 @@ SAFE_BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 RESPONSE_CONTENT_MAX_BYTES = 10 * 1024 * 1024
 INFER_MESSAGE_MAX = 20
-CHART_MESSAGE_MAX = 20
+# Multi-section SDK reports can contain dozens of charts. Bound their count
+# separately from the per-image and aggregate decoded-byte limits below.
+CHART_MESSAGE_MAX = 512
 BASE64_FIELD_MAX_BYTES = 5 * 1024 * 1024
 DECODED_BINARY_TOTAL_MAX_BYTES = 100 * 1024 * 1024
 CITATION_COUNT_MAX = 10_000

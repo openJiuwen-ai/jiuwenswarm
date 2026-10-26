@@ -41,6 +41,7 @@ _CN_PROTOCOL = """## 技能执行规范（强制）
 
 1. **声明步骤**：默认情况下，每次行动前必须在回复开头声明当前所在步骤，格式：`[当前步骤: <步骤名称>]`。**无需调用任何工具来"开始"步骤**——声明本身即代表进入该步。若 SKILL.md 明确声明“阶段状态和阶段消息由工具事件唯一生成”，则以该声明为准，禁止自行输出 `[当前步骤: ...]` 或其他步骤声明。
 2. **必须使用 todo**：在执行 skill 步骤前，必须先创建 todo 列表。
+   - **加速通道例外（单份交付物）**：若任务直接交给 `skill_acceleration_exec` 加速通道执行、且本单轮只需产出**一份交付物**，**不要创建 todo**——加速通道内部会通过 Stage 步骤事件自行在前端展示进度，无需也不应再建外层 todo（建了会导致前端任务列表异常）。**仅当单轮需产出多份交付物**（需多次调用 `skill_acceleration_exec`）时，才必须先建外层待办清单（规则见「技能加速通道」段的「多交付物待办清单」）。
    - **创建时搭便车**：`todo_create` **必须**和第一个工作工具在同一轮发出，禁止 `todo_create` 独占一轮。
    - **更新时搭便车（强制）**：`todo_modify` **必须**和下一个任务的工作工具在同一轮发出，禁止 `todo_modify` 独占一轮。系统会在工作工具被调用时自动将 pending 推进为 in_progress，你只需要用 `todo_modify` 标记 completed/cancelled。
    - ✅ 正确：`[write_file(...), todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]`
@@ -82,6 +83,7 @@ Then execute the workflow; the rules below govern execution.
 
 1. **Declare step**: By default, before each action, state your current step at the start of your reply: `[Current Step: <step name>]`. **You do NOT call any tool to "start" a step** — the declaration itself enters the step. If SKILL.md explicitly states that stage status and stage messages are emitted exclusively by tool events, follow that rule and you must not declare `[Current Step: ...]` or any other step message yourself.
 2. **Use todo (mandatory)**: For skills, you MUST create a todo list before executing the skill steps.
+   - **Acceleration-channel exception (single deliverable)**: If the task is handed directly to the `skill_acceleration_exec` acceleration channel and this turn needs to produce exactly **one deliverable**, do **NOT** create a todo — the channel emits its own Stage step events that render as the frontend task list, so no outer todo is needed (creating one causes the frontend task list to display incorrectly). **Only** when a single turn must produce **multiple deliverables** (multiple `skill_acceleration_exec` calls) must you first build an outer todo list (see the "Multiple-deliverable todo list" in the acceleration-channel section).
    - **Piggyback on creation**: `todo_create` **MUST** be called in the same response as the first work tool — never in a standalone todo-only round.
    - **Piggyback on updates (MANDATORY)**: `todo_modify` **MUST** be called alongside the next task's work tool in the same response — never alone. The system auto-advances pending tasks to in_progress when work tools are called, so you only need `todo_modify` to mark tasks completed/cancelled.
    - ✅ CORRECT: `[write_file(...), todo_modify(action="update", todos=[{"id":"step1","status":"completed"}])]`

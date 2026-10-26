@@ -5,6 +5,19 @@
 在每次 LLM 调用前向 system prompt 注入 skill_turbo_guide 段，
 指导 LLM 何时使用 skill_acceleration_exec 加速通道以及失败后的降级策略。
 
+指南含多交付物强制引导：单轮需要多份交付物（多次调用 skill_acceleration_exec）
+时必须先 todo_create 建外层待办清单、逐项执行逐项 todo_modify 标记、全部完成后
+统一总结——外层 todo 激活时入口才走 outer_todo 分支（跳过内部 task.*、chat.*
+归外层 todo 步骤 segment，见 skill_turbo_tools 入口拦截），无 todo 连跑会让
+各次交付的内部任务互相顶替、交付总结挤占主气泡（实证：单轮两份 PPT 无 todo
+连跑，交付总结一份被毁一份过时错位）。
+
+清单编排必须**串行**：todo_create / todo_modify 的工具结果返回后才进入加速
+通道，严禁同批并行调用——同轮并行 todo_create + skill_acceleration_exec 会让
+入口 outer_todo 检测竞态误判（rail 的 _ACTIVE_TASK_ID 尚未设置），turbo 的
+Stage 快照顶掉外层 todo 槽位且续跑入口不再补发终态（实证 case 与机制见
+docs/bugfix/B_03_leaked-task-slot-settlement.md）。
+
 清单动态化（请求期）：外部 turbo 技能目录的可见性依赖请求级上下文
 （session 绑定目录 / env），sidecar 启动（模块导入）时不可见，工具描述
 若仅依赖导入期固化值会恒为"暂无"。本 rail 在每次模型调用前调用
@@ -49,11 +62,13 @@ def _build_skill_turbo_guide_text(language: str, skill_names: list[str]) -> str:
         names = "、".join(skill_names)
         return f"""## 技能加速通道（skill_acceleration_exec）
 
-⚠️ **默认优先**：当用户意图匹配 `skill_acceleration_exec`（当前支持的技能清单以该工具描述中的"当前内部支持"为准，当前：{names}），你的**第一个工具调用必须是 `skill_acceleration_exec`**——它内部会自行完成规划+研究+生成+推送全流程。**唯一例外**：用户**显式**要求先执行某项 `skill_acceleration_exec` 不会自行处理的前置操作，则必须先完成该操作再调用 `skill_acceleration_exec`。搜索、读文件等研究类操作它内部会自己完成，**不构成**例外；其他技能类操作（如加载独立技能流程）它不会自行处理，**构成**例外。**同样例外**：本回合 tool_result 明确提示『检测到上一轮留下的已完成产物』时，不要调用 `skill_acceleration_exec`，改用 skill_tool 或直接编辑产物文件继续。
+⚠️ **默认优先**：当用户意图匹配 `skill_acceleration_exec`（当前支持的技能清单以该工具描述中的"当前内部支持"为准，当前：{names}），你的**第一个工具调用必须是 `skill_acceleration_exec`**——它内部会自行完成规划+研究+生成+推送全流程。**唯一例外**：用户**显式**要求先执行某项 `skill_acceleration_exec` 不会自行处理的前置操作，则必须先完成该操作再调用 `skill_acceleration_exec`。搜索、读文件等研究类操作它内部会自己完成，**不构成**例外；其他技能类操作（如加载独立技能流程）它不会自行处理，**构成**例外。**同样例外**：本回合 tool_result 明确提示『检测到上一轮留下的已完成产物』时，不要调用 `skill_acceleration_exec`，改用 skill_tool 或直接编辑产物文件继续。**同样例外**：单轮需要产出**多份交付物**（即需要多次调用 `skill_acceleration_exec`，如一次要两份 PPT）时，必须先按下方「📋 多交付物待办清单」用 `todo_create` 建好清单，**等 `todo_create` 成功返回后**再进入加速通道（**不要把 `todo_create` 和 `skill_acceleration_exec` 放在同一批并行调用**）。
 
 若你已先调用了 `skill_tool` 加载了对应技能正文（即**不属于**上述例外，只是误触），**仍须立即调用 `skill_acceleration_exec`**——不要因"已经加载了 SKILL.md"或"已经做了研究"而放弃加速通道。
 
-若 `skill_acceleration_exec` 返回成功（产物已生成），**禁止**再用 `skill_tool` 重复同一任务。若待办仍有 `in_progress`，先单独调 `todo_modify` 把对应步骤标为 `completed`，再向用户总结结果。若 `skill_acceleration_exec` 返回失败或未处理，**必须**继续用 `skill_tool` 加载对应技能走标准流程完成用户任务。
+若 `skill_acceleration_exec` 返回成功（产物已生成），**禁止**再用 `skill_tool` 重复同一任务。若待办仍有 `in_progress`，先单独调 `todo_modify` 把对应步骤标为 `completed`；清单还有未完成项时按下方「📋 多交付物待办清单」继续下一项，全部完成后再向用户总结结果。若 `skill_acceleration_exec` 返回失败或未处理，**必须**继续用 `skill_tool` 加载对应技能走标准流程完成用户任务。
+
+📋 **多交付物待办清单（强制）**：单轮需要产出**多份交付物**（如两份 PPT、多份文档，即需要多次调用 `skill_acceleration_exec`）时，**禁止**在无外层待办的情况下连跑加速通道——各次交付的进度与总结会互相顶替、无法归位到各自交付物下。正确流程（**串行推进：每一步都必须等上一步的工具结果返回后再发起下一步，严禁同批并行调用**）：先调 `todo_create` 建待办清单（**每份交付物一项**，第一项自动为 `in_progress`）→ **等 `todo_create` 返回成功后**，对当前项调用 `skill_acceleration_exec` 完成交付 → 成功后立即调 `todo_modify`（action=update）把当前项标为 `completed`、下一项标为 `in_progress` → **等 `todo_modify` 返回成功后**再进入下一项，清单仍有未完成项时**继续下一项，不要中途向用户做最终总结** → **全部完成后**再向用户做**一次性统一总结**（逐份说明交付结果）。
 
 ⏸️ **暂停不是失败**：当 `skill_acceleration_exec` 暂停等待用户回答（返回"技能加速已暂停"类信息，或向用户弹出补充问题卡片，或返回结果中包含 `__skill_turbo_hitl__` 标记时）时，这是任务流的正常提问环节。**必须停止后续工具调用，等待用户回答**；用户回答后加速通道会自动从断点继续。**禁止**把暂停当成失败而改走 `skill_tool` 标准流程，那会丢弃已完成的阶段并从头重跑。
 
@@ -62,11 +77,13 @@ def _build_skill_turbo_guide_text(language: str, skill_names: list[str]) -> str:
     names = ", ".join(skill_names)
     return f"""## Skill Acceleration Channel (skill_acceleration_exec)
 
-⚠️ **Default priority**: When the user's intent matches `skill_acceleration_exec` (see the "当前内部支持 / currently supported" list in that tool's description; currently: {names}), your **FIRST tool call MUST be `skill_acceleration_exec`** — it handles planning + research + generation + delivery internally. **Only exception**: the user **explicitly** asks to first perform a preceding action that `skill_acceleration_exec` does not handle internally; then you must complete that action before calling `skill_acceleration_exec`. Research-style actions like `web_search` and file reading are handled internally — they do **NOT** constitute an exception; other skill-type actions (e.g. loading a separate skill flow) are not handled internally and **DO** constitute an exception. **Also excepted**: when this turn's tool_result explicitly indicates completed artifacts from a previous run were detected, do NOT call `skill_acceleration_exec`; continue with skill_tool or by editing the artifact files directly.
+⚠️ **Default priority**: When the user's intent matches `skill_acceleration_exec` (see the "当前内部支持 / currently supported" list in that tool's description; currently: {names}), your **FIRST tool call MUST be `skill_acceleration_exec`** — it handles planning + research + generation + delivery internally. **Only exception**: the user **explicitly** asks to first perform a preceding action that `skill_acceleration_exec` does not handle internally; then you must complete that action before calling `skill_acceleration_exec`. Research-style actions like `web_search` and file reading are handled internally — they do **NOT** constitute an exception; other skill-type actions (e.g. loading a separate skill flow) are not handled internally and **DO** constitute an exception. **Also excepted**: when this turn's tool_result explicitly indicates completed artifacts from a previous run were detected, do NOT call `skill_acceleration_exec`; continue with skill_tool or by editing the artifact files directly. **Also excepted**: when a single turn must produce **multiple deliverables** (i.e. multiple `skill_acceleration_exec` calls, e.g. two PPT decks in one request), you must first build the todo list via `todo_create` as required by the "📋 Multiple-deliverable todo list" clause below, and enter the acceleration channel **only after `todo_create` has returned successfully** (**do NOT batch `todo_create` and `skill_acceleration_exec` as parallel calls in the same turn**).
 
 If you have already mistakenly called `skill_tool` to load the corresponding skill body (i.e. this does **NOT** fall under the exception above - it was just a misfire), **you MUST still call `skill_acceleration_exec` immediately** - do NOT abandon the acceleration channel because "SKILL.md is already loaded" or "research is already done."
 
-If `skill_acceleration_exec` returns success (the artifact is already generated), you are **forbidden** from calling `skill_tool` again for the same task. If any todo is still `in_progress`, first call `todo_modify` alone to mark that step `completed`, then summarize the result to the user. If `skill_acceleration_exec` returns failure or is not handled, you **MUST** fall back to `skill_tool` to load the corresponding skill and complete the user's task via the standard flow.
+If `skill_acceleration_exec` returns success (the artifact is already generated), you are **forbidden** from calling `skill_tool` again for the same task. If any todo is still `in_progress`, first call `todo_modify` alone to mark that step `completed`; if the list still has unfinished items, continue with the next one per the "📋 Multiple-deliverable todo list" clause below, and only summarize to the user after all items are completed. If `skill_acceleration_exec` returns failure or is not handled, you **MUST** fall back to `skill_tool` to load the corresponding skill and complete the user's task via the standard flow.
+
+📋 **Multiple-deliverable todo list (mandatory)**: When a single turn must produce **multiple deliverables** (e.g. two PPT decks, several documents — i.e. multiple `skill_acceleration_exec` calls), you are **forbidden** from running the acceleration channel back-to-back without an outer todo list — each run's progress and delivery summary would overwrite the previous one instead of attaching to its own deliverable. Correct flow (**strictly sequential: every step must wait for the previous tool's result before starting the next; NEVER batch these calls in parallel**): first call `todo_create` to build the list (**one item per deliverable**; the first item automatically becomes `in_progress`) → **after `todo_create` returns success**, call `skill_acceleration_exec` for the current item → on success immediately call `todo_modify` (action=update) to mark the current item `completed` and the next item `in_progress` → **after `todo_modify` returns success**, proceed to the next item; while unfinished items remain, **continue with the next one and do NOT give the user a final summary midway** → after **all items are completed**, give **one unified summary** covering every deliverable.
 
 ⏸️ **Pause is NOT failure**: When `skill_acceleration_exec` pauses to wait for the user's answer (returning a "skill acceleration paused" style message, showing a follow-up question card to the user, or returning a result containing the `__skill_turbo_hitl__` marker), that is a normal clarification step of the pipeline. You **MUST stop making further tool calls and wait for the user's answer**; the acceleration channel will automatically resume from the breakpoint once answered. **DO NOT** treat the pause as a failure and switch to the `skill_tool` standard flow — that would discard completed stages and rerun from scratch.
 

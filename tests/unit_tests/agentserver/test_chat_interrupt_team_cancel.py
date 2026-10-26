@@ -7,6 +7,7 @@ pause→pause_session_runtime，resume→仅消息，supplement/未知→"暂不
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -130,20 +131,33 @@ async def test_team_supplement_not_supported_no_cancel(fake_team_manager):
 
 
 @pytest.mark.asyncio
-async def test_team_cancel_no_stream_task_returns_false(monkeypatch):
-    """无 team run driver → cancel_session_runtime 返回 False → success=False。"""
+@pytest.mark.parametrize("stop_error", [None, TimeoutError, RuntimeError, asyncio.CancelledError])
+async def test_team_cancel_no_stream_task_returns_false(monkeypatch, stop_error):
+    """Distinguish absent runtimes from failed stops; propagate caller cancellation."""
     import jiuwenswarm.agents.harness.team as team_pkg
     tm = SimpleNamespace(
-        cancel_session_runtime=AsyncMock(return_value=False),
+        cancel_session_runtime=AsyncMock(return_value=False, side_effect=stop_error),
         pause_session_runtime=AsyncMock(return_value=False),
         has_stream_task=lambda sid: False,
     )
     monkeypatch.setattr(team_pkg, "get_team_manager", lambda channel_id: tm)
     from jiuwenswarm.server.handlers.chat import _handle_cancel
     req = _team_interrupt_request(session_id="sess-empty", intent="cancel")
-    resp = await _handle_cancel(_ctx(req), allow_create=False, send_response=False)
+    ctx = _ctx(req)
+    if stop_error is asyncio.CancelledError:
+        with pytest.raises(asyncio.CancelledError):
+            await _handle_cancel(ctx, allow_create=False, send_response=True)
+        ctx.sink.send_wire.assert_not_awaited()
+        return
+    resp = await _handle_cancel(ctx, allow_create=False, send_response=True)
+    assert resp.ok is True
+    assert resp.payload["event_type"] == "chat.interrupt_result"
     assert resp.payload["success"] is False
-    assert "没有可取消" in resp.payload["message"]
+    assert resp.payload["intent"] == "cancel"
+    expected = "团队停止未完成，请稍后重试" if stop_error else "当前没有可取消的团队任务"
+    assert resp.payload["message"] == expected
+    ctx.sink.send_wire.assert_awaited_once()
+    assert ctx.sink.send_wire.await_args.args[0]["body"]["result"] == resp.payload
 
 
 @pytest.mark.asyncio

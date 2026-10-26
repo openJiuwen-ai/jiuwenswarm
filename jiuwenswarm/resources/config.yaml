@@ -668,6 +668,7 @@ react:
       - read_memory                 # 间接调用（尤其中小模型），长期记忆功能形同虚设
       - write_memory
       - edit_memory
+      - external_memory_search
     enable_for_models:             # 模型白名单（空=全部启用）
       - glm
     subagents:                      # 子 agent 延迟加载配置

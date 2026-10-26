@@ -204,6 +204,10 @@ async def test_team_completed_flushes_pending_text_before_complete(monkeypatch):
 
     class _Manager:
         @staticmethod
+        def owns_stream_task(session_id, task) -> bool:
+            return True
+
+        @staticmethod
         def reset_seen_team_events(session_id: str) -> None:
             return None
 

@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_06 / thinking-adaptation |
 | 关联模块 | jiuwenswarm/common/thinking/（6 文件） |
-| 最近一次修订日期 | 2026-10-13 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -34,28 +34,31 @@ medium/high 的推理力度）是**另一条独立管线**，归 [[S_10]]；两�
   llm_call_kwargs / injected / degraded / reason / vendor_style / model_name）；
   `freeze_llm_call_kwargs` 深拷贝后冻结，`thaw_llm_call_kwargs` 解冻出可变副本——
   **注入模型调用时必须用 thaw 副本**（KV-cache 友好 + 不污染冻结源）。
-- **N3 厂商白名单有序窄匹配**：`_VENDOR_PATTERNS` 有序表——GLM-5 / 5.1 / 5.2 精确窄
-  匹配 + DeepSeek 关键字 → `extra_body_thinking_type` 风格；Qwen 的
+- **N3 厂商白名单有序窄匹配**：`_VENDOR_PATTERNS` 有序表——GLM-5.3 →
+  `glm53_reasoning_effort`；Kimi K3 → `effort_only`（仅 `reasoning_effort`，禁带
+  `thinking`）；GLM-5 / 5.1 / 5.2 + DeepSeek → `extra_body_thinking_type`；Qwen 的
   `extra_body_enable_thinking` 预留未启用。`match_vendor_style` 未命中返回 None；
-  `style_to_kwargs` 遇未知 style **抛 ValueError**（表内穷尽，禁宽匹配）。
-- **N4 adapt_thinking 永不抛异常**：invalid_value / unsupported_model / adapter_error
+  `depth_to_kwargs` / `style_to_kwargs` 遇未知 style **抛 ValueError**（表内穷尽，禁宽匹配）。
+- **N4 default → 产品默认深度（窄集合）**：仅 GLM-5.3 / Kimi K3 在 `default` 时自动注入
+  `DEFAULT_THINKING_DEPTH`（当前 `"low"`）；其余白名单 `default` 为空操作。
+- **N5 adapt_thinking 永不抛异常**：invalid_value / unsupported_model / adapter_error
   三种情况统一降级，`degraded=True` + `reason` 可追溯。**降级不是错误**——thinking 是
   增强项，失败不得影响主调用。
-- **N5 rail 注入点唯一**：`ThinkingInjectRail(DeepAgentRail)` priority=15，仅
+- **N6 rail 注入点唯一**：`ThinkingInjectRail(DeepAgentRail)` priority=15，仅
   `before_model_call` 注入 `extra["llm_call_kwargs"]`；注入失败仅 warning（fail-open）。
-- **N6 钩子幂等 + ImportError 降级**：`register_thinking_hook` 幂等注册进 openjiuwen
+- **N7 钩子幂等 + ImportError 降级**：`register_thinking_hook` 幂等注册进 openjiuwen
   core TaskTool；SDK 不可用时降级 warning（社区环境不装 SDK 也能跑）。
-- **N7 日志摘要脱敏**：`kwargs_digest` 输出日志摘要而非全量 kwargs（防敏感参数进日志）。
+- **N8 日志摘要脱敏**：`kwargs_digest` 输出日志摘要而非全量 kwargs（防敏感参数进日志）。
 
 ## 接口契约
 
 | 模块 | 关键符号 | 语义要点 |
 |---|---|---|
-| `types.py` | `THINKING_VALUES`、`ThinkingProfile`、`normalize_thinking`、`freeze/thaw_llm_call_kwargs`、`kwargs_digest` | N1 / N2 / N7 |
-| `vendor_map.py` | `_VENDOR_PATTERNS`、`match_vendor_style`、`style_to_kwargs` | N3 |
-| `adapter.py` | `adapt_thinking` | N4 |
-| `rail.py` | `ThinkingInjectRail` | N5 |
-| `register_hook.py` | `register_thinking_hook` | N6 |
+| `types.py` | `THINKING_VALUES`、`ThinkingProfile`、`normalize_thinking`、`freeze/thaw_llm_call_kwargs`、`kwargs_digest` | N1 / N2 / N8 |
+| `vendor_map.py` | `_VENDOR_PATTERNS`、`DEFAULT_THINKING_DEPTH`、`match_vendor_style`、`depth_to_kwargs`、`style_to_kwargs` | N3 / N4 |
+| `adapter.py` | `adapt_thinking`、`resolve_effective_depth` | N4 / N5 |
+| `rail.py` | `ThinkingInjectRail` | N6 |
+| `register_hook.py` | `register_thinking_hook` | N7 |
 
 ## 执行路径 / 装配点
 

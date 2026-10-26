@@ -942,6 +942,21 @@ async def _handle_stream(
         try:
             await _handle_stream_impl(ctx, request)
         finally:
+            # 兜底注销:覆盖 _handle_stream_impl 内所有分支的任何异常/提前
+            # return 路径——注册在分支选择之前,分支内 prepare 阶段抛错时,
+            # 内层各 finally 尚未建立,注册项只能在这里回收。幂等:未注册或
+            # 已注销时 pop 为 no-op(MR#8528 检视:非 tenant 分支 1005-1019
+            # 的 prepare 异常路径曾漏注销)。全部取值走 getattr 默认值:
+            # 兜底路径零风险,server 桩/缺属性时静默跳过(telemetry 边界
+            # 单测即用最小桩)。
+            current_task = asyncio.current_task()
+            sid = str(getattr(request, "session_id", "") or "")
+            sst = getattr(ctx.services, "session_stream_tasks", None)
+            entries = sst.get(sid) if (sid and sst is not None) else None
+            if entries is not None and current_task is not None:
+                entries.pop(current_task, None)
+                if not entries:
+                    sst.pop(sid, None)
             if foreground:
                 await manager.end_foreground_chat()
     finally:
@@ -966,39 +981,49 @@ async def _handle_stream_impl(
         ctx.services.session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event
 
     if _uses_tenant_pool(request):
-        prepared = await _prepare_tenant_code_mode_chat_turn(ctx, request, channel_id)
-        chunk_count = 0
-        coalescer = StreamDeltaCoalescer(enabled=_deep_stream_should_coalesce(request))
-
-        async def _emit_tenant(batch: list[AgentResponseChunk]) -> bool:
-            nonlocal chunk_count
-            for outgoing in batch:
-                chunk_count += 1
-                sent_original = await ctx.sink.send_chunk(
-                    outgoing,
-                    sequence=chunk_count - 1,
-                    response_id=request.request_id,
-                )
-                if not sent_original:
-                    return False
-            return True
-
+        # 本分支的 return/异常都不允许跳过 stream task 注销:注册在分支之前,
+        # 滞留的 {task: Event} 会经 task key 钉住整条 _runner 对象图
+        # (issue#5240 残余:每 HTTP chat 泄漏 1 条,约 1.9 簇/会话、受控 +19MB/h)。
         try:
-            async for chunk in ctx.services.tenant_pool().process_message_stream(request):
-                if chunk.agent_ref is None:
-                    chunk.agent_ref = request.agent_ref
-                if not await _emit_tenant(coalescer.push(chunk)):
+            prepared = await _prepare_tenant_code_mode_chat_turn(ctx, request, channel_id)
+            chunk_count = 0
+            coalescer = StreamDeltaCoalescer(enabled=_deep_stream_should_coalesce(request))
+
+            async def _emit_tenant(batch: list[AgentResponseChunk]) -> bool:
+                nonlocal chunk_count
+                for outgoing in batch:
+                    chunk_count += 1
+                    sent_original = await ctx.sink.send_chunk(
+                        outgoing,
+                        sequence=chunk_count - 1,
+                        response_id=request.request_id,
+                    )
+                    if not sent_original:
+                        return False
+                return True
+
+            try:
+                async for chunk in ctx.services.tenant_pool().process_message_stream(request):
+                    if chunk.agent_ref is None:
+                        chunk.agent_ref = request.agent_ref
+                    if not await _emit_tenant(coalescer.push(chunk)):
+                        return
+                if not await _emit_tenant(coalescer.flush()):
                     return
-            if not await _emit_tenant(coalescer.flush()):
-                return
+            finally:
+                if prepared is not None:
+                    await _check_post_process_plan_exit(ctx, request, prepared[2])
+            logger.info(
+                "[AgentWebSocketServer] 流式响应完成 (tenant pool): request_id=%s chunks=%s",
+                request.request_id,
+                chunk_count,
+            )
         finally:
-            if prepared is not None:
-                await _check_post_process_plan_exit(ctx, request, prepared[2])
-        logger.info(
-            "[AgentWebSocketServer] 流式响应完成 (tenant pool): request_id=%s chunks=%s",
-            request.request_id,
-            chunk_count,
-        )
+            entries = ctx.services.session_stream_tasks.get(session_id)
+            if entries is not None and current_task is not None:
+                entries.pop(current_task, None)
+                if not entries:
+                    ctx.services.session_stream_tasks.pop(session_id, None)
         return
 
     # 无状态流式请求（skills / skilldev / plugins / symphony）不需要 mode 解析和

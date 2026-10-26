@@ -259,6 +259,15 @@ from jiuwenswarm.perf.install_hooks import install_perf_hooks
 
 install_perf_hooks()
 
+# Strip leader-exclusive tools when factory injects general-purpose (Deep / Flash /
+# Team all go through _inject_general_purpose_subagent; Team does not use
+# interface_deep._make_deep_agent_config).
+from jiuwenswarm.agents.harness.common.tools.subagent_executor.excluded_spawn_tools import (
+    apply_inject_general_purpose_excluded_tools_patch,
+)
+
+apply_inject_general_purpose_excluded_tools_patch()
+
 # Process exit diagnostics: log reason only; do not change exit code or cleanup order.
 _EXIT_REASON = "unknown"
 

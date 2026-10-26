@@ -1237,6 +1237,140 @@ async def test_handle_team_binding_create_persists_team_entity(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_handle_team_binding_create_heals_entity_without_binding(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+    from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStore
+
+    server = AgentWebSocketServerHarness()
+    fake_ws = FakeWebSocket()
+    binding_store = TeamBindingStore(tmp_path / "teams" / "bindings.json")
+    entity_store = TeamEntityStore(tmp_path / ".agent_teams")
+    entity_store.write(
+        team_name="oc_team_legacy",
+        template_id="oc_team_legacy",
+        template_snapshot={
+            "team_name": "oc_team_legacy",
+            "leader": {"member_name": "lead"},
+        },
+        created_at=42.0,
+    )
+
+    patch_shared_name(monkeypatch, "get_config", lambda: {"modes": {"team": {}}})
+    patch_shared_name(monkeypatch, "encode_agent_response_for_wire", fake_encode_agent_response_for_wire)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: binding_store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.get_team_entity_store",
+        lambda: entity_store,
+    )
+
+    request = AgentRequest(
+        request_id="req-team-binding-heal",
+        channel_id="officeclaw",
+        req_method=ReqMethod.TEAM_BINDING_CREATE,
+        params={"team_name": "oc_team_legacy", "template_id": "oc_team_legacy"},
+    )
+
+    await server.handle_team_binding_create_for_test(fake_ws, request, asyncio.Lock())
+
+    binding = binding_store.get("oc_team_legacy")
+    assert fake_ws.sent[0]["ok"] is True
+    assert binding is not None
+    assert binding.template_id == "oc_team_legacy"
+    assert binding.created_at == 42.0
+    assert binding.legacy is False
+    assert binding.session_ids == ()
+    # Entity must stay intact; heal only backfills binding.
+    entity = entity_store.get("oc_team_legacy")
+    assert entity is not None
+    assert entity.created_at == 42.0
+
+
+def test_create_team_binding_without_heal_conflicts_on_entity_only(monkeypatch, tmp_path):
+    """Generate/auto-create must not adopt a dead-state entity (heal defaults off)."""
+    from jiuwenswarm.server.handlers import team as team_handlers
+    from jiuwenswarm.server.runtime.team_binding_store import (
+        TeamBindingStore,
+        TeamBindingStoreError,
+    )
+    from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStore
+
+    binding_store = TeamBindingStore(tmp_path / "teams" / "bindings.json")
+    entity_store = TeamEntityStore(tmp_path / ".agent_teams")
+    entity_store.write(
+        team_name="semantic_name",
+        template_id="semantic_name",
+        template_snapshot={
+            "team_name": "semantic_name",
+            "leader": {"member_name": "lead"},
+        },
+        created_at=42.0,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: binding_store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.get_team_entity_store",
+        lambda: entity_store,
+    )
+
+    with pytest.raises(TeamBindingStoreError) as exc_info:
+        team_handlers._create_team_binding_from_template(
+            team_name="semantic_name",
+            template_id="research",
+            config_base={"modes": {"team": {"research": {"team_name": "t"}}}},
+            heal=False,
+        )
+
+    assert exc_info.value.code == "CONFLICT"
+    assert binding_store.get("semantic_name") is None
+
+
+@pytest.mark.asyncio
+async def test_handle_team_binding_create_still_conflicts_when_binding_exists(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+    from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStore
+
+    server = AgentWebSocketServerHarness()
+    fake_ws = FakeWebSocket()
+    binding_store = TeamBindingStore(tmp_path / "teams" / "bindings.json")
+    entity_store = TeamEntityStore(tmp_path / ".agent_teams")
+    entity_store.write(
+        team_name="research_team",
+        template_id="research",
+        template_snapshot={"team_name": "research_team", "leader": {"member_name": "lead"}},
+        created_at=42.0,
+    )
+    binding_store.create(team_name="research_team", template_id="research", created_at=42.0)
+
+    patch_shared_name(monkeypatch, "get_config", lambda: {"modes": {"team": {}}})
+    patch_shared_name(monkeypatch, "encode_agent_response_for_wire", fake_encode_agent_response_for_wire)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: binding_store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.get_team_entity_store",
+        lambda: entity_store,
+    )
+
+    request = AgentRequest(
+        request_id="req-team-binding-conflict",
+        channel_id="web",
+        req_method=ReqMethod.TEAM_BINDING_CREATE,
+        params={"team_name": "research_team", "template_id": "research"},
+    )
+
+    await server.handle_team_binding_create_for_test(fake_ws, request, asyncio.Lock())
+
+    assert fake_ws.sent[0]["ok"] is False
+    assert fake_ws.sent[0]["payload"]["code"] == "CONFLICT"
+
+
+@pytest.mark.asyncio
 async def test_handle_team_binding_create_uses_officeclaw_tenant_catalog(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
     from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStore
