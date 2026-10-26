@@ -179,9 +179,9 @@ class SessionExecutionHandle:
     parent_execution_id: str | None = None
     root_work_kind: SessionWorkKind | None = None
     root_request_id: str | None = None
-    # The interactions (questions, approvals, ...) this execution's pause emitted;
-    # an answer to any of them resumes it.
-    waiting_control_ids: frozenset[str] = frozenset()
+    waiting_control_id: str | None = None
+    # Every card this execution still waits on; waiting_control_id is the latest.
+    pending_control_ids: set[str] = field(default_factory=set, repr=False)
     state: SessionExecutionState = SessionExecutionState.QUEUED
     created_at: float = field(default_factory=time.monotonic)
     started_at: float | None = None
