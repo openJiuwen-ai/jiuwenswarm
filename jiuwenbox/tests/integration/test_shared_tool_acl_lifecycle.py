@@ -14,6 +14,69 @@ from jiuwenbox.supervisor import win_constants as const
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="real Windows ACLs")
 
 
+def test_service_source_acl_preserves_normal_skill_write_and_cleanup(tmp_path, monkeypatch):
+    import win32security as security
+
+    source = tmp_path / "source"
+    skills = tmp_path / "workspace" / "skills"
+    files = [source / "jiuwenbox" / "__init__.py", skills / "demo" / "node_modules" / "pkg" / "index.js"]
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("existing")
+    sid = "S-1-5-21-111111111-222222222-333333333-12345"
+    monkeypatch.setenv("JIUWENBOX_SERVICE_READ_ROOTS", json.dumps([str(source)]))
+    monkeypatch.setenv("JIUWENBOX_TOOL_PATHS", "{}")
+    monkeypatch.setenv("JIUWENBOX_PATH_ALLOWLIST", "[]")
+    for key in ("JIUWENBOX_BUNDLED_PYTHON", "JIUWENBOX_VENV_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(shared_paths, "_shared_acl_cache_path", lambda: tmp_path / "service-acl.json")
+    monkeypatch.setattr(win_setup, "get_sandbox_user_sid", lambda: sid)
+    monkeypatch.setattr(win_acl, "get_synthetic_write_sid", lambda: sid)
+    monkeypatch.setattr(win_acl, "grant_parent_traverse", lambda *a, **kw: None)
+    walked = []
+    walk = win_acl._walk_acl_objects
+
+    def counted(root, **kwargs):
+        for path in walk(root, **kwargs):
+            walked.append(path)
+            yield path
+
+    monkeypatch.setattr(win_acl, "_walk_acl_objects", counted)
+    policy = SecurityPolicy(version=1)
+    shared_paths.prepare_shared_tool_acl(policy)
+    assert str(files[0]) in walked
+    assert str(files[1]) not in walked
+    walked.clear()
+    shared_paths.prepare_shared_tool_acl(policy)
+    assert walked == []
+    roots, writable = shared_paths.shared_tool_paths()
+    assert roots == [str(source)] and writable == []
+    win_acl.apply_sandbox_acl(str(skills.parent), [str(skills.parent)], [],
+                             sandbox_user_sid=sid, bounded_roots=[str(skills.parent)], preserve_roots=roots)
+    assert str(files[1]) in walked
+    sd = security.GetFileSecurity(str(files[1]), security.DACL_SECURITY_INFORMATION)
+    skill_entries = win_acl._acl_entries(sd.GetSecurityDescriptorDacl())
+    assert any(who == sid and kind == const.ACCESS_ALLOWED_ACE_TYPE and mask & const.FILE_WRITE_DATA
+               for kind, _, mask, who in skill_entries)
+    assert not any(who == sid and kind == const.ACCESS_DENIED_ACE_TYPE and mask & const.DENY_WRITE_RIGHTS
+                   for kind, _, mask, who in skill_entries)
+    win_acl.revoke_sandbox_acl([str(skills.parent)], sandbox_user_sid=sid, preserve_roots=roots)
+    sd = security.GetFileSecurity(str(files[1]), security.DACL_SECURITY_INFORMATION)
+    assert not any(who == sid for _, _, _, who in win_acl._acl_entries(sd.GetSecurityDescriptorDacl()))
+    sd = security.GetFileSecurity(str(files[0]), security.DACL_SECURITY_INFORMATION)
+    entries = win_acl._acl_entries(sd.GetSecurityDescriptorDacl())
+    assert any(who == sid and kind == const.ACCESS_ALLOWED_ACE_TYPE
+               and mask & const.ALLOW_READ_EXECUTE_RIGHTS == const.ALLOW_READ_EXECUTE_RIGHTS
+               for kind, _, mask, who in entries)
+    assert any(who == sid and kind == const.ACCESS_DENIED_ACE_TYPE and mask & const.DENY_WRITE_RIGHTS
+               for kind, _, mask, who in entries)
+    policy.windows.filesystem.deny_read.append(str(source))
+    shared_paths.prepare_shared_tool_acl(policy)
+    sd = security.GetFileSecurity(str(files[0]), security.DACL_SECURITY_INFORMATION)
+    assert any(who == sid and kind == const.ACCESS_DENIED_ACE_TYPE and mask & const.DENY_READ_RIGHTS
+               for kind, _, mask, who in win_acl._acl_entries(sd.GetSecurityDescriptorDacl()))
+
+
 def test_declared_bundled_git_repairs_existing_executables_and_dlls_only(tmp_path, monkeypatch):
     import win32security as security
 

@@ -77,7 +77,9 @@ def test_child_inherits_environment_with_sandbox_profile_and_proxy(
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-forwarded")
     monkeypatch.setenv("DATABASE_URL", "must-not-be-forwarded")
     monkeypatch.setenv("PYTHONPATH", "runner-loader-path")
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", "C:/host-bytecode")
     monkeypatch.setenv("NODE_OPTIONS", "runner-loader-options")
+    monkeypatch.setenv("JIUWENBOX_SOFT_DELETE", "1")
     request_env = _build_windows_exec_env(
         {"CUSTOM_TOOL_SETTING": "request-override"} if explicit_env else None,
     )
@@ -85,8 +87,13 @@ def test_child_inherits_environment_with_sandbox_profile_and_proxy(
     request_env.update({key: "C:/host-profile" for key in (
         "USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA",
     )})
+    request_env["jiuwenbox_service_read_roots"] = '["C:/direct-request"]'
+    request_env["JIUWENBOX_INJECT_ENV"] = json.dumps({
+        "JIUWENBOX_SERVICE_READ_ROOTS": '["C:/injected-request"]', "INJECTED_SETTING": "kept",
+    })
     if explicit_env:
         request_env["NODE_OPTIONS"] = ""
+        request_env["PYTHONPYCACHEPREFIX"] = "C:/request-bytecode"
     with pytest.raises(RuntimeError, match="environment captured"):
         win_exec._create_process_as_user(
             1, ["python"], request_env, None, 2, 3, workspace=str(tmp_path / "sb"),
@@ -102,6 +109,7 @@ def test_child_inherits_environment_with_sandbox_profile_and_proxy(
         assert captured["USERPROFILE"] == captured["HOME"] == str(tmp_path / "sb")
         expected_temp = str(tmp_path / "sb" / ".tmp")
     assert captured["TMP"] == captured["TEMP"] == captured["TMPDIR"] == expected_temp
+    assert captured["PYTHONPYCACHEPREFIX"] == os.path.join(expected_temp, "python-cache")
     assert captured["HTTP_PROXY"] == f"http://127.0.0.1:{win_exec._proxy_port_start}"
     assert captured["all_proxy"] == captured["HTTP_PROXY"]
     assert captured["no_proxy"] == "127.0.0.1,localhost,::1"
@@ -111,6 +119,9 @@ def test_child_inherits_environment_with_sandbox_profile_and_proxy(
     assert "OPENAI_API_KEY" not in captured
     assert "DATABASE_URL" not in captured
     assert "PYTHONPATH" not in captured
+    assert "JIUWENBOX_SERVICE_READ_ROOTS" not in {key.upper() for key in captured}
+    assert captured["INJECTED_SETTING"] == "kept"
+    assert captured["JIUWENBOX_SOFT_DELETE"] == "1"
     if explicit_env:
         assert captured["NODE_OPTIONS"] == ""
     else:

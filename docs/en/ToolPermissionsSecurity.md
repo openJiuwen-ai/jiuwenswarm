@@ -16,6 +16,16 @@ Before starting an internally managed Windows sandbox service, Swarm supplies co
 
 Managed venv bases are pinned in a protected host-user registry key. Writable `pyvenv.cfg` metadata cannot create new ACL roots: mismatches block startup before the base directory is published. Existing unpinned venvs must match an independently selected host interpreter first. Optional Python discovery failures are logged and skipped without discarding other tool declarations.
 
+Source launches declare the known `jiuwenbox/src` through `JIUWENBOX_SERVICE_READ_ROOTS` to enable sandbox-account imports. Skill directories are not automatically made shared read-only roots; their existing read/write permissions and session cleanup remain unchanged. This import fix does not resolve skill dependency scan latency or introduce a mandatory full scan on every startup.
+
+JiuwenBox attempts bytecode migration for each declared read-only root only when object-level ACL preparation fails with Windows error 5 and no effective read denial applies. It removes only CPython cache files owned by the current sandbox account and backed by a source file inside the same canonical root. Original path components are still checked for links/reparse points before deletion; short aliases and `..` do not change the containment check. Directories (including empty `__pycache__` directories), unrelated artifacts, host-owned caches and orphan-owner files are not automatically removed or taken over. Required ACL failures remain fatal. Migration reuses the cold ACL walk; a cache hit adds no cleanup scan.
+
+The sandbox first-hop runner (`jiuwenbox.supervisor.win_exec`) receives `PYTHONPYCACHEPREFIX` from `ProcessRuntime._create_windows` before it is spawned. The second-hop command receives its own prefix from `_create_process_as_user`, under sandbox Temp with the existing workspace fallback. This does not refer to the host box-server launched by Swarm's `ensure_running`. Explicit Python flags or code that clears its environment can override Python's default cache behavior; source read-only ACLs still apply.
+
+ACL failure diagnostics include `root`, `path`, `operation`, `owner_sid`, `object_type`, `winerror`, `migration` and `required`. Owner metadata is queried only on failure; diagnostic failures do not replace the original exception. Candidate exclusions such as `directory_not_cache` or `owner_mismatch` are DEBUG messages, while required failures remain ERROR messages. Shared-root logs report `cache=hit/miss` and elapsed time. Stop affected processes and have the host administrator review the declared scope/policy and reinstall, rebuild or explicitly repair the identified runtime; no automatic elevation, ownership takeover or broad ACL reset is performed.
+
+Windows commands do not receive the four service declarations `JIUWENBOX_SERVICE_READ_ROOTS`, `JIUWENBOX_TOOL_PATHS`, `JIUWENBOX_PATH_ALLOWLIST` or `JIUWENBOX_ENV_ALLOWLIST`, even through inherited allowlists or `JIUWENBOX_INJECT_ENV` (case-insensitive filtering). The service's declarations remain unchanged; existing execution protocol and host soft-delete settings retain their behavior.
+
 | Capability | Description |
 |-----------|-------------|
 | **Three-tier actions** | `allow` executes directly; `ask` requires user confirmation (Web/CLI, etc.); `deny` rejects. |

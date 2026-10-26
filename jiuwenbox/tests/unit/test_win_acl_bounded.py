@@ -172,11 +172,102 @@ def test_bounded_allow_failure_degrades_without_failing_create(tmp_path, native,
     assert _rights(native[0][str(root / "other")], "synthetic", const.ACCESS_ALLOWED_ACE_TYPE)
 
 
-def test_reapply_skips_unchanged_objects(tmp_path, native):
+@pytest.mark.parametrize("relative,operation", [
+    ("node_modules/pkg/index.js", "write_dacl"),
+    ("usr/bin/bash.exe", "write_dacl"),
+    ("__pycache__/worker.cpython-313.pyc", "read_dacl"),
+])
+def test_tool_acl_failure_reports_root_owner_and_operation(
+    tmp_path, native, monkeypatch, caplog, relative, operation,
+):
+    target = tmp_path / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"must remain unchanged")
+    api = win_acl._ensure_pywin32()[0]
+    monkeypatch.setattr(api, "OWNER_SECURITY_INFORMATION", 1, raising=False)
+    monkeypatch.setattr(api, "ConvertSidToStringSid", str, raising=False)
+    original_get, original_write = api.GetFileSecurity, win_acl._write_file_dacl
+
+    class AclFailure(PermissionError):
+        winerror = 5
+
+    failure = AclFailure("original ACL failure")
+
+    def get(path, flags):
+        if flags == 1:
+            return SimpleNamespace(GetSecurityDescriptorOwner=lambda: "sandbox-owner-sid")
+        if path == str(target) and operation == "read_dacl":
+            raise failure
+        return original_get(path, flags)
+
+    def write(path, *args, **kwargs):
+        if path == str(target):
+            raise failure
+        return original_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(api, "GetFileSecurity", get)
+    monkeypatch.setattr(win_acl, "_write_file_dacl", write)
+    rules = {"allow_read": [str(tmp_path)], "allow_write": [], "deny_read": [], "deny_write": []}
+    with pytest.raises(AclFailure) as error:
+        win_acl.apply_tool_acl([str(tmp_path)], "sandbox", rules, strict=True)
+    assert error.value is failure
+    assert target.read_bytes() == b"must remain unchanged"
+    record = next(record for record in caplog.records if "object update failed" in record.message)
+    for field in (f"root={tmp_path}", f"path={target}", f"operation={operation}",
+                  "owner_sid=sandbox-owner-sid", "winerror=5", "migration=not_configured", "required=True"):
+        assert field in record.message
+
+
+def test_failed_owner_diagnostic_does_not_replace_acl_error(tmp_path, native, monkeypatch, caplog):
+    api = win_acl._ensure_pywin32()[0]
+    original_get = api.GetFileSecurity
+    monkeypatch.setattr(api, "OWNER_SECURITY_INFORMATION", 1, raising=False)
+
+    def get(path, flags):
+        if flags == 1:
+            raise PermissionError("cannot read owner")
+        return original_get(path, flags)
+
+    monkeypatch.setattr(api, "GetFileSecurity", get)
+    _fail_once(monkeypatch, tmp_path)
+    rules = {"allow_read": [str(tmp_path)], "allow_write": [], "deny_read": [], "deny_write": []}
+    with pytest.raises(PermissionError, match="protected file"):
+        win_acl.apply_tool_acl([str(tmp_path)], "sandbox", rules, strict=True)
+    assert "owner_sid=unknown owner_error=cannot read owner" in caplog.text
+
+
+def test_required_directory_listing_failure_is_diagnosed(tmp_path, native, monkeypatch, caplog):
+    original_scandir = win_acl.os.scandir
+    failure = PermissionError("cannot list required root")
+
+    def scandir(path):
+        if str(path) == str(tmp_path):
+            raise failure
+        return original_scandir(path)
+
+    monkeypatch.setattr(win_acl.os, "scandir", scandir)
+    rules = {"allow_read": [str(tmp_path)], "allow_write": [], "deny_read": [], "deny_write": []}
+    with pytest.raises(PermissionError) as error:
+        win_acl.apply_tool_acl([str(tmp_path)], "sandbox", rules, strict=True)
+    assert error.value is failure
+    assert f"root={tmp_path} path={tmp_path} operation=list_directory" in caplog.text
+    assert "required=True" in caplog.text
+
+
+def test_reapply_skips_unchanged_objects(tmp_path, native, monkeypatch):
     root = tmp_path / "workspace"
     (root / "node_modules" / "pkg").mkdir(parents=True)
     (root / "node_modules" / "pkg" / "index.js").write_text("existing", encoding="utf-8")
     descriptors, writes = native
+    api = win_acl._ensure_pywin32()[0]
+    original_get = api.GetFileSecurity
+    queries = []
+
+    def get(path, flags):
+        queries.append(flags)
+        return original_get(path, flags)
+
+    monkeypatch.setattr(api, "GetFileSecurity", get)
     args = (str(root), [str(root)], [])
     win_acl.apply_sandbox_acl(*args, sandbox_user_sid="sandbox", bounded_roots=[str(root)])
     first = len(writes)
@@ -185,6 +276,7 @@ def test_reapply_skips_unchanged_objects(tmp_path, native):
         *args, sandbox_user_sid="sandbox", bounded_roots=[str(root)],
     ) == [str(root)]
     assert len(writes) == first
+    assert all(flags == api.DACL_SECURITY_INFORMATION for flags in queries)
 
 
 def test_office_claw_cleanup_keeps_profile_deny_without_propagation(tmp_path, native, monkeypatch):

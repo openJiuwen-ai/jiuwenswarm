@@ -43,10 +43,10 @@ def test_inheritance_matches_platform_key_case(monkeypatch, platform, for_runner
 
 def test_inheritance_without_allowlist_excludes_tool_and_secret_keys(monkeypatch):
     monkeypatch.delenv(ENV_ALLOWLIST, raising=False)
-    for key in ("CLAW_SKILL_TOKEN", "OPENAI_API_KEY", "DATABASE_URL", "PYTHONPATH", "NODE_OPTIONS"):
+    for key in ("CLAW_SKILL_TOKEN", "OPENAI_API_KEY", "DATABASE_URL", "PYTHONPATH", "NODE_OPTIONS", "PYTHONPYCACHEPREFIX"):
         monkeypatch.setenv(key, "test-parent-value")
     env = inherited_environment()
-    for key in ("CLAW_SKILL_TOKEN", "OPENAI_API_KEY", "DATABASE_URL", "PYTHONPATH", "NODE_OPTIONS"):
+    for key in ("CLAW_SKILL_TOKEN", "OPENAI_API_KEY", "DATABASE_URL", "PYTHONPATH", "NODE_OPTIONS", "PYTHONPYCACHEPREFIX"):
         assert key not in env
 
 

@@ -165,6 +165,55 @@ def test_cwd_and_relative_path_do_not_implicitly_authorize_tools(tmp_path, monke
     assert "JIUWENBOX_TOOL_PATHS" not in env
 
 
+@pytest.mark.parametrize("initial_roots", ["", "  ", "[]"])
+def test_service_sources_are_readonly_and_do_not_replace_explicit_tools(tmp_path, initial_roots):
+    source = tmp_path / "repo" / "jiuwenbox" / "src"
+    skills = tmp_path / "agent" / "workspace" / "skills"
+    unrelated = tmp_path / "private"
+    for folder in (source, skills, unrelated):
+        folder.mkdir(parents=True)
+    env = {"JIUWENBOX_TOOL_PATHS": "{}", "JIUWENBOX_SKILLS_DIR": str(skills),
+           "JIUWENBOX_SERVICE_READ_ROOTS": initial_roots,
+           "PYTHONPATH": str(unrelated)}
+    runtime_tools.declare_windows_service_read_roots(env, source)
+    runtime_tools.declare_windows_runtime_tools(env)
+    assert env["JIUWENBOX_TOOL_PATHS"] == "{}"
+    assert json.loads(env["JIUWENBOX_SERVICE_READ_ROOTS"]) == [str(source)]
+    assert str(skills) not in json.loads(env["JIUWENBOX_SERVICE_READ_ROOTS"])
+    assert str(source.parent) not in json.loads(env["JIUWENBOX_SERVICE_READ_ROOTS"])
+    assert str(unrelated) not in json.loads(env["JIUWENBOX_SERVICE_READ_ROOTS"])
+
+
+def test_skill_directory_alone_does_not_create_a_service_readonly_grant(tmp_path):
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    env = {"JIUWENBOX_SKILLS_DIR": str(skills)}
+    runtime_tools.declare_windows_service_read_roots(env, None)
+    assert "JIUWENBOX_SERVICE_READ_ROOTS" not in env
+
+
+def test_service_source_discovery_does_not_grant_relative_or_missing_paths(tmp_path):
+    env = {"JIUWENBOX_SKILLS_DIR": "relative-skills", "PYTHONPATH": str(tmp_path)}
+    runtime_tools.declare_windows_service_read_roots(env, tmp_path / "missing")
+    assert "JIUWENBOX_SERVICE_READ_ROOTS" not in env
+
+
+def test_service_read_roots_reject_invalid_explicit_json(tmp_path):
+    env = {"JIUWENBOX_SERVICE_READ_ROOTS": '{}'}
+    with pytest.raises(ValueError, match="list of paths"):
+        runtime_tools.declare_windows_service_read_roots(env, tmp_path)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows case-insensitive service paths")
+def test_service_read_roots_deduplicate_windows_case_and_separators(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    supplied = str(source.resolve()).upper().replace("\\", "/")
+    env = {"JIUWENBOX_SERVICE_READ_ROOTS": json.dumps([supplied, str(source.resolve())])}
+    runtime_tools.declare_windows_service_read_roots(env, source)
+    assert json.loads(env["JIUWENBOX_SERVICE_READ_ROOTS"]) == [supplied]
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_declares_the_existing_venv_base_instead_of_another_python(tmp_path, monkeypatch, host_pins):
     from unittest.mock import AsyncMock

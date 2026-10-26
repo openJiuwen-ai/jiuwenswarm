@@ -166,7 +166,11 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
     policy = tmp_path / "policy.yaml"
     policy.write_text("version: 1", encoding="utf-8")
     monkeypatch.setattr(runner_module, "_cleanup_stale_win_proxy_ports", lambda: None)
-    monkeypatch.setattr(runner_module, "_resolve_jiuwenbox_src_dir", lambda: None)
+    source = tmp_path / "jiuwenbox-src"
+    source.mkdir()
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    monkeypatch.setattr(runner_module, "_resolve_jiuwenbox_src_dir", lambda: source)
     monkeypatch.setattr(runner, "_register_atexit_once", Mock())
     monkeypatch.setattr(runner, "_bind_win_job", Mock())
     monkeypatch.setattr(runner, "_prepare_windows_setup", AsyncMock())
@@ -208,7 +212,7 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
     monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spawn)
     bootstrap_env = {
         "JIUWENBOX_RUNNER_PYTHON": str(tmp_path / "missing-runner" / "python.exe"),
-        "JIUWENBOX_SKILLS_DIR": "C:/workspace/skills",
+        "JIUWENBOX_SKILLS_DIR": str(skills),
         "CUSTOM_TOOL_SETTING": "startup-override",
     }
     assert await runner.ensure_running(policy_path=policy, extra_env=bootstrap_env)
@@ -223,7 +227,11 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
             assert call.kwargs["stdin"] == subprocess.PIPE
             assert call.args[2] == "jiuwenbox.server.parent_control"
         assert env["JIUWENBOX_RUNNER_PYTHON"] == str(tmp_path / "missing-runner" / "python.exe")
-        assert env["JIUWENBOX_SKILLS_DIR"] == "C:/workspace/skills"
+        assert env["JIUWENBOX_SKILLS_DIR"] == str(skills)
+        if platform == "win32":
+            assert json.loads(env["JIUWENBOX_SERVICE_READ_ROOTS"]) == [str(source.resolve())]
+        else:
+            assert "JIUWENBOX_SERVICE_READ_ROOTS" not in env
         assert env["JIUWENBOX_POLICY_PATH"] == str(policy)
         assert env["HOST_TOOL_TOKEN"] == "test-tool-token"
         assert env["HOST_PYTHON_EXE"] == "C:/managed/python.exe"
@@ -244,6 +252,7 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
         assert runner._prepare_windows_setup.await_count == 2
         for call in runner._prepare_windows_setup.await_args_list:
             assert json.loads(call.args[0]["JIUWENBOX_TOOL_PATHS"]) == tools
+            assert json.loads(call.args[0]["JIUWENBOX_SERVICE_READ_ROOTS"]) == [str(source.resolve())]
 
     policy.write_text("version: 3", encoding="utf-8")
     assert await runner.ensure_running(policy_path=policy, extra_env={})

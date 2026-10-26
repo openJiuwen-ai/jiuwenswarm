@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from jiuwenbox.server.environment import inherited_environment
+from jiuwenbox.server.environment import inherited_environment, strip_service_declarations
 from jiuwenbox.server.shared_paths import configured_tool_paths
 
 # Cap stdout/stderr at this many chars per audit event. Large model
@@ -92,6 +92,7 @@ def _build_windows_exec_env(
 
     base = inherited_environment()
     base.update(env or {})
+    strip_service_declarations(base)
     merge_soft_delete_spawn_env(base)
     # Trusted host declarations, independent of the command request environment.
     _, parts = configured_tool_paths()

@@ -7,18 +7,32 @@ import re
 import sys
 
 ENV_ALLOWLIST = "JIUWENBOX_ENV_ALLOWLIST"
+_SERVICE_DECLARATION_KEYS = frozenset({
+    "JIUWENBOX_SERVICE_READ_ROOTS", "JIUWENBOX_TOOL_PATHS", "JIUWENBOX_PATH_ALLOWLIST", ENV_ALLOWLIST,
+})
 _SYSTEM_KEYS = frozenset({
     "PATH", "PATHEXT", "SystemRoot", "windir", "COMSPEC", "SystemDrive",
     "LANG", "LC_ALL", "LC_CTYPE", "PYTHONIOENCODING", "PYTHONUTF8",
 })
 _LOADER_KEYS = frozenset({
     "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
-    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONSAFEPATH",
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONSAFEPATH", "PYTHONPYCACHEPREFIX",
     "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
 })
 _WINDOWS_PROFILE_KEYS = frozenset({
     "USERPROFILE", "HOME", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP", "TMPDIR",
 })
+
+
+def strip_service_declarations(env: dict[str, str]) -> None:
+    """ACL/inheritance declarations are service inputs, never command settings.
+
+    Keep execution protocol keys such as INJECT_ENV and host soft-delete
+    settings intact; filtering all JIUWENBOX_* keys would break those channels.
+    """
+    for key in list(env):
+        if key.upper() in _SERVICE_DECLARATION_KEYS:
+            del env[key]
 
 
 def inherited_environment(*, for_runner: bool = False) -> dict[str, str]:

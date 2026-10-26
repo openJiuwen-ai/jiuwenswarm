@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import stat
 import sys
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.supervisor import win_constants as const
@@ -1287,12 +1289,14 @@ def _walk_acl_objects(root: str, *, preserve_roots: list[str] | None = None, str
         path = pending.pop()
         if any(_acl_rule_covers(rule, os.path.normcase(os.path.abspath(path))) for rule in preserved):
             continue
+        operation = "stat_object"
         try:
             stat = os.stat(path, follow_symlinks=False)
             if os.path.islink(path) or getattr(stat, "st_file_attributes", 0) & 0x400:
                 continue
             yield path
             if os.path.isdir(path):
+                operation = "list_directory"
                 with os.scandir(path) as entries:
                     pending.extend(entry.path for entry in entries)
         except FileNotFoundError:
@@ -1300,6 +1304,7 @@ def _walk_acl_objects(root: str, *, preserve_roots: list[str] | None = None, str
             continue
         except OSError as exc:
             if strict:
+                log_acl_failure(root, path, operation, exc, "not_attempted", required=True)
                 raise
             # A sandbox-owned child can deny FILE_LIST_DIRECTORY. Skipping it
             # keeps sibling ACL work; aborting would roll back the whole root.
@@ -1331,9 +1336,112 @@ def _acl_entries(acl) -> "list[tuple[int, int, int, str]] | None":
     return entries
 
 
+def _bytecode_source(path: Path, root: Path) -> Path | None:
+    """Classify backed CPython caches inside an explicit root, without links."""
+    if not path.is_absolute() or not root.is_absolute() or path.parent.name != "__pycache__":
+        return None
+    match = re.fullmatch(r"([\w]+)\.cpython-\d+(?:\.opt-[012])?\.pyc", path.name)
+    canonical_root = root.resolve()
+    if match is None or not path.resolve().is_relative_to(canonical_root):
+        return None
+    if root.is_symlink() or getattr(root.lstat(), "st_file_attributes", 0) & 0x400:
+        return None
+    # Inspect the original route before using canonical paths: resolving a link
+    # must not hide it from the migration's no-reparse-point boundary.
+    for current in (path, *path.parents):
+        if current.is_symlink() or getattr(current.lstat(), "st_file_attributes", 0) & 0x400:
+            return None
+        if current.resolve() == canonical_root:
+            break
+    else:
+        return None
+    source = path.parent.parent / (match[1] + ".py")
+    try:
+        source_stat = source.lstat()
+    except FileNotFoundError:
+        return None
+    if source.is_symlink() or getattr(source_stat, "st_file_attributes", 0) & 0x400:
+        return None
+    return source.resolve() if source.is_file() and source.resolve().is_relative_to(canonical_root) else None
+
+
+def migrate_sandbox_bytecode(path: str, root: str, sandbox_sid: str) -> bool:
+    """On ACL denial only, remove a backed cache owned by the current sandbox.
+
+    No ownership changes, no recursive cleanup, no handling of orphan SIDs or
+    unrelated artifacts. False leaves the original ACL failure fatal.
+    """
+    owner = "unknown"
+    eligible = "unknown"
+    reason = "candidate_check_failed"
+    try:
+        cache = Path(path)
+        if stat.S_ISDIR(cache.lstat().st_mode):
+            logger.debug("Bytecode migration skipped: root=%s path=%s eligible=false "
+                         "reason=directory_not_cache", root, path)
+            return False
+        if _bytecode_source(cache, Path(root)) is None:
+            logger.debug("Bytecode migration skipped: root=%s path=%s eligible=false "
+                         "reason=not_backed_cpython_cache", root, path)
+            return False
+        reason = "owner_read_failed"
+        security, _, _ = _ensure_pywin32()
+        sd = security.GetFileSecurity(path, security.OWNER_SECURITY_INFORMATION)
+        owner = security.ConvertSidToStringSid(sd.GetSecurityDescriptorOwner())
+        if owner != sandbox_sid:
+            logger.debug("Bytecode migration skipped: root=%s path=%s owner_sid=%s "
+                         "eligible=false reason=owner_mismatch sandbox_sid=%s", root, path, owner, sandbox_sid)
+            return False
+        eligible = "true"
+        reason = "delete_failed"
+        cache.unlink()
+        logger.info("Removed sandbox-owned bytecode after ACL denial: root=%s path=%s owner_sid=%s",
+                    root, path, owner)
+        return True
+    except FileNotFoundError:
+        return True
+    except Exception as exc:  # Preserve the original strict ACL error.
+        logger.warning("Bytecode migration unavailable: root=%s path=%s owner_sid=%s "
+                       "eligible=%s reason=%s error=%s", root, path, owner, eligible, reason, exc)
+        return False
+
+
+def log_acl_failure(root: str, path: str, operation: str, exc: Exception,
+                    migration: str, *, required: bool) -> None:
+    """Read owner metadata only on failure; diagnostics never replace the error."""
+    owner = "unknown"
+    owner_error = "none"
+    object_type = "unknown"
+    try:
+        metadata = Path(path).lstat()
+        if getattr(metadata, "st_file_attributes", 0) & 0x400 or stat.S_ISLNK(metadata.st_mode):
+            object_type = "reparse_point"
+        elif stat.S_ISDIR(metadata.st_mode):
+            object_type = "directory"
+        elif stat.S_ISREG(metadata.st_mode):
+            object_type = "file"
+    except OSError:
+        pass
+    try:
+        security, _, _ = _ensure_pywin32()
+        sd = security.GetFileSecurity(path, security.OWNER_SECURITY_INFORMATION)
+        owner = security.ConvertSidToStringSid(sd.GetSecurityDescriptorOwner())
+    except Exception as owner_exc:
+        owner_error = str(owner_exc)
+    logger.log(
+        logging.ERROR if required else logging.WARNING,
+        "[ACL] object update failed: root=%s path=%s operation=%s owner_sid=%s owner_error=%s "
+        "winerror=%s migration=%s required=%s object_type=%s "
+        "recovery=review_root_policy_and_host_permissions error=%s",
+        root, path, operation, owner, owner_error, getattr(exc, "winerror", None),
+        migration, required, object_type, exc,
+    )
+
+
 def _apply_bounded_acl(
     root: str, sid_objs: list, policy: dict, *, read_only_tool: bool = False, strict: bool = False,
     preserve_roots: list[str] | None = None,
+    on_access_denied: Callable[[str], bool] | None = None,
 ) -> list[str]:
     """Apply final policy per object; never ask Windows to propagate a whole tree.
 
@@ -1379,6 +1487,8 @@ def _apply_bounded_acl(
             # Keep YAML read denials, including those on an ancestor directory.
             rights = const.ALLOW_READ_EXECUTE_RIGHTS
             denied |= const.DENY_WRITE_RIGHTS
+        operation = "build_aces"
+        migration = "not_configured" if on_access_denied is None else "not_attempted"
         try:
             flags = const.RECURSIVE_ACE_FLAGS if os.path.isdir(path) else 0
             aces = []
@@ -1388,12 +1498,23 @@ def _apply_bounded_acl(
                 if rights & ~denied:
                     aces.append((const.ACCESS_ALLOWED_ACE_TYPE, flags, rights & ~denied, sid))
             t_obj = time.perf_counter()
-            sd = win32security.GetFileSecurity(path, win32security.DACL_SECURITY_INFORMATION)
-            existing = sd.GetSecurityDescriptorDacl()
-            acl = _rebuild_acl_with_order(existing, aces, drop_sid_keys=sid_keys)
-            if _acl_entries(existing) != _acl_entries(acl):
-                _write_file_dacl(path, acl, sd=sd)
-                written += 1
+            try:
+                operation = "read_dacl"
+                sd = win32security.GetFileSecurity(path, win32security.DACL_SECURITY_INFORMATION)
+                operation = "build_dacl"
+                existing = sd.GetSecurityDescriptorDacl()
+                acl = _rebuild_acl_with_order(existing, aces, drop_sid_keys=sid_keys)
+                if _acl_entries(existing) != _acl_entries(acl):
+                    operation = "write_dacl"
+                    _write_file_dacl(path, acl, sd=sd)
+                    written += 1
+            except Exception as exc:
+                if read_only_tool and getattr(exc, "winerror", None) == 5 and on_access_denied is not None:
+                    migration = "blocked_by_read_deny" if denied & const.DENY_READ_RIGHTS else "failed_or_ineligible"
+                    if (not denied & const.DENY_READ_RIGHTS and on_access_denied(path)
+                            and not os.path.lexists(path)):
+                        continue  # Only a removed artifact may bypass its ACL write.
+                raise
             elapsed = time.perf_counter() - t_obj
             if elapsed >= _ACL_SLOW_OBJECT_SECONDS:
                 logger.warning("[ACL] slow object path=%s elapsed=%.2fs", path, elapsed)
@@ -1401,13 +1522,11 @@ def _apply_bounded_acl(
             continue
         except Exception as exc:  # noqa: BLE001 - Deny objects re-raise below
             if denied or strict:
+                log_acl_failure(walk_root, path, operation, exc, migration, required=True)
                 raise
             failed += 1
             if failed <= _ACL_MAX_FAILURE_LOGS:
-                logger.warning(
-                    "[ACL] allow grant failed, skip object (isolation degraded): path=%s reason=%s",
-                    path, exc,
-                )
+                log_acl_failure(walk_root, path, operation, exc, migration, required=False)
     logger.info(
         "[ACL] tree done path=%s objects=%d written=%d failed=%d elapsed=%.2fs",
         walk_root, visited, written, failed, time.perf_counter() - t0,
@@ -1421,6 +1540,7 @@ def apply_tool_acl(
     roots: list[str], sandbox_user_sid: str | None, filesystem_policy: dict,
     *, writable_roots: list[str] | None = None,
     strict: bool = False,
+    on_access_denied: Callable[[str], bool] | None = None,
 ) -> list[str]:
     """Apply tool ACLs, including protected DACLs; no junctions.
 
@@ -1457,6 +1577,7 @@ def apply_tool_acl(
             root, sid_objs, filesystem_policy,
             read_only_tool=os.path.normcase(os.path.abspath(root)) not in writable,
             strict=strict,
+            on_access_denied=on_access_denied,
         ))
     return applied
 

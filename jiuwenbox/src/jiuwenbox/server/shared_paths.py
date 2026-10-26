@@ -7,6 +7,8 @@ import logging
 import os
 import sys
 import threading
+import time
+from functools import partial
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -53,9 +55,15 @@ def configured_tool_paths() -> tuple[list[str], list[str]]:
     return roots, directories
 
 
+def configured_service_read_roots() -> list[str]:
+    """Trusted service code/resources; never taken from a command request."""
+    raw = json.loads((os.environ.get("JIUWENBOX_SERVICE_READ_ROOTS") or "").strip() or "[]")
+    return _absolute_paths(raw, "JIUWENBOX_SERVICE_READ_ROOTS")
+
+
 def shared_tool_paths(read_roots: list[str] | None = None) -> tuple[list[str], list[str]]:
     """Explicit shared roots plus optional generic runtime Python paths."""
-    roots = [*configured_tool_paths()[0], *(read_roots or [])]
+    roots = [*configured_tool_paths()[0], *configured_service_read_roots(), *(read_roots or [])]
     writable = configured_shared_paths()
     roots.extend(writable)
     for name in ("JIUWENBOX_BUNDLED_PYTHON", "JIUWENBOX_VENV_DIR"):
@@ -66,11 +74,11 @@ def shared_tool_paths(read_roots: list[str] | None = None) -> tuple[list[str], l
             roots.append(root)
             if name == "JIUWENBOX_VENV_DIR":
                 writable.append(root)
-    roots = list(dict.fromkeys(roots))
+    roots = list({os.path.normcase(root): root for root in roots}.values())
     roots = [root for root in roots if not any(
         root != parent and Path(root).is_relative_to(parent) for parent in writable
     )]
-    return roots, list(dict.fromkeys(writable))
+    return roots, list({os.path.normcase(root): root for root in writable}.values())
 
 
 def _shared_acl_cache_path() -> Path:
@@ -97,11 +105,20 @@ def _shared_acl_fingerprint(root: str, sid: str, synthetic_sid: str, policy: dic
             state.append((str(marker), stat.st_ino, stat.st_mtime_ns, stat.st_size))
         except FileNotFoundError:
             state.append((str(marker), None))
+        except OSError as exc:
+            win_acl.log_acl_failure(root, str(marker), "stat_runtime_metadata", exc, "not_attempted", required=True)
+            raise
     security, _, _ = win_acl._ensure_pywin32()
-    sd = security.GetFileSecurity(root, security.DACL_SECURITY_INFORMATION)
-    acl = security.ConvertSecurityDescriptorToStringSecurityDescriptor(
-        sd, 1, security.DACL_SECURITY_INFORMATION,
-    )
+    operation = "read_root_dacl"
+    try:
+        sd = security.GetFileSecurity(root, security.DACL_SECURITY_INFORMATION)
+        operation = "serialize_root_dacl"
+        acl = security.ConvertSecurityDescriptorToStringSecurityDescriptor(
+            sd, 1, security.DACL_SECURITY_INFORMATION,
+        )
+    except Exception as exc:
+        win_acl.log_acl_failure(root, root, operation, exc, "not_attempted", required=True)
+        raise
     value = {"version": 2, "sid": sid, "synthetic_sid": synthetic_sid,
              "policy": policy, "state": state, "acl": acl}
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode("utf-8")).hexdigest()
@@ -118,7 +135,7 @@ def prepare_shared_tool_acl(policy, *, read_roots: list[str] | None = None) -> N
         return
     from jiuwenbox.supervisor import win_acl, win_constants as const, win_setup
 
-    read_roots = [*configured_tool_paths()[0], *(read_roots or [])]
+    read_roots = [*configured_tool_paths()[0], *configured_service_read_roots(), *(read_roots or [])]
     roots, writable = shared_tool_paths(read_roots)
     # A parent's repair also visits protected descendants. Apply children last
     # so a writable child cannot be changed back to RX by a later parent walk.
@@ -170,19 +187,35 @@ def prepare_shared_tool_acl(policy, *, read_roots: list[str] | None = None) -> N
                 win_acl.grant_parent_traverse(root, trustee, filesystem_policy=rules)
         updated = {}
         for root in roots:
+            started = time.perf_counter()
             key = os.path.normcase(root)
             fingerprint = _shared_acl_fingerprint(root, sid, synthetic, rules, read_roots or [])
             if cached.get(key) == fingerprint:
-                logger.info("Shared tool ACL unchanged, skip tree: %s", root)
+                logger.info("Shared tool ACL unchanged, skip tree: %s cache=hit elapsed=%.3fs",
+                            root, time.perf_counter() - started)
                 updated[key] = fingerprint
                 continue
-            win_acl.apply_tool_acl([root], sid, rules, writable_roots=writable, strict=True)
+            # Migration shares the cold ACL walk and only runs on a denied object.
+            readonly = not any(Path(root).is_relative_to(path) for path in writable)
+            migration = None
+            if readonly:
+                migration = partial(win_acl.migrate_sandbox_bytecode, root=root, sandbox_sid=sid)
+            win_acl.apply_tool_acl([root], sid, rules, writable_roots=writable, strict=True,
+                                   on_access_denied=migration)
             # Parent workspace/data-tree operations must not propagate into
             # this service-owned subtree or invalidate the persistent grant.
             security, _, _ = win_acl._ensure_pywin32()
-            sd = security.GetFileSecurity(root, security.DACL_SECURITY_INFORMATION)
-            win_acl._write_file_dacl(root, sd.GetSecurityDescriptorDacl(), protect=True, sd=sd)
+            operation = "read_root_dacl"
+            try:
+                sd = security.GetFileSecurity(root, security.DACL_SECURITY_INFORMATION)
+                operation = "protect_root_dacl"
+                win_acl._write_file_dacl(root, sd.GetSecurityDescriptorDacl(), protect=True, sd=sd)
+            except Exception as exc:
+                win_acl.log_acl_failure(root, root, operation, exc, "not_attempted", required=True)
+                raise
             updated[key] = _shared_acl_fingerprint(root, sid, synthetic, rules, read_roots or [])
+            logger.info("Shared tool ACL prepared: %s cache=miss elapsed=%.3fs",
+                        root, time.perf_counter() - started)
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         temporary = cache_file.with_suffix(f".{os.getpid()}.tmp")
         temporary.write_text(json.dumps(updated, sort_keys=True), encoding="utf-8")

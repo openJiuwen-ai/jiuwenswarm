@@ -13,6 +13,56 @@ from jiuwenbox.server.sandbox_manager import _build_windows_exec_env
 from jiuwenbox.supervisor.win_setup import collect_preinstall_paths
 
 
+def test_service_read_roots_are_shared_without_changing_command_path(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    for key in ("JIUWENBOX_VENV_DIR", "JIUWENBOX_BUNDLED_PYTHON"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("JIUWENBOX_TOOL_PATHS", "{}")
+    monkeypatch.setenv("JIUWENBOX_PATH_ALLOWLIST", "[]")
+    monkeypatch.setenv("JIUWENBOX_SERVICE_READ_ROOTS", json.dumps([str(source)]))
+    assert shared_paths.shared_tool_paths() == ([str(source)], [])
+    assert shared_paths.configured_tool_paths() == ([], [])
+    env = _build_windows_exec_env({"JIUWENBOX_SERVICE_READ_ROOTS": '["C:/untrusted"]'})
+    assert "JIUWENBOX_SERVICE_READ_ROOTS" not in env
+    assert str(source) not in env["PATH"].split(os.pathsep)
+    assert shared_paths.shared_tool_paths() == ([str(source)], [])
+
+
+@pytest.mark.parametrize("key", ["JIUWENBOX_SERVICE_READ_ROOTS", "JIUWENBOX_TOOL_PATHS",
+                                 "JIUWENBOX_PATH_ALLOWLIST", "JIUWENBOX_ENV_ALLOWLIST"])
+@pytest.mark.parametrize("lowercase", [False, True])
+def test_service_declarations_are_not_command_environment_even_when_allowlisted(tools, monkeypatch, key, lowercase):
+    monkeypatch.setenv("JIUWENBOX_ENV_ALLOWLIST", json.dumps([key]))
+    request = {key.lower() if lowercase else key: '["C:/untrusted"]', "TOOL_SETTING": ""}
+    env = _build_windows_exec_env(request)
+    assert key not in {name.upper() for name in env}
+    assert env["TOOL_SETTING"] == ""
+    assert request[key.lower() if lowercase else key] == '["C:/untrusted"]'
+
+
+@pytest.mark.parametrize("raw", ['{}', '[1]', '["relative"]', '["C:/"]', '{bad'])
+def test_invalid_service_read_roots_fail_closed(monkeypatch, raw):
+    monkeypatch.setenv("JIUWENBOX_SERVICE_READ_ROOTS", raw)
+    with pytest.raises(ValueError):
+        shared_paths.shared_tool_paths()
+
+
+def test_tool_and_service_roots_merge_with_writable_exceptions(tmp_path, monkeypatch):
+    root = tmp_path / "tools"
+    child = root / "plugin"
+    child.mkdir(parents=True)
+    for key in ("JIUWENBOX_VENV_DIR", "JIUWENBOX_BUNDLED_PYTHON"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("JIUWENBOX_TOOL_PATHS", json.dumps({"read_roots": [str(root)], "executable_dirs": [str(root)]}))
+    monkeypatch.setenv("JIUWENBOX_SERVICE_READ_ROOTS", json.dumps([str(root / ".." / "tools"), str(child)]))
+    monkeypatch.setenv("JIUWENBOX_PATH_ALLOWLIST", "[]")
+    assert shared_paths.shared_tool_paths() == ([str(root), str(child)], [])
+    assert shared_paths.configured_tool_paths()[1] == [str(root)]
+    monkeypatch.setenv("JIUWENBOX_PATH_ALLOWLIST", json.dumps([str(root)]))
+    assert shared_paths.shared_tool_paths() == ([str(root)], [str(root)])
+
+
 @pytest.fixture
 def tools(tmp_path, monkeypatch):
     base = tmp_path / "runtime" / "python-win"

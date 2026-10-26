@@ -3288,6 +3288,7 @@ class ProcessRuntime(RuntimeAdapter):
         env.setdefault("TEMP", win_tmp_dir)
         env.setdefault("TMP", win_tmp_dir)
         env.setdefault("TMPDIR", win_tmp_dir)
+        win_exec.configure_python_cache_env(env, win_tmp_dir)
         # 补 profile 变量 (第一跳 runner env 缺这些, profile 加载只在不传 env
         # block 时自动填; 我们传了 env block → 需显式补, 否则 child 继承不到).
         env.setdefault("USERPROFILE", _profile_root)

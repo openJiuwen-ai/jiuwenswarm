@@ -11,6 +11,27 @@ from jiuwenswarm.server.runtime.pip_env import resolve_python_base, verified_run
 logger = logging.getLogger(__name__)
 
 
+def declare_windows_service_read_roots(env: dict[str, str], source_dir: Path | None) -> None:
+    """Declare the known runner source independently of optional tool discovery.
+
+    Never interpret arbitrary PYTHONPATH entries as permission requests. These
+    roots add no command PATH prefixes and do not change explicit tool choices.
+    """
+    roots = json.loads((env.get("JIUWENBOX_SERVICE_READ_ROOTS") or "").strip() or "[]")
+    if not isinstance(roots, list) or any(not isinstance(root, str) for root in roots):
+        raise ValueError("JIUWENBOX_SERVICE_READ_ROOTS requires a list of paths")
+    unique = {}
+    for value in roots:
+        path = Path(value)
+        key = os.path.normcase(str(path.resolve())) if path.is_absolute() else value
+        unique.setdefault(key, value)
+    if source_dir is not None and source_dir.is_absolute() and source_dir.is_dir():
+        root = str(source_dir.resolve())
+        unique.setdefault(os.path.normcase(root), root)
+    if unique:
+        env["JIUWENBOX_SERVICE_READ_ROOTS"] = json.dumps(list(unique.values()))
+
+
 def _find_executable(name: str, env: dict[str, str]) -> Path | None:
     """Search absolute service PATH entries without Windows' implicit cwd lookup."""
     for entry in env.get("PATH", "").split(os.pathsep):

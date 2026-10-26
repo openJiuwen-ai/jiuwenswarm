@@ -975,6 +975,11 @@ def get_sandbox_profile_dir() -> str | None:
         kernel32.CloseHandle(wintypes.HANDLE(token))
 
 
+def configure_python_cache_env(env: dict[str, str], sandbox_temp: str) -> None:
+    """Keep CPython bytecode in a launcher-selected, sandbox-owned temp tree."""
+    env["PYTHONPYCACHEPREFIX"] = os.path.join(sandbox_temp, "python-cache")
+
+
 def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
     restricted_token: int,
     command: list[str],
@@ -1070,6 +1075,8 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
             _val = os.environ.get(_var)
             if _val:
                 env.setdefault(_var, _val)
+    if workspace:
+        configure_python_cache_env(env, _child_tmp)
     # 自动注入代理 env (文档 §6.6): 即使调用方没传, 也让遵守代理协议的程序
     # (pip/git/curl/node 等) 走 win_proxy, WFP 兜底拦截不走代理的出网.
     proxy_url = f"http://127.0.0.1:{_proxy_port_start}"
@@ -1102,7 +1109,7 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
             # P1-17: 注入键黑名单 — 防代码注入类键 (LD_PRELOAD/PYTHONPATH/PATH 等) 绕过沙箱. 纵深防御.
             forbidden_inject_keys = frozenset({  # noqa: N806 - Win32 SDK 常量风格
                 "LD_PRELOAD", "LD_LIBRARY_PATH",
-                "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONSAFEPATH",
+                "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONSAFEPATH", "PYTHONPYCACHEPREFIX",
                 "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
                 "PATH",  # 覆盖 PATH 可劫持可执行解析
                 "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
@@ -1125,6 +1132,8 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
                 "INFO",
                 f"injected env from JIUWENBOX_INJECT_ENV: keys={_injected_keys}",
             )
+    from jiuwenbox.server.environment import strip_service_declarations
+    strip_service_declarations(env)
     _push_log(
         "INFO",
         f"child proxy injected: HTTPS_PROXY={env.get('HTTPS_PROXY')} "

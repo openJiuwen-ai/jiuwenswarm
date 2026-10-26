@@ -650,8 +650,13 @@ class JiuwenBoxRunner:
                 )
             logger.info("[JiuwenBoxRunner] spawning: %s", " ".join(cmd))
             if sys.platform == "win32":
-                from jiuwenswarm.server.sandbox.runtime_tools import declare_windows_runtime_tools
+                from jiuwenswarm.server.sandbox.runtime_tools import (
+                    declare_windows_runtime_tools, declare_windows_service_read_roots,
+                )
 
+                declare_windows_service_read_roots(
+                    env, local_src if not getattr(sys, "frozen", False) else None,
+                )
                 declare_windows_runtime_tools(env)
                 setup_started = time.monotonic()
                 await self._prepare_windows_setup(env, policy_path)
