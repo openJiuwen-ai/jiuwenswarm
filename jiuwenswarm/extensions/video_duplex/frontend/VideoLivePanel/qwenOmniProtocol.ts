@@ -32,6 +32,8 @@ export interface QwenOmniSessionOptions {
   replyLanguage?: string;
   restoreInstructions?: string;
   extraInstructions?: string;
+  /** The client creates replies itself (an approval card is open), so the provider must not. */
+  clientResponses?: boolean;
 }
 
 export interface QwenOmniMediaBatch {
@@ -60,6 +62,7 @@ export function createQwenOmniSessionUpdate(options: QwenOmniSessionOptions): Re
         type: 'semantic_vad',
         threshold: 0.5,
         silence_duration_ms: 800,
+        create_response: !options.clientResponses,
       },
       enable_input_audio_transcription: true,
       tools: options.tools || [],

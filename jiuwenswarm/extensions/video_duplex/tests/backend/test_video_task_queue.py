@@ -698,9 +698,78 @@ async def test_untyped_validation_errors_are_never_treated_as_conflicts(queue, m
     assert queue.executed == queue.cancels == []
 
 
+async def test_5597_voice_query_sees_scheduled_jobs_created_in_another_conversation(tmp_path, monkeypatch):
+    """A Cron job created in conversation A is visible to a voice query in conversation B (#5597).
+
+    The voice task list is conversation-scoped; scheduled jobs live in the Gateway Cron store,
+    owner-scoped like the sidebar's cron.job.list. The query must read that store directly.
+    """
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.store import TaskStore
+    from jiuwenswarm.gateway.cron.controller import CronController
+    from jiuwenswarm.runtime.cron.store import CronJobStore
+
+    cron_store = CronJobStore(tmp_path / "cron_jobs.json")
+    scheduler = SimpleNamespace(project_execution_allowed=lambda *_: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(CronController, "_instance", CronController(store=cron_store, scheduler=scheduler))
+    created = await cron_store.create_job(
+        name="喝水提醒", cron_expr="0 9 * * *", timezone="Asia/Shanghai",
+        description="提醒我喝水", targets="web", session_id="conversation-a", user_id="alice",
+    )
+    await cron_store.create_job(
+        name="别人的提醒", cron_expr="0 8 * * *", timezone="Asia/Shanghai",
+        description="other", targets="web", session_id="conversation-x", user_id="mallory",
+    )
+
+    service = TaskService(TaskStore(tmp_path / "scheduled.sqlite"), None)
+    service.started = True
+    service.kick = Mock(return_value=None)
+    manager = video_search.VideoSearchManager(
+        SimpleNamespace(), SimpleNamespace(), log_event=lambda _: None, qwen_active=lambda: True,
+        path=tmp_path / "unused.sqlite",
+    )
+    manager._service = service
+
+    query = SimpleNamespace(name="jiuwen_task_query", arguments={})
+    result = await manager.operate("alice", "task-duplex:conversation-b", query)
+    assert result["jobs"] == [], "Core invocations stay conversation-scoped"
+    scheduled = result["scheduled_jobs"]
+    assert scheduled["available"] is True and scheduled["total"] == 1
+    assert [(job["id"], job["name"]) for job in scheduled["jobs"]] == [(created.id, "喝水提醒")]
+    assert "all conversations" in scheduled["message"]
+    # Same owner scope as the sidebar list.
+    assert [job["id"] for job in await CronController.get_instance().list_jobs(user_id="alice")] == [created.id]
+
+    query.arguments = {"query": "定时任务"}
+    filtered = await manager.operate("alice", "task-duplex:conversation-b", query)
+    assert filtered["scheduled_jobs"]["total"] == 1, "Invocation text filters never hide scheduled jobs"
+
+    other = await manager.operate("bob", "task-duplex:conversation-b", SimpleNamespace(
+        name="jiuwen_task_query", arguments={}))
+    assert other["scheduled_jobs"]["total"] == 0
+
+
+async def test_5597_unreadable_scheduled_jobs_are_not_reported_as_none(tmp_path):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.store import TaskStore
+
+    async def broken(_owner):
+        raise RuntimeError("cron store offline")
+
+    service = TaskService(TaskStore(tmp_path / "broken.sqlite"), None)
+    service.started = True
+    manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
+    manager._service, manager.concurrency = service, 2
+    manager.list_scheduled_jobs = broken
+    result = await manager.operate("alice", "scope", SimpleNamespace(name="jiuwen_task_query", arguments={}))
+    assert result["scheduled_jobs"]["available"] is False
+    assert "do not claim there are none" in result["scheduled_jobs"]["message"]
+
+
 @pytest.mark.parametrize("source", ["confirm_interrupt", "permission_interrupt"])
-async def test_voice_is_told_to_click_approval_cards_and_cannot_approve_them(tmp_path, source):
-    # Voice never approves cards (#7352); it must say so instead of implying "allowed".
+async def test_voice_is_told_how_to_answer_approval_cards(tmp_path, source):
+    # Voice may answer approval cards, but only on explicit consent; the query receipt carries the rules.
     from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
     from jiuwenswarm.extensions.video_duplex.backend.tasks.store import TaskStore
     service = TaskService(TaskStore(tmp_path / "approval.sqlite"), None)
@@ -721,21 +790,20 @@ async def test_voice_is_told_to_click_approval_cards_and_cannot_approve_them(tmp
 
     query = await manager.operate("alice", "scope", SimpleNamespace(name="jiuwen_task_query", arguments={}))
     jobs = {job["id"]: job for job in query["jobs"]}
-    assert jobs[task["id"]]["requires_click"] is True
     assert jobs[task["id"]]["approval_cards"] == [
         {"header": "操作确认: cua_agent", "message": "cua_agent 将操作桌面：打开计算器"}]
-    assert jobs[asking["id"]]["requires_click"] is False, "Information questions stay voice-answerable"
-    assert "requires_click" in query["message"]
-
-    call = SimpleNamespace(name="jiuwen_task_answer", call_id="voice-allow", arguments={
-        "job_id": task["id"], "interaction_id": "card-a", "answers": ["允许"]})
-    result = await manager.operate("alice", "scope", call)
-    assert result["applied"] is False and result["state"] == "rejected"
-    assert result["code"] == "APPROVAL_REQUIRES_CLICK"
-    assert result["approval_cards"] == jobs[task["id"]]["approval_cards"]
-    assert "NOT approved" in result["message"] and "Do not claim" in result["message"]
-    stored = service.store.read(task["id"])
-    assert stored["status"] == "waiting_user" and stored["interaction"]["state"] == "pending"
+    assert "approval_cards" not in jobs[asking["id"]], "Information questions are not approval cards"
+    message = query["message"]
+    assert "answered by voice with jiuwen_task_answer" in message
+    assert "同意, 允许, 可以 or 批准, choose the allow option" in message
+    assert "拒绝, 不要 or 取消这个操作, choose the reject option" in message
+    assert "only when the user says 本会话保持同意" in message and "permanent option (e.g. 永久记住) only when the user explicitly says 永久同意" in message
+    assert "ask one short question and do not submit" in message
+    assert "several cards are pending, confirm which card" in message
+    assert "Never use a new request as an answer to a card" in message
+    assert "Cards left by typed chat also appear in jiuwen_task_query" in message
+    assert "已批准 only after the answer receipt or a later query confirms the task resumed" in message
+    assert "click" not in message and "requires_click" not in message
 
 
 @pytest.mark.parametrize("version_kind", ["quoted", "invalid", "omitted"])

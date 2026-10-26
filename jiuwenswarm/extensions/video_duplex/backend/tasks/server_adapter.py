@@ -12,12 +12,30 @@ from .bridge import resolve_checkpoint_ack
 class VoiceTaskServerAdapter(GatewayAdapter):
     methods = frozenset({
         ReqMethod.VOICE_TASK_CHECKPOINT_ACK.value, ReqMethod.VOICE_TASK_FILES.value,
-        ReqMethod.VOICE_SESSION_RECEIPTS.value,
+        ReqMethod.VOICE_SESSION_RECEIPTS.value, ReqMethod.VOICE_TASK_PENDING_INTERRUPT.value,
     })
+
+    def __init__(self, pending_interrupt=None):
+        # AgentManager.session_has_pending_interrupt; read-only.
+        self._pending_interrupt = pending_interrupt
 
     async def handle(self, request):
         if request.req_method == ReqMethod.VOICE_TASK_CHECKPOINT_ACK:
             payload = {"accepted": resolve_checkpoint_ack(request)}
+        elif request.req_method == ReqMethod.VOICE_TASK_PENDING_INTERRUPT:
+            from jiuwenswarm.server.runtime.session.lifecycle import guard
+            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+            session = request.session_id or ""
+            if not session or self._pending_interrupt is None:
+                raise ValueError("Pending interrupt lookup is unavailable")
+            guard(session)
+            metadata = await asyncio.to_thread(
+                get_session_metadata, session, cache_bust=True, enable_writeback=False
+            )
+            if not metadata or str(metadata.get("user_id") or "").strip() != (request.user_id or ""):
+                raise ValueError("Task session is unavailable to this user")
+            payload = {"pending": bool(self._pending_interrupt(session))}
         elif request.req_method == ReqMethod.VOICE_SESSION_RECEIPTS:
             from ..session_receipts import configure
 

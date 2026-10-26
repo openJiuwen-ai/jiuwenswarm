@@ -976,6 +976,26 @@ class AgentManager:
             )
             return False
 
+    def session_has_pending_interrupt(self, session_id: str) -> bool:
+        """Read-only: whether any cached Agent's Core waits for an answer in ``session_id``.
+
+        A full-duplex voice task shares the chat's Core session, whichever
+        channel started the waiting turn, so every channel's Agents are asked.
+        Asking never creates an Agent, a session adapter or an interrupt.
+        """
+        sid = str(session_id or "").strip()
+        if not sid:
+            return False
+        for channel_agents in list(self.agents.values()):
+            if not isinstance(channel_agents, dict):
+                continue
+            for agent in list(channel_agents.values()):
+                adapter = self._resolve_runtime_adapter(agent)
+                probe = getattr(adapter, "session_has_pending_interrupt", None)
+                if callable(probe) and probe(sid):
+                    return True
+        return False
+
     def _resolve_session_agent(
         self,
         channel_id: str | None,

@@ -11,6 +11,8 @@ import {
   useApplicationTaskStore,
 } from "../../../channels/web/frontend/src/applicationPlugins/taskProgressStore";
 import { useSessionStore } from "../../../channels/web/frontend/src/stores/sessionStore";
+import { useChatStore } from "../../../channels/web/frontend/src/stores/chatStore";
+import { APPROVAL_SOURCES } from "./VideoLivePanel/taskPrompts";
 import { VideoLivePanel, type VideoLivePanelHandle } from "./VideoLivePanel";
 import type {
   SearchJobPayload,
@@ -672,14 +674,32 @@ export function TaskFullDuplexRuntime({
     return () => { disposed = true; window.clearInterval(timer); };
   }, [sessionId, handleCoreAgentProgress]);
 
+  // Typed-chat approval cards are not duplex jobs; forward them so voice can answer them too.
+  const chatApprovalsRef = useRef(new Map<string, { request_id: string; source?: string; questions?: unknown[] }>());
+  const syncChatApprovals = useCallback(() => {
+    const target = runtimeSessionIdRef.current;
+    const pending = new Map<string, { request_id: string; source?: string; questions?: unknown[] }>();
+    for (const card of (target && useChatStore.getState().getRuntime(target)?.pendingQuestions) || []) {
+      if (!card.duplexJobId && card.source && APPROVAL_SOURCES.has(card.source)) pending.set(card.request_id, card);
+    }
+    for (const [id, card] of chatApprovalsRef.current)
+      if (!pending.has(id)) panelRef.current?.deliverChatApproval({ ...card, state: "answered" });
+    for (const [id, card] of pending)
+      if (!chatApprovalsRef.current.has(id)) panelRef.current?.deliverChatApproval({ ...card, state: "pending" });
+    chatApprovalsRef.current = pending;
+  }, []);
+  useEffect(() => useChatStore.subscribe(syncChatApprovals), [syncChatApprovals]);
+
   const setPanelRef = useCallback((panel: VideoLivePanelHandle | null) => {
     panelRef.current = panel;
     registerTaskFullDuplexController(panel, async (targetSessionId) => {
       runtimeSessionIdRef.current = targetSessionId;
+      chatApprovalsRef.current = new Map();
+      syncChatApprovals();
       await flushConversationHistory(targetSessionId);
       return conversationJobsRef.current.bind(targetSessionId);
     }, cancelSessionTasks);
-  }, []);
+  }, [syncChatApprovals]);
 
   useEffect(
     () => () => {

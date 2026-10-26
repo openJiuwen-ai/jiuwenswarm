@@ -197,3 +197,16 @@ def test_delegation_rejects_invalid_titles(title):
     with pytest.raises(ValueError, match="title"):
         parse_qwen_omni_tool_call({"name": "jiuwen_delegate", "call_id": "bad-title",
                                    "arguments": {"task": "complete requirements", "title": title}})
+
+
+def test_parse_qwen_answer_accepts_empty_job_id_for_typed_chat_card() -> None:
+    # A typed-chat approval card has no job; voice answers it with job_id "".
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_task_answer", "call_id": "c1",
+        "arguments": json.dumps({"job_id": "", "interaction_id": "call_a", "answers": ["本次允许"]}),
+    })
+    assert call.arguments["job_id"] == ""
+    with pytest.raises(ValueError):
+        parse_qwen_omni_tool_call({
+            "name": "jiuwen_task_cancel", "call_id": "c2", "arguments": json.dumps({"job_id": ""}),
+        })

@@ -217,6 +217,8 @@ class WebChannel(BaseWsChannel):
         # 而不是当孤儿丢弃；turn 的终态事件送达后解除绑定。
         self._a4p_rebound_ws: dict[str, str] = {}
         self._queued_moa_notices: WeakKeyDictionary[asyncio.Queue, int] = WeakKeyDictionary()
+        # Observers of per-session pushes (card shown, turn started/ended).
+        self._session_event_listeners: list[Callable[[str, str, dict], Any]] = []
         # Git diff 监控注册表(设计文档阶段10):由 app_gateway 在启动期注入,
         # handler 通过 ``getattr(channel, "git_watcher_registry", None)`` 防御性读取。
         self.git_watcher_registry: Any = None
@@ -1496,10 +1498,29 @@ class WebChannel(BaseWsChannel):
             sid = payload.get("session_id") or msg.session_id
             if sid:
                 self._session_busy[sid] = bool(payload.get("is_processing", False))
-        elif event_name == "chat.interrupt_result":
+        if event_name in {"chat.processing_status", "chat.ask_user_question"} and payload is not None:
+            sid = payload.get("session_id") or msg.session_id
+            for listener in list(self._session_event_listeners):
+                try:
+                    listener(event_name, sid, payload)
+                except Exception:
+                    logger.warning("[WebChannel] session event listener failed", exc_info=True)
+        if event_name == "chat.interrupt_result":
             intent = payload.get("intent", "cancel") if payload is not None else "cancel"
             if msg.session_id:
                 self._session_busy[msg.session_id] = intent in ("pause", "supplement", "resume")
+
+    def add_session_event_listener(self, listener: Callable[[str, str, dict], Any]) -> None:
+        """Observe ``chat.processing_status`` / ``chat.ask_user_question`` pushes per session."""
+        self._session_event_listeners.append(listener)
+
+    async def dispatch_client_request(self, ws: Any, method: str, params: dict) -> None:
+        """Run a request as if *ws* had sent it, through the same routing a click uses."""
+        frame = {
+            "type": "req", "id": f"server-{method}-{time.time_ns()}",
+            "method": method, "params": params,
+        }
+        await self._handle_raw_message(ws, json.dumps(frame), getattr(ws, "_jiuwen_query", {}) or {})
 
     def is_session_busy(self, session_id: str) -> bool:
         """查询 session 是否正在执行(agent 处理中)。
@@ -1688,6 +1709,8 @@ class WebChannel(BaseWsChannel):
                     exc_info=exc,
                 )
 
+        # Lets a server-side action replay this connection's own request path.
+        setattr(ws, "_jiuwen_query", query)
         try:
             inflight: set[Any] = set()
             async for raw in ws:

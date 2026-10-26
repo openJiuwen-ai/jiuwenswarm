@@ -210,6 +210,8 @@ class ReqMethod(Enum):
     # Gateway owns voice task records; AgentServer returns execution facts/files.
     VOICE_TASK_CHECKPOINT_ACK = "voice.task.checkpoint.ack"
     VOICE_TASK_FILES = "voice.task.files"
+    # Read-only: whether Core still waits for an answer in the session (#5486).
+    VOICE_TASK_PENDING_INTERRUPT = "voice.task.pending_interrupt"
     VOICE_SESSION_RECEIPTS = "voice.session.receipts"
 
     # HarmonyOS TUI DevEco bootstrap（Phase 3：用户态在目标 AgentServer 注入目录执行）

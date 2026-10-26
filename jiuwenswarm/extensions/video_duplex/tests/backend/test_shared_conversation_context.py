@@ -39,14 +39,16 @@ def test_saved_chat_tasks_share_session_but_have_distinct_execution_ids():
     second = TaskService._new("alice", "task-duplex:web-chat", "two", {"independent": True})
     assert first["core_session_id"] == second["core_session_id"] == "web-chat"
     assert first["request_id"] != second["request_id"]
+    scheduler = TaskService.__new__(TaskService)
+    scheduler.pending_interrupts = set()
     first["status"] = "running"
-    assert not TaskService._ready(second, [first, second], [first])
+    assert not scheduler._ready(second, [first, second], [first])
     first["status"] = "completed"
-    assert TaskService._ready(second, [first, second], [])
+    assert scheduler._ready(second, [first, second], [])
     # Separate saved conversations still permit concurrent execution.
     other = TaskService._new("alice", "task-duplex:other", "three", {"independent": True})
     first["status"] = "running"
-    assert TaskService._ready(other, [first, other], [first])
+    assert scheduler._ready(other, [first, other], [first])
 
 
 async def test_live_context_imports_speech_once_and_skips_task_ui_duplicates(monkeypatch):

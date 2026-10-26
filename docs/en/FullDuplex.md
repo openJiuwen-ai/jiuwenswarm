@@ -168,12 +168,16 @@ uses native design tools in the current project. Voice and text share the Design
 later typed turns also receive recent saved voice context. Native question cards remain
 answerable. Voice answers and cancellation use the current task binding, so a stale
 cancellation cannot stop a later turn.
-Approval cards (permission approvals, cua desktop confirmations and similar) must be
-clicked on screen (Allow or Reject); voice cannot approve or reject them. While a task
-waits on one, the assistant explains what the card is for and asks you to click it,
-without claiming it was allowed. While the card is open, voice stops listening and the
-microphone button is disabled, the same way the text input is locked; once you click the
-card, the microphone returns to the state you had chosen.
+Approval cards (permission approvals, cua desktop confirmations and similar) can be
+answered by voice as well as on screen. Clearly saying "agree", "allow", "OK" or "approve"
+allows; "reject", "no" or "cancel this operation" rejects. Saying "allow for this
+conversation" picks the session option, so the card is not shown again in this conversation;
+the permanent option is picked only when you explicitly say "always allow". If your meaning is unclear,
+the assistant asks once and does not submit; with several open cards it first confirms
+which one. A new request spoken while a card waits (such as "open WeChat") is dispatched
+as a new task and queued until the approval is handled; it is never used as an answer.
+Cards left by typed chat can also be answered by voice. The assistant says a card was
+approved only after it confirms the task resumed. Speech that ended before a card appeared is never taken as its answer.
 Voice tasks retain their own per-round result subscription even when the Design page
 already has a subscription. Canvas, node, run and assistant activity updates use the
 saved Design session's Web channel, so the page does not need a refresh.

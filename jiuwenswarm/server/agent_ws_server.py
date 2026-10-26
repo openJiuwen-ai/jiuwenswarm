@@ -1188,7 +1188,7 @@ class AgentWebSocketServer:
         # dispatch occurs before the legacy handler chain below.
         self._adapter_registry = AdapterRegistry()
         for adapter in (
-            VoiceTaskServerAdapter(),
+            VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
             SessionAdapter(),
             WorkspaceFileAdapter(),
             MemoryAdapter(),
@@ -2075,7 +2075,7 @@ class AgentWebSocketServer:
                 self._install_session_message_service()
                 self._adapter_registry = AdapterRegistry()
                 for adapter in (
-                    VoiceTaskServerAdapter(),
+                    VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
                     SessionAdapter(),
                     WorkspaceFileAdapter(),
                     MemoryAdapter(),
