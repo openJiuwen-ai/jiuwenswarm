@@ -1815,7 +1815,9 @@ async def test_progressive_tool_optimize_switch_round_trips_through_config_rpc(m
         "update_progressive_tool_optimize_in_config",
         lambda enabled: persisted.append(enabled),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client())
+    )
 
     await channel.methods["config.get"](object(), "req-tool-optimize-get", {}, "session")
     assert channel.responses[-1]["payload"]["progressive_tool_optimize"] == "false"
@@ -1828,7 +1830,7 @@ async def test_progressive_tool_optimize_switch_round_trips_through_config_rpc(m
     )
     assert persisted == [True]
     assert channel.responses[-1]["payload"]["updated"] == ["progressive_tool_optimize"]
-    change_set = app_web_handlers._ConfigChangeSet({}, ["progressive_tool_optimize"])
+    change_set = config_set_handlers.ConfigChangeSet({}, ["progressive_tool_optimize"])
     assert change_set.reload_scopes == {"agent_runtime"}
 
 

@@ -6947,12 +6947,10 @@ class JiuWenSwarmDeepAdapter:
                 ToolRetrievalPromptRail,
             )
 
-            mounted = any(
-                existing is rail
-                for existing in self._instance.find_rails_by_type(
-                    (ToolRetrievalPromptRail,)
-                )
+            existing_rails = self._instance.find_rails_by_type(
+                (ToolRetrievalPromptRail,)
             )
+            mounted = any(existing is rail for existing in existing_rails)
         if not enabled:
             if rail is None:
                 return
