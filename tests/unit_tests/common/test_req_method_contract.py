@@ -24,8 +24,8 @@ import openjiuwen_protocol.message as protocol_message
 from jiuwenswarm.common.schema import agent as schema_agent
 from jiuwenswarm.common.schema import message as schema_message
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.channel_manager.tui.tui_connect import CLI_FORWARD_REQ_METHODS
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+from gateway.channel_manager.tui.tui_connect import CLI_FORWARD_REQ_METHODS
+from gateway.channel_manager.web.app_web_handlers import (
     _FORWARD_REQ_METHODS,
 )
 
