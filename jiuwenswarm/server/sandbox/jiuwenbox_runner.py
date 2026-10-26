@@ -187,37 +187,6 @@ def _cleanup_stale_win_proxy_ports(
             )
 
 
-def _declare_windows_git_tools(env: dict[str, str]) -> None:
-    """Declare Git from the trusted service PATH when the host supplied no tools.
-
-    Match only Git for Windows layouts, never arbitrary PATH ancestors. The
-    resulting service-owned RO grant includes Bash's DLLs, not just its EXE.
-    Explicit declarations (including empty ones) remain authoritative.
-    """
-    if "JIUWENBOX_TOOL_PATHS" in env:
-        return
-    executable = shutil.which("git.exe", path=env.get("PATH", ""))
-    if not executable or not Path(executable).is_absolute():
-        return
-    git = Path(executable).resolve()
-    for root in (git.parent.parent, git.parent.parent.parent):
-        if root == Path(root.anchor):
-            continue
-        relative = git.relative_to(root).as_posix().lower()
-        if relative not in {
-            "cmd/git.exe", "bin/git.exe", "mingw64/bin/git.exe", "mingw32/bin/git.exe",
-        }:
-            continue
-        if not (root / "usr" / "bin" / "bash.exe").is_file():
-            continue
-        directories = [root / "cmd", root / "bin", root / "usr" / "bin"]
-        env["JIUWENBOX_TOOL_PATHS"] = json.dumps({
-            "read_roots": [str(root)],
-            "executable_dirs": [str(directory) for directory in directories if directory.is_dir()],
-        })
-        return
-
-
 def _resolve_jiuwenbox_src_dir() -> Optional[Path]:
     """探测仓库内 ``code_agent/jiuwenbox/src``; 若存在则供 PYTHONPATH 注入用.
 
@@ -681,7 +650,9 @@ class JiuwenBoxRunner:
                 )
             logger.info("[JiuwenBoxRunner] spawning: %s", " ".join(cmd))
             if sys.platform == "win32":
-                _declare_windows_git_tools(env)
+                from jiuwenswarm.server.sandbox.runtime_tools import declare_windows_runtime_tools
+
+                declare_windows_runtime_tools(env)
                 setup_started = time.monotonic()
                 await self._prepare_windows_setup(env, policy_path)
                 logger.info(

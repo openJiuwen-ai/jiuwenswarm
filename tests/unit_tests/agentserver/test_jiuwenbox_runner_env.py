@@ -145,6 +145,9 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
 ):
     from jiuwenswarm.common import config
 
+    for key in list(os.environ):
+        if key.startswith("JIUWENBOX_"):
+            monkeypatch.delenv(key)
     allowlist = ["HOST_TOOL_TOKEN", "HOST_PYTHON_EXE", "CUSTOM_TOOL_SETTING", "EMPTY_TOOL_SETTING"]
     paths = [str(tmp_path / "shared-dependencies")]
     tools = {"read_roots": [str(tmp_path / "tools")], "executable_dirs": [str(tmp_path / "tools")]}
@@ -185,7 +188,7 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
         tools = {"read_roots": [str(git)],
                  "executable_dirs": [str(git / name) for name in ("cmd", "bin", "usr/bin")]}
         monkeypatch.delenv("JIUWENBOX_TOOL_PATHS", raising=False)
-        monkeypatch.setattr(runner_module.shutil, "which", lambda *a, **kw: str(git / "cmd/git.exe"))
+        monkeypatch.setenv("PATH", str(git / "cmd"))
     else:
         monkeypatch.setenv("JIUWENBOX_TOOL_PATHS", json.dumps(tools))
     monkeypatch.setenv("CLAW_SKILL_TOKEN", "unlisted-product-token")
@@ -204,7 +207,7 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
     ))
     monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spawn)
     bootstrap_env = {
-        "JIUWENBOX_RUNNER_PYTHON": "C:/Python312/python.exe",
+        "JIUWENBOX_RUNNER_PYTHON": str(tmp_path / "missing-runner" / "python.exe"),
         "JIUWENBOX_SKILLS_DIR": "C:/workspace/skills",
         "CUSTOM_TOOL_SETTING": "startup-override",
     }
@@ -219,7 +222,7 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
         if platform == "win32":
             assert call.kwargs["stdin"] == subprocess.PIPE
             assert call.args[2] == "jiuwenbox.server.parent_control"
-        assert env["JIUWENBOX_RUNNER_PYTHON"] == "C:/Python312/python.exe"
+        assert env["JIUWENBOX_RUNNER_PYTHON"] == str(tmp_path / "missing-runner" / "python.exe")
         assert env["JIUWENBOX_SKILLS_DIR"] == "C:/workspace/skills"
         assert env["JIUWENBOX_POLICY_PATH"] == str(policy)
         assert env["HOST_TOOL_TOKEN"] == "test-tool-token"

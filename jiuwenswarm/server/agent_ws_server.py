@@ -505,25 +505,24 @@ async def _build_sandbox_env() -> dict[str, str] | None:
     sandbox_env: dict[str, str] = {}
     if sys.platform != "win32":
         return sandbox_env
+    from jiuwenswarm.server.runtime.python_base_pin import RuntimePythonTrustError
     try:
         from jiuwenswarm.server.runtime.pip_env import (
-            ensure_runtime_venv, resolve_base_python,
+            ensure_runtime_venv, verified_runtime_python_base,
         )
         try:
-            bundled_python = resolve_base_python()
-            sandbox_env["JIUWENBOX_BUNDLED_PYTHON"] = str(bundled_python.parent)
-            sandbox_env["JIUWENCLAW_BASE_PYTHON"] = str(bundled_python)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[AgentWebSocketServer] inject JIUWENBOX_BUNDLED_PYTHON failed: %s",
-                exc,
-            )
-        try:
             venv_dir = ensure_runtime_venv()
+            actual_base = verified_runtime_python_base(venv_dir)
+            # Publish together, only after host-pin validation has succeeded.
             sandbox_env["JIUWENBOX_VENV_DIR"] = str(venv_dir)
+            sandbox_env["JIUWENBOX_BUNDLED_PYTHON"] = str(actual_base.parent)
+            sandbox_env["JIUWENCLAW_BASE_PYTHON"] = str(actual_base)
+        except RuntimePythonTrustError:
+            logger.error("[AgentWebSocketServer] managed venv base validation failed; refusing sandbox startup")
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "[AgentWebSocketServer] inject JIUWENBOX_VENV_DIR failed: %s",
+                "[AgentWebSocketServer] provision isolation venv failed: %s",
                 exc,
             )
         # skills 目录注入：policy 基底 allow_read 用 %JIUWENBOX_SKILLS_DIR%
@@ -538,6 +537,8 @@ async def _build_sandbox_env() -> dict[str, str] | None:
                 "[AgentWebSocketServer] inject JIUWENBOX_SKILLS_DIR failed: %s",
                 exc,
             )
+    except RuntimePythonTrustError:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "[AgentWebSocketServer] inject sandbox python/venv env failed: %s",

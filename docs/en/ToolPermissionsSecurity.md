@@ -12,6 +12,10 @@ Xiaoyi A2A `clientVariables.permission` travels in the request permission contex
 
 ## 1. Overview
 
+Before starting an internally managed Windows sandbox service, Swarm supplies common runtime declarations when `JIUWENBOX_TOOL_PATHS` is absent. It prefers the isolation venv, resolves its actual base Python, and finds standard Node and Git/Bash distributions on the service PATH. JiuwenBox prepares shared ACLs at service startup; sessions reuse those grants. Explicit declarations remain authoritative. This does not change shell approval rules or guarantee repair after arbitrary runtime upgrades. See [shared paths and environment configuration](../../jiuwenbox/docs/沙箱公共目录与环境变量配置.md) for the declaration and cache boundaries.
+
+Managed venv bases are pinned in a protected host-user registry key. Writable `pyvenv.cfg` metadata cannot create new ACL roots: mismatches block startup before the base directory is published. Existing unpinned venvs must match an independently selected host interpreter first. Optional Python discovery failures are logged and skipped without discarding other tool declarations.
+
 | Capability | Description |
 |-----------|-------------|
 | **Three-tier actions** | `allow` executes directly; `ask` requires user confirmation (Web/CLI, etc.); `deny` rejects. |

@@ -76,6 +76,7 @@ async def test_bootstrap_stops_on_probe_failure_and_preserves_frozen_branch(monk
     monkeypatch.setattr(sandbox_policy_render, "_ensure_copy_exists", lambda: None)
     monkeypatch.setattr(pip_env, "resolve_base_python", lambda: Path(sys.base_prefix) / "python.exe")
     monkeypatch.setattr(pip_env, "ensure_runtime_venv", lambda: tmp_path)
+    monkeypatch.setattr(pip_env, "verified_runtime_python_base", lambda root: Path(sys.base_prefix) / "python.exe")
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sys, "frozen", mode == "frozen", raising=False)
     monkeypatch.delenv("JIUWENBOX_RUNNER_PYTHON", raising=False)
