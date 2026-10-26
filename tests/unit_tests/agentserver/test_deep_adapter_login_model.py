@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth.model_catalog import LoginModel
-from jiuwenswarm.common.auth import login_credentials
-from jiuwenswarm.common.auth.login_credentials import placeholder_api_key
+from swarm_base.auth.model_catalog import LoginModel
+from swarm_base.auth import login_credentials
+from swarm_base.auth.login_credentials import placeholder_api_key
 from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
@@ -35,7 +35,7 @@ def adapter(monkeypatch):
     adapter._model_name_to_keys = {"my-gpt": ["my-gpt"]}
     adapter._last_resolved_model = None
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "swarm_base.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [
             LoginModel(model_name="glm-5", display_name="GLM-5"),
             LoginModel(model_name="my-gpt", display_name="my-gpt"),
@@ -147,7 +147,7 @@ def test_model_check_records_whether_the_session_uses_a_free_model(adapter, monk
 
 @pytest.mark.parametrize("selection_type", ["model", "model_group"])
 def test_stable_selection_clears_previous_free_model_error_classification(adapter, selection_type):
-    from jiuwenswarm.common.auth.apig import classify_model_error
+    from swarm_base.auth.apig import classify_model_error
 
     adapter._model_config_error(_request("glm-5", **SCOPED))
     assert login_credentials.session_uses_login_model("s") is True

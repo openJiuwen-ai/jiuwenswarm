@@ -1,30 +1,20 @@
-"""Stable model-selection error codes shared by runtime and RPC layers."""
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from __future__ import annotations
+"""转发别名（M1' 过渡形态）：真源已迁 ``swarm_base.model_errors``。"""
 
-from typing import Any
-
-
-MODEL_SELECTION_NOT_FOUND = "MODEL_SELECTION_NOT_FOUND"
-MODEL_SELECTION_DISABLED = "MODEL_SELECTION_DISABLED"
-MODEL_SELECTION_FORBIDDEN = "MODEL_SELECTION_FORBIDDEN"
-MODEL_GROUP_INVALID = "MODEL_GROUP_INVALID"
-MODEL_GROUP_NO_AVAILABLE_ROUTE = "MODEL_GROUP_NO_AVAILABLE_ROUTE"
-MODEL_REQUEST_CONFIG_INVALID = "MODEL_REQUEST_CONFIG_INVALID"
-MODEL_ROUTE_FAILED = "MODEL_ROUTE_FAILED"
-MODEL_STREAM_INTERRUPTED = "MODEL_STREAM_INTERRUPTED"
-MODEL_OUTCOME_UNKNOWN = "MODEL_OUTCOME_UNKNOWN"
-MODEL_SELECTION_REFERENCED = "MODEL_SELECTION_REFERENCED"
-MODEL_RUNTIME_UNAVAILABLE = "MODEL_RUNTIME_UNAVAILABLE"
-TEAM_MODEL_SELECTION_STALE = "TEAM_MODEL_SELECTION_STALE"
-
-
-class ModelSelectionError(RuntimeError):
-    def __init__(self, code: str, message: str, **details: Any) -> None:
-        super().__init__(message)
-        self.code = code
-        self.details = details
-
-    def to_payload(self) -> dict[str, Any]:
-        return {"code": self.code, "message": str(self), **self.details}
-
+from swarm_base.model_errors import *  # noqa: F401,F403
+from swarm_base.model_errors import (  # noqa: F401
+    MODEL_GROUP_INVALID,
+    MODEL_GROUP_NO_AVAILABLE_ROUTE,
+    MODEL_OUTCOME_UNKNOWN,
+    MODEL_REQUEST_CONFIG_INVALID,
+    MODEL_ROUTE_FAILED,
+    MODEL_RUNTIME_UNAVAILABLE,
+    MODEL_SELECTION_DISABLED,
+    MODEL_SELECTION_FORBIDDEN,
+    MODEL_SELECTION_NOT_FOUND,
+    MODEL_SELECTION_REFERENCED,
+    MODEL_STREAM_INTERRUPTED,
+    ModelSelectionError,
+    TEAM_MODEL_SELECTION_STALE,
+)

@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth import session_store as store_mod
-from jiuwenswarm.common.auth.account_kit import Credential, LoginOutcome, OAuthError
-from jiuwenswarm.common.auth.service import AuthService
+from swarm_base.auth import session_store as store_mod
+from swarm_base.auth.account_kit import Credential, LoginOutcome, OAuthError
+from swarm_base.auth.service import AuthService
 
 
 class _Pending:

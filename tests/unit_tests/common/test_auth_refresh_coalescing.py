@@ -6,10 +6,10 @@ import time
 
 import pytest
 
-from jiuwenswarm.common.auth import service as service_mod
-from jiuwenswarm.common.auth import session_store as store_mod
-from jiuwenswarm.common.auth.account_kit import Credential, LoginOutcome
-from jiuwenswarm.common.auth.service import REFRESH_AHEAD_S, AuthService, ModelAuthRequired
+from swarm_base.auth import service as service_mod
+from swarm_base.auth import session_store as store_mod
+from swarm_base.auth.account_kit import Credential, LoginOutcome
+from swarm_base.auth.service import REFRESH_AHEAD_S, AuthService, ModelAuthRequired
 
 
 @pytest.fixture
