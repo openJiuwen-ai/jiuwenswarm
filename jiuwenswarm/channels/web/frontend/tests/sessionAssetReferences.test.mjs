@@ -55,6 +55,15 @@ test('display name adds the extension back without an @ prefix', () => {
   assert.equal(displayFileName(asset('fox', 'C:/a/fox.PNG')), 'fox.PNG');
 });
 
+test('display name does not double the extension when the asset was renamed to already include it', () => {
+  // Rename inputs don't strip extensions, so asset.name can legitimately already end in ".png".
+  assert.equal(displayFileName(asset('mybottle.png')), 'mybottle.png');
+  // Case-insensitive match (real extension vs. a differently-cased one the user typed).
+  assert.equal(displayFileName(asset('mybottle.PNG')), 'mybottle.PNG');
+  // A name that merely contains the extension mid-string, not as a suffix, still gets it appended.
+  assert.equal(displayFileName(asset('png_export_v2')), 'png_export_v2.png');
+});
+
 // 真实数据：会话 web_1a1102fc6e1_5e63432faddc 的 history.jsonl 与 session_assets.json。
 // 附件在历史里只有原始 filename，改成 serum 的名字只存在素材表里，靠路径对回去。
 const SERUM_PATH =
