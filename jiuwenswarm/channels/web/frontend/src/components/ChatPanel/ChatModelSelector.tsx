@@ -65,6 +65,9 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
   useEffect(() => {
     if (!activeSessionId || disabled || groupBlocked) return;
     if (!selectedModelSelection) return;
+    // 模型目录尚未加载（刷新时 models.list 常晚于 session.get_metadata 到达）时无法判断
+    // 选择是否失效，不能按“已删除”清空会话实际绑定的模型；等目录到达后本 effect 会重跑。
+    if (models.length === 0 && modelGroups.length === 0) return;
     if (isModelSelectionAvailable(selectedModelSelection, models, modelGroups)) return;
     if (useChatStore.getState().getRuntime(activeSessionId)?.isProcessing) return;
     const next = resolveAvailableModelSelection(selectedModelSelection, models, modelGroups);
