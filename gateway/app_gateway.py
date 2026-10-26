@@ -1878,7 +1878,7 @@ async def _run(
 
     from jiuwenswarm.common.updater import UpdaterService
     from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.registry import ExtensionRegistry
     from gateway.channel_manager.channel_manager import ChannelManager
     from gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
         WebProxyChannelConfig,
@@ -2048,7 +2048,7 @@ async def _run(
     config_updater = None
     from gateway.routing.e2a_proxy import is_agentos_routing_client
     if is_agentos_routing_client(client) and callable(getattr(client, "apply_remote_overrides", None)):
-        from jiuwenswarm.extensions.agentos.config_updater.service import (
+        from gateway.extensions.agentos.config_updater.service import (
             ConfigUpdaterService,
         )
         from gateway.runtime.cron.factory import load_cron_store_settings
@@ -3424,7 +3424,7 @@ async def _run(
                         manager = WebPortManager(web_channel, wp_config)
                         web_channel.web_port_manager = manager
                         manager.start()
-                        from jiuwenswarm.extensions.agentos.registry_watcher.service import (
+                        from gateway.extensions.agentos.registry_watcher.service import (
                             RegistryWatcherService,
                         )
                         from gateway.cron.factory import (

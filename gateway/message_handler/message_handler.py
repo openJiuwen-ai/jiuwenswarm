@@ -3314,7 +3314,12 @@ class MessageHandler(ABC):
         else:
             session_id = self._stream_sessions.get(rid)
 
+<<<<<<< HEAD
         from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import EVENT, handle_checkpoint_push
+=======
+        from gateway.extensions.video_duplex.backend.tasks.bridge import EVENT, handle_checkpoint_push
+        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import READY_EVENT
+>>>>>>> b179934e1 (refactor(gateway): M1 extensions 解耦——gateway 侧独立副本（gateway 拆仓 M 组 1/n）)
 
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "models.updated":
             await self._broadcast_models_updated()
@@ -4038,7 +4043,7 @@ class MessageHandler(ABC):
             req_method=msg.req_method.value if msg.req_method is not None else None,
             params=params,
         )
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
+        from gateway.extensions.registry import ExtensionRegistry
 
         await ExtensionRegistry.get_instance().trigger(GatewayHookEvents.BEFORE_CHAT_REQUEST, ctx)
 

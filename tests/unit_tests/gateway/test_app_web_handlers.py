@@ -18,7 +18,7 @@ from tests.unit_tests.gateway.config_routing_harness import (
 )
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
-from jiuwenswarm.extensions.registry import ExtensionRegistry
+from gateway.extensions.registry import ExtensionRegistry
 from gateway.channel_manager.web import app_web_handlers
 from jiuwenswarm.common.config_panel.config_set_handlers import (
     flatten_external_cli_agents_for_config_panel as _flatten_external_cli_agents_for_config_panel,
@@ -1517,7 +1517,7 @@ async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, t
     reload_calls: list[tuple[set[str], dict, dict]] = []
 
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.registry.ExtensionRegistry.get_instance",
+        "gateway.extensions.registry.ExtensionRegistry.get_instance",
         lambda: SimpleNamespace(get_crypto_provider=lambda: None),
     )
     for key in keys:
