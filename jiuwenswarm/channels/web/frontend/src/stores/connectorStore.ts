@@ -372,6 +372,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
   },
 
   uninstallPackage: async (identifier: string) => {
+    if (get().busyMap[identifier]) return false;
     set((state) => ({
       busyMap: { ...state.busyMap, [identifier]: 'uninstall' },
       error: null,
@@ -480,6 +481,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
   },
 
   deleteConnector: async (name: string) => {
+    if (get().busyMap[name]) return false;
     set((state) => ({
       busyMap: { ...state.busyMap, [name]: 'delete' },
       error: null,
