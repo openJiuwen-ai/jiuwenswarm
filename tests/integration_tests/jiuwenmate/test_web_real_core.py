@@ -169,6 +169,20 @@ async def test_default_colleague_answers_and_remembers_the_conversation(tmp_path
     assert "你好" in user_texts(model.calls[1]) and "第1次回复" in [m.content for m in model.calls[1]]
 
 
+async def test_model_identity_is_present_in_the_actual_model_request(tmp_path, model):
+    server = Server(tmp_path)
+    agent_id = (await server.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT))["colleague"]["agent_id"]
+
+    answered = await server.ask(agent_id, "你是什么模型？")
+    await server.adapter.aclose()
+
+    assert answered["outcome"] == "completed"
+    system_prompt = model.calls[0][0].content
+    assert '"model": "deepseek", "provider": "OpenAI"' in system_prompt
+    assert "当前配置模型为「deepseek」，提供方为「OpenAI」" in system_prompt
+    assert "不要回答看不到系统配置、无法确认配置或建议用户联系管理员" in system_prompt
+
+
 async def test_the_conversation_window_survives_a_server_restart(tmp_path, model):
     first = Server(tmp_path)
     agent_id = (await first.call(ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT))["colleague"]["agent_id"]
