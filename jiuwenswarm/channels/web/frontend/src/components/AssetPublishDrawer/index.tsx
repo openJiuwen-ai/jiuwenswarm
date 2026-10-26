@@ -275,7 +275,6 @@ function AssetPublishDrawer({
   };
   const issueText = (value: unknown) => {
     const issue = value as { code?: string; message?: string; path?: string };
-    const code = typeof value === 'string' ? value : issue?.code;
     const zh = i18n.language.startsWith('zh');
     const known: Record<string, [string, string]> = {
       SOURCE_CHANGED: ['源文件已变化，请重新检查。', 'Source files changed. Check the package again.'],
@@ -294,11 +293,15 @@ function AssetPublishDrawer({
         'This version exists. Change the version or explicitly enable overwrite.',
       ],
     };
+    // Review lists (files, excluded, normalizations) carry plain strings: paths and notes.
+    // Only map a string when it is one of the known codes; otherwise show it verbatim.
+    if (typeof value === 'string') return known[value]?.[zh ? 0 : 1] ?? value;
+    const code = issue?.code;
     if (code && known[code]) return known[code][zh ? 0 : 1] + (issue?.path ? ` (${issue.path})` : '');
     // Prefer the Hub's own guidance when it is short enough; it is more specific than any code table.
     const reported = typeof issue?.message === 'string' ? issue.message.trim() : '';
     if (reported) return reported;
-    const safeKey = publishIssueKey(code || value);
+    const safeKey = publishIssueKey(code || '');
     return safeKey === 'requestFailed' ? text('requestFailed') : text(safeKey);
   };
   const panel = useRef<HTMLElement | null>(null);
