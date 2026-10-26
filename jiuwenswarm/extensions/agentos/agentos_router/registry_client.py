@@ -19,11 +19,11 @@ from urllib.parse import quote
 
 import httpx
 
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+from gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, ImageInfo
-from jiuwenswarm.extensions.agentos.registry_watcher.decode import (
+from gateway.extensions.agentos.agentos_router.models import AgentInfo, ImageInfo
+from gateway.extensions.agentos.registry_watcher.decode import (
     parse_access_mode,
     port_from_access_mode,
 )

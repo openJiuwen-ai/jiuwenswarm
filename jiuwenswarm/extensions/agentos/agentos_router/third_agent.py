@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from jiuwenswarm.common.client.third_agent import ThirdAgent
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentRuntime
+from gateway.extensions.agentos.agentos_router.agent_manager import AgentRuntime
 
 if TYPE_CHECKING:
     from jiuwenswarm.extensions.agentos.agentos_router.router_client import (

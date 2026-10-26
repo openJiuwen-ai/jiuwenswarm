@@ -8,11 +8,15 @@
 hook_event / hooks_context 已下沉 ``jiuwenswarm.common``；
 加载治理见 ``extensions/manager.py`` 的清单化配置。
 
-解耦阶段（M 组 extensions）：registry 框架、SDK、config_updater、
-registry_watcher、agentos_router.agent_manager 与 video_duplex task bridge
-在 ``jiuwenswarm.extensions`` 之外保留本包副本，供 gateway 进程直接使用；
-``jiuwenswarm.extensions`` 仍作为扩展发现/加载入口（manager/loader 暂留母仓）。
-两份副本的类身份不同，不可跨包 isinstance/身份比较。
+解耦阶段（M 组 extensions）：
+- ``agentos/config_updater``、``agentos/registry_watcher``、
+  ``agentos/agentos_router.{agent_manager,models,logutil}`` 与
+  ``video_duplex/backend/tasks/bridge`` 以本包为**唯一实现**，
+  ``jiuwenswarm.extensions`` 侧已删除原文件并反向 import 本包；
+- ``registry`` 框架、``sdk``、``types``、``callback_compat`` 仍保留本包
+  副本：这些是母仓 AgentServer/worker/runtime 同样依赖的共享能力，由母仓
+  持有真源、gateway 仅借用，避免母仓为通用能力反向依赖 gateway；
+- ``jiuwenswarm.extensions`` 仍作为扩展发现/加载入口（manager/loader 暂留母仓）。
 
 没有本文件时 setuptools.packages.find 不会把 gateway/extensions 当作包，
 wheel 中该目录 0 个文件——部署路径（pip install wheel 后启动）加载 SSH

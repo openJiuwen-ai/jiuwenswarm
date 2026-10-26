@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
+from gateway.extensions.agentos.agentos_router.logutil import log_agentos
 from jiuwenswarm.extensions.yuanrong_frontend_client import bind_southbound_trace_id
 
 logger = logging.getLogger(__name__)

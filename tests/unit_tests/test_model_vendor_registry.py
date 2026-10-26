@@ -2,7 +2,7 @@
 
 import pytest
 
-from jiuwenswarm.common.model_vendor_registry import PlanKind, get_preset, to_frontend_payload
+from gateway.common.model_vendor_registry import PlanKind, get_preset, to_frontend_payload
 
 
 def test_frontend_payload_contains_protocol_scoped_reasoning_capabilities() -> None:
@@ -25,7 +25,7 @@ def test_frontend_payload_isolates_single_model_capability_failure(
 ) -> None:
     # 单个模型的能力查询异常不能拖垮整个 vendors.list：该模型条目被跳过，
     # 其余模型与厂商卡片照常返回（前端回落到 reasoning_rules/model_fallbacks）。
-    import jiuwenswarm.common.model_vendor_registry as registry
+    import gateway.common.model_vendor_registry as registry
 
     real_capability = registry.get_reasoning_capability
 

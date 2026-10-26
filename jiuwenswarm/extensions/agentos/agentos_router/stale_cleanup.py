@@ -19,8 +19,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager
-from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
+from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from gateway.extensions.agentos.agentos_router.logutil import log_agentos
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     InstanceRecord,
     RegistryClient,

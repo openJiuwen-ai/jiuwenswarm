@@ -105,7 +105,7 @@ async def task_agent_query(client, method, params, session, owner):
 class AgentTaskExecutor:
     def __init__(self, client, store, normalize_media):
         self.client, self.store, self.normalize_media = client, store, normalize_media
-        from .tasks.bridge import GatewayTaskEndpoint
+        from gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 
         self.endpoint = GatewayTaskEndpoint(store)
 

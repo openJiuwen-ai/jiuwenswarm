@@ -12,7 +12,7 @@ from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.video_duplex.backend import task_adapter
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
-from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
+from gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
 from jiuwenswarm.server.runtime.video_task import bridge
 from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
