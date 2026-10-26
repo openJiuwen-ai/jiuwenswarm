@@ -147,4 +147,4 @@ def test_runtime_workspace_retries_migration_after_mcp_repair_lock_error(
     common_utils.prepare_runtime_workspace(cleanup_stale_descs=False)
     migrated = config_module.load_yaml_round_trip(config_path)
     assert migrated["operator_extra"] == "keep"
-    assert migrated["config_version"] == VERSION
+    assert migrated["config_version"] == "0.2.8b1 · 2026-10-26"

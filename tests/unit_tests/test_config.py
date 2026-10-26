@@ -71,6 +71,31 @@ def test_config_refreshes_same_version_build_date_and_preserves_user_values(tmp_
     assert yaml.safe_load(config.read_text(encoding="utf-8"))["config_version"] == "0.2.8.dev20261026"
 
 
+def test_config_refreshes_same_version_build_date_and_preserves_user_values(tmp_path, monkeypatch):
+    from jiuwenswarm.common import version
+
+    monkeypatch.setattr(version, "get_runtime_version", lambda: "0.2.8.dev20261026")
+    monkeypatch.setattr(version, "get_runtime_build_date", lambda: "2026-10-26")
+    template = tmp_path / "template.yaml"
+    config = tmp_path / "config.yaml"
+    template.write_text('config_version: ""\nsetting: default\nnew_option: true\n', encoding="utf-8")
+    config.write_text('# Keep this comment\nconfig_version: "0.2.8.dev20261026 · 2026-10-20"\nsetting: custom\n', encoding="utf-8")
+
+    assert migrate_config_from_template(template, config) is True
+    migrated = yaml.safe_load(config.read_text(encoding="utf-8"))
+    assert migrated["config_version"] == "0.2.8.dev20261026 · 2026-10-26"
+    assert migrated["new_option"] is True
+    assert migrated["setting"] == "custom"
+    assert "app_version" not in migrated
+    assert "build_date" not in migrated
+    assert "# Keep this comment" in config.read_text(encoding="utf-8")
+    assert migrate_config_from_template(template, config) is False
+
+    monkeypatch.setattr(version, "get_runtime_build_date", lambda: "")
+    assert migrate_config_from_template(template, config) is True
+    assert yaml.safe_load(config.read_text(encoding="utf-8"))["config_version"] == "0.2.8.dev20261026"
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("evolution_enabled", [False, True])
 def test_symphony_evolution_requires_both_switches(
@@ -1365,9 +1390,10 @@ react:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        from jiuwenswarm.common._build_config import VERSION
         from jiuwenswarm.common.utils import ensure_config_migrated_from_template
 
+        monkeypatch.setattr("jiuwenswarm.common.version.get_runtime_version", lambda: "0.2.8b1")
+        monkeypatch.setattr("jiuwenswarm.common.version.get_runtime_build_date", lambda: "2026-10-26")
         template_path = tmp_path / "template.yaml"
         template_path.write_text(
             "react:\n  answer_chunk_size: 500\n  new_option: true\n",
@@ -1377,7 +1403,7 @@ react:
         config_path = workspace_dir / "config" / "config.yaml"
         config_path.parent.mkdir(parents=True)
         config_path.write_text(
-            f"config_version: {VERSION}\nreact:\n  answer_chunk_size: 300\n",
+            'config_version: "0.2.8b1 · 2026-10-26"\nreact:\n  answer_chunk_size: 300\n',
             encoding="utf-8",
         )
         monkeypatch.setattr(
@@ -1388,7 +1414,7 @@ react:
         assert ensure_config_migrated_from_template(workspace_dir) is True
         migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert migrated["react"] == {"answer_chunk_size": 300, "new_option": True}
-        assert migrated["config_version"] == VERSION
+        assert migrated["config_version"] == "0.2.8b1 · 2026-10-26"
         assert ensure_config_migrated_from_template(workspace_dir) is False
 
     @staticmethod

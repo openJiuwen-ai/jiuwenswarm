@@ -8,6 +8,7 @@ interface UpdatePanelProps {
 
 interface UpdateStatusPayload {
   current_version?: unknown;
+  current_build_date?: unknown;
   latest_version?: unknown;
   state?: unknown;
   has_update?: unknown;
@@ -218,6 +219,7 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
   const installMode = normalizeString(status?.install_mode) || 'desktop';
   const isPipMode = installMode === 'pip';
   const currentVersion = normalizeString(status?.current_version) || '-';
+  const currentBuildDate = normalizeString(status?.current_build_date);
   const latestVersion = normalizeString(status?.latest_version) || '-';
   const releaseNotes = normalizeString(status?.release_notes);
   const publishedAt = formatPublishedAt(publishedAtValue, i18n.language);
