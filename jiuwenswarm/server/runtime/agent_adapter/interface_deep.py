@@ -518,6 +518,7 @@ from jiuwenswarm.server.utils.stream_utils import (
     parse_stream_chunk as parse_common_stream_chunk,
 )
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
+    MULTIMODAL_TOOL_GROUPS,
     apply_audio_model_config_from_yaml,
     apply_image_gen_model_config_from_yaml,
     apply_video_model_config_from_yaml,
@@ -7087,70 +7088,150 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
-    def _sync_multimodal_tools_for_runtime(self) -> None:
-        """Sync multimodal tool registration after config reload."""
-        # The owner id, not ``card.id``: these instances are agent-owned, and a
-        # reload must rebuild them under the same owner the create path used.
-        agent_id = self._tool_owner_id()
-        self._vision_tools, self._vision_tools_registered = self._sync_tool_group(
-            current_tools=self._vision_tools,
-            registered=self._vision_tools_registered,
-            enabled=self._vision_model_config is not None,
-            create_fn=lambda: create_vision_tools(
-                language=self._resolve_runtime_language(),
-                vision_model_config=self._vision_model_config,
-                agent_id=agent_id,
+    def _build_multimodal_tool_groups(
+        self, agent_id: str, *, fail_on_error: bool = False,
+    ) -> dict[str, list[Any]]:
+        """Materialize enabled capabilities for both Work and Code builds.
+
+        Building a candidate Spec must not replace the live adapter's tool
+        records. Registration and adoption happen at their lifecycle boundaries.
+        Disabled groups are empty; failed groups are omitted unless the caller
+        requires failure propagation to abort a candidate Spec replacement.
+        """
+        factories = (
+            (
+                "vision tools", self._vision_model_config is not None,
+                lambda: create_vision_tools(
+                    language=self._resolve_runtime_language(),
+                    vision_model_config=self._vision_model_config,
+                    agent_id=agent_id,
+                ),
             ),
-            warn_label="vision tools",
+            (
+                "audio tools", self._audio_model_config is not None,
+                lambda: self._iter_runtime_audio_tools(agent_id),
+            ),
+            (
+                "video tool", bool(self._video_model_config),
+                lambda: mark_stateless([video_understanding]),
+            ),
+            (
+                "generate_image tool", bool(self._image_gen_model_config),
+                lambda: mark_stateless([generate_image]),
+            ),
+            (
+                "generate_video tools", bool(self._video_gen_model_config),
+                lambda: mark_stateless([generate_video, check_video_status]),
+            ),
+            (
+                "generate_visual tool", bool(self._visual_gen_model_config),
+                lambda: mark_stateless([generate_visual]),
+            ),
         )
+        groups: dict[str, list[Any]] = {}
+        for label, enabled, create in factories:
+            if not enabled:
+                groups[label] = []
+                continue
+            try:
+                groups[label] = list(create())
+            except Exception as exc:
+                logger.warning("[JiuWenSwarmDeepAdapter] %s build failed: %s", label, exc)
+                if fail_on_error:
+                    raise
+        return groups
 
-        desired_audio_tools = self._iter_runtime_audio_tools(agent_id)
-        if self._audio_tools_registered:
-            current_names = {tool.card.name for tool in self._audio_tools}
-            desired_names = {tool.card.name for tool in desired_audio_tools}
-            if current_names != desired_names:
-                self._remove_registered_tools(self._audio_tools)
-                self._audio_tools = []
-                self._audio_tools_registered = False
-        self._audio_tools, self._audio_tools_registered = self._sync_tool_group(
-            current_tools=self._audio_tools,
-            registered=self._audio_tools_registered,
-            enabled=bool(desired_audio_tools),
-            create_fn=lambda: desired_audio_tools,
-            warn_label="audio tools",
+    def _set_multimodal_runtime_state(self, tools: list[Any]) -> None:
+        """Adopt successfully registered tools without rebuilding instances."""
+        by_name = {
+            tool.card.name: tool
+            for tool in tools
+            if getattr(tool, "card", None) is not None
+        }
+        self._vision_tools = [
+            by_name[name] for name in MULTIMODAL_TOOL_GROUPS["vision tools"] if name in by_name
+        ]
+        self._audio_tools = [
+            by_name[name] for name in MULTIMODAL_TOOL_GROUPS["audio tools"] if name in by_name
+        ]
+        self._vision_tools_registered = bool(self._vision_tools)
+        self._audio_tools_registered = bool(self._audio_tools)
+        self._video_tool_registered = "video_understanding" in by_name
+        self._image_gen_tool_registered = "generate_image" in by_name
+        self._video_gen_tool_registered = all(
+            name in by_name for name in MULTIMODAL_TOOL_GROUPS["generate_video tools"]
         )
+        self._visual_gen_tool_registered = "generate_visual" in by_name
 
-        _, self._video_tool_registered = self._sync_tool_group(
-            current_tools=mark_stateless([video_understanding]),
-            registered=self._video_tool_registered,
-            enabled=bool(self._video_model_config),
-            create_fn=lambda: mark_stateless([video_understanding]),
-            warn_label="video tool",
-        )
+    def _get_multimodal_tools(self) -> list[Any]:
+        """Return the live instances tracked by this adapter."""
+        tools = [*self._vision_tools, *self._audio_tools]
+        if self._video_tool_registered:
+            tools.append(video_understanding)
+        if self._image_gen_tool_registered:
+            tools.append(generate_image)
+        if self._video_gen_tool_registered:
+            tools.extend([generate_video, check_video_status])
+        if self._visual_gen_tool_registered:
+            tools.append(generate_visual)
+        return tools
 
-        _, self._image_gen_tool_registered = self._sync_tool_group(
-            current_tools=mark_stateless([generate_image]),
-            registered=self._image_gen_tool_registered,
-            enabled=bool(self._image_gen_model_config),
-            create_fn=lambda: mark_stateless([generate_image]),
-            warn_label="generate_image tool",
-        )
+    def _register_multimodal_tools(
+        self, agent_id: str, *, fail_on_error: bool = False,
+    ) -> list[Any]:
+        """Register initial/candidate groups with the same rollback as reloads.
 
-        _, self._video_gen_tool_registered = self._sync_tool_group(
-            current_tools=mark_stateless([generate_video, check_video_status]),
-            registered=self._video_gen_tool_registered,
-            enabled=bool(self._video_gen_model_config),
-            create_fn=lambda: mark_stateless([generate_video, check_video_status]),
-            warn_label="generate_video tools",
-        )
+        Return instances for the caller to adopt only after its build succeeds.
+        Shared resources stay registered when a group fails or an agent retires.
+        A candidate Spec aborts on failure and reclaims all registrations made
+        here, including earlier groups not yet returned to its build context.
+        """
+        registered: list[Any] = []
+        groups = self._build_multimodal_tool_groups(agent_id, fail_on_error=fail_on_error)
+        for label, tools in groups.items():
+            attempted: list[Any] = []
+            try:
+                for tool in tools:
+                    attempted.append(tool)
+                    register_tool(tool, agent_id)
+            except Exception as exc:
+                rollback_tools = registered + attempted if fail_on_error else attempted
+                for tool in rollback_tools:
+                    try:
+                        unregister_tool(tool)
+                    except Exception as cleanup_exc:
+                        logger.warning("[JiuWenSwarmDeepAdapter] remove tool failed: %s", cleanup_exc)
+                logger.warning("[JiuWenSwarmDeepAdapter] %s registration failed: %s", label, exc)
+                if fail_on_error:
+                    raise
+            else:
+                registered.extend(tools)
+        return registered
 
-        _, self._visual_gen_tool_registered = self._sync_tool_group(
-            current_tools=mark_stateless([generate_visual]),
-            registered=self._visual_gen_tool_registered,
-            enabled=bool(self._visual_gen_model_config),
-            create_fn=lambda: mark_stateless([generate_visual]),
-            warn_label="generate_visual tool",
-        )
+    def _sync_multimodal_tools_for_runtime(self) -> None:
+        """Reconcile the same capability groups used by initial Spec/Work builds."""
+        current_tools = self._get_multimodal_tools()
+        desired_groups = self._build_multimodal_tool_groups(self._tool_owner_id())
+        active: list[Any] = []
+        for label, names in MULTIMODAL_TOOL_GROUPS.items():
+            current = [tool for tool in current_tools if tool.card.name in names]
+            if label not in desired_groups:
+                active.extend(current)
+                continue
+            desired = desired_groups[label]
+            if current and {tool.card.name for tool in current} != {tool.card.name for tool in desired}:
+                self._remove_registered_tools(current)
+                self._prune_tool_cards({tool.card.name for tool in current})
+                current = []
+            tools, _ = self._sync_tool_group(
+                current_tools=current,
+                registered=bool(current),
+                enabled=bool(desired),
+                create_fn=lambda group=desired: group,
+                warn_label=label,
+            )
+            active.extend(tools)
+        self._set_multimodal_runtime_state(active)
 
     def _invalidate_stale_paid_search_tool(self) -> None:
         """Re-register paid search when its configured-provider metadata changes."""
@@ -7175,7 +7256,7 @@ class JiuWenSwarmDeepAdapter:
     def _sync_paid_search_tool_for_runtime(self) -> None:
         """Sync paid-search tool registration after config reload."""
         self._invalidate_stale_paid_search_tool()
-        # The owner id, not ``card.id``; see ``_sync_multimodal_tools_for_runtime``.
+        # Registration and AbilityManager must use the same tool owner id.
         agent_id = self._tool_owner_id()
         tools, self._paid_search_registered = self._sync_tool_group(
             current_tools=[self._paid_search_tool] if self._paid_search_tool else [],
@@ -11760,93 +11841,12 @@ class JiuWenSwarmDeepAdapter:
             self._register_agent_owned_tool(tool_instance, agent_id)
             tool_cards.append(tool_instance.card)
 
-        self._vision_tools = []
-        self._vision_tools_registered = False
-        if self._vision_model_config is not None:
-            try:
-                for tool in create_vision_tools(
-                    language=self._resolve_runtime_language(),
-                    vision_model_config=self._vision_model_config,
-                    agent_id=agent_id,
-                ):
-                    self._register_agent_owned_tool(tool, agent_id)
-                    tool_cards.append(tool.card)
-                    self._vision_tools.append(tool)
-                self._vision_tools_registered = bool(self._vision_tools)
-            except Exception as exc:
-                self._vision_tools = []
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] vision tools registration failed: %s",
-                    exc,
-                )
-
-        self._audio_tools = []
-        self._audio_tools_registered = False
-        try:
-            self._audio_tools = self._iter_runtime_audio_tools(agent_id)
-            for tool in self._audio_tools:
-                self._register_agent_owned_tool(tool, agent_id)
-                tool_cards.append(tool.card)
-            self._audio_tools_registered = bool(self._audio_tools)
-        except Exception as exc:
-            self._audio_tools = []
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] audio tools registration failed: %s",
-                exc,
-            )
-
-        self._video_tool_registered = False
-        if self._video_model_config:
-            try:
-                self._register_shared_tool(video_understanding)
-                tool_cards.append(video_understanding.card)
-                self._video_tool_registered = True
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] video tool registration failed: %s",
-                    exc,
-                )
-
-        # generate_image tool: use dedicated image_gen model config
-        self._image_gen_tool_registered = False
-        if self._image_gen_model_config:
-            try:
-                self._register_shared_tool(generate_image)
-                tool_cards.append(generate_image.card)
-                self._image_gen_tool_registered = True
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] generate_image tool registration failed: %s",
-                    exc,
-                )
-
-        # generate_video/check_video_status tools: dedicated video_gen model config
-        self._video_gen_tool_registered = False
-        if self._video_gen_model_config:
-            try:
-                self._register_shared_tool(generate_video)
-                tool_cards.append(generate_video.card)
-                self._register_shared_tool(check_video_status)
-                tool_cards.append(check_video_status.card)
-                self._video_gen_tool_registered = True
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] generate_video tools registration failed: %s",
-                    exc,
-                )
-
-        # generate_visual tool: dedicated visual_gen model config
-        self._visual_gen_tool_registered = False
-        if self._visual_gen_model_config:
-            try:
-                self._register_shared_tool(generate_visual)
-                tool_cards.append(generate_visual.card)
-                self._visual_gen_tool_registered = True
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] generate_visual tool registration failed: %s",
-                    exc,
-                )
+        multimodal_tools = self._register_multimodal_tools(agent_id)
+        self._set_multimodal_runtime_state(multimodal_tools)
+        tool_cards.extend(tool.card for tool in multimodal_tools)
+        if self._instance is None and self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
+            for tool in multimodal_tools:
+                self._append_tool_card(tool.card)
 
         # 小艺手机端工具：由 channels.xiaoyi.phone_tools_enabled 控制
         config_base = get_config()
