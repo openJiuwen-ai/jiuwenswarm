@@ -35,6 +35,7 @@ from jiuwenswarm.common.work_mode import (
     SUPPORTED_WORK_MODES,
     is_default_project_id,
     normalize_work_mode,
+    resolve_default_project_id,
 )
 from jiuwenswarm.server.runtime.session.work_mode import (
     infer_legacy_project_work_mode,
@@ -529,8 +530,8 @@ def resolve_cron_project_binding(
       2. explicit real project ids must exist and be visible, then inject the
          project's stored work_mode;
       3. without project_id, resolve visible project by (work_mode, project_dir);
-      4. empty/unmatched project_dir falls back to the caller's effective
-         work_mode and empty project_id.
+      4. empty/unmatched project_dir falls back to the default project of the
+         caller's effective work_mode (``work``→``default``, ``code``→``default_code``).
 
     ``resolve_cron_project_id`` still owns absolute-path validation and raises
     ``ValueError`` for relative paths, preserving existing caller behavior.
@@ -586,22 +587,29 @@ def resolve_cron_project_binding(
 
     project_dir_val = str(project_dir or "").strip()
     resolved_project_id = resolve_cron_project_id(project_dir_val, match_mode)
+    if is_default_project_id(resolved_project_id):
+        # 手动未选项目 / 目录未命中：归属调用方 work_mode 的默认项目，让落库的
+        # project_id 自描述，侧栏按 project_id 精确分组，不再依赖空串兜底。
+        resolved_project_id = resolve_default_project_id(input_mode)
+        return CronProjectBinding(
+            project_id=resolved_project_id,
+            work_mode=(
+                DEFAULT_TUI_WORK_MODE
+                if resolved_project_id == DEFAULT_PROJECT_ID_CODE
+                else DEFAULT_WEB_WORK_MODE
+            ),
+        )
     resolved_work_mode = input_mode
-    if not is_default_project_id(resolved_project_id):
-        proj = get_project_by_id(resolved_project_id, cache_bust=True)
-        if proj is not None:
-            resolved_work_mode = proj.work_mode or DEFAULT_WEB_WORK_MODE
-            if resolved_work_mode not in EXECUTION_WORK_MODES:
-                return CronProjectBinding(
-                    project_id="",
-                    work_mode=resolved_work_mode,
-                    error=f"cron is not supported for work_mode: {resolved_work_mode!r}",
-                    code="BAD_REQUEST",
-                )
-    elif resolved_project_id == DEFAULT_PROJECT_ID_CODE:
-        resolved_work_mode = DEFAULT_TUI_WORK_MODE
-    elif resolved_project_id == DEFAULT_PROJECT_ID_WORK:
-        resolved_work_mode = DEFAULT_WEB_WORK_MODE
+    proj = get_project_by_id(resolved_project_id, cache_bust=True)
+    if proj is not None:
+        resolved_work_mode = proj.work_mode or DEFAULT_WEB_WORK_MODE
+        if resolved_work_mode not in EXECUTION_WORK_MODES:
+            return CronProjectBinding(
+                project_id="",
+                work_mode=resolved_work_mode,
+                error=f"cron is not supported for work_mode: {resolved_work_mode!r}",
+                code="BAD_REQUEST",
+            )
     return CronProjectBinding(
         project_id=resolved_project_id,
         work_mode=resolved_work_mode,
@@ -698,6 +706,8 @@ def resolve_cron_job_patch(
         binding = resolve_cron_project_work_mode(pid_val, effective_work_mode)
         if binding.error is not None:
             raise ValueError(binding.error)
+        # 清空项目（空串）时同样物化默认项目 ID，避免重新产生空串归属。
+        patch["project_id"] = binding.project_id
         effective_work_mode = binding.work_mode
         patch["work_mode"] = effective_work_mode
 
