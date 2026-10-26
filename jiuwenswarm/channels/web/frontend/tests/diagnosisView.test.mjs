@@ -10,6 +10,7 @@ import {
   evidenceNodeLabel,
   filterRecords,
   findingCounts,
+  findingItems,
   formatElapsed,
   formatRecordTime,
   formatTimeWindow,
@@ -30,6 +31,7 @@ import {
   stageViews,
   stripLeadingHeading,
   suggestionsState,
+  truncateText,
   skillSuggestionText,
   unixNanoToMs,
   usesLegacyFindings,
@@ -99,6 +101,14 @@ test('record time is shown in local time and tolerates bad input', () => {
   assert.equal(formatRecordTime(undefined), '');
   assert.equal(formatRecordTime(''), '');
   assert.equal(formatRecordTime('not a date'), '');
+});
+
+test('truncateText caps the display at the limit, ellipsis included', () => {
+  assert.equal(truncateText('abc', 5), 'abc');
+  assert.equal(truncateText('  abc  ', 5), 'abc');
+  const clipped = truncateText('x'.repeat(600), 500);
+  assert.equal(clipped.length, 500);
+  assert.ok(clipped.endsWith('…'));
 });
 
 test('a record row prefers the trajectory summary, then the legacy headline, then the scope label', () => {
@@ -265,6 +275,24 @@ test('findingCounts separates reward causes, skill suggestions and experience ve
     findingCounts({ root_causes: [cause('a'), cause('b', { category: 'ttse_fail' })], reward_failure_causes: [], evolution_judge: [] }),
     { causes: 1, skill: 0, experience: 1, legacy: true },
   );
+});
+
+test('findingItems puts artifact causes first, then skill, then experience', () => {
+  const items = findingItems({
+    reward_failure_causes: [{ id: 'rfc-1' }, { id: 'rfc-2' }],
+    evolution_judge: [
+      { id: 'evo-exp', category: 'experience' },
+      { id: 'evo-skill', category: 'skill' },
+    ],
+  });
+  assert.deepEqual(items.map(item => [item.id, item.kind]), [
+    ['rfc-1', 'artifact'],
+    ['rfc-2', 'artifact'],
+    ['evo-skill', 'skill'],
+    ['evo-exp', 'experience'],
+  ]);
+  assert.equal(items[0].cause.id, 'rfc-1');
+  assert.equal(items[2].judge.id, 'evo-skill');
 });
 
 test('legacy records are detected when only root causes exist', () => {

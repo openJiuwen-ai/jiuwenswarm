@@ -104,6 +104,14 @@ export function formatRecordTime(value: string | undefined): string {
   return `${dateOf(date)} ${clockOf(date)}`;
 }
 
+/** Cap a display string at ``limit`` characters, ellipsis included; never cuts a short string. */
+export function truncateText(text: string, limit: number): string {
+  const trimmed = text.trim();
+  if (limit <= 0) return '';
+  if (trimmed.length <= limit) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
 /** Second line of a record row: the trajectory summary, else the legacy headline, else the scope kind. */
 export function recordLabel(
   summary: Pick<DiagnosisSummary, 'trajectory_summary' | 'headline' | 'scope_kind'> & {
@@ -111,8 +119,8 @@ export function recordLabel(
   },
   scopeLabel: string,
 ): string {
-  const summaryText = summary.trajectory_summary ?? '';
-  if (summaryText.trim() !== '') return summaryText;
+  const summaryText = truncateText(summary.trajectory_summary ?? '', 500);
+  if (summaryText !== '') return summaryText;
   return summary.headline === undefined || summary.headline === '' ? scopeLabel : summary.headline;
 }
 
@@ -283,6 +291,39 @@ export function findingCounts(record: DiagnosisRecord): FindingCounts {
     experience: judges.filter(judge => judge.category === 'experience').length,
     legacy: false,
   };
+}
+
+export type FindingKind = 'artifact' | 'skill' | 'experience';
+
+export interface FindingItem {
+  kind: FindingKind;
+  id: string;
+  cause?: RewardFailureCause;
+  judge?: EvolutionJudge;
+}
+
+/**
+ * Every finding of a new-interface record in display order: Reward failure causes first, then skill
+ * judgments, then the experience verdict (at most one).
+ */
+export function findingItems(record: DiagnosisRecord): FindingItem[] {
+  const causes = (record.reward_failure_causes ?? []).map(cause => ({
+    kind: 'artifact' as const,
+    id: cause.id,
+    cause,
+  }));
+  const judges = record.evolution_judge ?? [];
+  const skill = judges.filter(judge => judge.category === 'skill').map(judge => ({
+    kind: 'skill' as const,
+    id: judge.id,
+    judge,
+  }));
+  const experience = judges.filter(judge => judge.category === 'experience').map(judge => ({
+    kind: 'experience' as const,
+    id: judge.id,
+    judge,
+  }));
+  return [...causes, ...skill, ...experience];
 }
 
 /** The original signal text shown in a finding's evidence fold; empty when the record predates it. */
