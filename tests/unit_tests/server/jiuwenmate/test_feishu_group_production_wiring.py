@@ -1094,3 +1094,49 @@ async def test_gateway_reports_pending_when_no_delivery_handler_is_available():
     assert envelope.method == ReqMethod.JIUWENMATE_DELIVERY_ACK.value
     assert envelope.params["outcome"] == "pending"
     assert envelope.params["error_code"] == "CHANNEL_ROUTE_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_welink_reconciliation_push_preserves_read_only_operation():
+    server = object.__new__(_agent_websocket_server_type())
+    server._result_delivery_waiters = {}
+    pushed = []
+    async def send_push(message):
+        pushed.append(message)
+        server._result_delivery_waiters['del-welink'].set_result({
+            'delivery_id': 'del-welink', 'stage': 'send', 'outcome': 'unknown',
+        })
+        return True
+    server.send_push = send_push
+    await server._send_result_delivery({'delivery_id': 'del-welink', 'channel': 'welink',
+        'operation': 'reconcile', 'app_id': 'reader', 'target_id': 'g', 'idempotency_key': 'key'})
+    assert pushed[0]['payload']['operation'] == 'reconcile'
+    assert pushed[0]['payload']['channel'] == 'welink'
+
+
+@pytest.mark.asyncio
+async def test_welink_gateway_reconciliation_reads_history_without_sending(tmp_path):
+    import json
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_connect import WelinkChannel, WelinkConfig
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_poller import MembershipStore
+
+    channel = WelinkChannel(WelinkConfig(account='reader', agent_id='mate', credential_dir=str(tmp_path),
+        assistant_credential_id='ak', assistant_secret='sk'), MagicMock())
+    membership = MembershipStore(tmp_path / 'membership.json')
+    membership.set('g', shared=True, assistants={'dig_reader_assistant'})
+    journal = channel._delivery_journal()
+    journal.prepare('key', 'g', 'answer', '10', {'dig_reader_assistant'})
+    journal.mark_wire('key', 'wire', 'session', 'trace')
+    class Cli:
+        def query_history(self, group, cursor):
+            return SimpleNamespace(ok=True, stdout=json.dumps({'messages': [
+                {'messageId': '11', 'senderAccount': 'dig_reader_assistant', 'text': 'answer'}]}))
+    channel._cli = Cli()
+    def forbidden(*args, **kwargs):
+        raise AssertionError('reconciliation must not send')
+    channel._link = SimpleNamespace(send_text=forbidden)
+    manager = ChannelManager(object.__new__(MessageHandler))
+    manager.register_channel(channel)
+    result = await manager.deliver_persistent_result({'channel': 'welink', 'operation': 'reconcile',
+        'app_id': 'reader', 'chat_id': 'g', 'idempotency_key': 'key'})
+    assert result == {'outcome': 'delivered', 'external_message_id': '11'}

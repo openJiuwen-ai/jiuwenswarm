@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType
@@ -58,6 +58,8 @@ class ResultDeliveryService:
         self._send_delivery = send_delivery
         self._archive_delivery = archive_delivery
         self._archive_after: tuple[str, str] | None = None
+        self._welink_reconcile_after = ""
+        self._next_welink_reconcile: datetime | None = None
         self._clock = clock
         self._poll_interval = poll_interval
         self._send_timeout = send_timeout
@@ -188,8 +190,38 @@ class ResultDeliveryService:
                         "[JiuwenMate] group handoff was not accepted: delivery_id=%s",
                         delivery_id,
                     )
+        await self.reconcile_welink_deliveries()
         await self.reconcile_archives()
         return dispatched
+
+    async def reconcile_welink_deliveries(self) -> None:
+        """Ask Gateway for history evidence. Unknown rows remain fenced from dispatch."""
+        now = self._clock()
+        if self._next_welink_reconcile is not None and now < self._next_welink_reconcile:
+            return
+        self._next_welink_reconcile = now + timedelta(seconds=10)
+        jobs = await asyncio.to_thread(
+            self._repository.unknown_welink_result_deliveries, self._namespace_id,
+            after=self._welink_reconcile_after, limit=1,
+        )
+        if not jobs and self._welink_reconcile_after:
+            self._welink_reconcile_after = ""
+            jobs = await asyncio.to_thread(self._repository.unknown_welink_result_deliveries, self._namespace_id, limit=1)
+        for job in jobs:
+            self._welink_reconcile_after = str(job["delivery_id"])
+            try:
+                ack = await asyncio.wait_for(self._send_delivery(dict(job)), timeout=self._send_timeout)
+                outcome, message_id, error_code = self._classify_ack(job, ack)
+                if outcome not in {"delivered", "failed"}:
+                    continue
+                await asyncio.to_thread(
+                    self._repository.update_result_delivery, self._namespace_id, job["delivery_id"],
+                    outcome=outcome, external_message_id=message_id, error_code=error_code, now=self._clock(),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("[JiuwenMate] WeLink delivery still unconfirmed: delivery_id=%s", job["delivery_id"])
 
     async def reconcile_archives(self) -> None:
         """Retry only public-record persistence after a durable send ACK; never resend the message."""

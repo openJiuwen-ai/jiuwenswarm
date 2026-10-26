@@ -6,25 +6,33 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import hashlib
+import json
+import os
 import re
 import time
 from urllib.parse import urlparse
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel, RobotMessageRouter
 from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_assistant_link import AssistantLink, Mention
-from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_assistant_send import AssistantSendError
 from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_cli import WelinkCli
 from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_messages import (
     WelinkHistoryMessage,
     WelinkMedia,
     is_image_media,
     parse_auth_status,
+    parse_cli_json,
+    parse_history_messages,
+    parse_group_members,
+    reader_assistant_accounts,
 )
-from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_poller import CursorStore, WelinkPoller
+from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_poller import (
+    MEMBERSHIP_TTL_SECONDS, CursorStore, MembershipStore, WelinkPoller,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +67,9 @@ class WelinkChannel(BaseChannel):
     def __init__(self, config: WelinkConfig, router: RobotMessageRouter) -> None:
         super().__init__(config, router)
         self.config = config
-        self._sent: dict[str, str] = {}
+        self._delivery_lock = asyncio.Lock()
+        self._journal = None
+        self._preflight_retry_at = 0.0
         self._inbound_handler: WelinkInboundHandler | None = None
         self._cli = WelinkCli(config.cli_path, Path(config.credential_dir), env_name=config.env_name)
         self._link: AssistantLink | None = None
@@ -98,7 +108,10 @@ class WelinkChannel(BaseChannel):
             assistant_ready,
         )
         if assistant_ready:
-            self._link = AssistantLink(self.config.assistant_credential_id, self.config.assistant_secret)
+            self._link = AssistantLink(
+                self.config.assistant_credential_id, self.config.assistant_secret,
+                on_delivery_error=self._delivery_journal().record_error,
+            )
             self._link.start(asyncio.get_running_loop(), self._on_mention)
         try:
             await self._poll_loop(poller)
@@ -109,19 +122,32 @@ class WelinkChannel(BaseChannel):
                 await asyncio.to_thread(link.stop)
 
     async def _poll_loop(self, poller: WelinkPoller) -> None:
+        pending_path = Path(self.config.credential_dir) / (
+            "pending-" + hashlib.sha256(self.config.account.encode()).hexdigest()[:24] + ".json"
+        )
+        pending: list[WelinkHistoryMessage] = []
+        if pending_path.is_file():
+            for raw in json.loads(pending_path.read_text(encoding="utf-8")):
+                raw["media"] = tuple(WelinkMedia(**item) for item in raw.get("media", ()))
+                pending.append(WelinkHistoryMessage(**raw))
         while self._running:
             try:
                 now = time.monotonic()
                 if auth_recheck_due(self._auth_ok_at, now):
                     self._auth_ok_at = now if await asyncio.to_thread(self._logged_in) else 0.0
                 if self._auth_ok_at > 0:
-                    messages = await asyncio.to_thread(poller.poll)
-                    for message in messages:
+                    if not pending:
+                        pending = await asyncio.to_thread(poller.poll)
+                        await asyncio.to_thread(self._save_pending, pending_path, pending)
+                    while pending:
+                        message = pending[0]
                         if not self._running:
                             break
                         accepted = await self._deliver(message)
                         if accepted:
                             poller.commit(message.group_id, message.message_id)
+                            pending.pop(0)
+                            await asyncio.to_thread(self._save_pending, pending_path, pending)
                         else:
                             break
             except asyncio.CancelledError:
@@ -129,6 +155,17 @@ class WelinkChannel(BaseChannel):
             except Exception:
                 logger.warning("[Welink] poll failed", exc_info=True)
             await asyncio.sleep(max(self.config.poll_interval_seconds, 1))
+
+    @staticmethod
+    def _save_pending(path: Path, messages: list[WelinkHistoryMessage]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        with temporary.open("w", encoding="utf-8") as stream:
+            temporary.chmod(0o600)
+            json.dump([asdict(message) for message in messages], stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
 
     async def stop(self) -> None:
         self._running = False
@@ -147,28 +184,96 @@ class WelinkChannel(BaseChannel):
         """Reply as the assistant. The logged-in employee account is never the sender."""
         if not chat_id or not text or not idempotency_key:
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
-        cached = self._sent.get(idempotency_key)
-        if cached:
-            return {"outcome": "delivered", "external_message_id": cached}
-        credential_id = self.config.assistant_credential_id.strip()
-        secret = self.config.assistant_secret.strip()
-        if not credential_id or not secret:
-            logger.warning("[Welink] assistant credential missing; personal account send refused chat_id=%s", chat_id)
-            return {"outcome": "failed", "error_code": "WELINK_ASSISTANT_NOT_CONFIGURED"}
-        link = self._link
-        if link is None:
-            logger.warning("[Welink] assistant link is not running chat_id=%s", chat_id)
-            return {"outcome": "failed", "error_code": "WELINK_ASSISTANT_SEND_FAILED"}
+        async with self._delivery_lock:
+            journal = self._delivery_journal()
+            if journal.get(idempotency_key) is not None:
+                return await self.reconcile_group_text(chat_id=chat_id, idempotency_key=idempotency_key)
+            if not self.config.assistant_credential_id.strip() or not self.config.assistant_secret.strip():
+                return {"outcome": "failed", "error_code": "WELINK_ASSISTANT_NOT_CONFIGURED"}
+            link = self._link
+            if link is None:
+                return {"outcome": "pending", "error_code": "WELINK_ACCOUNT_NOT_CONNECTED"}
+            if time.monotonic() < self._preflight_retry_at:
+                return {"outcome": "pending", "error_code": "WELINK_SEND_PREFLIGHT_BACKOFF"}
+            try:
+                assistants = await asyncio.to_thread(self._allowed_assistants, chat_id)
+                if not assistants:
+                    raise ValueError("assistant membership unavailable")
+                history = await asyncio.to_thread(self._history, chat_id)
+            except Exception:
+                self._preflight_retry_at = time.monotonic() + 30
+                return {"outcome": "pending", "error_code": "WELINK_SEND_PREFLIGHT_UNAVAILABLE"}
+            numeric = [int(item.message_id) for item in history if item.message_id.isdigit()]
+            baseline = str(max(numeric)) if numeric else ""
+            prepared = await asyncio.to_thread(journal.prepare, idempotency_key, chat_id, text, baseline, assistants)
+            if not prepared:
+                if journal.get(idempotency_key) is not None:
+                    return journal.outcome(idempotency_key)
+                return {"outcome": "pending", "error_code": "WELINK_IDENTICAL_REPLY_UNRESOLVED"}
+            try:
+                await asyncio.to_thread(
+                    link.send_text, chat_id, text, source_message_id,
+                    on_prepared=lambda message_id, session_id, trace_id: journal.mark_wire(
+                        idempotency_key, message_id, session_id, trace_id),
+                )
+            except Exception:
+                logger.warning("[Welink] send awaiting reconciliation chat_id=%s", chat_id)
+            return journal.outcome(idempotency_key)
+
+    def _delivery_journal(self):
+        from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_delivery import DeliveryJournal
+
+        if self._journal is None:
+            # Separate account and credential identities when authorization changes.
+            identity = hashlib.sha256(
+                f"{self.config.account}:{self.config.assistant_credential_id}".encode()
+            ).hexdigest()[:24]
+            self._journal = DeliveryJournal(Path(self.config.credential_dir) / f"deliveries-{identity}.sqlite3")
+        return self._journal
+
+    def _allowed_assistants(self, chat_id: str) -> set[str]:
+        membership = MembershipStore(Path(self.config.credential_dir) / "membership.json")
+        record = membership.get(chat_id)
+        age = time.time() - membership.checked_at(chat_id)
+        if record is not None and 0 <= age < MEMBERSHIP_TTL_SECONDS:
+            return set(record[1]) if record[0] else set()
+        result = self._cli.query_group_members(chat_id)
+        if not result.ok:
+            return set()
+        payload = parse_cli_json(result.stdout)
+        if isinstance(payload, dict) and payload.get("resultCode") not in (None, 0, "0"):
+            return set()
+        members = parse_group_members(payload)
+        if not any(member.account == self.config.account for member in members):
+            return set()
+        return reader_assistant_accounts(members, self.config.account)
+
+    def _history(self, chat_id: str) -> list[WelinkHistoryMessage]:
+        result = self._cli.query_history(chat_id, None)
+        if not result.ok:
+            raise ValueError("history unavailable")
+        payload = parse_cli_json(result.stdout)
+        if not isinstance(payload, (dict, list)):
+            raise ValueError("invalid history response")
+        if isinstance(payload, dict) and payload.get("resultCode") not in (None, 0, "0"):
+            raise ValueError("history rejected")
+        return parse_history_messages(payload, group_id=chat_id)
+
+    async def reconcile_group_text(self, *, chat_id: str, idempotency_key: str) -> dict[str, Any]:
+        """Read history only. A missing receipt or history gap never authorizes another send."""
+        journal = self._delivery_journal()
+        row = await asyncio.to_thread(journal.get, idempotency_key)
+        if row is None or row["group_id"] != chat_id:
+            return {"outcome": "unknown", "error_code": "WELINK_RECEIPT_UNAVAILABLE"}
+        if row["status"] != "unknown":
+            return journal.outcome(idempotency_key)
         try:
-            external_id = await asyncio.to_thread(link.send_text, chat_id, text, source_message_id)
-        except AssistantSendError as exc:
-            logger.warning("[Welink] assistant send failed: chat_id=%s code=%s", chat_id, exc.code)
-            return {"outcome": "failed", "error_code": "WELINK_ASSISTANT_SEND_FAILED"}
+            if not await asyncio.to_thread(self._allowed_assistants, chat_id):
+                return {"outcome": "unknown", "error_code": "WELINK_MEMBERSHIP_UNAVAILABLE"}
+            history = await asyncio.to_thread(self._history, chat_id)
+            return await asyncio.to_thread(journal.reconcile, idempotency_key, history)
         except Exception:
-            logger.warning("[Welink] assistant send outcome unknown: chat_id=%s", chat_id)
-            return {"outcome": "unknown", "error_code": "WELINK_SEND_ERROR"}
-        self._sent[idempotency_key] = external_id
-        return {"outcome": "delivered", "external_message_id": external_id}
+            return {"outcome": "unknown", "error_code": "WELINK_HISTORY_UNAVAILABLE"}
 
     def _logged_in(self) -> bool:
         try:
@@ -194,7 +299,7 @@ class WelinkChannel(BaseChannel):
         if (
             not from_mention
             and link is not None
-            and link.claim_polled(message.group_id, message.message_id, message.text)
+            and link.claim_polled(message.group_id, message.message_id, message.text, sender_id=message.sender_id)
         ):
             logger.info("[Welink] skip polled mention already accepted group_id=%s", message.group_id)
             return True
@@ -205,7 +310,8 @@ class WelinkChannel(BaseChannel):
         event = {
             "account": self.config.account,
             "expected_agent_id": self.config.agent_id,
-            "message_id": message.message_id,
+            "message_id": (link.canonical_message_id(message.group_id, message.message_id)
+                           if link is not None else message.message_id),
             "chat_id": message.group_id,
             "chat_type": "group",
             "sender_id": message.sender_id,
