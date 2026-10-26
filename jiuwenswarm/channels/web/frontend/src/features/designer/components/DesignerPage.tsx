@@ -12,6 +12,7 @@ import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
 import { isDesignerModerationError } from '../designerRunView';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
 import { DESIGNER_UPLOAD_TOO_LARGE } from '../designerNodeUpload';
+import { bindDesignerExclusivePlayback } from '../designerMediaPlayback';
 import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
@@ -240,8 +241,14 @@ export function DesignerPage({
     showCanvas && !bootstrapInProgress && !isDesignerPreviewGraph(domainGraph);
   const editingLocked = useDesignerGraphEditingLocked();
 
+  // The canvas has three independent players (node cards, the material viewer
+  // which autoplays, the revision chooser). Keep exactly one of them audible so
+  // opening the viewer never overlaps a running node preview (#5411).
+  const pageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => bindDesignerExclusivePlayback(pageRef.current), []);
+
   return (
-    <div className="designer-page app-section" data-testid="designer-page">
+    <div className="designer-page app-section" data-testid="designer-page" ref={pageRef}>
       <div className="designer-page__main">
         <header className="designer-page__toolbar" data-testid="designer-page-toolbar">
           {onToggleSidebarCollapse ? (

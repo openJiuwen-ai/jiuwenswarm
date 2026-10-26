@@ -87,6 +87,8 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>org.jetbrains.plugins.terminal</depends>
+    <!-- JCEF is a separate bundled plugin on newer platforms; the chat/map panels are JBCefBrowser. -->
+    <depends>com.intellij.modules.jcef</depends>
 
     <extensions defaultExtensionNs="com.intellij">
 

@@ -159,6 +159,65 @@ async def test_group_and_configuration_switch_rebuild_under_session_lock(router)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,selection",
+    [
+        ("agent", MODEL),
+        ("team", MODEL),
+        ("cron", MODEL),
+        ("team", {**GROUP, "route_id": "primary"}),
+        ("cron", {**GROUP, "route_id": "primary"}),
+    ],
+)
+async def test_busy_ordinary_session_accepts_its_applied_stable_model(router, kind, selection):
+    parent, _, metadata, built, _ = router
+    if kind == "team":
+        parent._session_instance_mode = "team"
+    elif kind == "cron":
+        parent._is_cron_execution_session = lambda _: True
+    child = await parent._get_or_create_session_adapter("chat-a", model_name="current")
+    model = object()
+    suffix = f":{selection['route_id']}" if selection.get("route_id") else ""
+    reference = f"{selection['type']}:{selection['id']}{suffix}"
+    child._stable_selection_cache = {reference: ("fingerprint", model)}
+    child._last_resolved_model = model
+    child.busy = True
+    before = deepcopy(metadata)
+
+    assert await parent._get_or_create_session_adapter("chat-a", model_selection=selection) is child
+    assert child._collaboration_model_selection is None
+    assert metadata == before
+    assert len(built) == 1
+    child.cleanup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("difference", ["model", "group", "route", "cached_model", "moa"])
+async def test_busy_session_still_rejects_a_different_model_snapshot(router, difference):
+    parent, _, _, _, _ = router
+    parent._session_instance_mode = "team"
+    child = await parent._get_or_create_session_adapter("chat-a", model_name="current")
+    model = object()
+    selection = {**GROUP, "route_id": "primary"}
+    child._stable_selection_cache = {"model_group:group-a:primary": ("fingerprint", model)}
+    child._last_resolved_model = model
+    child.busy = True
+    if difference == "model":
+        selection = MODEL
+    elif difference == "group":
+        selection = {**selection, "id": "group-b"}
+    elif difference == "route":
+        selection = {**selection, "route_id": "other"}
+    elif difference == "cached_model":
+        child._last_resolved_model = object()
+    else:
+        child._moa_enabled = True
+
+    with pytest.raises(RuntimeError, match="Model selection cannot change"):
+        await parent._get_or_create_session_adapter("chat-a", model_selection=selection)
+
+
+@pytest.mark.asyncio
 async def test_active_invocation_and_permission_resume_keep_snapshot_when_flag_changes(router):
     parent, config, _, built, _ = router
     installed = await parent._get_or_create_session_adapter("chat-a", model_selection=GROUP)

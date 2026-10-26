@@ -1690,11 +1690,17 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
             sessions_dir = get_agent_sessions_dir()
             pinned_list: list[tuple[str, int]] = []
             if sessions_dir.is_dir():
+                from jiuwenswarm.server.runtime.session import lifecycle as lc
                 for session_dir in sessions_dir.iterdir():
                     if not session_dir.is_dir():
                         continue
                     sid = session_dir.name
                     if sid.startswith(_EPHEMERAL_PROBE_SESSION_PREFIXES):
+                        continue
+                    state = lc.state("session", sid)
+                    if lc.logically_deleted(state) or lc.logically_archived(state):
+                        # Accepted but not yet moved/deleted: it already left
+                        # the active pin ordering.
                         continue
                     scanned += 1
                     m = meta if sid == session_id else _read_metadata(sid)
@@ -2088,6 +2094,11 @@ def get_all_sessions_metadata(
         if session_id.startswith(_EPHEMERAL_PROBE_SESSION_PREFIXES):
             continue
         state = lc.state("session", session_id)
+        # Lifecycle state is authoritative for visibility: archive and delete
+        # are accepted before the directory moves or disappears, so the active
+        # list must hide the Session while cleanup runs in the background.
+        if lc.logically_deleted(state) or lc.logically_archived(state):
+            continue
         archived = lc.session_paths(session_id)[1].exists()
         if archived:
             continue
@@ -2227,6 +2238,10 @@ def _collect_all_sessions_metadata(
             continue
         state = lc.state("session", sid)
         if lc.session_paths(sid, sessions_root=sessions_dir)[1].exists():
+            continue
+        # Lifecycle state is authoritative for visibility: archive and delete
+        # are accepted before the directory moves or disappears.
+        if lc.logically_deleted(state) or lc.logically_archived(state):
             continue
         if user_id:
             # 按用户家目录读时,绕过走全局单例的 _read_metadata,直接读该目录下文件,

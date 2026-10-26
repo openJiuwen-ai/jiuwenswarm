@@ -2207,11 +2207,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
             : {}),
-          // 会话级 worktree 开关：仅用户显式拨过（非 undefined）才发送，
-          // 后端按 params > 会话持久化 > 团队模板配置 回退。
-          ...(sessionRt?.swarmflowWorktree !== undefined
-            ? { swarmflow_worktree: sessionRt.swarmflowWorktree }
-            : {}),
           // 会话级团队调度模式：新建会话时由欢迎页开关落成显式值，恢复会话时从 metadata 读回；
           // 未设置时不发送，后端按 会话持久化 > 团队配置 回退。
           ...(sessionRt?.teamDispatchMode !== undefined
@@ -2415,11 +2410,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return (await sendExpertMessage(newInput, sessionId)) ?? false;
         }
         const result = await request<{ success?: boolean }>('chat.interrupt', {
-          session_id: sessionId, target_team_id: expertId, mode: 'team', intent,
+          session_id: sessionId,
+          target_team_id: expertId,
+          mode: 'team',
+          // The team composer stops via pause; direct expert streams only support cancel.
+          intent: intent === 'pause' ? 'cancel' : intent,
         });
-        if (result?.success) {
-          useChatStore.getState().setProcessing(`${sessionId}::${expertId}`, false);
-        }
         return result?.success === true;
       }
       if (intent === 'supplement' && newInput) {
@@ -4849,11 +4845,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           closeHeartbeatSessionState(sessionId, hbChatErrorAutomation.run_id);
           return;
         }
+        // 会话预算耗尽提示按会话去重：后端对同一耗尽可能多次广播（终态事件
+        // 重放、新 run 撞同一干账本），重复到达时上面的思考态/历史加载态清理
+        // 已完成，这里直接返回，不再追加提示或触发后续错误通知。
+        const isSessionBudgetExhausted = payload.code === 'SWARMFLOW_SESSION_BUDGET_EXHAUSTED';
+        const sessionBudgetErrorId = `session-budget-exhausted-${sessionId}`;
+        if (
+          isSessionBudgetExhausted &&
+          useChatStore.getState().getRuntime(sessionId)?.messages.some((message) => message.id === sessionBudgetErrorId)
+        ) {
+          return;
+        }
         useChatStore.getState().setExecutionError(sessionId, errorMsg);
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().setSessionError(sessionId, errorMsg);
         useChatStore.getState().addMessage(sessionId, {
-          id: prefixedMessageId('error-'),
+          id: isSessionBudgetExhausted ? sessionBudgetErrorId : prefixedMessageId('error-'),
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),

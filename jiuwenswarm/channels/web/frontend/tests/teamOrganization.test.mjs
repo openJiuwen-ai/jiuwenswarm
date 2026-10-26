@@ -10,6 +10,7 @@ import {
   isTeamOrganizationUiEnabled,
   selectedExpertTeamId,
   expertTeamId,
+  sendExpertMessage,
   useOrganizationEvents,
   useChatStore,
   useSessionStore,
@@ -23,6 +24,7 @@ import {
   useTeamOrganizationUiEnabled,
   useSettingsConfig,
   SettingsServicesProvider,
+  parseHistoryJsonFileToPreviewMessages,
 } from '../node_modules/.cache/team-organization/organization.mjs';
 
 function seed() {
@@ -40,6 +42,129 @@ function seed() {
         ],
       },
     },
+  });
+}
+
+// Execute the production callbacks with injected dependencies, without mounting the full App.
+function loadCallback(path, name, bindings) {
+  const source = ts.createSourceFile(
+    path,
+    readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  let callback;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === name) {
+      const initializer = node.initializer;
+      if (
+        initializer && ts.isCallExpression(initializer) && initializer.expression.getText(source) === 'useCallback'
+      ) {
+        callback = initializer.arguments[0].getText(source);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(callback, `${path}: ${name} callback must exist`);
+  const { outputText } = ts.transpileModule(`const callback = ${callback};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  });
+  return new Function(...Object.keys(bindings), `${outputText}\nreturn callback;`)(...Object.values(bindings));
+}
+
+for (const scenario of [
+  { name: 'expert team', mode: 'team', enabled: true, teamId: 'expert', intent: 'cancel' },
+  { name: 'owner team', mode: 'team', enabled: true, teamId: 'owner', intent: 'pause' },
+  { name: 'disabled organization UI', mode: 'team', enabled: false, teamId: 'expert', intent: 'pause' },
+  { name: 'agent', mode: 'agent', enabled: false, teamId: 'owner', intent: 'cancel' },
+]) {
+  test(`composer Stop sends the supported intent for ${scenario.name}`, async () => {
+    seed();
+    setTeamOrganizationUiEnabled(scenario.enabled);
+    useSessionStore.getState().setMode('session', scenario.mode);
+    useTeamSelectorStore.setState((state) => ({
+      runtimes: { session: { ...state.runtimes.session, selectedTeamId: scenario.teamId } },
+    }));
+    const calls = [];
+    const pending = [];
+    const originalRequest = webClient.request;
+    const dom = new JSDOM('<div id="root"></div>');
+    const previousWindow = globalThis.window;
+    const previousDocument = globalThis.document;
+    globalThis.window = dom.window;
+    globalThis.document = dom.window.document;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    webClient.request = async (method, params) => {
+      calls.push({ method, params });
+      // Match AgentServer: targeted expert cancellation only accepts cancel.
+      assert.equal(params.target_team_id ? params.intent === 'cancel' : true, true);
+      return { success: true };
+    };
+    const fail = (error) => assert.fail(error);
+    const interrupt = loadCallback('hooks/useWebSocket.ts', 'interrupt', {
+      selectedExpertTeamId,
+      sendExpertMessage,
+      request: loadCallback('hooks/useWebSocket.ts', 'request', { webClient }),
+      useSessionStore,
+      getSessionWorkContext: () => ({}),
+      resolveOutgoingMode: (_sessionId, mode) => mode,
+      onErrorRef: { current: fail },
+      t: (key) => key,
+    });
+    const controls = Object.fromEntries(['pause', 'cancel'].map((intent) => {
+      const callback = loadCallback('hooks/useWebSocket.ts', intent, {
+        interrupt,
+        useSubagentStore: { getState: () => ({ markRunningSubagentsCancelled() {} }) },
+        onErrorRef: { current: fail },
+        t: (key) => key,
+      });
+      return [intent, (sessionId) => {
+        const task = callback(sessionId);
+        pending.push(task);
+        return task;
+      }];
+    }));
+    const onCancel = loadCallback('App.tsx', 'handleCancel', {
+      sessionIdRef: { current: 'session' },
+      NEW_CONVERSATION_ID: 'new',
+      useGoalStore: { getState: () => ({ runtimes: {} }) },
+      useChatStore,
+      mode: scenario.mode,
+      ...controls,
+    });
+    const onClick = loadCallback('components/ChatPanel/InputArea.tsx', 'handleSendButtonClick', {
+      designLandingSubmitting: false,
+      showStop: true,
+      onCancel,
+      handleSubmit: () => assert.fail('Stop must not send a new message'),
+    });
+    const root = createRoot(document.getElementById('root'));
+    try {
+      await act(async () => root.render(React.createElement('button', { onClick }, 'Stop')));
+      await act(async () => {
+        document.querySelector('button').click();
+        await Promise.all(pending);
+      });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].method, 'chat.interrupt');
+      assert.equal(calls[0].params.session_id, 'session');
+      assert.equal(calls[0].params.intent, scenario.intent);
+      assert.equal(calls[0].params.mode, scenario.mode);
+      assert.equal(
+        calls[0].params.target_team_id,
+        scenario.enabled && scenario.teamId === 'expert' ? 'expert' : undefined,
+      );
+    } finally {
+      await act(async () => root.unmount());
+      webClient.request = originalRequest;
+      dom.window.close();
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+      setTeamOrganizationUiEnabled(false);
+    }
   });
 }
 
@@ -64,6 +189,177 @@ test('root background routing uses Team identity only when the organization UI i
   setTeamOrganizationUiEnabled(false);
   assert.equal(expertTeamId(expert, 'session'), null);
 });
+
+test('expert processing survives ACKs and selection changes, and settles only matching requests', async () => {
+  seed();
+  const chat = useChatStore.getState();
+  chat.setProcessing('session', false);
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const listeners = new Map();
+  const originalOn = webClient.on;
+  const originalRequest = webClient.request;
+  webClient.on = (event, handler) => {
+    listeners.set(event, handler);
+    return () => listeners.delete(event);
+  };
+  let sequence = 0;
+  let fail = false;
+  const calls = [];
+  webClient.request = async (method, params, options) => {
+    calls.push({ method, params });
+    options.onRequestId(`direct-${++sequence}`);
+    if (fail) throw new Error('send failed');
+    return { accepted: true };
+  };
+  function Probe() { useOrganizationEvents(); return null; }
+  const root = createRoot(document.getElementById('root'));
+  const emit = (event, id, extra = {}) => listeners.get(event)({ payload: {
+    session_id: 'session', team_id: 'expert', source: 'org_expert_direct', request_id: id, ...extra,
+  } });
+  const select = (teamId) => useTeamSelectorStore.setState((state) => ({
+    runtimes: { ...state.runtimes, session: { ...state.runtimes.session, selectedTeamId: teamId } },
+  }));
+  const busy = (key = 'session::expert') => chat.getRuntime(key)?.isProcessing;
+  try {
+    await act(async () => {
+      setTeamOrganizationUiEnabled(true);
+      root.render(React.createElement(Probe));
+    });
+    assert.equal(await sendExpertMessage('first question', 'session'), true);
+    assert.equal(busy(), true);
+    assert.equal(busy('session'), false);
+    emit('chat.processing_status', 'direct-1', { is_processing: true });
+    select('owner');
+    emit('chat.delta', 'direct-1', { content: 'partial reply' });
+    emit('chat.processing_status', 'direct-1', { is_processing: false });
+    assert.equal(busy(), false);
+    assert.equal(busy('session'), false);
+    assert.equal(chat.getRuntime('session::expert').messages.at(-1).isStreaming, false);
+    assert.equal(calls[0].params.target_team_id, 'expert');
+
+    // Two requests for the same expert can finish in either order.
+    select('expert');
+    await sendExpertMessage('second question', 'session');
+    await sendExpertMessage('third question', 'session');
+    emit('chat.processing_status', 'direct-3', { is_processing: false });
+    assert.equal(busy(), true);
+    emit('org.turn_completed', 'direct-1');
+    emit('chat.error', 'direct-1', { error: 'late error' });
+    assert.equal(busy(), true);
+    emit('org.turn_completed', 'background-turn');
+    assert.equal(busy(), true);
+    emit('chat.error', 'direct-2', { error: 'execution failed' });
+    assert.equal(busy(), false);
+    assert.equal(chat.getRuntime('session::expert').messages.at(-1).content, 'execution failed');
+
+    // Other teams and the owner keep their own running state.
+    chat.setProcessing('session', true);
+    chat.ensureTeamRuntime('session', 'other');
+    emit('chat.processing_status', 'other-request', { team_id: 'other', is_processing: true });
+    await sendExpertMessage('fourth question', 'session');
+    emit('chat.processing_status', 'direct-4', { is_processing: false });
+    assert.equal(busy(), false);
+    assert.equal(busy('session::other'), true);
+    assert.equal(busy('session'), true);
+    emit('chat.processing_status', 'other-request', { team_id: 'other', is_processing: false });
+    assert.equal(busy('session::other'), false);
+
+    fail = true;
+    await assert.rejects(sendExpertMessage('failed send', 'session'), /send failed/);
+    assert.equal(busy(), false);
+    assert.equal(busy('session'), true);
+    chat.setProcessing('session', false);
+  } finally {
+    await act(async () => root.unmount());
+    setTeamOrganizationUiEnabled(false);
+    webClient.on = originalOn;
+    webClient.request = originalRequest;
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});
+
+for (const endedWhileOffline of [true, false]) {
+  test(`expert reconnect reconciles ACKed requests, ended offline=${endedWhileOffline}`, async () => {
+    seed();
+    const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+    globalThis.window = dom.window;
+    globalThis.document = dom.window.document;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    const originals = { on: webClient.on, request: webClient.request, getState: webClient.getState, onStateChange: webClient.onStateChange };
+    const listeners = new Map();
+    let state = 'ready';
+    let stateChanged;
+    let tick;
+    let serverRequests = [];
+    let sequence = 0;
+    let delayedSnapshot;
+    webClient.on = (event, handler) => { listeners.set(event, handler); return () => listeners.delete(event); };
+    webClient.getState = () => state;
+    webClient.onStateChange = (handler) => { stateChanged = handler; return () => { stateChanged = undefined; }; };
+    dom.window.setInterval = (callback) => { tick = callback; return 1; };
+    dom.window.clearInterval = () => {};
+    webClient.request = async (method, params, options) => {
+      if (method === 'team.list') {
+        if (delayedSnapshot) return new Promise((resolve) => { delayedSnapshot.resolve = resolve; });
+        return { expert_requests: serverRequests };
+      }
+      options.onRequestId(`reconnect-${++sequence}`);
+      return { accepted: true };
+    };
+    function Probe() { useOrganizationEvents(); return null; }
+    const root = createRoot(document.getElementById('root'));
+    const busy = () => useChatStore.getState().getRuntime('session::expert').isProcessing;
+    const emit = (event, extra = {}) => listeners.get(event)({ payload: {
+      session_id: 'session', team_id: 'expert', source: 'org_expert_direct', ...extra,
+    } });
+    try {
+      await act(async () => { setTeamOrganizationUiEnabled(true); root.render(React.createElement(Probe)); });
+      await sendExpertMessage('accepted before disconnect', 'session');
+      assert.equal(busy(), true);
+      state = 'reconnecting';
+      stateChanged(state);
+      assert.equal(busy(), false);
+      serverRequests = endedWhileOffline ? [] : [{ team_id: 'expert', request_id: 'reconnect-1' }];
+      await act(async () => { state = 'ready'; stateChanged(state); });
+      assert.equal(busy(), !endedWhileOffline);
+      // If it was still running, a lost terminal is repaired by the periodic query.
+      serverRequests = [];
+      await act(async () => tick());
+      assert.equal(busy(), false);
+      await sendExpertMessage('new question after reconnect', 'session');
+      emit('chat.processing_status', { request_id: 'reconnect-1', is_processing: false });
+      assert.equal(busy(), true);
+      emit('chat.interrupt_result', { success: true, cancelled_request_ids: ['reconnect-2'] });
+      assert.equal(busy(), false);
+
+      // A snapshot started before a new send must not clear the newer request.
+      await sendExpertMessage('third question', 'session');
+      delayedSnapshot = {};
+      tick();
+      await sendExpertMessage('fourth question', 'session');
+      await act(async () => delayedSnapshot.resolve({ expert_requests: [] }));
+      assert.equal(busy(), true);
+      delayedSnapshot = undefined;
+      await act(async () => tick());
+      assert.equal(busy(), false);
+      await sendExpertMessage('close session', 'session');
+      listeners.get('session.deleted')({ payload: { session_id: 'session' } });
+      assert.equal(busy(), false);
+    } finally {
+      await act(async () => root.unmount());
+      setTeamOrganizationUiEnabled(false);
+      Object.assign(webClient, originals);
+      dom.window.close();
+      delete globalThis.window;
+      delete globalThis.document;
+    }
+  });
+}
 
 test('organization chunks group by gateway request ID and leave Owner messages untouched', async () => {
   seed();
@@ -719,6 +1015,39 @@ test('history is routed to independent conversations without polluting owner', (
   );
 });
 
+test('refresh restores background expert and member replies into their own conversations', () => {
+  seed();
+  setTeamOrganizationUiEnabled(true);
+  const records = [
+    { id: 'owner', role: 'user', content: 'owner task', timestamp: 1792800000 },
+    ...['leader', 'teammate'].map((role, index) => ({
+      id: `background-${role}`, role, member_name: role === 'leader' ? 'team_leader' : 'analyst',
+      content: `${role} reply`, event_type: 'chat.final', source: 'org_expert_background',
+      team_id: 'expert', mode: 'team', timestamp: 1792800001 + index,
+    })),
+    { id: 'summary', role: 'leader', content: 'summary reply', event_type: 'chat.final',
+      source: 'org_summary_background', team_id: 'summary', mode: 'team', timestamp: 1792800003 },
+    { id: 'owner-member', role: 'teammate', content: 'hidden owner member', event_type: 'chat.final',
+      source: 'org_root_background', team_id: 'owner', mode: 'team', timestamp: 1792800004 },
+    { id: 'expert-tool', role: 'leader', event_type: 'chat.tool_call', tool_name: 'read_file',
+      source: 'org_expert_background', team_id: 'expert', mode: 'team', timestamp: 1792800005 },
+  ];
+  // A browser reload has no in-memory expert conversation to fall back to.
+  useChatStore.getState().removeRuntime('session::expert');
+  useChatStore.getState().removeRuntime('session::summary');
+  const messages = parseHistoryJsonFileToPreviewMessages(records, 'session');
+  useChatStore.getState().replaceHistoryMessages('session', messages);
+  assert.equal(useChatStore.getState().runtimes.session.messages.length, 1);
+  const expert = useChatStore.getState().runtimes['session::expert'].messages;
+  assert.equal(expert.length, 2);
+  assert.match(expert[0].content, /leader reply/);
+  assert.equal(expert[1].content, 'teammate reply');
+  assert.match(expert[1].id, /^team-member-analyst@/);
+  assert.equal(useChatStore.getState().runtimes['session::summary'].messages.length, 1);
+  setTeamOrganizationUiEnabled(false);
+  assert.deepEqual(parseHistoryJsonFileToPreviewMessages(records, 'session').map((message) => message.id), ['owner']);
+});
+
 test('disabled UI has no organization event subscriptions; disabling unsubscribes', async () => {
   seed();
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
@@ -741,7 +1070,7 @@ test('disabled UI has no organization event subscriptions; disabling unsubscribe
     await act(async () => root.render(React.createElement(Probe)));
     assert.equal(subscriptions.length, 0);
     await act(async () => setTeamOrganizationUiEnabled(true));
-    assert.equal(subscriptions.length, 10);
+    assert.ok(subscriptions.some((entry) => entry.name === 'chat.processing_status'));
     assert.ok(subscriptions.some((entry) => entry.name === 'org.turn_completed'));
     await act(async () => setTeamOrganizationUiEnabled(false));
     assert.equal(subscriptions.length, 0);

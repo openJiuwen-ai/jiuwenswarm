@@ -581,8 +581,8 @@ agent_observability:
 # auto_harness 不向 Web 暴露轨迹。
 # ============================================================
 trajectory_ui:
-  enabled: false                     # 启用“对话 / 轨迹”数据链路
-  diagnosis_enabled: false           # 启用“诊断与归因”视图；开启后同样会记录轨迹数据，无需同时开启 enabled
+  enabled: false                     # 数据面开关；由 diagnosis_enabled 同步写入，勿单独依赖实验设置
+  diagnosis_enabled: false           # 启用「诊断与归因」入口并记录轨迹数据；关闭后隐藏轨迹相关页面
   db_path: ""                       # Session database root; defaults to ~/.jiuwenswarm/.trace/sessions
   retention_days: 7                 # SQLite 轨迹保留天数
   queue_size: 4096                  # Agent 主线程非阻塞写入队列上限

@@ -677,13 +677,6 @@ export interface SessionRuntime {
   /** 本会话 swarmflow token 上限（留空=不限） */
   swarmflowBudget: number | null;
   /**
-   * 本会话的 worktree 隔离开关（会话级，随 chat.send 下发）。
-   * undefined = 用户未拨过：不随请求发送，后端回退会话持久化值，
-   * 都没有则保持团队模板的 worktree 配置。
-   * 退出 team 模式不清理（重开 swarmflow 时保留用户偏好）。
-   */
-  swarmflowWorktree?: boolean;
-  /**
    * 本会话团队的任务调度模式（会话级，随 chat.send 下发并持久化到会话 metadata）。
    * undefined = 用户未拨过：开关默认关闭（自主模式）。团队建好后不可再改。
    */
@@ -857,8 +850,6 @@ interface SessionState {
   applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
   /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
   setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
-  /** 设置本会话的 worktree 隔离开关（显式值，随 chat.send 下发并持久化到会话 metadata） */
-  setSwarmflowWorktree: (sessionId: string, enabled: boolean) => void;
   /** 设置本会话团队的任务调度模式（显式值，随 chat.send 下发并持久化到会话 metadata） */
   setTeamDispatchMode: (sessionId: string, mode: TeamDispatchMode) => void;
   /** 懒加载 phase 完整 agents（command.workflows get_phase） */
@@ -2169,19 +2160,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             enableSwarmflow: active,
             swarmflowBudget: nextBudget,
           },
-        },
-      };
-    });
-  },
-
-  setSwarmflowWorktree: (sessionId, enabled) => {
-    set((state) => {
-      const rt = state.runtimes[sessionId];
-      if (!rt) return state;
-      return {
-        runtimes: {
-          ...state.runtimes,
-          [sessionId]: { ...rt, swarmflowWorktree: enabled },
         },
       };
     });
