@@ -942,11 +942,11 @@ export class WebHttpClient {
       }
     } finally {
       try {
-        // 错误流正常结束或读流失败均收尾；主动取消/替换仍由对应请求处理。
+        // 异常 EOF（gateway pod 被删、链路重置、错误流无终态）时本地收尾。
+        // 主动 abort / 被新 chat.send 顶替仍由对应路径处理，这里不 settle、不 interrupt。
         if (
           kind === 'sse' &&
           isEnterprise() &&
-          sawChatError &&
           !sawTaskEnd &&
           sessionId &&
           !readAborted &&
@@ -960,9 +960,11 @@ export class WebHttpClient {
               session_id: sessionId,
               request_id: requestId,
               is_processing: false,
-              source: 'http_error_eof',
+              source: sawChatError ? 'http_error_eof' : 'http_abnormal_eof',
             },
           });
+          // 多副本下任意存活 gateway 均可按 session 转发 cancel。
+          void this.interruptChat(sessionId, requestId);
         }
       } catch (error) {
         console.warn('[WebHttpClient] Failed to settle errored SSE', requestId, error);
