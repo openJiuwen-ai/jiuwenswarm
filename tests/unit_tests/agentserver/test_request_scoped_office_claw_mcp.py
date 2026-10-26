@@ -1666,3 +1666,193 @@ def test_batch_registration_does_not_hide_transitive_import_failure(monkeypatch)
     with pytest.raises(ModuleNotFoundError) as captured:
         adapter._install_staged_request_mcp_tools(interface_deep._RequestMcpToolBuffers())
     assert captured.value is failure
+
+
+@pytest.mark.asyncio
+async def test_multi_block_mcp_result_keeps_payload_not_only_trailer() -> None:
+    """MCP 正文 + 元数据尾块必须合并，不能只返回 content[-1]。"""
+    from mcp.types import CallToolResult, TextContent
+
+    payload = '{"summary":"1.3.1 创建或发起电子签约","parameters":[1,2,3]}'
+    trailer = '{"doc_version":"5.7"}'
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-merge.office-claw.get_endpoint",
+            name="get_endpoint",
+            description="get endpoint doc",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-merge",
+        "qiyuesuo",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(
+                content=[
+                    TextContent(type="text", text=payload),
+                    TextContent(type="text", text=trailer),
+                ]
+            )
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+    ):
+        result = await tool._invoke_with_active_binding({"path": "/x"})
+
+    assert result["result"] == payload + "\n" + trailer
+
+
+@pytest.mark.asyncio
+async def test_mixed_text_and_image_result_keeps_text_payload() -> None:
+    """文本说明 + 图片的 MCP 结果必须同时保留正文和图片占位。"""
+    from mcp.types import CallToolResult, ImageContent, TextContent
+
+    payload = '{"summary":"endpoint document","parameters":[1,2,3]}'
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-mixed.office-claw.get_endpoint",
+            name="get_endpoint",
+            description="get endpoint doc",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-mixed",
+        "qiyuesuo",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(
+                content=[
+                    TextContent(type="text", text=payload),
+                    ImageContent(type="image", data="aGk=", mimeType="image/png"),
+                ]
+            )
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+    ):
+        result = await tool._invoke_with_active_binding({"path": "/x"})
+
+    assert result["result"] == payload + "\n[image content: image/png, 4 base64 chars]"
+
+
+@pytest.mark.asyncio
+async def test_audio_content_result_uses_bounded_binary_summary() -> None:
+    """AudioContent 的 base64 不能原样进入模型上下文。"""
+    from mcp.types import AudioContent, CallToolResult, TextContent
+
+    payload = '{"summary":"endpoint document"}'
+    audio_data = "A" * 10_000
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-audio.office-claw.get_endpoint",
+            name="get_endpoint",
+            description="get endpoint doc",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-audio",
+        "qiyuesuo",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(
+                content=[
+                    TextContent(type="text", text=payload),
+                    AudioContent(
+                        type="audio", data=audio_data, mimeType="audio/wav"
+                    ),
+                ]
+            )
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+    ):
+        result = await tool._invoke_with_active_binding({"path": "/x"})
+
+    assert payload in result["result"]
+    assert audio_data not in result["result"]
+    assert "[binary content: audio/wav, 10000 base64 chars]" in result["result"]
+
+
+@pytest.mark.asyncio
+async def test_embedded_resource_blob_is_summarized() -> None:
+    """EmbeddedResource 的 blob 不能被 model_dump 原样序列化进结果。"""
+    from mcp.types import (
+        BlobResourceContents,
+        CallToolResult,
+        EmbeddedResource,
+        TextContent,
+    )
+
+    payload = '{"summary":"endpoint document"}'
+    blob = "B" * 10_000
+    resource = EmbeddedResource(
+        type="resource",
+        resource=BlobResourceContents(
+            uri="file:///x.bin",
+            blob=blob,
+            mimeType="application/octet-stream",
+        ),
+    )
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-blob.office-claw.get_endpoint",
+            name="get_endpoint",
+            description="get endpoint doc",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-blob",
+        "qiyuesuo",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(
+                content=[TextContent(type="text", text=payload), resource]
+            )
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+    ):
+        result = await tool._invoke_with_active_binding({"path": "/x"})
+
+    assert payload in result["result"]
+    assert blob not in result["result"]
+    assert (
+        "[binary content: application/octet-stream, 10000 base64 chars]"
+        in result["result"]
+    )
+
+
+def test_custom_data_block_without_mime_type_is_summarized() -> None:
+    from jiuwenswarm.common.mcp_config import _mcp_non_text_summary
+
+    summary = _mcp_non_text_summary(SimpleNamespace(data="C" * 10_000))
+
+    assert summary == "[binary content: unknown, 10000 base64 chars]"
