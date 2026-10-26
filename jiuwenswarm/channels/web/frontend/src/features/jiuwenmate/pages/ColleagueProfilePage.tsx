@@ -13,7 +13,6 @@ import {
   PencilLine,
   Plus,
   Search,
-  SquareArrowOutUpRight,
   Trash2,
   UsersRound,
   type LucideIcon,
@@ -22,6 +21,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import feishuIcon from '../../../assets/jiuwenmate/icons/feishu.svg';
 import dingtalkIcon from '../../../assets/settings/channels/dingtalk.svg';
+import welinkIcon from '../../../assets/jiuwenmate/icons/welink.png';
 import autoModelIcon from '../../../assets/jiuwenmate/icons/auto.svg';
 import deepseekProviderIcon from '../../../assets/providers/deepseek.svg';
 import kimiProviderIcon from '../../../assets/providers/kimi.svg';
@@ -36,6 +36,7 @@ import customModelIcon from '../../../assets/settings/models/custom.svg';
 import { ConnectorPickerDrawer } from '../../../components/ConnectorMarket/ConnectorPickerDrawer';
 import { PageCard } from '../../../components/ui';
 import { ActionMenu } from '../components/ActionMenu';
+import { JiuwenMateConfirmDialog } from '../components/JiuwenMateDialog';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import type { ColleagueResourceOption, JiuwenMateModelCatalog, JiuwenMateSchedule, JiuwenMateWireSettings } from '../jiuwenmateApi';
@@ -146,6 +147,8 @@ interface ColleagueProfilePageProps {
   onOpenOffice: () => void;
   onChat: () => void;
   onConfigureIm: () => void;
+  onConfigureWelink: () => void;
+  onRevokeChannel?: (platform: 'feishu' | 'welink') => void | Promise<void>;
   onToggleDisabled: () => void;
   onDelete: () => void;
 }
@@ -193,6 +196,8 @@ export function ColleagueProfilePage({
   onOpenOffice,
   onChat,
   onConfigureIm,
+  onConfigureWelink,
+  onRevokeChannel,
   onToggleDisabled,
   onDelete,
 }: ColleagueProfilePageProps) {
@@ -412,6 +417,17 @@ export function ColleagueProfilePage({
     setSection(next);
     setEditing(false);
   };
+  const [revokePlatform, setRevokePlatform] = useState<'feishu' | 'welink' | null>(null);
+  const [revoking, setRevoking] = useState(false);
+  const confirmRevoke = () => {
+    if (!revokePlatform || revoking) return;
+    const platform = revokePlatform;
+    setRevoking(true);
+    void Promise.resolve(onRevokeChannel?.(platform))
+      .then(() => setRevokePlatform(null))
+      .catch(() => undefined)
+      .finally(() => setRevoking(false));
+  };
 
   return (
     <section className="jiuwenmate-page jiuwenmate-profile" data-testid="jiuwenmate-colleague-profile">
@@ -486,7 +502,15 @@ export function ColleagueProfilePage({
                   onSave={() => saveSettings({ name: name.trim(), description: description.trim(), tags: [...tags] })}
                 />
               ) : null}
-              <ProfileOverview colleague={colleague} activity={activity} today={today} onConfigureIm={onConfigureIm} />
+              <ProfileOverview
+                colleague={colleague}
+                activity={activity}
+                today={today}
+                onConfigureIm={onConfigureIm}
+                onConfigureWelink={onConfigureWelink}
+                onRevokeChannel={setRevokePlatform}
+                revoking={revoking}
+              />
             </>
           ) : (
             <ProfileSectionDetail
@@ -514,6 +538,9 @@ export function ColleagueProfilePage({
               onGroupReplyModeChange={changeGroupReplyMode}
               onPermissionProfileChange={changePermissionProfile}
               onConfigureIm={onConfigureIm}
+              onConfigureWelink={onConfigureWelink}
+              onRevokeChannel={setRevokePlatform}
+              revoking={revoking}
               schedules={schedules}
               savingSchedule={savingSchedule}
               onCreateSchedule={onCreateSchedule}
@@ -532,6 +559,19 @@ export function ColleagueProfilePage({
           )}
         </div>
       </div>
+      {revokePlatform ? (
+        <JiuwenMateConfirmDialog
+          title={t('jiuwenmate.profile.cancelAuthorizationTitle')}
+          warning={t('jiuwenmate.profile.cancelAuthorizationWarning')}
+          message={t('jiuwenmate.profile.cancelAuthorizationMessage', {
+            channel: t(revokePlatform === 'welink' ? 'jiuwenmate.im.welink' : 'jiuwenmate.im.feishu'),
+          })}
+          onCancel={() => {
+            if (!revoking) setRevokePlatform(null);
+          }}
+          onConfirm={confirmRevoke}
+        />
+      ) : null}
     </section>
   );
 }
@@ -565,7 +605,19 @@ function channelLabel(t: (key: string) => string, channel: string): string {
   return label === key ? channel : label;
 }
 
-function ImBindingAction({ configured, onConfigure }: { configured: boolean; onConfigure: () => void }) {
+function ImBindingAction({
+  platform,
+  configured,
+  revoking = false,
+  onConfigure,
+  onRevoke,
+}: {
+  platform: 'feishu' | 'dingtalk' | 'welink';
+  configured: boolean;
+  revoking?: boolean;
+  onConfigure: () => void;
+  onRevoke?: (platform: 'feishu' | 'welink') => void;
+}) {
   const { t } = useTranslation();
   if (!configured) {
     return (
@@ -585,6 +637,18 @@ function ImBindingAction({ configured, onConfigure }: { configured: boolean; onC
       >
         {t('common.modify')}
       </button>
+      {onRevoke && platform !== 'dingtalk' ? (
+        <button
+          type="button"
+          className="jiuwenmate-link-button jiuwenmate-link-button--danger"
+          onClick={() => onRevoke(platform)}
+          disabled={revoking}
+          data-testid="jiuwenmate-profile-im-revoke"
+          data-variant={platform}
+        >
+          {t('jiuwenmate.profile.cancelAuthorization')}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -608,11 +672,15 @@ function ProfileOverview({
   activity,
   today,
   onConfigureIm,
+  onConfigureWelink,
 }: {
   colleague: JiuwenMateColleague;
   activity: JiuwenMateActivityMember | null;
   today: Date;
   onConfigureIm: () => void;
+  onConfigureWelink: () => void;
+  onRevokeChannel?: (platform: 'feishu' | 'welink') => void;
+  revoking?: boolean;
 }) {
   const { t } = useTranslation();
   const [period, setPeriod] = useState<WorkLogPeriod>('7d');
@@ -626,6 +694,9 @@ function ProfileOverview({
   const heatmap = useMemo(() => halfYearHeatmap(year, half, daily), [year, half, daily]);
   const taskKinds = tasksInHalf(activity?.kinds ?? [], year, half);
   const taskTotal = taskKinds.conversation + taskKinds.channel + taskKinds.schedule;
+  const primaryChannelConfigured = colleague.feishuConfigured === true
+    || colleague.dingtalkConfigured === true
+    || (colleague.imConfigured && colleague.imPlatform !== undefined);
 
   const metrics: { key: string; value: ReactNode; icon: LucideIcon }[] = [
     {
@@ -659,23 +730,31 @@ function ProfileOverview({
       <p className="jiuwenmate-profile__joined">
         {t('jiuwenmate.profile.joinedAt', { time: formatJoinedAt(colleague.joinedAt) })}
       </p>
-      {!colleague.imConfigured ? (
+      {!primaryChannelConfigured || !colleague.welinkConfigured ? (
         <section className="jiuwenmate-profile__im" data-testid="jiuwenmate-profile-quick-im">
           <header>
             <strong>{t('jiuwenmate.profile.quickIm')}</strong>
-            <button type="button" className="jiuwenmate-link-button" onClick={onConfigureIm}>
-              <SquareArrowOutUpRight aria-hidden />
-              {t('jiuwenmate.profile.goConfigure')}
-            </button>
           </header>
-          <div className="jiuwenmate-profile__im-row">
-            <img src={feishuIcon} alt="" aria-hidden />
-            <span>
-              <strong>{t('jiuwenmate.im.channels')}</strong>
-              <small>{t('jiuwenmate.im.isolationHint')}</small>
-            </span>
-            <ImBindingAction configured={false} onConfigure={onConfigureIm} />
-          </div>
+          {!primaryChannelConfigured ? (
+            <div className="jiuwenmate-profile__im-row">
+              <img src={colleague.imPlatform === 'dingtalk' ? dingtalkIcon : feishuIcon} alt="" aria-hidden />
+              <span>
+                <strong>{t('jiuwenmate.im.channels')}</strong>
+                <small>{t('jiuwenmate.im.isolationHint')}</small>
+              </span>
+              <ImBindingAction platform="feishu" configured={false} onConfigure={onConfigureIm} />
+            </div>
+          ) : null}
+          {!colleague.welinkConfigured ? (
+            <div className="jiuwenmate-profile__im-row">
+              <img className="jiuwenmate-welink-logo" src={welinkIcon} alt="" aria-hidden />
+              <span>
+                <strong>{t('jiuwenmate.im.welink')}</strong>
+                <small>{t('jiuwenmate.profile.welinkHint')}</small>
+              </span>
+              <ImBindingAction platform="welink" configured={false} onConfigure={onConfigureWelink} />
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -948,6 +1027,9 @@ function ProfileSectionDetail({
   onGroupReplyModeChange,
   onPermissionProfileChange,
   onConfigureIm,
+  onConfigureWelink,
+  onRevokeChannel,
+  revoking = false,
   schedules,
   savingSchedule,
   onCreateSchedule,
@@ -987,6 +1069,9 @@ function ProfileSectionDetail({
   onGroupReplyModeChange: (mode: 'passive' | 'adaptive') => void;
   onPermissionProfileChange: (profile: 'default' | 'automatic' | 'full_access') => void;
   onConfigureIm: () => void;
+  onConfigureWelink: () => void;
+  onRevokeChannel?: (platform: 'feishu' | 'welink') => void;
+  revoking?: boolean;
   schedules: readonly JiuwenMateSchedule[];
   savingSchedule: boolean;
   onCreateSchedule?: (draft: ScheduleDraft) => void | Promise<void>;
@@ -1130,10 +1215,32 @@ function ProfileSectionDetail({
         <div className="jiuwenmate-profile__im-row jiuwenmate-profile__im-row--bordered">
           <img src={colleague.imPlatform === 'dingtalk' ? dingtalkIcon : feishuIcon} alt="" aria-hidden />
           <span>
-            <strong>{t(`jiuwenmate.im.${colleague.imPlatform ?? 'feishu'}`)}</strong>
+            <strong>{t(`jiuwenmate.im.${colleague.imPlatform === 'dingtalk' ? 'dingtalk' : 'feishu'}`)}</strong>
             <small>{colleague.imPlatform === 'dingtalk' ? t('jiuwenmate.im.dingtalkHint') : t('jiuwenmate.profile.feishuHint')}</small>
           </span>
-          <ImBindingAction configured={colleague.imConfigured} onConfigure={onConfigureIm} />
+          <ImBindingAction
+            platform={colleague.imPlatform === 'dingtalk' ? 'dingtalk' : 'feishu'}
+            configured={colleague.imPlatform === 'dingtalk'
+              ? colleague.dingtalkConfigured ?? colleague.imConfigured
+              : colleague.feishuConfigured ?? (colleague.imConfigured && colleague.imPlatform !== undefined)}
+            revoking={revoking}
+            onConfigure={onConfigureIm}
+            onRevoke={colleague.imPlatform === 'dingtalk' ? undefined : onRevokeChannel}
+          />
+        </div>
+        <div className="jiuwenmate-profile__im-row jiuwenmate-profile__im-row--bordered">
+          <img className="jiuwenmate-welink-logo" src={welinkIcon} alt="" aria-hidden />
+          <span>
+            <strong>{t('jiuwenmate.im.welink')}</strong>
+            <small>{t('jiuwenmate.profile.welinkHint')}</small>
+          </span>
+          <ImBindingAction
+            platform="welink"
+            configured={colleague.welinkConfigured === true}
+            revoking={revoking}
+            onConfigure={onConfigureWelink}
+            onRevoke={onRevokeChannel}
+          />
         </div>
       </section>
     );

@@ -30,7 +30,10 @@ def tool(tmp_path, agent="agent-a"):
     context.extras[PARENT_SYS_OPERATION_EXTRAS_KEY] = SysOperation(SysOperationCard(id=agent))
     runtime = FeishuCliRuntime(tmp_path / "jm", config_loader=lambda: {})
     module().bind_bash_runtime(context, office=office, cli=runtime)
-    return module().build_bash_tool({}, context), session
+    built = module().build_bash_tool({}, context)
+    tools = built if isinstance(built, list) else [built]
+    bash = next(item for item in tools if getattr(getattr(item, "card", None), "name", None) == "bash")
+    return bash, session
 
 
 @pytest.mark.asyncio

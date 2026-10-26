@@ -10,6 +10,7 @@ import {
   deleteColleague,
   finishColleagueAuthorization,
   openColleagueAuthorization,
+  revokeColleagueAuthorization,
   openColleagueCreation,
   openColleagueMessages,
   openCustomColleagueCreation,
@@ -76,6 +77,11 @@ test('completing creation opens the profile with the IM authorization prompt onc
 
   const configured = finishColleagueAuthorization(openColleagueAuthorization(skipped, 'brand-advisor'), true);
   assert.equal(configured.colleagues[0].imConfigured, true);
+  assert.equal(configured.colleagues[0].feishuConfigured, true);
+
+  const revoked = revokeColleagueAuthorization(configured, 'brand-advisor', 'feishu');
+  assert.equal(revoked.colleagues[0].feishuConfigured, false);
+  assert.equal(revoked.colleagues[0].imConfigured, false);
 
   const repeated = completeColleagueCreation(configured, colleague);
   assert.deepEqual(repeated.colleagues.map((item) => item.id), ['brand-advisor']);
