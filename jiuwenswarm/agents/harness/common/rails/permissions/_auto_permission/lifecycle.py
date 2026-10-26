@@ -22,9 +22,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.policy_eval import (
 from jiuwenswarm.agents.harness.common.rails.permissions.trusted_search_urls import (
     SessionTrustedSearchUrls,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
-    SessionDenyStore,
-)
 from jiuwenswarm.agents.harness.common.rails.permissions.sandbox_profile import (
     SandboxDescriptor,
 )
