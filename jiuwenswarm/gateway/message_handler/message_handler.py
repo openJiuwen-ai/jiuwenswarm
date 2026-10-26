@@ -528,11 +528,11 @@ class MessageHandler(ABC):
         )
         payload = getattr(response, "payload", None)
         if not getattr(response, "ok", False) or not isinstance(payload, dict):
-            return InboundDisposition.REJECTED
+            return InboundDisposition.RETRYABLE
         try:
             return InboundDisposition(payload.get("disposition"))
         except (TypeError, ValueError):
-            return InboundDisposition.REJECTED
+            return InboundDisposition.RETRYABLE
 
     async def unregister_ws_subscriptions(self, channel_id: str, ws_id: str) -> int:
         """Remove physical subscriptions owned by a disconnected WebSocket."""
@@ -3660,6 +3660,8 @@ class MessageHandler(ABC):
                 result = {"outcome": "unknown", "error_code": "GATEWAY_DELIVERY_ERROR"}
 
         outcome = result.get("outcome")
+        if payload.get("operation") == "reconcile" and outcome == "pending":
+            outcome = "unknown"
         if outcome not in {"delivered", "failed", "unknown", "pending"}:
             outcome = "unknown"
         external_message_id = result.get("external_message_id")

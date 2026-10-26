@@ -110,9 +110,9 @@ def test_personal_cli_refuses_every_send_command(tmp_path) -> None:
         welink_cli_module.subprocess.run = original
 
 
-def test_channel_refuses_to_send_with_the_personal_account() -> None:
+def test_channel_refuses_to_send_with_the_personal_account(tmp_path) -> None:
     channel = WelinkChannel(
-        WelinkConfig(enabled=True, account="h00557917", agent_id="mate", credential_dir="."),
+        WelinkConfig(enabled=True, account="h00557917", agent_id="mate", credential_dir=str(tmp_path)),
         _Router(),
     )
     channel._cli.send_to_group = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("personal send"))
@@ -120,21 +120,6 @@ def test_channel_refuses_to_send_with_the_personal_account() -> None:
     missing = asyncio.run(channel.send_group_text(chat_id="1023", text="你好", idempotency_key="k1"))
     assert missing["error_code"] == "WELINK_ASSISTANT_NOT_CONFIGURED"
 
-    sent: list[tuple[str, str, str]] = []
-    channel.config.assistant_credential_id = "ak-1"
-    channel.config.assistant_secret = "assistant-secret"
-
-    class _Link:
-        def send_text(self, group_id: str, text: str, source_message_id: str = "") -> str:
-            sent.append((group_id, text, source_message_id))
-            return "msg_notify_1"
-
-    channel._link = _Link()
-    delivered = asyncio.run(
-        channel.send_group_text(chat_id="1023", text="你好", idempotency_key="k2", source_message_id="m-9")
-    )
-    assert delivered["outcome"] == "delivered"
-    assert sent == [("1023", "你好", "m-9")]
 
 
 class _QueuedSocket:

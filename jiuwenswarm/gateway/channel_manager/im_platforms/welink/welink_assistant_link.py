@@ -64,6 +64,8 @@ class _QaSlot:
     part_id: str
     opened: bool
     created_at: float
+    sender_id: str = ""
+    accepted: bool = False
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:
@@ -177,7 +179,9 @@ class AssistantLink:
         connect: Connect | None = None,
         heartbeat_seconds: float = _HEARTBEAT_SECONDS,
         slot_ttl_seconds: float = _SLOT_TTL_SECONDS,
+        on_delivery_error: Callable[[str, str], None] | None = None,
     ) -> None:
+        self._on_delivery_error = on_delivery_error
         self._credential_id = credential_id.strip()
         self._secret = secret.strip()
         self._connect = connect or _open_socket
@@ -185,7 +189,8 @@ class AssistantLink:
         self._slot_ttl_seconds = slot_ttl_seconds
         self._commands: queue.Queue[Any] = queue.Queue()
         self._slots: dict[str, _QaSlot] = {}
-        self._delivered: set[str] = set()
+        self._aliases: dict[tuple[str, str], str] = {}
+        self._delivered: set[tuple[str, str]] = set()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -216,12 +221,13 @@ class AssistantLink:
             thread.join(timeout=5)
         self._ready.clear()
 
-    def send_text(self, group_id: str, text: str, source_message_id: str = "") -> str:
+    def send_text(self, group_id: str, text: str, source_message_id: str = "", *,
+                  on_prepared: Callable[[str, str, str], None] | None = None) -> str:
         """Send one reply. An open @ task for this message is finished in place."""
         if not group_id.strip() or not text:
             raise AssistantSendError("missing_assistant_credential")
         box: queue.Queue[Any] = queue.Queue(1)
-        self._commands.put(("send", group_id, text, source_message_id, box))
+        self._commands.put(("send", group_id, text, source_message_id, box, on_prepared))
         try:
             result = box.get(timeout=25)
         except queue.Empty as exc:
@@ -230,19 +236,27 @@ class AssistantLink:
             raise result
         return str(result)
 
-    def claim_polled(self, group_id: str, message_id: str, text: str) -> bool:
-        """True when this history row is the @ task already given to the colleague."""
+    def claim_polled(self, group_id: str, message_id: str, text: str, *, sender_id: str = "") -> bool:
+        """Align one history ID with its mention without replacing the Request's original key."""
         with self._lock:
-            if message_id in self._delivered or message_id in self._slots:
+            canonical = self._aliases.get((group_id, message_id), message_id)
+            slot = self._slots.get(canonical)
+            if slot is not None and slot.group_id == group_id:
+                return slot.accepted
+            if (group_id, canonical) in self._delivered:
                 return True
-            for key, slot in list(self._slots.items()):
-                if slot.group_id == group_id and _same_text(slot.text, text):
-                    if key != message_id:
-                        self._slots.pop(key, None)
-                        slot.message_id = message_id
-                        self._slots[message_id] = slot
-                    return True
+            matches = [slot for slot in self._slots.values()
+                       if slot.group_id == group_id and sender_id and slot.sender_id == sender_id
+                       and _same_text(slot.text, text)
+                       and slot.message_id not in self._aliases.values()]
+            if len(matches) == 1:
+                self._aliases[(group_id, message_id)] = matches[0].message_id
+                return matches[0].accepted
         return False
+
+    def canonical_message_id(self, group_id: str, message_id: str) -> str:
+        with self._lock:
+            return self._aliases.get((group_id, message_id), message_id)
 
     def _run(self) -> None:
         delay = 1.0
@@ -322,6 +336,14 @@ class AssistantLink:
 
     def _on_frame(self, socket: Any, frame: dict[str, Any]) -> None:
         kind = str(frame.get("type") or "")
+        if kind == "tool_error":
+            payload = _as_mapping(frame.get("payload"))
+            if self._on_delivery_error is not None:
+                self._on_delivery_error(
+                    str(frame.get("toolSessionId") or payload.get("toolSessionId") or ""),
+                    str(frame.get("traceId") or payload.get("traceId") or ""),
+                )
+            return
         if kind in {"register_ok", "heartbeat", "tool_done", "tool_event"}:
             return
         reply = control_reply(frame)
@@ -345,7 +367,7 @@ class AssistantLink:
         with self._lock:
             if mention.message_id in self._slots:
                 return
-            if mention.message_id in self._delivered:
+            if (mention.group_id, mention.message_id) in self._delivered:
                 already = True
                 slot = None
             else:
@@ -361,6 +383,7 @@ class AssistantLink:
                     part_id=f"prt_notify_{suffix}",
                     opened=False,
                     created_at=time.monotonic(),
+                    sender_id=mention.sender_id,
                 )
                 self._slots[mention.message_id] = slot
         if already:
@@ -387,6 +410,8 @@ class AssistantLink:
                 accepted = bool(finished.result())
             except Exception:
                 logger.warning("[Welink] mention handler failed: message_id=%s", mention.message_id)
+            with self._lock:
+                slot.accepted = accepted
             if not accepted:
                 self._commands.put(("close", mention.message_id))
 
@@ -402,25 +427,30 @@ class AssistantLink:
             if kind == "close":
                 self._close_slot(socket, command[1], quiet=True)
                 continue
-            _kind, group_id, text, source_message_id, box = command
+            _kind, group_id, text, source_message_id, box, on_prepared = command
             try:
-                box.put(self._send_text(socket, group_id, text, source_message_id))
+                box.put(self._send_text(socket, group_id, text, source_message_id, on_prepared=on_prepared))
             except AssistantSendError as exc:
                 box.put(exc)
             except Exception as exc:
                 box.put(AssistantSendError(type(exc).__name__))
 
-    def _send_text(self, socket: Any, group_id: str, text: str, source_message_id: str) -> str:
+    def _send_text(self, socket: Any, group_id: str, text: str, source_message_id: str, *,
+                   on_prepared: Callable[[str, str, str], None] | None = None) -> str:
         slot = self._take_slot(source_message_id, group_id)
         if slot is None:
             suffix = uuid.uuid4().hex[:12]
             message_id, frames = build_group_frames(group_id, text, suffix=suffix, trace_id=uuid.uuid4().hex)
+            if on_prepared is not None:
+                on_prepared(message_id, frames[0]["toolSessionId"], frames[0]["traceId"])
             for frame in frames:
                 self._send_raw(socket, frame)
             if source_message_id:
                 with self._lock:
-                    self._delivered.add(source_message_id)
+                    self._delivered.add((group_id, source_message_id))
             return message_id
+        if on_prepared is not None:
+            on_prepared(slot.reply_message_id, slot.tool_session_id, slot.trace_id)
         self._send_qa_event(
             socket,
             slot,
@@ -441,18 +471,17 @@ class AssistantLink:
             },
         )
         with self._lock:
-            self._delivered.add(slot.message_id)
+            self._delivered.add((group_id, slot.message_id))
             if source_message_id:
-                self._delivered.add(source_message_id)
+                self._delivered.add((group_id, source_message_id))
         return slot.reply_message_id
 
     def _take_slot(self, source_message_id: str, group_id: str) -> _QaSlot | None:
         with self._lock:
-            if source_message_id and source_message_id in self._slots:
-                return self._slots.pop(source_message_id)
-            matched = [key for key, slot in self._slots.items() if slot.group_id == group_id]
-            if len(matched) == 1:
-                return self._slots.pop(matched[0])
+            canonical = self._aliases.get((group_id, source_message_id), source_message_id)
+            slot = self._slots.get(canonical)
+            if slot is not None and slot.group_id == group_id:
+                return self._slots.pop(canonical)
         return None
 
     def _close_slot(self, socket: Any, message_id: str, *, quiet: bool) -> None:

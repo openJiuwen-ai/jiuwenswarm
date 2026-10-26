@@ -2377,6 +2377,7 @@ class AgentWebSocketServer:
                 "idempotency_key": job.get("idempotency_key"),
                 "text": job.get("text"),
                 "channel": job.get("channel"),
+                "operation": job.get("operation", "send"),
             },
         }
         mentions = job.get("mention_targets")
@@ -2841,20 +2842,33 @@ class AgentWebSocketServer:
     ) -> None:
         """Accept one polled WeLink group message for the bound colleague."""
         from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition
-        from jiuwenswarm.server.jiuwenmate.welink_inbound import WelinkInboundEvent, accept_welink_message
+        from jiuwenswarm.server.jiuwenmate.welink_inbound import (
+            WelinkInboundEvent, accept_welink_message, configured_welink_binding,
+        )
 
-        disposition = InboundDisposition.REJECTED
+        disposition = InboundDisposition.RETRYABLE
+        event = None
         try:
             params = request.params if isinstance(request.params, dict) else {}
             event = WelinkInboundEvent.from_payload(params.get("event"))
-            fanout = await self._ensure_persistent_group_fanout()
-            if fanout is not None:
-                disposition = await accept_welink_message(fanout, event)
-        except Exception as exc:
-            logger.warning(
-                "[AgentWebSocketServer] WeLink inbound rejected: error_type=%s",
-                type(exc).__name__,
-            )
+        except (TypeError, ValueError):
+            disposition = InboundDisposition.REJECTED
+        if event is not None:
+            try:
+                binding = configured_welink_binding()
+                if binding is None or (binding.account, binding.agent_id) != (
+                    event.account.strip(), event.expected_agent_id.strip(),
+                ):
+                    disposition = InboundDisposition.REJECTED
+                else:
+                    fanout = await self._ensure_persistent_group_fanout()
+                    if fanout is not None:
+                        disposition = await accept_welink_message(fanout, event)
+            except Exception as exc:
+                logger.warning(
+                    "[AgentWebSocketServer] WeLink inbound temporarily unavailable: error_type=%s",
+                    type(exc).__name__,
+                )
 
         response = AgentResponse(
             request_id=request.request_id,

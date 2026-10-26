@@ -253,7 +253,7 @@ async def accept_welink_message(fanout: Any, event: WelinkInboundEvent) -> Inbou
         )
     except Exception as exc:
         logger.warning("[JiuwenMate] WeLink event rejected: error_type=%s error=%s", type(exc).__name__, exc)
-        return InboundDisposition.REJECTED
+        return InboundDisposition.RETRYABLE
     return InboundDisposition.HANDLED
 
 
