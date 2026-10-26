@@ -70,7 +70,7 @@ class HubTransport(Protocol):
         ...
 
 
-_SHARED_HTTP_CLIENTS: dict[tuple[str, float, int], httpx.AsyncClient] = {}
+_SHARED_HTTP_CLIENTS: dict[tuple[str, float, asyncio.AbstractEventLoop], httpx.AsyncClient] = {}
 _MAX_SHARED_CLIENTS = 8
 
 
@@ -111,7 +111,7 @@ class HttpHubTransport:
         return None
 
     async def aclose(self) -> None:
-        key = (self.base_url, self.timeout, id(asyncio.get_running_loop()))
+        key = (self.base_url, self.timeout, asyncio.get_running_loop())
         client = _SHARED_HTTP_CLIENTS.pop(key, None)
         if client is not None and not client.is_closed:
             await client.aclose()
@@ -120,11 +120,13 @@ class HttpHubTransport:
         """Reuse one client per endpoint and event loop so TLS stays warm.
 
         A fresh client costs a full handshake (hundreds of milliseconds here), and asset
-        pages issue several Hub calls in a row.
+        pages issue several Hub calls in a row. The loop object itself is the key so a
+        recycled ``id()`` can never hit a client bound to a closed loop.
         """
-        key = (self.base_url, self.timeout, id(asyncio.get_running_loop()))
+        loop = asyncio.get_running_loop()
+        key = (self.base_url, self.timeout, loop)
         client = _SHARED_HTTP_CLIENTS.get(key)
-        if client is not None and not client.is_closed:
+        if client is not None and not client.is_closed and not loop.is_closed():
             return client
         client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=False)
         _SHARED_HTTP_CLIENTS[key] = client
@@ -308,16 +310,20 @@ class HubClient(HubAssetPort):
             entries = listing.get("files")
             if not isinstance(entries, list):
                 return ""
-            target = next(
+            # Prefer the package-root README; nested ones (docs/README.md, skills/x/README.md)
+            # describe a sub-asset and must not stand in for the package description.
+            readmes = sorted(
                 (
-                    entry.get("path")
-                    for entry in entries
-                    if isinstance(entry, dict)
-                    and isinstance(entry.get("path"), str)
-                    and str(entry["path"]).rsplit("/", 1)[-1].lower() == "readme.md"
+                    path
+                    for path in (
+                        entry.get("path") for entry in entries if isinstance(entry, dict)
+                    )
+                    if isinstance(path, str)
+                    and path.rsplit("/", 1)[-1].lower() == "readme.md"
                 ),
-                None,
+                key=lambda path: (path.count("/"), len(path)),
             )
+            target = readmes[0] if readmes else None
             if not target:
                 return ""
             payload = await self.transport.get_data(files_path, params={"with_content": target})

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 HubAssetKind = Literal["agent_template", "agent_group", "plugin", "mcp"]
 
