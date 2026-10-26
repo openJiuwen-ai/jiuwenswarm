@@ -188,6 +188,40 @@ test('without an open card, and for the assistant notices, replies are left alon
   assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
 });
 
+test('a card that opens before the reply to just-finished speech redirects that reply', () => {
+  // Consent spoken just before the card appeared was answered "已收到您的确认…继续执行"
+  // just after it (#5538 robustness run): the reply had been formed without the card.
+  const { session, sent } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
+  openCard(session);
+  sent.length = 0;
+  session.handleEvent({ type: 'response.created', response: { id: 'auto' } });
+  assert.deepEqual(sent.map(e => e.type), ['response.cancel']);
+  session.handleEvent({ type: 'response.done', response: { id: 'auto', status: 'cancelled' } });
+  assert.match(sent.find(e => e.type === 'conversation.item.create').item.content[0].text, /has NOT clicked/);
+});
+
+test('a card that opens while the reply to speech is playing cancels and redirects it', () => {
+  const { session, sent } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
+  session.handleEvent({ type: 'response.created', response: { id: 'auto' } });
+  sent.length = 0;
+  openCard(session);
+  assert.ok(sent.some(e => e.type === 'response.cancel'), 'the playing reply is cancelled');
+  session.handleEvent({ type: 'response.done', response: { id: 'auto', status: 'cancelled' } });
+  assert.match(sent.find(e => e.type === 'conversation.item.create').item.content[0].text, /has NOT clicked/);
+});
+
+test('a card that opens while an assistant notice plays leaves the notice alone', () => {
+  const { session, sent } = createSession();
+  session.enqueueQuestion('ask', { id: 'q-a', request_id: 'ask-1', state: 'pending',
+    source: 'ask_user_interrupt', questions: [{ question: '预算多少？' }] });
+  session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
+  sent.length = 0;
+  openCard(session);
+  assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
+});
+
 test('information questions do not add approval instructions', () => {
   const { session, sent } = createSession();
   session.enqueueQuestion('ask', { id: 'q-a', request_id: 'ask-1', state: 'pending',

@@ -145,6 +145,10 @@ export class RealtimeDuplexSession {
   // A user turn spoken while a card is open: the provider's automatic reply is cancelled and
   // re-requested after the card's status, so that status is the last thing the model reads.
   private cardTurn: { at: number; cancelling: boolean } | null = null;
+  // The provider's automatic reply to the user's latest speech: when that speech
+  // ended (until the reply is created), then the reply's ID while it plays.
+  private speechReplyPendingAt: number | null = null;
+  private speechReplyId: string | null = null;
   private pendingToolResults: RealtimeToolResult[] = [];
   private toolResultWaitKey = '';
   private acceptedToolResultIds = new Set<string>();
@@ -345,6 +349,8 @@ export class RealtimeDuplexSession {
     this.pendingQuestions = [];
     this.pendingApprovals.clear();
     this.cardTurn = null;
+    this.speechReplyPendingAt = null;
+    this.speechReplyId = null;
     this.toolResultWaitKey = '';
     this.acceptedToolResultIds.clear();
     this.acceptedFunctionCallIds.clear();
@@ -431,6 +437,7 @@ export class RealtimeDuplexSession {
     if (interaction.source && APPROVAL_SOURCES.has(interaction.source) && !this.pendingApprovals.has(key)) {
       this.pendingApprovals.set(key, interaction.questions?.[0]?.header || interaction.source);
       this.syncApprovalInstructions();
+      this.redirectSpeechReply();
     }
     if (this.acceptedToolResultIds.has(key)) return;
     this.acceptedToolResultIds.add(key);
@@ -462,6 +469,19 @@ export class RealtimeDuplexSession {
     if (!this.cardTurn) return;
     this.cardTurn.cancelling = true;
     this.interruptQwenResponse(this.activeUserTurnId || 'card-turn', 0, 0, 0);
+  }
+
+  // A card that opens while the model answers speech finished just before it: that
+  // reply was formed without the card ("已收到您的确认…继续执行"), so it is
+  // redirected like any card turn. Notices and tool results are never speech replies.
+  private redirectSpeechReply(): void {
+    if (this.cardTurn) return;
+    if (this.speechReplyPendingAt !== null && performance.now() - this.speechReplyPendingAt < 8_000) {
+      this.cardTurn = { at: this.speechReplyPendingAt, cancelling: false };
+    } else if (this.responseActive && this.speechReplyId && this.speechReplyId === this.responseId) {
+      this.cardTurn = { at: performance.now(), cancelling: false };
+      this.cancelForCardTurn();
+    }
   }
 
   private reissueCardTurn(): void {
@@ -922,6 +942,8 @@ export class RealtimeDuplexSession {
         }
       }
       this.responseActive = true;
+      this.speechReplyId = this.speechReplyPendingAt !== null ? this.responseId : null;
+      this.speechReplyPendingAt = null;
       if (this.cardTurn && !this.cardTurn.cancelling) {
         if (this.pendingApprovals.size && performance.now() - this.cardTurn.at < 8_000) this.cancelForCardTurn();
         else this.cardTurn = null;
@@ -963,6 +985,7 @@ export class RealtimeDuplexSession {
       if (this.providerSpeechActive) this.latestInputId = String(event.item_id || this.newTurnId('audio'));
       this.awaitingProviderResponse = true;
       // The provider answers this speech by itself; with a card open, that reply is redirected.
+      if (type === 'input_audio_buffer.speech_stopped') this.speechReplyPendingAt = performance.now();
       if (type === 'input_audio_buffer.speech_stopped' && this.pendingApprovals.size) {
         this.cardTurn = { at: performance.now(), cancelling: false };
       }

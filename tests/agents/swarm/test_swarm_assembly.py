@@ -271,7 +271,6 @@ _COMMON_TOOL_NAMES: frozenset[str] = frozenset(
         # Skill retrieval is a separate self-gated tool provider.
         registry.SKILL_RETRIEVAL,
         registry.SYMPHONY_TOOLKIT,
-        registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
         registry.VIDEO_GEN,
@@ -663,6 +662,14 @@ def test_build_member_capability_specs_tool_names(role: str) -> None:
         expected.add(registry.SESSION_MESSAGING_TOOLS)
     assert tool_names == expected
     assert all(isinstance(spec, BuiltinToolSpec) for spec in tool_specs)
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.code"])
+def test_team_members_do_not_register_user_todos(mode: str, role: str) -> None:
+    _, tool_specs = build_member_capability_specs({}, mode, role)
+
+    assert registry.USER_TODOS not in {spec.type for spec in tool_specs}
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
@@ -2502,7 +2509,6 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.AUDIO,
         # SKILL_TOOLKIT moved to the MEMBER_SKILL_TOOLKIT rail (see common set).
         registry.SKILL_RETRIEVAL,
-        registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
         registry.VIDEO_GEN,

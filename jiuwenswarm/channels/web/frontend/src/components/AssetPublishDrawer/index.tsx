@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { FormDrawer, Input, Textarea } from '../ui';
 import {
   beginHubOAuth,
+  clearHubOAuthSession,
   getStoredOAuthProvider,
   getStoredOAuthUser,
   waitForHubOAuth,
@@ -129,6 +130,8 @@ const messages = {
     publicDescription: '审核通过后可在 Hub 中公开展示。',
     privateDescription: '仅对当前发布账号可见。',
     switchAccount: '切换账号',
+    signOut: '退出授权',
+    signOutConfirm: '退出后需要重新登录才能继续发布，已填写的内容会保留。是否继续？',
     loginWith: '使用',
     signedIn: '已登录',
     forceWarning: '将尝试覆盖 Hub 中的同版本内容，请确认你有更新权限。',
@@ -223,6 +226,8 @@ const messages = {
     publicDescription: 'Visible in Hub after moderation approval.',
     privateDescription: 'Visible only to the publishing account.',
     switchAccount: 'Switch account',
+    signOut: 'Sign out',
+    signOutConfirm: 'You will need to sign in again to publish. Your entered values are kept. Continue?',
     loginWith: 'Sign in with',
     signedIn: 'signed in',
     forceWarning: 'This will attempt to overwrite the same Hub version. Confirm that you have update permission.',
@@ -349,6 +354,11 @@ function AssetPublishDrawer({
     const desktopOpen = window.pywebview?.api?.open_external_url;
     const browserTab = desktopOpen || window.__JIUWEN_DESKTOP__ ? null : window.open('', '_blank');
     loginWindow.current = browserTab;
+    const cancelled = () => {
+      if (generation === loginGeneration.current) return false;
+      browserTab?.close();
+      return true;
+    };
     try {
       setLoginError('');
       setLoginBusy(true);
@@ -356,8 +366,10 @@ function AssetPublishDrawer({
       if (!desktopOpen && !browserTab) throw new Error('浏览器阻止了授权窗口，请允许打开新标签页。');
       if (browserTab) browserTab.opener = null;
       const attempt = await beginHubOAuth(provider);
+      if (cancelled()) return;
       if (desktopOpen) {
         const opened = await desktopOpen(attempt.authorize_url);
+        if (cancelled()) return;
         if (!opened) throw new Error('无法打开系统浏览器，请重试。');
       } else if (browserTab) browserTab.location.href = attempt.authorize_url;
       loginAbort.current?.abort();
@@ -377,6 +389,21 @@ function AssetPublishDrawer({
         setLoginBusy(false);
       }
     }
+  };
+  const signOut = () => {
+    if (!window.confirm(text('signOutConfirm'))) return;
+    // Invalidate an authorization attempt that is still in flight, including the stage before
+    // polling starts, otherwise it can resume and store a fresh token after signing out.
+    loginGeneration.current++;
+    loginAbort.current?.abort();
+    loginWindow.current?.close();
+    setLoginBusy(false);
+    clearHubOAuthSession();
+    setSwitchingAccount(false);
+    setReview(false);
+    setLoginError('');
+    // The hook listens for this event to re-read the authorization scope.
+    window.dispatchEvent(new CustomEvent('oauth-callback-complete'));
   };
   const invalid = validateMetadata(state.metadata).length > 0;
   const invalidFields = new Set(validateMetadata(state.metadata));
@@ -567,15 +594,26 @@ function AssetPublishDrawer({
               <span data-testid="asset-publish-destination">{hubHost(state.description.hub_url)}</span>
             )}
           </div>
-          <button
-            type="button"
-            className="asset-publish-text-button"
-            data-testid="asset-publish-switch-account"
-            aria-expanded={switchingAccount}
-            onClick={() => setSwitchingAccount((value) => !value)}
-          >
-            {text('switchAccount')}
-          </button>
+          <div className="asset-publish-account-actions">
+            <button
+              type="button"
+              className="asset-publish-text-button"
+              data-testid="asset-publish-switch-account"
+              aria-expanded={switchingAccount}
+              onClick={() => setSwitchingAccount((value) => !value)}
+            >
+              {text('switchAccount')}
+            </button>
+            <button
+              type="button"
+              className="asset-publish-text-button"
+              data-testid="asset-publish-sign-out"
+              onClick={signOut}
+              disabled={state.busy || state.submissionLocked}
+            >
+              {text('signOut')}
+            </button>
+          </div>
           {switchingAccount && (
             <div className="asset-publish-provider-options">
               {(['gitcode', 'github'] as const).map((nextProvider) => (

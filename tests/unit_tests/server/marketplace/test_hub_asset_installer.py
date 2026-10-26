@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -212,3 +213,58 @@ async def test_install_rejects_existing_destination_without_overwriting_it(
         )
 
     assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_install_uses_resolved_alias_for_same_named_hub_asset(
+    tmp_path: Path,
+) -> None:
+    """Two Hub assets may share one package name; the resolver picks the local id."""
+    destination_root = tmp_path / "packages"
+    state = HubInstallStateStore(tmp_path / "state")
+    committed: list[str] = []
+
+    result = await install_hub_asset_package(
+        kind="plugin",
+        asset_id="asset-second",
+        destination_root=destination_root,
+        state_store=state,
+        package_name_validator=lambda value: value,
+        package_validator=lambda _root, _expected: None,
+        package_id_resolver=lambda package_name, _asset: f"{package_name}-2",
+        on_committed=lambda record: committed.append(record.package_id),
+        hub_port=_HubPort(),
+        downloader=_Downloader(),
+    )
+
+    assert result.package_id == "runtime-package-2"
+    assert result.destination == destination_root / "runtime-package-2"
+    assert (result.destination / "payload.txt").is_file()
+    assert result.record.package_id == "runtime-package-2"
+    assert committed == ["runtime-package-2"]
+    assert state.get("asset-second").package_id == "runtime-package-2"
+
+
+@pytest.mark.asyncio
+async def test_install_rejects_artifact_name_that_is_neither_hub_nor_alias(
+    tmp_path: Path,
+) -> None:
+    """An alias only tolerates the Hub package name inside the archive."""
+
+    class ForeignArtifactPort(_HubPort):
+        async def resolve_download(self, request):
+            artifact = await super().resolve_download(request)
+            return replace(artifact, package_name="some-other-package")
+
+    with pytest.raises(ValueError, match="artifact package name mismatch"):
+        await install_hub_asset_package(
+            kind="plugin",
+            asset_id="asset-second",
+            destination_root=tmp_path / "packages",
+            state_store=HubInstallStateStore(tmp_path / "state"),
+            package_name_validator=lambda value: value,
+            package_validator=lambda _root, _expected: None,
+            package_id_resolver=lambda package_name, _asset: f"{package_name}-2",
+            hub_port=ForeignArtifactPort(),
+            downloader=_Downloader(),
+        )

@@ -1499,6 +1499,7 @@
       "chooseSource": "选择共享的内容",
       "muteMic": "关闭麦克风",
       "unmuteMic": "开启麦克风",
+      "cardHold": "请先点击上方确认卡片，语音已暂停收音",
       "muteSpeaker": "静音模型回应",
       "unmuteSpeaker": "开启模型声音",
       "stopSharing": "停止屏幕共享",

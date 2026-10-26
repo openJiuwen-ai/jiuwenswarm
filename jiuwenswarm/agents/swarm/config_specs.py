@@ -136,7 +136,6 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     # registrar.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
-    registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
     registry.VIDEO_GEN,
@@ -194,7 +193,6 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     # rail; declaring SKILL_TOOLKIT here too would double-register them.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
-    registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
     registry.VIDEO_GEN,

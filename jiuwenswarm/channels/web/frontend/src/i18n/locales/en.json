@@ -1515,6 +1515,7 @@
       "chooseSource": "Choose what to share",
       "muteMic": "Mute microphone",
       "unmuteMic": "Unmute microphone",
+      "cardHold": "Voice is paused until you click the confirmation card above",
       "muteSpeaker": "Mute model audio",
       "unmuteSpeaker": "Unmute model audio",
       "stopSharing": "Stop screen sharing",
