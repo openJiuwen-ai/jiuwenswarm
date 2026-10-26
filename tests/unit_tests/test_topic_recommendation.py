@@ -2169,3 +2169,114 @@ def test_recommendation_stores_wait_the_same_for_a_write_lock(tmp_path) -> None:
     for store in (topic_store, short_store):
         with store._connect() as connection:
             assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+
+
+@pytest.mark.asyncio
+async def test_saved_topic_sync_logs_when_agent_server_rejects(monkeypatch) -> None:
+    from gateway.app_gateway import sync_saved_topic_recommendation
+
+    warnings: list[str] = []
+
+    def record(message: str, *args: Any, **_kwargs: Any) -> None:
+        warnings.append(message % args if args else message)
+
+    async def reject(**_kwargs):
+        return False, {"error": "AgentServer is unavailable", "code": "SERVICE_UNAVAILABLE"}
+
+    monkeypatch.setattr("gateway.routing.e2a_proxy.fetch_agent_unary", reject)
+    monkeypatch.setattr("gateway.app_gateway.logger.warning", record)
+    await sync_saved_topic_recommendation(
+        object(),
+        updated_env_keys=["topic_recommendation_enabled"],
+        reload_scopes=[],
+        config_payload={},
+    )
+    assert warnings == [
+        "[App] topic recommendation config sync failed: "
+        "code=SERVICE_UNAVAILABLE error=AgentServer is unavailable"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recommendation_host_stop_failure_does_not_escape() -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    class _Host:
+        async def shutdown(self) -> None:
+            raise RuntimeError("recommendation stop failed")
+
+    server = AgentWebSocketServer()
+    server._recommendation_host = _Host()
+    await server._stop_recommendation_host()
+    assert server._recommendation_host is None
+
+
+@pytest.mark.asyncio
+async def test_rebind_reports_success_when_recommendation_hook_fails(monkeypatch) -> None:
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
+    from jiuwenswarm.common.e2a.models import E2AResponse
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    class _Project:
+        project_id = "proj-new"
+        project_dir = "D:/work"
+        name = "work"
+        work_mode = "code"
+
+    rebound = {"count": 0}
+
+    def metadata(sid, cache_bust=False, enable_writeback=True):
+        return {"project_id": "proj-old", "session_id": sid}
+
+    def rebind(**_kwargs):
+        rebound["count"] += 1
+        return True
+
+    class _Host:
+        async def session_left_project(self, project_id: str, session_id: str) -> None:
+            raise RuntimeError("sqlite locked")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.agent_ws_server.get_session_metadata",
+        metadata,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.project_store.find_or_create_code_project_for_tui_params",
+        lambda _params: _Project(),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.rebind_session_project",
+        rebind,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.recommendation_host.active_recommendation_host",
+        lambda: _Host(),
+    )
+
+    class _Socket:
+        def __init__(self) -> None:
+            self.frames: list[dict[str, Any]] = []
+
+        async def send(self, data: str | bytes) -> None:
+            if isinstance(data, bytes):
+                data = data.decode("utf-8")
+            self.frames.append(json.loads(data))
+
+    socket = _Socket()
+    await AgentWebSocketServer()._handle_session_rebind_project(
+        socket,
+        AgentRequest(
+            request_id="rebind-1",
+            channel_id="web",
+            session_id="sess-1",
+            req_method=ReqMethod.SESSION_REBIND_PROJECT,
+            params={"project_dir": "D:/work"},
+        ),
+        asyncio.Lock(),
+    )
+    assert rebound["count"] == 1
+    response = e2a_response_to_agent_response(E2AResponse.from_dict(socket.frames[-1]))
+    assert response.ok is True
+    assert response.payload["project_id"] == "proj-new"

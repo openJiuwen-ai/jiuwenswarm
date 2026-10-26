@@ -5121,13 +5121,21 @@ class AgentWebSocketServer:
                             active_recommendation_host,
                         )
 
-                        host = active_recommendation_host()
-                        if (
-                            host is not None
-                            and previous_project_id
-                            and previous_project_id != project.project_id
-                        ):
-                            await host.session_left_project(previous_project_id, sid)
+                        try:
+                            host = active_recommendation_host()
+                            if (
+                                host is not None
+                                and previous_project_id
+                                and previous_project_id != project.project_id
+                            ):
+                                await host.session_left_project(previous_project_id, sid)
+                        except Exception:  # noqa: BLE001 - rebind already persisted
+                            logger.warning(
+                                "[AgentWebSocketServer] session rebind recommendation "
+                                "hook failed: session_id=%s",
+                                sid,
+                                exc_info=True,
+                            )
                         resp = AgentResponse(
                             request_id=request.request_id,
                             channel_id=request.channel_id,
@@ -12663,7 +12671,13 @@ class AgentWebSocketServer:
             return
         deactivate_recommendation_host(host)
         self._recommendation_host = None
-        await host.shutdown()
+        try:
+            await host.shutdown()
+        except Exception:  # noqa: BLE001 - recommendation must not block server stop
+            logger.warning(
+                "[AgentWebSocketServer] recommendation host failed to stop",
+                exc_info=True,
+            )
 
     async def _push_recommendation_event(self, event_type: str, payload: dict[str, Any]) -> None:
         body = dict(payload)

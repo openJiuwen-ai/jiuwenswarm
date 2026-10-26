@@ -486,22 +486,13 @@ class PromptSuggestionForks:
         )
         transport = WebSocketGatewayPushTransport()
         store = TopicStarterStore(get_agent_workspace_dir() / "recommendation.db")
-        for shown_id, shown_text in zip(suggestion_ids, suggestions):
-            shown = await asyncio.to_thread(
-                stage_delivery,
-                store,
-                session_id,
-                request_id,
-                {"suggestion_id": shown_id, "text": shown_text},
-            )
-            if shown is None:
-                continue
-            await transport.send_push({
-                "channel_id": "",
-                "session_id": session_id,
-                "request_id": request_id,
-                "payload": shown,
-            })
+        await _push_checked_suggestions(
+            store=store,
+            transport=transport,
+            session_id=session_id,
+            request_id=request_id,
+            suggestions=list(zip(suggestion_ids, suggestions)),
+        )
 
 
 forks = PromptSuggestionForks()
@@ -606,6 +597,41 @@ def record_page_outcome(store: TopicStarterStore, params: dict[str, Any]) -> boo
         "created_at": time.time(),
         "payload": {"suggestion_id": suggestion_id, "session_id": session_id, "request_id": request_id, **outcome},
     })
+
+
+async def _push_checked_suggestions(
+    *,
+    store: TopicStarterStore,
+    transport: Any,
+    session_id: str,
+    request_id: str,
+    suggestions: list[tuple[str, str]],
+) -> None:
+    """Push each current suggestion. One staging or push failure leaves the rest."""
+    for shown_id, shown_text in suggestions:
+        try:
+            shown = await asyncio.to_thread(
+                stage_delivery,
+                store,
+                session_id,
+                request_id,
+                {"suggestion_id": shown_id, "text": shown_text},
+            )
+            if shown is None:
+                continue
+            await transport.send_push({
+                "channel_id": "",
+                "session_id": session_id,
+                "request_id": request_id,
+                "payload": shown,
+            })
+        except Exception:  # noqa: BLE001 - one suggestion must not drop the others
+            logger.warning(
+                "[PromptSuggestion] delivery failed: session_id=%s suggestion_id=%s",
+                session_id,
+                shown_id,
+                exc_info=True,
+            )
 
 
 def stage_delivery(

@@ -1803,6 +1803,49 @@ def _build_acp_route_binding(
     )
 
 
+async def sync_saved_topic_recommendation(
+    client: Any,
+    *,
+    updated_env_keys: Any,
+    reload_scopes: Any,
+    config_payload: dict[str, Any] | None,
+) -> None:
+    """Ask AgentServer to apply a saved topic switch or model.
+
+    ``fetch_agent_unary`` reports a down or rejecting AgentServer as
+    ``(False, payload)`` and does not raise. The config file is already saved,
+    so this only logs; it does not fail the save.
+    """
+    from gateway.routing.e2a_proxy import fetch_agent_unary
+
+    try:
+        ok, payload = await fetch_agent_unary(
+            agent_client=client,
+            req_method=ReqMethod.RECOMMENDATION,
+            params={
+                "action": "apply_saved_config",
+                "updated_env_keys": sorted(updated_env_keys or []),
+                "reload_scopes": sorted(reload_scopes),
+                "config": dict(config_payload or {}),
+            },
+            session_id="sess_reload",
+            user_id="agentos_test",
+            channel_id="web",
+            label="recommendation",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[App] topic recommendation config sync failed: %s", exc)
+        return
+    if ok:
+        return
+    detail = payload if isinstance(payload, dict) else {}
+    logger.warning(
+        "[App] topic recommendation config sync failed: code=%s error=%s",
+        detail.get("code"),
+        detail.get("error"),
+    )
+
+
 def _build_route_config_map(bindings: list[GatewayRouteBinding]) -> dict[str, RouteConfig]:
     return {
         binding.path: RouteConfig(
@@ -2299,32 +2342,13 @@ async def _run(
             or "model" in reload_scopes
         )
         if should_sync_topic:
-            async def _sync_topic_recommendation_after_save() -> None:
-                from gateway.routing.e2a_proxy import fetch_agent_unary
-
-                try:
-                    await fetch_agent_unary(
-                        agent_client=client,
-                        req_method=ReqMethod.RECOMMENDATION,
-                        params={
-                            "action": "apply_saved_config",
-                            "updated_env_keys": sorted(updated_env_keys or []),
-                            "reload_scopes": sorted(reload_scopes),
-                            "config": dict(config_payload or {}),
-                        },
-                        session_id="sess_reload",
-                        user_id="agentos_test",
-                        channel_id="web",
-                        label="recommendation",
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "[App] topic recommendation config sync failed: %s",
-                        exc,
-                    )
-
             spawn_background_task(
-                _sync_topic_recommendation_after_save(),
+                sync_saved_topic_recommendation(
+                    client,
+                    updated_env_keys=updated_env_keys,
+                    reload_scopes=reload_scopes,
+                    config_payload=config_payload,
+                ),
                 name="topic-recommendation-config-sync",
             )
         return True

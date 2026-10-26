@@ -1176,3 +1176,32 @@ async def test_turn_whose_last_call_still_asked_for_a_tool_gets_no_suggestion(pr
     assert len(client.requests) == 1
     assert product.page.events == []
     assert _outcomes(product.store) == [("suppressed", "unanswered_tool_call")]
+
+
+async def test_one_failed_suggestion_delivery_leaves_the_next(monkeypatch) -> None:
+    pushed: list[dict[str, Any]] = []
+
+    def stage(_store, session_id, request_id, payload):
+        if payload["suggestion_id"] == "first":
+            raise RuntimeError("db locked")
+        return {
+            "event_type": "prompt_suggestion.ready",
+            "session_id": session_id,
+            "request_id": request_id,
+            "suggestion_id": payload["suggestion_id"],
+            "text": payload["text"],
+        }
+
+    class _Transport:
+        async def send_push(self, message: dict[str, Any]) -> None:
+            pushed.append(message)
+
+    monkeypatch.setattr(prompt_suggestion, "stage_delivery", stage)
+    await prompt_suggestion._push_checked_suggestions(
+        store=None,
+        transport=_Transport(),
+        session_id=SESSION,
+        request_id="req-1",
+        suggestions=[("first", "导出成双语对照"), ("second", "再整理一份术语表")],
+    )
+    assert [message["payload"]["suggestion_id"] for message in pushed] == ["second"]
