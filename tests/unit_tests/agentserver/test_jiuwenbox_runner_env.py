@@ -139,8 +139,9 @@ async def test_stop_timeout_kills_before_draining_shutdown_logs(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("platform", ["win32", "linux"])
 @pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("implicit_git", [False, True])
 async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
-    tmp_path, monkeypatch, platform, enabled,
+    tmp_path, monkeypatch, platform, enabled, implicit_git,
 ):
     from jiuwenswarm.common import config
 
@@ -175,7 +176,18 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
     monkeypatch.setenv("EMPTY_TOOL_SETTING", "")
     monkeypatch.setenv("HOST_TOOL_TOKEN", "test-tool-token")
     monkeypatch.setenv("HOST_PYTHON_EXE", "C:/managed/python.exe")
-    monkeypatch.setenv("JIUWENBOX_TOOL_PATHS", json.dumps(tools))
+    if implicit_git:
+        git = tmp_path / "git-win"
+        for name in ("cmd/git.exe", "bin/bash.exe", "usr/bin/bash.exe"):
+            path = git / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        tools = {"read_roots": [str(git)],
+                 "executable_dirs": [str(git / name) for name in ("cmd", "bin", "usr/bin")]}
+        monkeypatch.delenv("JIUWENBOX_TOOL_PATHS", raising=False)
+        monkeypatch.setattr(runner_module.shutil, "which", lambda *a, **kw: str(git / "cmd/git.exe"))
+    else:
+        monkeypatch.setenv("JIUWENBOX_TOOL_PATHS", json.dumps(tools))
     monkeypatch.setenv("CLAW_SKILL_TOKEN", "unlisted-product-token")
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-forwarded")
     monkeypatch.setenv("DATABASE_URL", "must-not-be-forwarded")
@@ -220,7 +232,15 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
         assert "DATABASE_URL" not in env
         assert json.loads(env["JIUWENBOX_ENV_ALLOWLIST"]) == allowlist
         assert json.loads(env["JIUWENBOX_PATH_ALLOWLIST"]) == paths
-        assert json.loads(env["JIUWENBOX_TOOL_PATHS"]) == tools
+        if implicit_git and platform != "win32":
+            assert "JIUWENBOX_TOOL_PATHS" not in env
+        else:
+            assert json.loads(env["JIUWENBOX_TOOL_PATHS"]) == tools
+
+    if platform == "win32":
+        assert runner._prepare_windows_setup.await_count == 2
+        for call in runner._prepare_windows_setup.await_args_list:
+            assert json.loads(call.args[0]["JIUWENBOX_TOOL_PATHS"]) == tools
 
     policy.write_text("version: 3", encoding="utf-8")
     assert await runner.ensure_running(policy_path=policy, extra_env={})

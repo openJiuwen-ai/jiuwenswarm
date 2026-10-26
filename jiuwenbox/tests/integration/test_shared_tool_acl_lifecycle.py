@@ -1,15 +1,75 @@
 """Service-owned tool ACLs are persistent, cached and excluded from session cleanup."""
 
-import sys
 import json
+import sys
+from unittest.mock import Mock
 
 import pytest
 
 from jiuwenbox.models.policy import SecurityPolicy
 from jiuwenbox.server import shared_paths
-from jiuwenbox.supervisor import win_acl, win_constants as const, win_setup
+from jiuwenbox.supervisor import win_acl, win_setup
+from jiuwenbox.supervisor import win_constants as const
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="real Windows ACLs")
+
+
+def test_declared_bundled_git_repairs_existing_executables_and_dlls_only(tmp_path, monkeypatch):
+    import win32security as security
+
+    desktop = tmp_path / "desktop"
+    git = desktop / "runtime" / "git-win"
+    files = [git / name for name in (
+        "cmd/git.exe", "bin/bash.exe", "usr/bin/bash.exe", "usr/bin/msys-2.0.dll",
+    )]
+    sibling = desktop / "users" / "private.txt"
+    for file in [*files, sibling]:
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text("already extracted")
+    # Existing protected files cannot rely on propagation from a parent ACE.
+    sd = security.GetFileSecurity(str(files[-1]), security.DACL_SECURITY_INFORMATION)
+    sd.SetSecurityDescriptorControl(security.SE_DACL_PROTECTED, security.SE_DACL_PROTECTED)
+    security.SetFileSecurity(str(files[-1]), security.DACL_SECURITY_INFORMATION, sd)
+    sid = "S-1-5-21-111111111-222222222-333333333-12345"
+    synthetic = "S-1-5-21-111111111-222222222-333333333-12346"
+    monkeypatch.setenv("JIUWENBOX_TOOL_PATHS", json.dumps({
+        "read_roots": [str(git)],
+        "executable_dirs": [str(git / name) for name in ("cmd", "bin", "usr/bin")],
+    }))
+    monkeypatch.setenv("JIUWENBOX_PATH_ALLOWLIST", "[]")
+    for name in ("JIUWENBOX_BUNDLED_PYTHON", "JIUWENBOX_VENV_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(shared_paths, "_shared_acl_cache_path", lambda: tmp_path / "git-acl-cache.json")
+    monkeypatch.setattr(win_setup, "get_sandbox_user_sid", lambda: sid)
+    monkeypatch.setattr(win_acl, "get_synthetic_write_sid", lambda: synthetic)
+    # Record ancestor repair without changing host-profile ACLs for fake SIDs.
+    traverse = Mock()
+    monkeypatch.setattr(win_acl, "grant_parent_traverse", traverse)
+
+    def entries(path):
+        descriptor = security.GetFileSecurity(str(path), security.DACL_SECURITY_INFORMATION)
+        return win_acl._acl_entries(descriptor.GetSecurityDescriptorDacl())
+
+    sibling_before = entries(sibling)
+    policy = SecurityPolicy(version=1)
+    shared_paths.prepare_shared_tool_acl(policy)
+    assert shared_paths.shared_tool_paths() == ([str(git)], [])
+    assert {call.args[1] for call in traverse.call_args_list} == {sid, synthetic}
+    assert all(call.args[0] == str(git) for call in traverse.call_args_list)
+    for file in files:
+        for trustee in (sid, synthetic):
+            allows = [mask for kind, _, mask, who in entries(file)
+                      if who == trustee and kind == const.ACCESS_ALLOWED_ACE_TYPE]
+            assert allows and allows[0] & const.ALLOW_READ_EXECUTE_RIGHTS == const.ALLOW_READ_EXECUTE_RIGHTS
+            assert not allows[0] & const.DENY_WRITE_RIGHTS
+    assert entries(sibling) == sibling_before
+    # A configured deny remains authoritative over the automatic tool grant.
+    policy = SecurityPolicy.model_validate({
+        "version": 1, "windows": {"filesystem": {"deny_read": [str(git)]}},
+    })
+    shared_paths.prepare_shared_tool_acl(policy)
+    assert any(kind == const.ACCESS_DENIED_ACE_TYPE and mask & const.DENY_READ_RIGHTS
+               for kind, _, mask, who in entries(files[0]) if who == sid)
 
 
 def test_shared_acl_cache_invalidation_and_no_tree_walk_on_warm_start(tmp_path, monkeypatch):
