@@ -4182,7 +4182,7 @@
           "manual": "Manual approval",
           "system": "System permission check"
         },
-        "risk": "Risk",
+        "risk": "Tool capability risk",
         "riskValues": {
           "critical": "Critical",
           "high": "High",
@@ -4190,7 +4190,7 @@
           "low": "Low",
           "unknown": "Unknown"
         },
-        "reason": "Reason",
+        "reason": "Approval rationale",
         "reasonValues": {
           "approved": "Permission review allowed this operation.",
           "denied": "Permission review denied this operation.",

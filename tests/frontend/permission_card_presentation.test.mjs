@@ -282,7 +282,7 @@ test('renders the current permission card reviewer and redacted payload', async 
     'first-reason',
     'data-badge-tone="success"',
     'Tool payload \\(redacted\\)',
-    'Risk: </span><span class="break-words text-text">Low',
+    'Tool capability risk: </span><span class="break-words text-text">Low',
   ]) {
     assert.match(html, new RegExp(expected));
   }

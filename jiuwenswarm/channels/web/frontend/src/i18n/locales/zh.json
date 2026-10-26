@@ -4156,7 +4156,7 @@
           "manual": "人工审批",
           "system": "系统权限检查"
         },
-        "risk": "风险",
+        "risk": "工具能力风险",
         "riskValues": {
           "critical": "严重",
           "high": "高",
@@ -4164,7 +4164,7 @@
           "low": "低",
           "unknown": "未知"
         },
-        "reason": "原因",
+        "reason": "本次审批依据",
         "reasonValues": {
           "approved": "权限审查已允许此操作。",
           "denied": "权限审查已拒绝此操作。",
