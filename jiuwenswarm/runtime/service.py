@@ -1717,18 +1717,23 @@ class AgentRuntime:
             set_runtime_context,
         )
 
-        async with self._tenant.scoped_manager(request) as manager:
-            token = set_runtime_context(self, manager)
-            try:
-                work_kind = self.session_work_kind(request)
-                if (
-                    work_kind is SessionWorkKind.CONTROL_INPUT
-                    and self._defer_stale_ask_user_to_chat(request)
-                ):
-                    work_kind = (
-                        SessionWorkKind.CHAT_STREAM
-                        if request.is_stream
-                        else SessionWorkKind.CHAT_UNARY
+        token = set_runtime_context(self, self._agent_manager)
+        try:
+            work_kind = self.session_work_kind(request)
+            if (
+                work_kind is SessionWorkKind.CONTROL_INPUT
+                and self._defer_stale_ask_user_to_chat(request)
+            ):
+                work_kind = (
+                    SessionWorkKind.CHAT_STREAM
+                    if request.is_stream
+                    else SessionWorkKind.CHAT_UNARY
+                )
+            if work_kind is not None:
+                await self._ensure_session_registered(request)
+                if work_kind is SessionWorkKind.CONTROL_INPUT:
+                    return await self._deliver_control(
+                        request, on_control_event=on_control_event,
                     )
                 if work_kind is not None:
                     await self._ensure_session_registered(request)
@@ -2075,12 +2080,6 @@ class AgentRuntime:
             for event in events:
                 yield event
             return
-        execution_id = None
-
-        def remember_execution(execution: SessionExecutionSnapshot) -> None:
-            nonlocal execution_id
-            execution_id = execution.execution_id
-
         if self.session_work_kind(request) is SessionWorkKind.CONTROL_INPUT and not (
             self._defer_stale_ask_user_to_chat(request)
         ):
@@ -3640,7 +3639,10 @@ class AgentRuntime:
         if not self._is_stale_ask_user_answer(request.params):
             return False
         session_id = request.session_id or "default"
-        if self._has_control_target(session_id, self._control_ids(request)):
+        if self._session_coordinator.has_control_target(
+            session_id,
+            self._control_request_id(request),
+        ):
             return False
         snapshot = self._session_coordinator.snapshot_session(session_id)
         if snapshot is None:
