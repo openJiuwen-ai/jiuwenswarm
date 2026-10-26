@@ -1984,7 +1984,6 @@ class JiuWenSwarmDeepAdapter:
         self._model_config_source: str = "config.yaml"
         self._enterprise_config: Any = None
         self._enterprise_config_resource_id: str | None = None
-        self._agent_permissions_body: dict[str, Any] | None = None
         self._config_base_cache: dict[str, Any] | None = None
         self._config_cache: dict[str, Any] = {}
         self._filesystem_rail: SysOperationRail | None = None
@@ -7291,6 +7290,9 @@ class JiuWenSwarmDeepAdapter:
             return
         config_base = result.config if isinstance(result.config, dict) else base
         self._config_base_cache = dict(config_base)
+        # 预热会话首聊才补企业配置时，同步挂上/刷新权限 Rail（含 Manager 护栏）。
+        if not self._permission_state.permission_update_in_progress:
+            self._update_permission_rail(config_base)
         try:
             self._create_model(config_base)
         except ValueError:
@@ -11214,9 +11216,6 @@ class JiuWenSwarmDeepAdapter:
         """Load + apply enterprise config for this request (read then merge)."""
         from jiuwenswarm.common.config_provider import resolve_agent_config
         from jiuwenswarm.edition import is_enterprise
-        from jiuwenswarm.server.runtime.enterprise_config.permissions import (
-            resolve_permissions_body_from_enterprise,
-        )
 
         cached_policy = getattr(self, "_enterprise_config", None)
         cached_resource_id = getattr(self, "_enterprise_config_resource_id", None)
@@ -11249,7 +11248,18 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] using enterprise MCP config: count=%s",
                 len(getattr(loaded, "mcp", None) or []),
             )
-        self._agent_permissions_body = resolve_permissions_body_from_enterprise(loaded)
+            perm_cfg = (
+                result.config.get("permissions")
+                if isinstance(result.config, dict)
+                else None
+            )
+            if isinstance(perm_cfg, dict):
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] using enterprise permissions config: "
+                    "enabled=%s permission_mode=%s",
+                    perm_cfg.get("enabled"),
+                    perm_cfg.get("permission_mode"),
+                )
         if loaded is not None and self._skill_manager is not None:
             try:
                 await self._skill_manager.apply_skill_source_configs(
@@ -11410,7 +11420,7 @@ class JiuWenSwarmDeepAdapter:
         self._instance_overrides = dict(config or {}) if isinstance(config, dict) else {}
         load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
         config_base = get_config()
-        # 企业版：create_instance 可带 request，按 routing 读库并合并 model/mcp
+        # 企业版：create_instance 可带 request，按 routing 读库并合并 model/mcp/permissions
         bootstrap_request = None
         if isinstance(self._instance_overrides, dict):
             bootstrap_request = self._instance_overrides.pop("request", None)
@@ -16236,7 +16246,10 @@ class JiuWenSwarmDeepAdapter:
         """
         if not self._is_session_scoped_adapter:
             session_id = self._session_adapter_key(request.session_id)
-            runtime_binding = request.trusted_runtime_binding
+            # Only chat.send (via JiuWenSwarm._resolve_runtime_binding_for_request)
+            # stamps this attribute. Control resume (permission / ask_user answer)
+            # calls process_message_*_impl directly and must tolerate absence.
+            runtime_binding = getattr(request, "trusted_runtime_binding", None)
             if request.req_method is ReqMethod.CHAT_SEND:
                 try:
                     if runtime_binding is None:
@@ -16933,7 +16946,9 @@ class JiuWenSwarmDeepAdapter:
         stream_impl_started_at = time.monotonic()
         if not self._is_session_scoped_adapter:
             session_id = self._session_adapter_key(request.session_id)
-            runtime_binding = request.trusted_runtime_binding
+            # Only chat.send stamps this; permission/ask_user control resume
+            # enters via deliver_control_input without the attribute.
+            runtime_binding = getattr(request, "trusted_runtime_binding", None)
             if request.req_method is ReqMethod.CHAT_SEND:
                 try:
                     if runtime_binding is None:

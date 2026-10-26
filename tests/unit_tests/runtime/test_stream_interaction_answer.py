@@ -679,7 +679,10 @@ async def test_awaitable_stream_factory_and_waiting_terminal_semantics(harness) 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["ask_user_interrupt", "confirm_interrupt"])
+@pytest.mark.parametrize(
+    "source",
+    ["ask_user_interrupt", "confirm_interrupt", "permission_interrupt"],
+)
 async def test_chat_send_question_answer_streams_before_resumed_turn_finishes(harness, source):
     """The WebSocket/mobile compatibility entry must not collect the whole turn."""
     await _seed_waiting(harness)

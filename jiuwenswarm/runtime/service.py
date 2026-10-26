@@ -1940,14 +1940,21 @@ class AgentRuntime:
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
+                # Stream Web answers while the resumed turn runs. Unary invoke
+                # still buffers via _deliver_control; Heartbeat keeps that path.
                 if (
-                    request.params.get("source") in {"ask_user_interrupt", "confirm_interrupt"}
+                    request.params.get("source") in {
+                        "ask_user_interrupt",
+                        "confirm_interrupt",
+                        "permission_interrupt",
+                    }
                     and self._session_coordinator.control_target_work_kind(
                         request.session_id or "default", self._control_request_id(request)
                     ) is not SessionWorkKind.HEARTBEAT
                 ):
                     async with aclosing(self._stream_with_runtime_context(
-                        self._stream_question_answer(request)
+                        self._stream_question_answer(request),
+                        request=request,
                     )) as events:
                         async for event in events:
                             yield event
@@ -1955,7 +1962,9 @@ class AgentRuntime:
                 # The resumed turn runs inside this await, before the loop
                 # below binds the Runtime. Bind it here as ``invoke`` does so
                 # the turn can reach host services such as Session messaging.
-                token = set_runtime_context(self, self._agent_manager)
+                # Use the tenant-scoped ``manager`` from the caller — AgentRuntime
+                # no longer keeps a parallel ``_agent_manager`` attribute.
+                token = set_runtime_context(self, manager)
                 try:
                     events = await self._deliver_control(
                         request, on_control_event=on_control_event,
@@ -2441,11 +2450,12 @@ class AgentRuntime:
         self,
         request: AgentRequest,
     ) -> AsyncIterator[RuntimeEvent]:
-        """Stream a compatibility question or confirmation under control admission.
+        """Stream ask_user / confirm / permission answers under control admission.
 
         The unary control API deliberately collects a complete turn. WebSocket
-        chat.send answers must instead expose each event while the turn runs.
-        Heartbeat controls retain their existing owner and completion policy.
+        chat.send / chat.user_answer resumes must instead expose each event
+        while the turn runs (including permission_interrupt). Heartbeat
+        controls retain their existing owner and completion policy.
         """
         session_id = request.session_id or "default"
         request_id = self._control_request_id(request)

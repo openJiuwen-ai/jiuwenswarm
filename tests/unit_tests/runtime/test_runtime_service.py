@@ -397,7 +397,10 @@ async def test_permission_control_ack_precedes_continuation_completion(streaming
             if task.done():
                 await task
             raise
-        assert len(received) == (1 if case == "smart" else 0)
+        # Unary + smart permission still early-acks via on_control_event.
+        # Streaming permission_interrupt now shares the ask_user stream path, so
+        # runtime.accepted rides the main event stream (not the callback).
+        assert len(received) == (1 if case == "smart" and not streaming else 0)
         if case == "failed_handoff":
             with pytest.raises(RuntimeError, match="handoff failed"):
                 await task
@@ -406,7 +409,9 @@ async def test_permission_control_ack_precedes_continuation_completion(streaming
             release.set()
             events = await asyncio.wait_for(task, timeout=1)
             assert [event.event_type for event in events] == (
-                ["chat.final"] if case == "smart" else ["runtime.accepted", "chat.final"]
+                ["chat.final"]
+                if case == "smart" and not streaming
+                else ["runtime.accepted", "chat.final"]
             )
             if received:
                 assert received[0].request_id == "answer-transport"
