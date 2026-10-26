@@ -36,7 +36,6 @@ export interface RuntimeTeamInfo {
 }
 
 interface TeamListResponse {
-  organization_owner_stopped?: boolean;
   organization_requests?: OrganizationRequest[];
   expert_requests?: ExpertRequest[];
   session_id: string;
@@ -208,7 +207,6 @@ export const useTeamSelectorStore = create<TeamSelectorState>((set, get) => ({
         reconcileOrganizationRequests(
           sessionId, teams.find((team) => team.is_owner)?.team_id || ownerTeamId(sessionId),
           response.organization_requests, processingRevision, response.expert_requests,
-          response.organization_owner_stopped,
         );
       }
 

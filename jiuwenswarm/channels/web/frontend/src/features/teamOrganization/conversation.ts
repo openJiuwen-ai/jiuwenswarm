@@ -4,7 +4,7 @@ import { conversationKey, useChatStore, useTeamSelectorStore } from '../../store
 import { isTeamOrganizationUiEnabled, useTeamOrganizationUiEnabled } from './featureConfig';
 import { generateUuidV4 } from '../../utils/uuid';
 import type { MediaItem } from '../../types';
-import { finishExpertRequest, startExpertRequest } from './processing';
+import { finishExpertRequest, isOrganizationProcessing, startExpertRequest } from './processing';
 
 import { ownerTeamId } from './ownerIdentity';
 export { ownerTeamId } from './ownerIdentity';
@@ -34,10 +34,8 @@ export function organizationOwnerStopTarget(sessionId: string): string | null {
   const runtime = useTeamSelectorStore.getState().runtimes[sessionId];
   const owner = runtime?.teams.find((team) => team.is_owner);
   const ownerId = owner?.team_id || ownerTeamId(sessionId);
-  const hasOrganization = Boolean(owner?.organization_id) || isOrganizationProcessing(sessionId);
-  const isProcessing = Boolean(useChatStore.getState().getRuntime(sessionId)?.isProcessing);
-  if (!ownerId || !hasOrganization || !isProcessing) return null;
-  return !runtime?.selectedTeamId || runtime.selectedTeamId === ownerId ? ownerId : null;
+  return ownerId && isOrganizationProcessing(sessionId) &&
+    (!runtime?.selectedTeamId || runtime.selectedTeamId === ownerId) ? ownerId : null;
 }
 
 export function useOrganizationConversationKey(sessionId: string | null): string {

@@ -168,6 +168,7 @@ import { TeamSelector } from './TeamSelector';
 import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import { resolveTeamDispatchMode, useTeamScheduledDispatchEnabled } from '../../features/teamDispatch/featureConfig';
@@ -1162,7 +1163,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const evolutionStatus = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.evolutionStatus ?? null);
   const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? EMPTY_SKILLS);
   const teamMembers = useSessionStore(
-    (s) => s.runtimes[conversationId]?.teamMembers ?? EMPTY_TEAM_MEMBERS,
+    (s) => s.runtimes[conversationId]?.teamMembers ?? [],
   ) as InputAreaTeamMember[];
   const currentSession = useSessionStore((s) => s.currentSession);
   const activeSession = useSessionStore((s) => {
@@ -2592,81 +2593,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const el = inputRef.current;
     return el ? readComposerText(el) : '';
   }, []);
-
-  // Capture before the next session's passive hydration replaces the editor DOM.
-  useLayoutEffect(() => {
-    const editor = inputRef.current;
-    const sid = activeSessionId;
-    if (!editor || !sid) return;
-    return () => {
-      const runtime = useChatStore.getState().runtimes[sid];
-      const text = readComposerText(editor);
-      // Sending or an external edit may already have replaced the stored draft.
-      if (runtime && runtime.inputValue === text) {
-        useChatStore.getState().setInputValue(sid, text, readComposerSkillPositions(editor));
-      }
-    };
-  }, [activeSessionId]);
-
-  // 切会话时用 inputValue 填充 contenteditable。技能 chip 由 selectedSkills 同步效果重建；
-  // 有参斜杠 chip（如 /persist）写在纯文本里，这里还原成蓝色标签，避免切回后"标签消失"（#5771）。
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    const sid = useChatStore.getState().activeSessionId;
-    if (!sid) return;
-    const text = useChatStore.getState().runtimes[sid]?.inputValue ?? '';
-    el.replaceChildren();
-    const { command, rest } = splitComposerSlashChip(text);
-    if (command) {
-      const chip = document.createElement('span');
-      chip.className = 'chat-input-chip-inline chat-input-chip-inline--slash-command';
-      chip.setAttribute('contenteditable', 'false');
-      chip.dataset.slashCommand = command;
-
-      const prefix = document.createElement('span');
-      prefix.className = 'chat-input-chip-inline__prefix';
-      prefix.textContent = '/';
-
-      const labelEl = document.createElement('span');
-      labelEl.className = 'chat-input-chip-inline__label';
-      labelEl.textContent = command;
-
-      const removeBtn = document.createElement('button');
-      removeBtn.type = 'button';
-      removeBtn.className = 'chat-input-chip-inline__remove';
-      removeBtn.setAttribute('aria-label', 'remove slash command');
-      removeBtn.innerHTML = closeSvg;
-      removeBtn.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const next = chip.nextSibling;
-        if (next && next.nodeType === Node.TEXT_NODE) {
-          const nextText = next.textContent || '';
-          if (nextText.startsWith(' ')) {
-            next.textContent = nextText.slice(1);
-          }
-        }
-        chip.remove();
-        const activeSid = useChatStore.getState().activeSessionId;
-        if (activeSid) useChatStore.getState().setInputValue(activeSid, extractPlainText());
-      });
-
-      chip.append(prefix, labelEl, removeBtn);
-      el.append(chip);
-      el.append(document.createTextNode(rest || '\u200B'));
-    } else {
-      el.textContent = text;
-    }
-    const selection = window.getSelection();
-    if (selection) {
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      range.collapse(false);
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-  }, [activeSessionId, extractPlainText]);
 
   const composerConversationRef = useRef(conversationId);
   useEffect(() => {

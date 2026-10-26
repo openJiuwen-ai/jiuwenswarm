@@ -11,7 +11,6 @@ await build({
     'src/i18n/index.ts',
     'src/features/teamOrganization/featureConfig.ts',
     'src/features/teamOrganization/processing.ts',
-    'src/features/teamOrganization/conversation.ts',
     'src/features/multiModelCollaboration/featureConfig.ts',
     'src/services/webClient.ts',
     'src/features/sessionAssets/sessionAssets.ts',

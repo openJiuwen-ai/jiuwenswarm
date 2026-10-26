@@ -2665,18 +2665,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (ownerStopTarget) {
           params.intent = 'cancel';
           params.target_team_id = ownerStopTarget;
-          params.organization_owner_stop = true;
-          const foregroundWasProcessing = Boolean(
-            useChatStore.getState().getRuntime(sessionId)?.foregroundIsProcessing,
-          );
-          const ownerWasStopped = isOrganizationOwnerStopped(sessionId);
-          restoreOwnerProcessing = () => {
-            setOrganizationOwnerStopped(sessionId, ownerWasStopped);
-            useChatStore.getState().setProcessing(sessionId, foregroundWasProcessing);
-          };
-          // Stop the Owner composer immediately while children finish independently.
-          setOrganizationOwnerStopped(sessionId, true, true);
-          closeActiveTeamLeaderMessages(sessionId);
+          params.organization_stop = true;
         }
         if (['pause', 'resume', 'cancel', 'supplement'].includes(intent)) {
           // 出站 mode 与普通消息/队列重发同一套组合逻辑（resolveOutgoingMode）：
@@ -4899,9 +4888,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         usePlanStore.getState().setActive(sessionId, false);
       }),
       webClient.on('chat.processing_status', ({ payload }) => {
-        if (payload.session_usage) {
-          useSessionStore.getState().receiveSessionTokenUsage(payload.session_usage);
-        }
         // Organization background rounds own their lifecycle in useOrganizationEvents.
         // They must not close a concurrent foreground Owner request.
         if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&

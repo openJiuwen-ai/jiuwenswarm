@@ -1,5 +1,7 @@
 export * from '../../src/features/teamOrganization/featureConfig';
-export { selectedExpertTeamId, expertTeamId, sendExpertMessage } from '../../src/features/teamOrganization/conversation';
+export { selectedExpertTeamId, expertTeamId, sendExpertMessage, useOrganizationConversationKey } from '../../src/features/teamOrganization/conversation';
+export * from '../../src/features/teamOrganization/processing';
+export { organizationOwnerStopTarget } from '../../src/features/teamOrganization/conversation';
 export { useOrganizationEvents } from '../../src/features/teamOrganization/useOrganizationEvents';
 export { useChatStore, conversationKey } from '../../src/stores/chatStore';
 export { useSessionStore } from '../../src/stores/sessionStore';

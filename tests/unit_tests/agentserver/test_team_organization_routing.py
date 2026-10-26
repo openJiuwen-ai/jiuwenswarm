@@ -144,7 +144,7 @@ async def test_cancel_recovered_expert_without_owner_runtime(monkeypatch, persis
         response = await server._cancel_targeted_expert(request(ReqMethod.CHAT_CANCEL))
         assert response.ok is allowed
         assert expert.cancelled() is allowed
-        lookup.assert_awaited_once_with("session", "expert")
+        lookup.assert_awaited_once_with("session", "owner")
     finally:
         expert.cancel()
         await asyncio.gather(expert, return_exceptions=True)

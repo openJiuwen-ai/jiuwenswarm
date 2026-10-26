@@ -3010,9 +3010,7 @@ class JiuWenSwarm:
                 await package_manager.install_agent_group_with_hub(params)
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
-                from jiuwenswarm.server.runtime.organization_packages import (
-                    uninstall_organization_agent_group,
-                )
+                from jiuwenswarm.server.runtime.organization_packages import uninstall_organization_agent_group
 
                 await uninstall_organization_agent_group(params)
                 payload = {}
