@@ -2,9 +2,9 @@
 
 """Data contract of the trajectory diagnosis feature.
 
-The structures mirror ``docs/ai/design/轨迹诊断/01-接口与数据契约.md``. Time
-points are Unix-nanosecond decimal strings, and every step is referenced by a
-span anchor (:class:`StepRef`) rather than by a UI ordinal.
+The structures mirror ``适配参考/12-诊断引擎接口.md``. Time points are
+Unix-nanosecond decimal strings, and every step is referenced by a span anchor
+(:class:`StepRef`) rather than by a UI ordinal.
 """
 
 from __future__ import annotations
@@ -60,56 +60,8 @@ class ModeProfile(StrEnum):
     TEAM = "team"
 
 
-class RootCauseCategory(StrEnum):
-    """Attribution category of a root cause."""
-
-    SKILL_DEFECT = "skill_defect"
-    TTSE_SUCCESS = "ttse_success"
-    TTSE_PARTIAL = "ttse_partial"
-    TTSE_FAIL = "ttse_fail"
-    TOOL_OR_ENV = "tool_or_env"
-    MODEL_CAPABILITY = "model_capability"
-    REQUIREMENT_UNCLEAR = "requirement_unclear"
-    OTHER = "other"
-
-
-#: Experience categories: the verdict of TTSE success detection on the diagnosed
-#: stretch. A diagnosis reports at most one of them.
-TTSE_ROOT_CAUSE_CATEGORIES: frozenset[RootCauseCategory] = frozenset(
-    {
-        RootCauseCategory.TTSE_SUCCESS,
-        RootCauseCategory.TTSE_PARTIAL,
-        RootCauseCategory.TTSE_FAIL,
-    },
-)
-
-#: Root-cause categories each mode profile may report; the host drops the rest.
-ALLOWED_ROOT_CAUSE_CATEGORIES: dict[ModeProfile, frozenset[RootCauseCategory]] = {
-    ModeProfile.AGENT_WORK: frozenset(RootCauseCategory),
-    ModeProfile.AGENT_CODE: frozenset(
-        {
-            RootCauseCategory.TOOL_OR_ENV,
-            RootCauseCategory.MODEL_CAPABILITY,
-            RootCauseCategory.REQUIREMENT_UNCLEAR,
-            RootCauseCategory.OTHER,
-        },
-    ),
-    ModeProfile.TEAM: frozenset(RootCauseCategory) - TTSE_ROOT_CAUSE_CATEGORIES,
-}
-
-
-#: TTSE outcome and fixed task score each experience category stands for, the
-#: values TTSE's own success detection assigns. Triggering hands them to TTSE
-#: as the explicit score, so the induction does not detect the outcome again.
-TTSE_OUTCOME_BY_CATEGORY: dict[RootCauseCategory, tuple[str, float]] = {
-    RootCauseCategory.TTSE_SUCCESS: ("success", 1.0),
-    RootCauseCategory.TTSE_PARTIAL: ("partial", 0.5),
-    RootCauseCategory.TTSE_FAIL: ("fail", 0.0),
-}
-
-
 class TtseTriggerOutcome(StrEnum):
-    """Result of handing one TTSE root cause to the experience pipeline.
+    """Result of handing one experience evolution item to the experience pipeline.
 
     ``triggered`` only says that TTSE accepted the work; what it generates
     and saves afterwards is decided by TTSE itself and is not reported here.
@@ -254,46 +206,12 @@ class DiagnosisStage(_Model):
     elapsed_ms: int | None = None
 
 
-class ArtifactIssue(_Model):
-    """One defect reported by the artifact evaluation."""
-
-    description: str
-    refs: list[StepRef] = Field(default_factory=list)
-
-
-class ArtifactEval(_Model):
-    """Artifact evaluation outcome."""
-
-    applied: bool = False
-    skipped_reason: str | None = None
-    verdict: Literal["pass", "partial", "fail"] | None = None
-    score: float | None = None
-    summary: str | None = None
-    issues: list[ArtifactIssue] = Field(default_factory=list)
-
-
-class DiagnosisEvidence(_Model):
-    """Evidence stored with a record; only the artifact evaluation remains."""
-
-    artifact_eval: ArtifactEval | None = None
-
-
 class SignalRef(_Model):
-    """The diagnostic signal an attributed root cause answers.
+    """The diagnostic signal a failure cause answers.
 
-    A root cause pairs a signal (what went wrong, how badly, where it surfaced)
-    with an attribution (where the cause lies and what it is). Reward signals
-    carry ``tier``, ``score`` and ``category``; rule signals only carry the
-    source and ``tier == "uncertain"``.
-
-    Attributes:
-        id: Signal id; root causes of one signal share it.
-        source: ``keyword_tool`` / ``keyword_user`` for rule hits, ``reward``
-            for a Reward dimension.
-        tier: ``perfect`` / ``fair`` / ``weak`` / ``uncertain``.
-        score: Dimension score (0-100) of a Reward signal.
-        category: Reward dimension category.
-        node_ids: Nodes where the problem surfaced (a hint, not the cause).
+    Reward signals carry ``tier``, ``score`` and ``category``; rule signals
+    only carry the source and ``tier``.  This is a display extension of the
+    interface (a badge in the frontend), optional on every cause.
     """
 
     id: str
@@ -302,51 +220,49 @@ class SignalRef(_Model):
     score: float | None = None
     category: str | None = None
     node_ids: list[str] = Field(default_factory=list)
+    text: str = ""
+    """The original signal text (the old root cause's evidence); empty when unknown."""
 
 
-class RootCause(_Model):
-    """One attributed root cause."""
+class RelatedSignalAttribution(_Model):
+    """Per-signal detail behind one evolution item (frontend expansion only)."""
+
+    signal_id: str
+    source: str
+    tier: str
+    category: str | None = None
+    score: float | None = None
+    node_ids: list[str] = Field(default_factory=list)
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RewardFailureCause(_Model):
+    """One deliverable-evaluation failure cause (interface section 4.3)."""
 
     id: str
-    category: RootCauseCategory
-    subject_id: str
-    refs: list[StepRef] = Field(default_factory=list)
+    dimension: str
     summary: str
-    evidence: str = ""
-    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    evidence: list[StepRef] = Field(min_length=1)
+    suggestion: list[str] = Field(default_factory=list)
     signal: SignalRef | None = None
 
 
-class ArtifactFix(_Model):
-    """Instruction that is filled into the composer."""
-
-    instruction: str
-    root_cause_ids: list[str] = Field(default_factory=list)
-
-
-class SkillSuggestion(_Model):
-    """Skill evolution suggestion that is filled into the composer."""
+class EvolutionJudge(_Model):
+    """One evolution item (interface section 4.4)."""
 
     id: str
-    skill_name: str
-    change_summary: str
-    rationale: str = ""
-    message: str
-    root_cause_ids: list[str] = Field(default_factory=list)
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-    selectable: bool = True
-    blocked_reason: str | None = None
-
-
-class DiagnosisSuggestions(_Model):
-    """Optimization outlets of one diagnosis."""
-
-    artifact_fix: ArtifactFix | None = None
-    skills: list[SkillSuggestion] = Field(default_factory=list)
+    category: Literal["skill", "experience"]
+    summary: str
+    evidence: list[StepRef] = Field(min_length=1)
+    suggestion: list[str] = Field(default_factory=list)
+    score: float = Field(ge=0.0, le=1.0)
+    target: str | None = None
+    outcome: Literal["success", "partial", "fail"] | None = None
+    related_signals: list[RelatedSignalAttribution] = Field(default_factory=list)
 
 
 class TtseTriggerResult(_Model):
-    """Outcome of triggering TTSE with one experience root cause."""
+    """Outcome of triggering TTSE with one experience evolution item."""
 
     result: TtseTriggerOutcome
     message: str | None = None
@@ -371,7 +287,7 @@ class DiagnosisSummary(_Model):
     scope_kind: Literal["full", "selection"]
     evaluate_artifact: bool = False
     artifact_eval_applied: bool = False
-    headline: str | None = None
+    trajectory_summary: str | None = None
 
 
 class DiagnosisRecord(DiagnosisSummary):
@@ -381,13 +297,12 @@ class DiagnosisRecord(DiagnosisSummary):
     input: DiagnosisInput
     seq: int = 0
     stages: list[DiagnosisStage] = Field(default_factory=list)
-    evidence: DiagnosisEvidence = Field(default_factory=DiagnosisEvidence)
-    root_causes: list[RootCause] = Field(default_factory=list)
-    suggestions: DiagnosisSuggestions = Field(default_factory=DiagnosisSuggestions)
+    reward_failure_causes: list[RewardFailureCause] = Field(default_factory=list)
+    evolution_judge: list[EvolutionJudge] = Field(default_factory=list)
+    artifact_improvement: str | None = None
     ttse_trigger: dict[str, TtseTriggerResult] = Field(default_factory=dict)
     error: DiagnosisError | None = None
     reward: dict[str, Any] | None = None
-    task_description: str | None = None
 
     def to_summary(self) -> DiagnosisSummary:
         """Return the list-endpoint projection of this record."""
@@ -400,7 +315,7 @@ class DiagnosisRecord(DiagnosisSummary):
             scope_kind=self.scope_kind,
             evaluate_artifact=self.evaluate_artifact,
             artifact_eval_applied=self.artifact_eval_applied,
-            headline=self.headline,
+            trajectory_summary=self.trajectory_summary,
         )
 
 
@@ -411,16 +326,22 @@ class DiagnosisProgressEvent(_Model):
     diagnosis_id: str
     seq: int
     stage_id: str
-    kind: Literal["stage_started", "output_delta", "stage_finished", "root_causes"]
+    kind: Literal[
+        "stage_started",
+        "output_delta",
+        "stage_finished",
+        "reward_failure_causes",
+        "evolution_judge",
+    ]
     title: str | None = None
     text_delta: str | None = None
     status: Literal["completed", "failed", "skipped"] | None = None
     summary: str | None = None
     skip_reason: str | None = None
     elapsed_ms: int | None = None
-    # ``root_causes`` events: the causes now known for one signal, replacing earlier ones.
-    signal_id: str | None = None
-    root_causes: list[RootCause] | None = None
+    # Whole-table replacement events: every item known so far.
+    reward_failure_causes: list[RewardFailureCause] | None = None
+    evolution_judge: list[EvolutionJudge] | None = None
 
 
 class DiagnosisStatusEvent(_Model):
@@ -436,7 +357,7 @@ class DiagnosisStatusEvent(_Model):
 class TtseTriggerRequest(_Model):
     """Body of the TTSE trigger endpoint."""
 
-    root_cause_ids: list[str] = Field(min_length=1, max_length=50)
+    evolution_judge_id: str = Field(min_length=1)
 
 
 class DiagnosisHostError(Exception):
@@ -471,18 +392,11 @@ ERROR_STATUS_BY_CODE: dict[str, int] = {
 }
 
 __all__ = [
-    "ALLOWED_ROOT_CAUSE_CATEGORIES",
     "ERROR_STATUS_BY_CODE",
     "MAX_SELECTION_RANGES",
     "MAX_USER_NOTE_CHARS",
     "TERMINAL_STATUSES",
-    "TTSE_OUTCOME_BY_CATEGORY",
-    "TTSE_ROOT_CAUSE_CATEGORIES",
-    "ArtifactEval",
-    "ArtifactFix",
-    "ArtifactIssue",
     "DiagnosisError",
-    "DiagnosisEvidence",
     "DiagnosisHostError",
     "DiagnosisInput",
     "DiagnosisProgressEvent",
@@ -492,17 +406,16 @@ __all__ = [
     "DiagnosisStage",
     "DiagnosisStatus",
     "DiagnosisStatusEvent",
-    "DiagnosisSuggestions",
     "DiagnosisSummary",
+    "EvolutionJudge",
     "FullScope",
     "ModeProfile",
     "ModelInfo",
-    "RootCause",
-    "RootCauseCategory",
+    "RelatedSignalAttribution",
+    "RewardFailureCause",
     "SelectionRange",
     "SelectionScope",
     "SignalRef",
-    "SkillSuggestion",
     "StageStatus",
     "StepRef",
     "TtseTriggerOutcome",

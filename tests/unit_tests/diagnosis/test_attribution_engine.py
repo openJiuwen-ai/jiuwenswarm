@@ -33,16 +33,16 @@ from jiuwenswarm.diagnosis.attribution_engine import (
     _flatten_span,
     _prepare_nodes,
     _render_llm_line,
-    _translate_attribution,
+    _translate_evolution_judge,
+    _translate_reward_failure_causes,
 )
 from jiuwenswarm.diagnosis.engine import EngineError, EngineEvent, EngineInputs, EngineResult
 from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel
 from jiuwenswarm.diagnosis.models import (
-    ArtifactEval,
     DiagnosisError,
     ModeProfile,
     ModelInfo,
-    RootCauseCategory,
+    RewardFailureCause,
     StepRef,
 )
 from jiuwenswarm.diagnosis.snapshot import (
@@ -112,14 +112,76 @@ def _parsed() -> TaskParseResult:
     )
 
 
-def _signal(signal_id: str, tier: str = "weak") -> DiagnosticSignal:
+def _summary_outcome(summary: str = "选中范围内共执行了 3 个步骤，期间出现一次工具报错。") -> SimpleNamespace:
+    return SimpleNamespace(trajectory_summary=summary, status="success", completed=True)
+
+
+def _signal(signal_id: str, tier: str = "weak", *, source: SignalSource = SignalSource.KEYWORD_TOOL) -> DiagnosticSignal:
     return DiagnosticSignal.create(
         text=f"信号 {signal_id}",
-        source=SignalSource.KEYWORD_TOOL,
+        source=source,
         tier=tier,
         node_ids=["main:0"],
         signal_id=signal_id,
     )
+
+
+def _reward_signal(signal_id: str = "diag-r", *, text: str = "测试应当通过\n仍有用例失败") -> DiagnosticSignal:
+    return DiagnosticSignal.create(
+        text=text,
+        source=SignalSource.REWARD,
+        tier="weak",
+        node_ids=["main:0"],
+        signal_id=signal_id,
+        score=60.0,
+        metadata={"category": "正确性"},
+    )
+
+
+def _reward_payload(*requirements: str, comment: str = "fix it") -> dict[str, Any]:
+    return {
+        "schema_version": "attribution.reward.v1",
+        "overall": {"comment": "整体", "total_score": 60},
+        "categories": [],
+        "dimensions": [
+            {"category": "c", "requirement": requirement, "comment": comment, "score": 60}
+            for requirement in requirements
+        ],
+    }
+
+
+def _node() -> TrajectoryNode:
+    return TrajectoryNode(
+        node_id="main:0",
+        subagent_key="main",
+        display_name="Main",
+        kind="main_agent",
+        role="assistant",
+        content="hi",
+        trace_id=TRACE_A,
+        span_id=span_id(0),
+        start_ts_ns=1000,
+        end_ts_ns=2000,
+        source_kind="llm",
+    )
+
+
+def _single_node() -> dict[str, list[TrajectoryNode]]:
+    return {"main": [_node()]}
+
+
+def _drain(queue: asyncio.Queue[EngineEvent | None]) -> list[EngineEvent]:
+    events: list[EngineEvent] = []
+    while not queue.empty():
+        event = queue.get_nowait()
+        assert event is not None
+        events.append(event)
+    return events
+
+
+def _lines(queue: asyncio.Queue[EngineEvent | None]) -> list[str | None]:
+    """Log lines of the drained events; table updates are not log lines."""
+    return [event.text_delta for event in _drain(queue) if event.kind == "output_delta"]
 
 
 @pytest.mark.asyncio
@@ -167,7 +229,7 @@ def test_flatten_span_returns_the_single_span() -> None:
 
 
 @pytest.mark.asyncio
-async def test_empty_pool_raises_empty_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_empty_pool_raises_empty_scope() -> None:
     engine = AttributionCoreEngine(model_factory=lambda _model: object())
     events: list[EngineEvent] = []
 
@@ -194,6 +256,11 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
     async def emit(_event: EngineEvent) -> None:
         return
 
+    async def summary(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        return _summary_outcome("任务解析失败，但已阅读选中范围的轨迹。")
+
+    monkeypatch.setattr(module, "run_trajectory_summary", summary)
+
     for error_type, code in (
         ("incomplete_task", "TASK_INCOMPLETE"),
         ("multiple_unrelated_tasks", "MULTIPLE_UNRELATED_TASKS"),
@@ -204,17 +271,18 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
             raise TaskParseError(error_type, "boom")
 
         monkeypatch.setattr(module, "run_task_parse", fail)
-        with pytest.raises(EngineError) as exc:
-            await engine.run(inputs, emit)
-        assert exc.value.code == code
+        result = await engine.run(inputs, emit)
+        assert result.error is not None and result.error.code == code
+        assert result.trajectory_summary == "任务解析失败，但已阅读选中范围的轨迹。"
+        assert result.reward_failure_causes == [] and result.evolution_judge == []
 
     async def crash(*_args: Any, **_kwargs: Any) -> TaskParseResult:
         raise RuntimeError("network down")
 
     monkeypatch.setattr(module, "run_task_parse", crash)
-    with pytest.raises(EngineError) as exc:
-        await engine.run(inputs, emit)
-    assert exc.value.code == "MODEL_CALL_FAILED"
+    result = await engine.run(inputs, emit)
+    assert result.error is not None and result.error.code == "MODEL_CALL_FAILED"
+    assert result.trajectory_summary == "任务解析失败，但已阅读选中范围的轨迹。"
 
 
 @pytest.mark.asyncio
@@ -244,20 +312,71 @@ async def test_no_signals_finishes_normally_and_skips_attribution(monkeypatch: p
     async def attribute(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         raise AssertionError("attribution must not run without signals")
 
+    async def summary(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        return _summary_outcome("选中范围没有产生诊断信号，轨迹主要是任务收尾。")
+
     monkeypatch.setattr(module, "run_task_parse", parse)
     monkeypatch.setattr(module, "run_diagnosis", diagnose)
     monkeypatch.setattr(module, "run_attribution", attribute)
+    monkeypatch.setattr(module, "run_trajectory_summary", summary)
 
     result = await engine.run(inputs, emit)
 
     assert result.error is None
-    assert result.root_causes == []
-    assert result.headline == "没有可归因的信号，无需归因"
+    assert result.trajectory_summary == "选中范围没有产生诊断信号，轨迹主要是任务收尾。"
+    assert result.reward_failure_causes == []
+    assert result.evolution_judge == []
     finished = {event.stage_id: event for event in events if event.kind == "stage_finished"}
     assert finished["diagnose"].status == "completed"
     assert finished["diagnose"].summary == "信号 0 条（规则模式 · Reward 已跳过：无任务产物）"
     assert finished["attribute"].status == "skipped"
     assert finished["attribute"].skip_reason == "诊断分析没有产出可归因的信号，已跳过归因"
+
+
+@pytest.mark.asyncio
+async def test_only_perfect_signals_still_run_summary_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    import jiuwenswarm.diagnosis.attribution_engine as module
+
+    engine = AttributionCoreEngine(model_factory=lambda _model: object())
+    snapshot = _snapshot([_chat_record(0, 1000, 2000)])
+    inputs = _inputs(snapshot, [SubjectRange("main", 0, 10**9)])
+    events: list[EngineEvent] = []
+
+    async def emit(event: EngineEvent) -> None:
+        events.append(event)
+
+    async def parse(*_args: Any, **_kwargs: Any) -> TaskParseResult:
+        return _parsed()
+
+    async def diagnose(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            signals=[_signal("diag-p", tier="perfect")],
+            reward_overall=RewardOverall(comment="很好", total_score=95),
+            signal_mode="reward",
+            run_meta={"reward": {"submitted": True}},
+            reward_payload=_reward_payload("测试应当通过"),
+        )
+
+    async def attribute(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        raise AssertionError("the attribution agent must not run for perfect-only signals")
+
+    async def summary(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        return _summary_outcome("所有评分维度均已达标，轨迹无失败归因。")
+
+    monkeypatch.setattr(module, "run_task_parse", parse)
+    monkeypatch.setattr(module, "run_diagnosis", diagnose)
+    monkeypatch.setattr(module, "run_attribution", attribute)
+    monkeypatch.setattr(module, "run_trajectory_summary", summary)
+
+    result = await engine.run(inputs, emit)
+
+    assert result.error is None
+    assert result.trajectory_summary == "所有评分维度均已达标，轨迹无失败归因。"
+    assert result.reward_failure_causes == [] and result.evolution_judge == []
+    assert result.reward == _reward_payload("测试应当通过")
+    finished = next(event for event in events if event.stage_id == "attribute" and event.kind == "stage_finished")
+    assert finished.status == "completed"
+
 
 @pytest.mark.asyncio
 async def test_engine_emits_three_stages_in_order_with_llm_lines(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -279,17 +398,26 @@ async def test_engine_emits_three_stages_in_order_with_llm_lines(monkeypatch: py
         sink = kwargs["status_sink"]
         sink.report(SimpleNamespace(request_id="llm-2", stage="keyword_diag", status="succeeded", iteration=None, model="fake-model", response_preview=None, error=None))
         return SimpleNamespace(
-            signals=[_signal("diag-1")],
+            signals=[_reward_signal()],
             reward_overall=RewardOverall(comment="基本完成", total_score=87),
             signal_mode="reward",
             run_meta={"reward": {"submitted": True, "budget_exceeded": False, "tokens": 10}},
-            reward_payload={"overall": {"total_score": 87}},
+            reward_payload=_reward_payload("测试应当通过"),
         )
 
     async def attribute(*_args: Any, **kwargs: Any) -> SimpleNamespace:
         runtime = kwargs["runtime"]
-        runtime.record_attribution("diag-1", [{"attr_id": "attr-12345678", "text_md": "根因文本", "start_node_id": "main:0"}])
-        runtime.record_artifact_improvement("改进意见 md")
+        runtime.record_reward_failure(
+            "diag-r",
+            [
+                {
+                    "attr_id": "attr-12345678",
+                    "text_md": "根因文本",
+                    "start_node_id": "main:0",
+                    "suggestion": "把结论移到开头",
+                }
+            ],
+        )
         return SimpleNamespace(
             status="success",
             failure_kind=None,
@@ -300,6 +428,7 @@ async def test_engine_emits_three_stages_in_order_with_llm_lines(monkeypatch: py
             wake_attempted=False,
             counts={},
             token_usage={},
+            trajectory_summary="这段轨迹跑了测试但仍有失败",
         )
 
     monkeypatch.setattr(module, "run_task_parse", parse)
@@ -314,89 +443,30 @@ async def test_engine_emits_three_stages_in_order_with_llm_lines(monkeypatch: py
     kinds = [(event.stage_id, event.kind) for event in events]
     assert ("task_parse", "stage_started") == kinds[0]
     assert ("attribute", "stage_finished") == kinds[-1]
-    # llm lines land in the right stage's output stream, between its events
     task_lines = [event.text_delta for event in events if event.stage_id == "task_parse" and event.kind == "output_delta"]
     assert any("llm-1" in line for line in task_lines)
     assert any("iter 1" in line for line in task_lines)
     diagnose_lines = [event.text_delta for event in events if event.stage_id == "diagnose" and event.kind == "output_delta"]
     assert any("llm-2" in line and "keyword_diag" in line for line in diagnose_lines)
-    # ordering of stage boundaries
     starts = [index for index, kind in enumerate(kinds) if kind[1] == "stage_started"]
     finishes = [index for index, kind in enumerate(kinds) if kind[1] == "stage_finished"]
     assert starts == [0, kinds.index(("diagnose", "stage_started")), kinds.index(("attribute", "stage_started"))]
     assert finishes[0] < starts[1] < finishes[1] < starts[2] < finishes[2]
-    assert result.headline == "总分 87 · 定位 1 处问题"
-    assert result.task_description == "装好依赖并跑测试"
-    assert result.reward == {"overall": {"total_score": 87}}
-    cause = result.root_causes[0]
+    assert result.trajectory_summary == "这段轨迹跑了测试但仍有失败"
+    assert result.reward == _reward_payload("测试应当通过")
+    cause = result.reward_failure_causes[0]
+    assert cause.dimension == "测试应当通过"
+    assert cause.suggestion == ["把结论移到开头"]
     assert cause.signal is not None
-    assert cause.signal.id == "diag-1"
-    assert cause.signal.source == "keyword_tool"
+    assert cause.signal.id == "diag-r"
+    assert cause.signal.source == "reward"
     assert cause.signal.node_ids == ["main:0"]
+    assert cause.evidence[0].node_id == "main:0"
     finished_attribute = next(
         event for event in events if event.stage_id == "attribute" and event.kind == "stage_finished"
     )
-    assert finished_attribute.summary == "定位 1 处 · 来自 1 条信号 · 标无效 0 条 · 产物修复建议 1 条"
+    assert finished_attribute.summary == "轨迹摘要已生成 · 失败原因 1 条 · 演进项 0 条"
     assert result.error is None
-    assert result.root_causes[0].id == "attr-12345678"
-    assert result.root_causes[0].category is RootCauseCategory.OTHER
-    assert result.root_causes[0].confidence is None
-    assert result.root_causes[0].evidence == "信号 diag-1"
-    assert result.suggestions.artifact_fix is not None
-    assert result.artifact_eval == ArtifactEval(applied=False, skipped_reason="not_produced")
-
-
-@pytest.mark.asyncio
-async def test_headline_without_reward_score(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jiuwenswarm.diagnosis.attribution_engine as module
-
-    engine = AttributionCoreEngine(model_factory=lambda _model: object())
-    snapshot = _snapshot([_chat_record(0, 1000, 2000)])
-    inputs = _inputs(snapshot, [SubjectRange("main", 0, 10**9)])
-
-    events: list[EngineEvent] = []
-
-    async def emit(event: EngineEvent) -> None:
-        events.append(event)
-
-    async def parse(*_args: Any, **_kwargs: Any) -> TaskParseResult:
-        return _parsed()
-
-    async def diagnose(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
-        return SimpleNamespace(
-            signals=[_signal("diag-1"), _signal("diag-2", tier="perfect")],
-            reward_overall=None,
-            signal_mode="rule_jev",
-            run_meta={"reward": {"skipped": "no artifacts"}},
-            reward_payload=None,
-        )
-
-    async def attribute(*_args: Any, **kwargs: Any) -> SimpleNamespace:
-        return SimpleNamespace(
-            status="success",
-            failure_kind=None,
-            error_detail=None,
-            completed=True,
-            pending_signal_ids=[],
-            skipped_signal_ids=["diag-2"],
-            wake_attempted=False,
-            counts={},
-            token_usage={},
-        )
-
-    monkeypatch.setattr(module, "run_task_parse", parse)
-    monkeypatch.setattr(module, "run_diagnosis", diagnose)
-    monkeypatch.setattr(module, "run_attribution", attribute)
-
-    result = await engine.run(inputs, emit)
-    # No cause was reported, attribution finished: the headline says so.
-    assert result.headline == "未发现需要归因的问题"
-    assert result.reward is None
-    assert result.task_description == "装好依赖并跑测试"
-    diagnose_finished = next(
-        event for event in events if event.stage_id == "diagnose" and event.kind == "stage_finished"
-    )
-    assert diagnose_finished.summary == "信号 2 条（规则模式 · Reward 已跳过：无任务产物）"
 
 
 @pytest.mark.asyncio
@@ -414,7 +484,7 @@ async def test_attribution_failure_keeps_results_and_reports_error(monkeypatch: 
 
     async def diagnose(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         return SimpleNamespace(
-            signals=[_signal("diag-1")],
+            signals=[_reward_signal()],
             reward_overall=None,
             signal_mode="rule_jev",
             run_meta={"reward": {"skipped": "no artifacts"}},
@@ -423,17 +493,28 @@ async def test_attribution_failure_keeps_results_and_reports_error(monkeypatch: 
 
     async def attribute(*_args: Any, **kwargs: Any) -> SimpleNamespace:
         runtime = kwargs["runtime"]
-        runtime.record_attribution("diag-1", [{"attr_id": "attr-aaaaaaaa", "text_md": "半成品根因", "start_node_id": "main:0"}])
+        runtime.record_reward_failure(
+            "diag-r",
+            [
+                {
+                    "attr_id": "attr-aaaaaaaa",
+                    "text_md": "半成品原因",
+                    "start_node_id": "main:0",
+                    "suggestion": "补上缺失的对比",
+                }
+            ],
+        )
         return SimpleNamespace(
             status="failed",
             failure_kind="timeout",
             error_detail=None,
             completed=False,
-            pending_signal_ids=["diag-2"],
+            pending_signal_ids=["diag-r"],
             skipped_signal_ids=[],
             wake_attempted=True,
             counts={},
             token_usage={},
+            trajectory_summary="归因超时前写了一半",
         )
 
     monkeypatch.setattr(module, "run_task_parse", parse)
@@ -443,161 +524,239 @@ async def test_attribution_failure_keeps_results_and_reports_error(monkeypatch: 
     snapshot = _snapshot([_chat_record(0, 1000, 2000)])
     result = await engine.run(_inputs(snapshot, [SubjectRange("main", 0, 10**9)]), emit)
 
-    assert result.root_causes and result.root_causes[0].summary == "半成品根因"
+    assert result.trajectory_summary == "归因超时前写了一半"
+    assert result.reward_failure_causes and result.reward_failure_causes[0].summary == "半成品原因"
     assert result.error is not None
     assert result.error.code == "ATTRIBUTION_INCOMPLETE"
     assert "超时" in result.error.message
-    assert result.headline == "定位 1 处问题"
     finished = next(event for event in events if event.stage_id == "attribute" and event.kind == "stage_finished")
     assert finished.status == "failed"
 
 
-def test_unanchored_entries_are_counted() -> None:
-    node = TrajectoryNode(
-        node_id="main:0",
-        subagent_key="main",
-        display_name="Main",
-        kind="main_agent",
-        role="assistant",
-        content="hi",
-        trace_id=TRACE_A,
-        span_id=span_id(0),
-        start_ts_ns=1000,
-        end_ts_ns=2000,
-        source_kind="llm",
+def test_translate_reward_failure_causes_anchors_and_suggestions() -> None:
+    runtime = NodeBackedRuntime(_single_node(), "zh")
+    runtime.record_reward_failure(
+        "diag-r",
+        [
+            {"attr_id": "attr-00000001", "text_md": "可定位", "start_node_id": "main:0", "suggestion": "改这里"},
+            {"attr_id": "attr-00000002", "text_md": "锚点丢失", "start_node_id": "main:99", "suggestion": "改那里"},
+        ],
     )
-    nodes = {"main": [node]}
-    runtime = NodeBackedRuntime(nodes, "zh")
-    runtime.record_attribution("diag-1", [
-        {"attr_id": "attr-00000001", "text_md": "可定位", "start_node_id": "main:0"},
-        {"attr_id": "attr-00000002", "text_md": "锚点丢失", "start_node_id": "main:99"},
-    ])
-    signals = [_signal("diag-1")]
+    signal = _reward_signal()
 
-    causes, suggestions, dropped = _translate_attribution(nodes, runtime, signals)
+    causes, dropped = _translate_reward_failure_causes(runtime, [signal], _reward_payload("测试应当通过"), _single_node())
 
-    assert len(causes) == 2
-    assert dropped == 1
-    assert causes[0].refs == [StepRef(trace_id=TRACE_A, span_id=span_id(0), subject_id="main", node_id="main:0")]
-    assert causes[1].refs == []
-    assert causes[0].confidence is None
-    assert causes[0].evidence == "信号 diag-1"
-    assert suggestions.skills == []
+    assert len(causes) == 1 and dropped == 1
+    cause = causes[0]
+    assert cause.id == "rfc-1"
+    assert cause.dimension == "测试应当通过"
+    assert cause.evidence == [StepRef(trace_id=TRACE_A, span_id=span_id(0), subject_id="main", node_id="main:0")]
+    assert cause.suggestion == ["改这里"]
+    assert cause.signal is not None and cause.signal.id == "diag-r"
+    assert cause.signal.text == "测试应当通过\n仍有用例失败"
 
 
-def _single_node() -> dict[str, list[TrajectoryNode]]:
-    node = TrajectoryNode(
-        node_id="main:0",
-        subagent_key="main",
-        display_name="Main",
-        kind="main_agent",
-        role="assistant",
-        content="hi",
-        trace_id=TRACE_A,
-        span_id=span_id(0),
-        start_ts_ns=1000,
-        end_ts_ns=2000,
-        source_kind="llm",
+def test_agent_suggestion_wins_over_the_reward_comment() -> None:
+    runtime = NodeBackedRuntime(_single_node(), "zh")
+    runtime.record_reward_failure(
+        "diag-r",
+        [{"attr_id": "attr-1", "text_md": "原因", "start_node_id": "main:0", "suggestion": "把对比补上"}],
     )
-    return {"main": [node]}
+
+    causes, _dropped = _translate_reward_failure_causes(
+        runtime, [_reward_signal()], _reward_payload("测试应当通过"), _single_node()
+    )
+
+    assert causes[0].suggestion == ["把对比补上"]
 
 
-def _drain(queue: asyncio.Queue[EngineEvent | None]) -> list[EngineEvent]:
-    events: list[EngineEvent] = []
-    while not queue.empty():
-        event = queue.get_nowait()
-        assert event is not None
-        events.append(event)
-    return events
+def test_reward_comment_is_only_a_fallback_for_entries_without_a_suggestion() -> None:
+    runtime = NodeBackedRuntime(_single_node(), "zh")
+    runtime.record_reward_failure(
+        "diag-r", [{"attr_id": "attr-1", "text_md": "原因", "start_node_id": "main:0"}]
+    )
+    causes, _dropped = _translate_reward_failure_causes(
+        runtime, [_reward_signal()], _reward_payload("测试应当通过"), _single_node()
+    )
+    assert causes[0].suggestion == ["fix it"]
+
+    other = NodeBackedRuntime(_single_node(), "zh")
+    other.record_reward_failure(
+        "diag-r", [{"attr_id": "attr-1", "text_md": "原因", "start_node_id": "main:0"}]
+    )
+    missing, _dropped = _translate_reward_failure_causes(
+        other, [_reward_signal()], _reward_payload("别的需求"), _single_node()
+    )
+    assert missing[0].suggestion == []
 
 
-def _lines(queue: asyncio.Queue[EngineEvent | None]) -> list[str | None]:
-    """Log lines of the drained events; root cause updates are not log lines."""
-    return [event.text_delta for event in _drain(queue) if event.kind == "output_delta"]
+def test_translate_skill_evolution_judge() -> None:
+    runtime = NodeBackedRuntime(_single_node(), "zh")
+    signal = _signal("diag-1")
+    runtime.mark_signal_topic("diag-1", "skill", "demo-skill")
+    runtime.record_skill_cause(
+        "diag-1", [{"attr_id": "attr-1", "text_md": "skill 用错", "start_node_id": "main:0"}]
+    )
+    runtime.record_skill_evolution("demo-skill", "## 改进\n- 加一步", 0.8)
+
+    judges, dropped = _translate_evolution_judge(runtime, [signal], _single_node())
+
+    assert dropped == 0
+    assert len(judges) == 1
+    judge = judges[0]
+    assert judge.category == "skill"
+    assert judge.target == "demo-skill"
+    assert judge.score == 0.8
+    assert judge.suggestion == ["## 改进\n- 加一步"]
+    assert judge.summary == "skill 用错"
+    assert judge.evidence[0].node_id == "main:0"
+    assert judge.related_signals and judge.related_signals[0].signal_id == "diag-1"
+    assert judge.related_signals[0].entries[0]["text_md"] == "skill 用错"
 
 
-def test_streaming_runtime_reports_root_causes_per_signal() -> None:
+def test_related_signal_carries_the_signal_category_and_score() -> None:
+    runtime = NodeBackedRuntime(_single_node(), "zh")
+    signal = _reward_signal("diag-r")
+    runtime.mark_signal_topic("diag-r", "skill", "demo-skill")
+    runtime.record_skill_cause(
+        "diag-r", [{"attr_id": "attr-1", "text_md": "x", "start_node_id": "main:0"}]
+    )
+    runtime.record_skill_evolution("demo-skill", "advice", 0.5)
+
+    judges, _dropped = _translate_evolution_judge(runtime, [signal], _single_node())
+
+    related = judges[0].related_signals[0]
+    assert (related.category, related.score) == ("正确性", 60.0)
+    assert related.node_ids == ["main:0"]
+
+
+def test_translate_experience_evolution_judge() -> None:
+    runtime = NodeBackedRuntime(_single_node(), "zh")
+    signal = _signal("diag-1")
+    runtime.mark_signal_topic("diag-1", "experience")
+    runtime.record_experience_cause(
+        "diag-1", [{"attr_id": "attr-1", "text_md": "经验依据", "start_node_id": "main:0"}]
+    )
+    runtime.record_experience_evolution("partial", ["先核对环境"])
+
+    judges, _dropped = _translate_evolution_judge(runtime, [signal], _single_node())
+
+    judge = judges[0]
+    assert judge.category == "experience"
+    assert judge.outcome == "partial"
+    assert judge.score == 0.5
+    assert judge.target is None
+    assert judge.suggestion == ["先核对环境"]
+
+
+def test_translate_evolution_judge_skips_unanchored_items() -> None:
+    runtime = NodeBackedRuntime(_single_node(), "zh")
+    runtime.mark_signal_topic("diag-1", "skill", "demo-skill")
+    runtime.record_skill_cause(
+        "diag-1", [{"attr_id": "attr-2", "text_md": "x", "start_node_id": "main:99"}]
+    )
+    runtime.skill_evolutions["demo-skill"] = {"md_string": "advice", "confidence": 0.5}
+
+    judges, dropped = _translate_evolution_judge(runtime, [_signal("diag-1")], _single_node())
+
+    assert judges == [] and dropped == 1
+
+
+def test_streaming_runtime_pushes_whole_tables() -> None:
+    from jiuwenswarm.diagnosis.attribution_engine import _TEXTS, _StreamingRuntime
+
+    queue: asyncio.Queue[EngineEvent | None] = asyncio.Queue()
+    signal = _reward_signal()
+    runtime = _StreamingRuntime(
+        _single_node(), "zh", queue, _TEXTS["zh"], [signal], _reward_payload("测试应当通过")
+    )
+
+    runtime.record_reward_failure(
+        "diag-r",
+        [{"attr_id": "attr-1", "text_md": "原因 A", "start_node_id": "main:0", "suggestion": "改 A"}],
+    )
+    events = _drain(queue)
+    tables = [event for event in events if event.kind == "reward_failure_causes"]
+    assert len(tables) == 1
+    assert tables[0].stage_id == "attribute"
+    assert [cause.id for cause in tables[0].reward_failure_causes] == ["rfc-1"]
+    assert events[0].kind == "output_delta"  # the entry log line comes first
+
+
+def test_streaming_runtime_pushes_evolution_tables_and_logs() -> None:
     from jiuwenswarm.diagnosis.attribution_engine import _TEXTS, _StreamingRuntime
 
     queue: asyncio.Queue[EngineEvent | None] = asyncio.Queue()
     signal = _signal("diag-1")
     runtime = _StreamingRuntime(_single_node(), "zh", queue, _TEXTS["zh"], [signal])
 
-    runtime.record_attribution("diag-1", [{"attr_id": "attr-1", "text_md": "原因 A", "start_node_id": "main:0"}])
-    first = [event for event in _drain(queue) if event.kind == "root_causes"]
-    assert len(first) == 1
-    assert first[0].stage_id == "attribute"
-    assert first[0].signal_id == "diag-1"
-    cause = first[0].root_causes[0]
-    assert cause.id == "attr-1"
-    assert cause.summary == "原因 A"
-    assert cause.evidence == "信号 diag-1"
-    assert cause.signal is not None and cause.signal.id == "diag-1"
-    assert cause.refs == [StepRef(trace_id=TRACE_A, span_id=span_id(0), subject_id="main", node_id="main:0")]
-
-    # A resubmission reports everything now held for the signal, so the host can replace it.
-    runtime.record_attribution("diag-1", [
-        {"attr_id": "attr-2", "text_md": "新", "start_node_id": "main:0"},
-        {"attr_id": "attr-3", "text_md": "另一处", "start_node_id": "main:0"},
-    ])
-    second = [event for event in _drain(queue) if event.kind == "root_causes"]
-    assert [item.id for item in second[0].root_causes] == ["attr-2", "attr-3"]
+    runtime.mark_signal_topic("diag-1", "skill", "demo-skill")
+    assert _lines(queue) == ["标记 skill：diag-1"]
+    runtime.record_skill_cause(
+        "diag-1", [{"attr_id": "attr-1", "text_md": "原因 A", "start_node_id": "main:0"}]
+    )
+    runtime.record_skill_evolution("demo-skill", "改进", 0.7)
+    events = _drain(queue)
+    table_events = [event for event in events if event.kind == "evolution_judge"]
+    assert table_events and table_events[-1].evolution_judge[0].target == "demo-skill"
+    assert table_events[-1].evolution_judge[0].score == 0.7
+    assert [event.text_delta for event in events if event.kind == "output_delta"] == [
+        "[attr-1] 原因 A（main:0）",
+        "已提交 Skill 改进：demo-skill",
+    ]
 
 
-def test_streaming_runtime_reports_causes_without_a_known_signal() -> None:
+def test_streaming_runtime_logs_marks_invalid_and_summary() -> None:
     from jiuwenswarm.diagnosis.attribution_engine import _TEXTS, _StreamingRuntime
 
     queue: asyncio.Queue[EngineEvent | None] = asyncio.Queue()
     runtime = _StreamingRuntime(_single_node(), "zh", queue, _TEXTS["zh"])
-
-    runtime.record_attribution("diag-9", [{"attr_id": "attr-1", "text_md": "原因", "start_node_id": "main:0"}])
-
-    event = next(item for item in _drain(queue) if item.kind == "root_causes")
-    assert event.root_causes[0].signal is None
-    assert event.root_causes[0].evidence == ""
-
-
-def test_streaming_runtime_logs_each_submission_as_it_happens() -> None:
-    from jiuwenswarm.diagnosis.attribution_engine import _TEXTS, _StreamingRuntime
-
-    queue: asyncio.Queue[EngineEvent | None] = asyncio.Queue()
-    runtime = _StreamingRuntime(_single_node(), "zh", queue, _TEXTS["zh"])
-
-    runtime.record_attribution("diag-1", [{"attr_id": "attr-1", "text_md": "原因 A", "start_node_id": "main:0"}])
-    assert _lines(queue) == ["[attr-1] 原因 A（main:0）"]
 
     runtime.mark_signal_invalid("diag-2")
-    runtime.record_artifact_improvement("改进")
-    runtime.record_skill_improvement("demo-skill", "改进")
+    runtime.record_experience_evolution("partial", ["tip"])
+    runtime.record_trajectory_summary("这段轨迹的摘要")
     lines = _lines(queue)
-    assert lines == ["标记无效：diag-2", "已提交产物改进意见", "已提交 Skill 改进：demo-skill"]
-    # The stored state still feeds the root causes.
+    assert lines == ["标记无效：diag-2", "已提交经验判定：partial", "这段轨迹的摘要"]
     assert runtime.invalid_signals == {"diag-2"}
-    assert runtime.artifact_improvement == "改进"
-    assert runtime.skill_improvements == {"demo-skill": "改进"}
+    assert runtime.experience_evolution == {"outcome": "partial", "suggestions": ["tip"]}
+    assert runtime.trajectory_summary == "这段轨迹的摘要"
 
 
 def test_streaming_runtime_marks_resubmissions_as_updated() -> None:
     from jiuwenswarm.diagnosis.attribution_engine import _TEXTS, _StreamingRuntime
 
     queue: asyncio.Queue[EngineEvent | None] = asyncio.Queue()
-    runtime = _StreamingRuntime(_single_node(), "zh", queue, _TEXTS["zh"])
-    runtime.record_attribution("diag-1", [{"attr_id": "attr-1", "text_md": "旧", "start_node_id": "main:0"}])
-    runtime.record_attribution("diag-1", [
-        {"attr_id": "attr-2", "text_md": "新", "start_node_id": "main:0", "end_node_id": "main:3"},
-    ])
-    runtime.record_artifact_improvement("一")
-    runtime.record_artifact_improvement("二")
+    signal = _reward_signal()
+    runtime = _StreamingRuntime(
+        _single_node(), "zh", queue, _TEXTS["zh"], [signal], _reward_payload("测试应当通过")
+    )
+    runtime.record_reward_failure(
+        "diag-r",
+        [{"attr_id": "attr-1", "text_md": "旧", "start_node_id": "main:0", "suggestion": "改旧"}],
+    )
+    runtime.record_reward_failure(
+        "diag-r",
+        [
+            {
+                "attr_id": "attr-2",
+                "text_md": "新",
+                "start_node_id": "main:0",
+                "end_node_id": "main:0",
+                "suggestion": "改新",
+            }
+        ],
+    )
+    runtime.record_trajectory_summary("摘要一")
+    runtime.record_trajectory_summary("摘要二")
 
     lines = _lines(queue)
     assert lines == [
         "[attr-1] 旧（main:0）",
-        "（更新）[attr-2] 新（main:0 → main:3）",
-        "已提交产物改进意见",
-        "（更新）已提交产物改进意见",
+        "（更新）[attr-2] 新（main:0）",
+        "摘要一",
+        "（更新）摘要二",
     ]
-    # An overwritten submission leaves only the last entries behind.
-    assert [entry["attr_id"] for entry in runtime.attributions["diag-1"]] == ["attr-2"]
+    assert [entry["attr_id"] for entry in runtime.reward_attributions["diag-r"]] == ["attr-2"]
 
 
 @pytest.mark.asyncio
@@ -616,7 +775,7 @@ async def test_attribute_stage_logs_submissions_before_the_run_ends(monkeypatch:
 
     async def diagnose(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         return SimpleNamespace(
-            signals=[_signal("diag-1")],
+            signals=[_reward_signal()],
             reward_overall=None,
             signal_mode="rule_jev",
             run_meta={"reward": {"skipped": "no artifacts"}},
@@ -625,9 +784,18 @@ async def test_attribute_stage_logs_submissions_before_the_run_ends(monkeypatch:
 
     async def attribute(*_args: Any, **kwargs: Any) -> SimpleNamespace:
         runtime = kwargs["runtime"]
-        runtime.record_attribution("diag-1", [{"attr_id": "attr-1", "text_md": "原因", "start_node_id": "main:0"}])
+        runtime.record_reward_failure(
+            "diag-r",
+            [
+                {
+                    "attr_id": "attr-1",
+                    "text_md": "原因",
+                    "start_node_id": "main:0",
+                    "suggestion": "改一下",
+                }
+            ],
+        )
         await asyncio.sleep(0.05)
-        # The writer drains concurrently, so the line is already out while the agent is still working.
         seen_before_return.append(
             sum(1 for event in events if event.stage_id == "attribute" and event.text_delta == "[attr-1] 原因（main:0）"),
         )
@@ -641,6 +809,7 @@ async def test_attribute_stage_logs_submissions_before_the_run_ends(monkeypatch:
             wake_attempted=False,
             counts={},
             token_usage={},
+            trajectory_summary="summary",
         )
 
     monkeypatch.setattr(module, "run_task_parse", parse)
@@ -650,83 +819,8 @@ async def test_attribute_stage_logs_submissions_before_the_run_ends(monkeypatch:
     await engine.run(_inputs(_snapshot([_chat_record(0, 1000, 2000)]), [SubjectRange("main", 0, 10**9)]), emit)
 
     assert seen_before_return == [1]
-    # No second copy is written after the run.
     entry_lines = [event for event in events if event.text_delta == "[attr-1] 原因（main:0）"]
     assert len(entry_lines) == 1
-
-
-def test_root_cause_carries_reward_signal_reference() -> None:
-    nodes = _single_node()
-    runtime = NodeBackedRuntime(nodes, "zh")
-    runtime.record_attribution("diag-r", [{"attr_id": "attr-00000001", "text_md": "原因", "start_node_id": "main:0"}])
-    signal = DiagnosticSignal.create(
-        text="测试应当通过\n仍有用例失败",
-        source=SignalSource.REWARD,
-        tier="weak",
-        node_ids=["main:0"],
-        signal_id="diag-r",
-        score=60.0,
-        metadata={"category": "正确性"},
-    )
-
-    causes, _suggestions, _dropped = _translate_attribution(nodes, runtime, [signal])
-
-    ref = causes[0].signal
-    assert ref is not None
-    assert (ref.id, ref.source, ref.tier, ref.score, ref.category) == ("diag-r", "reward", "weak", 60.0, "正确性")
-    assert ref.node_ids == ["main:0"]
-    assert causes[0].evidence == "测试应当通过\n仍有用例失败"
-
-
-def test_root_cause_signal_reference_for_rule_signal_has_no_score() -> None:
-    nodes = _single_node()
-    runtime = NodeBackedRuntime(nodes, "zh")
-    runtime.record_attribution("diag-1", [{"attr_id": "attr-00000001", "text_md": "原因", "start_node_id": "main:0"}])
-
-    causes, _suggestions, _dropped = _translate_attribution(nodes, runtime, [_signal("diag-1", tier="uncertain")])
-
-    ref = causes[0].signal
-    assert ref is not None
-    assert (ref.source, ref.tier, ref.score, ref.category) == ("keyword_tool", "uncertain", None, None)
-
-
-def test_root_cause_without_known_signal_has_no_reference() -> None:
-    nodes = _single_node()
-    runtime = NodeBackedRuntime(nodes, "zh")
-    runtime.record_attribution("diag-x", [{"attr_id": "attr-00000001", "text_md": "原因", "start_node_id": "main:0"}])
-
-    causes, _suggestions, _dropped = _translate_attribution(nodes, runtime, [])
-
-    assert causes[0].signal is None
-    assert causes[0].evidence == ""
-
-
-def test_skill_suggestion_does_not_repeat_markdown() -> None:
-    nodes = _single_node()
-    runtime = NodeBackedRuntime(nodes, "zh")
-    runtime.record_attribution("diag-1", [{"attr_id": "attr-00000001", "text_md": "原因", "start_node_id": "main:0"}])
-    runtime.record_skill_improvement("demo-skill", "## 改进\n- 加一步")
-
-    _causes, suggestions, _dropped = _translate_attribution(nodes, runtime, [_signal("diag-1")])
-
-    skill = suggestions.skills[0]
-    assert skill.change_summary == skill.message == "## 改进\n- 加一步"
-    assert skill.rationale == ""
-
-
-def test_headline_variants() -> None:
-    from jiuwenswarm.diagnosis.attribution_engine import _TEXTS, _compose_headline
-
-    zh = _TEXTS["zh"]
-    en = _TEXTS["en"]
-    assert _compose_headline(zh, score=90, located=2, failed=False) == "总分 90 · 定位 2 处问题"
-    assert _compose_headline(zh, score=None, located=2, failed=False) == "定位 2 处问题"
-    assert _compose_headline(zh, score=95, located=0, failed=False) == "总分 95 · 未发现需要归因的问题"
-    assert _compose_headline(zh, score=None, located=0, failed=False) == "未发现需要归因的问题"
-    assert _compose_headline(zh, score=70, located=0, failed=True) == "总分 70"
-    assert _compose_headline(zh, score=None, located=0, failed=True) is None
-    assert _compose_headline(en, score=90, located=2, failed=False) == "Score 90 · 2 issues located"
-    assert _compose_headline(en, score=None, located=0, failed=False) == "No issues to attribute"
 
 
 def test_clip_folds_whitespace_and_truncates() -> None:
@@ -734,23 +828,6 @@ def test_clip_folds_whitespace_and_truncates() -> None:
 
     assert _clip("a\n\n b\t c", 20) == "a b c"
     assert _clip("x" * 10, 5) == "xxxxx…"
-
-
-def test_attribute_summary_counts_entries_and_dropped() -> None:
-    nodes = _single_node()
-    runtime = NodeBackedRuntime(nodes, "zh")
-    runtime.record_attribution("diag-1", [
-        {"attr_id": "attr-00000001", "text_md": "可定位", "start_node_id": "main:0"},
-        {"attr_id": "attr-00000002", "text_md": "第二条", "start_node_id": "main:0"},
-        {"attr_id": "attr-00000003", "text_md": "锚点丢失", "start_node_id": "main:99"},
-    ])
-
-    causes, _suggestions, dropped = _translate_attribution(nodes, runtime, [_signal("diag-1")])
-
-    # Two located entries come from one signal; the lost anchor is counted apart.
-    assert len(causes) - dropped == 2
-    assert len(runtime.attributions) == 1
-    assert dropped == 1
 
 
 def test_render_llm_line_parts() -> None:
@@ -790,50 +867,52 @@ def test_filter_engine_result_passes_error_through() -> None:
     assert filtered.error.code == "ATTRIBUTION_INCOMPLETE"
 
 
-def test_filter_and_apply_carry_reward_task_and_signal_reference() -> None:
-    from jiuwenswarm.diagnosis.models import RootCause, SignalRef
+def test_filter_and_apply_carry_reward_summary_and_signal_reference() -> None:
+    from jiuwenswarm.diagnosis.models import SignalRef
     from jiuwenswarm.diagnosis.snapshot import ScopeIndex
 
     snapshot = _snapshot([_chat_record(0, 1000, 2000)])
     index = ScopeIndex.build(snapshot, [SubjectRange("main", 0, 10**9)])
     ref = StepRef(trace_id=TRACE_A, span_id=span_id(0), subject_id="main", node_id="main:0")
-    cause = RootCause(
-        id="attr-1",
-        category=RootCauseCategory.OTHER,
-        subject_id="main",
-        refs=[ref],
+    cause = RewardFailureCause(
+        id="rfc-1",
+        dimension="正确性",
         summary="原因",
+        evidence=[ref],
+        suggestion=["改进"],
         signal=SignalRef(id="diag-1", source="reward", tier="weak", score=60.0, category="正确性"),
     )
     result = EngineResult(
-        root_causes=[cause],
-        reward={"overall": {"total_score": 60}},
-        task_description="装好依赖并跑测试",
+        trajectory_summary="轨迹摘要",
+        reward_failure_causes=[cause],
+        reward=_reward_payload("正确性"),
     )
 
     filtered = filter_engine_result(result, index=index, profile=ModeProfile.AGENT_WORK)
     record = make_record()
     DiagnosisService._apply_result(record, filtered)
 
-    assert filtered.reward == {"overall": {"total_score": 60}}
-    assert filtered.task_description == "装好依赖并跑测试"
-    assert filtered.root_causes[0].signal is not None
-    assert record.reward == {"overall": {"total_score": 60}}
-    assert record.task_description == "装好依赖并跑测试"
-    assert record.root_causes[0].signal is not None
-    assert record.root_causes[0].signal.category == "正确性"
+    assert filtered.reward == _reward_payload("正确性")
+    assert filtered.trajectory_summary == "轨迹摘要"
+    assert filtered.reward_failure_causes[0].signal is not None
+    assert record.reward == _reward_payload("正确性")
+    assert record.trajectory_summary == "轨迹摘要"
+    assert record.reward_failure_causes[0].signal is not None
+    assert record.reward_failure_causes[0].signal.category == "正确性"
 
 
 def test_apply_result_stores_engine_error() -> None:
     record = make_record()
-    result = EngineResult(error=DiagnosisError(code="ATTRIBUTION_INCOMPLETE", message="归因未完成：超时"))
+    result = EngineResult(
+        trajectory_summary="摘要",
+        error=DiagnosisError(code="ATTRIBUTION_INCOMPLETE", message="归因未完成：超时"),
+    )
 
     DiagnosisService._apply_result(record, result)
 
     assert record.error is not None
     assert record.error.code == "ATTRIBUTION_INCOMPLETE"
-    assert record.evidence.artifact_eval is not None
-    assert record.evidence.artifact_eval.applied is False
+    assert record.trajectory_summary == "摘要"
 
 
 def test_production_host_runs_diagnoses_with_the_attribution_core_engine() -> None:

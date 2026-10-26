@@ -646,6 +646,30 @@
   margin-top: 0.25rem;
 }
 
+.relatedSignals {
+  gap: 0.5rem;
+}
+
+.relatedSignal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.relatedSignal + .relatedSignal {
+  border-top: 1px dashed var(--color-border-default);
+  padding-top: 0.5rem;
+}
+
+.artifactItems {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
 .tag {
   flex: 0 0 auto;
   border-radius: 0.25rem;

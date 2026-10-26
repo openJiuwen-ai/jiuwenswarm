@@ -15,7 +15,6 @@ import {
   type DiagnosisSelectionState,
 } from './diagnosis/diagnosisSelection';
 import { canSubmitDiagnosis, highlightKeysOf } from './diagnosis/diagnosisState';
-import type { RootCause } from './diagnosis/diagnosisTypes';
 import { DiagnosisRecordSelect } from './diagnosis/DiagnosisRecordSelect';
 import { DiagnosisSelectionBar } from './diagnosis/DiagnosisSelectionBar';
 import { DiagnosisSubpage } from './diagnosis/DiagnosisSubpage';
@@ -185,12 +184,12 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
     });
   }, [exitSelection, fullScope, nodeLimitExceeded, note, selectedNodes, selectionState, start, subjectChoices]);
 
-  const focusCause = useCallback((cause: RootCause | null) => {
-    if (cause === null) {
+  const focusCause = useCallback((findingId: string | null) => {
+    if (findingId === null) {
       setFocused(null);
       return;
     }
-    setFocused({ causeId: cause.id, keys: highlightKeysOf(record, [cause.id]) });
+    setFocused({ causeId: findingId, keys: highlightKeysOf(record, [findingId]) });
     setSubpage('trajectory');
   }, [record]);
 
@@ -321,8 +320,8 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
         <DiagnosisSubpage
           session={session}
           subjectLabels={subjectLabels}
-          focusedCauseId={focused?.causeId ?? null}
-          onFocusCause={focusCause}
+          focusedFindingId={focused?.causeId ?? null}
+          onFocusFinding={focusCause}
         />
       </div>
       {selecting ? (
