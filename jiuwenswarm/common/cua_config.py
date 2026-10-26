@@ -24,7 +24,7 @@ def is_cua_backend_available() -> bool:
     Availability is independent of user preferences and OS permission grants.
     Windows keeps Core's PyAutoGUI/Pillow single-step backend, including in
     desktop installers; its bundled native runtime serves cua_repl. macOS
-    installers use the external native backend for cua_repl. Unknown or incomplete
+    installers use the native backend for both routes. Unknown or incomplete
     installs hide the setting without changing its persisted value.
     """
     try:
@@ -34,7 +34,7 @@ def is_cua_backend_available() -> bool:
             bundle = getattr(sys, "_MEIPASS", None)
             if not bundle:
                 return False
-            root = Path(bundle) / "computer_use/_resources/os_adapter"
+            root = Path(bundle) / "computer_use/_resources/backends"
             if sys.platform == "darwin":
                 driver = root / "macos/.build/ComputerUseDriver.app/Contents/MacOS/computer-use-driver"
                 version = platform.mac_ver()[0].split(".")[0]
