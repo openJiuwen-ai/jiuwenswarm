@@ -31,15 +31,34 @@ CJK_FONT_CANDIDATES = [
 ]
 
 
-def _have(tool):
-    return shutil.which(tool) is not None
+def _which(tool, *fallbacks):
+    """Absolute path of an external tool, or None when it is unavailable.
+
+    External programs are invoked through this resolved path rather than a bare
+    name left to PATH lookup. `fallbacks` covers the usual install locations for
+    when PATH is minimal (CI sandboxes, service contexts).
+    """
+    found = shutil.which(tool)
+    if found:
+        return os.path.abspath(found)
+    for candidate in fallbacks:
+        if os.path.isabs(candidate) and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+FC_LIST = _which("fc-list", "/usr/bin/fc-list", "/usr/local/bin/fc-list")
+SOFFICE = _which("soffice", "/usr/bin/soffice", "/usr/local/bin/soffice",
+                 "/usr/lib/libreoffice/program/soffice",
+                 r"C:\Program Files\LibreOffice\program\soffice.exe")
+PDFTOPPM = _which("pdftoppm", "/usr/bin/pdftoppm", "/usr/local/bin/pdftoppm")
 
 
 def _pick_cjk_font():
-    if not _have("fc-list"):
+    if FC_LIST is None:
         return None
     try:
-        out = subprocess.run(["fc-list", "family"], capture_output=True, text=True,
+        out = subprocess.run([FC_LIST, "family"], capture_output=True, text=True,
                              encoding="utf-8", errors="replace", timeout=20).stdout
     except Exception:  # noqa: BLE001
         return None
@@ -49,7 +68,7 @@ def _pick_cjk_font():
             return f
     # any zh font
     try:
-        zh = subprocess.run(["fc-list", ":lang=zh", "family"], capture_output=True, text=True,
+        zh = subprocess.run([FC_LIST, ":lang=zh", "family"], capture_output=True, text=True,
                             encoding="utf-8", errors="replace", timeout=20).stdout
         first = [l.strip() for l in zh.splitlines() if l.strip()]
         return first[0].split(",")[0] if first else None
@@ -59,14 +78,14 @@ def _pick_cjk_font():
 
 def to_pdf(src, outdir):
     """Convert workbook to PDF via LibreOffice headless. Returns pdf path."""
-    if not _have("soffice"):
+    if SOFFICE is None:
         raise SystemExit("soffice (LibreOffice) not found; cannot render. See doctor.py")
     os.makedirs(outdir, exist_ok=True)
     env = dict(os.environ)
     # Isolated profile avoids locking issues when run repeatedly.
     profile = tempfile.mkdtemp(prefix="lo_profile_")
     cmd = [
-        "soffice", "--headless", "--norestore", "--convert-to", "pdf",
+        SOFFICE, "--headless", "--norestore", "--convert-to", "pdf",
         "--outdir", outdir, src,
         f"-env:UserInstallation=file://{profile}",
     ]
@@ -80,10 +99,10 @@ def to_pdf(src, outdir):
 
 
 def pdf_to_pngs(pdf, outdir, prefix):
-    if not _have("pdftoppm"):
+    if PDFTOPPM is None:
         raise SystemExit("pdftoppm (poppler-utils) not found; cannot rasterize. See doctor.py")
     stem = os.path.join(outdir, prefix)
-    subprocess.run(["pdftoppm", "-png", "-r", "120", pdf, stem],
+    subprocess.run([PDFTOPPM, "-png", "-r", "120", pdf, stem],
                    check=True, capture_output=True, text=True,
                    encoding="utf-8", errors="replace", timeout=180)
     return sorted(glob.glob(stem + "*.png"))
