@@ -1010,11 +1010,11 @@ export function AgentManagementPanel({
       const fromDetail = view === 'group-detail' && groupSelectedId === id;
       const result = await groupClient.uninstallGroup(id);
       await Promise.all([loadGroups('catalog'), loadGroups('mine')]);
-      if (fromDetail && before?.source === 'local') {
-        setView('mine');
+      if (fromDetail) {
+        setView(groupDetailOrigin);
         setMineKind('group');
-      } else if (fromDetail) {
-        await openGroupDetail(id);
+        setGroupSelectedId(null);
+        setGroupDetail(null);
       }
       if (result.notice) { setActionNoticeError(false); setActionNotice(result.notice); }
     } catch (error) {
