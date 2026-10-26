@@ -1,21 +1,25 @@
 # JiuwenSwarm 内置事件开发模板
 
-本文面向 WebClient、Gateway 和 AgentServer 开发者。目录以当前实现为准，新增示例文件另行标注；管理、事件和 WebUI 类型使用真实接口，业务处理用带注释的伪代码表示。本文只指导 swarm 内置事件开发。最近修订：2026-10-22。
+本文面向 WebClient、Gateway 和 AgentServer 开发者。目录以当前实现为准，新增示例文件另行标注；管理、事件和 WebUI 类型使用真实接口，业务处理用带注释的伪代码表示。本文只指导 swarm 内置事件开发。最近修订：2026-10-25。
 
 ## 1. 先看整体流程
 
 ### 1.1 事件在哪里执行
 
-三类开发者提供的事件和 Python Handler 都在 AgentServer 中执行；WebClient 和 Gateway 负责采集、转发或执行所属模块的动作。
+三类开发者提供的事件和 Python Handler 都在 AgentServer 中执行。只有 AgentServer 装配本套 EventBus；WebClient 和 Gateway 通过 WebSocket 上报请求、取得结果或执行所属模块的动作。事件属于哪个业务模块，与事件链在哪个进程执行是两回事。
 
 ```mermaid
 flowchart LR
     FE["React 前端"] --> WC["WebClient"]
     WC --> GW["Gateway"]
-    GW --> AD["AgentServer 适配器<br/>请求转为 Event"]
-    AD --> BUS["同一个 EventBus"]
+    GW -->|"WebSocket / E2A 请求"| AD["AgentServer 适配器<br/>请求转为 Event"]
+    AD --> BUS["AgentServer 内同一个 EventBus"]
     BIZ["AgentServer 本地业务"] --> BUS
     BUS --> H["匹配的 Handler<br/>USER → BUILTIN → CORE"]
+    H -->|"事件结果"| AD
+    H -->|"本地业务结果"| BIZ
+    AD -->|"响应或受控下行消息"| GW
+    GW -->|"消费结果或转发页面更新"| WC
 ```
 
 ### 1.2 文件放在哪里，登记后怎样生效
@@ -98,7 +102,23 @@ sequenceDiagram
 
 `next_handler` 推进当前链；`trigger` 或动词 Ops 能力发起新的事件链。事件返回后，入口不要再次执行已经由 CORE 完成的动作。
 
-匹配结果在进入执行链前已经固定，Handler 替换 `event_input` 后不会重新匹配；多次调用 `next_handler` 会重复执行下游处理。Handler、CORE 或 Ops 抛出的异常会向外传播，由业务入口决定如何处理；EventBus 不自动重试，也不撤销已发生的操作。
+匹配结果在进入执行链前已经固定，Handler 替换 `event_input` 后不会重新匹配；多次调用 `next_handler` 会重复执行下游处理。普通 Handler 故障是否跳过、哪些异常继续传播，遵循 core [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md)；业务入口负责处理向外传播的错误和取消。EventBus 不自动重试，也不撤销已发生的操作。
+
+### 1.4 先找到真实入口和最终生效位置
+
+从用户实际使用的入口向下查，确认原动作在哪里执行，再确定事件插入的位置。启动阶段登记事件类型、Handler 和 Ops，不代表某项业务已经经过事件链；仅新增一个启动演示或无人调用的发布函数，也不能代替真实业务接入。
+
+实现前用当前源码中的函数名回答以下问题：
+
+| 要确认什么 | 需要找到的位置 |
+| --- | --- |
+| 谁发起业务 | 原有页面、渠道消息入口或本地业务方法，以及实际调用方 |
+| 事件在哪执行 | 该入口所在进程、AgentServer 适配器或本地触发方法、已装配的 Bus |
+| 原动作由谁执行 | CORE 内部的默认实现，或事件返回“继续”后由原流程执行；两者选清楚 |
+| 结果怎样生效 | 消费事件输出的调用方、当前实例读取的状态，以及用户最后看到或使用的结果 |
+
+资源池、当前实例的可用集合和最终使用者可能读取不同状态。沿公开接口查完写入与读取两侧，不能仅凭底层登记成功就判断业务可用，也不能直接修改其它模块的私有集合来补接线。
+如果业务本来在实例初始化时发生，可以在该真实生命周期中触发；不要为了展示效果另加一条启动专用路径。原入口需要等待结果时，必须 `await` 并消费输出，继续和短路都要验证原动作的执行次数。
 
 ## 2. 三个模块共用的目录和启动方式
 
@@ -387,6 +407,26 @@ def register_handlers(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
 
 ### 3.7 接通触发入口与结果返回
 
+这一链路沿用 WebUI 桥接方式：前端采集交互，WebClient 和 Gateway 转发，AgentServer 适配器转换为进程内事件；更新画面时再通过下行帧返回浏览器。不要在 WebClient 或 Gateway 中获取 Bus 或执行 Python Handler。
+
+```mermaid
+sequenceDiagram
+    participant FE as React 真实交互
+    participant WC as WebClient
+    participant GW as Gateway
+    participant AD as AgentServer / WebUIDispatchAdapter
+    participant B as AgentServer EventBus
+    FE->>WC: webui.dispatch
+    WC->>GW: WebSocket 请求
+    GW->>AD: E2A 请求，保留身份与会话
+    AD->>B: runtime.dispatch → trigger
+    B-->>AD: 事件输出
+    AD-->>GW: 原请求的响应
+    GW-->>WC: 转发回执
+    WC-->>FE: 消费结果
+    Note over B,FE: 如需更新画面，另经 ui.render 链及 webui.render 推送返回
+```
+
 前端同步扩充事件类型，并在实际交互位置调用上报函数：
 
 ```typescript
@@ -454,6 +494,8 @@ class WebUIDispatchAdapter(GatewayAdapter):
 
 单元测试覆盖前端类型和白名单、类型唯一登记、匹配、继续与短路、非法输入、失效目标、Ops Build、请求回执与渲染失败。最后通过真实 WebClient/Gateway 链路验证，不能仅凭推送入口返回成功认定页面已显示。
 
+涉及页面改动时，复用相邻区域的布局、组件和样式 token。在浏览器检查普通与窄窗口、较长文案、中英文及相关加载和错误状态：按钮、文字和状态提示不重叠，不挤出容器，也不遮挡原有交互。构建和接口测试通过不能代替这项检查；未能启动页面时明确记录未完成视觉验证。
+
 ## 4. Gateway 开发模板：请求转发与渠道事件
 
 本章的 `channel.custom` 是新事件占位名；输入输出是下文新定义的业务模型，不是已有 swarm API。业务文件按以下声明补齐，具体操作在注释处实现。
@@ -465,7 +507,7 @@ class WebUIDispatchAdapter(GatewayAdapter):
 | `event_types/channel_event.py` | 事件名、输入输出、匹配函数、CORE 工厂、类型登记 |
 | `event_handlers/channel_handler.py` | BUILTIN Handler、Handler 登记 |
 | `handler_ops/channel_ops.py` | 可选的主动触发能力、Build Handler、能力登记 |
-| 所属业务入口 | 准备可信会话、触发事件、转换并使用结果 |
+| Gateway 原业务入口与 AgentServer 适配器 | 经 WebSocket 请求事件处理，等待并使用结果；需要渠道动作时补充受控下行接收与执行 |
 
 ### 4.2 定义事件名、输入和输出
 
@@ -492,6 +534,8 @@ class ChannelEventOutput:
     status: str
     data: Mapping[str, object] = field(default_factory=dict)
     # 由事件契约明确 accepted、status 及 data 的含义，调用方据此继续业务。
+    # 对转发前判断类事件，可约定 status 为 continue / handled，data 携带约定的回复内容。
+    # accepted 只表示本次事件是否被接受，不单独作为“已完成回复”或“需要短路”的依据。
 ```
 
 ### 4.3 定义匹配函数、CORE 和类型登记
@@ -506,7 +550,8 @@ from openjiuwen.core.events import (
 def match_channel_event(event_input: object, match_pattern: MatchPattern) -> bool:
     if not isinstance(event_input, ChannelEventInput):
         return False
-    # 比较 channel_id、target_id、action 等约定字段；空模式全匹配，不执行业务。
+    # 比较 channel_id、target_id、action 或 payload 中的约定字段；空模式全匹配，不执行业务。
+    # 要求内容完全匹配时比较原文，不擅自去除空格、换行或合并附件内容。
     raise NotImplementedError("实现本事件输入字段匹配")
 
 
@@ -521,8 +566,10 @@ def build_channel_core() -> EventHandler:
             raise TypeError("channel.custom requires ChannelEventInput")
         if ops is None or ops.session_context is None:
             raise ValueError("channel.custom requires SessionContext")
-        # 检查会话是否允许该渠道动作，通过 AgentServer 侧受控代理交给 Gateway，并映射执行结果。
-        # 返回 ChannelEventOutput；CORE 不调用 next_handler，入口不补做同一动作。
+        # 先检查当前会话与渠道范围。转发前判断类事件的默认行为可只返回 continue，
+        # 由 Gateway 消费结果后执行原有转发；此 CORE 不创建聊天任务或再次发送原消息。
+        # 真正执行渠道动作的事件，才经 WebSocket 受控下行交给 Gateway，并核对执行结果。
+        # 返回 ChannelEventOutput；CORE 不调用 next_handler，不与入口重复执行同一动作。
         raise NotImplementedError("实现本事件的默认处理")
 
     return channel_core
@@ -638,7 +685,31 @@ def register_handlers(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
 
 ### 4.7 接通触发入口与结果返回
 
-Gateway 网络 Handler 负责路由，事件 Handler 在 AgentServer 执行。上行经 E2A 转为下列 AgentRequest；需要渠道动作时，CORE 再经受控代理调用 Gateway，并等待结果。E2A 是两进程间的请求协议。
+Gateway 原业务入口留在 Gateway，事件链在 AgentServer 执行，两者通过 WebSocket 上的 E2A 请求连接。E2A 是两进程间的请求协议；请求到达 AgentServer 后，由专用适配器转换为 `Event`。当前没有通用渠道事件代理，下面的适配器与业务接入都是待实现骨架。
+
+以“转发前判断是否继续”的事件为例，Gateway 必须先等待事件结果，再决定是否进入原聊天流程：
+
+```mermaid
+sequenceDiagram
+    participant CH as 原渠道消息入口
+    participant GW as Gateway 原处理流程
+    participant AD as AgentServer 渠道事件适配器
+    participant B as AgentServer EventBus
+    participant CHAT as 原聊天处理
+    CH->>GW: 原消息、附件与会话上下文
+    GW->>AD: 专用事件请求（WebSocket / E2A）
+    AD->>B: trigger(Event, SessionContext)
+    B-->>AD: ChannelEventOutput
+    AD-->>GW: 对应请求的处理结果
+    alt status 为 handled
+        GW->>CH: 按结果回复一次
+        Note over GW,CHAT: 不发送 chat.send，不启动模型任务
+    else status 为 continue
+        GW->>CHAT: 原消息进入原流程一次
+    end
+```
+
+不要在 Gateway 调用 AgentServer 的进程内单例获取函数，也不要在 Gateway 再装配一套 Bus。将事件直接挪到 AgentServer 的 `chat.send` 入口，会改变拦截时机和覆盖范围；若需求是 Gateway 转发前判断，这不能代替上图的往返链路。向 AgentServer 请求事件处理不等于发起模型调用。
 
 ```python
 # AgentServer 侧：新业务适配器骨架，不表示已有通用渠道代理。
@@ -658,7 +729,8 @@ def parse_channel_request(request: AgentRequest) -> tuple[ChannelEventInput, Ses
 
 
 def build_channel_response(request: AgentRequest, output: ChannelEventOutput) -> AgentResponse:
-    # 关联原 request_id，将 accepted、status、data 转为网络响应。
+    # 关联原 request_id，将 accepted、status、data 转为网络响应，并保留路由关联字段。
+    # ok=True 只表示本次请求得到结果；Gateway 仍须检查事件的 accepted 和 status。
     raise NotImplementedError("实现渠道事件回执转换")
 
 
@@ -668,6 +740,7 @@ class ChannelEventAdapter(GatewayAdapter):
         self.methods = frozenset({method.value})  # 网络方法名，与 event_type 分开确定。
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
+        # 只执行业务事件链，不调用 chat.send，也不启动模型任务。
         event_input, session = parse_channel_request(request)
         output = await self.bus.trigger(Event(CHANNEL_EVENT_TYPE, event_input), session)
         if not isinstance(output, ChannelEventOutput):
@@ -679,13 +752,58 @@ def register_channel_adapter(
     registry: AdapterRegistry, bus: ExtensionEventBus, method: ReqMethod,
 ) -> None:
     registry.register(ChannelEventAdapter(bus, method))
-    # Gateway 侧用同一个 ReqMethod 登记路由，按现有 proxy_unary_request 完成转发。
+    # 同时接入 AgentServer 当前的适配器装配入口；不能只定义此函数而无人调用。
+    # Web 网络入口可参考 proxy_unary_request；Gateway 自身收到的渠道消息用现有 client 发 E2A。
     # 新方法需要先补充 ReqMethod 及两端协议，不虚构一个当前不存在的枚举值。
 ```
 
+Gateway 侧还须接入结果消费。下面只展示转发前判断的分支；函数名为示意，必须由原有消息处理流程调用：
+
+```python
+from collections.abc import Awaitable, Callable
+from jiuwenswarm.common.client.agent_client import AgentServerClient
+from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.common.schema.message import Message
+from jiuwenswarm.extensions_v2.event_types.channel_event import ChannelEventOutput
+from jiuwenswarm.gateway.routing.agent_request_timeout import send_agent_request_with_timeout
+
+
+def decode_channel_output(response: AgentResponse) -> ChannelEventOutput:
+    # 检查 ok 与 payload 字段类型，按双方约定解码；未知 status、None 和失败响应不当作 continue。
+    raise NotImplementedError("实现回执校验与输出转换")
+
+
+async def before_original_forward(
+    client: AgentServerClient,
+    control_request: E2AEnvelope,
+    original_message: Message,
+    deliver_reply: Callable[[Message, ChannelEventOutput], Awaitable[None]],
+) -> bool:
+    # Gateway 原入口准备专用事件请求：使用已登记的 method 和独立 request_id，不能发送 chat.send。
+    # 身份、会话与目标沿可信路由取得；按契约传递原内容，不修改后续转发所用的原消息及附件。
+    # 控制请求与原聊天请求不能复用同一个在途 request_id。
+    response = await send_agent_request_with_timeout(
+        client, control_request, label="channel event",
+    )
+    output = decode_channel_output(response)
+    if not output.accepted:
+        raise RuntimeError("channel event was not accepted")
+    if output.status == "handled":
+        await deliver_reply(original_message, output)  # 调用原渠道的回复路径，并核对投递结果。
+        return True  # 原消息循环据此结束本条消息，不再创建聊天请求。
+    if output.status == "continue":
+        return False  # 原入口仅沿既有转发分支执行一次，不从此函数另发一遍聊天。
+    raise ValueError("unexpected channel event status")
+```
+
+在真实 Gateway 入口等待上述判断：已处理则结束当前消息；继续则保留原有转发代码。结合当前调用链选择插入点，不能跳过命令、取消、附件准备和会话路由，也不能重复经过这些步骤。异常、超时或取消按事件契约明确处理，不因没拿到结果就自动重发或无条件继续。本骨架以拒绝未知结果为示意；其它降级策略须由具体事件确认。
+
+若事件本身要求执行 Gateway 渠道动作，则由 AgentServer 经受控下行消息通知 Gateway，Gateway 接收器校验渠道与目标后调用本地公开接口，再按契约回报执行结果。Gateway 不执行 Python 事件 Handler；AgentServer 也不能直接调用另一个进程的 Channel 对象。不要把“下行消息已发出”当作动作已完成。
+
 ### 4.8 完成后检查
 
-单元测试覆盖类型唯一登记、匹配、继续与短路、目标拒绝、Ops Build、超时和执行结果。另行核对事件与网络方法的区别、Gateway 路由及结果回传，并完成跨进程联调；当前没有可直接复用的通用渠道事件代理。
+单元测试覆盖类型唯一登记、匹配、继续与短路、目标拒绝、Ops Build、超时和执行结果。从真实 Gateway 消息入口验证：命中短路时回复一次且没有聊天或模型任务，未命中只沿原路径转发一次；失败、取消、附件、已有命令和不同会话的行为保留。测试中可隔离 WebSocket 传输，但要保留 Gateway 结果消费与 AgentServer 适配器、事件链，并分别验证运行边界；同进程直接获取 Bus 的测试不能证明跨进程接通。最后完成实际跨进程联调，未执行时明确记录。
 
 ## 5. AgentServer 开发模板：本地业务事件
 
@@ -873,33 +991,34 @@ def register_handlers(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
 ### 5.7 接通触发入口与结果返回
 
 AgentServer 与 EventBus 在同一进程，直接在真实业务扩展点调用；不经过 WebUI 或 Gateway 适配器。
+先按第 1.4 节追到原动作和最后的读取方。将下面的方法体合入已存在的业务入口；如果增加辅助函数，必须同时修改原调用方。不要照模板另建一个仅在启动时执行的发布器来代替原业务路径。
 
 ```python
-# AgentServer 业务类的方法骨架，合并到实际业务调用位置。
+# AgentServer 原业务方法的伪代码；名称仅作示意，不是新增的框架 API。
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
 from jiuwenswarm.extensions_v2.event_types.agent_event import (
     AGENT_EVENT_TYPE, AgentEventInput, AgentEventOutput,
 )
 
 
-class AgentEventPublisher:
-    def __init__(self, bus: ExtensionEventBus) -> None:
-        self.bus = bus
-
-    async def on_business_step(
-        self, request: AgentEventInput, session: SessionContext,
-    ) -> AgentEventOutput:
-        # session 由服务端会话记录准备；不要读取全局“当前会话”。
-        output = await self.bus.trigger(Event(AGENT_EVENT_TYPE, request), session)
-        if not isinstance(output, AgentEventOutput):
-            raise TypeError("agent.custom must return AgentEventOutput")
-        # 检查 accepted、status，使用业务结果继续原流程，不再补跑默认动作。
-        return output
+async def existing_business_entry(
+    bus: ExtensionEventBus, request: AgentEventInput, session: SessionContext,
+) -> AgentEventOutput:
+    # bus 来自本业务使用的装配实例；session 来自服务端记录，不读取全局“当前会话”。
+    output = await bus.trigger(Event(AGENT_EVENT_TYPE, request), session)
+    if not isinstance(output, AgentEventOutput):
+        raise TypeError("agent.custom must return AgentEventOutput")
+    # 按事件约定检查 accepted、status，并将输出接回原调用方。
+    # 原动作若已放进 CORE，这里不再执行；CORE 使用底层实现，不能递归调用本入口。
+    # 需要继续原流程的事件则在检查结果后执行；通知型事件放在原动作完成之后。
+    return output
 ```
+
+登记或修改资源的事件还要核对当前业务实例是否可见、是否真正被使用。需要更新实例状态时调用所属模块的公开接口，并保留原有权限、缓存刷新及生命周期处理；不可把底层资源池的一次写入当作完整接入。
 
 ### 5.8 完成后检查
 
-单元测试覆盖类型唯一登记、匹配、继续与短路、输入错误、会话缺失、Ops Build 和结果使用。需要结果后再继续时直接 await；仅通知型事件可由业务安排后台任务，并负责异常、等待或取消。
+单元测试覆盖类型唯一登记、匹配、继续与短路、输入错误、会话缺失、Ops Build 和结果使用。从原业务入口进入，核对触发次数、最终可见状态及实际使用结果，不以直接调用 `trigger()` 的测试代替。需要结果后再继续时直接 await；仅通知型事件可由业务安排后台任务，并负责异常、等待或取消。
 
 ## 6. 完成开发时核对哪些内容
 
@@ -914,6 +1033,8 @@ class AgentEventPublisher:
 | 异常与验证 | 测试覆盖成功、非法输入、未命中、继续、短路及异常；入口按业务要求处理异常和取消，不假定事件失败会自动回滚 |
 | 跨进程入口 | WebClient / Gateway 的方法、适配器和结果回传都已接通 |
 | 本地业务 | 在真实扩展点触发并使用结果，后台任务由所属业务管理 |
+| 最终生效 | 原入口经过事件链，当前实例的读取状态和实际行为符合预期；只有底层写入不算完成 |
+| 页面布局 | 涉及 UI 时，真实页面的按钮、文字和状态提示在普通与窄窗口不重叠；未验证项据实记录 |
 
 ### 6.2 常见错误
 
@@ -925,5 +1046,7 @@ class AgentEventPublisher:
 | `EVENTS_MATCH_INVALID` | 匹配函数是否抛错，或返回了非 bool 值 |
 | `EVENTS_OPS_INVALID` | 是否重复创建 namespace、重复添加方法，或调用未知能力 |
 | `EVENTS_NEXT_INVALID` | 是否跨调用保存 next、跨任务使用 next，或改变了 event_type |
+| Gateway 中取不到 Bus | 是否误在 Gateway 读取 AgentServer 单例；应检查 WebSocket 请求与适配器接入 |
+| 事件返回成功但业务没变化 | 原入口是否真的调用事件，结果是否被消费，最终使用者是否读取了另一层状态 |
 
 真实接口可查阅 [ExtensionManager](../../management/registry.py)、[WebUIRuntime](../../webui/runtime.py)、[WebUIDispatchAdapter](../../webui/adapter.py)、core [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md)和 [Registry 与 Bus 规约](../../../../../agent-core/openjiuwen/core/extension/docs/specs/S_02_registry-and-bus.md)。core 侧的对应写法见[内置事件开发说明](../../../../../agent-core/openjiuwen/core/events/docs/designs/events-extension-development-guide.md)。本文标为新增示例的文件与方法骨架仍需按业务实现。
