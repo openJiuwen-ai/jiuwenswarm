@@ -99,7 +99,7 @@ async def _ensure_present(cron_controller: Any) -> None:
             # 否则 wake_dt 在过去会导致循环触发。
             "wake_offset_seconds": 0,
         }
-        await cron_controller.create_job(params)
+        await cron_controller.create_job(params, internal_proactive_sync=True)
         logger.info("[ProactiveAutoReg] created proactive.tick job (cron=%s)", DEFAULT_CRON_EXPR)
         return
 
