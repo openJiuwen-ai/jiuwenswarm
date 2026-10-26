@@ -208,3 +208,13 @@ def test_summary_team_spec_uses_inprocess_transport(monkeypatch):
         in spec.agents["source-integrator"].system_prompt
     )
     assert "Return the complete draft" in spec.agents["delivery-drafter"].system_prompt
+    leader_prompt = spec.agents["leader"].system_prompt
+    assert "root_task and summary_task" in leader_prompt
+    assert "facts must come only from bound sources" in leader_prompt
+    assert "stop after successful submission" in leader_prompt
+    assert "correct the reported fields and retry without restarting drafting" in leader_prompt
+    assert "source disagreements and missing evidence" in spec.agents["source-integrator"].system_prompt
+    drafter_prompt = spec.agents["delivery-drafter"].system_prompt
+    assert "Do not automatically produce a long report or redo specialist work" in drafter_prompt
+    assert "copy it unchanged" in drafter_prompt
+    assert "Set result_type to the actual delivered format" in drafter_prompt

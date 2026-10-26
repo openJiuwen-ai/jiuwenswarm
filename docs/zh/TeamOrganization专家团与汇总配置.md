@@ -132,7 +132,19 @@ JiuwenSwarm 的 Summary Team 是一个固定的持久 Team：
 
 它使用默认 Team 模型，但不会复制用户 Team 的成员、工具或模板提示词。内部 transport 固定为 `inprocess`，成员使用 `build_mode`；中间稿写入自身 Team workspace，最终交付写入 Organization workspace 的 `summary/`。
 
+认领根任务后、拆分前显式选择聚合模式。根据根任务要求和各团队实际承担的交付范围选择模式。不存在承担完整根交付的专业团队，且各团队分别提供并列、独立的领域结论，根任务需要汇集、编排或综合这些结论时，必须选择 SUMMARY_TEAM。无论内容多少、任务大小或是否存在冲突，均不得以节约时间、降低开销、只是收集或 Owner 能自行整理为由改选 HIERARCHICAL。只有某个专业团队承担完整根交付，其最终输出本身即可满足根任务，其他团队提供所需输入、组件或验证时，才选择 HIERARCHICAL。团队领域正交不改变这一条件。Owner 名义上的汇总职责不构成完整专业交付，也不得虚设最终集成团队。用户明确指定模式时，在运行时约束允许的范围内遵循。
+
+`WAITING_SOURCES` 表示汇总尚未开始。所有必需来源都要同时满足 `COMPLETED` 和 `ACCEPTED`，包括 Owner 本团执行的子任务。创建工具等待时返回最新任务状态和 `blocked_sources`，Owner 应先处理未完成来源或待验收项，再等待汇总交付；验收就绪后仍由既有路径自动启动。
+
+对于本团承担的组织子任务，Leader 应在执行或内部派发前调用 `org_update_task(action='start')`；成员完成后，Leader 检查成果并及时回写对应组织子任务，再由创建团队显式验收。内部任务完成不会自动完成或验收组织子任务。
+
+聊天消息、时间线标题和工具分组按当前团队会话解析 Leader 身份；没有保存的身份时，使用该团队名册或团队名。Summary 等运行时团队不继承 Owner 的名称和头像，此显示解析不修改专家团绑定。
+
 每个 Organization 最多有一个共享 Summary Team。第一次创建 `SUMMARY_TEAM` execution 时懒加载，后续根任务复用；完成一次汇总不会立即停止它。
+
+Summary 输入在既有绑定来源外提供 `root_task`（ID、标题、描述和输出规范），用于确定交付格式与验收要求；事实依据仍仅来自绑定来源。保留来源分歧、限制与已有成品入口，不默认另写报告。需要把已有成品作为最终文件发布时，原样复制到组织 `summary/` 后设置 `result_uri`，`result_type` 与实际格式一致，原目录权限校验保持不变。
+
+本地调试分支通过 `uv sync --locked --inexact` 将相邻的 `../../agent-core-0.1.20/agent-core_0.1.20-zeze` 安装为 editable 依赖。修改该 core 仓库的 Python 源码后重启后端即可使用，`uv run` 不再恢复为 Git 固定版本。
 
 使用 `SUMMARY_TEAM` 时，汇总与最终交付按以下流程推进：
 

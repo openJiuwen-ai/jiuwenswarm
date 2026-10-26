@@ -13,6 +13,7 @@ import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import { AgentAvatar } from '../AgentAvatar';
 import { useChatStore, useSessionStore } from '../../stores';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { useConversationLeaderIdentity } from '../../features/teamOrganization/leaderIdentity';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import type { TeamLeaderIdentity } from '../../features/teamLeaderIdentity';
 import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
@@ -554,9 +555,7 @@ export function ChatTimelineList({
   const isTeamMode = mode === 'team';
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const conversationId = useOrganizationConversationKey(activeSessionId);
-  const runtimeTeamLeaderIdentity = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null,
-  );
+  const runtimeTeamLeaderIdentity = useConversationLeaderIdentity(activeSessionId);
   const teamLeaderIdentity = teamLeaderIdentityOverride ?? runtimeTeamLeaderIdentity;
   const teamGroupIdentity = teamGroupIdentityOverride;
   const storeIsProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
