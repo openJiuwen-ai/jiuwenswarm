@@ -498,6 +498,50 @@ test('welcome Tab and unknown slash Enter do not send input; /plan still execute
   });
 });
 
+test('persist session tag shows for real persist sessions; close hides it locally', async () => {
+  await mount({}, async ({ render, sessionId }) => {
+    await render();
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+    await act(async () => useSessionStore.getState().setPersistSession(sessionId, true));
+    assert.notEqual(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+    assert.equal(
+      document.querySelector('[data-testid="chat-panel-persist-tag-label"]').textContent,
+      i18n.t('persistSession.toolbarTag'),
+    );
+    await click(document.querySelector('[data-testid="chat-panel-persist-tag-close"]'));
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).persistSession, false);
+  });
+});
+
+test('persist session tag never renders on the welcome page even when armed', async () => {
+  await mount({ sessionId: 'new' }, async ({ render }) => {
+    await render();
+    await act(async () => useSessionStore.getState().setPersistSession('new', true));
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+  });
+});
+
+test('persist session tag drops its close button once the session has messages', async () => {
+  await mount({}, async ({ render, sessionId }) => {
+    await render();
+    await act(async () => useSessionStore.getState().setPersistSession(sessionId, true));
+    await act(async () =>
+      useChatStore.getState().addMessage(sessionId, {
+        id: 'persist-history-1',
+        role: 'user',
+        content: 'first task',
+        timestamp: '2026-10-26T10:00:00.000Z',
+      }),
+    );
+    const tag = document.querySelector('[data-testid="chat-panel-persist-tag"]');
+    assert.notEqual(tag, null);
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag-close"]'), null);
+    assert.equal(tag.className.includes('chat-agent-tag--static'), true);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).persistSession, true);
+  });
+});
+
 test('real session still forks and prevents overlapping compact requests', async () => {
   await mount({}, async ({ props, render, sessionId }) => {
     const forked = [];
