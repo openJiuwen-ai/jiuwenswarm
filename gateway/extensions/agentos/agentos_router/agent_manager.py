@@ -10,7 +10,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from openjiuwen_protocol.e2a.models import E2AEnvelope
-from gateway.extensions.agentos.agentos_router.logutil import format_agentos, log_agentos
+
+from gateway.extensions.agentos.agentos_router.logutil import (
+    format_agentos,
+    log_agentos,
+)
 from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
 
 logger = logging.getLogger(__name__)

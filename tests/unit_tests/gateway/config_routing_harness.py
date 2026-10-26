@@ -18,6 +18,7 @@ def make_config_routing_client(on_config_saved: Any = None) -> Any:
     """构造把 config 域 E2A 请求交给真实 ConfigAdapter 执行的 client。"""
     from openjiuwen_protocol.e2a.agent_models import AgentRequest
     from openjiuwen_protocol.message import ReqMethod
+
     from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import ConfigAdapter
 
     adapter = ConfigAdapter(on_config_saved=on_config_saved)

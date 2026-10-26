@@ -9,6 +9,9 @@
   R2  server  禁止 import gateway
   R3  gateway 禁止 import server / agents / channels
 
+例外：``gateway.common`` 是无状态纯函数/常量的唯一真源（M1 策略调整），
+common / server / runtime 允许反向引用；其余 ``gateway.*`` 仍属传输层，继续禁止。
+
 使用时机（《Gateway独立成仓-解耦设计》PR-2，单人解耦精简版）：
 
   1. 每次同步 upstream 后——母仓是共享仓库，上游提交可能引入新耦合；
@@ -58,6 +61,9 @@ _ALL_LOCAL_PKGS = None  # 延迟初始化（collect_py_files 依赖 git）
 # （common 注入化 + 纯模块下沉）全部消除；!8016 合入的临时白名单
 # （14 对）随本 MR 缩减为空。
 KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {}
+
+# 允许的跨层目标：无状态纯组件以 gateway 为唯一真源，母仓反向引用不视为违规。
+ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = ("gateway.common",)
 
 KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 
@@ -272,6 +278,12 @@ def _check_rule(
         if not mod.startswith(source_prefixes):
             continue
         for tgt in graph.hard.get(mod, set()) | graph.lazy.get(mod, set()):
+            # 无状态纯组件（gateway.common）允许被母仓反向引用。
+            if any(
+                tgt == allowed or tgt.startswith(allowed + ".")
+                for allowed in ALLOWED_CROSS_LAYER_PREFIXES
+            ):
+                continue
             # M0-c 后 gateway 为顶层包：forbidden 匹配需同时覆盖
             # ``jiuwenswarm.<pkg>`` 与裸顶层 ``<pkg>`` 两种模块名形态。
             if any(

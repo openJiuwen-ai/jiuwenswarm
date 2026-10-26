@@ -26,7 +26,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 
-from jiuwenswarm.common.utils import get_agent_root_dir
 from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
@@ -38,6 +37,7 @@ from gateway.common.work_mode import (
     normalize_work_mode,
     resolve_default_project_id,
 )
+from jiuwenswarm.common.utils import get_agent_root_dir
 from jiuwenswarm.server.runtime.session.work_mode import (
     infer_legacy_project_work_mode,
 )

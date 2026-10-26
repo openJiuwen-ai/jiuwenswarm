@@ -1,10 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Discoverable ADX Gateway transport extension."""
 
+from gateway.extensions.sdk.agent_server_client import AgentServerClientExtension
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.extensions.adx.config import adx_router_selected, load_router_config
 from jiuwenswarm.extensions.adx.router_client import AdxRouterClient
-from gateway.extensions.sdk.agent_server_client import AgentServerClientExtension
 
 
 class AdxRouter(AgentServerClientExtension):

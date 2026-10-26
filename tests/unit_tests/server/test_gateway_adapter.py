@@ -16,9 +16,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
@@ -72,7 +72,9 @@ async def test_workspace_upload_chunks_stay_in_injected_user_dir(
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Large AgentOS uploads are routed as bounded E2A chunks, not Gateway files."""
-    from jiuwenswarm.server.runtime.gateway_adapter import workspace_file_adapter as module
+    from jiuwenswarm.server.runtime.gateway_adapter import (
+        workspace_file_adapter as module,
+    )
 
     monkeypatch.setattr(module, "get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(module, "is_path_within_user_dirs", lambda path: Path(path).is_relative_to(tmp_path))
@@ -121,7 +123,9 @@ async def test_upload_chunk_concurrent_same_name_does_not_clobber(
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
 
-    from jiuwenswarm.server.runtime.gateway_adapter import workspace_file_adapter as module
+    from jiuwenswarm.server.runtime.gateway_adapter import (
+        workspace_file_adapter as module,
+    )
 
     monkeypatch.setattr(module, "get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(module, "is_path_within_user_dirs", lambda path: Path(path).is_relative_to(tmp_path))

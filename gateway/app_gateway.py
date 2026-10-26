@@ -29,7 +29,6 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
-
 # Include entry-module import/configuration work in later startup phase logs.
 # PyInstaller boot time is intentionally outside this boundary.
 _PROCESS_START_T0 = time.monotonic()
@@ -41,7 +40,11 @@ def _mark_startup_import_phase(stage: str) -> None:
 
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
-from gateway.common.ws_diagnostics import format_ws_diagnostics, describe_ws_peer, describe_ws_exception
+from gateway.common.ws_diagnostics import (
+    describe_ws_exception,
+    describe_ws_peer,
+    format_ws_diagnostics,
+)
 from jiuwenswarm.common.media_capability_config import (
     migrate_media_capability_switches,
 )
@@ -49,7 +52,7 @@ from jiuwenswarm.common.media_capability_config import (
 # user_id 白名单: 仅允许字母数字及 _-, 拒绝路径遍历字符
 _SAFE_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
-from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
+from jiuwenswarm.dotenv_early import load_dotenv_runtime, parse_dotenv_early
 
 parse_dotenv_early("jiuwenswarm-gateway")
 _mark_startup_import_phase("dotenv_parsed")
@@ -66,39 +69,48 @@ if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
     prepare_runtime_workspace(cleanup_stale_descs=False)
 _mark_startup_import_phase("runtime_workspace_ready")
 
-from openjiuwen.core.common.logging import LogManager  # pylint: disable=wrong-import-order
+from openjiuwen.core.common.logging import (
+    LogManager,  # pylint: disable=wrong-import-order
+)
+
 from gateway.channel_manager.base import BaseWebChannel
+
 _mark_startup_import_phase("openjiuwen_and_channel_base_imported")
 
 # --- Now safe to import jiuwenswarm modules ---
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import Message, Mode, ReqMethod
+
 from gateway.channel_manager.protocol.acp.acp_connect import AcpGatewayBridge
-from gateway.routing.agent_request_timeout import coerce_client_timeout_ms
+from gateway.channel_manager.web.media import (
+    normalize_chat_media_attachments,
+)
+from gateway.common.process_supervision import (
+    GATEWAY_RESTART_EXIT_CODE,
+    SUPERVISOR_PID_ENV,
+)
 from gateway.common.security.ws_origin import (
     extract_handshake_request,
     get_header_value,
 )
+from gateway.routing.agent_request_timeout import coerce_client_timeout_ms
 from gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.debug_dump import (
     install_async_dump_handler,
     install_crash_exit_handler,
 )
-from gateway.common.process_supervision import GATEWAY_RESTART_EXIT_CODE, SUPERVISOR_PID_ENV
+from jiuwenswarm.common.schema.message import (
+    PROMPT_SUGGESTION_READY_EVENT,
+    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+    TOPIC_STARTERS_READY_EVENT,
+)
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     get_env_file,
     get_root_dir,
     get_user_workspace_dir,
 )
-from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-from openjiuwen_protocol.message import Message, Mode, ReqMethod
-from jiuwenswarm.common.schema.message import (
-    PROMPT_SUGGESTION_READY_EVENT,
-    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
-    TOPIC_STARTERS_READY_EVENT,
-)
-from gateway.channel_manager.web.media import (
-    normalize_chat_media_attachments,
-)
+
 _mark_startup_import_phase("gateway_core_imports_loaded")
 
 _logging_yaml = get_root_dir() / "config" / "logging.yaml"
@@ -1874,9 +1886,6 @@ async def _run(
     # 读取其重依赖 (slack_bolt/telegram/redis/aiohttp 等), 缩短 Gateway 就绪时间。
     from openjiuwen.core.runner import Runner
 
-    from jiuwenswarm.common.updater import UpdaterService
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
     from gateway.channel_manager.channel_manager import ChannelManager
     from gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
         WebProxyChannelConfig,
@@ -1899,21 +1908,24 @@ async def _run(
         WebChannel,
         WebChannelConfig,
     )
-    from jiuwenswarm.common.config import get_config
     from gateway.cleanup import start_background_cleanup
-    from gateway.routing.agent_client import WebSocketAgentServerClient
     from gateway.cron import (
         CronController,
         CronSchedulerService,
         create_gateway_cron_store,
     )
+    from gateway.extensions.registry import ExtensionRegistry
     from gateway.health_check import (
         GatewayHealthCheckService,
         HealthCheckConfig,
     )
     from gateway.heartbeat import HeartbeatControllerProxy
     from gateway.message_handler.message_handler import MessageHandler
+    from gateway.routing.agent_client import WebSocketAgentServerClient
+    from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.config_panel.config_set_handlers import CONFIG_SET_ENV_MAP
+    from jiuwenswarm.common.updater import UpdaterService
+    from jiuwenswarm.extensions.manager import ExtensionManager
 
     logger.info("[App] Gateway starting, connecting AgentServer: %s", agent_server_url)
     for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
@@ -2003,8 +2015,8 @@ async def _run(
     message_handler.set_outbound_pipeline(im_outbound)
 
     cron_store = await create_gateway_cron_store()
-    from jiuwenswarm.common.model_migration import migrate_legacy_cron_selections
     from gateway.runtime.cron.factory import load_cron_store_settings
+    from jiuwenswarm.common.model_migration import migrate_legacy_cron_selections
 
     # Shared etcd jobs need the target user's catalog; that migration runs on
     # the per-user resource/reference boundary, never using Gateway's catalog.
@@ -3422,11 +3434,11 @@ async def _run(
                         manager = WebPortManager(web_channel, wp_config)
                         web_channel.web_port_manager = manager
                         manager.start()
-                        from gateway.extensions.agentos.registry_watcher.service import (
-                            RegistryWatcherService,
-                        )
                         from gateway.cron.factory import (
                             load_cron_store_settings,
+                        )
+                        from gateway.extensions.agentos.registry_watcher.service import (
+                            RegistryWatcherService,
                         )
 
                         endpoints = list(load_cron_store_settings(full_cfg).endpoints)

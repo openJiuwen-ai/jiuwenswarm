@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
-import asyncio
 import time
 from abc import ABC
 from dataclasses import dataclass
@@ -17,9 +17,10 @@ from gateway.routing.keys import ChannelKey
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from openjiuwen_protocol.message import Message
+
     from gateway.channel_manager.base import BaseChannel
     from gateway.message_handler import MessageHandler
-    from openjiuwen_protocol.message import Message
 
 
 @dataclass
@@ -195,11 +196,11 @@ class ChannelManager(ABC):
             import base64 as _base64
 
             from openjiuwen_protocol.message import ReqMethod
-            from gateway.routing.e2a_proxy import fetch_agent_unary
 
             from gateway.routing.agent_http_bridge import (
                 E2A_PAYLOAD_MAX_BYTES,
             )
+            from gateway.routing.e2a_proxy import fetch_agent_unary
 
             content_bytes = bytes(content)
             # 传输取舍（方案 §10.5）：超限的 base64 帧会超过内部 WS 8MB 帧限制
@@ -208,11 +209,11 @@ class ChannelManager(ABC):
             # 内容走 base64 E2A。不使用 HTTP bridge（upload_file_bytes）——其
             # 上传端口推导仅对已启动独立上传监听器的部署有效，单机模式不监听。
             if len(content_bytes) > E2A_PAYLOAD_MAX_BYTES:
+                import mimetypes
+
                 from gateway.routing.agent_http_bridge import (
                     upload_file_bytes_via_e2a,
                 )
-
-                import mimetypes
 
                 rel_path = (
                     f"agent/workspace/{storage_platform}_files/downloads/"

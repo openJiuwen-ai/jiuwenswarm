@@ -8,7 +8,6 @@ import json
 
 import pytest
 
-from jiuwenswarm.common.etcd.client import EtcdKv, EtcdRangeResult
 from gateway.extensions.agentos.registry_watcher import (
     NAMESPACE_ENV,
     registry_prefix,
@@ -20,6 +19,7 @@ from gateway.extensions.agentos.registry_watcher.decode import (
     decode_record,
     web_svc_port,
 )
+from jiuwenswarm.common.etcd.client import EtcdKv, EtcdRangeResult
 
 # Registry contract: ``{namespace}/images/image_<sid>`` (no leading slash,
 # ``access_mode`` nested under ``data``).

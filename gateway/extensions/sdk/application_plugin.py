@@ -6,7 +6,6 @@ from typing import Any, Awaitable, Callable
 
 from gateway.extensions.sdk.base import BaseExtension
 
-
 WebSocketEndpoint = Callable[[Any], Awaitable[None]]
 
 
