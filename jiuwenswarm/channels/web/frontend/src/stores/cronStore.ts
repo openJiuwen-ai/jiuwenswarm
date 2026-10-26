@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import { webRequest } from '../services/webClient';
 import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
 import { jobBelongsToProject } from '../components/CronPanel/cronProjectDisplay';
-import { adoptActiveCronSessions } from '../features/cron/cronActiveSessionDiscovery';
 import type { Session } from '../types';
 import type { CronRunUpdate } from '../types/cron';
 

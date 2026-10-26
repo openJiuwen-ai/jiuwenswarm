@@ -784,11 +784,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // 需由前端（project.list 已含 work_mode）随 project_id 下发，保证归属/展示正确。
         // 未选项目时也要带上当前模式，后端据此把空项目归到 default/default_code（#5713）。
         ...(submittingWorkMode ? { work_mode: submittingWorkMode } : {}),
-        ...(submittingWorkMode ? { work_mode: submittingWorkMode } : {}),
-        // 模型字段：稳定选择存在时随 model_name 一并下发——执行会话按 model_id
-        // 定位模型，仅靠 model_name 反查在目录出现重名模型（多条目同 model_name）
-        // 时会报 "ambiguous legacy model name"，任务创建成功但到点秒败且无输出
-        ...cronModelPayloadFields(value),
+        ...(value.modelName ? { model_name: value.modelName } : {}),
         mode: value.mode,
         session_id: sessionId,
       });
