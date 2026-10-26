@@ -5,10 +5,10 @@
 - 计划范围：`jiuwenswarm/extensions_v2/` 负责的 V2 扩展机制——扩展包的装配、声明校验、加载生效与生命周期管理，平台事件（含 WebUI 渲染事件）的定义与触发，扩展UI界面项的发现、挂载与交互，以及 AgentServer 与 Gateway、Web 前端之间的上下行交接。
 - 范围之外：agent-core 的 Events 与 Extension 公共机制实现；旧 `jiuwenswarm/extensions/` 机制的改造；Gateway 渠道能力与旧机制迁移；工具、会话与模型服务自身的业务实现。
 - 所属模块：`jiuwenswarm/jiuwenswarm/extensions_v2/`。协作方为 AgentServer 运行时（`jiuwenswarm/server/`）、Gateway WebChannel（`jiuwenswarm/gateway/`）与 Web 前端（`jiuwenswarm/channels/web/frontend/`）。
-- 交付分类：既有本地包装载与 WebUI 工作共 8 项，保留历史台账；本轮新增 4 项后端接入。Gateway 渠道能力与旧机制迁移不在本轮。
+- 交付分类：既有本地包装载与 WebUI 工作共 8 项，保留历史台账；后端管理接入 4 项，追加 Server 会话工作区 Ops 1 项。Gateway 渠道能力与旧机制迁移不在本轮。
 - 既有安排：EXTV2-01～08 和 M1～M3 保留原范围与进度。本轮补充 EXTV2-09～12 四项后端接入，并在 EXTV2-09 追加 Web `/extension` 命令；不新增管理页面或业务内置事件任务。
 - 本轮边界：复用 Core 已有的 Registry、热重载与失败候选清理；不增加已发布版本回退，不修改 Events 内部实现，不实现自动在途计数及旧代模块回收。
-- 更新日期：2026-10-25。
+- 更新日期：2026-10-26。
 - 设计依据：[设计概览](extensions-v2-overview.md)、[详细架构](extensions-v2-architecture.md)、agent-core [扩展包加载规约](../../../../../agent-core/openjiuwen/core/extension/docs/specs/S_01_package-loading.md)、agent-core [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md)。
 - 关键口径与待确认项：见第 1.2、1.3 节；未确认前，受影响的工作项不标注完成。
 - 术语与全局约束：见第 1.1 节。
@@ -252,6 +252,16 @@
 - **独立验证：** `tests/unit_tests/extensions_v2/management/test_management_shutdown.py`。
 - **特性文档：** [F_12](../features/F_12_management-shutdown.md)。
 
+### EXTV2-13 会话工作区查询
+
+- **目标与范围：** 提供 `ops.session.cwd()`、`ops.session.root()`；在现有用量事件真实入口绑定执行目录与项目根快照，供当次 Handler 查询。
+- **责任与契约：** [S_03](../specs/S_03_session-workspace-ops.md) 为唯一契约来源；能力和 Build Handler 放在 `handler_ops/`，登记接入 bootstrap，事实采集留在回合宿主入口。
+- **开工硬前置：** 已有 EXTV2-01 的装配、EXTV2-05 的 Ops Build 接线与原生回合用量触发点，不依赖本轮管理增强项。
+- **验收标准：** [F_13 第 5 节](../features/F_13_session-workspace-ops.md#5-验证设计执行记录与结论) 的 V-01～V-07；目录差异、缺失、非法值、并发与嵌套隔离、真实包装载和现有功能回归均须验证。
+- **独立验证：** `tests/unit_tests/extensions_v2/test_session_ops.py`、`test_context_usage.py`；真实模型和网络联调单独记录。
+- **前端与联合交付：** 本特性不增加前端入口；Worker 内扩展包可以独立验证，不据此完成 M1～M3。
+- **特性文档：** [F_13](../features/F_13_session-workspace-ops.md)，对应 Server 开发计划 PR-01。
+
 ## 3. 特性依赖关系与并行开发
 
 下图覆盖第 2 节全部特性。矩形为特性，六边形为交付节点，分组为工作线；实线表示开工硬前置，虚线表示联合验收参与。
@@ -283,6 +293,8 @@ flowchart TB
     WB ~~~ WC
 
     A1 --> B1
+    A1 --> S13["EXTV2-13 会话工作区 Ops"]
+    B1 --> S13
     A4 --> B3
     B3 --> C1
 
@@ -349,6 +361,7 @@ flowchart LR
 | EXTV2-10 失败回滚与结果未知核对 | 完成 | 李志远 | — | 11 项真实回滚、无 Report 核对、查询及编码异常测试通过 | 2026-10-23 |
 | EXTV2-11 管理写操作串行 | 完成 | 李志远 | — | 7 项并发、取消与通知重入测试通过 | 2026-10-23 |
 | EXTV2-12 停机撤销与上下文释放 | 完成 | 李志远 | — | 6 项逆依赖、BUSY、失败保留和清理重试测试通过 | 2026-10-23 |
+| EXTV2-13 会话工作区查询 | 待验收 | Server 维护者 | — | 两个 Ops、生产注册和原生用量入口已实现；V2 115 项、原生用量 3 项、无项目工作区 62 项及独立进程验证通过；外围 11 项 Windows 失败在基线全部复现，真实聊天与网络未测，证据见 F_13 | 2026-10-26 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 
