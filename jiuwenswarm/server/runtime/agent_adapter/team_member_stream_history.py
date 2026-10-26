@@ -29,6 +29,7 @@ MEMBER_SEGMENT_BOUNDARY_EVENTS = frozenset({
     "chat.tool_call",
     "chat.ask_user_question",
     "harness.activate_interaction",
+    "plan.approval_required",
 })
 
 
@@ -145,6 +146,17 @@ class TeamMemberStreamHistory:
         segment.text_order = None
         if final_content:
             segment.persisted_text = final_content
+
+    def take_pending_reasoning(self, member_key: str) -> tuple[float | None, dict[str, Any]] | None:
+        """Pop standalone reasoning with its first-frame time (ms) and member identity."""
+        segment = self._segments.get(member_key)
+        if segment is None:
+            return None
+        started_at = segment.reasoning_started_at_ms
+        extra = self.attach_reasoning(member_key, segment.identity) or {}
+        if not extra.get("reasoning_content"):
+            return None
+        return started_at, extra
 
     def take_pending_final(
         self,

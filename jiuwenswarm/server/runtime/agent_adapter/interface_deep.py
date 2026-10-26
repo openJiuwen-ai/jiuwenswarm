@@ -4091,6 +4091,7 @@ class JiuWenSwarmDeepAdapter:
         """Decrement the active-task count for *session_id*; remove when zero.
 
         When the count drops to zero, optionally cleans up per-session rail state.
+        Suspended tool calls retain stream rail state until resumed or superseded.
         Skip ``cleanup_rail`` when the stream consumer was cancelled but AgentServer
         work may still be winding down — ``process_interrupt`` owns teardown then.
         """
@@ -4100,7 +4101,16 @@ class JiuWenSwarmDeepAdapter:
             self._active_session_ids.pop(sid, None)
             if cleanup_rail and self._stream_event_rail is not None:
                 try:
-                    self._stream_event_rail.cleanup_session(sid)
+                    # An ordinary HITL stream ends while its tool call is still
+                    # suspended. Keep its projection state until resume or
+                    # cancellation so the replay cannot emit the call twice.
+                    suspended = (
+                        self._deep_agent_loop_session_id() == sid
+                        and self._stream_completion_state(had_interaction=False) == "suspended"
+                        and not self._stream_event_rail.is_abort_requested(sid)
+                    )
+                    if not suspended:
+                        self._stream_event_rail.cleanup_session(sid)
                 except Exception as exc:
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] cleanup_session(%s) failed: %s",
@@ -19308,7 +19318,7 @@ class JiuWenSwarmDeepAdapter:
             if not stream_consumer_cancelled:
                 self._reset_runtime_cron_context(cron_context_tokens)
                 reset_session_messaging_route(session_message_context_token)
-            # Always clean up rail state — process_interrupt's
+            # Request rail cleanup (suspended HITL calls retain their state) — process_interrupt's
             # _stop_session_interrupt_work sets abort flags but does NOT
             # call cleanup_session(), so skipping cleanup here would leak
             # _abort_requested / _pause_events entries on long-lived adapters.

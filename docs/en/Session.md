@@ -89,6 +89,8 @@ history.jsonl is a JSONL-format file (one JSON object per line) that records the
 
 > **Tip**: Agent response messages also contain `tool_call` and other fields for recording tool call information.
 
+When a session waits for a user answer, permission confirmation, or plan approval, the streamed text and reasoning are saved before the pause. Reasoning without accompanying text is stored as a `chat.reasoning` record with `reasoning_content`; team members retain their own identity. A paused tool does not produce an empty completion result. Replaying an unfinished tool call during resume does not repeat its `chat.tool_call` and initial `chat.tool_update`, and calls with the same ID in different sessions are tracked independently. These rules apply to new records; previously lost content cannot be recovered from the history file.
+
 ### Why Sessions are Needed
 
 The session mechanism plays an important role in JiuwenSwarm:

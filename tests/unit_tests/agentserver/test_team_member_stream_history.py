@@ -228,3 +228,40 @@ def test_non_empty_member_final_supersedes_pending_text() -> None:
     history.note_delta("r2-writer-1", "最终段", _WRITER)
     history.discard_text("r2-writer-1", final_content="最终段")
     assert history.take_pending_final("r2-writer-1") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("as_dict", [False, True])
+@pytest.mark.parametrize("with_text", [False, True])
+@pytest.mark.parametrize("boundary", [
+    "chat.ask_user_question", "harness.activate_interaction", "plan.approval_required",
+])
+async def test_member_interaction_preserves_its_reasoning_and_text(
+    monkeypatch: pytest.MonkeyPatch,
+    as_dict: bool,
+    with_text: bool,
+    boundary: str,
+) -> None:
+    payloads = [
+        {"event_type": "chat.reasoning", "content": "leader 思考", **_LEADER},
+        {"event_type": "chat.reasoning", "content": "成员需要确认", **_WRITER},
+    ]
+    if with_text:
+        payloads.append({"event_type": "chat.delta", "content": "成员正文", **_WRITER})
+    payloads.extend([
+        {"event_type": boundary, "request_id": "confirm-1", **_WRITER},
+        {"event_type": "chat.final", "content": "leader 正文", **_LEADER},
+    ])
+
+    records = await _run_team_stream(monkeypatch, payloads, as_dict=as_dict)
+
+    reasoning_records = [r for r in records if _extra(r).get("reasoning_content")]
+    assert [_extra(r)["reasoning_content"] for r in reasoning_records] == [
+        "成员需要确认", "leader 思考",
+    ]
+    member_record = reasoning_records[0]
+    assert member_record["event_type"] == ("chat.final" if with_text else "chat.reasoning")
+    assert member_record["content"] == ("成员正文" if with_text else "")
+    assert _extra(member_record)["member_name"] == _WRITER["member_name"]
+    assert _extra(member_record)["team_id"] == _WRITER["team_id"]
+    assert _extra(member_record)["role"] == "teammate"

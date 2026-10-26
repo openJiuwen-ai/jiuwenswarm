@@ -368,7 +368,7 @@ async def test_permission_interrupt_stays_inflight_until_stop_collection():
     await rail.after_tool_call(ctx)
 
     assert not any(chunk.type == "tool_result" for chunk in session.chunks)
-    assert set(rail._inflight_tool_calls) == {"call-1"}
+    assert set(rail._inflight_tool_calls) == {("default", "call-1")}
 
     rail.collect_cancelled_tool_updates()
 

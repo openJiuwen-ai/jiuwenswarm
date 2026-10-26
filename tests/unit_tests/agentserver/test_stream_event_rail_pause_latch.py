@@ -270,7 +270,7 @@ def test_collect_cancelled_tools_matches_padded_session_id() -> None:
     """In-flight tools are stored under the normalized sid; collection with
     a padded id must still find them."""
     rail = _rail()
-    rail._inflight_tool_calls["tc-1"] = {
+    rail._inflight_tool_calls[("sess-latch", "tc-1")] = {
         "tool_call": SimpleNamespace(id="tc-1", name="shell"),
         "session": None,
         "session_id": "sess-latch",
