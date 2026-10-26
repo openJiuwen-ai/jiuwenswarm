@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.message_handler.message_handler import MessageHandler
 
 
 class _RemoteClient:

@@ -189,6 +189,91 @@ def identity_reference_image_paths(graph: dict[str, Any] | None) -> list[Path]:
     return [p for p in user_reference_image_paths(graph) if str(p) not in style_only]
 
 
+def _reference_records_by_path(graph: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Upload record behind each existing file, keyed by resolved path."""
+    records: dict[str, dict[str, Any]] = {}
+    for item in graph_user_references(graph):
+        candidate = _existing_file(str(item.get("path") or item.get("uri") or ""))
+        if candidate is None:
+            continue
+        records[str(candidate.resolve())] = item
+    return records
+
+
+def _still_nodes(graph: dict[str, Any] | None, role: str) -> list[dict[str, Any]]:
+    return [
+        node
+        for node in (graph or {}).get("nodes") or []
+        if isinstance(node, dict) and node_pipeline(node) == role and str(node.get("id") or "")
+    ]
+
+
+def _unlabelled_reference_owner(graph: dict[str, Any] | None) -> str:
+    """Role that owns an upload nothing has classified, when that is unambiguous.
+
+    A cast card is the first consumer of a user photo — the reported failure is a
+    face that does not match. An unlabelled upload only reaches a scene card when
+    the graph has no cast card at all.
+    """
+    characters = _still_nodes(graph, NODE_ROLE_CHARACTER)
+    if len(characters) == 1:
+        return NODE_ROLE_CHARACTER
+    if characters:
+        return ""
+    if len(_still_nodes(graph, NODE_ROLE_SCENE)) == 1:
+        return NODE_ROLE_SCENE
+    return ""
+
+
+def identity_reference_images_for_node(ctx: Any, node: dict[str, Any] | None) -> list[Path]:
+    """Identity uploads that belong to this still when no edge ever delivered one.
+
+    ``attach_user_reference_nodes`` draws an upload → still edge only after the
+    supervisor has classified the image. When that judgment is missing (model
+    unavailable, older graph, upload added to the canvas afterwards) the still
+    used to fall back to pure text-to-image and silently invented the face or
+    the place. Prefer the ids the node already declares, then the single still
+    of this role, so the user's own subject is never dropped without a trace.
+    """
+    if not isinstance(node, dict) or not isinstance(getattr(ctx, "graph", None), dict):
+        return []
+    graph = ctx.graph
+    role = node_pipeline(node)
+    if role not in {NODE_ROLE_CHARACTER, NODE_ROLE_SCENE}:
+        return []
+    identity = identity_reference_image_paths(graph)
+    if not identity:
+        return []
+    records = _reference_records_by_path(graph)
+    if role == NODE_ROLE_CHARACTER:
+        declared = _config_ids(node, "character_id", "character_ids")
+        pinned_key = "character_id"
+        foreign_subjects = {"scene", "object"}
+    else:
+        declared = _config_ids(node, "setting_id", "setting_ids")
+        pinned_key = "setting_id"
+        foreign_subjects = {"character", "object"}
+    single_still = len(_still_nodes(graph, role)) == 1
+    owner = _unlabelled_reference_owner(graph)
+    matched: list[Path] = []
+    by_role: list[Path] = []
+    for path in identity:
+        record = records.get(str(path)) or {}
+        subject = str(record.get("subject") or "").strip().lower()
+        if subject in foreign_subjects:
+            continue
+        pinned = str(record.get(pinned_key) or "").strip()
+        if declared and pinned:
+            if pinned in declared:
+                matched.append(path)
+            continue  # the upload names a different person / place
+        if not single_still:
+            continue  # several stills of this role: never guess which one owns it
+        if subject or owner == role:
+            by_role.append(path)
+    return matched or by_role
+
+
 def user_reference_video_path(graph: dict[str, Any] | None) -> Path | None:
     paths = user_reference_paths(graph, kind=KIND_VIDEO)
     return paths[0] if paths else None

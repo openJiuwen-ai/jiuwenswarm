@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:update-panel": "esbuild src/components/UpdatePanel/index.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/update-panel/index.mjs && node --test tests/updatePanel.test.mjs",
     "test:desktop-file-drop": "esbuild src/features/workspace/localFilePicker.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/desktop-file-drop/localFilePicker.mjs && node --test tests/desktopFileDrop.test.mjs",
     "test:asset-name-search": "esbuild src/features/assetNameSearch.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/asset-name-search && node --test tests/assetNameSearch.test.mjs",
     "test:moa-settings": "npm run test:multi-model-collaboration-settings",
@@ -138,6 +139,7 @@
     "test:designer-materials": "esbuild src/features/designer/designerMaterials.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/designer-materials/designerMaterials.js && node --test tests/designerMaterials.test.mjs",
     "test:designer-activity": "esbuild src/features/designer/designerActivity.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/designer-activity/designerActivity.js && node --test tests/designerActivity.test.mjs",
     "test:pending-connector-flow": "node --test tests/pendingConnectorFlow.test.mjs",
+    "test:connector-store-uninstall-guard": "node --test tests/connectorStoreUninstallGuard.test.mjs",
     "test:host-oauth-connector-modal": "node --test tests/hostOAuthConnectorModal.test.mjs",
     "test:equipment-marketplace": "esbuild src/features/equipmentMarketplace.ts src/components/ConnectorMarket/mcpState.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/equipment-marketplace && node --test tests/equipmentMarketplace.test.mjs",
     "test:market-search-client": "node --test tests/marketSearchClient.test.mjs",

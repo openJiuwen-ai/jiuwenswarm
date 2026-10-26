@@ -7,13 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.protocol.ssh.config import proxy_config_from_dict
-from jiuwenswarm.gateway.extensions.auth.ssh_key_registry import (
+from gateway.channel_manager.protocol.ssh.config import proxy_config_from_dict
+from gateway.extensions.auth.ssh_key_registry import (
     KeyRegistry,
     KeyRegistryEntry,
 )
-from jiuwenswarm.gateway.channel_manager.protocol.ssh.server import ProxySSHServer, SSHProxy
-from jiuwenswarm.gateway.channel_manager.protocol.ssh.ssh_connect import (
+from gateway.channel_manager.protocol.ssh.server import ProxySSHServer, SSHProxy
+from gateway.channel_manager.protocol.ssh.ssh_connect import (
     SshAuthConfig,
     SshChannel,
     SshChannelConfig,
@@ -269,7 +269,7 @@ async def test_handle_ssh_client_uses_authenticated_identity(monkeypatch):
 
     # Avoid depending on asyncssh.Error path; keep exception type available.
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.protocol.ssh.server.asyncssh",
+        "gateway.channel_manager.protocol.ssh.server.asyncssh",
         asyncssh,
         raising=False,
     )

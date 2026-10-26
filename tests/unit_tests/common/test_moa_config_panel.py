@@ -172,7 +172,7 @@ async def test_agentserver_config_adapter_uses_same_moa_persistence(panel_config
 
 
 def test_transport_log_formatter_redacts_jev_secret():
-    from jiuwenswarm.gateway.routing.agent_client import _to_json
+    from gateway.routing.agent_client import _to_json
 
     payload = {"params": {"config": {"moa_jev_api_key": "test-write-only-secret"}}}
     formatted = _to_json(payload)

@@ -1,6 +1,6 @@
 # Project & Session Management (Web)
 
-> **Implementation**: `jiuwenswarm/gateway/channel_manager/web/app_web_handlers.py` (handler registration), `jiuwenswarm/gateway/channel_manager/web/git_ws_handler.py` (Git Diff WebSocket), `jiuwenswarm/server/runtime/session/project_store.py` (project storage), `jiuwenswarm/server/runtime/session/session_metadata.py` (session metadata), `jiuwenswarm/server/runtime/session/project_git.py` (Git operations), `jiuwenswarm/server/runtime/session/git_diff_status.py` (Diff aggregation), `jiuwenswarm/server/runtime/session/git_diff_watcher.py` (Diff monitoring)
+> **Implementation**: `gateway/channel_manager/web/app_web_handlers.py` (handler registration), `gateway/channel_manager/web/git_ws_handler.py` (Git Diff WebSocket), `jiuwenswarm/server/runtime/session/project_store.py` (project storage), `jiuwenswarm/server/runtime/session/session_metadata.py` (session metadata), `jiuwenswarm/server/runtime/session/project_git.py` (Git operations), `jiuwenswarm/server/runtime/session/git_diff_status.py` (Diff aggregation), `jiuwenswarm/server/runtime/session/git_diff_watcher.py` (Diff monitoring)
 > **中文版**: [../zh/项目与会话管理.md](../zh/项目与会话管理.md)
 
 ---

@@ -16,8 +16,8 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
 from openjiuwen.harness.tools.cron import CronToolContext
 from jiuwenswarm.agents.harness.common.tools.cron import cron_tools as cron_tools_module
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
-from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
-from jiuwenswarm.gateway.cron.store import CronJob, CronJobStore
+from gateway.cron.scheduler import CronSchedulerService
+from gateway.cron.store import CronJob, CronJobStore
 
 import time
 

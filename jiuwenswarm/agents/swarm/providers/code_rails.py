@@ -315,7 +315,7 @@ def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -
 
         # Without A4P, skip cron: the scheduler tags every cron request with
         # ``request_metadata["cron"]`` (see ``CronScheduler._stream_team_round``
-        # at jiuwenswarm/gateway/cron/scheduler.py). The ``channel_id == "__cron__"``
+        # at gateway/cron/scheduler.py). The ``channel_id == "__cron__"``
         # fallback covers single-agent sessions where the SDK may not propagate
         # ``request_metadata`` into ``SwarmBuildContext``.
         request_meta = getattr(ctx, "request_metadata", None) or {}

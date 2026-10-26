@@ -1127,12 +1127,12 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
     TopicService,
 )
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,
     _register_web_handlers,
 )
-from jiuwenswarm.gateway.channel_manager.web.web_connect import (
+from gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
 )
@@ -1691,7 +1691,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_rid import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
     TopicService,
 )
-from jiuwenswarm.gateway import app_gateway
+from gateway import app_gateway
 
 def test_gateway_keeps_prepare_lane_when_search_is_unconfigured(
     monkeypatch,

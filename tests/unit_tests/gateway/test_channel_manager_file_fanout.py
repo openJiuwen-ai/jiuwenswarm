@@ -11,9 +11,9 @@ import pytest
 
 from jiuwenswarm.agents.harness.common.tools.send_file_to_user import SendFileToolkit
 from jiuwenswarm.common.schema.message import EventType, Message
-from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
-from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey, make_delivery_target
-from jiuwenswarm.gateway.routing.session_sharing import SessionSharingRegistry, SubRole
+from gateway.channel_manager.channel_manager import ChannelManager
+from gateway.routing.keys import AgentRef, RoutingKey, make_delivery_target
+from gateway.routing.session_sharing import SessionSharingRegistry, SubRole
 
 
 class _FakeMessageHandler:

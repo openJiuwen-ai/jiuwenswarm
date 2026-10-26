@@ -72,7 +72,7 @@
 
 ### 4.1 模块位置（建议）
 
-- **Python 侧**：已实现为 `jiuwenswarm/gateway/slash_command.py`（受控通道解析、`CONTROL_MESSAGE_TEXTS`、第一批命令元数据 `FIRST_BATCH_REGISTRY`）。亦可按演进拆分为 `channel_control_slash.py` 等。原建议职责为：
+- **Python 侧**：已实现为 `gateway/slash_command.py`（受控通道解析、`CONTROL_MESSAGE_TEXTS`、第一批命令元数据 `FIRST_BATCH_REGISTRY`）。亦可按演进拆分为 `channel_control_slash.py` 等。原建议职责为：
   - **数据**：受控命令的集合、匹配规则（精确 / 前缀 / 禁止多行等）、元数据（说明、是否转发 Agent）。
   - **纯函数**：给定通道类型与用户文本，返回**结构化判定结果**（未命中 / 命中且合法 / 命中但非法），**不**直接做 IO（不在这里 `create_task` 发通知）。
 - **命名建议**：若仅包含 A 类，模块名应避免被误解为「全站所有 slash」，以免后续贡献者把 B 类逻辑塞入 Gateway。

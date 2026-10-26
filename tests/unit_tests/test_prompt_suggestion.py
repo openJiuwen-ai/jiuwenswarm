@@ -39,9 +39,9 @@ from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import P
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import TopicStarterStore
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
@@ -687,7 +687,7 @@ async def test_composer_event_cancels_only_its_sessions_in_flight_fork(product, 
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.common.e2a.models import E2AResponse
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+    from gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     server = AgentWebSocketServer()
