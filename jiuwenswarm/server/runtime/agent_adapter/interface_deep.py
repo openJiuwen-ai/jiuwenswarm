@@ -3792,6 +3792,14 @@ class JiuWenSwarmDeepAdapter:
                 )
                 if busy:
                     installed_selection = getattr(existing, "_collaboration_model_selection", None)
+                    if selection is not None and not getattr(existing, "_moa_enabled", False):
+                        # Ordinary routing can apply a stable model after the child
+                        # was built. Compare with that actual model, not its initial selection.
+                        suffix = f":{selection.route_id}" if selection.route_id else ""
+                        reference = f"{selection.type}:{selection.id}{suffix}"
+                        cached = getattr(existing, "_stable_selection_cache", {}).get(reference)
+                        if cached is not None and cached[1] is getattr(existing, "_last_resolved_model", None):
+                            installed_selection = selection
                     explicit_switch = model_selection is not None or bool(model_name)
                     if not retain_moa_snapshot and explicit_switch and selection != installed_selection:
                         raise RuntimeError("Model selection cannot change while the session is executing")
