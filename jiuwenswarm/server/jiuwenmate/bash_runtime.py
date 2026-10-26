@@ -338,6 +338,14 @@ def build_bash_tool(params: dict[str, Any], context):
                 raise PersistentAgentError(f"duplicate tool name: {card.name}", code="INVALID_CONFIG")
             names.add(card.name)
             selected.append(child)
+    from jiuwenswarm.server.jiuwenmate.vision_runtime import office_vision_tools
+
+    office = session_workspace.parent.parent
+    for child in office_vision_tools(office, language=getattr(context, "language", "cn"), agent_id=execution.agent_id):
+        if child.card.name in names:
+            raise PersistentAgentError(f"duplicate tool name: {child.card.name}", code="INVALID_CONFIG")
+        names.add(child.card.name)
+        selected.append(child)
     return [*selected, tool] if selected else tool
 
 

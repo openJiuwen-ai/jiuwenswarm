@@ -768,7 +768,7 @@ class ExecutionRepository(SQLiteStore):
         exclude_delivery_ids: Sequence[str] = (),
         now: datetime,
     ) -> list[dict[str, object]]:
-        """Atomically claim the runtime's IM deliveries and return their stored route and payload.
+        """Atomically claim IM deliveries and return their stored route and payload.
 
         A file delivery also carries a logical key for the Agent's shared ``output/`` file
         and the ``file_key`` of an earlier upload, so a retry sends the uploaded file again
@@ -778,7 +778,7 @@ class ExecutionRepository(SQLiteStore):
             raise ValueError("limit must be a positive integer")
         if not channels:
             return []
-        if not channels <= {"feishu", "dingtalk"}:
+        if not channels <= {"feishu", "dingtalk", "welink"}:
             raise ValueError("unsupported IM delivery channel")
         channel_placeholders = ", ".join("?" for _ in channels)
         exclude_clause = ""
@@ -968,7 +968,7 @@ class ExecutionRepository(SQLiteStore):
         """Fence only this runtime's interrupted sends; never blindly resend unknown outcomes."""
         if not channels:
             return 0
-        if not channels <= {"feishu", "dingtalk"}:
+        if not channels <= {"feishu", "dingtalk", "welink"}:
             raise ValueError("unsupported IM delivery channel")
         placeholders = ", ".join("?" for _ in channels)
         with self._transaction() as conn:

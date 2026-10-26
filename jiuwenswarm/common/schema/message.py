@@ -160,6 +160,7 @@ _ensure_req_method("JIUWENMATE_AGENT_MAIL_DISCONNECT", "jiuwenmate.agent_mail.di
 _ensure_req_method("JIUWENMATE_DINGTALK_INBOUND", "jiuwenmate.dingtalk.inbound")
 _ensure_req_method("JIUWENMATE_DINGTALK_BINDING_CHECK", "jiuwenmate.dingtalk.binding_check")
 _ensure_req_method("JIUWENMATE_PERMISSION_DECIDE", "jiuwenmate.permission.decide")
+_ensure_req_method("JIUWENMATE_WELINK_INBOUND", "jiuwenmate.welink.inbound")
 _ensure_req_method("MODELS_REFRESH_STATUS", "models.refresh_status")
 # The Gateway forwards an event only when the protocol EventType knows it; the
 # pinned protocol package does not define this one yet.

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObjec
 import { useTranslation } from 'react-i18next';
 import { webClient, webRequest } from '../../services/webClient';
 import { ImAuthorizeDialog } from './components/ImAuthorizeDialog';
+import { WelinkOauthDialog } from './components/WelinkOauthDialog';
 import { JiuwenMateConfirmDialog, JiuwenMateDialog } from './components/JiuwenMateDialog';
 import { JiuwenMateRail, type JiuwenMateRailView } from './components/JiuwenMateRail';
 import {
@@ -21,6 +22,7 @@ import {
   officeActivityLoad,
   openOffice,
   replaceColleagues,
+  revokeColleagueAuthorization,
   selectColleagueTemplate,
   setColleagueDisabled,
   startColleagueRefinement,
@@ -181,7 +183,7 @@ export function JiuwenMateApp({
     setLoadStatus('loading');
     setLoadError('');
     try {
-      const [colleagues, bindingResult, dingtalkResult] = await Promise.all([
+      const [colleagues, bindingResult, dingtalkResult, welinkResult] = await Promise.all([
         api.loadColleagues(),
         webRequest<{ agent_ids?: string[] }>('channel.feishu.get_bindings').then(
           (value) => ({ ok: true as const, value }),
@@ -191,18 +193,38 @@ export function JiuwenMateApp({
           (value) => ({ ok: true as const, value }),
           () => ({ ok: false as const, value: null }),
         ),
+        webRequest<{ agent_ids?: string[] }>('channel.welink.get_bindings').then(
+          (value) => ({ ok: true as const, value }),
+          () => ({ ok: false as const, value: null }),
+        ),
       ]);
       setState((current) =>
         replaceColleagues(
           current,
           colleagues.map((colleague) => {
-            const feishu = bindingResult.ok && (bindingResult.value?.agent_ids ?? []).includes(colleague.id);
-            const dingtalk = dingtalkResult.ok && (dingtalkResult.value?.agent_ids ?? []).includes(colleague.id);
-            const complete = bindingResult.ok && dingtalkResult.ok;
+            const feishuConfigured = bindingResult.ok
+              ? (bindingResult.value?.agent_ids ?? []).includes(colleague.id)
+              : colleague.feishuConfigured ?? (colleague.imConfigured && colleague.imPlatform === 'feishu');
+            const dingtalkConfigured = dingtalkResult.ok
+              ? (dingtalkResult.value?.agent_ids ?? []).includes(colleague.id)
+              : colleague.dingtalkConfigured ?? (colleague.imConfigured && colleague.imPlatform === 'dingtalk');
+            const welinkConfigured = welinkResult.ok
+              ? (welinkResult.value?.agent_ids ?? []).includes(colleague.id)
+              : colleague.welinkConfigured === true;
+            const complete = bindingResult.ok && dingtalkResult.ok && welinkResult.ok;
             return {
               ...colleague,
-              imConfigured: feishu || dingtalk || (!complete && colleague.imConfigured),
-              imPlatform: dingtalk ? 'dingtalk' as const : feishu ? 'feishu' as const : complete ? undefined : colleague.imPlatform,
+              feishuConfigured,
+              dingtalkConfigured,
+              welinkConfigured,
+              imConfigured: feishuConfigured || dingtalkConfigured || welinkConfigured || (!complete && colleague.imConfigured),
+              imPlatform: dingtalkConfigured
+                ? 'dingtalk'
+                : feishuConfigured
+                  ? 'feishu'
+                  : welinkConfigured || complete
+                    ? undefined
+                    : colleague.imPlatform,
             };
           }),
         ),
@@ -592,7 +614,8 @@ export function JiuwenMateApp({
   const [boundRobotCode, setBoundRobotCode] = useState('');
   const authorizePlatform = authorizeColleague?.imPlatform ?? 'feishu';
   const authorizeId = authorizeColleague?.id ?? '';
-  const authorizeConfigured = authorizeColleague?.imConfigured === true;
+  const authorizeConfigured = authorizeColleague?.feishuConfigured === true
+    || authorizeColleague?.dingtalkConfigured === true;
 
   useEffect(() => {
     setBoundAppId('');
@@ -639,7 +662,10 @@ export function JiuwenMateApp({
         .then((groups) => {
           if (!cancelled) setSchedules(groups.flat());
         })
-        .catch(() => undefined)
+        .catch(() => {
+          // A silent refresh must not cover the authorization dialog with
+          // "请求超时". The previous schedule list stays on screen.
+        })
         .finally(() => {
           refreshing = false;
         });
@@ -805,7 +831,13 @@ export function JiuwenMateApp({
                     ...current,
                     colleagues: current.colleagues.map((item) =>
                       item.id === fresh.id
-                        ? { ...fresh, imConfigured: item.imConfigured, disabled: item.disabled }
+                        ? {
+                            ...fresh,
+                            imConfigured: item.imConfigured,
+                            feishuConfigured: item.feishuConfigured,
+                            welinkConfigured: item.welinkConfigured,
+                            disabled: item.disabled,
+                          }
                         : item,
                     ),
                   }));
@@ -833,7 +865,19 @@ export function JiuwenMateApp({
             onDisconnectAgentMail={api.disconnectAgentMail}
             onOpenOffice={() => showFeature('office', openOffice)}
             onChat={() => openWorkspace(selectedColleague.id)}
-            onConfigureIm={() => setState((current) => openColleagueAuthorization(current, selectedColleague.id))}
+            onConfigureIm={() => setState((current) => openColleagueAuthorization(current, selectedColleague.id, 'feishu'))}
+            onConfigureWelink={() => setState((current) => openColleagueAuthorization(current, selectedColleague.id, 'welink'))}
+            onRevokeChannel={(platform) => {
+              const method = platform === 'welink' ? 'channel.welink.revoke' : 'channel.feishu.revoke';
+              return webRequest(method, { persistent_agent_id: selectedColleague.id })
+                .then(() => {
+                  setState((current) => revokeColleagueAuthorization(current, selectedColleague.id, platform));
+                })
+                .catch((error: unknown) => {
+                  setActionError(errorMessage(error));
+                  throw error;
+                });
+            }}
             onToggleDisabled={() => requestToggleDisabled(selectedColleague.id)}
             onDelete={() => requestDelete(selectedColleague.id)}
           />
@@ -936,7 +980,7 @@ export function JiuwenMateApp({
           </button>
         </div>
       ) : null}
-      {authorizeColleague && !existingPage ? (
+      {authorizeColleague && state.authorizePlatform !== 'welink' && !existingPage ? (
         <ImAuthorizeDialog
           created={!authorizeConfigured}
           initialAppId={boundAppId}
@@ -952,10 +996,19 @@ export function JiuwenMateApp({
               persistent_agent_id: authorizeColleague.id,
             });
             setState((current) => {
-              const next = finishColleagueAuthorization(current, true);
-              return { ...next, colleagues: next.colleagues.map((item) =>
-                item.id === authorizeColleague.id ? { ...item, imPlatform: platform } : item,
-              ) };
+              const next = finishColleagueAuthorization(current, false);
+              return {
+                ...next,
+                colleagues: next.colleagues.map((item) => item.id === authorizeColleague.id
+                  ? {
+                      ...item,
+                      imConfigured: true,
+                      feishuConfigured: platform === 'feishu' ? true : item.feishuConfigured,
+                      dingtalkConfigured: platform === 'dingtalk' ? true : item.dingtalkConfigured,
+                      imPlatform: platform,
+                    }
+                  : item),
+              };
             });
           }}
         />
@@ -977,6 +1030,13 @@ export function JiuwenMateApp({
         >
           <p className="jiuwenmate-dialog__message">{t('jiuwenmate.create.employeeExists')}</p>
         </JiuwenMateDialog>
+      ) : null}
+      {authorizeColleague && state.authorizePlatform === 'welink' && !existingPage ? (
+        <WelinkOauthDialog
+          agentId={authorizeColleague.id}
+          onSkip={() => setState((current) => finishColleagueAuthorization(current, false))}
+          onBound={() => setState((current) => finishColleagueAuthorization(current, true))}
+        />
       ) : null}
       {pendingConfirm ? (
         <JiuwenMateConfirmDialog

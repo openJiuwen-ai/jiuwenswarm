@@ -651,6 +651,8 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     AgentWebSocketServer = _agent_websocket_server_type()
     import jiuwenswarm.server.jiuwenmate.feishu_group_fanout as module
 
+    import jiuwenswarm.server.jiuwenmate.welink_inbound as welink_inbound
+
     fanout = object()
     manager = MagicMock()
     manager.start = AsyncMock()
@@ -658,6 +660,7 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     manager.aclose = AsyncMock()
     factory = MagicMock(return_value=(fanout, manager))
     monkeypatch.setattr(module, "configured_feishu_bindings", lambda: ())
+    monkeypatch.setattr(welink_inbound, "configured_welink_binding", lambda: None)
     monkeypatch.setattr(module, "create_default_persistent_group_fanout", factory)
 
     server = object.__new__(AgentWebSocketServer)
@@ -682,6 +685,36 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     await server._close_persistent_group_fanout()
     manager.aclose.assert_awaited_once()
     assert server._feishu_group_fanout is None
+
+
+@pytest.mark.asyncio
+async def test_agent_server_recovers_a_left_welink_request(monkeypatch):
+    AgentWebSocketServer = _agent_websocket_server_type()
+    import jiuwenswarm.server.jiuwenmate.feishu_group_fanout as module
+    import jiuwenswarm.server.jiuwenmate.welink_inbound as welink_inbound
+
+    fanout = object()
+    manager = MagicMock()
+    manager.start = AsyncMock()
+    manager.recover = AsyncMock()
+    manager.aclose = AsyncMock()
+    monkeypatch.setattr(module, "configured_feishu_bindings", lambda: ())
+    monkeypatch.setattr(
+        welink_inbound,
+        "configured_welink_binding",
+        lambda: SimpleNamespace(namespace_id="local"),
+    )
+    monkeypatch.setattr(module, "create_default_persistent_group_fanout", MagicMock(return_value=(fanout, manager)))
+
+    server = object.__new__(AgentWebSocketServer)
+    server._feishu_runtime_lock = asyncio.Lock()
+    server._feishu_group_fanout = None
+    server._feishu_agent_manager = None
+
+    assert await server._ensure_persistent_group_fanout() is fanout
+    manager.recover.assert_awaited_once_with(
+        "local", channels=frozenset({"welink"}), include_unrouted=False,
+    )
 
 
 @pytest.mark.asyncio

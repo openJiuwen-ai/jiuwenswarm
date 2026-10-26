@@ -2480,10 +2480,23 @@ class AgentWebSocketServer:
             )
 
             from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import configured_dingtalk_bindings
+            from jiuwenswarm.server.jiuwenmate.welink_inbound import configured_welink_binding
 
-            bindings = (*configured_feishu_bindings(), *configured_dingtalk_bindings())
-            if not bindings:
+            feishu_bindings = configured_feishu_bindings()
+            dingtalk_bindings = configured_dingtalk_bindings()
+            welink_binding = configured_welink_binding()
+            bindings = (*feishu_bindings, *dingtalk_bindings)
+            if not bindings and welink_binding is None:
                 return None
+            channels = frozenset(
+                name
+                for name, enabled in (
+                    ("feishu", bool(feishu_bindings)),
+                    ("dingtalk", bool(dingtalk_bindings)),
+                    ("welink", welink_binding is not None),
+                )
+                if enabled
+            )
             fanout, manager = create_default_persistent_group_fanout(
                 send_delivery=self._send_result_delivery,
                 thinking_notice_sender=self._send_thinking_notice,
@@ -2493,10 +2506,12 @@ class AgentWebSocketServer:
                 await manager.start()
                 from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_NAMESPACE
 
-                namespaces = {item.namespace_id for item in bindings} or {WEB_NAMESPACE}
-                for namespace_id in sorted(namespaces):
+                namespaces = {item.namespace_id for item in bindings}
+                if welink_binding is not None and welink_binding.namespace_id:
+                    namespaces.add(welink_binding.namespace_id)
+                for namespace_id in sorted(namespaces or {WEB_NAMESPACE}):
                     await manager.recover(
-                        namespace_id, channels=frozenset({"feishu", "dingtalk"}), include_unrouted=False,
+                        namespace_id, channels=channels, include_unrouted=False,
                     )
             except BaseException:
                 await manager.aclose()
@@ -2655,6 +2670,7 @@ class AgentWebSocketServer:
                 "source_reply_to": job.get("source_reply_to"),
                 "idempotency_key": job.get("idempotency_key"),
                 "text": job.get("text"),
+                "channel": job.get("channel"),
             },
         }
         mentions = job.get("mention_targets")
@@ -3133,6 +3149,40 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
+    async def _handle_welink_inbound(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Accept one polled WeLink group message for the bound colleague."""
+        from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition
+        from jiuwenswarm.server.jiuwenmate.welink_inbound import WelinkInboundEvent, accept_welink_message
+
+        disposition = InboundDisposition.REJECTED
+        try:
+            params = request.params if isinstance(request.params, dict) else {}
+            event = WelinkInboundEvent.from_payload(params.get("event"))
+            fanout = await self._ensure_persistent_group_fanout()
+            if fanout is not None:
+                disposition = await accept_welink_message(fanout, event)
+        except Exception as exc:
+            logger.warning(
+                "[AgentWebSocketServer] WeLink inbound rejected: error_type=%s",
+                type(exc).__name__,
+            )
+
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"disposition": disposition.value},
+            metadata=request.metadata,
+        )
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
     async def _handle_dingtalk_binding_check(
         self,
         ws: Any,
@@ -3205,6 +3255,9 @@ class AgentWebSocketServer:
             return
         if request.req_method == ReqMethod.JIUWENMATE_FEISHU_INBOUND:
             await self._handle_feishu_inbound(ws, request, send_lock)
+            return
+        if request.req_method == ReqMethod.JIUWENMATE_WELINK_INBOUND:
+            await self._handle_welink_inbound(ws, request, send_lock)
             return
         if request.req_method == ReqMethod.CHAT_SEND:
             server_logger.info(
@@ -8149,6 +8202,63 @@ class AgentWebSocketServer:
                 from jiuwenswarm.server.runtime.team_organization_identity_store import (
                     load_organization_team_identity,
                 )
+            except ImportError:
+                load_organization_team_identity = None
+                logger.warning("[AgentWebSocketServer] historical Team identity loader unavailable", exc_info=True)
+
+            for leader in organization.leaders:
+                team = None
+                identity = {}
+                try:
+                    team = await db.team.get_team(leader.team_id)
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team details unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+                try:
+                    if load_organization_team_identity is not None:
+                        identity = load_organization_team_identity(leader.team_id)
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team identity unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+                try:
+                    _upsert(
+                        leader.team_id,
+                        state="configured",
+                        display_name=getattr(team, "display_name", None) or identity.get("display_name"),
+                        agent_group_name=identity.get("agent_group_name"),
+                    )
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] historical Team labels unavailable: session=%s team=%s",
+                        session_id, leader.team_id, exc_info=True,
+                    )
+
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+
+        try:
+            persisted = await self._load_persisted_organization(session_id) if organization_enabled() else None
+        except Exception:
+            persisted = None
+            logger.exception("[AgentWebSocketServer] historical team.list failed: session_id=%s", session_id)
+
+        if persisted is not None:
+            db, organization = persisted
+            # Membership is authoritative; optional labels must never remove a Team.
+            for leader in organization.leaders:
+                _upsert(
+                    leader.team_id,
+                    state="configured",
+                    leader_id=leader.leader_id,
+                    organization_id=organization.organization_id,
+                    capabilities=list(leader.capabilities or []),
+                    source="database",
+                )
+            try:
+                from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
             except ImportError:
                 load_organization_team_identity = None
                 logger.warning("[AgentWebSocketServer] historical Team identity loader unavailable", exc_info=True)
