@@ -239,7 +239,7 @@ test('feature flag defaults off and accepts backend booleans', () => {
   assert.equal(isMultiModelCollaborationEnabled(), false);
 });
 
-test('collaboration is the last experimental section and other sections retain their order', () => {
+test('collaboration and other experimental sections retain their order', () => {
   assert.deepEqual(experimentalSectionIds, [
     'external-cli-custom-agents',
     'rsi',
@@ -252,6 +252,7 @@ test('collaboration is the last experimental section and other sections retain t
     'team-scheduled-dispatch',
     'proactive-recommendation',
     'multi-model-collaboration',
+    'computer-control',
   ]);
 });
 
