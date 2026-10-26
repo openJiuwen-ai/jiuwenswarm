@@ -53,7 +53,7 @@ from jiuwenswarm.channels.process_cli.prompt import (
 )
 from jiuwenswarm.channels.process_cli.prompt import read_prompt as _read_prompt
 from jiuwenswarm.channels.process_cli.ui import ProcessCliUI, resolved_cwd
-from jiuwenswarm.common.mode_matrix import deprecate_mode
+from gateway.common.mode_matrix import deprecate_mode
 
 if TYPE_CHECKING:
     import argparse

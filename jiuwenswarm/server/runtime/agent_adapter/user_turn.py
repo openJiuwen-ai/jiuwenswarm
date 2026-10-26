@@ -27,7 +27,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_PROMPT_PREFIX_EN,
     HOST_USER_PROMPT_PREFIX_ZH,
 )
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 logger = logging.getLogger(__name__)
 

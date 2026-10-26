@@ -18,9 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
+from gateway.common.mode_matrix import is_team_mode
+from gateway.common.protocol_ids import is_valid_session_id
+from gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.schema.message import SESSION_REQUEST_COMPLETED_EVENT
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 

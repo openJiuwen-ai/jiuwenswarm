@@ -147,7 +147,7 @@ class SessionCreateInput:
         _require_bool("team_hint", self.team_hint)
         _require_optional_bool("moa_enabled", self.moa_enabled)
         if self.model_selection is not None:
-            from jiuwenswarm.common.model_selection import ModelSelection
+            from gateway.common.model_selection import ModelSelection
             ModelSelection.model_validate(self.model_selection)
         _require_optional_bool("work_mode_explicit", self.work_mode_explicit)
 
@@ -699,7 +699,7 @@ class RuntimeSessionProvisioner:
             if binding.error:
                 raise SessionProvisionError(binding.error, code=binding.code)
 
-            from jiuwenswarm.common.work_mode import (
+            from gateway.common.work_mode import (
                 DEFAULT_WEB_WORK_MODE,
                 is_default_project_id,
             )
@@ -743,7 +743,7 @@ class RuntimeSessionProvisioner:
             else:
                 final_work_mode = binding.work_mode
 
-            from jiuwenswarm.common.mode_matrix import resolve_request_mode
+            from gateway.common.mode_matrix import resolve_request_mode
             from jiuwenswarm.runtime.request import resolve_agent_request_mode
 
             params.update(
@@ -761,7 +761,7 @@ class RuntimeSessionProvisioner:
             canonical_mode = resolved.canonical_mode
             is_swarm = provision_input.is_swarm or resolved.is_team
             from jiuwenswarm.common.config import get_config
-            from jiuwenswarm.common.model_selection import ModelSelection
+            from gateway.common.model_selection import ModelSelection
             from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
 
             raw_selection = provision_input.model_selection or existing_metadata.get("model_selection")
@@ -1014,7 +1014,7 @@ class RuntimeSessionProvisioner:
         previous_session_id: str,
         params: dict[str, object],
     ) -> tuple[SessionLifecycleTarget, SessionLifecycleTarget | None]:
-        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from gateway.common.mode_matrix import is_team_mode
 
         mode = str(params.get("mode") or "agent.plan")
         target_is_team = bool(params.get("team")) or is_team_mode(mode)
@@ -1165,7 +1165,7 @@ class RuntimeSessionProvisioner:
                 code="BAD_REQUEST",
             )
 
-        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.runtime.request import resolve_agent_request_mode
 
         _, _, resolved_mode = resolve_agent_request_mode(provision_input.mode)
@@ -1521,7 +1521,7 @@ class RuntimeSessionProvisioner:
         if checkpoint_error is not None:
             return checkpoint_error
 
-        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,
         )
@@ -1865,7 +1865,7 @@ class RuntimeSessionProvisioner:
         *,
         binding_session_ids: tuple[str, ...],
     ) -> list[str]:
-        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.common.utils import get_agent_sessions_dir
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,

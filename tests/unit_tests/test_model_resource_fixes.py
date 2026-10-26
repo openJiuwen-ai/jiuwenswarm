@@ -10,7 +10,7 @@ import pytest
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_errors import ModelSelectionError
-from jiuwenswarm.common.model_selection import ModelSelection
+from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
 

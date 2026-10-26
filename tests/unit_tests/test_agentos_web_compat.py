@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from jiuwenswarm.common.agentos_runtime import is_agentos_workspace_fallback
-from jiuwenswarm.common.mode_matrix import NEW_CANONICAL_MODE_RESOLUTION
+from gateway.common.mode_matrix import NEW_CANONICAL_MODE_RESOLUTION
 from gateway.channel_manager.web.agentos_compat import project_agentos_web_frame
 
 

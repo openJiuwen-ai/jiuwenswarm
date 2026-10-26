@@ -18,7 +18,7 @@ from contextlib import aclosing
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
@@ -418,7 +418,7 @@ class AgentRuntime:
         )
 
     def _require_cross_session_input_admission(self, request: AgentRequest) -> None:
-        from jiuwenswarm.common.mode_matrix import is_plan_mode
+        from gateway.common.mode_matrix import is_plan_mode
         from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
 
         if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict) and (
@@ -1065,7 +1065,7 @@ class AgentRuntime:
         work_mode: object = None,
     ) -> bool:
         """Return whether a mode uses the single-Agent Session Runtime."""
-        from jiuwenswarm.common.mode_matrix import (
+        from gateway.common.mode_matrix import (
             NEW_AGENT_CODE_NORMAL,
             NEW_AGENT_WORK_NORMAL,
             deprecate_mode,
@@ -1105,7 +1105,7 @@ class AgentRuntime:
             channel_id,
             **prepare_kwargs,
         )
-        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.runtime.team_controller import LazyTeamExecutionController
 
         if (is_team_mode((request.params or {}).get("mode"))
@@ -3237,7 +3237,7 @@ class AgentRuntime:
     @staticmethod
     def _request_targets_team(request: AgentRequest) -> bool:
         """Resolve Team admission before agent execution begins."""
-        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.runtime.request import resolve_agent_request_mode
 
         params = request.params if isinstance(request.params, dict) else {}
@@ -3572,7 +3572,7 @@ class AgentRuntime:
         target = self._participant_registry.target(session_id)
         if target is not None:
             return target
-        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from gateway.common.mode_matrix import is_team_mode
 
         mode = str(params.get("mode") or "agent.plan")
         target = SessionLifecycleTarget(

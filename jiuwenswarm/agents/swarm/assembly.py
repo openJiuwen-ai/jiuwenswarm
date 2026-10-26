@@ -63,7 +63,7 @@ from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
 )
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_TEAM_DESIGN,
     is_code_profile_mode,
     is_team_mode,

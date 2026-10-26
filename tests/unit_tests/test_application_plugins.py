@@ -21,7 +21,7 @@ from jiuwenswarm.extensions.sdk import (
     FrontendContribution,
     WebSocketRouteContribution,
 )
-from jiuwenswarm.extensions.types import ExtensionMetadata
+from gateway.extensions.types import ExtensionMetadata
 
 
 class _FakeChannel:

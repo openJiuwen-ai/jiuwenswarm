@@ -89,7 +89,7 @@ import requests
 from jiuwenswarm.agents.harness.common.tools import vllm_omni_gen
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
 from jiuwenswarm.common.utils import get_agent_workspace_dir
-from jiuwenswarm.common.volcengine_endpoints import normalize_ark_api_base
+from gateway.common.volcengine_endpoints import normalize_ark_api_base
 
 logger = logging.getLogger(__name__)
 

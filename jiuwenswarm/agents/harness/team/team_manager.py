@@ -33,14 +33,14 @@ from openjiuwen.harness.rails import (
     TeamSkillEvolutionRail,
 )
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
-from jiuwenswarm.common.cron_team_completion import (
+from gateway.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
     apply_cron_team_round_event,
     cron_team_round_should_end,
     new_cron_team_round_state,
 )
 from jiuwenswarm.common.log_preview import preview_text
-from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+from gateway.common.model_selection import ModelSelection as SwarmModelSelection
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
 configure_agent_teams_home()
@@ -1304,7 +1304,7 @@ class TeamManager:
             TEAM_MODEL_SELECTION_STALE,
             ModelSelectionError,
         )
-        from jiuwenswarm.common.model_selection import ResolvedModelGroup
+        from gateway.common.model_selection import ResolvedModelGroup
         from jiuwenswarm.server.runtime.model_compiler_adapter import (
             compile_model_selection,
         )
@@ -1874,7 +1874,7 @@ class TeamManager:
         *,
         request_metadata: dict[str, Any] | None,
     ) -> None:
-        from jiuwenswarm.common.mode_matrix import is_team_plan_mode
+        from gateway.common.mode_matrix import is_team_plan_mode
 
         mode = (request_metadata or {}).get("mode")
         if is_team_plan_mode(mode):

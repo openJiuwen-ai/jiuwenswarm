@@ -14,7 +14,7 @@ from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_response_for_wire,
 )
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.ws_limits import AGENT_WS_SEND_BUDGET_BYTES
+from gateway.common.ws_limits import AGENT_WS_SEND_BUDGET_BYTES
 
 logger = logging.getLogger(__name__)
 

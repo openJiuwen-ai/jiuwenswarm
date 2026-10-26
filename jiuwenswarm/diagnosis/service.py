@@ -17,14 +17,14 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
     is_single_agent_mode,
     is_team_mode,
 )
+from gateway.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled, get_ttse_enabled
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.diagnosis.engine import (
     DiagnosisEngine,
     EngineError,

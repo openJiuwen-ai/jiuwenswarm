@@ -18,7 +18,7 @@ from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     is_interrupt_resume_payload,
 )
-from jiuwenswarm.common.mode_matrix import is_plan_mode
+from gateway.common.mode_matrix import is_plan_mode
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.chat_send import PLAN_ENTRY_SOURCES
 from jiuwenswarm.runtime.request import (

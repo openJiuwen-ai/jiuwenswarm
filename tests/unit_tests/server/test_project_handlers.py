@@ -110,7 +110,7 @@ class _FakeSessionCreateAgentClient:
             )
             return SimpleNamespace(ok=response.ok, payload=response.payload)
 
-        from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE, is_default_project_id
+        from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE, is_default_project_id
         from jiuwenswarm.server.runtime.session import project_store
         from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
         from jiuwenswarm.server.runtime.session.work_mode import resolve_session_work_mode_params

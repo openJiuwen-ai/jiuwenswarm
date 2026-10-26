@@ -4,7 +4,7 @@
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.extensions.adx.config import adx_router_selected, load_router_config
 from jiuwenswarm.extensions.adx.router_client import AdxRouterClient
-from jiuwenswarm.extensions.sdk.agent_server_client import AgentServerClientExtension
+from gateway.extensions.sdk.agent_server_client import AgentServerClientExtension
 
 
 class AdxRouter(AgentServerClientExtension):

@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from jiuwenswarm.common.model_catalog import ModelCatalog
-from jiuwenswarm.common.model_selection import ModelSelection
+from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.runtime.cron.store import CronJobStore
 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 

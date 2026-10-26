@@ -18,7 +18,7 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
