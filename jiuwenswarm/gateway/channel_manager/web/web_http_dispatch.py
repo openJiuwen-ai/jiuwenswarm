@@ -68,7 +68,14 @@ def _build_http_ext(
         if not values:
             continue
         source[key] = values[0]
-    return _ext_build(source)
+    ext = _ext_build(source)
+    # The enterprise login integration has one built-in credential field.
+    # Other extension fields continue to use the existing allowlist.
+    if is_enterprise():
+        user_token = _get_header(hdrs, "X-User-Token")
+        if user_token:
+            ext = dict(ext or {}, **{"X-User-Token": user_token})
+    return ext
 
 
 async def dispatch_http_request(
