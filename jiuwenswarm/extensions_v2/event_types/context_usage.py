@@ -69,8 +69,13 @@ def register_context_usage_events(bus: ExtensionEventBus) -> None:
     bus.register_event_type(CONTEXT_USAGE_EVENT, match_pattern_subset, context_usage_core)
 
 
-def notify_context_usage(update: ContextUsageUpdate) -> asyncio.Task | None:
-    """Schedule the host event without blocking the chat stream."""
+def notify_context_usage(
+    update: ContextUsageUpdate,
+    *,
+    cwd: str | None = None,
+    project_root: str | None = None,
+) -> asyncio.Task | None:
+    """Schedule usage with workspace facts captured at the host call boundary."""
 
     if not update.session_id:
         return None
@@ -83,17 +88,26 @@ def notify_context_usage(update: ContextUsageUpdate) -> asyncio.Task | None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return None
-    task = loop.create_task(_dispatch(bus, update))
+    context = SessionContext(
+        session_id=update.session_id,
+        cwd=cwd,
+        metadata={"project_root": project_root} if project_root is not None else {},
+    )
+    task = loop.create_task(_dispatch(bus, update, context))
     _PENDING.add(task)
     task.add_done_callback(_PENDING.discard)
     return task
 
 
-async def _dispatch(bus: ExtensionEventBus, update: ContextUsageUpdate) -> None:
+async def _dispatch(
+    bus: ExtensionEventBus,
+    update: ContextUsageUpdate,
+    context: SessionContext,
+) -> None:
     try:
         await bus.trigger(
             Event(CONTEXT_USAGE_EVENT, update),
-            SessionContext(session_id=update.session_id),
+            context,
         )
     except Exception:  # noqa: BLE001 - telemetry must not break the round
         logger.debug("[ExtensionsV2] context usage event failed", exc_info=True)
