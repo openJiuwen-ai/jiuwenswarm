@@ -98,8 +98,8 @@ def _login_model_auth_for_job(job: CronJob) -> dict[str, Any] | None:
     拿不到凭据不在这里报错：AgentServer 对"登录模型没带凭据"有面向用户的
     ``login_required`` 报错，任务以明确原因失败，而不是静默换默认模型。
     """
-    from jiuwenswarm.common.auth.apig import resolve_apig_config
-    from jiuwenswarm.common.auth.login_credentials import is_credential_ref
+    from swarm_base.auth.apig import resolve_apig_config
+    from swarm_base.auth.login_credentials import is_credential_ref
     from gateway.auth.passthrough import refreshed_credential_for_ref
 
     ref = str(getattr(job, "credential_ref", "") or "").strip()

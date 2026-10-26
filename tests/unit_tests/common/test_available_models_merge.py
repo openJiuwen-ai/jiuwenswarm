@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.common import config as config_mod
-from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SOURCE
+from swarm_base.auth.model_catalog import LOGIN_MODEL_SOURCE
 from jiuwenswarm.common.config import get_available_models
 
 
@@ -40,7 +40,7 @@ def patched(monkeypatch):
     def _apply(configured: list[dict], login: list[dict]):
         monkeypatch.setattr(config_mod, "get_default_models", lambda _c=None: list(configured))
         monkeypatch.setattr(
-            "jiuwenswarm.common.auth.model_catalog.list_login_model_entries",
+            "swarm_base.auth.model_catalog.list_login_model_entries",
             lambda _s=None: list(login),
         )
 
@@ -77,7 +77,7 @@ def test_login_module_failure_is_non_fatal(monkeypatch):
         raise RuntimeError("catalog exploded")
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.list_login_model_entries", _boom
+        "swarm_base.auth.model_catalog.list_login_model_entries", _boom
     )
     assert [e["model_client_config"]["model_name"] for e in get_available_models(None, "sess-1")] == ["a"]
 

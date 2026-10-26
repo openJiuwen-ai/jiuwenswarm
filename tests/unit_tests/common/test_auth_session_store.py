@@ -7,9 +7,9 @@ import time
 
 import pytest
 
-from jiuwenswarm.common.auth import session_store as store_mod
-from jiuwenswarm.common.auth.account_kit import Credential, LoginOutcome
-from jiuwenswarm.common.auth.session_store import AuthSessionStore
+from swarm_base.auth import session_store as store_mod
+from swarm_base.auth.account_kit import Credential, LoginOutcome
+from swarm_base.auth.session_store import AuthSessionStore
 
 
 @pytest.fixture(autouse=True)

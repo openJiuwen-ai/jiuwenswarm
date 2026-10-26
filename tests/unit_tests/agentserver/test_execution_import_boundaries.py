@@ -12,8 +12,8 @@ import pytest
     "statement, blocked",
     [
         (
-            "from jiuwenswarm.common.auth import login_credentials",
-            ["jiuwenswarm.common.auth.account_kit"],
+            "from swarm_base.auth import login_credentials",
+            ["swarm_base.auth.account_kit"],
         ),
         (
             "from jiuwenswarm.agents.harness.common.rails.permissions import tool_permission_context",

@@ -156,6 +156,8 @@ def _all_local_top_modules() -> tuple[str, ...]:
         parts = rel.split("/")
         if parts[0] == "gateway":
             tops.add("gateway")  # M0-c 顶层包：R1 语义下 common 不得 import gateway
+        elif parts[0] == "swarm_base":
+            tops.add("swarm_base")  # M1'：common 的 shim 指向 swarm_base，R1 需豁免（见下）
         elif len(parts) >= 2 and parts[0] == PKG:
             tops.add(parts[1][:-3] if parts[1].endswith(".py") else parts[1])
     tops.discard("")
@@ -173,8 +175,10 @@ def _git(*args: str) -> str:
 
 def collect_py_files() -> list[str]:
     # M0-c 后 gateway 为顶层包（与 jiuwenswarm 并列）；两者都纳入依赖图
-    tracked = _git("ls-files", f"{PKG}/", "gateway/").splitlines()
-    untracked = _git("ls-files", "--others", "--exclude-standard", f"{PKG}/", "gateway/").splitlines()
+    tracked = _git("ls-files", f"{PKG}/", "gateway/", "swarm_base/").splitlines()
+    untracked = _git(
+        "ls-files", "--others", "--exclude-standard", f"{PKG}/", "gateway/", "swarm_base/"
+    ).splitlines()
     return sorted(f for f in set(tracked) | set(untracked) if f.endswith(".py"))
 
 
@@ -352,9 +356,13 @@ def run_rules(graph: ImportGraph) -> int:
     if _ALL_LOCAL_PKGS is None:
         _ALL_LOCAL_PKGS = _all_local_top_modules()
     exit_code = 0
+    # R1 forbidden 列表排除 swarm_base：common/X shim（from swarm_base.X
+    # import *）是 M1' 既定过渡形态。shim 自身的纯度（只指向 swarm_base、
+    # 不夹带其他引用）由下方 R1-shim 规则单独守卫。
+    _r1_forbidden = tuple(p for p in _ALL_LOCAL_PKGS if p != "swarm_base")
     exit_code |= _check_rule(
         graph, "R1 common 禁止 import 任何非 common 的本仓模块（零本仓引用不变量）",
-        (f"{PKG}.common.",), _ALL_LOCAL_PKGS,
+        (f"{PKG}.common.",), _r1_forbidden,
         KNOWN_R1_COMMON_BACKREFS,
     )
     exit_code |= _check_rule(
@@ -366,6 +374,12 @@ def run_rules(graph: ImportGraph) -> int:
         graph, "R3 gateway 禁止 import server/agents/channels/runtime/symphony",
         ("gateway.",), ("server", "agents", "channels", "runtime", "symphony"),
         KNOWN_R3_GATEWAY_FOREIGN,
+    )
+    exit_code |= _check_rule(
+        graph,
+        "R-C swarm_base 禁止 import gateway（共享底座纯度：不含通道逻辑）",
+        ("swarm_base.",), ("gateway",),
+        {},
     )
     return exit_code
 

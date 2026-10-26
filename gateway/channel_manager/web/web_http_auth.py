@@ -35,13 +35,13 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from jiuwenswarm.common.auth.account_kit import OAuthError
-from jiuwenswarm.common.auth.model_catalog import (
+from swarm_base.auth.account_kit import OAuthError
+from swarm_base.auth.model_catalog import (
     get_models,
     model_whitelist,
 )
-from jiuwenswarm.common.auth.service import ModelAuthRequired, get_auth_service, resolve_id_token
-from jiuwenswarm.common.auth.session_store import AuthSession
+from swarm_base.auth.service import ModelAuthRequired, get_auth_service, resolve_id_token
+from swarm_base.auth.session_store import AuthSession
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ try{{var c=new BroadcastChannel("{AUTH_CALLBACK_CHANNEL}");c.postMessage({{type:
 
 async def _revoke_agent_server_credential(user_id: str) -> None:
     try:
-        from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
+        from swarm_base.auth.login_credentials import credential_ref_for_user
         from gateway.message_handler.message_handler import MessageHandler
 
         handler = MessageHandler.try_get_instance()
@@ -153,7 +153,7 @@ async def _revoke_agent_server_credential(user_id: str) -> None:
 
 
 def register_auth_routes(app: FastAPI) -> None:
-    from jiuwenswarm.common.auth.remote_config import warm_up_in_background
+    from swarm_base.auth.remote_config import warm_up_in_background
 
     # 启动时先在后台把官网配置拉下来：否则第一个请求要么等网络、要么拿到空配置
     warm_up_in_background()
@@ -322,7 +322,7 @@ def register_auth_routes(app: FastAPI) -> None:
         ),
     )
     async def auth_quota(request: Request) -> Response:
-        from jiuwenswarm.common.auth.apig import ApigError, fetch_quota, resolve_apig_config
+        from swarm_base.auth.apig import ApigError, fetch_quota, resolve_apig_config
 
         config = await run_in_threadpool(resolve_apig_config)
         if config is None:

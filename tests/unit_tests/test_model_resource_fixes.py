@@ -16,7 +16,7 @@ from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionReso
 
 @pytest.mark.asyncio
 async def test_legacy_models_list_keeps_editable_key_but_hides_login_key(monkeypatch):
-    from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SOURCE
+    from swarm_base.auth.model_catalog import LOGIN_MODEL_SOURCE
     from jiuwenswarm.common.config_panel import models_handlers
 
     models = [{
@@ -151,7 +151,7 @@ def test_stable_selection_translates_reasoning_before_core_compilation(catalog_s
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["defaults", "agentos", "source", "model_source"])
 async def test_model_get_returns_plaintext_key_only_for_user_configured_models(catalog_state, monkeypatch, source):
-    from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SOURCE
+    from swarm_base.auth.model_catalog import LOGIN_MODEL_SOURCE
     from jiuwenswarm.common.config_panel.model_resource_handlers import _resource_payload
 
     crypto = SimpleNamespace(decrypt=lambda value: value.removeprefix("enc:"))

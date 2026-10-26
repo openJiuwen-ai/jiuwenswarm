@@ -2109,7 +2109,7 @@ def get_available_models(
     # 登录送的模型始终叠加进列表（不再受 enable_free_models / Opencode Zen 开关约束；
     # Zen 已停用，免费模型来源就是登录）。
     try:
-        from jiuwenswarm.common.auth.model_catalog import list_login_model_entries
+        from swarm_base.auth.model_catalog import list_login_model_entries
 
         login_entries = list_login_model_entries(session_id)
     except Exception as exc:  # noqa: BLE001 — 登录模型拿不到不该影响已配置模型
@@ -2152,7 +2152,7 @@ def update_default_models_in_config(
 
 
 def update_login_model_settings_in_config(context_windows: dict[str, int | None]) -> None:
-    from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SETTINGS_KEY
+    from swarm_base.auth.model_catalog import LOGIN_MODEL_SETTINGS_KEY
 
     def _mutate(data):
         if "models" not in data:

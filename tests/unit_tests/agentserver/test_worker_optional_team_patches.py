@@ -18,7 +18,7 @@ def test_optional_team_patch_failure_preserves_remaining_runtime_patches(
     from jiuwenswarm.agents.harness.common.tools import bash_tool_safety
     from jiuwenswarm.common import config, llm_provider_compat_patch, native_tokenizer_cache
     from jiuwenswarm.common import team_workspace_read_guard
-    from jiuwenswarm.common.auth import login_credentials
+    from swarm_base.auth import login_credentials
 
     monkeypatch.setattr(runtime_backend.logger, "handlers", [caplog.handler])
     monkeypatch.setattr(runtime_backend.logger, "propagate", False)
