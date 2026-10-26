@@ -108,11 +108,14 @@ import {
 import { TeamTrajectoryWorkspace } from './TeamTrajectoryWorkspace';
 import { SharedTimeAxis } from './diagnosis/SharedTimeAxis';
 import {
+  isAgentFullySelected,
   isAgentIncluded,
   laneRangeOf,
   selectOnAxis,
   selectOnLane,
   toggleAgent,
+  toggleSelectAllOnLane,
+  unionWallRange,
   type DiagnosisSelectionState,
   type WallRange,
 } from './diagnosis/diagnosisSelection';
@@ -246,8 +249,10 @@ export interface TrajectoryDiagnosisLaneNodes {
 export type TrajectoryLaneScale = 'time' | 'equal' | 'tokens' | 'duration';
 
 export interface TrajectoryPanelSummary {
-  traces: number;
-  spans: number;
+  /** Subject lanes on the page (same set diagnosis can pick from). */
+  agents: number;
+  /** Timed nodes across those lanes (`timedNodeIntervals`, same as diagnosis). */
+  nodes: number;
 }
 
 function ignoreTimelineRange(): void {}
@@ -1303,14 +1308,16 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   useEffect(() => {
     onTimelineAvailableChangeRef.current?.(timelineAvailable);
   }, [timelineAvailable]);
-  const summaryTraces = subjectGroups.groups.reduce((sum, group) => sum + group.traceCount, 0);
-  const summarySpans = allDisplayedRawRecords.length || allDisplayedRecords.length;
   const onSummaryChangeRef = useRef(onSummaryChange);
   onSummaryChangeRef.current = onSummaryChange;
   useEffect(() => {
     if (!sharedTimeAxis) return;
-    onSummaryChangeRef.current?.({ traces: summaryTraces, spans: summarySpans });
-  }, [sharedTimeAxis, summarySpans, summaryTraces]);
+    const lanes = JSON.parse(diagnosisNodesKey) as TrajectoryDiagnosisLaneNodes[];
+    onSummaryChangeRef.current?.({
+      agents: lanes.length,
+      nodes: lanes.reduce((sum, lane) => sum + lane.intervals.length, 0),
+    });
+  }, [diagnosisNodesKey, sharedTimeAxis]);
   const exportArchiveRef = useRef<() => void>(() => {});
   const exitReplayRef = useRef<() => void>(() => {});
   const onArchiveActionsReadyRef = useRef(onArchiveActionsReady);
@@ -1807,6 +1814,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                   <SharedTimeAxis
                     domain={timeAxis.domain}
                     viewport={timeAxis.viewport}
+                    toWall={timeAxis.toWall}
                     range={axisVisualRange}
                     onRangeChange={selectOnAxisRange}
                     selectable={selecting}
@@ -1820,6 +1828,18 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                 agentSelection: {
                   isIncluded: (subjectId: string) => isAgentIncluded(selection.state, subjectId),
                   onToggle: (subjectId: string) => selection.onChange(current => toggleAgent(current, subjectId)),
+                  canSelectAll: (subjectId: string) => (
+                    unionWallRange(timedNodeIntervals(subjectSnapshots.get(subjectId)?.turns ?? [])) !== null
+                  ),
+                  isSelectAllActive: (subjectId: string) => isAgentFullySelected(
+                    selection.state,
+                    subjectId,
+                    timedNodeIntervals(subjectSnapshots.get(subjectId)?.turns ?? []),
+                  ),
+                  onSelectAll: (subjectId: string) => {
+                    const intervals = timedNodeIntervals(subjectSnapshots.get(subjectId)?.turns ?? []);
+                    selection.onChange(current => toggleSelectAllOnLane(current, subjectId, intervals));
+                  },
                   isHighlighted: (subjectId: string) => laneRangeOf(selection.state, subjectId) !== null,
                 },
               }),

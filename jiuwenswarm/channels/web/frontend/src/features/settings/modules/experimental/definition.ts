@@ -6,7 +6,6 @@ import {
   ProactiveLimitsSetting,
   RSISetting,
   TrajectoryDiagnosisSetting,
-  TrajectoryUiSetting,
 } from './ExperimentalSettings';
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
@@ -42,7 +41,6 @@ export const experimentalModule: SettingsModuleDefinition = {
       id: 'trajectory-ui',
       titleKey: 'settingsPanel.experimental.trajectoryUi',
       items: [
-        { id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting },
         { id: 'trajectory-diagnosis-enabled', component: 'custom', render: TrajectoryDiagnosisSetting },
       ],
     },

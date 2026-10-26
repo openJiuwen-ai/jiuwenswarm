@@ -226,7 +226,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
         <h2 className={css.title}>{t('trajectory.diagnosis.entry')}</h2>
         {summary === null ? null : (
           <span className={css.summary} data-testid="trajectory-analysis-summary">
-            {t('trajectory.analysis.summary', { traces: summary.traces, spans: summary.spans })}
+            {t('trajectory.analysis.summary', { agents: summary.agents, nodes: summary.nodes })}
           </span>
         )}
         <span className={css.spacer} />

@@ -1,9 +1,13 @@
 /** Shared time axis ruler. When selectable, dragging picks one window; idle gaps are already removed from this axis. */
 
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TrajectoryTimeRange } from '../trajectory/timeline';
-import { formatElapsed, type WallClockDomain } from './diagnosisTimeSelection';
+import {
+  axisTicks,
+  formatAxisClock,
+  type WallClockDomain,
+} from './diagnosisTimeSelection';
 import css from './SharedTimeAxis.module.css';
 
 const MINIMUM_DRAG_PX = 4;
@@ -141,6 +145,11 @@ export interface SharedTimeAxisProps {
   domain: WallClockDomain | null;
   /** Visible slice of `domain`. `null` shows the whole axis. */
   viewport?: TrajectoryTimeRange | null;
+  /**
+   * Map an axis position (compressed ms) back to a wall-clock instant so labels
+   * show real clock time instead of elapsed time from 0.
+   */
+  toWall?: ((axisMs: number) => number) | undefined;
   range: TrajectoryTimeRange | null;
   onRangeChange: (range: TrajectoryTimeRange | null) => void;
   /** When false the axis is a plain ruler: dragging selects nothing. Defaults to true. */
@@ -159,6 +168,7 @@ function fractionIn(clientX: number, plot: HTMLElement): number {
 export function SharedTimeAxis({
   domain,
   viewport = null,
+  toWall,
   range,
   onRangeChange,
   selectable = true,
@@ -181,7 +191,6 @@ export function SharedTimeAxis({
     return () => observer.disconnect();
   }, []);
   const [draft, setDraft] = useState<TrajectoryTimeRange | null>(null);
-  const origin = domain?.startMs ?? 0;
   const windowStart = domain === null
     ? 0
     : viewport === null ? domain.startMs : Math.max(domain.startMs, viewport.start);
@@ -190,8 +199,21 @@ export function SharedTimeAxis({
     : viewport === null ? domain.endMs : Math.min(domain.endMs, viewport.end);
   const duration = Math.max(0, windowEnd - windowStart);
   const visible = draft ?? range;
-  const boundStartLabel = formatElapsed(windowStart - origin);
-  const boundEndLabel = formatElapsed(windowEnd - origin);
+  const labelAt = (axisMs: number): string => (
+    formatAxisClock(toWall === undefined ? axisMs : toWall(axisMs))
+  );
+  const boundStartLabel = labelAt(windowStart);
+  const boundEndLabel = labelAt(windowEnd);
+  const tickMarks = useMemo(() => {
+    if (duration <= 0) return [];
+    // Skip the endpoints: the bound labels already mark the ends.
+    return axisTicks(duration)
+      .filter(tick => tick.fraction > 0 && tick.fraction < 1)
+      .map(tick => ({
+        key: tick.offsetMs,
+        fraction: tick.fraction,
+      }));
+  }, [duration]);
   // Endpoint labels follow the visible window. The selection's own labels stay
   // on the picked instants, so zooming the window does not rewrite them.
   const selection = visible === null || duration <= 0
@@ -204,8 +226,8 @@ export function SharedTimeAxis({
       const endFraction = (visible.end - windowStart) / duration;
       const left = clampFraction((overlapStart - windowStart) / duration);
       const width = clampFraction((overlapEnd - overlapStart) / duration);
-      const startLabel = formatElapsed(visible.start - origin);
-      const endLabel = formatElapsed(visible.end - origin);
+      const startLabel = labelAt(visible.start);
+      const endLabel = labelAt(visible.end);
       const placed = placeSelectionLabels({
         startPx: left * plotWidth,
         endPx: (left + width) * plotWidth,
@@ -293,6 +315,14 @@ export function SharedTimeAxis({
           className={css.track}
           aria-label={t('trajectory.diagnosis.timeAxis')}
         >
+          {tickMarks.map(tick => (
+            <span
+              key={tick.key}
+              className={css.tick}
+              style={{ left: `${tick.fraction * 100}%` }}
+              data-testid="trajectory-analysis-time-axis-tick"
+            />
+          ))}
           {selection === null ? null : (
             <span
               className={css.selection}

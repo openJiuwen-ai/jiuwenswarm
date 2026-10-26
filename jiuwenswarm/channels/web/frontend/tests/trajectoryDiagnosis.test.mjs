@@ -26,6 +26,7 @@ import {
   compressSharedTimeline,
   diagnosisSelectionRanges,
   clampSharedViewport,
+  formatAxisClock,
   formatElapsed,
   mainAgentLastNode,
   sharedWallClockDomain,
@@ -372,6 +373,12 @@ test('formatElapsed and axis ticks run from 0:00 to the end', () => {
   assert.equal(ticks[0].label, '0:00');
   assert.equal(ticks[ticks.length - 1].label, '1:30');
   assert.equal(ticks[ticks.length - 1].fraction, 1);
+});
+
+test('formatAxisClock shows local wall-clock time', () => {
+  const stamp = new Date(2026, 9, 23, 14, 5, 9).getTime();
+  assert.equal(formatAxisClock(stamp), '14:05:09');
+  assert.equal(formatAxisClock(Number.NaN), '');
 });
 
 test('canSubmitDiagnosis follows scope, busy and running state', () => {

@@ -12,13 +12,6 @@
   padding: 0 8px;
 }
 
-.controlTimeline {
-  position: relative;
-  z-index: 10;
-  flex: none;
-  padding: 8px 0 0;
-}
-
 .lanes {
   position: relative;
   z-index: 0;
@@ -26,7 +19,7 @@
   min-height: 0;
   flex: 1 1 0;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
   padding: 8px;
   overflow-x: hidden;
   overflow-y: auto;
@@ -368,11 +361,6 @@
   background: var(--dsw-alias-bg-layer-1);
 }
 
-.laneRow[data-highlighted='true'] :global([role='toolbar']),
-.laneRowExpanded[data-highlighted='true'] :global([role='toolbar']) {
-  background: #ddecff;
-}
-
 .memberCluster {
   display: inline-flex;
   min-width: 0;
@@ -441,36 +429,6 @@
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.reviewDecision {
-  flex: none;
-  color: var(--dsw-alias-label-secondary);
-  font: var(--dsw-font-xxxs-11);
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.reviewDecision::before {
-  margin-right: 4px;
-  color: var(--dsw-alias-label-caption);
-  content: '·';
-}
-
-.reviewDecision[data-decision='pass'] {
-  color: var(--dsw-alias-state-success-primary);
-}
-
-.reviewDecision[data-decision='fail'] {
-  color: var(--dsw-alias-state-error-primary);
-}
-
-.reviewDecision[data-decision='score'] {
-  color: var(--dsw-alias-state-business-primary);
-}
-
-.reviewDecision[data-decision='pending'] {
-  color: var(--dsw-alias-label-caption);
 }
 
 .selectAll {

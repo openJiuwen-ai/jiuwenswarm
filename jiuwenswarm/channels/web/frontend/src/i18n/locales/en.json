@@ -1054,17 +1054,9 @@
         "title": "Enable RSI",
         "description": "Show the RSI entry in the sidebar to create and view RSI tasks for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
-      "cua_agent_enabled": {
-        "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
-      },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
         "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically; only data recorded after it is turned on can be diagnosed. When off, trajectory pages are hidden."
-      },
-      "trajectory_ui_diagnosis_enabled": {
-        "title": "Enable trajectory diagnosis",
-        "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically, with no need to enable the trajectory UI; only data recorded after it is turned on can be diagnosed."
       },
       "team_organization_ui_enabled": {
         "title": "Enable Team Organization UI",
@@ -1465,18 +1457,22 @@
       "diagnose": "Diagnose trajectory",
       "selection": {
         "fullScope": "Entire trajectory",
-        "notePlaceholder": "Enter user feedback (optional)",
+        "selectAll": "Select all",
+        "clearSelectAll": "Clear selection",
+        "selectAllAgent": "Select all of {{name}}'s trajectory",
+        "clearSelectAllAgent": "Clear all of {{name}}'s trajectory",
+        "notePlaceholder": "Describe issues in the selected range (optional). e.g. answer missed the point; tool failure not retried; expected file missing",
         "cancel": "Cancel",
         "start": "Start",
         "starting": "Starting…",
-        "summary": "{{count}} agent(s) selected, {{nodes}} node(s)",
+        "summary": "{{count}} Agent(s) selected · {{nodes}} node(s)",
         "emptyNodes": "The selection has no complete step to diagnose. Steps that are not fully covered were left out.",
         "lastTurn": "The selection includes the main agent's last response. Artifact evaluation and process-anomaly diagnosis will be attempted.",
         "nodeLimit": "The selection contains {{count}} nodes, over the limit of {{limit}}. Narrow the range.",
         "running": "A diagnosis is already in progress",
         "noData": "There is no trajectory to diagnose yet"
       },
-      "summary": "{{traces}} traces · {{spans}} OTel spans",
+      "summary": "{{agents}} Agents · {{nodes}} nodes",
       "toolbar": {
         "scale": "Trajectory scale",
         "time": "Time",
@@ -1504,7 +1500,7 @@
     },
     "diagnosis": {
       "entry": "Trajectory analysis",
-      "noteLabel": "Note (optional)",
+      "noteLabel": "User feedback: describe issues in the selected range (optional)",
       "fullScopeBusy": "The session is running; the full trajectory cannot be diagnosed",
       "cancel": "Cancel diagnosis",
       "selectionHint": "Drag a range on the time axis or any lane, and check the members to diagnose.",
