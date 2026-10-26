@@ -79,7 +79,62 @@ def test_second_turn_same_topic_returns_already_delivered_without_rerun(monkeypa
     assert ctx.inputs.tool_result is not None
     payload = ctx.inputs.tool_result
     assert payload["kind"] == "completed"
-    assert "已交付" in payload["content"] or payload.get("state", {}).get("phase") == "completed"
+    # 完成文案含真实 file_name（Issue 1/6），不回落默认「研究报告」
+    assert "ai_chip_report" in payload["content"]
+    # Issue 8：_skip_tool 必须为 True，否则 AbilityManager 仍会真实执行 deepresearch_execute
+    assert ctx.extra.get("_skip_tool") is True
+    # Issue 3：tool_msg 必须设为精简完成文案，含真实 file_name 且不含内部 state/conversation_id
+    assert ctx.inputs.tool_msg is not None
+    assert "ai_chip_report" in ctx.inputs.tool_msg.content
+    assert "conversation_id" not in ctx.inputs.tool_msg.content
+
+
+def test_short_circuit_completion_content_has_real_file_name():
+    """Issue 1/6：短路完成文案含真实 file_name，不回落默认「研究报告」。"""
+    sess = _fake_session(delivery_index={
+        "wf_1": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                 "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                 "delivered_at": 1791601751.0},
+    })
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_new", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
+    asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
+    content = str(ctx.inputs.tool_result.get("content", ""))
+    assert "ai_chip_report" in content
+    assert "研究报告已成功生成" not in content or "ai_chip_report" in content
+
+
+def test_short_circuit_skips_in_flight_workflow_resume():
+    """Issue 2：进行中 workflow（workflow_id in states）不走短路，避免吞掉用户答复与残留 state。"""
+    sess = _fake_session(
+        delivery_index={
+            "wf_1": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                     "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                     "delivered_at": 1791601751.0},
+        },
+        states={"wf_new": {"phase": "wait_feedback", "query": "深度研究AI芯片行业"}},
+    )
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_new", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
+    asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
+    # 进行中 workflow 不短路：_skip_tool 未设，tool_result 未被改写为 completed
+    assert ctx.extra.get("_skip_tool") is None
+    assert ctx.inputs.tool_result is None or not isinstance(ctx.inputs.tool_result, dict) \
+        or ctx.inputs.tool_result.get("kind") != "completed"
+
+
+def test_empty_query_or_file_name_not_matched():
+    """Issue 7：空 query/file_name 不命中交付索引，不误短路合法研究。"""
+    sess = _fake_session(delivery_index={
+        "wf_1": {"query": "", "file_name": "",
+                 "conversation_id": "cid-empty", "html_style_status": None,
+                 "delivered_at": 1791601751.0},
+    })
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_new", args={
+        "query": "", "file_name": "", "report_type": "brief"})
+    asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
+    # 空键不命中：不短路
+    assert ctx.extra.get("_skip_tool") is None
 
 
 def test_different_topic_not_blocked():
@@ -164,15 +219,13 @@ def test_terminal_completed_updates_tool_msg_to_completion_content():
     assert len(ctx.force_finish_requests) == 1
 
 
-def test_terminal_completed_rewrites_tool_result_to_completion_content():
-    """终态完成时 tool_result 改写为精简完成文案，使 history 记录与下一轮 LLM 上下文重建看到「已完成」。
+def test_terminal_completed_preserves_structured_tool_result_for_usage_accounting():
+    """终态完成时保留 tool_result 结构化信封，SDK token 用量可被下游提取（Issue 4）。
 
-    修复前：terminal 分支不改写 tool_result，StreamEventRail(priority=80) emit
-    原始 16KB Python dict（含 workflow_llm_token_usage / timing_windows 等）到
-    history.json 的 chat.tool_result 记录。下一轮 LLM 重建上下文时从 history
-    读这个巨大 result dict，被 ask_user_question 卡片误导，忽略 kind=completed。
-    修复后：terminal 分支把 ctx.inputs.tool_result 改写为精简完成文案字符串，
-    StreamEventRail emit 的是精简文案，history 记录精简文案，LLM 看到「已完成」。
+    面向模型的精简文案落到 tool_msg（react_agent 经 context.add_messages(tool_message)
+    将 ToolMessage 写入会话历史，LLM 看到 tool_msg 而非 tool_result）。tool_result 保留
+    kind=completed + workflow_llm_token_usage 结构，使 StreamEventRail raw_output 与
+    interface_deep._extract_deepresearch_sdk_usage 能提取 SDK token 用量计入 perf 汇总。
     """
     from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
         EXECUTION_SCHEMA,
@@ -199,6 +252,11 @@ def test_terminal_completed_rewrites_tool_result_to_completion_content():
     }
     r = rail.DeepResearchExecutionRail(model_provider=lambda: None)
     asyncio.run(r.after_tool_call(ctx))
-    assert ctx.inputs.tool_result == completion_content
-    assert "999999" not in str(ctx.inputs.tool_result)
-    assert "workflow_llm_token_usage" not in str(ctx.inputs.tool_result)
+    # tool_msg 含精简完成文案（LLM 经 context.add_messages 看到）
+    assert ctx.inputs.tool_msg is not None
+    assert "已完成" in ctx.inputs.tool_msg.content
+    # tool_result 保留结构化信封：kind=completed + workflow_llm_token_usage 不丢失
+    assert isinstance(ctx.inputs.tool_result, dict)
+    assert ctx.inputs.tool_result.get("kind") == "completed"
+    assert "workflow_llm_token_usage" in ctx.inputs.tool_result
+    assert len(ctx.force_finish_requests) == 1

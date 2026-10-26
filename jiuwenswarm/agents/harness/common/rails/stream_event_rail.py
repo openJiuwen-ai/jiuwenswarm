@@ -92,6 +92,10 @@ def _early_checkpoint_disabled_by_env() -> bool:
 _DEFAULT_TOOL_RESULT_DISPLAY_MAX_CHARS = 60000
 _TOOL_RESULT_DISPLAY_MAX_CHARS_LIMIT = 100_000
 
+# DeepResearch 执行信封 schema_version（与 execution.EXECUTION_SCHEMA 对齐，
+# 此处用字面量避免向 tools/deepresearch 反向 import 拉起整条 deepresearch 栈）。
+_DEEPRESEARCH_EXECUTION_SCHEMA = "openjiuwen.deepresearch.execute.v1"
+
 
 def _resolve_source_skill(session: Any = None) -> str:
     """Return active skill name for tool-call attribution, or empty string.
@@ -130,7 +134,15 @@ def _resolve_tool_result_display_max_chars() -> int:
 def _format_tool_result_for_stream(result: Any) -> str:
     if result is None:
         return ""
-    text = str(result)
+    if (
+        isinstance(result, dict)
+        and result.get("schema_version") == _DEEPRESEARCH_EXECUTION_SCHEMA
+        and result.get("kind") == "completed"
+        and isinstance(result.get("content"), str)
+    ):
+        text = result["content"]
+    else:
+        text = str(result)
     limit = _resolve_tool_result_display_max_chars()
     if limit == 0 or len(text) <= limit:
         return text

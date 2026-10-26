@@ -127,9 +127,14 @@ def _record_delivery(
     html_style_status: str | None,
 ) -> None:
     idx = _load_delivery_index(session)
+    normalized_query = _normalize_topic(query)
+    fname = str(file_name or "").strip()
+    # 空键不入索引：空 query/file_name 的条目会误拦后续合法空参调用（issue #5131 审查）
+    if not normalized_query or not fname:
+        return
     idx[workflow_id] = {
-        "query": _normalize_topic(query),
-        "file_name": str(file_name or ""),
+        "query": normalized_query,
+        "file_name": fname,
         "conversation_id": str(conversation_id or ""),
         "html_style_status": html_style_status,
         "delivered_at": time.time(),
@@ -149,13 +154,16 @@ def _lookup_delivery(
     """同会话×同主题×同 file_name 已交付则返回交付条目，否则 None。
 
     主题按 _normalize_topic 归一化后比较（两侧均归一化），消除大小写/空白差异。
+    空 query 或空 file_name 不参与匹配——空键不应拦截合法研究（issue #5131 审查）。
     """
     topic = _normalize_topic(query)
-    fname = str(file_name or "")
+    fname = str(file_name or "").strip()
+    if not topic or not fname:
+        return None
     for entry in _load_delivery_index(session).values():
         if (
             _normalize_topic(str(entry.get("query") or "")) == topic
-            and entry.get("file_name") == fname
+            and str(entry.get("file_name") or "").strip() == fname
         ):
             return dict(entry)
     return None
@@ -353,34 +361,44 @@ class DeepResearchExecutionRail(DeepAgentRail):
 
         # 幂等守卫：同会话×同主题×同 file_name 已交付则短路返回「已完成」，
         # 不进入 bind_deepresearch_execution_context，阻止报告交付后重复执行（issue #5131）。
+        # workflow_id not in states：进行中 workflow 的续跑不走短路，避免吞掉用户答复
+        # 与残留 state（atomgit-bot 审查 Issue 2）。
         args = _tool_args(ctx)
         hit = _lookup_delivery(
             ctx.session,
             query=str(args.get("query") or ""),
             file_name=str(args.get("file_name") or ""),
         )
-        if hit is not None:
+        if hit is not None and workflow_id not in states:
             from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
                 _completion_content,
                 _persist_delivered_state,
                 _result,
             )
 
+            completion_text = _completion_content(
+                {"file_name": str(hit.get("file_name") or "")},
+                hit.get("html_style_status"),
+            )
             short_state = _persist_delivered_state(
                 ctx,
-                workflow_id=_workflow_id(ctx.session, tool_call_id),
+                workflow_id=workflow_id,
                 conversation_id=str(hit.get("conversation_id") or ""),
+                query=str(args.get("query") or ""),
+                file_name=str(hit.get("file_name") or ""),
+                requested_report_type=str(args.get("report_type") or "brief"),
             )
             ctx.inputs.tool_result = _result(
                 "completed",
                 short_state,
-                content=_completion_content(short_state, hit.get("html_style_status")),
+                content=completion_text,
+            )
+            ctx.inputs.tool_msg = ToolMessage(
+                content=completion_text,
+                tool_call_id=tool_call_id,
             )
             ctx.request_force_finish(
-                {
-                    "output": str(ctx.inputs.tool_result.get("content", "") or ""),
-                    "result_type": "answer",
-                }
+                {"output": completion_text, "result_type": "answer"}
             )
             logger.info(
                 "[deepresearch_execution_rail] idempotent short-circuit "
@@ -388,7 +406,10 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 tool_call_id,
                 str(hit.get("conversation_id") or ""),
             )
-            # 标记短路供 after_tool_call early-return，避免二次 force_finish 与空 delivery 记录
+            # _skip_tool：阻止 AbilityManager 真实执行 deepresearch_execute（renquanjia 审查 Issue 5）。
+            # _deepresearch_short_circuit：标记短路供 after_tool_call early-return，
+            # 避免二次 force_finish 与空 delivery 记录。
+            ctx.extra["_skip_tool"] = True
             ctx.extra["_deepresearch_short_circuit"] = workflow_id
             return
 
@@ -538,7 +559,10 @@ class DeepResearchExecutionRail(DeepAgentRail):
                     content=content.strip(),
                     tool_call_id=tool_call_id,
                 )
-                ctx.inputs.tool_result = content.strip()
+                # 不改写 tool_result：保留结构化信封（kind=completed +
+                # workflow_llm_token_usage），使 StreamEventRail raw_output 与
+                # interface_deep._extract_deepresearch_sdk_usage 能提取 SDK token
+                # 用量（atomgit-bot 审查 Issue 4）。面向模型的精简文案落到 tool_msg。
                 ctx.request_force_finish(
                     {"output": content.strip(), "result_type": "answer"}
                 )

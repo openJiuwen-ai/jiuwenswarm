@@ -132,20 +132,23 @@ def _persist_delivered_state(
     *,
     workflow_id: str,
     conversation_id: str,
+    query: str = "",
+    file_name: str = "",
+    requested_report_type: str = "brief",
 ) -> dict[str, Any]:
     """构造一个 phase=completed 的只读 state 供幂等短路返回，不写 session（rail 负责）。
 
     context/workflow_id 仅用于与 _persist 对齐调用形态，实际未使用——短路返回的
-    state 不落盘，rail 的 after_tool_call 也不应为此 state 调 _record_delivery
-    （short_state 的 query/file_name 为空，_record_delivery 的查表键不命中）。
+    state 不落盘。query/file_name/requested_report_type 由调用方从交付索引与工具
+    入参取真实值传入，使 _completion_content 能输出真实报告名而非默认「研究报告」。
     """
     return {
         "schema_version": _STATE_SCHEMA_VERSION,
         "phase": "completed",
-        "query": "",
-        "file_name": "",
+        "query": query,
+        "file_name": file_name,
         "conversation_id": conversation_id,
-        "requested_report_type": "brief",
+        "requested_report_type": requested_report_type,
         "revision": 0,
     }
 
