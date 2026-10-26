@@ -569,27 +569,22 @@ def _register_brief_upgrade_record(
     stored_metadata: dict[str, Any] | None = None
     normalized_report_id = str(report_id or "").strip()
     normalized_query = str(original_query or "").strip()
-    if (
-        normalized_report_id
-        and normalized_query
-        and isinstance(metadata, dict)
-        and metadata
-        and metadata.get("brief_outline")
-    ):
-        serialized = json.dumps(metadata, ensure_ascii=False)
-        if len(serialized) <= DEEPRESEARCH_BRIEF_METADATA_CACHE_TEXT_CHARS:
-            stored_metadata = copy.deepcopy(metadata)
-            available = True
-        else:
-            logger.warning(
-                "[deepresearch_stream] brief metadata too large to cache "
-                "request_id=%s session_id=%s chars=%d limit=%d; "
-                "brief upgrade will degrade to plain professional",
-                _safe_log_correlation_id(route.get("request_id")),
-                _safe_log_correlation_id(route.get("session_id")),
-                len(serialized),
-                DEEPRESEARCH_BRIEF_METADATA_CACHE_TEXT_CHARS,
-            )
+    if normalized_report_id and normalized_query:
+        if isinstance(metadata, dict) and metadata and metadata.get("brief_outline"):
+            serialized = json.dumps(metadata, ensure_ascii=False)
+            if len(serialized) <= DEEPRESEARCH_BRIEF_METADATA_CACHE_TEXT_CHARS:
+                stored_metadata = copy.deepcopy(metadata)
+                available = True
+            else:
+                logger.warning(
+                    "[deepresearch_stream] brief metadata too large to cache "
+                    "request_id=%s session_id=%s chars=%d limit=%d; "
+                    "brief upgrade will degrade to plain professional",
+                    _safe_log_correlation_id(route.get("request_id")),
+                    _safe_log_correlation_id(route.get("session_id")),
+                    len(serialized),
+                    DEEPRESEARCH_BRIEF_METADATA_CACHE_TEXT_CHARS,
+                )
     record: dict[str, Any] = {
         "report_id": normalized_report_id,
         "original_query": normalized_query,
@@ -2975,13 +2970,9 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                 candidate = (
                     record.get("metadata") if isinstance(record, dict) else None
                 )
-                if (
-                    record
-                    and record.get("upgrade_available")
-                    and isinstance(candidate, dict)
-                    and candidate
-                ):
-                    upgrade_metadata = candidate
+                if record and record.get("upgrade_available"):
+                    if isinstance(candidate, dict) and candidate:
+                        upgrade_metadata = candidate
             if isinstance(upgrade_metadata, dict) and upgrade_metadata:
                 config["METADATA"] = json.dumps(
                     upgrade_metadata, ensure_ascii=False

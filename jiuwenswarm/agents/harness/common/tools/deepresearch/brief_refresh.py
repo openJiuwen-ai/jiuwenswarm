@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import json
 import re
-from html.parser import HTMLParser
 from pathlib import Path
+
+from lxml import etree, html
 
 from .path_safety import is_direct_regular_file
 
@@ -14,33 +15,30 @@ _MAX_REPORT_BYTES = 32 * 1024 * 1024
 _MAX_REPORT_TEXT_CHARS = 128_000
 
 
-class _ReportText(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-        self.ignored = 0
+def _extract_report_html_text(source: str) -> str:
+    """Read report evidence from a DOM without executing scripts or loading URLs."""
+    if not source.strip():
+        return ""
+    # The caller caps file bytes first; allow valid large inline chart libraries.
+    parser = html.HTMLParser(encoding="utf-8", no_network=True, remove_comments=True, huge_tree=True)
+    try:
+        document = html.document_fromstring(source.encode("utf-8"), parser=parser)
+    except etree.ParserError as error:
+        raise ValueError("brief source is empty or invalid HTML") from error
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"head", "script", "style", "svg"}:
-            self.ignored += 1
-        if self.ignored:
-            return
-        if tag in {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4"}:
-            self.parts.append("\n")
-        if tag == "a":
-            href = dict(attrs).get("href") or ""
-            if href.startswith(("https://", "http://")):
-                self.parts.append(f" [{href}] ")
+    for element in document.xpath("//head | //script | //style | //svg"):
+        element.drop_tree()
+    for link in document.iter("a"):
+        href = link.get("href", "")
+        if href.startswith(("https://", "http://")):
+            link.text = f" [{href}] {link.text or ''}"
 
-    def handle_endtag(self, tag: str) -> None:
-        if tag in {"head", "script", "style", "svg"}:
-            self.ignored = max(0, self.ignored - 1)
-        if not self.ignored and tag in {"p", "div", "li", "tr", "td", "th"}:
-            self.parts.append("\n")
-
-    def handle_data(self, data: str) -> None:
-        if not self.ignored:
-            self.parts.append(data)
+    for element in document.iter():
+        if element.tag in {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4"}:
+            element.text = "\n" + (element.text or "")
+        if element.tag in {"p", "div", "li", "tr", "td", "th"}:
+            element.tail = "\n" + (element.tail or "")
+    return "".join(document.itertext())
 
 
 def build_brief_refresh_query(
@@ -59,13 +57,13 @@ def build_brief_refresh_query(
         raise ValueError("brief source is too large")
     text = raw.decode("utf-8-sig", errors="replace")
     if path.suffix.lower() in {".html", ".htm"}:
-        parser = _ReportText()
-        parser.feed(text)
-        text = "".join(parser.parts)
-    text = "\n".join(
-        line for part in text.splitlines()
-        if (line := re.sub(r"\s+", " ", part).strip())
-    )
+        text = _extract_report_html_text(text)
+    lines: list[str] = []
+    for part in text.splitlines():
+        line = re.sub(r"\s+", " ", part).strip()
+        if line:
+            lines.append(line)
+    text = "\n".join(lines)
     if not text:
         raise ValueError("brief source is empty")
     if len(text) > _MAX_REPORT_TEXT_CHARS:

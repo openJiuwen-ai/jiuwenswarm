@@ -30,7 +30,7 @@ def test_refresh_query_includes_report_evidence_and_reference_urls(tmp_path):
     assert report.read_text(encoding="utf-8") == source
 
 
-@pytest.mark.parametrize("content", ["", "<html><script>only code</script></html>"])
+@pytest.mark.parametrize("content", ["", "<html><script>only code</script></html>", "<!-- only a comment -->"])
 def test_refresh_rejects_empty_report(tmp_path, content):
     report = tmp_path / "brief.html"
     report.write_text(content, encoding="utf-8")
@@ -78,3 +78,48 @@ def test_refresh_keeps_visible_text_limit_for_allowed_size_html(tmp_path):
     report.write_text("<html><body>" + "x" * 128_001 + "</body></html>", encoding="utf-8")
     with pytest.raises(ValueError, match="^brief source text is too large$"):
         build_brief_refresh_query("task", str(report), "evidence")
+
+
+def test_refresh_preserves_inline_text_links_and_removed_node_tails(tmp_path):
+    report = tmp_path / "brief.html"
+    report.write_text(
+        '<html><head><title>hidden title</title></head><body>'
+        '<p>Before <strong>bold</strong> &amp; after'
+        '<script>hidden script</script> visible tail</p>'
+        '<p><a href="https://example.org/?a=1&amp;b=2"><em>Reference</em></a></p>'
+        '<p><a href="javascript:ignored()">Label only</a></p>'
+        '<svg><text>hidden chart labels</text></svg>visible after chart'
+        '<!-- hidden comment --></body></html>',
+        encoding="utf-8",
+    )
+
+    query = build_brief_refresh_query("topic", str(report), "evidence")
+
+    assert "Before bold & after visible tail" in query
+    assert "https://example.org/?a=1&b=2" in query
+    assert "Reference" in query
+    assert "Label only" in query
+    assert "visible after chart" in query
+    assert "javascript:ignored()" not in query
+    assert "hidden" not in query
+
+
+def test_refresh_keeps_plain_report_normalization(tmp_path):
+    report = tmp_path / "brief.md"
+    report.write_text("  First   finding  \n\n  Second\tfinding  ", encoding="utf-8")
+
+    query = build_brief_refresh_query("topic", str(report), "evidence")
+
+    assert "First finding\\nSecond finding" in query
+
+
+def test_refresh_uses_utf8_even_when_html_declares_another_charset(tmp_path):
+    report = tmp_path / "brief.html"
+    report.write_text(
+        '<html><head><meta charset="windows-1252"></head><body><p>研究结论与参考来源</p></body></html>',
+        encoding="utf-8",
+    )
+
+    query = build_brief_refresh_query("topic", str(report), "evidence")
+
+    assert "研究结论与参考来源" in query

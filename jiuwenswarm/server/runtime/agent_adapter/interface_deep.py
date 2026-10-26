@@ -764,9 +764,9 @@ def _extract_deepresearch_followup(request: AgentRequest) -> dict[str, Any] | No
         return None
     action = value.get("action")
     source_report_id = value.get("source_report_id")
+    valid_action = isinstance(action, str) and action in _DEEPRESEARCH_FOLLOWUP_ACTIONS
     if (
-        not isinstance(action, str)
-        or action not in _DEEPRESEARCH_FOLLOWUP_ACTIONS
+        not valid_action
         or not isinstance(source_report_id, str)
         or not source_report_id.strip()
     ):

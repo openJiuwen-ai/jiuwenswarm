@@ -709,11 +709,11 @@ def _validated_brief_report(value: object) -> dict[str, Any]:
         value.get("v") != 1
         or value.get("report_type") != "brief"
         or value.get("report_delivered") is not True
-        or not isinstance(report_id, str)
-        or not report_id.strip()
-        or not isinstance(title, str)
-        or not isinstance(upgrade_available, bool)
     ):
+        return {}
+    if not isinstance(report_id, str) or not report_id.strip():
+        return {}
+    if not isinstance(title, str) or not isinstance(upgrade_available, bool):
         return {}
     return {
         "v": 1,
