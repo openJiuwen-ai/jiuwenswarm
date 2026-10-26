@@ -4123,20 +4123,38 @@ def _validate_agent_template_import_layout(pkg_root: Path, manifest: dict) -> No
         )
 
 
-def _validate_agent_group_import_skill_paths(manifest: dict) -> None:
+def _validate_manifest_import_skill_paths(
+    manifest: dict,
+    pkg_root: Path,
+    *,
+    kind_label: str,
+) -> None:
     """Reject host-specific skill paths before the core package loader runs."""
     skills = manifest.get("skills", [])
     if not isinstance(skills, list):
         return
+    pkg_root_resolved = pkg_root.resolve()
     for skill in skills:
         raw_dir = skill.get("dir") if isinstance(skill, dict) else skill
-        if not isinstance(raw_dir, str):
+        if not isinstance(raw_dir, str) or not raw_dir.strip():
             continue
         if Path(raw_dir).expanduser().is_absolute():
-            raise ValueError("agent_group skill dir must be package-relative")
+            raise ValueError(f"{kind_label} skill dir must be package-relative")
         windows_path = PureWindowsPath(raw_dir)
         if windows_path.drive or windows_path.root:
-            raise ValueError("agent_group skill dir must be package-relative")
+            raise ValueError(f"{kind_label} skill dir must be package-relative")
+        rel = raw_dir.strip().replace("\\", "/")
+        posix = PurePosixPath(rel)
+        if posix.is_absolute() or ".." in rel.split("/") or PureWindowsPath(raw_dir).is_absolute():
+            raise ValueError(f"{kind_label} skill dir must be package-relative")
+        skill_dir = (pkg_root / rel).resolve()
+        if skill_dir == pkg_root_resolved or not skill_dir.is_relative_to(pkg_root_resolved):
+            raise ValueError(f"{kind_label} skill dir must be package-relative")
+
+
+def _validate_agent_group_import_skill_paths(manifest: dict, pkg_root: Path) -> None:
+    """Reject host-specific skill paths before the core package loader runs."""
+    _validate_manifest_import_skill_paths(manifest, pkg_root, kind_label="agent_group")
 
 
 def _commit_imported_package(
@@ -4156,6 +4174,9 @@ def _commit_imported_package(
         _require_import_readme(pkg_root, kind_label)
     if kind == _AGENT_TEMPLATE_KIND:
         _validate_agent_template_import_layout(pkg_root, manifest)
+        _validate_manifest_import_skill_paths(manifest, pkg_root, kind_label="agent_template")
+    if kind == _PLUGIN_PACKAGE_KIND:
+        _validate_manifest_import_skill_paths(manifest, pkg_root, kind_label="plugin")
     if kind == _AGENT_GROUP_KIND:
         from openjiuwen.agent_teams.experts import load_agent_group_package
 
@@ -4168,7 +4189,7 @@ def _commit_imported_package(
                 "agent_group manifest name must match its package directory"
             )
         _assert_no_symlinks(pkg_root)
-        _validate_agent_group_import_skill_paths(manifest)
+        _validate_agent_group_import_skill_paths(manifest, pkg_root)
         load_agent_group_package(pkg_root)
     local_root = _local_root(kind)
     _assert_package_id_available(
