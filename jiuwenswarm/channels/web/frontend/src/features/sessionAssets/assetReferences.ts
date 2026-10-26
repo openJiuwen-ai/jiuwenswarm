@@ -53,6 +53,15 @@ export function stemFilename(filename: string): string {
   return dot > 0 ? base.slice(0, dot) : base;
 }
 
+/** 素材列表展示用的文件名：引用名（asset.name，不含扩展名，聊天框里 @ 它用的就是这个，不能变）
+ *  加上从 path 取回的扩展名，这样列表里看到的是完整文件名（如 "Panda_Cub.png"）。 */
+export function displayFileName(asset: { name: string; path: string }): string {
+  const base = asset.path.split(/[\\/]/).pop() ?? '';
+  const dot = base.lastIndexOf('.');
+  const ext = dot > 0 ? base.slice(dot) : '';
+  return `${asset.name}${ext}`;
+}
+
 /** MIME 类型 -> 素材种类，和后端 session_assets.py 的 _kind_of 对齐（用于笔记里的展示文本，
  *  不影响引用匹配本身）。 */
 export function assetKindFromMime(mimeType: string): string {
