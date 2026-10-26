@@ -742,7 +742,7 @@ def _extract_requested_report_type(request: AgentRequest) -> DeepResearchReportT
     return cast(DeepResearchReportType, value)
 
 
-_DEEPRESEARCH_FOLLOWUP_ACTIONS = frozenset({"upgrade_latest_brief"})
+_DEEPRESEARCH_FOLLOWUP_ACTIONS = frozenset({"upgrade_latest_brief", "refresh_latest_brief"})
 
 
 def _extract_deepresearch_followup(request: AgentRequest) -> dict[str, Any] | None:
@@ -765,7 +765,8 @@ def _extract_deepresearch_followup(request: AgentRequest) -> dict[str, Any] | No
     action = value.get("action")
     source_report_id = value.get("source_report_id")
     if (
-        action not in _DEEPRESEARCH_FOLLOWUP_ACTIONS
+        not isinstance(action, str)
+        or action not in _DEEPRESEARCH_FOLLOWUP_ACTIONS
         or not isinstance(source_report_id, str)
         or not source_report_id.strip()
     ):
@@ -777,7 +778,7 @@ def _extract_deepresearch_followup(request: AgentRequest) -> dict[str, Any] | No
         return None
     return {
         "v": 1,
-        "action": "upgrade_latest_brief",
+        "action": action,
         "source_report_id": source_report_id.strip(),
     }
 TodoModifyTool = CompatibleTodoModifyTool

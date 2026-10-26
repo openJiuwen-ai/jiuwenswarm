@@ -200,6 +200,17 @@ def test_config_frame_accepts_exact_limit_and_rejects_one_byte_over():
         dt._encode_deepresearch_config({**exact, "padding": exact["padding"] + "x"})
 
 
+def test_query_frame_keeps_existing_config_limit_and_bounds_source_text():
+    query = "报告证据" * 20_000
+    frame = json.loads(dt._encode_deepresearch_config(_valid_config(), request_query=query))
+    assert frame["request_query"] == query
+    assert "request_query" not in frame["config"]
+    with pytest.raises(ValueError, match="64 KiB"):
+        dt._encode_deepresearch_config({"padding": "x" * 65536}, request_query="query")
+    with pytest.raises(ValueError, match="1 MiB"):
+        dt._encode_deepresearch_config(_valid_config(), request_query="x" * (1024 * 1024))
+
+
 def test_child_env_delegates_to_isolated_runtime_and_contains_no_secrets():
     executable = Path("/isolated/bin/python")
     base_env = {"PATH": "/isolated/bin", "HTTP_PROXY": "http://proxy"}
@@ -6072,7 +6083,58 @@ async def test_brief_completion_caches_metadata_and_marks_upgrade_available(
             "original_file_name": "新能源汽车报告.md",
             "metadata": _brief_upgrade_metadata(),
             "upgrade_available": True,
+            "report_path": str(tmp_path / "r.md"),
         }
+    finally:
+        dt._BRIEF_UPGRADE_RECORDS.clear()
+
+
+@pytest.mark.asyncio
+async def test_refreshed_brief_delivers_new_file_and_replaces_source_cache(tmp_path: Path):
+    route = _brief_upgrade_route()
+    _seed_brief_upgrade_record(route, report_id="original-brief", metadata=_brief_upgrade_metadata())
+    proc = _Proc(_completed_stream_lines({
+        "response_content": "<h1>补充后的精简报告</h1>",
+        "response_content_type": "text/html",
+        "metadata": _brief_upgrade_metadata(),
+    }))
+    report = tmp_path / "refreshed.html"
+    report.write_text("<h1>补充后的精简报告</h1>", encoding="utf-8")
+    push = AsyncMock()
+    refresh_query = "包含原报告和本次补充要求的合成查询" + "报告证据" * 10_000
+    try:
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(item) for item in _stream_patches(proc, route=route)]
+            stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
+            stack.enter_context(patch.object(dt, "_write_report_html", new=AsyncMock(
+                return_value=str(report),
+            )))
+            claim = stack.enter_context(patch.object(dt, "_claim_start_snapshot", new=AsyncMock()))
+            outcome = json.loads(await dt._call_deepresearch_stream_impl(
+                action="start", query=refresh_query,
+                file_name="原报告（补充版-abcd1234）", report_type="brief",
+                upgrade_from_brief=False, _brief_refresh_original_query="原始研究任务",
+            ))
+        assert outcome["report_delivered"] is True
+        assert outcome["brief_report"]["report_id"] == "C1"
+        assert outcome["brief_report"]["report_type"] == "brief"
+        assert outcome["brief_report"]["upgrade_available"] is True
+        record = dt._get_brief_upgrade_record(route)
+        assert record["report_id"] == "C1"
+        assert record["original_query"] == "原始研究任务"
+        assert record["report_path"] == str(report)
+        assert dt._deepresearch_brief_refresh_query_ctx.get() is None
+        claim.assert_not_awaited()
+        file_pushes = [call.args[0]["payload"] for call in push.send_push.await_args_list
+                       if call.args[0]["payload"].get("event_type") == "chat.file"]
+        assert len(file_pushes) == 1
+        assert file_pushes[0]["files"][0]["path"] == str(report)
+        frame = json.loads(bytes(proc.stdin.data))
+        assert frame["request_query"] == refresh_query
+        assert "REQUEST_QUERY" not in frame["config"]
+        argv = mocks[5].await_args.args
+        assert argv[argv.index("--query") + 1] == ""
+        assert all(refresh_query not in str(value) for value in mocks[5].await_args.kwargs["env"].values())
     finally:
         dt._BRIEF_UPGRADE_RECORDS.clear()
 

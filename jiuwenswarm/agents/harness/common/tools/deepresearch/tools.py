@@ -94,6 +94,7 @@ logger = logging.getLogger(__name__)
 
 DEEPRESEARCH_CONFIG_PROTOCOL_VERSION = 1
 DEEPRESEARCH_CONFIG_MAX_BYTES = 64 * 1024
+DEEPRESEARCH_QUERY_FRAME_MAX_BYTES = 1024 * 1024
 DEEPRESEARCH_STOP_FRAME_PROTOCOL_VERSION = 1
 DEEPRESEARCH_GRACEFUL_STOP_TIMEOUT_SECONDS = 30.0
 # 修复A:停止-完成竞速交付报告的超时上限。markdown 产物管线含 HTML 样式
@@ -556,6 +557,7 @@ def _register_brief_upgrade_record(
     original_query: str,
     original_file_name: str,
     metadata: Any,
+    report_path: str = "",
 ) -> bool:
     """brief 完成即登记来源记录；返回本次是否可升级。
 
@@ -595,6 +597,8 @@ def _register_brief_upgrade_record(
         "metadata": stored_metadata,
         "upgrade_available": available,
     }
+    if report_path:
+        record["report_path"] = report_path
     key = _outline_cache_key(route)
     with _BRIEF_UPGRADE_RECORDS_GUARD:
         while len(_BRIEF_UPGRADE_RECORDS) >= DEEPRESEARCH_OUTLINE_CACHE_TENANTS:
@@ -846,24 +850,34 @@ def _validate_deepresearch_search_config(config: dict[str, str]) -> str | None:
     )
 
 
-def _encode_deepresearch_config(config: dict[str, str]) -> bytes:
+def _encode_deepresearch_config(
+    config: dict[str, str], *, request_query: str | None = None
+) -> bytes:
     tls = normalize_child_tls_config(
         {
             "LLM_SSL_VERIFY": config.get("LLM_SSL_VERIFY", "false"),
             "TOOL_SSL_VERIFY": config.get("TOOL_SSL_VERIFY", "false"),
         }
     )
+    payload: dict[str, Any] = {
+        "version": DEEPRESEARCH_CONFIG_PROTOCOL_VERSION,
+        "config": config,
+        "tls": tls,
+    }
     frame = json.dumps(
-        {
-            "version": DEEPRESEARCH_CONFIG_PROTOCOL_VERSION,
-            "config": config,
-            "tls": tls,
-        },
+        payload,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8") + b"\n"
     if len(frame) > DEEPRESEARCH_CONFIG_MAX_BYTES:
         raise ValueError("DeepResearch config frame exceeds 64 KiB")
+    if request_query is not None:
+        if not isinstance(request_query, str) or not request_query.strip():
+            raise ValueError("DeepResearch request query must be nonempty text")
+        payload["request_query"] = request_query
+        frame = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+        if len(frame) > DEEPRESEARCH_QUERY_FRAME_MAX_BYTES:
+            raise ValueError("DeepResearch query frame exceeds 1 MiB")
     return frame
 
 
@@ -2642,6 +2656,10 @@ _deepresearch_upgrade_snapshot_ctx: contextvars.ContextVar[dict[str, Any] | None
     )
 )
 
+_deepresearch_brief_refresh_query_ctx: contextvars.ContextVar[str | None] = (
+    contextvars.ContextVar("jiuwenswarm_deepresearch_brief_refresh_query", default=None)
+)
+
 
 def _claim_interrupted_prompt(
     node: str, marker: Mapping[str, Any], query: str
@@ -2706,16 +2724,19 @@ async def _call_deepresearch_stream_impl(
     *,
     _router_state: object | None = None,
     _upgrade_brief_metadata: dict[str, Any] | None = None,
+    _brief_refresh_original_query: str | None = None,
     **kwargs: Any,
 ) -> str:
     # _upgrade_brief_metadata：execution.py 已校验的升级 metadata 快照，经
     # 私有通道下传（不进 LLM 可见的工具签名），注入时优先于缓存读取。
     route_token = _deepresearch_router_state_ctx.set(_router_state)
     snapshot_token = _deepresearch_upgrade_snapshot_ctx.set(_upgrade_brief_metadata)
+    refresh_token = _deepresearch_brief_refresh_query_ctx.set(_brief_refresh_original_query)
     try:
         stream_impl = getattr(deepresearch_stream, "_func")
         return await stream_impl(**kwargs)
     finally:
+        _deepresearch_brief_refresh_query_ctx.reset(refresh_token)
         _deepresearch_upgrade_snapshot_ctx.reset(snapshot_token)
         _deepresearch_router_state_ctx.reset(route_token)
 
@@ -2797,7 +2818,11 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
     # 认领停止快照时按 claim node 推导的阶段提示(消费点 set/reset);
     # 其余路径保持 None。
     claim_stage_hint: int | None = None
-    if action == "start" and not upgrade_from_brief:
+    if (
+        action == "start"
+        and not upgrade_from_brief
+        and _deepresearch_brief_refresh_query_ctx.get() is None
+    ):
         # 停止恢复兜底（2026-10-15 19:52 回归实证）：停止后新请求中 skill
         # 激活态随请求重建而重置，deepresearch_execute 被
         # ProgressiveToolRail 过滤（stopped 文案指引的唯一入口成为死信），
@@ -2846,7 +2871,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             "run",
             "--config-stdin",
             "--query",
-            query,
+            "" if _deepresearch_brief_refresh_query_ctx.get() is not None else query,
         ]
         if conversation_id:
             argv.extend(("--conversation-id", conversation_id))
@@ -2979,7 +3004,15 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             runtime_config=config,
             executable=python_bin,
         )
-        config_frame = _encode_deepresearch_config(config)
+        # Source report text can exceed Windows' command-line length limit.
+        # Keep it outside config/environment in the bounded stdin frame.
+        config_frame = _encode_deepresearch_config(
+            config,
+            request_query=(
+                query if action == "start" and _deepresearch_brief_refresh_query_ctx.get() is not None
+                else None
+            ),
+        )
     except DeepResearchRuntimeError as exc:
         code = str(exc)
         return json.dumps(
@@ -4089,9 +4122,10 @@ async def _consume_stream(
                 brief_upgrade_available = _register_brief_upgrade_record(
                     route,
                     report_id=brief_report_id,
-                    original_query=query,
+                    original_query=_deepresearch_brief_refresh_query_ctx.get() or query,
                     original_file_name=file_name,
                     metadata=brief_metadata,
+                    report_path=str(primary_path),
                 )
                 if brief_upgrade_available:
                     completed_outcome["brief_upgrade_available"] = True

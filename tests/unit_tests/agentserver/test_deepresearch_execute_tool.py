@@ -3129,6 +3129,7 @@ def _seed_upgrade_record(
     original_file_name: str = "原报告.md",
     metadata: dict | None = None,
     available: bool = True,
+    report_path: str = "",
 ) -> None:
     """按 execution.py 实际解析口径（默认路由）种入 brief 来源记录。"""
     dt._BRIEF_UPGRADE_RECORDS[dt._outline_cache_key(dt._get_route())] = {
@@ -3137,7 +3138,90 @@ def _seed_upgrade_record(
         "original_file_name": original_file_name,
         "metadata": metadata,
         "upgrade_available": available,
+        "report_path": report_path,
     }
+
+
+@pytest.mark.asyncio
+async def test_refresh_binds_report_body_and_forces_new_brief(tmp_path):
+    report = tmp_path / "original.html"
+    report.write_text("<h1>原报告</h1><p>证据不足的结论</p>", encoding="utf-8")
+    _seed_upgrade_record(metadata=_UPGRADE_TEST_METADATA, report_path=str(report))
+    try:
+        with (
+            patch.object(de, "_probe_resumable_checkpoint") as probe,
+            patch.object(de, "_scan_resumable_checkpoint_by_query") as scan,
+            patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(
+                return_value=json.dumps({"status": "completed", "report_delivered": True})
+            )) as stream,
+        ):
+            result, saved = await _invoke(
+                query="补充关键数据和参考来源", file_name="模型选择的文件名",
+                report_type="professional", upgrade_from_brief=True,
+                conversation_id="old-stopped-conversation",
+                deepresearch_followup={
+                    "v": 1, "action": "refresh_latest_brief",
+                    "source_report_id": "brief-conv-1",
+                },
+            )
+        assert result["kind"] == "completed"
+        kwargs = stream.await_args.kwargs
+        assert kwargs["report_type"] == "brief"
+        assert kwargs["upgrade_from_brief"] is False
+        assert kwargs["action"] == "start"
+        assert kwargs["conversation_id"] != "old-stopped-conversation"
+        assert "原始研究查询" in kwargs["query"]
+        assert "证据不足的结论" in kwargs["query"]
+        assert "补充关键数据和参考来源" in kwargs["query"]
+        assert kwargs["file_name"].startswith("原报告（补充版-")
+        assert kwargs["_brief_refresh_original_query"] == "原始研究查询"
+        assert saved[0]["source_brief_report_id"] == "brief-conv-1"
+        assert saved[0]["requested_report_type"] == "brief"
+        assert report.read_text(encoding="utf-8") == "<h1>原报告</h1><p>证据不足的结论</p>"
+        probe.assert_not_called()
+        scan.assert_not_called()
+    finally:
+        dt._BRIEF_UPGRADE_RECORDS.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_id,report_path,code", [
+    ("another-report", "", "brief_refresh_target_changed"),
+    ("brief-conv-1", "", "brief_refresh_unavailable"),
+])
+async def test_refresh_fails_closed_without_matching_readable_source(source_id, report_path, code):
+    _seed_upgrade_record(metadata=_UPGRADE_TEST_METADATA, report_path=report_path)
+    try:
+        with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream:
+            result, _ = await _invoke(deepresearch_followup={
+                "v": 1, "action": "refresh_latest_brief", "source_report_id": source_id,
+            })
+        assert result["kind"] == "error"
+        assert result["error_code"] == code
+        stream.assert_not_awaited()
+    finally:
+        dt._BRIEF_UPGRADE_RECORDS.clear()
+
+
+@pytest.mark.asyncio
+async def test_refresh_resume_keeps_original_task_and_brief_type():
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(
+        return_value=json.dumps({"status": "completed", "report_delivered": True})
+    )) as stream:
+        result, _ = await _invoke(
+            state={
+                "phase": "wait_feedback", "query": "绑定后的补充查询",
+                "file_name": "原报告（补充版-1）", "conversation_id": "refresh-conv",
+                "requested_report_type": "brief", "brief_refresh_original_query": "原始研究查询",
+                "questions": ["需要补充什么？"], "revision": 1,
+            },
+            user_input={"status": "answered", "answers": [{
+                "question": "需要补充什么？", "selected_options": ["参考来源"],
+            }]}, report_type="professional",
+        )
+    assert result["kind"] == "completed"
+    assert stream.await_args.kwargs["report_type"] == "brief"
+    assert stream.await_args.kwargs["_brief_refresh_original_query"] == "原始研究查询"
 
 
 @pytest.mark.asyncio

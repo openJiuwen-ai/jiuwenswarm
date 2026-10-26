@@ -24,6 +24,7 @@ from jiuwenswarm.common.schema.ask_user import (
 )
 from jiuwenswarm.perf.context import DeepResearchReportType
 
+from .brief_refresh import build_brief_refresh_query
 from .stream_router import _format_outline_card_markdown, stage_for_resume_node
 from .tools import (
     _call_deepresearch_stream_impl,
@@ -1164,6 +1165,8 @@ async def _run_sdk_step(
     if node:
         sdk_kwargs = dict(sdk_kwargs)
         sdk_kwargs["node"] = node
+    if state.get("brief_refresh_original_query"):
+        sdk_kwargs["_brief_refresh_original_query"] = state["brief_refresh_original_query"]
     outcome = await _call_sdk(context, action=action, **sdk_kwargs)
     return await _handle_outcome(context, state, outcome, action=action, node=node)
 
@@ -1336,6 +1339,53 @@ async def deepresearch_execute(
         )
 
     if phase == "new":
+        followup = context.deepresearch_followup
+        if followup is not None and followup.get("action") == "refresh_latest_brief":
+            record = _get_brief_upgrade_record(_get_route())
+            if record is None or not str(record.get("original_query") or "").strip():
+                return _terminal_error(
+                    context, state, error_code="brief_refresh_unavailable",
+                    content="最新精简报告的来源不可用，请重新生成精简报告后再补充。",
+                )
+            if str(record.get("report_id") or "") != str(followup.get("source_report_id") or ""):
+                return _terminal_error(
+                    context, state, error_code="brief_refresh_target_changed",
+                    content="最新精简报告已变化，本次补充未执行；请刷新后基于最新报告重新发起。",
+                )
+            source_query = str(record["original_query"])
+            try:
+                source_path = str(record.get("report_path") or "").strip()
+                if not source_path:
+                    raise ValueError("brief report path missing")
+                refresh_query = await asyncio.to_thread(
+                    build_brief_refresh_query, source_query, source_path, query
+                )
+            except (OSError, ValueError):
+                return _terminal_error(
+                    context, state, error_code="brief_refresh_unavailable",
+                    content="无法读取最新精简报告的正文，本次未生成补充报告；请重新生成精简报告后再试。",
+                )
+            # A fresh identity and filename preserve the source and avoid claiming
+            # an unrelated stopped workflow. Resume uses this bound source state.
+            title = _report_title_from_file_name(str(record.get("original_file_name") or ""))
+            title = re.sub(r"（补充版-[0-9a-f]+）$", "", title) or "研究报告"
+            state = _persist(
+                context, state, "starting",
+                conversation_id=str(uuid.uuid4()),
+                query=refresh_query,
+                file_name=f"{title}（补充版-{uuid.uuid4().hex[:8]}）",
+                requested_report_type="brief",
+                source_brief_report_id=str(record["report_id"]),
+                brief_refresh_original_query=source_query,
+            )
+            return await _guard_user_stop(
+                context, state,
+                _run_sdk_step(
+                    context, state, action="start", query=refresh_query,
+                    conversation_id=state["conversation_id"], file_name=state["file_name"],
+                    report_type="brief", upgrade_from_brief=False,
+                ),
+            )
         # A new brief upgrade must not claim a stopped run with the same topic.
         # Existing upgrade workflows still use the normal resume branches below.
         if context.deepresearch_followup is not None or upgrade_from_brief:
