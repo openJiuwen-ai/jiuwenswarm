@@ -55,6 +55,17 @@ def object_prefix(group_id: str, bot_id: str, user_id: str) -> str:
     return f"uploads/{hashlib.sha256(scope).hexdigest()}/"
 
 
+def _obs_http_client() -> PoolManager:
+    """Share the OBS-only TLS policy between SDK and presigned-URL requests."""
+    verify = os.getenv("JIUWENCLAW_SSL_VERIFY", "false").strip().lower() not in {
+        "", "0", "false", "no", "off",
+    }
+    return PoolManager(
+        timeout=Timeout(connect=5, read=60), retries=False,
+        cert_reqs="CERT_REQUIRED" if verify else "CERT_NONE",
+    )
+
+
 @dataclass(frozen=True)
 class AttachmentStore:
     client: Minio
@@ -90,7 +101,7 @@ class AttachmentStore:
             secret_key=secret,
             secure=parsed.scheme == "https",
             region=os.getenv("OBS_REGION", "default"),
-            http_client=PoolManager(timeout=Timeout(connect=5, read=60), retries=False),
+            http_client=_obs_http_client(),
         )
         return cls(client, bucket, origin)
 
@@ -213,7 +224,7 @@ class AttachmentStore:
         self._upload_key(url, prefix)
         # Use the signed URL so its expiry/signature is enforced by OBS. Never
         # follow redirects or reinterpret the URL as an unrestricted SDK key.
-        transport = PoolManager(timeout=Timeout(connect=5, read=60), retries=False)
+        transport = _obs_http_client()
         try:
             response = transport.request(
                 "GET", url, redirect=False, preload_content=False
