@@ -19,7 +19,7 @@
 
 飞书群消息原先在归档后就会为每位已绑定员工创建 Request，再由参与判断决定是否回答。没有按员工关闭主动参与的开关，也没有把职责外的具体任务和面向群成员的轻量交流分开。
 
-本次让每位员工单独保存群聊回复模式。被动员工只在飞书群里被明确 @ 时创建 Request。自适应员工对人类消息继续进入参与判断：具体任务按职责决定，轻量日常交流从宽并简短回应，没有具体内容的寒暄只由一位自适应员工受理。普通 Bot 群消息按 F_08 先归档、后结束，不因自适应模式触发；只有明确 @ 当前接收者或有效目标交接才继续。
+本次让每位员工单独保存群聊回复模式。被动员工只在飞书群里被明确 @ 时创建 Request。自适应员工对未明确指向其他对象的人类群消息进入参与判断：具体任务按职责决定，轻量日常交流从宽并简短回应，没有具体内容的寒暄只由一位自适应员工受理。若消息用飞书原生 @ 明确点名其他人或 Bot，未被点名的员工只归档，不创建 Request；`@all` 仍按群广播进入自适应判断。普通 Bot 群消息按 F_08 先归档、后结束，不因自适应模式触发；明确 @ 当前接收者或有效目标交接则继续。
 
 参与判断决定回复，并且认定该任务需要一定思考时间时，才把一句固定等待提示写入 `participation.decided.notice`。明确 @ 也走这道判断：必须回复，复杂任务同样先写这句。可以马上简短回复的任务和 `ignore` 都不带这句。宿主在正式回答之前投递已有的 `notice`。提示不进入最终结果。
 
@@ -35,7 +35,7 @@
 
 ### 4.1 方案概览
 
-员工详情保存 `group_reply_mode`，取值只有 `passive` 与 `adaptive`，缺省为 `adaptive`。飞书群消息先写入该群公开记录；Bot 消息未明确 @ 当前接收者时立即结束，不读取回复模式。有效目标交接复用明确 @ 的受理路径。接收 Bot 被明确 @ 时直接创建 Request；否则人类消息读取当前设置：被动模式到此结束，不创建 Request。自适应模式继续判断纯寒暄和是否应等待先被点名的员工，然后才受理。执行前把职责边界和轻量交流说明放进 `system_prompt_addendum`，参与判断在 core 指令之后阅读这段说明。
+员工详情保存 `group_reply_mode`，取值只有 `passive` 与 `adaptive`，缺省为 `adaptive`。飞书群消息先写入该群公开记录；Bot 消息未明确 @ 当前接收者时立即结束，不读取回复模式。有效目标交接复用明确 @ 的受理路径。接收 Bot 被明确 @ 时直接创建 Request；若飞书原生 @ 指向其他对象，未被点名的员工立即结束，不读取回复模式；`@all` 不视为点名其他对象。其余人类消息读取当前设置：被动模式到此结束，不创建 Request。自适应模式再判断纯寒暄和是否应等待先被点名的群内员工，然后才受理。执行前把职责边界和轻量交流说明放进 `system_prompt_addendum`，参与判断在 core 指令之后阅读这段说明。
 
 ```mermaid
 flowchart TD
@@ -43,7 +43,9 @@ flowchart TD
     G -->|是| H["结束，不创建 Request"]
     G -->|否| B{"接收 Bot 被明确 @"}
     B -->|是| R["创建 Request"]
-    B -->|否| C{"当前设置为被动"}
+    B -->|否| M{"消息是否明确 @ 了其他对象"}
+    M -->|是，且不是 @all| H
+    M -->|否 / @all| C{"当前设置为被动"}
     C -->|是| H
     C -->|否| D{"没有具体内容的寒暄"}
     D -->|是且不是选定员工| H
@@ -67,11 +69,11 @@ flowchart TD
 - 实现体现：`PersistentGroupFanout` 在 `scheduler.accept` 之前返回。
 - 相关候选：未另做归档扫描补建 Request。
 
-#### D-02 被动是硬门闩，自适应仍由模型判断职责
+#### D-02 被动是硬门闩，自适应只判断未明确指向其他对象的消息
 
-- 选择与依据：被动表示该员工不参与未被 @ 的群消息。自适应对通过 F_08 入站门闩的消息保留参与判断，避免用词表代替职责；普通 Bot 未被 @ 时不进入此判断。明确 @ 不经过回复模式门闩；core 仍记 `respond`，并判断是否需要先发等待提示。
-- 代价与成立条件：自适应不保证每条群消息都有回复。模型可以不遵守附加说明。
-- 实现体现：`group_reply_mode == "passive"` 时返回已处理；`build_group_execution_guidance` 始终带上职责说明。
+- 选择与依据：被动表示该员工不参与未被 @ 的群消息。自适应只对没有明确收件对象的人类群消息保留职责参与判断，避免模型把相似的 Bot 名称误认为当前接收者；飞书原生 @ 了其他人或 Bot 时，在参与判断前结束。`@all` 是群广播，不属于指向其他对象。普通 Bot 未被 @ 时仍不进入参与判断。明确 @ 当前接收 Bot 不经过回复模式门闩；core 仍记 `respond`，并判断是否需要先发等待提示。
+- 代价与成立条件：被明确 @ 的其他对象即使没有本地员工绑定，其他自适应员工也不补位；`@all` 仍可能有多位自适应员工分别判断并回复。无飞书原生提及、仅手写 `@名称` 的消息仍由自适应参与判断。
+- 实现体现：`PersistentGroupFanout` 以 `receiver_bot_mentioned` 和平台 `mention_ids` 在创建 Request 前区分明确收件对象；`group_reply_mode == "passive"` 时返回已处理；`build_group_execution_guidance` 始终带上职责说明。
 - 相关候选：R-01。
 
 #### D-03 纯寒暄只交给一位自适应员工
@@ -111,6 +113,7 @@ flowchart TD
 - 员工详情在渠道区域展示「群聊回复模式」。被动说明为「仅在飞书群聊中被 @ 时回复。」自适应说明为「被 @ 时回复，其他群消息根据身份职责自主判断是否参与。」保存后发布再读回当前值。
 - 飞书私聊不读取该字段。群消息没有飞书原生 @ 时，正文里的姓名不算被 @。
 - F_08 的 Bot 门闩在模式检查之前生效：普通 Bot 群消息不创建 Session / Request，但保留公开记录；仅引用回复、手写名称或 @ 其他 Bot 不能放行。该规则不增加新设置，也不影响私聊。
+- 自适应员工收到带有飞书原生特定对象 `mention_ids`、但 `receiver_bot_mentioned` 为 false 的人类群消息时，只归档，不创建 Session / Request，避免模型把相似的外部 Bot 名称解释为当前员工；明确 @ 当前员工仍正常受理。`@all` 是群广播，继续走既有自适应分流。
 - 纯寒暄的全匹配只覆盖没有后续要求的问候。带具体任务的句子即使以问候开头，也不走寒暄分流。
 - 参与说明要求具体任务与职责完全无关时 `ignore`，轻量日常交流从宽判断。这段说明附在群执行上；没有其他群成员时仍然保留职责说明，不附带交接规则。
 - 等待提示只有五句，写在 core `participation.py`：`好的，我先想想，马上回复你。`、`收到，稍等一下，我看完就回复。`、`我在想了，很快告诉你。`、`稍等片刻，整理好就回复你。`、`明白，我想一下，马上就来。` 只有 `effort` 为 `extended` 时才选取，选取只依赖 `execution_id`，结果放在 `participation.decided.notice`。宿主不改写，也不补判复杂度。它不写入最终结果账本。
@@ -120,8 +123,9 @@ flowchart TD
 1. 员工详情写入 `passive` 或 `adaptive`，并发布。
 2. 飞书群消息归档。普通 Bot 未明确 @ 当前接收者时结束；明确 @ 或有效目标交接时，把该员工内部 ID 放入本次 Request 的提及名单并受理。
 3. 未被 @ 且当前设置为被动时结束。公开记录保留这条消息。
-4. 人类消息未被 @ 且为自适应时，纯寒暄只受理选定员工；用户先点名另一位在群员工时，其余员工等待该员工的公开回复。
-5. 已受理的群 Request 在参与判断中阅读职责与轻量交流说明。明确 @ 也进入这道判断，且必须回复。`effort` 为 `extended` 时，core 把等待提示写入 `notice`；宿主先向该 Request 路由上的渠道投递这一句，再继续正式回复和终态投递。简单任务和 `ignore` 不带 `notice`，也不发送等待提示。
+4. 人类消息明确 @ 了其他对象且没有 @ 当前员工时结束；`@all` 例外，继续作为广播处理。公开记录保留该消息。
+5. 人类消息没有明确收件对象且为自适应时，纯寒暄只受理选定员工；用户先点名另一位本群员工时，其余员工等待该员工的公开回复。
+6. 已受理的群 Request 在参与判断中阅读职责与轻量交流说明。明确 @ 当前员工也进入这道判断，且必须回复。`effort` 为 `extended` 时，core 把等待提示写入 `notice`；宿主先向该 Request 路由上的渠道投递这一句，再继续正式回复和终态投递。简单任务和 `ignore` 不带 `notice`，也不发送等待提示。
 
 切换模式不会为第 3 步已经结束的消息补建 Request。
 
@@ -155,6 +159,7 @@ flowchart TD
 | JM-23-V-04 | 纯寒暄 | 只有一位自适应员工得到 Request；优先名称或职责说明含「生活」的员工 |
 | JM-23-V-05 | 被动期间跳过的消息随后改为自适应 | 不补建 Request；新消息才按自适应受理 |
 | JM-23-V-06 | 参与判断写入 `notice` | 向该 Request 的渠道投递这一句，且同一 Execution 只发送一次；简单任务、`ignore` 与 Web 不发送。明确 @ 的复杂任务同样发送 |
+| JM-23-V-07 | 自适应员工收到明确 @ 其他对象的消息，或收到 `@all` 群广播 | 明确 @ 其他对象时仅归档、不创建本员工 Request；`@all` 仍进入自适应分流；明确 @ 本员工仍创建 Request |
 
 ### 8.2 实际执行与证据
 
@@ -170,9 +175,11 @@ flowchart TD
 
 2026-10-22：按 F_08 在回复模式检查前加入普通 Bot 门闩。`test_persistent_group_fanout.py` 增加 Bot 在被动 / 自适应、明确 @ / 未 @ 和私聊下的组合断言，确认人类消息模式规则不变。联合聚焦回归 161 passed、1 deselected，个人版路由与附件另有 63 passed；完整命令、排除的既有断言差异及真机待验项见 [F_08 第 8.2 节](F_08_feishu-group-fanout.md#82-实际执行与证据)。本次不修改 core 参与判断或等待提示。
 
+2026-10-26：处理相似 Bot 名称导致的自适应误回复。实际请求记录显示，Feishu `mention_ids` 指向另一 Bot，本机员工 ID 未被追加，但 core 参与判断仍把正文中的相似名称解释为“明确 @ 了我”。在 `PersistentGroupFanout` 增加入站硬门闩：存在特定对象的原生提及、当前 Bot 未被提及时，只保留群归档，不创建 Session / Request；结构化 `@all` 与明确 @ 当前 Bot 保持原有行为，手写 `@all` 不会覆盖特定对象的原生提及。定向回归 15 passed；完整 fanout 测试文件 69 passed、1 项既有未发布配置 `HANDLED` / `REJECTED` 预期差异失败，详见本次开发验证。尚未重启真实服务或复测真实飞书。
+
 ### 8.3 验证结论
 
-宿主组件覆盖了被动门闩、纯寒暄只受理一位员工、职责说明会进入群执行，以及把参与判断已经写入的 `notice` 投递到请求渠道。是否附带由 core 按 `effort=extended` 决定，明确 @ 的复杂任务同样写入。真实飞书和其他渠道中的模型判断、等待提示到达与页面切换尚未验收，JM-23 保持待验收。
+宿主组件覆盖了被动门闩、明确 @ 收件对象门闩、`@all` 广播、纯寒暄只受理一位员工、职责说明会进入群执行，以及把参与判断已经写入的 `notice` 投递到请求渠道。明确 @ 其他对象不再依赖模型自行分辨相似名称。真实飞书与其他渠道的模型判断、等待提示到达和页面切换尚未验收，JM-23 保持待验收。
 
 ## 9. 风险与已知遗留
 
@@ -181,3 +188,11 @@ flowchart TD
 | 参与判断仍是模型决定 | 自适应员工可能回答职责外的具体任务，或忽略轻量交流 | 真实飞书验收；需要硬规则时重新评估 R-01 |
 | 切换模式不重放 | 被动期间的消息不会在打开自适应后自动回答 | 保持 D-01，由用户重新发送 |
 | 发布耗时可能导致页面超时 | 设置可能已经写上，页面提示超时后高亮回到旧值 | 不在本特性改变发布超时 |
+
+## 10. 设计演进与修订
+
+### English change note
+
+On 2026-10-26, an incident record showed that a message natively mentioning another Feishu bot still reached adaptive participation. The model mistook the similar display name for a mention of the local employee. Adaptive employees now skip messages with a specific native recipient mention unless the receiving bot was mentioned; the message remains archived, with no Session or Request created. A native `@all` remains a broadcast, identified from structured mention IDs, while typed `@all` text cannot override a specific recipient mention. Explicit mentions of the receiving bot keep their existing behavior. Fifteen focused routing tests pass; the full fanout test file has 69 passes and one existing `HANDLED` / `REJECTED` expectation mismatch for unpublished configuration. The live service has not been restarted or tested in a real Feishu group.
+
+2026-10-26：现场记录确认某员工在收到指向另一 Bot 的飞书原生 @ 时仍进入自适应判断，且 core 将相似名称误判为当前员工被 @。自适应只适用于未明确指向其他对象的人类消息；具体对象提及先由宿主按平台 `mention_ids` 和当前 Bot 提及标记过滤，防止模型解释正文中的相似名称。群广播 `@all` 不属于特定对象提及。该规则覆盖路由误触发，不改变真正 @ 当前 Bot 后的参与判断。

@@ -433,6 +433,11 @@ class ExecutionRepository(SQLiteStore):
             "relation": row["relation"],
         }
 
+    def pending_continuation_ref(self, namespace_id: str, request_id: str) -> str | None:
+        """The interrupted Execution awaiting a continuation that has not started yet."""
+        with self._transaction() as conn:
+            return self._pending_continuation(conn, namespace_id, request_id)
+
     @staticmethod
     def _pending_continuation(conn: sqlite3.Connection, namespace_id: str, request_id: str) -> str | None:
         try:
