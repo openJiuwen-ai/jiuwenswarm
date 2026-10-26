@@ -3457,7 +3457,7 @@ async def test_stage_three_remains_in_progress_when_research_fails():
 
 
 @pytest.mark.asyncio
-async def test_brief_process_content_reaches_gateway_reasoning():
+async def test_brief_process_content_reaches_gateway_as_text():
     detail = "证据详情：Redis 适合共享状态，SQLite 适合本地持久化。"
     proc = _Proc(
         [
@@ -3502,7 +3502,7 @@ async def test_brief_process_content_reaches_gateway_reasoning():
     assert any(
         payload.get("task_id") == "deepresearch_stage_3"
         and payload.get("stream_source_id") == "dr_brief_info_collector"
-        and payload.get("content") == detail
+        and payload.get("content") == detail + "\n\n"
         for payload in reasoning_payloads
     )
 
