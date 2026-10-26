@@ -16,6 +16,7 @@ import tempfile
 import time
 import zipfile
 from collections import OrderedDict
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -1837,6 +1838,85 @@ def _assert_agent_group_name_available(name: str) -> None:
             )
 
 
+def _package_id_claimed(kind: str, package_id: str) -> bool:
+    """Report whether a local, built-in or shelf package owns this directory name.
+
+    Built-in copies stay in place (no orphan cleanup), so any built_in hit
+    blocks the name and the caller takes the next suffix.
+    """
+    if (_local_root(kind) / package_id).exists():
+        return True
+    resources_root = _resources_root(kind)
+    if resources_root is not None and (resources_root / package_id).is_dir():
+        return True
+    return (_built_in_root(kind) / package_id).exists()
+
+
+def _hub_package_id_resolver(kind: str) -> Callable[[str, str], str]:
+    """Pick a free local id when several Hub assets share one package name.
+
+    Hub keys assets by asset_id, so two publishers can both own
+    ``business-planning``. Local packages are keyed by directory name, which is
+    why the second asset used to fail with a duplicate error. Resolve it to
+    ``business-planning-2`` instead: the display name stays the same and both
+    copies keep an independent lifecycle. Reinstalling the same asset reuses
+    its recorded id so retries stay idempotent instead of piling up suffixes.
+    """
+    store = _hub_install_state_store(kind)
+
+    def resolve(hub_package_id: str, asset_id: str) -> str:
+        recorded = store.get(asset_id)
+        if recorded is not None and recorded.package_id:
+            return recorded.package_id
+        if not _package_id_claimed(kind, hub_package_id):
+            return hub_package_id
+        for index in range(2, 100):
+            candidate = f"{hub_package_id}-{index}"
+            if not _package_id_claimed(kind, candidate):
+                logger.info(
+                    "[extension_package_manager] Hub %s package %r is taken; "
+                    "installing as %r",
+                    kind,
+                    hub_package_id,
+                    candidate,
+                )
+                return candidate
+        raise ValueError(
+            f"too many Hub packages share the name {hub_package_id!r}"
+        )
+
+    return resolve
+
+
+def _rename_hub_package_identity(
+    package_root: Path, package_id: str, package_type: str
+) -> None:
+    """Rewrite only the identity field so an aliased package loads under its own id.
+
+    agent_template and agent_group key on ``manifest["name"]``; plugin keys on
+    ``manifest["id"]``. ``display_name`` stays untouched on purpose: the two
+    copies must keep showing the same product name.
+
+    Only an alias may rename: the resolver appends ``-<n>`` and keeps the Hub
+    package name as the stem. Any other mismatch is a Hub packaging error that
+    the id check must report instead of silently rewriting it.
+    """
+    manifest = _read_package_manifest(package_root)
+    if manifest is None:
+        return  # the package validator reports the precise manifest error
+    key = "id" if package_type == "plugin" else "name"
+    current = manifest.get(key)
+    if not isinstance(current, str) or not current.strip():
+        return  # missing identity, let _package_id_from_manifest reject it
+    if current == package_id:
+        return
+    stem, separator, suffix = package_id.rpartition("-")
+    if not separator or not suffix.isdigit() or stem != current:
+        return  # not an alias of this package, keep it for the id check
+    manifest[key] = package_id
+    _write_json(package_root / "manifest.json", manifest)
+
+
 def _skills_manifest_entries(skill_names: list[str]) -> list[dict[str, str]]:
     """Build loader-shaped skills entries with mode fixed to all."""
     return [{"dir": f"./skills/{name}", "mode": "all"} for name in skill_names]
@@ -2945,6 +3025,9 @@ async def _prepare_hub_equipment(
 
     def validate_package(package_root: Path, expected_package_id: str) -> None:
         _normalize_hub_equipment_manifest(package_root, package_type=package_type)
+        # An aliased install must answer to its own directory id, otherwise the
+        # id check below and the runtime loader still see the Hub package name.
+        _rename_hub_package_identity(package_root, expected_package_id, package_type)
         _validate_package_manifest(package_root, kind_label, package_type)
         manifest = _read_package_manifest(package_root)
         if manifest is None:
@@ -2987,6 +3070,7 @@ async def _prepare_hub_equipment(
             value, f"Hub {kind_label} package"
         ),
         package_validator=validate_package,
+        package_id_resolver=_hub_package_id_resolver(kind),
         conflict_validator=reject_conflict,
         on_committed=write_marketplace,
         on_rollback=lambda runtime_package_id: _remove_marketplace_entry(
@@ -4329,6 +4413,7 @@ async def install_agent_group_with_hub(
     package_id = record.package_id if record is not None else requested_id
     if _resolve_agent_group_definition_dir(package_id) is None:
         def validate(package_root: Path, expected_name: str) -> None:
+            _rename_hub_package_identity(package_root, expected_name, "agent_group")
             _validate_package_manifest(package_root, "agent_group", "agent_group")
             manifest = _read_package_manifest(package_root)
             if (
@@ -4345,6 +4430,7 @@ async def install_agent_group_with_hub(
             state_store=store,
             package_name_validator=lambda value: _reject_package_name(value, "agent_group"),
             package_validator=validate,
+            package_id_resolver=_hub_package_id_resolver(_AGENT_GROUP_KIND),
             conflict_validator=lambda value: _assert_package_id_available(
                 value, local_root=_local_root(_AGENT_GROUP_KIND),
                 built_in_root=_built_in_root(_AGENT_GROUP_KIND),
