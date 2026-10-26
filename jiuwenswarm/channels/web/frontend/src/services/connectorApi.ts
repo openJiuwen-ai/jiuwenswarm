@@ -129,6 +129,9 @@ interface RawConnectResponse {
   applied?: boolean;
   item?: Record<string, unknown>;
   error?: string;
+  code?: string;
+  runtime?: string;
+  install_cmd?: string;
   installed_skills?: string[];
   server_id_scope?: string;
   credentials_required?: boolean;
@@ -155,6 +158,9 @@ function fromRawConnect(raw: RawConnectResponse): ConnectorConnectResponse {
     applied: raw.applied,
     item: raw.item,
     error: raw.error,
+    code: raw.code,
+    runtime: raw.runtime,
+    installCmd: raw.install_cmd,
     installedSkills: raw.installed_skills,
     serverIdScope: raw.server_id_scope,
     credentialsRequired: raw.credentials_required,

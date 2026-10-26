@@ -1,4 +1,5 @@
 import { TASK_ACCEPTED_INSTRUCTIONS } from './taskPrompts';
+import { informationInteraction } from './taskInteraction';
 import { toast } from '../../../../channels/web/frontend/src/components/ui/Toast/toastStore';
 import {
   ChangeEvent,
@@ -86,6 +87,7 @@ export interface VideoLivePanelHandle {
   stopScreenSharing: () => void;
   deliverToolResult: (payload: SearchJobPayload) => void;
   deliverQuestion: (payload: SearchJobPayload) => void;
+  deliverTaskInteraction: (payload: SearchJobPayload) => void;
 }
 
 interface VideoLivePanelProps {
@@ -434,6 +436,13 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     setSearchStatus(`${payload.engine || '九问搜索 Agent'}失败：${error}`);
   };
 
+  const deliverTaskInteraction = (payload: SearchJobPayload) => {
+    if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current || !payload.job_id) return;
+    const interaction = informationInteraction(payload);
+    if (payload.replay && interaction?.state === 'pending') return;
+    if (interaction) duplexRef.current?.enqueueQuestion(payload.job_id, interaction);
+  };
+
   useEffect(() => {
     // In task mode the conversation runtime owns subscriptions, polling and result display.
     if (headless) return;
@@ -456,9 +465,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     });
     const unsubscribeProgress = webClient.on<SearchJobPayload>('video.search.progress', ({ payload }) => {
       if (!belongsToCurrentSession(payload)) return;
-      if (!payload.replay && payload.job_id && payload.interaction) {
-        duplexRef.current?.enqueueQuestion(payload.job_id, payload.interaction);
-      }
+      deliverTaskInteraction(payload);
       updateSearchProgress(payload);
       onCoreAgentProgress?.('progress', payload);
       const job = payload.job_id ? searchJobsRef.current.get(payload.job_id) : undefined;
@@ -1187,7 +1194,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         setSourceName('');
       }
     },
+    deliverTaskInteraction,
     deliverToolResult: (payload) => {
+      deliverTaskInteraction(payload);
       if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;
       // The runtime delivers terminal events once. Hold them while replacing
       // Qwen's transport, including the interval spent fetching fresh config.

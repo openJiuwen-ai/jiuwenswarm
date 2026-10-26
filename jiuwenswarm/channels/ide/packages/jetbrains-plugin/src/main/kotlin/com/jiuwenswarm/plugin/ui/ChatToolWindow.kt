@@ -10,6 +10,7 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
@@ -20,6 +21,7 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.psi.PsiManager
+import com.intellij.psi.search.FilenameIndex
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.PsiSearchHelper
 import com.intellij.ui.content.ContentFactory
@@ -39,6 +41,9 @@ import org.cef.browser.CefBrowser
 import org.cef.browser.CefFrame
 import org.cef.handler.CefLoadHandlerAdapter
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.Paths
+import java.nio.file.attribute.BasicFileAttributes
 import javax.swing.BorderFactory
 import javax.swing.JComponent
 import javax.swing.JLabel
@@ -115,6 +120,12 @@ class ChatPanel(
     // lastTurnSnapshots: promoted from currentTurnSnapshots on chat.final; used for rewind.
     private val currentTurnSnapshots = mutableMapOf<String, String?>()
     @Volatile private var lastTurnSnapshots = mapOf<String, String?>()
+    // Files captured before the turn was sent (open editors + mentioned paths).
+    private val turnBaseline = mutableMapOf<String, String?>()
+    // Edits that can only be undone by reversing the tool's old/new strings.
+    private val currentTurnInverseEdits = mutableMapOf<String, MutableList<Pair<String, String>>>()
+    @Volatile private var lastTurnInverseEdits = mapOf<String, List<Pair<String, String>>>()
+    private var currentTurnStartedAt = 0L
 
     // Swarm state — updated on every team event; feeds the Swarm Map panel
     val swarmStateManager = SwarmStateManager()
@@ -298,6 +309,75 @@ class ChatPanel(
     // ──────────────────────────────────────────
     // Webview → Plugin messages
     // ──────────────────────────────────────────
+    private fun readFileSnapshot(path: String): String? {
+        val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(path) ?: return null
+        return try {
+            ReadAction.compute<String?, Throwable> {
+                String(vf.contentsToByteArray(), vf.charset)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun clearRewindState() {
+        currentTurnSnapshots.clear()
+        lastTurnSnapshots = emptyMap()
+        turnBaseline.clear()
+        currentTurnInverseEdits.clear()
+        lastTurnInverseEdits = emptyMap()
+        currentTurnStartedAt = 0L
+    }
+
+    /**
+     * Capture pre-turn content before sending. The backend executes file tools
+     * before emitting chat.tool_call, so a snapshot taken from that event would
+     * already contain the agent's changes.
+     */
+    private fun beginTurn(mentionedPaths: List<String>) {
+        clearRewindState()
+        currentTurnStartedAt = System.currentTimeMillis()
+        val paths = mutableSetOf<String>()
+        ApplicationManager.getApplication().runReadAction {
+            FileEditorManager.getInstance(project).openFiles.forEach { paths.add(it.path) }
+        }
+        val root = project.basePath
+        for (raw in mentionedPaths) {
+            if (raw.isBlank()) continue
+            val f = File(raw)
+            paths.add(if (f.isAbsolute || root == null) f.path else File(root, raw).path)
+        }
+        for (path in paths) turnBaseline[path] = readFileSnapshot(path)
+    }
+
+    private fun noteFileEdit(path: String, oldStr: String?, newStr: String?) {
+        if (currentTurnSnapshots.containsKey(path) || currentTurnInverseEdits.containsKey(path)) return
+        if (turnBaseline.containsKey(path)) {
+            currentTurnSnapshots[path] = turnBaseline[path]
+            return
+        }
+        val createdThisTurn = try {
+            val attrs = Files.readAttributes(Paths.get(path), BasicFileAttributes::class.java)
+            currentTurnStartedAt > 0 && attrs.creationTime().toMillis() >= currentTurnStartedAt - 2_000
+        } catch (_: Exception) {
+            false
+        }
+        if (createdThisTurn) {
+            currentTurnSnapshots[path] = null
+            return
+        }
+        if (oldStr != null && newStr != null && oldStr != newStr) {
+            currentTurnInverseEdits.getOrPut(path) { mutableListOf() }.add(oldStr to newStr)
+        }
+    }
+
+    private fun promoteSnapshots(): Boolean {
+        if (currentTurnSnapshots.isEmpty() && currentTurnInverseEdits.isEmpty()) return false
+        lastTurnSnapshots = currentTurnSnapshots.toMap()
+        lastTurnInverseEdits = currentTurnInverseEdits.mapValues { it.value.toList() }
+        return true
+    }
+
     private fun handleWebviewMessage(jsonStr: String) {
         try {
             val msg = gson.fromJson(jsonStr, JsonObject::class.java)
@@ -312,9 +392,8 @@ class ChatPanel(
                     val mentionedPaths = msg.getAsJsonArray("mentionedPaths")
                         ?.mapNotNull { it.asString } ?: emptyList()
                     lastRequestId = rid
-                    // Clear snapshots from previous turn; rewind is no longer valid once user sends a new message
-                    currentTurnSnapshots.clear()
-                    lastTurnSnapshots = emptyMap()
+                    // Capture pre-turn content BEFORE the backend starts editing.
+                    if (JiuwenSwarmSettings.instance().rewindEnabled) beginTurn(mentionedPaths) else clearRewindState()
                     dispatchToWebview(mapOf("type" to "rewindable", "enabled" to false))
                     lastUserInput = content
                     debug("SEND  → requestId=$rid mode=$mode content=${content.take(60)} media=${mediaItems?.size() ?: 0}")
@@ -352,8 +431,7 @@ class ChatPanel(
                 "new_session" -> ApplicationManager.getApplication().executeOnPooledThread {
                     try {
                         debug("ACTION→ new_session (reconnecting for fresh session)")
-                        currentTurnSnapshots.clear()
-                        lastTurnSnapshots = emptyMap()
+                        clearRewindState()
                         dispatchToWebview(mapOf("type" to "rewindable", "enabled" to false))
                         service.ws.reconnect()
                     } catch (e: Exception) {
@@ -410,13 +488,21 @@ class ChatPanel(
                     }
                 }
                 "toggle_skill" -> {
-                    val skillId = msg.get("skillId")?.asString ?: return
+                    val key = msg.get("skillId")?.asString ?: ""
+                    val name = msg.get("name")?.asString ?: key
                     val enabled = msg.get("enabled")?.asBoolean ?: return
+                    if (name.isBlank()) return
+                    val resultKey = key.ifBlank { name }
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
-                            debug("ACTION→ toggle_skill $skillId enabled=$enabled")
-                            service.session.toggleSkill(skillId, enabled)
-                            dispatchToWebview(mapOf("type" to "skill_toggled", "skillId" to skillId, "enabled" to enabled))
+                            debug("ACTION toggle_skill $name enabled=$enabled")
+                            val payload = service.session.toggleSkill(name, enabled)
+                            if (payload.get("success")?.asBoolean == false) {
+                                throw IllegalStateException(
+                                    payload.get("detail")?.asString ?: "Failed to toggle skill"
+                                )
+                            }
+                            dispatchToWebview(mapOf("type" to "skill_toggled", "skillId" to resultKey, "enabled" to enabled))
                         } catch (e: Exception) {
                             LOG.warn("toggle_skill failed", e)
                             dispatchToWebview(mapOf("type" to "skills_error", "message" to (e.message ?: "Failed to toggle skill")))
@@ -485,10 +571,37 @@ class ChatPanel(
                 }
                 "rewind" -> {
                     val snapshots = lastTurnSnapshots
-                    if (snapshots.isEmpty()) return
+                    val inverseEdits = lastTurnInverseEdits
+                    if (snapshots.isEmpty() && inverseEdits.isEmpty()) {
+                        dispatchToWebview(mapOf("type" to "rewind_done",
+                            "message" to "Nothing to undo for the last turn",
+                            "restored" to 0, "failed" to 0))
+                        return
+                    }
                     ApplicationManager.getApplication().executeOnPooledThread {
                         var restored = 0
                         var failed = 0
+                        // Files without a baseline: reverse the tool's old/new pairs.
+                        for ((path, edits) in inverseEdits) {
+                            if (snapshots.containsKey(path)) continue
+                            try {
+                                WriteCommandAction.runWriteCommandAction(project, "Rewind agent changes", null, Runnable {
+                                    val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(path)
+                                        ?: throw IllegalStateException("file not found")
+                                    var content = String(vf.contentsToByteArray(), vf.charset)
+                                    for ((oldStr, newStr) in edits.asReversed()) {
+                                        if (newStr.isEmpty()) continue
+                                        if (!content.contains(newStr)) throw IllegalStateException("cannot reverse edit")
+                                        content = content.replaceFirst(newStr, oldStr)
+                                    }
+                                    vf.setBinaryContent(content.toByteArray(vf.charset))
+                                })
+                                restored++
+                            } catch (e: Exception) {
+                                debug("Rewind failed for $path: ${e.message}")
+                                failed++
+                            }
+                        }
                         for ((path, originalContent) in snapshots) {
                             try {
                                 WriteCommandAction.runWriteCommandAction(project, "Rewind agent changes", null, Runnable {
@@ -506,6 +619,7 @@ class ChatPanel(
                             }
                         }
                         lastTurnSnapshots = emptyMap()
+                        lastTurnInverseEdits = emptyMap()
                         val resultMsg = if (failed == 0) "Rewound $restored file(s)"
                                         else "Rewound $restored file(s), $failed failed"
                         dispatchToWebview(mapOf("type" to "rewind_done", "message" to resultMsg,
@@ -515,13 +629,35 @@ class ChatPanel(
                 "open_file" -> {
                     val path = msg.get("path")?.asString ?: return
                     val line = msg.get("line")?.asInt ?: 0
-                    ApplicationManager.getApplication().invokeLater {
-                        val vf = LocalFileSystem.getInstance().findFileByPath(path)
-                            ?: LocalFileSystem.getInstance().refreshAndFindFileByPath(path)
-                        if (vf != null) {
-                            OpenFileDescriptor(project, vf, maxOf(0, line - 1), 0).navigate(true)
-                        } else {
+                    // Resolve paths and query the filename index off the EDT: index
+                    // access requires a read action and must not block the UI.
+                    ApplicationManager.getApplication().executeOnPooledThread {
+                        val basePath = project.basePath
+                        val normalized = path.replace('\\', '/')
+                        val windowsAbsolute = Regex("^[A-Za-z]:/").containsMatchIn(normalized)
+                        val isAbsolute = File(path).isAbsolute || windowsAbsolute
+                        val resolved = if (isAbsolute || basePath == null) path
+                                       else File(basePath, normalized).path
+                        val vf = try {
+                            LocalFileSystem.getInstance().findFileByPath(resolved)
+                                ?: LocalFileSystem.getInstance().refreshAndFindFileByPath(resolved)
+                                ?: ReadAction.compute<com.intellij.psi.PsiFile?, Throwable> {
+                                    FilenameIndex.getFilesByName(
+                                        project,
+                                        File(normalized).name,
+                                        GlobalSearchScope.projectScope(project),
+                                    ).firstOrNull()
+                                }?.virtualFile
+                        } catch (e: Exception) {
+                            debug("open_file: lookup failed for $path: ${e.message}")
+                            null
+                        }
+                        if (vf == null) {
                             debug("open_file: not found: $path")
+                            return@executeOnPooledThread
+                        }
+                        ApplicationManager.getApplication().invokeLater {
+                            OpenFileDescriptor(project, vf, maxOf(0, line - 1), 0).navigate(true)
                         }
                     }
                 }
@@ -636,16 +772,13 @@ class ChatPanel(
                         else -> null
                     } ?: payload.getAsJsonObject("tool_input") ?: payload.getAsJsonObject("input")
                     val path = args?.get("file_path")?.asString ?: args?.get("path")?.asString
-                    if (path != null && !currentTurnSnapshots.containsKey(path)) {
-                        val vf = LocalFileSystem.getInstance().findFileByPath(path)
-                        currentTurnSnapshots[path] = vf?.let {
-                            try {
-                                ReadAction.compute<String, Throwable> {
-                                    String(it.contentsToByteArray(), it.charset)
-                                }
-                            } catch (_: Exception) { null }
-                        }
-                        debug("SNAP  → snapshotted $path (existed=${vf != null})")
+                    if (path != null) {
+                        val oldStr = args?.get("old_str")?.takeIf { it.isJsonPrimitive }?.asString
+                            ?: args?.get("old_string")?.takeIf { it.isJsonPrimitive }?.asString
+                        val newStr = args?.get("new_str")?.takeIf { it.isJsonPrimitive }?.asString
+                            ?: args?.get("new_string")?.takeIf { it.isJsonPrimitive }?.asString
+                        noteFileEdit(path, oldStr, newStr)
+                        debug("SNAP  → recorded edit $path")
                     }
                 }
                 // Terminal integration for bash commands
@@ -678,12 +811,12 @@ class ChatPanel(
             }
             // ── On turn end, promote snapshots and show rewind bar ──
             if (et == "chat.final") {
-                if (currentTurnSnapshots.isNotEmpty()) {
-                    lastTurnSnapshots = currentTurnSnapshots.toMap()
+                if (promoteSnapshots()) {
                     dispatchToWebview(mapOf("type" to "rewindable", "enabled" to true))
-                    debug("SNAP  → turn complete, ${lastTurnSnapshots.size} file(s) snapshotted")
+                    debug("SNAP  → turn complete, ${lastTurnSnapshots.size} snapshot(s), ${lastTurnInverseEdits.size} reverse edit(s)")
                 }
-                currentTurnSnapshots.clear()
+                // Keep current snapshots: a turn can emit several chat.final
+                // milestones and undo must use the earliest content per file.
                 sendGitStatus()
             }
             debug("CONV  → event_type=$et request_id=${converted.get("request_id")?.asString}")

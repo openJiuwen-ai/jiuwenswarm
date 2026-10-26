@@ -35,6 +35,11 @@ import logging
 import time
 from typing import Any, AsyncIterator
 
+from .managed_subagent_control import (
+    register_cua_execution,
+    unregister_cua_execution,
+)
+
 _PATCH_APPLIED = False
 _REVISIONS: dict[str, int] = {}
 # Resumed browser delegations reuse the same sub_session_id, and the Web
@@ -326,6 +331,14 @@ async def _invoke_with_event_forwarding(
             created_at_ms=started_ms,
         )
     )
+    cua_execution = (
+        register_cua_execution(
+            parent_session_id=parent_session_id,
+            sub_session_id=sub_session_id,
+        )
+        if normalized_type == "cua_agent"
+        else None
+    )
     try:
         result = await original_invoke(
             task_tool,
@@ -333,6 +346,7 @@ async def _invoke_with_event_forwarding(
             **kwargs,
         )
     except BaseException as exc:
+        unregister_cua_execution(cua_execution)
         await _stop_heartbeat(heartbeat)
         await _emit_roster_event(
             parent_session,
@@ -348,6 +362,7 @@ async def _invoke_with_event_forwarding(
             ),
         )
         raise
+    unregister_cua_execution(cua_execution)
     await _stop_heartbeat(heartbeat)
     await _emit_roster_event(
         parent_session,

@@ -105,6 +105,17 @@ async def test_checkpoint_changes_and_settlement_roundtrip_without_shared_data(r
     r.handler.publish_robot_messages.assert_not_called()
 
 
+async def test_cancel_settlement_closes_and_settles_in_one_checkpoint(routed_task):
+    r = routed_task
+    remote = bridge.RemoteTaskEndpoint(r.request)
+    await remote.call("bind")
+    await remote.call("settle", cancelled=True)
+    current = r.store.read(r.task["id"])
+    assert not current["checkpoint_open"]
+    assert current["execution_settled"]
+    assert current["execution_cancelled"]
+
+
 @pytest.mark.parametrize("key,value", [
     ("owner", "mallory"), ("session_id", "managed-task-other"), ("request_id", "stale"),
 ])
@@ -113,7 +124,15 @@ async def test_foreign_or_stale_execution_cannot_read_or_mutate_checkpoint(route
     remote = bridge.RemoteTaskEndpoint(r.request)
     remote.identity[key] = value
     before = r.store.read(r.task["id"])
-    for action in ("status", "bind", "claim", "context_written", "observed", "close", "settle"):
+    for action in (
+        "status",
+        "bind",
+        "claim",
+        "context_written",
+        "observed",
+        "close",
+        "settle",
+    ):
         with pytest.raises(RuntimeError, match="STALE"):
             await remote.call(action)
         assert r.store.read(r.task["id"]) == before
@@ -332,3 +351,21 @@ async def test_checkpoint_roundtrip_over_websocket_without_shared_task_database(
             r.handler.publish_robot_messages.assert_not_called()
         finally:
             await client.disconnect()
+
+
+async def test_form_answer_request_does_not_rebind_running_task(routed_task):
+    r = routed_task
+    rail = SimpleNamespace(managed_tasks={})
+    adapter = SimpleNamespace(
+        _is_session_scoped_adapter=True,
+        task_execution_binding=(SimpleNamespace(_react_agent=object()), rail),
+    )
+    answer = SimpleNamespace(
+        channel_id="video_tool", session_id=r.request.session_id,
+        request_id="answer-op", user_id="alice", req_method=ReqMethod.CHAT_ANSWER,
+        params=dict(r.request.params),
+    )
+    async with bind_task_execution(r.request, adapter, {}):
+        checkpoint = rail.managed_tasks[r.request.session_id]
+        async with bind_task_execution(answer, adapter, {}):
+            assert rail.managed_tasks[r.request.session_id] is checkpoint

@@ -72,6 +72,7 @@ export class JoyAIProvider {
   private rateLimitStrikes = 0;
   private framePollingPausedUntil = 0;
   private pendingToolContext: JoyAIToolContextEntry[] = [];
+  private deliveredSearchIds = new Set<string>();
   private restoreToken = '';
 
   constructor(callbacks: JoyAIProviderCallbacks, replyLanguage: ReplyLanguage = 'match') {
@@ -110,6 +111,7 @@ export class JoyAIProvider {
     this.rateLimitStrikes = 0;
     this.framePollingPausedUntil = 0;
     this.pendingToolContext = [];
+    this.deliveredSearchIds.clear();
     this.startFramePolling();
 
     const voice = new JoyAIVoiceSession({
@@ -176,6 +178,7 @@ export class JoyAIProvider {
     this.rateLimitStrikes = 0;
     this.framePollingPausedUntil = 0;
     this.pendingToolContext = [];
+    this.deliveredSearchIds.clear();
     this.handledTurns.clear();
     if (this.framePollTimer !== null) {
       window.clearInterval(this.framePollTimer);
@@ -200,10 +203,12 @@ export class JoyAIProvider {
     const result = payload.display_result?.trim() || payload.result?.trim() || '';
     const question = payload.question?.trim() || existing?.question || '';
     if (!result || !question) return false;
+    if (this.deliveredSearchIds.has(jobId)) return true;
+    this.deliveredSearchIds.add(jobId);
 
     const sessionId = this.sessionId;
-    // The shared result handler has already displayed the full answer. Retain it
-    // for follow-up questions, but send only Core Agent's brief to the TTS queue.
+    // The shared handler displays the full answer. Display Core's brief as the
+    // assistant reply and queue that same brief for speech without re-summarizing.
     this.pendingToolContext = rememberJoyAIToolContext(this.pendingToolContext, {
       jobId,
       question,
@@ -215,6 +220,7 @@ export class JoyAIProvider {
       job_id: jobId,
       context_job_count: this.pendingToolContext.length,
     });
+    this.callbacks.commitAssistantAnswer(brief.summary, jobId);
 
     const deliver = async () => {
       if (!(await this.waitForAnswerSlot(sessionId))) return;
@@ -325,7 +331,7 @@ export class JoyAIProvider {
       // The official client skips a scheduled frame while inference is busy.
       if (this.queuedRequestCount > 0) return;
       const frameDataUrl = this.callbacks.getLatestFrameDataUrl();
-      if (!frameDataUrl) return;
+      if (!frameDataUrl && !this.promptLifecycle.hasPending) return;
       const pendingPrompt = this.promptLifecycle.claim();
       const request = this.requestFrame(pendingPrompt?.instruction || '', pendingPrompt?.question || '', frameDataUrl);
       void request
@@ -361,7 +367,7 @@ export class JoyAIProvider {
     const activeSessionId = this.sessionId;
     const sessionId = activeSessionId;
     const searchSessionId = this.callbacks.getSearchSessionId();
-    if (!sessionId || !frameDataUrl) return null;
+    if (!sessionId || (!frameDataUrl && !originalQuestion)) return null;
 
     const commandId = crypto.randomUUID();
     const ttsGenerationAtRequest = this.ttsGeneration;
@@ -374,7 +380,7 @@ export class JoyAIProvider {
       const prompt = instruction.trim();
       const toolContext =
         requestKind === 'user' ? buildJoyAIToolContextBatch(this.pendingToolContext) : { text: '', jobIds: [] };
-      const frameTimeRange = this.frameClock.nextRange();
+      const frameTimeRange = frameDataUrl ? this.frameClock.nextRange() : '';
       let result: JoyAIFrameResult;
       try {
         const send = () => webRequest<JoyAIFrameResult>(

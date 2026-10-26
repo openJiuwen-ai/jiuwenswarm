@@ -3248,40 +3248,29 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
 
-        # 移除前先问 AgentServer 项目下是否有会话在执行:必须在 hide_project_jobs
-        # 之前拦截,否则定时任务已被停用、移除却被取消,留下任务全部停用的
-        # 半残状态。预检失败或旧版 AgentServer 不认识该参数时不触碰 cron;
-        # 通过预检后仍由 commit 侧重新扫描,覆盖期间新启动的会话。
-        precheck_ok, precheck_payload = await fetch_agent_unary(
-            agent_client=_resolve(agent_client),
-            req_method=ReqMethod.PROJECT_LIFECYCLE,
-            params={"project_id": project_id, "running_sessions": True},
-            session_id=session_id,
-            user_id=user_id,
-            channel_id="web",
-            label="project.remove.precheck",
-            timeout_seconds=10,
-        )
-        if not precheck_ok or "has_running_sessions" not in precheck_payload:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error=str(precheck_payload.get("error") or "project remove precheck unavailable"),
-                code=str(precheck_payload.get("code") or "SERVICE_UNAVAILABLE"),
-            )
-            return
-        if precheck_payload["has_running_sessions"]:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error="project has running sessions; stop them before removing",
-                code="SESSION_BUSY",
-            )
-            return
-
+        # Removal is accepted immediately; running sessions no longer block it.
+        # The AgentServer hides the project and stops those sessions in the
+        # background, so this path goes straight to the cron-safe commit.
         async def _after_remove() -> None:
             registry = getattr(channel, "git_watcher_registry", None)
             if registry is not None and project_id:
                 registry.cleanup_project(project_id)
             _schedule_agent_prewarm_sync("project.remove")
+            # The AgentServer stops these Sessions in the background.  Settle
+            # the Gateway's busy cache now: otherwise a later restore would
+            # surface them as "still processing" on session.get_metadata.
+            stopped = (
+                remove_payload.get("stopped_sessions")
+                if isinstance(remove_payload, dict)
+                else None
+            )
+            if isinstance(stopped, list):
+                clear_busy = getattr(channel, "clear_session_busy", None)
+                if callable(clear_busy):
+                    for raw_sid in stopped:
+                        sid = str(raw_sid or "")
+                        if sid:
+                            clear_busy(sid)
             await _broadcast_project_event("project.removed", project_id, user_id)
 
         class _RemoveCommitError(Exception):
@@ -5385,6 +5374,31 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # 转发到 AgentServer 与本地 handler 冲突）。静态元数据本地返回最快、依赖最少。
     channel.register_method("commands.list", _commands_list)
 
+    async def _file_upload_chunk(ws, req_id, params, session_id, user_id=None):
+        """浏览器分块上传（E2A 转发 AgentServer 的 ``file.upload_chunk``）。
+
+        生产入口（app_web 静态服务）没有 Vite 的 /file-api 上传中间件，画布素材
+        改为复用这条已认证的 WS 通道逐块上传（前端 512 KiB/块），由 AgentServer
+        落到注入目录；避免前端直连要求 token 的 /file-api/upload 得到
+        ``missing_token``（issue #5325）。
+        """
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.FILE_UPLOAD_CHUNK,
+            label="file.upload_chunk",
+            timeout_seconds=120.0,
+        )
+
+    channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
     channel.register_method("media.persist", _media_persist)
     channel.register_method("media.discard", _media_discard)

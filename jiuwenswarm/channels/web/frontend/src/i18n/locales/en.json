@@ -75,6 +75,13 @@
     "loadErrorTitle": "Failed to load",
     "loadErrorFallback": "Could not load the design workflow. Please try again later.",
     "attachmentsBlocked": "Design mode does not support attachments yet. Remove attachments and try again.",
+    "models": {
+      "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
+      "videoOff": "Video generation is switched off in Settings > Agent.",
+      "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "imageOff": "Image generation is switched off in Settings > Agent.",
+      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent."
+    },
     "activity": {
       "thinking": "Thinking",
       "toolCall": "Using {{tool}}",
@@ -511,6 +518,7 @@
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
+      "jevTab": "Jev",
       "modelGroups": "Model groups",
       "modelGroupsManagement": "Model group management",
       "empty": "No models configured",
@@ -738,6 +746,8 @@
       "providerTypesafe": "TypeSafe",
       "providerCustom": "Custom",
       "jevConfig": "Jev Model Configuration",
+      "jevKeyMissing": "Jev API key is not configured. Configure it under Models > Jev first.",
+      "clearSharedJevConfirm": "Clear this provider's Jev key? Browser decisions will return to LLM only, and JEV decision for multi-model collaboration will be disabled.",
       "jevBaseInvalid": "Enter an HTTPS API base URL without credentials, query parameters or fragments",
       "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
@@ -816,7 +826,7 @@
       },
       "decision_mode": {
         "title": "Browser decisions",
-        "description": "Choose who decides each browser step. Jev modes need the Jev API key below."
+        "description": "Choose who decides each browser step. Jev modes use the shared configuration under Models > Jev."
       },
       "decision_provider": {
         "title": "Jev provider",
@@ -1001,7 +1011,7 @@
       },
       "moa_jev_enabled": {
         "title": "JEV decision",
-        "description": "Use JEV to verify execution progress. When off, use the selected model group’s default model."
+        "description": "Use JEV configured under Models > Jev to verify execution progress. When off, use the selected model group’s default model."
       },
       "moa_verifier_interval": {
         "title": "Verification interval (rounds)",
@@ -1664,6 +1674,7 @@
     "agentGroupRuntimeDisabledTitle": "Enable external agents first",
     "agentGroupRuntimeDisabledConfirm": "Got it",
     "agentGroupBinding": "This conversation is bound to an Expert Team and cannot be changed",
+    "agentGroupNoDescription": "No description available for this expert team",
     "agentGroupFirstBuildOnly": "Expert Teams can only be selected when a Team is first created",
     "agentOnlyInSingleAgentMode": "Experts can only be selected in single-Agent mode",
     "externalAgentRequiresNewSession": "External experts require a new conversation. Start a new session to use one.",
@@ -3634,6 +3645,7 @@
       "connectionUnavailable": "Required connectors are not connected yet. Connect them before use.",
       "connectorUnavailableNamed": "This Expert requires the connector “{{connector}}”, which is not connected. Connect it and try again.",
       "uploadSuccess": "Expert package {{id}} was imported. Review it in My Experts.",
+      "uploadImportedInstallFailed": "Expert package {{id}} was imported, but installation failed. Try installing it again in My Experts.",
       "uploadError": "Unable to upload and import the Expert package. Check the file and try again.",
       "uploadMissingManifest": "The Expert package is missing manifest.json, or the file is corrupt.",
       "uploadMissingReadme": "The Expert package is missing README.md.",
@@ -3798,6 +3810,7 @@
         "packageValidationError": "Expert Team package validation failed: {{reason}}",
         "createSuccess": "Expert Team \"{{name}}\" was created.",
         "uploadSuccess": "Expert Team package {{id}} was imported. Review it in My Expert Teams.",
+        "uploadImportedInstallFailed": "Expert Team package {{id}} was imported, but installation failed. Retry installation in My Expert Teams.",
         "uploadError": "Unable to import the Expert Team package. Check the file and try again.",
         "catalogEmpty": "No Expert Teams to show",
         "mineEmpty": "You do not have any Expert Teams yet",
@@ -4404,7 +4417,9 @@
         "archiveFailed": "The archive operation failed. Please try again later.",
         "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first.",
         "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
-        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again."
+        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again.",
+        "archiveSessionFinalizing": "This conversation is still finishing up. Try archiving again shortly.",
+        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"

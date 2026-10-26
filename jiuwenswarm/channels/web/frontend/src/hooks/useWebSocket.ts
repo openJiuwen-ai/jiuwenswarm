@@ -2415,11 +2415,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return (await sendExpertMessage(newInput, sessionId)) ?? false;
         }
         const result = await request<{ success?: boolean }>('chat.interrupt', {
-          session_id: sessionId, target_team_id: expertId, mode: 'team', intent,
+          session_id: sessionId,
+          target_team_id: expertId,
+          mode: 'team',
+          // The team composer stops via pause; direct expert streams only support cancel.
+          intent: intent === 'pause' ? 'cancel' : intent,
         });
-        if (result?.success) {
-          useChatStore.getState().setProcessing(`${sessionId}::${expertId}`, false);
-        }
         return result?.success === true;
       }
       if (intent === 'supplement' && newInput) {

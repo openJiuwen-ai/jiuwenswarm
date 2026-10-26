@@ -5,6 +5,7 @@ import type { SettingValue, SettingsSource } from '../registry/types';
 import { useSettingsServices } from './SettingsServicesProvider';
 import { serializeConfigSettingValue } from './settingsSourceContract';
 import { useSettingsConfig } from './useSettingsConfig';
+import { applyBrowserDisplaySettings, browserDisplayRevision } from '../../desktopBrowserDisplay';
 
 export type SettingsSourceController = {
   values: Readonly<Record<string, unknown>>;
@@ -145,11 +146,15 @@ function BrowserSourceProvider({ children }: { children: ReactNode }) {
       return undefined;
     }
     const id = ++requestId.current;
+    const displayRevision = browserDisplayRevision();
     setLoading(true);
     setError('');
     void request<Record<string, unknown>>('path.get')
       .then((payload) => {
-        if (id === requestId.current) setValues(normalizeBrowserState(payload));
+        if (id === requestId.current) {
+          setValues(normalizeBrowserState(payload));
+          void applyBrowserDisplaySettings(payload, displayRevision);
+        }
       })
       .catch((loadError) => {
         if (id === requestId.current)
@@ -181,6 +186,7 @@ function BrowserSourceProvider({ children }: { children: ReactNode }) {
           }, { timeoutMs: 600_000 }),
         );
         setValues((current) => normalizeBrowserState({ ...current, ...result }));
+        await applyBrowserDisplaySettings(result);
         return result;
       } catch (saveError) {
         setValues((current) =>

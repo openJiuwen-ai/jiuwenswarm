@@ -198,7 +198,7 @@ test('information questions do not add approval instructions', () => {
 test('delegation retains valid scheduling arguments and dispatches only once', () => {
   const errors = [];
   const { session, functionCalls } = createSession(null, { onError: (message) => errors.push(message) });
-  const args = { task: '查询杭州天气', independent: true, depends_on: [], resources: [] };
+  const args = { task: '查询杭州天气', title: '查询杭州天气与出行建议', independent: true, depends_on: [], resources: [] };
   const event = { type: 'response.function_call_arguments.done', name: 'jiuwen_delegate', call_id: 'parallel-weather', arguments: JSON.stringify(args) };
   session.handleEvent(event);
   session.handleEvent(event);
@@ -1388,4 +1388,24 @@ test('cancelling context initialization rejects the old startup and ignores late
   socket.onmessage({ data: JSON.stringify({ type: 'session.updated' }) });
   assert.equal(session.sessionReady, false);
   assert.equal(states.at(-1), 'closed');
+});
+
+
+test('completed cancellation receipt permits Core follow-up for the user requested effects', () => {
+  const { session, sent, functionCalls } = createSession();
+  session.enqueueOperationResult('stop-created', {
+    task_id: 'created', task_status: 'completed', state: 'completed', stopped: false,
+  });
+  const continuation = sent.find(event => event.type === 'response.create').response.instructions;
+  assert.match(continuation, /removing, disabling or undoing/);
+  assert.match(continuation, /jiuwen_task_modify/);
+  assert.match(continuation, /or delegate the full requested action to Core/);
+  assert.match(continuation, /Never repeat the same ineffective cancellation/);
+  session.handleEvent({ type: 'response.created', response: { id: 'continue-effects' } });
+  session.handleEvent({ type: 'response.function_call_arguments.done', name: 'jiuwen_task_modify',
+    call_id: 'remove-effect', response_id: 'continue-effects',
+    arguments: JSON.stringify({ job_id: 'created', revision: 2, instruction: 'Remove the previously created result and verify' }),
+  });
+  assert.equal(functionCalls.length, 1);
+  assert.equal(functionCalls[0].name, 'jiuwen_task_modify');
 });

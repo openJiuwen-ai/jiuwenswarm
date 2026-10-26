@@ -1,5 +1,15 @@
 /** Turn a Designer output_ref.uri into a browser-playable /file-api URL. */
 
+import { webRequest } from '../../services/webClient';
+
+/** Canvas uploads keep the pre-existing 32 MiB ceiling; chunks stay at 512 KiB. */
+export const DESIGNER_UPLOAD_MAX_BYTES = 32 * 1024 * 1024;
+export const DESIGNER_UPLOAD_CHUNK_BYTES = 512 * 1024;
+// ``file.upload_chunk`` resolves a relative target under the user workspace
+// (~/.jiuwenswarm). Keep uploads under ``agent/`` so the app_web preview root
+// (/file-api/raw-file) accepts the persisted path in production builds.
+const DESIGNER_UPLOAD_DIR = 'agent/uploads/designer';
+
 export function localPathToFileUri(path: string): string {
   const normalized = path.replace(/\\/g, '/');
   if (/^[A-Za-z]:\//.test(normalized)) {
@@ -60,40 +70,75 @@ export async function saveDesignerTextFile(uri: string, content: string): Promis
   }
 }
 
+function uploadId(): string {
+  const cryptoApi = typeof crypto !== 'undefined' ? crypto : undefined;
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
+    return cryptoApi.randomUUID().replace(/-/g, '');
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function safeUploadFilename(name: string): string {
+  const trimmed = (name || 'upload.bin').trim() || 'upload.bin';
+  return trimmed.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 120);
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('read_failed'));
+    reader.onload = () => {
+      const result = String(reader.result ?? '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : '');
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Persist one canvas asset through the authenticated ``file.upload_chunk`` WS
+ * RPC (512 KiB sequential chunks, abort on the first failure).
+ *
+ * The old implementation posted multipart to ``/file-api/upload``, which only
+ * the Vite dev middleware accepts; the production app_web entry requires an
+ * upload token and answered ``missing_token`` (issue #5325 / GitHub #8513).
+ */
 export async function uploadDesignerAsset(file: File): Promise<{
   path: string;
   filename: string;
   mime_type?: string;
 }> {
-  const form = new FormData();
-  form.append('file', file);
-  const response = await fetch('/file-api/upload', {
-    method: 'POST',
-    body: form,
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    let code = '';
-    try {
-      code = String((JSON.parse(detail) as { error?: unknown }).error ?? '');
-    } catch {
-      code = '';
-    }
-    throw new Error(code || detail.slice(0, 160) || `HTTP ${response.status}`);
+  if (!file || file.size === 0) {
+    throw new Error('empty_file');
   }
-  const payload = (await response.json()) as {
-    files?: Array<{ path?: string; filename?: string; mime_type?: string }>;
-    errors?: Array<{ error?: string }>;
-  };
-  const uploaded = payload.files?.find((item) => item.path);
-  if (!uploaded?.path) {
-    throw new Error(payload.errors?.[0]?.error || 'upload_failed');
+  if (file.size > DESIGNER_UPLOAD_MAX_BYTES) {
+    throw new Error('file_too_large');
   }
-  return {
-    path: uploaded.path,
-    filename: uploaded.filename || file.name,
-    mime_type: uploaded.mime_type,
-  };
+  const uploadToken = uploadId();
+  const filename = safeUploadFilename(file.name);
+  const targetRelPath = `${DESIGNER_UPLOAD_DIR}/${uploadToken}__${filename}`;
+  let resolvedPath = '';
+  for (let offset = 0; offset < file.size; offset += DESIGNER_UPLOAD_CHUNK_BYTES) {
+    const chunk = file.slice(offset, Math.min(offset + DESIGNER_UPLOAD_CHUNK_BYTES, file.size));
+    const data = await blobToBase64(chunk);
+    if (!data) throw new Error('upload_failed');
+    const response = await webRequest<{ path?: string }>(
+      'file.upload_chunk',
+      {
+        upload_id: uploadToken,
+        target_rel_path: targetRelPath,
+        resolved_path: resolvedPath,
+        data,
+        final: offset + chunk.size >= file.size,
+      },
+      { timeoutMs: 120_000 },
+    );
+    const nextPath = String(response?.path ?? '').trim();
+    if (!nextPath) throw new Error('upload_failed');
+    resolvedPath = nextPath;
+  }
+  return { path: resolvedPath, filename, mime_type: file.type || undefined };
 }
 
 export function designerAssetTextUrl(uri: string | null | undefined): string | null {

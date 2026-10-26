@@ -1,5 +1,7 @@
 .designer-page {
   position: relative;
+  /* Keep the toolbar and canvas layers below the shell's floating session sidebar (z-index 30). */
+  isolation: isolate;
   display: flex;
   flex: 1 1 0%;
   gap: 0 !important;

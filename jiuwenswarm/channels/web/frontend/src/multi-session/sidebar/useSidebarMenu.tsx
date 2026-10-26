@@ -74,6 +74,9 @@ function getSessionTitle(session: Session, fallback: string): string {
 
 function archiveErrorKey(error: unknown): string {
   const code = getArchiveErrorCode(error);
+  if (code === 'OPERATION_IN_PROGRESS') {
+    return 'multiSession.project.errors.archiveSessionFinalizing';
+  }
   if (code === 'SESSION_BUSY') {
     // 会话会自行结束，引导稍后重试，而不是让用户先手动停止一个已经停过的
     // 会话。成因不同文案不同：subagent 退出与 Team 回合收尾是两件事。
@@ -133,6 +136,9 @@ function projectActionErrorText(error: unknown, translate: Translate): string {
   }
   if (code === 'CRON_STOP_FAILED') {
     return translate('multiSession.project.errors.cronStopFailed');
+  }
+  if (code === 'OPERATION_IN_PROGRESS') {
+    return translate('multiSession.project.errors.removeSessionFinalizing');
   }
   if (code === 'SESSION_BUSY') {
     return translate('multiSession.project.errors.removeSessionBusy');
@@ -358,10 +364,6 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
   }
 
   async function deleteSession(session: Session) {
-    const runtime = useChatStore.getState().getRuntime(session.session_id);
-    if (runtime?.isProcessing || runtime?.pendingQuestions[0]) {
-      throw Object.assign(new Error(t('multiSession.deleteRunningDisabled')), { code: 'SESSION_BUSY' });
-    }
     await archivedTaskClient.deleteSession(session.session_id);
     purgeSessionRuntimes(session.session_id);
     removeSessionLocally(session.session_id);

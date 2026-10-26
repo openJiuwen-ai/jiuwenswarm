@@ -7,3 +7,7 @@ class QueueVersionConflict(ValueError):
 
 class TaskRevisionConflict(ValueError):
     """The task revision changed or already has a linked successor."""
+
+
+class TaskNotFound(ValueError):
+    """The requested invocation is absent from the authenticated conversation."""
