@@ -186,6 +186,49 @@ def _extract_feishu_post_text(content: str) -> str:
     return result if result else "[富文本消息解析失败]"
 
 
+def _extract_feishu_post_image_keys(content):
+    """Collect image_key values from a Feishu post (rich-text) payload.
+
+    Walks both the flat shape ``{"title", "content"}`` and the locale-wrapped
+    shape ``{"zh_cn": {...}, ...}``. Returns keys in document order,
+    de-duplicated. Empty list when there is no img node or on parse failure.
+    """
+    try:
+        data = json.loads(content) if isinstance(content, str) else (content or {})
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    if "content" not in data:
+        post = None
+        for key in ("zh_cn", "en_us"):
+            cand = data.get(key)
+            if isinstance(cand, dict) and ("content" in cand or "title" in cand):
+                post = cand
+                break
+        if post is None:
+            for cand in data.values():
+                if isinstance(cand, dict) and ("content" in cand or "title" in cand):
+                    post = cand
+                    break
+        if post is not None:
+            data = post
+    keys = []
+    seen = set()
+    content_blocks = data.get("content") or []
+    if isinstance(content_blocks, list):
+        for paragraph in content_blocks:
+            if not isinstance(paragraph, list):
+                continue
+            for node in paragraph:
+                if isinstance(node, dict) and node.get("tag") == "img":
+                    image_key = node.get("image_key")
+                    if isinstance(image_key, str) and image_key and image_key not in seen:
+                        seen.add(image_key)
+                        keys.append(image_key)
+    return keys
+
+
 
 class _ThreadLocalLoopProxy:
     """Provide a thread-local event loop proxy for lark_oapi ws client."""
@@ -2905,7 +2948,7 @@ class FeishuChannel(BaseChannel):
                     content=content,
                     timestamp_ms=_ts,
                     metadata=_meta,
-                    files=[file_info] if file_info else None,
+                    files=(file_info if isinstance(file_info, list) else [file_info]) if file_info else None,
                 )
             else:
                 await self._process_batched_message(
@@ -2914,7 +2957,7 @@ class FeishuChannel(BaseChannel):
                     merged_content=content,
                     timestamp_ms=_ts,
                     metadata=_meta,
-                    files=[file_info] if file_info else None,
+                    files=(file_info if isinstance(file_info, list) else [file_info]) if file_info else None,
                 )
 
         except Exception as e:
@@ -3247,9 +3290,14 @@ class FeishuChannel(BaseChannel):
         if msg_type == "media":
             return await self._handle_media_message(message)
 
-        # 富文本 (post) 消息：解析正文，避免落到 [post] 占位符
+        # 富文本 (post) 消息：解析正文，避免落到 [post] 占位符；
+        # 同时下载正文内嵌图片（img 节点携带 image_key），与独立图片消息同链路落盘。
         if msg_type == "post":
-            return _extract_feishu_post_text(message.content or ""), None
+            text = _extract_feishu_post_text(message.content or "")
+            file_infos = await self._download_post_inline_images(message)
+            if file_infos is None:
+                text = text + "\n[图片下载失败]"
+            return text, file_infos or None
 
         # 贴纸消息
         if msg_type == "sticker":
@@ -3257,6 +3305,42 @@ class FeishuChannel(BaseChannel):
 
         # 其他类型
         return MSG_TYPE_MAP.get(msg_type, f"[{msg_type}]"), None
+
+    async def _download_post_inline_images(self, message: Any) -> list[dict] | None:
+        """下载 post 富文本正文内嵌的图片，返回 file_info 列表。
+
+        返回语义：
+        - ``[]``：post 中没有内嵌图片（或渠道未装配 file_service），无需下载；
+        - ``[file_info, ...]``：全部或部分图片下载成功；
+        - ``None``：存在图片但全部下载失败（调用方据此追加失败提示）。
+
+        AttachmentPersistError（附件落盘失败）按既有约定向上抛出，
+        由入站主流程整条消息按可重试错误处理。
+        """
+        image_keys = _extract_feishu_post_image_keys(message.content or "")
+        if not image_keys or self._file_service is None:
+            return []
+        infos: list[dict] = []
+        any_failed = False
+        for image_key in image_keys:
+            try:
+                file_info = await self._file_service.download_image(
+                    file_key=image_key,
+                    message_id=message.message_id,
+                )
+            except AttachmentPersistError:
+                raise
+            except Exception as e:
+                logger.error("下载 post 内嵌图片失败 image_key=%s: %s", image_key, e)
+                any_failed = True
+                continue
+            if file_info:
+                infos.append(file_info)
+            else:
+                any_failed = True
+        if not infos and any_failed:
+            return None
+        return infos
 
     async def _handle_image_message(self, message: Any) -> tuple[str, dict | None]:
         """处理图片消息。"""
