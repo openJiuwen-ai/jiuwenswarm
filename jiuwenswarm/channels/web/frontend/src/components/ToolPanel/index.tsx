@@ -39,6 +39,7 @@ import type { CodeReviewTarget } from '../../features/code-mode/types';
 import { useCodeGitDiffWatch } from '../../features/code-mode/useCodeGitDiffWatch';
 import { type SingleAgentToolTab } from '../../features/singleAgentPanelState';
 import { useBrowserAgentActivity } from '../../features/browserAgentActivity';
+import { useDesktopBrowserHeadless } from '../../features/desktopBrowserDisplay';
 import { closeDesktopBrowserTab, openFileInDesktopBrowser, useDesktopBrowserTabFlags } from '../../features/desktopBrowserFile';
 import { SubagentExpandedPanel } from '../subagent/SubagentExpandedPanel';
 import { useSubagentStore, selectSubagents } from '../../stores/subagentStore';
@@ -342,8 +343,12 @@ export function ToolPanel({
   const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
   const hasBrowserAgentActivity = useBrowserAgentActivity(resolvedSessionId);
   const desktopBrowserTabFlags = useDesktopBrowserTabFlags(resolvedSessionId);
+  const browserHeadless = useDesktopBrowserHeadless();
   const showBrowserTab =
-    isElectron && !desktopBrowserTabFlags.closed && (hasBrowserAgentActivity || desktopBrowserTabFlags.requested);
+    isElectron &&
+    !browserHeadless &&
+    !desktopBrowserTabFlags.closed &&
+    (hasBrowserAgentActivity || desktopBrowserTabFlags.requested);
   const handleTabClose = (tab: string) => {
     if (tab === 'browser') closeDesktopBrowserTab();
   };

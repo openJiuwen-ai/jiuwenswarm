@@ -1038,13 +1038,23 @@ function parseHistoryTimelineEntry(
   sessionId: string,
   subagentId?: string,
 ): HistoryTimelineEntry | null {
-  const teamId = expertTeamId({ ...buildEventPayloadForRecord(record), ...record }, sessionId);
+  const payload = buildEventPayloadForRecord(record);
+  const teamId = expertTeamId({ ...payload, ...record }, sessionId);
   if (teamId && !isTeamOrganizationUiEnabled()) return null;
-  const entry = parseSessionHistoryTimelineEntry(record, sessionId, subagentId);
+  const expertTeammate = Boolean(teamId && isTeamTeammateMessageRecord(record));
+  const entry = parseSessionHistoryTimelineEntry(
+    expertTeammate ? { ...record, role: 'assistant' } : record,
+    sessionId,
+    subagentId,
+  );
   if (teamId && entry) {
     // Expert history never replays tools or lifecycle into the owner's runtime.
     if (entry.kind !== 'message') return null;
     entry.message.teamId = teamId;
+    if (expertTeammate && record.event_type === 'chat.final') {
+      entry.message.id = `team-member-${String(payload.member_name ?? '')}@${entry.message.id}`;
+      entry.message.content = normalizeFinalContent(payload);
+    }
   }
   return entry;
 }
@@ -1205,6 +1215,11 @@ function parseSessionHistoryTimelineEntry(
   }
 
   if (eventType === 'chat.final') {
+    // A full-duplex task's raw Core answer (with its spoken-brief markers) is never shown
+    // live; the duplex runtime persists the clean result as its own tool_result reply.
+    if (record.channel_id === 'video_tool' || payload.channel_id === 'video_tool') {
+      return null;
+    }
     // Goal 完成卡片落盘的是 `goal.completed:` + JSON 信封，不是展示文本。
     // normalizeFinalContent 会把字面 `\n` 还原成真换行（GFM 表格要靠这个），信封里的
     // JSON 字符串于是带上非法控制符，parseGoalCompletedContent 解析失败 →

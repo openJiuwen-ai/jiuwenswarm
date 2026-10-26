@@ -277,6 +277,193 @@ async def test_process_stream_publishes_error_and_stops_processing_on_connection
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["success", "missing_terminal", "error", "cancel", "other_team"])
+async def test_expert_stream_lifecycle_preserves_request_and_team_route(ending):
+    started = asyncio.Event()
+
+    class Client:
+        async def send_request_stream(self, env):
+            started.set()
+            if ending == "error":
+                raise RuntimeError("expert disconnected")
+            if ending == "cancel":
+                await asyncio.Event().wait()
+            if ending in ("success", "other_team"):
+                yield AgentResponseChunk(
+                    request_id=env.request_id, channel_id="web",
+                    payload={
+                        "event_type": "chat.processing_status", "is_processing": False,
+                        **({"team_id": "other", "source": "org_expert_direct"} if ending == "other_team" else {}),
+                    },
+                )
+
+    handler = _TestMessageHandler.create_with_client(Client())
+    owner = _seed_stream_task(handler, rid="owner", channel_id="web", session_id="session")
+    handler._stream_emits_processing_status["owner"] = True
+    other = _seed_stream_task(handler, rid="other", channel_id="web", session_id="session")
+    handler._stream_emits_processing_status["other"] = True
+    handler._stream_team_ids["other"] = "other"
+    msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
+    msg.params["target_team_id"] = "expert"
+    env = e2a_from_agent_fields(
+        request_id=msg.id, channel_id="web", session_id="session",
+        req_method=ReqMethod.CHAT_SEND, params=msg.params, is_stream=True, timestamp=0.0,
+    )
+    try:
+        await handler._start_stream_task(msg, env, msg.id)
+        task = handler._stream_tasks[msg.id]
+        await started.wait()
+        if ending == "cancel":
+            task.cancel()
+        await asyncio.wait_for(task, timeout=1)
+        outputs = await _drain_robot_messages(handler)
+        statuses = [message.payload for message in outputs if (
+            message.payload.get("event_type") == "chat.processing_status"
+            and message.payload.get("team_id") == "expert"
+        )]
+        assert [payload["is_processing"] for payload in statuses] == [True, False]
+        assert all(payload["request_id"] == msg.id for payload in statuses)
+        assert all(payload["source"] == "org_expert_direct" for payload in statuses)
+        assert not owner.done() and not other.done()
+        assert msg.id not in handler._stream_team_ids
+        if ending == "error":
+            error = next(message.payload for message in outputs if message.payload.get("event_type") == "chat.error")
+            assert error["team_id"] == "expert"
+            assert error["source"] == "org_expert_direct"
+            assert error["request_id"] == msg.id
+    finally:
+        owner.cancel()
+        other.cancel()
+        await asyncio.gather(owner, other, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_expert_terminal_cannot_swallow_owner_cleanup_or_block_it():
+    class Client:
+        async def send_request_stream(self, env):
+            yield AgentResponseChunk(
+                request_id=env.request_id, channel_id="web",
+                payload={"event_type": "chat.processing_status", "is_processing": False,
+                         "team_id": "expert", "source": "org_expert_direct"},
+            )
+
+    handler = _TestMessageHandler.create_with_client(Client())
+    expert = _seed_stream_task(handler, rid="expert", channel_id="web", session_id="session")
+    handler._stream_emits_processing_status["expert"] = True
+    handler._stream_team_ids["expert"] = "expert"
+    try:
+        await handler.process_stream(
+            SimpleNamespace(request_id="owner", channel="web", params={"mode": "team"}),
+            "session", None,
+        )
+        statuses = [message.payload for message in await _drain_robot_messages(handler)
+                    if message.payload.get("event_type") == "chat.processing_status"]
+        assert len(statuses) == 2
+        assert statuses[0]["team_id"] == "expert"
+        assert statuses[1]["is_processing"] is False
+        assert "team_id" not in statuses[1]
+        assert not expert.done()
+    finally:
+        expert.cancel()
+        await asyncio.gather(expert, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["", "org_root_background", "org_root_delivery"])
+async def test_owner_status_with_team_identity_still_waits_for_other_owner_work(source):
+    class Client:
+        async def send_request_stream(self, env):
+            yield AgentResponseChunk(
+                request_id=env.request_id, channel_id="web",
+                payload={"event_type": "chat.processing_status", "is_processing": False,
+                         "team_name": "owner", "source": source},
+            )
+
+    handler = _TestMessageHandler.create_with_client(Client())
+    owner = _seed_stream_task(handler, rid="owner-long", channel_id="web", session_id="session")
+    handler._stream_emits_processing_status["owner-long"] = True
+    try:
+        await handler.process_stream(
+            SimpleNamespace(request_id="owner-short", channel="web", params={"mode": "team"}),
+            "session", None,
+        )
+        outputs = await _drain_robot_messages(handler)
+        assert not any(message.payload.get("event_type") == "chat.processing_status" for message in outputs)
+        assert not owner.done()
+    finally:
+        owner.cancel()
+        await asyncio.gather(owner, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intent", ["cancel", "pause", "resume", "supplement"])
+async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, intent):
+    handler = _TestMessageHandler.create()
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: {"team_name": "owner"},
+    )
+    msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
+    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.is_stream = False
+    msg.params.update({"target_team_id": "expert", "intent": intent})
+    session_cancel = AsyncMock()
+    monkeypatch.setattr(handler, "_cancel_agent_work_for_session", session_cancel)
+    owner = _seed_stream_task(handler, rid="owner", channel_id="web", session_id="session")
+    await handler.start_forwarding()
+    try:
+        await handler.publish_user_messages(msg)
+        async with asyncio.timeout(2):
+            while not _FakeAgentClient.sent_requests:
+                await asyncio.sleep(0)
+        env = _FakeAgentClient.sent_requests[0]
+        assert env.params["target_team_id"] == "expert"
+        assert env.params["intent"] == intent
+        assert not owner.done()
+        session_cancel.assert_not_awaited()
+    finally:
+        await handler.stop_forwarding()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["org_root_background", "org_root_delivery"])
+async def test_org_root_terminal_is_the_stream_terminal(source):
+    class Client:
+        async def send_request_stream(self, env):
+            yield AgentResponseChunk(
+                request_id=env.request_id, channel_id="web",
+                payload={"event_type": "chat.processing_status", "is_processing": False,
+                         "team_id": "owner", "source": source},
+            )
+
+    handler = _TestMessageHandler.create_with_client(Client())
+    await handler.process_stream(
+        SimpleNamespace(request_id="owner", channel="web", params={"mode": "team"}),
+        "session", None,
+    )
+    statuses = [message for message in await _drain_robot_messages(handler)
+                if message.payload.get("event_type") == "chat.processing_status"]
+    assert len(statuses) == 1
+    assert statuses[0].payload["source"] == source
+
+
+@pytest.mark.parametrize("mode,target,owner,expected", [
+    ("agent", "expert", "owner", False), ("team", "owner", "owner", False),
+    ("team", "expert", "", False), ("team", "", "owner", False),
+    ("team", "expert", "owner", True),
+])
+def test_targeted_cancel_requires_team_mode_and_non_owner(monkeypatch, mode, target, owner, expected):
+    handler = _TestMessageHandler.create()
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: {"team_name": owner},
+    )
+    msg = _chat_send_message(channel_id="web", session_id="session", mode=mode)
+    msg.params["target_team_id"] = target
+    assert handler._is_targeted_expert_cancel(msg) is expected
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [
     TimeoutError(),
     DatabaseTimeoutError("QueuePool limit of size 8 overflow 0 reached, connection timed out, timeout 10.00"),

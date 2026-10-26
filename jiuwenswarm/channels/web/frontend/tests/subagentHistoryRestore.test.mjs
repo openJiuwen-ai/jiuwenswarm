@@ -22,6 +22,18 @@ test('existing full-duplex spoken replies stay expanded after history restore wi
   assert.deepEqual(messages.map((message) => message.keepExpanded), [true, true, undefined]);
 });
 
+test('a full-duplex task restores only its clean result, not the raw Core answer with brief markers', () => {
+  const brief = '[[JIUWEN_BRIEF_BEGIN]]\n已拒绝授权。\n[[JIUWEN_BRIEF_END]]';
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    { id: 'core', channel_id: 'video_tool', role: 'assistant', event_type: 'chat.final',
+      request_id: 'task-a', content: `未能完成任务：授权被拒绝。\n\n${brief}`, timestamp: 1 },
+    { id: 'receipt', channel_id: 'video_duplex', role: 'assistant', event_type: 'chat.final',
+      presentation: 'tool_result', content: '未能完成任务：授权被拒绝。', timestamp: 2 },
+  ], sessionId);
+  assert.deepEqual(messages.map((message) => message.id), ['receipt']);
+  assert.ok(messages.every((message) => !message.content.includes('JIUWEN_BRIEF')));
+});
+
 test('history restores an unmatched chat.ask_user_question as a read-only qa.summary card (no live re-prompt)', () => {
   const preview = parseHistoryJsonFileToTimelinePreview([
     {

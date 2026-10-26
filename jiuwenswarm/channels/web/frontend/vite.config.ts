@@ -446,6 +446,8 @@ function devWsTrafficLogger(): Plugin {
 }
 
 const DESIGNER_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
+const DESIGNER_VIDEO_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024
+const DESIGNER_UPLOAD_REQUEST_MAX_BYTES = DESIGNER_VIDEO_UPLOAD_MAX_BYTES + 64 * 1024
 
 interface MultipartFilePart {
   filename: string
@@ -1543,15 +1545,20 @@ function devFileContentApi(): Plugin {
         req.on('end', () => {
           try {
             const body = Buffer.concat(chunks)
-            if (body.length > DESIGNER_UPLOAD_MAX_BYTES) {
+            const requestTooLarge = body.length > DESIGNER_UPLOAD_REQUEST_MAX_BYTES
+            const parts = !requestTooLarge && contentType.includes('multipart/form-data')
+              ? parseMultipartFiles(contentType, body)
+              : []
+            const partLimit = (part: MultipartFilePart) => (
+              part.mimeType.startsWith('video/') ? DESIGNER_VIDEO_UPLOAD_MAX_BYTES : DESIGNER_UPLOAD_MAX_BYTES
+            )
+            const tooLarge = requestTooLarge || parts.some((part) => part.data.length > partLimit(part))
+            if (tooLarge) {
               res.statusCode = 413
               res.setHeader('content-type', 'application/json; charset=utf-8')
               res.end(JSON.stringify({ error: 'file_too_large', files: [], errors: [{ error: 'file_too_large' }] }))
               return
             }
-            const parts = contentType.includes('multipart/form-data')
-              ? parseMultipartFiles(contentType, body)
-              : []
             if (parts.length === 0) {
               res.statusCode = 400
               res.setHeader('content-type', 'application/json; charset=utf-8')

@@ -375,13 +375,15 @@ def _browser_credential_environment() -> dict[str, str]:
 
 def get_panel() -> dict[str, Any]:
     """Return the Web/TUI config panel payload without Gateway handlers."""
+    # 保存过的 .env 优先于本进程的 os.environ。生成类配置槽是由另一个进程写入的，
+    # 这里的 os.environ 可能还停在修改之前——设置页因此一直显示旧的模型（火山方舟的
+    # 默认值），而工具实际已经跑在用户新选的模型上了（MiniMax）。JEV 密钥早就因为这
+    # 个跨进程时序问题改读文件；这个 map 里的每个字段其实都一样。
+    environment = _browser_credential_environment()
     payload: dict[str, Any] = {
-        param_key: (os.getenv(env_key) or "")
+        param_key: (environment.get(env_key) or "")
         for param_key, env_key in _CONFIG_SET_ENV_MAP.items()
     }
-    browser_environment = _browser_credential_environment()
-    for field in ("jev_openrouter_api_key", "jev_typesafe_api_key", "jev_custom_api_key"):
-        payload[field] = browser_environment.get(_CONFIG_SET_ENV_MAP.get(field, ""), "")
     payload["app_version"] = get_runtime_version()
     runtime_platform = (
         (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"

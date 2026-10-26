@@ -201,6 +201,7 @@
       "assetsHint": "Toggle the current-canvas asset list.",
       "upload": "Upload",
       "uploadHint": "Upload an image, video, or audio file as a new canvas node.",
+      "uploadTooLarge": "File too large: videos can be up to 1 GB, images and audio up to 32 MB.",
       "comfyuiHint": "Import a ComfyUI workflow (.json). Only vLLM-Omni Generate Image / Generate Video nodes are added.",
       "group": {
         "image": "Image",
@@ -510,6 +511,7 @@
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
+      "jevTab": "Jev",
       "modelGroups": "Model groups",
       "modelGroupsManagement": "Model group management",
       "empty": "No models configured",
@@ -572,8 +574,8 @@
       "deleteConfirm": "Delete “{{alias}}” ({{model}})?",
       "deleteConfirmTitle": "Delete model",
       "loadFailed": "Failed to load the model list. Please try again.",
-      "customName": "Custom name",
-      "customNamePlaceholder": "Enter a unique custom name",
+      "customName": "Model display name",
+      "customNamePlaceholder": "Enter a unique model display name",
       "protocol": "Protocol",
       "vendor": "Model provider",
       "model": "Model",
@@ -598,6 +600,7 @@
       "noPresetModelsNoEndpoint": "This provider does not expose a model-list endpoint",
       "fetchModelsLoading": "Fetching...",
       "fetchModelsRemote": "Fetched {{count}} models from the provider",
+      "fetchGenerationModelsRemote": "Fetched {{count}} generation models; listing does not confirm account access",
       "fetchModelsFailed": "Failed to fetch the model list",
       "fetchModelsFailedUsingPreset": "Failed to fetch the model list: {{error}}. Showing provider presets",
       "fetchModelsInvalidResponse": "The provider model-list response is invalid",
@@ -680,8 +683,10 @@
         "reasoningUnsupported": "The reasoning option “{{value}}” is unsupported. Select another option or use the default",
         "reasoningUnavailable": "Reasoning options have not loaded. Retry before saving",
         "contextWindowInvalid": "Enter a valid positive context window, such as 256K, 1M, or 1310720",
-        "aliasConflict": "Custom name must be globally unique and cannot match another model ID",
-        "modelNameConflict": "Model ID cannot match another configuration's custom name"
+        "aliasRequired": "Model display name is required",
+        "aliasConflict": "Model display name must be globally unique and cannot match another model's display name",
+        "modelNameConflict": "Model ID cannot match another configuration's model display name",
+        "modelGroupNameConflict": "Model group name must be globally unique and cannot match another model group name"
       },
       "testConnection": "Test connection",
       "test": "Test"
@@ -706,7 +711,8 @@
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
       "regionalBaseHint": "Keys are region-bound: use https://api.minimax.io/v1 for a global key and https://api.minimaxi.com/v1 for a China key. If the address and the key's region differ, the other region is tried automatically.",
-      "regionalBaseHintModelark": "Keys and model activation are region-bound: use https://ark.ap-southeast.bytepluses.com/api/v3 for BytePlus ModelArk (international) and https://ark.cn-beijing.volces.com/api/v3 for Volcengine (China). Models must be activated in the Ark console first, otherwise calls fail with ModelNotOpen.",
+      "regionalBaseHintModelark": "Keys and model activation are region-bound: use https://ark.ap-southeast.bytepluses.com/api/v3 for BytePlus ModelArk (international) and https://ark.cn-beijing.volces.com/api/v3 for Volcengine (China). Discovery and generation use the configured region without switching. Activate models in the matching console.",
+      "arkGenerationBaseInvalid": "Use an official regional Volcengine Ark or BytePlus /api/v3 address. Coding Plan addresses do not support image or video generation.",
       "regionalBaseHintDashscope": "Generation uses the native DashScope /api/v1 API, not the chat compatible-mode URL. Keys are region-bound: use https://dashscope.aliyuncs.com/api/v1 for a China key and https://dashscope-intl.aliyuncs.com/api/v1 for an international key. If the address and the key's region differ, the other region is tried automatically.",
       "selfHostedBaseHintVllmOmni": "Enter the address of your self-hosted vLLM-Omni server (for example http://127.0.0.1:8091/v1). Leave the API key empty if the server has no auth; leave the model empty to use the model the server has loaded.",
       "servedModel": "Model loaded by the server",
@@ -733,6 +739,8 @@
       "providerTypesafe": "TypeSafe",
       "providerCustom": "Custom",
       "jevConfig": "Jev Model Configuration",
+      "jevKeyMissing": "Jev API key is not configured. Configure it under Models > Jev first.",
+      "clearSharedJevConfirm": "Clear this provider's Jev key? Browser decisions will return to LLM only, and JEV decision for multi-model collaboration will be disabled.",
       "jevBaseInvalid": "Enter an HTTPS API base URL without credentials, query parameters or fragments",
       "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
@@ -811,7 +819,7 @@
       },
       "decision_mode": {
         "title": "Browser decisions",
-        "description": "Choose who decides each browser step. Jev modes need the Jev API key below."
+        "description": "Choose who decides each browser step. Jev modes use the shared configuration under Models > Jev."
       },
       "decision_provider": {
         "title": "Jev provider",
@@ -1000,7 +1008,7 @@
       },
       "moa_jev_enabled": {
         "title": "JEV decision",
-        "description": "Use JEV to verify execution progress. When off, use the selected model group’s default model."
+        "description": "Use JEV configured under Models > Jev to verify execution progress. When off, use the selected model group’s default model."
       },
       "moa_verifier_interval": {
         "title": "Verification interval (rounds)",
@@ -1655,7 +1663,11 @@
     "agentGroupRemove": "Remove Expert Team",
     "agentGroupSkillsLocked": "An Expert Team is selected; additional Expert Team skills are unavailable",
     "teamSkillsGroupLocked": "Team skills are selected; an Expert Team cannot be selected",
+    "agentGroupRuntimeDisabled": "This Expert Team includes external experts. {{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then select the Expert Team again.",
+    "agentGroupRuntimeDisabledTitle": "Enable external agents first",
+    "agentGroupRuntimeDisabledConfirm": "Got it",
     "agentGroupBinding": "This conversation is bound to an Expert Team and cannot be changed",
+    "agentGroupNoDescription": "No description available for this expert team",
     "agentGroupFirstBuildOnly": "Expert Teams can only be selected when a Team is first created",
     "agentOnlyInSingleAgentMode": "Experts can only be selected in single-Agent mode",
     "externalAgentRequiresNewSession": "External experts require a new conversation. Start a new session to use one.",
@@ -2130,7 +2142,7 @@
       "apiBaseUrlInvalid": "API Base URL must start with http:// or https://",
       "modelNameRequired": "Model name is required. Select a model before saving",
       "modelNameTooLong": "Model name is too long. Use 100 characters or fewer",
-      "aliasTooLong": "Alias is too long. Use 100 characters or fewer",
+      "aliasTooLong": "Model display name is too long. Use 100 characters or fewer",
       "apiBaseTooLong": "API Base URL is too long. Use 512 characters or fewer"
     },
     "booleanLabels": {
@@ -3626,6 +3638,7 @@
       "connectionUnavailable": "Required connectors are not connected yet. Connect them before use.",
       "connectorUnavailableNamed": "This Expert requires the connector “{{connector}}”, which is not connected. Connect it and try again.",
       "uploadSuccess": "Expert package {{id}} was imported. Review it in My Experts.",
+      "uploadImportedInstallFailed": "Expert package {{id}} was imported, but installation failed. Try installing it again in My Experts.",
       "uploadError": "Unable to upload and import the Expert package. Check the file and try again.",
       "uploadMissingManifest": "The Expert package is missing manifest.json, or the file is corrupt.",
       "uploadMissingReadme": "The Expert package is missing README.md.",
@@ -3790,6 +3803,7 @@
         "packageValidationError": "Expert Team package validation failed: {{reason}}",
         "createSuccess": "Expert Team \"{{name}}\" was created.",
         "uploadSuccess": "Expert Team package {{id}} was imported. Review it in My Expert Teams.",
+        "uploadImportedInstallFailed": "Expert Team package {{id}} was imported, but installation failed. Retry installation in My Expert Teams.",
         "uploadError": "Unable to import the Expert Team package. Check the file and try again.",
         "catalogEmpty": "No Expert Teams to show",
         "mineEmpty": "You do not have any Expert Teams yet",
@@ -4396,7 +4410,9 @@
         "archiveFailed": "The archive operation failed. Please try again later.",
         "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first.",
         "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
-        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again."
+        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again.",
+        "archiveSessionFinalizing": "This conversation is still finishing up. Try archiving again shortly.",
+        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"

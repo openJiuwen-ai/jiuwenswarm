@@ -38,8 +38,8 @@ ModelArk (Volcengine Ark / BytePlus):
   (returns ``id``), then ``GET .../tasks/{id}`` until ``status`` is ``succeeded``
   (``content.video_url``) or a failure status (``error``).
 - ``{base}`` is e.g. ``https://ark.ap-southeast.bytepluses.com/api/v3``. Keys and
-  model activation are region-bound, so a key rejected on the configured host is
-  retried on the other known hosts. A model the account has not activated comes back
+  model activation are region-bound; requests stay on the configured official host,
+  matching model discovery. A model the account has not activated comes back
   as ``ModelNotOpen``; that is surfaced with the console step needed to fix it.
 
 DashScope (Alibaba Model Studio, Wan video / Qwen-Image):
@@ -89,6 +89,7 @@ import requests
 from jiuwenswarm.agents.harness.common.tools import vllm_omni_gen
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.common.volcengine_endpoints import normalize_ark_api_base
 
 logger = logging.getLogger(__name__)
 
@@ -124,11 +125,6 @@ _MINIMAX_HOST = re.compile(r"(^|\.)minimax(i)?\.(io|com)$", re.IGNORECASE)
 _MINIMAX_REGION_ROOTS = ("https://api.minimax.io", "https://api.minimaxi.com")
 _MINIMAX_AUTH_STATUS_CODES = (1004, 2049)
 
-_MODELARK_KNOWN_BASES = (
-    "https://ark.ap-southeast.bytepluses.com/api/v3",
-    "https://ark.eu-west.bytepluses.com/api/v3",
-    "https://ark.cn-beijing.volces.com/api/v3",
-)
 _MODELARK_HOST = re.compile(r"^ark\.[\w-]+\.(bytepluses\.com|volces\.com)$", re.IGNORECASE)
 _MODELARK_VIDEO_RATIOS = {"16:9", "4:3", "1:1", "3:4", "9:16", "21:9"}
 _MODELARK_VIDEO_RESOLUTIONS = {"480p", "720p", "1080p"}
@@ -664,18 +660,6 @@ async def _minimax_check_video(target: GenerationTarget, task_id: str, save_dir:
 # ModelArk
 # --------------------------------------------------------------------------- #
 
-def _modelark_normalize_base(api_base: str) -> str:
-    base = api_base.strip().rstrip("/")
-    return base if re.search(r"/api/v\d+$", base) else f"{base}/api/v3"
-
-
-def _modelark_candidate_bases(api_base: str) -> list[str]:
-    primary = _modelark_normalize_base(api_base)
-    if primary not in _MODELARK_KNOWN_BASES:
-        return [primary]
-    return [primary, *[base for base in _MODELARK_KNOWN_BASES if base != primary]]
-
-
 def _modelark_account_hint(code: str) -> str:
     hint = _MODELARK_ACCOUNT_HINTS.get(code)
     return (
@@ -707,45 +691,36 @@ def _modelark_is_auth_failure(http_status: int, payload: Any) -> bool:
     return code.startswith("Authentication") or code == "InvalidEndpointOrModel.NotFound"
 
 
-def _modelark_auth_failure_message(bases: list[str], detail: str) -> str:
-    hosts = ", ".join(re.sub(r"^https?://|/api/v\d+$", "", base) for base in bases)
+def _modelark_auth_failure_message(base: str, detail: str) -> str:
+    host = re.sub(r"^https?://|/api/v\d+$", "", base)
     return (
-        f"[ERROR]: ModelArk request failed on every region host tried ({hosts}): {detail}. Check that the API key "
-        "is valid, that key and model belong to one of these regions, and that the model name is correct and "
+        f"[ERROR]: ModelArk request failed on the configured region ({host}): {detail}. Check that the API key "
+        "is valid, that key and model belong to this region, and that the model name is correct and "
         "activated for your account. Update the settings in Settings > Agent (Image/Video generation). "
         "Do not search other config files for a different key."
     )
 
 
 async def _modelark_post(
-    client: httpx.AsyncClient, bases: list[str], path: str, headers: dict[str, str], body: dict[str, Any]
+    client: httpx.AsyncClient, base: str, path: str, headers: dict[str, str], body: dict[str, Any]
 ) -> tuple[str, httpx.Response | None, Any, str | None]:
-    """POST to the first base that accepts the key.
+    """POST to the configured official region without credential probing elsewhere.
 
     Returns (base, response, payload, error); a non-None error is the finished
     tool result.
     """
-    resp: httpx.Response | None = None
-    payload: Any = None
-    base = bases[0]
-    for index, candidate in enumerate(bases):
-        base = candidate
-        logger.info("ModelArk POST %s%s", base, path)
-        resp = await client.post(f"{base}{path}", headers=headers, json=body)
-        try:
-            payload = resp.json()
-        except ValueError:
-            return base, resp, None, (
-                f"[ERROR]: ModelArk returned a non-JSON response: {resp.status_code} {resp.text[:300]}"
-            )
-        if _modelark_is_auth_failure(resp.status_code, payload):
-            if index + 1 < len(bases):
-                logger.warning("ModelArk rejected the key on %s, trying %s", base, bases[index + 1])
-                continue
-            return base, resp, payload, _modelark_auth_failure_message(
-                bases, _modelark_error_detail(payload) or str(resp.status_code)
-            )
-        break
+    logger.info("ModelArk POST %s%s", base, path)
+    resp = await client.post(f"{base}{path}", headers=headers, json=body)
+    try:
+        payload = resp.json()
+    except ValueError:
+        return base, resp, None, (
+            f"[ERROR]: ModelArk returned a non-JSON response: {resp.status_code} {resp.text[:300]}"
+        )
+    if _modelark_is_auth_failure(resp.status_code, payload):
+        return base, resp, payload, _modelark_auth_failure_message(
+            base, _modelark_error_detail(payload) or str(resp.status_code)
+        )
     return base, resp, payload, None
 
 
@@ -753,6 +728,10 @@ async def _modelark_generate_image(
     target: GenerationTarget, prompt: str, aspect_ratio: str, save_dir: str | None, options: ImageOptions
 ) -> str:
     api_key, api_base, model = target.api_key, target.api_base, target.model
+    try:
+        api_base = normalize_ark_api_base(api_base)
+    except ValueError as exc:
+        return f"[ERROR]: {exc}"
     parsed = parse_size(options.size)
     explicit_size = f"{parsed[0]}x{parsed[1]}" if parsed else None
     body: dict[str, Any] = {
@@ -771,7 +750,7 @@ async def _modelark_generate_image(
     try:
         async with httpx.AsyncClient(timeout=180, verify=get_requests_verify()) as client:
             _, resp, payload, error = await _modelark_post(
-                client, _modelark_candidate_bases(api_base), "/images/generations", headers, body
+                client, api_base, "/images/generations", headers, body
             )
             if error:
                 return error
@@ -807,6 +786,10 @@ async def _modelark_generate_image(
 
 async def _modelark_submit_video(target: GenerationTarget, request: VideoRequest, save_dir: str | None) -> str:
     api_key, api_base, model = target.api_key, target.api_base, target.model
+    try:
+        api_base = normalize_ark_api_base(api_base)
+    except ValueError as exc:
+        return f"[ERROR]: {exc}"
     prompt, aspect_ratio, resolution = request.prompt, request.aspect_ratio, request.resolution
     duration_seconds = request.duration_seconds
     generate_audio = request.generate_audio
@@ -829,7 +812,7 @@ async def _modelark_submit_video(target: GenerationTarget, request: VideoRequest
     try:
         async with httpx.AsyncClient(timeout=60, verify=get_requests_verify()) as client:
             base, resp, payload, error = await _modelark_post(
-                client, _modelark_candidate_bases(api_base), "/contents/generations/tasks", headers, body
+                client, api_base, "/contents/generations/tasks", headers, body
             )
             if error:
                 return error
@@ -849,6 +832,8 @@ async def _modelark_submit_video(target: GenerationTarget, request: VideoRequest
                 except _TRANSIENT_HTTP_ERRORS as exc:
                     logger.warning("[generate_video] polling ModelArk job %s failed, retrying: %r", task_id, exc)
                     continue
+                if status == "auth_failed":
+                    return _modelark_auth_failure_message(api_base, query_error or "")
                 if query_error:
                     return query_error
             if status in _PENDING_STATUSES:
@@ -893,17 +878,16 @@ async def _modelark_finish(
 
 async def _modelark_check_video(target: GenerationTarget, task_id: str, save_dir: str | None) -> str:
     api_key, api_base = target.api_key, target.api_base
-    bases = _modelark_candidate_bases(api_base)
+    try:
+        api_base = normalize_ark_api_base(api_base)
+    except ValueError as exc:
+        return f"[ERROR]: {exc}"
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
         async with httpx.AsyncClient(timeout=60, verify=get_requests_verify()) as client:
-            for index, base in enumerate(bases):
-                status, task, error = await _modelark_query(client, base, headers, task_id)
-                if status == "auth_failed":
-                    if index + 1 < len(bases):
-                        continue
-                    return _modelark_auth_failure_message(bases, error or "")
-                break
+            status, task, error = await _modelark_query(client, api_base, headers, task_id)
+            if status == "auth_failed":
+                return _modelark_auth_failure_message(api_base, error or "")
             if error:
                 return error
             if status in _PENDING_STATUSES:

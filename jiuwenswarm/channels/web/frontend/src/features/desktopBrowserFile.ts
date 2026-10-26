@@ -4,6 +4,7 @@ import { useChatStore } from '../stores/chatStore';
 import { useSessionStore } from '../stores/sessionStore';
 import { openSingleAgentPanel } from './singleAgentPanelState';
 import { openTeamPanel } from './teamPanelState';
+import { isDesktopBrowserHeadless } from './desktopBrowserDisplay';
 
 const DESKTOP_BROWSER_TAB_EVENT = 'jiuwenclaw-desktop-browser-tab-change';
 const DESKTOP_BROWSER_TAB_FLAGS_KEY = 'jiuwenclaw_desktop_browser_tab_flags';
@@ -90,6 +91,7 @@ export interface DesktopBrowserOpenableFile {
  */
 export function openFileInDesktopBrowser(file: DesktopBrowserOpenableFile): boolean {
   if (!window.jiuwenDesktop) return false;
+  if (isDesktopBrowserHeadless()) return false;
   if (!isDesktopBrowserPreviewableFile(file.name)) return false;
   const url = buildInlineFileUrl(file.download_url);
   if (!url) return false;

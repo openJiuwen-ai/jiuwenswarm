@@ -11,6 +11,7 @@ import { seedDesignerChatHistory } from '../designerEntry';
 import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
 import { isDesignerModerationError } from '../designerRunView';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+import { DESIGNER_UPLOAD_TOO_LARGE } from '../designerNodeUpload';
 import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
@@ -325,7 +326,11 @@ export function DesignerPage({
             data-testid="designer-run-error-toast"
           >
             <div className="designer-error-toast" role="alert" data-testid="designer-error" title={runError}>
-              {isDesignerModerationError(runError) ? t('designer.run.moderationBlocked') : runError}
+              {runError === DESIGNER_UPLOAD_TOO_LARGE
+                ? t('designer.dock.uploadTooLarge')
+                : isDesignerModerationError(runError)
+                  ? t('designer.run.moderationBlocked')
+                  : runError}
             </div>
           </div>
         ) : null}

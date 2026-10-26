@@ -30,7 +30,24 @@ cd packages/jetbrains-plugin
 ./gradlew buildPlugin   # → build/distributions/*.zip
 ```
 
-Requires JDK 17 and Gradle 8.7.
+Requires JDK 21 and Gradle 9.6.
+
+### JetBrains platform selection
+
+By default the build uses the reproducible platform coordinate
+`intellijIdea("2026.1")`. Developers can build against a locally installed IDE by
+passing a Gradle property or environment variable; do **not** commit a
+machine-specific path:
+
+```bash
+./gradlew buildPlugin -PjetbrainsIdePath="/Applications/WebStorm.app/Contents"
+# or
+export JETBRAINS_IDE_PATH="/opt/idea"
+./gradlew buildPlugin
+```
+
+The packaged plugin declares `sinceBuild = 253` (2025.3) with an open upper bound,
+so it installs on 2025.3 and newer while being compiled against the 2026.1 platform.
 
 ## One-time Account Setup
 
@@ -201,7 +218,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
 
       - name: Build and publish
         working-directory: packages/jetbrains-plugin

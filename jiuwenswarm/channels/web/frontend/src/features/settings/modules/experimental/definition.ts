@@ -8,7 +8,7 @@ import {
   TrajectoryDiagnosisSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
-import { MultiModelVerificationSettings } from './MultiModelCollaborationSettings';
+import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
@@ -119,7 +119,10 @@ export const experimentalModule: SettingsModuleDefinition = {
           subItems: {
             show: 'when-parent-checked',
             disabled: 'never',
-            items: [{ id: 'multi-model-verification', component: 'custom', render: MultiModelVerificationSettings }],
+            items: [
+              { id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled' },
+              { id: 'multi-model-verification', component: 'custom', render: CollaborationVerifierInterval },
+            ],
           },
         },
       ],

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from typing import Any, Optional
 
 from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
@@ -115,9 +116,17 @@ def is_cua_delegation_approval_message(message: str) -> bool:
 class CuaDelegationApprovalRail(ConfirmInterruptRail):
     """Confirm ``task_tool`` calls that delegate to cua_agent; pass all others."""
 
-    def __init__(self, language: str = "cn") -> None:
+    def __init__(self, language: str | Callable[[], str] = "cn") -> None:
         super().__init__(tool_names=["task_tool"])
-        self._language = "en" if language == "en" else "cn"
+        # A callable is read each time a card is raised: the rail outlives the
+        # request it was built for, and the user may switch language meanwhile.
+        self._language_source = language
+
+    @property
+    def _language(self) -> str:
+        source = self._language_source
+        language = source() if callable(source) else source
+        return "en" if language == "en" else "cn"
 
     def _get_auto_confirm_key(self, tool_call: ToolCall) -> str:
         return CUA_DELEGATION_AUTO_CONFIRM_KEY
@@ -138,12 +147,13 @@ class CuaDelegationApprovalRail(ConfirmInterruptRail):
                 return self.approve()
             if self._is_auto_confirmed(auto_confirm_config, CUA_DELEGATION_AUTO_CONFIRM_KEY):
                 return self.approve()
+            language = self._language
             return self.interrupt(
                 InterruptRequest(
-                    message=self._build_message(tool_args.get("task_description")),
+                    message=self._build_message(tool_args.get("task_description"), language),
                     payload_schema=self.request.payload_schema,
                     auto_confirm_key=CUA_DELEGATION_AUTO_CONFIRM_KEY,
-                    ui_options=_OPTIONS_EN if self._language == "en" else _OPTIONS_CN,
+                    ui_options=_OPTIONS_EN if language == "en" else _OPTIONS_CN,
                 )
             )
         if _wants_always_allow(user_input):
@@ -151,16 +161,17 @@ class CuaDelegationApprovalRail(ConfirmInterruptRail):
             _persist_always_allow()
         return await super().resolve_interrupt(ctx, tool_call, user_input, auto_confirm_config)
 
-    def _build_message(self, task_description: Any) -> str:
+    @staticmethod
+    def _build_message(task_description: Any, language: str) -> str:
         task = str(task_description or "").strip()
         if len(task) > _MAX_TASK_PREVIEW_CHARS:
             task = task[:_MAX_TASK_PREVIEW_CHARS] + "\n… (truncated)"
-        labels = _ACTION_LABELS[self._language]
-        separator = ", " if self._language == "en" else "、"
+        labels = _ACTION_LABELS[language]
+        separator = ", " if language == "en" else "、"
         actions = separator.join(f"{labels.get(tool, tool)} ({tool})" for tool in GATED_CUA_TOOLS)
         if not actions:
-            actions = "mouse and keyboard input" if self._language == "en" else "鼠标键盘操作"
-        template = _MESSAGE_EN if self._language == "en" else _MESSAGE_CN
+            actions = "mouse and keyboard input" if language == "en" else "鼠标键盘操作"
+        template = _MESSAGE_EN if language == "en" else _MESSAGE_CN
         return template.format(actions=actions, task=task)
 
 

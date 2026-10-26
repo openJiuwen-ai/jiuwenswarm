@@ -125,5 +125,27 @@
     },
     "server_accepts": false,
     "client_accepts": true
+  },
+  {
+    "id": "create-with-title",
+    "name": "jiuwen_delegate",
+    "arguments": {
+      "task": "请查香港天气并说明是否带伞",
+      "title": "查询香港天气与出行建议"
+    },
+    "server_accepts": true,
+    "client_accepts": true
+  },
+  {
+    "id": "modify-with-title",
+    "name": "jiuwen_task_modify",
+    "arguments": {
+      "job_id": "task-a",
+      "revision": 1,
+      "instruction": "改成英文",
+      "title": "用英文介绍香港天气"
+    },
+    "server_accepts": true,
+    "client_accepts": true
   }
 ]

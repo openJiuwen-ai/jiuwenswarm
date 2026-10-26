@@ -78,11 +78,12 @@ await build({
             'export const useSettingsServices = () => globalThis.collaborationFixture.services;',
           './ExperimentalSettings': [
             'A2UISetting',
-            'ExternalCliSettingsItem',
+            'ExternalCliCustomAgentsItem',
             'ProactiveLimitsSetting',
             'RSISetting',
             'TaskAsrSetting',
             'TaskFullDuplexSetting',
+            'TrajectoryDiagnosisSetting',
             'TrajectoryUiSetting',
           ]
             .map((name) => `export const ${name} = () => null;`)
@@ -109,9 +110,6 @@ const {
   ConfigFixture,
   SettingsSaveQueue,
   SettingsUnsavedChangesRegistry,
-  createCollaborationJevDraft,
-  buildCollaborationJevUpdates,
-  validateCollaborationJevDraft,
   parseCollaborationVerifierInterval,
   isMultiModelCollaborationEnabled,
   setMultiModelCollaborationEnabled,
@@ -163,13 +161,6 @@ async function mount(options, run) {
         if (options.rejectSave) throw new Error('save failed');
         if (options.save) await options.save(params.config);
         config = { ...config, ...params.config };
-        if (params.config.moa_jev_api_key) config.moa_jev_api_key_configured = true;
-        if (params.config.moa_jev_api_key_clear === 'true') {
-          config.moa_jev_api_key_configured = false;
-          config.moa_jev_enabled = false;
-        }
-        delete config.moa_jev_api_key;
-        delete config.moa_jev_api_key_clear;
         return { saved: true };
       }
       throw new Error(`Unexpected RPC: ${method}`);
@@ -236,9 +227,7 @@ async function mount(options, run) {
 const enabled = { multi_model_collaboration_enabled: 'true' };
 const configured = {
   ...enabled,
-  moa_jev_api_key_configured: true,
-  moa_jev_api_base: 'https://verify.example/model',
-  moa_jev_model_name: 'jev-custom',
+  jev_typesafe_api_key: 'shared-synthetic-key',
 };
 
 test('feature flag defaults off and accepts backend booleans', () => {
@@ -250,9 +239,9 @@ test('feature flag defaults off and accepts backend booleans', () => {
   assert.equal(isMultiModelCollaborationEnabled(), false);
 });
 
-test('collaboration is the last experimental section and other sections retain their order', () => {
+test('collaboration and other experimental sections retain their order', () => {
   assert.deepEqual(experimentalSectionIds, [
-    'external-cli-agents',
+    'external-cli-custom-agents',
     'rsi',
     'a2ui',
     'a4p',
@@ -263,6 +252,7 @@ test('collaboration is the last experimental section and other sections retain t
     'team-scheduled-dispatch',
     'proactive-recommendation',
     'multi-model-collaboration',
+    'tool-optimize',
   ]);
 });
 
@@ -275,10 +265,11 @@ test('registered main switch controls child visibility and preserves child confi
       assert.equal(get('settings-collaboration-interval-input').value, '7');
       await click('settings-switch', 'multi-model-collaboration-enabled');
       assert.deepEqual(saves, [{ multi_model_collaboration_enabled: 'false' }]);
-      assert.equal(get('settings-collaboration-jev-switch'), null);
+      assert.equal(get('settings-collaboration-interval-input'), null);
+      assert.equal(get('settings-switch', 'collaboration-jev-enabled'), null);
       assert.equal(isMultiModelCollaborationEnabled(), false);
       await click('settings-switch', 'multi-model-collaboration-enabled');
-      assert.equal(get('settings-collaboration-jev-switch').getAttribute('aria-checked'), 'true');
+      assert.equal(get('settings-switch', 'collaboration-jev-enabled').getAttribute('aria-checked'), 'true');
       assert.equal(get('settings-collaboration-interval-input').value, '7');
     },
   );
@@ -287,138 +278,30 @@ test('registered main switch controls child visibility and preserves child confi
 test('empty config defaults to disabled main and expands default verifier values after enabling', async () => {
   await mount({}, async ({ get, main, click, saves }) => {
     assert.equal(main().getAttribute('aria-checked'), 'false');
-    assert.equal(get('settings-collaboration-jev-switch'), null);
+    assert.equal(get('settings-collaboration-interval-input'), null);
+    assert.equal(get('settings-collaboration-jev-configure-btn'), null);
     await click('settings-switch', 'multi-model-collaboration-enabled');
     assert.deepEqual(saves, [{ multi_model_collaboration_enabled: 'true' }]);
-    assert.equal(get('settings-collaboration-jev-switch').getAttribute('aria-checked'), 'false');
+    assert.equal(get('settings-switch', 'collaboration-jev-enabled').getAttribute('aria-checked'), 'false');
     assert.equal(get('settings-collaboration-interval-input').value, '3');
   });
 });
 
-test('JEV enabling without a key opens config, and cancel leaves it disabled', async () => {
-  await mount({ config: enabled }, async ({ get, click, saves }) => {
-    await click('settings-collaboration-jev-switch');
-    assert.ok(get('settings-collaboration-jev-dialog'));
-    assert.equal(get('settings-collaboration-jev-switch').getAttribute('aria-checked'), 'false');
-    assert.equal(get('settings-collaboration-jev-form-field-input', 'apiBase').value, 'https://api.typesafe.ai');
-    assert.equal(get('settings-collaboration-jev-form-field-input', 'modelName'), null);
-    await click('settings-collaboration-jev-dialog-cancel-btn');
+test('JEV switch rejects a missing key without opening or saving model configuration', async () => {
+  await mount({ config: enabled, save: () => { throw new Error('JEV api_key is required'); } }, async ({ get, click, saves }) => {
+    await click('settings-switch', 'collaboration-jev-enabled');
+    assert.equal(get('settings-switch', 'collaboration-jev-enabled').getAttribute('aria-checked'), 'false');
     assert.equal(get('settings-collaboration-jev-dialog'), null);
-    assert.deepEqual(saves, []);
+    assert.deepEqual(saves, [{ moa_jev_enabled: 'true' }]);
   });
-});
-
-test('new JEV connection and enable are saved atomically, only then enabling verification', async () => {
-  let resolve;
-  await mount(
-    {
-      config: enabled,
-      save: () =>
-        new Promise((done) => {
-          resolve = done;
-        }),
-    },
-    async ({ get, click, input, saves, unsavedChanges }) => {
-      await click('settings-collaboration-jev-switch');
-      await input('settings-collaboration-jev-form-field-input', 'test-key', 'apiKey');
-      assert.equal(unsavedChanges.hasChanges(), true);
-      await click('settings-collaboration-jev-dialog-save-btn');
-      assert.deepEqual(saves, [
-        {
-          moa_jev_api_base: 'https://api.typesafe.ai',
-          moa_jev_model_name: 'jev-latest',
-          moa_jev_api_key: 'test-key',
-          moa_jev_enabled: 'true',
-        },
-      ]);
-      assert.equal(get('settings-collaboration-jev-switch').getAttribute('aria-checked'), 'false');
-      assert.equal(get('settings-collaboration-jev-form-field-input', 'apiKey').disabled, true);
-      await click('settings-collaboration-jev-dialog-save-btn');
-      assert.equal(saves.length, 1);
-      await act(async () => resolve());
-      assert.equal(get('settings-collaboration-jev-dialog'), null);
-      assert.equal(get('settings-collaboration-jev-switch').getAttribute('aria-checked'), 'true');
-      assert.equal(unsavedChanges.hasChanges(), false);
-      await click('settings-collaboration-jev-configure-btn');
-      assert.equal(get('settings-collaboration-jev-form-field-input', 'apiKey').value, '');
-    },
-  );
-});
-
-test('JEV key is write-only and editing the address retains the saved key and hidden model', async () => {
-  await mount(
-    { config: { ...configured, moa_jev_api_key: 'must-not-hydrate' } },
-    async ({ get, click, input, saves }) => {
-      await click('settings-collaboration-jev-configure-btn');
-      assert.equal(get('settings-collaboration-jev-form-field-input', 'apiKey').value, '');
-      assert.ok(!document.body.textContent.includes('must-not-hydrate'));
-      assert.equal(get('settings-collaboration-jev-form-field-input', 'modelName'), null);
-      await input('settings-collaboration-jev-form-field-input', 'https://updated.example/model', 'apiBase');
-      await click('settings-collaboration-jev-dialog-save-btn');
-      assert.deepEqual(saves, [
-        { moa_jev_api_base: 'https://updated.example/model', moa_jev_model_name: 'jev-custom' },
-      ]);
-      assert.equal(get('settings-collaboration-jev-switch').getAttribute('aria-checked'), 'false');
-      assert.ok(get('settings-collaboration-jev-clear-btn'));
-    },
-  );
 });
 
 test('configured JEV switches directly without changing connection or browser settings', async () => {
   await mount({ config: configured }, async ({ click, get, saves }) => {
-    await click('settings-collaboration-jev-switch');
+    await click('settings-switch', 'collaboration-jev-enabled');
     assert.equal(get('settings-collaboration-jev-dialog'), null);
-    await click('settings-collaboration-jev-switch');
+    await click('settings-switch', 'collaboration-jev-enabled');
     assert.deepEqual(saves, [{ moa_jev_enabled: 'true' }, { moa_jev_enabled: 'false' }]);
-  });
-});
-
-test('clearing JEV key disables JEV in the same save while retaining the model verifier interval', async () => {
-  await mount(
-    { config: { ...configured, moa_jev_enabled: true, moa_verifier_interval: '5' } },
-    async ({ get, click, saves, modalButton }) => {
-      await click('settings-collaboration-jev-clear-btn');
-      await modalButton('settingsPanel.common.clear');
-      assert.deepEqual(saves, [{ moa_jev_api_key_clear: 'true', moa_jev_enabled: 'false' }]);
-      assert.equal(get('settings-collaboration-jev-clear-btn'), null);
-      assert.equal(get('settings-collaboration-jev-switch').getAttribute('aria-checked'), 'false');
-      assert.equal(get('settings-collaboration-interval-input').value, '5');
-    },
-  );
-});
-
-test('JEV validates key and URL credentials before making a request', async () => {
-  await mount({ config: enabled }, async ({ click, input, get, saves }) => {
-    await click('settings-collaboration-jev-switch');
-    await input('settings-collaboration-jev-form-field-input', 'https://user:password@verify.example', 'apiBase');
-    await click('settings-collaboration-jev-dialog-save-btn');
-    assert.equal(document.querySelectorAll('.form-item__error').length, 2);
-    assert.deepEqual(saves, []);
-    assert.equal(get('settings-collaboration-jev-switch').getAttribute('aria-checked'), 'false');
-  });
-});
-
-test('failed JEV save retains draft, stays off, and reports the failure', async () => {
-  await mount({ config: enabled, rejectSave: true }, async ({ click, input, get }) => {
-    await click('settings-collaboration-jev-switch');
-    await input('settings-collaboration-jev-form-field-input', 'pending-test-key', 'apiKey');
-    await click('settings-collaboration-jev-dialog-save-btn');
-    assert.equal(get('settings-collaboration-jev-dialog-error').textContent, 'save failed');
-    assert.equal(get('settings-collaboration-jev-form-field-input', 'apiKey').value, 'pending-test-key');
-    assert.equal(get('settings-collaboration-jev-switch').getAttribute('aria-checked'), 'false');
-  });
-});
-
-test('dirty JEV cancel uses the shared discard confirmation and removes unsaved draft', async () => {
-  await mount({ config: enabled }, async ({ click, input, get, modalButton, saves, unsavedChanges }) => {
-    await click('settings-collaboration-jev-switch');
-    await input('settings-collaboration-jev-form-field-input', 'discard-key', 'apiKey');
-    await click('settings-collaboration-jev-dialog-cancel-btn');
-    assert.equal(document.querySelectorAll('dialog[open]').length, 2);
-    await modalButton('common.confirm');
-    assert.equal(get('settings-collaboration-jev-dialog'), null);
-    assert.equal(unsavedChanges.hasChanges(), false);
-    assert.deepEqual(saves, []);
   });
 });
 
@@ -456,13 +339,13 @@ test('disconnect and read-only settings disable changes', async () => {
     globalThis.collaborationFixture.disabled = true;
     await render();
     assert.equal(main().disabled, true);
-    assert.equal(get('settings-collaboration-jev-switch').disabled, true);
+    assert.equal(get('settings-switch', 'collaboration-jev-enabled').disabled, true);
     assert.equal(get('settings-collaboration-interval-modify-btn').disabled, true);
     globalThis.collaborationFixture.disabled = false;
     services.isConnected = false;
     await render();
     assert.equal(main().disabled, true);
-    assert.equal(get('settings-collaboration-jev-configure-btn').disabled, true);
+    assert.equal(get('settings-switch', 'collaboration-jev-enabled').disabled, true);
     assert.deepEqual(saves, []);
   });
 });
@@ -483,34 +366,10 @@ test('reconnect reloads confirmed feature flag and child config', async () => {
       assert.equal(loadCount, 2);
       assert.equal(main().getAttribute('aria-checked'), 'false');
       assert.equal(isMultiModelCollaborationEnabled(), false);
-      assert.equal(get('settings-collaboration-jev-switch'), null);
+      assert.equal(get('settings-collaboration-interval-input'), null);
+      assert.equal(get('settings-collaboration-jev-configure-btn'), null);
     },
   );
-});
-
-test('JEV helper emits no legacy model-group/aggregator/verifier selection or blank credential', () => {
-  const draft = createCollaborationJevDraft({ moa_jev_api_key: 'secret' });
-  assert.equal(draft.apiKey, '');
-  assert.deepEqual(buildCollaborationJevUpdates(draft, false), {
-    moa_jev_api_base: 'https://api.typesafe.ai',
-    moa_jev_model_name: 'jev-latest',
-  });
-  assert.deepEqual(validateCollaborationJevDraft(draft, true), {});
-  for (const raw of ['1', '3', ' 7 ']) assert.equal(parseCollaborationVerifierInterval(raw), Number(raw));
-});
-
-test('hidden JEV model uses the default for missing or blank values and preserves existing models', () => {
-  for (const modelName of [undefined, null, '', '   ']) {
-    const draft = createCollaborationJevDraft({ moa_jev_model_name: modelName });
-    assert.equal(draft.modelName, 'jev-latest');
-    assert.equal(buildCollaborationJevUpdates(draft, false).moa_jev_model_name, 'jev-latest');
-  }
-  const existing = createCollaborationJevDraft({ moa_jev_model_name: '  jev-custom  ' });
-  assert.equal(existing.modelName, 'jev-custom');
-  assert.equal(buildCollaborationJevUpdates(existing, false).moa_jev_model_name, 'jev-custom');
-  const blankDraft = { ...existing, modelName: '  ' };
-  assert.deepEqual(validateCollaborationJevDraft(blankDraft, true), {});
-  assert.equal(buildCollaborationJevUpdates(blankDraft, false).moa_jev_model_name, 'jev-latest');
 });
 
 test('independent MoA page and navigation entry are removed', () => {
@@ -571,7 +430,7 @@ test('reconnect response cannot overwrite a completed feature save, but a new re
   );
 });
 
-test('write-only JEV key and one-shot clear do not enter config snapshots and confirmed save survives stale reload', async () => {
+test('shared JEV key save and clear survive stale config reloads', async () => {
   let resolveSave;
   let resolveReload;
   let loads = 0;
@@ -585,8 +444,7 @@ test('write-only JEV key and one-shot clear do not enter config snapshots and co
             resolveReload = resolve;
           });
         return {
-          moa_jev_api_key: 'malformed-response-secret',
-          moa_jev_api_key_configured: false,
+          jev_typesafe_api_key: '',
           moa_jev_enabled: false,
         };
       },
@@ -596,11 +454,11 @@ test('write-only JEV key and one-shot clear do not enter config snapshots and co
         }),
     },
     async ({ services, render }) => {
-      assert.equal('moa_jev_api_key' in globalThis.collaborationFixture.controller.config, false);
+      assert.equal(globalThis.collaborationFixture.controller.config.jev_typesafe_api_key, '');
       let saving;
       await act(async () => {
         saving = globalThis.collaborationFixture.controller.save(
-          { moa_jev_api_key: 'new-test-key', moa_jev_enabled: 'true' },
+          { jev_typesafe_api_key: 'new-test-key', moa_jev_enabled: 'true' },
           'jev-key',
         );
       });
@@ -612,28 +470,30 @@ test('write-only JEV key and one-shot clear do not enter config snapshots and co
         resolveSave();
         await saving;
       });
-      await act(async () => resolveReload({ moa_jev_api_key_configured: false, moa_jev_enabled: false }));
+      await act(async () => resolveReload({ jev_typesafe_api_key: '', moa_jev_enabled: false }));
       const config = globalThis.collaborationFixture.controller.config;
-      assert.equal(config.moa_jev_api_key_configured, 'true');
+      assert.equal(config.jev_typesafe_api_key, 'new-test-key');
       assert.equal(config.moa_jev_enabled, 'true');
       assert.equal('moa_jev_api_key' in config, false);
       let clearing;
       await act(async () => {
-        clearing = globalThis.collaborationFixture.controller.save({ moa_jev_api_key_clear: 'true' }, 'clear-key');
+        clearing = globalThis.collaborationFixture.controller.save(
+          { jev_typesafe_api_key: '', moa_jev_enabled: 'false' }, 'clear-key',
+        );
       });
       await act(async () => {
         resolveSave();
         await clearing;
       });
       const cleared = globalThis.collaborationFixture.controller.config;
-      assert.equal(cleared.moa_jev_api_key_configured, 'false');
+      assert.equal(cleared.jev_typesafe_api_key, '');
       assert.equal(cleared.moa_jev_enabled, 'false');
       assert.equal('moa_jev_api_key_clear' in cleared, false);
     },
   );
 });
 
-test('config notifications silently refresh saved child values and preserve an open JEV draft', async () => {
+test('config notifications refresh collaboration controls after shared config changes', async () => {
   let loads = 0;
   await mount(
     {
@@ -642,13 +502,11 @@ test('config notifications silently refresh saved child values and preserve an o
         return { ...configured, moa_verifier_interval: loads === 1 ? '3' : '7' };
       },
     },
-    async ({ click, input, get, dom }) => {
-      await click('settings-collaboration-jev-configure-btn');
-      await input('settings-collaboration-jev-form-field-input', 'https://unsaved.example', 'apiBase');
+    async ({ get, dom }) => {
       await act(async () => dom.window.dispatchEvent(new dom.window.Event('jiuwen:settings-config-changed')));
       assert.equal(loads, 2);
       assert.equal(get('settings-collaboration-interval-input').value, '7');
-      assert.equal(get('settings-collaboration-jev-form-field-input', 'apiBase').value, 'https://unsaved.example');
+      assert.equal(get('settings-collaboration-jev-configure-btn'), null);
       assert.equal(get('settings-source-loading'), null);
     },
   );
@@ -722,21 +580,5 @@ test('parent switch cannot discard an interval editor draft and unlocks after ca
     await click('settings-collaboration-interval-save-btn');
     assert.equal(main().disabled, false);
     assert.deepEqual(saves, [{ moa_verifier_interval: '5' }]);
-  });
-});
-
-test('parent switch cannot discard a JEV connection draft and unlocks after explicit discard', async () => {
-  await mount({ config: enabled }, async ({ main, get, click, input, modalButton, saves, unsavedChanges }) => {
-    await click('settings-collaboration-jev-switch');
-    await input('settings-collaboration-jev-form-field-input', 'keep-this-draft', 'apiKey');
-    assert.equal(main().disabled, true);
-    await click('settings-switch', 'multi-model-collaboration-enabled');
-    assert.equal(get('settings-collaboration-jev-form-field-input', 'apiKey').value, 'keep-this-draft');
-    assert.equal(unsavedChanges.hasChanges(), true);
-    assert.deepEqual(saves, []);
-    await click('settings-collaboration-jev-dialog-cancel-btn');
-    await modalButton('common.confirm');
-    assert.equal(main().disabled, false);
-    assert.equal(unsavedChanges.hasChanges(), false);
   });
 });

@@ -56,6 +56,18 @@ def native_approval_question(payload):
     )
 
 
+def approval_cards(interaction):
+    """Summarize a pending approval card for voice; None for voice-answerable questions."""
+    interaction = interaction or {}
+    if interaction.get("source") not in NATIVE_APPROVAL_SOURCES or interaction.get("state") != "pending":
+        return None
+    return [
+        dict(header=str(q.get("header") or "")[:200], message=str(q.get("question") or "")[:500])
+        for q in (interaction.get("questions") or [])[:3]
+        if isinstance(q, dict)
+    ]
+
+
 def validate_native_approval_answers(interaction, answers):
     native_approval_question(interaction)
     if not isinstance(answers, list) or len(answers) != len(interaction["questions"]):

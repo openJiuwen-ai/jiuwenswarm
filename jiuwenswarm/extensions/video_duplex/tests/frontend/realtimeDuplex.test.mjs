@@ -120,10 +120,85 @@ test('pending information questions are announced once without completing their 
   assert.deepEqual(dispatchedToolResults, []);
 });
 
+test('pending approval cards ask the user to click instead of answering by voice', () => {
+  // Voice must never approve cards, so it must not invite a spoken "允许" either.
+  const { session, sent } = createSession();
+  session.enqueueQuestion('cua', { id: 'card-a', request_id: 'core-approval', state: 'pending',
+    source: 'confirm_interrupt', questions: [{ header: '操作确认: cua_agent', question: '打开计算器' }] });
+  const text = sent.find(e => e.type === 'conversation.item.create').item.content[0].text;
+  assert.match(text, /操作确认: cua_agent/);
+  assert.match(text, /click/);
+  assert.match(text, /Do not call jiuwen_task_answer/);
+  assert.doesNotMatch(text, /then call jiuwen_task_answer/);
+});
+
+test('an open approval card stays in the session instructions until it closes', () => {
+  // A one-off notice is forgotten by the next turn, so a spoken "允许" was
+  // answered as consent (#8941). Every reply must see the open card.
+  const { session, sent } = createSession();
+  const card = { id: 'card-a', request_id: 'core-approval', state: 'pending',
+    source: 'confirm_interrupt', questions: [{ header: '操作确认: cua_agent', question: '打开计算器' }] };
+  session.enqueueQuestion('cua', card);
+  const updates = () => sent.filter(e => e.type === 'session.update');
+  assert.equal(updates().length, 1);
+  assert.match(updates()[0].session.instructions, /\[Pending approval cards\].*操作确认: cua_agent/);
+  assert.match(updates()[0].session.instructions, /Never say a pending card was allowed/);
+
+  session.enqueueQuestion('cua', card); // A repeated progress event must not resend.
+  assert.equal(updates().length, 1);
+
+  session.enqueueQuestion('cua', { ...card, state: 'accepted' });
+  assert.equal(updates().length, 2);
+  assert.doesNotMatch(updates()[1].session.instructions, /Pending approval cards/);
+});
+
+const openCard = (session) => session.enqueueQuestion('cua', { id: 'card-a', request_id: 'core-approval', state: 'pending',
+  source: 'confirm_interrupt', questions: [{ header: '操作确认: cua_agent', question: '打开计算器' }] });
+
+test('every reply to speech while a card is open reads the card status last', () => {
+  // The model hears audio, not the transcript ("允许" was transcribed as "人是"), and it
+  // answered a spoken "允许" with "你已经在屏幕上点击了允许" despite the instructions (#8941).
+  const { session, sent } = createSession();
+  openCard(session);
+  session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+  sent.length = 0;
+
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
+  session.handleEvent({ type: 'response.created', response: { id: 'auto' } });
+  assert.deepEqual(sent.map(e => e.type), ['response.cancel'], 'the automatic reply is cancelled');
+
+  session.handleEvent({ type: 'response.done', response: { id: 'auto', status: 'cancelled' } });
+  assert.deepEqual(sent.slice(1).map(e => e.type), ['conversation.item.create', 'response.create']);
+  const status = sent[1].item.content[0].text;
+  assert.match(status, /操作确认: cua_agent/);
+  assert.match(status, /has NOT clicked/);
+  assert.match(status, /Never say the card was allowed/);
+
+  session.handleEvent({ type: 'response.created', response: { id: 'replacement' } });
+  assert.equal(sent.filter(e => e.type === 'response.cancel').length, 1, 'the re-requested reply plays');
+});
+
+test('without an open card, and for the assistant notices, replies are left alone', () => {
+  const { session, sent } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
+  session.handleEvent({ type: 'response.created', response: { id: 'r1' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'r1', status: 'completed' } });
+  openCard(session); // its notice reply is not a user turn
+  session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
+  assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
+});
+
+test('information questions do not add approval instructions', () => {
+  const { session, sent } = createSession();
+  session.enqueueQuestion('ask', { id: 'q-a', request_id: 'ask-1', state: 'pending',
+    source: 'ask_user_interrupt', questions: [{ question: '预算多少？' }] });
+  assert.equal(sent.filter(e => e.type === 'session.update').length, 0);
+});
+
 test('delegation retains valid scheduling arguments and dispatches only once', () => {
   const errors = [];
   const { session, functionCalls } = createSession(null, { onError: (message) => errors.push(message) });
-  const args = { task: '查询杭州天气', independent: true, depends_on: [], resources: [] };
+  const args = { task: '查询杭州天气', title: '查询杭州天气与出行建议', independent: true, depends_on: [], resources: [] };
   const event = { type: 'response.function_call_arguments.done', name: 'jiuwen_delegate', call_id: 'parallel-weather', arguments: JSON.stringify(args) };
   session.handleEvent(event);
   session.handleEvent(event);
@@ -1313,4 +1388,24 @@ test('cancelling context initialization rejects the old startup and ignores late
   socket.onmessage({ data: JSON.stringify({ type: 'session.updated' }) });
   assert.equal(session.sessionReady, false);
   assert.equal(states.at(-1), 'closed');
+});
+
+
+test('completed cancellation receipt permits Core follow-up for the user requested effects', () => {
+  const { session, sent, functionCalls } = createSession();
+  session.enqueueOperationResult('stop-created', {
+    task_id: 'created', task_status: 'completed', state: 'completed', stopped: false,
+  });
+  const continuation = sent.find(event => event.type === 'response.create').response.instructions;
+  assert.match(continuation, /removing, disabling or undoing/);
+  assert.match(continuation, /jiuwen_task_modify/);
+  assert.match(continuation, /or delegate the full requested action to Core/);
+  assert.match(continuation, /Never repeat the same ineffective cancellation/);
+  session.handleEvent({ type: 'response.created', response: { id: 'continue-effects' } });
+  session.handleEvent({ type: 'response.function_call_arguments.done', name: 'jiuwen_task_modify',
+    call_id: 'remove-effect', response_id: 'continue-effects',
+    arguments: JSON.stringify({ job_id: 'created', revision: 2, instruction: 'Remove the previously created result and verify' }),
+  });
+  assert.equal(functionCalls.length, 1);
+  assert.equal(functionCalls[0].name, 'jiuwen_task_modify');
 });

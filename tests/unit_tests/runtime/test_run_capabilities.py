@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -123,3 +124,92 @@ async def test_permission_rail_rejects_run_deny_before_host_approval() -> None:
         None, SimpleNamespace(name="write_file"), None
     )
     assert result == "[PERMISSION_DENIED] run policy"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("current,fallback,expected", [
+    (None, {"get_current_goal": "deny", "locked": "allow"}, "deny"),
+    ({}, {"get_current_goal": "deny"}, "allow"),
+    ({"get_current_goal": "ask"}, {"get_current_goal": "deny"}, "ask"),
+    (None, None, "allow"),
+])
+@pytest.mark.asyncio
+async def test_auto_callback_restores_adapter_permissions(current, fallback, expected):
+    from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool import (
+        AutoPermissionBeforeToolMixin,
+    )
+
+    installed = {"tools": {"get_current_goal": "allow", "locked": "deny"}}
+
+    async def evaluate():
+        assert RUN_PERMISSIONS.get() == (fallback if current is None else current)
+        return overlay_run_permissions(installed)
+
+    rail = SimpleNamespace(base_rail=SimpleNamespace(), run_permission_levels=fallback, _before_tool_call_impl=evaluate)
+    token = RUN_PERMISSIONS.set(current)
+    try:
+        effective = await AutoPermissionBeforeToolMixin.before_tool_call(rail)
+        assert effective["tools"] == {"get_current_goal": expected, "locked": "deny"}
+        assert installed["tools"] == {"get_current_goal": "allow", "locked": "deny"}
+        assert RUN_PERMISSIONS.get() is current
+        assert rail.run_permission_levels is fallback
+    finally:
+        RUN_PERMISSIONS.reset(token)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
+@pytest.mark.asyncio
+async def test_auto_callback_cleans_request_permissions_on_failure(error):
+    from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool import (
+        AutoPermissionBeforeToolMixin,
+    )
+
+    async def fail():
+        assert RUN_PERMISSIONS.get() == {"get_current_goal": "deny"}
+        raise error()
+
+    rail = SimpleNamespace(base_rail=SimpleNamespace(), run_permission_levels={"get_current_goal": "deny"}, _before_tool_call_impl=fail)
+    token = RUN_PERMISSIONS.set(None)
+    try:
+        with pytest.raises(error):
+            await AutoPermissionBeforeToolMixin.before_tool_call(rail)
+        assert RUN_PERMISSIONS.get() is None
+    finally:
+        RUN_PERMISSIONS.reset(token)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_auto_callback_keeps_existing_workers_and_next_requests_isolated():
+    from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool import (
+        AutoPermissionBeforeToolMixin,
+    )
+
+    release = asyncio.Event()
+
+    async def evaluate():
+        await release.wait()
+        return overlay_run_permissions({"tools": {"get_current_goal": "ask"}})["tools"]["get_current_goal"]
+
+    rails = [SimpleNamespace(base_rail=SimpleNamespace(), run_permission_levels={"get_current_goal": level}, _before_tool_call_impl=evaluate)
+             for level in ("deny", "allow")]
+    parent = RUN_PERMISSIONS.set(None)
+    tasks = [asyncio.create_task(AutoPermissionBeforeToolMixin.before_tool_call(rail)) for rail in rails]
+    token = RUN_PERMISSIONS.set({"get_current_goal": "ask"})
+    try:
+        release.set()
+        assert await asyncio.gather(*tasks) == ["deny", "allow"]
+        assert RUN_PERMISSIONS.get() == {"get_current_goal": "ask"}
+        rails[0].run_permission_levels = None
+        RUN_PERMISSIONS.reset(token)
+        token = RUN_PERMISSIONS.set(None)
+        assert await AutoPermissionBeforeToolMixin.before_tool_call(rails[0]) == "ask"
+        assert RUN_PERMISSIONS.get() is None
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        RUN_PERMISSIONS.reset(token)
+        RUN_PERMISSIONS.reset(parent)

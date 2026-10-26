@@ -144,7 +144,7 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
 
   return (
     <div
-      className={clsx('flex h-full min-h-0 flex-col overflow-hidden bg-card', className)}
+      className={clsx('flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-card', className)}
       data-testid="team-area-org-info-panel"
     >
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-3">

@@ -201,6 +201,7 @@
       "assetsHint": "打开当前画布素材列表。",
       "upload": "上传",
       "uploadHint": "上传图片、视频或音频文件，作为新节点添加到画布。",
+      "uploadTooLarge": "文件过大：视频不能超过 1GB，图片和音频不能超过 32MB。",
       "comfyuiHint": "导入 ComfyUI 工作流（.json）。仅添加 vLLM-Omni 的 Generate Image / Generate Video 节点。",
       "group": {
         "image": "图片",
@@ -503,6 +504,7 @@
       "customModels": "自定义模型",
       "tabsLabel": "模型设置分类",
       "modelsTab": "模型",
+      "jevTab": "Jev",
       "modelGroups": "模型组",
       "modelGroupsManagement": "模型组管理",
       "empty": "尚未配置模型",
@@ -565,8 +567,8 @@
       "deleteConfirm": "确定删除“{{alias}}”（{{model}}）吗？",
       "deleteConfirmTitle": "删除模型",
       "loadFailed": "模型列表获取失败，请重试。",
-      "customName": "自定义名称",
-      "customNamePlaceholder": "请输入唯一的自定义名称",
+      "customName": "模型展示名称",
+      "customNamePlaceholder": "请输入唯一的模型展示名称",
       "protocol": "协议",
       "vendor": "模型提供商",
       "model": "模型",
@@ -591,6 +593,7 @@
       "noPresetModelsNoEndpoint": "该提供商未提供模型列表接口",
       "fetchModelsLoading": "获取中...",
       "fetchModelsRemote": "已从提供商获取 {{count}} 个模型",
+      "fetchGenerationModelsRemote": "已获取 {{count}} 个生成模型；列表不代表当前账号已开通",
       "fetchModelsFailed": "模型列表拉取失败",
       "fetchModelsFailedUsingPreset": "模型列表拉取失败：{{error}}。当前展示提供商预设模型",
       "fetchModelsInvalidResponse": "提供商模型列表响应格式不正确",
@@ -673,8 +676,10 @@
         "reasoningUnsupported": "当前推理选项“{{value}}”不受支持，请重新选择或使用默认值",
         "reasoningUnavailable": "推理选项尚未加载，请重试后保存",
         "contextWindowInvalid": "请输入有效的正整数上下文窗口，例如 256K、1M 或 1310720",
-        "aliasConflict": "自定义名称必须全局唯一，且不能与其他模型 ID 相同",
-        "modelNameConflict": "模型 ID 不能与其他配置的自定义名称相同"
+        "aliasRequired": "模型展示名称为必填项",
+        "aliasConflict": "模型展示名称必须全局唯一，不能与其他模型的展示名称重复",
+        "modelNameConflict": "模型 ID 不能与其他配置的模型展示名称相同",
+        "modelGroupNameConflict": "模型组名称必须全局唯一，不能与其他模型组名称重复"
       },
       "testConnection": "测试连接",
       "test": "测试"
@@ -699,7 +704,8 @@
       "saveAndEnable": "保存并启用",
       "savedRestartRequired": "配置已保存，重启后生效。",
       "regionalBaseHint": "密钥分区域：国际版密钥用 https://api.minimax.io/v1，国内版密钥用 https://api.minimaxi.com/v1。地址与密钥的区域不一致时，会自动尝试另一个区域。",
-      "regionalBaseHintModelark": "密钥和模型开通都分区域：国际版（BytePlus ModelArk）用 https://ark.ap-southeast.bytepluses.com/api/v3，国内版（火山引擎）用 https://ark.cn-beijing.volces.com/api/v3。模型需要先在 Ark 控制台开通，否则会提示 ModelNotOpen。",
+      "regionalBaseHintModelark": "密钥和模型开通都分区域：国际版（BytePlus ModelArk）用 https://ark.ap-southeast.bytepluses.com/api/v3，国内版（火山引擎）用 https://ark.cn-beijing.volces.com/api/v3。模型查询和生成使用所填区域，不自动切换区域。模型需在对应控制台开通。",
+      "arkGenerationBaseInvalid": "请填写火山方舟或 BytePlus 的官方区域 /api/v3 地址；生图和视频生成不支持 Coding Plan 地址。",
       "regionalBaseHintDashscope": "生成走百炼原生接口 /api/v1（不是对话用的 compatible-mode）。密钥分区域：国内版用 https://dashscope.aliyuncs.com/api/v1，国际版用 https://dashscope-intl.aliyuncs.com/api/v1。地址与密钥的区域不一致时，会自动尝试另一个区域。",
       "selfHostedBaseHintVllmOmni": "填写自部署 vLLM-Omni 服务的地址（如 http://127.0.0.1:8091/v1）。服务未开启鉴权时 API key 可留空；模型名留空时使用服务实际加载的模型。",
       "servedModel": "服务当前加载的模型",
@@ -726,6 +732,8 @@
       "providerTypesafe": "TypeSafe",
       "providerCustom": "自定义",
       "jevConfig": "Jev 模型配置",
+      "jevKeyMissing": "尚未配置 Jev 密钥，请先在「模型 > Jev」配置。",
+      "clearSharedJevConfirm": "清除当前提供商的 Jev 密钥？浏览器将切回仅 LLM，多模型协同将关闭 JEV 决策。",
       "jevBaseInvalid": "请填写 HTTPS API 基础地址，不含账号、查询参数或片段",
       "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
@@ -804,7 +812,7 @@
       },
       "decision_mode": {
         "title": "浏览器决策",
-        "description": "选择由谁决定每一步浏览器操作。Jev 模式需要先在下方配置 Jev API 密钥。"
+        "description": "选择由谁决定每一步浏览器操作。Jev 模式使用「模型 > Jev」中的共享配置。"
       },
       "decision_provider": {
         "title": "Jev 服务提供方",
@@ -984,7 +992,7 @@
       },
       "moa_jev_enabled": {
         "title": "JEV 决策",
-        "description": "使用 JEV 验证执行进度；关闭时使用模型组的组内默认模型。"
+        "description": "使用「模型 > Jev」中配置的 JEV 验证执行进度；关闭时使用模型组的组内默认模型。"
       },
       "moa_verifier_interval": {
         "title": "验证间隔（轮）",
@@ -1639,7 +1647,11 @@
     "agentGroupRemove": "移除专家团",
     "agentGroupSkillsLocked": "已选择专家团，不能额外添加专家团技能",
     "teamSkillsGroupLocked": "已选择团队技能，不能额外选择专家团",
+    "agentGroupRuntimeDisabled": "该专家团包含三方专家，{{agents}} 尚未启用。请在设置的「智能体 → 三方 Agent」中打开对应开关，再重新选择专家团。",
+    "agentGroupRuntimeDisabledTitle": "请先启用三方 Agent",
+    "agentGroupRuntimeDisabledConfirm": "知道了",
     "agentGroupBinding": "当前对话已绑定专家团，暂不可更换",
+    "agentGroupNoDescription": "该专家团暂无描述",
     "agentGroupFirstBuildOnly": "专家团只能在首次创建 Team 时选择",
     "agentOnlyInSingleAgentMode": "专家仅支持在单 Agent 模式下选择",
     "externalAgentRequiresNewSession": "三方专家需在新会话中使用，请新建会话后再选择",
@@ -2114,7 +2126,7 @@
       "apiBaseUrlInvalid": "API Base URL 必须以 http:// 或 https:// 开头",
       "modelNameRequired": "模型名称为必填项，请先选择模型后再保存",
       "modelNameTooLong": "模型名称过长，请控制在 100 字符以内",
-      "aliasTooLong": "别名过长，请控制在 100 字符以内",
+      "aliasTooLong": "模型展示名称过长，请控制在 100 字符以内",
       "apiBaseTooLong": "API Base URL 过长，请控制在 512 字符以内"
     },
     "booleanLabels": {
@@ -3603,6 +3615,7 @@
       "connectionUnavailable": "依赖的连接器尚未连接，请先连接后再使用",
       "connectorUnavailableNamed": "该专家依赖的连接器「{{connector}}」尚未连接，请先完成连接后再重试安装。",
       "uploadSuccess": "专家包 {{id}} 已导入，请在我的专家中查看",
+      "uploadImportedInstallFailed": "专家包 {{id}} 已导入，但安装失败，请在我的专家中重试安装",
       "uploadError": "上传并导入专家失败，请检查文件后重试",
       "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
       "uploadMissingReadme": "专家包缺少 README.md 文件",
@@ -3767,6 +3780,7 @@
         "packageValidationError": "专家团包校验失败：{{reason}}",
         "createSuccess": "专家团「{{name}}」已创建。",
         "uploadSuccess": "专家团包 {{id}} 已导入，请在我的专家团中查看。",
+        "uploadImportedInstallFailed": "专家团包 {{id}} 已导入，但安装失败，请在我的专家团中重试安装。",
         "uploadError": "专家团包导入失败，请检查文件后重试。",
         "catalogEmpty": "暂无可展示的专家团",
         "mineEmpty": "还没有我的专家团",
@@ -4370,7 +4384,9 @@
         "archiveFailed": "归档操作失败，请稍后重试",
         "projectNameConflict": "已有同名项目占用了该名称，无法恢复项目。请先重命名同名项目。",
         "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。",
-        "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。"
+        "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。",
+        "archiveSessionFinalizing": "会话正在收尾，请稍后重试归档。",
+        "removeSessionFinalizing": "会话正在收尾，请稍后重试移除。"
       },
       "cancel": "取消",
       "confirm": "确定"

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.gateway.cron.controller import CronController
+from jiuwenswarm.gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.gateway.embedded.runtime.session.project_store import CronProjectBinding
 
 
@@ -318,6 +319,33 @@ async def test_create_job_rejects_unresolved_project_in_single_user(monkeypatch)
                 "project_id": "proj_missing",
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_create_job_without_marker_allows_default_project_and_no_fields() -> None:
+    """无项目字段的请求（系统路径，如 proactive 自动注册）与默认项目 ID 不需要 marker。"""
+    cc = _make_controller()
+    job = await cc.create_job(
+        {
+            "name": "system-path",
+            "cron_expr": "0 9 * * *",
+            "targets": "web",
+            "mode": "proactive.tick",
+            "id": PROACTIVE_JOB_ID,
+        }
+    )
+    assert job["project_id"] == ""
+    assert job["work_mode"] == "work"
+
+    job_default = await cc.create_job(
+        {
+            "name": "default-bound",
+            "cron_expr": "0 9 * * *",
+            "targets": "web",
+            "project_id": "default_code",
+        }
+    )
+    assert job_default["project_id"] == "default_code"
 
 
 @pytest.mark.asyncio

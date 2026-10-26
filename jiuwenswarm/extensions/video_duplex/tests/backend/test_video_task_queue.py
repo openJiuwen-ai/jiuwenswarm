@@ -361,7 +361,14 @@ async def test_remote_task_controls_preserve_connection_user_scope(queue, operat
             "queue_version": q.manager.snapshot(owner or "", "scope").get("queue_version"),
         }, None)
 
-    assert q.responses[-1].get("ok") is False
+    if operation == "answer":
+        assert q.responses[-1].get("ok") is True
+        rejection = q.responses[-1]["payload"]["tool_result"]
+        assert rejection["code"] == "TASK_NOT_FOUND"
+        assert rejection["applied"] is False
+        assert "jobs" not in rejection and "result" not in rejection
+    else:
+        assert q.responses[-1].get("ok") is False
     assert record() == before
     assert q.executed == ["A"] and not q.cancels
     assert q.execution_users == [owner]
@@ -423,7 +430,8 @@ async def test_answer_forwards_task_user_without_local_prefix_special_case(owner
 
     executor = AgentTaskExecutor(SimpleNamespace(send_request=send_request), None, None)
     await executor.answer({
-        "owner": owner, "core_session_id": "execution-a",
+        "id": "task-a", "request_id": "execution-request-a", "resume_answer": True,
+        "owner": owner, "core_session_id": "execution-a", "request": {},
         "interaction": {
             "operation_id": "answer-a", "request_id": "question-a", "source": "ask_user_interrupt",
             "answers": [{"question": "Budget?", "answer": "5000"}],
@@ -432,6 +440,8 @@ async def test_answer_forwards_task_user_without_local_prefix_special_case(owner
     assert len(sent) == 1
     assert sent[0].user_id == (owner or None)
     assert sent[0].session_id == "execution-a"
+    assert sent[0].params["managed_task_request"] == "execution-request-a"
+    assert sent[0].params["managed_task_binding"]["task_id"] == "task-a"
 
 
 async def test_cancel_completed_task_never_sends_cancel_to_following_execution(queue):
@@ -504,8 +514,9 @@ async def test_query_summary_covers_unfinished_tasks_beyond_first_page(tmp_path)
     assert missing["jobs"] == [] and missing["summary"]["all_finished"] is False
     assert "do not infer" in missing["message"]
     call.arguments = {"job_id": result["jobs"][0]["id"]}
-    with pytest.raises(ValueError, match="not found"):
-        await manager.operate("mallory", "scope", call)
+    rejected = await manager.operate("mallory", "scope", call)
+    assert rejected["code"] == "TASK_NOT_FOUND" and rejected["applied"] is False
+    assert "jobs" not in rejected and "result" not in rejected
 
 
 def test_voice_artifacts_use_file_events_not_answer_claims():
@@ -683,3 +694,43 @@ async def test_untyped_validation_errors_are_never_treated_as_conflicts(queue, m
     reject.assert_called_once()
     assert queue.record(task_id) == before
     assert queue.executed == queue.cancels == []
+
+
+@pytest.mark.parametrize("source", ["confirm_interrupt", "permission_interrupt"])
+async def test_voice_is_told_to_click_approval_cards_and_cannot_approve_them(tmp_path, source):
+    # Voice never approves cards (#7352); it must say so instead of implying "allowed".
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.store import TaskStore
+    service = TaskService(TaskStore(tmp_path / "approval.sqlite"), None)
+    service.started = True
+    service.kick = Mock(return_value=None)
+    manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
+    manager._service, manager.concurrency = service, 2
+    card = {"id": "card-a", "request_id": "core-approval", "state": "pending", "source": source,
+            "questions": [{"question": "cua_agent 将操作桌面：打开计算器", "header": "操作确认: cua_agent",
+                           "options": [{"label": "允许"}, {"label": "拒绝"}]}]}
+    task = service.submit("alice", "scope", "cua", "打开计算器")
+    service.store.update(task["id"], lambda t: t.update(status="waiting_user", interaction=card))
+    asking = service.submit("alice", "scope", "trip", "规划行程")
+    service.store.update(asking["id"], lambda t: t.update(status="waiting_user", interaction={
+        "id": "question-a", "request_id": "q", "state": "pending", "source": "ask_user_interrupt",
+        "questions": [{"question": "预算是多少？"}]}))
+
+    query = await manager.operate("alice", "scope", SimpleNamespace(name="jiuwen_task_query", arguments={}))
+    jobs = {job["id"]: job for job in query["jobs"]}
+    assert jobs[task["id"]]["requires_click"] is True
+    assert jobs[task["id"]]["approval_cards"] == [
+        {"header": "操作确认: cua_agent", "message": "cua_agent 将操作桌面：打开计算器"}]
+    assert jobs[asking["id"]]["requires_click"] is False, "Information questions stay voice-answerable"
+    assert "requires_click" in query["message"]
+
+    call = SimpleNamespace(name="jiuwen_task_answer", call_id="voice-allow", arguments={
+        "job_id": task["id"], "interaction_id": "card-a", "answers": ["允许"]})
+    result = await manager.operate("alice", "scope", call)
+    assert result["applied"] is False and result["state"] == "rejected"
+    assert result["code"] == "APPROVAL_REQUIRES_CLICK"
+    assert result["approval_cards"] == jobs[task["id"]]["approval_cards"]
+    assert "NOT approved" in result["message"] and "Do not claim" in result["message"]
+    stored = service.store.read(task["id"])
+    assert stored["status"] == "waiting_user" and stored["interaction"]["state"] == "pending"

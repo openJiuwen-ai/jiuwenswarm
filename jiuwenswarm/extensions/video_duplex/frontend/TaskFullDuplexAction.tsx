@@ -25,7 +25,7 @@ import { setTaskAsrEnabled } from '../../../channels/web/frontend/src/features/t
 import { webRequest } from '../../../channels/web/frontend/src/services/webClient';
 import {
   startTaskFullDuplex,
-  stopTaskFullDuplex,
+  exitTaskFullDuplex,
   useTaskFullDuplexRuntime,
   toggleTaskDuplexMicrophone,
   toggleTaskDuplexSpeaker,
@@ -96,7 +96,7 @@ export function TaskFullDuplexAction({
 
   const handleClick = useCallback(async () => {
     if (state !== 'idle') {
-      stopTaskFullDuplex();
+      exitTaskFullDuplex();
       return;
     }
     if (isTaskDuplexScreenSharingEnabled()) {
@@ -334,7 +334,7 @@ export function TaskFullDuplexControls() {
                 </button>
                 <button
                   type="button"
-                  onClick={stopTaskFullDuplex}
+                  onClick={exitTaskFullDuplex}
                   aria-label={t('chat.duplexControls.exit')}
                   title={t('chat.duplexControls.exit')}
                   data-testid="chat-panel-duplex-exit"

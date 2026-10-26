@@ -16,9 +16,15 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from jiuwenswarm.server.worker.callback_registry import (
+    CallbackRegistryOwner,
+    bind_callback_registry_owner,
+)
 from jiuwenswarm.server.worker.signals import RuntimeSignalSink
 
 logger = logging.getLogger(__name__)
+
+_STARTUP_FAILURE_CLEANUP_TIMEOUT = 5.0
 
 
 def _configure_openjiuwen_logging() -> None:
@@ -210,8 +216,17 @@ class WorkerRuntime:
     stop_event: asyncio.Event
     teammate_task: asyncio.Task | None = None
     zen_task: asyncio.Task | None = None
+    callback_registry_owner: CallbackRegistryOwner | None = None
 
     async def shutdown(self) -> None:
+        try:
+            await self._shutdown_owned_resources()
+        finally:
+            if self.callback_registry_owner is not None:
+                self.callback_registry_owner.close()
+                await asyncio.shield(self.callback_registry_owner.aclose())
+
+    async def _shutdown_owned_resources(self) -> None:
         self.stop_event.set()
         if self.teammate_task is not None:
             self.teammate_task.cancel()
@@ -263,6 +278,76 @@ async def start_worker_runtime(
 ) -> WorkerRuntime:
     """Load Agent Runtime. Chat readiness is signaled through ``signals``."""
     startup_t0 = time.monotonic()
+    await asyncio.to_thread(_preload_runtime_backend)
+    await asyncio.sleep(0)
+
+    from openjiuwen.core.runner import Runner
+
+    owner = bind_callback_registry_owner(Runner.callback_framework)
+    runtime = WorkerRuntime(
+        server=None,
+        stop_event=asyncio.Event(),
+        callback_registry_owner=owner,
+    )
+    try:
+        await _start_worker_runtime(
+            host, port, signals, runtime=runtime,
+            on_constructed=on_constructed, startup_t0=startup_t0,
+        )
+    except BaseException:
+        try:
+            await _cleanup_failed_startup(runtime)
+        except BaseException as exc:  # noqa: BLE001
+            logger.warning("[Worker] failed startup cleanup failed: %s", exc)
+        raise
+    return runtime
+
+
+def _log_late_startup_cleanup(task: asyncio.Task) -> None:
+    """Consume a cleanup that outlived the failed startup's grace period."""
+    if not task.cancelled():
+        error = task.exception()
+        if error is not None:
+            logger.warning("[Worker] late startup cleanup failed: %s", error)
+
+
+async def _cleanup_failed_startup(runtime: WorkerRuntime) -> None:
+    """Preserve the startup error while giving partial resources bounded cleanup."""
+    owner = runtime.callback_registry_owner
+    if owner is None:
+        return
+    cleanup = asyncio.create_task(runtime.shutdown() if runtime.server is not None else owner.aclose())
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _STARTUP_FAILURE_CLEANUP_TIMEOUT
+    try:
+        while not cleanup.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError("Worker failed startup cleanup exceeded its grace period")
+            try:
+                await asyncio.wait({cleanup}, timeout=remaining)
+            except asyncio.CancelledError:
+                # The outer handler re-raises the original startup exception,
+                # including its first cancellation, after this bounded join.
+                continue
+        cleanup.result()
+    finally:
+        if not cleanup.done():
+            cleanup.cancel()
+            cleanup.add_done_callback(_log_late_startup_cleanup)
+        owner.close()
+
+
+async def _start_worker_runtime(
+    host: str,
+    port: int,
+    signals: RuntimeSignalSink,
+    *,
+    runtime: WorkerRuntime,
+    on_constructed: Any,
+    startup_t0: float,
+) -> None:
+    """Keep registry ownership alive through partial startup and cleanup."""
 
     def log_startup_stage(stage: str) -> None:
         logger.info(
@@ -271,8 +356,6 @@ async def start_worker_runtime(
             time.monotonic() - startup_t0,
         )
 
-    await asyncio.to_thread(_preload_runtime_backend)
-    await asyncio.sleep(0)
     log_startup_stage("runtime_imports_ready")
 
     from openjiuwen.core.runner import Runner
@@ -302,6 +385,7 @@ async def start_worker_runtime(
         return AgentWebSocketServer.get_instance(host=host, port=port)
 
     server = await asyncio.to_thread(_construct_runtime_server)
+    runtime.server = server
     await asyncio.sleep(0)
     log_startup_stage("runtime_constructed")
     if on_constructed is not None:
@@ -351,7 +435,7 @@ async def start_worker_runtime(
             logger.debug("[Worker] models.updated push failed", exc_info=True)
 
     register_models_ready_callback(_on_zen_models_ready)
-    zen_task = asyncio.create_task(
+    runtime.zen_task = asyncio.create_task(
         warm_zen_free_models(reason="startup"),
         name="zen-free-models-warmup",
     )
@@ -374,16 +458,8 @@ async def start_worker_runtime(
         logger.warning("[Worker] proactive engine init failed: %s", exc)
         signals.degraded(str(exc))
 
-    stop_event = asyncio.Event()
-    teammate_task: asyncio.Task | None = None
     try:
-        teammate_task = _spawn_teammate_bootstrap(stop_event, server)
+        runtime.teammate_task = _spawn_teammate_bootstrap(runtime.stop_event, server)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Worker] teammate bootstrap daemon start failed: %s", exc)
     log_startup_stage("ready")
-    return WorkerRuntime(
-        server=server,
-        stop_event=stop_event,
-        teammate_task=teammate_task,
-        zen_task=zen_task,
-    )

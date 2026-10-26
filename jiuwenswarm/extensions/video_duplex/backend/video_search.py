@@ -226,6 +226,22 @@ def core_agent_progress(payload: dict[str, Any]) -> dict[str, Any] | None:
                 if isinstance(item, dict)
             ],
         }
+    if event_type in {"chat.subtask_update", "chat.subagent_activity"}:
+        # Carry the exact frame so the Web subagent panel reuses its typed-path
+        # normalization. Each frame is a distinct roster/activity fact.
+        name = str(
+            payload.get("display_name")
+            or payload.get("subagent_type")
+            or payload.get("subagent_id")
+            or "子智能体"
+        ).strip()
+        return {
+            "stage": "subagent",
+            "title": f"子智能体：{name}",
+            "detail": core_agent_text(payload.get("summary") or payload.get("message")),
+            "status": "running",
+            "subagent_event": dict(payload),
+        }
     if event_type == "chat.delta" and str(payload.get("content") or "").strip():
         return {"stage": "answer", "title": "正在整理执行结果", "status": "running"}
     if event_type == "chat.error":

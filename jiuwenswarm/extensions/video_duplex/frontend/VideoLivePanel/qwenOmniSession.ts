@@ -1,4 +1,10 @@
-import { taskCancellationNotice, taskQuestionNotice } from './taskPrompts.js';
+import {
+  APPROVAL_SOURCES,
+  pendingApprovalInstructions,
+  pendingCardTurnNotice,
+  taskCancellationNotice,
+  taskQuestionNotice,
+} from './taskPrompts.js';
 import {
   createQwenOmniCancelResponseEvent,
   createQwenOmniFinishSessionEvent,
@@ -134,6 +140,11 @@ export class RealtimeDuplexSession {
   private responseId: string | null = null;
   private pendingOperations: Array<{ callId: string; output: unknown }> = [];
   private pendingQuestions: Array<{ jobId: string; interaction: unknown }> = [];
+  // Open approval cards (job:interaction -> header), kept in the session instructions.
+  private pendingApprovals = new Map<string, string>();
+  // A user turn spoken while a card is open: the provider's automatic reply is cancelled and
+  // re-requested after the card's status, so that status is the last thing the model reads.
+  private cardTurn: { at: number; cancelling: boolean } | null = null;
   private pendingToolResults: RealtimeToolResult[] = [];
   private toolResultWaitKey = '';
   private acceptedToolResultIds = new Set<string>();
@@ -332,6 +343,8 @@ export class RealtimeDuplexSession {
     this.pendingToolResults = [];
     this.pendingOperations = [];
     this.pendingQuestions = [];
+    this.pendingApprovals.clear();
+    this.cardTurn = null;
     this.toolResultWaitKey = '';
     this.acceptedToolResultIds.clear();
     this.acceptedFunctionCallIds.clear();
@@ -382,6 +395,7 @@ export class RealtimeDuplexSession {
 
   cancelToolTask(jobId: string, callId: string): void {
     this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== jobId);
+    this.closeApprovals(jobId);
     this.pendingToolResults = this.pendingToolResults.filter((item) => item.jobId !== jobId);
     if (this.acceptedToolResultIds.has(jobId)) return;
     this.acceptedToolResultIds.add(jobId);
@@ -404,20 +418,75 @@ export class RealtimeDuplexSession {
     this.dispatchQueuedToolResult();
   }
 
-  enqueueQuestion(jobId: string, interaction: { id?: string; request_id: string; state: string }): void {
+  enqueueQuestion(
+    jobId: string,
+    interaction: { id?: string; request_id: string; state: string; source?: string; questions?: Array<{ header?: string }> },
+  ): void {
     if (interaction.state !== 'pending') {
       this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== jobId);
+      this.closeApprovals(jobId);
       return;
     }
     const key = `question:${jobId}:${interaction.id || interaction.request_id}`;
+    if (interaction.source && APPROVAL_SOURCES.has(interaction.source) && !this.pendingApprovals.has(key)) {
+      this.pendingApprovals.set(key, interaction.questions?.[0]?.header || interaction.source);
+      this.syncApprovalInstructions();
+    }
     if (this.acceptedToolResultIds.has(key)) return;
     this.acceptedToolResultIds.add(key);
     this.pendingQuestions.push({ jobId, interaction });
     this.dispatchQueuedToolResult();
   }
 
+  private closeApprovals(jobId: string): void {
+    const prefix = `question:${jobId}:`;
+    const keys = [...this.pendingApprovals.keys()].filter(key => key.startsWith(prefix));
+    if (!keys.length) return;
+    keys.forEach(key => this.pendingApprovals.delete(key));
+    this.syncApprovalInstructions();
+  }
+
+  private sessionUpdate(): Record<string, unknown> {
+    return createQwenOmniSessionUpdate({
+      voice: this.config.voice,
+      tools: this.config.tools,
+      replyLanguage: this.config.replyLanguage,
+      restoreInstructions: this.config.restoreInstructions,
+      extraInstructions: pendingApprovalInstructions([...this.pendingApprovals.values()]),
+      inputRate: INPUT_RATE,
+      outputRate: OUTPUT_RATE,
+    });
+  }
+
+  private cancelForCardTurn(): void {
+    if (!this.cardTurn) return;
+    this.cardTurn.cancelling = true;
+    this.interruptQwenResponse(this.activeUserTurnId || 'card-turn', 0, 0, 0);
+  }
+
+  private reissueCardTurn(): void {
+    if (!this.cardTurn?.cancelling) return;
+    this.cardTurn = null;
+    // Hold queued notices until this reply is created, so they cannot collide with it.
+    this.awaitingProviderResponse = true;
+    this.send({ type: 'conversation.item.create', item: {
+      type: 'message', role: 'user',
+      content: [{ type: 'input_text', text: pendingCardTurnNotice([...this.pendingApprovals.values()]) }],
+    } });
+    this.send({ type: 'response.create' });
+    this.emitDiagnostic('qwen_card_turn_reissued', { pending: this.pendingApprovals.size });
+  }
+
+  private syncApprovalInstructions(): void {
+    // Before the session is ready, the initial session.update already carries them.
+    if (this.socket?.readyState !== WebSocket.OPEN || !this.sessionReady) return;
+    this.send(this.sessionUpdate());
+    this.emitDiagnostic('qwen_approval_instructions_synced', { pending: this.pendingApprovals.size });
+  }
+
   enqueueToolResult(toolResult: RealtimeToolResult): boolean {
     this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== toolResult.jobId);
+    this.closeApprovals(toolResult.jobId);
     const jobId = toolResult.jobId.trim();
     const question = toolResult.question.trim();
     const summary = toolResult.brief.summary.trim().slice(0, 1600);
@@ -500,16 +569,7 @@ export class RealtimeDuplexSession {
       const sendInit = async () => {
         if (initSent) return;
         initSent = true;
-        this.send(
-          createQwenOmniSessionUpdate({
-            voice: this.config.voice,
-            tools: this.config.tools,
-            replyLanguage: this.config.replyLanguage,
-            restoreInstructions: this.config.restoreInstructions,
-            inputRate: INPUT_RATE,
-            outputRate: OUTPUT_RATE,
-          }),
-        );
+        this.send(this.sessionUpdate());
       };
       socket.onopen = () => {
         this.emitDiagnostic('realtime_websocket_open', { url: url.toString() });
@@ -553,6 +613,7 @@ export class RealtimeDuplexSession {
             void sendInit();
             return;
           }
+          if (type === 'session.updated' && this.sessionReady) return; // Instruction refresh, not startup.
           if (type === 'session.updated' || type === 'session.created') {
             if (this.config.restoreInstructions && type !== 'session.updated') return;
             this.sessionReady = true;
@@ -861,8 +922,12 @@ export class RealtimeDuplexSession {
         }
       }
       this.responseActive = true;
+      if (this.cardTurn && !this.cardTurn.cancelling) {
+        if (this.pendingApprovals.size && performance.now() - this.cardTurn.at < 8_000) this.cancelForCardTurn();
+        else this.cardTurn = null;
+      }
       // Only VAD ends user speech. A model response must not re-arm interruption.
-      if (!this.interruptWhileUserSpeaking()) this.callbacks.onState('speaking');
+      if (!this.cardTurn && !this.interruptWhileUserSpeaking()) this.callbacks.onState('speaking');
     } else if (type === 'audio.cancelled' || type === 'response.audio.cancelled' || type === 'response.cancelled') {
       this.releaseResponseOutput(outputResponseId, 'cancelled');
       this.emitDiagnostic('qwen_response_cancelled', {
@@ -877,6 +942,7 @@ export class RealtimeDuplexSession {
           cancelResponse: false,
         });
         this.callbacks.onState('listening');
+        this.reissueCardTurn();
       }
     } else if (type === 'response.audio.done' || type === 'response.output_audio.done' || type === 'response.done') {
       const affectsActive = !eventResponseId || eventResponseId === this.responseId || this.notificationConflictWaiting;
@@ -888,6 +954,7 @@ export class RealtimeDuplexSession {
         this.responseActive = false;
         this.notificationConflictWaiting = false;
         this.emitDiagnostic('qwen_response_finished', { response_id: eventResponseId, reason: String(response?.status || '') });
+        this.reissueCardTurn();
       }
       if (affectsActive) this.enqueuePlaybackDrain(eventResponseId || this.responseId);
       if (type === 'response.done' && affectsActive) this.dispatchQueuedToolResult();
@@ -895,6 +962,10 @@ export class RealtimeDuplexSession {
       this.providerSpeechActive = type === 'input_audio_buffer.speech_started';
       if (this.providerSpeechActive) this.latestInputId = String(event.item_id || this.newTurnId('audio'));
       this.awaitingProviderResponse = true;
+      // The provider answers this speech by itself; with a card open, that reply is redirected.
+      if (type === 'input_audio_buffer.speech_stopped' && this.pendingApprovals.size) {
+        this.cardTurn = { at: performance.now(), cancelling: false };
+      }
       this.emitDiagnostic('qwen_provider_vad', { source: type, raw_event: rawEvent || JSON.stringify(event) });
     } else if (type === 'conversation.item.input_audio_transcription.delta') {
       this.callbacks.onUserText(`${String(event.delta || event.text || '')}${String(event.stash || '')}`, false);

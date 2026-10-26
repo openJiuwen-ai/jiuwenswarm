@@ -1,4 +1,5 @@
 import { TASK_ACCEPTED_INSTRUCTIONS } from './taskPrompts';
+import { informationInteraction } from './taskInteraction';
 import { toast } from '../../../../channels/web/frontend/src/components/ui/Toast/toastStore';
 import {
   ChangeEvent,
@@ -31,6 +32,7 @@ import { webClient, webRequest } from '../../../../channels/web/frontend/src/ser
 import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSession';
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
 import { JoyAIProvider } from './joyaiProvider';
+import { captureVideoFrame, FrameEncoder } from './frameEncoding';
 import { setDuplexVoicePhase } from '../duplexAudioMeter';
 import { describeDuplexError } from '../duplexErrorMessage';
 import {
@@ -64,9 +66,7 @@ interface ScreenSource {
 const FRAME_INTERVAL_MS = 500;
 const MAX_FRAMES = 6;
 const MAX_SCREENS = 4;
-const MAX_FRAME_WIDTH = 768;
 const SCREEN_PREVIEW_FRAME_RATE = 30;
-const FRAME_JPEG_QUALITY = 0.72;
 
 function cleanAssistantText(text: string): string {
   return text
@@ -86,6 +86,8 @@ export interface VideoLivePanelHandle {
   setSpeakerMuted: (muted: boolean) => void;
   stopScreenSharing: () => void;
   deliverToolResult: (payload: SearchJobPayload) => void;
+  deliverQuestion: (payload: SearchJobPayload) => void;
+  deliverTaskInteraction: (payload: SearchJobPayload) => void;
 }
 
 interface VideoLivePanelProps {
@@ -434,6 +436,13 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     setSearchStatus(`${payload.engine || '九问搜索 Agent'}失败：${error}`);
   };
 
+  const deliverTaskInteraction = (payload: SearchJobPayload) => {
+    if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current || !payload.job_id) return;
+    const interaction = informationInteraction(payload);
+    if (payload.replay && interaction?.state === 'pending') return;
+    if (interaction) duplexRef.current?.enqueueQuestion(payload.job_id, interaction);
+  };
+
   useEffect(() => {
     // In task mode the conversation runtime owns subscriptions, polling and result display.
     if (headless) return;
@@ -456,9 +465,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     });
     const unsubscribeProgress = webClient.on<SearchJobPayload>('video.search.progress', ({ payload }) => {
       if (!belongsToCurrentSession(payload)) return;
-      if (!payload.replay && payload.job_id && payload.interaction) {
-        duplexRef.current?.enqueueQuestion(payload.job_id, payload.interaction);
-      }
+      deliverTaskInteraction(payload);
       updateSearchProgress(payload);
       onCoreAgentProgress?.('progress', payload);
       const job = payload.job_id ? searchJobsRef.current.get(payload.job_id) : undefined;
@@ -619,42 +626,15 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     let cancelled = false;
     let captureInFlight = false;
 
-    const canvasToDataUrl = (canvas: HTMLCanvasElement): Promise<string | null> =>
-      new Promise((resolve) => {
-        canvas.toBlob(
-          (blob) => {
-            if (!blob || cancelled) {
-              resolve(null);
-              return;
-            }
-            const reader = new FileReader();
-            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
-            reader.onerror = () => resolve(null);
-            reader.readAsDataURL(blob);
-          },
-          'image/jpeg',
-          FRAME_JPEG_QUALITY,
-        );
-      });
+    const frameEncoder = new FrameEncoder();
 
     const captureVideo = async (video: HTMLVideoElement, sourceId: string): Promise<CapturedFrame | null> => {
       const canvas = canvasRef.current;
-      if (!canvas || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return null;
-      if (!video.videoWidth || !video.videoHeight) return null;
-
-      const scale = Math.min(1, MAX_FRAME_WIDTH / video.videoWidth);
-      const width = Math.round(video.videoWidth * scale);
-      const height = Math.round(video.videoHeight * scale);
-      if (canvas.width !== width) canvas.width = width;
-      if (canvas.height !== height) canvas.height = height;
-      const context = canvas.getContext('2d');
-      if (!context) return null;
-
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const dataUrl = await canvasToDataUrl(canvas);
-      if (!dataUrl || cancelled) return null;
+      if (!canvas) return null;
+      const frame = await captureVideoFrame(frameEncoder, video, canvas, sourceId, () => cancelled);
+      if (!frame) return null;
       return {
-        data_url: dataUrl,
+        data_url: frame.dataUrl,
         source_id: sourceId,
       };
     };
@@ -1214,7 +1194,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         setSourceName('');
       }
     },
+    deliverTaskInteraction,
     deliverToolResult: (payload) => {
+      deliverTaskInteraction(payload);
       if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;
       // The runtime delivers terminal events once. Hold them while replacing
       // Qwen's transport, including the interval spent fetching fresh config.
@@ -1244,6 +1226,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       }
       if (payload.status === 'failed') acceptFailedSearch(payload);
       else acceptCompletedSearch(payload);
+    },
+    deliverQuestion: (payload) => {
+      // Headless panels have no task subscriptions, so the runtime forwards
+      // pending questions and approval cards for the model to raise.
+      if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;
+      if (payload.job_id && payload.interaction) duplexRef.current?.enqueueQuestion(payload.job_id, payload.interaction);
     },
   }));
 

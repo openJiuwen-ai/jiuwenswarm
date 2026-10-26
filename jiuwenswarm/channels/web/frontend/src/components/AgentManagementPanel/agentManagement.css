@@ -605,6 +605,10 @@
   margin: 16px 0 0;
 }
 
+.agent-management-inline-notice--error {
+  color: var(--color-feedback-danger);
+}
+
 .agent-management-connection-warning {
   margin-top: 16px;
   color: var(--color-text-secondary);
