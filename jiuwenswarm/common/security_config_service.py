@@ -590,15 +590,23 @@ class SecurityConfigService:
 
     def persist_user_approval(self, grant: dict[str, Any]) -> bool:
         """Persist one Rail-generated grant without copying composed rules to user."""
-        if not isinstance(grant, dict) or not isinstance(grant.get("id"), str) or not grant["id"]:
+        return self.persist_user_approvals([grant])
+
+    def persist_user_approvals(self, approvals: list[dict[str, Any]]) -> bool:
+        """Validate and persist an approval batch under one lock and revision."""
+        if not approvals or any(
+            not isinstance(grant, dict) or not isinstance(grant.get("id"), str) or not grant["id"]
+            for grant in approvals
+        ):
             raise ValueError("approval grant requires an id")
         with self._thread_lock, self._locked():
             settings, local, cloud = self._load()
             if not any(item["id"] == SOURCE_USER and item["enabled"] for item in settings["security"]["policy_sources"]):
                 return False
             grants = local.setdefault("permissions", {}).setdefault("approval_overrides", [])
-            grants[:] = [item for item in grants if item.get("id") != grant["id"]]
-            grants.append(deepcopy(grant))
+            by_id = {item["id"]: deepcopy(item) for item in approvals}
+            grants[:] = [item for item in grants if item.get("id") not in by_id]
+            grants.extend(by_id.values())
             local = validate_source(local)
             state = self._pending_after_edit()
             self._compose_checked(settings, local, cloud, state)

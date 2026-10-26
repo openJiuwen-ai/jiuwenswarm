@@ -19,6 +19,8 @@ import { ShieldCheck, ChevronDown } from 'lucide-react';
 import { useChatStore } from '../../stores';
 import type { AskUserQuestionPayload, Question, QuestionOption, UserAnswer } from '../../types';
 import { classifyAuthOption, type AuthSemantic } from './promptRouting';
+import { resolveAuthorizationScope } from './authorizationScope';
+import type { AuthorizationScope } from '../../types/websocket';
 
 interface AuthorizationPromptProps {
   pending: AskUserQuestionPayload;
@@ -85,14 +87,14 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   const setPendingQuestion = useChatStore((s) => s.setPendingQuestion);
   const [expanded, setExpanded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [scope, setScope] = useState<'exact' | 'parent' | 'domain'>('exact');
+  const [scopeSelection, setScopeSelection] = useState<{ requestId: string; value: AuthorizationScope } | null>(null);
   useEffect(() => {
-    setScope('exact');
     setSubmitting(false);
   }, [pending.request_id]);
 
   const questions = pending.questions ?? [];
   const primary = questions[0];
+  const scope = resolveAuthorizationScope(primary?.authorization_scopes, scopeSelection?.requestId === pending.request_id ? scopeSelection.value : undefined);
   const isConfirm = pending.source === 'confirm_interrupt';
   const count = questions.length;
 
@@ -215,7 +217,7 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
               className="auth-prompt__scope-select"
               value={scope}
               disabled={submitting}
-              onChange={e => setScope(e.target.value as typeof scope)}
+              onChange={e => setScopeSelection({ requestId: pending.request_id, value: e.target.value as AuthorizationScope })}
             >
               {primary.authorization_scopes?.map(option => (
                 <option key={option.value} value={option.value}>

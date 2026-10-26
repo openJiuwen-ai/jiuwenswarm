@@ -28,6 +28,7 @@
     "test:history-pagination": "tsc src/features/historyPagination.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/history-pagination --skipLibCheck --noEmitOnError && node --test tests/historyPagination.test.mjs",
     "test:artifact-collection": "esbuild src/components/ArtifactsPanel/artifactCollection.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/artifact-collection/artifactCollection.mjs && node --test tests/artifactCollection.test.mjs",
     "test:desktop-save": "esbuild src/utils/desktopSave.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/desktop-save/desktopSave.mjs && node --test tests/desktopSave.test.mjs",
+    "test:authorization-scope": "tsc src/components/InteractionSlot/authorizationScope.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/authorization-scope --skipLibCheck --noEmitOnError && node --test tests/authorizationScope.test.mjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },

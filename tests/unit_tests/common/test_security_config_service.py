@@ -437,6 +437,27 @@ def test_composed_permanent_approval_stays_in_user_source(service):
     ]
 
 
+def test_composed_shell_approval_batch_persists_together_and_rejects_invalid_batch(service, tmp_path):
+    from openjiuwen.harness.security.permission_engine.approve.operation_grants import (
+        build_operation_grants,
+    )
+
+    service.initialize_from_live()
+    grants = build_operation_grants(
+        "bash", {"command": "cd repo && git status", "workdir": str(tmp_path)}, {},
+        mode="allow_with_scope", scope="subcommands",
+    )
+    assert service.persist_user_approvals(grants)
+    assert service.persist_user_approvals(grants)
+    stored = load_yaml_round_trip(service.config_path)["permissions"]["approval_overrides"]
+    assert stored[-2:] == grants
+    assert len(stored) == 3  # Existing approval plus the two deduplicated children.
+    before = service.local_path.read_bytes()
+    with pytest.raises(ValueError, match="requires an id"):
+        service.persist_user_approvals([grants[0], {**grants[1], "id": ""}])
+    assert service.local_path.read_bytes() == before
+
+
 def test_legacy_edit_keeps_sandbox_retry_for_unchanged_network_axis(service):
     live = load_yaml_round_trip(service.config_path)
     live["sandbox"]["enabled"] = True

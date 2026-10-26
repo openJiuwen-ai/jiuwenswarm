@@ -9,6 +9,8 @@ export type WebConnectionState =
   | 'reconnecting'
   | 'closed';
 
+export type AuthorizationScope = 'exact' | 'parent' | 'domain' | 'subcommands';
+
 export interface WsRequest {
   type: 'req';
   id: string;
@@ -141,7 +143,7 @@ export interface Question {
   header: string;
   options: QuestionOption[];
   multi_select?: boolean;
-  authorization_scopes?: { value: 'exact' | 'parent' | 'domain'; label: string }[];
+  authorization_scopes?: { value: AuthorizationScope; label: string }[];
 }
 
 /**
@@ -170,7 +172,7 @@ export interface UserAnswer {
   selected_options: string[];
   custom_input?: string;
   authorization_mode?: 'allow' | 'allow_with_scope';
-  authorization_scope?: 'exact' | 'parent' | 'domain';
+  authorization_scope?: AuthorizationScope;
 }
 
 /**

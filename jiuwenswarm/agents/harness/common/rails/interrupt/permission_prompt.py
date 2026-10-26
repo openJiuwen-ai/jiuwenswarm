@@ -240,7 +240,7 @@ def build_permission_prompt(
     ):
         # The complete core body is rendered once below; preserve its remember
         # hint without repeating the intent/file list/risk sections.
-        hint_marker = "\n\n> 默认仅授权当前对象"
+        hint_marker = "\n\n> 默认"
         _, marker, hint = message.partition(hint_marker)
         message = (marker + hint).strip() if marker else ""
     elif message.strip() == presentation.summary:

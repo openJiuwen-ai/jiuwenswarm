@@ -573,26 +573,32 @@ def get_permissions_with_session_overlay(
     return apply_session_permissions_overlay(base, overlay)
 
 
-def persist_merged_allow_rule_snapshot(permissions: dict[str, Any], *, approval_grant: dict | None = None) -> bool:
+def persist_merged_allow_rule_snapshot(
+    permissions: dict[str, Any], *, approval_grant: dict | None = None,
+    approval_grants: list[dict] | None = None,
+) -> bool:
     """HITL「永久记住」：把相对模板多出的场景 list 写入 config.yaml。"""
     if not isinstance(permissions, dict):
         return False
     from jiuwenswarm.common.config import get_config
 
     live = get_config().get("permissions") or {}
+    grants = approval_grants if approval_grants is not None else (
+        [approval_grant] if approval_grant is not None else None
+    )
     if isinstance(live.get("composition"), dict):
-        if approval_grant is None:
+        if not grants:
             return False
         try:
             from jiuwenswarm.common.security_config_service import SecurityConfigService
 
-            return SecurityConfigService().persist_user_approval(approval_grant)
+            return SecurityConfigService().persist_user_approvals(grants)
         except Exception:
             logger.warning("[PermissionPersist] composed approval persist failed", exc_info=True)
             return False
     # Never promote other session grants when one operation is remembered forever.
-    if approval_grant is not None:
-        permissions = {"approval_overrides": [approval_grant]}
+    if grants is not None:
+        permissions = {"approval_overrides": grants}
     from jiuwenswarm.common.config import update_config
     from jiuwenswarm.common.config_split import _get, _user_only_list_items, upsert_list_by_id
     from jiuwenswarm.common.utils import get_package_config_file

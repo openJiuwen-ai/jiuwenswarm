@@ -82,8 +82,9 @@ def test_channel_fix_preserves_explicit_allow_and_deny(channel_permission_case, 
     assert isinstance(decision, ApproveResult if permission == "allow" else RejectResult)
 
 
-def test_permission_scope_options_reach_frontend():
-    scopes = [{"value": "exact", "label": "当前文件"}, {"value": "parent", "label": "上一级目录"}]
+@pytest.mark.parametrize("scope", ["parent", "domain", "subcommands"])
+def test_permission_scope_options_reach_frontend(scope):
+    scopes = [{"value": "exact", "label": "当前对象"}, {"value": scope, "label": "范围授权"}]
     interaction = SimpleNamespace(id="approval", value={
         "tool_name": "read_file", "message": "需要授权", "tool_args": {"path": "/tmp/a"},
         "metadata": {"source": "permission_interrupt", "authorization_scopes": scopes},
@@ -92,14 +93,26 @@ def test_permission_scope_options_reach_frontend():
     assert result["questions"][0]["authorization_scopes"] == scopes
 
 
-def test_permission_scope_reply_reaches_confirmation_payload():
+@pytest.mark.parametrize("scope", ["parent", "domain", "subcommands"])
+def test_permission_scope_reply_reaches_confirmation_payload(scope):
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
     result = JiuWenSwarm._build_interactive_input_from_answers("approval", [{
-        "selected_options": ["session_allow"], "authorization_mode": "allow_with_scope", "authorization_scope": "domain",
+        "selected_options": ["session_allow"], "authorization_mode": "allow_with_scope", "authorization_scope": scope,
     }], source="permission_interrupt")
     assert result.user_inputs["approval"] == {
         "approved": True, "auto_confirm": True, "persist_allow": False, "feedback": "",
-        "authorization_mode": "allow_with_scope", "authorization_scope": "domain",
+        "authorization_mode": "allow_with_scope", "authorization_scope": scope,
+    }
+
+
+@pytest.mark.parametrize("fields", [{}, {"authorization_scope": "exact"}, {"authorization_mode": "allow_with_scope"}])
+def test_permission_reply_keeps_omitted_scope_fields_for_server_defaults(fields):
+    from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+    result = JiuWenSwarm._build_interactive_input_from_answers("approval", [{
+        "selected_options": ["session_allow"], **fields,
+    }], source="permission_interrupt")
+    assert result.user_inputs["approval"] == {
+        "approved": True, "auto_confirm": True, "persist_allow": False, "feedback": "", **fields,
     }
 
 
@@ -266,7 +279,8 @@ def test_core_permission_message_reaches_ws_with_complete_file_list(tmp_path):
     assert body.count("涉及的文件操作") == 1 and body.count("风险等级") == 1
     assert body.index("助手想要") < body.index("工具 `") < body.index("涉及的文件操作") < body.index("风险等级")
     assert "**风险等级：高风险**" in body
-    assert "命令始终按原始命令授权" in body
+    assert "默认按可用范围授权" in body
+    assert "命令为可独立或组合复用的子命令" in body
     assert question["tool_args"] == args and question["tool_call_id"] == call.id
     assert payloads[0]["request_id"] == "copy-approval"
 
