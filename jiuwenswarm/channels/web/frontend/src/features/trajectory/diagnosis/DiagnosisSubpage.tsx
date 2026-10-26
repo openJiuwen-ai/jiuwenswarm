@@ -8,25 +8,22 @@ import {
   asRewardPayload,
   type DiagnosisRecord,
   type EvolutionJudge,
-  type SignalRef,
 } from './diagnosisTypes';
 import {
   artifactSuggestion,
   artifactSuggestionItems,
   diagnosisTarget,
-  evidenceNodeLabel,
   formatElapsed,
   formatTimeWindow,
   isStageExpanded,
   legacyArtifactInstruction,
   looksLikePath,
   processSummary,
-  signalEvidenceBody,
-  signalTier,
   skillSuggestionText,
   splitStageOutput,
   stageViews,
   suggestionsState,
+  truncateText,
   type ArtifactSuggestionItem,
   type StageView,
   type StageViewStatus,
@@ -129,7 +126,7 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
   const target = useMemo(() => diagnosisTarget(record), [record]);
   const labelOf = (subjectId: string) => subjectLabels.get(subjectId) ?? subjectId;
   const note = record.input.user_note?.trim() ?? '';
-  const trajectorySummary = (record.trajectory_summary ?? record.task_description ?? '').trim();
+  const trajectorySummary = truncateText(record.trajectory_summary ?? record.task_description ?? '', 500);
   const reward = asRewardPayload(record.reward);
   const skills = skillJudges(record);
   const experience = experienceJudge(record);
@@ -172,12 +169,6 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
             {t('trajectory.diagnosis.objectExcludedRunning', { count: record.input.excluded_running.length })}
           </p>
         ) : null}
-        {trajectorySummary === '' ? null : (
-          <div className={css.taskBox} data-testid="trajectory-diagnosis-task">
-            <span className={css.lineLabel}>{t('trajectory.diagnosis.objectSummary')}</span>
-            <PlainFold text={trajectorySummary} />
-          </div>
-        )}
       </Card>
 
       {note === '' ? null : (
@@ -212,6 +203,12 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
           focusedFindingId={focusedFindingId}
           onFocusFinding={onFocusFinding}
         />
+        {trajectorySummary === '' ? null : (
+          <div className={css.taskBox} data-testid="trajectory-diagnosis-task">
+            <span className={css.lineLabel}>{t('trajectory.diagnosis.objectSummary')}</span>
+            <PlainFold text={trajectorySummary} />
+          </div>
+        )}
       </Card>
 
       <Card title={t('trajectory.diagnosis.suggestions')} testId="trajectory-diagnosis-suggestions">
@@ -236,11 +233,7 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
                   />
                 )}
               >
-                <ArtifactCauseList
-                  items={artifactItems}
-                  focusedFindingId={focusedFindingId}
-                  onFocusFinding={onFocusFinding}
-                />
+                <ArtifactCauseList items={artifactItems} />
               </SuggestionCard>
             ) : artifactText === '' ? null : (
               <SuggestionCard
@@ -262,8 +255,6 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
               <EvolutionCard
                 key={judge.id}
                 judge={judge}
-                focused={focusedFindingId === judge.id}
-                onFocusFinding={onFocusFinding}
                 action={(
                   <FillButton
                     text={`${t('trajectory.diagnosis.skillFillPrefix')}\n\n${skillSuggestionText(judge)}`}
@@ -278,8 +269,6 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
             {experience === null ? null : (
               <EvolutionCard
                 judge={experience}
-                focused={focusedFindingId === experience.id}
-                onFocusFinding={onFocusFinding}
                 action={(
                   <span className={css.row}>
                     {record.ttse_trigger[experience.id] === undefined ? null : (
@@ -323,99 +312,26 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
  * The artifact-fix outlet of the new interface: one entry per failure cause, showing only
  * its suggestion text until the user opens it onto the full attribution fields.
  */
-/** Signal labels of one artifact item, in the requested reading order. */
-function ArtifactSignalTags({ signal }: { signal: SignalRef | null | undefined }) {
-  const { t } = useTranslation();
-  if (signal === null || signal === undefined) return null;
-  const tier = signalTier(signal);
-  return (
-    <>
-      {signal.source === '' ? null : (
-        <span className={css.chip}>
-          {t(`trajectory.diagnosis.signalSource.${signal.source}`, { defaultValue: signal.source })}
-        </span>
-      )}
-      {tier === null ? null : (
-        <span className={`${css.tag} ${css[`tier_${tier}`]}`}>
-          {t(`trajectory.diagnosis.signalTier.${tier}`)}
-        </span>
-      )}
-      {signal.category === undefined || signal.category === null || signal.category === '' ? null : (
-        <span className={css.badge}>{signal.category}</span>
-      )}
-      {typeof signal.score === 'number' ? (
-        <span className={css.hint}>{t('trajectory.diagnosis.signalScore', { score: signal.score })}</span>
-      ) : null}
-    </>
-  );
-}
-
-function ArtifactCauseList({ items, focusedFindingId, onFocusFinding }: {
-  items: readonly ArtifactSuggestionItem[];
-  focusedFindingId: string | null;
-  onFocusFinding: (findingId: string | null) => void;
-}) {
-  const { t } = useTranslation();
+/** The artifact-fix suggestions: one text per cause, no per-item expansion. */
+function ArtifactCauseList({ items }: { items: readonly ArtifactSuggestionItem[] }) {
   return (
     <ol className={css.artifactItems} data-testid="trajectory-diagnosis-artifact-list">
-      {items.map(item => {
-        const nodes = evidenceNodeLabel(item);
-        const evidence = signalEvidenceBody(item.signal, item.dimension);
-        return (
-          <li key={item.id}>
-            <details className={css.artifactItem} data-testid="trajectory-diagnosis-artifact-item">
-              <summary>
-                <span className={css.artifactItemText}>{item.text}</span>
-              </summary>
-              <div className={css.artifactItemBody}>
-                <div className={css.row}>
-                  <ArtifactSignalTags signal={item.signal} />
-                  {nodes === '' ? null : (
-                    <span className={css.hint} data-testid="trajectory-diagnosis-cause-nodes">
-                      {t('trajectory.diagnosis.causeAt', { nodes })}
-                    </span>
-                  )}
-                  <span className={css.spacer} />
-                  <button
-                    type="button"
-                    className={css.button}
-                    aria-pressed={focusedFindingId === item.id}
-                    onClick={() => onFocusFinding(focusedFindingId === item.id ? null : item.id)}
-                    data-testid="trajectory-diagnosis-highlight"
-                  >
-                    {t('trajectory.diagnosis.highlight')}
-                  </button>
-                </div>
-                <p className={css.hint} data-testid="trajectory-diagnosis-artifact-dimension">
-                  {item.dimension}
-                </p>
-                <ClampedMarkdown text={item.summary} />
-                {evidence === '' ? null : (
-                  <div className={css.row} data-testid="trajectory-diagnosis-artifact-evidence">
-                    <span className={css.artifactEvidenceTag}>{t('trajectory.diagnosis.evidence')}</span>
-                    <span className={css.artifactEvidenceText}>{evidence}</span>
-                  </div>
-                )}
-              </div>
-            </details>
-          </li>
-        );
-      })}
+      {items.map(item => (
+        <li key={item.id}>
+          <ClampedMarkdown text={item.text} />
+        </li>
+      ))}
     </ol>
   );
 }
 
-/** One evolution item: a skill advice or the experience verdict, with its related signals folded away. */
-function EvolutionCard({ judge, focused, onFocusFinding, action, children }: {
+/** One evolution item: the advice/verdict text and its action; details live in the findings list. */
+function EvolutionCard({ judge, action, children }: {
   judge: EvolutionJudge;
-  focused: boolean;
-  onFocusFinding: (findingId: string | null) => void;
   action: ReactNode;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
-  const [signalsOpen, setSignalsOpen] = useState(false);
-  const signals = judge.related_signals ?? [];
   const skill = judge.category === 'skill';
   const title = skill ? (judge.target ?? '') : t('trajectory.diagnosis.ttseReady');
   return (
@@ -427,85 +343,7 @@ function EvolutionCard({ judge, focused, onFocusFinding, action, children }: {
       testId={skill ? 'trajectory-diagnosis-skill' : 'trajectory-diagnosis-ttse'}
       action={action}
     >
-      <div className={css.row}>
-        {skill ? (
-          <span className={css.tag} data-testid="trajectory-diagnosis-evolution-score">
-            {t('trajectory.diagnosis.confidence', { value: Math.round(judge.score * 100) })}
-          </span>
-        ) : (
-          <>
-            {judge.outcome === null || judge.outcome === undefined ? null : (
-              <span
-                className={`${css.tag} ${css.tagExperience}`}
-                data-testid="trajectory-diagnosis-evolution-outcome"
-              >
-                {t(`trajectory.diagnosis.ttseOutcome.${judge.outcome}`)}
-              </span>
-            )}
-            <span className={css.hint} data-testid="trajectory-diagnosis-evolution-score">
-              {t('trajectory.diagnosis.signalScore', { score: judge.score })}
-            </span>
-          </>
-        )}
-      </div>
       {children}
-      {signals.length === 0 ? null : (
-        <div className={css.evidence} data-testid="trajectory-diagnosis-related-signals">
-          <div className={css.row}>
-            <button
-              type="button"
-              className={css.relatedSignalsToggle}
-              aria-expanded={signalsOpen}
-              onClick={() => setSignalsOpen(current => !current)}
-            >
-              <ChevronRight
-                className={`${css.chevron} ${signalsOpen ? css.chevronOpen : ''}`}
-                size={14}
-                strokeWidth={2}
-                aria-hidden
-              />
-              <span>{t('trajectory.diagnosis.relatedSignals')}</span>
-            </button>
-            <span className={css.spacer} />
-            <button
-              type="button"
-              className={css.button}
-              aria-pressed={focused}
-              onClick={() => onFocusFinding(focused ? null : judge.id)}
-              data-testid="trajectory-diagnosis-highlight"
-            >
-              {t('trajectory.diagnosis.highlight')}
-            </button>
-          </div>
-          {signalsOpen ? (
-            <div className={`${css.evidenceBody} ${css.relatedSignals}`}>
-              {signals.flatMap(signal => signal.entries.map((entry, index) => {
-                const nodes = evidenceNodeLabel({ evidence: entry.refs });
-                return (
-                  <div className={css.relatedSignal} key={`${signal.signal_id}:${index}`}>
-                    <div className={css.row}>
-                      <ArtifactSignalTags
-                        signal={{
-                          id: signal.signal_id,
-                          source: signal.source,
-                          tier: signal.tier,
-                          category: signal.category,
-                          score: signal.score,
-                          node_ids: signal.node_ids,
-                        }}
-                      />
-                      {nodes === '' ? null : (
-                        <span className={css.hint}>{t('trajectory.diagnosis.causeAt', { nodes })}</span>
-                      )}
-                    </div>
-                    <ClampedMarkdown text={entry.text_md} />
-                  </div>
-                );
-              }))}
-            </div>
-          ) : null}
-        </div>
-      )}
     </SuggestionCard>
   );
 }

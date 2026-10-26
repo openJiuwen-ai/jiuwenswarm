@@ -1214,9 +1214,17 @@
         "weak": "未达标"
       },
       "signalSource": {
-        "keyword_tool": "工具输出命中",
-        "keyword_user": "用户消息命中",
-        "reward": "Reward 评分"
+        "keyword_tool": "工具输出",
+        "keyword_user": "用户消息",
+        "reward": "Reward",
+        "user": "用户补充"
+      },
+      "signalSourceLabel": "信号来源：{{source}}",
+      "attributionLabel": "归因：{{kind}}",
+      "attributionKind": {
+        "artifact": "产物",
+        "skill": "技能",
+        "experience": "经验"
       },
       "signalScore": "得分 {{score}}",
       "signalSurfacedAt": "问题定位到 {{nodes}}",
@@ -1229,9 +1237,9 @@
       "objectExcludedRunning": "诊断时有 {{count}} 个步骤仍在运行，未纳入诊断",
       "objectTask": "任务描述",
       "objectSummary": "轨迹摘要",
-      "findingCauses": "{{count}} 条 Reward 评估失败归因",
-      "findingSkill": "{{count}} 条 Skill 建议",
-      "findingExperience": "{{count}} 条经验判定",
+      "findingCauses": "{{count}} 条产物归因",
+      "findingSkill": "{{count}} 条技能归因",
+      "findingExperience": "{{count}} 条经验归因",
       "findingJoin": "、",
       "findingWithEvolution": "{{causes}}，另有 {{evolution}}",
       "findingLegacyCauses": "{{count}} 处旧版归因",

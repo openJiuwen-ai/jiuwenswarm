@@ -1230,9 +1230,17 @@
         "weak": "Not met"
       },
       "signalSource": {
-        "keyword_tool": "Tool output hit",
-        "keyword_user": "User message hit",
-        "reward": "Reward score"
+        "keyword_tool": "Tool output",
+        "keyword_user": "User message",
+        "reward": "Reward",
+        "user": "User note"
+      },
+      "signalSourceLabel": "Source: {{source}}",
+      "attributionLabel": "Attribution: {{kind}}",
+      "attributionKind": {
+        "artifact": "Artifact",
+        "skill": "Skill",
+        "experience": "Experience"
       },
       "signalScore": "Score {{score}}",
       "signalSurfacedAt": "Surfaced at {{nodes}}",
@@ -1245,9 +1253,9 @@
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
       "objectSummary": "Trajectory summary",
-      "findingCauses": "{{count}} reward failure cause(s)",
-      "findingSkill": "{{count}} skill suggestion(s)",
-      "findingExperience": "{{count}} experience verdict(s)",
+      "findingCauses": "{{count}} artifact finding(s)",
+      "findingSkill": "{{count}} skill finding(s)",
+      "findingExperience": "{{count}} experience finding(s)",
       "findingJoin": ", ",
       "findingWithEvolution": "{{causes}}, plus {{evolution}}",
       "findingLegacyCauses": "{{count}} legacy finding(s)",

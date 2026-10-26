@@ -112,6 +112,10 @@ def _parsed() -> TaskParseResult:
     )
 
 
+def _summary_outcome(summary: str = "选中范围内共执行了 3 个步骤，期间出现一次工具报错。") -> SimpleNamespace:
+    return SimpleNamespace(trajectory_summary=summary, status="success", completed=True)
+
+
 def _signal(signal_id: str, tier: str = "weak", *, source: SignalSource = SignalSource.KEYWORD_TOOL) -> DiagnosticSignal:
     return DiagnosticSignal.create(
         text=f"信号 {signal_id}",
@@ -252,6 +256,11 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
     async def emit(_event: EngineEvent) -> None:
         return
 
+    async def summary(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        return _summary_outcome("任务解析失败，但已阅读选中范围的轨迹。")
+
+    monkeypatch.setattr(module, "run_trajectory_summary", summary)
+
     for error_type, code in (
         ("incomplete_task", "TASK_INCOMPLETE"),
         ("multiple_unrelated_tasks", "MULTIPLE_UNRELATED_TASKS"),
@@ -262,17 +271,18 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
             raise TaskParseError(error_type, "boom")
 
         monkeypatch.setattr(module, "run_task_parse", fail)
-        with pytest.raises(EngineError) as exc:
-            await engine.run(inputs, emit)
-        assert exc.value.code == code
+        result = await engine.run(inputs, emit)
+        assert result.error is not None and result.error.code == code
+        assert result.trajectory_summary == "任务解析失败，但已阅读选中范围的轨迹。"
+        assert result.reward_failure_causes == [] and result.evolution_judge == []
 
     async def crash(*_args: Any, **_kwargs: Any) -> TaskParseResult:
         raise RuntimeError("network down")
 
     monkeypatch.setattr(module, "run_task_parse", crash)
-    with pytest.raises(EngineError) as exc:
-        await engine.run(inputs, emit)
-    assert exc.value.code == "MODEL_CALL_FAILED"
+    result = await engine.run(inputs, emit)
+    assert result.error is not None and result.error.code == "MODEL_CALL_FAILED"
+    assert result.trajectory_summary == "任务解析失败，但已阅读选中范围的轨迹。"
 
 
 @pytest.mark.asyncio
@@ -302,14 +312,18 @@ async def test_no_signals_finishes_normally_and_skips_attribution(monkeypatch: p
     async def attribute(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         raise AssertionError("attribution must not run without signals")
 
+    async def summary(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        return _summary_outcome("选中范围没有产生诊断信号，轨迹主要是任务收尾。")
+
     monkeypatch.setattr(module, "run_task_parse", parse)
     monkeypatch.setattr(module, "run_diagnosis", diagnose)
     monkeypatch.setattr(module, "run_attribution", attribute)
+    monkeypatch.setattr(module, "run_trajectory_summary", summary)
 
     result = await engine.run(inputs, emit)
 
     assert result.error is None
-    assert result.trajectory_summary == "本次没有可归因的信号，无需归因"
+    assert result.trajectory_summary == "选中范围没有产生诊断信号，轨迹主要是任务收尾。"
     assert result.reward_failure_causes == []
     assert result.evolution_judge == []
     finished = {event.stage_id: event for event in events if event.kind == "stage_finished"}
@@ -317,6 +331,51 @@ async def test_no_signals_finishes_normally_and_skips_attribution(monkeypatch: p
     assert finished["diagnose"].summary == "信号 0 条（规则模式 · Reward 已跳过：无任务产物）"
     assert finished["attribute"].status == "skipped"
     assert finished["attribute"].skip_reason == "诊断分析没有产出可归因的信号，已跳过归因"
+
+
+@pytest.mark.asyncio
+async def test_only_perfect_signals_still_run_summary_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    import jiuwenswarm.diagnosis.attribution_engine as module
+
+    engine = AttributionCoreEngine(model_factory=lambda _model: object())
+    snapshot = _snapshot([_chat_record(0, 1000, 2000)])
+    inputs = _inputs(snapshot, [SubjectRange("main", 0, 10**9)])
+    events: list[EngineEvent] = []
+
+    async def emit(event: EngineEvent) -> None:
+        events.append(event)
+
+    async def parse(*_args: Any, **_kwargs: Any) -> TaskParseResult:
+        return _parsed()
+
+    async def diagnose(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            signals=[_signal("diag-p", tier="perfect")],
+            reward_overall=RewardOverall(comment="很好", total_score=95),
+            signal_mode="reward",
+            run_meta={"reward": {"submitted": True}},
+            reward_payload=_reward_payload("测试应当通过"),
+        )
+
+    async def attribute(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        raise AssertionError("the attribution agent must not run for perfect-only signals")
+
+    async def summary(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        return _summary_outcome("所有评分维度均已达标，轨迹无失败归因。")
+
+    monkeypatch.setattr(module, "run_task_parse", parse)
+    monkeypatch.setattr(module, "run_diagnosis", diagnose)
+    monkeypatch.setattr(module, "run_attribution", attribute)
+    monkeypatch.setattr(module, "run_trajectory_summary", summary)
+
+    result = await engine.run(inputs, emit)
+
+    assert result.error is None
+    assert result.trajectory_summary == "所有评分维度均已达标，轨迹无失败归因。"
+    assert result.reward_failure_causes == [] and result.evolution_judge == []
+    assert result.reward == _reward_payload("测试应当通过")
+    finished = next(event for event in events if event.stage_id == "attribute" and event.kind == "stage_finished")
+    assert finished.status == "completed"
 
 
 @pytest.mark.asyncio

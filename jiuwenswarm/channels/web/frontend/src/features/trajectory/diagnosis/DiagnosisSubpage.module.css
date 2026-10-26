@@ -646,40 +646,6 @@
   margin-top: 0.25rem;
 }
 
-.relatedSignalsToggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  border: none;
-  background: none;
-  padding: 0;
-  color: var(--color-text-secondary);
-  font-size: 0.75rem;
-  cursor: pointer;
-}
-
-.relatedSignalsToggle:hover {
-  color: var(--color-text-primary);
-}
-
-.artifactEvidenceTag {
-  flex: 0 0 auto;
-  border-radius: 0.25rem;
-  background: var(--color-surface-muted);
-  color: var(--color-text-primary);
-  padding: 0 0.5rem;
-  font-size: 0.6875rem;
-  font-weight: 400;
-}
-
-.artifactEvidenceText {
-  flex: 1 1 12rem;
-  min-width: 0;
-  color: var(--color-text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
 .relatedSignals {
   gap: 0.5rem;
 }
@@ -702,38 +668,6 @@
   margin: 0;
   padding: 0;
   list-style: none;
-}
-
-.artifactItem {
-  border-top: 1px dashed var(--color-border-default);
-  padding-top: 0.375rem;
-}
-
-.artifactItems > li:first-child > .artifactItem {
-  border-top: none;
-  padding-top: 0;
-}
-
-.artifactItem > summary {
-  cursor: pointer;
-  color: var(--color-text-primary);
-}
-
-.artifactItem > summary:hover {
-  color: var(--color-text-primary);
-}
-
-.artifactItemText {
-  white-space: pre-line;
-}
-
-.artifactItemBody {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-  margin: 0.5rem 0 0.25rem;
-  padding-left: 0.75rem;
-  border-left: 2px solid var(--color-border-default);
 }
 
 .tag {

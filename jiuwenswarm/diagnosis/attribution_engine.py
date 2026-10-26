@@ -45,6 +45,7 @@ from openjiuwen.agent_evolving.attribution import (
     run_attribution,
     run_diagnosis,
     run_task_parse,
+    run_trajectory_summary,
     slice_nodes_by_range,
 )
 from openjiuwen.agent_evolving.attribution.snapshot import SlicedNodes
@@ -104,6 +105,7 @@ _TEXTS: dict[str, dict[str, str]] = {
         "reward_failed": "Reward 失败：{reason}",
         "reward_no_signals": "Reward 未产出有效信号，使用规则信号继续",
         "trajectory_summary_no_signals": "本次没有可归因的信号，无需归因",
+        "trajectory_summary_unavailable": "未能生成轨迹摘要（模型调用失败或超时）",
         "attribute_skipped_no_signals": "诊断分析没有产出可归因的信号，已跳过归因",
         "diagnose_summary_reward": "信号 {count} 条（Reward 模式）",
         "diagnose_summary_rule": "信号 {count} 条（规则模式）",
@@ -149,6 +151,7 @@ _TEXTS: dict[str, dict[str, str]] = {
         "reward_failed": "Reward failed: {reason}",
         "reward_no_signals": "Reward produced no usable signals; rule signals are kept",
         "trajectory_summary_no_signals": "No signals to attribute this run; nothing to attribute",
+        "trajectory_summary_unavailable": "Could not generate a trajectory summary (model call failed or timed out)",
         "attribute_skipped_no_signals": "Diagnosis produced no signals to attribute; attribution was skipped",
         "diagnose_summary_reward": "{count} signals (reward mode)",
         "diagnose_summary_rule": "{count} signals (rule mode)",
@@ -780,14 +783,55 @@ class AttributionCoreEngine:
             nodes=sliced,
             workspace=workspace,
         )
-        task_parse = await self._stage_task_parse(context)
+        try:
+            task_parse = await self._stage_task_parse(context)
+        except EngineError as exc:
+            # A valid range must still produce a summary even when the task
+            # cannot be parsed; keep the record completed with a warning.
+            logger.warning("[diagnosis] task parse failed; summary only: %s", exc.code)
+            queue.put_nowait(
+                EngineEvent("task_parse", "stage_finished", status="failed", summary=exc.message),
+            )
+            summary = await self._summary_only(context)
+            return EngineResult(
+                trajectory_summary=summary,
+                error=DiagnosisError(code=exc.code, message=exc.message),
+            )
         diagnosis = await self._stage_diagnose(context, task_parse)
         if diagnosis.signals:
             result = await self._stage_attribute(context, task_parse, diagnosis)
         else:
             # Nothing to attribute is a normal outcome, not a failure.
-            result = self._result_without_signals(text, queue, diagnosis)
+            result = await self._result_without_signals(context, task_parse, diagnosis)
         return result
+
+    def _task_hint(self, context: _StageContext) -> str:
+        """Best-effort task hint from the user's own messages when task parsing is unavailable."""
+        parts: list[str] = []
+        for node in getattr(context.nodes, "user_requests", ()) or ():
+            content = str(getattr(node, "content", "") or "").strip()
+            if content:
+                parts.append(content)
+        return " / ".join(parts)[:2000]
+
+    async def _summary_only(self, context: _StageContext, *, task_description: str = "") -> str:
+        """A narrative summary for a valid range when the normal attribution agent will not run."""
+        hint = task_description.strip() or self._task_hint(context)
+        try:
+            outcome = await run_trajectory_summary(
+                model=context.model,
+                nodes_by_subagent=context.nodes,
+                language=context.inputs.locale,
+                status_sink=context.sink,
+                model_name=context.model_name,
+                status_counter=context.counter,
+                task_hint=hint,
+            )
+            summary = str(outcome.trajectory_summary or "").strip()
+        except Exception:  # noqa: BLE001 - a valid range still needs some summary
+            logger.warning("[diagnosis] summary-only run failed", exc_info=True)
+            summary = ""
+        return summary or context.text["trajectory_summary_unavailable"]
 
     async def _stage_task_parse(self, context: _StageContext) -> Any:
         inputs = context.inputs
@@ -932,13 +976,15 @@ class AttributionCoreEngine:
         queue.put_nowait(EngineEvent("diagnose", "stage_finished", status="completed", summary=summary))
         return diagnosis
 
-    @staticmethod
-    def _result_without_signals(
-        text: dict[str, str],
-        queue: asyncio.Queue[EngineEvent | None],
+    async def _result_without_signals(
+        self,
+        context: _StageContext,
+        task_parse: Any,
         diagnosis: Any,
     ) -> EngineResult:
         """Finish normally when diagnosis produced no signal: the attribute stage is skipped."""
+        text = context.text
+        queue = context.queue
         queue.put_nowait(EngineEvent("attribute", "stage_started", title=text["stage_attribute"]))
         queue.put_nowait(
             EngineEvent(
@@ -948,10 +994,8 @@ class AttributionCoreEngine:
                 skip_reason=text["attribute_skipped_no_signals"],
             ),
         )
-        return EngineResult(
-            trajectory_summary=text["trajectory_summary_no_signals"],
-            reward=diagnosis.reward_payload,
-        )
+        summary = await self._summary_only(context, task_description=task_parse.task_description)
+        return EngineResult(trajectory_summary=summary, reward=diagnosis.reward_payload)
 
     async def _stage_attribute(self, context: _StageContext, task_parse: Any, diagnosis: Any) -> EngineResult:
         inputs = context.inputs
@@ -960,6 +1004,26 @@ class AttributionCoreEngine:
         nodes = context.nodes
         queue.put_nowait(EngineEvent("attribute", "stage_started", title=text["stage_attribute"]))
         language = inputs.locale
+        if not any(signal.tier != "perfect" for signal in diagnosis.signals):
+            skipped = [signal.signal_id for signal in diagnosis.signals if signal.tier == "perfect"]
+            if skipped:
+                queue.put_nowait(
+                    EngineEvent(
+                        "attribute",
+                        "output_delta",
+                        text_delta=text["perfect_skipped"].format(ids=", ".join(skipped)),
+                    ),
+                )
+            summary = await self._summary_only(context, task_description=task_parse.task_description)
+            queue.put_nowait(
+                EngineEvent(
+                    "attribute",
+                    "stage_finished",
+                    status="completed",
+                    summary=text["attribute_summary"].format(causes=0, evolution=0),
+                ),
+            )
+            return EngineResult(trajectory_summary=summary, reward=diagnosis.reward_payload)
         # Entries are logged and the two tables refreshed as the agent submits them.
         runtime = _StreamingRuntime(nodes, language, queue, text, diagnosis.signals, diagnosis.reward_payload)
         outcome = await run_attribution(
