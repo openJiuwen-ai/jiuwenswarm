@@ -506,6 +506,8 @@ export interface HistoryCompactionReplay {
 interface BeginHistoryRestoreOptions {
   sessionId: string;
   subagentId?: string;
+  /** Continue initial restore past batches with no restorable content. */
+  requestNextBatch: (cursor: string) => Promise<unknown>;
   onReady: (messages: Message[], cursor: HistoryCursorMeta) => void;
   /** 与消息同一时间线顺序，用于恢复 ToolGroupDisplay */
   onToolReplay?: (items: HistoryToolReplayItem[]) => void;
@@ -523,7 +525,7 @@ interface BeginHistoryRestoreOptions {
   onContextUsage?: (payload: Record<string, unknown>) => void;
   /** 恢复问题澄清对话框（chat.ask_user_question），重新入 pendingQuestion 队列弹交互框 */
   onPendingQuestionReplay?: (items: HistoryPendingQuestionReplayItem[]) => void;
-  /** 无消息且无工具回放时调用；游标元数据仍决定是否存在更早记录。 */
+  /** Called only when the exhausted snapshot has no restorable content. */
   onEmpty?: (cursor: HistoryCursorMeta) => void;
   onFailure?: (failure: HistoryRestoreFailure) => void;
   onError?: (message: string) => void;
@@ -2296,7 +2298,9 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   restoreGeneration = generation;
 
   const entries: HistoryTimelineEntry[] = [];
+  let requestCursor: string | null = null;
   let cursorMeta: HistoryCursorMeta | null = null;
+  let snapshotMeta: HistoryCursorMeta | null = null;
   let disposed = false;
   let finalized = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2314,13 +2318,21 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
       undefined,
       false,
       options.subagentId,
-      null,
+      requestCursor,
     )) {
       return;
     }
 
-    const nextMeta = readHistoryCursorMeta(payload, null);
+    const nextMeta = readHistoryCursorMeta(payload, requestCursor);
     if (nextMeta) {
+      if (snapshotMeta && (
+        nextMeta.snapshotId !== snapshotMeta.snapshotId
+        || nextMeta.snapshotEnd !== snapshotMeta.snapshotEnd
+      )) {
+        fail({ code: 'HISTORY_SNAPSHOT_CHANGED', message: 'history snapshot changed during restore' });
+        return;
+      }
+      snapshotMeta = nextMeta;
       cursorMeta = nextMeta;
     }
 
@@ -2397,10 +2409,10 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
 
   function finalize(): void {
     if (disposed || finalized) return;
-    finalized = true;
     reassembler.flush();
 
     if (!cursorMeta) {
+      finalized = true;
       stopListening();
       try {
         options.onFailure?.({
@@ -2426,19 +2438,37 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     } = materializeHistoryTimeline(entries);
     const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
+    const isEmpty = (
+      messages.length === 0
+      && toolReplay.length === 0
+      && harnessReplay.length === 0
+      && teamReplay.length === 0
+      && subagentReplay.length === 0
+      && pendingQuestionReplay.length === 0
+      && answeredQuestionReplay.length === 0
+      && !latestContextUsage
+    );
+    const nextCursor = cursorMeta.nextCursor;
+    if (isEmpty && cursorMeta.hasMore && nextCursor) {
+      // A filtered batch does not establish that the whole snapshot is empty.
+      requestCursor = nextCursor;
+      cursorMeta = null;
+      resetRestoreTimer();
+      void Promise.resolve().then(() => {
+        if (!disposed && !finalized) return options.requestNextBatch(nextCursor);
+      }).catch((error: unknown) => {
+        fail({
+          code: 'HISTORY_RESTORE_FAILED',
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+      return;
+    }
+
+    finalized = true;
     stopListening();
 
     try {
-      const isEmpty = (
-        messages.length === 0
-        && toolReplay.length === 0
-        && harnessReplay.length === 0
-        && teamReplay.length === 0
-        && subagentReplay.length === 0
-        && pendingQuestionReplay.length === 0
-        && answeredQuestionReplay.length === 0
-        && !latestContextUsage
-      );
       if (isEmpty) {
         options.onEmpty?.(cursorMeta);
         return;
@@ -2479,11 +2509,14 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
 
   const handle: HistoryRestoreHandle = { generation, dispose };
   activeHistoryRequests.set(requestKey, handle);
-  // 超时是一次明确失败，不能把不完整批次当作成功历史发布。
-  restoreTimer = setTimeout(() => {
-    if (disposed || finalized) return;
-    fail({ code: 'HISTORY_RESTORE_TIMEOUT', message: 'history restore timed out' });
-  }, HISTORY_RESTORE_TIMEOUT_MS);
+  function resetRestoreTimer(): void {
+    if (restoreTimer) clearTimeout(restoreTimer);
+    restoreTimer = setTimeout(() => {
+      if (disposed || finalized) return;
+      fail({ code: 'HISTORY_RESTORE_TIMEOUT', message: 'history restore timed out' });
+    }, HISTORY_RESTORE_TIMEOUT_MS);
+  }
+  resetRestoreTimer();
   return handle;
 }
 
