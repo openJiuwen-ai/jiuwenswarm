@@ -868,6 +868,108 @@ async def test_stdout_pending_buffer_is_bounded_and_logs_dimensions():
 
 
 @pytest.mark.asyncio
+async def test_stdout_limits_apply_per_frame_not_per_read(monkeypatch):
+    monkeypatch.setattr(dt, "DEEPRESEARCH_STDOUT_PENDING_MAX_BYTES", 32)
+    payload = b'{"status":"started"}\n' * 8
+    assert [line async for line in dt._iter_ndjson_lines(_Reader(payload))] == [
+        b'{"status":"started"}'
+    ] * 8
+
+
+@pytest.mark.asyncio
+async def test_terminal_stdout_has_a_hard_wire_limit(monkeypatch):
+    monkeypatch.setattr(dt, "DEEPRESEARCH_STDOUT_PENDING_MAX_BYTES", 32)
+    monkeypatch.setattr(dt, "DEEPRESEARCH_STDOUT_TERMINAL_MAX_BYTES", 128)
+    payload = json.dumps({
+        "__deepsearch_status__": "completed",
+        "final_result": {"response_content": "x" * 129},
+    }).encode()
+    for value in (payload, payload + b"\n"):
+        with pytest.raises(ValueError, match="deepresearch_stdout_limit_exceeded"):
+            async for _ in dt._iter_ndjson_lines(_Reader(value)):
+                pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame", [
+    {"agent": "reporter", "content": "x" * 100},
+    {"agent": "end", "section_idx": "1", "event": "summary_response",
+     "content": "x" * 100},
+    {"agent": "end", "section_idx": "0", "event": "message",
+     "content": "x" * 100},
+    {"__deepsearch_status__": "completed", "final_result": "x" * 100},
+])
+async def test_ordinary_stdout_frames_keep_their_wire_limit(monkeypatch, frame):
+    monkeypatch.setattr(dt, "DEEPRESEARCH_STDOUT_PENDING_MAX_BYTES", 32)
+    with pytest.raises(ValueError, match="deepresearch_stdout_limit_exceeded"):
+        async for _ in dt._iter_ndjson_lines(_Reader(json.dumps(frame).encode() + b"\n")):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_fragmented_unicode_terminal_frame_exceeds_legacy_wire_limit():
+    content = "银发" * (3 * 1024 * 1024)
+    frame = {"__deepsearch_status__": "completed",
+             "final_result": {"response_content": content}}
+    payload = json.dumps(frame, ensure_ascii=False).encode() + b"\n"
+    assert len(payload) > 16 * 1024 * 1024
+    assert len(content) < 16 * 1024 * 1024
+
+    class Reader:
+        def __init__(self):
+            self.offset = 0
+
+        async def read(self, size):
+            chunk = payload[self.offset:self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+    lines = [line async for line in dt._iter_ndjson_lines(Reader(), read_size=65537)]
+    assert len(lines) == 1
+    parsed = json.loads(lines[0])
+    assert dt._validate_stream_json_shape(parsed)
+    assert dt._redact_json_value(parsed, ())["final_result"]["response_content"] == content
+
+
+@pytest.mark.parametrize("operation", [dt._validate_stream_json_shape, dt._redact_json_value])
+def test_terminal_text_budget_remains_bounded(monkeypatch, operation):
+    monkeypatch.setattr(dt, "MAX_TERMINAL_RESULT_TEXT_CHARS", 256)
+    frame = {"__deepsearch_status__": "completed",
+             "final_result": {"response_content": "x" * 257}}
+    if operation is dt._validate_stream_json_shape:
+        assert operation(frame) is False
+    else:
+        with pytest.raises(dt._StreamProtocolInvalid):
+            operation(frame, ())
+
+
+@pytest.mark.asyncio
+async def test_stop_drain_preserves_large_completed_report():
+    content = "x" * (16 * 1024 * 1024 + 1)
+    frame = json.dumps({
+        "__deepsearch_status__": "completed",
+        "final_result": {"response_content": content},
+    }).encode() + b"\n"
+    captured = {}
+    await dt._drain_stream_while_stopping(_Reader(frame), captured)
+    assert captured["final_result"]["response_content"] == content
+
+
+def test_terminal_redaction_and_validation_share_text_budget(monkeypatch):
+    monkeypatch.setattr(dt, "DEEPRESEARCH_STREAM_JSON_MAX_TEXT_CHARS", 256)
+    frame = {
+        "__deepsearch_status__": "completed",
+        "final_result": {"response_content": "secret " * 100},
+    }
+    assert dt._validate_stream_json_shape(frame)
+    redacted = dt._redact_json_value(frame, ("secret",))
+    assert "secret" not in redacted["final_result"]["response_content"]
+    assert not dt._validate_stream_json_shape({"content": "x" * 257})
+    with pytest.raises(dt._StreamProtocolInvalid):
+        dt._redact_json_value({"content": "x" * 257}, ())
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("exception_message", "expected_reason", "expected_exc_info"),
     [
@@ -2160,6 +2262,43 @@ async def test_completed_marker_delivers_large_sdk_end_result(tmp_path: Path):
         "report_delivered": True,
     }
     write_artifacts.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_completed_marker_delivers_report_above_legacy_limits(tmp_path: Path):
+    content = "x" * (16 * 1024 * 1024 + 1) + " REPORT_SECRET"
+    final_result = {
+        "response_content": content,
+        "citations": [{"title": "source", "url": "https://example.org"}] * 6000,
+    }
+    proc = _Proc([
+        json.dumps({"agent": "end", "section_idx": "0",
+                    "event": "summary_response", "content": json.dumps(final_result)}),
+        json.dumps({"__deepsearch_status__": "completed", "conversation_id": "C1",
+                    "final_result": final_result}),
+    ])
+    route = {"request_id": "R1", "channel_id": "CH1", "session_id": "S1",
+             "service_id": "default", "agent_id": "default"}
+    push = AsyncMock()
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route=route):
+            stack.enter_context(item)
+        stack.enter_context(patch.object(dt, "_build_deepresearch_request_config",
+                                        return_value=_valid_config(LLM_API_KEY="REPORT_SECRET")))
+        stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
+        write = stack.enter_context(patch.object(
+            dt, "_write_report_artifacts_stream",
+            new=AsyncMock(return_value={"md": str(tmp_path / "report.md")}),
+        ))
+        outcome = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+    assert outcome["status"] == "completed"
+    assert outcome["report_delivered"] is True
+    delivered = write.await_args.args[0]
+    assert delivered["response_content"].startswith(content[:100])
+    assert "REPORT_SECRET" not in delivered["response_content"]
+    assert len(delivered["citations"]) == 6000
+    assert any(call.args[0]["payload"].get("event_type") == "chat.file"
+               for call in push.send_push.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -4357,6 +4496,75 @@ async def test_ordered_stage_gateway_updates_reach_completed_todo_snapshot(tmp_p
     assert active == sorted(active, key=lambda value: 99 if value is None else value)
     assert active[-1] is None
     assert persist.called
+
+
+@pytest.mark.asyncio
+async def test_completed_report_with_32_charts_publishes_real_files(tmp_path: Path):
+    image_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jV1EAAAAASUVORK5CYII="
+    )
+    charts = [
+        {
+            "chart_id": f"chart-{index}",
+            "chart_title": f"Chart {index}",
+            "base64": base64.b64encode(image_bytes).decode("ascii"),
+        }
+        for index in range(32)
+    ]
+    proc = _Proc([
+        json.dumps({
+            "agent": "sub_reporter",
+            "section_idx": "1",
+            "section_total": 1,
+            "event": "summary_response",
+            "content": "SUCCESS",
+        }),
+        json.dumps({
+            "__deepsearch_status__": "completed",
+            "conversation_id": "C1",
+            "final_result": {
+                "response_content": "# Report\n\n" + "\n".join(
+                    f"(#insertChart:{chart['chart_id']})" for chart in charts
+                ),
+                "chart_messages": charts,
+            },
+        }),
+    ])
+    route = {
+        "request_id": "R", "channel_id": "CH", "session_id": "S",
+        "service_id": "default", "agent_id": "default",
+    }
+    push = AsyncMock()
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route=route):
+            stack.enter_context(item)
+        stack.enter_context(patch.object(dt, "get_cwd", return_value=str(tmp_path)))
+        stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
+        stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=tmp_path / "todo.json"))
+        # Avoid model calls while exercising real Markdown/HTML publication.
+        stack.enter_context(patch.object(
+            dt, "stylize_report_archive",
+            side_effect=DeepResearchRuntimeError("offline_test"),
+        ))
+        outcome = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+
+    assert outcome["status"] == "completed", outcome
+    deliveries = [
+        call.args[0]["payload"] for call in push.send_push.await_args_list
+        if call.args[0]["payload"].get("event_type") == "chat.file"
+    ]
+    assert len(deliveries) == 1
+    files = {item["mime_type"]: Path(item["path"]) for item in deliveries[0]["files"]}
+    markdown = files["text/markdown"]
+    html = files["text/html"]
+    snapshot = json.loads(markdown.with_suffix(".final-result.json").read_text(encoding="utf-8"))
+    assert len(snapshot["chart_messages"]) == 32
+    rendered = html.read_text(encoding="utf-8")
+    for message in snapshot["chart_messages"]:
+        asset = markdown.parent / message["artifact_path"]
+        assert asset.read_bytes() == image_bytes
+        assert message["artifact_path"] in rendered
+    assert markdown.with_suffix(".provenance.json").is_file()
 
 
 def test_windows_path_publication_backend_avoids_directory_descriptors(

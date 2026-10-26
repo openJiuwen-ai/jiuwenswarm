@@ -142,7 +142,7 @@ def resolve_skill_turbo_thinking_kwargs(
 ) -> dict[str, Any]:
     """Optional thinking inject for SkillTurbo LLM calls.
 
-    ``thinking is None`` → ``default`` (GLM-5.3 family → product depth low;
+    ``thinking is None`` → ``default`` (GLM-5.3 / Kimi K3 → product depth low;
     other models → no inject). Unsupported / degraded → empty dict (never abort).
     """
     if thinking is None:
@@ -585,6 +585,16 @@ class SkillTurboExecutor:
         skill_name = self._env.skill_name
         if skill_name and "skill_name" not in merged:
             merged["skill_name"] = skill_name
+        # 注入 python_cmd：skill_code（如 docx-craft pipeline_init.py P0）需要用
+        # 当前解释器运行 python-docx 等依赖。契约：executor 注入 sys.executable
+        # （jiuwenclaw venv / 打包后 embeddable python），skill 侧禁止 import sys
+        # （validator denied_import_exact），也不得自行探测系统 PATH 上的 python。
+        if not str(merged.get("python_cmd") or "").strip():
+            merged["python_cmd"] = sys.executable
+            logger.debug(
+                "[SkillTurboExecutor] injected python_cmd (sys.executable): %s",
+                merged["python_cmd"],
+            )
         return merged
 
     def _build_tool_loader_context(

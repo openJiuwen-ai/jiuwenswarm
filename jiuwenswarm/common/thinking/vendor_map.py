@@ -5,16 +5,18 @@
 Allowlisted families participate in thinking toggle / depth injection.
 
 Styles:
-- ``glm53_reasoning_effort``: GLM-5.3（始终思考）— 只用 ``reasoning_effort``
-  ``low|high|max``，禁止 ``thinking.type=disabled``。
+- ``glm53_reasoning_effort``: GLM-5.3（始终思考）— ``reasoning_effort``
+  ``low|high|max`` + ``thinking.type=enabled``（禁止 disabled）。
+- ``effort_only``: Kimi K3（始终思考）— **仅**顶层 ``reasoning_effort``
+  ``low|high|max``，禁止携带 ``thinking``（厂商会拒参）。
 - ``extra_body_thinking_type``: GLM-5 / 5.1 / 5.2 / DeepSeek — ``thinking.type``
   开关；深度档可附带 ``reasoning_effort``。
 
 Product depth semantics (``low|medium|high``) are mapped per style.
 
-:data:`DEFAULT_THINKING_DEPTH` is the depth used when GLM-5.3 family auto-
-injects on ``default`` (temporary; broader layered defaults TBD). Explicit
-``low|medium|high`` still map for every allowlisted style.
+:data:`DEFAULT_THINKING_DEPTH` is the depth used when GLM-5.3 / Kimi K3
+auto-inject on ``default`` / omit. Explicit ``low|medium|high`` still map
+for every allowlisted style.
 """
 
 from __future__ import annotations
@@ -22,8 +24,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# Depth applied when GLM-5.3 auto-injects on ``default`` / omit.
-# Future: layered config; keep a single module-level knob for now.
+# Depth applied when GLM-5.3 / Kimi K3 auto-inject on ``default`` / omit.
+# Future: user-configurable depth; keep a single module-level knob for now.
 DEFAULT_THINKING_DEPTH = "low"
 
 # Ordered: first match wins. GLM-5.3 must precede the broader GLM-5 pattern.
@@ -34,6 +36,13 @@ _VENDOR_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
             re.IGNORECASE,
         ),
         "glm53_reasoning_effort",
+    ),
+    (
+        re.compile(
+            r"(?:^|[^a-z0-9])kimi[-_]?k3(?:$|[^0-9])",
+            re.IGNORECASE,
+        ),
+        "effort_only",
     ),
     (
         re.compile(
@@ -48,8 +57,8 @@ _VENDOR_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 
-# GLM-5.3 vendor effort levels (no medium literal).
-_GLM53_EFFORT = {
+# Always-on thinking models: product depth → vendor effort (no medium literal).
+_ALWAYS_ON_EFFORT = {
     "off": "low",  # cannot disable — fall back to lightest effort
     "on": "high",
     "low": "low",
@@ -73,11 +82,15 @@ def depth_to_kwargs(style: str, depth: str) -> dict[str, Any]:
     """Map vendor style + product depth to physical ``llm_call_kwargs``."""
     level = (depth or DEFAULT_THINKING_DEPTH).strip().lower()
     if style == "glm53_reasoning_effort":
-        effort = _GLM53_EFFORT.get(level, "low")
+        effort = _ALWAYS_ON_EFFORT.get(level, "low")
         return {
             "extra_body": {"thinking": {"type": "enabled"}},
             "reasoning_effort": effort,
         }
+    if style == "effort_only":
+        # Kimi K3: never send thinking.* — only top-level reasoning_effort.
+        effort = _ALWAYS_ON_EFFORT.get(level, "low")
+        return {"reasoning_effort": effort}
     if style == "extra_body_thinking_type":
         if level == "off":
             return {"extra_body": {"thinking": {"type": "disabled"}}}

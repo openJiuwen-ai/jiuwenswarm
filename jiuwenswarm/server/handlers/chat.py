@@ -254,12 +254,18 @@ async def _handle_cancel(
                 message="团队已暂停" if paused else "当前没有可暂停的团队任务",
             )
         elif intent == "cancel":
-            cancelled = await team_manager.cancel_session_runtime(sid, reason=reason)
+            try:
+                cancelled = await team_manager.cancel_session_runtime(sid, reason=reason)
+                message = "团队当前执行已结束" if cancelled else "当前没有可取消的团队任务"
+            except Exception:
+                logger.exception("[AgentWebSocketServer] team cancel failed: session_id=%s", sid)
+                cancelled = False
+                message = "团队停止未完成，请稍后重试"
             resp = _build_team_interrupt_response(
                 request,
                 intent=intent,
                 success=cancelled,
-                message="团队当前执行已结束" if cancelled else "当前没有可取消的团队任务",
+                message=message,
             )
         else:
             resp = _build_team_interrupt_response(

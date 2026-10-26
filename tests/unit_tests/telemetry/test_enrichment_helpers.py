@@ -544,6 +544,8 @@ def test_usage_extracts_nested_sdk_and_provider_specific_fields() -> None:
         cache_read_input_tokens=5,
         cache_creation_input_tokens=3,
         reasoning_output_tokens=2,
+        uncached_input_tokens=4,
+        cache_usage_observed=True,
     )
 
 
@@ -563,6 +565,8 @@ def test_usage_supports_flat_dict_aliases_and_never_raises_for_invalid_values() 
         cache_read_input_tokens=3,
         cache_creation_input_tokens=0,
         reasoning_output_tokens=0,
+        uncached_input_tokens=5,
+        cache_usage_observed=True,
     )
     assert extract_usage(None) == UsageBreakdown()
     assert extract_usage({"usage_metadata": {"input_tokens": True}}) == UsageBreakdown()
@@ -579,7 +583,61 @@ def test_usage_degrades_broken_top_level_and_nested_mapping_reads() -> None:
     assert extract_usage({"usage_metadata": partly_broken_usage}) == UsageBreakdown(
         output_tokens=4,
         total_tokens=4,
+        uncached_input_tokens=0,
     )
+
+
+def test_usage_computes_uncached_input_by_provider_style() -> None:
+    openai_style = {
+        "prompt_tokens": 10,
+        "prompt_tokens_details": {"cached_tokens": 4},
+    }
+    anthropic_style = {
+        "input_tokens": 10,
+        "cache_read_input_tokens": 4,
+    }
+
+    assert extract_usage(openai_style).uncached_input_tokens == 6
+    assert extract_usage(anthropic_style).uncached_input_tokens == 6
+    assert extract_usage({"prompt_tokens": 5}).uncached_input_tokens == 5
+
+
+def test_usage_computes_uncached_input_from_unified_metadata() -> None:
+    result = {
+        "input_tokens": 10,
+        "cache_read_tokens": 4,
+        "cache_write_tokens": 2,
+        "cache_creation_input_tokens": 2,
+    }
+
+    breakdown = extract_usage(result)
+
+    assert breakdown.input_tokens == 10
+    assert breakdown.cache_read_input_tokens == 4
+    assert breakdown.cache_creation_input_tokens == 2
+    assert breakdown.uncached_input_tokens == 4
+    assert breakdown.cache_usage_observed is True
+
+
+def test_usage_prefers_unified_cache_miss_tokens() -> None:
+    result = {
+        "input_tokens": 10,
+        "cache_read_tokens": 4,
+        "cache_write_tokens": 2,
+        "cache_miss_tokens": 3,
+    }
+
+    breakdown = extract_usage(result)
+
+    assert breakdown.uncached_input_tokens == 3
+    assert breakdown.cache_usage_observed is True
+
+
+def test_usage_without_cache_fields_is_not_cache_observed() -> None:
+    breakdown = extract_usage({"input_tokens": 10, "output_tokens": 2})
+
+    assert breakdown.cache_usage_observed is False
+    assert breakdown.uncached_input_tokens == 10
 
 
 def test_context_tokens_classify_all_components_and_each_skill(

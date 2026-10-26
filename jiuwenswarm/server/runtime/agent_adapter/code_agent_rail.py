@@ -219,6 +219,13 @@ class AgentTool(Tool):
             allowed_tools=list(spec.tools) if spec.tools else ["*"],
             disallowed_tools=None,
         )
+        # 本路径直调 create_deep_agent，绕过 create_subagent / GP inject；
+        # 仍须剔除 send_file_to_user 等主 Agent 专属工具。
+        from jiuwenswarm.agents.harness.common.tools.subagent_executor.excluded_spawn_tools import (
+            filter_excluded_spawn_tools,
+        )
+
+        parent_tool_cards = filter_excluded_spawn_tools(parent_tool_cards) or []
 
         # 构建 workspace（对齐 DeepAgent.create_subagent 的逻辑）
         parent_workspace_root = (

@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_04 / node-contract |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：plan_node.py / json_utils.py / thinking_seam.py；executor.py 的回调绑定、LLM 与 ask_user 实现侧） |
-| 最近一次修订日期 | 2026-10-20 |
-| 关联 feature | [[F_02]]（`_needs_fallback` 标志检测 + 回调槽 12→11）；关联 bugfix [[B_02]]（异常通道 guard 置位 + 标志剥离解耦） |
+| 最近一次修订日期 | 2026-10-23 |
+| 关联 feature | [[F_02]]（`_needs_fallback` 标志检测 + 回调槽 12→11）；[[F_04]]（python_cmd 注入契约）；关联 bugfix [[B_02]]（异常通道 guard 置位 + 标志剥离解耦） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
 
@@ -340,7 +340,7 @@ finally:
 | JSON 提取 | `extract_json(raw, expected_type)` | `json_utils.extract_llm_json` | 四级提取链（见数据结构） |
 | 受控日志 | `log` / `log_debug` / `log_info` / `log_warning` / `log_error` | `executor._log_from_node` | 级别白名单 + request_id/session_id 上下文格式化 |
 | 子节点编排 | `execute_subplan(_stream)` / `skip_subplan(_stream)` / `should_skip_subplan` | plan_node 自身 + executor 回调 | 任务追踪钩子（after 矩阵） |
-| 数据 | `inputs` dict | executor `_merge_env_config_to_inputs` | 唯一数据入口：用户 inputs + `skill_root` / `skill_name` 注入 |
+| 数据 | `inputs` dict | executor `_merge_env_config_to_inputs` | 唯一数据入口：用户 inputs + `skill_root` / `skill_name` / `python_cmd` 注入 |
 
 **不可访问**：session 对象、事件发射器、request_id、环境变量、白名单外 import（validator 拒绝，[[S_03]]）、文件 IO 方法（denied_attribute_call_names 封死 pathlib 读写）、dunder 属性（`__init__` / `__name__` 除外）。工具实例语义：`env.get_tool_function` 按 `Runner.resource_mgr` 全局 tool_id 现取共享实例；send_file 等带 session 路由的工具执行期从请求级 ContextVar 解析，节点侧无感知（[[S_01]] N9）。
 
@@ -353,7 +353,8 @@ finally:
 
 ### inputs / outputs 约定
 
-- **inputs 整树共享同一 dict 引用**：executor `merged_inputs`（用户 inputs 浅拷贝 + `skill_root` / `skill_name` 注入，均带 "not in merged" 保护——resume inputs 已有则不覆盖）。节点间数据传递是技能侧约定，executor 不做数据路由。
+- **inputs 整树共享同一 dict 引用**：executor `merged_inputs`（用户 inputs 浅拷贝 + `skill_root` / `skill_name` 注入，均带 "not in merged" 保护——resume inputs 已有则不覆盖；另有 `python_cmd` 注入——缺省 / 空白时取 `sys.executable`，显式非空值保留，[[F_04]]）。节点间数据传递是技能侧约定，executor 不做数据路由。
+- **python_cmd 使用契约（技能侧）**：需要拉起 python 子进程的 skill_code（如 docx-craft `pipeline_init.py` P0）一律用 `inputs["python_cmd"]`（= 引擎当前解释器：jiuwenclaw venv / 打包后 embeddable python，技能依赖装在哪它就指向哪）；**禁止 import sys 取 `sys.executable`**（validator denied_import_exact，[[S_03]]），**禁止探测系统 PATH 上的 python**——PATH 命中的解释器不含技能依赖，是依赖缺失类故障的直接来源。
 - **子节点写回约定键**：子节点通常把结果写回 `inputs[plan_name]` 或 merge 结果字段（技能侧约定：跳过 node / status / message / content / skipped / resume_skip 等元键）；"下游未消费的键也保持存在"是技能侧防御惯例（默认键预置，防下游 KeyError）。
 - **输出推荐 dict 且至少含 `node/status/result`**；skip 类结果额外 `skipped: True`（resume skip 双标记 `skipped + resume_skip`）。
 - **业务失败表达**：结果 dict 含 `export_status=="failed"` 或 `status=="error"` → executor 侧 `_is_subplan_business_failure` 识别 → task.complete 标 failed（节点不抛异常也可表达失败终态）。

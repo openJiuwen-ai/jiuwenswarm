@@ -86,8 +86,9 @@ MAX_SECTION_COUNT = 256
 MAX_STATE_ENTRIES = 256
 MAX_IDENTIFIER_CHARS = 1024
 MAX_CHUNK_TEXT_CHARS = 1_048_576
-MAX_TERMINAL_RESULT_TEXT_CHARS = 16 * 1024 * 1024
-# Match the stream protocol's node budget for citation-rich final results.
+# Complete reports include citations, charts and metadata. Keep this budget
+# separate from process-display limits; depth and identifier bounds still apply.
+MAX_TERMINAL_RESULT_TEXT_CHARS = 64 * 1024 * 1024
 MAX_TERMINAL_RESULT_JSON_NODES = 100_000
 MAX_ACCUMULATED_TEXT_CHARS = 1_048_576
 MAX_JSON_DEPTH = 64
@@ -193,15 +194,17 @@ def _validate_identifier(value: Any) -> str:
 
 
 def _validate_json_shape(
-    value: Any, *, max_text_chars: int = MAX_CHUNK_TEXT_CHARS,
+    value: Any,
+    *,
+    max_text_chars: int = MAX_CHUNK_TEXT_CHARS,
     max_nodes: int | None = None,
 ) -> int:
     """Bound container traversal without recursion or copying caller data."""
-    node_limit = MAX_JSON_NODES if max_nodes is None else max_nodes
     stack: list[tuple[Any, int, bool]] = [(value, 0, False)]
     active: set[int] = set()
     nodes = 0
     text_chars = 0
+    node_limit = MAX_JSON_NODES if max_nodes is None else max_nodes
     while stack:
         current, depth, leaving = stack.pop()
         if leaving:
@@ -382,9 +385,15 @@ def _validate_router_input(
     incoming_text_chars = 0
     for key in ("content", "reasoning_content"):
         value = chunk.get(key)
-        if value is not None and not (
-            terminal_result_content and key == "content"
-        ):
+        if value is None:
+            continue
+        if terminal_result_content and key == "content":
+            _validate_json_shape(
+                value,
+                max_text_chars=MAX_TERMINAL_RESULT_TEXT_CHARS,
+                max_nodes=MAX_TERMINAL_RESULT_JSON_NODES,
+            )
+        else:
             incoming_text_chars += _validate_json_shape(value)
     if len(state.active_nodes) > MAX_STATE_ENTRIES:
         raise ValueError(ROUTER_LIMIT_ERROR)
@@ -804,6 +813,20 @@ def _can_start_final_report(state: RouterState, agent: str) -> bool:
     return agent in BRIEF_FINAL_REPORT_NODES or _all_sections_completed(state)
 
 
+def is_terminal_result_chunk(value: Any) -> bool:
+    """Identify result envelopes without parsing or trusting their contents."""
+    if not isinstance(value, dict):
+        return False
+    if (value.get("__deepsearch_status__") or value.get("status")) == "completed":
+        return isinstance(value.get("final_result"), dict)
+    return (
+        value.get("agent") == "end"
+        and str(value.get("section_idx", "0")).strip() in {"", "0"}
+        and value.get("event") in ("summary_response", "error")
+        and isinstance(value.get("content"), (str, dict))
+    )
+
+
 def _is_successful_workflow_end(chunk: dict, agent: str, event: str) -> bool:
     """Validate SDK EndNode results and recognize successful completion."""
     if (
@@ -944,14 +967,11 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
     section_idx = _validate_identifier(chunk.get("section_idx", "0")) or "0"
     # The EndNode embeds the complete final result in ``content`` (1+ MiB).
     # It is a workflow boundary, not process text for the frontend, so keep it
-    # under the terminal 16 MiB protocol bound without applying the 1 MiB
+    # under the terminal result budget without applying the 1 MiB
     # process-display accumulator limit — even when the result carries
     # non-fatal exception_info (the SDK then emits event=error).  Delivery is
     # still gated by _is_successful_workflow_end below.
-    is_end_node = (
-        agent == "end"
-        and section_idx in {"", "0"}
-    )
+    is_end_node = agent == "end" and is_terminal_result_chunk(chunk)
     successful_workflow_end = _is_successful_workflow_end(chunk, agent, event)
 
     _validate_router_input(

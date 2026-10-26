@@ -716,6 +716,7 @@ async def test_http_accepts_team_sessions_with_team_name(tmp_path: Path) -> None
         "agent.work.plan",
         "agent.code.normal",
         "agent.code.plan",
+        "flash",
     ],
 )
 async def test_http_accepts_new_single_agent_canonical_modes(

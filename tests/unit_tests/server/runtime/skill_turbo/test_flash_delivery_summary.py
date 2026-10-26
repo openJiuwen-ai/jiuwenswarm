@@ -107,7 +107,7 @@ def assemble_flash(monkeypatch):
         monkeypatch.setattr(adapter, "_task_execution_rail_enabled", lambda: True)
         rails = adapter._build_agent_rails(config["react"], config, mode="flash")
         adapter._build_task_execution_rail.assert_not_called()
-        adapter._build_skill_turbo_prompt_rail.assert_not_called()
+        adapter._build_skill_turbo_prompt_rail.assert_called_once()
         adapter._build_skill_protocol_prompt_rail.assert_not_called()
         return adapter, rails
 

@@ -12,8 +12,8 @@ from typing import Any, Mapping
 from jiuwenswarm.common.utils import logger
 
 # Public contract for spawn/fork / depth parameter ``thinking``.
-# ``default`` is usually a no-op; GLM-5.3 family maps it to
-# :data:`DEFAULT_THINKING_DEPTH` at adapt time (temporary scope).
+# ``default`` is usually a no-op; GLM-5.3 / Kimi K3 map it to
+# :data:`DEFAULT_THINKING_DEPTH` at adapt time.
 # Depth tiers ``low|medium|high`` are product semantics (vendor-mapped).
 # Legacy toggle ``off|on`` remains for subagent / DisableThinkingMixin.
 THINKING_VALUES = frozenset({"", "default", "off", "on", "low", "medium", "high"})

@@ -41,6 +41,18 @@ def setpath(d, dotted_path: str, value) -> None:
     cur[keys[-1]] = value
 
 
+def _env_int(name: str, default: int) -> int:
+    """读整型 env；未设/非法回落 default（``<=0`` 合法，消费端归一为禁用淘汰）。"""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("env %s=%r 非整数，回落默认 %s", name, raw, default)
+        return default
+
+
 def inject_feishu_bots(data) -> None:
     """原 gen_gateway_config_file 的 FEISHU_BOTS 注入，改由 env 驱动。"""
     data["channels"]["feishu"] = {}
@@ -95,8 +107,19 @@ def main() -> int:
     if sandbox_enabled:
         setpath(data, "sandbox.enabled", True)
         setpath(data, "sandbox.startup_mode", "external")
-        setpath(data, "sandbox.idle_ttl_seconds", 600)
-        setpath(data, "sandbox.idle_check_interval", 180)
+        # 空闲 reaper 周期:稳态沙箱数 ≈ 创建速率 × idle_ttl,须与 Box 内存
+        # 容量匹配(14.4MB/个,2Gi ≈ 145 个);env 可调(issue#5718)。
+        # 默认 180/60:高速率短会话(18.4/min)下稳态 ≈55 个 ≈800MB,2Gi 内安全。
+        setpath(
+            data,
+            "sandbox.idle_ttl_seconds",
+            _env_int("JIUWENBOX_IDLE_TTL_SECONDS", 180),
+        )
+        setpath(
+            data,
+            "sandbox.idle_check_interval",
+            _env_int("JIUWENBOX_IDLE_CHECK_INTERVAL_SECONDS", 60),
+        )
         setpath(data, "sandbox.url", "${JIUWENBOX_URL:-http://127.0.0.1:8321}")
         setpath(data, "sandbox.type", "jiuwenbox")
     setpath(data, "channels.ssh.host_key_path", "${JIUWENSWARM_CONFIG_DIR:-}/ssh_host_key")

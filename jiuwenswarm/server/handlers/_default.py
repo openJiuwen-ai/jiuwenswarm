@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-
 import logging
 from typing import Any
 
@@ -23,36 +22,58 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
     is_interrupt_resume_payload,
 )
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
-from jiuwenswarm.common.mode_matrix import NEW_AGENT_WORK_NORMAL, is_plan_mode
+from jiuwenswarm.common.mode_matrix import (
+    NEW_AGENT_WORK_NORMAL,
+    is_plan_mode,
+    is_team_mode,
+)
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
-from jiuwenswarm.common.ws_diagnostics import describe_ws_exception, format_ws_diagnostics
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.ws_diagnostics import (
+    describe_ws_exception,
+    format_ws_diagnostics,
+)
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
-    _uses_tenant_pool,
     _CODE_MODE_SYNC_METHODS,
+    _SESSION_PREVIOUS_MODE_KEY,
+    EXPLICIT_PLAN_ENTRY_SOURCES,
     _apply_resolved_mode_to_request,
     _inject_plan_mode_activation_reminder,
+    _is_team_metadata_mode,
     _plan_active_sessions,
     _plan_exited_sessions,
-    _SESSION_PREVIOUS_MODE_KEY,
     _session_mode_sync_locks,
     _sessions_dir_for_request,
     _sync_chat_request_metadata,
-    EXPLICIT_PLAN_ENTRY_SOURCES,
+    _uses_explicit_officeclaw_mode,
+    _uses_tenant_pool,
     resolve_request_project_dir,
     resolve_request_runtime_mode,
 )
+from jiuwenswarm.server.handlers.stream_delta_coalesce import StreamDeltaCoalescer
+from jiuwenswarm.server.runtime.session_owner_routing import (
+    bind_request_to_session_owner,
+)
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
-
-from jiuwenswarm.server.runtime.session_owner_routing import bind_request_to_session_owner
-
 
 logger = logging.getLogger(__name__)
 
 # ── 流式心跳间隔：Agent 处理超过此阈值时发心跳 chunk 保活 WebSocket，
 # 避免 ping_timeout 关连接。默认 10 秒，小于服务端 ping_timeout=20s。
 _STREAM_HEARTBEAT_INTERVAL_SECONDS = 10.0
+
+
+def _deep_stream_should_coalesce(request: AgentRequest) -> bool:
+    """团队流已在 team_helpers 合并，这里再合并会多等 1 秒。"""
+    metadata = request.metadata if isinstance(request.metadata, dict) else {}
+    if _is_team_metadata_mode(metadata):
+        return False
+    params = request.params if isinstance(request.params, dict) else {}
+    if params.get("team"):
+        return False
+    mode = str(params.get("mode") or "").strip().lower()
+    return not is_team_mode(mode)
 
 
 def _is_stateless_method_request(request: AgentRequest) -> bool:
@@ -543,13 +564,16 @@ async def _prepare_code_mode_chat_turn(
         # tool_call id.  Restore the original canonical mode before applying
         # defaults; otherwise the request is irreversibly rewritten to
         # ``agent`` and the tenant pool creates a different adapter instance.
-        if is_interrupt_continuation and not explicit_mode_provided:
+        explicit_officeclaw = _uses_explicit_officeclaw_mode(request)
+        restore_session_mode = is_interrupt_continuation or explicit_officeclaw
+        keep_interrupted_mode = is_interrupt_continuation and explicit_officeclaw
+        if restore_session_mode and (not explicit_mode_provided or keep_interrupted_mode):
             stored_mode = str(session_metadata.get("mode") or "").strip()
             if stored_mode and stored_mode.lower() != "unknown":
                 params["mode"] = stored_mode
                 _raw_mode = stored_mode
                 logger.info(
-                    "[AgentWebSocketServer] interrupt continuation routing "
+                    "[AgentWebSocketServer] session continuation routing "
                     "restored: session_id=%s mode=%s source=%s",
                     sid,
                     stored_mode,
@@ -633,6 +657,10 @@ async def _prepare_code_mode_chat_turn(
         mode = "flash"
         request.resolved_adapter_mode = "flash"
         request.resolved_adapter_source = "session_sticky"
+        if _uses_explicit_officeclaw_mode(request):
+            # 租户池稍后再次解析请求，保留 Flash canonical 才不会退回 Deep。
+            canonical_mode = "flash"
+            params["mode"] = canonical_mode
         logger.info(
             "[_prepare_code_mode_chat_turn] Flash session affinity restored: "
             "session_id=%s canonical_mode=%s",
@@ -914,6 +942,21 @@ async def _handle_stream(
         try:
             await _handle_stream_impl(ctx, request)
         finally:
+            # 兜底注销:覆盖 _handle_stream_impl 内所有分支的任何异常/提前
+            # return 路径——注册在分支选择之前,分支内 prepare 阶段抛错时,
+            # 内层各 finally 尚未建立,注册项只能在这里回收。幂等:未注册或
+            # 已注销时 pop 为 no-op(MR#8528 检视:非 tenant 分支 1005-1019
+            # 的 prepare 异常路径曾漏注销)。全部取值走 getattr 默认值:
+            # 兜底路径零风险,server 桩/缺属性时静默跳过(telemetry 边界
+            # 单测即用最小桩)。
+            current_task = asyncio.current_task()
+            sid = str(getattr(request, "session_id", "") or "")
+            sst = getattr(ctx.services, "session_stream_tasks", None)
+            entries = sst.get(sid) if (sid and sst is not None) else None
+            if entries is not None and current_task is not None:
+                entries.pop(current_task, None)
+                if not entries:
+                    sst.pop(sid, None)
             if foreground:
                 await manager.end_foreground_chat()
     finally:
@@ -938,28 +981,49 @@ async def _handle_stream_impl(
         ctx.services.session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event
 
     if _uses_tenant_pool(request):
-        prepared = await _prepare_tenant_code_mode_chat_turn(ctx, request, channel_id)
-        chunk_count = 0
+        # 本分支的 return/异常都不允许跳过 stream task 注销:注册在分支之前,
+        # 滞留的 {task: Event} 会经 task key 钉住整条 _runner 对象图
+        # (issue#5240 残余:每 HTTP chat 泄漏 1 条,约 1.9 簇/会话、受控 +19MB/h)。
         try:
-            async for chunk in ctx.services.tenant_pool().process_message_stream(request):
-                chunk_count += 1
-                if chunk.agent_ref is None:
-                    chunk.agent_ref = request.agent_ref
-                sent_original = await ctx.sink.send_chunk(
-                    chunk,
-                    sequence=chunk_count - 1,
-                    response_id=request.request_id,
-                )
-                if not sent_original:
+            prepared = await _prepare_tenant_code_mode_chat_turn(ctx, request, channel_id)
+            chunk_count = 0
+            coalescer = StreamDeltaCoalescer(enabled=_deep_stream_should_coalesce(request))
+
+            async def _emit_tenant(batch: list[AgentResponseChunk]) -> bool:
+                nonlocal chunk_count
+                for outgoing in batch:
+                    chunk_count += 1
+                    sent_original = await ctx.sink.send_chunk(
+                        outgoing,
+                        sequence=chunk_count - 1,
+                        response_id=request.request_id,
+                    )
+                    if not sent_original:
+                        return False
+                return True
+
+            try:
+                async for chunk in ctx.services.tenant_pool().process_message_stream(request):
+                    if chunk.agent_ref is None:
+                        chunk.agent_ref = request.agent_ref
+                    if not await _emit_tenant(coalescer.push(chunk)):
+                        return
+                if not await _emit_tenant(coalescer.flush()):
                     return
+            finally:
+                if prepared is not None:
+                    await _check_post_process_plan_exit(ctx, request, prepared[2])
+            logger.info(
+                "[AgentWebSocketServer] 流式响应完成 (tenant pool): request_id=%s chunks=%s",
+                request.request_id,
+                chunk_count,
+            )
         finally:
-            if prepared is not None:
-                await _check_post_process_plan_exit(ctx, request, prepared[2])
-        logger.info(
-            "[AgentWebSocketServer] 流式响应完成 (tenant pool): request_id=%s chunks=%s",
-            request.request_id,
-            chunk_count,
-        )
+            entries = ctx.services.session_stream_tasks.get(session_id)
+            if entries is not None and current_task is not None:
+                entries.pop(current_task, None)
+                if not entries:
+                    ctx.services.session_stream_tasks.pop(session_id, None)
         return
 
     # 无状态流式请求（skills / skilldev / plugins / symphony）不需要 mode 解析和
@@ -983,6 +1047,7 @@ async def _handle_stream_impl(
                 await _push_plan_mode_exited(ctx, request)
 
     chunk_count = 0
+    coalescer = StreamDeltaCoalescer(enabled=_deep_stream_should_coalesce(request))
     # 心跳控制：当有真实 chunk 发送时重置，空闲时发送心跳
     heartbeat_event = asyncio.Event()
     heartbeat_task: asyncio.Task | None = None
@@ -999,7 +1064,7 @@ async def _handle_stream_impl(
                     )
                     # 有真实 chunk 发送，重置 event 继续等待
                     heartbeat_event.clear()
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # 超时：空闲超过心跳间隔，发送 keepalive chunk
                     heartbeat_chunk = AgentResponseChunk(
                         request_id=request.request_id,
@@ -1036,24 +1101,18 @@ async def _handle_stream_impl(
     # 启动心跳任务
     heartbeat_task = asyncio.create_task(_heartbeat_loop())
 
-    try:
-        async for chunk in agent.process_message_stream(request):
+    async def _emit_agent(batch: list[AgentResponseChunk]) -> bool:
+        nonlocal chunk_count
+        for outgoing in batch:
             chunk_count += 1
-            # 通知心跳任务有真实 chunk 发送，重置心跳计时
-            heartbeat_event.set()
-            # V2: chunk 回带请求侧 agent_ref，供 gateway 3 元组精确路由
-            # （设计 §6.3）。is None 守卫：保留 team 模式由事件派生的 agent_ref
-            # （_build_team_event_chunk_meta 已设值），不覆盖。
-            if chunk.agent_ref is None:
-                chunk.agent_ref = request.agent_ref
-            # 诊断：打印前 3 个和每 50 个 chunk 的发送情况。
+            # 诊断：打印前 3 个和每 50 个实际写出的 chunk。
             # wire 只在这里算 —— 编码本身由 ctx.sink 负责，不必为一条偶尔打印
             # 的日志给每个 chunk 都编一次。
             if chunk_count <= 3 or chunk_count % 50 == 0:
-                _pl = getattr(chunk, "payload", None) or {}
+                _pl = getattr(outgoing, "payload", None) or {}
                 _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
                 wire = encode_agent_chunk_for_wire(
-                    chunk,
+                    outgoing,
                     response_id=request.request_id,
                     sequence=chunk_count - 1,
                 )
@@ -1065,18 +1124,10 @@ async def _handle_stream_impl(
                 )
             try:
                 sent_original = await ctx.sink.send_chunk(
-                    chunk,
+                    outgoing,
                     sequence=chunk_count - 1,
                     response_id=request.request_id,
                 )
-                if not sent_original:
-                    logger.warning(
-                        "[AgentWebSocketServer] 流式响应因单个 chunk 超限而停止: "
-                        "request_id=%s seq=%s",
-                        request.request_id,
-                        chunk_count - 1,
-                    )
-                    return
             except WebSocketConnectionClosed as ws_closed_exc:
                 logger.info(
                     "[AgentWebSocketServer] 流式响应停止，WebSocket 已关闭: %s",
@@ -1085,9 +1136,32 @@ async def _handle_stream_impl(
                         describe_ws_exception(ws_closed_exc),
                     ),
                 )
+                return False
+            if not sent_original:
+                logger.warning(
+                    "[AgentWebSocketServer] 流式响应因单个 chunk 超限而停止: "
+                    "request_id=%s seq=%s",
+                    request.request_id,
+                    chunk_count - 1,
+                )
+                return False
+        return True
+
+    try:
+        async for chunk in agent.process_message_stream(request):
+            # 通知心跳任务有真实输出在进行，重置心跳计时。
+            heartbeat_event.set()
+            # V2: chunk 回带请求侧 agent_ref，供 gateway 3 元组精确路由
+            # （设计 §6.3）。is None 守卫：保留 team 模式由事件派生的 agent_ref
+            # （_build_team_event_chunk_meta 已设值），不覆盖。
+            if chunk.agent_ref is None:
+                chunk.agent_ref = request.agent_ref
+            if not await _emit_agent(coalescer.push(chunk)):
                 return
             # 清除 event，让心跳任务重新开始计时
             heartbeat_event.clear()
+        if not await _emit_agent(coalescer.flush()):
+            return
     finally:
         # 停止心跳任务
         if heartbeat_task is not None:

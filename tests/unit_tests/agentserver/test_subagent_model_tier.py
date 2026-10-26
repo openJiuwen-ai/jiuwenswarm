@@ -35,6 +35,8 @@ def _adapter_with_tier_models() -> JiuWenSwarmDeepAdapter:
     adapter._model_name_to_keys = {}
     adapter._model_identity_to_keys = {}
     adapter._model_identity_owners = {}
+    adapter._model_entry_by_ref = {}
+    adapter._applied_model_refs = set()
     adapter._tier_model_cache = {}
     adapter._model = None
     adapter._instance = None

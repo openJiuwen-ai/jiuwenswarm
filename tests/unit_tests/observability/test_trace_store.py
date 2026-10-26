@@ -821,6 +821,7 @@ async def test_reader_accepts_agent_and_team_modes_but_rejects_unknown_traces(
     mixed_trace_id = "5" * 32
     unknown_trace_id = "6" * 32
     team_trace_id = "7" * 32
+    flash_trace_id = "8" * 32
     store = TrajectoryStore(database_path)
     store.initialize()
     try:
@@ -850,6 +851,12 @@ async def test_reader_accepts_agent_and_team_modes_but_rejects_unknown_traces(
                     agent_mode="team",
                     raw_json=_raw_record(team_trace_id, "4" * 16),
                 ),
+                _stored_record(
+                    trace_id=flash_trace_id,
+                    span_id="5" * 16,
+                    agent_mode="flash",
+                    raw_json=_raw_record(flash_trace_id, "5" * 16),
+                ),
                 _stored_record(),
             ]
         )
@@ -861,6 +868,7 @@ async def test_reader_accepts_agent_and_team_modes_but_rejects_unknown_traces(
 
     assert [item["trace_id"] for item in items] == [
         _TRACE_ID,
+        flash_trace_id,
         team_trace_id,
         mixed_trace_id,
     ]
@@ -881,6 +889,12 @@ async def test_reader_accepts_agent_and_team_modes_but_rejects_unknown_traces(
     assert await reader.get_trace_records(
         "session-1",
         team_trace_id,
+        since_revision=0,
+        limit=1000,
+    ) is not None
+    assert await reader.get_trace_records(
+        "session-1",
+        flash_trace_id,
         since_revision=0,
         limit=1000,
     ) is not None

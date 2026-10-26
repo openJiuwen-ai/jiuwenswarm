@@ -55,3 +55,27 @@ async def test_tool_result_does_not_wait_for_backlog():
     elapsed = asyncio.get_running_loop().time() - started
     assert ws.sent
     assert elapsed < 0.05
+
+
+class _UnimplementedTransport:
+    def get_write_buffer_size(self) -> int:
+        raise NotImplementedError
+
+
+class _UnimplementedWs:
+    def __init__(self) -> None:
+        self.transport = _UnimplementedTransport()
+        self.sent: list[str] = []
+
+    async def send(self, payload: str) -> None:
+        self.sent.append(payload)
+
+
+async def test_unimplemented_write_buffer_still_sends_delta():
+    ws = _UnimplementedWs()
+    sink = WSSink(ws, asyncio.Lock())
+    started = asyncio.get_running_loop().time()
+    await sink.send_chunk(_chunk("chat.delta"), sequence=1)
+    elapsed = asyncio.get_running_loop().time() - started
+    assert ws.sent
+    assert elapsed < 0.05
