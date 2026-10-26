@@ -312,17 +312,14 @@ class HubClient(HubAssetPort):
                 return ""
             # Prefer the package-root README; nested ones (docs/README.md, skills/x/README.md)
             # describe a sub-asset and must not stand in for the package description.
-            readmes = sorted(
-                (
-                    path
-                    for path in (
-                        entry.get("path") for entry in entries if isinstance(entry, dict)
-                    )
-                    if isinstance(path, str)
-                    and path.rsplit("/", 1)[-1].lower() == "readme.md"
-                ),
-                key=lambda path: (path.count("/"), len(path)),
-            )
+            readmes: list[str] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                path = entry.get("path")
+                if isinstance(path, str) and path.rsplit("/", 1)[-1].lower() == "readme.md":
+                    readmes.append(path)
+            readmes.sort(key=lambda item: (item.count("/"), len(item)))
             target = readmes[0] if readmes else None
             if not target:
                 return ""
