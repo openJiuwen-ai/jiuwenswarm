@@ -741,10 +741,17 @@ class SessionArchiveService:
         operation_id: str,
         reason: str,
         *,
+        attempts: int | None = None,
         next_at: float = 0.0,
         exhausted: bool = False,
     ) -> dict | None:
-        """Compare and save one operation's failure in the same worker thread."""
+        """Compare and save one operation's failure in the same worker thread.
+
+        ``attempts`` 必须随失败一起落盘，不能只留局部变量：占用路径（拿不到跨进程锁）
+        永远进不到 ``_finalize_session_locked``，而那是唯一写 ``cleanup_attempts`` 的地方。
+        不落盘时 ``attempts`` 恒为 1，``_MAX_CLEANUP_ATTEMPTS`` 永不达成、
+        ``_abandon_cleanup`` 不可达，收尾退化成无限重试。
+        """
         with lc.resource_lock("session", session_id):
             operation = lc.state("session", session_id).get("operation") or {}
             if operation.get("operation_id") != operation_id or operation.get("status") in {
@@ -752,9 +759,7 @@ class SessionArchiveService:
                 "abandoned",
             }:
                 return None
-            return lc.update(
-                "session",
-                session_id,
+            changes: dict = dict(
                 status="abandoned" if exhausted else "failed",
                 stop_pending=False,
                 retryable=not exhausted,
@@ -762,6 +767,12 @@ class SessionArchiveService:
                 cleanup_exhausted=exhausted,
                 errors=[reason],
             )
+            if attempts is not None:
+                # 单调不减：并发/重入时不要把已经记下的次数写回更小的值。
+                changes["cleanup_attempts"] = max(
+                    int(attempts), int(operation.get("cleanup_attempts") or 0)
+                )
+            return lc.update("session", session_id, **changes)
 
     async def _record_finalize_failure(
         self,
@@ -788,6 +799,7 @@ class SessionArchiveService:
             session_id,
             operation_id,
             str(exc),
+            attempts=attempts,
             next_at=next_at,
         )
         if updated is None:
@@ -816,6 +828,7 @@ class SessionArchiveService:
             session_id,
             operation_id,
             reason,
+            attempts=attempts,
             exhausted=True,
         )
         if operation is None:
