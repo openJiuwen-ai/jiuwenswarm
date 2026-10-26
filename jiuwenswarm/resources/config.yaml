@@ -1023,6 +1023,15 @@ channels:
     #   enable_streaming: true
     #   chat_id:
     #   enabled: false
+  welink:
+    # 一个 AI 同事绑定一个 WeLink 账号。登录凭证写在 credential_dir，由办公室扫码写入。
+    enabled: false
+    account:
+    persistent_agent_id:
+    cli_path: welink-cli
+    env: pro
+    credential_dir:
+    poll_interval_seconds: 5
   xiaoyi:
     # 小艺渠道不做文件回传：send_file_to_user 不注册给模型，
     # 相关提示词也不再要求它发文件（见 file_delivery_policy / TeamWorkspaceReportPathRail）。

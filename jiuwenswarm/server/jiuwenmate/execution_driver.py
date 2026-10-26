@@ -37,6 +37,7 @@ from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from openjiuwen.harness import persistent_agent as core
 from jiuwenswarm.server.jiuwenmate.bash_runtime import bind_bash_runtime, close_bash_runtime
 from jiuwenswarm.server.jiuwenmate.dropped_stream_retry import install_dropped_stream_retry
+from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_guidance
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailRuntimeService
 from jiuwenswarm.server.jiuwenmate.agent_mail_tool import prepare_agent_mail_invocation
@@ -233,6 +234,7 @@ class ExecutionDriver:
                 item for item in (
                     guidance,
                     _session_workspace_guidance(record.session_id, session_workspace, output_dir),
+                    vision_guidance(),
                 ) if item
             ]
             spec, context = build_invocation(

@@ -425,13 +425,15 @@ async def test_claimed_group_delivery_does_not_copy_inbound_mentions(host):
     assert state.record.request_input.source.mention_ids == ("ou_author", "ou_b", "ou_b", "ou.b")
 
 
-async def test_sending_delivery_after_restart_becomes_unknown_not_retriable(host):
+@pytest.mark.parametrize("channel", ["feishu", "welink"])
+async def test_sending_delivery_after_restart_becomes_unknown_not_retriable(host, channel):
     repository, _, port = host
-    route = RequestRouteSnapshot(channel="feishu", app_id="cli_bound", target_id="oc_group", source_message_id="om_1")
+    route = RequestRouteSnapshot(channel=channel, app_id="cli_bound", target_id="oc_group", source_message_id="om_1")
     execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
     await port.record(execution, candidate(execution, 1))
     await port.record(execution, final(execution, 2))
-    repository.claim_pending_result_deliveries(NS, limit=10, now=NOW)
+    claimed = repository.claim_pending_result_deliveries(NS, limit=10, now=NOW)
+    assert len(claimed) == 1 and claimed[0]["channel"] == channel
 
     repository.recover_sending_result_deliveries(NS, now=NOW + timedelta(minutes=1))
     jobs = repository.claim_pending_result_deliveries(NS, limit=10, now=NOW + timedelta(minutes=1))

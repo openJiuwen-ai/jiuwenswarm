@@ -495,6 +495,37 @@ class MessageHandler(ABC):
             chat_id=event.conversation_id, method=ReqMethod.JIUWENMATE_DINGTALK_INBOUND.value,
             params={"event": event.to_payload()},
         ))
+
+        payload = getattr(response, "payload", None)
+        if not getattr(response, "ok", False) or not isinstance(payload, dict):
+            return InboundDisposition.REJECTED
+        try:
+            return InboundDisposition(payload.get("disposition"))
+        except (TypeError, ValueError):
+            return InboundDisposition.REJECTED
+
+    async def handle_persistent_welink_event(self, event: dict[str, Any]) -> InboundDisposition:
+        """Hand one polled WeLink group message to the bound colleague."""
+        from uuid import uuid4
+
+        from jiuwenswarm.common.e2a.models import E2AEnvelope
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.jiuwenmate.welink_inbound import WelinkInboundEvent
+
+        try:
+            parsed = event if isinstance(event, WelinkInboundEvent) else WelinkInboundEvent.from_payload(event)
+        except (TypeError, ValueError):
+            return InboundDisposition.REJECTED
+        response = await self.agent_client.send_request(
+            E2AEnvelope(
+                request_id=f"welink_{uuid4().hex}",
+                channel="welink",
+                user_id=parsed.sender_id,
+                chat_id=parsed.chat_id,
+                method=ReqMethod.JIUWENMATE_WELINK_INBOUND.value,
+                params={"event": parsed.to_payload()},
+            )
+        )
         payload = getattr(response, "payload", None)
         if not getattr(response, "ok", False) or not isinstance(payload, dict):
             return InboundDisposition.REJECTED

@@ -324,6 +324,20 @@
   opacity: 0.8;
 }
 
+.jiuwenmate-link-button--danger {
+  color: var(--jm-danger);
+}
+
+.jiuwenmate-link-button--danger:hover {
+  color: var(--jm-danger);
+  opacity: 0.8;
+}
+
+.jiuwenmate-link-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .jiuwenmate-icon-button {
   display: inline-grid;
   width: 28px;
@@ -4018,6 +4032,126 @@
 .jiuwenmate-im-dialog__platform img {
   width: 18px;
   height: 18px;
+}
+
+.jiuwenmate-im-dialog__platform img.jiuwenmate-welink-logo {
+  width: auto;
+  height: 18px;
+}
+
+.jiuwenmate-welink-logo {
+  flex: 0 0 auto;
+  width: auto;
+  height: 18px;
+  object-fit: contain;
+  border-radius: 3px;
+}
+
+.jiuwenmate-profile__im-row > img.jiuwenmate-welink-logo {
+  width: auto;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+}
+
+.jiuwenmate-welink-qr-image {
+  display: block;
+  width: 240px;
+  height: 240px;
+  margin: 0 auto;
+  padding: 12px;
+  border-radius: 8px;
+  background: #fff;
+  object-fit: contain;
+  box-sizing: border-box;
+}
+
+.jiuwenmate-welink-qr-image svg {
+  display: block;
+  width: 216px;
+  height: 216px;
+}
+
+.jiuwenmate-welink-qr-image--pending {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.jiuwenmate-welink-pending {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 18px 0 6px;
+  color: var(--jm-text-2);
+  font-size: 13px;
+}
+
+.jiuwenmate-welink-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--jm-border);
+  border-top-color: var(--jm-blue);
+  border-radius: 50%;
+  animation: jiuwenmate-welink-spin 0.8s linear infinite;
+}
+
+@keyframes jiuwenmate-welink-spin {
+  to { transform: rotate(360deg); }
+}
+
+.jiuwenmate-welink-status {
+  margin: 0;
+  color: var(--jm-text-2);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.jiuwenmate-welink-error {
+  margin: 0;
+  color: var(--jm-danger);
+  font-size: 13px;
+}
+
+.jiuwenmate-welink-steps {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.jiuwenmate-welink-steps legend {
+  margin-bottom: 4px;
+  color: var(--jm-text-2);
+  font-size: 12px;
+}
+
+.jiuwenmate-welink-steps label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.jiuwenmate-welink-secret {
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.jiuwenmate-welink-copy {
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--jm-blue);
+  font-size: 12px;
+  cursor: pointer;
 }
 
 /* Profile */

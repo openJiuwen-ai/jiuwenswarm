@@ -62,16 +62,25 @@ function renderProfile(extra) {
 }
 
 test('the overview hides quick IM setup after the channel is configured', () => {
+  const authorized = {
+    ...colleague,
+    imConfigured: true,
+    feishuConfigured: true,
+    welinkConfigured: true,
+  };
   const channels = renderProfile({
     initialSection: 'channels',
-    colleague: { ...colleague, imConfigured: true },
+    colleague: authorized,
   });
   assert.match(channels, /data-variant="channels"/);
   assert.match(channels, /已授权/);
   assert.match(channels, /data-testid="jiuwenmate-profile-im-modify"/);
   assert.match(channels, />修改</);
+  assert.match(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="feishu"/);
+  assert.match(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="welink"/);
+  assert.match(channels, />取消授权</);
 
-  const overview = renderProfile({ colleague: { ...colleague, imConfigured: true } });
+  const overview = renderProfile({ colleague: authorized });
   assert.doesNotMatch(overview, /data-testid="jiuwenmate-profile-quick-im"/);
 });
 
@@ -430,6 +439,8 @@ test('the employee mail page does not explain a duplicate mailbox as a blocking 
 test('the overview shows quick IM setup when no channel is configured', () => {
   const overview = renderProfile({ colleague: { ...colleague, imConfigured: false } });
   assert.match(overview, /data-testid="jiuwenmate-profile-quick-im"/);
+  assert.match(overview, />授权</);
+  assert.doesNotMatch(overview, /去配置/);
 });
 
 test('skills can be changed on the skills page without the pencil', () => {

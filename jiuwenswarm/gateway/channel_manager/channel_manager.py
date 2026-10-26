@@ -155,6 +155,8 @@ class ChannelManager(ABC):
         required = (app_id, chat_id, idempotency_key)
         if not isinstance(file, dict):
             required = (*required, text)
+        if payload.get("channel") == "welink":
+            return await self._deliver_welink_result(payload, app_id, chat_id, text, idempotency_key, file)
         if not all(isinstance(value, str) and value.strip() for value in required):
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
         file_args: dict[str, Any] = {}
@@ -288,6 +290,41 @@ class ChannelManager(ABC):
             )
             return {"outcome": "unknown", "error_code": "THINKING_NOTICE_SEND_ERROR"}
         return {"outcome": "delivered", "external_message_id": idempotency_key}
+
+    async def _deliver_welink_result(
+        self,
+        _payload: dict[str, Any],
+        app_id: Any,
+        chat_id: Any,
+        text: Any,
+        idempotency_key: Any,
+        file: Any,
+    ) -> dict[str, Any]:
+        """Send a colleague's final text as the configured assistant, never as the reading account."""
+        if isinstance(file, dict):
+            return {"outcome": "failed", "error_code": "WELINK_FILE_UNSUPPORTED"}
+        if not all(isinstance(value, str) and value.strip() for value in (app_id, chat_id, text, idempotency_key)):
+            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
+        matches = [
+            channel
+            for key, channel in self._channels.items()
+            if key.channel_id == "welink" and key.app_id == app_id and callable(getattr(channel, "send_group_text", None))
+        ]
+        if not matches:
+            return {"outcome": "pending", "error_code": "WELINK_ACCOUNT_NOT_CONNECTED"}
+        if len(matches) != 1:
+            return {"outcome": "failed", "error_code": "WELINK_ACCOUNT_AMBIGUOUS"}
+        try:
+            source_message_id = _payload.get("source_message_id")
+            return await matches[0].send_group_text(
+                chat_id=chat_id,
+                text=text,
+                idempotency_key=idempotency_key,
+                source_message_id=source_message_id if isinstance(source_message_id, str) else "",
+            )
+        except Exception:
+            logger.warning("[ChannelManager] WeLink send outcome unknown: account=%s", app_id)
+            return {"outcome": "unknown", "error_code": "WELINK_SEND_ERROR"}
 
     async def _feishu_mention_targets(self, value: Any, sender_channel: Any) -> list[dict[str, Any]]:
         """Map validated employee IDs to one connected Bot identity without guessing."""

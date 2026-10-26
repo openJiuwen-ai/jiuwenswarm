@@ -16,6 +16,7 @@ export interface JiuwenMateState {
   draft: JiuwenMateColleagueDraft | null;
   selectedColleagueId: string | null;
   authorizeColleagueId: string | null;
+  authorizePlatform: 'feishu' | 'welink' | null;
   colleagues: JiuwenMateColleague[];
 }
 
@@ -34,6 +35,7 @@ export function createInitialJiuwenMateState(colleagues: readonly JiuwenMateColl
     ...RESET_CREATION,
     selectedColleagueId: colleagues[0]?.id ?? null,
     authorizeColleagueId: null,
+    authorizePlatform: null,
     colleagues: [...colleagues],
   };
 }
@@ -158,13 +160,35 @@ export function completeColleagueCreation(state: JiuwenMateState, colleague: Jiu
     view: 'colleague-profile',
     selectedColleagueId: colleague.id,
     authorizeColleagueId: alreadyExists ? state.authorizeColleagueId : colleague.id,
+    authorizePlatform: alreadyExists ? state.authorizePlatform : 'feishu',
     colleagues: alreadyExists ? state.colleagues : [...state.colleagues, colleague],
   };
 }
 
-export function openColleagueAuthorization(state: JiuwenMateState, colleagueId: string): JiuwenMateState {
+export function openColleagueAuthorization(
+  state: JiuwenMateState,
+  colleagueId: string,
+  platform: 'feishu' | 'welink' = 'feishu',
+): JiuwenMateState {
   if (!state.colleagues.some((item) => item.id === colleagueId)) return state;
-  return { ...state, authorizeColleagueId: colleagueId };
+  return { ...state, authorizeColleagueId: colleagueId, authorizePlatform: platform };
+}
+
+export function revokeColleagueAuthorization(
+  state: JiuwenMateState,
+  colleagueId: string,
+  platform: 'feishu' | 'welink',
+): JiuwenMateState {
+  return {
+    ...state,
+    colleagues: state.colleagues.map((item) => {
+      if (item.id !== colleagueId) return item;
+      if (platform === 'welink') {
+        return { ...item, welinkConfigured: false, imConfigured: item.feishuConfigured === true };
+      }
+      return { ...item, feishuConfigured: false, imConfigured: item.welinkConfigured === true };
+    }),
+  };
 }
 
 export function finishColleagueAuthorization(state: JiuwenMateState, configured: boolean): JiuwenMateState {
@@ -172,8 +196,15 @@ export function finishColleagueAuthorization(state: JiuwenMateState, configured:
   return {
     ...state,
     authorizeColleagueId: null,
+    authorizePlatform: null,
     colleagues: configured
-      ? state.colleagues.map((item) => (item.id === targetId ? { ...item, imConfigured: true } : item))
+      ? state.colleagues.map((item) => {
+          if (item.id !== targetId) return item;
+          if (state.authorizePlatform === 'welink') {
+            return { ...item, welinkConfigured: true, imConfigured: true };
+          }
+          return { ...item, feishuConfigured: true, imConfigured: true };
+        })
       : state.colleagues,
   };
 }
