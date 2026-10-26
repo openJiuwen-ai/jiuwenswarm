@@ -61,7 +61,7 @@ async def send_agent_request_with_timeout(
 
 def task_identity(ws, scope):
     """Use WebChannel's user scope; connection admission belongs to the gateway."""
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     if not isinstance(scope, str) or not scope:
         raise ValueError("Invalid task conversation")

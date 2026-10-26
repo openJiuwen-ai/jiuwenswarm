@@ -8,7 +8,7 @@ from websockets.exceptions import ConnectionClosedError
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponse
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+from gateway.routing.agent_client import WebSocketAgentServerClient
 
 
 class Socket:

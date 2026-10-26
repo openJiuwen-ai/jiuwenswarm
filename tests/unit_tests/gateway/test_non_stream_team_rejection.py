@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
-from jiuwenswarm.gateway.message_handler.message_handler import (
+from gateway.message_handler.message_handler import (
     _NON_STREAM_TEAM_NOTICE,
     MessageHandler,
 )

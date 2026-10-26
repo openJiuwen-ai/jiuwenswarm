@@ -126,7 +126,7 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
 
 当前 **已注册** 的顶层命令来自 `createBuiltinCommands()`（`registry.ts`），按名称排序如下表。
 
-> **与文档 [Slash命令表.md](Slash命令表.md) 的差异**：`jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/` 下另有 `cancel.ts`、`new.ts`、`sessions.ts` 等实现文件，但当前没有把它们注册为独立顶层命令。`/new` 仍然可用，因为它是 `/clear` 的别名；默认构建没有独立 `/cancel`，中断任务请优先使用 **`Ctrl+C`**（第一次中断，连按两次退出）。`/switch` 仅在 `agentos-tui` 托管环境（`AGENTOS_TUI_SUPERVISED=1`）中注册，用于 `/switch claude`、`/switch list` 等第三方 TUI handoff；它不同于 Gateway 受控频道的模式切换指令。Gateway 侧行为仍以 `jiuwenswarm/gateway/slash_command.py` 与 Slash命令表为准。
+> **与文档 [Slash命令表.md](Slash命令表.md) 的差异**：`jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/` 下另有 `cancel.ts`、`new.ts`、`sessions.ts` 等实现文件，但当前没有把它们注册为独立顶层命令。`/new` 仍然可用，因为它是 `/clear` 的别名；默认构建没有独立 `/cancel`，中断任务请优先使用 **`Ctrl+C`**（第一次中断，连按两次退出）。`/switch` 仅在 `agentos-tui` 托管环境（`AGENTOS_TUI_SUPERVISED=1`）中注册，用于 `/switch claude`、`/switch list` 等第三方 TUI handoff；它不同于 Gateway 受控频道的模式切换指令。Gateway 侧行为仍以 `gateway/slash_command.py` 与 Slash命令表为准。
 
 ### 命令总表
 

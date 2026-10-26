@@ -1,5 +1,5 @@
 /**
- * 后端 CronJob.mode 的"团队判定"（对齐 jiuwenswarm/gateway/cron/models.py）。
+ * 后端 CronJob.mode 的"团队判定"（对齐 gateway/cron/models.py）。
  *
  * 后端团队串集合 = CRON_JOB_MODES 里 team 系 + mode_matrix.TEAM_CANONICAL_MODES：
  *   team / code.team / team.plan / team.plan.normal / team.plan.code /

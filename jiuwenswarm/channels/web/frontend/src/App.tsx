@@ -1,4 +1,5 @@
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
+import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
   applyMultiModelCollaborationSnapshot,
   getMultiModelCollaborationRevision,
@@ -204,17 +205,13 @@ import {
   trajectoryComposerClearance,
 } from './features/trajectory/trajectoryLayout';
 import {
-  normalizeTrajectoryUiEnabled,
-  setTrajectoryUiEnabled,
-  useTrajectoryUiEnabled,
-} from './features/trajectory/featureConfig';
-import {
   normalizeTrajectoryDiagnosisEnabled,
   setTrajectoryDiagnosisEnabled,
   useTrajectoryDiagnosisEnabled,
 } from './features/trajectory/diagnosis/diagnosisFeatureConfig';
 import './App.css';
 import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
+import { organizationOwnerStopTarget } from './features/teamOrganization/conversation';
 import {
   normalizeTeamBootstrapMode,
   normalizeTeamDispatchMode,
@@ -223,10 +220,6 @@ import {
   setTeamScheduledDispatchEnabled,
 } from './features/teamDispatch/featureConfig';
 
-const LazyTrajectoryPanel = lazy(async () => {
-  const module = await import('./features/trajectory/TrajectoryPanel');
-  return { default: module.TrajectoryPanel };
-});
 const LazyTrajectoryAnalysisPage = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryAnalysisPage');
   return { default: module.TrajectoryAnalysisPage };
@@ -496,7 +489,6 @@ function AppContent({
   const [trajectoryComposerCollapsed, setTrajectoryComposerCollapsed] = useState<Record<string, boolean>>({});
   const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
-  const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
@@ -512,7 +504,6 @@ function AppContent({
   );
   const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
-  const trajectoryUiEnabled = useTrajectoryUiEnabled();
   const trajectoryDiagnosisEnabled = useTrajectoryDiagnosisEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
@@ -633,11 +624,22 @@ function AppContent({
   );
   /** 仅用于强制重跑「首屏 history」effect：从会话列表恢复时若 sessionId 未变，也要重新拉 history 并恢复 historyPagerMeta */
   const [historyBootstrapKey, setHistoryBootstrapKey] = useState(0);
+  const historyRefreshQueueRef = useRef(new HistoryRefreshQueue());
+  const forcedHistoryRefreshRef = useRef(new Set<string>());
+  const [historyRecoveryRevision, setHistoryRecoveryRevision] = useState(0);
+  // 延迟绑定到后文定义的 loadSessionMetadata，供 runtime.history_required 回查权威运行态。
+  const loadSessionMetadataRef = useRef<((id: string) => Promise<Session | null>) | null>(null);
   const sessionIdRef = useRef(sessionId);
   useEffect(() => webClient.on('runtime.history_required', (event) => {
-    if (event.payload.session_id === sessionIdRef.current) {
-      setHistoryBootstrapKey((key) => key + 1);
-    }
+    const targetSessionId = event.payload.session_id;
+    if (typeof targetSessionId !== 'string' || !targetSessionId) return;
+    historyRefreshQueueRef.current.request(targetSessionId);
+    setHistoryRecoveryRevision((revision) => revision + 1);
+    // 该恢复 turn 的终态被当孤儿丢弃，本地 isProcessing 可能停在刷新前的 true
+    // （不会再有 processing_status(false) 到达），从而阻塞下方 effect 的 take()。
+    // 回查网关权威运行态，用实时 is_processing 覆盖本地状态解除阻塞；若确有新 turn
+    // 在跑则保持 busy、延后刷新，不会清掉新轮的流式缓冲。
+    void loadSessionMetadataRef.current?.(targetSessionId);
   }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
@@ -852,12 +854,15 @@ function AppContent({
   const requestedChatSurfaceView: ChatSurfaceView = surfaceModeSupported
     ? (chatSurfaceViews[sessionId] ?? 'chat')
     : 'chat';
-  const chatSurfaceView: ChatSurfaceView = (requestedChatSurfaceView === 'trajectory' && !trajectoryUiEnabled)
+  // The standalone chat/trajectory tabs were removed; only the diagnosis entry remains.
+  const chatSurfaceView: ChatSurfaceView = (
+    requestedChatSurfaceView === 'trajectory'
     || (requestedChatSurfaceView === 'diagnosis' && !diagnosisEntryAvailable)
+  )
     ? 'chat'
     : requestedChatSurfaceView;
   const selectChatSurfaceView = useCallback((nextView: ChatSurfaceView) => {
-    if (nextView === 'trajectory') setTrajectoryUiRequested(true);
+    if (nextView === 'trajectory') return;
     if (nextView === 'diagnosis') setDiagnosisUiRequested(true);
     setChatSurfaceViews((current) => (
       current[sessionId] === nextView
@@ -872,7 +877,7 @@ function AppContent({
   const leaveDiagnosisView = useCallback(() => {
     selectChatSurfaceView('chat');
   }, [selectChatSurfaceView]);
-  const composerDocked = chatSurfaceView === 'trajectory' || chatSurfaceView === 'diagnosis';
+  const composerDocked = chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
   const toggleTrajectoryComposer = useCallback(() => {
     setTrajectoryComposerCollapsed((current) => ({
@@ -1126,6 +1131,7 @@ function AppContent({
   }, [setHistoryRetryAvailable, setLoadingHistory]);
 
   useEffect(() => () => disposeInFlightHistoryHandles(), [disposeInFlightHistoryHandles]);
+
   const todos = useTodoStore((s) => s.runtimes[sessionId]?.todos ?? []);
   const subagentCount = useSubagentStore((s) => Object.keys(s.runtimes[sessionId]?.subagentsById ?? {}).length);
   const subagentStatusSignature = useSubagentStore((s) => Object.values(s.runtimes[sessionId]?.subagentsById ?? {})
@@ -1979,6 +1985,10 @@ function AppContent({
     return pending;
   }, [fetchSessionMetadata]);
 
+  useEffect(() => {
+    loadSessionMetadataRef.current = loadSessionMetadata;
+  }, [loadSessionMetadata]);
+
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
     try {
@@ -1986,8 +1996,9 @@ function AppContent({
       const config = await request<Record<string, unknown>>('config.get');
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
-      setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
-      setTrajectoryDiagnosisEnabled(normalizeTrajectoryDiagnosisEnabled(config.trajectory_ui_diagnosis_enabled));
+      setTrajectoryDiagnosisEnabled(
+        normalizeTrajectoryDiagnosisEnabled(config.trajectory_ui_diagnosis_enabled),
+      );
       setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
       setTeamScheduledDispatchEnabled(config.team_scheduled_dispatch_enabled);
       const collaborationSnapshotApplied = applyMultiModelCollaborationSnapshot(
@@ -2406,6 +2417,24 @@ function AppContent({
     void loadSessionMetadata(routeSessionId);
   }, [isConnected, loadSessionMetadata, routeSessionId]);
 
+  useEffect(() => {
+    if (!isConnected || !sessionId) return;
+    // A recovered old request must not clear a newer turn's stream buffers.
+    if (!historyRefreshQueueRef.current.take(sessionId, isProcessing || isLoadingHistory)) return;
+    disposeInFlightHistoryHandles(sessionId);
+    setHistoryPagerMeta(sessionId, null);
+    forcedHistoryRefreshRef.current.add(sessionId);
+    setHistoryBootstrapKey((key) => key + 1);
+  }, [
+    disposeInFlightHistoryHandles,
+    historyRecoveryRevision,
+    isConnected,
+    isLoadingHistory,
+    isProcessing,
+    sessionId,
+    setHistoryPagerMeta,
+  ]);
+
   // 聊天处理完成后更新本地会话元数据，以便拾取自动生成的标题等更新。
   const prevProcessingBySessionRef = useRef(new Map<string, boolean>());
   useEffect(() => {
@@ -2452,8 +2481,9 @@ function AppContent({
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
+    const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
     
-    if (sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
+    if (!forceRefresh && sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
       setHistoryPagerMeta(sessionId, null);
       setHistoryLoadingMore(false);
       setLoadingHistory(sessionId, false);
@@ -2462,7 +2492,7 @@ function AppContent({
 
     // 新建会话时跳过历史加载
     const isNew = useChatStore.getState().runtimes[sessionId]?.isNewSession ?? false;
-    if (isNew) {
+    if (isNew && !forceRefresh) {
       useChatStore.getState().setNewSession(sessionId, false);
       setHistoryPagerMeta(sessionId, null);  // 新会话无历史，不显示分页栏
       setLoadingHistory(sessionId, false);
@@ -2474,7 +2504,7 @@ function AppContent({
     const existingRuntime = useChatStore.getState().getRuntime(sessionId);
     const subagentRuntime = useSubagentStore.getState().getRuntime(sessionId);
     const hasStorageOnlySubagentCache = Object.keys(subagentRuntime?.cacheOnlySubagentIds ?? {}).length > 0;
-    if (existingRuntime && existingRuntime.historyPagerMeta) {
+    if (!forceRefresh && existingRuntime && existingRuntime.historyPagerMeta) {
       if (hasStorageOnlySubagentCache) {
         useSubagentStore.getState().removeRuntime(sessionId);
       } else {
@@ -3524,7 +3554,11 @@ function AppContent({
     // （paused/blocked/completed/无目标）下，停止只结束会话，不碰目标本身。
     const isGoalActive = useGoalStore.getState().runtimes[currentSessionId]?.goal?.status === 'active';
     if (mode === 'team') {
-      void pause(currentSessionId);
+      if (organizationOwnerStopTarget(currentSessionId)) {
+        void cancel(currentSessionId);
+      } else {
+        void pause(currentSessionId);
+      }
       if (isGoalActive) void pauseGoal(currentSessionId);
       return;
     }
@@ -4526,25 +4560,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     mode={mode}
                     onViewChange={selectChatSurfaceView}
                     tabListLabel={t('trajectory.tabs.aria')}
-                    trajectory={(
-                      <Suspense
-                        fallback={(
-                          <div className="trajectory-view-loading">
-                            {t('trajectory.loading')}
-                          </div>
-                        )}
-                      >
-                        <LazyTrajectoryPanel
-                          active={chatSurfaceView === 'trajectory'}
-                          mode={mode}
-                          sessionId={sessionId}
-                        />
-                      </Suspense>
-                    )}
-                    trajectoryEnabled={trajectoryUiEnabled}
+                    trajectory={null}
+                    trajectoryEnabled={false}
                     trajectoryLabel={t('trajectory.tabs.trajectory')}
                     showNavigation={sessionId !== NEW_CONVERSATION_ID}
-                    trajectoryRequested={trajectoryUiRequested}
+                    trajectoryRequested={false}
                   />
                 </div>
 

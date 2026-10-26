@@ -12,7 +12,7 @@ JiuwenSwarm提供两种安装方式：`pip安装`或`源码安装`。
   git clone https://gitcode.com/openjiuwen/jiuwenswarm.git
   ```
 - 环境依赖：
-  - python：>=3.11，<3.14
+  - python：>=3.11
   - nodejs：>=18.0.0（仅源码前端构建或 browser-use 功能需要，推荐 20 LTS）
 
 **注意：用户可根据自己实际需要，基于以下任意一种方案安装。**
@@ -64,7 +64,7 @@ JiuwenSwarm提供两种安装方式：`pip安装`或`源码安装`。
 ### `uv`方式安装
 - 使用`uv`新建虚拟环境
   ```bash
-  # 使用uv新建虚拟环境（支持 3.11、3.12、3.13 任一版本）
+  # 使用uv新建虚拟环境（支持 3.11–3.14 任一版本）
   uv venv --python=3.11
   # 或 uv venv --python=3.12
   # 或 uv venv --python=3.13
@@ -132,7 +132,7 @@ JiuwenSwarm提供两种安装方式：`pip安装`或`源码安装`。
 ### `conda`方式安装
 - 使用`conda`新建虚拟环境
   ```bash
-  # 使用Anaconda新建虚拟环境（支持 3.11、3.12、3.13 任一版本）
+  # 使用Anaconda新建虚拟环境（支持 3.11–3.14 任一版本）
   conda create -n JiuwenSwarm python=3.11
   # 或 conda create -n JiuwenSwarm python=3.12
   # 或 conda create -n JiuwenSwarm python=3.13

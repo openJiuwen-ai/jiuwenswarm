@@ -178,13 +178,14 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
   }, [runtime?.teams, runtime?.selectedTeamId, runtime?.defaultTeamId]);
 
   const openMenu = useCallback(() => {
+    if (sessionId) void fetchTeams(sessionId);
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
       setDirection(resolveMenuDirection(rect.bottom, MENU_MAX_HEIGHT));
       setAnchor(rect);
     }
     setOpen((prev) => !prev);
-  }, []);
+  }, [sessionId, fetchTeams]);
 
   useEffect(() => {
     if (!open) return;
@@ -245,6 +246,11 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
             />
           )}
           <span className="chat-mode-select__label">{label}</span>
+          {selected?.available === false && (
+            <span className="text-danger" data-testid="chat-panel-team-select-unavailable">
+              {t('chat.teamSelect.unavailable')}
+            </span>
+          )}
         </span>
         <svg
           className="chat-mode-select__chevron"
@@ -331,6 +337,11 @@ export function TeamSelector({ sessionId, isProcessing = false, groups = [] }: T
                     >
                       {teamLabel(team, teamIdentity, i18n.language, team.team_id)}
                     </span>
+                    {team.available === false && (
+                      <span className="text-danger" data-testid="chat-panel-team-select-option-unavailable" data-variant={team.team_id}>
+                        {t('chat.teamSelect.unavailable')}
+                      </span>
+                    )}
                   </span>
                   {isActive && (
                     <svg

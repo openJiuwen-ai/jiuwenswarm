@@ -2,14 +2,14 @@
 
 """gateway 包惰性导出不变量。
 
-历史包袱：``jiuwenswarm/gateway/__init__.py`` 曾在包初始化时急切导入
+历史包袱：``gateway/__init__.py`` 曾在包初始化时急切导入
 ChannelManager/MessageHandler 等重量级成员，连带整个 gateway 运行时
 （1674 个模块 / ~1.4s）。web 静态服务（app_web）等快路径只需要
 ``gateway.routing.agent_http_bridge`` 里一个纯 stdlib 的函数，却被迫付清
 全部导入税——冻结 web 服务首次可服务的耗时因此多出 ~1.3s（实测
 1693ms → 750ms，见 docs/zh/desktop-electron-packaging.md §7）。
 
-已改为 PEP 562 惰性导出（``from jiuwenswarm.gateway import X`` 兼容）。
+已改为 PEP 562 惰性导出（``from gateway import X`` 兼容）。
 本测试防止任何改动把急切导入加回来。
 """
 
@@ -19,10 +19,10 @@ import subprocess
 import sys
 
 _HEAVY_PREFIXES = (
-    "jiuwenswarm.gateway.channel_manager",
-    "jiuwenswarm.gateway.message_handler",
-    "jiuwenswarm.gateway.health_check",
-    "jiuwenswarm.gateway.routing.agent_client",
+    "gateway.channel_manager",
+    "gateway.message_handler",
+    "gateway.health_check",
+    "gateway.routing.agent_client",
 )
 
 
@@ -39,7 +39,7 @@ def _run_isolated(code: str) -> str:
 def test_gateway_package_import_stays_lazy() -> None:
     code = (
         "import sys\n"
-        "import jiuwenswarm.gateway\n"
+        "import gateway\n"
         f"heavy = [m for m in sys.modules if m.startswith({_HEAVY_PREFIXES!r})]\n"
         "print(heavy)\n"
     )
@@ -64,7 +64,7 @@ def test_app_web_import_does_not_pull_gateway_runtime() -> None:
 
 def test_lazy_reexports_remain_usable() -> None:
     code = (
-        "from jiuwenswarm.gateway import (\n"
+        "from gateway import (\n"
         "    AgentServerClient, WebSocketAgentServerClient, ChannelManager,\n"
         "    GatewayHealthCheckService, HEALTH_CHECK_CHANNEL_ID,\n"
         "    HealthCheckConfig, IHealthCheck, MessageHandler,\n"

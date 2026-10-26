@@ -10,7 +10,7 @@ import uuid
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.adx.control_client import AdxControlError
 from jiuwenswarm.extensions.adx.errors import AdxRoutingError
-from jiuwenswarm.gateway.routing.container_files import (
+from gateway.routing.container_files import (
     AgentFileDownloadChunk,
     AgentOSFileTransferError,
     normalize_agent_file_download_path,

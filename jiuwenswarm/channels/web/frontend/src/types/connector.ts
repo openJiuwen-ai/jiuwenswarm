@@ -66,7 +66,7 @@ export interface ConnectorInstallResponse {
 
 export interface ConnectorUninstallResponse {
   type: 'uninstalled';
-  item: { id: string; name: string; removed: boolean };
+  item: { id: string; name: string; removed: boolean; already_removed?: boolean };
   applied: boolean;
   error?: string;
 }

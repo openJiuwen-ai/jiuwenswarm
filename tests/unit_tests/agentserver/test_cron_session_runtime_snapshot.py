@@ -160,7 +160,7 @@ async def test_metadata_status_tracks_known_runtime_state_and_preserves_pending_
     assert result["status"] == ("processing" if expected_processing else "idle")
 
 
-@pytest.mark.parametrize("module_name", ["jiuwenswarm.runtime.cron.models", "jiuwenswarm.gateway.runtime.cron.models"])
+@pytest.mark.parametrize("module_name", ["jiuwenswarm.runtime.cron.models", "gateway.runtime.cron.models"])
 def test_cron_timeout_default_remains_one_hour_with_explicit_ten_minute_override(module_name):
     from importlib import import_module
 
