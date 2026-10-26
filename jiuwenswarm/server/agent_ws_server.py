@@ -11867,6 +11867,14 @@ class AgentWebSocketServer:
                     warm_zen_free_models(reason="agent.reload_config")
                 )
             if should_reload_agents:
+                # 企业配置源：失效本进程的企业配置缓存（模板实体 + 实例/模板行
+                # TTL 缓存）——reload 只在处理进程做一次；存量 session 适配器走
+                # stale 懒重载，而**新建会话**的首次企业加载不经过懒重载，必须
+                # 能看到最新模板行（如动态 token 凭据热更），否则读到 600s TTL
+                # 旧行（与 dev-stable 的 refresh_config_source 语义对齐）。
+                from jiuwenswarm.common.config_provider import refresh_config_source
+
+                await refresh_config_source()
                 await self._agent_manager.reload_agents_config(
                     config_payload,
                     env_overrides,
