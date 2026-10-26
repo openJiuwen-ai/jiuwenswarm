@@ -250,7 +250,7 @@ def _build_project_lookup() -> tuple[
 
 def _repair_session_project_dir(metadata: dict[str, Any]) -> None:
     """Keep an explicitly bound session's directory consistent with its project ID."""
-    from agent_gateway.common.work_mode import is_default_project_id
+    from jiuwenswarm.common.work_mode import is_default_project_id
     from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
 
     project_id = str(metadata.get("project_id") or "").strip()
@@ -1009,7 +1009,6 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
     注意: ``_write_metadata_sync`` 本身不更新缓存,缓存更新统一在此函数
     顶部完成,与异步路径行为一致,避免 ``init_session_metadata`` 污染缓存。
     """
-    global _WRITE_REVISION
     _repair_session_project_dir(metadata)
     # 立即更新缓存,确保后续读取能看到最新状态
     # 入队前捕获 rebind 版本号: worker 处理时据此判断本快照是否早于一次重绑
@@ -1632,8 +1631,7 @@ def sync_session_request_metadata(
         if is_chat_turn:
             metadata["last_message_at"] = _current_timestamp()
 
-    _enqueue_write(session_id, metadata, preserve_pin_fields=True,
-                   merge_fields=_changed_fields(before, metadata))
+    _enqueue_write(session_id, metadata, preserve_pin_fields=True)
     # Execution fallback may come from legacy metadata rather than the request.
     if not is_agentos_workspace_fallback(
         channel_id=channel_id,
