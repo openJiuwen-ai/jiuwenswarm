@@ -3652,6 +3652,7 @@
       "uploadMissingManifest": "The Expert package is missing manifest.json, or the file is corrupt.",
       "uploadMissingReadme": "The Expert package is missing README.md.",
       "uploadMissingPersona": "The Expert package is missing the persona directory, or it contains no .md files.",
+      "uploadSkillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths.",
       "newVersion": "This Expert has a new version available",
       "teamUnavailable": "Expert Team management is not available yet",
       "featureUnavailable": "This feature is outside this milestone",
@@ -4755,7 +4756,8 @@
       "invalidType": "Only .zip / .tar files are supported",
       "importSuccess": "Plugin imported successfully",
       "missingManifest": "The plugin package is missing manifest.json, or the file is corrupt.",
-      "missingReadme": "The plugin package is missing README.md."
+      "missingReadme": "The plugin package is missing README.md.",
+      "skillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths."
     },
     "common": {
       "back": "Back",

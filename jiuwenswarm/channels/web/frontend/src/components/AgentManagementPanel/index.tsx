@@ -185,6 +185,9 @@ function getFriendlyErrorMessage(
   if (/^(?:leader|member) agent_template (?:not found|is invalid|is Team-compatible)/i.test(normalizedMessage)) {
     return translate('agentManagement.group.states.memberUnavailable');
   }
+  if (/(?:agent_template|agent_group|plugin) skill dir must be package-relative/i.test(normalizedMessage)) {
+    return translate('agentManagement.states.uploadSkillPathNotRelative');
+  }
   if (/^agent_template package not found:/i.test(normalizedMessage)) {
     return translate('agentManagement.states.agentUnavailable');
   }

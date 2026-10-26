@@ -3629,6 +3629,7 @@
       "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
       "uploadMissingReadme": "专家包缺少 README.md 文件",
       "uploadMissingPersona": "专家包缺少 persona 目录，或目录下没有 .md 文件",
+      "uploadSkillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径",
       "newVersion": "该专家有新版本，可更新",
       "teamUnavailable": "专家团管理暂未开放",
       "featureUnavailable": "该功能暂不在本期范围",
@@ -4729,7 +4730,8 @@
       "invalidType": "仅支持 .zip / .tar 文件",
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
-      "missingReadme": "插件包缺少 README.md 文件"
+      "missingReadme": "插件包缺少 README.md 文件",
+      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径"
     },
     "common": {
       "back": "返回",

@@ -66,6 +66,19 @@ def test_preserved_cli_paths_work_for_host_and_manifest_configuration(tmp_path, 
     assert native_custom["codex_bin"] == str(custom)
 
 
+def test_merge_host_codex_turn_idle_invalid_host_config_falls_back(monkeypatch):
+    from jiuwenswarm.common import external_cli_runtime
+
+    monkeypatch.setattr(external_cli_runtime, "activate_external_cli_runtime_paths", lambda: None)
+    monkeypatch.setattr(
+        external_harness_helpers,
+        "_host_cli_agent_entry",
+        lambda _: {"cli_agent": "codex", "codex_turn_idle_timeout_s": "5min"},
+    )
+    merged = external_harness_helpers._merge_host_external_cli_config("codex", {})
+    assert merged["turn_idle_timeout_s"] == 300.0
+
+
 @pytest.fixture(autouse=True)
 def enable_host_external_cli_agents(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
