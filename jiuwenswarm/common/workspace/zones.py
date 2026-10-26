@@ -51,6 +51,7 @@ _PREFIX_RULES: Final[tuple[tuple[str, WorkspaceZone], ...]] = (
     ("agent/jiuwenclaw_workspace/messages/", WorkspaceZone.RUNTIME),
     ("agent/jiuwenclaw_workspace/prompt_attachment/", WorkspaceZone.ARTIFACT),
     ("agent/jiuwenclaw_workspace/received_files/", WorkspaceZone.ARTIFACT),
+    ("agent/jiuwenclaw_workspace/uploads/", WorkspaceZone.ARTIFACT),
 )
 
 
