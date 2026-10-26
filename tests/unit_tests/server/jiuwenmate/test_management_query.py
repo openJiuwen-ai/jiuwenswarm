@@ -164,11 +164,87 @@ def test_ignored_request_is_not_a_task_reply_or_failure(tmp_path):
         {"date": "2026-10-16", "hour": 9, "minutes": 60, "tasks": 1, "tokens": 25},
         {"date": "2026-10-16", "hour": 11, "minutes": 30, "tasks": 1, "tokens": 40},
     ]
-    assert member["channels"] == [
-        {"channel": "web", "calls": 2, "tokens": 65, "tasks": 2, "replies": 1, "failures": 1}
-    ]
+    assert member["channels"] == []
     assert "settings" not in member
     assert "persona" not in json.dumps(report)
+
+
+def test_activity_channels_merge_group_and_private_platform_and_exclude_web():
+    report = assemble_activity(
+        colleagues=[{"agent_id": "mate_a", "created_at": "2026-10-16T00:00:00+00:00"}],
+        requests=[
+            {
+                "request_id": "req_dm",
+                "agent_id": "mate_a",
+                "session_id": "sess_dm",
+                "source_ref": "feishu:dm",
+                "status": "ended",
+                "outcome": "completed",
+                "updated_at": "2026-10-16T10:01:00+00:00",
+            },
+            {
+                "request_id": "req_group",
+                "agent_id": "mate_a",
+                "session_id": "sess_group",
+                "source_ref": "feishu:group",
+                "status": "ended",
+                "outcome": "completed",
+                "updated_at": "2026-10-16T10:02:00+00:00",
+            },
+            {
+                "request_id": "req_web",
+                "agent_id": "mate_a",
+                "session_id": "sess_web",
+                "source_ref": "web:message",
+                "status": "ended",
+                "outcome": "completed",
+                "updated_at": "2026-10-16T10:03:00+00:00",
+            },
+        ],
+        executions=[
+            {"execution_id": "exe_dm", "request_id": "req_dm", "started_at": "2026-10-16T10:00:00+00:00"},
+            {"execution_id": "exe_group", "request_id": "req_group", "started_at": "2026-10-16T10:01:00+00:00"},
+            {"execution_id": "exe_web", "request_id": "req_web", "started_at": "2026-10-16T10:02:00+00:00"},
+        ],
+        sessions=[
+            {
+                "session_id": "sess_dm",
+                "agent_id": "mate_a",
+                "kind": "im_direct",
+                "channel": "feishu",
+                "conversation_key": "dm",
+            },
+            {
+                "session_id": "sess_group",
+                "agent_id": "mate_a",
+                "kind": "group",
+                "channel": "group",
+                "conversation_key": "grp",
+            },
+            {
+                "session_id": "sess_web",
+                "agent_id": "mate_a",
+                "kind": "web_direct",
+                "channel": "web",
+                "conversation_key": "conv",
+            },
+        ],
+        calls=[
+            {"status": "settled", "charged_tokens": 10, "ref": {"execution_id": "exe_dm"}},
+            {"status": "settled", "charged_tokens": 20, "ref": {"execution_id": "exe_group"}},
+            {"status": "settled", "charged_tokens": 30, "ref": {"execution_id": "exe_web"}},
+        ],
+        deliveries=[],
+        groups=[{"group_chat_id": "grp", "platform": "feishu", "platform_chat_id": "oc_group"}],
+        now=NOW,
+    )
+
+    member = report["members"][0]
+    assert member["tasks"] == 3
+    assert member["tokens"] == 60
+    assert member["channels"] == [
+        {"channel": "feishu", "calls": 2, "tokens": 30, "tasks": 2, "replies": 2, "failures": 0}
+    ]
 
 
 def test_subminute_execution_keeps_its_hourly_activity_and_tokens():
