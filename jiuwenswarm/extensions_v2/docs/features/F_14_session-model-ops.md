@@ -5,6 +5,7 @@
 | 编号 | F_14 / session-model-ops |
 | 归档日期 | 2026-10-26 |
 | 关联计划 | [EXTV2-14](../designs/extensions-v2-development-plan.md) |
+| 关联 PR | [!79](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/79) |
 | 主责规约 | [S_04](../specs/S_04_session-model-ops.md) |
 
 ## 1. 问题与范围
