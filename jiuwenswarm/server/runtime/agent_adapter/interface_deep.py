@@ -18302,6 +18302,9 @@ class JiuWenSwarmDeepAdapter:
         _debug_logger = None
         _debug_trace_token = None  # reset token for the ContextVar-bound logger
         interaction_stream = None
+        moa_stream = None
+        moa_progress = None
+        moa_mailbox = None
         interaction_stream_abort = True
         # 提前 import 观测 span 工具（同 7382 处理由）：原 import 在 try 内
         # _sync_prompt_attachments 之后，该处异常会让 finally 的
@@ -18514,6 +18517,9 @@ class JiuWenSwarmDeepAdapter:
                 )
 
             inputs = await self._prepare_root_input_dispatch(request, inputs)
+            moa_progress = getattr(self._moa_runtime, "progress", None)
+            if moa_progress is not None:
+                moa_mailbox = moa_progress.open()
 
             if pending_goal_op is not None:
                 self._permission_dispatch.release(inputs)
@@ -18776,7 +18782,23 @@ class JiuWenSwarmDeepAdapter:
             from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_output
 
             await bind_task_output(self._voice_agent_task_rail, request, interaction_stream)
-            async for chunk in interaction_stream:
+            runner_stream = interaction_stream
+            if moa_progress is not None:
+                moa_stream = moa_progress.stream(interaction_stream)
+                runner_stream = moa_stream
+            async for chunk in runner_stream:
+                chunk_type = (
+                    chunk.get("event_type", chunk.get("type"))
+                    if isinstance(chunk, dict) else getattr(chunk, "type", None)
+                )
+                if chunk_type == "chat.moa_status":
+                    # A notice is not evidence of model output or a new round.
+                    parsed = parse_common_stream_chunk(chunk)
+                    if parsed is not None:
+                        yield AgentResponseChunk(
+                            request_id=rid, channel_id=cid, payload=parsed, is_complete=False,
+                        )
+                    continue
                 first_chunk_seen, run_failure = observe_runner_stream_chunk(
                     chunk,
                     stream_started_at=runner_stream_started_at,
@@ -19237,45 +19259,64 @@ class JiuWenSwarmDeepAdapter:
                 )
 
                 reset_current_multimodal_image_files(image_files_token)
-            if interaction_stream is not None:
-                try:
-                    await interaction_stream.close(
-                        abort_active_round=interaction_stream_abort,
-                    )
-                except Exception:
-                    logger.debug("[Goal] interaction stream close failed", exc_info=True)
-                if not attach_subscription:
-                    await self._commit_round_state(session_id)
-            close_agent_run_span(
-                _run_span,
-                session_id=session_id,
-                output=_assemble_run_answer(run_answer_deltas, run_answer_final),
-                exception=_run_exception,
-                error_type=run_failure[0] if run_failure is not None else "",
-                error_message=run_failure[1] if run_failure is not None else "",
-            )
-            self._permission_dispatch.finalize(inputs)
-            self._unregister_session_agent_task(session_id)
-            cleanup_permission_context(token_perm)
-            AUTHORIZATION_EXECUTION_CONTEXTS.release(
-                authorization_context.session_id,
-                authorization_context.request_id,
-            )
-            if not stream_consumer_cancelled:
-                self._reset_runtime_cron_context(cron_context_tokens)
-                reset_session_messaging_route(session_message_context_token)
-            # Always clean up rail state — process_interrupt's
-            # _stop_session_interrupt_work sets abort flags but does NOT
-            # call cleanup_session(), so skipping cleanup here would leak
-            # _abort_requested / _pause_events entries on long-lived adapters.
-            # Attach subscriptions never marked the session active; skipping
-            # symmetrically avoids popping another stream's counter entry and
-            # wiping its rail state.
-            if not attach_subscription:
-                self._unmark_session_active(
-                    session_id,
-                    cleanup_rail=True,
+            moa_close_cancellation = None
+            try:
+                if moa_stream is not None:
+                    await moa_stream.aclose()
+                elif moa_progress is not None and moa_progress.mailbox is moa_mailbox:
+                    # A failed dispatch has no consumer to close its mailbox. An
+                    # injected request must leave the existing output owner alone.
+                    if interaction_stream is not None or not self._instance.has_output_stream():
+                        moa_progress.close()
+            except asyncio.CancelledError as exc:
+                # Defer cancellation until the existing owner cleanup has run.
+                moa_close_cancellation = exc
+                stream_consumer_cancelled = True
+                _run_exception = exc
+            except Exception:
+                logger.debug("[MoA] progress stream close failed", exc_info=True)
+            finally:
+                if interaction_stream is not None:
+                    try:
+                        await interaction_stream.close(
+                            abort_active_round=interaction_stream_abort,
+                        )
+                    except Exception:
+                        logger.debug("[Goal] interaction stream close failed", exc_info=True)
+                    if not attach_subscription:
+                        await self._commit_round_state(session_id)
+                close_agent_run_span(
+                    _run_span,
+                    session_id=session_id,
+                    output=_assemble_run_answer(run_answer_deltas, run_answer_final),
+                    exception=_run_exception,
+                    error_type=run_failure[0] if run_failure is not None else "",
+                    error_message=run_failure[1] if run_failure is not None else "",
                 )
+                self._permission_dispatch.finalize(inputs)
+                self._unregister_session_agent_task(session_id)
+                cleanup_permission_context(token_perm)
+                AUTHORIZATION_EXECUTION_CONTEXTS.release(
+                    authorization_context.session_id,
+                    authorization_context.request_id,
+                )
+                if not stream_consumer_cancelled:
+                    self._reset_runtime_cron_context(cron_context_tokens)
+                    reset_session_messaging_route(session_message_context_token)
+                # Always clean up rail state — process_interrupt's
+                # _stop_session_interrupt_work sets abort flags but does NOT
+                # call cleanup_session(), so skipping cleanup here would leak
+                # _abort_requested / _pause_events entries on long-lived adapters.
+                # Attach subscriptions never marked the session active; skipping
+                # symmetrically avoids popping another stream's counter entry and
+                # wiping its rail state.
+                if not attach_subscription:
+                    self._unmark_session_active(
+                        session_id,
+                        cleanup_rail=True,
+                    )
+            if moa_close_cancellation is not None:
+                raise moa_close_cancellation
 
         summary = {
             "input_tokens": usage_accumulator["input_tokens"],
@@ -19713,6 +19754,9 @@ class JiuWenSwarmDeepAdapter:
                 chunk_type = chunk.type
                 payload = chunk.payload
 
+                if chunk_type == "chat.moa_status":
+                    return parse_common_stream_chunk(chunk)
+
                 if chunk_type == "__interaction__" and contains_permission_interaction(
                     chunk
                 ):
@@ -20092,6 +20136,8 @@ class JiuWenSwarmDeepAdapter:
                 )
 
             if isinstance(chunk, dict):
+                if chunk.get("event_type") == "chat.moa_status" or chunk.get("type") == "chat.moa_status":
+                    return parse_common_stream_chunk(chunk)
                 if "traceId" in chunk or "invokeId" in chunk:
                     return None
                 # Interaction loop lifecycle events emitted by DeepAgent

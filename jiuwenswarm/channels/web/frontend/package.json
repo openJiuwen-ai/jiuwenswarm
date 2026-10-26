@@ -9,6 +9,7 @@
     "test:asset-name-search": "esbuild src/features/assetNameSearch.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/asset-name-search && node --test tests/assetNameSearch.test.mjs",
     "test:moa-settings": "npm run test:multi-model-collaboration-settings",
     "test:jev-settings": "node --test tests/jevSettings.test.mjs tests/jevSettingsDialog.test.mjs tests/multiModelCollaborationSettings.test.mjs tests/browserSettingsFeedback.test.mjs",
+    "test:moa-progress": "node --test tests/moaProgress.test.mjs",
     "test:multi-model-collaboration-settings": "node --test tests/multiModelCollaborationSettings.test.mjs",
     "test:team-organization": "esbuild tests/fixtures/teamOrganizationExports.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/team-organization/organization.mjs --define:import.meta.env={} && node --test tests/teamOrganization.test.mjs",
     "test:browser-agent-activity": "esbuild src/features/browserAgentActivity.ts src/stores/sessionStore.ts src/stores/subagentStore.ts --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/browser-agent-activity --define:import.meta.env={} && node --test tests/browserAgentActivity.test.mjs",

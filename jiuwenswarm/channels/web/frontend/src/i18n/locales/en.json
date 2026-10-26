@@ -1012,7 +1012,7 @@
       },
       "multi_model_collaboration_enabled": {
         "title": "Multi-model collaboration",
-        "description": "In a single-agent conversation, select a model group to let its default model combine suggestions from the other members."
+        "description": "In a single-agent conversation, select a model group to let its default model combine suggestions from the other members. We recommend using more capable models as reference models to provide suggestions to the aggregator (the group's default model)."
       },
       "moa_jev_enabled": {
         "title": "JEV decision",
@@ -1729,6 +1729,8 @@
       "completed": "Completed",
       "failed": "Failed"
     },
+    "moaReferenceRunning": "Running reference models…",
+    "moaVerifying": "Evaluating task progress…",
     "contextCompressionCommandRunning": "Compressing context",
     "teamPause": "Pause",
     "teamPauseHint": "After pausing a team, send the next message to continue",

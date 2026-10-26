@@ -140,6 +140,32 @@ def normalize_context_usage_payload(payload: Any) -> dict[str, Any] | None:
     return usage_payload
 
 
+def normalize_moa_status_payload(payload: Any) -> dict[str, Any] | None:
+    """Project transient MoA lifecycle metadata without model content."""
+    if not isinstance(payload, dict):
+        return None
+    operation_id = payload.get("operation_id")
+    phase = payload.get("phase")
+    status = payload.get("status")
+    if not isinstance(operation_id, str) or not operation_id.strip():
+        return None
+    if phase not in ("reference", "verification"):
+        return None
+    if status not in ("started", "completed", "failed", "cancelled"):
+        return None
+    result = {
+        "event_type": "chat.moa_status",
+        "operation_id": operation_id,
+        "phase": phase,
+        "status": status,
+    }
+    for key in ("session_id", "execution_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            result[key] = value
+    return result
+
+
 def parse_stream_chunk(chunk: Any, *, _has_streamed_content: bool = False) -> dict[str, Any] | None:
     """Parse agent output chunk to frontend-consumable payload dict.
 
@@ -179,6 +205,10 @@ def parse_stream_chunk(chunk: Any, *, _has_streamed_content: bool = False) -> di
 
 def _parse_dict_chunk(chunk: dict[str, Any], _has_streamed_content: bool) -> dict[str, Any] | None:
     """Parse dict chunk."""
+    if chunk.get("event_type") == "chat.moa_status":
+        return normalize_moa_status_payload(chunk)
+    if chunk.get("type") == "chat.moa_status":
+        return normalize_moa_status_payload(chunk.get("payload", chunk))
     if "event_type" in chunk:
         if chunk.get("event_type") == "context.usage":
             usage_payload = normalize_context_usage_payload(chunk)
@@ -245,6 +275,9 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
     """Parse OutputSchema-like chunk with type and payload attributes."""
     chunk_type = getattr(chunk, "type", "")
     payload = getattr(chunk, "payload", {})
+
+    if chunk_type == "chat.moa_status":
+        return normalize_moa_status_payload(payload)
 
     if chunk_type == "chat.ask_user_question":
         return parse_ask_user_question_payload(payload)

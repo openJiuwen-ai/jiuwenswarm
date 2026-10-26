@@ -3456,7 +3456,7 @@ class JiuWenSwarm:
             return
         # should_record 判定（与 process_message_stream 一致）：
         # chat.* 或 context.usage 落盘；其余不落盘。
-        should_record = et.startswith("chat.") or et == "context.usage"
+        should_record = (et.startswith("chat.") and et != "chat.moa_status") or et == "context.usage"
         if not should_record:
             return
         # chat.delta / chat.reasoning 增量不落盘（与 process_message_stream 一致）。
@@ -4458,7 +4458,7 @@ class JiuWenSwarm:
                         if isinstance(data.payload, dict) and isinstance(data.payload.get("event_type"), str):
                             et = str(data.payload.get("event_type"))
                             _note_goal_stream_payload(et, data.payload)
-                            should_record = et.startswith("chat.") or et == "context.usage"
+                            should_record = (et.startswith("chat.") and et != "chat.moa_status") or et == "context.usage"
                             final_segment_started_at: float | None = None
                             final_segment_order = None
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
@@ -4737,7 +4737,7 @@ class JiuWenSwarm:
                         ) or data
                         et = str(data.get("event_type"))
                         _note_goal_stream_payload(et, data)
-                        should_record = et.startswith("chat.") or et == "context.usage"
+                        should_record = (et.startswith("chat.") and et != "chat.moa_status") or et == "context.usage"
                         final_segment_started_at = None
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True

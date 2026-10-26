@@ -996,7 +996,7 @@
       },
       "multi_model_collaboration_enabled": {
         "title": "多模型协同",
-        "description": "单 Agent 对话选择模型组后，由组内默认模型聚合其他模型的建议。"
+        "description": "单 Agent 对话选择模型组后，由组内默认模型聚合其他模型的建议。建议使用能力更强的模型作为参考模型，为聚合模型（组内默认模型）提供建议。"
       },
       "moa_jev_enabled": {
         "title": "JEV 决策",
@@ -1713,6 +1713,8 @@
       "completed": "已完成",
       "failed": "失败"
     },
+    "moaReferenceRunning": "正在运行参考模型…",
+    "moaVerifying": "正在评估任务执行进展…",
     "contextCompressionCommandRunning": "正在压缩上下文",
     "teamPause": "暂停",
     "teamPauseHint": "团队暂停后，直接发送下一条消息即可继续",
