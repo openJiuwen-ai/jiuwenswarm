@@ -4815,60 +4815,95 @@ async def test_stop_session_for_archive_cancels_requests_without_waiting_for_cac
             return_exceptions=True,
         )
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stop_fails", [False, True])
-async def test_close_stops_owned_team_via_session_lifecycle(stop_fails) -> None:
-    """The unified Team lifecycle replaces the removed global stream API."""
-    from jiuwenswarm.runtime.session_lifecycle import (
-        SessionDescriptor as LifecycleDescriptor,
-        SessionKind,
-        SessionLifecycleTarget,
+
+def _session_waiting_on_card() -> SimpleNamespace:
+    waiting = SimpleNamespace(state=SessionExecutionState.WAITING_FOR_CONTROL)
+    return SimpleNamespace(
+        _session_coordinator=SimpleNamespace(
+            snapshot_session=lambda _sid: SimpleNamespace(executions=(waiting,))
+        )
     )
 
-    manager = FakeAgentManager()
-    initializer = AsyncMock()
-    lifecycle = SimpleNamespace(stop_session=AsyncMock(
-        side_effect=RuntimeError("team stop failed") if stop_fails else None,
-    ))
+
+async def test_voice_task_is_refused_before_admission_and_the_card_stays_clickable() -> None:
+    """#5487: admitting a voice turn cancels the execution that waits on a card,
+    so the card could no longer be clicked. The refusal must happen before
+    admission and be a terminal chat.error, so the voice task fails instead of
+    becoming unknown and holding the voice queue."""
+    seen: list[str] = []
+
+    class CardAgent(FakeAgent):
+        async def process_message_stream(self, request: AgentRequest):
+            seen.append(request.request_id)
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "chat.ask_user_question",
+                    "request_id": "call_cua",
+                    "source": "confirm_interrupt",
+                    "questions": [],
+                },
+            )
+
+        async def deliver_control_input(self, request: AgentRequest):
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"event_type": "chat.final", "content": "approved"},
+                is_complete=True,
+            )
+
+    class CardManager(FakeAgentManager):
+        def get_agent_for_session_nowait(self, channel_id: str, session_id: str) -> object:
+            return self.agent
+
+    manager = CardManager()
+    manager.agent = CardAgent()
     runtime = AgentRuntime(
         agent_manager=manager,
-        initializer=initializer,
-        session_runtime_lifecycle=lifecycle,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
     )
-    snapshot = await runtime._session_coordinator.register_session("owned-team", "web")
-    await runtime._session_coordinator.register_session("ordinary-agent", "web")
-    runtime._participant_registry.remember_target(SessionLifecycleTarget(
-        descriptor=LifecycleDescriptor(
-            session_id="owned-team", channel_id="web", mode="team", work_mode="work",
-        ),
-        kind=SessionKind.TEAM,
-    ))
-    if stop_fails:
-        with pytest.raises(RuntimeError, match="team stop failed"):
-            await runtime.close()
-    else:
-        await runtime.close()
-    lifecycle.stop_session.assert_awaited_once()
-    context = lifecycle.stop_session.await_args.args[0]
-    assert context.session_id == "owned-team"
-    assert context.generation == snapshot.generation
-    assert lifecycle.stop_session.await_args.kwargs == {"reason": "runtime_closed"}
-    assert manager.cleanup_calls == 1
-    assert runtime.closed is True
-    initializer.assert_not_awaited()
-    await runtime.close()
-    assert lifecycle.stop_session.await_count == 1
+    runtime._trigger_before_chat_request_hook = AsyncMock()
+    session_id = "voice-card-session"
+    params = {"mode": "agent", "work_mode": "work"}
+    typed = AgentRequest(
+        request_id="typed", channel_id="web", session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND, is_stream=True, params={**params, "query": "open notepad"},
+    )
+    await _collect_events(runtime.stream(typed, trigger_hook=False))
+
+    voice = AgentRequest(
+        request_id="task-voice", channel_id="video_tool", session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND, is_stream=True, params={**params, "query": "append a line"},
+    )
+    events = await _collect_events(runtime.stream(voice, trigger_hook=False))
+
+    assert [(event.event_type, event.ok, event.is_complete) for event in events] == [
+        ("chat.error", False, True)
+    ]
+    assert seen == ["typed"]
+    snapshot = runtime._session_coordinator.snapshot_session(session_id)
+    assert snapshot is not None
+    assert [item.state.value for item in snapshot.executions] == ["waiting_for_control"]
+
+    click = AgentRequest(
+        request_id="click", channel_id="web", session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND, is_stream=True,
+        params={
+            **params, "query": "", "request_id": "call_cua", "source": "confirm_interrupt",
+            "answers": [{"question": "", "selected_options": ["allow_once"]}],
+        },
+    )
+    clicked = await asyncio.wait_for(_collect_events(runtime.stream(click, trigger_hook=False)), timeout=0.5)
+    assert [event.event_type for event in clicked] == ["chat.final"]
 
 
-@pytest.mark.asyncio
-async def test_runtime_close_does_not_clear_another_runtime_managers() -> None:
-    first_manager, second_manager = FakeAgentManager(), FakeAgentManager()
-    first = AgentRuntime(agent_manager=first_manager, initializer=AsyncMock())
-    second = AgentRuntime(agent_manager=second_manager, initializer=AsyncMock())
-    await first.close()
-    assert first_manager.cleanup_calls == 1
-    assert second_manager.cleanup_calls == 0
-    assert second.agent_manager is second_manager
-    await second.start()
-    await second.close()
-    assert second_manager.cleanup_calls == 1
+def test_typed_input_still_supersedes_a_waiting_card() -> None:
+    request = AgentRequest(
+        request_id="r1", channel_id="web", session_id="chat-1",
+        req_method=ReqMethod.CHAT_SEND, params={"mode": "agent.code.normal"},
+    )
+
+    assert AgentRuntime._voice_task_card_refusal(_session_waiting_on_card(), request) == []

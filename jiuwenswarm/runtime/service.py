@@ -517,6 +517,36 @@ class AgentRuntime:
             or self._session_message_goal_busy(session_id)
         )
 
+    def _voice_task_card_refusal(self, request: AgentRequest) -> list[RuntimeEvent]:
+        """Refuse a new voice task while a chat turn waits on a card (#5487).
+
+        Any new chat execution supersedes one that waits for control input, so
+        the card could no longer be clicked; cards are click-only for voice.
+        The refusal is a ``chat.error`` so the voice task fails instead of
+        becoming unknown, which would hold the conversation's voice queue.
+        """
+        if request.channel_id != "video_tool" or str((request.params or {}).get("mode") or "").startswith("team."):
+            return []
+        snapshot = self._session_coordinator.snapshot_session(request.session_id or "default")
+        if snapshot is None or not any(
+            execution.state is SessionExecutionState.WAITING_FOR_CONTROL
+            for execution in snapshot.executions
+        ):
+            return []
+        from jiuwenswarm.runtime.events import RuntimeEvent
+
+        return [RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            payload={
+                "event_type": "chat.error",
+                "error": "当前对话有待处理的确认卡片，请先在界面上点击处理，再发起全双工工具任务。",
+            },
+            is_complete=True,
+            ok=False,
+        )]
+
     def _require_cross_session_input_admission(self, request: AgentRequest) -> None:
         from agent_gateway.common.mode_matrix import is_plan_mode
         from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
@@ -1735,42 +1765,28 @@ class AgentRuntime:
                     return await self._deliver_control(
                         request, on_control_event=on_control_event,
                     )
-                if work_kind is not None:
-                    await self._ensure_session_registered(request)
-                    if work_kind is SessionWorkKind.CONTROL_INPUT:
-                        return await self._deliver_control(
-                            request, on_control_event=on_control_event,
-                        )
-                    # Team work kinds require matching execution details (the
-                    # coordinator rejects a Team execution without them); mirror
-                    # the streaming path's classification for unary Team calls.
-                    team_details = None
-                    if work_kind in {
-                        SessionWorkKind.TEAM_REQUEST,
-                        SessionWorkKind.TEAM_CONTROL,
-                        SessionWorkKind.TEAM_BACKGROUND,
-                    }:
-                        self._team_lifecycle()
-                        team_details = TeamExecutionDetails(
-                            observation_only=self._is_attach_only_request(request),
-                            control_id=(
-                                self._team_control_id(request)
-                                if work_kind is SessionWorkKind.TEAM_CONTROL
-                                else None
-                            ),
-                            background_trigger=self._team_background_trigger(request),
-                            session_message_id=self._team_session_message_id(request),
-                            waiter_kind=self._team_waiter_kind(
-                                request,
-                                work_kind=work_kind,
-                                background=False,
-                            ),
-                        )
-                    return await self._session_coordinator.run_unary(
-                        request.session_id or "default",
-                        request.request_id,
-                        work_kind,
-                        lambda: self._invoke_started(
+                refusal = self._voice_task_card_refusal(request)
+                if refusal:
+                    return refusal
+                # Team work kinds require matching execution details (the
+                # coordinator rejects a Team execution without them); mirror
+                # the streaming path's classification for unary Team calls.
+                team_details = None
+                if work_kind in {
+                    SessionWorkKind.TEAM_REQUEST,
+                    SessionWorkKind.TEAM_CONTROL,
+                    SessionWorkKind.TEAM_BACKGROUND,
+                }:
+                    self._team_lifecycle()
+                    team_details = TeamExecutionDetails(
+                        control_id=(
+                            self._team_control_id(request)
+                            if work_kind is SessionWorkKind.TEAM_CONTROL
+                            else None
+                        ),
+                        background_trigger=self._team_background_trigger(request),
+                        session_message_id=self._team_session_message_id(request),
+                        waiter_kind=self._team_waiter_kind(
                             request,
                             trigger_hook=trigger_hook,
                             on_control_event=on_control_event,
@@ -2359,6 +2375,11 @@ class AgentRuntime:
                     expected_execution_id=request.params.get("expected_execution_id"),
                 )
             else:
+                refusal = self._voice_task_card_refusal(request)
+                if refusal:
+                    for event in refusal:
+                        yield event
+                    return
                 team_execution = work_kind in {
                     SessionWorkKind.TEAM_REQUEST,
                     SessionWorkKind.TEAM_CONTROL,

@@ -145,3 +145,42 @@ def test_regular_chat_send_refreshes_activity_timestamps(sessions_dir) -> None:
     after = _read_metadata("s-chat")
     assert after["last_message_at"] > before["last_message_at"]
     assert after["last_user_message_at"] > before["last_user_message_at"]
+
+
+def _voice_request(session_id: str, mode: str = "agent.code.normal") -> AgentRequest:
+    return AgentRequest(
+        request_id="task-1",
+        channel_id="video_tool",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": mode},
+        is_stream=True,
+    )
+
+
+def test_voice_task_in_a_saved_chat_runs_on_the_chat_channel(sessions_dir):
+    """#5487: a second video_tool agent kept its own copy of the chat's session,
+    so a voice turn resumed approval cards the chat had already answered."""
+    from jiuwenswarm.runtime.request import resolve_request_owner_channel
+
+    _init_session("chat-1")
+    _drain_writes()
+
+    assert resolve_request_owner_channel(_voice_request("chat-1")) == "web"
+
+
+def test_voice_task_without_a_saved_chat_keeps_its_own_channel(sessions_dir):
+    from jiuwenswarm.runtime.request import resolve_request_owner_channel
+
+    assert resolve_request_owner_channel(_voice_request("managed-task-1")) == "video_tool"
+
+
+def test_design_voice_task_and_other_channels_keep_their_routing(sessions_dir):
+    from jiuwenswarm.runtime.request import resolve_request_owner_channel
+
+    _init_session("chat-2")
+    _drain_writes()
+
+    # Design tasks are bound by the Team stream on their own channel.
+    assert resolve_request_owner_channel(_voice_request("chat-2", "team.design")) == "video_tool"
+    assert resolve_request_owner_channel(_chat_request("r2", "chat-2", {"mode": "agent"})) == "web"
