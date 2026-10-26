@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """refresh_user_config.py 的单元测试。
 
-不依赖 root、网络、docker、真实 Gateway：外部 I/O 通过注入的 Runtime 替换，
-文件操作使用临时目录。可用标准库运行：
+不依赖 root 或网络：外部 I/O 通过注入的 Runtime 替换，文件操作使用临时目录。
+可用标准库运行：
 
     python -m unittest discover -s tests/unit_tests/deploy -v
 """
@@ -12,7 +12,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
-import json
 import sys
 import tempfile
 import unittest
@@ -97,7 +96,6 @@ def make_runtime(**overrides):
         "is_tty": lambda: False,
         "load_round": _round_load,
         "dump_round": _round_dump,
-        "run_cmd": lambda argv: (1, "", ""),  # 默认 docker 不可用
     }
     base.update(overrides)
     return replace(mod.Runtime(), **base)
@@ -192,82 +190,6 @@ class PureFunctionTests(unittest.TestCase):
         with self.assertRaises(mod.FatalError):
             mod.apply_agentos({"models": []}, [])
 
-    def test_config_value(self):
-        data = {"a": {"b": {"c": "v"}}, "empty": None}
-        self.assertEqual(mod.config_value(data, "a.b.c"), "v")
-        self.assertEqual(mod.config_value(data, "a.b.missing"), "")
-        self.assertEqual(mod.config_value(data, "empty"), "")
-        self.assertEqual(mod.config_value(None, "a"), "")
-
-    def test_path_within(self):
-        home = Path("/home/agentos/users/u1")
-        self.assertTrue(mod.path_within("/home/agentos/users/u1", home))
-        self.assertTrue(mod.path_within("/home/agentos/users/u1/", home))
-        self.assertTrue(mod.path_within("/home/agentos/users/u1/workspace", home))
-        self.assertFalse(mod.path_within("/home/agentos/users/u10", home))
-        self.assertFalse(mod.path_within("", home))
-        self.assertFalse(mod.path_within(None, home))
-
-    def test_instance_matches_user(self):
-        home = Path("/home/agentos/users/u1")
-        self.assertTrue(
-            mod.instance_matches_user(
-                {"instance": {"rootfs": {"workspace": "/home/agentos/users/u1"}}}, home
-            )
-        )
-        self.assertTrue(
-            mod.instance_matches_user(
-                {"rootfs": {"mounts": [{"source": "/home/agentos/users/u1/workspace"}]}},
-                home,
-            )
-        )
-        self.assertTrue(
-            mod.instance_matches_user(
-                {"env_vars": {"JIUWENSWARM_USER_DIRECTORY": "/home/agentos/users/u1"}},
-                home,
-            )
-        )
-        self.assertFalse(
-            mod.instance_matches_user(
-                {"rootfs": {"workspace": "/home/agentos/users/u2"}}, home
-            )
-        )
-        self.assertFalse(mod.instance_matches_user(None, home))
-
-    def test_describe_instance(self):
-        text = mod.describe_instance(
-            "id-1",
-            {
-                "instance": {
-                    "sandbox_type": "docker",
-                    "rootfs": {
-                        "mounts": [{"source": "/home/agentos/users/u1/workspace"}]
-                    },
-                }
-            },
-        )
-        self.assertIn("id-1", text)
-        self.assertIn("docker", text)
-        self.assertIn("/home/agentos/users/u1/workspace", text)
-
-    def test_mounts_match_user(self):
-        home = Path("/home/agentos/users/u1")
-        self.assertTrue(
-            mod.mounts_match_user(
-                [{"Source": "/home/agentos/users/u1/.jiuwenswarm/agent/workspace"}], home
-            )
-        )
-        self.assertTrue(
-            mod.mounts_match_user(
-                [{"source": "/home/agentos/users/u1/workspace"}], home
-            )
-        )
-        self.assertFalse(
-            mod.mounts_match_user([{"Source": "/home/agentos/users/u10/x"}], home)
-        )
-        self.assertFalse(mod.mounts_match_user([{"Source": "/home/agentos"}], home))
-        self.assertFalse(mod.mounts_match_user(None, home))
-
 
 # ---------------------------------------------------------------------------
 # 步骤编排（真实临时文件 + 假 I/O）
@@ -306,7 +228,7 @@ class FlowTests(unittest.TestCase):
         chowns = []
         runtime = make_runtime(chown=lambda path, uid, gid: chowns.append((str(path), uid, gid)))
 
-        rc, out, _ = run_captured(ws.options(no_restart=True), runtime)
+        rc, out, _ = run_captured(ws.options(), runtime)
 
         self.assertEqual(rc, 0)
         merged = _round_load(ws.user_cfg)
@@ -328,279 +250,10 @@ class FlowTests(unittest.TestCase):
         before = _sha(ws.user_cfg)
 
         with self.assertRaises(mod.FatalError):
-            run_captured(ws.options(no_restart=True), make_runtime())
+            run_captured(ws.options(), make_runtime())
 
         self.assertEqual(_sha(ws.user_cfg), before)
         self.assertEqual(list(ws.user_cfg_dir.glob("config.yaml.new.*")), [])
-
-    def _restart_runtime(self, instances, *, delete_status=200):
-        state = {"deleted": False}
-        deletes = []
-        mine = (self.root / "home" / "testu02").as_posix()
-
-        def http(url, method):
-            if method == "GET":
-                if url.endswith("/api/agent"):
-                    items = list(instances)
-                    if state["deleted"]:
-                        items = [
-                            item
-                            for item in items
-                            if (item.get("instance_id") or item.get("instanceId")) != "id-1"
-                        ]
-                    return 200, json.dumps({"code": 200, "instances": items})
-                instance_id = url.rsplit("/", 1)[-1]
-                if instance_id == "id-1":
-                    return 200, json.dumps(
-                        {"instance": {"rootfs": {"workspace": mine}}}
-                    )
-                return 200, json.dumps(
-                    {
-                        "instance": {
-                            "rootfs": {"workspace": "/home/agentos/users/other"}
-                        }
-                    }
-                )
-            instance_id = url.rsplit("/", 1)[-1]
-            deletes.append(instance_id)
-            if delete_status in (200, 202, 204, 404) and instance_id == "id-1":
-                state["deleted"] = True
-            return delete_status, "{}"
-
-        return make_runtime(http=http, run_cmd=lambda argv: (1, "", "")), deletes
-
-    def test_restart_happy_path(self):
-        ws = Workspace(self.root)
-        runtime, deletes = self._restart_runtime(
-            [
-                {"instance_id": "id-1", "sandbox_type": "supervisor"},
-                {"instance_id": "id-2", "sandbox_type": "supervisor"},
-                {"instance_id": "id-3", "sandbox_type": "supervisor"},
-            ]
-        )
-
-        rc, out, _ = run_captured(ws.options(frontend="http://fake"), runtime)
-
-        self.assertEqual(rc, 0)
-        self.assertEqual(deletes, ["id-1"])
-        self.assertIn("已删除实例: id-1", out)
-
-    def test_restart_delete_failure_returns_2(self):
-        ws = Workspace(self.root)
-        runtime, deletes = self._restart_runtime(
-            [{"instance_id": "id-1", "sandbox_type": "supervisor"}],
-            delete_status=500,
-        )
-
-        rc, _, err = run_captured(ws.options(frontend="http://fake"), runtime)
-
-        self.assertEqual(rc, 2)
-        self.assertEqual(deletes, ["id-1"])
-        self.assertIn("重启未完成", err)
-
-    def test_restart_others_only(self):
-        ws = Workspace(self.root)
-
-        def http(url, method):
-            if method == "DELETE":
-                raise AssertionError("不应该删除其他用户的实例")
-            return 200, json.dumps(
-                {"code": 200, "instances": [{"instanceId": "id-2", "name": "otheruser+jiuwenswarm"}]}
-            )
-
-        rc, out, _ = run_captured(ws.options(frontend="http://fake"), make_runtime(http=http))
-
-        self.assertEqual(rc, 0)
-        self.assertIn("没有匹配用户 testu02 的实例", out)
-
-    def test_restart_api_unreachable_returns_2(self):
-        ws = Workspace(self.root)
-
-        def http(url, method):
-            raise RuntimeError("down")
-
-        rc, _, _ = run_captured(ws.options(frontend="http://fake"), make_runtime(http=http))
-
-        self.assertEqual(rc, 2)
-
-    def test_no_restart_skips_http(self):
-        ws = Workspace(self.root)
-
-        def http(url, method):
-            raise AssertionError("--no-restart 不应发请求")
-
-        rc, _, _ = run_captured(ws.options(no_restart=True), make_runtime(http=http))
-
-        self.assertEqual(rc, 0)
-
-    def test_restart_matches_by_detail_workspace(self):
-        ws = Workspace(self.root)
-        mine = (ws.home_base / "testu02").as_posix()
-        deletes = []
-
-        def http(url, method):
-            if method == "GET":
-                if url.endswith("/api/agent"):
-                    return 200, json.dumps(
-                        {
-                            "code": 200,
-                            "instances": [
-                                {"instance_id": "id-1", "sandbox_type": "supervisor"},
-                                {"instance_id": "id-2", "sandbox_type": "docker"},
-                            ],
-                        }
-                    )
-                if url.endswith("/api/agent/id-1"):
-                    return 200, json.dumps(
-                        {
-                            "code": 200,
-                            "instance": {
-                                "instance_id": "id-1",
-                                "sandbox_type": "supervisor",
-                                "rootfs": {"workspace": mine},
-                            },
-                        }
-                    )
-                return 200, json.dumps(
-                    {
-                        "instance": {
-                            "sandbox_type": "docker",
-                            "rootfs": {
-                                "mounts": [{"source": "/home/agentos/users/other/x"}]
-                            },
-                        }
-                    }
-                )
-            deletes.append(url.rsplit("/", 1)[-1])
-            return 200, "{}"
-
-        rc, out, _ = run_captured(
-            ws.options(frontend="http://fake"), make_runtime(http=http)
-        )
-
-        self.assertEqual(rc, 0)
-        self.assertEqual(deletes, ["id-1"])
-        self.assertIn("已删除实例: id-1", out)
-
-    def test_restart_reports_unmatched_instances(self):
-        ws = Workspace(self.root)
-
-        def http(url, method):
-            if method == "DELETE":
-                raise AssertionError("不应删除其他用户的实例")
-            if url.endswith("/api/agent"):
-                return 200, json.dumps(
-                    {
-                        "code": 200,
-                        "instances": [
-                            {"instance_id": "id-1", "sandbox_type": "supervisor"},
-                            {"instance_id": "id-2", "sandbox_type": "docker"},
-                        ],
-                    }
-                )
-            if url.endswith("/api/agent/id-1"):
-                return 200, json.dumps(
-                    {
-                        "instance": {
-                            "sandbox_type": "supervisor",
-                            "rootfs": {"workspace": "/home/agentos/users/aaa"},
-                        }
-                    }
-                )
-            return 200, json.dumps(
-                {
-                    "instance": {
-                        "sandbox_type": "docker",
-                        "rootfs": {
-                            "mounts": [
-                                {"source": "/home/agentos/users/aaa/workspace"}
-                            ]
-                        },
-                    }
-                }
-            )
-
-        rc, out, _ = run_captured(
-            ws.options(frontend="http://fake"), make_runtime(http=http)
-        )
-
-        self.assertEqual(rc, 0)
-        self.assertIn("返回 2 个实例", out)
-        self.assertIn("id-1", out)
-        self.assertIn("id-2", out)
-        self.assertIn("/home/agentos/users/aaa", out)
-        self.assertIn("不匹配", out)
-
-    def test_restart_detail_failure_returns_2(self):
-        ws = Workspace(self.root)
-
-        def http(url, method):
-            if method == "DELETE":
-                raise AssertionError("详情读取失败时不应删除任何实例")
-            if url.endswith("/api/agent"):
-                return 200, json.dumps(
-                    {"instances": [{"instance_id": "id-1", "sandbox_type": "supervisor"}]}
-                )
-            return 500, "{}"
-
-        rc, out, err = run_captured(
-            ws.options(frontend="http://fake"), make_runtime(http=http)
-        )
-
-        self.assertEqual(rc, 2)
-        self.assertIn("无法判定归属", err)
-        self.assertNotIn("未发现用户 testu02 的运行实例", out)
-
-    def test_restart_detail_404_returns_0(self):
-        ws = Workspace(self.root)
-
-        def http(url, method):
-            if method == "DELETE":
-                raise AssertionError("实例已不存在时不应删除")
-            if url.endswith("/api/agent"):
-                return 200, json.dumps(
-                    {"instances": [{"instance_id": "id-1", "sandbox_type": "supervisor"}]}
-                )
-            return 404, "{}"
-
-        rc, out, _ = run_captured(
-            ws.options(frontend="http://fake"), make_runtime(http=http)
-        )
-
-        self.assertEqual(rc, 0)
-        self.assertIn("实例已不存在", out)
-
-    def test_restart_partial_uncertain_returns_2(self):
-        ws = Workspace(self.root)
-        mine = (ws.home_base / "testu02").as_posix()
-        deletes = []
-
-        def http(url, method):
-            if method == "GET":
-                if url.endswith("/api/agent"):
-                    return 200, json.dumps(
-                        {
-                            "instances": [
-                                {"instance_id": "id-1", "sandbox_type": "supervisor"},
-                                {"instance_id": "id-2", "sandbox_type": "docker"},
-                            ]
-                        }
-                    )
-                if url.endswith("/api/agent/id-1"):
-                    return 200, json.dumps(
-                        {"instance": {"rootfs": {"workspace": mine}}}
-                    )
-                return 500, "{}"
-            deletes.append(url.rsplit("/", 1)[-1])
-            return 200, "{}"
-
-        rc, _, err = run_captured(
-            ws.options(frontend="http://fake"), make_runtime(http=http)
-        )
-
-        self.assertEqual(rc, 2)
-        self.assertEqual(deletes, ["id-1"])
-        self.assertIn("重启未完全确认", err)
 
     def _add_user(self, username, agentos_block=None):
         cfg_dir = self.root / "home" / username / ".jiuwenswarm" / "config"
@@ -610,43 +263,15 @@ class FlowTests(unittest.TestCase):
         cfg.write_text(text, encoding="utf-8")
         return cfg
 
-    def test_all_updates_every_user_and_restarts_all(self):
+    def test_all_updates_every_user(self):
         ws = Workspace(self.root, _user_config_text(_agentos_block()))
         other = self._add_user("testu03", _agentos_block(("bk-c",)))
-        deletes = []
-        homes = {
-            name: (ws.home_base / name).as_posix() for name in ("testu02", "testu03")
-        }
-
-        def http(url, method):
-            if method == "GET":
-                if url.endswith("/api/agent"):
-                    return 200, json.dumps(
-                        {
-                            "instances": [
-                                {"instance_id": "id-2", "sandbox_type": "supervisor"},
-                                {"instance_id": "id-3", "sandbox_type": "supervisor"},
-                            ]
-                        }
-                    )
-                if url.endswith("/api/agent/id-2"):
-                    return 200, json.dumps(
-                        {"instance": {"rootfs": {"workspace": homes["testu02"]}}}
-                    )
-                if url.endswith("/api/agent/id-3"):
-                    return 200, json.dumps(
-                        {"instance": {"rootfs": {"workspace": homes["testu03"]}}}
-                    )
-                raise AssertionError(url)
-            deletes.append(url.rsplit("/", 1)[-1])
-            return 200, "{}"
 
         rc, out, _ = run_captured(
-            ws.options(all_users=True, username="", frontend="http://fake"), make_runtime(http=http)
+            ws.options(all_users=True, username=""), make_runtime()
         )
 
         self.assertEqual(rc, 0)
-        self.assertEqual(sorted(deletes), ["id-2", "id-3"])
         self.assertIn("成功: 2 / 2", out)
         self.assertEqual(
             [
@@ -663,41 +288,15 @@ class FlowTests(unittest.TestCase):
             ["bk-c"],
         )
 
-    def test_all_skips_failed_user_but_restarts_others(self):
+    def test_all_skips_failed_user(self):
         ws = Workspace(self.root)
         self._add_user("testu04", "  agentos: oops\n")
-        deletes = []
-
-        def http(url, method):
-            if method == "GET":
-                if url.endswith("/api/agent"):
-                    return 200, json.dumps(
-                        {
-                            "instances": [
-                                {"instance_id": "id-1", "sandbox_type": "supervisor"}
-                            ]
-                        }
-                    )
-                if url.endswith("/api/agent/id-1"):
-                    return 200, json.dumps(
-                        {
-                            "instance": {
-                                "rootfs": {
-                                    "workspace": (ws.home_base / "testu02").as_posix()
-                                }
-                            }
-                        }
-                    )
-                raise AssertionError(url)
-            deletes.append(url.rsplit("/", 1)[-1])
-            return 200, "{}"
 
         rc, out, err = run_captured(
-            ws.options(all_users=True, username="", frontend="http://fake"), make_runtime(http=http)
+            ws.options(all_users=True, username=""), make_runtime()
         )
 
         self.assertEqual(rc, 1)
-        self.assertEqual(deletes, ["id-1"])
         self.assertIn("成功: 1 / 2", out)
         self.assertIn("testu04", err)
 
@@ -713,6 +312,19 @@ class FlowTests(unittest.TestCase):
         for path, data in before.items():
             self.assertEqual(path.read_bytes(), data)
 
+    def test_all_without_users_returns_0(self):
+        ws = Workspace(self.root)
+        empty_base = self.root / "empty"
+        empty_base.mkdir()
+
+        rc, out, _ = run_captured(
+            ws.options(all_users=True, username="", home_base=empty_base),
+            make_runtime(),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("没有已初始化的用户", out)
+
     def test_all_survives_corrupt_yaml(self):
         ws = Workspace(self.root)
         bad_dir = self.root / "home" / "testu05" / ".jiuwenswarm" / "config"
@@ -720,9 +332,7 @@ class FlowTests(unittest.TestCase):
         (bad_dir / "config.yaml").write_text("models: [\n", encoding="utf-8")
 
         rc, out, err = run_captured(
-            ws.options(
-                all_users=True, username="", no_restart=True, yes=True
-            ),
+            ws.options(all_users=True, username="", yes=True),
             make_runtime(),
         )
 
@@ -738,7 +348,7 @@ class FlowTests(unittest.TestCase):
             raise ValueError("boom")
 
         rc, out, err = run_captured(
-            ws.options(all_users=True, username="", no_restart=True, yes=True),
+            ws.options(all_users=True, username="", yes=True),
             make_runtime(dump_round=boom),
         )
 
