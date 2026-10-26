@@ -509,11 +509,10 @@ def test_frozen_catalogue_intersects_live_registry() -> None:
     toolkit = _build_toolkit(tools)
     snapshot = toolkit.frozen_catalogue
 
-    assert [category.path for category in snapshot.categories] == [
-        "documents",
-        "cron",
-    ]
-    assert snapshot.categories[1].tools == ("cron_create_job",)
+    # cron keeps two live members → stays a category; documents has only
+    # read_pdf live → collapses out of the category list.
+    assert [category.path for category in snapshot.categories] == ["cron"]
+    assert snapshot.categories[0].tools == ("cron_create_job", "cron_list_jobs")
     assert {entry.name for entry in snapshot.flat_entries} == {
         "cron_create_job",
         "cron_list_jobs",
