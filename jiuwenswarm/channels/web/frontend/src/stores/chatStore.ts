@@ -182,7 +182,10 @@ export interface ReasoningSegment {
 
 export interface ChatRuntime {
   messages: Message[];
+  /** Aggregate busy state; foreground and organization lifecycles update their own flags. */
   isProcessing: boolean;
+  foregroundIsProcessing: boolean;
+  organizationIsProcessing: boolean;
   activeExecutionId: string | null;
   executionError: string | null;
   /** The Team session's bound AgentGroup was deleted or uninstalled. */
@@ -249,6 +252,8 @@ function createEmptyRuntime(): ChatRuntime {
   return {
     messages: [],
     isProcessing: false,
+    foregroundIsProcessing: false,
+    organizationIsProcessing: false,
     activeExecutionId: null,
     executionError: null,
     agentGroupUnavailable: false,
@@ -377,6 +382,7 @@ interface ChatState {
   setExecutionError: (sessionId: string, error: string | null) => void;
   setAgentGroupUnavailable: (sessionId: string, unavailable: boolean) => void;
   setProcessing: (sessionId: string, status: boolean) => void;
+  setOrganizationProcessing: (sessionId: string, status: boolean) => void;
   setActiveExecutionId: (sessionId: string, executionId: string) => void;
   setThinking: (sessionId: string, status: boolean) => void;
   setLoadingHistory: (sessionId: string, status: boolean) => void;
@@ -1037,13 +1043,14 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       // 新一轮开始（false→true）：把「思考中」耗时锚点归到轮次起点。
-      const turnStart = status && !runtime.isProcessing;
+      const turnStart = status && !runtime.foregroundIsProcessing;
       return {
         runtimes: {
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
-            isProcessing: status,
+            foregroundIsProcessing: status,
+            isProcessing: status || runtime.organizationIsProcessing,
             ...(!status ? {
               activeExecutionId: null,
               reasoningInputBoundaryPending: false,
@@ -1056,9 +1063,25 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       };
     });
     // 整轮空闲：把忙碌时暂存的目标用户气泡正式入列（空 final 主路径之外的兜底）
-    if (!status) {
+    if (!get().runtimes[sessionId]?.isProcessing) {
       get().flushPendingGoalObjectiveBubble(sessionId);
     }
+  },
+
+  setOrganizationProcessing: (sessionId, status) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const isProcessing = status || runtime.foregroundIsProcessing;
+      if (runtime.organizationIsProcessing === status && runtime.isProcessing === isProcessing) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, organizationIsProcessing: status, isProcessing },
+        },
+      };
+    });
+    if (!get().runtimes[sessionId]?.isProcessing) get().flushPendingGoalObjectiveBubble(sessionId);
   },
 
   setSessionError: (sessionId, error) => {
@@ -1306,7 +1329,8 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             [sessionId]: {
               ...runtime,
               switchingMode: true,
-              isProcessing: false,
+              foregroundIsProcessing: false,
+              isProcessing: runtime.organizationIsProcessing,
               isPaused: false,
               pausedTask: null,
               interruptResult: null,

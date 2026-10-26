@@ -14,10 +14,9 @@ This patch is applied once at process startup (from
 ``JiuWenSwarmDeepAdapter.__init__``):
 
   A. Wrap ``call_tool`` / ``list_tools`` on the HTTP transports with
-     ``anyio.fail_after``. On timeout we ``disconnect()`` so the dead session
-     is torn down and the very next call fails fast (the stock client raises
-     "Not connected" once ``self._session`` is None) instead of waiting out
-     the full timeout again.
+     ``anyio.fail_after``. On timeout, clients with lazy reconnect detach the
+     dead session and recover on the next call; older clients are disconnected
+     so the next call fails fast with "Not connected".
 
      NB: must use ``anyio.fail_after`` (a cancel scope), *not*
      ``asyncio.wait_for``. The MCP SDK runs its streamable-http transport
@@ -28,7 +27,7 @@ This patch is applied once at process startup (from
      within the current task, so it stays compatible with the SDK's scopes.
   B. Monkeypatch ``ToolMgr._create_client`` so ``config.params["timeout_s"]``
      (i.e. ``/mcp add ... --timeout_s N``) is stamped onto the client instance
-     as ``_jws_call_timeout`` and honored by (A). Falls back to
+     as ``_jws_call_timeout`` and honored by (A) and by connect. Falls back to
      ``DEFAULT_CALL_TIMEOUT`` when unset.
 
 Both transforms are idempotent: a module-level ``_PATCHED`` guard makes the
@@ -84,41 +83,46 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
 
         async def wrapped(self, *args, **kwargs):
             timeout = _resolve_timeout(self, kwargs.get("timeout"))
+            # SSE re-defaults a missing timeout to 60s; forward ours.
+            call_kwargs = {**kwargs, "timeout": timeout}
             try:
                 # anyio.fail_after (cancel scope) — NOT asyncio.wait_for: the
                 # latter runs the coroutine in a separate asyncio Task, which
                 # breaks anyio's cancel-scope invariants inside the MCP SDK
                 # transport and corrupts the session on healthy calls.
                 with anyio.fail_after(timeout):
-                    return await orig(self, *args, **kwargs)
+                    return await orig(self, *args, **call_kwargs)
             except TimeoutError:
                 logger.warning(
-                    "[mcp-timeout] %s.%s timed out after %.1fs, disconnecting client: %s",
+                    "[mcp-timeout] %s.%s timed out after %.1fs, releasing client: %s",
                     cls.__name__,
                     name,
                     timeout,
                     getattr(self, "_server_path", "?"),
                 )
-                # Tear down the dead session so the next call fails fast rather
-                # than burning another full timeout window on a half-open conn.
-                # disconnect runs the same anyio task-group teardown that can
-                # raise a BaseExceptionGroup (containing GeneratorExit); coerce
-                # it so the timeout path doesn't escape as an uncatchable group.
-                try:
-                    await self.disconnect()
-                except BaseException as disc_exc:  # noqa: BLE001
-                    from jiuwenswarm.server.runtime.mcp.exc_group import (
-                        reraise_as_exception,
-                    )
+                if hasattr(self, "_lazy_reconnect"):
+                    # Detach the dead session; the next call lazily reconnects
+                    # on the owner task. Awaiting disconnect here would block
+                    # behind that queue.
+                    setattr(self, "_lazy_reconnect", True)
+                    setattr(self, "_session", None)
+                else:
+                    # Older clients: tear down so the next call fails fast.
                     try:
-                        reraise_as_exception(disc_exc)
-                    except Exception as coerce_exc:  # noqa: BLE001
-                        logger.warning(
-                            "[mcp-timeout] %s.%s disconnect after timeout also failed: %r",
-                            cls.__name__,
-                            name,
-                            coerce_exc,
+                        await self.disconnect()
+                    except BaseException as disc_exc:  # noqa: BLE001
+                        from jiuwenswarm.server.runtime.mcp.exc_group import (
+                            reraise_as_exception,
                         )
+                        try:
+                            reraise_as_exception(disc_exc)
+                        except Exception as coerce_exc:  # noqa: BLE001
+                            logger.warning(
+                                "[mcp-timeout] %s.%s disconnect after timeout also failed: %r",
+                                cls.__name__,
+                                name,
+                                coerce_exc,
+                            )
                 raise
             except BaseException as exc:
                 # The mcp SDK's streamablehttp_client runs inside an anyio task
@@ -138,24 +142,35 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
 
         setattr(cls, name, wrapped)
 
+    def _wrap_connect_with_config_timeout(cls: type) -> None:
+        """Pass timeout_s into connect without an outer cancel scope."""
+        key = (cls, "connect")
+        if key in _wrapped_methods:
+            return
+        _wrapped_methods.add(key)
+        orig = getattr(cls, "connect")
+
+        async def wrapped(self, *args, **kwargs):
+            explicit = kwargs.get("timeout")
+            if not isinstance(explicit, (int, float)) or explicit <= 0:
+                stamped = getattr(self, "_jws_call_timeout", None)
+                if isinstance(stamped, (int, float)) and stamped > 0:
+                    kwargs["timeout"] = float(stamped)
+            return await orig(self, *args, **kwargs)
+
+        setattr(cls, "connect", wrapped)
+
     # (A) HTTP long-poll transports — same failure mode when the server dies.
     # call_tool / list_tools are the hot path. They enter and exit the MCP SDK's
     # anyio task-group scope within the same call, so anyio.fail_after's cancel
     # scope stays correctly paired.
     #
-    # connect is deliberately NOT wrapped: connect() does
-    # ``self._exit_stack.enter_async_context(self._client)`` — it ENTERS the
-    # SDK streamable_http_client's task-group cancel scope but does not EXIT it
-    # (the exit is deferred to disconnect() via self._exit_stack.aclose()). If
-    # anyio.fail_after wrapped connect, its cancel scope would close when
-    # connect() returns, while the SDK's task-group scope it entered is still
-    # alive — anyio then raises "Attempted to exit a cancel scope that isn't
-    # the current task's current cancel scope" on the next task-group op
-    # (e.g. list_tools). connect already guards initialize() with
-    # asyncio.wait_for, so it does not need an outer cancel scope.
+    # connect is not wrapped in fail_after: it leaves the SDK task-group scope
+    # open until disconnect(), so an outer cancel scope would break later calls.
     for cls in (StreamableHttpClient, SseClient):
         _wrap_with_timeout(cls, "call_tool")
         _wrap_with_timeout(cls, "list_tools")
+        _wrap_connect_with_config_timeout(cls)
 
     # (B) Thread config.params["timeout_s"] (--timeout_s) onto each client so
     # (A) can pick it up. NOTE: if the browser-move client patch is applied

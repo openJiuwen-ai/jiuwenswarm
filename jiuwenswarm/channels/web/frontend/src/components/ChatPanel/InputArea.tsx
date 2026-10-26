@@ -1,4 +1,4 @@
-﻿import {
+import {
   useState,
   useRef,
   useCallback,
@@ -20,7 +20,7 @@
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { AtSign, ChevronRight, CircleX, ListChecks, Loader2, Lock, Mic, Pencil, Plus, Rocket, Settings, Square, SquarePlay, Workflow, X } from 'lucide-react';
+import { AtSign, ChevronRight, CircleX, Infinity as InfinityIcon, ListChecks, Loader2, Lock, Mic, Pencil, Plus, Rocket, Settings, Square, SquarePlay, Workflow, X } from 'lucide-react';
 
 // import { stopAllTts } from '../../utils';
 import {
@@ -62,7 +62,6 @@ import {
   validateAssetName,
 } from '../../features/sessionAssets/assetReferences';
 import { useSessionArtifacts } from '../ArtifactsPanel';
-import { WorktreeProjectGuide } from './WorktreeProjectGuide';
 import {
   parseSlashLine,
   parseGoalSlashArgs,
@@ -87,7 +86,7 @@ import { SkillPickerPanel } from './SkillPickerPanel';
 import { PickerPanel } from './PickerPanel';
 import { PickerSearchInput } from './PickerSearchInput';
 import { Switch } from '../Switch';
-import { Input } from '../ui';
+import { Button, CloseButton, Dialog, Input } from '../ui';
 import { Select } from '../ui/Select/Select';
 import { ExtensionIcon } from '../ConnectorMarket/icons';
 import {
@@ -150,6 +149,7 @@ import { TeamSelector } from './TeamSelector';
 import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import {
@@ -344,6 +344,10 @@ interface InputAreaProps {
   onForkSession: (sourceSessionId: string) => Promise<void>;
   /** Signals that the user is editing an existing real Session. */
   onInputIntent?: (sessionId: string) => void;
+  /** Tab or → in the empty composer; returns true when it filled the composer, which then keeps focus. */
+  onEmptyComposerTab?: () => boolean;
+  /** The next-input suggestion, shown in the empty composer while its chip after the reply is out of view. */
+  suggestionPlaceholder?: string | null;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   onPersistDocuments: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   /** Delete an unsent image copy under the session uploads directory. */
@@ -389,7 +393,7 @@ function clipboardHasFileItems(clipboardData: DataTransfer | null | undefined): 
 
 const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 /**
- * Keep in sync with jiuwenswarm/gateway/document_attachments.py
+ * Keep in sync with gateway/document_attachments.py
  * FORBIDDEN_DOCUMENT_EXTENSIONS.
  */
 const FORBIDDEN_DOCUMENT_EXTENSIONS = new Set([
@@ -760,6 +764,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onEnsureSession,
     onForkSession,
     onInputIntent,
+    onEmptyComposerTab,
+    suggestionPlaceholder,
     onPersistMedia,
     onPersistDocuments,
     onDiscardMedia,
@@ -802,6 +808,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [projectCreateMode, setProjectCreateMode] = useState<ProjectCreateMode>('blank');
   const [menuDirection, setMenuDirection] = useState<'up' | 'down'>('up');
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const [groupRuntimeNotice, setGroupRuntimeNotice] = useState<string | null>(null);
   const [externalAgentSwitchNotice, setExternalAgentSwitchNotice] = useState<string | null>(null);
   const [agentPickerQuery, setAgentPickerQuery] = useState('');
   const [pickerTab, setPickerTab] = useState<'agent' | 'group'>('agent');
@@ -901,6 +908,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const attachmentMenuOpenedByLongPressRef = useRef(false);
   const isComposingRef = useRef(false);
   const { t, i18n } = useTranslation();
+  const organizationEnabled = useTeamOrganizationUiEnabled();
+  const organizationTeamUnavailable = useTeamSelectorStore((s) => {
+    if (!organizationEnabled || !activeSessionId) return false;
+    const runtime = s.runtimes[activeSessionId];
+    return runtime?.teams.find((team) => team.team_id === runtime.selectedTeamId)?.available === false;
+  });
   const agentGroupUnavailable = useChatStore(
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
   );
@@ -919,6 +932,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const designLandingSubmitting = isDesignLanding && isProcessing;
   const composerDisabled =
     agentGroupUnavailable ||
+    organizationTeamUnavailable ||
     isCompactRunning ||
     (hasPendingQuestion && !hasRunningAgent) ||
     designLandingSubmitting;
@@ -1086,14 +1100,17 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     setAgentPickerQuery('');
     setPickerTab('agent');
   }, [attachMenuOpen]);
-  const isPaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isPaused ?? false);
+  const conversationIsPaused = useChatStore((s) => s.runtimes[conversationId]?.isPaused ?? false);
+  const organizationIsProcessing = useOrganizationProcessing(activeSessionId);
+  const isPaused = conversationIsPaused;
+  const ownerOrganizationIsProcessing = conversationId === activeSessionId && organizationIsProcessing;
   const queuePaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuePaused ?? false);
   const isLoadingHistory = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isLoadingHistory ?? false);
   const inputValue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.inputValue ?? '');
   const evolutionStatus = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.evolutionStatus ?? null);
   const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? []);
   const teamMembers = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.teamMembers ?? [],
+    (s) => s.runtimes[conversationId]?.teamMembers ?? [],
   ) as InputAreaTeamMember[];
   const currentSession = useSessionStore((s) => s.currentSession);
   const activeSession = useSessionStore((s) => {
@@ -1203,6 +1220,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   };
   const canUsePlanMenu = supportsPlanMode(mode);
   const planTagVisible = canUsePlanMenu && planActive;
+  // 永续会话标记：只对真实会话展示（/persist 创建或后端会话列表带 persist_session 的会话），
+  // 欢迎页在 session.create 之前没有可展示的持久化状态。
+  const persistSessionActive = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.persistSession ?? false,
+  );
+  const persistTagVisible = Boolean(
+    activeSessionId && activeSessionId !== NEW_CONVERSATION_ID && persistSessionActive,
+  );
 
   const mentionableMembers = useMemo(() => {
     return teamMembers
@@ -1484,49 +1509,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return selectedProject && !isDefaultInputProject(selectedProject) ? selectedProject : null;
   }, [activeSession, projects, selectedProject, t, workMode]);
 
-  // Worktree 隔离开关的显示默认值：全局 config（团队模板的 worktree.enabled），
-  // 仅在会话未显式拨过（swarmflowWorktree === undefined）时用于展示。
-  // 挂载时读一次，配置面板每次打开时刷新；会话自身的值存 sessionStore。
-  const [swarmflowWorktreeDefault, setSwarmflowWorktreeDefault] = useState<boolean | null>(null);
-  const refreshSwarmflowWorktreeDefault = useCallback(() => {
-    webRequest<Record<string, unknown>>('config.get')
-      .then((config) => {
-        const raw = (config as { swarmflow_worktree?: unknown } | undefined)?.swarmflow_worktree;
-        setSwarmflowWorktreeDefault(raw === true || String(raw ?? '').trim().toLowerCase() === 'true');
-      })
-      .catch(() => {});
-  }, []);
-  useEffect(() => {
-    refreshSwarmflowWorktreeDefault();
-  }, [refreshSwarmflowWorktreeDefault]);
-  // 会话级 worktree 值（undefined=未拨过）；有效值 = 会话值 ?? 全局默认
-  const swarmflowWorktreeValue = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.swarmflowWorktree,
-  );
-  const swarmflowWorktreeEffective = swarmflowWorktreeValue ?? (swarmflowWorktreeDefault ?? false);
-  // Worktree 无项目目录的聚光灯引导。动态工作流的"+"菜单/配置面板还开着时会挡住
-  // 项目下拉，先挂起，等它们全部关闭后再弹；弹出后选好项目自动消失。
-  const [worktreeGuideOpen, setWorktreeGuideOpen] = useState(false);
-  const [worktreeGuidePending, setWorktreeGuidePending] = useState(false);
-  useEffect(() => {
-    if (worktreeGuideOpen && displayedProject) setWorktreeGuideOpen(false);
-  }, [worktreeGuideOpen, displayedProject]);
-  useEffect(() => {
-    if (!worktreeGuidePending || attachMenuOpen || swarmflowConfigPanelOpen) return;
-    setWorktreeGuidePending(false);
-    if (!displayedProject && swarmflowWorktreeEffective) setWorktreeGuideOpen(true);
-  }, [worktreeGuidePending, attachMenuOpen, swarmflowConfigPanelOpen, displayedProject, swarmflowWorktreeEffective]);
-  const toggleSwarmflowWorktree = useCallback(
-    (next: boolean) => {
-      if (!activeSessionId || swarmflowToggleDisabled) return;
-      useSessionStore.getState().setSwarmflowWorktree(activeSessionId, next);
-      if (next && !displayedProject) {
-        setWorktreeGuidePending(true);
-      }
-    },
-    [activeSessionId, swarmflowToggleDisabled, displayedProject],
-  );
-
   const appendTaskAsrTranscript = useCallback(
     (transcript: string) => {
       const text = transcript.trim();
@@ -1538,7 +1520,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       const separator = current && !/\s$/.test(current) ? ' ' : '';
       editor.appendChild(document.createTextNode(`${separator}${text}`));
       useChatStore.getState().setInputValue(sid, `${current}${separator}${text}`);
-      if (sid !== NEW_CONVERSATION_ID) onInputIntent?.(sid);
+      onInputIntent?.(sid);
 
       editor.focus();
       const range = document.createRange();
@@ -2432,6 +2414,24 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return text.replace(/\u200B/g, '');
   }, []);
 
+  const composerConversationRef = useRef(conversationId);
+  useEffect(() => {
+    if (composerConversationRef.current === conversationId) return;
+    composerConversationRef.current = conversationId;
+    setComposerSuggestion(null);
+    // Member IDs are scoped to a Team, even when two Teams use the same ID.
+    // Preserve the draft but remove the old Team's member addressing tokens.
+    const editor = inputRef.current;
+    if (!editor) return;
+    const tokens = editor.querySelectorAll<HTMLElement>(
+      '[data-composer-token="member"]:not([data-composer-item-kind="asset"])',
+    );
+    if (!tokens.length) return;
+    tokens.forEach((token) => token.remove());
+    const sid = useChatStore.getState().activeSessionId;
+    if (sid) useChatStore.getState().setInputValue(sid, extractPlainText());
+  }, [conversationId, extractPlainText]);
+
   /** 从 contenteditable 提取富文本（chip 转成 {{skill:名称}} 标记，保留位置用于气泡交织渲染） */
   const extractRichContent = useCallback((): string => {
     const el = inputRef.current;
@@ -2731,8 +2731,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // preparing a follow-up. A pending approval keeps Stop available and blocks Send.
   const hasDraft = hasTextDraft || attachments.length > 0 || isListening || isTranscribing;
   const isImageInterruptBlocked = isInterruptible && !isTeamMode && !isAgentMode && readyMediaItems.length > 0;
-  const showStop =
-    !designLandingSubmitting && isProcessing && !isPaused && (!hasDraft || hasPendingQuestion);
+  const hasRunningWork = (isProcessing && !isPaused) || ownerOrganizationIsProcessing;
+  const showStop = !designLandingSubmitting && hasRunningWork && (!hasDraft || hasPendingQuestion);
   const hasReadyMedia = readyMediaItems.length > 0;
   const canSubmit =
     showStop ||
@@ -2992,7 +2992,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       chip.className = `chat-input-chip-inline chat-input-chip-inline--${kind}`;
       chip.setAttribute('contenteditable', 'false');
       chip.dataset.composerToken = kind;
+      chip.dataset.composerItemKind = slashItemKind ?? kind;
       chip.dataset.value = value;
+      chip.setAttribute('data-testid', 'chat-panel-composer-token');
+      chip.dataset.variant = value;
 
       const prefix = document.createElement('span');
       prefix.className = 'chat-input-chip-inline__prefix';
@@ -3055,7 +3058,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   const notifyKVCInputIntent = useCallback(() => {
-    if (!activeSessionId || activeSessionId === NEW_CONVERSATION_ID) return;
+    if (!activeSessionId) return;
     onInputIntent?.(activeSessionId);
   }, [activeSessionId, onInputIntent]);
 
@@ -3115,6 +3118,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
       }
 
+      if ((e.key === 'Tab' || e.key === 'ArrowRight') && !e.shiftKey && !isImeCompositionKey(e.nativeEvent, isComposingRef.current)
+          && !extractPlainText().trim() && onEmptyComposerTab?.()) {
+        e.preventDefault();
+        return;
+      }
+
       if (e.key !== 'Enter' || e.shiftKey) return;
       if (isImeCompositionKey(e.nativeEvent, isComposingRef.current)) return;
       e.preventDefault();
@@ -3130,6 +3139,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       mode,
       moveComposerSuggestionHighlight,
       notifyKVCInputIntent,
+      onEmptyComposerTab,
     ],
   );
 
@@ -4016,7 +4026,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               onBlur={saveSelection}
               onPaste={handlePaste}
               data-placeholder={
-                agentGroupUnavailable
+                organizationTeamUnavailable
+                  ? t('chat.teamSelect.unavailableHint')
+                  : agentGroupUnavailable
                   ? t('chat.placeholderAgentGroupDeleted')
                   : isCompactRunning
                   ? t('chat.placeholderCompacting')
@@ -4027,7 +4039,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       : designLandingSubmitting
                         ? t('chat.placeholder')
                         : isTeamMode
-                          ? isInterruptible && !isPaused
+                          ? (isInterruptible || ownerOrganizationIsProcessing) && !isPaused
                             ? t('chat.placeholderTeamModeProcessing')
                             : t('chat.placeholderTeamMode')
                         : isAutoHarnessMode
@@ -4036,7 +4048,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             ? t('chat.placeholderProcessingQueue')
                             : isInterruptible
                               ? t('chat.placeholderProcessing')
-                              : t('chat.placeholder')
+                              : suggestionPlaceholder || t('chat.placeholder')
               }
               className={cx('chat-input-editor', composerDisabled && 'chat-input-editor--disabled')}
               data-testid="chat-panel-input"
@@ -4358,11 +4370,30 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                             ? t('chat.teamSkillsGroupLocked')
                                             : existingTeamGroupSelectionDisabled
                                             ? t('chat.agentGroupFirstBuildOnly')
-                                            : item.description || t('chat.agentGroupBinding')
+                                            : item.description || t('chat.agentGroupNoDescription')
                                       }
                                       {...agentTooltipHandlers}
-                                      onClick={() => {
+                                      onClick={async () => {
                                         if (agentGroupSelectionDisabled || !activeSessionId) return;
+                                        try {
+                                          const result = await webRequest<{ group?: { disabledRuntimes?: string[] } }>(
+                                            'agent_groups.show', { id: item.id },
+                                          );
+                                          const disabled = result.group?.disabledRuntimes ?? [];
+                                          if (disabled.length > 0) {
+                                            setGroupRuntimeNotice(t('chat.agentGroupRuntimeDisabled', {
+                                              agents: disabled.map((name) => {
+                                                if (name === 'claude') return 'Claude';
+                                                if (name === 'codex') return 'Codex';
+                                                return name;
+                                              }).join(', '),
+                                            }));
+                                            return;
+                                          }
+                                        } catch (error) {
+                                          setGroupRuntimeNotice(String(error));
+                                          return;
+                                        }
                                         useSessionStore.getState().setMode(activeSessionId, 'team');
                                         setAgentGroupSelectionIntent(activeSessionId, { kind: 'select', id: item.name });
                                         setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
@@ -4617,10 +4648,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 usePlanStore.getState().setActive(activeSessionId, false);
                               }
                               useSessionStore.getState().setSwarmflowActive(activeSessionId, next);
-                              // worktree 有效开启且未选项目目录时，等菜单关闭后再弹聚光灯引导
-                              if (next && swarmflowWorktreeEffective && !displayedProject) {
-                                setWorktreeGuidePending(true);
-                              }
                             };
                             return (
                               <div
@@ -4660,7 +4687,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                       e.stopPropagation();
                                       if (!swarmflowActive) return;
                                       if (!swarmflowConfigPanelOpen) {
-                                        refreshSwarmflowWorktreeDefault();
                                         if (swarmflowConfigBtnRef.current) {
                                           setSwarmflowConfigAnchor(
                                             swarmflowConfigBtnRef.current.getBoundingClientRect(),
@@ -5057,6 +5083,40 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                         </button>
                       );
                     })()}
+                  </div>
+                )}
+
+                {persistTagVisible && (
+                  // 永续会话标记：persist_session 是 session.create 的一次性参数，会话存续期间
+                  // 后端没有关闭入口。会话还没有任何消息时展示 ×、点击仅本地隐藏（切走再切回
+                  // 会随会话记录回灌回来），hover 沿用 agent-tag「图标换 ×」的交换交互；一旦
+                  // 发过消息（hasHistory）直接不渲染 ×，并加 --static 修饰让图标 hover 常显，
+                  // 避免悬停时图标消失又没有 × 补位、标签视觉上缺一块。
+                  <div
+                    className={hasHistory ? 'chat-agent-tag chat-agent-tag--static' : 'chat-agent-tag'}
+                    data-testid="chat-panel-persist-tag"
+                  >
+                    <span className="chat-agent-tag__avatar chat-agent-tag__avatar--plain" aria-hidden="true">
+                      <InfinityIcon size={16} aria-hidden="true" />
+                    </span>
+                    <span className="chat-agent-tag__label" data-testid="chat-panel-persist-tag-label">
+                      {t('persistSession.toolbarTag')}
+                    </span>
+                    {!hasHistory && (
+                      <button
+                        type="button"
+                        className="chat-agent-tag__close"
+                        data-testid="chat-panel-persist-tag-close"
+                        aria-label={t('persistSession.closeTag')}
+                        title={t('persistSession.closeTag')}
+                        onClick={() => {
+                          if (!activeSessionId) return;
+                          useSessionStore.getState().setPersistSession(activeSessionId, false);
+                        }}
+                      >
+                        <WorkIcon name="close" />
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -5631,21 +5691,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       );
                     })()}
                   </div>
-                  <div className="chat-swarmflow-config-panel__field">
-                    <div
-                      className="chat-swarmflow-config-panel__worktree-row"
-                      data-testid="chat-panel-swarmflow-worktree-row"
-                    >
-                      <label className="chat-swarmflow-config-panel__label">
-                        {t('swarmflow.worktreeToggleLabel')}
-                      </label>
-                      <Switch
-                        checked={swarmflowWorktreeEffective}
-                        disabled={swarmflowToggleDisabled}
-                        onChange={toggleSwarmflowWorktree}
-                      />
-                    </div>
-                  </div>
                   {swarmflowToggleDisabled && (
                     <span className="chat-swarmflow-config-panel__readonly-hint">
                       {t('swarmflow.configReadonlyHint')}
@@ -5655,12 +5700,34 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 document.body,
               );
             })()}
-          {worktreeGuideOpen && (
-            <WorktreeProjectGuide onAcknowledge={() => setWorktreeGuideOpen(false)} />
-          )}
         </div>
       </div>
 
+      <Dialog
+        open={groupRuntimeNotice !== null}
+        titleId="group-runtime-notice-title"
+        className="chat-group-runtime-dialog"
+        onCancel={() => setGroupRuntimeNotice(null)}
+        onBackdropClick={() => setGroupRuntimeNotice(null)}
+      >
+        <div className="chat-group-runtime-dialog__header" data-testid="chat-panel-group-runtime-notice-header">
+          <h2 id="group-runtime-notice-title">{t('chat.agentGroupRuntimeDisabledTitle')}</h2>
+          <CloseButton
+            testId="chat-panel-group-runtime-notice-close"
+            ariaLabel={t('common.close')}
+            onClick={() => setGroupRuntimeNotice(null)}
+          />
+        </div>
+        <p className="chat-group-runtime-dialog__message" data-testid="chat-panel-group-runtime-notice">
+          {groupRuntimeNotice}
+        </p>
+        <div className="chat-group-runtime-dialog__actions" data-testid="chat-panel-group-runtime-notice-actions">
+          <Button variant="primary" data-testid="chat-panel-group-runtime-notice-confirm"
+            onClick={() => setGroupRuntimeNotice(null)}>
+            {t('chat.agentGroupRuntimeDisabledConfirm')}
+          </Button>
+        </div>
+      </Dialog>
       {goalOverwriteRequest && (
         <OverwriteGoalConfirmModal
           currentObjective={goalOverwriteRequest.currentObjective}

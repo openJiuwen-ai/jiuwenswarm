@@ -30,6 +30,9 @@ export function SettingsPage({
   onExternalCliPendingChoicesChange,
   externalCliDetectResults,
   onExternalCliDetectResultsChange,
+  recommendationFocus,
+  onCorrectRecommendation,
+  onRecommendationEnabledChange,
   initialModuleId,
   sidebar,
 }: {
@@ -62,6 +65,9 @@ export function SettingsPage({
           Record<ExternalCliAgentKind, ExternalCliDetectResult>
         >),
   ) => void;
+  recommendationFocus?: number | null;
+  onCorrectRecommendation?: (text: string) => void;
+  onRecommendationEnabledChange?: (enabled: boolean) => void;
   initialModuleId?: SettingsModuleTarget;
   sidebar?: SettingsSidebarControls;
 }) {
@@ -81,6 +87,9 @@ export function SettingsPage({
       onExternalCliPendingChoicesChange={onExternalCliPendingChoicesChange}
       externalCliDetectResults={externalCliDetectResults}
       onExternalCliDetectResultsChange={onExternalCliDetectResultsChange}
+      recommendationFocus={recommendationFocus}
+      onCorrectRecommendation={onCorrectRecommendation}
+      onRecommendationEnabledChange={onRecommendationEnabledChange}
     >
       <SettingsPageLayout definition={definition} initialModuleId={initialModuleId} sidebar={sidebar} />
     </SettingsServicesProvider>

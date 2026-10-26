@@ -381,12 +381,18 @@ async def test_supervisor_self_stall_defers_transport_verdict(
         watchdog = asyncio.create_task(supervisor._watchdog(1))
         try:
             await asyncio.sleep(0)  # watchdog enters its first interval sleep
-            time.sleep(0.05)  # this Front's own loop stalls; pongs pile up unread
-            # The expired watchdog timer fires before this shorter sleep ends,
-            # so the first verdict sees stale rx AND high loop lag: defer.
-            await asyncio.sleep(0.001)
-            await conn.messages.put(_pong(beat_age=0.0))
-            await asyncio.sleep(0.05)  # pump drains; later cycles see fresh rx
+            time.sleep(0.05)  # this Front's own loop stalls
+            # The overdue sleep timer only queues the watchdog. The first
+            # yield runs that timer; the second resumes ahead of the verdict
+            # and enqueues the missed pong while _last_rx is still stale, so
+            # the verdict must defer. The pump applies the pong on the next
+            # turn, before the following interval — a 1ms timer instead races
+            # that 10ms tick and lets the verdict close the Worker first.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            conn.messages.put_nowait(_pong(beat_age=0.0))
+            await asyncio.sleep(0)  # pump refreshes _last_rx
+            await asyncio.sleep(0.05)  # later cycles see fresh rx
         finally:
             watchdog.cancel()
             await asyncio.gather(watchdog, return_exceptions=True)

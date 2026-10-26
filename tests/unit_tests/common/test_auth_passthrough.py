@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth import login_credentials, passthrough
+from jiuwenswarm.common.auth import login_credentials
+from gateway.auth import passthrough
 from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
 from jiuwenswarm.common.auth.model_catalog import LoginModel
 from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
@@ -226,7 +227,7 @@ def test_first_message_after_idle_gets_a_refreshed_token(apig_env, monkeypatch, 
     from jiuwenswarm.common.auth import service as service_mod
     from jiuwenswarm.common.auth import session_store as store_mod
     from jiuwenswarm.common.auth.account_kit import Credential, LoginOutcome
-    from jiuwenswarm.gateway.app_gateway import _refresh_expired_login_credential
+    from gateway.app_gateway import _refresh_expired_login_credential
 
     monkeypatch.setattr(store_mod, "auth_dir", lambda: tmp_path)
     store = store_mod.AuthSessionStore()

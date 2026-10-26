@@ -13,7 +13,7 @@ from urllib.parse import urljoin
 
 from jiuwenswarm.common._build_config import PACKAGE_NAME
 from jiuwenswarm.common.config import get_config_raw
-from jiuwenswarm.common.version import __version__, get_runtime_version
+from jiuwenswarm.common.version import __version__, get_runtime_build_date, get_runtime_version
 from jiuwenswarm.common.upgrade_executor import create_executor
 from jiuwenswarm.common.version_source import (
     GitHubReleasesSource,
@@ -93,6 +93,7 @@ def _platform_asset_key() -> str:
 @dataclass
 class UpdateStatus:
     current_version: str
+    current_build_date: str = ""
     latest_version: str = ""
     state: str = "idle"
     has_update: bool = False
@@ -118,6 +119,7 @@ class UpdaterService:
         self._download_thread: threading.Thread | None = None
         self._status = UpdateStatus(
             current_version=get_runtime_version(),
+            current_build_date=get_runtime_build_date(),
             install_mode=_detect_install_mode(),
         )
 

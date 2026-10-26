@@ -74,3 +74,21 @@ grep -rl "<session_id>" "<root>/agent/sessions" "<root>/config/runtime_state" "<
 ## 配置与智能体协作
 
 始终使用中文交流。修改子目录前阅读其中的 `AGENTS.md`；同时遵守 `AGENTS.local.md` 的本地约束。不要提交 API 密钥、真实 `.env`、运行日志或覆盖率产物；配置模板放入 `resources/`。涉及文件与进程操作时兼顾 Windows、macOS 和 Linux。
+
+
+## AI coding 流程与文档资产
+
+项目级技能位于 `.agents/skills/`，按当前任务阶段读取：
+
+- `jw-coding-flow`：需求、设计、开发、检视与交付的流程入口。
+- `jw-design`：需求分析、架构/特性方案、日期评审及设计生命周期。
+- `jw-dev`：实现、行为测试、契约同步及 feature / bugfix 开发记忆。
+- `jw-review`：统一代码检视入口，按 JiuwenSwarm 技术方向、模块 AGENTS/spec 与协议依据，重点审视工作区、提交或分支的行为差异及跨端影响，执行证据核对与复查交接，不限定 PR 场景。
+- `jw-testing`：独立撰写转测资料，本地输出 `designs/testing/`，不进入设计索引。
+- `project-maintainer`：按需维护项目知识库。
+
+实际资产位于 `.agents/agent-docs/` 的 `designs/`、`specs/`、`features/`、`bugfix/`。
+新设计使用 `D-YYYYMMDD-HHMM-<slug>`，feature / bugfix 使用 `F_` / `B_` 加 `YYYYMMDD_HHMM` 和主题。
+时间采用 Asia/Singapore、精确到分钟，历史编号不调整。模块使用真实仓库相对路径，跨仓模块保留完整路径。
+流程、模板和索引工具见各技能；现有与迁入设计从 `.agents/agent-docs/designs/README.md` 进入。
+core 的底层设计/spec 继续在 core 维护，不因依赖关系复制到本仓。提交、推送和 PR 遵循既有授权规则。

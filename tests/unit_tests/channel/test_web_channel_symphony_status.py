@@ -10,19 +10,19 @@ from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.web_connect import (
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
 )
-from jiuwenswarm.gateway.routing.keys import RoutingKey
-from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from gateway.routing.keys import RoutingKey
+from gateway.routing.session_sharing import RoutingTarget
 
 
 @pytest.mark.asyncio
 async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.web_connect.get_logs_dir",
+        "gateway.channel_manager.web.web_connect.get_logs_dir",
         lambda: tmp_path,
     )
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
@@ -39,15 +39,15 @@ async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, mo
 
 def test_web_channel_rotates_frontend_context_usage_log(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.web_connect.get_logs_dir",
+        "gateway.channel_manager.web.web_connect.get_logs_dir",
         lambda: tmp_path,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.web_connect._CONTEXT_USAGE_MAX_BYTES",
+        "gateway.channel_manager.web.web_connect._CONTEXT_USAGE_MAX_BYTES",
         12,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.web_connect._CONTEXT_USAGE_BACKUP_COUNT",
+        "gateway.channel_manager.web.web_connect._CONTEXT_USAGE_BACKUP_COUNT",
         2,
     )
 

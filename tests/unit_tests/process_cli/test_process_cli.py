@@ -1723,7 +1723,7 @@ def test_prompt_command_denies_permission_requests_even_with_a_tty(monkeypatch, 
 def test_process_cli_has_no_server_or_transport_dependencies() -> None:
     package = Path(app.__file__).resolve().parent
     forbidden = (
-        "jiuwenswarm.gateway",
+        "gateway",
         "jiuwenswarm.server.agent_ws_server",
         "jiuwenswarm.channels.tui",
         "websockets",

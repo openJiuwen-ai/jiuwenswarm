@@ -77,6 +77,16 @@ TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 # spec carries the old element name.
 TEAM_SKILL_LIBRARY_RELOAD = "swarm.team_skill_library_reload"
 TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
+ORGANIZATION_AVAILABILITY = "swarm.organization_availability"
+
+
+@harness_element(kind=ElementKind.RAIL, name=ORGANIZATION_AVAILABILITY,
+                 description="Expose current AgentGroup availability to organization leaders.")
+def _build_organization_availability_rail(params: dict[str, Any], context: SwarmBuildContext) -> Any:
+    from jiuwenswarm.agents.harness.team.rails.organization_availability_rail import OrganizationAvailabilityRail
+
+    return OrganizationAvailabilityRail(context.team_id, context.session_id)
+
 CONTEXT_PROCESSOR = "swarm.context_processor"
 MODEL_ANOMALY_DETECTION = "swarm.model_anomaly_detection"
 PLUGIN_RAILS = "swarm.plugin_rails"

@@ -345,8 +345,8 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
     from jiuwenswarm.common.schema.message import Message
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
-    from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+    from gateway.message_handler.message_handler import MessageHandler
+    from gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.runtime.service import AgentRuntime
     from jiuwenswarm.runtime.events import RuntimeEvent
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
