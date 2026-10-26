@@ -253,7 +253,7 @@ class ConfigChangeSet:
     @property
     def reload_options(self) -> dict[str, Any]:
         return {
-            "target_channel_id": None if "cua_agent_enabled" in self.yaml_updated else WEB_CONFIG_RELOAD_CHANNEL_ID,
+            "target_channel_id": WEB_CONFIG_RELOAD_CHANNEL_ID,
             "reload_scopes": sorted(self.reload_scopes),
         }
 
