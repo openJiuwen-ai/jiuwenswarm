@@ -21,22 +21,22 @@ from pathlib import Path
 
 import openjiuwen_protocol.message as protocol_message
 
+from gateway.channel_manager.tui.tui_connect import CLI_FORWARD_REQ_METHODS
+from gateway.channel_manager.web.app_web_handlers import _FORWARD_REQ_METHODS
 from jiuwenswarm.common.schema import agent as schema_agent
 from jiuwenswarm.common.schema import message as schema_message
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.channel_manager.tui.tui_connect import CLI_FORWARD_REQ_METHODS
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
-    _FORWARD_REQ_METHODS,
-)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+# gateway 拆仓后已是顶层包（不再是 jiuwenswarm.gateway），见 ea68d6e。
+_GATEWAY_ROOT = _REPO_ROOT / "gateway"
 _REQ_METHOD_VALUES = frozenset(method.value for method in ReqMethod)
 
 
 def _gateway_req_method_literals() -> set[str]:
     """收集 gateway 源码中 ``req_method="..."`` 关键字实参字面量。"""
     found: set[str] = set()
-    for path in (_REPO_ROOT / "jiuwenswarm" / "gateway").rglob("*.py"):
+    for path in _GATEWAY_ROOT.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -68,6 +68,15 @@ def test_forwarded_methods_exist_in_protocol_req_method() -> None:
         "以下方法串会转发到 AgentServer，但 openjiuwen-protocol 的 ReqMethod "
         f"未定义，服务端 ReqMethod(str) 会抛 ValueError：{unknown}。"
         "请在 agent-protocol 仓补齐后更新 pyproject/uv.lock 的 pin。"
+    )
+
+
+def test_gateway_source_root_is_the_scanned_one() -> None:
+    """目录搬迁会让字面量扫描静默变空，必须显式失败而不是悄悄少覆盖一块。"""
+    assert _GATEWAY_ROOT.is_dir(), f"未找到 gateway 源码目录：{_GATEWAY_ROOT}"
+    assert _gateway_req_method_literals(), (
+        f"{_GATEWAY_ROOT} 下未收集到任何 req_method 字面量，"
+        "说明扫描目录与 gateway 实际位置不一致。"
     )
 
 
