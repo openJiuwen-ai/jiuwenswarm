@@ -392,6 +392,99 @@ async def test_finalize_assistant_response_if_a2ui_bypasses_non_web_channel(monk
     assert result == content
 
 
+@pytest.mark.asyncio
+async def test_finalize_officeclaw_skips_server_side_repair_and_resend(monkeypatch):
+    """officeclaw (relay-claw) must NOT run server-side A2UI repair/retry/resend.
+
+    relay-claw frontend accumulates streamed a2ui deltas and self-repairs via
+    jsonrepair; a server-side repair+resend would emit a second <a2ui-json> block
+    on top of the accumulated one and arrive after the wire terminal chunk
+    (review CR-1 + atomgit-bot medium-priority comment on PR #8390).
+    """
+    import types
+
+    config_calls: list[int] = []
+
+    def fake_config():
+        config_calls.append(1)
+        return types.SimpleNamespace(enabled=True)
+
+    monkeypatch.setattr(integration, "_get_runtime_a2ui_config", fake_config)
+
+    finalize_calls: list[str] = []
+
+    async def fake_finalize(content, **kwargs):
+        finalize_calls.append(content)
+        return content
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.runtime.response_finalization.finalize_a2ui_assistant_content",
+        fake_finalize,
+    )
+
+    repair_calls: list[str] = []
+
+    async def repair_call(prompt: str):
+        repair_calls.append(prompt)
+        return prompt
+
+    retry_calls: list[str] = []
+
+    def retry_without_a2ui_call(query: str):
+        retry_calls.append(query)
+        return "retry content"
+
+    broken_a2ui = "<a2ui-json>{broken json</a2ui-json>"
+    result = await integration.finalize_assistant_response_if_a2ui(
+        broken_a2ui,
+        channel="officeclaw",
+        user_query="generate a form",
+        request_id="req-officeclaw",
+        repair_call=repair_call,
+        retry_without_a2ui_call=retry_without_a2ui_call,
+    )
+
+    assert result == broken_a2ui
+    assert config_calls == []
+    assert finalize_calls == []
+    assert repair_calls == []
+    assert retry_calls == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_web_still_runs_server_side_repair(monkeypatch):
+    """web must keep running server-side A2UI repair/retry/resend (regression guard)."""
+    import types
+
+    def fake_config():
+        return types.SimpleNamespace(enabled=True)
+
+    monkeypatch.setattr(integration, "_get_runtime_a2ui_config", fake_config)
+
+    finalize_calls: list[str] = []
+
+    async def fake_finalize(content, **kwargs):
+        finalize_calls.append(content)
+        return content
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.runtime.response_finalization.finalize_a2ui_assistant_content",
+        fake_finalize,
+    )
+
+    content = "<a2ui-json>[]</a2ui-json>"
+    result = await integration.finalize_assistant_response_if_a2ui(
+        content,
+        channel="web",
+        user_query="generate a form",
+        request_id="req-web",
+        repair_call=None,
+    )
+
+    assert result == content
+    assert finalize_calls == [content]
+
+
 def test_partial_marker_ignores_short_data_token():
     """'data' alone must not trigger A2UI suppression (ECharts false-positive)."""
     from jiuwenswarm.server.runtime.agent_adapter.interface import (

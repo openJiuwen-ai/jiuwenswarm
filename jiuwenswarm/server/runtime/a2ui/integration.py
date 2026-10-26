@@ -47,6 +47,19 @@ def is_a2ui_probe_channel(channel: str | None) -> bool:
     return str(channel or "").strip().lower() in _A2UI_PROBE_CHANNEL_IDS
 
 
+# 仅这些渠道走服务端 A2UI repair/retry/重发（finalize_assistant_response_if_a2ui）。
+# officeclaw (relay-claw) 故意排除：relay-claw 前端用 parseA2UIContent 从累积文本
+# 提取 <a2ui-json> 并自带 jsonrepair 兜底；服务端 repair 后整段 chat.final 重发会与
+# 已累积 delta 产生重复块，且该帧落在 wire 终结块之后被消费方丢弃（PR #8390 检视
+# CR-1 + atomgit-bot medium-priority 意见）。officeclaw 改为仅校验不 repair。
+_A2UI_FINALIZE_REPAIR_CHANNEL_IDS = frozenset({"web"})
+
+
+def should_finalize_repair(channel: str | None) -> bool:
+    """Return whether the channel runs server-side A2UI repair/retry/resend."""
+    return str(channel or "").strip().lower() in _A2UI_FINALIZE_REPAIR_CHANNEL_IDS
+
+
 def _to_bool(value: Any) -> bool:
     """Normalize Web config boolean values to Python bools."""
     if isinstance(value, bool):
@@ -123,6 +136,11 @@ async def finalize_assistant_response_if_a2ui(
 ) -> str:
     """Validate/repair assistant A2UI content while keeping host modules generic."""
     if not is_a2ui_channel(channel):
+        return content
+
+    # officeclaw (relay-claw) 不走服务端 repair/retry/重发：前端累积解析 + jsonrepair
+    # 自担修复，重发整段会制造重复块且落在 wire 终结块之后被丢（PR #8390 检视意见）。
+    if not should_finalize_repair(channel):
         return content
 
     try:
