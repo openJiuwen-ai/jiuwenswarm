@@ -48,6 +48,8 @@ class SlackChannelConfig:
     allowed_channel_ids: list[str] = field(default_factory=list)
     default_channel_id: str = ""
     reply_in_thread: bool = True
+    # Session boundary for channel messages: "thread" or "channel".
+    session: str = "thread"
 
 
 class SlackChannel(BaseChannel):
@@ -214,6 +216,8 @@ class SlackChannel(BaseChannel):
 
         if is_dm:
             session_id = f"slack_{team_id or 'default'}_{channel_id}_{user_id}"
+        elif self.config.session.strip().lower() == "channel":
+            session_id = f"slack_{team_id or 'default'}_{channel_id}"
         else:
             session_id = f"slack_{team_id or 'default'}_{channel_id}_{root_thread_ts}"
 
@@ -280,9 +284,9 @@ class SlackChannel(BaseChannel):
         session_id = str(msg.session_id or "")
         if session_id.startswith("slack_"):
             parts = session_id.split("_", 4)
-            if len(parts) >= 4:
+            if len(parts) >= 3:
                 channel_id = parts[2].strip()
-                session_target = parts[3].strip()
+                session_target = parts[3].strip() if len(parts) >= 4 else ""
                 if channel_id:
                     parsed_thread = session_target if "." in session_target else ""
                     return channel_id, parsed_thread
@@ -326,5 +330,6 @@ class SlackChannel(BaseChannel):
                 "default_channel_id": self.config.default_channel_id,
                 "allowed_channel_ids": list(self.config.allowed_channel_ids),
                 "reply_in_thread": self.config.reply_in_thread,
+                "session": self.config.session,
             },
         )

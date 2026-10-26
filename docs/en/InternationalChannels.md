@@ -349,6 +349,7 @@ channels:
     allowed_channel_ids: []
     default_channel_id:
     reply_in_thread: true
+    session: thread
     enabled: true
 ```
 
@@ -360,6 +361,7 @@ channels:
 | `allowed_channel_ids` | Channel IDs allowed to mention the bot; empty allows all channels and does not restrict DMs | `[]` |
 | `default_channel_id` | Fallback channel for outbound messages without request context | empty |
 | `reply_in_thread` | Reply in the thread containing the triggering channel message | `true` |
+| `session` | Session boundary for channel messages: `thread` gives each thread its own session, `channel` gives the whole channel one session. A direct message always keeps one session per user. | `thread` |
 | `enabled` | Enable the Slack channel | `false` |
 
 ### 3. Use the Bot
