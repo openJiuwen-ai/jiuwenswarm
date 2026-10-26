@@ -89,6 +89,21 @@ def _work_kind(source_ref: str, session: Mapping[str, str] | None) -> str:
     return "conversation"
 
 
+def _transport_channel(
+    session: Mapping[str, str] | None,
+    group_names: Mapping[str, Mapping[str, str]],
+) -> str:
+    """Return an IM platform for channel metrics; group and Web sessions are not platforms."""
+    if session is None:
+        return ""
+    if session["kind"] == "im_direct":
+        return session["channel"]
+    if session["kind"] == "group":
+        mapped = group_names.get(session["conversation_key"])
+        return "" if mapped is None else _optional(mapped, "platform") or ""
+    return ""
+
+
 def _history_title(
     source_ref: str,
     session: Mapping[str, str] | None,
@@ -191,6 +206,7 @@ def assemble_activity(
                 continue
             session = by_session.get(str(request["session_id"]))
             channel_name = session["channel"] if session is not None else ""
+            transport_channel = _transport_channel(session, group_names)
             outcome = request["outcome"]
             ended = request["status"] == "ended" and request["updated_at"]
             spent = _minutes(started, _aware(str(request["updated_at"]))) if ended else 0
@@ -228,8 +244,8 @@ def assemble_activity(
                     "started_at": started.isoformat(),
                 }
             )
-            if channel_name:
-                bucket = channel_bucket(channel_name)
+            if transport_channel:
+                bucket = channel_bucket(transport_channel)
                 bucket["tasks"] += 1
                 if outcome == "completed":
                     bucket["replies"] += 1
@@ -271,9 +287,11 @@ def assemble_activity(
             hour_tokens[(day, started.hour)] += amount
             session = by_session.get(str(request["session_id"]))
             if session is not None:
-                bucket = channel_bucket(session["channel"])
-                bucket["calls"] += 1
-                bucket["tokens"] += amount
+                transport_channel = _transport_channel(session, group_names)
+                if transport_channel:
+                    bucket = channel_bucket(transport_channel)
+                    bucket["calls"] += 1
+                    bucket["tokens"] += amount
                 if session["kind"] == "group":
                     group = group_bucket(session)
                     group["tokens"] = int(group["tokens"]) + amount
