@@ -1817,7 +1817,9 @@
     "approvalInputPlaceholder": "填写修改意见后点击「下一步」；留空点击「跳过」"
   },
   "persistSession": {
-    "textRequired": "请在 /persist 后输入任务内容"
+    "textRequired": "请在 /persist 后输入任务内容",
+    "toolbarTag": "永续会话",
+    "closeTag": "隐藏永续会话标记"
   },
   "crossSession": {
     "messageBadge": "来自会话：{{title}}"

@@ -2254,6 +2254,14 @@
   opacity: 1;
 }
 
+/* 永续会话标签在已发消息阶段没有 ×（只读）：hover 不参与「图标换 ×」的交换，
+   图标保持常显，避免悬停时图标淡出又没有 × 补位、标签视觉上缺一块。
+   必须排在上面的 hover 隐藏规则之后：两条规则特异性相同，按源序后者生效 */
+.chat-agent-tag--static:hover .chat-agent-tag__avatar,
+.chat-agent-tag--static:focus-within .chat-agent-tag__avatar {
+  opacity: 1;
+}
+
 .chat-agent-tag__lock {
   flex: 0 0 auto;
   color: var(--color-text-tertiary);

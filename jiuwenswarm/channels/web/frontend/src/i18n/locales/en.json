@@ -1833,7 +1833,9 @@
     "approvalInputPlaceholder": "Add revision notes then click Next; leave empty and click Skip"
   },
   "persistSession": {
-    "textRequired": "Enter a task after /persist"
+    "textRequired": "Enter a task after /persist",
+    "toolbarTag": "Persist Session",
+    "closeTag": "Hide persist session tag"
   },
   "crossSession": {
     "messageBadge": "From session: {{title}}"
