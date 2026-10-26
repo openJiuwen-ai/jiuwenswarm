@@ -292,10 +292,6 @@ function useNodePreviewUri(nodeId: string): string | null {
   return resolveDesignerNodePreviewRef(node, nodeState)?.uri ?? null;
 }
 
-function useNodeProducedAt(nodeId: string): number {
-  return useDesignerRunStore((state) => state.nodeStates[nodeId]?.completed_at ?? 0);
-}
-
 function DocumentFitBody({
   nodeId,
   contentKey,

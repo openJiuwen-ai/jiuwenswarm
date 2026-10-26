@@ -2,7 +2,10 @@ import { Headphones, Image as ImageIcon, Sheet, Video, X } from 'lucide-react';
 import { useCallback, useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { designerAssetPreviewUrl } from '../../designerAssetUrl';
-import { designerImagePreviewUrl, preferredDesignerPreviewRef } from '../../designerMaterials';
+import {
+  designerImagePreviewUrl,
+  resolveDesignerNodePreviewRef,
+} from '../../designerMaterials';
 import { useDesignerAssetLibraryStore } from '../../designerAssetLibraryStore';
 import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
