@@ -125,10 +125,14 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     from jiuwenswarm.gateway.channel_manager.web.trajectory_http import (
         attach_trajectory_routes,
     )
+    from jiuwenswarm.gateway.channel_manager.web.mcp_oauth_http import (
+        attach_mcp_oauth_routes,
+    )
     from jiuwenswarm.gateway.channel_manager.web.web_http_auth import register_auth_routes
 
     attach_container_file_routes(app, channel)
     attach_trajectory_routes(app, channel)
+    attach_mcp_oauth_routes(app)
     # The diagnosis service runs in the AgentServer; these routes only proxy to it.
     attach_diagnosis_routes(app, channel)
     # register auth http routes for huawei account login

@@ -165,6 +165,7 @@ from jiuwenswarm.server.runtime.agent_adapter.trusted_web_search import (
     TrustedWebFreeSearchTool,
 )
 from jiuwenswarm.agents.harness.common.rsi.errors import RsiHarnessInstallConflict
+from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
 
 GOAL_UPDATED_EVENT_TYPE = InteractionEventType.GOAL_UPDATED.value
 _ERROR_EVENT = getattr(InteractionEventType, "EXECUTION_ERROR", None)
@@ -4748,6 +4749,11 @@ class JiuWenSwarmDeepAdapter:
                         [git_bin, *args],
                         capture_output=True,
                         text=True,
+                        # git always writes UTF-8 (branch names, commits, user
+                        # names); pin the codec so a non-UTF-8 locale cannot
+                        # turn the output into a decode error or mojibake.
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=5,
                         cwd=project_dir,
                     )
@@ -5315,7 +5321,10 @@ class JiuWenSwarmDeepAdapter:
         """
         name = str(entry.get("name", "")).strip()
         resolver = build_mcp_credential_resolver(name)
-        return build_mcp_server_config(entry, server_id_scope="jiuwenswarm", credential_resolver=resolver)
+        return build_mcp_server_config(
+            entry, server_id_scope="jiuwenswarm", credential_resolver=resolver,
+            resolve_node_launcher=True,
+        )
 
     @staticmethod
     def _extract_enabled_mcp_server_entries(config_base: dict[str, Any]) -> list[dict[str, Any]]:
@@ -10392,7 +10401,7 @@ class JiuWenSwarmDeepAdapter:
         rail_infos: list[_RailBuildInfo],
         config_base: dict[str, Any],
     ) -> list[Any]:
-        """Build each declared rail in order, then attach the two standing ones.
+        """Build each declared rail in order, then attach the standing ones.
 
         Shared by the agent and code rail sets, which differ only in what they
         declare. Rail construction is the bulk of ``create_instance``, so each
@@ -10435,6 +10444,15 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.warning("%s Failed to load UserHookRail: %s", log_prefix, exc)
         stage_timer.mark("user_hook_rail")
+
+        # Keeps each turn's last main model call, which the next-input suggestion forks. It is
+        # mounted before the observability rail, which stays last so it sees every call.
+        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
+            PromptSuggestionForkRail,
+        )
+
+        rails_list.append(PromptSuggestionForkRail())
+        stage_timer.mark("prompt_suggestion_rail")
 
         # Observability rail: opens an agent-layer span (agent.<name>.task_iteration.<n>
         # for task-loop runs, or agent.<name>.invoke for single-round) under the root
@@ -17178,6 +17196,7 @@ class JiuWenSwarmDeepAdapter:
         _run_error_type = ""
         collected_content: list[str] = []
         error_text: str | None = None
+        pending_interaction: dict[str, Any] | None = None
         interaction_stream = None
         interaction_stream_abort = True
         # 提前 import 观测 span 工具：原 import 在 try 内 _sync_prompt_attachments
@@ -17359,6 +17378,8 @@ class JiuWenSwarmDeepAdapter:
                         )
                         if parsed is not None:
                             event_type = str(parsed.get("event_type") or "").strip()
+                            if event_type in USER_INTERACTION_EVENTS:
+                                pending_interaction = parsed
                             # execution.error（DeepAgent round 级异常，如模型调用失败）
                             # 与 chat.error / error 一样视为终端失败，透传其 message。
                             if event_type in ("chat.error", "error", ERROR_EVENT_TYPE):
@@ -17378,6 +17399,8 @@ class JiuWenSwarmDeepAdapter:
                         _parent_session_id=self._parent_session_id,
                     )
                     if parsed is not None:
+                        if parsed.get("event_type") in USER_INTERACTION_EVENTS:
+                            pending_interaction = parsed
                         text = parsed.get("content", "")
                         if text:
                             collected_content.append(text)
@@ -17451,7 +17474,7 @@ class JiuWenSwarmDeepAdapter:
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={"content": content},
+            payload={**(pending_interaction or {}), "content": content},
             metadata=request.metadata,
         )
 

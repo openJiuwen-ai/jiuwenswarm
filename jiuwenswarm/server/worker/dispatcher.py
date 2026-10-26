@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Sequence
 from dataclasses import asdict
 from enum import Enum
 from typing import Any
@@ -17,6 +18,11 @@ from typing import Any
 from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.session.model import (
+    SessionExecutionSnapshot,
+    SessionExecutionState,
+    SessionLifecycleContext,
+)
 from jiuwenswarm.server.ipc.protocol import (
     KIND_CANCEL,
     KIND_DELIVERY_ACK,
@@ -34,6 +40,7 @@ from jiuwenswarm.server.ipc.protocol import (
 )
 from jiuwenswarm.server.ipc.stream import IpcConnection
 from jiuwenswarm.server.worker.diagnostics import LoopBeat, heartbeat_reply
+from jiuwenswarm.server.worker.event_store import DispatchRecord
 from jiuwenswarm.server.worker.gateway_bridge import (
     WorkerGatewayBridge,
     begin_delivery_tracking,
@@ -220,7 +227,24 @@ class WorkerDispatcher:
         logger.info("[Worker] ignored ipc kind=%s", kind)
         return True
 
-    def _reconcile_execution_state(self, request: AgentRequest):
+    @staticmethod
+    def _record_executions(
+        record: DispatchRecord,
+        executions: Sequence[SessionExecutionSnapshot],
+    ) -> list[SessionExecutionSnapshot]:
+        matching_executions = []
+        for execution in executions:
+            matches_execution = execution.execution_id == record.last_execution_id
+            matches_request = record.request.request_id in {execution.request_id, execution.root_request_id}
+            if matches_execution or matches_request:
+                matching_executions.append(execution)
+        return matching_executions
+
+    @staticmethod
+    def _execution_is_processing(execution: SessionExecutionSnapshot) -> bool:
+        return not execution.state.terminal and execution.state is not SessionExecutionState.WAITING_FOR_INPUT
+
+    def _reconcile_execution_state(self, request: AgentRequest, *, across_channels: bool = False):
         """Distinguish a returned output segment from a terminal execution."""
         if self._runtime is None:
             return None
@@ -232,23 +256,28 @@ class WorkerDispatcher:
         state = snapshot_getter(request.params.get("session_id") or request.session_id or "")
         if state is None:
             return None
+        scope = request_scope(request)
         for record in list(self._bridge.events.records.values()):
-            if record.scope != request_scope(request):
+            matches_scope = record.scope[1:] == scope[1:] if across_channels else record.scope == scope
+            if not matches_scope:
                 continue
             if record.is_passive_subscription:
                 record.is_processing = False
                 continue
-            if record.last_execution_id:
-                executions = [item for item in state.executions if item.execution_id == record.last_execution_id]
-            else:
-                executions = [item for item in state.executions
-                              if record.request.request_id in {item.request_id, item.root_request_id}]
+            executions = self._record_executions(record, state.executions)
             if not executions:
+                # The Coordinator retains live executions. A returned handler
+                # with no remaining owner must not keep a pruned input busy.
+                # Active handlers can still be warming or awaiting admission.
+                if not record.active:
+                    record.is_processing = False
+                    record.interactions.clear()
+                    self._bridge.events.finish(record.dispatch_id)
                 continue
             ongoing = [item for item in executions if not item.state.terminal]
             waiting = {item.waiting_control_id for item in ongoing if item.waiting_control_id}
             record.interactions = {key: value for key, value in record.interactions.items() if key in waiting}
-            record.is_processing = bool(ongoing)
+            record.is_processing = any(self._execution_is_processing(item) for item in ongoing)
             if ongoing:
                 record.terminal = None
             elif not record.active:
@@ -517,50 +546,83 @@ class WorkerDispatcher:
     async def _subscribe_locked(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
         request = load_agent_request(message.get("payload") or {})
         after = max(0, int(message.get("after") or 0))
-        self._reconcile_execution_state(request)
+        state = self._reconcile_execution_state(request, across_channels=True)
         snapshot = self._bridge.events.snapshot(request, after=after)
+        work_records = []
+        scope = request_scope(request)
+        for record in self._bridge.events.records.values():
+            if record.scope[1:] != scope[1:] or record.is_passive_subscription:
+                continue
+            if _is_session_work_request(record.request):
+                work_records.append(record)
+        # Activity crosses channels for the same Session owner; replay and
+        # dispatch details remain caller-scoped. Navigation/history handlers
+        # do not represent conversation execution.
+        snapshot["is_processing"] = any(record.active or record.is_processing for record in work_records)
         if message.get("worker_instance") not in {None, "", self._bridge.events.instance}:
             snapshot["history_required"] = True
             snapshot["interrupted"] = True
             after = 0
-        if self._runtime is not None:
+        if state is not None:
+            allowed = {item["request_id"] for item in snapshot["dispatches"]}
+            executions = [asdict(item) for item in state.executions
+                          if item.request_id in allowed or item.root_request_id in allowed]
+            snapshot["executions"] = json.loads(
+                json.dumps(
+                    executions, default=lambda value: value.value if isinstance(value, Enum) else str(value)
+                )
+            )
+            # A known execution owns activity, not its response handler:
+            # persistent Team handlers remain attached while waiting for
+            # input. Preserve active dispatches without an execution yet
+            # so warming/queued work still appears busy.
+            snapshot["is_processing"] = any(
+                record.is_processing
+                or (record.active and not self._record_executions(record, state.executions))
+                for record in work_records
+            )
+            # The only remaining response owner may be a passive observer
+            # while teammates execute. Read generation-scoped Team activity
+            # without treating the observer's lifetime as conversation work.
             runtime_getter = getattr(self._runtime, "_execution_runtime", None)
             runtime = runtime_getter() if callable(runtime_getter) else self._runtime
-            getter = getattr(runtime, "get_session_snapshot", None)
-            if callable(getter):
-                state = getter(request.params.get("session_id") or request.session_id or "")
-                if state is not None:
-                    allowed = {item["request_id"] for item in snapshot["dispatches"]}
-                    executions = [asdict(item) for item in state.executions
-                                  if item.request_id in allowed or item.root_request_id in allowed]
-                    snapshot["executions"] = json.loads(
-                        json.dumps(
-                            executions, default=lambda value: value.value if isinstance(value, Enum) else str(value)
-                        )
+            team_lifecycle = getattr(runtime, "_session_runtime_lifecycle", None)
+            if team_lifecycle is not None:
+                snapshot["is_processing"] = snapshot["is_processing"] or team_lifecycle.is_running(
+                    SessionLifecycleContext(
+                        session_id=request.params.get("session_id") or request.session_id or "",
+                        generation=state.generation,
                     )
-                    # Accepted warming/queued dispatches have no Coordinator
-                    # execution yet. An empty execution list must not clear them.
-                    work_requests = {
-                        record.request.request_id for record in self._bridge.events.records.values()
-                        if record.scope == request_scope(request) and not record.is_passive_subscription
-                    }
-                    snapshot["is_processing"] = snapshot["is_processing"] or any(
-                        not item.state.terminal for item in state.executions
-                        if item.request_id in work_requests or item.root_request_id in work_requests)
-                    waiting = {item.waiting_control_id for item in state.executions
-                               if not item.state.terminal and item.waiting_control_id}
-                    for record in self._bridge.events.records.values():
-                        if record.scope != request_scope(request):
-                            continue
-                        record.interactions = {key: value for key, value in record.interactions.items()
-                                               if key in waiting}
-                    snapshot["dispatches"] = self._bridge.events.snapshot(request, after=after)["dispatches"]
+                )
+            waiting = {item.waiting_control_id for item in state.executions
+                       if not item.state.terminal and item.waiting_control_id}
+            for record in self._bridge.events.records.values():
+                if record.scope != request_scope(request):
+                    continue
+                record.interactions = {key: value for key, value in record.interactions.items()
+                                       if key in waiting}
+            snapshot["dispatches"] = self._bridge.events.snapshot(request, after=after)["dispatches"]
         # Copy the replay before the first await: other scopes can publish and
         # evict journal frames while this scope's snapshot is being delivered.
         frames = self._bridge.events.replay(request, after=after) if message.get("subscribe") else []
         await conn.send({"kind": KIND_SNAPSHOT, "query_id": message.get("query_id"),
                          "generation": generation, "payload": snapshot})
         await self._bridge.replay(frames, generation)
+
+
+def _is_session_work_request(request: AgentRequest) -> bool:
+    """Keep page restoration and passive Goal subscriptions out of busy state."""
+    if request.params.get("attach_goal") is True:
+        return False
+    if request.req_method == ReqMethod.COMMAND_GOAL:
+        return str(request.params.get("action", "get")).strip().lower() in {"set", "resume"}
+    return request.req_method in {
+        ReqMethod.CHAT_SEND,
+        ReqMethod.CHAT_RESUME,
+        ReqMethod.CHAT_ANSWER,
+        ReqMethod.CHAT_SWARMFLOW_REPLY,
+        ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
+    }
 
 
 def _frame_matches_session(message: dict[str, Any], generation: int) -> bool:

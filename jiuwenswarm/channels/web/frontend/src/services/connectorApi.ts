@@ -129,6 +129,9 @@ interface RawConnectResponse {
   applied?: boolean;
   item?: Record<string, unknown>;
   error?: string;
+  code?: string;
+  runtime?: string;
+  install_cmd?: string;
   installed_skills?: string[];
   server_id_scope?: string;
   credentials_required?: boolean;
@@ -143,9 +146,12 @@ interface RawConnectResponse {
   fields?: Record<string, ConnectorCredentialField>;
   step_index?: number;
   steps_total?: number;
+  auth_pending?: boolean;
+  host_oauth?: boolean;
   auth_url?: string | null;
   auth_domain?: string;
   command?: string;
+  flow?: string;
 }
 
 function fromRawConnect(raw: RawConnectResponse): ConnectorConnectResponse {
@@ -155,6 +161,9 @@ function fromRawConnect(raw: RawConnectResponse): ConnectorConnectResponse {
     applied: raw.applied,
     item: raw.item,
     error: raw.error,
+    code: raw.code,
+    runtime: raw.runtime,
+    installCmd: raw.install_cmd,
     installedSkills: raw.installed_skills,
     serverIdScope: raw.server_id_scope,
     credentialsRequired: raw.credentials_required,
@@ -169,9 +178,12 @@ function fromRawConnect(raw: RawConnectResponse): ConnectorConnectResponse {
     fields: raw.fields,
     stepIndex: raw.step_index,
     stepsTotal: raw.steps_total,
+    authPending: raw.auth_pending,
+    hostOAuth: raw.host_oauth,
     authUrl: raw.auth_url,
     authDomain: raw.auth_domain,
     command: raw.command,
+    flow: raw.flow,
   };
 }
 
@@ -229,6 +241,15 @@ export const connectorApi = {
       'mcp.wait_auth',
       { name, step_index: stepIndex },
       { timeoutMs: WAIT_AUTH_TIMEOUT_MS },
+    );
+    return fromRawConnect(payload);
+  },
+  startOAuth: async (name: string): Promise<ConnectorConnectResponse> => {
+    const callbackUrl = window.location.origin;
+    const payload = await webRequest<RawConnectResponse>(
+      'mcp.oauth.start',
+      { name, callback_url: callbackUrl },
+      { timeoutMs: 5 * 60 * 1000 },
     );
     return fromRawConnect(payload);
   },

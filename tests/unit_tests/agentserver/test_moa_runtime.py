@@ -75,7 +75,7 @@ def test_single_enabled_member_uses_its_model_without_moa(moa_config, jev_enable
     group["routes"][2]["enabled"] = False
     moa_config["experimental"]["multi_model_collaboration"]["jev_enabled"] = jev_enabled
     if jev_enabled:
-        moa_config["experimental"]["multi_model_collaboration"]["jev"] = {"api_key": "encrypted-jev-key"}
+        monkeypatch.setenv("TYPESAFE_API_KEY", "encrypted-jev-key")
         monkeypatch.setattr(
             "jiuwenswarm.common.config.get_crypto_provider",
             lambda: SimpleNamespace(decrypt=lambda _: "test-jev-key"),
@@ -115,6 +115,7 @@ def test_status_is_safe_and_archival_roles_never_control_verification(moa_config
 
 def test_jev_stored_credential_is_decrypted_only_in_runtime(moa_config, monkeypatch):
     moa_config["experimental"]["multi_model_collaboration"].update({"jev_enabled": True, "jev": {"api_key": "encrypted-value"}})
+    monkeypatch.setenv("TYPESAFE_API_KEY", "shared-encrypted-value")
     monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: SimpleNamespace(decrypt=lambda _: "resolved-secret"))
     runtime = build_moa_runtime(moa_config, SELECTION)
     assert runtime.config.scorer._settings["api_key"] == "resolved-secret"
@@ -532,6 +533,7 @@ def test_ordinary_model_and_old_flag_never_enable_moa(moa_config):
 
 
 def test_jev_interval_and_default_change_affect_next_runtime(moa_config, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "shared-jev-secret")
     monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
     before = build_moa_runtime(moa_config, SELECTION)
     moa_config["experimental"]["multi_model_collaboration"].update({"jev_enabled": True, "verifier_interval": 1, "jev": {"api_key": "jev-secret"}})
@@ -542,6 +544,61 @@ def test_jev_interval_and_default_change_affect_next_runtime(moa_config, monkeyp
     assert after.model_name == "model-b" and after.config.verifier.interval == 1
     assert isinstance(after.config.scorer, JevProgressScorer)
     assert before.fingerprint != after.fingerprint
+
+
+@pytest.mark.parametrize("provider,base,model,key_env,endpoint", [
+    ("typesafe", "https://api.typesafe.ai/v1", "jev-1.13.0", "TYPESAFE_API_KEY", "/systemone"),
+    ("openrouter", "https://openrouter.ai/api/alpha", "typesafe/jev-1.13", "OPENROUTER_API_KEY", "/decisions"),
+    ("custom", "https://jev.example.test/v1", "jev-preview", "JEV_CUSTOM_API_KEY", "/systemone"),
+])
+@pytest.mark.asyncio
+async def test_shared_jev_config_reaches_actual_client_wire_format(
+    moa_config, monkeypatch, provider, base, model, key_env, endpoint,
+):
+    import json
+
+    import httpx
+    from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
+
+    from jiuwenswarm.agents.harness.common.browser_config import browser_decision_state
+
+    monkeypatch.setenv(key_env, "shared-provider-secret")
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
+    moa_config["browser"] = {"decision": {
+        "mode": "llm", "provider": provider, "api_base": base, "model": model,
+    }}
+    moa_config["experimental"]["multi_model_collaboration"].update({
+        "jev_enabled": True, "jev": {"api_key": "obsolete-key", "model_name": "obsolete-model"},
+    })
+    runtime = build_moa_runtime(moa_config, SELECTION)
+    projected = browser_decision_state(moa_config)
+    settings = runtime.config.scorer._settings
+    assert settings["api_base"] == projected["decision_api_base"]
+    assert settings["model_name"] == projected["decision_model"]
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "model": model,
+            "answers": {"progress": {
+                "type": "choice", "choice": "T", "confidence": 1.0,
+                "probabilities": {chr(65 + index): float(index == 19) for index in range(20)},
+            }},
+            "usage": {"input_tokens": 10, "output_tokens": 1},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        scorer = JevProgressScorer(
+            **settings, client_factory=lambda **kwargs: JevSystemOneClient(http_client=client, **kwargs),
+        )
+        assert await scorer("Read the page", ("Read the answer",), 1) == 1.0
+    assert len(requests) == 1
+    assert str(requests[0].url) == base + endpoint
+    assert requests[0].headers["Authorization"] == "Bearer shared-provider-secret"
+    assert json.loads(requests[0].content)["model"] == model
+    monkeypatch.setenv(key_env, "rotated-shared-key")
+    assert build_moa_runtime(moa_config, SELECTION).fingerprint != runtime.fingerprint
 
 
 @pytest.mark.parametrize("requested,expected", [("model-b", "model:mdl_b"), ("Alias b", "model:mdl_b"), ("login-only-model", "login-only-model"), ("zen-free-model", "zen-free-model")])

@@ -125,7 +125,15 @@ class SessionManager(
         if (mode != null) params["mode"] = mode
         val payload = request("session.switch", params, sid)
         setSessionId(sid)
-        sessionTitle = payload.get("title")?.asString ?: sid
+        val serverTitle = payload.get("title")?.asString
+        sessionTitle = serverTitle ?: sid
+        if (serverTitle.isNullOrBlank()) {
+            // session.switch has no title; use the persisted title (e.g. a user
+            // rename) instead of falling back to the session id.
+            runCatching { listSessions() }.getOrNull()
+                ?.firstOrNull { it.session_id == sid && !it.title.isNullOrBlank() }
+                ?.title?.let { sessionTitle = it }
+        }
     }
 
     /**

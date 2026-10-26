@@ -44,6 +44,7 @@ import {
   GoalRecord,
   GoalAction,
   Message,
+  ChatInputProvenance,
 } from '../types';
 import {
   ensureSessionRuntimes,
@@ -727,7 +728,13 @@ interface UseWebSocketReturn {
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   discardMedia: (sessionId: string, path: string) => Promise<{ deleted?: boolean }>;
-  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => Promise<boolean>;
+  sendMessage: (
+    content: string,
+    sessionId: string,
+    mediaItems?: MediaItem[],
+    options?: ChatSendOptions,
+    provenance?: ChatInputProvenance,
+  ) => Promise<boolean>;
   sendStructuredChatContent: (content: unknown, sessionId: string) => Promise<void>;
   interrupt: (
     sessionId: string,
@@ -1942,7 +1949,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   // 发送聊天消息
   const sendMessage = useCallback(
-    async (content: string, sessionId: string, mediaItems: MediaItem[] = [], options?: ChatSendOptions): Promise<boolean> => {
+    async (
+      content: string,
+      sessionId: string,
+      mediaItems: MediaItem[] = [],
+      options?: ChatSendOptions,
+      provenance: ChatInputProvenance = {
+        input_origin: 'manual_free_text',
+        assistance_origin: 'none',
+      },
+    ): Promise<boolean> => {
       if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
         if (!content.trim() && !mediaItems.length) return false;
         try {
@@ -2201,6 +2217,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // plugin_names/mcp 的组装+字段语义说明见 utils/enabledExtensions.ts 的
           // buildExtensionSendPayload 头注释（未恢复时省略，恢复后发送完整装备快照）。
           ...extensionPayload,
+          input_origin: provenance.input_origin,
+          assistance_origin: provenance.assistance_origin,
+          ...(provenance.topic_starter ? { topic_starter: provenance.topic_starter } : {}),
+          ...(provenance.prompt_suggestion ? { prompt_suggestion: provenance.prompt_suggestion } : {}),
           ...(inputMode ? { input_mode: inputMode } : {}),
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
           ...(sessionMetadata ? { metadata: sessionMetadata } : {}),
@@ -2420,11 +2440,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return (await sendExpertMessage(newInput, sessionId)) ?? false;
         }
         const result = await request<{ success?: boolean }>('chat.interrupt', {
-          session_id: sessionId, target_team_id: expertId, mode: 'team', intent,
+          session_id: sessionId,
+          target_team_id: expertId,
+          mode: 'team',
+          // The team composer stops via pause; direct expert streams only support cancel.
+          intent: intent === 'pause' ? 'cancel' : intent,
         });
-        if (result?.success) {
-          useChatStore.getState().setProcessing(`${sessionId}::${expertId}`, false);
-        }
         return result?.success === true;
       }
       if (intent === 'supplement' && newInput) {

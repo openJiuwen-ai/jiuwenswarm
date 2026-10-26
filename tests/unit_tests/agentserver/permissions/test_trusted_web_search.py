@@ -122,6 +122,7 @@ class _ProductionSearchCallbacks:
             await self.queue_rail.before_tool_call(ctx)
             await self.permission_rail.before_tool_call(ctx)
         elif event is AgentCallbackEvent.AFTER_TOOL_CALL:
+            await self.queue_rail.after_tool_call(ctx)
             await self.permission_rail.after_tool_call(ctx)
         elif event is AgentCallbackEvent.ON_TOOL_EXCEPTION:
             await self.queue_rail.on_tool_exception(ctx)
