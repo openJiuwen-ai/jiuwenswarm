@@ -35,6 +35,11 @@ def deactivate_recommendation_host(host: "RecommendationHost") -> None:
         _ACTIVE_HOST = None
 
 
+def _no_active_request_ids() -> Iterable[str]:
+    """No request stream is bound until the AgentServer binds one."""
+    return ()
+
+
 def _build_topic_starter_services(
     topic_starter_store: Any,
     *,
@@ -302,7 +307,7 @@ class RecommendationHost:
         self.legacy_tasks: set[asyncio.Task] = set()
         self._services_built = False
         self._seed_task: asyncio.Task[None] | None = None
-        self._active_request_ids: Callable[[], Iterable[str]] = lambda: ()
+        self._active_request_ids: Callable[[], Iterable[str]] = _no_active_request_ids
         self._push: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
 
     def bind_active_requests(self, loader: Callable[[], Iterable[str]]) -> None:

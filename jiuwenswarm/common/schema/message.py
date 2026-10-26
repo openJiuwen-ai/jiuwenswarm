@@ -33,15 +33,17 @@ def _ensure_req_method(name: str, value: str) -> None:
                 f"ReqMethod.{name} is {existing.value!r}, expected {value!r}"
             )
         return
-    if value in ReqMethod._value2member_map_:
+    if any(item.value == value for item in ReqMethod):
         raise RuntimeError(f"ReqMethod value {value!r} is already registered")
+    # Enum exposes no public API for adding a member, so extending the pinned
+    # protocol enum requires its internal registries. Keep those accesses here.
     member = object.__new__(ReqMethod)
-    member._name_ = name
-    member._value_ = value
+    member._name_ = name  # pylint: disable=protected-access
+    member._value_ = value  # pylint: disable=protected-access
     type.__setattr__(ReqMethod, name, member)
-    ReqMethod._member_map_[name] = member
-    ReqMethod._value2member_map_[value] = member
-    ReqMethod._member_names_.append(name)
+    ReqMethod._member_map_[name] = member  # pylint: disable=protected-access
+    ReqMethod._value2member_map_[value] = member  # pylint: disable=protected-access
+    ReqMethod._member_names_.append(name)  # pylint: disable=protected-access
 
 
 _ensure_req_method("PROMPT_SUGGESTION_CANCEL", "prompt_suggestion.cancel")
