@@ -479,6 +479,7 @@ class SessionArchiveService:
             operation = lc.state("session", session_id).get("operation") or {}
             operation_id = str(operation.get("operation_id") or "")
         async with self._finalize_semaphore:
+            busy_exc: BaseException | None = None
             for _ in range(40):
                 try:
                     async with self.lock("session", session_id):
@@ -519,6 +520,7 @@ class SessionArchiveService:
                         # teardown).  Wait briefly instead of dropping the
                         # cleanup; a genuinely busy user action falls through
                         # after the retry budget and recovery picks it up.
+                        busy_exc = exc
                         await asyncio.sleep(0.05)
                         continue
                     operation = lc.state("session", session_id).get("operation") or {}
@@ -530,6 +532,20 @@ class SessionArchiveService:
             logger.warning(
                 "session finalizer deferred by a live operation: session_id=%s",
                 session_id,
+            )
+            # 「拿不到锁」也是失败：此前这里只打日志 + `_poke_recovery()`，既不写
+            # `cleanup_next_at` 也不加 `cleanup_attempts`，有界重试预算对它完全无效——
+            # `_recover` 每 10 秒重新 spawn 一次，同一个被残留 flock 占住的会话会被
+            # 无限重试，每次还占一个收尾槽位约 2 秒。记一次可重试失败：退避按
+            # `_cleanup_backoff` 生效，达到 `_MAX_CLEANUP_ATTEMPTS` 后转入 abandoned。
+            operation = lc.state("session", session_id).get("operation") or {}
+            attempts = int(operation.get("cleanup_attempts") or 0) + 1
+            await self._record_finalize_failure(
+                session_id,
+                action,
+                attempts,
+                busy_exc or RuntimeError("session operation still in progress"),
+                operation_id,
             )
             self._poke_recovery()
 
