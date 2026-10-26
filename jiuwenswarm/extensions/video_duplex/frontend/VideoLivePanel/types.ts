@@ -68,6 +68,7 @@ export interface SearchProgressEntry {
   content?: string;
   tool_name?: string;
   tool_call_id?: string;
+  tool_payload?: Record<string, unknown>;
   tool_arguments?: unknown;
   tool_description?: string;
   tool_formatted_args?: string;

@@ -8,9 +8,16 @@ import pytest
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import (
     QWEN_OMNI_DELEGATE_TOOL_NAME,
     QWEN_OMNI_RESEARCH_TOOL_NAME,
+    delegate_matches_input,
     parse_qwen_omni_tool_call,
     qwen_omni_tools,
 )
+
+
+def test_delegate_rejects_unrelated_full_voice_turn_but_allows_short_followup() -> None:
+    assert not delegate_matches_input("我定一个闹钟。", "查询当前有哪些电影种类或类型。")
+    assert delegate_matches_input("我定一个闹钟。", "设置19点闹钟")
+    assert delegate_matches_input("十九点。", "设置19点闹钟")
 
 
 def test_qwen_tool_definition_exposes_delegate_and_task_controls() -> None:
@@ -37,7 +44,7 @@ def test_qwen_tool_definition_exposes_delegate_and_task_controls() -> None:
         "jiuwen_delegate": {"task"}, "jiuwen_task_query": set(),
         "jiuwen_task_cancel": {"job_id"},
         "jiuwen_task_modify": {"job_id", "revision", "instruction"},
-        "jiuwen_task_reorder": {"job_id", "queue_version", "action"},
+        "jiuwen_task_reorder": {"job_id", "action"},
         "jiuwen_task_answer": {"job_id", "interaction_id", "answers"},
     }
     schemas = {t["function"]["name"]: t["function"]["parameters"] for t in tools}
@@ -154,3 +161,39 @@ def test_task_service_rejects_invalid_titles(title):
     with pytest.raises(ValueError, match="title"):
         _clean_title(title)
     assert _clean_title("  修改打卡提醒  ") == "修改打卡提醒"
+
+
+@pytest.mark.parametrize("version", [45527757797612, "45527757797612", "0"])
+def test_reorder_normalizes_decimal_queue_version(version):
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_task_reorder", "call_id": "move-weather",
+        "arguments": {"job_id": "weather", "action": "next", "queue_version": version},
+    })
+    assert type(call.arguments["queue_version"]) is int
+    assert call.arguments["queue_version"] == int(version)
+
+
+
+@pytest.mark.parametrize("version", [True, 1.0, "1.0", "1e2", "-1", "+1", "01", " 1", "１２", "9007199254740992", 2**53])
+def test_reorder_ignores_ambiguous_or_unsafe_model_queue_version(version):
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_task_reorder", "call_id": "invalid-version",
+        "arguments": {"job_id": "weather", "action": "next", "queue_version": version},
+    })
+    assert call.arguments == {"job_id": "weather", "action": "next"}
+
+
+def test_reorder_allows_server_owned_queue_version():
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_task_reorder", "call_id": "server-version",
+        "arguments": {"job_id": "weather", "action": "next"},
+    })
+    assert call.arguments == {"job_id": "weather", "action": "next"}
+
+
+
+@pytest.mark.parametrize("title", [None, 42, "", "x" * 81, "first\nsecond"])
+def test_delegation_rejects_invalid_titles(title):
+    with pytest.raises(ValueError, match="title"):
+        parse_qwen_omni_tool_call({"name": "jiuwen_delegate", "call_id": "bad-title",
+                                   "arguments": {"task": "complete requirements", "title": title}})

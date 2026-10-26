@@ -29,6 +29,9 @@ from jiuwenswarm.server.runtime.agent_adapter.task_tool_events import (
     apply_task_tool_event_patch,
 )
 from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
+    active_cua_execution,
+    bind_managed_task_request,
+    reset_managed_task_request,
     bind_managed_task_session,
     cancel_cua_execution,
     has_active_cua,
@@ -456,3 +459,47 @@ async def test_two_cua_delegations_of_one_request_are_both_tracked_and_cancelled
         unregister_cua_execution(registration)
     unbind_managed_task_session(binding)
     assert both
+
+
+async def test_repeated_cancel_preserves_all_cua_cleanup_tasks() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
+        register_cua_execution,
+        unregister_cua_execution,
+    )
+
+    started = [asyncio.Event(), asyncio.Event()]
+    cleaning = [asyncio.Event(), asyncio.Event()]
+    release = asyncio.Event()
+
+    async def run(index):
+        registration = register_cua_execution(parent_session_id="cleanup-parent", sub_session_id=f"child-{index}")
+        started[index].set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning[index].set()
+            try:
+                await release.wait()
+            finally:
+                unregister_cua_execution(registration)
+
+    binding = bind_managed_task_session("cleanup-parent", "cleanup-request")
+    tasks = [asyncio.create_task(run(index)) for index in range(2)]
+    try:
+        await asyncio.gather(*(event.wait() for event in started))
+        assert cancel_cua_execution("cleanup-request") is True
+        await asyncio.gather(*(event.wait() for event in cleaning))
+        assert has_active_cua("cleanup-request")
+        assert cancel_cua_execution("cleanup-request") is True
+        assert all(task.cancelling() == 1 and not task.done() for task in tasks)
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        assert all(task.cancelled() for task in tasks)
+        assert not has_active_cua("cleanup-request")
+    finally:
+        release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        unbind_managed_task_session(binding)

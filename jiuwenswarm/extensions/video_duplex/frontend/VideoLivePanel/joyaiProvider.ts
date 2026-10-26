@@ -23,7 +23,7 @@ import {
 const FRAME_POLL_INTERVAL_MS = 1_000;
 const RATE_LIMIT_BASE_COOLDOWN_MS = 60_000;
 const RATE_LIMIT_MAX_COOLDOWN_MS = 5 * 60_000;
-const FRAME_POLL_CLIENT_BUILD = 'joyai-tool-context-v11';
+const FRAME_POLL_CLIENT_BUILD = 'joyai-adaptive-frame-v12';
 
 function isJoyAIRateLimit(error: unknown): boolean {
   const candidate = error as { code?: string; message?: string } | null;
@@ -71,6 +71,8 @@ export class JoyAIProvider {
   private searchDeliveryQueue: Promise<void> = Promise.resolve();
   private rateLimitStrikes = 0;
   private framePollingPausedUntil = 0;
+  private frameRequestIntervalMs = FRAME_POLL_INTERVAL_MS;
+  private lastFrameRequestAt: number | null = null;
   private pendingToolContext: JoyAIToolContextEntry[] = [];
   private deliveredSearchIds = new Set<string>();
   private restoreToken = '';
@@ -110,6 +112,8 @@ export class JoyAIProvider {
     this.frameClock.reset();
     this.rateLimitStrikes = 0;
     this.framePollingPausedUntil = 0;
+    this.frameRequestIntervalMs = FRAME_POLL_INTERVAL_MS;
+    this.lastFrameRequestAt = null;
     this.pendingToolContext = [];
     this.deliveredSearchIds.clear();
     this.startFramePolling();
@@ -177,6 +181,8 @@ export class JoyAIProvider {
     this.frameClock.reset();
     this.rateLimitStrikes = 0;
     this.framePollingPausedUntil = 0;
+    this.frameRequestIntervalMs = FRAME_POLL_INTERVAL_MS;
+    this.lastFrameRequestAt = null;
     this.pendingToolContext = [];
     this.deliveredSearchIds.clear();
     this.handledTurns.clear();
@@ -321,17 +327,23 @@ export class JoyAIProvider {
 
   private startFramePolling(): void {
     if (this.framePollTimer !== null) return;
+    const sessionId = this.sessionId;
     this.callbacks.report('joyai_frame_polling_started', {
       client_build: FRAME_POLL_CLIENT_BUILD,
       frame_count: this.callbacks.getFrameCount(),
     });
     const sendLatestFrame = () => {
-      if (!this.active) return;
-      if (Date.now() < this.framePollingPausedUntil) return;
+      if (!this.active || this.sessionId !== sessionId) return;
+      const now = Date.now();
+      if (now < this.framePollingPausedUntil) return;
       // The official client skips a scheduled frame while inference is busy.
       if (this.queuedRequestCount > 0) return;
       const frameDataUrl = this.callbacks.getLatestFrameDataUrl();
       if (!frameDataUrl && !this.promptLifecycle.hasPending) return;
+      if (
+        frameDataUrl && this.lastFrameRequestAt !== null
+        && now - this.lastFrameRequestAt < this.frameRequestIntervalMs
+      ) return;
       const pendingPrompt = this.promptLifecycle.claim();
       const request = this.requestFrame(pendingPrompt?.instruction || '', pendingPrompt?.question || '', frameDataUrl);
       void request
@@ -344,7 +356,10 @@ export class JoyAIProvider {
           }
         })
         .catch((error) => {
-          if (!this.active) return;
+          if (!this.active || this.sessionId !== sessionId) {
+            pendingPrompt?.complete(null);
+            return;
+          }
           if (isJoyAIRateLimit(error) && pendingPrompt && !this.promptLifecycle.hasPending) {
             const retry = this.promptLifecycle.enqueue(pendingPrompt.instruction, pendingPrompt.question);
             void retry.then(pendingPrompt.complete, pendingPrompt.fail);
@@ -400,6 +415,7 @@ export class JoyAIProvider {
           },
           { timeoutMs: 60_000 },
         );
+        if (frameDataUrl) this.lastFrameRequestAt = Date.now();
         try {
           result = await send();
         } catch (error) {
@@ -421,8 +437,15 @@ export class JoyAIProvider {
           });
         }
       } catch (error) {
+        if (!this.active || this.sessionId !== activeSessionId) return null;
         if (isJoyAIRateLimit(error)) {
           this.rateLimitStrikes += 1;
+          // Keep the lower image rate after success; a cooldown alone would
+          // resume the same traffic that exhausted the provider's quota.
+          this.frameRequestIntervalMs = Math.min(
+            this.frameRequestIntervalMs * 2,
+            RATE_LIMIT_MAX_COOLDOWN_MS,
+          );
           const cooldownMs = Math.min(
             RATE_LIMIT_BASE_COOLDOWN_MS * 2 ** (this.rateLimitStrikes - 1),
             RATE_LIMIT_MAX_COOLDOWN_MS,
@@ -431,15 +454,24 @@ export class JoyAIProvider {
           this.callbacks.report('joyai_rate_limited', {
             cooldown_ms: cooldownMs,
             rate_limit_strikes: this.rateLimitStrikes,
+            frame_interval_ms: this.frameRequestIntervalMs,
             request_kind: requestKind,
             reply_language: this.replyLanguage,
           });
-          this.callbacks.setStatus(`JoyAI 额度受限，${Math.ceil(cooldownMs / 1_000)} 秒后自动恢复`);
+          this.callbacks.setStatus(
+            `JoyAI 限流，${Math.ceil(cooldownMs / 1_000)} 秒后重试，画面发送间隔已调整为 ${this.frameRequestIntervalMs / 1_000} 秒`,
+          );
         }
         throw error;
       }
-      this.rateLimitStrikes = 0;
-      this.framePollingPausedUntil = 0;
+      if (this.active && this.sessionId === activeSessionId) {
+        this.rateLimitStrikes = 0;
+        if (this.framePollingPausedUntil > 0) {
+          this.callbacks.setError('');
+          this.callbacks.setStatus('');
+        }
+        this.framePollingPausedUntil = 0;
+      }
       // A stopped media run may still have created backend work. Preserve its conversation owner.
       this.callbacks.rememberSearchJob(result.search_job, this.active && this.sessionId === activeSessionId);
       if (!this.active || this.sessionId !== activeSessionId) {

@@ -33,6 +33,10 @@ class TaskStore:
                     owner TEXT NOT NULL, session TEXT NOT NULL, id TEXT NOT NULL,
                     fingerprint TEXT NOT NULL, task_id TEXT NOT NULL, body TEXT NOT NULL,
                     PRIMARY KEY(owner,session,id));
+                CREATE TABLE IF NOT EXISTS task_queue_versions (
+                    owner TEXT NOT NULL, session TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL, version INTEGER NOT NULL,
+                    PRIMARY KEY(owner,session));
             """)
 
     @contextmanager

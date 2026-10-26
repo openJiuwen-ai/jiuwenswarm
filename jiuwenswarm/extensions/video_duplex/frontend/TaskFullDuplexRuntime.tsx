@@ -17,6 +17,10 @@ import type {
   SearchProgressEntry,
 } from "./VideoLivePanel/types";
 import { TaskFullDuplexControls } from "./TaskFullDuplexAction";
+import {
+  normalizeToolCallPayload,
+  normalizeToolResultPayload,
+} from "../../../channels/web/frontend/src/features/tool-events/toolEventNormalizer";
 import { getFileIdentityKey } from "../../../channels/web/frontend/src/utils/fileDownloadDedup";
 import { TaskDuplexJobs } from "./taskDuplexJobs";
 import { describeDuplexError } from "./duplexErrorMessage";
@@ -34,6 +38,13 @@ const WAIT_REASON_LABELS: Record<string, string> = {
   dependency_pending: "等待前置任务完成",
   capacity_order_or_resource: "等待执行名额、队列顺序或资源释放",
 };
+
+function traceTaskUi(event: string, fields: Record<string, unknown>): void {
+  void webRequest("video.realtime.telemetry", {
+    event: `task_trace_${event}`, client_time: new Date().toISOString(),
+    client_build: "task-trace-v1", ...fields,
+  }, { timeoutMs: 5_000 }).catch(() => undefined);
+}
 
 const BLOCKER_STATUS_LABELS: Record<string, string> = {
   running: "执行中",
@@ -245,13 +256,16 @@ export function TaskFullDuplexRuntime({
       targetSessionId: string,
       toolResult: Parameters<typeof onToolResult>[1],
       updatedAt?: string,
+      nativeResult?: Record<string, unknown>,
     ) => {
       onToolResult(targetSessionId, toolResult, updatedAt);
       persistTimelineEvent(targetSessionId, {
         kind: "tool_result",
         timestamp: timestampSeconds(updatedAt),
         tool_result: {
+          ...nativeResult,
           ...toolResult,
+          ...(nativeResult?.id ? { id: toolResult.toolCallId } : {}),
           tool_name: toolResult.toolName,
           tool_call_id: toolResult.toolCallId,
         },
@@ -274,26 +288,6 @@ export function TaskFullDuplexRuntime({
     [progressAtMs],
   );
 
-  const toolArguments = useCallback(
-    (value: unknown): Record<string, unknown> => {
-      if (value && typeof value === "object" && !Array.isArray(value)) {
-        return value as Record<string, unknown>;
-      }
-      if (typeof value === "string") {
-        try {
-          const parsed = JSON.parse(value);
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            return parsed as Record<string, unknown>;
-          }
-        } catch {
-          return value ? { input: value } : {};
-        }
-      }
-      return value == null ? {} : { input: value };
-    },
-    [],
-  );
-
   const toolResultText = useCallback(
     (value: unknown, fallback = ""): string => {
       if (typeof value === "string") return value;
@@ -312,13 +306,21 @@ export function TaskFullDuplexRuntime({
       event: "started" | "progress" | "completed" | "failed" | "cancelled",
       incoming: SearchJobPayload,
     ) => {
+      let rejectionReason = "";
       const job = conversationJobsRef.current.accept({
         ...incoming,
         status:
           incoming.status ||
           (event === "completed" || event === "failed" ? event : "running"),
-      });
-      if (!job) return;
+      }, (reason) => { rejectionReason = reason; });
+      if (!job) {
+        traceTaskUi("progress_ignored", {
+          job_id: incoming.job_id, search_session_id: incoming.search_session_id,
+          status: incoming.status, sequence: incoming.sequence,
+          queue_version: incoming.queue_version, reason: rejectionReason,
+        });
+        return;
+      }
       const { sessionId: targetSessionId, payload } = job;
       const jobId = payload.job_id!;
       const entries = payload.progress_history?.length
@@ -361,6 +363,15 @@ export function TaskFullDuplexRuntime({
         searchSessionId: payload.search_session_id,
         queuePosition: payload.queue_position ?? previousTask?.queuePosition,
         queueVersion: payload.queue_version ?? previousTask?.queueVersion,
+      });
+      const stored = useApplicationTaskStore.getState().sessions[targetSessionId]
+        ?.find((task) => task.id === jobId);
+      traceTaskUi("progress_store_observed", {
+        job_id: jobId, search_session_id: payload.search_session_id,
+        status, sequence: payload.sequence ?? latest?.sequence ?? 0,
+        queue_version: payload.queue_version, queue_position: payload.queue_position,
+        stored_status: stored?.status, stored_sequence: stored?.sequence,
+        stored_queue_version: stored?.queueVersion, stored_queue_position: stored?.queuePosition,
       });
       if (runtimeSessionIdRef.current === targetSessionId)
         panelRef.current?.deliverTaskInteraction(payload);
@@ -421,12 +432,14 @@ export function TaskFullDuplexRuntime({
             emitToolCall(
               targetSessionId,
               {
+                ...normalizeToolCallPayload(entry.tool_payload || {
+                  name: entry.tool_name,
+                  arguments: entry.tool_arguments,
+                  description: entry.tool_description,
+                  formatted_args: entry.tool_formatted_args,
+                  display_name: entry.tool_display_name,
+                }),
                 id,
-                name: entry.tool_name?.trim() || "unknown",
-                arguments: toolArguments(entry.tool_arguments),
-                description: entry.tool_description?.trim() || undefined,
-                formatted_args: entry.tool_formatted_args?.trim() || undefined,
-                display_name: entry.tool_display_name?.trim() || undefined,
               },
               progressAtIso(entry),
             );
@@ -437,17 +450,20 @@ export function TaskFullDuplexRuntime({
             const id =
               toolIds.get(rawId) ||
               `full-duplex-core-${jobId}-${rawId || `sequence-${entry.sequence}`}`;
+            const nativePayload = entry.tool_payload;
+            const normalized = normalizeToolResultPayload(nativePayload || {
+              tool_name: entry.tool_name,
+              result: toolResultText(entry.tool_result, entry.detail || ""),
+              success: entry.tool_success !== false && entry.status !== "failed",
+              summary: entry.tool_summary,
+            });
             emitToolResult(
               targetSessionId,
-              {
-                toolName: entry.tool_name?.trim() || "unknown",
-                toolCallId: id,
-                result: toolResultText(entry.tool_result, entry.detail || ""),
-                success:
-                  entry.tool_success !== false && entry.status !== "failed",
-                summary: entry.tool_summary?.trim() || undefined,
-              },
+              { ...normalized, toolCallId: id },
               progressAtIso(entry),
+              nativePayload
+                ? (nativePayload.tool_result as Record<string, unknown> | undefined) || nativePayload
+                : undefined,
             );
           }
         });
@@ -490,7 +506,6 @@ export function TaskFullDuplexRuntime({
       progressAtMs,
       onConversationItem,
       onFileItems,
-      toolArguments,
       toolResultText,
     ],
   );
@@ -501,14 +516,22 @@ export function TaskFullDuplexRuntime({
       queue_version: number;
       jobs: SearchJobPayload[];
     }) => {
+      traceTaskUi("queue_received", snapshot);
       for (const payload of snapshot.jobs) {
         const existing = Object.values(
           useApplicationTaskStore.getState().sessions,
         )
           .flat()
           .find((task) => task.id === payload.job_id);
-        // queue_version is an opaque hash; only per-task sequence orders snapshots.
-        // A snapshot without a sequence cannot be proven older; only skip a known older one.
+        // New versions are monotonic; retain sequence ordering for legacy hash snapshots.
+        if (existing && (existing.queueVersion ?? -1) >= 2 ** 48
+            && existing.queueVersion! > snapshot.queue_version) {
+          traceTaskUi("queue_ignored", {
+            job_id: payload.job_id, queue_version: snapshot.queue_version,
+            stored_queue_version: existing.queueVersion, reason: "older_queue_version",
+          });
+          continue;
+        }
         if (
           existing &&
           typeof existing.sequence === "number" &&
@@ -527,6 +550,14 @@ export function TaskFullDuplexRuntime({
             queueVersion: snapshot.queue_version,
             queuePosition: payload.queue_position,
           });
+        const stored = entry && useApplicationTaskStore.getState().sessions[entry[0]]
+          ?.find((item) => item.id === payload.job_id);
+        traceTaskUi("queue_store_observed", {
+          job_id: payload.job_id, search_session_id: snapshot.search_session_id,
+          queue_version: snapshot.queue_version, queue_position: payload.queue_position,
+          stored_status: stored?.status, stored_sequence: stored?.sequence,
+          stored_queue_version: stored?.queueVersion, stored_queue_position: stored?.queuePosition,
+        });
       }
     },
     [handleCoreAgentProgress],
@@ -541,22 +572,35 @@ export function TaskFullDuplexRuntime({
     const unregister = registerApplicationTaskController(
       "video-duplex",
       async (task, action, beforeId) => {
-        const result = await webRequest<{
-          search_session_id: string;
-          queue_version: number;
-          jobs: SearchJobPayload[];
-        }>(
-          "video.search.control",
-          {
-            job_id: task.id,
-            search_session_id: task.searchSessionId,
-            action,
-            queue_version: task.queueVersion,
-            before_job_id: beforeId,
-          },
-          { timeoutMs: 30_000 },
-        );
-        acceptQueue(result);
+        traceTaskUi("control_sent", {
+          job_id: task.id, action, before_job_id: beforeId,
+          search_session_id: task.searchSessionId, queue_version: task.queueVersion,
+        });
+        try {
+          const result = await webRequest<{
+            search_session_id: string;
+            queue_version: number;
+            jobs: SearchJobPayload[];
+          }>(
+            "video.search.control",
+            {
+              job_id: task.id,
+              search_session_id: task.searchSessionId,
+              action,
+              queue_version: task.queueVersion,
+              before_job_id: beforeId,
+            },
+            { timeoutMs: 30_000 },
+          );
+          traceTaskUi("control_received", { action, job_id: task.id, ...result });
+          acceptQueue(result);
+        } catch (error) {
+          traceTaskUi("control_failed", {
+            job_id: task.id, action, search_session_id: task.searchSessionId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
       },
     );
     return () => {

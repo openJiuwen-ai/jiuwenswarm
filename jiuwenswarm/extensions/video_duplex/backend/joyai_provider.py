@@ -44,13 +44,14 @@ _ACTION_INSTRUCTIONS = (
     "For a passive frame with nothing to say: </silence>. "
     "Never provide weather, prices, news, or action outcomes without a confirmed tool result. "
     "Never promise a search or action without the delegation in this same output. "
+    "Tool JSON must follow </delegation>, never appear inside </response>. "
     "Do not output unmarked text, reasoning or fabricated results.\n\n"
 )
 _USER_KNOWLEDGE_GUARD = (
     "【本轮动作约束】你必须自行选择官方动作。只依据当前或近期清晰画面、用户明确提供的信息和已确认的工具结果回答。"
     "天气、新闻、价格、公司或品牌背景等外部或时效事实需要搜索核实，不得凭记忆猜测。"
     "当且仅当搜索对象已经明确且需要外部核实时，必须在本次推理中一次性输出完整的 Delegate 动作："
-    "</response> 简短说明 </delegation> 包含明确对象和查询事项的可独立执行搜索请求。"
+    '</response> 简短说明 </delegation> {"name":"jiuwen_delegate","arguments":{"task":"明确对象和查询事项"}}。'
     "</response> 与 </delegation> 必须出现在同一次输出中，标记之间允许空白或换行。"
     "Delegate 是不可拆分的原子动作；只说‘需要搜索’、‘我来查询’或其他搜索承诺却没有在同一输出中给出 </delegation>，均为无效动作。"
     "不得先 Speak、再等待下一帧补发 Delegate，也不得用 </delegation> 询问‘这是什么’、‘哪个品牌’或‘请提供对象’。"
@@ -60,15 +61,25 @@ _USER_KNOWLEDGE_GUARD = (
     "对于用户提出的任务或操作请求：不得自行判断能否完成、是否有权限，也不得直接否认或拒绝。"
     "必须把任务原样交给九问 Core Agent 执行；能否执行由 Core Agent 返回，不由你判断。"
     "委派执行时同样必须在同一次输出中给出完整 Delegate："
-    "</response> 简短说明 </delegation> 请执行：完整任务描述。"
+    '</response> 简短说明 </delegation> {"name":"jiuwen_delegate","arguments":{"task":"完整任务描述"}}。'
+    "工具 JSON 只能放在 </delegation> 后，不能放在 </response> 的播报文字中。"
 )
 _RESPONSE_MARKER = re.compile(r"</?response>", flags=re.IGNORECASE)
 _SILENCE_MARKER = re.compile(r"</?silence>", flags=re.IGNORECASE)
 _DELEGATION_MARKER = re.compile(r"</?delegation>", flags=re.IGNORECASE)
+_TASK_CALL_MARKER = re.compile(r'"name"\s*:\s*"jiuwen_[^"]+"')
 
 
 class JoyAIRateLimitError(RuntimeError):
     """JoyAI rejected a request because its rolling token quota was exhausted."""
+
+
+class JoyAIActionProtocolError(ValueError):
+    """Retain malformed model output for one text-only action review."""
+
+    def __init__(self, completion: dict[str, Any]):
+        super().__init__("JoyAI returned an incomplete action; no tool was executed")
+        self.completion = completion
 
 
 def model_config() -> tuple[str, str, str]:
@@ -102,20 +113,28 @@ def uses_native_voice_channel(video_live_mode: str) -> bool:
 def parse_action(raw_content: str) -> dict[str, str]:
     """Normalize JoyAI's native silence/response/delegation action protocol."""
     raw = str(raw_content or "").strip()
+    if _SILENCE_MARKER.fullmatch(raw):
+        return {"decision": "silence", "response": "", "delegation": ""}
     delegation_match = _DELEGATION_MARKER.search(raw)
     response_match = _RESPONSE_MARKER.search(raw)
-    if delegation_match and response_match:
-        response = _RESPONSE_MARKER.sub("", raw[:delegation_match.start()], count=1).strip()
+    if (
+        response_match is None
+        or response_match.start() != 0
+        or len(_RESPONSE_MARKER.findall(raw)) != 1
+        or len(_DELEGATION_MARKER.findall(raw)) > 1
+        or _SILENCE_MARKER.search(raw)
+    ):
+        raise ValueError("JoyAI returned an invalid action protocol")
+    response_end = delegation_match.start() if delegation_match else len(raw)
+    response = raw[response_match.end():response_end].strip()
+    if not response or _TASK_CALL_MARKER.search(response):
+        raise ValueError("JoyAI returned an empty response or tool JSON outside delegation")
+    if delegation_match:
         delegation = raw[delegation_match.end():].strip()
+        if not delegation:
+            raise ValueError("JoyAI returned an empty delegation")
         return {"decision": "delegation", "response": response, "delegation": delegation}
-    if _SILENCE_MARKER.search(raw):
-        return {"decision": "silence", "response": "", "delegation": ""}
-    if response_match:
-        response = _RESPONSE_MARKER.sub("", raw, count=1).strip()
-        return {"decision": "response", "response": response, "delegation": ""}
-    if not raw:
-        return {"decision": "silence", "response": "", "delegation": ""}
-    return {"decision": "response", "response": raw, "delegation": ""}
+    return {"decision": "response", "response": response, "delegation": ""}
 
 
 def normalize_response_language(value: object) -> str:
@@ -247,7 +266,11 @@ async def request_frame(
         max_tokens=512 if instruction else 128,
         frame_time_range=frame_time_range,
     )
-    return {**parse_action(completion["raw_content"]), **completion}
+    try:
+        action = parse_action(completion["raw_content"])
+    except ValueError as exc:
+        raise JoyAIActionProtocolError(completion) from exc
+    return {**action, **completion}
 
 
 def _clean_model_text(text: str) -> str:

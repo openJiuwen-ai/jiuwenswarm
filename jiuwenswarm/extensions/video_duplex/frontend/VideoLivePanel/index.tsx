@@ -168,6 +168,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       {
         event,
         client_time: new Date().toISOString(),
+        search_session_id: searchSessionRef.current,
         ...details,
       },
       { timeoutMs: 5_000 },
@@ -911,6 +912,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             },
             onAssistantText: (text, final, toolJobId, responseId) => {
               const visibleText = text.trim();
+              if (final && visibleText) reportRealtimeEvent('task_trace_assistant_final', {
+                text: visibleText, job_id: toolJobId, response_id: responseId,
+              });
               if (final && toolJobId) {
                 searchJobsRef.current.delete(toolJobId);
                 setSearchStatus('');
@@ -942,6 +946,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             },
             onUserText: (text, final) => {
               if (final) {
+                reportRealtimeEvent('task_trace_user_transcript', { text });
                 handleFinalRealtimeUserText(text);
               } else {
                 const partialTranscript = text.trim();
@@ -1013,9 +1018,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               const searchSessionId = searchSessionRef.current;
               const latestInstruction = {text: call.originalInstruction || call.task, turnId: call.inputId || ''};
               const originalInstruction = latestInstruction.text.trim();
+              const toolArguments = JSON.parse(call.arguments) as { job_id?: string };
               reportRealtimeEvent('qwen_tool_call_forwarding', {
                 name: call.name,
                 call_id: call.callId,
+                job_id: toolArguments.job_id,
+                search_session_id: searchSessionId,
                 question: originalInstruction,
                 task: call.task,
                 turn_id: latestInstruction.turnId,
@@ -1073,7 +1081,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 });
             },
             onDiagnostic: (event) => {
-              void webRequest('video.realtime.telemetry', event, {
+              void webRequest('video.realtime.telemetry', {
+                ...event, search_session_id: searchSessionRef.current,
+              }, {
                 timeoutMs: 5_000,
               }).catch(() => undefined);
             },

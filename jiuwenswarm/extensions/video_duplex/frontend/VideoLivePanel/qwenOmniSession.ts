@@ -138,7 +138,7 @@ export class RealtimeDuplexSession {
   private sessionReady = false;
   private cancelSocketStartup: (() => void) | null = null;
   private responseId: string | null = null;
-  private pendingOperations: Array<{ callId: string; output: unknown }> = [];
+  private pendingOperations: Array<{ callId: string; output: unknown; callEpoch: number | null }> = [];
   private pendingQuestions: Array<{ jobId: string; interaction: unknown }> = [];
   // Open approval cards (job:interaction -> header), kept in the session instructions.
   private pendingApprovals = new Map<string, string>();
@@ -153,6 +153,7 @@ export class RealtimeDuplexSession {
   private responseToolJobIds = new Map<string, string>();
   private assistantPlaying = false;
   private responseActive = false;
+  private pendingResponseInterrupt = false;
   private providerSpeechActive = false;
   private awaitingProviderResponse = false;
   private retryNotificationResponse = false;
@@ -193,6 +194,7 @@ export class RealtimeDuplexSession {
   private silentToolResponses = new Set<string>();
   private messageOutputItems = new Map<string, Set<string>>();
   private finishedOutputResponses = new Set<string>();
+  private toolCandidateResponses = new Set<string>();
   private activeUserTurnId: string | null = null;
   private turnSequence = 0;
   private qwenMedia = new QwenOmniMediaSequencer();
@@ -352,6 +354,7 @@ export class RealtimeDuplexSession {
     this.responseToolJobIds.clear();
     this.sessionReady = false;
     this.responseActive = false;
+    this.pendingResponseInterrupt = false;
     this.providerSpeechActive = false;
     this.awaitingProviderResponse = false;
     this.retryNotificationResponse = false;
@@ -376,6 +379,7 @@ export class RealtimeDuplexSession {
     this.silentToolResponses.clear();
     this.messageOutputItems.clear();
     this.finishedOutputResponses.clear();
+    this.toolCandidateResponses.clear();
     this.qwenMedia.reset();
     this.playbackGeneration += 1;
     this.playbackOperation = Promise.resolve();
@@ -414,7 +418,7 @@ export class RealtimeDuplexSession {
       this.toolFailures.set(call.target, (this.toolFailures.get(call.target) || 0) + 1);
       this.rejectedToolCalls.add(call.signature);
     }
-    this.pendingOperations.push({ callId, output });
+    this.pendingOperations.push({ callId, output, callEpoch: call?.epoch ?? null });
     this.dispatchQueuedToolResult();
   }
 
@@ -791,7 +795,25 @@ export class RealtimeDuplexSession {
     const operation = this.pendingOperations.shift();
     if (operation) {
       this.notificationConflicts = 0;
-      this.send(createQwenOmniToolOutputEvent(operation.callId, JSON.stringify(operation.output)));
+      const lateOutput = operation.callEpoch !== null && operation.callEpoch < this.inputEpoch;
+      this.emitDiagnostic('qwen_tool_output_sent', {
+        call_id: operation.callId, response_id: this.responseId || '',
+        response_active: this.responseActive, user_speech_active: this.userActivityActive,
+        output_chars: JSON.stringify(operation.output).length,
+        delivery: lateOutput ? 'message' : 'function_call_output',
+      });
+      if (lateOutput) {
+        // A later user turn can retire the old function call before its receipt is sent.
+        this.emitDiagnostic('qwen_late_tool_output_rerouted', { call_id: operation.callId });
+        this.send({ type: 'conversation.item.create', item: {
+          type: 'message', role: 'user', content: [{ type: 'input_text',
+            text: `An earlier Jiuwen operation returned this receipt. `
+              + `Report its state briefly without repeating it: ${JSON.stringify(operation.output)}`,
+          }],
+        } });
+      } else {
+        this.send(createQwenOmniToolOutputEvent(operation.callId, JSON.stringify(operation.output)));
+      }
       this.requestResponse(true);
       return;
     }
@@ -814,7 +836,9 @@ export class RealtimeDuplexSession {
         question: toolResult.question,
       }, this.config.replyLanguage);
       // Accepted delegation closed the call; completion is a separate notification.
-      if (!toolResult.callId || this.acceptedToolResultIds.has(`operation:${toolResult.callId}`)) events.shift();
+      const callEpoch = toolResult.callId ? this.toolCalls.get(toolResult.callId)?.epoch : undefined;
+      if (!toolResult.callId || this.acceptedToolResultIds.has(`operation:${toolResult.callId}`)
+          || (callEpoch !== undefined && callEpoch < this.inputEpoch)) events.shift();
       events.forEach((event) => this.send(event));
       this.emitDiagnostic('qwen_tool_result_returned', {
         job_id: toolResult.jobId,
@@ -831,8 +855,14 @@ export class RealtimeDuplexSession {
     const response = event.response as Record<string, unknown> | undefined;
     const eventResponseId = String(event.response_id || response?.id || '') || null;
     const outputResponseId = eventResponseId || this.responseId || '';
-    // Allow message-item text and audio to stream before response.done.
-    // A later tool item cannot retract output already delivered to the user.
+    if (type === 'conversation.item.created') {
+      const item = event.item as Record<string, unknown> | undefined;
+      if (item?.type === 'function_call_output') this.emitDiagnostic('qwen_tool_output_acknowledged', {
+        call_id: String(item.call_id || ''), item_id: String(item.id || ''),
+      });
+    }
+    // A message item may precede a function call in the same response.
+    // Hold action-turn output until response.done so a preliminary promise is not spoken twice.
     if (type === 'response.output_item.added') {
       const item = event.item as Record<string, unknown> | undefined;
       if (item?.type === 'function_call') this.silenceToolResponse(outputResponseId);
@@ -841,14 +871,16 @@ export class RealtimeDuplexSession {
         const items = this.messageOutputItems.get(outputResponseId) || new Set<string>();
         items.add(String(item.id || ''));
         this.messageOutputItems.set(outputResponseId, items);
-        const held = this.heldOutput.get(outputResponseId);
-        if (held) {
-          this.streamMessageText(outputResponseId, held);
-          const pending = held.audio;
-          held.audio = [];
-          for (const chunk of pending) {
-            if (this.isMessageOutput(chunk.event, outputResponseId)) this.enqueueAudioDelta(chunk.event, chunk.encoded, outputResponseId || null);
-            else held.audio.push(chunk);
+        if (!this.toolCandidateResponses.has(outputResponseId)) {
+          const held = this.heldOutput.get(outputResponseId);
+          if (held) {
+            this.streamMessageText(outputResponseId, held);
+            const pending = held.audio;
+            held.audio = [];
+            for (const chunk of pending) {
+              if (this.isMessageOutput(chunk.event, outputResponseId)) this.enqueueAudioDelta(chunk.event, chunk.encoded, outputResponseId || null);
+              else held.audio.push(chunk);
+            }
           }
         }
       }
@@ -880,6 +912,7 @@ export class RealtimeDuplexSession {
           name: functionCall.name,
           call_id: functionCall.callId,
           task: functionCall.task,
+          response_id: eventResponseId || '',
         });
         const args = JSON.parse(functionCall.arguments) as Record<string, unknown>;
         const signature = JSON.stringify([functionCall.name, Object.keys(args).sort().map(key => [key, args[key]])]);
@@ -912,6 +945,10 @@ export class RealtimeDuplexSession {
       this.awaitingProviderResponse = false;
       this.responseId = eventResponseId || this.newTurnId('response');
       this.responseInputs.set(this.responseId, this.latestInputId);
+      const inputText = this.inputTexts.get(this.latestInputId) || '';
+      if (/(打开|关闭|启动|创建|设置|设定|删除|移除|取消|停止|修改|调整|排序|调到|排到|查询|查找|搜索|帮我|请帮|生成|发送|下载|上传|提醒|闹钟|任务|文件|桌面|计算|安装|更新|先.+再|\b(?:open|launch|create|set|delete|cancel|modify|reorder|find|search|send|download|upload|remind)\b)/i.test(inputText)) {
+        this.toolCandidateResponses.add(this.responseId);
+      }
       if (this.responseInputs.size > 64) this.responseInputs.delete(this.responseInputs.keys().next().value!);
       if (this.pendingToolResponseJobId) {
         this.responseToolJobIds.set(this.responseId, this.pendingToolResponseJobId);
@@ -922,6 +959,12 @@ export class RealtimeDuplexSession {
         }
       }
       this.responseActive = true;
+      if (this.pendingResponseInterrupt) {
+        this.pendingResponseInterrupt = false;
+        this.interruptedResponseIds.add(this.responseId);
+        this.send(createQwenOmniCancelResponseEvent());
+        return;
+      }
       if (this.cardTurn && !this.cardTurn.cancelling) {
         if (this.pendingApprovals.size && performance.now() - this.cardTurn.at < 8_000) this.cancelForCardTurn();
         else this.cardTurn = null;
@@ -952,14 +995,18 @@ export class RealtimeDuplexSession {
       }
       if (type === 'response.done' && affectsActive) {
         this.responseActive = false;
+        this.pendingResponseInterrupt = false;
         this.notificationConflictWaiting = false;
         this.emitDiagnostic('qwen_response_finished', { response_id: eventResponseId, reason: String(response?.status || '') });
         this.reissueCardTurn();
       }
-      if (affectsActive) this.enqueuePlaybackDrain(eventResponseId || this.responseId);
+      if (affectsActive && (type === 'response.done' || !this.toolCandidateResponses.has(outputResponseId)))
+        this.enqueuePlaybackDrain(eventResponseId || this.responseId);
       if (type === 'response.done' && affectsActive) this.dispatchQueuedToolResult();
     } else if (type === 'input_audio_buffer.speech_started' || type === 'input_audio_buffer.speech_stopped') {
       this.providerSpeechActive = type === 'input_audio_buffer.speech_started';
+      if (this.providerSpeechActive) this.qwenMedia.resumeVideo();
+      else this.qwenMedia.pauseVideo();
       if (this.providerSpeechActive) this.latestInputId = String(event.item_id || this.newTurnId('audio'));
       this.awaitingProviderResponse = true;
       // The provider answers this speech by itself; with a card open, that reply is redirected.
@@ -981,13 +1028,16 @@ export class RealtimeDuplexSession {
       });
       this.callbacks.onUserText(transcript, true);
     } else if (type === 'error') {
-      if (!readableError(event.error || event).includes('Conversation already has an active response')) {
+      const message = readableError(event.error || event);
+      const imageAppendError = /^Error append image before append audio\.?$/i.test(message);
+      const supersededResponse = message === 'Response request cancelled by new input';
+      if (!imageAppendError && !supersededResponse && !message.includes('Conversation already has an active response')) {
         this.releaseResponseOutput(outputResponseId, 'failed');
       }
       const media = this.qwenMedia.snapshot();
       const error = event.error;
       const errorRecord = error && typeof error === 'object' ? (error as Record<string, unknown>) : {};
-      if (readableError(error || event).includes('Conversation already has an active response')) {
+      if (message.includes('Conversation already has an active response')) {
         // The conversation items were already submitted. Retry only response creation,
         // after the provider's active response ends; never replay a tool or its output.
         this.responseActive = true;
@@ -999,7 +1049,7 @@ export class RealtimeDuplexSession {
         raw_event: rawEvent || JSON.stringify(event),
         code: String(errorRecord.code || event.code || 'unknown'),
         error_type: String(errorRecord.type || ''),
-        message: readableError(error || event),
+        message,
         audio_append_sequence: media.audioAppendSequence,
         image_append_sequence: media.imageAppendSequence,
         has_deferred_image: media.hasDeferredImage,
@@ -1012,13 +1062,26 @@ export class RealtimeDuplexSession {
         this.callbacks.onIdleTimeout();
         return;
       }
-      this.callbacks.onError(readableError(error || event));
+      if (imageAppendError) {
+        // The rejected frame does not end audio or an already completed response.
+        // Wait for the next provider speech turn before sending another image.
+        this.qwenMedia.pauseVideo();
+        return;
+      }
+      if (supersededResponse) {
+        // Qwen discarded the pending response when the next spoken input arrived.
+        this.pendingResponseInterrupt = false;
+        if (!this.responseId) this.responseActive = false;
+        return;
+      }
+      this.callbacks.onError(message);
     }
   }
 
   private interruptQwenResponse(turnId: string, speechMs: number, level: number, threshold: number): boolean {
     if (!this.responseActive && !this.assistantPlaying) return false;
     const interruptedResponseId = this.responseId;
+    if (this.pendingResponseInterrupt) return false;
     if (interruptedResponseId && this.interruptedResponseIds.has(interruptedResponseId)) return false;
     if (interruptedResponseId) {
       this.interruptedResponseIds.add(interruptedResponseId);
@@ -1026,7 +1089,8 @@ export class RealtimeDuplexSession {
         this.interruptedResponseIds.delete(this.interruptedResponseIds.values().next().value!);
       }
     }
-    const cancelEventSent = this.responseActive;
+    const cancelEventSent = this.responseActive && Boolean(interruptedResponseId);
+    if (this.responseActive && !interruptedResponseId) this.pendingResponseInterrupt = true;
     this.closeStreamedText(interruptedResponseId || '');
     this.heldOutput.delete(interruptedResponseId || '');
     this.messageOutputItems.delete(interruptedResponseId || '');
@@ -1072,7 +1136,7 @@ export class RealtimeDuplexSession {
   private holdResponseOutput(type: string, event: Record<string, unknown>, responseId: string): boolean {
     if (!/^response\.(?:text\.(?:delta|done)|(?:output_)?audio(?:_transcript)?\.(?:delta|done))$/.test(type)) return false;
     if (this.silentToolResponses.has(responseId) || this.finishedOutputResponses.has(responseId) || this.interruptedResponseIds.has(responseId)) return true;
-    if (/^response\.(?:output_)?audio\.(?:delta|done)$/.test(type) && this.isMessageOutput(event, responseId)) {
+    if (!this.toolCandidateResponses.has(responseId) && /^response\.(?:output_)?audio\.(?:delta|done)$/.test(type) && this.isMessageOutput(event, responseId)) {
       if (type.endsWith('.done')) return false;
       const encoded = String(event.delta || event.audio || '');
       if (encoded) this.enqueueAudioDelta(event, encoded, responseId || null);
@@ -1096,7 +1160,7 @@ export class RealtimeDuplexSession {
     }
     if (type.startsWith('response.text.')) output.textItemId = String(event.item_id || '');
     else if (type.includes('audio_transcript')) output.transcriptItemId = String(event.item_id || '');
-    this.streamMessageText(responseId, output);
+    if (!this.toolCandidateResponses.has(responseId)) this.streamMessageText(responseId, output);
     return true;
   }
 
@@ -1141,6 +1205,7 @@ export class RealtimeDuplexSession {
   }
 
   private releaseResponseOutput(responseId: string, status: string): void {
+    this.toolCandidateResponses.delete(responseId);
     this.messageOutputItems.delete(responseId);
     if (this.finishedOutputResponses.has(responseId)) return;
     const output = this.heldOutput.get(responseId);

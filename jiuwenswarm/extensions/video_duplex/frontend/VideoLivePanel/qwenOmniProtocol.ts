@@ -105,6 +105,16 @@ export class QwenOmniMediaSequencer {
   private audioAppendSequence = 0;
   private imageAppendSequence = 0;
   private deferredVideoFrame: string | null = null;
+  private videoPaused = false;
+
+  pauseVideo(): void {
+    this.deferredVideoFrame = null;
+    this.videoPaused = true;
+  }
+
+  resumeVideo(): void {
+    this.videoPaused = false;
+  }
 
   createBatch(audio: string, includeVideo: boolean, frame: string | null): QwenOmniMediaBatch {
     const events: Array<Record<string, unknown>> = [
@@ -115,7 +125,7 @@ export class QwenOmniMediaSequencer {
     ];
     const diagnostics: QwenOmniMediaBatch['diagnostics'] = [];
     this.audioAppendSequence += 1;
-    if (!includeVideo) return { events, diagnostics };
+    if (!includeVideo || this.videoPaused) return { events, diagnostics };
 
     const deferredFrame = this.deferredVideoFrame;
     this.deferredVideoFrame = null;
@@ -157,5 +167,6 @@ export class QwenOmniMediaSequencer {
     this.audioAppendSequence = 0;
     this.imageAppendSequence = 0;
     this.deferredVideoFrame = null;
+    this.videoPaused = false;
   }
 }

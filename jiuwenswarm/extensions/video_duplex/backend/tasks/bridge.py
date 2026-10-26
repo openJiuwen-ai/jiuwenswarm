@@ -4,6 +4,7 @@ import asyncio
 import logging
 import uuid
 import weakref
+from .diagnostics import trace_task
 
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -54,6 +55,21 @@ class GatewayTaskEndpoint:
             )
             if replay is not None:
                 return replay
+            if action == "bind" and not task.get("execution_bound") and (
+                task.get("execution_cancelled") or task["status"] == "cancelling"
+            ):
+                # A delayed request may arrive after its admission was revoked.
+                # Return a normal ACK so the remote owner can exit before Core
+                # starts, rather than failing the checkpoint transport.
+                task.update(
+                    checkpoint_open=False, execution_settled=True,
+                    execution_cancelled=True, output_closed=True,
+                    sequence=task["sequence"] + 1,
+                )
+                self.store.put(db, task)
+                result = {"cancelled": True}
+                self.store.command(db, task, command["command_id"], fingerprint, result)
+                return result
             if action in {"bind", "claim", "context_written", "observed"}:
                 if task["status"] not in {"running", "waiting_user"}:
                     raise RuntimeError("TASK_EXECUTION_NOT_RUNNING")
@@ -113,6 +129,8 @@ class RemoteTaskEndpoint:
         command = {**self.identity, **data, "command_id": command_id, "action": action}
         future = asyncio.get_running_loop().create_future()
         _pending[command_id] = (self.identity, future)
+        if action != "status":
+            trace_task("checkpoint_sent", **self.identity, command_id=command_id, action=action)
         try:
             delivered = await send_runtime_push({
                 "request_id": self.identity["request_id"], "channel_id": "video_tool",
@@ -124,7 +142,13 @@ class RemoteTaskEndpoint:
             result = await asyncio.wait_for(asyncio.shield(future), ACK_TIMEOUT)
             if result.get("error"):
                 raise RuntimeError(result["error"])
+            if action != "status":
+                trace_task("checkpoint_acknowledged", **self.identity, command_id=command_id, action=action)
             return result
+        except BaseException as exc:
+            trace_task("checkpoint_failed", **self.identity, command_id=command_id,
+                       action=action, error_type=type(exc).__name__, error=str(exc)[:1000])
+            raise
         finally:
             _pending.pop(command_id, None)
             if not future.done():

@@ -19,27 +19,37 @@ export class TaskDuplexJobs {
     return searchSessionId;
   }
 
-  accept(payload: SearchJobPayload): ConversationJob | null {
+  accept(payload: SearchJobPayload, onRejected?: (reason: string) => void): ConversationJob | null {
+    const reject = (reason: string): null => {
+      onRejected?.(reason);
+      return null;
+    };
     const jobId = payload.job_id?.trim();
     const searchSessionId = payload.search_session_id?.trim();
     const sessionId = searchSessionId
       ? this.owners.get(searchSessionId)
       : undefined;
-    if (!jobId || !sessionId) return null;
+    if (!jobId || !sessionId) return reject("missing_job_or_unbound_session");
     const previous = this.jobs.get(jobId);
-    if (previous && previous.sessionId !== sessionId) return null;
+    if (previous && previous.sessionId !== sessionId) return reject("session_mismatch");
     if (previous && payload.sequence != null && previous.payload.sequence != null
-        && payload.sequence < previous.payload.sequence) return null;
-    if (previous?.payload.status === "cancelled") return null;
+        && payload.sequence < previous.payload.sequence) return reject("older_sequence");
+    if (previous?.payload.status === "cancelled") return reject("already_cancelled");
+    if (
+      previous && (previous.payload.queue_version ?? -1) >= 2 ** 48 &&
+      (payload.queue_version ?? previous.payload.queue_version ?? -1) <
+        (previous.payload.queue_version ?? -1)
+    )
+      return reject("older_queue_version");
     if (
       previous?.payload.status === "cancelling" &&
       ["queued", "running"].includes(payload.status || "") &&
       payload.queue_version == null
     )
-      return null;
+      return reject("cancelling_without_queue_version");
     // An in-flight status request or submission acknowledgement may arrive after completion.
     if (previous && isTerminal(previous.payload) && !isTerminal(payload))
-      return null;
+      return reject("terminal_state_regression");
     const job = {
       sessionId,
       payload: { ...previous?.payload, ...payload, replay: payload.replay ?? false },
