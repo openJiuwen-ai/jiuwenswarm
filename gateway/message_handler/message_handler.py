@@ -3995,14 +3995,14 @@ class MessageHandler(ABC):
             return {}
         return {"team_id": team_id, "team_name": team_id, "source": "org_expert_direct"}
 
-    def _is_targeted_expert_cancel(self, msg: "Message") -> bool:
+    async def _is_targeted_expert_cancel(self, msg: "Message") -> bool:
         route = self._expert_stream_route(msg.params)
         if not route or not msg.session_id:
             return False
         try:
             from jiuwenswarm.common.external_providers import provider
 
-            metadata = provider("session_metadata").get_session_metadata(
+            metadata = await provider("session_metadata").get_session_metadata_async(
                 msg.session_id, enable_writeback=False,
             )
             owner_id = str((metadata or {}).get("team_name") or "").strip()
@@ -4330,7 +4330,7 @@ class MessageHandler(ABC):
             user_id=getattr(msg, "user_id", None),
         )
 
-    def _effective_session_model(self, session_id: str, params: dict[str, Any]) -> str:
+    async def _effective_session_model(self, session_id: str, params: dict[str, Any]) -> str:
         if isinstance(params.get("model_selection"), dict):
             return ""
         explicit = str(params.get("model_name") or "").strip()
@@ -4344,7 +4344,7 @@ class MessageHandler(ABC):
 
             if get_session_model_selection(session_id) is not None:
                 return ""
-            metadata = provider("session_metadata").get_session_metadata(
+            metadata = await provider("session_metadata").get_session_metadata_async(
                 session_id, cache_bust=True, enable_writeback=False,
             )
         except Exception:  # noqa: BLE001 — 读不到就当没有
@@ -4389,7 +4389,7 @@ class MessageHandler(ABC):
 
             owner = session_owners.lookup(session_id)
             if owner is None or (
-                bare_model_name(self._effective_session_model(session_id, params)) != owner.model_name
+                bare_model_name(await self._effective_session_model(session_id, params)) != owner.model_name
             ):
                 params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
                 return
@@ -4682,7 +4682,7 @@ class MessageHandler(ABC):
                     continue
 
                 if msg.req_method == ReqMethod.CHAT_CANCEL:
-                    if self._is_targeted_expert_cancel(msg):
+                    if await self._is_targeted_expert_cancel(msg):
                         # The AgentServer validates membership and cancels only
                         # this expert. Never enter the session-wide cancel path.
                         agent_msg = await self._prepare_agent_dispatch_message(msg)

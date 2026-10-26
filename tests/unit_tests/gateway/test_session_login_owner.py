@@ -28,7 +28,11 @@ def _owners_in_tmp(monkeypatch, tmp_path):
 
 def _run(env, *, session_model: str = "GLM-5.2") -> dict:
     handler = SimpleNamespace(agent_client=None)
-    handler._effective_session_model = lambda sid, params: params.get("model_name") or session_model
+
+    async def _effective_session_model(sid, params):
+        return params.get("model_name") or session_model
+
+    handler._effective_session_model = _effective_session_model
     asyncio.run(MessageHandler._apply_session_login_owner(handler, env))
     return env.params
 

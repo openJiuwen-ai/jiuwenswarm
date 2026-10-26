@@ -70,7 +70,8 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
         "jiuwenswarm.agents.harness.common.browser_config",
     },
     # 过渡桥接（B1'）：gateway 与 AgentServer 同机部署期间的直连实现，
-    # gateway 独立成仓时整体删除并由 A-API HTTP 实现替代。
+    # gateway 独立成仓时整体删除并由 WS 远端实现替代（session_metadata
+    # 域已就绪 gateway/routing/session_metadata_remote.py）。
     # （runtime.cron.factory 一条已随 M0-a 的 router_client 改向消除）
     "gateway.server_store_bridge": {
         "jiuwenswarm.server.runtime.mcp.state_store",

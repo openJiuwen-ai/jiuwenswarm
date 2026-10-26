@@ -2023,6 +2023,10 @@ async def _run(
     cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
     cron_controller.bind_agent_client(client)
     message_handler.set_cron_controller(cron_controller)
+    # session_metadata 域 WS 远端实现的客户端绑定（仅远端预演模式消费）
+    from gateway.routing.session_metadata_remote import bind_agent_client as _bind_session_meta_client
+
+    _bind_session_meta_client(client)
 
     # Heartbeat Store/Controller/Scheduler/Execution live in AgentServer.
     # Gateway keeps only the stable public-interface proxy wired to Web/TUI.

@@ -1,0 +1,165 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Tests for the session_metadata WS remote provider and the bridge adapter."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from gateway.routing import session_metadata_remote
+from gateway.routing.session_metadata_remote import (
+    SessionMetadataRemoteProvider,
+    bind_agent_client,
+    remote_enabled,
+)
+from gateway.server_store_bridge import _LocalSessionMetadataProvider, install
+from jiuwenswarm.common import external_providers
+from jiuwenswarm.common.external_providers import provider
+
+
+class _FakeStore:
+    """Sync session_metadata store double."""
+
+    def __init__(self, meta: dict[str, Any] | None = None) -> None:
+        self.meta = meta if meta is not None else {"team_name": "owner-team"}
+        self.calls: list[tuple[Any, ...]] = []
+
+    def get_session_metadata(
+        self, session_id: str, cache_bust: bool = False, *, enable_writeback: bool = True
+    ) -> dict[str, Any]:
+        self.calls.append((session_id, cache_bust, enable_writeback))
+        return self.meta
+
+
+class _FakeUnary:
+    """Captures fetch_agent_unary kwargs and replays a canned (ok, payload)."""
+
+    def __init__(self) -> None:
+        self.captured: dict[str, Any] = {}
+        self.result: tuple[bool, dict[str, Any]] = (True, {"team_name": "remote-team"})
+
+    async def __call__(self, **kwargs: Any) -> tuple[bool, dict[str, Any]]:
+        self.captured.update(kwargs)
+        return self.result
+
+
+@pytest.fixture(name="fake_unary")
+def _fake_unary(monkeypatch: pytest.MonkeyPatch) -> _FakeUnary:
+    fake = _FakeUnary()
+    monkeypatch.setattr(session_metadata_remote, "fetch_agent_unary", fake)
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_remote_returns_payload_and_shapes_request(fake_unary) -> None:
+    bind_agent_client(SimpleNamespace(name="agent-client"))
+
+    result = await SessionMetadataRemoteProvider().get_session_metadata_async(
+        "sess-1", cache_bust=True
+    )
+
+    assert result == {"team_name": "remote-team"}
+    assert fake_unary.captured["agent_client"] is not None
+    assert fake_unary.captured["req_method"].value == "session.get_metadata"
+    assert fake_unary.captured["params"] == {"session_id": "sess-1"}
+    assert fake_unary.captured["session_id"] == "sess-1"
+    # 内部通道标识避开 "web"，不触发 server 侧排队会话消息附加逻辑
+    assert fake_unary.captured["channel_id"] == "gateway"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result",
+    [
+        (False, {"error": "session not found", "code": "NOT_FOUND"}),
+        (False, {"error": "AgentServer is unavailable", "code": "SERVICE_UNAVAILABLE"}),
+    ],
+)
+async def test_remote_returns_empty_dict_on_error(fake_unary, result) -> None:
+    fake_unary.result = result
+
+    assert await SessionMetadataRemoteProvider().get_session_metadata_async("sess") == {}
+
+
+def test_remote_sync_entry_is_rejected() -> None:
+    with pytest.raises(RuntimeError, match="async-only"):
+        SessionMetadataRemoteProvider().get_session_metadata("sess")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("1", True), ("true", True), ("True", True), ("", False), ("0", False), (None, False)],
+)
+def test_remote_enabled_env_parsing(monkeypatch: pytest.MonkeyPatch, value, expected) -> None:
+    if value is None:
+        monkeypatch.delenv("JIUWENSWARM_SESSION_METADATA_REMOTE", raising=False)
+    else:
+        monkeypatch.setenv("JIUWENSWARM_SESSION_METADATA_REMOTE", value)
+    assert remote_enabled() is expected
+
+
+def test_local_adapter_sync_passthrough() -> None:
+    store = _FakeStore({"team_name": "local-team"})
+
+    result = _LocalSessionMetadataProvider(store).get_session_metadata(
+        "sess-2", True, enable_writeback=False
+    )
+
+    assert result == {"team_name": "local-team"}
+    assert store.calls == [("sess-2", True, False)]
+
+
+@pytest.mark.asyncio
+async def test_local_adapter_async_entry() -> None:
+    store = _FakeStore({"team_name": "local-team"})
+
+    result = await _LocalSessionMetadataProvider(store).get_session_metadata_async(
+        "sess-3", cache_bust=True, enable_writeback=False
+    )
+
+    assert result == {"team_name": "local-team"}
+    assert store.calls == [("sess-3", True, False)]
+
+
+def test_local_adapter_keeps_late_bound_patch_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """对实现模块属性的 monkeypatch 必须仍然生效（取属性发生在调用时）。"""
+    store = _FakeStore({"team_name": "original"})
+    adapter = _LocalSessionMetadataProvider(store)
+    monkeypatch.setattr(
+        store, "get_session_metadata", lambda *args, **kwargs: {"team_name": "patched"}
+    )
+
+    assert adapter.get_session_metadata("sess") == {"team_name": "patched"}
+
+
+@pytest.fixture(name="reset_bridge")
+def _reset_bridge(monkeypatch: pytest.MonkeyPatch):
+    """Isolate bridge install state and the provider registry around install()."""
+    monkeypatch.setattr("gateway.server_store_bridge._INSTALLED", False)
+    saved = dict(external_providers._providers)
+    yield
+    external_providers._providers.clear()
+    external_providers._providers.update(saved)
+
+
+def test_install_registers_local_adapter_by_default(
+    reset_bridge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("JIUWENSWARM_SESSION_METADATA_REMOTE", raising=False)
+
+    install()
+
+    assert isinstance(provider("session_metadata"), _LocalSessionMetadataProvider)
+
+
+def test_install_registers_remote_when_env_set(
+    reset_bridge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_SESSION_METADATA_REMOTE", "1")
+
+    install()
+
+    assert isinstance(provider("session_metadata"), SessionMetadataRemoteProvider)

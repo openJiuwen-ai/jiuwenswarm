@@ -1879,7 +1879,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 try:
                     from jiuwenswarm.common.external_providers import provider
 
-                    meta = provider("session_metadata").get_session_metadata(
+                    meta = await provider("session_metadata").get_session_metadata_async(
                         session_id, cache_bust=True
                     )
                     if isinstance(meta, dict):
