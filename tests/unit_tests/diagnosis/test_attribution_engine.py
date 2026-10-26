@@ -544,7 +544,7 @@ def test_translate_reward_failure_causes_anchors_and_suggestions() -> None:
     )
     signal = _reward_signal()
 
-    causes, dropped = _translate_reward_failure_causes(runtime, [signal], _reward_payload("测试应当通过"))
+    causes, dropped = _translate_reward_failure_causes(runtime, [signal], _reward_payload("测试应当通过"), _single_node())
 
     assert len(causes) == 1 and dropped == 1
     cause = causes[0]
@@ -563,7 +563,9 @@ def test_agent_suggestion_wins_over_the_reward_comment() -> None:
         [{"attr_id": "attr-1", "text_md": "原因", "start_node_id": "main:0", "suggestion": "把对比补上"}],
     )
 
-    causes, _dropped = _translate_reward_failure_causes(runtime, [_reward_signal()], _reward_payload("测试应当通过"))
+    causes, _dropped = _translate_reward_failure_causes(
+        runtime, [_reward_signal()], _reward_payload("测试应当通过"), _single_node()
+    )
 
     assert causes[0].suggestion == ["把对比补上"]
 
@@ -573,14 +575,18 @@ def test_reward_comment_is_only_a_fallback_for_entries_without_a_suggestion() ->
     runtime.record_reward_failure(
         "diag-r", [{"attr_id": "attr-1", "text_md": "原因", "start_node_id": "main:0"}]
     )
-    causes, _dropped = _translate_reward_failure_causes(runtime, [_reward_signal()], _reward_payload("测试应当通过"))
+    causes, _dropped = _translate_reward_failure_causes(
+        runtime, [_reward_signal()], _reward_payload("测试应当通过"), _single_node()
+    )
     assert causes[0].suggestion == ["fix it"]
 
     other = NodeBackedRuntime(_single_node(), "zh")
     other.record_reward_failure(
         "diag-r", [{"attr_id": "attr-1", "text_md": "原因", "start_node_id": "main:0"}]
     )
-    missing, _dropped = _translate_reward_failure_causes(other, [_reward_signal()], _reward_payload("别的需求"))
+    missing, _dropped = _translate_reward_failure_causes(
+        other, [_reward_signal()], _reward_payload("别的需求"), _single_node()
+    )
     assert missing[0].suggestion == []
 
 
@@ -593,7 +599,7 @@ def test_translate_skill_evolution_judge() -> None:
     )
     runtime.record_skill_evolution("demo-skill", "## 改进\n- 加一步", 0.8)
 
-    judges, dropped = _translate_evolution_judge(runtime, [signal])
+    judges, dropped = _translate_evolution_judge(runtime, [signal], _single_node())
 
     assert dropped == 0
     assert len(judges) == 1
@@ -617,7 +623,7 @@ def test_related_signal_carries_the_signal_category_and_score() -> None:
     )
     runtime.record_skill_evolution("demo-skill", "advice", 0.5)
 
-    judges, _dropped = _translate_evolution_judge(runtime, [signal])
+    judges, _dropped = _translate_evolution_judge(runtime, [signal], _single_node())
 
     related = judges[0].related_signals[0]
     assert (related.category, related.score) == ("正确性", 60.0)
@@ -633,7 +639,7 @@ def test_translate_experience_evolution_judge() -> None:
     )
     runtime.record_experience_evolution("partial", ["先核对环境"])
 
-    judges, _dropped = _translate_evolution_judge(runtime, [signal])
+    judges, _dropped = _translate_evolution_judge(runtime, [signal], _single_node())
 
     judge = judges[0]
     assert judge.category == "experience"
@@ -651,7 +657,7 @@ def test_translate_evolution_judge_skips_unanchored_items() -> None:
     )
     runtime.skill_evolutions["demo-skill"] = {"md_string": "advice", "confidence": 0.5}
 
-    judges, dropped = _translate_evolution_judge(runtime, [_signal("diag-1")])
+    judges, dropped = _translate_evolution_judge(runtime, [_signal("diag-1")], _single_node())
 
     assert judges == [] and dropped == 1
 
