@@ -11,9 +11,11 @@ from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import HOST_USER_ORIGIN_INTERNAL
 from jiuwenswarm.server.runtime.team_organization_identity_store import save_organization_team_identity
 
 if TYPE_CHECKING:
+    from openjiuwen.agent_teams.interaction import DeliverResult
     from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _UnattendedTeamRoundHistoryWriter
 
 logger = logging.getLogger(__name__)

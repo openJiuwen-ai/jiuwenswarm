@@ -13,25 +13,11 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server import agent_ws_server
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_EXTERNAL,
     HOST_USER_ORIGIN_INTERNAL,
 )
-
-
-@pytest.fixture(autouse=True)
-def isolate_historical_database(monkeypatch):
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.team_organization_history.get_config",
-        lambda: {"experimental": {"team_organization_ui_enabled": True}},
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.team_organization_identity_store.load_organization_team_identity",
-        lambda _: {},
-    )
-    monkeypatch.setattr(
-        AgentWebSocketServer, "_load_persisted_organization", AsyncMock(return_value=None)
-    )
 
 
 @pytest.fixture(autouse=True)

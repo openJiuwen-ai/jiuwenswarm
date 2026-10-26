@@ -7076,9 +7076,11 @@ class AgentWebSocketServer:
             from jiuwenswarm.agents.harness.team.expert_org.launcher import (
                 JiuwenExpertTeamLauncher,
             )
-            from jiuwenswarm.server.runtime.agent_adapter.interface import (
-                is_external_user_authored_dispatch,
+            from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+                HOST_USER_ORIGIN_EXTERNAL,
+                HOST_USER_ORIGIN_INTERNAL,
             )
+            from jiuwenswarm.server.runtime.agent_adapter.interface import is_external_user_authored_dispatch
 
             query = _request_query_text(request)
             append_history_record(
