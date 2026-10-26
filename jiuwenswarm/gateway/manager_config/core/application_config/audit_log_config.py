@@ -12,6 +12,8 @@ from jiuwenswarm.gateway.config.enterprise.tables.application_config_models impo
     AUDIT_LOG_CONFIG_TABLE_DEF,
 )
 
+from jiuwenswarm.gateway.storage.revision import revision_of
+
 from ...infrastructure.repository_access import require_enterprise_repository
 from ...infrastructure.utils import format_ts, utc_now
 
@@ -155,11 +157,15 @@ class AuditLogConfigService:
         existing = await repo.get()
 
         if existing is not None:
+            # revision 是读到的版本，数据库用它做乐观锁，不采用请求里的绝对号。
+            expected = revision_of(existing)
+            if expected is None:
+                raise ValueError("audit_log_config row has no revision")
             update_data = {
                 **flat,
                 "body": body,
                 "source": source,
-                "revision": revision,
+                "revision": expected,
                 "updated_at": now,
             }
             updated = await repo.update({}, update_data)
@@ -168,7 +174,7 @@ class AuditLogConfigService:
             apply_audit_log_config_payload(body, validate=False)
             logger.info(
                 "[ManagerConfigReceiver] audit_log_config upsert revision=%s",
-                revision,
+                updated.get("revision"),
             )
             return _row_to_dict(updated)
 

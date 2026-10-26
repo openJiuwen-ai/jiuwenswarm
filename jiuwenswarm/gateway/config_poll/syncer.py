@@ -17,7 +17,7 @@ if frozenset(TABLE_APPLIERS) != frozenset(POLL_TABLES):
 
 
 class ConfigPollSyncer:
-    """按行拉取全表，用 ``row_key -> updated_at`` 判断行更新或行删除。"""
+    """按行拉取全表，用 ``row_key -> id:revision`` 判断行更新或行删除。"""
 
     def __init__(self) -> None:
         self._last_rows: dict[str, dict[str, str]] = {}

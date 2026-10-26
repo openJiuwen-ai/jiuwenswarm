@@ -37,6 +37,7 @@ CHANNEL_CONFIG_TABLE_DEF = TableDefinition(
             nullable=False,
             default="active",
         ),
+        ColumnDefinition("revision", "integer", nullable=False, default=1),
         ColumnDefinition("created_at", "datetime", nullable=False),
         ColumnDefinition("updated_at", "datetime", nullable=False),
     ],
@@ -76,6 +77,7 @@ LOG_MASKING_RULE_TABLE_DEF = TableDefinition(
         ColumnDefinition("source", "string", length=16, nullable=False),
         ColumnDefinition("enabled", "boolean", nullable=False, default=True),
         ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("revision", "integer", nullable=False, default=1),
         ColumnDefinition("created_at", "datetime", nullable=False),
         ColumnDefinition("updated_at", "datetime", nullable=False),
     ],
@@ -100,6 +102,7 @@ LOGGING_CONFIG_TABLE_DEF = TableDefinition(
         ColumnDefinition("channel", "string", length=16, nullable=True),
         ColumnDefinition("agent_server", "string", length=16, nullable=True),
         ColumnDefinition("full", "string", length=16, nullable=True),
+        ColumnDefinition("revision", "integer", nullable=False, default=1),
         ColumnDefinition("created_at", "datetime", nullable=False),
         ColumnDefinition("updated_at", "datetime", nullable=False),
     ],
@@ -195,9 +198,18 @@ AUDIT_LOG_CONFIG_TABLE_DEF = TableDefinition(
         ColumnDefinition("ntp_failover", "boolean", nullable=False, default=True),
         ColumnDefinition("body", "json", nullable=False),
         ColumnDefinition("source", "string", length=16, nullable=False, default="manager"),
+        # 变更号：更新时由数据库自增，config_poll 用来发现这一行变过。
         ColumnDefinition("revision", "integer", nullable=False, default=1),
         ColumnDefinition("created_at", "datetime", nullable=False),
         ColumnDefinition("updated_at", "datetime", nullable=False),
     ],
     indexes=[],
 )
+
+# config_poll 用 revision 发现变更。更新由数据库执行 revision = revision + 1。
+POLL_REVISION_TABLES = frozenset({
+    CHANNEL_CONFIG_TABLE_DEF.table_name,
+    LOG_MASKING_RULE_TABLE_DEF.table_name,
+    LOGGING_CONFIG_TABLE_DEF.table_name,
+    AUDIT_LOG_CONFIG_TABLE_DEF.table_name,
+})

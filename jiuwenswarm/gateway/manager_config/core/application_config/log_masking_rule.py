@@ -8,6 +8,10 @@ import logging
 from typing import Any
 
 from jiuwenswarm.gateway.config.enterprise.repository import EnterpriseRecordRepository
+from jiuwenswarm.gateway.storage.revision import (
+    retry_on_revision_conflict,
+    revision_of,
+)
 from jiuwenswarm.gateway.config.enterprise.tables.application_config_models import LOG_MASKING_RULE_TABLE_DEF
 from jiuwenswarm.infrastructure.log_masking.engine import LogMaskingEngine
 from ...infrastructure.repository_access import require_enterprise_repository
@@ -73,7 +77,17 @@ async def _upsert_log_masking_rule_from_sync(
     repo: EnterpriseRecordRepository,
     request: LogMaskingRuleCreateRequest,
 ) -> dict[str, Any]:
-    """按 ``rule_id`` upsert（对齐 agent_template；全量同步 POST 幂等）。"""
+    """按 ``rule_id`` upsert（对齐 agent_template；全量同步 POST 幂等）。
+
+    整段写入不对冲突做自动重试：版本不符就失败，避免后一次把先写入的规则盖掉。
+    """
+    return await _upsert_log_masking_rule_once(repo, request)
+
+
+async def _upsert_log_masking_rule_once(
+    repo: EnterpriseRecordRepository,
+    request: LogMaskingRuleCreateRequest,
+) -> dict[str, Any]:
     from jiuwenswarm.infrastructure.log_masking.engine import (
         normalize_replacement,
         normalize_rule_id,
@@ -121,8 +135,12 @@ async def _upsert_log_masking_rule_from_sync(
     updates = {
         key: value
         for key, value in row_data.items()
-        if key not in ("rule_id",)
+        if key not in ("rule_id", "revision")
     }
+    expected = revision_of(existing)
+    if expected is None:
+        raise ValueError(f"log_masking_rule {rule_id!r} has no revision")
+    updates["revision"] = expected
     updates["updated_at"] = utc_now()
     updated = await repo.update({"rule_id": rule_id}, updates)
     if updated is None:
@@ -131,6 +149,16 @@ async def _upsert_log_masking_rule_from_sync(
 
 
 async def _update_log_masking_rule_record(
+    repo: EnterpriseRecordRepository,
+    rule_id: str,
+    request: LogMaskingRuleUpdateRequest,
+) -> dict[str, Any] | None:
+    return await retry_on_revision_conflict(
+        lambda: _update_log_masking_rule_once(repo, rule_id, request)
+    )
+
+
+async def _update_log_masking_rule_once(
     repo: EnterpriseRecordRepository,
     rule_id: str,
     request: LogMaskingRuleUpdateRequest,
@@ -183,6 +211,10 @@ async def _update_log_masking_rule_record(
         exclude_rule_id=rid,
     )
 
+    expected = revision_of(existing)
+    if expected is None:
+        raise ValueError(f"log_masking_rule {rid!r} has no revision")
+    updates["revision"] = expected
     updates["updated_at"] = utc_now()
     updated = await repo.update({"rule_id": rid}, updates)
     if updated is None:

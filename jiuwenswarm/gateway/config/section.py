@@ -7,7 +7,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from jiuwenswarm.gateway.config.enterprise.tables.application_config_models import (
+    POLL_REVISION_TABLES,
+)
 from jiuwenswarm.gateway.storage.protocols.persistent import PersistentStore
+from jiuwenswarm.gateway.storage.revision import (
+    ExpectedRevision,
+    RevisionConflictError,
+    retry_on_revision_conflict,
+    revision_of,
+)
 
 
 def utc_now() -> datetime:
@@ -142,12 +151,23 @@ class DbFlatSectionCodec:
         row["updated_at"] = now
         return row
 
-    def to_updates(self, document: SectionDocument) -> dict[str, Any]:
-        updates = {
-            key: document.body.get(key)
-            for key in self._fields
-            if key in document.body
-        }
+    def to_updates(
+        self, document: SectionDocument, *, clear_absent: bool = False
+    ) -> dict[str, Any]:
+        if clear_absent:
+            # 整段替换：列上有、这次 body 里没有的字段写成空，避免旧值留下。
+            updates = {
+                key: document.body.get(key) if key in document.body else None
+                for key in self._fields
+            }
+            if not updates.get("level"):
+                updates["level"] = "INFO"
+        else:
+            updates = {
+                key: document.body.get(key)
+                for key in self._fields
+                if key in document.body
+            }
         updates["updated_at"] = utc_now()
         return updates
 
@@ -188,15 +208,33 @@ class SectionDocumentRepository:
         document = await self.get()
         return dict(document.body) if document else {}
 
-    async def replace(self, body: dict[str, Any]) -> SectionDocument:
-        """整段替换；YAML 浅 update 不删键，故有旧文档时先 delete 再 create。"""
-        existing = await self.get()
-        document = SectionDocument(
-            body=dict(body),
+    def _document(
+        self,
+        body: dict[str, Any],
+        existing: SectionDocument | None,
+    ) -> SectionDocument:
+        return SectionDocument(
+            body=body,
             source=(existing.source if existing else "local"),
             revision=(int(existing.revision) + 1 if existing else 1),
         )
-        if await self._load_row() is not None:
+
+    async def replace(self, body: dict[str, Any]) -> SectionDocument:
+        """整段替换。
+
+        YAML 浅 update 不删键，故有旧文档时先 delete 再 create。
+        企业扁平行按读到的 revision 更新，并把这次没提交的列写成空。
+        """
+
+        existing_row = await self._load_row()
+        existing = self._codec.from_record(existing_row) if existing_row else None
+        document = self._document(dict(body), existing)
+        expected = revision_of(existing_row)
+        if existing_row is not None and expected is not None:
+            return await self.upsert(
+                document, expected_revision=expected, clear_absent=True
+            )
+        if existing_row is not None:
             await self.delete()
         row = await self._store.create(
             self._store_name,
@@ -205,28 +243,46 @@ class SectionDocumentRepository:
         return self._codec.from_record(row)
 
     async def merge(self, updates: dict[str, Any]) -> SectionDocument:
-        existing = await self.get()
-        body = dict(existing.body) if existing else {}
-        body.update(updates)
-        document = SectionDocument(
-            body=body,
-            source=(existing.source if existing else "local"),
-            revision=(int(existing.revision) + 1 if existing else 1),
-        )
-        return await self.upsert(document)
+        async def once() -> SectionDocument:
+            existing_row = await self._load_row()
+            existing = (
+                self._codec.from_record(existing_row) if existing_row else None
+            )
+            body = dict(existing.body) if existing else {}
+            body.update(updates)
+            document = self._document(body, existing)
+            if existing_row is None:
+                return await self.upsert(document)
+            return await self.upsert(
+                document, expected_revision=revision_of(existing_row)
+            )
+
+        return await retry_on_revision_conflict(once)
 
     async def mutate(self, mutate_fn) -> SectionDocument:
-        existing = await self.get()
-        body = dict(existing.body) if existing else {}
-        mutate_fn(body)
-        document = SectionDocument(
-            body=body,
-            source=(existing.source if existing else "local"),
-            revision=(int(existing.revision) + 1 if existing else 1),
-        )
-        return await self.upsert(document)
+        async def once() -> SectionDocument:
+            existing_row = await self._load_row()
+            existing = (
+                self._codec.from_record(existing_row) if existing_row else None
+            )
+            body = dict(existing.body) if existing else {}
+            mutate_fn(body)
+            document = self._document(body, existing)
+            if existing_row is None:
+                return await self.upsert(document)
+            return await self.upsert(
+                document, expected_revision=revision_of(existing_row)
+            )
 
-    async def upsert(self, document: SectionDocument) -> SectionDocument:
+        return await retry_on_revision_conflict(once)
+
+    async def upsert(
+        self,
+        document: SectionDocument,
+        *,
+        expected_revision: int | None = None,
+        clear_absent: bool = False,
+    ) -> SectionDocument:
         identity = self._identity()
         existing_row = await self._load_row()
         if existing_row is not None:
@@ -236,13 +292,26 @@ class SectionDocumentRepository:
                 key = {}
                 if "id" in existing_row:
                     key = {"id": existing_row["id"]}
-            row = await self._store.update(
-                self._store_name,
-                key,
-                self._codec.to_updates(document),
-            )
+            if clear_absent and isinstance(self._codec, DbFlatSectionCodec):
+                updates = self._codec.to_updates(document, clear_absent=True)
+            else:
+                updates = self._codec.to_updates(document)
+            if (
+                expected_revision is not None
+                and self._store_name in POLL_REVISION_TABLES
+            ):
+                updates["revision"] = ExpectedRevision(expected_revision)
+            row = await self._store.update(self._store_name, key, updates)
             if row is not None:
                 return self._codec.from_record(row)
+            if (
+                expected_revision is not None
+                and self._store_name in POLL_REVISION_TABLES
+            ):
+                # 行在读到之后被删掉。不能改成直接插入，否则会绕过乐观锁。
+                raise RevisionConflictError(
+                    f"{self._store_name} revision conflict during upsert"
+                )
         row = await self._store.create(
             self._store_name,
             self._codec.to_record(document, instance_id=self._instance_id),
