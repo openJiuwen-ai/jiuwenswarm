@@ -213,6 +213,13 @@ export async function submitDesignComposer(params: {
   if (!prompt && checked.refs.length === 0) {
     throw new Error('empty');
   }
+  // Design landing gate (frontend-only): fail on the prompt itself when the
+  // chat / video / image models are missing or switched off, before any
+  // session or graph is created.
+  const modelProblem = await findDesignModelsProblem();
+  if (modelProblem) {
+    throw new Error(modelProblem);
+  }
   const modelChoice = resolveDesignerModelChoice();
   const projectId = resolveDesignComposerProjectId();
   const created = await designerWorkspaceClient.createSession({ projectId });
