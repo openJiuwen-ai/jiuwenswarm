@@ -53,6 +53,7 @@ import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
+import { useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import skillPackageIcon from '../../assets/skill.svg';
 import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
@@ -378,6 +379,7 @@ export const MessageItem = memo(function MessageItem({
   onForkFromMessage,
 }: MessageItemProps) {
   const { t } = useTranslation();
+  const agentCatalog = useAgentCatalogStore((state) => state.catalog);
   const {
     id,
     role,
@@ -846,6 +848,13 @@ export const MessageItem = memo(function MessageItem({
         )}
         data-testid="chat-panel-bubble-wrapper"
       >
+        {!isUser && message.agentTemplateName && (
+          <div className="chat-message-expert">
+            {agentCatalog?.find(
+              (item) => item.id === message.agentTemplateName || item.runtimePackageName === message.agentTemplateName,
+            )?.displayName || message.agentTemplateName}
+          </div>
+        )}
         {!isUser && (
           <div className="hidden" data-testid="chat-panel-thinking-summary" aria-hidden="true" />
         )}

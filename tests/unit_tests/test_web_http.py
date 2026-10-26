@@ -146,12 +146,47 @@ def test_bind_http_session_create_strips_client_session_id():
     assert sid != "web_should_not_go_to_agent"
 
 
+def test_bind_http_session_shared_user_reuses_one_session():
+    first, first_params = outbound_mod.bind_http_session(
+        "agent_templates.list", {"user_id": "user1", "filter": "mine"}, bind_param=False,
+    )
+    second, second_params = outbound_mod.bind_http_session(
+        "agent_templates.list", {"user_id": "user1"}, bind_param=False,
+    )
+    assert first == second == "shared_user_user1"
+    assert "session_id" not in first_params
+    assert "session_id" not in second_params
+
+
 def test_bind_http_session_bind_param_false_does_not_invent_session_id():
     sid, params = outbound_mod.bind_http_session(
         "permissions.tools.get", {}, bind_param=False,
     )
     assert "session_id" not in params
-    assert sid.startswith("webhttp_")
+    assert sid == "shared_user_default"
+
+
+def test_bind_http_session_sessionless_reads_share_one_route():
+    user = {"user_id": "user1"}
+    catalog, catalog_params = outbound_mod.bind_http_session(
+        "agent_templates.list", user, bind_param=False,
+    )
+    projects, project_params = outbound_mod.bind_http_session(
+        "project.list", {**user, "filter": "all"}, bind_param=False,
+    )
+    locale, locale_params = outbound_mod.bind_http_session(
+        "locale.get_conf", user, bind_param=False,
+    )
+    assert catalog == projects == locale == "shared_user_user1"
+    assert "session_id" not in catalog_params
+    assert "session_id" not in project_params
+    assert "session_id" not in locale_params
+    created, created_params = outbound_mod.bind_http_session(
+        "session.create", user,
+    )
+    assert created.startswith("webhttp_")
+    assert created != catalog
+    assert "session_id" not in created_params
 
 
 def test_bind_http_session_bind_param_false_keeps_client_session_id():

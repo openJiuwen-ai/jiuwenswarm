@@ -581,6 +581,56 @@ def _ask_user_answer_resume_request(answers: list[dict] | None = None) -> AgentR
 
 
 @pytest.mark.asyncio
+async def test_deliver_control_input_binds_package_allowlist_for_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业版续聊不走 process_message，仍要看到当次请求带上的专家包名单。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.package_allowlist._is_user_owned",
+        lambda kind, package_id: False,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.package_allowlist._candidate_ids",
+        lambda kind, package_id: {package_id},
+    )
+    claw = _InterruptHarness()
+    _captured, set_fake_stream = _build_control_input_harness(claw, monkeypatch)
+    seen: list[bool] = []
+
+    async def _fake_stream_impl(_self, _request, _inputs):
+        from jiuwenswarm.server.runtime.package_allowlist import allows
+
+        seen.append(allows("agent_template", "granted-expert"))
+        yield AgentResponseChunk(
+            request_id="req-resume-new-456",
+            channel_id="web",
+            payload={"event_type": "chat.final", "content": "继续"},
+            is_complete=True,
+        )
+
+    set_fake_stream(_fake_stream_impl)
+    request = AgentRequest(
+        request_id="req-resume-new-456",
+        channel_id="web",
+        session_id="web-sess-1",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "source": "ask_user_interrupt",
+            "request_id": "req-original-123",
+            "answers": [{"question": "用哪种方案?", "selected_options": ["方案A"]}],
+            "mode": "agent",
+        },
+        metadata={
+            "package_allowlist": [{"kind": "agent_template", "id": "granted-expert"}],
+        },
+    )
+    async for _ in claw.deliver_control_input(request):
+        pass
+    assert seen == [True]
+
+
+@pytest.mark.asyncio
 async def test_deliver_control_input_delta_chunks_are_not_persisted_but_merged_into_empty_final(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

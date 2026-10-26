@@ -69,6 +69,10 @@
     "update": "Updates",
     "personalContext": "Knowledge"
   },
+  "experts": {
+    "podStarting": "Starting the expert runtime, please wait",
+    "podStartTimeout": "The expert runtime did not start in time. Try again later"
+  },
   "applicationPlugins": {
     "title": "Application plugins",
     "description": "Manage application plugins with dedicated pages and runtime capabilities.",

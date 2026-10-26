@@ -2279,9 +2279,10 @@ async def list_agent_templates_with_hub(
     hub_port: HubAssetPort | None = None,
     downloader: Any = None,
 ) -> list[dict]:
-    return await _list_equipment_with_hub(
+    cards = await _list_equipment_with_hub(
         _AGENT_TEMPLATE_KIND, params, hub_port=hub_port, downloader=downloader
     )
+    return _filter_allowed_cards("agent_template", cards)
 
 
 async def list_plugin_packages_with_hub(
@@ -2374,7 +2375,10 @@ async def list_agent_groups_with_hub(
         by_id[card["id"]] = card
     source_filter = params.get("filter") if isinstance(params, dict) else None
     if source_filter in {"local", "mine"}:
-        return _apply_list_source_filter(list(by_id.values()), params)
+        return _filter_allowed_cards(
+            "agent_group",
+            _apply_list_source_filter(list(by_id.values()), params),
+        )
 
     query = str((params or {}).get("query") or "").strip()
     if query:
@@ -2449,8 +2453,33 @@ async def list_agent_groups_with_hub(
     result = _apply_list_source_filter(list(by_id.values()), params)
     if cache_state is not None:
         from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import CatalogCards
-        return CatalogCards(result, cache_state)
-    return result
+        result = CatalogCards(result, cache_state)
+    return _filter_allowed_cards("agent_group", result)
+
+
+def _filter_allowed_cards(kind: str, cards: list[dict]) -> list[dict]:
+    """企业版按允许名单收目录。保留 Hub 缓存标记。"""
+    from jiuwenswarm.server.runtime.package_allowlist import filter_cards
+
+    filtered = filter_cards(kind, list(cards))
+    cache = getattr(cards, "cache", None)
+    if cache is None:
+        return filtered
+    from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import CatalogCards
+
+    return CatalogCards(filtered, cache)
+
+
+def _require_package_allowed(kind: str, package_id: str) -> None:
+    from jiuwenswarm.server.runtime.package_allowlist import require_allowed
+
+    require_allowed(kind, package_id)
+
+
+def _package_allowed(kind: str, package_id: str) -> bool:
+    from jiuwenswarm.server.runtime.package_allowlist import allows
+
+    return allows(kind, package_id)
 
 
 def _build_agent_group_card(
@@ -2597,6 +2626,8 @@ async def show_agent_group_with_hub(
     name: str, *, hub_port: HubAssetPort | None = None
 ) -> dict | None:
     """Return local group details or public Hub metadata before installation."""
+    if not _package_allowed("agent_group", name):
+        return None
     store = _hub_install_state_store(_AGENT_GROUP_KIND)
     record = store.get(name)
     if record is not None and record.kind == "agent_group":
@@ -2854,6 +2885,8 @@ async def _show_equipment_with_hub(
 async def show_agent_template_with_hub(
     name: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
 ) -> dict | None:
+    if not _package_allowed("agent_template", name):
+        return None
     return await _show_equipment_with_hub(
         _AGENT_TEMPLATE_KIND, name, hub_port=hub_port, downloader=downloader
     )
@@ -3088,6 +3121,8 @@ async def install_equipment_from_hub_gated(
 ) -> tuple[bool, dict[str, Any]]:
     kind_label = _hub_asset_kind(kind)
     requested_id = _lifecycle_package_id(params, kind_label)
+    if kind == _AGENT_TEMPLATE_KIND and not _package_allowed(kind_label, requested_id):
+        return False, {"error": f"package not allowed: {kind_label} {requested_id}"}
     state_store = _hub_install_state_store(kind)
     record = state_store.get(requested_id) or state_store.get_by_package_id(
         requested_id
@@ -3487,6 +3522,7 @@ async def list_agent_template_files_with_hub(
     downloader: Any = None,
 ) -> list[dict]:
     """List files, downloading an uninstalled Hub expert if needed."""
+    _require_package_allowed("agent_template", name)
     pkg_dir, archive = await _resolve_agent_template_preview_with_hub(
         name, hub_port=hub_port, downloader=downloader
     )
@@ -3505,6 +3541,7 @@ async def read_agent_template_file_with_hub(
     downloader: Any = None,
 ) -> dict:
     """Read one previewable file, downloading an uninstalled Hub expert if needed."""
+    _require_package_allowed("agent_template", name)
     pkg_dir, archive = await _resolve_agent_template_preview_with_hub(
         name, hub_port=hub_port, downloader=downloader
     )
@@ -3542,6 +3579,7 @@ def read_agent_group_file(name: str, rel_path: str) -> dict:
 
 
 async def list_agent_group_files_with_hub(name: str) -> list[dict]:
+    _require_package_allowed("agent_group", name)
     record = _hub_install_state_store(_AGENT_GROUP_KIND).get(name)
     package_id = record.package_id if record is not None else name
     if _resolve_agent_group_definition_dir(package_id) is not None:
@@ -3551,6 +3589,7 @@ async def list_agent_group_files_with_hub(name: str) -> list[dict]:
 
 
 async def read_agent_group_file_with_hub(name: str, rel_path: str) -> dict:
+    _require_package_allowed("agent_group", name)
     record = _hub_install_state_store(_AGENT_GROUP_KIND).get(name)
     package_id = record.package_id if record is not None else name
     if _resolve_agent_group_definition_dir(package_id) is not None:
@@ -4297,6 +4336,7 @@ def _install_package(
 def install_agent_template(params: dict) -> None:
     """Install an expert package."""
     package_id = _lifecycle_package_id(params, "agent_template")
+    _require_package_allowed("agent_template", package_id)
     resolved = _resolve_agent_template_definition_dir(package_id)
     if resolved is not None:
         _validate_agent_template_runtime_package(resolved[0])
@@ -4314,6 +4354,7 @@ def install_agent_group(params: dict) -> None:
     from openjiuwen.agent_teams.experts import load_agent_group_package
 
     package_id = _lifecycle_package_id(params, "agent_group")
+    _require_package_allowed("agent_group", package_id)
     resolved = _resolve_agent_group_definition_dir(package_id)
     if resolved is None:
         raise ValueError(f"agent_group package not found: {package_id}")
@@ -4372,6 +4413,7 @@ async def install_agent_group_with_hub(
     from openjiuwen.agent_teams.experts import load_agent_group_package
 
     requested_id = _lifecycle_package_id(params, "agent_group")
+    _require_package_allowed("agent_group", requested_id)
     store = _hub_install_state_store(_AGENT_GROUP_KIND)
     record = store.get(requested_id) or store.get_by_package_id(requested_id)
     package_id = record.package_id if record is not None else requested_id

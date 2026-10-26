@@ -164,6 +164,12 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("skills.get", "GET", "/skills/{name}"),
     ("skills.uninstall", "DELETE", "/skills/{name}"),
     ("skills.toggle", "POST", "/skills/{name}/actions/toggle"),
+    ("agent_templates.list", "GET", "/agent-templates"),
+    ("agent_templates.show", "GET", "/agent-templates/{id}"),
+    ("agent_templates.file.list", "GET", "/agent-templates/{id}/files"),
+    ("agent_templates.file.read", "GET", "/agent-templates/{id}/files/content"),
+    ("agent_templates.install", "POST", "/agent-templates/{id}/actions/install"),
+    ("agent_templates.uninstall", "POST", "/agent-templates/{id}/actions/uninstall"),
     ("extensions.list", "GET", "/extensions"),
     ("extensions.import", "POST", "/extensions"),
     ("extensions.delete", "DELETE", "/extensions/{name}"),
@@ -338,6 +344,9 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     ``channel_context.ext`` 是白名单过滤后的请求级扩展字段，经内部
     ``X-Jiuwenswarm-Request-Ext`` 传输；该头不承担鉴权。
 
+    企业版另附 ``X-Jiuwenswarm-Package-Allowlist``。值来自发送前读到的库行，
+    不采用 ``channel_context`` 里客户端自带的名单。
+
     ``gateway_id`` 仅透传保留；Agent 业务（如企业配置 ``RoutingContext``）当前不消费。
     """
     from jiuwenswarm.common.request_ext import (
@@ -384,7 +393,26 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     encoded_ext = encode_internal_header(channel_context.get(METADATA_KEY))
     if encoded_ext:
         headers[INTERNAL_HEADER_NAME] = encoded_ext
+    _attach_package_allowlist_header(headers)
     return headers
+
+
+def _attach_package_allowlist_header(headers: dict[str, str]) -> None:
+    """企业版写入刚绑定的名单。未绑定时按空名单发送。"""
+    from jiuwenswarm.edition import is_enterprise
+
+    if not is_enterprise():
+        return
+    from jiuwenswarm.server.runtime.package_allowlist import (
+        HEADER_NAME,
+        encode_package_allowlist_header,
+        outbound_allowlist_packages,
+    )
+
+    packages = outbound_allowlist_packages()
+    if packages is None:
+        packages = []
+    headers[HEADER_NAME] = encode_package_allowlist_header(packages)
 
 
 def method_has_http_handler(method: str) -> bool:

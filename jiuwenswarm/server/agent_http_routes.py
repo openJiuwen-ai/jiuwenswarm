@@ -407,7 +407,8 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     """从 Gateway 透传的 ``X-*`` 头重建 ``user_id`` 和 ``metadata``。
 
     Gateway 的 REST 正文只有业务参数。身份在头里：``X-User-Id``、路由三维、
-    企业租户三字段，以及内部扩展头。没有 ``X-User-Id`` 时 ``user_id`` 为空，
+    企业租户三字段，以及内部扩展头。企业版的专家包允许名单在
+    ``X-Jiuwenswarm-Package-Allowlist``。没有 ``X-User-Id`` 时 ``user_id`` 为空，
     表示这次请求按匿名处理，和 WebSocket 入口缺省身份时一样。
     """
     from jiuwenswarm.common.request_identity import (
@@ -451,6 +452,18 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
         else:
             if ext:
                 metadata[METADATA_KEY] = ext
+    from jiuwenswarm.edition import is_enterprise
+
+    if is_enterprise():
+        from jiuwenswarm.server.runtime.package_allowlist import (
+            HEADER_NAME,
+            METADATA_KEY as GRANT_METADATA_KEY,
+            decode_package_allowlist_header,
+        )
+
+        metadata[GRANT_METADATA_KEY] = decode_package_allowlist_header(
+            request.headers.get(HEADER_NAME)
+        )
     user_id = str(identity.get("user_id") or "").strip()
     return user_id, metadata or None
 
