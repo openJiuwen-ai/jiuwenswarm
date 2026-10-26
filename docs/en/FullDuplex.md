@@ -9,6 +9,12 @@ Drag the blue ball with a mouse or touch to move the controller. It stays within
 window. The sharing indicator and Close button move with it. Close stops video sharing
 while voice continues. Microphone mute and speaker mute remain separate controls.
 
+With a mouse, hover over the controller to show the sharing indicator and controls.
+They remain visible on touch screens. For a file created by a delegated voice task,
+Core Agent verifies the file and delivers it with `send_file_to_user`. A delivered
+file appears in the original conversation's artifacts. Follow-up questions about its
+location use the path from the file receipt; mentioning a path alone does not deliver it.
+
 ![Isolated controller preview with sharing enabled](../images/full-duplex-controls.png)
 
 The realtime voice model has a separate connection. Delegated Core Agent work and

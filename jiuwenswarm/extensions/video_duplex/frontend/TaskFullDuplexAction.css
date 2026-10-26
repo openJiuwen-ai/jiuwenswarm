@@ -93,14 +93,21 @@
   display: flex;
   gap: 8px;
   padding-top: 8px;
+}
+
+.task-full-duplex-orb__controls,
+.task-full-duplex-sharing {
   opacity: 0;
   pointer-events: none;
   transition: opacity 150ms;
 }
 
 .task-full-duplex-orb:hover .task-full-duplex-orb__controls,
+.task-full-duplex-orb:hover .task-full-duplex-sharing,
 .task-full-duplex-orb.is-dragging .task-full-duplex-orb__controls,
-.task-full-duplex-orb:focus-within .task-full-duplex-orb__controls {
+.task-full-duplex-orb.is-dragging .task-full-duplex-sharing,
+.task-full-duplex-orb:focus-within .task-full-duplex-orb__controls,
+.task-full-duplex-orb:focus-within .task-full-duplex-sharing {
   opacity: 1;
   pointer-events: auto;
 }
@@ -136,7 +143,8 @@
 }
 
 @media (hover: none) {
-  .task-full-duplex-orb__controls {
+  .task-full-duplex-orb__controls,
+  .task-full-duplex-sharing {
     opacity: 1;
     pointer-events: auto;
   }
