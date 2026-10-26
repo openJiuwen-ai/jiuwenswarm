@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Mapping from JiuwenSwarm settings to the SDK observability config.
+"""Map JiuwenSwarm settings and bind an active AgentArts provider to the SDK.
 
 Provider lifecycle itself lives in the SDK: each runtime acquires and releases
 its own demand (``openjiuwen.harness.observability`` for single agent,
@@ -8,13 +8,50 @@ its own demand (``openjiuwen.harness.observability`` for single agent,
 ``openjiuwen.extensions.observability.demand`` keeps one runtime's shutdown from
 tearing down a provider the other still needs. What remains here is the part the
 SDK cannot own: turning this platform's ``config.yaml`` section into an
-``ObservabilityConfig``.
+``ObservabilityConfig`` and selecting the provider installed by its host probe.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from typing import Any
+
+
+def bind_agentarts_tracer_provider(config: Any) -> bool:
+    """Keep AgentCore parents on the provider installed by the AgentArts wheel.
+
+    AgentCore otherwise creates a private provider even when a global provider
+    exists. The wheel's LLM/tool spans then reference parents exported only to
+    the private provider's local destination.
+    """
+    if os.getenv("agentarts_agentops_otel_agent_apm_enable", "false").strip().lower() != "true":
+        return False
+
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from openjiuwen.extensions.observability.setup import (
+        init_observability,
+        is_initialized,
+    )
+
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        return False
+    # The wheel owns export and shutdown. SDK demand registration below still
+    # installs the agent/team callbacks and trajectory processors as usual.
+    # Let the SDK check identity/ownership under its initialization lock instead
+    # of choosing an error-handling path from a stale is_initialized() snapshot.
+    try:
+        init_observability(config, tracer_provider_override=provider, owns_provider=False)
+    except RuntimeError:
+        if not is_initialized():
+            # A real initialization failure must reach the caller's error path.
+            raise
+        # An existing private/other provider, including one initialized while
+        # we were binding, keeps its original lifecycle.
+        return False
+    return True
 
 
 def build_observability_config(

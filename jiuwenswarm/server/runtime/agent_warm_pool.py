@@ -20,6 +20,7 @@ from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
 )
+from jiuwenswarm.common.config import resolve_config_env_vars
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.runtime.session import project_store
 
@@ -86,10 +87,11 @@ class WarmKey:
     project_dir: str
     work_mode: str
     is_swarm: bool = False
+    adapter_mode: str = "agent"
 
     @property
     def agent_mode(self) -> str:
-        return "code" if self.work_mode == "code" else "agent"
+        return self.adapter_mode
 
     @property
     def agent_sub_mode(self) -> str | None:
@@ -183,13 +185,22 @@ class AgentWarmPool:
         project_dir: str | None,
         work_mode: str,
         is_swarm: bool = False,
+        adapter_mode: str | None = None,
     ) -> WarmKey:
+        normalized_adapter_mode = str(adapter_mode or "").strip().lower()
+        if not normalized_adapter_mode:
+            normalized_adapter_mode = (
+                "code" if str(work_mode).strip().lower() == "code" else "agent"
+            )
+        if normalized_adapter_mode not in {"agent", "code", "flash"}:
+            normalized_adapter_mode = "agent"
         return WarmKey(
             channel_id=str(channel_id or "default").strip() or "default",
             project_id=str(project_id or "").strip(),
             project_dir=_normalize_project_dir(project_dir),
             work_mode="code" if str(work_mode).strip().lower() == "code" else "work",
             is_swarm=bool(is_swarm),
+            adapter_mode=normalized_adapter_mode,
         )
 
     @staticmethod
@@ -232,6 +243,7 @@ class AgentWarmPool:
                 "project_dir": key.project_dir,
                 "work_mode": key.work_mode,
                 "is_swarm": key.is_swarm,
+                "adapter_mode": key.adapter_mode,
             },
         }
         self._marker_path(session_id).write_text(
@@ -267,7 +279,11 @@ class AgentWarmPool:
             except (OSError, ValueError, TypeError):
                 logger.warning("Invalid prewarm marker left in place: %s", marker)
 
-    def _desired_keys(self, enabled_channels: set[str] | None = None) -> set[WarmKey]:
+    def _desired_keys(
+        self,
+        enabled_channels: set[str] | None = None,
+        config: Any | None = None,
+    ) -> set[WarmKey]:
         channels = (
             self._enabled_channels if enabled_channels is None else enabled_channels
         )
@@ -281,12 +297,25 @@ class AgentWarmPool:
                 (DEFAULT_PROJECT_ID_CODE, "", "code"),
             ]
         )
+        flash_enabled = False
+        if isinstance(config, dict):
+            flash_config = resolve_config_env_vars(config).get("flash")
+            flash_enabled = bool(
+                flash_config.get("enabled", False)
+                if isinstance(flash_config, dict)
+                else False
+            )
         return {
             self.make_key(
                 channel_id=channel,
                 project_id=project_id,
                 project_dir=project_dir,
                 work_mode=work_mode,
+                adapter_mode=(
+                    "code"
+                    if work_mode == "code"
+                    else ("flash" if flash_enabled else "agent")
+                ),
             )
             for channel in channels
             for project_id, project_dir, work_mode in records
@@ -321,7 +350,7 @@ class AgentWarmPool:
         # Project discovery can touch persistent metadata. Keep it outside both
         # the AgentServer event loop and the pool lock, then reconcile against
         # one immutable target snapshot.
-        desired = await asyncio.to_thread(self._desired_keys, channels)
+        desired = await asyncio.to_thread(self._desired_keys, channels, config)
         async with self._lock:
             if self._closed:
                 return _zero_stats()
@@ -549,6 +578,7 @@ class AgentWarmPool:
                         session_id=session_id,
                         channel_id=key.channel_id,
                         mode=("code.normal" if key.work_mode == "code" else "agent"),
+                        adapter_mode=key.adapter_mode,
                         project_dir=key.project_dir or None,
                     )
             logger.info(

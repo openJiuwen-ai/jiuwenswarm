@@ -49,6 +49,15 @@ class TestVendorMap:
         assert match_vendor_style("glm-5.3-test") == "glm53_reasoning_effort"
         assert match_vendor_style("GLM-5.3") == "glm53_reasoning_effort"
 
+    def test_match_kimi_k3_effort_only(self):
+        assert match_vendor_style("kimi-k3") == "effort_only"
+        assert match_vendor_style("kimi-k3-test-1009") == "effort_only"
+        assert match_vendor_style("Kimi-K3") == "effort_only"
+        assert match_vendor_style("provider/kimi_k3") == "effort_only"
+        # 勿误伤 kimi-k2.x
+        assert match_vendor_style("kimi-k2.6") is None
+        assert match_vendor_style("kimi-k2.7-code") is None
+
     def test_match_deepseek_family(self):
         assert match_vendor_style("DeepSeek-V3.2") == "extra_body_thinking_type"
         assert match_vendor_style("deepseek-v3.2") == "extra_body_thinking_type"
@@ -89,6 +98,15 @@ class TestVendorMap:
         assert low["extra_body"]["thinking"]["type"] == "enabled"
         assert low["reasoning_effort"] == "low"
 
+    def test_effort_only_never_sends_thinking(self):
+        low = depth_to_kwargs("effort_only", "low")
+        assert low == {"reasoning_effort": "low"}
+        assert "extra_body" not in low
+        off = depth_to_kwargs("effort_only", "off")
+        assert off == {"reasoning_effort": "low"}
+        high = depth_to_kwargs("effort_only", "high")
+        assert high == {"reasoning_effort": "max"}
+
 
 class TestAdaptThinking:
     def test_default_no_inject_for_non_glm53(self):
@@ -102,6 +120,10 @@ class TestAdaptThinking:
         assert deepseek.injected is False
         assert deepseek.thinking == "default"
 
+        glm52 = adapt_thinking("default", model_name="glm-5.2")
+        assert glm52.injected is False
+        assert glm52.thinking == "default"
+
     def test_default_glm53_uses_effort_low(self):
         assert DEFAULT_THINKING_DEPTH == "low"
         profile = adapt_thinking("default", model_name="glm-5.3-test")
@@ -114,6 +136,23 @@ class TestAdaptThinking:
         bare = adapt_thinking("", model_name="glm-5.3")
         assert bare.injected is True
         assert bare.llm_call_kwargs["reasoning_effort"] == "low"
+
+    def test_default_kimi_k3_uses_effort_low_without_thinking(self):
+        profile = adapt_thinking("default", model_name="kimi-k3-test-1009")
+        assert profile.injected is True
+        assert profile.vendor_style == "effort_only"
+        assert profile.thinking == "low"
+        assert profile.llm_call_kwargs["reasoning_effort"] == "low"
+        assert "extra_body" not in profile.llm_call_kwargs
+
+        bare = adapt_thinking("", model_name="kimi-k3")
+        assert bare.injected is True
+        assert bare.llm_call_kwargs == {"reasoning_effort": "low"}
+
+    def test_off_kimi_k3_falls_back_to_low(self):
+        profile = adapt_thinking("off", model_name="kimi-k3")
+        assert profile.injected is True
+        assert profile.llm_call_kwargs == {"reasoning_effort": "low"}
 
     def test_off_glm(self):
         profile = adapt_thinking("off", model_name="glm-5.1")

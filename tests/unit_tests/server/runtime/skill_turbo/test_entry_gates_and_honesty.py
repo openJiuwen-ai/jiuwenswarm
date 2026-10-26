@@ -93,17 +93,53 @@ class TestWrapResultHonesty:
             skill_turbo_tools.clear_pending_ppt_delivery_summary()
 
     def test_success_with_confirmed_delivery_uses_confirmed_hint(self):
-        """通用交付确认（send_file_status=sent）→ 用"已确认"停止提示（case_3 docx D8 修复）。"""
+        """通用交付确认（send_file_status=sent）→ 用"已确认"停止提示（case_3 docx D8 修复）。
+
+        holder 形状必须对齐 executor 节点产物收集的真实产出
+        （{plan_name: {"info": {..., "send_file_status": "sent"}, ...}}）；
+        首版用 {"deliveries": [...]} 形状，_generic_delivery_confirmed 判定不过、
+        从未真正进入 CONFIRMED 分支（假绿），线上 TypeError 逃逸（B_03）。
+        """
         holder: dict[str, Any] = {
-            "deliveries": [
-                {"tool": "send_file", "file_name": "report.docx", "status": "sent"}
-            ]
+            "p8_delivery": {
+                "task_id": "task-1",
+                "status": "completed",
+                "info": {"delivery_status": "ok", "send_file_status": "sent"},
+                "files": [{"path": "D:/out/report.xlsx"}],
+                "finished_at": 1.0,
+            }
         }
         result = _wrap_skill_turbo_result({"success": True, "result": "文档已生成"}, artifact_holder=holder)
         assert result["success"] is True
         assert "文档已生成" in result["result"]
-        # 已确认收尾：不再出现"未确认"中立措辞
-        assert "未确认" not in result["result"]
+        # 已确认收尾：明确"已确认文件…发送"，且不出现中立分支的"未能确认/不要声称已发送"
+        assert "已确认文件" in result["result"]
+        assert "未能确认" not in result["result"]
+        assert "不要声称文件已发送" not in result["result"]
+
+    def test_confirmed_hint_follows_request_language(self):
+        """CONFIRMED 提示按 request metadata 切换语言（与 NEUTRAL 保持同语言，B_03）。"""
+        holder: dict[str, Any] = {
+            "p8_delivery": {
+                "task_id": "task-1",
+                "status": "completed",
+                "info": {"send_file_status": "sent"},
+                "files": [],
+                "finished_at": 1.0,
+            }
+        }
+        token = skill_turbo_tools.set_current_request_metadata(
+            {"preferred_language": "en"}
+        )
+        try:
+            result = _wrap_skill_turbo_result(
+                {"success": True, "result": "done"}, artifact_holder=holder
+            )
+            assert result["success"] is True
+            assert "delivery pipeline confirmed" in result["result"]
+            assert "已确认文件" not in result["result"]
+        finally:
+            skill_turbo_tools.reset_current_request_metadata(token)
 
     def test_success_without_delivery_signal_keeps_neutral(self):
         """无骨架且无确认信号 → 中立短句（不宣称文件已发送）。"""

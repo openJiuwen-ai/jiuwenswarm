@@ -219,13 +219,23 @@ async def test_flash_selection_survives_startup_cleanup_and_config_read(
     await harness.rail.after_model_call(ctx)
 
 
-def test_shipped_flash_selection_defaults_are_disabled_and_complete():
+def test_shipped_flash_selection_defaults_are_disabled_and_complete(monkeypatch, tmp_path):
     from dataclasses import asdict
     from jiuwenswarm.common.utils import load_yaml_dict, resolve_shipped_template_config_path
 
+    from jiuwenswarm.common import config as config_module
+
     template = load_yaml_dict(resolve_shipped_template_config_path())
-    assert template["flash"]["skill_selection"] == asdict(SelectionSettings())
-    assert not SelectionSettings.from_config(template).enabled
+    assert template["flash"]["skill_selection"]["enabled"] == "${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}"
+    monkeypatch.setattr(config_module, "get_config_file", lambda: tmp_path / "config.yaml")
+    monkeypatch.delenv("JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED", raising=False)
+    config_module.clear_config_cache()
+    try:
+        config = config_module.get_config()
+        assert config["flash"]["skill_selection"] == asdict(SelectionSettings())
+        assert not SelectionSettings.from_config(config).enabled
+    finally:
+        config_module.clear_config_cache()
 
 
 @pytest.mark.parametrize("settings", [{"enabled": "true"}, {"enabled": True, "candidate_k": 6},
@@ -561,6 +571,7 @@ async def test_model_request_excludes_full_catalog_before_and_after_search(harne
     records.append(SimpleNamespace(name="slides", description="presentation slides"))
     callbacks = AgentCallbackManager("flash-prompt-test-" + uuid4().hex)
     agent = object.__new__(ReActAgent)
+    agent._context_usage_sequences = {}
     agent._agent_callback_manager = callbacks
     agent._config = ReActAgentConfig(model_name="offline-capture")
     agent._ability_manager = AbilityManager()
@@ -1675,3 +1686,41 @@ def test_inverted_bm25_preserves_original_scores():
         expected.append(score)
     assert index.get_scores(terms) == pytest.approx(expected, rel=1e-14)
     assert BM25Okapi([]).get_scores(terms) == []
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("environment", [None, "true", "false"])
+async def test_yaml_environment_controls_real_retrieval_without_rewriting_config(
+    harness, monkeypatch, tmp_path, enabled, environment,
+):
+    from copy import deepcopy
+    from jiuwenswarm.common import config as config_module
+
+    path = tmp_path / "config.yaml"
+    raw = {"flash": {"skill_selection": {"enabled": enabled, "candidate_k": 3}}}
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    original = path.read_bytes()
+    monkeypatch.setattr(config_module, "get_config_file", lambda: path)
+    monkeypatch.delenv("JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED", raising=False)
+    if environment is not None:
+        monkeypatch.setenv("JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED", environment)
+    config_module.clear_config_cache()
+    try:
+        config = config_module.get_config()
+        harness.config.clear()
+        harness.config.update(deepcopy(config))
+        expected = enabled if environment is None else environment == "true"
+        ctx = context()
+        await harness.rail.before_model_call(ctx)
+        assert (SkillSearchTool.TOOL_NAME in harness.abilities.tools) is expected
+        if expected:
+            assert harness.rail.service.settings.candidate_k == 3
+            result = await harness.rail._search_from_model("制作演示文稿", ["slides"], ctx)
+            assert result["status"] == "candidates"
+        else:
+            assert harness.rail.service is None
+        await harness.rail.after_model_call(ctx)
+        assert path.read_bytes() == original
+        assert config_module.get_config_raw()["flash"]["skill_selection"]["enabled"] is enabled
+    finally:
+        config_module.clear_config_cache()

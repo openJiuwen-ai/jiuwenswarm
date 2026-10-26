@@ -67,8 +67,11 @@ def test_score_table_is_the_expected_15_entries():
         ("请逐步推导这个数学证明", (20, "reasoning", "easy")),
         ("1+1", (20, "reasoning", "easy")),
         ("把这段 JSON 转成 CSV", (5, "format", "easy")),
-        # 长输入触发长度信号 → 难度抬到 medium（无规则命中时按 chat 兜底）
-        ("x" * 400, (20, "chat", "medium")),
+        # 长输入触发长度信号 → 难度抬离 easy（无规则命中时按 chat 兜底）。
+        # golden 随估算器变过：原值录自 tiktoken，而 "x"*400 在 cl100k 里被 BPE 压到 50 token
+        # （medium）；换成本地估算后是 100（hard）。"x"*200 在三种算法下都落 medium，用作稳定锚点。
+        ("x" * 400, (40, "chat", "hard")),
+        ("x" * 200, (20, "chat", "medium")),
     ],
 )
 async def test_classify_known_prompts(prompt, expected):

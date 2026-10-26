@@ -42,6 +42,17 @@ _FILE_LOCK = threading.Lock()
 # 内存缓存: key = f"{sessions_root}\n{session_id}"，避免多租户同 session_id 串缓存
 _METADATA_CACHE: dict[str, dict[str, Any]] = {}
 _CACHE_LOCK = threading.Lock()
+# 缓存容量帽:键空间随累计会话数增长,无帽则每会话一条永驻(issue#5240 残余:
+# 受控 census 实测 ≈+2-3 obj/会话,adapter 逐出不删会话目录故无自然回收)。
+# FIFO 逐最旧;miss 只退化为一次 metadata.json 小文件读,无正确性影响。
+_METADATA_CACHE_MAX = 8192
+
+
+def _evict_metadata_cache_locked() -> None:
+    """容量帽驱逐;调用方必须已持有 ``_CACHE_LOCK``(threading.Lock 不可重入)。"""
+    if len(_METADATA_CACHE) < _METADATA_CACHE_MAX:
+        return
+    _METADATA_CACHE.pop(next(iter(_METADATA_CACHE)), None)
 
 # 会话标题自动生成的截取长度
 _TITLE_MAX_LEN = 50
@@ -85,6 +96,14 @@ _INJECTED_TAG_START_RE = re.compile(
 
 def _has_valid_work_mode(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in SUPPORTED_WORK_MODES
+
+
+def _normalize_adapter_mode(value: Any) -> str | None:
+    """Normalize the implementation selection persisted with a session."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized if normalized in {"agent", "code", "flash"} else None
 
 
 def _is_first_lock_available(metadata: dict[str, Any], key: str) -> bool:
@@ -886,6 +905,7 @@ def _ensure_worker_started() -> None:
                     if preserve_pin_fields:
                         cache_key = _metadata_cache_key(sid, sessions_root)
                         with _CACHE_LOCK:
+                            _evict_metadata_cache_locked()
                             _METADATA_CACHE[cache_key] = written.copy()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("metadata 异步写入失败: %s", exc)
@@ -922,6 +942,7 @@ def _enqueue_write(
             session_id, metadata, sessions_root=root_s
         )
     with _CACHE_LOCK:
+        _evict_metadata_cache_locked()
         _METADATA_CACHE[cache_key] = metadata.copy()
     if sync_write:
         written = _write_metadata_sync(
@@ -932,6 +953,7 @@ def _enqueue_write(
         )
         if preserve_pin_fields:
             with _CACHE_LOCK:
+                _evict_metadata_cache_locked()
                 _METADATA_CACHE[cache_key] = written.copy()
         return
     _ensure_worker_started()
@@ -945,6 +967,7 @@ def _enqueue_write(
                 session_id, metadata, sessions_root=root_s
             )
             with _CACHE_LOCK:
+                _evict_metadata_cache_locked()
                 _METADATA_CACHE[cache_key] = metadata.copy()
         written = _write_metadata_sync(
             session_id,
@@ -954,6 +977,7 @@ def _enqueue_write(
         )
         if preserve_pin_fields:
             with _CACHE_LOCK:
+                _evict_metadata_cache_locked()
                 _METADATA_CACHE[cache_key] = written.copy()
 
 
@@ -984,6 +1008,7 @@ def init_session_metadata(
     model: str = "",
     cron_id: str = "",
     work_mode: str = "",
+    adapter_mode: str = "agent",
     channel_metadata: dict[str, Any] | None = None,
     sessions_root: str | Path | None = None,
 ) -> None:
@@ -998,6 +1023,7 @@ def init_session_metadata(
         if not (isinstance(work_mode, str) and work_mode.strip())
         else normalize_work_mode(work_mode)
     )
+    resolved_adapter_mode = _normalize_adapter_mode(adapter_mode) or "agent"
     metadata = {
         "session_id": session_id,
         "channel_id": channel_id,
@@ -1020,6 +1046,7 @@ def init_session_metadata(
         "pin_order": 0,
         "status": "idle",
         "work_mode": resolved_work_mode,
+        "adapter_mode": resolved_adapter_mode,
     }
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
@@ -1247,6 +1274,7 @@ def sync_session_request_metadata(
     explicit_mode_provided: bool = False,
     explicit_model_provided: bool = False,
     work_mode: str | None = None,
+    adapter_mode: str | None = None,
     sessions_root: str | Path | None = None,
 ) -> str | None:
     """校验请求带来的参数与磁盘 metadata.json 是否需要更新，并按字段语义写入。
@@ -1300,6 +1328,8 @@ def sync_session_request_metadata(
         session_id, cache_bust=True, sessions_root=root_s
     )
     effective_project_dir: str | None = None
+    normalized_adapter_mode = _normalize_adapter_mode(adapter_mode)
+    adapter_mode_changed = False
 
     if not metadata:
         # 会话元数据不存在：兜底新建（外部渠道隐式创建 session 的场景）
@@ -1310,6 +1340,7 @@ def sync_session_request_metadata(
             if not (isinstance(work_mode, str) and work_mode.strip())
             else normalize_work_mode(work_mode)
         )
+        adapter_mode_changed = normalized_adapter_mode is not None
         metadata = {
             "session_id": session_id,
             "channel_id": channel_id or "",
@@ -1332,6 +1363,7 @@ def sync_session_request_metadata(
             "pin_order": 0,
             "status": "idle",
             "work_mode": resolved_work_mode,
+            "adapter_mode": normalized_adapter_mode or "agent",
         }
         effective_project_dir = project_dir or None
     else:
@@ -1369,6 +1401,16 @@ def sync_session_request_metadata(
             if not _has_valid_work_mode(existing_wm):
                 metadata["work_mode"] = normalized_wm
 
+        # ``adapter_mode`` is an implementation selection, not a business
+        # canonical mode.  Persist changes synchronously so an immediate next
+        # turn (or a process reload) cannot lose the session's implementation
+        # affinity and accidentally fall back to Deep.
+        if normalized_adapter_mode is not None:
+            adapter_mode_changed = (
+                metadata.get("adapter_mode") != normalized_adapter_mode
+            )
+            metadata["adapter_mode"] = normalized_adapter_mode
+
         # model：显式覆盖式——仅当请求方显式携带 model 才覆盖；
         # 未显式携带（如只读 RPC 回退到进程 MODEL_NAME）则保持磁盘原值，
         # 不覆盖用户在该会话用 /model 切换过的模型
@@ -1396,6 +1438,7 @@ def sync_session_request_metadata(
         session_id,
         metadata,
         preserve_pin_fields=True,
+        sync_write=adapter_mode_changed,
         sessions_root=root_s,
     )
     return effective_project_dir

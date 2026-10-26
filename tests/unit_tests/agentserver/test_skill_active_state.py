@@ -43,7 +43,14 @@ def session_files(tmp_path, monkeypatch):
     context_token = file_store._session_file_context.set(None)
     sessions = tmp_path / "sessions"
     # Existing lifecycle cases use these session identifiers as real sessions.
-    for sid in set(re.findall(r'officeclaw_[A-Za-z0-9_]+', Path(__file__).read_text())):
+    # The test module is UTF-8 (Chinese comments); read_text must pin the
+    # encoding or every test errors out on GBK-locale Windows hosts.
+    for sid in set(
+        re.findall(
+            r'officeclaw_[A-Za-z0-9_]+',
+            Path(__file__).read_text(encoding="utf-8"),
+        )
+    ):
         (sessions / sid).mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(file_store, "get_agent_sessions_dir", lambda: sessions)
     monkeypatch.setattr(file_store, "get_user_workspace_dir", lambda: tmp_path)
@@ -675,6 +682,164 @@ class TestAdoptDefaultActiveSkill(unittest.TestCase):
         bash_ctx.extra = {}
         asyncio.run(inject.before_tool_call(bash_ctx))
         assert "env" not in bash_ctx.inputs.tool_args
+
+
+class TestCancelledScopeRevival(unittest.TestCase):
+    """A fresh explicit skill_tool call reopens a task-cancelled window.
+
+    Regression (SKILL_GATE false blocking): interrupt(cancel) ->
+    revoke_grants(sid, "main") writes ``main`` into the session file's
+    invalidated list; FileSkillGrantStore.operate then silently dropped
+    every later update_active_skill_state activation in the SAME session
+    (the "activated" log still printed), so the bash gate kept reading
+    active=None forever - skill_tool then bash failed no matter the
+    ordering (same batch, serial, strict serial barrier). Fix: the
+    skill_tool before_tool_call drops the stale main breaker first
+    (aligned with activate_pending's discard when the feature is on);
+    the late-callback guard stays unchanged.
+    """
+
+    sid = "officeclaw_revive_sess"
+
+    def tearDown(self):
+        clear_session_skill_state(self.sid)
+
+    def _skill_tool_ctx(self, skill_name="hwocr", listing=False):
+        ctx = AgentCallbackContext(agent=MagicMock())
+        tool_call = MagicMock()
+        tool_call.arguments = {"skill_name": skill_name}
+        tool_msg = MagicMock()
+        if listing:
+            tool_msg.metadata = {"is_directory_listing": True}
+        else:
+            tool_msg.metadata = {"skill_name": skill_name}
+        ctx.inputs = ToolCallInputs(
+            tool_call=tool_call,
+            tool_name="skill_tool",
+            tool_args={"skill_name": skill_name},
+            tool_result=None,
+            tool_msg=tool_msg,
+        )
+        ctx.extra = {}
+        return ctx
+
+    def _bash_ctx(self):
+        ctx = AgentCallbackContext(agent=MagicMock())
+        ctx.inputs = ToolCallInputs(
+            tool_call=MagicMock(),
+            tool_name="bash",
+            tool_args={"command": "hwocr.exe general-text"},
+            tool_result=None,
+            tool_msg=None,
+        )
+        ctx.extra = {}
+        return ctx
+
+    def _store(self):
+        from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+        return skill_active_state._shared_store(self.sid)
+
+    def test_late_callback_after_cancel_stays_dropped(self):
+        # Control: no fresh skill_tool call after the cancel - a late
+        # callback stays dropped (existing safety semantics, see
+        # test_revocation_is_seen_by_original_process).
+        rail = SkillActiveStateRail(session_id=self.sid)
+        self._store().revoke_grants(self.sid, "main")
+        asyncio.run(rail.after_tool_call(self._skill_tool_ctx()))
+        assert get_session_active_skill(self.sid) is None
+
+    def test_fresh_skill_tool_after_cancel_activates_and_gates_pass(self):
+        # Fix target: a fresh explicit skill_tool call (before + after on
+        # the SAME ctx, as the framework dispatches it) persists the
+        # activation atomically with the breaker drop, and the bash gate
+        # can read it and inject credentials.
+        rail = SkillActiveStateRail(session_id=self.sid)
+        self._store().revoke_grants(self.sid, "main")
+        fresh_ctx = self._skill_tool_ctx()
+        asyncio.run(rail.before_tool_call(fresh_ctx))
+        asyncio.run(rail.after_tool_call(fresh_ctx))
+        assert get_session_active_skill(self.sid) == "hwocr"
+        inject = SkillCredentialInjectionRail(
+            skill_envs={"hwocr": {"HWOCR_AK": "ak", "HWOCR_SK": "sk"}},
+            preset_session_id=self.sid,
+        )
+        bash_ctx = self._bash_ctx()
+        asyncio.run(inject.before_tool_call(bash_ctx))
+        assert bash_ctx.inputs.tool_args["env"]["HWOCR_AK"] == "ak"
+
+    def test_late_callback_between_fresh_before_and_after_stays_dropped(self):
+        # SF-1 regression: a late after-callback from the cancelled round
+        # lands after the fresh call's before but before its after. The
+        # breaker drop is deferred into the fresh activation transaction,
+        # so the stale write must still be dropped; the fresh call then
+        # activates normally.
+        rail = SkillActiveStateRail(session_id=self.sid)
+        self._store().revoke_grants(self.sid, "main")
+        fresh_ctx = self._skill_tool_ctx(skill_name="hwocr")
+        asyncio.run(rail.before_tool_call(fresh_ctx))
+        # Late after-callback from the cancelled round (stale skill, no
+        # revive marker: its own before ran before the cancel).
+        asyncio.run(
+            rail.after_tool_call(self._skill_tool_ctx(skill_name="stale-skill"))
+        )
+        assert get_session_active_skill(self.sid) is None
+        # The fresh call's after now persists atomically.
+        asyncio.run(rail.after_tool_call(fresh_ctx))
+        assert get_session_active_skill(self.sid) == "hwocr"
+
+    def test_listing_only_call_does_not_revive(self):
+        # SF-2 regression: a directory-listing skill_tool call activates
+        # nothing, so it must not drop the breaker either (symmetry with
+        # after_tool_call's listing skip).
+        rail = SkillActiveStateRail(session_id=self.sid)
+        self._store().revoke_grants(self.sid, "main")
+        listing_ctx = self._skill_tool_ctx(listing=True)
+        asyncio.run(rail.before_tool_call(listing_ctx))
+        asyncio.run(rail.after_tool_call(listing_ctx))
+        assert get_session_active_skill(self.sid) is None
+        # Breaker still up: a late callback is still dropped...
+        asyncio.run(rail.after_tool_call(self._skill_tool_ctx()))
+        assert get_session_active_skill(self.sid) is None
+        # ...while a fresh explicit call still activates.
+        fresh_ctx = self._skill_tool_ctx()
+        asyncio.run(rail.before_tool_call(fresh_ctx))
+        asyncio.run(rail.after_tool_call(fresh_ctx))
+        assert get_session_active_skill(self.sid) == "hwocr"
+
+    def test_bash_or_other_tools_do_not_revive(self):
+        # Only an explicit skill_tool call drops the breaker; bash and
+        # other tools must not revive it.
+        rail = SkillActiveStateRail(session_id=self.sid)
+        self._store().revoke_grants(self.sid, "main")
+        asyncio.run(rail.before_tool_call(self._bash_ctx()))
+        asyncio.run(rail.after_tool_call(self._skill_tool_ctx()))
+        assert get_session_active_skill(self.sid) is None
+
+    def test_revive_marker_travels_the_real_callback_framework(self):
+        # NTH-R2-1: pin the framework contract the marker relies on.
+        # The revive marker is stamped in before_tool_call and consumed in
+        # after_tool_call; it only works because the callback framework
+        # dispatches both events on the SAME AgentCallbackContext
+        # (ctx.extra persists across events). Drive both hooks through the
+        # real AsyncCallbackFramework so a future per-event ctx copy fails
+        # LOUDLY here instead of silently re-introducing the SKILL_GATE
+        # false-blocking bug.
+        from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
+
+        rail = SkillActiveStateRail(session_id=self.sid)
+        self._store().revoke_grants(self.sid, "main")
+        ctx = self._skill_tool_ctx()
+
+        async def run_through_framework():
+            callbacks = AsyncCallbackFramework()
+            await callbacks.register("before_tool", rail.before_tool_call)
+            await callbacks.register("after_tool", rail.after_tool_call)
+            await callbacks.trigger("before_tool", ctx)
+            await callbacks.trigger("after_tool", ctx)
+
+        asyncio.run(run_through_framework())
+        assert get_session_active_skill(self.sid) == "hwocr"
 
 
 if __name__ == "__main__":

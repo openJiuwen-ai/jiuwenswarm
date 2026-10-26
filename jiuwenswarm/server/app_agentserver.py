@@ -145,10 +145,12 @@ install_shell_tool_safety_hooks()
 
 # LLM 客户端补丁分两类：
 #   1) 与渠道无关：GLM XML 标签清洗、tip Authorization 保留（Huawei MaaS Basic）、
-#      华为 MaaS x-span-id 注入——OfficeClaw + Huawei MaaS 生产链路硬依赖，无条件应用；
+#      华为 MaaS x-span-id 注入、before_model_http 扩展埋点（模型 HTTP 出口的
+#      公共事件点，积分对账头等扩展字段经此注入）生产链路硬依赖，无条件应用；
 #   2) 仅对 SSE-only 网关有意义：非流式 invoke()（subagent / 心跳等）把
 #      text/event-stream 文本组装成 ChatCompletion——按渠道门控，见下方函数。
 from jiuwenswarm.llm_sse_patch import (
+    apply_before_model_http_hook_patch,
     apply_glm_tool_xml_sanitize_patch,
     apply_huawei_maas_span_id_patch,
     apply_openai_auth_header_patch,
@@ -159,6 +161,7 @@ from jiuwenswarm.llm_sse_patch import (
 apply_openai_auth_header_patch()
 apply_glm_tool_xml_sanitize_patch()
 apply_huawei_maas_span_id_patch()
+apply_before_model_http_hook_patch()
 
 
 def _should_apply_sse_invoke_patch() -> bool:
@@ -255,6 +258,15 @@ register_thinking_hook()
 from jiuwenswarm.perf.install_hooks import install_perf_hooks
 
 install_perf_hooks()
+
+# Strip leader-exclusive tools when factory injects general-purpose (Deep / Flash /
+# Team all go through _inject_general_purpose_subagent; Team does not use
+# interface_deep._make_deep_agent_config).
+from jiuwenswarm.agents.harness.common.tools.subagent_executor.excluded_spawn_tools import (
+    apply_inject_general_purpose_excluded_tools_patch,
+)
+
+apply_inject_general_purpose_excluded_tools_patch()
 
 # Process exit diagnostics: log reason only; do not change exit code or cleanup order.
 _EXIT_REASON = "unknown"

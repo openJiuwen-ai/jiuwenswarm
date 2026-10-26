@@ -11,7 +11,7 @@ description: SkillTurbo 技能加速引擎模块说明书——给修改/检视�
 - `docs/specs/S_01_execution-pipeline.md` — 主链路与执行管线（执行循环 / task_states / 产物 / 退出路径 E1-E13 全景）
 - `docs/specs/S_02_skill-routing-and-registration.md` — 技能路由与注册（发现 / 扫描 / meta.json / 入口链 / planner 路由 / 入口工具 / 工具装载）
 - `docs/specs/S_03_security-model.md` — 安全模型（validator 三 profile / 运行期沙箱 / 审批收口）
-- `docs/specs/S_04_node-contract.md` — PlanNode 节点契约（11 条契约 / 12 回调 / IO 约定 / 异常分流 / LLM 调用）
+- `docs/specs/S_04_node-contract.md` — PlanNode 节点契约（11 条契约 / 11 回调 / IO 约定 / 异常分流 / LLM 调用）
 - `docs/specs/S_05_dynamic-package-and-facade.md` — 动态包与门面（包注册 / skill_turbo_runtime / tool_utils 工具契约）
 - `docs/specs/S_06_hitl-interrupt-resume.md` — HITL 中断-恢复状态机（tcid / 发卡 / 恢复 / 取消 / 持久化——**缺陷密度最高领域**）
 - `docs/specs/S_07_fallback-and-degradation.md` — 降级体系（4 层决策 / fallback 子代理 / 契约判定 / 回写）
@@ -38,7 +38,7 @@ description: SkillTurbo 技能加速引擎模块说明书——给修改/检视�
 | **tcid（tool_call_id）** | `skill_turbo-tc-{tool_name}-{args_hash}-{idx}`；args_hash = `sha1` 对 `request_id` 与 canonical_args 以竖线拼接后取前 8 位 hex；HITL 重放的对齐锚（全公式见 [[S_06]]） |
 | **断点 / resume_ctx** | `__skill_turbo_resume_ctx__`（checkpointer 隔离键 `{card.id}__skill_turbo` 下）：plan_code + inputs + pending_tool_call_id + task_states 快照 |
 | **HITL / TIE / AbortError** | HITL = ask_user/权限类人机中断；TIE = ToolInterruptException；AbortError = 中断信号异常（**全链不吞**，承载 TIE 时触发暂停） |
-| **发卡** | 向前端发 `chat.ask_user_question` 卡片；单路 owner（harness `__interaction__` 转换 / resume 内 `_emit_skill_turbo_hitl_chunks`），request_id 恒为外层 call id 域 |
+| **发卡** | 向前端发 `chat.ask_user_question` 卡片；单路 owner（harness `__interaction__` 转换，fresh 首卡与 resume 内二次中断卡同源），request_id 恒为外层 call id 域 |
 | **门面（skill_turbo_runtime）** | 外部 turbo code 与引擎之间的唯一接口边界（sys.modules 内存注册，磁盘不存在）；契约符号纯 re-export |
 | **动态包（skill_turbo_codes_{skill}）** | turbo_codes 目录的 sys.modules 注册形态（`__path__` 锚点，不进 sys.path） |
 | **fallback / 降级** | 三级概念勿混：**fallback** = 节点级子代理兜底（可恢复）；**FallbackContractError** = 终止性降级信号（不进节点 fallback，直达降级出口）；**SkillTurboNotHandled** = 对外层 LLM 的降级信号（tool 返回 success=false，由 LLM 转 skill_tool 标准流程） |
@@ -47,7 +47,7 @@ description: SkillTurbo 技能加速引擎模块说明书——给修改/检视�
 
 ## 公开入口（public API）
 
-公开符号仅限 `__init__.py` 的 lazy export（13 个）：
+公开符号仅限 `__init__.py` 的 lazy export：
 
 | 入口 | 用途 |
 |---|---|
@@ -69,10 +69,10 @@ interface_deep 在 `config.react.skill_turbo.enabled=true` 时注册进外层 ab
 
 ```
 skill_turbo/
-├── __init__.py             # 公开 API lazy export（13 符号）
+├── __init__.py             # 公开 API lazy export（名单以 `__all__` 为准）
 ├── agent.py                # SkillTurbo 门面：planner→executor 组装、run/run_stream/resume_stream、异常→NotHandled 分流
 ├── planner.py              # LLM 流式路由（置信度 0.6、解析失败重试 1 次）→ plan_code 组装（入口 5 级链）
-├── executor.py             # 执行引擎核心（~3800 行）：执行循环 / 事件发射 / task_states / HITL 断点 / use_tool / LLM 调用 / 降级入口
+├── executor.py             # 执行引擎核心：执行循环 / 事件发射 / task_states / HITL 断点 / use_tool / LLM 调用 / 降级入口
 ├── plan_node.py            # PlanNode 基类（11 条契约）+ AbortError/FallbackContractError re-export（全链唯一符号源）
 ├── environment.py          # 技能发现/注册（三路径，外部覆盖内置）/ 工具装载 / Skill 模型 / skill_root·路径解析
 ├── skill_turbo_tools.py    # skill_acceleration_exec 封装：入口拦截 / resume / 事件转发映射 / 收尾诚实性 / 模块级 ContextVar 协议
@@ -81,7 +81,9 @@ skill_turbo/
 ├── resume_context.py       # ResumeContextManager：断点 save/load/clear/mark（隔离键、merge 语义、isolated 通道）
 ├── interactive_ask.py      # 引导模式（interactive_ask）判定与 resume 恢复
 ├── node_artifact_store.py  # 节点产物 session 持久化（只存摘要/路径；plan_code_hash 门禁继承）
-├── context_binding.py      # 7 通道 ContextVar 统一 bind/reset（新增通道=bind 一段+RESETTERS 一行）
+├── hitl_dedup.py          # OuterCallIDDeduplicator：HITL 卡片 request_id derive+seq 计数收口（挂 adapter 实例跨请求存续）
+├── task_slot_guard.py     # taskProgress 槽位泄漏登记簿（模块级跨请求单例；claim/release/peek + 上限淘汰，[[B_03]]）
+├── context_binding.py      # 9 通道 ContextVar 统一 bind/reset（新增通道=bind 一段+RESETTERS 一行）
 ├── evolver.py              # 执行轨迹（预留未接线）
 ├── json_utils.py           # extract_llm_json 四级提取（无 LLM 级重试，重试归调用方/rail）
 ├── markdown_stream.py      # 流式 markdown 围栏粘连/未闭合保护
@@ -89,11 +91,11 @@ skill_turbo/
 ├── skill_meta.py           # meta.json 解析 + find_skill_root_file（入口发现唯一实现，三消费方共用）
 ├── thinking_seam.py        # thinking 参数 fail-open 注入 + 参数被拒启发式判定（裸参重试一次）
 ├── tools_loader.py         # 10 分组工具装载（异常隔离）+ send_file 每请求刷新
-├── turbo_package_loader.py # 外部 turbo 发现 + 动态包注册/清洗碰撞/rebind + resume 自愈重注册
+├── turbo_package_loader.py # 外部 turbo 发现（enable_turbo 开关）+ 动态包注册/清洗碰撞/rebind + resume 自愈重注册
 ├── validator.py            # PlanCodeValidator 三 profile（import 白黑名单/危险函数/require_abort_reraise 静态强制）
 ├── rails/                  # ask_user_rail（HITL）/ artifact_rail（产物检测+事件）/ delivery_summary_rail（交付骨架时序）/ permission_rail（审批卡）/ skill_prompt_rail（指南注入）
 ├── runtime/                # skill_turbo_runtime 门面（契约符号 re-export + CONTRACT_VERSION）+ tool_utils（通用工具单副本）
-└── docs/                   # 设计文档归档（specs/ 9 份 + 归档规约 AGENTS.md）
+└── docs/                   # 设计文档归档（specs/ 9 份 + features/ 变更归档 + 归档规约 AGENTS.md）
 ```
 
 ## 架构铁律
@@ -113,9 +115,10 @@ skill_turbo/
 3. **HITL 断点清理完备性**（[[S_06]] N1）。任何退出路径（approve / resume 成功 / 断点不可复用 /
    cancel / supplement）必须清理持久化断点；**瞬时失败是唯一合法保留场景**（且不 post_run）；
    cancel 必须**先终止执行、后清状态**（反序会被 executor 退出路径的落盘覆盖）。
-4. **发卡单路 owner + 外层 call id 口径**（[[S_06]] N8）。ask_user 卡片只有两个合法产出源
-   （harness `__interaction__` 转换 / resume 内 `_emit_skill_turbo_hitl_chunks`），request_id 恒为
-   外层 skill_acceleration_exec call id（或其 `#n` 变体），必经 `_dedupe_ask_user_card`。
+4. **发卡单路 owner + 外层 call id 口径**（[[S_06]] N8）。ask_user 卡片唯一产出源是
+   harness `__interaction__` 转换（fresh 首卡与 resume 内二次中断卡同源），request_id 恒为
+   外层 skill_acceleration_exec call id（或其 `#n` 变体），必经 `_dedupe_ask_user_card`
+   （序号计数收口 hitl_dedup.OuterCallIDDeduplicator，挂 adapter 实例跨请求存续）。
 5. **tcid 确定性**（[[S_06]] N4）。`skill_turbo-tc-{name}-{args_hash}-{idx}`（args_hash =
    `sha1` 对 `request_id` 与 canonical_args 以竖线拼接后取前 8 位 hex）；
    request_id 混入使 **resume 精确匹配必然失效，name+idx 回退命中是预期路径**。改 tcid 格式必须
@@ -148,21 +151,23 @@ skill_turbo/
 - **启用**：`config.yaml react.skill_turbo.enabled`（false 时工具不注册、rail 不挂载）；
   `react.disabled_tools` 含 `skill_acceleration_exec` 时 rail 仍建但不注入指南。
 - **请求级**：每次 `skill_acceleration_exec` 调用新建实例；请求上下文经模块级 ContextVar 传递
-  （`_current_request_metadata` / `_skill_turbo_resume_answers` 等，见 [[S_09]] 7 通道表）。
+  （`_current_request_metadata` / `_skill_turbo_resume_answers` 等，见 [[S_09]] 9 通道表）。
 - **跨请求**：HITL 断点 / 节点产物经 checkpointer 持久化（隔离键）；类级扫描缓存
   （`_scan_cache` / `_external_scan_cache`）跨实例共享、按 mtime 失效。
 - **部署顺序**：① agent-core → ② 技能源（技能侧仓）→ ③ jiuwenswarm（回滚逆序；错序后果见 [[S_09]]）。
 
 ## 测试
 
-pytest.ini 的 addopts 含全仓 coverage，日常跑请清掉（`-o addopts=""`）：
+pytest.ini 的 addopts 含全仓 coverage 与 `-v`，日常跑请覆盖为仅保留 asyncio 模式
+（**不能整个清空**——`--asyncio-mode=auto` 也在 addopts 里，清空会让 async 用例全部报
+"not natively supported"）：
 
 ```powershell
-# 模块单测（322 个：validator/包加载/tool_utils/planner/fallback/HITL 对齐/交付门禁/退出路径帧级/AbortError 守卫/契约解析/ask_user 门控/ContextVar 通道/入口拦截/task_states 快照…）
-.venv\Scripts\python.exe -m pytest tests/unit_tests/server/runtime/skill_turbo/ -o addopts=""
+# 模块单测（412 个：validator/包加载/tool_utils/planner/fallback/HITL 对齐/交付门禁/退出路径帧级/AbortError 守卫/契约解析/ask_user 门控/ContextVar 通道（9 通道 bind/reset）/入口拦截/task_states 快照/fallback 标志检测/flash 交付收尾/槽位登记簿 B_03/fresh 守卫后续交付物放行 B_04/python_cmd 注入 F_04/enable_turbo 开关 F_05…）
+.venv\Scripts\python.exe -m pytest tests/unit_tests/server/runtime/skill_turbo/ -o addopts="--asyncio-mode=auto"
 
 # HITL / 工具面 / 中断恢复（历史路径在 agentserver/ 下——skill_turbo 曾位于该处，迁移遗留，勿再新增）
-.venv\Scripts\python.exe -m pytest tests/unit_tests/agentserver/test_skill_turbo_hitl_resume_react.py tests/unit_tests/agentserver/test_skill_turbo_hitl_tie_rewrite_repro.py tests/unit_tests/agentserver/test_skill_turbo_interrupt_recovery.py tests/unit_tests/agentserver/test_skill_turbo_resume_usage.py tests/unit_tests/agentserver/test_skill_turbo_tools.py tests/unit_tests/agentserver/test_skill_turbo_prompt_disabled.py -o addopts=""
+.venv\Scripts\python.exe -m pytest tests/unit_tests/agentserver/test_skill_turbo_hitl_resume_react.py tests/unit_tests/agentserver/test_skill_turbo_hitl_tie_rewrite_repro.py tests/unit_tests/agentserver/test_skill_turbo_interrupt_recovery.py tests/unit_tests/agentserver/test_skill_turbo_resume_usage.py tests/unit_tests/agentserver/test_skill_turbo_tools.py tests/unit_tests/agentserver/test_skill_turbo_prompt_disabled.py -o addopts="--asyncio-mode=auto"
 
 # 技能侧仓（改 turbo code 后必跑的注册门禁；在技能侧仓执行，路径为共享技能根目录下的技能目录）
 python -m unittest discover -s <shared_skills_root>/pptx-craft/turbo/tests -p "test_turbo_registration_gate.py"
@@ -196,7 +201,9 @@ specs 的执行路径全景与修改检查单就是为根治此问题而设。
 
 1. **特性更新归档 feature 且三连续提交**：`docs/features/` 新增 `F_NN_<slug>.md`；特性代码
    （`feat(skill_turbo)`）、测试（`test(skill_turbo)`）、文档（`docs(skill_turbo)`）拆成三个
-   紧邻提交、同一 PR 落地。bugfix 触及 spec 描述的路径/不变量时同样三连（`fix`/`test`/`docs`）。
+   紧邻提交、同一 PR 落地。bugfix 触及 spec 描述的路径/不变量时归档
+   `docs/bugfix/B_NN_<slug>.md`（复现场景 + 根因 + 修复口径），代码、测试、文档合并为**一个**
+   `fix(skill_turbo)` 提交——三连续提交的唯一例外（与 skill 模块约定一致）。
 2. **规约变动必更新 specs**：契约 / 执行路径 / 不变量 / 事件协议 / 持久化结构变化时，同步修订
    对应 `S_NN`（元信息"最近一次修订日期"填当天）；新规约主题 = 新 spec 文件。
 3. **读到不一致当场修文档**：本文件 / specs 里与代码不符的接口名、枚举值、路数、路径，先 grep

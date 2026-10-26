@@ -14,6 +14,7 @@ from typing import Any, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
+
 from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.edition import is_enterprise
@@ -43,6 +44,8 @@ from jiuwenswarm.server.runtime.reload_result import (
 from jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail import (
     coalesce_config_skill_envs,
 )
+
+from jiuwenswarm.server.runtime.session_owner_routing import bind_request_to_session_owner
 
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
@@ -290,6 +293,9 @@ class AgentManager:
         # 上一次默认模型的连接身份快照 (diff_key -> ModelClientConfig), 用于
         # 模型热更新后关闭"已被删除/改掉凭证"的 LLM 连接 (增量关闭)。
         self._last_model_conn_configs: dict[tuple, Any] = {}
+        # create_token 幂等表容量帽(FIFO):保证 ack 丢失后同 token 重投仍命中
+        # 原 claim,同时内存上界 8192 条 ≈ 12MB(issue#5240 残余 + MR#8528 检视)。
+        self._session_create_tokens_max = 8192
         self._session_create_tokens: dict[tuple[str, str], tuple[Any, Any]] = {}
         self._session_create_token_lock = asyncio.Lock()
         from jiuwenswarm.server.runtime.agent_warm_pool import AgentWarmPool
@@ -677,6 +683,10 @@ class AgentManager:
                 setter(self._personal_context_runtime_enabled)
             await agent.create_instance(
                 config,
+                # 传原始 manager 模式（含 'team'）：_ensure_adapter 的严格校验按
+                # resolve_adapter_mode 映射后的**实现**比较（team 与 agent 同为
+                # DeepAdapter → 放行），且 adapter 保留业务模式标签供无参重建复用
+                # （上游 !8472 preserve adapter identity 的设计）。
                 mode=mode_key,
                 sub_mode=sub_mode_key or None,
                 config_base=self._latest_config_base,
@@ -948,6 +958,7 @@ class AgentManager:
         project_dir: str | None,
         work_mode: str,
         is_swarm: bool,
+        adapter_mode: str = "agent",
         prewarm_eligible: bool = True,
         create_token: str | None = None,
     ):
@@ -958,6 +969,7 @@ class AgentManager:
             project_dir=project_dir,
             work_mode=work_mode,
             is_swarm=is_swarm,
+            adapter_mode=adapter_mode,
         )
         create_signature = (key, bool(prewarm_eligible))
         token_key = (key.channel_id, token)
@@ -982,6 +994,14 @@ class AgentManager:
                     "bypassed",
                 )
             if token:
+                # 容量帽而非消费式弹出:幂等窗口必须覆盖「ack 丢失/超时后的
+                # 同 token 重投」(网关接口契约),而会话激活发生在回 ack 之前,
+                # 激活即弹会令重投生成重复会话。FIFO 逐最旧保证内存有界
+                # (issue#5240 残余 + MR#8528 检视)。
+                if len(self._session_create_tokens) >= self._session_create_tokens_max:
+                    self._session_create_tokens.pop(
+                        next(iter(self._session_create_tokens)), None
+                    )
                 self._session_create_tokens[token_key] = (create_signature, claim)
             return claim
 
@@ -1283,6 +1303,7 @@ class AgentManager:
             # session runtime、但没有这条暂停命令，不能拿来续跑。
             owned = self.find_agent_for_interrupt_resume_nowait(session_id)
             if owned is not None:
+                bind_request_to_session_owner(request, owned)
                 logger.info(
                     "[AgentManager] interrupt resume reuse session owner: "
                     "session_id=%s channel_id=%s source=%s",
@@ -1921,7 +1942,7 @@ class AgentManager:
         """解析请求的 agent 模式.
 
         优先取 params["mode"]；interrupt resume 请求（权限审批/确认/ask_user）
-        未携带 mode 时，从 session metadata 读取原始请求的 mode，避免从
+        以及 OfficeClaw 续聊未携带 mode 时，从 session metadata 读取原始请求的 mode，避免从
         code.normal 降级为 agent，导致 adapter 实例不匹配、无法恢复原
         interaction；其余情况默认 "agent"。
 
@@ -1932,18 +1953,17 @@ class AgentManager:
         Returns:
             完整 mode 字符串（如 "code.normal"、"agent.plan"）
         """
+        from jiuwenswarm.server.handlers._shared import _uses_explicit_officeclaw_mode
+
         mode_full = params.get("mode")
-        if mode_full:
+        explicit_officeclaw = _uses_explicit_officeclaw_mode(request)
+        is_interrupt_continuation = _is_interrupt_resume_request(request)
+        keep_interrupted_mode = explicit_officeclaw and is_interrupt_continuation
+        if mode_full and not keep_interrupted_mode:
             return str(mode_full)
 
         source = str(params.get("source") or "").strip()
-        answers = params.get("answers")
-        req_id = str(params.get("request_id") or "").strip()
-        if (
-            source in {"permission_interrupt", "confirm_interrupt", "ask_user_interrupt"}
-            and isinstance(answers, list)
-            and bool(req_id)
-        ):
+        if is_interrupt_continuation or explicit_officeclaw:
             sid = getattr(request, "session_id", "") or ""
             if sid:
                 try:
@@ -1961,11 +1981,21 @@ class AgentManager:
                         sessions_root=sessions_root,
                     )
                     stored_mode = str(meta.get("mode") or "").strip()
+                    stored_adapter = str(meta.get("adapter_mode") or "").strip().lower()
+                    stored_work_mode = str(meta.get("work_mode") or "work").strip().lower()
+                    normal_flash_session = (
+                        stored_mode in {"agent", "agent.work.normal"}
+                        and stored_adapter == "flash"
+                    )
+                    if explicit_officeclaw and normal_flash_session:
+                        # 旧会话业务 mode 仍为 agent；审批恢复须保留已经选定的 Flash。
+                        if stored_work_mode == "work":
+                            stored_mode = "flash"
                     if stored_mode and stored_mode != "unknown":
                         # 回写 params，让下游 run_stream 等也能拿到正确 mode
                         params["mode"] = stored_mode
                         logger.info(
-                            "[AgentManager] interrupt resume mode resolved"
+                            "[AgentManager] session continuation mode resolved"
                             " from session metadata: session_id=%s"
                             " mode=%s source=%s",
                             sid, stored_mode, source,
@@ -1976,7 +2006,7 @@ class AgentManager:
                         "[AgentManager] resolve mode from session metadata failed",
                         exc_info=True,
                     )
-        return "agent"
+        return str(mode_full) if mode_full else "agent"
 
     def _agent_lookup_from_request(self, request: Any) -> tuple[str, str | None, str | None]:
         """Resolve get_agent keys from a chat request.
@@ -1984,12 +2014,30 @@ class AgentManager:
         Must match ``AgentWebSocketServer._prepare_code_mode_chat_turn`` so the
         tenant-pool path reuses the same cached instance after plan-mode sync.
         """
-        from jiuwenswarm.server.handlers._shared import resolve_agent_request_mode
+        from jiuwenswarm.server.handlers._shared import resolve_request_runtime_mode
 
         params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
-        mode_full = self._resolve_request_mode(request, params)
-        mode, sub_mode, _canonical = resolve_agent_request_mode(mode_full)
+        # This helper restores the durable mode for interrupt continuations.
+        # It may write ``params["mode"]`` from session metadata before the
+        # runtime resolver below picks the matching manager/facade.
+        self._resolve_request_mode(request, params)
+        resolved = resolve_request_runtime_mode(request)
+        mode, sub_mode = resolved.manager_mode, resolved.sub_mode
         agent_mode = "agent" if mode == "auto_harness" else mode
+        adapter_mode = resolved.adapter_mode
+        adapter_source = resolved.adapter_source
+        # Handler preparation may have restored a durable Flash binding, or
+        # selected the implementation before a config reload. Reuse that
+        # decision for normal single-agent work, including its cache key.
+        # Code, Team and Plan continue to use their own routing rules.
+        if mode in {"agent", "flash"} and sub_mode is None:
+            prepared_mode = getattr(request, "resolved_adapter_mode", None)
+            if prepared_mode in {"agent", "flash"}:
+                agent_mode = prepared_mode
+                adapter_mode = prepared_mode
+                adapter_source = getattr(request, "resolved_adapter_source", None)
+        request.resolved_adapter_mode = adapter_mode
+        request.resolved_adapter_source = adapter_source
         project_dir = (
             params.get("project_dir")
             or params.get("workspace_dir")

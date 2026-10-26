@@ -49,12 +49,21 @@ from jiuwenswarm.server.runtime.agent_adapter.todo_close_text_hold import (
     TODO_CLOSE_HOLD_STREAM_TYPE,
     TODO_CLOSE_RELEASE_STREAM_TYPE,
 )
+from jiuwenswarm.server.runtime.skill_turbo.task_slot_guard import (
+    release_task_slot,
+)
 
 _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
     "active_task_id", default=None
 )
 SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY = (
     "_jiuwenswarm_skill_turbo_outer_todo_active"
+)
+SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY = (
+    "_jiuwenswarm_skill_turbo_outer_todo_pending"
+)
+SKILL_TURBO_OUTER_TODO_COMPLETED_BEFORE_EXTRA_KEY = (
+    "_jiuwenswarm_skill_turbo_outer_todo_completed_before"
 )
 # 纯文本收尾前插入的一次调用。名字用已注册的 todo_modify，避免下一轮
 # 请求里出现未注册工具名被模型接口拒绝。id 前缀把它和真改状态分开：
@@ -1784,6 +1793,13 @@ class TaskExecutionRail(DeepAgentRail):
             ctx.extra[SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY] = (
                 _ACTIVE_TASK_ID.get() is not None
             )
+            ctx.extra[SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY] = (
+                self._pending_items_after(_ACTIVE_TASK_ID.get())
+            )
+            # B_04：fresh 守卫的后续交付物放行信号——早于绑定项的已完成项数。
+            ctx.extra[SKILL_TURBO_OUTER_TODO_COMPLETED_BEFORE_EXTRA_KEY] = (
+                self._completed_items_before(_ACTIVE_TASK_ID.get())
+            )
 
     def _reject_todo_close_nudge(self, ctx: AgentCallbackContext) -> None:
         """Skip the internal nudge tool and return the todo_modify instruction."""
@@ -2193,6 +2209,77 @@ class TaskExecutionRail(DeepAgentRail):
             if str(task.get("status", "")).lower() not in self._TODO_DONE_STATUSES:
                 return True
         return False
+
+    def _pending_items_after(self, task_id: str | None) -> dict[str, Any] | None:
+        """当前绑定项之后的未完成项快照；无外层 todo 或无后续项返回 None。
+
+        供停止提示条件化（_wrap_skill_turbo_result）：有后续未完成项时
+        引导模型先标记当前项完成再继续，而非一刀切终止本轮。
+        """
+        if not task_id:
+            return None
+        raw_id = task_id[5:] if task_id.startswith("todo:") else task_id
+        todo_map = self._todo_map
+        if not todo_map:
+            return None
+        current = todo_map.get(raw_id)
+        if not current:
+            return None
+        try:
+            current_index = int(current.get("index", 0))
+        except (TypeError, ValueError):
+            return None
+        pending: list[dict[str, Any]] = []
+        for other_id, task in self._iter_todos_by_index(todo_map):
+            try:
+                other_index = int(task.get("index", 0))
+            except (TypeError, ValueError):
+                continue
+            if (other_index, other_id) <= (current_index, raw_id):
+                continue
+            if str(task.get("status", "")).lower() in self._TODO_DONE_STATUSES:
+                continue
+            pending.append({"id": other_id, "content": task.get("content", ""), "index": other_index})
+        if not pending:
+            return None
+        return {
+            "count": len(pending),
+            "next_summary": pending[0].get("content", "") if pending else "",
+        }
+
+    def _completed_items_before(self, task_id: str | None) -> int | None:
+        """早于当前绑定项的已完成项数；无外层 todo 绑定返回 None。
+
+        B_04 fresh 守卫的后续交付物放行信号：清单推进到第二项及以后（早前
+        项已 completed/cancelled）时，本次 skill_acceleration_exec 是清单
+        推进的新交付物而非同任务重跑，残留产物属于已收尾的上一交付物。
+        迭代纪律与 _pending_items_after 一致（剥 "todo:" 前缀 + index 元组
+        排序 + _TODO_DONE_STATUSES 终态判定），保证两信号同一口径。
+        """
+        if not task_id:
+            return None
+        raw_id = task_id[5:] if task_id.startswith("todo:") else task_id
+        todo_map = self._todo_map
+        if not todo_map:
+            return None
+        current = todo_map.get(raw_id)
+        if not current:
+            return None
+        try:
+            current_index = int(current.get("index", 0))
+        except (TypeError, ValueError):
+            return None
+        completed = 0
+        for other_id, task in self._iter_todos_by_index(todo_map):
+            try:
+                other_index = int(task.get("index", 0))
+            except (TypeError, ValueError):
+                continue
+            if (other_index, other_id) >= (current_index, raw_id):
+                continue
+            if str(task.get("status", "")).lower() in self._TODO_DONE_STATUSES:
+                completed += 1
+        return completed
 
     def _overlay_serial_todo_statuses(
         self,
@@ -2681,6 +2768,11 @@ class TaskExecutionRail(DeepAgentRail):
                     payload=payload,
                 )
             )
+            # B_03：外层 todo 快照进流 = taskProgress 槽位被外层夺回，注销
+            # skill_turbo 的槽位泄漏登记（若入口 gate 误判 forwarded 曾遗留）。
+            # 必须在 write_stream 成功后注销——写失败时槽位未被夺回，保留
+            # 登记让 turbo 侧终止性出口仍可关账。
+            release_task_slot(session_id)
         except Exception:
             logger.debug(
                 "[TaskExecutionRail] task.update emit failed",

@@ -473,7 +473,8 @@
     "stop": "停止",
     "modelSelector": {
       "tooltip": "切换对话使用的模型",
-      "clusterLockedTooltip": "集群模式使用配置的默认模型，不支持修改",
+      "tooltipSessionLocked": "当前会话不支持切换模型，新建会话可选择",
+      "tooltipLockedEnterprise": "企业版模型统一配置，不支持修改",
       "configured": "已配置模型",
       "addModel": "添加自定义模型",
       "placeholder": "选择模型",
@@ -623,6 +624,9 @@
   "plan": {
     "toolbarTag": "计划",
     "closeTag": "退出计划模式",
+    "closeTagDisabled": "回答完成或取消后才能退出计划模式",
+    "toolbarUnavailableGoal": "当前已有进行中的目标，暂不可选择计划",
+    "toolbarUnavailableProcessing": "对话进行中，暂不可选择计划",
     "approvalPrompt": "计划已生成，请选择下一步。",
     "executePrompt": "计划已批准，请按计划开始执行。",
     "approvalExecute": "执行",
@@ -636,6 +640,7 @@
     "editTitle": "编辑目标",
     "toolbarTag": "目标",
     "toolbarUnavailable": "当前已有进行中的目标，请先完成或清除",
+    "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
     "closeTag": "取消目标",
     "badge": "目标",
     "status": {
@@ -2111,13 +2116,13 @@
       "actions": {
         "read": "读谱",
         "incrementalBuild": "增量构建",
-        "pauseBuild": "暂停构建",
+        "cancelBuild": "取消构建",
         "fullRebuild": "全量重新构建",
         "fitView": "适配视图"
       },
       "status": {
         "refreshing": "正在刷新技能总谱",
-        "paused": "技能总谱构建已暂停",
+        "cancelled": "技能总谱构建已取消",
         "reading": "正在读取技能总谱",
         "noBuildLogs": "暂无构建日志",
         "waitingBuildLogs": "等待构建日志...",
@@ -2127,21 +2132,22 @@
       "errors": {
         "readFailed": "无法读取技能总谱，请先刷新总谱。",
         "refreshFailed": "技能总谱刷新失败",
-        "pauseFailed": "技能总谱暂停失败",
+        "cancelFailed": "技能总谱取消失败",
         "buildFailedWithDetail": "Symphony 总谱构建失败: {{detail}}"
       },
       "serverDetails": {
         "noRunningBuild": "当前没有正在运行的技能总谱构建。",
-        "pauseRequested": "已请求暂停技能总谱构建，已完成的缓存和 checkpoint 会保留。",
-        "buildRunning": "已有技能总谱构建正在运行，请等待完成或先暂停当前构建。",
-        "buildPaused": "技能总谱构建已暂停，可再次执行增量构建继续。",
-        "scoreMissing": "技能总谱不存在或不完整，请先构建总谱。"
+        "buildStarted": "技能总谱后台构建已启动。",
+        "cancelRequested": "技能总谱构建已取消，已完成的缓存和 checkpoint 会保留。",
+        "buildRunning": "技能总谱已在后台构建中。",
+        "buildCancelled": "技能总谱构建已取消，可再次执行增量构建继续。",
+        "graphMissing": "技能总谱不存在或不完整，请先构建总谱。"
       },
       "buildStages": {
         "idle": "暂无构建日志",
         "updateStart": "开始构建技能总谱",
-        "updatePauseRequested": "正在暂停技能总谱构建",
-        "updatePaused": "技能总谱构建已暂停",
+        "updateCancelRequested": "正在取消技能总谱构建",
+        "updateCancelled": "技能总谱构建已取消",
         "scanStart": "扫描技能目录",
         "scanDone": "技能目录扫描完成",
         "diffDone": "计算技能变更",
@@ -2162,8 +2168,8 @@
         "graphResolveDone": "候选关系解析完成",
         "graphMaterializeStart": "生成总谱结构",
         "graphMaterializeDone": "总谱结构生成完成",
-        "graphScoreStart": "构建乐谱检索结构",
-        "graphScoreDone": "乐谱检索结构构建完成",
+        "graphLookupStart": "构建总谱检索结构",
+        "graphLookupDone": "总谱检索结构构建完成",
         "graphBuildDone": "技能关系图构建完成",
         "artifactGraphWriteStart": "写入总谱文件",
         "artifactGraphWriteDone": "总谱文件写入完成",
@@ -2915,12 +2921,26 @@
     }
   },
   "mermaid": {
-    "image": "图片",
-    "code": "代码",
-    "copyCode": "复制代码",
+    "rendering": "绘制中…",
     "zoomIn": "放大",
     "zoomOut": "缩小",
     "fitView": "适应视图"
+  },
+  "diagram": {
+    "image": "图片",
+    "code": "代码",
+    "moreActions": "更多图表操作",
+    "downloadImage": "下载为图片",
+    "copyCode": "复制代码",
+    "copied": "已复制",
+    "copyFailed": "复制失败",
+    "preparingImage": "正在生成图片…",
+    "downloadImageFailed": "图片保存失败"
+  },
+  "svg": {
+    "streaming": "绘制中…",
+    "invalid": "SVG 代码存在异常",
+    "previewTitle": "SVG 图片预览"
   },
   "authPrompt": {
     "title": "操作授权",
@@ -3423,6 +3443,124 @@
         "terminal": "运行终端",
         "todo": "待办清单"
       }
+    }
+  },
+  "auth": {
+    "title": "登录 JiuwenSwarm",
+    "subtitle": "输入你的账号与密码以继续",
+    "username": "账号",
+    "usernamePlaceholder": "输入账号",
+    "password": "密码",
+    "passwordPlaceholder": "输入密码",
+    "login": "登录",
+    "loggingIn": "登录中…",
+    "invalidCredentials": "账号或密码错误",
+    "loginFailed": "登录失败,请稍后重试",
+    "authRequired": "需要登录后才能访问",
+    "secureHint": "登录后将自动保持登录状态",
+    "logout": "登出"
+  },
+  "heartbeat": {
+    "status": {
+      "running": "执行中",
+      "scheduled": "已排期",
+      "paused": "已暂停",
+      "completed": "已完成",
+      "expired": "已过期"
+    },
+    "schedule": {
+      "tab": { "interval": "按间隔", "cron": "Cron 表达式", "once": "单次" },
+      "interval": { "label": "每隔", "unit": "分钟回到当前会话" },
+      "cron": { "hint": "标准 5 段格式：分 时 日 月 周（例：0 9 * * 1-5 表示工作日早上 9 点）" },
+      "once": { "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成" },
+      "summary": {
+        "interval": "每 {{minutes}} 分钟回到当前会话",
+        "cron": "{{expr}}（{{timezone}}）回到当前会话",
+        "once": "{{date}} {{time}} 回到当前会话一次"
+      }
+    },
+    "errors": {
+      "cronFieldCount": "心跳的 Cron 表达式需要 5 段（分 时 日 月 周）"
+    },
+    "drawer": {
+      "fieldName": "任务名称",
+      "fieldNameTooLong": "任务名称不能超过 64 字符",
+      "fieldPrompt": "续跑提示词",
+      "fieldPromptTooLong": "续跑提示词不能超过 2000 字符",
+      "fieldPromptHint": "心跳触发时，会把这段文字作为一条新消息投递回当前会话，Agent 在原有上下文里继续处理，不会开新会话",
+      "fieldSchedule": "调度计划",
+      "fieldScheduleHint": "选择心跳回到这个会话的触发方式：按间隔轮询 / 按 Cron 表达式定时 / 只触发一次",
+      "fieldConcurrencyPolicy": "重叠运行策略",
+      "fieldConcurrencyPolicyHint": "上一轮还没跑完时新触发怎么处理：跳过（skip，默认）/ 排队补跑一次（queue）/ 取消上一轮改跑新的（replace）",
+      "fieldSessionDeletedPolicy": "会话删除后策略",
+      "fieldSessionDeletedPolicyHint": "绑定的会话被删除后：停用任务并保留记录（disable，默认）/ 标记为已完成（completed）",
+      "fieldMaxRuns": "最大触发次数",
+      "fieldMaxRunsUnlimited": "不限制",
+      "fieldMaxRunsHint": "达到这个次数后任务自动标记为已完成；留空表示不限制",
+      "missingFields": "还需要填写：{{fields}}",
+      "submitCreate": "创建",
+      "submitUpdate": "保存",
+      "titleCreate": "新建心跳任务",
+      "titleEdit": "编辑心跳任务",
+      "back": "返回"
+    },
+    "concurrencyPolicy": { "skip": "跳过（skip）", "queue": "排队（queue）", "replace": "替换（replace）" },
+    "sessionDeletedPolicy": { "disable": "停用任务", "completed": "标记为已完成" },
+    "panel": {
+      "title": "心跳任务",
+      "loading": "加载中…",
+      "empty": "当前会话还没有心跳任务",
+      "create": "创建",
+      "edit": "编辑",
+      "runNow": "立即运行",
+      "cancelRun": "停止本次运行",
+      "pause": "暂停",
+      "resume": "恢复",
+      "resumeFromCompletedHint": "任务已完成或到期，点击恢复将按当前调度重新激活（需先编辑为未来时间）",
+      "delete": "删除",
+      "deleteConfirm": "确定删除心跳任务「{{name}}」吗？",
+      "filterLabel": "状态",
+      "filterAll": "全部",
+      "searchPlaceholder": "按名称或提示词搜索",
+      "emptyFiltered": "没有符合筛选条件的心跳任务",
+      "nextRunAt": "下次触发：{{time}}",
+      "runCount": "已触发 {{count}} 次",
+      "lastError": "上次错误：{{error}}",
+      "createMenu": {
+        "manual": "手动创建",
+        "viaChat": "通过聊天创建",
+        "viaChatPrompt": "帮我创建心跳提醒："
+      }
+    },
+    "toast": {
+      "paused": "已暂停后续计划",
+      "resumed": "已恢复后续计划",
+      "deleteConflict": "当前有运行未能取消，请稍后重试",
+      "runNowAccepted": "已接收，即将执行",
+      "runNowQueued": "已加入待执行队列",
+      "runNowRejected": {
+        "session_missing": "原会话不存在，未执行",
+        "session_busy": "当前会话正在运行，请稍后重试",
+        "previous_run_active": "上一轮尚未结束，已跳过",
+        "already_queued": "已有一个待执行触发，未重复排队",
+        "replacement_pending": "正在替换上一轮运行，请稍候",
+        "replacement_cancel_failed": "无法取消上一轮运行，未执行",
+        "job_disabled_during_replace": "替换期间任务已被停用，未执行",
+        "job_completed": "任务已完成，请先编辑调度/停止条件并恢复任务",
+        "unknown": "未执行，原因未知"
+      },
+      "cancel": {
+        "idle": "当前没有运行中的执行",
+        "cancelled": "已取消当前执行",
+        "not_found": "当前执行已结束或不存在",
+        "failed": "取消失败，状态待确认"
+      }
+    },
+    "runState": {
+      "succeeded": "上次运行成功",
+      "failed": "上次运行失败",
+      "skipped": "上次运行已跳过",
+      "cancelled": "上次运行已取消"
     }
   }
 }

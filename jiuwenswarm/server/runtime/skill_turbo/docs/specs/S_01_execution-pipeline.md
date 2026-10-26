@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / execution-pipeline |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：agent.py / executor.py / skill_turbo_tools.py；environment.py / planner.py 仅涉执行链一侧） |
-| 最近一次修订日期 | 2026-10-13 |
-| 关联 feature | 暂无（首批 specs，由现状代码逆向固化） |
+| 最近一次修订日期 | 2026-10-23 |
+| 关联 feature | [[F_02]]（回调槽 12→11 / resume 横幅不再抑制）；[[F_04]]（inputs 注入 python_cmd） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
 
@@ -31,7 +31,7 @@ SkillTurbo 技能加速引擎的**端到端执行循环**与其上的**执行状
 |---|---|
 | 技能发现/扫描/meta.json/入口文件链/planner 路由决策/工具装载细节 | [[S_02]] |
 | validator 三 profile / 运行期沙箱 / 审批收口 | [[S_03]] |
-| PlanNode 子类契约（11 条契约/12 回调的节点侧定义）、节点 IO 约定、LLM 调用参数语义 | [[S_04]] |
+| PlanNode 子类契约（11 条契约/11 回调的节点侧定义）、节点 IO 约定、LLM 调用参数语义 | [[S_04]] |
 | 动态包注册 / 门面符号 / tool_utils | [[S_05]] |
 | HITL tcid 机制/发卡/恢复/取消/持久化状态机细节 | [[S_06]] |
 | 4 层降级决策 / fallback 子代理内部 / 契约判定细节 | [[S_07]] |
@@ -93,12 +93,12 @@ def validate(self, plan_code: str) -> list[str]
 
 ### execute_plan_stream 内部 10 步序列（executor.py `execute_plan_stream`）
 
-1. `_merge_env_config_to_inputs`：注入 `skill_root` / `skill_name`，均带 "not in merged" 保护（resume inputs 已有则不覆盖）。
+1. `_merge_env_config_to_inputs`：注入 `skill_root` / `skill_name`（"not in merged" 保护，resume inputs 已有则不覆盖）与 `python_cmd`（缺省 / 空白时注入 `sys.executable`，显式非空值保留，[[F_04]]）。
 2. `env.register_tools`：静态工具幂等加载 + send_file 工具每请求刷新（先 remove 旧 tool_id 再 add）+ `_export_tool_info` 导出。
 3. `_setup_execution_context`：`create_agent_session`（`set_skill_turbo_id` 隔离键）+ 8 组 ContextVar 绑定（session/request_id/channel/task 队列/task_states/current_task_holder/send_file/interactive_ask）+ trace 创建 + `_tool_call_counter` 重置。
 4. 产物分支：`not _resume_replay` → `_clear_stale_node_artifacts()`（清 session 持久层残留）；else → `_inherit_node_artifacts_for_replay(plan_code)`（hash 门禁，fail-open）。
 5. yield `plan.started`——**必须最先**（前端依赖它建根节点）。
-6. `_prepare_root_node`：validate（`PlanCodeValidator`）→ exec 受限命名空间加载 → `_extract_root_node` → **deepcopy** → `_bind_node_callbacks`（12 个回调）→ 读 display_names。校验失败走 E5、加载失败走 E6（chat.error + complete 后 return，不发 plan.finished、不上抛）。
+6. `_prepare_root_node`：validate（`PlanCodeValidator`）→ exec 受限命名空间加载 → `_extract_root_node` → **deepcopy** → `_bind_node_callbacks`（11 个回调）→ 读 display_names。校验失败走 E5、加载失败走 E6（chat.error + complete 后 return，不发 plan.finished、不上抛）。
 7. `_initialize_pending_tasks(root)`：首跑为每个 depth==1 sub_plan 预置 pending；resume 走 `_take_resume_task_states` → `_restore_task_states_from_snapshot`（按 display name/index 对齐复用 task_id）。随后立即 drain 首个 task.update 快照。
 8. 主循环 `async for chunk in self._execute_node_stream(root, ...)`：
    - `chat.error` → 记 plan_failed 标记；
@@ -172,7 +172,7 @@ pending ──_before_subplan_execute──▶ in_progress ──_after_subplan_
 
 特殊转移：
 - AbortError 中断：保持 in_progress（execute_subplan 不调 after 回调）→ 进中断快照
-- resume 重放：in_progress stage 完整重入（不发重复 task.start，横幅抑制）
+- resume 重放：in_progress stage 完整重入（不发重复 task.start；技能侧开始横幅正常重发，[[F_02]] D7）
 - resume 重放：completed stage 静默跳过（skip result，不发 start/complete）
 - 业务失败：结果 dict 含 export_status=="failed" 或 status=="error" → task.complete(failed)
 ```
@@ -225,13 +225,13 @@ pending ──_before_subplan_execute──▶ in_progress ──_after_subplan_
 - **P1 工具触发**：外层 DeepAgent ReAct 主循环 LLM 自主调用 `skill_acceleration_exec`（skill_turbo_tools.py `skill_turbo`，`@tool stateless=True`）；`query` 为 LLM 对任务的忠实总结（不得扩写）。前置两块拦截：`[TEMP-TEMPLATE-BYPASS]` 正则（模板路径类请求引导走 skill_tool）、`[REGION-EDIT-BYPASS]` 关键词（PPT 选区/编辑语义，主防线在 SkillTurboPromptRail 排除提示词）。工具卡 `resilience.timeout_s=None` 豁免默认 300s 超时。
 - **P2 实例化**：`adapter.build_skill_turbo_config()`（tool_cards / model_client / fallback_handler / card / llm_concurrency_limit / vision / audio / sys_operation / permissions）→ `SkillTurbo(config)` → Environment → Planner → Executor（不传 trace_collector，evolver 预留未启用）。
 - **P3 Environment 装配**（environment.py `__init__` + `_load`）：`_resolve_skill_root`（config skills_dir → `resolve_agent_registered_skill_dirs()` 首目录 → 空串）→ `ensure_runtime_facade()`（幂等注册 `skill_turbo_runtime` 门面）→ 注册 model_client/tool_cards → `_scan_skills_dir` → `_scan_external_turbo_skills`（同名外部覆盖内置，N2）。
-- **P4 inputs 组装**（skill_turbo_tools.py）：query / conversation_id / session_id / request_id / channel_id（读 ContextVar `get_current_request_metadata()`，防 adapter 实例属性并发覆盖）/ user_id / chat_id / effective_project_dir / workspace_base（仅 metadata.output_dir 非空时设置，N11）/ metadata 整体。resume 场景补读 `get_skill_turbo_resume_answers()`。
+- **P4 inputs 组装**（skill_turbo_tools.py）：query / conversation_id / session_id / request_id / channel_id（读 ContextVar `get_current_request_metadata()`，防 adapter 实例属性并发覆盖）/ user_id / chat_id / effective_project_dir / workspace_base（仅 metadata.output_dir 非空时设置，N11）/ files（仅 metadata.files 非空时设置，[[S_09]] 4.7）/ metadata 整体。resume 场景补读 `get_skill_turbo_resume_answers()`。
 - **P5 plan 确定**：首跑 planner.py `plan`——`match_skill`（流式 LLM + 重试 1 次，confidence < 0.6 或未知 skill → None）→ `env.set_skill_name` → `build_plan_code`（入口文件四级优先级，收口于 skill_meta.find_skill_root_file）→ `from {module} import root` 字符串；无匹配 → agent.py 抛 `SkillTurboNotHandled` 上层降级。随后 `_sync_skill_name_to_inputs`。resume 不走 planner，直接用持久化 `resume_ctx["plan_code"]`。
 - **P6 执行入口分派**：`execute_plan`（非流式 wait_for 300s，生产不用）或 `execute_plan_stream`（流式无整体超时）。两入口共享 `_prepare_root_node`。
-- **P7 节点执行与回调**：`root.run_stream(inputs)`（模板方法）→ skill_code 定义 `_execute_stream`；编排节点经 `execute_subplan` 钩子序列驱动子树；`_bind_node_callbacks` 注入 12 个回调（has_tool / use_tool / call_llm / stream_llm / fallback / fallback_stream / extract_json / log / before_subplan_execute / after_subplan_execute / should_skip_subplan_execute / should_suppress_subplan_start_banner）。
+- **P7 节点执行与回调**：`root.run_stream(inputs)`（模板方法）→ skill_code 定义 `_execute_stream`；编排节点经 `execute_subplan` 钩子序列驱动子树；`_bind_node_callbacks` 注入 11 个回调（has_tool / use_tool / call_llm / stream_llm / fallback / fallback_stream / extract_json / log / before_subplan_execute / after_subplan_execute / should_skip_subplan_execute）。
 - **P8 use_tool 单次工具调用**（executor.py `use_tool`，6 步）：① `_next_tool_call_id` 确定性 tcid（N13）；② `_consume_pending_resume_input`（精确命中或 name+idx 回退命中 → 注入 user_input）；③ `build_tool_ctx` → before_tool_call rail 链（`_skip_tool` 标记 reject 直接返回 rail 注入结果；resume approve 命中时 `clear_resume_ctx`）；④ `env.get_tool_function(tool_name)` 按全局 tool_id 现取（N9，优先 `tool.invoke(inputs)` 协议，回退 `tool.run(**kwargs)`）；⑤ 执行 + after_tool_call；⑥ AbortError → `save_resume_ctx(session, plan_code, inputs, pending_tool_call_id, task_states)` → 上抛（断点唯一持久化点）。
 - **P9 HITL 中断透传**：executor flush task 事件后 raise（E8）→ 工具层 `extract_tool_interrupt` 取 TIC 存 ContextVar → 返回 `build_skill_turbo_hitl_result` → 外层 StreamEventRail 把 tool_result 改写为 TIE → harness 原生 HITL 三件套。细节归 [[S_06]]。
-- **P10 resume**：两条路径——A（主流）adapter `_try_skill_turbo_resume`（stale guard → load_resume_ctx → resume_in_flight 去重 → 新建 SkillTurbo → `resume_stream`）；B 外层 LLM 再调工具 → 工具层读 resume answers → `resume_stream`。重放走三跳过（N5）；清理语义：仅 `release_checkpoint`（正常完成或 NotHandled）时 `clear_resume_ctx` + `turbo_session.post_run()`，瞬时失败保留断点。
+- **P10 resume**（统一路径，[[S_06]] P3）：作答经 `interface.py` 公共入口守卫 → harness `handle_resume` 重放 `skill_acceleration_exec` → 工具体读 resume answers → load_resume_ctx → resume_in_flight 去重 → `resume_stream`。重放走三跳过（N5）；清理语义：仅 `release_checkpoint`（正常完成或 NotHandled）时 `clear_resume_ctx` + `turbo_session.post_run()`，瞬时失败保留断点。
 - **P11 交付收尾**：流转发（chunk 过滤 + `_prepare_parent_stream_output` 反向映射 event_type + `parent_session.write_stream`）；`_wrap_skill_turbo_result`——success 时追加产物摘要 + 停止提示（PPT 走 p10_delivery 骨架 + pending summary ContextVar；非 PPT 认 `send_file_status=="sent"`，否则中性提示）；失败时 error + 摘要。`_ppt_delivery_failed_error` 强制 success=False（N10）。SkillTurboDeliverySummaryRail 在外层 tool_result 后流式发出 PPT 交付总结。
 - **P12 trace 收尾**：见"evolver trace（预留未启用）"——`_finish_trace` 仅日志，`_send_trace` 空壳，evolver 链路当前不发生。
 
@@ -293,7 +293,7 @@ pending ──_before_subplan_execute──▶ in_progress ──_after_subplan_
 6. 改节点遍历或回调绑定 → 检查 depth==1 假设（task 事件/跳过判定只对二层生效）与 execute_subplan 钩子序列完整性。
 7. 改 `_prepare_root_node` / deepcopy → 检查 PlanNode 树不可持有不可深拷贝资源；校验逻辑不得复制第二份。
 8. 改 tool_call_id 生成（`_next_tool_call_id`）→ 连带检查 `_parse_call_idx_from_call_id` / `_parse_tool_name_from_call_id` 与 resume 回退命中链（N13）。
-9. 改 inputs 注入 → 保持 "not in merged" 保护（resume 不覆盖持久化值）+ workspace_base 显式性（N11）。
+9. 改 inputs 注入 → 保持 "not in merged" 保护（resume 不覆盖持久化值）+ workspace_base 显式性（N11）+ python_cmd 守卫语义（缺省 / 空白才注入 `sys.executable`，显式非空保留，[[F_04]]）。
 10. 改并发模型 → LLM Semaphore 懒初始化必须绑定运行时事件循环；不得引入跨请求实例状态（N1）。
 11. 改 session 创建 / checkpointer 读写 → session_id 稳定性（inputs.session_id 优先）+ `set_skill_turbo_id` 键隔离（N7/N8）。
 12. 改 use_tool → AbortError 分支 `save_resume_ctx` 四元组（plan_code / inputs / tcid / task_states）完整性；瞬时失败不得清断点。
@@ -307,7 +307,7 @@ pending ──_before_subplan_execute──▶ in_progress ──_after_subplan_
 |---|---|
 | [[S_02]] | 本 spec 的 P3/P5 只描述装配与 plan 确定在执行链上的位置；技能发现/扫描/入口文件优先级/路由决策细节归 S_02。 |
 | [[S_03]] | 本 spec 的 P6 `_prepare_root_node` 消费 validator 结果（E5/E6）；validator 三 profile、沙箱命名空间、`_safe_import` 白名单细节归 S_03。 |
-| [[S_04]] | 本 spec 从 executor 视角引用 12 回调与 execute_subplan 钩子序列；PlanNode 子类契约、节点 IO 约定、`__artifact__` / `_partial_artifact` 语义归 S_04。 |
+| [[S_04]] | 本 spec 从 executor 视角引用 11 回调与 execute_subplan 钩子序列；PlanNode 子类契约、节点 IO 约定、`__artifact__` / `_partial_artifact` 语义归 S_04。 |
 | [[S_05]] | P3 的动态包注册（`ensure_turbo_package`）、门面符号（`ensure_runtime_facade`）细节归 S_05。 |
 | [[S_06]] | 本 spec 的 E8/E9/P9/P10 只固化执行侧行为（raise 时机、断点四元组、三跳过）；tcid 生成细节、发卡、恢复分流、取消、持久化状态机归 S_06。 |
 | [[S_07]] | 本 spec 的 E2/E10/E11 只固化退出路径；4 层降级决策、fallback 子代理内部、契约判定归 S_07。 |

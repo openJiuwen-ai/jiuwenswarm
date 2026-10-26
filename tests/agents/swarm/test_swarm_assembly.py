@@ -192,6 +192,8 @@ def test_team_a2a_live_session_does_not_borrow_build_identity():
 # Sourced from the registry symbols so the test tracks renames automatically.
 _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
     {
+        registry.MODEL_ROUTING,
+        registry.WORKSPACE_QUOTA,
         registry.RUNTIME_PROMPT,
         registry.TEAM_SKILL_STORAGE_POLICY,
         registry.TEAM_SHARED_SKILL_LINK_REFRESH,
@@ -525,7 +527,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 19
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 21
     assert rail_names == expected
     disabled_tools = next(
         spec for spec in rails_specs if spec.type == registry.DISABLED_TOOLS
@@ -1447,7 +1449,7 @@ def test_symphony_toolkit_is_leader_only(monkeypatch: pytest.MonkeyPatch) -> Non
     """Symphony tools are built only for the team leader."""
     seen_configs: list[dict] = []
     fake_tool = types.SimpleNamespace(
-        card=types.SimpleNamespace(name="symphony_compose_score")
+        card=types.SimpleNamespace(name="symphony_compose_graph")
     )
 
     class FakeSymphonyToolkit:
@@ -1468,7 +1470,7 @@ def test_symphony_toolkit_is_leader_only(monkeypatch: pytest.MonkeyPatch) -> Non
 
     built = tools.build_symphony_toolkit({}, leader)
 
-    assert [tool.card.name for tool in built] == ["symphony_compose_score"]
+    assert [tool.card.name for tool in built] == ["symphony_compose_graph"]
     assert tools.build_symphony_toolkit({}, teammate) == []
     assert seen_configs == [{"symphony": {"enabled": True}}]
 

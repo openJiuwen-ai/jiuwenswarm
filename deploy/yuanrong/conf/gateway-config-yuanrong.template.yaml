@@ -16,7 +16,7 @@ symphony:
   enabled: false
   paths:
     skills_root: ""
-    score_dir: ""
+    graph_dir: ""
 
   fingerprint:
     scan:

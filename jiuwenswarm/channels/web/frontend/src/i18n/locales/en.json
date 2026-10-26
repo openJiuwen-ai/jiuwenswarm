@@ -472,7 +472,8 @@
     "stop": "Stop",
     "modelSelector": {
       "tooltip": "Switch the model used for chat",
-      "clusterLockedTooltip": "Cluster mode uses the configured default model and cannot be changed",
+      "tooltipSessionLocked": "This session has a fixed model. Start a new session to switch.",
+      "tooltipLockedEnterprise": "Enterprise models are centrally configured and cannot be changed.",
       "configured": "Configured Models",
       "addModel": "Add Custom Model",
       "placeholder": "Select Model",
@@ -622,6 +623,9 @@
   "plan": {
     "toolbarTag": "Plan",
     "closeTag": "Exit plan mode",
+    "closeTagDisabled": "You can exit plan mode once the reply finishes or you cancel it",
+    "toolbarUnavailableGoal": "A goal is already in progress, so Plan isn't available",
+    "toolbarUnavailableProcessing": "A reply is in progress, so Plan isn't available",
     "approvalPrompt": "The plan is ready. Choose what to do next.",
     "executePrompt": "The plan is approved. Start executing it.",
     "approvalExecute": "Execute",
@@ -635,6 +639,7 @@
     "editTitle": "Edit goal",
     "toolbarTag": "Goal",
     "toolbarUnavailable": "A goal is already in progress. Finish or clear it first.",
+    "toolbarUnavailablePlan": "Plan mode is in progress, so Goal isn't available",
     "closeTag": "Cancel goal",
     "badge": "Goal",
     "status": {
@@ -2124,13 +2129,13 @@
       "actions": {
         "read": "Read score",
         "incrementalBuild": "Incremental build",
-        "pauseBuild": "Pause build",
+        "cancelBuild": "Cancel build",
         "fullRebuild": "Full rebuild",
         "fitView": "Fit view"
       },
       "status": {
         "refreshing": "Refreshing skill score",
-        "paused": "Skill score build paused",
+        "cancelled": "Skill score build cancelled",
         "reading": "Reading skill score",
         "noBuildLogs": "No build logs",
         "waitingBuildLogs": "Waiting for build logs...",
@@ -2140,21 +2145,22 @@
       "errors": {
         "readFailed": "Unable to read the skill score. Refresh the score first.",
         "refreshFailed": "Failed to refresh the skill score",
-        "pauseFailed": "Failed to pause the skill score build",
+        "cancelFailed": "Failed to cancel the skill score build",
         "buildFailedWithDetail": "Symphony score build failed: {{detail}}"
       },
       "serverDetails": {
         "noRunningBuild": "No skill score build is currently running.",
-        "pauseRequested": "Skill score build pause requested. Completed cache and checkpoints will be kept.",
-        "buildRunning": "A skill score build is already running. Wait for it to finish or pause the current build first.",
-        "buildPaused": "Skill score build paused. Run an incremental build again to continue.",
-        "scoreMissing": "The skill score is missing or incomplete. Build the score first."
+        "buildStarted": "Skill score background build started.",
+        "cancelRequested": "Skill score build cancelled. Completed cache and checkpoints will be kept.",
+        "buildRunning": "A skill score build is already running in the background.",
+        "buildCancelled": "Skill score build cancelled. Run an incremental build again to continue.",
+        "graphMissing": "The skill score is missing or incomplete. Build the score first."
       },
       "buildStages": {
         "idle": "No build logs",
         "updateStart": "Starting skill score build",
-        "updatePauseRequested": "Pausing skill score build",
-        "updatePaused": "Skill score build paused",
+        "updateCancelRequested": "Cancelling skill score build",
+        "updateCancelled": "Skill score build cancelled",
         "scanStart": "Scanning skill directories",
         "scanDone": "Skill directory scan complete",
         "diffDone": "Checking skill changes",
@@ -2175,8 +2181,8 @@
         "graphResolveDone": "Candidate relation resolution complete",
         "graphMaterializeStart": "Generating score structure",
         "graphMaterializeDone": "Score structure generated",
-        "graphScoreStart": "Building score retrieval structure",
-        "graphScoreDone": "Score retrieval structure built",
+        "graphLookupStart": "Building score lookup structure",
+        "graphLookupDone": "Score lookup structure built",
         "graphBuildDone": "Skill relation graph built",
         "artifactGraphWriteStart": "Writing score files",
         "artifactGraphWriteDone": "Score files written",
@@ -2925,12 +2931,26 @@
     }
   },
   "mermaid": {
-    "image": "Image",
-    "code": "Code",
-    "copyCode": "Copy code",
+    "rendering": "Drawing…",
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out",
     "fitView": "Fit view"
+  },
+  "diagram": {
+    "image": "Image",
+    "code": "Code",
+    "moreActions": "More diagram actions",
+    "downloadImage": "Download as image",
+    "copyCode": "Copy code",
+    "copied": "Copied",
+    "copyFailed": "Copy failed",
+    "preparingImage": "Preparing image…",
+    "downloadImageFailed": "Could not save image"
+  },
+  "svg": {
+    "streaming": "Drawing…",
+    "invalid": "SVG code contains errors",
+    "previewTitle": "SVG image preview"
   },
   "authPrompt": {
     "title": "Authorization",
@@ -3434,6 +3454,124 @@
         "terminal": "Terminal",
         "todo": "Task list"
       }
+    }
+  },
+  "auth": {
+    "title": "Sign in to JiuwenSwarm",
+    "subtitle": "Enter your account and password to continue",
+    "username": "Account",
+    "usernamePlaceholder": "Enter account",
+    "password": "Password",
+    "passwordPlaceholder": "Enter password",
+    "login": "Sign in",
+    "loggingIn": "Signing in…",
+    "invalidCredentials": "Invalid account or password",
+    "loginFailed": "Sign-in failed, please retry later",
+    "authRequired": "Sign-in required to access",
+    "secureHint": "You'll stay signed in after login",
+    "logout": "Sign out"
+  },
+  "heartbeat": {
+    "status": {
+      "running": "Running",
+      "scheduled": "Scheduled",
+      "paused": "Paused",
+      "completed": "Completed",
+      "expired": "Expired"
+    },
+    "schedule": {
+      "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
+      "interval": { "label": "Every", "unit": "minutes, return to this session" },
+      "cron": { "hint": "Standard 5-field format: minute hour day month weekday (e.g. 0 9 * * 1-5 = weekdays at 9am)" },
+      "once": { "hint": "Pick a date and time; the job fires once at that moment and is then marked completed" },
+      "summary": {
+        "interval": "Return to this session every {{minutes}} min",
+        "cron": "{{expr}} ({{timezone}}), return to this session",
+        "once": "Return to this session once at {{date}} {{time}}"
+      }
+    },
+    "errors": {
+      "cronFieldCount": "Heartbeat cron expressions must have 5 fields (minute hour day month weekday)"
+    },
+    "drawer": {
+      "fieldName": "Task name",
+      "fieldNameTooLong": "Name must be at most 64 characters",
+      "fieldPrompt": "Follow-up prompt",
+      "fieldPromptTooLong": "Prompt must be at most 2000 characters",
+      "fieldPromptHint": "When the heartbeat fires, this text is delivered back into the current session as a new message; the agent continues in the existing context instead of starting a new session",
+      "fieldSchedule": "Schedule",
+      "fieldScheduleHint": "Choose how the heartbeat returns to this session: poll on an interval / fire on a cron schedule / fire once",
+      "fieldConcurrencyPolicy": "Concurrency policy",
+      "fieldConcurrencyPolicyHint": "What happens if the previous run hasn't finished when the next trigger fires: skip it (default) / queue one follow-up run (queue) / cancel the previous run and start fresh (replace)",
+      "fieldSessionDeletedPolicy": "On session deleted",
+      "fieldSessionDeletedPolicyHint": "If the bound session is deleted: disable the job and keep the record (default) / mark the job completed",
+      "fieldMaxRuns": "Max runs",
+      "fieldMaxRunsUnlimited": "Unlimited",
+      "fieldMaxRunsHint": "The job is marked completed automatically after this many runs; leave blank for no limit",
+      "missingFields": "Still needed: {{fields}}",
+      "submitCreate": "Create",
+      "submitUpdate": "Save",
+      "titleCreate": "New heartbeat job",
+      "titleEdit": "Edit heartbeat job",
+      "back": "Back"
+    },
+    "concurrencyPolicy": { "skip": "Skip", "queue": "Queue", "replace": "Replace" },
+    "sessionDeletedPolicy": { "disable": "Disable job", "completed": "Mark completed" },
+    "panel": {
+      "title": "Heartbeat Jobs",
+      "loading": "Loading…",
+      "empty": "No heartbeat jobs in this session yet",
+      "create": "Create",
+      "edit": "Edit",
+      "runNow": "Run now",
+      "cancelRun": "Cancel this run",
+      "pause": "Pause",
+      "resume": "Resume",
+      "resumeFromCompletedHint": "Job completed or expired. Click to reactivate with its current schedule (edit to a future time first)",
+      "delete": "Delete",
+      "deleteConfirm": "Delete heartbeat job \"{{name}}\"?",
+      "filterLabel": "Status",
+      "filterAll": "All",
+      "searchPlaceholder": "Search by name or prompt",
+      "emptyFiltered": "No heartbeat jobs match this filter",
+      "nextRunAt": "Next run: {{time}}",
+      "runCount": "Ran {{count}} times",
+      "lastError": "Last error: {{error}}",
+      "createMenu": {
+        "manual": "Create manually",
+        "viaChat": "Create via chat",
+        "viaChatPrompt": "Help me create a heartbeat reminder: "
+      }
+    },
+    "toast": {
+      "paused": "Future schedule paused",
+      "resumed": "Future schedule resumed",
+      "deleteConflict": "Could not cancel the active run, try again later",
+      "runNowAccepted": "Accepted, starting shortly",
+      "runNowQueued": "Queued for execution",
+      "runNowRejected": {
+        "session_missing": "Original session missing, not executed",
+        "session_busy": "Session is running, please try again later",
+        "previous_run_active": "Previous run still active, skipped",
+        "already_queued": "A run is already queued, not duplicated",
+        "replacement_pending": "Replacing the previous run, please wait",
+        "replacement_cancel_failed": "Could not cancel the previous run, not executed",
+        "job_disabled_during_replace": "Job was disabled during replacement, not executed",
+        "job_completed": "Job already completed. Edit the schedule/stop conditions and resume it first",
+        "unknown": "Not executed, reason unknown"
+      },
+      "cancel": {
+        "idle": "No run currently active",
+        "cancelled": "Current run cancelled",
+        "not_found": "Current run already finished or missing",
+        "failed": "Cancel failed, status unconfirmed"
+      }
+    },
+    "runState": {
+      "succeeded": "Last run succeeded",
+      "failed": "Last run failed",
+      "skipped": "Last run skipped",
+      "cancelled": "Last run cancelled"
     }
   }
 }

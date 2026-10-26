@@ -88,6 +88,9 @@ class PlanNode(ABC):
         self._fallback_stream_callback: (
             Callable[[PlanNode, dict[str, Any], Exception], AsyncIterator[Any]] | None
         ) = None
+        # _needs_fallback 一次性触发 guard（同节点一次 run 至多触发一次，
+        # 防 fallback 结果再带标志形成循环）
+        self._fallback_triggered: bool = False
         # JSON提取回调（新增）
         self._extract_json_callback: Callable[..., Any] | None = None
         self._log_callback: Callable[[PlanNode, str, str, tuple[Any, ...]], None] | None = None
@@ -100,10 +103,6 @@ class PlanNode(ABC):
         ) = None
         # HITL resume：已 completed 的二层 stage 短路跳过真实执行
         self._should_skip_subplan_execute: (
-            Callable[[PlanNode, dict[str, Any]], Awaitable[bool]] | None
-        ) = None
-        # HITL resume：in_progress 的二层 stage 重入时不广播「开始执行」横幅
-        self._should_suppress_subplan_start_banner: (
             Callable[[PlanNode, dict[str, Any]], Awaitable[bool]] | None
         ) = None
 
@@ -135,9 +134,6 @@ class PlanNode(ABC):
         should_skip_subplan_execute: (
             Callable[[PlanNode, dict[str, Any]], Awaitable[bool]] | None
         ) = None,
-        should_suppress_subplan_start_banner: (
-            Callable[[PlanNode, dict[str, Any]], Awaitable[bool]] | None
-        ) = None,
     ) -> None:
         self._has_tool_callback = has_tool
         self._call_tool_callback = use_tool
@@ -150,7 +146,6 @@ class PlanNode(ABC):
         self._before_subplan_execute = before_subplan_execute
         self._after_subplan_execute = after_subplan_execute
         self._should_skip_subplan_execute = should_skip_subplan_execute
-        self._should_suppress_subplan_start_banner = should_suppress_subplan_start_banner
         for node in self.sub_plans:
             node.set_runtime_callbacks(
                 has_tool=has_tool,
@@ -164,7 +159,6 @@ class PlanNode(ABC):
                 before_subplan_execute=before_subplan_execute,
                 after_subplan_execute=after_subplan_execute,
                 should_skip_subplan_execute=should_skip_subplan_execute,
-                should_suppress_subplan_start_banner=should_suppress_subplan_start_banner,
             )
 
     def log(self, level: str, message: str, *args: Any) -> None:
@@ -362,9 +356,14 @@ class PlanNode(ABC):
         必须直接向上抛给 SkillTurbo / DeepAdapter，由其转 HITL 三件套。
         ``FallbackContractError`` 为终止性降级信号（如 P2 早拒未支持能力），
         同样不进入节点 LLM fallback，交由 executor 包成 SkillTurboNotHandled。
+
+        三态节点（ok/partial/failed）以 dict 返回失败而非 raise；返回值携带
+        ``_needs_fallback=True`` 时视为"自身硬失败要求恢复"，转入 fallback
+        （与 raise 同一通道）。防循环：进入 fallback 前剥离标志位，且同节点
+        一次 run 至多触发一次。
         """
         try:
-            return await self._execute(inputs)
+            result = await self._execute(inputs)
         except AbortError:
             raise
         except FallbackContractError:
@@ -378,7 +377,30 @@ class PlanNode(ABC):
             )
             if self._fallback_callback is None:
                 raise
+            # 异常通道与标志通道共用一次性 guard（[[S_07]] N18：同节点一次
+            # run 至多触发一次 fallback）：进入前置位，防 fallback 产出再带
+            # _needs_fallback 经父节点 try_begin_fallback 判定二次进入。
+            self._fallback_triggered = True
             return await self._fallback_callback(self, inputs, e)
+        # 标志剥离与 fallback 判定解耦：guard 已置位（本次 run 已触发过
+        # fallback）时同样剥离，防内部协议键 _needs_fallback 泄入返回值
+        # （execute_subplan 的 after 回调结果等下游）。
+        needs_fallback = isinstance(result, dict) and bool(
+            result.pop("_needs_fallback", None)
+        )
+        if needs_fallback and not self._fallback_triggered:
+            self._fallback_triggered = True
+            reason = str(result.get("message") or result.get("fail_reason") or "node reported failure")
+            error = RuntimeError(f"node {self.plan_name} reported failure: {reason}")
+            logger.warning(
+                "[PlanNode] node reported failure, entering fallback name=%s reason=%s",
+                self.plan_name,
+                reason,
+            )
+            if self._fallback_callback is None:
+                raise error
+            return await self._fallback_callback(self, inputs, error)
+        return result
 
     async def run_stream(self, inputs: dict[str, Any]) -> AsyncIterator[Any]:
         """
@@ -399,8 +421,34 @@ class PlanNode(ABC):
         except Exception as e:
             if self._fallback_stream_callback is None:
                 raise
+            # 同 run() 异常通道：进入 fallback 前置位一次性 guard，防父节点
+            # execute_subplan_stream 对 fallback 末 chunk 的标志检测
+            # （try_begin_fallback）在同一次 run 内二次触发 fallback。
+            self._fallback_triggered = True
             async for chunk in self._fallback_stream_callback(self, inputs, e):
                 yield chunk
+
+    @property
+    def fallback_stream_callback(
+        self,
+    ) -> Callable[[PlanNode, dict[str, Any], Exception], AsyncIterator[Any]] | None:
+        """流式 fallback 回调的公开只读访问器。
+
+        供父节点在子节点返回值携带 ``_needs_fallback`` 时调用子节点兜底，
+        避免父节点直接访问子节点的受保护成员（G.CLS.11）。
+        """
+        return self._fallback_stream_callback
+
+    def try_begin_fallback(self) -> bool:
+        """一次性 fallback 触发 guard：首次调用返回 True 并置位，后续返回 False。
+
+        供父节点对子节点做原子判定，防 fallback 结果再带标志形成循环；
+        避免父节点直接读写子节点的受保护成员（G.CLS.11）。
+        """
+        if self._fallback_triggered:
+            return False
+        self._fallback_triggered = True
+        return True
 
     def validate_fallback_success(
         self,
@@ -434,16 +482,6 @@ class PlanNode(ABC):
         if self._should_skip_subplan_execute is None:
             return False
         return await self._should_skip_subplan_execute(subplan, inputs)
-
-    async def should_suppress_subplan_start_banner(
-        self,
-        subplan: "PlanNode",
-        inputs: dict[str, Any],
-    ) -> bool:
-        """HITL resume 重放时，编排层可查询是否抑制「开始执行」进度横幅。"""
-        if self._should_suppress_subplan_start_banner is None:
-            return False
-        return await self._should_suppress_subplan_start_banner(subplan, inputs)
 
     async def _maybe_skip_subplan_execute(
         self,
@@ -578,6 +616,39 @@ class PlanNode(ABC):
             async for chunk in subplan.run_stream(inputs):
                 last_chunk = chunk
                 yield chunk
+            # 三态节点以 dict 返回失败（qa 全败 / 导出失败等自身硬失败），
+            # 返回值携带 _needs_fallback=True 时转入该 subplan 的 fallback：
+            # fallback 产出续接在流中，last_chunk 替换为修复后结果（after
+            # 回调看到的是修复后结果）。防循环：触发前剥离标志位 + 同节点
+            # 一次 run 至多触发一次；剥离与 guard 判定解耦——guard 拒绝
+            # （本次 run 已触发过）时同样剥离，防内部协议键泄入 after 回调
+            # result；未标注时行为与现状逐位一致。
+            needs_fallback = isinstance(last_chunk, dict) and bool(
+                last_chunk.pop("_needs_fallback", None)
+            )
+            if needs_fallback and subplan.try_begin_fallback():
+                reason = str(
+                    last_chunk.get("message")
+                    or last_chunk.get("fail_reason")
+                    or "node reported failure"
+                )
+                fb_error = RuntimeError(
+                    f"node {subplan.plan_name} reported failure: {reason}"
+                )
+                logger.warning(
+                    "[PlanNode] subplan reported failure, entering fallback "
+                    "name=%s reason=%s",
+                    subplan.plan_name,
+                    reason,
+                )
+                subplan_fallback_stream = subplan.fallback_stream_callback
+                if subplan_fallback_stream is None:
+                    raise fb_error
+                async for fb_chunk in subplan_fallback_stream(
+                    subplan, inputs, fb_error
+                ):
+                    last_chunk = fb_chunk
+                    yield fb_chunk
         except AbortError:
             # HITL 中断：不调用 after_subplan_execute，避免 task 被误判完成
             hitl_interrupt = True

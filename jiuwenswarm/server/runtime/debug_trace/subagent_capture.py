@@ -13,7 +13,7 @@ capture is enabled) the subagent is driven through ``stream()`` instead, every
 chunk is fed to the active logger under a ``source=subagent:...`` label, and the
 chunks are reduced back into an invoke-style result via the SDK's own
 ``DeepAgent._result_from_stream_chunk``. When no debug run is active, behaviour
-is identical to a plain ``invoke`` (zero regression for normal runs).
+uses ``invoke``. Both paths share the delegation deadline and failure checks.
 
 Only ever reads the ContextVar (never set/reset) — the adapter owns the binding
 lifetime, see ``interface_deep.JiuWenSwarmDeepAdapter``.
@@ -23,6 +23,12 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+
+from jiuwenswarm.agents.harness.common.tools.subagent_executor.execution_timeout import (
+    ensure_subagent_available,
+    raise_for_subagent_stream_error,
+    run_subagent_with_timeout,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -49,6 +55,21 @@ async def invoke_subagent_with_trace(
         An invoke-style result dict (``{"output": ..., "result_type": ...}``),
         matching what ``subagent.invoke`` would have returned.
     """
+    child_session_id = str(inputs.get("conversation_id") or session_id or "")
+    return await run_subagent_with_timeout(
+        subagent,
+        session_id=child_session_id,
+        call=lambda: _invoke_subagent_with_trace(
+            subagent, inputs=inputs, session=session,
+            source_label=source_label, session_id=session_id,
+        ),
+    )
+
+
+async def _invoke_subagent_with_trace(
+    subagent: Any, *, inputs: dict, session: Any,
+    source_label: str, session_id: str | None,
+) -> dict:
     # Safety net for a subagent that reached here without going through the
     # create_subagent hook (a host-built instance, say). Idempotent, so the
     # normal path — where the hook already attached the rail — pays nothing.
@@ -72,7 +93,7 @@ async def invoke_subagent_with_trace(
         if sid:
             dbg = get_debug_trace_logger_for_session(sid)
     if dbg is None or not dbg.captures_subagent_flow():
-        # No debug run, or capture disabled — original path, unchanged.
+        # No debug run, or capture disabled: keep the SDK invoke path.
         return await subagent.invoke(inputs, session=session)
 
     output_parts: list[str] = []
@@ -87,11 +108,20 @@ async def invoke_subagent_with_trace(
         # subagent's tokens round-robin between source=main and source=subagent.
         # The isolated session is drained only by this loop, so tagging is clean
         # and nothing leaks into the parent (TUI) stream.
-        async for chunk in subagent.stream(inputs, session=None):
-            dbg.feed_subagent(source=source_label, chunk=chunk)
-            reduced = _reduce_stream_chunk(chunk, output_parts)
-            if reduced is not None:
-                result = reduced
+        iterator = subagent.stream(inputs, session=None)
+        try:
+            async for chunk in iterator:
+                ensure_subagent_available(subagent)
+                reduced = _reduce_stream_chunk(chunk, output_parts)
+                dbg.feed_subagent(source=source_label, chunk=chunk)
+                if reduced is not None:
+                    result = reduced
+        finally:
+            # Close in the same task that iterated the stream so rail ContextVar
+            # tokens are reset in their original context on error/cancellation.
+            close = getattr(iterator, "aclose", None)
+            if close is not None:
+                await close()
     finally:
         dbg.end_subagent(source=source_label)
 
@@ -108,6 +138,7 @@ def _reduce_stream_chunk(chunk: Any, output_parts: list[str]) -> dict | None:
     ``llm_output`` content and finalise on an ``answer`` chunk. Inlined (rather
     than calling the SDK staticmethod) to avoid protected-member access.
     """
+    raise_for_subagent_stream_error(chunk)
     chunk_type = getattr(chunk, "type", None)
     payload = getattr(chunk, "payload", None)
     if isinstance(chunk, dict):
@@ -123,6 +154,8 @@ def _reduce_stream_chunk(chunk: Any, output_parts: list[str]) -> dict | None:
     elif chunk_type == "answer":
         result = dict(payload)
         result.setdefault("result_type", "answer")
+        if result["result_type"] == "interrupt":
+            return result
         if "output" not in result:
             content = result.get("content")
             if isinstance(content, str):

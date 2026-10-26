@@ -11,13 +11,14 @@ from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_out
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.utils import get_agent_sessions_dir
+from jiuwenswarm.common.mode_matrix import NEW_AGENT_WORK_NORMAL
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
     _background_session_kvc_tasks,
     _log_background_session_kvc_failure,
     _sessions_dir_for_request,
     bootstrap_preconditions,
-    resolve_agent_request_mode,
+    resolve_request_runtime_mode,
 )
 from jiuwenswarm.server.runtime.agent_manager import ACP_DEFAULT_CAPABILITIES
 
@@ -105,7 +106,6 @@ async def handle_session_create(ctx: RequestContext) -> None:
         try:
             channel_id = request.channel_id or "default"
             params = request.params if isinstance(request.params, dict) else {}
-            mode, _, canonical_mode = resolve_agent_request_mode(params.get("mode", "agent"))
             explicit_session_id = params.get("session_id")
             previous_session_id = str(params.get("previous_session_id") or "").strip()
             if isinstance(explicit_session_id, str) and explicit_session_id.strip():
@@ -206,20 +206,32 @@ async def handle_session_create(ctx: RequestContext) -> None:
             params["project_dir"] = project_dir
             params["work_mode"] = final_work_mode
 
+            resolved_mode = resolve_request_runtime_mode(
+                request,
+                work_mode=final_work_mode,
+            )
+            mode = resolved_mode.manager_mode
+            canonical_mode = resolved_mode.canonical_mode
+            adapter_mode = resolved_mode.adapter_mode
+            request.resolved_adapter_mode = adapter_mode
+            request.resolved_adapter_source = resolved_mode.adapter_source
+
             is_swarm = bool(params.get("is_swarm")) or canonical_mode in {
                 "team",
                 "team.plan",
                 "code.team",
             }
             if not is_swarm:
-                mode, _, canonical_mode = resolve_agent_request_mode(
-                    canonical_mode,
-                    work_mode=final_work_mode,
-                )
                 params["mode"] = canonical_mode
             prewarm_eligible = (
                 not is_swarm
-                and canonical_mode in {"agent", "code", "code.normal"}
+                and canonical_mode in {
+                    "agent",
+                    NEW_AGENT_WORK_NORMAL,
+                    "flash",
+                    "code",
+                    "code.normal",
+                }
             )
             create_token = str(params.get("create_token") or "").strip()
             if not create_token:
@@ -230,6 +242,7 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 project_dir=project_dir,
                 work_mode=final_work_mode,
                 is_swarm=is_swarm,
+                adapter_mode=adapter_mode,
                 prewarm_eligible=prewarm_eligible,
                 create_token=create_token,
             )
@@ -317,6 +330,7 @@ async def handle_session_create(ctx: RequestContext) -> None:
                     project_dir=project_dir,
                     project_id=project_id,
                     work_mode=final_work_mode,
+                    adapter_mode=adapter_mode,
                     cron_id=str(params.get("cron_id") or "").strip(),
                     sessions_root=_sessions_dir_for_request(request, params=params),
                 )
@@ -382,7 +396,8 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 ctx.services.tenant_pool().prewarm_session_in_background(
                     session_id=session_id,
                     channel_id=channel_id or "default",
-                    mode="agent",
+                    mode=canonical_mode,
+                    adapter_mode=adapter_mode,
                     project_dir=(str(project_dir).strip() or None) if project_dir else None,
                     request=request,
                 )

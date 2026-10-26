@@ -6,7 +6,7 @@ USER root
 ARG AGENT_RUNTIME_REPOS=https://gitcode.com/openJiuwen/agent-runtime.git
 ARG AGENT_RUNTIME_BRANCH=develop
 ARG AGENT_CORE_REPOS=https://gitcode.com/openJiuwen/agent-core.git
-ARG AGENT_CORE_BRANCH=dev-stable-ee
+ARG AGENT_CORE_BRANCH=dev-stable
 ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
 
 # 业务用户 app(1000)
@@ -38,11 +38,6 @@ RUN uv pip install --system \
 # tiktoken BPE 预热
 ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
-
-# symphony extension.yaml 存在才清理依赖
-RUN if [ -f jiuwenswarm/extensions/symphony/extension.yaml ]; then \
-        yq -i '.dependencies = {}' jiuwenswarm/extensions/symphony/extension.yaml; \
-    fi
 
 ENV HOME=/home/app \
     PATH=/usr/local/bin:$PATH:/home/app/.local/bin
