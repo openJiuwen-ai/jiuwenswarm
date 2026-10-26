@@ -10,6 +10,8 @@ transport. Three kinds exist:
                   ``${VAR}`` placeholders (tianyancha/gildata/gmail/jira...).
   * cli_oauth   — the CLI binary manages its own OAuth (feishu/dingtalk...);
                   delegated to ``CliDriver`` (form C).
+  * oauth       — the host implements OAuth Authorization Code + PKCE and
+                  stores the exchanged tokens (Canva).
 
 This module provides the shared primitives the ``token`` strategy builds on:
 placeholder detection, a persistent ``CredentialStore``, and
@@ -78,6 +80,10 @@ def _get_machine_id() -> str:
             r = subprocess.run(
                 ["/usr/sbin/ioreg", "-d2", "-c", "IOPlatformExpertDevice"],
                 capture_output=True, text=True, timeout=2,
+                # macOS tools emit UTF-8. Without an explicit codec a decode
+                # error happens in the reader thread, stdout comes back empty
+                # and the machine id silently falls back to a constant.
+                encoding="utf-8", errors="replace",
             )
             for line in r.stdout.splitlines():
                 if "IOPlatformUUID" in line:
@@ -190,6 +196,7 @@ def _load_mcp_cfg(name: str) -> dict[str, Any] | None:
 KIND_NONE = "none"
 KIND_TOKEN = "token"
 KIND_CLI_OAUTH = "cli_oauth"
+KIND_OAUTH = "oauth"
 
 
 def extract_placeholders(mcp_cfg: dict[str, Any] | None) -> set[str]:
@@ -311,6 +318,8 @@ def detect_credential_kind(name: str) -> str:
         return KIND_NONE
     if package.credentials_type == "cli-oauth":
         return KIND_CLI_OAUTH
+    if package.credentials_type == "oauth":
+        return KIND_OAUTH
     if package.credentials_type == "token":
         return KIND_TOKEN
     return KIND_NONE
@@ -467,6 +476,7 @@ __all__ = [
     "KIND_NONE",
     "KIND_TOKEN",
     "KIND_CLI_OAUTH",
+    "KIND_OAUTH",
 ]
 
 

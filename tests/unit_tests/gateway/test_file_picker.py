@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from jiuwenswarm.channels.web import file_picker
+from jiuwenswarm.gateway.channel_manager.web import file_picker
 
 
 def test_remember_and_resolve_last_file_picker_dir(tmp_path: Path, monkeypatch):

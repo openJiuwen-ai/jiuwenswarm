@@ -2,7 +2,7 @@ import { Headphones, Image as ImageIcon, Sheet, Video, X } from 'lucide-react';
 import { useCallback, useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { designerAssetPreviewUrl } from '../../designerAssetUrl';
-import { preferredDesignerPreviewRef } from '../../designerMaterials';
+import { designerImagePreviewUrl, preferredDesignerPreviewRef } from '../../designerMaterials';
 import { useDesignerAssetLibraryStore } from '../../designerAssetLibraryStore';
 import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
@@ -99,7 +99,7 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
         sourceNodeId: source.id,
         label: source.label || source.id,
         mediaType: sourceType,
-        previewUrl: designerAssetPreviewUrl(previewRef?.uri),
+        previewUrl: designerImagePreviewUrl(previewRef, sourceType),
       });
     }
     return items;
@@ -157,10 +157,7 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
           </span>
           <div className="designer-node-toolbar__material-tile">
             {item.previewUrl &&
-            (item.kind === 'upload'
-              ? Boolean(item.mimeType?.startsWith('image/'))
-              : item.mediaType !== DESIGNER_NODE_TYPE_TABLE &&
-                item.mediaType !== DESIGNER_NODE_TYPE_TEXT) ? (
+            (item.kind === 'linked' || Boolean(item.mimeType?.startsWith('image/'))) ? (
               <img
                 className="designer-node-toolbar__material-thumb"
                 src={item.previewUrl}

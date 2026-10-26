@@ -20,7 +20,7 @@ For production, use a database reachable by all Teams, provide genuinely shared 
 
 On binding failure, the launcher rolls an expert Team back. Summary Team lifecycle and Summary Execution state are persisted separately so restart recovery can restore the shared Team and re-evaluate source readiness.
 
-Task completion and Web execution status have separate lifecycles. When a background Organization turn ends, the Web client closes that Team's current reasoning and streaming output without ending other Teams' work. A passive `attach_only` subscription does not keep the session busy; real execution and requests waiting for user input still do. Check Summary Execution and task states to confirm completion, rather than treating an intermediate `chat.final` segment as the end of the turn.
+Task completion and Web execution status have separate lifecycles. When a background Organization turn ends, the Web client closes that Team's current reasoning and streaming output without ending other Teams' work. Passive `attach_only` subscriptions and pending queries for Team lists, Organization snapshots, Team history, assets, plan status, workflows, pending authorizations, or Goal status do not keep the session busy. These queries do not mean that tasks restart when a completed session is reopened. Real execution, queued work, and requests waiting for authorization or interaction confirmation still keep the session busy. A Team that has finished its current work and is waiting for new input is idle. Check Summary Execution and task states to confirm completion, rather than treating an intermediate `chat.final` segment as the end of the turn.
 
 ## Importing packages
 

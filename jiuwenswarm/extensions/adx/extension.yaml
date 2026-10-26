@@ -1,0 +1,10 @@
+id: adx_router
+name: ADX Router
+version: 0.1.0
+description: Route per-user E2A traffic through ADX Ingress managed WebSockets
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.5"
+dependencies: {}
+requires_transport: true
+config_schema:
+  type: object

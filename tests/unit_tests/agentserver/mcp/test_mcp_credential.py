@@ -74,6 +74,16 @@ def test_detect_kind_cli_oauth_for_cli_json(tmp_path: Path) -> None:
         assert cred.detect_credential_kind("feishu") == "cli_oauth"
 
 
+def test_detect_kind_oauth_for_host_managed_package(tmp_path: Path) -> None:
+    """Canva: credentials.type=oauth -> 'oauth' (host runs OAuth + stores tokens)."""
+    _mk_pkg(tmp_path, "canva", mcp={
+        "mcpServers": {"canva": {"url": "https://mcp.canva.cn/mcp",
+                                 "headers": {"Authorization": "Bearer ${OAUTH_ACCESS_TOKEN}"}}}
+    })
+    with patch("jiuwenswarm.server.runtime.mcp.credential.get_workspace_dir", return_value=tmp_path):
+        assert cred.detect_credential_kind("canva") == "oauth"
+
+
 # --- resolve_placeholders: substitute ${VAR} from the store ---
 
 def test_resolve_placeholders_in_env(tmp_path: Path) -> None:
@@ -286,7 +296,10 @@ def _mk_pkg(workspace: Path, name: str, *, mcp: dict | None, cli: dict | None = 
         server = next(iter(mcp.get("mcpServers", {}).values()), {})
         integration_type = "stdio-mcp" if server.get("command") else "remote-mcp"
         placeholders = sorted(set(re.findall(r"\$\{(\w+)\}", json.dumps(mcp))))
-        if placeholders:
+        credentials_type = "token" if placeholders else None
+        if name == "canva":
+            credentials_type = "oauth"
+        if credentials_type == "token":
             (pkg / "token-schema.json").write_text(
                 json.dumps({"fields": [{"key": key, "required": True} for key in placeholders]}),
                 encoding="utf-8",
@@ -294,7 +307,7 @@ def _mk_pkg(workspace: Path, name: str, *, mcp: dict | None, cli: dict | None = 
         write_manifest(
             pkg,
             integration_type,
-            credentials_type="token" if placeholders else None,
+            credentials_type=credentials_type,
         )
     else:
         skills = pkg / "skills"

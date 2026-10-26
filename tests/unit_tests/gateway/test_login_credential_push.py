@@ -47,7 +47,7 @@ async def test_refresh_request_is_answered_with_an_update(monkeypatch):
         seen_refs.append(ref)
         return {"credential_ref": ref, "api_key": "id-new"}
 
-    monkeypatch.setattr("jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref", _refresh)
+    monkeypatch.setattr("jiuwenswarm.gateway.auth.passthrough.refreshed_credential_for_ref", _refresh)
     sent: list = []
 
     assert await _handler(sent)._handle_login_credential_refresh_push(_refresh_chunk()) is True
@@ -69,7 +69,7 @@ async def test_refresh_runs_off_the_event_loop(monkeypatch):
         ran_in.append(threading.get_ident())
         return None
 
-    monkeypatch.setattr("jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref", _refresh)
+    monkeypatch.setattr("jiuwenswarm.gateway.auth.passthrough.refreshed_credential_for_ref", _refresh)
     await _handler([])._handle_login_credential_refresh_push(_refresh_chunk())
     assert ran_in and ran_in[0] != loop_thread
 
@@ -79,7 +79,7 @@ async def test_failed_refresh_sends_nothing_and_is_still_consumed(monkeypatch):
     def _boom(ref):
         raise RuntimeError("exchange service down")
 
-    monkeypatch.setattr("jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref", _boom)
+    monkeypatch.setattr("jiuwenswarm.gateway.auth.passthrough.refreshed_credential_for_ref", _boom)
     sent: list = []
     assert await _handler(sent)._handle_login_credential_refresh_push(_refresh_chunk()) is True
     assert sent == []

@@ -19,6 +19,7 @@ dependencies = [
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@0ab5913b250d565b35bff3828dae438939cb1acd",
+    "JiuwenMemory>=0.2.0",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
@@ -70,6 +71,7 @@ dependencies = [
     "tree-sitter>=0.25.0,<0.26.0",
     "tree-sitter-bash>=0.25.0,<0.26.0",
     "playwright>=1.40,<2",
+    "tiktoken>=0.12.0,<0.13",
     "uv>=0.4.0,<0.13",
     "gitcode-cli==0.12.0",
     "imageio-ffmpeg>=0.5.1,<1",
@@ -131,6 +133,7 @@ shell-ast = []
 # Same packages as [dependency-groups] test (pip install -e ".[test]")
 test = [
     "a2a-sdk[http-server]==1.0.0",
+    "cryptography>=44.0.0",
     "asyncssh>=2.14.0,<2.24",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",
@@ -211,7 +214,6 @@ default-groups = ['dev']
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "0ab5913b250d565b35bff3828dae438939cb1acd" }
 openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "edfdae9a8a876b7a15dbf6bce501b929d235b6dc", subdirectory = "openjiuwen-protocol" }
 
@@ -220,6 +222,7 @@ openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git
 # Testing (keep in sync with optional-dependencies.test)
 test = [
     "a2a-sdk[http-server]==1.0.0",
+    "cryptography>=44.0.0",
     "asyncssh>=2.14.0,<2.24",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",

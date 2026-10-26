@@ -201,6 +201,8 @@ const DOWNLOADS_SAVE_DEBOUNCE_MS = 2_000;
 let downloadsSaveTimer = null;
 let pendingDownloadsPayload = null;
 let activePaneSessionId = '';
+// Stay hidden until the renderer has loaded the saved browser.headless setting.
+let browserHeadless = true;
 let lastBrowserBounds = null;
 let browserTargetResolver = null;
 let currentFrontendUrl = '';
@@ -1491,9 +1493,19 @@ function hideBrowserView(entry) {
   entry.view.setVisible(false);
 }
 
+function setBrowserHeadless(headless) {
+  if (typeof headless !== 'boolean') throw new TypeError('headless must be boolean');
+  browserHeadless = headless;
+  if (headless) {
+    activePaneSessionId = '';
+    for (const entry of browserViews.values()) hideBrowserView(entry);
+  }
+  return browserHeadless;
+}
+
 function setBrowserPaneVisible(sessionId, visible, focus = true) {
   const key = normalizeBrowserSessionId(sessionId);
-  if (!visible) {
+  if (!visible || browserHeadless) {
     const entry = browserViews.get(key);
     if (entry) {
       hideBrowserView(entry);
@@ -1511,7 +1523,7 @@ function setBrowserPaneVisible(sessionId, visible, focus = true) {
   // 视图可能尚未创建（首次切到 browser 页签）：创建完成后兜底应用边界与可见性。
   void ensureBrowserView(key)
     .then(entry => {
-      if (!entry || activePaneSessionId !== key) return;
+      if (!entry || browserHeadless || activePaneSessionId !== key) return;
       entry.visible = true;
       entry.view.setVisible(true);
       if (lastBrowserBounds) applyBrowserBounds(entry, lastBrowserBounds, 'activate-cache');
@@ -2897,6 +2909,7 @@ function registerIpcHandlers() {
   registerHandler('browser:set-visible', (visible, sessionId, focus) => {
     return setBrowserPaneVisible(sessionId, Boolean(visible), focus !== false);
   });
+  registerHandler('browser:set-headless', setBrowserHeadless);
   registerHandler('browser:set-bounds', (bounds, sessionId) => {
     lastBrowserBounds = bounds;
     const entry = browserViews.get(normalizeBrowserSessionId(sessionId));
@@ -2931,7 +2944,7 @@ function registerIpcHandlers() {
     }
   };
   browserDownloadService.attach(session.fromPartition(SHARED_BROWSER_PARTITION), pushDownloads);
-  registerHandler('browser:list-downloads', () => browserDownloadService.list());
+  registerHandler('browser:list-downloads', () => browserDownloadService.list({ freshPresence: true }));
   registerHandler('browser:download-action', (downloadId, requestedAction) =>
     browserDownloadService.action(downloadId, requestedAction));
   registerHandler('browser:open-download', downloadId => browserDownloadService.openDownload(downloadId));
@@ -2959,7 +2972,7 @@ function registerIpcHandlers() {
     // panel does not remount on reopen. Push a fresh list so records changed
     // while hidden — e.g. a completed file deleted in Explorer showing Chrome's
     // "已删除" marker — appear immediately on reopen.
-    pushDownloads(browserDownloadService.list());
+    pushDownloads(browserDownloadService.list({ freshPresence: true }));
   });
   registerHandler('browser:hide-download-bubble', () => {
     downloadBubble.hide();

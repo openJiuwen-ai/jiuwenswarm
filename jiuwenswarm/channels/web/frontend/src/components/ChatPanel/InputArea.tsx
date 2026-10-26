@@ -1,4 +1,4 @@
-﻿import {
+import {
   useState,
   useRef,
   useCallback,
@@ -86,7 +86,7 @@ import { SkillPickerPanel } from './SkillPickerPanel';
 import { PickerPanel } from './PickerPanel';
 import { PickerSearchInput } from './PickerSearchInput';
 import { Switch } from '../Switch';
-import { Input } from '../ui';
+import { Button, CloseButton, Dialog, Input } from '../ui';
 import { Select } from '../ui/Select/Select';
 import { ExtensionIcon } from '../ConnectorMarket/icons';
 import {
@@ -343,6 +343,10 @@ interface InputAreaProps {
   onForkSession: (sourceSessionId: string) => Promise<void>;
   /** Signals that the user is editing an existing real Session. */
   onInputIntent?: (sessionId: string) => void;
+  /** Tab or → in the empty composer; returns true when it filled the composer, which then keeps focus. */
+  onEmptyComposerTab?: () => boolean;
+  /** The next-input suggestion, shown in the empty composer while its chip after the reply is out of view. */
+  suggestionPlaceholder?: string | null;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   onPersistDocuments: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   /** Delete an unsent image copy under the session uploads directory. */
@@ -759,6 +763,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onEnsureSession,
     onForkSession,
     onInputIntent,
+    onEmptyComposerTab,
+    suggestionPlaceholder,
     onPersistMedia,
     onPersistDocuments,
     onDiscardMedia,
@@ -801,6 +807,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [projectCreateMode, setProjectCreateMode] = useState<ProjectCreateMode>('blank');
   const [menuDirection, setMenuDirection] = useState<'up' | 'down'>('up');
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const [groupRuntimeNotice, setGroupRuntimeNotice] = useState<string | null>(null);
   const [externalAgentSwitchNotice, setExternalAgentSwitchNotice] = useState<string | null>(null);
   const [agentPickerQuery, setAgentPickerQuery] = useState('');
   const [pickerTab, setPickerTab] = useState<'agent' | 'group'>('agent');
@@ -1494,7 +1501,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       const separator = current && !/\s$/.test(current) ? ' ' : '';
       editor.appendChild(document.createTextNode(`${separator}${text}`));
       useChatStore.getState().setInputValue(sid, `${current}${separator}${text}`);
-      if (sid !== NEW_CONVERSATION_ID) onInputIntent?.(sid);
+      onInputIntent?.(sid);
 
       editor.focus();
       const range = document.createRange();
@@ -3011,7 +3018,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   const notifyKVCInputIntent = useCallback(() => {
-    if (!activeSessionId || activeSessionId === NEW_CONVERSATION_ID) return;
+    if (!activeSessionId) return;
     onInputIntent?.(activeSessionId);
   }, [activeSessionId, onInputIntent]);
 
@@ -3071,6 +3078,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
       }
 
+      if ((e.key === 'Tab' || e.key === 'ArrowRight') && !e.shiftKey && !isImeCompositionKey(e.nativeEvent, isComposingRef.current)
+          && !extractPlainText().trim() && onEmptyComposerTab?.()) {
+        e.preventDefault();
+        return;
+      }
+
       if (e.key !== 'Enter' || e.shiftKey) return;
       if (isImeCompositionKey(e.nativeEvent, isComposingRef.current)) return;
       e.preventDefault();
@@ -3086,6 +3099,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       mode,
       moveComposerSuggestionHighlight,
       notifyKVCInputIntent,
+      onEmptyComposerTab,
     ],
   );
 
@@ -3992,7 +4006,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             ? t('chat.placeholderProcessingQueue')
                             : isInterruptible
                               ? t('chat.placeholderProcessing')
-                              : t('chat.placeholder')
+                              : suggestionPlaceholder || t('chat.placeholder')
               }
               className={cx('chat-input-editor', composerDisabled && 'chat-input-editor--disabled')}
               data-testid="chat-panel-input"
@@ -4314,11 +4328,30 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                             ? t('chat.teamSkillsGroupLocked')
                                             : existingTeamGroupSelectionDisabled
                                             ? t('chat.agentGroupFirstBuildOnly')
-                                            : item.description || t('chat.agentGroupBinding')
+                                            : item.description || t('chat.agentGroupNoDescription')
                                       }
                                       {...agentTooltipHandlers}
-                                      onClick={() => {
+                                      onClick={async () => {
                                         if (agentGroupSelectionDisabled || !activeSessionId) return;
+                                        try {
+                                          const result = await webRequest<{ group?: { disabledRuntimes?: string[] } }>(
+                                            'agent_groups.show', { id: item.id },
+                                          );
+                                          const disabled = result.group?.disabledRuntimes ?? [];
+                                          if (disabled.length > 0) {
+                                            setGroupRuntimeNotice(t('chat.agentGroupRuntimeDisabled', {
+                                              agents: disabled.map((name) => {
+                                                if (name === 'claude') return 'Claude';
+                                                if (name === 'codex') return 'Codex';
+                                                return name;
+                                              }).join(', '),
+                                            }));
+                                            return;
+                                          }
+                                        } catch (error) {
+                                          setGroupRuntimeNotice(String(error));
+                                          return;
+                                        }
                                         useSessionStore.getState().setMode(activeSessionId, 'team');
                                         setAgentGroupSelectionIntent(activeSessionId, { kind: 'select', id: item.name });
                                         setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
@@ -5594,6 +5627,31 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         </div>
       </div>
 
+      <Dialog
+        open={groupRuntimeNotice !== null}
+        titleId="group-runtime-notice-title"
+        className="chat-group-runtime-dialog"
+        onCancel={() => setGroupRuntimeNotice(null)}
+        onBackdropClick={() => setGroupRuntimeNotice(null)}
+      >
+        <div className="chat-group-runtime-dialog__header" data-testid="chat-panel-group-runtime-notice-header">
+          <h2 id="group-runtime-notice-title">{t('chat.agentGroupRuntimeDisabledTitle')}</h2>
+          <CloseButton
+            testId="chat-panel-group-runtime-notice-close"
+            ariaLabel={t('common.close')}
+            onClick={() => setGroupRuntimeNotice(null)}
+          />
+        </div>
+        <p className="chat-group-runtime-dialog__message" data-testid="chat-panel-group-runtime-notice">
+          {groupRuntimeNotice}
+        </p>
+        <div className="chat-group-runtime-dialog__actions" data-testid="chat-panel-group-runtime-notice-actions">
+          <Button variant="primary" data-testid="chat-panel-group-runtime-notice-confirm"
+            onClick={() => setGroupRuntimeNotice(null)}>
+            {t('chat.agentGroupRuntimeDisabledConfirm')}
+          </Button>
+        </div>
+      </Dialog>
       {goalOverwriteRequest && (
         <OverwriteGoalConfirmModal
           currentObjective={goalOverwriteRequest.currentObjective}

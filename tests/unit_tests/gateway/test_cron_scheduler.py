@@ -3184,7 +3184,7 @@ def _patch_login_credential_lookup(
     ``fresh`` 为 refreshed_credential_for_ref 的返回值（None=凭据已撤销/拿不到）。
     """
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref",
+        "jiuwenswarm.gateway.auth.passthrough.refreshed_credential_for_ref",
         lambda ref: fresh
         if fresh is not None
         else {"credential_ref": ref, "revoked": True},
