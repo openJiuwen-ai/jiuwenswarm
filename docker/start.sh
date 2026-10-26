@@ -25,11 +25,12 @@ if ! /usr/local/bin/python3 "${SCRIPT_DIR}/update_conf.py"; then
     exit 1
 fi
 
-# AGENT_RUNTIME_ENABLED=false（不部署 agent-runtime）时，关断 gateway 的 runtime
-# 路由扩展。EXTENSION_DIRS 为分号分隔的多目录（如 dir1;dir2）；内置扩展目录 
+# AGENT_RUNTIME_DEPLOY_MODE=off（不部署 agent-runtime）时，关断 gateway 的 runtime
+# 路由扩展；routing/full 保持扩展加载（配合 GATEWAY_AGENT_CLIENT_MODE=runtime 生效）。
+# EXTENSION_DIRS 为分号分隔的多目录（如 dir1;dir2）；内置扩展目录 
 # /app/jiuwenswarm/jiuwenswarm/extensions 无条件追加（+= 语义，无论 EXTENSION_DIRS 
 # 是否设置/是否已含该目录）
-if [ "${ROLE}" = "gateway" ] && [ "${AGENT_RUNTIME_ENABLED}" == "false" ]; then
+if [ "${ROLE}" = "gateway" ] && [ "${AGENT_RUNTIME_DEPLOY_MODE}" == "off" ]; then
     ext_dirs=()
     if [ -n "${EXTENSION_DIRS:-}" ]; then
         IFS=';' read -r -a ext_dirs <<< "${EXTENSION_DIRS}"
@@ -46,7 +47,7 @@ if [ "${ROLE}" = "gateway" ] && [ "${AGENT_RUNTIME_ENABLED}" == "false" ]; then
         file="${ext_dir%/}/runtime_management_extension/extension.yaml"
         if [ -f "${file}" ]; then
             yq -i '.enabled = false' "${file}"
-            echo "[start.sh] AGENT_RUNTIME_ENABLED=false → runtime extension disabled: ${file}"
+            echo "[start.sh] AGENT_RUNTIME_DEPLOY_MODE=off → runtime extension disabled: ${file}"
             disabled_any=1
         fi
     done
