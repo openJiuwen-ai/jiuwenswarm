@@ -144,10 +144,21 @@ async def _run(host: str, port: int) -> None:
         try:
             supervisor = await backend_task
         except Exception as exc:  # noqa: BLE001
-            logger.exception("[AgentServer] runtime supervisor failed: %s", exc)
+            logger.exception("[AgentServer] runtime supervisor failed: %r", exc)
             mark_failed = getattr(front.readiness, "mark_failed", None)
             if callable(mark_failed):
-                mark_failed(str(exc))
+                mark_failed(repr(exc))
+            # This task only fails while the first Worker bring-up never
+            # completed. Staying alive would leave the container unready
+            # until an external recycler notices; crash instead so the
+            # runtime restarts this pod (with backoff) into clean state.
+            logger.error(
+                "[AgentServer] runtime never reached ipc-ready at startup; "
+                "crashing for a fresh container"
+            )
+            from jiuwenswarm.common.process_supervision import CRASH_EXIT_CODE
+
+            os._exit(CRASH_EXIT_CODE)  # pylint: disable=protected-access
 
     watcher = asyncio.create_task(_watch_backend(), name="runtime-supervisor-watch")
 

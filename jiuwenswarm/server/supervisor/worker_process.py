@@ -26,8 +26,17 @@ def default_socket_path() -> str:
     from jiuwenswarm.common.utils import get_user_workspace_dir
     from jiuwenswarm.server.supervisor.identity import data_scope
 
-    suffix = "pipe" if os.name == "nt" else "sock"
-    path = get_user_workspace_dir() / "run" / f"runtime-{data_scope()[:16]}.{suffix}"
+    scope = data_scope()[:16]
+    if os.name == "nt":
+        name = f"runtime-{scope}.pipe"
+    else:
+        # A workspace shared by several pods on one node (e.g. a PVC) makes
+        # this endpoint reachable across pods, and connect() succeeds against
+        # any pod's listener on the path. Keep hosts apart so a Front never
+        # reattaches to another pod's Worker; the hostname is stable on a
+        # single machine, so desktop resident-Worker restarts still work.
+        name = f"runtime-{scope}-{os.uname().nodename}.sock"
+    path = get_user_workspace_dir() / "run" / name
     if os.name != "nt" and len(os.fsencode(path)) >= 100:
         import tempfile
         directory = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
@@ -35,7 +44,7 @@ def default_socket_path() -> str:
         if directory.is_symlink() or directory.stat().st_uid != os.getuid():
             raise RuntimeError("Runtime IPC directory has an unexpected owner")
         directory.chmod(0o700)
-        path = directory / f"runtime-{data_scope()[:16]}.sock"
+        path = directory / name
     return str(path)
 
 
