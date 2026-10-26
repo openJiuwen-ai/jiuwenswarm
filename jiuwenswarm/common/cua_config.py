@@ -22,9 +22,10 @@ def is_cua_backend_available() -> bool:
     """Check installation prerequisites without loading or starting a desktop backend.
 
     Availability is independent of user preferences and OS permission grants.
-    Python installs use Core's Windows/X11 backend; desktop installers also
-    require their bundled native runtime. Unknown or incomplete installs hide
-    the setting without changing its persisted value.
+    Windows keeps Core's PyAutoGUI/Pillow single-step backend, including in
+    desktop installers; its bundled native runtime serves cua_repl. macOS
+    installers use the native backend for both routes. Unknown or incomplete
+    installs hide the setting without changing its persisted value.
     """
     try:
         if os.getenv("JIUWENSWARM_RUNTIME_PLATFORM", "").strip().lower() == "harmony":
