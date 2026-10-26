@@ -1,9 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Read-only session workspace capabilities contributed during ``ops.build``."""
+"""Read-only session capabilities contributed during ``ops.build``."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from openjiuwen.core.events import (
@@ -15,6 +16,13 @@ from openjiuwen.core.events import (
     ExtensionEventBus,
     HandlerLevel,
     SessionContext,
+)
+
+from jiuwenswarm.common.protocol_ids import is_valid_session_id
+from jiuwenswarm.server.runtime.session.model_selection_store import (
+    SESSION_MODEL_INFO_KEY,
+    get_session_model_info,
+    sanitize_model_info,
 )
 
 
@@ -59,6 +67,24 @@ async def session_root(ops: EventHandlerOps) -> str | None:
     return _absolute_path(context.metadata.get("project_root"), "session.root")
 
 
+async def session_model(ops: EventHandlerOps) -> dict[str, object] | None:
+    """Read bound runtime model facts, or this session's saved selection.
+
+    Raises:
+        RuntimeError: No session is bound to the current Handler.
+        TypeError: A host model snapshot contains invalid field types.
+        ValueError: A host snapshot or bound session ID is invalid.
+        ModelSelectionError: Saved model metadata cannot be read or validated.
+    """
+    context = _require_session(ops, "session.model")
+    if not is_valid_session_id(context.session_id):
+        raise ValueError("invalid session_id")
+    snapshot = context.metadata.get(SESSION_MODEL_INFO_KEY)
+    if snapshot is not None:
+        return sanitize_model_info(snapshot)
+    return await asyncio.to_thread(get_session_model_info, context.session_id)
+
+
 async def session_ops_build(
     event: Event,
     ops: EventHandlerOps | None,
@@ -72,6 +98,7 @@ async def session_ops_build(
     builder.add_namespace("session")
     builder.add_method("session", "cwd", session_cwd)
     builder.add_method("session", "root", session_root)
+    builder.add_method("session", "model", session_model)
     return builder
 
 
