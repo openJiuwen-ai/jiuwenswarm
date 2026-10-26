@@ -37,6 +37,15 @@ description: 串联 JiuwenSwarm AI coding 的需求澄清、设计、开发、�
 故障证据写入 bugfix，不向设计回填开发事实，不另造重复状态台账。
 每阶段只读取所需 skill 与 reference，不把全部模板一次性载入。
 
+## 决策与验证的交接规则
+
+- 新建记录前按 [决策归属与替代](../jw-design/references/decision-records.md) 查找已有维护位置，说明续写、新决策或局部/完全替代；不按提交数复制文档。
+- 设计定义可观察验收条件；开发按 [行为证据](../jw-dev/references/behavior-evidence.md) 核对模型/用户可见内容、真实入口和实际副作用。
+- 检视与转测引用候选版本、适用范围和重验条件；候选、依赖或前提变化时只沿用已核实仍有效的证据。
+- 有复用价值的修复按 [防错模式提炼](../jw-dev/references/defensive-patterns.md) 更新所属模块规则/spec 并链接 bugfix，不把局部事故自动变成全仓禁令。
+
+以上规则复用 design/spec/feature/bugfix 和已有交接记录，不新建全局状态台账或另设阶段。
+
 实际文档在 `.agents/agent-docs/`，命名与存放遵循各阶段 skill。
 提交、推送、PR、分支和 worktree 遵循仓库及用户约定；本流程不扩展授权。
 不自动启动多代理，不运行格式化或静态检查。

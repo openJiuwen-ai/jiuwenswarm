@@ -24,6 +24,13 @@ description: 根据 JiuwenSwarm 的设计、spec、实现和已有验证证据�
 6. 按 [testing-lifecycle.md](references/testing-lifecycle.md) 记录真实评审与测试进展。
    仅要求撰写时交付草稿和待确认项，不自动推进到已测试或已验收。
 
+## 验证依据与重验条件
+
+按 [行为证据](../jw-dev/references/behavior-evidence.md) 整理受影响的模型/用户可见结果、真实入口、
+副作用和必要负向用例；已有快照仅是证据的一层，不以工具成功文本替代最终状态。
+测试计划与实际执行分开，记录对应候选、依赖/环境、适用范围及改变哪些前提后需要重验。
+复用旧报告时核对其版本与场景，尚未核实写待重验；本节不自动执行测试或扩大外部调用权限。
+
 ## 存放与标识
 
 - 默认输出 `.agents/agent-docs/designs/testing/<关联设计目录名>/testing.md`，附件放同目录 `assets/`。
