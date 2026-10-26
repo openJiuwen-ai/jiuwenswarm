@@ -12,7 +12,7 @@
 | 状态 | 进行中（与开发计划一致；任务中心不在本轮） |
 | 设计依据 | [JiuwenMate 服务端架构设计](../designs/jiuwenmate-architecture.md) 第 4.4 节；开发计划 JM-16 |
 | 关联 feature | 前置：[F_02](F_02_colleague-management.md)、[F_06](F_06_budget-port.md)、[F_09](F_09_web-and-feishu-result-delivery.md) |
-| 验证摘要 | 本次查询专项测试 9 项通过；活跃数据页面继续使用现有标题字段。任务中心未接入。 |
+| 验证摘要 | 查询专项测试 10 项通过；渠道数按实际 IM 平台归并，Web 不计入输送渠道。任务中心未接入。 |
 | Refs | 无独立 issue；需求来源为开发计划 JM-16 |
 
 ## 2. 背景、目标与范围
@@ -88,7 +88,7 @@ flowchart LR
 | `companion_days` | 自创建日到 `now` 的 UTC 日历天数，含首尾 |
 | `last_response_at` | 最近一次 `completed` 的 `updated_at`；没有则为空 |
 | `days` / `hours` | 按最早 Execution 的 UTC 日期和小时累计任务数、分钟和 Token；时段热力格按任务数显示，因此不足一分钟的任务也会显示活动颜色 |
-| `channels` | 按 Session 的 `channel` 汇总调用、Token、任务、回复和失败 |
+| `channels` | 仅汇总实际 IM 平台的调用、Token、任务、回复和失败。私聊以 Session 的 `channel` 作为平台，群聊按 `group_chats.platform` 取平台；同平台的私聊和群聊合并，Web 会话不计入 |
 | `groups` | `kind = group` 的会话；产物是该会话上状态为 `delivered` 或 `available` 的文件投递 |
 
 私聊执行历史按 Request 显示各自的请求文本作为简短任务名；当旧记录缺少可用请求文本时，回退到会话标题。该文本仅用于历史行标题，不返回完整消息正文或额外上下文。定时任务仍显示计划名称，群聊仍显示群标识。
@@ -106,7 +106,7 @@ flowchart LR
 
 | 验收 | 场景 | 预期 | 结果 |
 | --- | --- | --- | --- |
-| JM-16-V-02 | ignored、失败、已结算与未知用量；私聊历史按 Request 区分标题 | ignored 不进入任务、回复、失败；私聊请求显示各自文本，旧数据回退会话标题 | `uv run pytest -o 'addopts=-v --strict-markers --tb=short --asyncio-mode=auto' tests/unit_tests/server/jiuwenmate/test_management_query.py -q`：9 passed |
+| JM-16-V-02 | ignored、失败、已结算与未知用量；私聊历史按 Request 区分标题；同一 IM 平台的私聊和群聊合并，Web 排除 | ignored 不进入任务、回复、失败；私聊请求显示各自文本，旧数据回退会话标题；渠道统计按平台而非会话类型 | `uv run pytest -o 'addopts=-v --strict-markers --tb=short --asyncio-mode=auto' tests/unit_tests/server/jiuwenmate/test_management_query.py -q`：10 passed |
 | JM-16-V-03 | Web 查询 | 只读本地命名空间，响应不含凭据和设置 | 查询结果无设置字段；方法固定 `local`，前端不传命名空间 |
 | JM-16-V-01 | 任务中心 | 本轮不验收 | 未执行 |
 
@@ -129,3 +129,13 @@ flowchart LR
 - 发现：时段格原先只使用向下取整后的执行分钟数。短于一分钟的已完成任务因此变为 0，页面没有活动颜色。
 - 变化：小时汇总新增任务数和 Token；页面以任务数生成时段热力格，时长仍用于展示累计小时。
 - 兼容：旧响应没有 `tasks` 时继续使用已有分钟字段。
+
+### 2026-10-26 输送渠道按实际 IM 平台统计
+
+- 发现：原统计直接按 Session 的 `channel` 聚合，把飞书私聊记作 `feishu`、飞书群聊记作 `group`，并把 Web 会话也计入渠道数。
+- 变化：私聊按 Session 的平台字段计数，群聊按 `group_chats.platform` 计数；相同平台的私聊和群聊合并，Web 排除。活动卡片因此反映实际使用过的 IM 平台数。
+- 验证：`test_management_query.py` 10 passed，包含仅 Web 时渠道列表为空，以及飞书私聊、群聊合并成一个 Feishu 渠道的回归用例。
+
+#### English change note
+
+On 2026-10-26, the activity query was found to count Session types as delivery channels: Feishu direct messages were labeled `feishu`, Feishu groups were labeled `group`, and Web was included. Channel metrics now use the IM platform for direct sessions and `group_chats.platform` for group sessions. Direct and group activity on the same platform is merged, and Web is excluded. The management query tests pass (10 total), including Web exclusion and Feishu direct/group aggregation.
