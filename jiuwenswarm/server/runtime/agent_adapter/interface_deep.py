@@ -5390,6 +5390,27 @@ class JiuWenSwarmDeepAdapter:
         succeeds instead of raising "register rejected".
         """
         entry = get_mcp_server_config(name)
+        if entry is None:
+            # 企业合并快照兜底：企业下发的 MCP 只存在于适配器合并后的
+            # _config_base_cache（mcp.servers），不在本地 config.yaml /
+            # mcp/state.json——reconcile 的名字解析必须能看见它们，否则
+            # 企业 web 会话永远注册不到下发的（动态 token）网关。
+            for adapter in self._iter_mcp_target_adapters():
+                cache = getattr(adapter, "_config_base_cache", None)
+                mcp_section = cache.get("mcp") if isinstance(cache, dict) else None
+                servers = (
+                    mcp_section.get("servers", [])
+                    if isinstance(mcp_section, dict) else []
+                )
+                for item in servers:
+                    if (
+                        isinstance(item, dict)
+                        and str(item.get("name", "") or "").strip() == name
+                    ):
+                        entry = item
+                        break
+                if entry is not None:
+                    break
         if not entry:
             logger.debug(
                 "[JiuWenSwarmDeepAdapter] register_mcp_by_name: " \
@@ -5417,7 +5438,13 @@ class JiuWenSwarmDeepAdapter:
                 )
                 continue
             try:
-                if await adapter._register_mcp_server(cfg, tag=tag):
+                # 条目级动态 token 端点（存在 = 该网关需要动态 token，随 mark
+                # 登记）——与 _sync_mcp_servers_for_runtime 的透传口径一致；
+                # 漏传会导致 web 会话网关永远走静态头。
+                dynamic_token_url = str(entry.get("dynamic_token_url") or "").strip() or None
+                if await adapter._register_mcp_server(
+                    cfg, tag=tag, dynamic_token_url=dynamic_token_url
+                ):
                     applied_any = True
                 elif not first_error:
                     first_error = (
@@ -11735,6 +11762,12 @@ class JiuWenSwarmDeepAdapter:
             The normalized config snapshot that was cached on this adapter.
         """
         clear_config_cache()
+        # 企业配置源：失效企业配置进程缓存（模板实体 + 实例/模板行 TTL 缓存）
+        # 并重载 memory 的 gateway DB 配置——否则 reload 后企业加载仍命中
+        # 600s TTL 旧行（与 dev-stable 的 reload 快照流程对齐）。
+        from jiuwenswarm.common.config_provider import refresh_config_source
+
+        await refresh_config_source()
         # 清 MemoryRail 实际使用的 openjiuwen lite INDEX_CACHE（而非仓内并行实现的那份），
         # 并 close 旧实例（db 连接 / watchdog observer / 定时任务），使下次
         # init_memory_manager_async 用最新 embedding_config 创建新 manager + 新 provider。
