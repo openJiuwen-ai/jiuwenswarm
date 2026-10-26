@@ -1,5 +1,4 @@
-
-import { isEnterprise } from '../../edition';import {
+import {
   useState,
   useRef,
   useCallback,
@@ -21,7 +20,7 @@ import { isEnterprise } from '../../edition';import {
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { AtSign, ChevronRight, CircleX, Infinity as InfinityIcon, ListChecks, Loader2, Lock, Mic, Pencil, Plus, Rocket, Settings, Square, SquarePlay, Workflow, X } from 'lucide-react';
+import { AtSign, ChevronRight, CircleX, Infinity as InfinityIcon, ListChecks, Loader2, Lock, Mic, Pencil, Plus, Settings, Square, SquarePlay, Workflow, X } from 'lucide-react';
 
 // import { stopAllTts } from '../../utils';
 import {
