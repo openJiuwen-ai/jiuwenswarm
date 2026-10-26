@@ -339,7 +339,7 @@ async def test_reject_and_allow_once_apply_only_to_current_call(storage, tmp_pat
             with pytest.raises(AbortError) as raised:
                 await rail.before_tool_call(third)
             third.exception = raised.value
-            await queue_rail.on_tool_exception(third)
+            await queue_rail.after_tool_call(third)
             card = queue.pending_for_call(
                 root_session_id="session-a", execution_session_id="session-a", tool_call_id="third-call",
             )
