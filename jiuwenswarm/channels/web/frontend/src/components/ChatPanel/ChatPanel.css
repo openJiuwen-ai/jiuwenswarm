@@ -4199,10 +4199,10 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   height: 100%;
   width: 100%;
-  padding: clamp(2rem, 6vh, 4.5rem) 1.5rem 1.75rem;
+  padding: 2rem 1.5rem 6rem 1.5rem;
 }
 
 .chat-welcome__composer {
@@ -4325,9 +4325,9 @@
 }
 
 .chat-welcome__banner--bee {
-  position: static;
-  flex: 0 0 auto;
-  width: 100px;
+  top: -152px;
+  right: 0;
+  width: 200px;
   height: auto;
   z-index: 9;
   pointer-events: auto;
@@ -4335,24 +4335,15 @@
   mix-blend-mode: multiply;
 }
 
-.chat-welcome__header {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  width: min(100%, 768px);
-  margin-bottom: 20px;
-}
-
 .chat-welcome__heading {
   font-size: 32px;
   font-weight: 600;
   color: var(--color-text-strong);
   line-height: 48px;
-  margin: 0;
+  margin: 0 0 20px 0;
   text-align: left;
-  flex: 1;
-  min-width: 0;
+  align-self: flex-start;
+  width: calc(100% - 160px);
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -4388,7 +4379,6 @@
 
 /* 4.9 专家团「通过聊天创建」欢迎态：只由专家团入口挂载，普通新会话保留原首页。 */
 .chat-welcome--group-create {
-  justify-content: center;
   gap: 0;
   transform: translateY(-92px);
 }
@@ -4697,12 +4687,6 @@
 @media (hover: none) {
   .chat-suggestion-card__dismiss {
     opacity: 1;
-  }
-}
-
-@media (max-height: 760px) {
-  .chat-welcome {
-    padding-top: 1.5rem;
   }
 }
 

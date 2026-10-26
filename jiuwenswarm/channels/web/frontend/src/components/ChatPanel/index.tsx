@@ -2817,10 +2817,10 @@ export const ChatPanel = React.memo(function ChatPanel({
                   data-testid="chat-panel-welcome-group-banner"
                 />
               )}
-              <div className="chat-welcome__header" data-testid="chat-panel-welcome-header">
-                <h2 className="chat-welcome__heading" data-testid="chat-panel-welcome-heading">
-                  {isGroupCreateWelcome ? <GroupCreateWelcomeHeading /> : <WelcomeHeading />}
-                </h2>
+              <h2 className="chat-welcome__heading" data-testid="chat-panel-welcome-heading">
+                {isGroupCreateWelcome ? <GroupCreateWelcomeHeading /> : <WelcomeHeading />}
+              </h2>
+              <div className="chat-welcome__composer" data-testid="chat-panel-welcome-composer">
                 {!isGroupCreateWelcome && (
                   <>
                     <div
@@ -2869,8 +2869,6 @@ export const ChatPanel = React.memo(function ChatPanel({
                     />
                   </>
                 )}
-              </div>
-              <div className="chat-welcome__composer" data-testid="chat-panel-welcome-composer">
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
                 <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
                 <InterruptResultBubble />
