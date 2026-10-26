@@ -220,7 +220,7 @@ def _reject_install_manager(message):
     def reject(*args, **kwargs):
         pytest.fail(message)
 
-    return SimpleNamespace(install_symphony_skill_artifact=Mock(side_effect=reject))
+    return SimpleNamespace(install_symphony_skill_artifact=AsyncMock(side_effect=reject))
 
 
 def _patch_runtime_construction(monkeypatch, flow, runtime, model):
@@ -1286,7 +1286,7 @@ async def test_install_requires_approved_server_artifact(
     calls: list[Path] = []
 
     class Manager:
-        def install_symphony_skill_artifact(self, artifact_dir, **kwargs):
+        async def install_symphony_skill_artifact(self, artifact_dir, **kwargs):
             assert (Path(artifact_dir) / "SKILL.md").read_text(
                 encoding="utf-8"
             ) == reviewed_text
@@ -1369,10 +1369,13 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
     monkeypatch.setattr(service_module, "_save_install_receipt", real_save)
     restarted = _install_service(monkeypatch, _review_flow(tmp_path, package=package))
     restarted_manager = SkillManager(workspace_dir=str(workspace))
+    async def _fail_reinstall(*args, **kwargs):
+        pytest.fail("recovery must not copy twice")
+
     monkeypatch.setattr(
         restarted_manager,
         "install_symphony_skill_artifact",
-        lambda *args, **kwargs: pytest.fail("recovery must not copy twice"),
+        _fail_reinstall,
     )
 
     receipt = await restarted.install_candidate(
@@ -1456,7 +1459,7 @@ async def test_legacy_failed_receipt_is_ignored_and_overwritten(
     )
 
     manager = SimpleNamespace(
-        install_symphony_skill_artifact=Mock(
+        install_symphony_skill_artifact=AsyncMock(
             return_value={"success": True, "skill": {"name": "search-writer-pack"}}
         )
     )
@@ -1504,7 +1507,7 @@ async def test_client_package_credentials_must_match_server_package(
     assert result == {"installed": False, "reason": "package_id_mismatch"}
 
 
-def test_skill_manager_installs_only_server_owned_artifact(
+async def test_skill_manager_installs_only_server_owned_artifact(
     tmp_path: Path,
     allow_macos_pytest_temp_sources,
 ) -> None:
@@ -1515,7 +1518,7 @@ def test_skill_manager_installs_only_server_owned_artifact(
     _write_member_skills(workspace)
     manager = SkillManager(workspace_dir=str(workspace))
 
-    result = manager.install_symphony_skill_artifact(
+    result = await manager.install_symphony_skill_artifact(
         artifact,
         expected_root=root,
         package_id="cap-1",
@@ -1526,7 +1529,7 @@ def test_skill_manager_installs_only_server_owned_artifact(
     assert (tmp_path / "workspace" / "skills" / "combo-skill" / "SKILL.md").is_file()
 
 
-def test_skill_manager_does_not_install_pack_with_missing_member(
+async def test_skill_manager_does_not_install_pack_with_missing_member(
     tmp_path: Path,
     allow_macos_pytest_temp_sources,
 ) -> None:
@@ -1539,7 +1542,7 @@ def test_skill_manager_does_not_install_pack_with_missing_member(
     manager = SkillManager(workspace_dir=str(workspace))
 
     with pytest.raises(SkillRpcError) as exc:
-        manager.install_symphony_skill_artifact(
+        await manager.install_symphony_skill_artifact(
             artifact,
             expected_root=root,
             package_id="cap-missing",
@@ -1550,7 +1553,7 @@ def test_skill_manager_does_not_install_pack_with_missing_member(
     assert not (workspace / "skills" / "missing-member-pack").exists()
 
 
-def test_skill_manager_installs_pack_with_disabled_member_as_unavailable(
+async def test_skill_manager_installs_pack_with_disabled_member_as_unavailable(
     tmp_path: Path,
     allow_macos_pytest_temp_sources,
 ) -> None:
@@ -1562,7 +1565,7 @@ def test_skill_manager_installs_pack_with_disabled_member_as_unavailable(
     manager = SkillManager(workspace_dir=str(workspace))
     manager.set_skill_enabled("search", False)
 
-    result = manager.install_symphony_skill_artifact(
+    result = await manager.install_symphony_skill_artifact(
         artifact,
         expected_root=root,
         package_id="cap-disabled",
@@ -1603,7 +1606,7 @@ async def test_install_candidate_reports_missing_member_as_not_installable(
     assert not (workspace / "skills" / "search-writer-pack").exists()
 
 
-def test_skill_install_recovers_copy_before_state_crash(
+async def test_skill_install_recovers_copy_before_state_crash(
     monkeypatch, tmp_path: Path, allow_macos_pytest_temp_sources
 ) -> None:
     root = tmp_path / "flow"
@@ -1619,7 +1622,7 @@ def test_skill_install_recovers_copy_before_state_crash(
     )
 
     with pytest.raises(SystemExit, match="crash after copy"):
-        first.install_symphony_skill_artifact(
+        await first.install_symphony_skill_artifact(
             artifact,
             expected_root=root,
             package_id="cap-recovered",
