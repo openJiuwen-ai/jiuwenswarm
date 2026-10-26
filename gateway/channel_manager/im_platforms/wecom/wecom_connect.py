@@ -23,7 +23,7 @@ from gateway.channel_manager.im_platforms.platform_adapter.message import Messag
 from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
-from jiuwenswarm.common.schema.message import Message, ReqMethod, EventType
+from openjiuwen_protocol.message import Message, ReqMethod, EventType
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget

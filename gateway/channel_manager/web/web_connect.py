@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlparse
 import aiohttp
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
-from jiuwenswarm.common.protocol_ids import (
+from gateway.common.protocol_ids import (
     InvalidProtocolId,
     validate_session_id,
     validate_workflow_run_id,
@@ -34,15 +34,15 @@ from gateway.channel_manager.base import ChannelMetadata, RobotMessageRouter, Co
 from gateway.routing.base_ws_channel import BaseWsChannel
 from gateway.routing.keys import AgentRef, RoutingKey
 from gateway.routing.session_sharing import RoutingTarget
-from jiuwenswarm.common.security.ws_origin import (
+from gateway.common.security.ws_origin import (
     get_header_value,
 )
-from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
-from jiuwenswarm.common.session_message import (
+from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
+from gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )
-from jiuwenswarm.common.ws_diagnostics import (
+from gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
@@ -706,7 +706,7 @@ class WebChannel(BaseWsChannel):
         """同一端口承载 WebChannel 的 WebSocket 与 HTTP 路由（uvicorn/FastAPI）。"""
         import uvicorn
 
-        from jiuwenswarm.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
+        from gateway.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
         from gateway.channel_manager.web.transport_stall_guard import (
             guarded_http_protocol,
             guarded_websockets_protocol,

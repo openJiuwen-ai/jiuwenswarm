@@ -24,7 +24,7 @@ from gateway.routing.interaction_context import PendingInteraction
 
 if TYPE_CHECKING:
     from gateway.im_pipeline.im_inbound import IMPlatformAdapter
-    from jiuwenswarm.common.schema.message import Message
+    from openjiuwen_protocol.message import Message
 
 logger = logging.getLogger(__name__)
 

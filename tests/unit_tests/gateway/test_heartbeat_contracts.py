@@ -13,7 +13,7 @@ from websockets.legacy.server import serve as websocket_serve
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import (
     HeartbeatRuntimeBridge,
 )
-from jiuwenswarm.common.schema.message import EventType, ReqMethod
+from openjiuwen_protocol.message import EventType, ReqMethod
 from gateway.heartbeat import (
     HeartbeatControllerProxy,
     HeartbeatServiceUnavailableError,

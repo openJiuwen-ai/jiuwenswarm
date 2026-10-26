@@ -696,7 +696,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
             return _error_json(error="user_id is required", code="BAD_REQUEST", status_code=400)
 
         if token_payload.get("kind") == _VERIFIED_ASSET_TOKEN_KIND:
-            from jiuwenswarm.common.schema.message import ReqMethod
+            from openjiuwen_protocol.message import ReqMethod
             from gateway.routing.e2a_proxy import fetch_agent_unary
             session_id_value = token_payload.get("sid")
             if not isinstance(session_id_value, str):

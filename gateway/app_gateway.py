@@ -41,7 +41,7 @@ def _mark_startup_import_phase(stage: str) -> None:
 
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
-from jiuwenswarm.common.ws_diagnostics import format_ws_diagnostics, describe_ws_peer, describe_ws_exception
+from gateway.common.ws_diagnostics import format_ws_diagnostics, describe_ws_peer, describe_ws_exception
 from jiuwenswarm.common.media_capability_config import (
     migrate_media_capability_switches,
 )
@@ -73,7 +73,7 @@ _mark_startup_import_phase("openjiuwen_and_channel_base_imported")
 # --- Now safe to import jiuwenswarm modules ---
 from gateway.channel_manager.protocol.acp.acp_connect import AcpGatewayBridge
 from gateway.routing.agent_request_timeout import coerce_client_timeout_ms
-from jiuwenswarm.common.security.ws_origin import (
+from gateway.common.security.ws_origin import (
     extract_handshake_request,
     get_header_value,
 )
@@ -82,21 +82,19 @@ from jiuwenswarm.common.debug_dump import (
     install_async_dump_handler,
     install_crash_exit_handler,
 )
-from jiuwenswarm.common.process_supervision import GATEWAY_RESTART_EXIT_CODE, SUPERVISOR_PID_ENV
+from gateway.common.process_supervision import GATEWAY_RESTART_EXIT_CODE, SUPERVISOR_PID_ENV
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     get_env_file,
     get_root_dir,
     get_user_workspace_dir,
 )
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import Message, Mode, ReqMethod
 from jiuwenswarm.common.schema.message import (
     PROMPT_SUGGESTION_READY_EVENT,
     TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
     TOPIC_STARTERS_READY_EVENT,
-    Message,
-    Mode,
-    ReqMethod,
 )
 from gateway.channel_manager.web.media import (
     normalize_chat_media_attachments,

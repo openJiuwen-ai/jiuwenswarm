@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     DEPRECATION_MAP,
     MODE_ALIASES,
     NEW_AGENT_WORK_NORMAL,
@@ -36,7 +36,7 @@ from gateway.message_handler.message_handler import (
     MessageHandler,
     _VALID_MODE_INPUTS,
 )
-from jiuwenswarm.common.schema.message import Message
+from openjiuwen_protocol.message import Message
 
 
 class _FakeAgentClient:

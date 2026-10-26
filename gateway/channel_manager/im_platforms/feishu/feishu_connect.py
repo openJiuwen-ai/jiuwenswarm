@@ -15,8 +15,8 @@ from typing import Any, Callable
 
 import requests
 from pydantic import BaseModel, Field
-from jiuwenswarm.common.mode_matrix import is_team_mode
-from jiuwenswarm.common.schema.message import Message, ReqMethod, EventType
+from gateway.common.mode_matrix import is_team_mode
+from openjiuwen_protocol.message import Message, ReqMethod, EventType
 from gateway.channel_manager.base import RobotMessageRouter, BaseChannel
 from gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
     FeishuFileService,

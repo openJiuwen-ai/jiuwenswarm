@@ -14,7 +14,7 @@ import httpx
 
 from gateway.channel_manager.base import RobotMessageRouter, BaseChannel
 from gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import DingTalkFileService
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )

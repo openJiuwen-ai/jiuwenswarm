@@ -17,7 +17,7 @@ from openjiuwen.core.foundation.llm.schema.config import ModelClientConfig, Mode
 from jiuwenswarm.common.config import _parse_custom_headers
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from gateway.routing.interaction_context import PendingInteraction
-from jiuwenswarm.common.schema.message import Message, ReqMethod
+from openjiuwen_protocol.message import Message, ReqMethod
 from gateway.im_pipeline.im_session_input import prepare_im_session_input
 from gateway.message_handler.command_parser.slash_command import CONTROL_MESSAGE_TEXTS
 from jiuwenswarm.common.utils import get_deepagent_user_md_path, logger

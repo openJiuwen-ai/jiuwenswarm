@@ -14,7 +14,7 @@ from gateway.app_gateway import (
     RouteConfig,
     _normalize_gateway_message,
 )
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 
 
 class DummyBus:

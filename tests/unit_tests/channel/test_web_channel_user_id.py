@@ -16,7 +16,7 @@ from gateway.channel_manager.web.web_connect import (
     WebChannelConfig,
     _MethodHandlerInvocation,
 )
-from jiuwenswarm.common.schema.message import EventType, Message
+from openjiuwen_protocol.message import EventType, Message
 
 
 class _FakeRequestHeaders:

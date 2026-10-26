@@ -27,10 +27,10 @@ from gateway.cron.models import (
 from gateway.cron.store_base import CronJobStoreBackend
 from gateway.message_handler.message_handler import MessageHandler
 from gateway.runtime.events import TERMINAL_ERROR_EVENT_TYPES
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from gateway.runtime.cron.cron_expr import next_cron_datetime
 
 logger = logging.getLogger(__name__)
@@ -227,7 +227,7 @@ def _extract_text_from_stream_payload(payload: dict | None) -> str | None:
     return None
 
 
-from jiuwenswarm.common.cron_team_completion import (
+from gateway.common.cron_team_completion import (
     apply_cron_team_round_event,
     cron_team_round_should_end,
     is_cron_leader_placeholder_text as _is_cron_leader_placeholder_text,

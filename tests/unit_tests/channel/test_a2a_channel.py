@@ -8,7 +8,7 @@ from gateway.channel_manager.protocol.a2a.a2a_connect import (
     A2AChannelConfig,
     _A2AAgentExecutor,
 )
-from jiuwenswarm.common.schema.message import EventType, Message
+from openjiuwen_protocol.message import EventType, Message
 
 
 class DummyBus:

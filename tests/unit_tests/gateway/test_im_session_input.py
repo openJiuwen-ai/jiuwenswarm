@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jiuwenswarm.common.schema.message import Message, ReqMethod
+from openjiuwen_protocol.message import Message, ReqMethod
 from gateway.im_pipeline.im_inbound import IMInboundPipeline
 from gateway.im_pipeline.im_session_input import (
     is_shared_im_channel,

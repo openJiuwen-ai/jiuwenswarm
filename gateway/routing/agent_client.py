@@ -14,16 +14,16 @@ from urllib.parse import urlsplit
 
 from websockets.exceptions import ConnectionClosed, PayloadTooBig
 
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import (
+from openjiuwen_protocol.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from openjiuwen_protocol.e2a.models import E2AEnvelope
+from openjiuwen_protocol.e2a.wire_codec import (
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.moa_config import redact_moa_credentials
-from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from jiuwenswarm.common.ws_diagnostics import (
+from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
@@ -740,7 +740,7 @@ async def mock_agent_server_handler(ws: Any) -> None:
     """
     import websockets
 
-    from jiuwenswarm.common.e2a.wire_codec import (
+    from openjiuwen_protocol.e2a.wire_codec import (
         encode_agent_chunk_for_wire,
         encode_agent_response_for_wire,
     )
@@ -812,7 +812,7 @@ async def run_mock_agent_server(
 
 async def _run_verification() -> None:
     """用内存 Mock 服务端验证 WebSocketAgentServerClient 的 connect/send_request/send_request_stream."""
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+    from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 
     port = 18765
     uri = f"ws://127.0.0.1:{port}"
