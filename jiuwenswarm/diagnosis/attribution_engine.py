@@ -430,7 +430,10 @@ def _related_signal(signal: Any, entries: list[dict[str, Any]], index: dict[str,
         score=float(score) if isinstance(score, (int, float)) else None,
         node_ids=[str(item) for item in (getattr(signal, "node_ids", None) or [])],
         entries=[
-            {"text_md": str(entry.get("text_md") or ""), "refs": [ref.model_dump() for ref in _entry_refs(entry, index)]}
+            {
+                "text_md": str(entry.get("text_md") or ""),
+                "refs": [ref.model_dump() for ref in _entry_refs(entry, index)],
+            }
             for entry in entries
         ],
     )
@@ -440,6 +443,7 @@ def _translate_reward_failure_causes(
     runtime: NodeBackedRuntime,
     signals: list[Any],
     reward_payload: dict[str, Any] | None,
+    nodes: dict[str, list[Any]],
 ) -> tuple[list[RewardFailureCause], int]:
     """Assemble section 4.3; suggestions are the agent's entry suggestions.
 
@@ -447,7 +451,7 @@ def _translate_reward_failure_causes(
     agent build older than the entry field), so a mixed deployment still shows
     something actionable.
     """
-    index = _node_index(runtime._nodes)  # noqa: SLF001 - the runtime owns the sliced nodes
+    index = _node_index(nodes)
     signals_by_id = {signal.signal_id: signal for signal in signals}
     dimensions = {}
     if isinstance(reward_payload, Mapping):
@@ -467,7 +471,11 @@ def _translate_reward_failure_causes(
                 dropped += 1
                 continue
             agent_suggestion = str(entry.get("suggestion") or "").strip()
-            suggestion = [agent_suggestion] if agent_suggestion else _suggestion_from_comment(dimensions.get(dimension, ""))
+            suggestion = (
+                [agent_suggestion]
+                if agent_suggestion
+                else _suggestion_from_comment(dimensions.get(dimension, ""))
+            )
             causes.append(
                 RewardFailureCause(
                     id=f"rfc-{len(causes) + 1}",
@@ -483,21 +491,23 @@ def _translate_reward_failure_causes(
 
 def _marked_signal_ids(runtime: NodeBackedRuntime, category: str, *, skill_key: str | None = None) -> list[str]:
     invalid = set(runtime.invalid_signals)
-    return [
-        signal_id
-        for signal_id, categories in runtime.marks.items()
-        if signal_id not in invalid
-        and category in categories
-        and (skill_key is None or categories[category].skill_key == skill_key)
-    ]
+    found: list[str] = []
+    for signal_id, categories in runtime.marks.items():
+        if signal_id in invalid or category not in categories:
+            continue
+        if skill_key is not None and categories[category].skill_key != skill_key:
+            continue
+        found.append(signal_id)
+    return found
 
 
 def _translate_evolution_judge(
     runtime: NodeBackedRuntime,
     signals: list[Any],
+    nodes: dict[str, list[Any]],
 ) -> tuple[list[EvolutionJudge], int]:
     """Assemble section 4.4 from the marked signals and the global advice."""
-    index = _node_index(runtime._nodes)  # noqa: SLF001
+    index = _node_index(nodes)
     signals_by_id = {signal.signal_id: signal for signal in signals}
     judges: list[EvolutionJudge] = []
     dropped = 0
@@ -587,6 +597,7 @@ class _StreamingRuntime(NodeBackedRuntime):
         self._text = text
         self._signals = list(signals or [])
         self._reward_payload = reward_payload
+        self.nodes = nodes_by_subagent
 
     def _log(self, line: str) -> None:
         try:
@@ -600,12 +611,12 @@ class _StreamingRuntime(NodeBackedRuntime):
     def _push_tables(self) -> None:
         """Push the whole reward-cause and evolution tables known so far."""
         try:
-            causes, _ = _translate_reward_failure_causes(self, self._signals, self._reward_payload)
+            causes, _ = _translate_reward_failure_causes(self, self._signals, self._reward_payload, self.nodes)
             if self._reward_payload is not None:
                 self._queue.put_nowait(
                     EngineEvent("attribute", "reward_failure_causes", reward_failure_causes=causes),
                 )
-            judges, _ = _translate_evolution_judge(self, self._signals)
+            judges, _ = _translate_evolution_judge(self, self._signals, self.nodes)
             self._queue.put_nowait(EngineEvent("attribute", "evolution_judge", evolution_judge=judges))
         except Exception:  # noqa: BLE001 - a lost update must not break the run
             logger.debug("[diagnosis] attribution table update dropped", exc_info=True)
@@ -805,7 +816,8 @@ class AttributionCoreEngine:
             result = await self._result_without_signals(context, task_parse, diagnosis)
         return result
 
-    def _task_hint(self, context: _StageContext) -> str:
+    @staticmethod
+    def _task_hint(context: _StageContext) -> str:
         """Best-effort task hint from the user's own messages when task parsing is unavailable."""
         parts: list[str] = []
         for node in getattr(context.nodes, "user_requests", ()) or ():
@@ -1057,8 +1069,10 @@ class AttributionCoreEngine:
                     text_delta=text["attribute_pending"].format(ids=", ".join(outcome.pending_signal_ids)),
                 ),
             )
-        causes, dropped_causes = _translate_reward_failure_causes(runtime, diagnosis.signals, diagnosis.reward_payload)
-        judges, dropped_judges = _translate_evolution_judge(runtime, diagnosis.signals)
+        causes, dropped_causes = _translate_reward_failure_causes(
+            runtime, diagnosis.signals, diagnosis.reward_payload, nodes
+        )
+        judges, dropped_judges = _translate_evolution_judge(runtime, diagnosis.signals, nodes)
         dropped = dropped_causes + dropped_judges
         if dropped:
             queue.put_nowait(
