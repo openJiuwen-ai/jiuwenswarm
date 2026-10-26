@@ -272,6 +272,65 @@ async def test_orphan_rebound_cleared_after_terminal() -> None:
     assert len(calls) == 1, "绑定应已解除，后续迟到事件不得再改投"
 
 
+def _payload_only_terminal_msg(event_name: str) -> Message:
+    """终态消息只带 payload["event_type"]，event_type 字段为 None（_chunk_to_message 的合法形态）。"""
+    return Message(
+        id="req-old",
+        type="event",
+        channel_id="web",
+        session_id="sess-1",
+        params={},
+        timestamp=time.time(),
+        ok=True,
+        payload={"event_type": event_name, "content": "旧请求的回复"},
+        event_type=None,
+        metadata={"ws_id": "ws-old"},
+    )
+
+
+async def test_orphan_terminal_payload_event_type_only_invalidates_history() -> None:
+    """payload 携带终态 event_type 而 event_type 字段为 None 时仍触发 history 失效。"""
+    channel = _make_channel()
+    expected = _FakeWs("ws-new")
+    expected._web_connection_user_id = None
+    route = RoutingKey(
+        user_id="local", channel_id="web", app_id="default",
+        agent_ref=AgentRef(mode="agent", id="default"), session_id="sess-1",
+    )
+    channel._clients_by_key[route] = [expected]
+    calls = await _capture_broadcast(channel)
+
+    msg = _payload_only_terminal_msg("chat.final")
+    msg.metadata["user_id"] = None
+    msg.app_id = "default"
+
+    await channel.send(msg)
+
+    assert calls == [({
+        "type": "event",
+        "event": "runtime.history_required",
+        "payload": {"session_id": "sess-1"},
+    }, {expected})]
+
+
+async def test_orphan_rebound_cleared_on_payload_event_type_only_terminal() -> None:
+    """终态只带 payload event_type 时也解除改绑，避免绑定残留改投后续迟到事件。"""
+    channel = _make_channel()
+    rebound_ws = _FakeWs("ws-new")
+    channel._ws_by_id["ws-new"] = rebound_ws
+    channel.record_a4p_rebound("sess-1", "ws-new")
+    calls = await _capture_broadcast(channel)
+
+    await channel.send(_payload_only_terminal_msg("chat.final"))
+    assert len(calls) == 1
+
+    delta = _chat_final_msg(ws_id="ws-old")
+    delta.event_type = EventType.CHAT_DELTA
+    await channel.send(delta)
+
+    assert len(calls) == 1, "绑定应已解除，后续迟到事件不得再改投"
+
+
 @pytest.mark.parametrize(
     "event_name,expected_method",
     [("chat.final", "info"), ("chat.error", "info"), ("chat.delta", "debug")],

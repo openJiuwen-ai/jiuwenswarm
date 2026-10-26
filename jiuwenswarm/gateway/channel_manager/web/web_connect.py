@@ -1314,6 +1314,27 @@ class WebChannel(BaseWsChannel):
         sid = str(session_id or "").strip()
         self._a4p_rebound_ws.pop(sid, None)
 
+    @staticmethod
+    def _resolve_event_name(msg: Message) -> str:
+        """解析事件名：优先 ``event_type.value``，回退 ``payload["event_type"]``。
+
+        ``_chunk_to_message`` 仅在 payload 的事件名能解析为已知 ``EventType`` 时
+        才填充 ``event_type``，否则保持 None；本函数沿用 send() 与
+        ``_serialize_frame`` 既有的回退逻辑，避免同一条终态事件在不同分支被识别
+        成不同类型。
+        """
+        event_type = getattr(msg, "event_type", None)
+        if event_type is not None:
+            value = getattr(event_type, "value", "")
+            if isinstance(value, str) and value:
+                return value
+        payload = getattr(msg, "payload", None)
+        if isinstance(payload, dict):
+            payload_event_type = payload.get("event_type")
+            if isinstance(payload_event_type, str) and payload_event_type.strip():
+                return payload_event_type.strip()
+        return ""
+
     def _rebound_ws_for(self, msg: Message) -> Any | None:
         """孤儿事件若属于刚重新授权的恢复 turn，返回应改投的活动 ws，否则 None。"""
         sid = str(getattr(msg, "session_id", None) or "").strip()
@@ -1326,7 +1347,7 @@ class WebChannel(BaseWsChannel):
         if ws is None or getattr(ws, "closed", False):
             self._a4p_rebound_ws.pop(sid, None)
             return None
-        if getattr(msg, "event_type", None) in {EventType.CHAT_FINAL, EventType.CHAT_ERROR}:
+        if self._resolve_event_name(msg) in {"chat.final", "chat.error"}:
             self._a4p_rebound_ws.pop(sid, None)
         return ws
 
@@ -1337,7 +1358,7 @@ class WebChannel(BaseWsChannel):
         Its terminal output must trigger another read, but must never be consumed
         as the new connection's active chat response.
         """
-        if msg.event_type not in {EventType.CHAT_FINAL, EventType.CHAT_ERROR} or not msg.session_id:
+        if self._resolve_event_name(msg) not in {"chat.final", "chat.error"} or not msg.session_id:
             return
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
         # This key is injected from the authenticated Web connection, including

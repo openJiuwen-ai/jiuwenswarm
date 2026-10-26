@@ -617,12 +617,19 @@ function AppContent({
   const historyRefreshQueueRef = useRef(new HistoryRefreshQueue());
   const forcedHistoryRefreshRef = useRef(new Set<string>());
   const [historyRecoveryRevision, setHistoryRecoveryRevision] = useState(0);
+  // 延迟绑定到后文定义的 loadSessionMetadata，供 runtime.history_required 回查权威运行态。
+  const loadSessionMetadataRef = useRef<((id: string) => Promise<Session | null>) | null>(null);
   const sessionIdRef = useRef(sessionId);
   useEffect(() => webClient.on('runtime.history_required', (event) => {
     const targetSessionId = event.payload.session_id;
     if (typeof targetSessionId !== 'string' || !targetSessionId) return;
     historyRefreshQueueRef.current.request(targetSessionId);
     setHistoryRecoveryRevision((revision) => revision + 1);
+    // 该恢复 turn 的终态被当孤儿丢弃，本地 isProcessing 可能停在刷新前的 true
+    // （不会再有 processing_status(false) 到达），从而阻塞下方 effect 的 take()。
+    // 回查网关权威运行态，用实时 is_processing 覆盖本地状态解除阻塞；若确有新 turn
+    // 在跑则保持 busy、延后刷新，不会清掉新轮的流式缓冲。
+    void loadSessionMetadataRef.current?.(targetSessionId);
   }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
@@ -1954,6 +1961,10 @@ function AppContent({
     sessionMetadataRequestsRef.current.set(targetSessionId, pending);
     return pending;
   }, [fetchSessionMetadata]);
+
+  useEffect(() => {
+    loadSessionMetadataRef.current = loadSessionMetadata;
+  }, [loadSessionMetadata]);
 
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
