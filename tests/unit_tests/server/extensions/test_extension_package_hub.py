@@ -1348,3 +1348,31 @@ async def test_expert_catalog_keeps_hub_card_with_same_named_local_package(exten
     assert cards[0]['installed'] is False
     mine = await catalog.list_agent_templates_with_hub({'filter': 'mine'}, hub_port=hub)
     assert [(c['id'], c['source']) for c in mine] == [('sales-expert', 'local')]
+
+
+@pytest.mark.asyncio
+async def test_read_public_readme_prefers_package_root() -> None:
+    class Transport:
+        def __init__(self) -> None:
+            self.requests: list[dict | None] = []
+
+        async def get_data(self, path, *, params=None):
+            self.requests.append(params)
+            if params is None:
+                return {
+                    "files": [
+                        {"path": "docs/README.md"},
+                        {"path": "README.md"},
+                        {"path": "skills/demo/README.md"},
+                    ]
+                }
+            return {"content": f"content:{params['with_content']}"}
+
+    from jiuwenswarm.server.runtime.marketplace.hub_client import HubClient
+
+    transport = Transport()
+    client = HubClient(transport=transport)
+    text = await client.read_public_readme("asset-1", "1.0.0")
+
+    # Nested READMEs describe sub-assets; the package-root file wins.
+    assert text == "content:README.md"
