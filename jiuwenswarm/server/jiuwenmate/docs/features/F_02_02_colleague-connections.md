@@ -13,7 +13,7 @@
 | 设计依据 | [架构](../designs/jiuwenmate-architecture.md)第 2.1、4.1、9.2 节（按 6.2 节修订，已获确认）；[S_03](../specs/S_03_im-direct-message-and-delivery.md) |
 | 关联 feature | 前置：[F_02](F_02_colleague-management.md)、[F_21_02 钉钉单聊](F_21_02_dingtalk-direct-message.md)（本方案替代其第 9 节的合入依赖和 D-07 的临时检查）；相关：[F_08](F_08_feishu-group-fanout.md)、[F_10](F_10_web-colleague-management.md)、[F_14](F_14_workspace-read.md)、[F_24](F_24_personal-data-access.md) |
 | 验证摘要 | 第三轮：聚合专项 44 passed（新增 24 项），后端完整集合 985 passed、6 failed、1 skipped，集成与渠道 163 passed、4 failed、1 skipped；失败项与 HEAD 基线相同。推送前复核重新执行后端集合，仍为 985 passed、6 failed、1 skipped；前端 108 项、设置页 64 项与构建通过。完整浏览器、原生 PA 与真实平台未验证，当前预览模型创建员工受分词器准备失败阻塞，详见第 8、9 节 |
-| Refs | 无独立 issue；需求来源为本 session 用户决定。PR1（钉钉，提交 `1d6f9445`）与本方案同时合入上游 |
+| Refs | 无独立 issue；需求来源为本 session 用户决定。[PR1 !76（钉钉，提交 `1d6f9445`）](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/76) 与 [PR2 !77（本方案）](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/77) 配套审阅和交付；均为草稿，未经用户审批不合入 |
 
 ## 2. 背景、目标与范围
 
