@@ -54,13 +54,13 @@ def _ensure_image_dependencies() -> None:
     with _image_dependencies_lock:
         if _image_dependencies_loaded:
             return
-        from fastmcp import FastMCP
-        from google import genai
-        from google.genai import types
+        from fastmcp import FastMCP as fast_mcp_type
+        from google import genai as genai_module
+        from google.genai import types as genai_types
 
-        server = FastMCP("vision-mcp-server")
+        server = fast_mcp_type("vision-mcp-server")
         # Publish only after success so a failed initialization can be retried.
-        globals().update(FastMCP=FastMCP, genai=genai, types=types, mcp=server)
+        globals().update(FastMCP=fast_mcp_type, genai=genai_module, types=genai_types, mcp=server)
         _image_dependencies_loaded = True
 
 
@@ -1150,7 +1150,6 @@ async def generate_image(inputs: dict[str, Any], **kwargs) -> str:
     Returns:
         Paths to the generated image file(s) or error message
     """
-    _ensure_image_dependencies()
     _ = kwargs
     from jiuwenswarm.common.config import get_config
     try:
