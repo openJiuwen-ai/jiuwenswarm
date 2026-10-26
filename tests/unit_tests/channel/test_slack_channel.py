@@ -25,6 +25,7 @@ def _message(
     content: str = "response",
     metadata: dict[str, Any] | None = None,
     session_id: str = "slack_T1_C1_1710000000.000100",
+    payload: dict[str, Any] | None = None,
 ) -> Message:
     return Message(
         id="response-1",
@@ -34,7 +35,7 @@ def _message(
         params={},
         timestamp=time.time(),
         ok=True,
-        payload={"content": content},
+        payload={"content": content} if payload is None else payload,
         event_type=event_type,
         metadata=metadata,
     )
@@ -195,6 +196,55 @@ async def test_send_uses_routing_target_chunks_text_and_ignores_delta() -> None:
         "text": "x" * 100,
         "thread_ts": "1710000003.000400",
     }
+
+
+# Payload shapes as the runtime builds them: every event other than the text
+# events keys its body under something that is not "content".
+_NON_TEXT_EVENT_PAYLOADS: dict[EventType, dict[str, Any]] = {
+    EventType.CHAT_TOOL_CALL: {"tool_call": {"name": "Bash", "arguments": {}}},
+    EventType.CHAT_TOOL_UPDATE: {
+        "tool_update": {"tool_name": "Bash", "status": "in_progress"}
+    },
+    EventType.CHAT_TOOL_RESULT: {"result": "ok", "tool_name": "Bash"},
+    EventType.TODO_UPDATED: {"todos": [{"id": "1", "status": "done"}]},
+    EventType.CHAT_RETRACT: {"reason": "interrupt_snapshot_canceled"},
+    EventType.CHAT_MEDIA: {"files": [{"name": "clip.mp4"}]},
+    EventType.CHAT_MESSAGE_UPDATED: {"updates": {"mode": "agent.work.normal"}},
+    EventType.CHAT_SESSION_RESULT: {"status": "completed", "result": "done"},
+    EventType.CHAT_INTERRUPT_RESULT: {"intent": "cancel", "message": "cancelled"},
+    EventType.CHAT_ASK_USER_QUESTION: {"questions": [{"question": "Which ledger?"}]},
+    EventType.CHAT_PROCESSING_STATUS: {"is_processing": True},
+}
+
+
+@pytest.mark.asyncio
+async def test_send_skips_stream_chunks_and_posts_the_completed_answer() -> None:
+    channel = SlackChannel(
+        SlackChannelConfig(enabled=True, default_channel_id="C-DEFAULT"),
+        RobotMessageRouter(),
+    )
+    client = _FakeSlackClient()
+    channel._client = client
+
+    await channel.send(
+        _message(
+            event_type=EventType.CHAT_REASONING,
+            content="The user wants the quarterly figure. Open the ledger first.",
+        )
+    )
+    await channel.send(
+        _message(event_type=EventType.CHAT_DELTA, content="the answer so f")
+    )
+    for event_type, payload in _NON_TEXT_EVENT_PAYLOADS.items():
+        await channel.send(
+            _message(
+                event_type=event_type,
+                payload={"event_type": event_type.value, **payload},
+            )
+        )
+    await channel.send(_message(content="The figure is 42."))
+
+    assert [call["text"] for call in client.calls] == ["The figure is 42."]
 
 
 @pytest.mark.asyncio
