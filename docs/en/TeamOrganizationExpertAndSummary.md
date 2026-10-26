@@ -4,6 +4,8 @@ JiuwenSwarm scans local, built-in, and resource `agent_groups` roots. A package 
 
 Scanning returns descriptors only. `org_create_and_invite_expert_team` combines the selected package's roles, prompts, skills, and capabilities with the current Team's model, storage, transport, workspace, and session defaults. Each instance receives a unique runtime Team ID; read it from `org_view_organization` rather than treating the package name as an ID.
 
+Direct messages to a running expert Team use the same `interact` channel as ordinary Teams. Acceptance means the input was delivered to the Leader runtime, not that its task has completed. Replies continue through the existing Team stream and are saved in that Team's conversation history. A paused expert still resumes through the existing execution path. Organization-internal task and Leader-message scheduling is unchanged.
+
 ## Summary Team
 
 The fixed Summary Team contains:
@@ -20,4 +22,8 @@ For production, use a database reachable by all Teams, provide genuinely shared 
 
 On binding failure, the launcher rolls an expert Team back. Summary Team lifecycle and Summary Execution state are persisted separately so restart recovery can restore the shared Team and re-evaluate source readiness.
 
-Task completion and Web execution status have separate lifecycles. When a background Organization turn ends, the Web client closes that Team's current reasoning and streaming output without ending other Teams' work. A passive `attach_only` subscription does not keep the session busy; real execution and requests waiting for user input still do. Check Summary Execution and task states to confirm completion, rather than treating an intermediate `chat.final` segment as the end of the turn.
+Task completion and Web execution status have separate lifecycles. When a background Organization turn ends, the Web client closes that Team's current reasoning and streaming output without ending other Teams' work. Passive `attach_only` subscriptions and pending queries for Team lists, Organization snapshots, Team history, assets, plan status, workflows, pending authorizations, or Goal status do not keep the session busy. These queries do not mean that tasks restart when a completed session is reopened. Real execution, queued work, and requests waiting for authorization or interaction confirmation still keep the session busy. A Team that has finished its current work and is waiting for new input is idle. Check Summary Execution and task states to confirm completion, rather than treating an intermediate `chat.final` segment as the end of the turn.
+
+## Importing packages
+
+Imports validate skills before saving or installing the package. String entries in `skills` must be skill names, such as `"docx-pro"`; mappings use package-relative directories, such as `{"dir": "skills/docx-pro", "mode": "all"}`. Absolute POSIX and Windows paths are rejected, including Windows paths uploaded to a non-Windows server. Referenced skill directories must remain inside the package and contain `SKILL.md`.

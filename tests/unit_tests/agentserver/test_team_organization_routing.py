@@ -12,6 +12,11 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server import agent_ws_server
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_EXTERNAL,
+    HOST_USER_ORIGIN_INTERNAL,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +46,42 @@ def request(method=ReqMethod.CHAT_SEND, team="expert"):
 
 def backend(org):
     return SimpleNamespace(org_task_manager=SimpleNamespace(organization_id=org))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel,params,metadata,external", [
+    ("web", {}, None, True),
+    ("feishu", {}, None, True),
+    ("cron", {}, None, False),
+    ("heartbeat", {}, None, False),
+    ("web", {"source": "background"}, None, False),
+    ("web", {"log_as_user": False}, None, False),
+    ("web", {"automation": {"kind": "heartbeat"}}, None, False),
+    ("web", {}, {"automation": {"kind": "heartbeat"}}, False),
+    ("web", {"metadata": {"automation": {"kind": "heartbeat"}}}, None, False),
+    ("web", {"origin_kind": HOST_USER_ORIGIN_EXTERNAL}, {"automation": {"kind": "heartbeat"}}, False),
+    ("web", {}, {SESSION_MESSAGE_INTERNAL_KEY: {}}, False),
+])
+async def test_expert_input_origin_is_classified_at_host_ingress(monkeypatch, channel, params, metadata, external):
+    from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
+
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(server, "_resolve_team_backend", lambda *args: backend("org"))
+    monkeypatch.setattr(agent_ws_server, "append_history_record", lambda **kwargs: None)
+    run = AsyncMock(return_value=True)
+    monkeypatch.setattr(JiuwenExpertTeamLauncher, "run_organization_turn", run)
+    req = request()
+    req.channel_id = channel
+    req.params.update(params)
+    req.params["content"] = "Use the supplied materials."
+    req.metadata = metadata
+    chunks = [chunk async for chunk in server._targeted_expert_response_stream(req)]
+    run.assert_awaited_once()
+    assert run.await_args.kwargs["origin_kind"] == (
+        HOST_USER_ORIGIN_EXTERNAL if external else HOST_USER_ORIGIN_INTERNAL
+    )
+    assert chunks[-1].payload["success"] is True
 
 
 @pytest.mark.asyncio
@@ -82,6 +123,33 @@ async def test_cancel_isolated_from_owner(monkeypatch, organization, allowed):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("persisted_org,allowed", [("org", True), ("foreign", False), (None, False)])
+async def test_cancel_recovered_expert_without_owner_runtime(monkeypatch, persisted_org, allowed):
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(server, "_resolve_team_backend", lambda sid, team: backend("org") if team == "expert" else None)
+    lookup = AsyncMock(return_value=(object(), SimpleNamespace(organization_id=persisted_org)) if persisted_org else None)
+    monkeypatch.setattr(server, "_load_persisted_organization", lookup)
+    started = asyncio.Event()
+
+    async def running():
+        started.set()
+        await asyncio.Event().wait()
+
+    expert = asyncio.create_task(running())
+    server._session_stream_tasks = {"session::organization::expert": {expert: asyncio.Event()}}
+    try:
+        await started.wait()
+        response = await server._cancel_targeted_expert(request(ReqMethod.CHAT_CANCEL))
+        assert response.ok is allowed
+        assert expert.cancelled() is allowed
+        lookup.assert_awaited_once_with("session", "owner")
+    finally:
+        expert.cancel()
+        await asyncio.gather(expert, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_expert_stream_uses_runtime_event_adapter(monkeypatch):
     server = object.__new__(AgentWebSocketServer)
     closed = []
@@ -108,12 +176,103 @@ async def test_expert_stream_uses_runtime_event_adapter(monkeypatch):
     assert closed == [True]
 
 
-def test_regular_stream_key_is_unchanged():
+def test_regular_stream_key_is_unchanged(monkeypatch):
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
     assert AgentWebSocketServer._organization_stream_key(request(team="")) == "session"
+    assert AgentWebSocketServer._organization_stream_key(request(ReqMethod.TEAM_LIST)) == "session"
     assert (
         AgentWebSocketServer._organization_stream_key(request())
         == "session::organization::expert"
     )
+
+
+@pytest.mark.asyncio
+async def test_real_expert_stream_is_registered_cancelled_and_explicitly_settled(monkeypatch):
+    server = object.__new__(AgentWebSocketServer)
+    server._session_stream_tasks = {}
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(server, "_resolve_team_backend", lambda *_: backend("org"))
+    monkeypatch.setattr(agent_ws_server.AgentRuntime, "uses_session_runtime", lambda _: True)
+    monkeypatch.setattr(server, "_finalize_session_message_resume", AsyncMock())
+    monkeypatch.setattr(server, "_send_runtime_event", AsyncMock(return_value=True))
+    push = AsyncMock(return_value=True)
+    monkeypatch.setattr(server, "send_push", push)
+    started = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def stream(req):
+        try:
+            started.set()
+            await asyncio.Event().wait()
+            if False:
+                yield req
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(server, "_targeted_expert_runtime_stream", stream)
+    active_request = request()
+    active_request.metadata = {"ws_id": "old-connection"}
+    expert = asyncio.create_task(server._handle_stream_impl(object(), active_request, asyncio.Lock()))
+    owner = asyncio.create_task(asyncio.Event().wait())
+    server._session_stream_tasks["session"] = {owner: asyncio.Event()}
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        assert server._expert_request_snapshot("session") == [{"team_id": "expert", "request_id": "request"}]
+        monkeypatch.setattr(server, "_team_list_entries", AsyncMock(return_value=[]))
+        monkeypatch.setattr(agent_ws_server, "encode_agent_response_for_wire", lambda response, **kwargs: response)
+        send = AsyncMock()
+        monkeypatch.setattr(agent_ws_server, "send_wire_payload", send)
+        await server._handle_team_list(None, request(ReqMethod.TEAM_LIST), asyncio.Lock())
+        assert send.await_args.args[1].payload["expert_requests"] == [{"team_id": "expert", "request_id": "request"}]
+        cancel_request = request(ReqMethod.CHAT_CANCEL)
+        cancel_request.metadata = {"ws_id": "new-connection"}
+        response = await server._cancel_targeted_expert(cancel_request)
+        assert response.ok is True
+        assert response.payload["cancelled_request_ids"] == ["request"]
+        assert expert.cancelled() and closed.is_set()
+        assert not owner.done()
+        assert server._expert_request_snapshot("session") == []
+        assert "session::organization::expert" not in server._session_stream_tasks
+        payload = push.await_args.args[0]["payload"]
+        assert payload["team_id"] == "expert"
+        assert payload["request_id"] == "request"
+        assert payload["is_processing"] is False
+        assert push.await_args.args[0]["metadata"] == {"ws_id": "new-connection"}
+    finally:
+        owner.cancel()
+        expert.cancel()
+        await asyncio.gather(owner, expert, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancel_lookup_error_returns_failed_interrupt_response(monkeypatch):
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    monkeypatch.setattr(server, "_resolve_team_backend", lambda sid, team: backend("org") if team == "expert" else None)
+    monkeypatch.setattr(server, "_load_persisted_organization", AsyncMock(side_effect=RuntimeError("db unavailable")))
+    response = await server._cancel_targeted_expert(request(ReqMethod.CHAT_CANCEL))
+    assert response.ok is False
+    assert response.payload["event_type"] == "chat.interrupt_result"
+    assert response.payload["success"] is False
+    assert "db unavailable" in response.payload["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,team", [("agent", "expert"), ("team", "owner"), ("team", "")])
+@pytest.mark.parametrize("intent", ["cancel", "pause", "resume", "supplement"])
+async def test_non_expert_interrupt_uses_session_runtime(monkeypatch, mode, team, intent):
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {"team_name": "owner"})
+    cancel = AsyncMock(return_value=SimpleNamespace(ok=True))
+    targeted = AsyncMock()
+    monkeypatch.setattr(server, "_cancel_targeted_expert", targeted)
+    monkeypatch.setattr(server, "_execution_runtime", lambda: SimpleNamespace(cancel_request=cancel))
+    req = request(ReqMethod.CHAT_CANCEL, team)
+    req.params["mode"] = mode
+    req.params["intent"] = intent
+    await server._handle_cancel(None, req, asyncio.Lock(), send_response=False)
+    cancel.assert_awaited_once_with(req, allow_create=False)
+    targeted.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -490,11 +649,14 @@ async def test_direct_expert_failure_persists_error_once(monkeypatch, succeeded)
     )
 
     async def run_turn(self, *args, **kwargs):
+        assert args == ("expert", "session", {"query": "@expert-member Explain your finding"})
+        assert kwargs["source"] == "org_expert_direct"
         return succeeded
 
     monkeypatch.setattr(JiuwenExpertTeamLauncher, "run_organization_turn", run_turn)
     req = request()
-    req.params["content"] = "Explain your finding"
+    # Gateway normalizes the Web content field to query before AgentServer.
+    req.params["query"] = "@expert-member Explain your finding"
     chunks = [chunk async for chunk in server._targeted_expert_response_stream(req)]
     errors = [
         chunk.payload for chunk in chunks if chunk.payload["event_type"] == "chat.error"

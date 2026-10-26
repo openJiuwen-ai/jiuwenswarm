@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI
 
 from jiuwenswarm.common.obs_files import AttachmentStore, object_prefix
-from jiuwenswarm.gateway.channel_manager.web.enterprise_files import (
+from gateway.channel_manager.web.enterprise_files import (
     register_enterprise_file_routes,
 )
 

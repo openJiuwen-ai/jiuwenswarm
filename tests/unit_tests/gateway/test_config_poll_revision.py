@@ -17,9 +17,9 @@ assert _spec is not None and _spec.loader is not None
 _db = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_db)
 row_snapshot = _db.row_snapshot
-from jiuwenswarm.gateway.storage.backends.db.persistent_store import DbPersistentBackend
-from jiuwenswarm.gateway.storage.revision import RevisionConflictError
-from jiuwenswarm.gateway.storage.registry.store_registry import (
+from gateway.storage.backends.db.persistent_store import DbPersistentBackend
+from gateway.storage.revision import RevisionConflictError
+from gateway.storage.registry.store_registry import (
     DbLayout,
     StoreLayout,
     StoreRegistry,
@@ -184,8 +184,8 @@ async def test_unchanged_update_still_returns_the_row(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_channel_merge_creates_missing_row_then_keeps_other_fields(tmp_path) -> None:
-    from jiuwenswarm.gateway.config.channel.codec import DbRowChannelCodec
-    from jiuwenswarm.gateway.config.channel.repository import ChannelConfigRepository
+    from gateway.config.channel.codec import DbRowChannelCodec
+    from gateway.config.channel.repository import ChannelConfigRepository
 
     handler = SQLiteHandler(str(tmp_path / "channel.db"))
     await handler.init_database()
@@ -249,11 +249,11 @@ class _HideFirstList:
 
 @pytest.mark.asyncio
 async def test_logging_merge_retries_when_row_appears_before_update(tmp_path) -> None:
-    from jiuwenswarm.gateway.config.logging.repository import (
+    from gateway.config.logging.repository import (
         LOGGING_LEVEL_FIELDS,
         LoggingConfigRepository,
     )
-    from jiuwenswarm.gateway.config.section import DbFlatSectionCodec
+    from gateway.config.section import DbFlatSectionCodec
 
     handler = SQLiteHandler(str(tmp_path / "logging-race.db"))
     await handler.init_database()

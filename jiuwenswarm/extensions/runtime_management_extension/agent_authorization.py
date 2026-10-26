@@ -25,10 +25,10 @@ def _enterprise_checkers():
     """企业库不在本分支时返回空，聊天请求不因此被挡住。"""
     global _enterprise_absent_logged
     try:
-        from jiuwenswarm.gateway.config.enterprise.access import (
+        from gateway.config.enterprise.access import (
             get_enterprise_record_repository,
         )
-        from jiuwenswarm.gateway.config.enterprise.expressions import matches
+        from gateway.config.enterprise.expressions import matches
     except ImportError:
         if not _enterprise_absent_logged:
             _enterprise_absent_logged = True

@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.common.auth.model_catalog import LoginModel
-from jiuwenswarm.gateway.cron.controller import CronController
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from gateway.cron.controller import CronController
+from gateway.cron.store import CronJobStore
 
 _LOGIN_REF = "0123456789abcdef0123456789abcdef"
 _AUTH_SESSION = "auth-session-1"
@@ -94,13 +94,13 @@ def _patch_login_session(
 def _patch_project_binding(monkeypatch: pytest.MonkeyPatch) -> None:
     """项目绑定解析桩：create/update 不依赖 Gateway 本地项目表。"""
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.project_store.resolve_cron_project_binding",
+        "gateway.embedded.runtime.session.project_store.resolve_cron_project_binding",
         lambda raw_pid, project_dir, work_mode: SimpleNamespace(
             project_id="p1", work_mode="work", error=None
         ),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.project_store.resolve_cron_job_patch",
+        "gateway.embedded.runtime.session.project_store.resolve_cron_job_patch",
         lambda patch, **kwargs: None,
     )
 

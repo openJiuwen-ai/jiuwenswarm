@@ -15,7 +15,7 @@ from openjiuwen_runtime.foundation.db.sqlite_handler import SQLiteHandler
 from openjiuwen_runtime.foundation.db.utils import is_mysql, is_postgresql, is_sqlite
 from openjiuwen_runtime.foundation.log import get_logger
 
-from jiuwenswarm.gateway.config.enterprise.tables.table_init import init_all_tables
+from gateway.config.enterprise.tables.table_init import init_all_tables
 from jiuwenswarm.infrastructure.db.settings import Settings, get_settings
 
 logger = get_logger(__name__)

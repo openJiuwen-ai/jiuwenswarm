@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronLeft, ChevronRight, TrendingUp, Newspaper, Briefcase } from 'lucide-react';
 import { webRequest, webClient } from '../../services/webClient';
 import { getArchiveErrorCode } from '../../features/workspace/archivedTaskClient';
-import { useCronStore } from '../../stores';
+import { useCronStore, useWorkspaceStore } from '../../stores';
 import { ensureCronUserSeedFirst } from '../../features/cron/cronSeedMessage';
 import { projectRegistryClient } from '../../features/workspace/projectRegistryClient';
 import type { ProjectInfo } from '../../features/workspace/projectTypes';
@@ -333,6 +333,8 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 在这里创建/编辑/停止/删除任务后也要通知它刷新，否则侧边栏那边的任务文件夹会显示过期数据
   const reloadCronStore = useCronStore((s) => s.reload);
   const loadCronSessions = useCronStore((s) => s.loadCronSessions);
+  // 手动创建未选项目时，后端以此把任务归入 default/default_code（Issue #5713）。
+  const currentWorkMode = useWorkspaceStore((s) => s.workMode);
 
   const [jobs, setJobs] = useState<CronTaskUI[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
@@ -751,6 +753,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const expiredCount = useMemo(() => jobs.filter((j) => jobStatusKey(j) === 'expired').length, [jobs]);
 
   async function handleCreateSubmit(value: CronTaskFormValue) {
+    // 选中真实项目时以项目自身模式为准；未选项目时用当前 UI 模式。
+    const submittingWorkMode = value.workMode
+      ?? (currentWorkMode === 'code' || currentWorkMode === 'work' ? currentWorkMode : null);
     try {
       await webRequest<{ job: CronJobDTO }>('cron.job.create', {
         name: value.name.trim(),
@@ -773,7 +778,8 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         ...(value.projectId ? { project_id: value.projectId } : {}),
         // 一并带上 work_mode：AgentOS 多用户下 Gateway 不再本地反查项目表，work_mode
         // 需由前端（project.list 已含 work_mode）随 project_id 下发，保证归属/展示正确。
-        ...(value.projectId && value.workMode ? { work_mode: value.workMode } : {}),
+        // 未选项目时也要带上当前模式，后端据此把空项目归到 default/default_code（#5713）。
+        ...(submittingWorkMode ? { work_mode: submittingWorkMode } : {}),
         ...(value.modelName ? { model_name: value.modelName } : {}),
         mode: value.mode,
         session_id: sessionId,

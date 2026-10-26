@@ -452,7 +452,7 @@ async def test_non_explicit_tui_with_project_id_skips_project_creation(
         "get_project_by_id",
         # lifecycle.guard 在会话创建准入时读取 hidden（项目归档屏障）。
         lambda _project_id, cache_bust=True: SimpleNamespace(
-            work_mode="code", hidden=False
+            work_mode="code", hidden=False, project_dir=str(tmp_path),
         ),
     )
 

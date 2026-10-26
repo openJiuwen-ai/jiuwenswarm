@@ -1,45 +1,60 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
-"""Protocol wire aliases with host-owned Team delta identity preservation."""
 
-from typing import Any
+"""转发别名（过渡形态）：实现已迁 ``openjiuwen_protocol.e2a.wire_codec``。
 
-from gateway_protocol.e2a import wire_codec as protocol_wire
-from gateway_protocol.e2a.agent_models import AgentResponseChunk
-from gateway_protocol.e2a.wire_codec import (  # noqa: F401
+本模块仅保留 ``jiuwenswarm.common.e2a.wire_codec`` 旧 import 路径兼容，re-export openjiuwen-protocol
+包的同一对象（含原模块从兄弟模块引入的符号，保持命名空间一致）；
+唯一真源在协议包，本仓不持有实现。过渡期结束后随 common 副本收敛一并删除。
+"""
+
+from __future__ import annotations
+
+from openjiuwen_protocol.e2a.wire_codec import (  # noqa: F401
+    AgentResponse,
+    AgentResponseChunk,
+    E2AProvenance,
+    E2AResponse,
+    E2A_PROTOCOL_VERSION,
+    E2A_RESPONSE_KIND_E2A_ERROR,
+    E2A_RESPONSE_STATUS_FAILED,
+    E2A_SOURCE_PROTOCOL_E2A,
+    E2A_WIRE_LEGACY_AGENT_CHUNK_KEY,
+    E2A_WIRE_LEGACY_AGENT_RESPONSE_KEY,
+    IdentityOrigin,
+    e2a_response_from_agent_chunk,
+    e2a_response_from_agent_response,
+    e2a_response_to_agent_chunk,
+    e2a_response_to_agent_response,
+    encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
     encode_json_parse_error_wire,
     is_e2a_response_wire_dict,
+    parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
-)
-from jiuwenswarm.common.e2a.gateway_normalize import (  # noqa: F401
-    copy_team_delta_identity,
-    e2a_response_from_agent_chunk,
+    utc_now_iso,
 )
 
-
-def encode_agent_chunk_for_wire(
-    chunk: AgentResponseChunk,
-    *,
-    response_id: str,
-    sequence: int,
-    is_stream: bool = True,
-) -> dict[str, Any]:
-    """Keep protocol encoding and add only the host Team delta identity."""
-    wire = protocol_wire.encode_agent_chunk_for_wire(
-        chunk, response_id=response_id, sequence=sequence, is_stream=is_stream,
-    )
-    if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.delta":
-        copy_team_delta_identity(chunk.payload, wire["body"])
-    return wire
-
-
-def parse_agent_server_wire_chunk(data: dict[str, Any]) -> AgentResponseChunk:
-    """Keep protocol parsing and restore only the host Team delta identity."""
-    chunk = protocol_wire.parse_agent_server_wire_chunk(data)
-    if (
-        is_e2a_response_wire_dict(data)
-        and isinstance(chunk.payload, dict)
-        and chunk.payload.get("event_type") == "chat.delta"
-    ):
-        copy_team_delta_identity(data["body"], chunk.payload)
-    return chunk
+__all__ = [
+    "AgentResponse",
+    "AgentResponseChunk",
+    "E2AProvenance",
+    "E2AResponse",
+    "E2A_PROTOCOL_VERSION",
+    "E2A_RESPONSE_KIND_E2A_ERROR",
+    "E2A_RESPONSE_STATUS_FAILED",
+    "E2A_SOURCE_PROTOCOL_E2A",
+    "E2A_WIRE_LEGACY_AGENT_CHUNK_KEY",
+    "E2A_WIRE_LEGACY_AGENT_RESPONSE_KEY",
+    "IdentityOrigin",
+    "e2a_response_from_agent_chunk",
+    "e2a_response_from_agent_response",
+    "e2a_response_to_agent_chunk",
+    "e2a_response_to_agent_response",
+    "encode_agent_chunk_for_wire",
+    "encode_agent_response_for_wire",
+    "encode_json_parse_error_wire",
+    "is_e2a_response_wire_dict",
+    "parse_agent_server_wire_chunk",
+    "parse_agent_server_wire_unary",
+    "utc_now_iso",
+]

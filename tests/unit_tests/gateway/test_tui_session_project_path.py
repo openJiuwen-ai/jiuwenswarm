@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
+from gateway.channel_manager.tui.tui_connect import (
     CliHandlersBindParams,
     build_tui_session_create_channel_metadata,
     register_cli_handlers,
@@ -123,16 +123,16 @@ class TestInitSessionMetadataChannelMetadata:
         d = tmp_path / "sessions"
         d.mkdir()
         monkeypatch.setattr(
-            "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_agent_sessions_dir",
+            "gateway.embedded.runtime.session.session_metadata.get_agent_sessions_dir",
             lambda: d,
         )
-        from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import _METADATA_CACHE
+        from gateway.embedded.runtime.session.session_metadata import _METADATA_CACHE
 
         _METADATA_CACHE.clear()
         return d
 
     def test_persists_channel_metadata_on_init(self, sessions_dir: Path):
-        from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import init_session_metadata
+        from gateway.embedded.runtime.session.session_metadata import init_session_metadata
 
         init_session_metadata(
             session_id="tui_new",
@@ -166,10 +166,10 @@ async def test_session_create_uses_server_allocated_project_path_for_resume(
         "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_agent_sessions_dir",
+        "gateway.embedded.runtime.session.session_metadata.get_agent_sessions_dir",
         lambda: sessions_root,
     )
-    from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import _METADATA_CACHE
+    from gateway.embedded.runtime.session.session_metadata import _METADATA_CACHE
 
     _METADATA_CACHE.clear()
 
@@ -184,7 +184,7 @@ async def test_session_create_uses_server_allocated_project_path_for_resume(
 
         async def send_request(self, env):
             self.requests.append(env)
-            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import init_session_metadata
+            from gateway.embedded.runtime.session.session_metadata import init_session_metadata
 
             init_session_metadata(
                 session_id="tui_6a601aa3_f4ed87",

@@ -92,7 +92,7 @@ def test_apply_non_web_text_fallback_bypasses_non_web_payload(monkeypatch):
 
 def test_message_handler_fallback_skips_a2ui_import_without_marker(monkeypatch):
     """Gateway hot path should not import A2UI when payload has no A2UI marker."""
-    from jiuwenswarm.gateway.message_handler.message_handler import (
+    from gateway.message_handler.message_handler import (
         apply_a2ui_text_fallback_to_gateway_payload,
     )
 

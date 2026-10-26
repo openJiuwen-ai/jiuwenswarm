@@ -69,6 +69,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_ask_user import (
     ASK_USER_TOOL_NAME,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import (
+    session_observation_args_valid,
     ALLOW_LEVEL,
     ASK_LEVEL,
     DENY_LEVEL,
@@ -92,9 +93,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract imp
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context_rail import (
     root_context_failure_from_context,
-)
-from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
-    evaluate_session_deny,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
     optional_root_permission_queue,
@@ -381,13 +379,6 @@ class AutoPermissionBeforeToolMixin:
                 facts.tool_name,
                 tool_category=facts.tool_category,
             )
-            if session_id:
-                self.session_deny_store.record_denial(
-                    session_id=session_id,
-                    tool_name=facts.tool_name,
-                    tool_args=facts.untrusted_args,
-                    reason="user_rejected",
-                )
             self._emit_audit(
                 facts,
                 decision=DENY_LEVEL,
@@ -399,12 +390,6 @@ class AutoPermissionBeforeToolMixin:
                 decision_source="manual_approval",
             )
 
-        session_decision = evaluate_session_deny(
-            self.session_deny_store,
-            session_id=session_id,
-            tool_name=invocation.tool_name,
-            tool_args=normalized_args,
-        )
         policy_evaluation = await self.policy_evaluator.evaluate(invocation)
         send_paths = (
             policy_evaluation.path_result.canonical_paths
@@ -430,7 +415,7 @@ class AutoPermissionBeforeToolMixin:
         )
         readonly_binding_verified = bool(
             facts.capability.operation_family == "internal_readonly"
-            and trusted_readonly_binding(invocation, session_id)
+            and trusted_readonly_binding(invocation, session_id, owner_agent=getattr(self, "_owner_agent", None))
         )
 
         if trusted_send_resolution is not None:
@@ -476,15 +461,6 @@ class AutoPermissionBeforeToolMixin:
             return runtime_result(
                 build_denied_permission_response(command_contract_error),
                 decision_source="final_gate",
-            )
-        if session_decision is not None:
-            return runtime_result(
-                self._deny(
-                    facts,
-                    session_decision.reason,
-                    decision_source="session_deny",
-                ),
-                decision_source="session_deny",
             )
         if policy_evaluation.level == DENY_LEVEL:
             return runtime_result(
@@ -574,35 +550,19 @@ class AutoPermissionBeforeToolMixin:
             )
         if facts.capability.operation_family == "internal_readonly" and not readonly_binding_verified:
             domain_route = DecisionRoute(ASK_LEVEL, "readonly_tool_binding_unverified", "manual_only")
+        if session_observation_args_valid(facts.tool_name, facts.untrusted_args) is False:
+            domain_route = DecisionRoute(ASK_LEVEL, "readonly_tool_arguments_unverified", "manual_only")
 
-        if _is_rejection_confirmation(user_input):
-            if invocation_resume is None:
-                self._emit_audit(
-                    facts,
-                    decision=DENY_LEVEL,
-                    reason="tool_invocation_resume_required",
-                    degraded=False,
-                )
-                return runtime_result(
-                    build_denied_permission_response("tool_invocation_resume_required"),
-                    decision_source="root_permission_queue",
-                )
-            if session_id:
-                self.session_deny_store.record_denial(
-                    session_id=session_id,
-                    tool_name=facts.tool_name,
-                    tool_args=facts.untrusted_args,
-                    reason="user_rejected",
-                )
+        if _is_rejection_confirmation(user_input) and invocation_resume is None:
             self._emit_audit(
                 facts,
                 decision=DENY_LEVEL,
-                reason="user_rejected",
+                reason="tool_invocation_resume_required",
                 degraded=False,
             )
             return runtime_result(
-                build_rejected_permission_response("user_rejected"),
-                decision_source="manual_approval",
+                build_denied_permission_response("tool_invocation_resume_required"),
+                decision_source="root_permission_queue",
             )
 
         if wrapper_resume:
@@ -623,6 +583,7 @@ class AutoPermissionBeforeToolMixin:
             domain_route is not None and domain_route.reason in {
                 "subagent_runtime_control_binding_unverified",
                 "readonly_tool_binding_unverified",
+                "readonly_tool_arguments_unverified",
             }
         )
         if policy_evaluation.level == ALLOW_LEVEL and not binding_unverified:
@@ -841,13 +802,6 @@ class AutoPermissionBeforeToolMixin:
         base_result = await self._call_base_rail(args, kwargs, invocation)
         result_class = classify_permission_result(base_result)
         if result_class == "user_rejection":
-            if session_id:
-                self.session_deny_store.record_denial(
-                    session_id=session_id,
-                    tool_name=facts.tool_name,
-                    tool_args=facts.untrusted_args,
-                    reason="user_rejected",
-                )
             self._emit_audit(
                 facts, decision=DENY_LEVEL, reason="user_rejected", degraded=False
             )

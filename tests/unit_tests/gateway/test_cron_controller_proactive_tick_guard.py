@@ -15,12 +15,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.gateway.cron.controller import CronController
-from jiuwenswarm.gateway.cron.proactive_cron_sync import (
+from gateway.cron.controller import CronController
+from gateway.cron.proactive_cron_sync import (
     DEFAULT_CRON_EXPR,
     PROACTIVE_JOB_ID,
 )
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from gateway.cron.store import CronJobStore
 
 
 def _make_controller(tmp_path) -> tuple[CronController, CronJobStore]:

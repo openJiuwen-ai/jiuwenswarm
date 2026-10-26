@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from jiuwenswarm.common import utils
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.channel_manager.web.enterprise_files import register_enterprise_file_routes
+from gateway.channel_manager.web.enterprise_files import register_enterprise_file_routes
 from jiuwenswarm.server.runtime.attachments.upload_storage import (
     UPLOAD_READ_CHUNK_BYTES, read_session_upload_chunk,
 )
@@ -113,7 +113,7 @@ def test_upload_reader_rejects_linked_or_special_files(upload, tmp_path, kind):
 
 @pytest.mark.asyncio
 async def test_enterprise_raw_file_reuses_tenant_rpc_and_streaming(upload, monkeypatch):
-    from jiuwenswarm.gateway.routing import e2a_proxy
+    from gateway.routing import e2a_proxy
 
     calls = []
 
@@ -159,7 +159,7 @@ async def test_enterprise_raw_file_reuses_tenant_rpc_and_streaming(upload, monke
 
 @pytest.mark.asyncio
 async def test_raw_file_returns_unavailable_without_local_fallback(upload, monkeypatch):
-    from jiuwenswarm.gateway.routing import e2a_proxy
+    from gateway.routing import e2a_proxy
 
     async def unavailable(**kwargs):
         return False, {"code": "SERVICE_UNAVAILABLE"}

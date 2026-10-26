@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.agent_client_mode import (
+from gateway.agent_client_mode import (
     AgentClientModeError,
     read_agent_client_mode,
     resolve_agent_server_client,

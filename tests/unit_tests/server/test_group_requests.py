@@ -144,7 +144,7 @@ async def test_chat_checks_group_ownership_and_rejects_session_mismatch(host):
 
 
 def test_group_methods_are_forwarded_by_gateway_and_no_remove_method():
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+    from gateway.channel_manager.web.app_web_handlers import (
         _FORWARD_REQ_METHODS,
         _FORWARD_NO_LOCAL_HANDLER_METHODS,
     )

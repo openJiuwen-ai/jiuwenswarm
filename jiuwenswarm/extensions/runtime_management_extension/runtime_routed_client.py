@@ -31,7 +31,7 @@ from jiuwenswarm.extensions.runtime_management_extension.session_route_client im
     RetryableRouteError,
     RuntimeSessionRouteClient,
 )
-from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
+from gateway.routing.agent_client import AgentServerClient
 
 logger = logging.getLogger(__name__)
 

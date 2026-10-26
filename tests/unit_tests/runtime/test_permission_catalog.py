@@ -226,7 +226,7 @@ def test_catalogs_have_no_transport_dependencies(catalog_module: object) -> None
     assert imported_names.isdisjoint({"AgentRequest", "AgentResponse", "ReqMethod"})
     lowered_source = source.lower()
     assert "agent_ws_server" not in lowered_source
-    assert "jiuwenswarm.gateway" not in lowered_source
+    assert "gateway" not in lowered_source
     assert "websocket" not in lowered_source
     assert "wire codec" not in lowered_source
 

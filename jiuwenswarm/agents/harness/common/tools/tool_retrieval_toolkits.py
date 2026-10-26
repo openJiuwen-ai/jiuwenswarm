@@ -1,7 +1,7 @@
 """Static in-code tool category catalogue for progressive ``tool_search``.
 
-The deferred-tool directory is a two-level category tree frozen into this
-module (``_TOOL_CATEGORIES``): category path → description + member tool
+The deferred-tool directory is a flat category table frozen into this
+module (``_TOOL_CATEGORIES``): category name → description + member tool
 names. ``tool_search`` serves ``list`` (category navigation, names + short
 descriptions) and ``get_schema`` (the ``{name, description, schema}`` record
 for one tool) by rendering that static table against the live deferred
@@ -17,11 +17,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
+from openjiuwen.core.context_engine.processor.forked.compressor.recall.bm25 import (
+    tokenize as _bm25_tokenize,
+)
 from openjiuwen.core.foundation.tool import LocalFunction, ToolCard, ToolInfo
+from openjiuwen.harness.tools.tool_discovery.bm25 import BM25ToolIndex
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +40,19 @@ class ToolCategory(NamedTuple):
     tools: tuple[str, ...]
 
 
-# The static category tree. Category lines are description-only (tool names
-# are discovered through tool_search's list); two-level paths render as
-# ``scheduling > cron``. Membership lists the stable built-in deferred tools;
-# names not present in the live registry are skipped at render time.
+# The static category table — flat names, no hierarchy. Category lines are
+# description-only (tool names are discovered through tool_search's list).
+# Membership lists the stable built-in deferred tools; names not present in
+# the live registry are skipped at render time.
 _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
+    ToolCategory(
+        path="coding-memory",
+        description=(
+            "读写项目编码记忆（coding_memory/ 下的 markdown）：跨会话沉淀"
+            "代码经验、事实与决策，支持分页读取与精确字符串替换。"
+        ),
+        tools=("coding_memory_edit", "coding_memory_read", "coding_memory_write"),
+    ),
     ToolCategory(
         path="documents",
         description="读取 PDF 文档的文本内容，支持按页与分块读取。",
@@ -68,12 +79,46 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         tools=("get_current_goal", "submit_goal_report"),
     ),
     ToolCategory(
+        path="image-processing",
+        description="使用视觉模型处理图片：OCR 文字提取与图片问答。",
+        tools=("image_ocr", "visual_question_answering"),
+    ),
+    ToolCategory(
+        path="audio-processing",
+        description="使用音频模型处理音频：语音转写、音频问答与元数据提取。",
+        tools=(
+            "audio_metadata",
+            "audio_question_answering",
+            "audio_transcription",
+        ),
+    ),
+    ToolCategory(
+        path="video-understanding",
+        description="使用视频理解模型分析视频内容并回答相关问题。",
+        tools=("video_understanding",),
+    ),
+    ToolCategory(
+        path="image-generation",
+        description="文生图：按文字提示词生成图片并保存到工作区。",
+        tools=("generate_image", "generate_visual"),
+    ),
+    ToolCategory(
+        path="video-generation",
+        description="文生视频：提交视频生成任务，按任务号轮询进度并下载结果。",
+        tools=("generate_video", "check_video_status"),
+    ),
+    ToolCategory(
+        path="lsp",
+        description="通过语言服务器（LSP）获取代码智能：定义、引用、诊断等。",
+        tools=("lsp",),
+    ),
+    ToolCategory(
         path="modes",
         description="在 normal 与 plan 两种会话模式之间切换当前会话。",
         tools=("switch_mode",),
     ),
     ToolCategory(
-        path="scheduling > cron",
+        path="cron",
         description=(
             "cron 定时任务的创建、更新、删除、查询、启停、预览执行时间与手动触发。"
         ),
@@ -89,7 +134,7 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         ),
     ),
     ToolCategory(
-        path="scheduling > heartbeat",
+        path="heartbeat",
         description=(
             "绑定当前会话的心跳跟进任务的创建、更新、删除、查询、启停、预览触发时间、"
             "立即运行与取消运行。"
@@ -122,6 +167,21 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         ),
     ),
     ToolCategory(
+        path="skill-evolution",
+        description=(
+            "本地技能与经验的演进：经用户确认创建演进评审、启动受限评审并接受"
+            "已审查的变更提案，以及演进经验的查询、读取与整理。"
+        ),
+        tools=(
+            "evolve_review_task",
+            "evolve_skill_experiences",
+            "list_skill_experiences",
+            "prepare_skill_evolution",
+            "read_skill_experiences",
+            "simplify_skill_experiences",
+        ),
+    ),
+    ToolCategory(
         path="skill-management",
         description="网络上技能搜索、安装与本地技能卸载。",
         tools=("install_skill", "search_skill", "uninstall_skill"),
@@ -133,6 +193,19 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
             "支持超时与后台运行。"
         ),
         tools=("powershell",),
+    ),
+    ToolCategory(
+        path="user-todos",
+        description="管理用户个人待办与日程：任务、会议、提醒、计划。",
+        tools=("user_todos",),
+    ),
+    ToolCategory(
+        path="worktree",
+        description=(
+            "创建或恢复隔离的 git worktree 并切换当前会话工作目录；"
+            "退出时还原到原目录。"
+        ),
+        tools=("enter_worktree", "exit_worktree"),
     ),
 )
 
@@ -167,9 +240,11 @@ def _tool_index_tool_id(session_scope: str) -> str:
 
 
 _TOOL_SEARCH_CARD_DESCRIPTION = (
-    "Deferred-tool catalogue, read-only. list: subcategories and tools "
-    "under [category]. get_schema: the {name, description, schema} of the "
-    "tool named in [tool]; results execute via the fixed tool_call tool. "
+    "Deferred-tool catalogue, read-only. list: tools under [category]; "
+    "add [keyword] to BM25-search within the category or, with no "
+    "category, across all tools. "
+    "get_schema: the {name, description, schema} of the tool named in "
+    "[tool]; results execute via the fixed tool_call tool. "
     "Never executes tools."
 )
 
@@ -228,7 +303,7 @@ def _compact_schema_description(description: str) -> str:
 
 
 def _tool_search_input_params() -> dict[str, Any]:
-    """``tool_search`` card schema: list / get_schema over the category tree.
+    """``tool_search`` card schema: list / get_schema over the category table.
 
     The discovery flow is two-phase to bound tokens: list returns names and
     short descriptions only; get_schema returns the full schema for the tool
@@ -242,14 +317,27 @@ def _tool_search_input_params() -> dict[str, Any]:
                 "type": "string",
                 "enum": ["list", "get_schema"],
                 "description": (
-                    "list: subcategories and tools under [category]. "
-                    "get_schema: the schema of the tool named in [tool]."
+                    "list: tools under [category], optionally filtered by "
+                    "[keyword]. get_schema: the schema of the tool named "
+                    "in [tool]."
                 ),
             },
             "category": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Category name or A > B chain. Omit for root.",
+                "description": (
+                    "Exact category name. Omit only for a keyword-only "
+                    "global search."
+                ),
+            },
+            "keyword": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": (
+                    "list only. BM25 keyword search: within [category], or "
+                    "across all tools when category is omitted."
+                ),
             },
             "tool": {
                 "type": "string",
@@ -264,20 +352,15 @@ def _tool_search_input_params() -> dict[str, Any]:
 
 
 def _category_key(path: str) -> tuple[str, ...]:
-    """Normalize a category path to a casefolded segment tuple.
+    """Normalize a category name to a casefolded single-segment tuple."""
 
-    ``A > B`` chains, ``A.B`` cid spellings and bare names all normalize to
-    the same key, so the model can copy whichever spelling a line shows.
-    """
-
-    segments = re.split(r"\s*>\s*|\s*\.\s*", str(path or "").strip().casefold())
-    return tuple(segment for segment in segments if segment)
+    return (str(path or "").strip().casefold(),)
 
 
 class ToolRetrievalToolkit:
     """Expose one session-local ``tool_search`` structured tool for deferred tools.
 
-    The catalogue is the in-code ``_TOOL_CATEGORIES`` tree rendered against
+    The catalogue is the in-code ``_TOOL_CATEGORIES`` table rendered against
     the live deferred registry; MCP connector tools stay out of the static
     table and group under their ``mcp_{server}`` virtual branches instead.
     """
@@ -326,7 +409,15 @@ class ToolRetrievalToolkit:
         self._tool_by_name = {tool.name: tool for tool in tools}
 
     def _build_catalogue(self) -> ToolCatalogueSnapshot:
-        """Freeze the static tree against the live registry."""
+        """Freeze the static table against the live registry.
+
+        A category line is a routing signal: it pays for itself only when
+        there is a membership to route to. Categories with exactly one live
+        member collapse — the category line is dropped and the member falls
+        through to the flat ``[tool]`` block (name + short description,
+        get_schema directly), saving a list round trip that would reveal a
+        single name the prompt could have stated outright.
+        """
 
         self._live_records()
         live = self._tool_by_name
@@ -335,7 +426,7 @@ class ToolRetrievalToolkit:
                 tools=tuple(name for name in category.tools if name in live)
             )
             for category in _TOOL_CATEGORIES
-            if any(name in live for name in category.tools)
+            if sum(1 for name in category.tools if name in live) >= 2
         )
         flat_entries = tuple(
             _FlatToolEntry(name, tool.description or "")
@@ -453,13 +544,15 @@ class ToolRetrievalToolkit:
     # ─── tool_search ────────────────────────────────────────────────────
 
     async def tool_search(self, **kwargs: Any) -> str:
-        """Serve one catalogue operation from the static category tree.
+        """Serve one catalogue operation from the static category table.
 
         Token-bounding two-phase flow:
 
-        - ``list``: categories with descriptions (root / parent) or member
-          tool names + short descriptions (category) — served whole, no
-          schemas, no pagination.
+        - ``list``: one category's member tool names + short descriptions
+          — served whole, no schemas, no pagination. ``keyword``
+          BM25-searches within the category, or across every tool when
+          category is omitted; bare ``list`` (neither field) errors — the
+          category catalogue already sits in the system prompt.
         - ``get_schema`` with ``tool=<name>``: the full parameter schema
           for exactly the tool the model picked, ready for the fixed
           ``tool_call``.
@@ -473,12 +566,21 @@ class ToolRetrievalToolkit:
         # first name).
         kwargs.pop("call_goal", None)
         kwargs.pop("cursor", None)
+        had_retired_query = "query" in kwargs
         kwargs.pop("query", None)
         legacy_tools = kwargs.pop("tools", None)
         operation = str(kwargs.get("operation") or "").strip().lower()
         tool_name = str(kwargs.pop("tool", "") or "").strip()
         if not tool_name and isinstance(legacy_tools, list) and legacy_tools:
             tool_name = str(legacy_tools[0]).strip()
+
+        # ``keyword`` (list only) is normalized leniently: a stale
+        # snapshot's array spelling joins into one string, and anything
+        # empty after the strip degrades to an unfiltered listing.
+        raw_keyword = kwargs.pop("keyword", None)
+        if isinstance(raw_keyword, (list, tuple)):
+            raw_keyword = " ".join(str(item) for item in raw_keyword)
+        keyword = str(raw_keyword or "").strip()
 
         if operation == "get_schema":
             return self._render_schema(tool_name)
@@ -487,28 +589,118 @@ class ToolRetrievalToolkit:
             # retired from the card; an empty operation (direct callers only
             # — the card requires it) degrades to a plain listing too.
             category = str(kwargs.get("category") or "").strip()
-            return self._render_listing(category)
+            if not category and not keyword:
+                # Bare list (and a stale keyword-era snapshot whose ``query``
+                # was dropped) teaches the valid call shapes; a bare legacy
+                # "search" degrades to the root category listing instead.
+                if operation == "list" or had_retired_query:
+                    raise ValueError(
+                        'list needs "category" or "keyword": pick a category '
+                        "from the catalogue in your system prompt, or pass "
+                        'keyword for a global search. e.g. '
+                        '{"operation":"list","category":"cron"} or '
+                        '{"operation":"list","keyword":"图片"}'
+                    )
+                return self._render_root_listing()
+            return self._render_listing(category, keyword=keyword)
 
         raise ValueError(
             f'tool_search supports {"list", "get_schema"}, not {operation!r}; '
-            'e.g. {"operation":"list","category":"scheduling > cron"} or '
+            'e.g. {"operation":"list","category":"cron"} or '
             '{"operation":"get_schema","tool":"cron_create_job"}'
         )
 
     # ─── listing renderers ──────────────────────────────────────────────
 
-    def _render_listing(self, category: str) -> str:
+    def _render_listing(self, category: str, keyword: str = "") -> str:
         self._live_records()
 
         if not category:
-            return self._render_root_listing()
+            if keyword:
+                return self._render_keyword_search_listing(keyword)
+            # The category catalogue is already in the system prompt; a
+            # bare list would only re-dump it. Teach the call shape.
+            raise ValueError(
+                'list needs "category" or "keyword": pick a category from '
+                "the catalogue in your system prompt, or pass keyword for "
+                'a global search. e.g. {"operation":"list","category":'
+                '"cron"} or {"operation":"list","keyword":"图片"}'
+            )
 
         connector_server = self._match_connector_category(category)
         if connector_server is not None:
             # Connector groups live only as virtual branches; serve their
             # list here so the advertised category stays navigable.
-            return self._render_connector_listing(connector_server)
-        return self._render_category_listing(category)
+            return self._render_connector_listing(connector_server, keyword=keyword)
+        return self._render_category_listing(category, keyword=keyword)
+
+    def _render_root_listing(self) -> str:
+        """Root category listing for retired bare ``search`` spellings.
+
+        Mirrors the prompt directory's collapse semantics — multi-member
+        categories render ``[category]`` lines, single-member ones fold
+        into ``[tool]`` lines — plus the MCP connector virtual branches
+        (connecters never fold: the server description carries its own
+        routing signal). Bare ``list`` never gets here: the catalogue
+        already sits in the system prompt, so re-dumping it would only
+        waste a call.
+        """
+
+        lines = [
+            "## Tool categories",
+            "完整目录见 system prompt；本列表仅为旧拼写降级渲染。",
+            "",
+        ]
+        for category in self._live_categories():
+            description = " ".join((category.description or "").split())
+            if len(category.tools) >= 2:
+                lines.append(f"- [category] {category.path}: {description}")
+                continue
+            name = category.tools[0]
+            tool = self._tool_by_name.get(name)
+            tool_description = (tool.description if tool else "") or ""
+            lines.append(
+                f"- [tool] {name}: "
+                f"{_compact_schema_description(tool_description)}"
+            )
+        for server, group in self.mcp_connector_groups().items():
+            description = str(
+                group.get("description_zh")
+                or group.get("description_en")
+                or ""
+            ).strip() or f"Tools from MCP connector {server}."
+            lines.append(f"- [category] mcp_{server}: {description}")
+        return "\n".join(lines)
+
+    def _rank_tools_by_query(
+        self, names: tuple[str, ...] | list[str], keyword: str
+    ) -> list[str]:
+        """BM25-rank tools against a keyword, engine-index semantics.
+
+        ``BM25ToolIndex.search`` brings the ranking (exact-name first),
+        the score>0 threshold, and the tiebreaks; the corpus is one
+        category or the live registry, so the index is rebuilt per call.
+        Results sharing only single-character tokens with the query are
+        dropped: the shared tokenizer emits CJK unigrams, and a
+        unigram-only overlap (query 图片生成 vs doc 完成/发生) is noise
+        BM25's positive IDF cannot zero out.
+        """
+
+        documents = [
+            self._tool_by_name[name] for name in names if name in self._tool_by_name
+        ]
+        if not documents:
+            return []
+        ranked = BM25ToolIndex.build(documents).search(keyword, limit=len(documents))
+        multi_char = {
+            token for token in _bm25_tokenize(keyword) if len(token) > 1
+        }
+        selected: list[str] = []
+        for tool in ranked:
+            tokens = set(_bm25_tokenize(f"{tool.name or ''} {tool.description or ''}"))
+            if multi_char & tokens:
+                selected.append(tool.name)
+        return selected
 
     def _live_categories(self) -> tuple[ToolCategory, ...]:
         """Static categories whose membership intersects the live registry."""
@@ -522,58 +714,36 @@ class ToolRetrievalToolkit:
             if any(name in live for name in category.tools)
         )
 
-    def _uncategorized_names(self) -> tuple[str, ...]:
-        """Live deferred names no static category claims (connectors aside)."""
+    def _render_keyword_search_listing(self, keyword: str) -> str:
+        """BM25-search every live deferred tool (root + keyword).
 
-        covered = {
-            name
-            for category in _TOOL_CATEGORIES
-            for name in category.tools
-        }
-        return tuple(
-            sorted(
-                (
-                    name
-                    for name in self._tool_by_name
-                    if name not in covered and not name.startswith("mcp_")
-                ),
-                key=str.casefold,
+        Covers categorized, uncategorized, and MCP connector tools alike —
+        names are sorted before indexing so the rank tiebreaks stay
+        deterministic regardless of registry order.
+        """
+
+        names = sorted(self._tool_by_name, key=str.casefold)
+        ranked = self._rank_tools_by_query(names, keyword)
+        header = f'## Tools (keyword: "{keyword}")'
+        if not ranked:
+            return (
+                f"{header}\n\n"
+                f'No tools match keyword "{keyword}" (0 of {len(names)})'
             )
-        )
-
-    def _render_root_listing(self) -> str:
-        lines = ["## Tool categories", ""]
+        lines = [header, ""]
         lines.extend(
-            f"- [category] {category.path}: {category.description}"
-            for category in self._live_categories()
+            f"- [tool] {name}: "
+            f"{_compact_schema_description(self._tool_by_name[name].description)}"
+            for name in ranked
         )
-        for server, group in sorted(self.mcp_connector_groups().items()):
-            description = str(
-                group.get("description_zh") or group.get("description_en") or ""
-            ).strip()
-            if not description:
-                description = f"Tools from MCP connector {server}."
-            lines.append(f"- [category] mcp_{server}: {description}")
-        uncategorized = self._uncategorized_names()
-        if uncategorized:
-            lines.append("")
-            lines.extend(
-                f"- [tool] {name}: "
-                f"{_compact_schema_description(self._tool_by_name[name].description)}"
-                for name in uncategorized
-            )
-        if len(lines) == 2:
-            # No categories, no connectors, no stray tools: empty registry.
-            return "## Tool categories\n\nNo deferred tools available."
         return "\n".join(lines)
 
-    def _render_category_listing(self, category: str) -> str:
-        """Render one category's member tools, or its subcategory lines.
+    def _render_category_listing(self, category: str, keyword: str = "") -> str:
+        """Render one category's member tools.
 
-        A full-path match lists the category's tools; a parent path (e.g.
-        ``scheduling``) lists its subcategories, mirroring the root's
-        category lines. Anything else raises with the valid names so the
-        model can retry without probing.
+        A name match lists the category's tools, BM25-ranked against
+        ``keyword`` when given; anything else raises with the valid names
+        so the model can retry without probing.
         """
 
         requested = _category_key(category)
@@ -584,31 +754,30 @@ class ToolRetrievalToolkit:
         ]
         if matches:
             matched = matches[0]
-            lines = [f"## Tools (category: {matched.path})", ""]
+            names: tuple[str, ...] | list[str] = matched.tools
+            header = f"## Tools (category: {matched.path})"
+            if keyword:
+                names = self._rank_tools_by_query(matched.tools, keyword)
+                if not names:
+                    return (
+                        f'## Tools (category: {matched.path}, keyword: "{keyword}")'
+                        f"\n\n"
+                        f'No tools match keyword "{keyword}" '
+                        f"(0 of {len(matched.tools)})"
+                    )
+                header = f'## Tools (category: {matched.path}, keyword: "{keyword}")'
+            lines = [header, ""]
             lines.extend(
                 f"- [tool] {name}: "
                 f"{_compact_schema_description(self._tool_by_name[name].description)}"
-                for name in matched.tools
-            )
-            return "\n".join(lines)
-
-        children = []
-        for candidate in self._live_categories():
-            path_key = _category_key(candidate.path)
-            if path_key[: len(requested)] == requested and len(path_key) > len(requested):
-                children.append(candidate)
-        if children:
-            lines = [f"## Tool categories (under: {category})", ""]
-            lines.extend(
-                f"- [category] {child.path}: {child.description}"
-                for child in children
+                for name in names
             )
             return "\n".join(lines)
 
         raise ValueError(
             f"list: {category!r} is not a catalogue category. Valid: "
             f"{', '.join(self._valid_category_names())}. "
-            "Omit category for the root catalogue."
+            "Or omit category and pass keyword for a global search."
         )
 
     def _valid_category_names(self) -> list[str]:
@@ -628,11 +797,26 @@ class ToolRetrievalToolkit:
                 return server
         return None
 
-    def _render_connector_listing(self, server: str) -> str:
+    def _render_connector_listing(self, server: str, keyword: str = "") -> str:
         """Render one connector group in the standard list format."""
 
         group = self.mcp_connector_groups().get(server) or {}
-        lines = [f"## Tools (MCP connector: {server})"]
+        member_names = tuple(
+            name for name in group.get("tools") or () if name in self._tool_by_name
+        )
+        header = f"## Tools (MCP connector: {server})"
+        if keyword:
+            ranked = self._rank_tools_by_query(member_names, keyword)
+            if not ranked:
+                return (
+                    f'## Tools (MCP connector: {server}, keyword: "{keyword}")'
+                    f"\n\n"
+                    f'No tools match keyword "{keyword}" '
+                    f"(0 of {len(member_names)})"
+                )
+            member_names = tuple(ranked)
+            header = f'## Tools (MCP connector: {server}, keyword: "{keyword}")'
+        lines = [header]
         description = str(
             group.get("description_zh") or group.get("description_en") or ""
         ).strip()
@@ -641,8 +825,7 @@ class ToolRetrievalToolkit:
         lines.append("")
         lines.extend(
             f"- [tool] {name}: {self._tool_by_name[name].description or ''}"
-            for name in group.get("tools") or ()
-            if name in self._tool_by_name
+            for name in member_names
         )
         return "\n".join(lines)
 

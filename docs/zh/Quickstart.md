@@ -11,7 +11,7 @@
 | 依赖项 | 版本要求 | 说明 |
 |--------|----------|------|
 | 操作系统 | Windows 10/11, macOS 10.15+, Linux | 支持主流操作系统 |
-| Python | `≥3.11, <3.14` | 推荐使用 Python 3.11 |
+| Python | `≥3.11` | 推荐使用 Python 3.11 |
 | Node.js | 18.x 或更高版本 | 用于前端界面 |
 | Git | 最新版本 | 用于源码安装 |
 
@@ -61,6 +61,12 @@ jiuwenswarm-start
 ```
 
 当看到类似上述提示时，表示服务已启动，在浏览器中访问 `http://localhost:5173` 即可使用。
+
+### 查看应用版本与打包日期
+
+更新页面的“当前版本”会显示完整版本号，并以次级文字显示“构建于 YYYY-MM-DD”。WHL、Windows EXE 与 macOS DMG 的打包日期统一使用 UTC+08:00，安装、启动和检查更新不会改变该日期。旧包或源码运行没有打包日期时，只显示版本号。
+
+WHL 用户也可直接查看数据目录的 `config/config.yaml`，例如 `config_version: "0.2.8 · 2026-10-26"`。版本号保留每日构建后缀，日期不依赖界面语言。此字段用于版本记录，配置同步仍按模板执行；更新检查和协议接口继续使用原始版本号。
 
 ### Linux 远程访问 Web 前端（可选）
 
@@ -133,7 +139,7 @@ cd jiuwenswarm
 ### `uv`方式安装
 - 使用`uv`新建虚拟环境
   ```bash
-  # 使用uv新建虚拟环境（支持 3.11、3.12、3.13 任一版本）
+  # 使用uv新建虚拟环境（支持 3.11–3.14 任一版本）
   uv venv --python=3.11
   # 或 uv venv --python=3.12
   # 或 uv venv --python=3.13
@@ -177,7 +183,7 @@ cd jiuwenswarm
 ### `conda`方式安装
 - 使用`conda`新建虚拟环境
   ```bash
-  # 使用Anaconda新建虚拟环境（支持 3.11、3.12、3.13 任一版本）
+  # 使用Anaconda新建虚拟环境（支持 3.11–3.14 任一版本）
   conda create -n JiuwenSwarm python=3.11
   # 或 conda create -n JiuwenSwarm python=3.12
   # 或 conda create -n JiuwenSwarm python=3.13
