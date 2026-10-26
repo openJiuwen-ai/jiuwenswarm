@@ -2810,6 +2810,52 @@ def _hub_detail_card(
     }
 
 
+_CAPABILITY_FIELDS = {
+    "skill": "skills",
+    "tool": "tools",
+    "rail": "rails",
+    "mcp": "mcps",
+}
+
+
+def _hub_card_with_capabilities(detail: HubAssetDetail) -> dict[str, Any]:
+    """Render a detail card from Hub metadata plus the published package profile.
+
+    The version endpoint already returns ``agent_package_profile``, so skills/tools/rails/
+    connectors and quick inputs can be shown without downloading the package archive.
+    """
+    card = _hub_detail_card(detail)
+    profile = detail.package_profile if isinstance(detail.package_profile, dict) else {}
+    capabilities = profile.get("capabilities")
+    if isinstance(capabilities, list):
+        for entry in capabilities:
+            if not isinstance(entry, dict):
+                continue
+            field = _CAPABILITY_FIELDS.get(str(entry.get("kind") or "").strip())
+            if field is None:
+                continue
+            identifier = str(entry.get("id") or "").strip()
+            if not identifier:
+                continue
+            card[field].append(
+                {
+                    "id": identifier,
+                    "displayName": _i18n(entry.get("name"), identifier),
+                    "displayDescription": _i18n(entry.get("description")),
+                }
+            )
+    quick_inputs = profile.get("quick_inputs")
+    if isinstance(quick_inputs, list):
+        card["quickInputs"] = [item for item in quick_inputs if isinstance(item, str)]
+    persona = profile.get("persona_markdown")
+    if isinstance(persona, str) and persona.strip():
+        card["persona"] = persona
+    manifest_tags = profile.get("manifest_tags")
+    if isinstance(manifest_tags, list) and manifest_tags and not card["tags"]:
+        card["tags"] = [_i18n(tag, str(tag)) for tag in manifest_tags]
+    return card
+
+
 def _apply_hub_identity(card: dict[str, Any], detail: HubAssetDetail) -> dict[str, Any]:
     card["id"] = detail.asset_id
     card["packageName"] = detail.package_name or detail.asset_id
@@ -2935,22 +2981,19 @@ async def _show_equipment_with_hub(
             f"Hub asset id mismatch: expected {remote_asset_id!r}, "
             f"got {remote.asset_id!r}"
         )
-    archive = await _load_hub_preview_archive(
-        kind,
-        remote.asset_id,
-        hub_port=port,
-        downloader=downloader,
-        detail=remote,
-    )
-    card = _build_show_card_from_zip(
-        archive.body,
-        archive.package_root,
-        package_type=hub_asset_kind,
-        package_id=remote.package_name or remote.asset_id,
-    )
-    if card is None:
-        return _hub_detail_card(remote)
-    return _apply_hub_identity(card, remote)
+    # Return the Hub metadata card immediately instead of downloading the package.
+    # The ZIP is only required for the files tab and for installing, and both of those
+    # paths load it on demand, so opening a detail page never waits for a download.
+    card = _hub_card_with_capabilities(remote)
+    if not card["details"]:
+        # Packages imported from outside the app may carry no description at all; read the
+        # README instead of leaving the detail page empty. This never downloads the archive.
+        reader = getattr(port, "read_public_readme", None)
+        if callable(reader):
+            readme = await reader(remote.asset_id, remote.version)
+            if readme:
+                card["details"] = readme
+    return card
 
 
 async def show_agent_template_with_hub(

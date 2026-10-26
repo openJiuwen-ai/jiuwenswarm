@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import quote, urljoin, urlparse
@@ -69,6 +70,10 @@ class HubTransport(Protocol):
         ...
 
 
+_SHARED_HTTP_CLIENTS: dict[tuple[str, float, asyncio.AbstractEventLoop], httpx.AsyncClient] = {}
+_MAX_SHARED_CLIENTS = 8
+
+
 class HttpHubTransport:
     def __init__(
         self,
@@ -105,19 +110,43 @@ class HttpHubTransport:
             return {"Authorization": f"Bearer {self.token}"}
         return None
 
+    async def aclose(self) -> None:
+        key = (self.base_url, self.timeout, asyncio.get_running_loop())
+        client = _SHARED_HTTP_CLIENTS.pop(key, None)
+        if client is not None and not client.is_closed:
+            await client.aclose()
+
+    def _http_client(self) -> httpx.AsyncClient:
+        """Reuse one client per endpoint and event loop so TLS stays warm.
+
+        A fresh client costs a full handshake (hundreds of milliseconds here), and asset
+        pages issue several Hub calls in a row. The loop object itself is the key so a
+        recycled ``id()`` can never hit a client bound to a closed loop.
+        """
+        loop = asyncio.get_running_loop()
+        key = (self.base_url, self.timeout, loop)
+        client = _SHARED_HTTP_CLIENTS.get(key)
+        if client is not None and not client.is_closed and not loop.is_closed():
+            return client
+        client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=False)
+        _SHARED_HTTP_CLIENTS[key] = client
+        while len(_SHARED_HTTP_CLIENTS) > _MAX_SHARED_CLIENTS:
+            old_key = next(iter(_SHARED_HTTP_CLIENTS))
+            old_client = _SHARED_HTTP_CLIENTS.pop(old_key)
+            if not old_client.is_closed:
+                asyncio.get_running_loop().create_task(old_client.aclose())
+        return client
+
     async def get_data(
         self, path: str, *, params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         relative = path if path.startswith("/") else f"/{path}"
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=False
-            ) as client:
-                response = await client.get(
-                    f"{self.base_url}{relative}",
-                    params=params,
-                    headers=self._headers(),
-                )
+            response = await self._http_client().get(
+                f"{self.base_url}{relative}",
+                params=params,
+                headers=self._headers(),
+            )
         except httpx.TimeoutException as exc:
             raise HubProtocolError("Hub 响应超时，请稍后重试") from exc
         except Exception as exc:
@@ -261,6 +290,45 @@ class HubClient(HubAssetPort):
             raise HubProtocolError("Hub version identity mismatch")
         return detail
 
+    async def read_public_readme(self, asset_id: str, version: str) -> str:
+        """Return the package README text, or an empty string.
+
+        Detail pages fall back to this when the Hub metadata has no description, which
+        happens for packages imported from outside the app. Uses the version files
+        endpoint so the archive is never downloaded; any failure keeps the page usable.
+        """
+        wanted = str(asset_id or "").strip()
+        wanted_version = str(version or "").strip()
+        if not wanted or not wanted_version:
+            return ""
+        files_path = (
+            f"/api/v1/plugins/{quote(wanted, safe='')}/versions/"
+            f"{quote(wanted_version, safe='')}/files"
+        )
+        try:
+            listing = await self.transport.get_data(files_path)
+            entries = listing.get("files")
+            if not isinstance(entries, list):
+                return ""
+            # Prefer the package-root README; nested ones (docs/README.md, skills/x/README.md)
+            # describe a sub-asset and must not stand in for the package description.
+            readmes: list[str] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                path = entry.get("path")
+                if isinstance(path, str) and path.rsplit("/", 1)[-1].lower() == "readme.md":
+                    readmes.append(path)
+            readmes.sort(key=lambda item: (item.count("/"), len(item)))
+            target = readmes[0] if readmes else None
+            if not target:
+                return ""
+            payload = await self.transport.get_data(files_path, params={"with_content": target})
+        except (HubProtocolError, HubNotFoundError, ValueError, TypeError):
+            return ""
+        content = payload.get("content") if isinstance(payload, dict) else None
+        return content[:20000] if isinstance(content, str) else ""
+
     async def get_artifact(
         self, asset_id: str, *, version: str | None = None
     ) -> HubArtifact:
@@ -351,6 +419,7 @@ class HubClient(HubAssetPort):
             icon_uri=self._normalize_icon_uri(detail.icon_uri or item.icon_uri),
             tags=detail.tags,
             package_name=detail.name or item.name,
+            package_profile=detail.package_profile,
         )
 
     async def resolve_download(
