@@ -269,9 +269,56 @@ HANDLERS: dict[ReqMethod, Handler] = {
     # 会话元数据和置顶都在 AgentServer 的 SessionAdapter。
     ReqMethod.SESSION_GET_METADATA: handle_gateway_adapter,
     ReqMethod.SESSION_PIN: handle_gateway_adapter,
-    # 技能列表在 AgentServer 的 SkillManager。WebSocket 经 process_message；
-    # 这里登记是为了让 HTTP 专用网址走同一条路径。
+    # 技能相关在 AgentServer 的 SkillManager。WebSocket 经 process_message；
+    # 这里登记是为了让 HTTP 专用网址走同一条路径（method_has_http_handler 依赖本表）。
+    # 凡 pod_rest_map.REST_ROUTES 中的 skills.* 都必须登记，否则企业版
+    # Gateway→Pod HTTP 会直接回 HTTP_METHOD_NOT_HANDLED（例如 skills.toggle）。
     ReqMethod.SKILLS_LIST: handle_skills_request,
+    ReqMethod.SKILLS_INSTALLED: handle_skills_request,
+    ReqMethod.SKILLS_GET: handle_skills_request,
+    ReqMethod.SKILLS_TOGGLE: handle_skills_request,
+    ReqMethod.SKILLS_INSTALL: handle_skills_request,
+    ReqMethod.SKILLS_IMPORT_LOCAL: handle_skills_request,
+    ReqMethod.SKILLS_UNINSTALL: handle_skills_request,
+    ReqMethod.SKILLS_MARKETPLACE_LIST: handle_skills_request,
+    ReqMethod.SKILLS_MARKETPLACE_ADD: handle_skills_request,
+    ReqMethod.SKILLS_MARKETPLACE_REMOVE: handle_skills_request,
+    ReqMethod.SKILLS_MARKETPLACE_TOGGLE: handle_skills_request,
+    ReqMethod.SKILLS_ONLINE_SEARCH: handle_skills_request,
+    ReqMethod.SKILLS_SKILLNET_SEARCH: handle_skills_request,
+    ReqMethod.SKILLS_SKILLNET_INSTALL: handle_skills_request,
+    ReqMethod.SKILLS_SKILLNET_INSTALL_STATUS: handle_skills_request,
+    ReqMethod.SKILLS_SKILLNET_EVALUATE: handle_skills_request,
+    ReqMethod.SKILLS_CLAWHUB_GET_TOKEN: handle_skills_request,
+    ReqMethod.SKILLS_CLAWHUB_SET_TOKEN: handle_skills_request,
+    ReqMethod.SKILLS_CLAWHUB_SEARCH: handle_skills_request,
+    ReqMethod.SKILLS_CLAWHUB_DOWNLOAD: handle_skills_request,
+    ReqMethod.SKILLS_TEAMSKILLS_HUB_INFO: handle_skills_request,
+    ReqMethod.SKILLS_TEAMSKILLS_HUB_INIT: handle_skills_request,
+    ReqMethod.SKILLS_TEAMSKILLS_HUB_VALIDATE: handle_skills_request,
+    ReqMethod.SKILLS_TEAMSKILLS_HUB_PACK: handle_skills_request,
+    ReqMethod.SKILLS_TEAMSKILLS_HUB_SEARCH: handle_skills_request,
+    ReqMethod.SKILLS_TEAMSKILLS_HUB_INSTALL: handle_skills_request,
+    ReqMethod.SKILLS_TEAMSKILLS_HUB_PUBLISH: handle_skills_request,
+    ReqMethod.SKILLS_TEAMSKILLS_HUB_DELETE: handle_skills_request,
+    ReqMethod.SKILLS_RETRIEVAL_STATUS: handle_skills_request,
+    ReqMethod.SKILLS_RETRIEVAL_INDEX_BUILD: handle_skills_request,
+    ReqMethod.SKILLS_RETRIEVAL_INDEX_CANCEL: handle_skills_request,
+    ReqMethod.SKILLS_RETRIEVAL_SEARCH: handle_skills_request,
+    ReqMethod.SKILLS_RETRIEVAL_TREE: handle_skills_request,
+    ReqMethod.SKILLS_EVOLUTION_STATUS: handle_skills_request,
+    ReqMethod.SKILLS_EVOLUTION_GET: handle_skills_request,
+    ReqMethod.SKILLS_EVOLUTION_SAVE: handle_skills_request,
+    ReqMethod.SKILLS_SOURCE_PROVIDERS: handle_skills_request,
+    ReqMethod.SKILLS_SOURCE_SEARCH: handle_skills_request,
+    ReqMethod.SKILLS_SOURCE_INSTALL: handle_skills_request,
+    ReqMethod.SKILLS_UPDATES_CHECK: handle_skills_request,
+    ReqMethod.SKILLS_UPDATE: handle_skills_request,
+    ReqMethod.SKILLS_ENTERPRISE_LIST: handle_skills_request,
+    ReqMethod.SKILLS_ENTERPRISE_INSTALL: handle_skills_request,
+    ReqMethod.SKILLS_ENTERPRISE_UNINSTALL: handle_skills_request,
+    ReqMethod.SKILLS_ENTERPRISE_SOURCE_PROVIDERS: handle_skills_request,
+    ReqMethod.SKILLS_ENTERPRISE_SOURCE_SEARCH: handle_skills_request,
 }
 
 

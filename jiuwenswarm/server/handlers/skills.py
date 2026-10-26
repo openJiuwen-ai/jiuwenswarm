@@ -45,7 +45,7 @@ async def handle_skills_request(ctx: RequestContext) -> None:
                 ok=False,
                 payload={
                     "code": "HTTP_METHOD_NOT_HANDLED",
-                    "error": "这个方法还没有 HTTP 处理: skills.list",
+                    "error": f"这个方法还没有 HTTP 处理: {getattr(request.req_method, 'value', 'skills')}",
                 },
                 metadata=request.metadata,
             )

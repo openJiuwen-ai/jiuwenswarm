@@ -119,6 +119,8 @@ const ROUTES: Record<string, RouteRow> = {
   'skills.enterprise.list': { verb: 'GET', path: '/skills/enterprise', kind: 'unary' },
   'skills.enterprise.install': { verb: 'POST', path: '/skills/enterprise/actions/install', kind: 'unary' },
   'skills.enterprise.uninstall': { verb: 'POST', path: '/skills/enterprise/actions/uninstall', kind: 'unary' },
+  'skills.enterprise.source.providers': { verb: 'GET', path: '/skills/enterprise/sources', kind: 'unary' },
+  'skills.enterprise.source.search': { verb: 'GET', path: '/skills/enterprise/sources/search', kind: 'unary' },
   'skills.marketplace.list': { verb: 'GET', path: '/skills/marketplace', kind: 'unary' },
   'skills.marketplace.add': { verb: 'POST', path: '/skills/marketplace', kind: 'unary' },
   'skills.marketplace.remove': { verb: 'POST', path: '/skills/marketplace/actions/remove', kind: 'unary' },

@@ -75,6 +75,8 @@ interface UseHubMarketplaceParams {
   marketplaceSubView: MarketplaceSubView;
   setMarketplaceSubView: (view: MarketplaceSubView) => void;
   withSession: WithSessionFn;
+  /** 企业版广场改挂企业技能源，跳过 Hub 拉取 */
+  skipHubFetch?: boolean;
 }
 
 export function useHubMarketplace({
@@ -84,6 +86,7 @@ export function useHubMarketplace({
   marketplaceSubView,
   setMarketplaceSubView,
   withSession,
+  skipHubFetch = false,
 }: UseHubMarketplaceParams) {
   /** 搜索结果（online_search） */
   const [hubSkills, setHubSkills] = useState<MarketplacePluginItem[]>([]);
@@ -474,7 +477,7 @@ export function useHubMarketplace({
   );
 
   useEffect(() => {
-    if (activeTab !== 'marketplace') return;
+    if (skipHubFetch || activeTab !== 'marketplace') return;
 
     if (!searchKeyword) {
       void fetchHubHomeSkills(marketplaceCategory);
@@ -486,7 +489,7 @@ export function useHubMarketplace({
     }, 500);
 
     return () => window.clearTimeout(timer);
-  }, [activeTab, marketplaceCategory, searchKeyword, fetchHubHomeSkills, fetchOnlineSearch]);
+  }, [activeTab, marketplaceCategory, searchKeyword, fetchHubHomeSkills, fetchOnlineSearch, skipHubFetch]);
 
   // 分组：skillpack → 精选技能包，swarmskill → 精选团队技能，其余 → 精选技能
   // （搜索时取搜索结果；无搜索词时取首页两路推荐结果合并，保持互斥分桶；

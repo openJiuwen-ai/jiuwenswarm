@@ -1,0 +1,11 @@
+# SwarmSkillHub 内置参考源配置（非敏感配置内聚在扩展包内）。
+# 密钥不落盘：hmac_secret_ref 只放 env:// 引用，密钥值由 secret_registry 注入。
+endpoint: "https://swarmskills.openjiuwen.com"
+timeout: 60.0
+verification: "if-present"          # if-present（默认，未签名不拦截）| required（强制验签）
+hmac_key_id: "default"
+hmac_secret_ref: "env://SKILL_DOWNLOAD_HMAC_SECRET"
+allowed_download_hosts:
+  - "openjiuwen-market.obs.*.myhuaweicloud.com"
+  - "127.0.0.1"
+  - "localhost"

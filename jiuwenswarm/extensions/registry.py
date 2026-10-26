@@ -95,6 +95,7 @@ class ExtensionRegistry:
         self._crypto_tool: CryptoUtility | None = None
         self._third_agent: ThirdAgentExtension | None = None
         self._application_plugins: dict[str, ApplicationPluginExtension] = {}
+        self._skill_source_extensions: dict[str, Any] = {}
         self.callback_framework = callback_framework
         self._config = ExtensionConfig(config=config, logger=logger)
 
@@ -136,6 +137,28 @@ class ExtensionRegistry:
 
     def register_third_agent(self, extension: ThirdAgentExtension) -> None:
         self._third_agent = extension
+
+    def register_skill_source_extension(self, extension: Any) -> None:
+        """Register one trusted Skill Source provider factory.
+
+        A configured ``source_id`` is bound later by AgentServer. Extensions
+        must not register tenant-specific provider instances here.
+        """
+        provider_type = str(getattr(extension, "provider_type", "") or "").strip()
+        if not provider_type:
+            raise ValueError("skill source provider_type is required")
+        if provider_type in self._skill_source_extensions:
+            raise ValueError(f"duplicate skill source provider_type: {provider_type}")
+        self._skill_source_extensions[provider_type] = extension
+
+    def get_skill_source_extension(self, provider_type: str) -> Any | None:
+        return self._skill_source_extensions.get(str(provider_type or "").strip())
+
+    def list_skill_source_extensions(self) -> list[Any]:
+        return [
+            self._skill_source_extensions[key]
+            for key in sorted(self._skill_source_extensions)
+        ]
 
     def register_application_plugin(
         self,
