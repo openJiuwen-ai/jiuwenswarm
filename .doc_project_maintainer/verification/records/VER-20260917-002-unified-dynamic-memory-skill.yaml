@@ -1,0 +1,33 @@
+id: VER-20260917-002-unified-dynamic-memory-skill
+applies_to:
+  source_revision: working-tree-2026-09-17-unified-skill
+  modules: [agent-harness]
+  flows: [eternal-conversation-memory]
+  symbols:
+    - BackgroundAgentRunner._stage_skill
+    - BackgroundAgentRunner.call_json
+    - build_background_deep_agent_spec
+    - ExtractorForkGuardRail
+    - _ExtractorProposalWriteTool
+    - SessionCoordinator._prepare_extractor_staging
+  paths:
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/background_agents.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/background_specs.py
+    - jiuwenswarm/resources/agent/workspace/skills/dynamic-memory-cli/SKILL.md
+    - jiuwenswarm/resources/agent/workspace/skills/dynamic-memory-cli/scripts/run_builder.py
+    - tests/unit_tests/agentserver/rails/test_eternal_conversation_deep_agents.py
+evidence:
+  level: synthetic_integration
+  scenario: unified-background-skill-sandboxed-tools-and-inline-proposal-repair
+  environment: local Windows Python 3.12
+  command: .venv/Scripts/python.exe -m pytest tests/unit_tests/agentserver/rails/test_eternal_conversation_deep_agents.py tests/unit_tests/agentserver/rails/test_eternal_conversation_rail.py -q
+  repetitions: 1
+  successes: 85
+  warnings: 1
+result: passed
+status: active
+recorded_at: 2026-09-22T10:17:00+08:00
+supersedes: []
+evidence_paths:
+  - .codex_tmp/persist-skill-wheel-final/workswarm-0.2.5b1-py3-none-any.whl
+notes: The real Builder helper chain and schema-identical Extractor tool binding passed. Extractor filesystem tools operate in a private sandbox; the inherited shell schema can run only the staged read-only dynamic-memory-cli surface and rejects arbitrary commands or escaped paths; dynamic workspace identities cannot reuse an old SysOperation sandbox. The Harness also stages one memory copy per extraction and requires observed memory-cli inspection, write_file use, and exact proposal-file/final-response equality before publication. A regression test proves that the exact proposal write is rejected before disk mutation when validation fails, that ToolMessage exposes only concise error text rather than the proposal JSON, and that a corrected write succeeds in the same tool surface. Another test proves that exhausting all response-level Extractor attempts triggers one audited retry of the same frozen batch without requiring a new foreground boundary; 85 focused tests and Ruff passed. The active real-model run is stopped after task 120, where the pre-fix Extractor exhausted retries on an oversized UT, so resumed live evidence is still required. The earlier full Windows UT attempt remains blocked by unrelated POSIX-only assumptions.

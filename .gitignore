@@ -95,6 +95,15 @@ jiuwenswarm/resources/agent/workspace/*
 !jiuwenswarm/resources/agent/workspace/plugins/
 !jiuwenswarm/resources/agent/workspace/plugins/agent_groups/
 !jiuwenswarm/resources/agent/workspace/plugins/agent_groups/designer/
+# The workspace is generated except for the vendored dynamic-memory-cli Skill.
+# Keep that canonical Skill visible to Git so clean checkouts and wheels contain
+# the same background-Agent contract that local development uses.
+!jiuwenswarm/resources/agent/workspace/skills/
+jiuwenswarm/resources/agent/workspace/skills/*
+!jiuwenswarm/resources/agent/workspace/skills/dynamic-memory-cli/
+!jiuwenswarm/resources/agent/workspace/skills/dynamic-memory-cli/**
+jiuwenswarm/resources/agent/workspace/skills/dynamic-memory-cli/**/__pycache__/
+jiuwenswarm/resources/agent/workspace/skills/dynamic-memory-cli/**/*.pyc
 jiuwenswarm/resources/tui/bin/
 packages/jiuwenswarm-tui/jiuwenswarm_tui/resources/tui/bin/
 packages/jiuwenswarm-tui/jiuwenswarm_tui/resources/tui-bin/

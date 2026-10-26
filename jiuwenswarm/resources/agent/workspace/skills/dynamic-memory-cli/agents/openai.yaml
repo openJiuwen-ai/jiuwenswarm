@@ -1,4 +1,4 @@
 interface:
   display_name: "Dynamic Memory CLI"
-  short_description: "Operate atomic Pending and Built agent memory."
-  default_prompt: "Use $dynamic-memory-cli to publish Pending retrieval UTs, search merged memory, and build verified Built indexes."
+  short_description: "Extract, publish, and build verified session memory."
+  default_prompt: "Use $dynamic-memory-cli in the role assigned by the Harness to extract work-log state or build and verify Pending UTs."

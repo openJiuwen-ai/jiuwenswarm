@@ -51,6 +51,12 @@ UT build state has exactly two values: `pending` and `built`. A task-local propo
 
 Pending search scores the current UT content and Agent-authored queries directly. Built search scores only the committed Built document whose content hash still matches the current UT. Merge by stable UT ID; current Pending content shadows a stale Built artifact. Return complete memory content and `build_state`.
 
+Search orders active matches by `priority` first and lexical score second. Extractors use the fixed
+importance levels 100/80/60/40/20: 100 is reserved for identity, hard user constraints, explicit
+promises, and safety or data-loss boundaries; ordinary implementation and test changes do not
+qualify. Retrieval tokenization includes deterministic CJK character n-grams so natural Chinese
+task text can match concise Chinese UT facts without transport-envelope metadata.
+
 Pending and Built have the same target semantics. Built-only validation proves every frozen UT query retrieves its own complete content with every `must_include` assertion present. It deliberately disables Pending fallback.
 
 ## Concurrency and recovery

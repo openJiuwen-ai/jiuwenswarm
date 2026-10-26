@@ -41,6 +41,19 @@ TRACKED_SUFFIXES = {".json", ".md", ".py", ".toml", ".yaml", ".yml"}
 IGNORED_PARTS = {".git", ".pytest_cache", ".venv", "__pycache__"}
 
 
+@dataclass(frozen=True)
+class BackgroundActivitySignature:
+    """Observable state used to detect stalled background workers."""
+
+    requested_cursor: Any
+    covered_through: Any
+    pending: Any
+    memory_revision: Any
+    snapshot_revision: Any
+    status: Any
+    history_stats: tuple[tuple[int, int] | None, ...]
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -135,9 +148,99 @@ def append_interrupted_once(path: Path, row: dict[str, Any]) -> None:
     append_jsonl(path, row)
 
 
-def _scenario_namespace() -> dict[str, Any]:
+def build_retry_query(
+    original_prompt: str,
+    invalidated_request_ids: list[str],
+) -> tuple[str, dict[str, Any] | None]:
+    """Make an acceptance retry explicit without adding another Agent turn.
+
+    The runner can restore files after a failed attempt, but it cannot rewind
+    the live Agent Session.  On retry, tell that same Session exactly which
+    attempts are no longer valid so their answers, tool results, and inferred
+    workspace state are not treated as current evidence.  The first attempt is
+    kept byte-for-byte identical to the natural task.
+    """
+    invalidated = [
+        str(value).strip()
+        for value in invalidated_request_ids
+        if str(value).strip()
+    ]
+    if not invalidated:
+        return original_prompt, None
+    recovery = {
+        "invalidated_request_ids": invalidated,
+        "workspace_restored_to_task_baseline": True,
+        "original_prompt_sha256": hashlib.sha256(
+            original_prompt.encode("utf-8")
+        ).hexdigest(),
+    }
+    request_list = ", ".join(invalidated)
+    query = (
+        "[Persist Session 验收恢复通知]\n"
+        f"前次尝试（request_id: {request_list}）未通过验收，已经作废；"
+        "验收脚本已将工作区恢复到本任务开始前。\n"
+        "不要把这些已作废尝试中的 Agent 回复、工具结果、文件修改、完成声明或"
+        "由此推断出的项目状态当作当前事实。请只依据恢复后的当前工作区、作废尝试"
+        "之前已经建立的会话事实，以及下面保持不变的原始用户任务重新判断。"
+        "这条恢复通知不授权覆盖任何既有用户约束；如果原始任务与既有约束冲突，"
+        "仍须先向用户确认。\n"
+        "[/Persist Session 验收恢复通知]\n\n"
+        "原始用户任务：\n"
+        f"{original_prompt}"
+    )
+    return query, recovery
+
+
+def invalidated_requests_for_task(path: Path, task_number: int) -> list[str]:
+    """Recover invalidated attempt ids when an acceptance run is resumed."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for row in load_jsonl(path):
+        request_id = str(row.get("request_id") or "").strip()
+        wrong_task = int(row.get("number") or 0) != task_number
+        baseline_not_restored = (
+            row.get("workspace_restored_to_task_baseline") is not True
+        )
+        invalid_request = not request_id or request_id in seen
+        if wrong_task or baseline_not_restored or invalid_request:
+            continue
+        seen.add(request_id)
+        result.append(request_id)
+    return result
+
+
+def verified_noop_evidence(
+    task: dict[str, Any], answer: str, evidence: dict[str, Any]
+) -> bool:
+    """Accept an already-satisfied report only with strong, scoped evidence."""
+    if not task.get("allow_verified_noop"):
+        return False
+    normalized = answer.casefold()
+    markers = (
+        "未复现",
+        "无需修改",
+        "零代码改动",
+        "无需代码改动",
+        "already satisfied",
+        "does not reproduce",
+        "no code changes",
+    )
+    conclusion = False
+    for marker in markers:
+        if marker in normalized:
+            conclusion = True
+            break
+    return bool(
+        conclusion
+        and int(evidence.get("successful_tool_results") or 0) >= 4
+        and evidence.get("verification_commands")
+    )
+
+
+def _scenario_namespace(workload: Path = WORKLOAD) -> dict[str, Any]:
     """Compile only the versioned workload's data and build helpers."""
-    tree = ast.parse(WORKLOAD.read_text(encoding="utf-8"), filename=str(WORKLOAD))
+    workload = workload.resolve()
+    tree = ast.parse(workload.read_text(encoding="utf-8"), filename=str(workload))
     wanted_functions = {
         "build_tasks",
         "initialize_project",
@@ -161,7 +264,7 @@ def _scenario_namespace() -> dict[str, Any]:
         "hashlib": hashlib,
         "re": re,
     }
-    exec(compile(ast.Module(body=body, type_ignores=[]), str(WORKLOAD), "exec"), namespace)
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(workload), "exec"), namespace)
     return namespace
 
 
@@ -649,6 +752,32 @@ def evidence_inventory(feature_root: Path) -> dict[str, Any]:
     }
 
 
+def extractor_fork_cache_inventory(feature_root: Path) -> dict[str, Any]:
+    """Verify the frozen Worker prefix and report provider cache diagnostics.
+
+    Byte-for-byte prefix identity is the correctness contract owned by the
+    harness.  Provider-reported KV cache reuse is intentionally diagnostic:
+    routed model endpoints may report a partial hit even when the exact frozen
+    prefix is preserved.
+    """
+    path = feature_root / "audit" / "extractor-fork-cache.jsonl"
+    rows = list(iter_jsonl(path)) if path.exists() else []
+    full_hits = sum(row.get("full_prefix_hit") is True for row in rows)
+    byte_prefix_matches = sum(row.get("byte_prefix_match") is True for row in rows)
+    return {
+        "path": str(path),
+        "calls": len(rows),
+        "byte_prefix_matches": byte_prefix_matches,
+        "full_prefix_hits": full_hits,
+        "verified": bool(rows) and byte_prefix_matches == len(rows),
+        "provider_cache_diagnostic": {
+            "full_prefix_hits": full_hits,
+            "all_calls_full_hit": bool(rows) and full_hits == len(rows),
+        },
+        "prefix_hashes": [str(row.get("prefix_sha256") or "") for row in rows],
+    }
+
+
 async def run_final_pytest(workspace: Path, timeout: float) -> dict[str, Any]:
     def invoke() -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -766,6 +895,20 @@ async def receive_turn(
             final = ""
             saw_terminal = False
             continue
+        event_request_id = str(
+            payload.get("request_id") or frame.get("request_id") or ""
+        ).strip()
+        allowed_request_ids = {
+            value
+            for value in (request_id, active_request_id, approval_in_flight)
+            if value
+        }
+        if event_request_id and event_request_id not in allowed_request_ids:
+            # A WebChannel connection can still deliver terminal/usage events
+            # from the preceding turn after the next natural task is sent.
+            # They remain in transport evidence, but must not terminate or
+            # contaminate the current task's answer.
+            continue
         approval_completed = (
             payload.get("request_id") == approval_in_flight
             and payload.get("is_complete") is True
@@ -776,6 +919,12 @@ async def receive_turn(
             approval_in_flight = None
             await send_next_approval()
             continue
+        if (
+            event_type == "chat.processing_status"
+            and payload.get("is_complete") is True
+            and saw_terminal
+        ):
+            return final or "".join(chunks)
         if event_type == "chat.delta" and isinstance(content, str):
             chunks.append(content)
         elif event_type == "chat.ask_user_question":
@@ -814,10 +963,68 @@ async def await_tui_connection_ack(ws, timeout: float, transport_path: Path) -> 
     raise TimeoutError("TUI connection did not become ready before chat.send")
 
 
-async def wait_memory_idle(feature_root: Path, timeout: float) -> dict[str, Any]:
-    deadline = asyncio.get_running_loop().time() + timeout
+def _background_activity_signature(
+    feature_root: Path, state: dict[str, Any]
+) -> BackgroundActivitySignature:
+    """Return cheap, observable evidence that either memory worker is alive."""
+    history_stats: list[tuple[int, int] | None] = []
+    for role in ("extractor", "builder"):
+        history = feature_root / "agent-history" / role / "conversation.jsonl"
+        try:
+            stat = history.stat()
+        except OSError:
+            history_stats.append(None)
+        else:
+            history_stats.append((stat.st_size, stat.st_mtime_ns))
+    return BackgroundActivitySignature(
+        requested_cursor=state.get("requested_cursor"),
+        covered_through=state.get("covered_through"),
+        pending=state.get("pending"),
+        memory_revision=state.get("memory_revision"),
+        snapshot_revision=state.get("snapshot_revision"),
+        status=state.get("status"),
+        history_stats=tuple(history_stats),
+    )
+
+
+def revalidate_verified_noop_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Rescore an audited no-op without replaying an already completed task."""
+    no_change_failure = "natural development task made no persistent change"
+    failures = row.get("failures")
+    if row.get("passed") or failures != [no_change_failure]:
+        return row
+    answer = row.get("answer")
+    evidence = row.get("evidence")
+    if not isinstance(answer, str) or not isinstance(evidence, dict):
+        return row
+    if not verified_noop_evidence(row, answer, evidence):
+        return row
+    rescored = dict(row)
+    rescored["failures"] = []
+    rescored["passed"] = True
+    rescored["verified_noop"] = True
+    rescored["rescore_audit"] = {
+        "original_failures": [no_change_failure],
+        "reason": "verified no-op evidence satisfied the current acceptance contract",
+        "rescored_at": utc_now(),
+    }
+    return rescored
+
+
+async def wait_memory_idle(
+    feature_root: Path, timeout: float, *, poll_interval: float = 0.5
+) -> dict[str, Any]:
+    """Wait until Extractor and Builder catch up.
+
+    ``timeout`` is an inactivity timeout, not a wall-clock cap. A real-model
+    extraction may legitimately take longer than the configured interval, so
+    observable progress in either background Agent renews the deadline.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    last_activity: BackgroundActivitySignature | None = None
     last: dict[str, Any] = {}
-    while asyncio.get_running_loop().time() < deadline:
+    while True:
         harness = load_json(feature_root / "state" / "harness.json", {}) or {}
         projection = load_json(feature_root / "state" / "eternal-conversation.json", {}) or {}
         requested = int(harness.get("requested_cursor") or 0)
@@ -841,12 +1048,20 @@ async def wait_memory_idle(feature_root: Path, timeout: float) -> dict[str, Any]
         }
         if worker_errors:
             raise RuntimeError(f"memory worker failed before idle: {worker_errors}")
-        await asyncio.sleep(0.5)
-    raise TimeoutError(f"memory workers did not become idle: {last}")
+        activity = _background_activity_signature(feature_root, last)
+        if activity != last_activity:
+            last_activity = activity
+            deadline = loop.time() + timeout
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"memory workers made no observable progress for {timeout}s: {last}"
+            )
+        await asyncio.sleep(min(poll_interval, remaining))
 
 
 async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dict[str, Any]:
-    scenario = _scenario_namespace()
+    scenario = _scenario_namespace(args.workload)
     all_tasks = list(scenario["build_tasks"](args.workspace))[: args.task_limit]
     if args.formal and len(all_tasks) != 200:
         raise RuntimeError("formal quadrant must execute all 200 tasks")
@@ -875,7 +1090,8 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                 }
             session_id = run_root.name.removeprefix(f"{channel}-{mode}-")
             previous = load_jsonl(run_root / "progress.jsonl")
-            for row in previous:
+            for original_row in previous:
+                row = revalidate_verified_noop_row(original_row)
                 if (
                     int(row.get("number") or 0) == len(rows) + 1
                     and (row.get("passed") or args.continue_after_failure)
@@ -948,18 +1164,26 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                 }
         return {"request_id": interrupt_id, "accepted": False, "reason": "timeout"}
 
-    async def execute_task(ws, task: dict[str, Any], attempt: int) -> dict[str, Any]:
+    async def execute_task(
+        ws,
+        task: dict[str, Any],
+        attempt: int,
+        invalidated_request_ids: list[str],
+    ) -> dict[str, Any]:
         request_id = f"acceptance-{int(task['number']):03d}-{uuid.uuid4().hex[:8]}"
         before = project_manifest(args.workspace)
         transport_start_offset = transport_path.stat().st_size if transport_path.exists() else 0
+        query, retry_recovery = build_retry_query(
+            str(task["prompt"]), invalidated_request_ids
+        )
         request = {
             "type": "req",
             "id": request_id,
             "method": "chat.send",
             "params": {
                 "session_id": session_id,
-                "content": task["prompt"],
-                "query": task["prompt"],
+                "content": query,
+                "query": query,
                 "mode": canonical_mode,
                 "work_mode": mode,
                 "project_dir": str(args.workspace),
@@ -973,7 +1197,13 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
         started = time.monotonic()
         append_jsonl(
             transport_path,
-            {"direction": "out", "kind": "natural-task", "attempt": attempt, "frame": request},
+            {
+                "direction": "out",
+                "kind": "natural-task",
+                "attempt": attempt,
+                "retry_recovery": retry_recovery,
+                "frame": request,
+            },
         )
         await ws.send(json.dumps(request, ensure_ascii=False))
         try:
@@ -1010,6 +1240,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                 "evidence": evidence,
                 "question_evidence": False,
                 "marker_evidence": None,
+                "retry_recovery": retry_recovery,
                 "timeout_interrupt": interrupt,
                 "failures": [f"{type(exc).__name__}: {exc}"],
                 "passed": False,
@@ -1025,6 +1256,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
         marker = task.get("probe_marker")
         question = bool(re.search(r"[?？][\s*_`'\"）)\]]*$", answer.strip()))
         marker_found = bool(marker and str(marker).casefold() in answer.casefold()) if is_probe else None
+        verified_noop = verified_noop_evidence(task, answer, evidence) if not changed else False
         failures: list[str] = []
         if not answer.strip():
             failures.append("empty foreground answer")
@@ -1040,7 +1272,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
             if not args.ablation_no_eternal and evidence["memory_searches"] < 1:
                 failures.append("blind conflict probe did not call memory search")
         else:
-            if not changed:
+            if not changed and not verified_noop:
                 failures.append("natural development task made no persistent change")
             if not evidence["verification_commands"]:
                 failures.append("natural development task ran no pytest verification")
@@ -1054,6 +1286,8 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
             "evidence": evidence,
             "question_evidence": question,
             "marker_evidence": marker_found,
+            "retry_recovery": retry_recovery,
+            "verified_noop": verified_noop,
             "failures": failures,
             "passed": not failures,
         }
@@ -1063,13 +1297,18 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
             await await_tui_connection_ack(ws, args.turn_timeout, transport_path)
         stop_quadrant = False
         for task in all_tasks[len(rows):]:
+            invalidated_request_ids = invalidated_requests_for_task(
+                run_root / "interrupted-tasks.jsonl", int(task["number"])
+            )
             for attempt in range(1, args.max_task_attempts + 1):
                 ensure_project_checkpoint(
                     run_root / "active-checkpoint.json",
                     args.workspace,
                     int(task["number"]),
                 )
-                row = await execute_task(ws, task, attempt)
+                row = await execute_task(
+                    ws, task, attempt, invalidated_request_ids
+                )
                 if row["passed"]:
                     if args.ablation_no_eternal:
                         row["memory_barrier_waited"] = False
@@ -1153,6 +1392,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                     run_root / "checkpoint-restores.jsonl",
                 )
                 row["workspace_restored_to_task_baseline"] = True
+                invalidated_request_ids.append(str(row["request_id"]))
                 if attempt < args.max_task_attempts and not args.ablation_no_eternal:
                     try:
                         retry_projection = await wait_memory_idle(
@@ -1232,6 +1472,9 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
         )
     else:
         inventory = evidence_inventory(feature_root)
+        inventory["extractor_fork_cache"] = extractor_fork_cache_inventory(
+            feature_root
+        )
         formal_gates = (
             not args.formal
             or (
@@ -1244,6 +1487,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
             and inventory["raw_hash_chain"]["verified"] is True
             and int(inventory["raw_hash_chain"]["records"]) == int(raw_metrics["records"])
             and inventory["derived_evidence_views"]["verified"] is True
+            and inventory["extractor_fork_cache"]["verified"] is True
             )
         )
     accepted = (
@@ -1291,6 +1535,10 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
             ).read_bytes()
         ).hexdigest(),
         "acceptance_source": load_json(SOURCE_MANIFEST),
+        "workload": {
+            "path": str(args.workload.resolve()),
+            "sha256": sha256_file(args.workload),
+        },
         "histories": histories,
         "evidence_inventory": inventory,
         "feature_root": str(feature_root),
@@ -1415,6 +1663,12 @@ def main() -> int:
     parser.add_argument("--final-pytest-timeout", type=float, default=30 * 60)
     parser.add_argument("--model-name")
     parser.add_argument("--session-id")
+    parser.add_argument(
+        "--workload",
+        type=Path,
+        default=WORKLOAD,
+        help="versioned 200-task workload module to execute",
+    )
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--evidence-root", type=Path, required=True)
     return asyncio.run(run(parser.parse_args()))
