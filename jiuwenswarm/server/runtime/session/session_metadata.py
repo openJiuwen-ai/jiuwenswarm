@@ -44,6 +44,7 @@ class _MetadataWriteOptions:
     """控制会话元数据写入时并发字段的保留策略。"""
 
     preserve_pin_fields: bool = False
+    preserve_equipment: bool = True
     preserve_rebound_fields: bool = False
     rebind_gen_at_enqueue: int | None = None
     merge_fields: frozenset[str] | None = None
@@ -764,6 +765,8 @@ def _write_metadata_unfenced(
                 to_write["moa_enabled"] = current["moa_enabled"]
             else:
                 to_write.pop("moa_enabled", None)
+        if options.preserve_equipment and current is not None:
+            to_write = _merge_session_equipment(current, to_write)
         # 权威 rebind 版本检查: 持锁后重比 gen, 判定调用方传入的快照是否已陈旧。
         # 比调用方持锁前的 pre-check 更可靠 —— 消除"gen 比较与文件写入"之间的
         # TOCTOU 窗口(P3)。rebind 自身传入的 gen 已 bump, 等于当前 gen, 不触发合并。
@@ -804,6 +807,18 @@ def update_session_model_selection(
         ),
     )
     remove_session_metadata_cache(session_id)
+
+
+def _merge_session_equipment(current: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    """整份回写没带装备时，保留磁盘上已记下的专家。显式写入的装备不被盖回去。"""
+    if "session_equipment" in metadata:
+        return metadata
+    equipment = current.get("session_equipment")
+    if not isinstance(equipment, dict):
+        return metadata
+    merged = metadata.copy()
+    merged["session_equipment"] = equipment
+    return merged
 
 
 def _merge_pin_fields(current: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
@@ -973,6 +988,7 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
     merge_fields: frozenset[str] | None = None,
     owns_moa_enabled: bool = False,
     replace_harness_checkpoint: bool = False,
+    preserve_equipment: bool = True,
 ) -> None:
     """将写入操作放入异步队列,队列满时退化为同步写。
 
@@ -1007,6 +1023,7 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
         _METADATA_CACHE_GENERATIONS[cache_key] = generation
     options = _MetadataWriteOptions(
         preserve_pin_fields=preserve_pin_fields,
+        preserve_equipment=preserve_equipment,
         rebind_gen_at_enqueue=rebind_gen_at_enqueue,
         lifecycle_generation=generation,
         merge_fields=merge_fields,
@@ -1372,6 +1389,7 @@ def update_session_metadata(
         merge_fields=changed,
         owns_moa_enabled=moa_enabled is not None,
         replace_harness_checkpoint=session_harness_checkpoint is not None,
+        preserve_equipment=session_equipment is None,
     )
 
 

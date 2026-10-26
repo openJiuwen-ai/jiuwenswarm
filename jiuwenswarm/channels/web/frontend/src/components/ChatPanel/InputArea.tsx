@@ -836,6 +836,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     () => useAgentCatalogStore.getState().catalog ?? [],
   );
   const [agentOptionsStatus, setAgentOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [agentPodNotice, setAgentPodNotice] = useState<'starting' | 'timeout' | null>(null);
   const agentManagementClient = useMemo(() => createAgentManagementClient(), []);
   const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>(
     () => [getSelectedAgentGroup()].filter((group): group is AgentGroupCatalogItem => group !== null),
@@ -1044,8 +1045,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       return;
     let cancelled = false;
     setAgentOptionsStatus('loading');
+    setAgentPodNotice(null);
     void agentManagementClient
-      .listCatalog({ filter: 'mine' })
+      .listCatalog({
+        filter: 'mine',
+        onPodStarting: () => {
+          if (!cancelled) setAgentPodNotice('starting');
+        },
+      })
       .then((items) => {
         if (cancelled) return;
         const selectedItem = selectedAgentId ? items.find((item) => isSameAgentOption(item, selectedAgentId)) : null;
@@ -1061,10 +1068,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
         setAgentOptions(items);
         seedAgentCatalog(items);
+        setAgentPodNotice(null);
         setAgentOptionsStatus('success');
       })
-      .catch(() => {
-        if (!cancelled) setAgentOptionsStatus('error');
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const code = error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
+        setAgentPodNotice(code === 'pod_start_timeout' ? 'timeout' : null);
+        setAgentOptionsStatus('error');
       });
     return () => {
       cancelled = true;
@@ -4247,7 +4258,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                       data-testid="chat-panel-agent-picker-state"
                                       data-variant="loading"
                                     >
-                                      {t('common.loading')}
+                                      {agentPodNotice === 'starting' ? t('experts.podStarting') : t('common.loading')}
                                     </div>
                                   ) : pickerTab === 'agent' && agentOptionsStatus === 'error' ? (
                                 <div
@@ -4255,7 +4266,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                   data-testid="chat-panel-agent-picker-state"
                                   data-variant="error"
                                 >
-                                  {t('agentManagement.states.loadError')}
+                                  {agentPodNotice === 'timeout' ? t('experts.podStartTimeout') : t('agentManagement.states.loadError')}
                                 </div>
                               ) : pickerTab === 'agent' && filteredAgentOptions.length === 0 ? (
                                 <div

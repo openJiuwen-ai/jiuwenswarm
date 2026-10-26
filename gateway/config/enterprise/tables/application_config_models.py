@@ -151,6 +151,23 @@ MEMORY_CONFIG_TABLE_DEF = TableDefinition(
     indexes=[],
 )
 
+PACKAGE_ALLOWLIST_TABLE_DEF = TableDefinition(
+    table_name="package_allowlist",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("packages", "json", nullable=False),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[],
+)
+
 CRON_POLICY_TABLE_DEF = TableDefinition(
     table_name="cron_policy",
     columns=[

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
+from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
 from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
     HubAssetDetail,
     HubAssetSummary,
@@ -1255,3 +1256,191 @@ async def test_expert_catalog_keeps_hub_card_with_same_named_local_package(exten
     assert cards[0]['installed'] is False
     mine = await catalog.list_agent_templates_with_hub({'filter': 'mine'}, hub_port=hub)
     assert [(c['id'], c['source']) for c in mine] == [('sales-expert', 'local')]
+
+
+_HIDDEN_EXPERT = "794db1bfe8884d6897d62d3584894a59"
+_HIDDEN_GROUP = "32c223d69b834c35b40bc3935c6f9f67"
+
+
+class _CatalogPairHub:
+    def __init__(self, kind: str, hidden_id: str) -> None:
+        self.kind = kind
+        self.hidden_id = hidden_id
+        self.artifact_calls = 0
+        self.queries = 0
+        self.items = (
+            _item("sales-expert", kind=kind),
+            _item(hidden_id, kind=kind),
+        )
+
+    async def search_assets(self, request) -> HubSearchPage:
+        return HubSearchPage(
+            items=self.items, total=len(self.items), page=request.page, page_size=100
+        )
+
+    async def query_asset(self, request) -> HubAssetDetail:
+        self.queries += 1
+        item = next(entry for entry in self.items if entry.asset_id == request.asset_id)
+        return HubAssetDetail(
+            kind=item.kind,
+            asset_id=item.asset_id,
+            version=item.public_latest_version,
+            display_name=item.display_name,
+            short_description=item.short_description,
+            detail_description="远端详情",
+            icon_uri=item.icon_uri,
+            tags=item.tags,
+            package_name=item.package_name,
+        )
+
+    async def resolve_download(self, request) -> HubResolvedDownload:
+        self.artifact_calls += 1
+        item = next(entry for entry in self.items if entry.asset_id == request.asset_id)
+        return HubResolvedDownload(
+            kind=item.kind,
+            asset_id=item.asset_id,
+            version=item.public_latest_version,
+            download_url="https://downloads.example.test/package.zip",
+            checksum_sha256="a" * 64,
+            package_name=item.package_name,
+        )
+
+
+def _allow_hidden_and_sales():
+    return bind_request_subject(
+        {
+            "package_allowlist": [
+                {"kind": "agent_template", "id": "sales-expert"},
+                {"kind": "agent_template", "id": _HIDDEN_EXPERT},
+                {"kind": "agent_group", "id": "sales-expert"},
+                {"kind": "agent_group", "id": _HIDDEN_GROUP},
+            ]
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_personal_catalog_keeps_connector_dependent_experts(
+    extension_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del extension_workspace
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    hub = _CatalogPairHub("agent_template", _HIDDEN_EXPERT)
+
+    cards = await catalog.list_agent_templates_with_hub({}, hub_port=hub)
+
+    assert {card["id"] for card in cards} == {"sales-expert", _HIDDEN_EXPERT}
+
+
+@pytest.mark.asyncio
+async def test_enterprise_catalog_omits_connector_dependent_experts(
+    extension_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del extension_workspace
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    template_hub = _CatalogPairHub("agent_template", _HIDDEN_EXPERT)
+
+    with _allow_hidden_and_sales():
+        templates = await catalog.list_agent_templates_with_hub({}, hub_port=template_hub)
+    groups = catalog._omit_enterprise_hidden_cards(
+        [{"id": "sales-expert"}, {"id": _HIDDEN_GROUP}]
+    )
+
+    assert [card["id"] for card in templates] == ["sales-expert"]
+    assert [card["id"] for card in groups] == ["sales-expert"]
+
+
+@pytest.mark.asyncio
+async def test_enterprise_show_hides_connector_dependent_packages(
+    extension_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del extension_workspace
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    expert_hub = _CatalogPairHub("agent_template", _HIDDEN_EXPERT)
+    group_hub = _CatalogPairHub("agent_group", _HIDDEN_GROUP)
+
+    assert await catalog.show_agent_template_with_hub(_HIDDEN_EXPERT, hub_port=expert_hub) is None
+    assert await catalog.show_agent_group_with_hub(_HIDDEN_GROUP, hub_port=group_hub) is None
+    assert expert_hub.queries == 0
+    assert group_hub.queries == 0
+
+
+@pytest.mark.asyncio
+async def test_personal_show_keeps_connector_dependent_packages(
+    extension_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del extension_workspace
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    expert_hub = FakeHubAssetPort(_item(_HIDDEN_EXPERT, "agent_template"))
+
+    expert = await catalog.show_agent_template_with_hub(
+        _HIDDEN_EXPERT, hub_port=expert_hub, downloader=FakeDownloader()
+    )
+    kept = catalog._omit_enterprise_hidden_cards(
+        [{"id": "sales-expert"}, {"id": _HIDDEN_GROUP}]
+    )
+
+    assert expert is not None and expert["id"] == _HIDDEN_EXPERT
+    assert {card["id"] for card in kept} == {"sales-expert", _HIDDEN_GROUP}
+
+
+@pytest.mark.asyncio
+async def test_enterprise_install_rejects_connector_dependent_packages_before_download(
+    extension_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del extension_workspace
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    expert_hub = FakeHubAssetPort(_item(_HIDDEN_EXPERT, "agent_template"))
+    group_hub = FakeHubAssetPort(_item(_HIDDEN_GROUP, "agent_group"))
+    expert_downloader = FakeDownloader()
+    group_downloader = FakeDownloader()
+
+    ok, payload = await catalog.install_equipment_from_hub_gated(
+        "agent_templates",
+        {"id": _HIDDEN_EXPERT},
+        hub_port=expert_hub,
+        downloader=expert_downloader,
+    )
+
+    with pytest.raises(ValueError, match="package not available"):
+        await catalog.install_agent_group_with_hub(
+            {"id": _HIDDEN_GROUP},
+            hub_port=group_hub,
+            downloader=group_downloader,
+        )
+
+    assert ok is False
+    assert payload["error"] == f"package not available: {_HIDDEN_EXPERT}"
+    assert expert_downloader.calls == 0
+    assert group_downloader.calls == 0
+    assert expert_hub.artifact_calls == 0
+    assert group_hub.artifact_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_personal_install_still_downloads_connector_dependent_expert(
+    extension_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del extension_workspace
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    hub = FakeHubAssetPort(_item(_HIDDEN_EXPERT, "agent_template", package_name="harmonyos-app-expert"))
+    downloader = FakeDownloader()
+
+    try:
+        ok, payload = await catalog.install_equipment_from_hub_gated(
+            "agent_templates",
+            {"id": _HIDDEN_EXPERT},
+            hub_port=hub,
+            downloader=downloader,
+        )
+    except Exception as exc:
+        assert "package not available" not in str(exc)
+    else:
+        assert (ok, payload) == (True, {})
+    assert downloader.calls == 1

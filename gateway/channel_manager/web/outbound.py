@@ -18,6 +18,17 @@ logger = logging.getLogger(__name__)
 _METHODS_WITHOUT_PARAM_SESSION_ID = frozenset({"session.create"})
 
 
+def _shared_user_route_session_id(params: dict[str, Any]) -> str:
+    """没有客户端会话号的 HTTP 请求按用户共用一条路由会话。
+
+    企业版服务的并发名额很小。语言配置、项目列表和专家目录如果每次都新开
+    ``webhttp_`` 路由键，会把名额占满，随后的 session.create 直接失败。
+    """
+    user = str(params.get("user_id") or "").strip()
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in user)
+    return f"shared_user_{cleaned or 'default'}"
+
+
 def bind_http_session(
     method: str,
     params: dict[str, Any] | None,
@@ -39,7 +50,13 @@ def bind_http_session(
         if method == "session.create" and not str(out.get("create_token") or "").strip():
             out["create_token"] = uuid.uuid4().hex
         return f"webhttp_{uuid.uuid4().hex[:12]}", out
-    envelope = client_sid or f"webhttp_{uuid.uuid4().hex[:12]}"
+    # 不往 params 写会话号的调用只需要路由亲和。按用户复用，避免每次请求占一个名额。
+    shared_sid = ""
+    if not client_sid and (
+        str(method).startswith("agent_templates.") or not bind_param
+    ):
+        shared_sid = _shared_user_route_session_id(out)
+    envelope = client_sid or shared_sid or f"webhttp_{uuid.uuid4().hex[:12]}"
     if not bind_param:
         if client_sid:
             out["session_id"] = client_sid

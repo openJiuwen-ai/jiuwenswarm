@@ -781,10 +781,49 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
 )
 
+_EXPERT_PACKAGE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "GET", "/agent-templates", "agent_templates.list",
+        "experts", "列出可见的专家包",
+        query_keys=("filter", "ui_language", "organization_id", "department_id") + _TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/agent-templates/{id}", "agent_templates.show",
+        "experts", "专家包详情",
+        path_to_param={"id": "id"},
+        query_keys=("ui_language", "organization_id", "department_id") + _TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/agent-templates/{id}/files", "agent_templates.file.list",
+        "experts", "专家包文件列表",
+        path_to_param={"id": "id"},
+        query_keys=("ui_language", "organization_id", "department_id") + _TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/agent-templates/{id}/files/content", "agent_templates.file.read",
+        "experts", "读取专家包文本文件",
+        path_to_param={"id": "id"},
+        query_keys=("path", "ui_language", "organization_id", "department_id") + _TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/agent-templates/{id}/actions/install", "agent_templates.install",
+        "experts", "安装专家包",
+        path_to_param={"id": "id"},
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/agent-templates/{id}/actions/uninstall", "agent_templates.uninstall",
+        "experts", "卸载专家包",
+        path_to_param={"id": "id"},
+        accept_body=True,
+    ),
+)
+
 WORKSPACE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_PERMISSIONS_ROUTES,
     *_PROJECT_ROUTES,
     *_SKILLS_ROUTES,
+    *_EXPERT_PACKAGE_ROUTES,
     *_HARNESS_ROUTES,
     *WORKSPACE_FILE_ROUTES,
 )

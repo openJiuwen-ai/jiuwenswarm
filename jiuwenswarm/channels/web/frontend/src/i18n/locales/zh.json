@@ -69,6 +69,10 @@
     "update": "更新",
     "personalContext": "知识"
   },
+  "experts": {
+    "podStarting": "正在启动专家运行环境，请稍候",
+    "podStartTimeout": "专家运行环境启动超时，请稍后重试"
+  },
   "applicationPlugins": {
     "title": "应用插件",
     "description": "管理提供独立页面和运行时能力的应用插件。",

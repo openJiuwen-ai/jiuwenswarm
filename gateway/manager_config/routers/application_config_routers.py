@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..core.application_config.audit_log_config import AuditLogConfigService
 from ..core.application_config.cron_policy import CronPolicyService
+from ..core.application_config.package_allowlist import PackageAllowlistService
 from ..core.application_config.log_masking_rule import LogMaskingRuleService
 from ..core.application_config.logging_config import LoggingConfigService
 from ..core.application_config.memory_config import MemoryConfigService
@@ -16,6 +17,7 @@ from ..core.application_config.task_memory_config import TaskMemoryConfigService
 from ..schemas.application_config_schemas import (
     AuditLogUpsertRequest,
     CronPolicyUpsertRequest,
+    PackageAllowlistUpsertRequest,
     LoggingConfigUpsertRequest,
     LogMaskingRuleCreateRequest,
     LogMaskingRuleUpdateRequest,
@@ -39,6 +41,7 @@ TaskMemorySyncBody = make_sync_body("TaskMemorySyncBody", TaskMemoryUpsertReques
 MemorySyncBody = make_sync_body("MemorySyncBody", MemoryConfigUpsertRequest)
 AuditLogSyncBody = make_sync_body("AuditLogSyncBody", AuditLogUpsertRequest)
 CronPolicySyncBody = make_sync_body("CronPolicySyncBody", CronPolicyUpsertRequest)
+PackageAllowlistSyncBody = make_sync_body("PackageAllowlistSyncBody", PackageAllowlistUpsertRequest)
 LogMaskingCreateSyncBody = make_sync_body(
     "LogMaskingCreateSyncBody", LogMaskingRuleCreateRequest
 )
@@ -117,6 +120,37 @@ async def delete_memory(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
+
+
+@application_config_router.put("/package-allowlists", response_model=ResponseModel)
+async def upsert_package_allowlist(
+    sync: Annotated[SyncContext, Depends(verify_sync(PackageAllowlistSyncBody))],
+):
+    try:
+        result = await PackageAllowlistService().upsert(sync.business)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
+
+
+@application_config_router.delete("/package-allowlists", response_model=ResponseModel)
+async def delete_package_allowlist(
+    sync: VerifySyncEnvelopeOnly,
+):
+    try:
+        await PackageAllowlistService().delete()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
+
+
+@application_config_router.get("/package-allowlists/catalog", response_model=ResponseModel)
+async def list_package_allowlist_catalog():
+    """本集群 Hub 目录。不做允许名单过滤，失败时 data 里带空 items 和 error。"""
+    from jiuwenswarm.server.runtime.equipment_hub_catalog import list_hub_equipment_catalog
+
+    payload = await list_hub_equipment_catalog()
+    return ResponseModel(code=200, message="success", data=payload)
 
 
 @application_config_router.put("/cron-policy", response_model=ResponseModel)

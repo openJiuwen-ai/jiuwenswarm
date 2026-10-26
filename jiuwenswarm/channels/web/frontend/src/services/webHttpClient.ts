@@ -15,6 +15,7 @@ import i18n from '../i18n';
 import { buildRuntimeIdentityHeaders } from './runtimeScope';
 import { createSessionEventGate } from './sessionEventGate';
 import { PauseBufferHook, PAUSABLE_STREAM_EVENTS } from './webClient';
+import { withExpertUiLanguage } from './expertUiLanguage';
 
 import { hasManagerSessionCredentials, getManagerAccessToken, managerAuthenticatedFetch } from '../auth/manager/authSession';
 import { isLoginAuthSimulateEnabled } from '../auth/config';
@@ -100,6 +101,12 @@ const ROUTES: Record<string, RouteRow> = {
   'cron.job.preview': { verb: 'POST', path: '/cron/jobs/{id}/actions/preview', kind: 'unary' },
   'cron.job.run_now': { verb: 'POST', path: '/cron/jobs/{id}/actions/run-now', kind: 'unary' },
   'skills.list': { verb: 'GET', path: '/skills', kind: 'unary' },
+  'agent_templates.list': { verb: 'GET', path: '/agent-templates', kind: 'unary' },
+  'agent_templates.show': { verb: 'GET', path: '/agent-templates/{id}', kind: 'unary' },
+  'agent_templates.file.list': { verb: 'GET', path: '/agent-templates/{id}/files', kind: 'unary' },
+  'agent_templates.file.read': { verb: 'GET', path: '/agent-templates/{id}/files/content', kind: 'unary' },
+  'agent_templates.install': { verb: 'POST', path: '/agent-templates/{id}/actions/install', kind: 'unary' },
+  'agent_templates.uninstall': { verb: 'POST', path: '/agent-templates/{id}/actions/uninstall', kind: 'unary' },
   'skills.installed': { verb: 'GET', path: '/skills/installed', kind: 'unary' },
   'skills.get': { verb: 'GET', path: '/skills/{name}', kind: 'unary' },
   'skills.install': { verb: 'POST', path: '/skills/actions/install', kind: 'unary' },
@@ -289,6 +296,7 @@ interface UnaryFail {
   message: string;
   code?: string;
   requestId?: string;
+  details?: Record<string, unknown>;
 }
 
 type UnaryResult = UnaryOk | UnaryFail;
@@ -299,7 +307,7 @@ interface SseFrame {
   id?: string;
 }
 
-function errorFields(error: unknown): { message: string; code?: string } {
+function errorFields(error: unknown): { message: string; code?: string; details?: Record<string, unknown> } {
   if (typeof error === 'string' && error.trim()) {
     return { message: error };
   }
@@ -311,7 +319,8 @@ function errorFields(error: unknown): { message: string; code?: string } {
           ? error.error
           : 'request failed';
     const code = typeof error.code === 'string' ? error.code : undefined;
-    return { message, code };
+    const details = isRecord(error.details) ? error.details : undefined;
+    return { message, code, details };
   }
   return { message: 'request failed' };
 }
@@ -326,8 +335,8 @@ export function unwrapHttpUnary(input: unknown, status?: number): UnaryResult {
       const payload = input.data !== undefined ? input.data : input.payload;
       return { ok: true, payload: payload ?? {}, requestId };
     }
-    const { message, code } = errorFields(input.error);
-    return { ok: false, message, code, requestId };
+    const { message, code, details } = errorFields(input.error);
+    return { ok: false, message, code, requestId, details };
   }
   if (input.agent_ready !== undefined) {
     return { ok: true, payload: input, requestId };
@@ -656,9 +665,10 @@ export class WebHttpClient {
 
     const requestId = this.generateRequestId();
     options.onRequestId?.(requestId);
+    const requestParams = withExpertUiLanguage(method, params);
     let assembled;
     try {
-      assembled = assembleWebRest(method, params, getGatewayHttpBase());
+      assembled = assembleWebRest(method, requestParams, getGatewayHttpBase());
     } catch (error) {
       if (error instanceof RestAssemblyError) {
         throw this.createWebError(error.message, 'BAD_REQUEST', requestId, false);
@@ -1002,12 +1012,16 @@ export class WebHttpClient {
   private async readUnaryPayload(response: Response, requestId: string): Promise<unknown> {
     const unwrapped = unwrapHttpUnary(await this.readJson(response), response.status);
     if (!unwrapped.ok) {
-      throw this.createWebError(
+      const error = this.createWebError(
         unwrapped.message,
         unwrapped.code ?? (response.status >= 500 ? 'HTTP_ERROR' : undefined),
         unwrapped.requestId ?? requestId,
         this.isRetriableCode(unwrapped.code) || response.status >= 500
       );
+      if (unwrapped.details) {
+        error.payload = unwrapped.details;
+      }
+      throw error;
     }
     if (!response.ok && response.status >= 400 && response.status !== 201) {
       throw this.createWebError(

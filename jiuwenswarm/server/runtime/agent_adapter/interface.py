@@ -3299,11 +3299,17 @@ class JiuWenSwarm:
 
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
-        return await self._process_message(request, schedule_session=True)
+        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+
+        with bind_request_subject(request.metadata):
+            return await self._process_message(request, schedule_session=True)
 
     async def execute_message(self, request: AgentRequest) -> AgentResponse:
         """Execute one request when scheduling is owned by AgentRuntime."""
-        return await self._process_message(request, schedule_session=False)
+        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+
+        with bind_request_subject(request.metadata):
+            return await self._process_message(request, schedule_session=False)
 
     async def _process_message(
         self,
@@ -3766,6 +3772,16 @@ class JiuWenSwarm:
         """Inject an interaction answer into this Session's active execution."""
         if not is_interrupt_resume_payload(request.params):
             raise ValueError("control input must answer an active interaction")
+        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+
+        # 续聊不经过 process_message。这里绑定当次请求的名单，深研适配器里的 allows 才能放行已授权专家。
+        with bind_request_subject(request.metadata):
+            async for chunk in self._stream_control_input(request):
+                yield chunk
+
+    async def _stream_control_input(
+        self, request: AgentRequest
+    ) -> AsyncIterator[AgentResponseChunk]:
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
         session_id = self._session_manager.get_session_id(request.session_id)
         params = request.params if isinstance(request.params, dict) else {}
@@ -4054,6 +4070,16 @@ class JiuWenSwarm:
 
     async def process_message_stream(
         self, request: AgentRequest
+    ) -> AsyncIterator[AgentResponseChunk]:
+        """处理流式请求，并带上本次请求的用户身份。"""
+        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+
+        with bind_request_subject(request.metadata):
+            async for chunk in self._process_message_stream(request):
+                yield chunk
+
+    async def _process_message_stream(
+            self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
         """处理流式请求.
 
