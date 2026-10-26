@@ -161,6 +161,7 @@ from jiuwenswarm.server.runtime.agent_adapter.trusted_web_search import (
     TrustedWebFreeSearchTool,
 )
 from jiuwenswarm.agents.harness.common.rsi.errors import RsiHarnessInstallConflict
+from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
 
 GOAL_UPDATED_EVENT_TYPE = InteractionEventType.GOAL_UPDATED.value
 _ERROR_EVENT = getattr(InteractionEventType, "EXECUTION_ERROR", None)
@@ -1925,7 +1926,7 @@ class JiuWenSwarmDeepAdapter:
 
     async def install_voice_task_rail(self, *, reload=False):
         """Keep task rail lifecycle and internal Agent ownership inside the Host."""
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import install_task_rail
+        from jiuwenswarm.server.runtime.video_task.rail import install_task_rail
 
         self._voice_agent_task_rail = await install_task_rail(
             self._instance, self._voice_agent_task_rail, reload=reload
@@ -2146,6 +2147,16 @@ class JiuWenSwarmDeepAdapter:
         self._skill_retrieval_context_window_tokens: int | None = None
         self._skill_retrieval_settings: Any | None = None
         self._restored_skill_retrieval_profile: dict[str, Any] | None = None
+        self._tool_retrieval_tools_registered: bool = False
+        self._tool_retrieval_prompt_rail: Any = None
+        self._tool_retrieval_tools: list[Any] = []
+        self._tool_retrieval_toolkit: Any | None = None
+        # Localized manifest descriptions of installed MCP packages; read
+        # once on first _mcp_server_descriptions call.
+        self._mcp_manifest_descriptions: dict[str, dict[str, str]] | None = None
+        # Frozen when this adapter/session is created, same contract as the
+        # skill retrieval switch above.
+        self._tool_retrieval_session_enabled: bool | None = None
         self._skill_manager: SkillManager | None = None
         self._a2x_client: Any | None = None
         self._a2x_config: dict[str, Any] = {}
@@ -3660,6 +3671,14 @@ class JiuWenSwarmDeepAdapter:
                 )
                 if busy:
                     installed_selection = getattr(existing, "_collaboration_model_selection", None)
+                    if selection is not None and not getattr(existing, "_moa_enabled", False):
+                        # Ordinary routing can apply a stable model after the child
+                        # was built. Compare with that actual model, not its initial selection.
+                        suffix = f":{selection.route_id}" if selection.route_id else ""
+                        reference = f"{selection.type}:{selection.id}{suffix}"
+                        cached = getattr(existing, "_stable_selection_cache", {}).get(reference)
+                        if cached is not None and cached[1] is getattr(existing, "_last_resolved_model", None):
+                            installed_selection = selection
                     explicit_switch = model_selection is not None or bool(model_name)
                     if not retain_moa_snapshot and explicit_switch and selection != installed_selection:
                         raise RuntimeError("Model selection cannot change while the session is executing")
@@ -3744,6 +3763,33 @@ class JiuWenSwarmDeepAdapter:
                 self._drop_session_adapter_cache_entry(
                     sid, remove_lock=False, remove_runtime_state=False,
                 )
+                existing = None
+            _tool_retrieval_flip_pending = (
+                existing is not None
+                and not is_external_harness
+                and not busy
+                and callable(
+                    getattr(
+                        existing,
+                        "_tool_retrieval_enable_flip_pending",
+                        None,
+                    )
+                )
+                and existing._tool_retrieval_enable_flip_pending()  # pylint: disable=protected-access
+            )
+            if _tool_retrieval_flip_pending:
+                # 优化开关与本会话冻结的披露画像已不一致（开↔关任一方向）：中途
+                # 状态手术无法在两套披露系统（我们的目录层 vs 引擎 bundled
+                # ProgressiveToolRail）之间保证干净交接，像上方 MoA 切换一样重建
+                # 会话 adapter——重建后整个会话只属于开关当前指向的一套系统，
+                # 重建路径会重读 config 并从磁盘恢复会话上下文。
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] rebuilding session adapter for tool "
+                    "retrieval enable: session_id=%s",
+                    sid,
+                )
+                await existing.cleanup()
+                self._drop_session_adapter_cache_entry(sid, remove_lock=False)
                 existing = None
             if existing is not None:
                 first_mcp_reconcile = requested_mcp_scan_names is not None and not bool(
@@ -4616,6 +4662,11 @@ class JiuWenSwarmDeepAdapter:
                         [git_bin, *args],
                         capture_output=True,
                         text=True,
+                        # git always writes UTF-8 (branch names, commits, user
+                        # names); pin the codec so a non-UTF-8 locale cannot
+                        # turn the output into a decode error or mojibake.
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=5,
                         cwd=project_dir,
                     )
@@ -5151,7 +5202,10 @@ class JiuWenSwarmDeepAdapter:
         """
         name = str(entry.get("name", "")).strip()
         resolver = build_mcp_credential_resolver(name)
-        return build_mcp_server_config(entry, server_id_scope="jiuwenswarm", credential_resolver=resolver)
+        return build_mcp_server_config(
+            entry, server_id_scope="jiuwenswarm", credential_resolver=resolver,
+            resolve_node_launcher=True,
+        )
 
     @staticmethod
     def _extract_enabled_mcp_server_entries(config_base: dict[str, Any]) -> list[dict[str, Any]]:
@@ -6378,6 +6432,382 @@ class JiuWenSwarmDeepAdapter:
             self._skill_retrieval_toolkit = None
             self._skill_retrieval_environment = None
             self._drop_tool_names_from_runtime(_SKILL_RETRIEVAL_TOOL_NAMES)
+
+    def _collect_deferred_tool_infos(self, cards: Any = None) -> list[ToolInfo]:
+        """Project deferred tool cards into retrieval ToolInfos.
+
+        Reads from the agent's AbilityManager when available so tools registered
+        after ``_get_tool_cards`` (cron/heartbeat, MCP, active packages) are
+        included — they register directly into AbilityManager during
+        ``create_instance`` and never pass through ``self._tool_cards``.
+        Falls back to the card list (pre-init, before the agent exists).
+        Only cards AbilityManager resolved as ``ToolExposure.DEFERRED``
+        participate; the ``cards`` argument is ignored once the agent exists.
+        """
+
+        infos: list[ToolInfo] = []
+        source_cards: list[Any]
+        instance = getattr(self, "_instance", None)
+        ability_manager = getattr(instance, "ability_manager", None) if instance is not None else None
+        list_abilities = getattr(ability_manager, "list", None)
+        if callable(list_abilities):
+            try:
+                source_cards = [c for c in (list_abilities() or []) if isinstance(c, ToolCard)]
+            except Exception:
+                source_cards = list(cards) if cards is not None else list(self._tool_cards or [])
+        else:
+            # Pre-init (toolkit built inside _get_tool_cards): the agent does
+            # not exist yet, so fall back to the cards passed in.
+            source_cards = list(cards) if cards is not None else list(self._tool_cards or [])
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] _collect_deferred_tool_infos "
+            "| source=ability_manager=%s | total_cards=%d | deferred=%s",
+            ability_manager is not None,
+            len(source_cards),
+            sorted(c.name for c in source_cards if getattr(c, "exposure", None) is ToolExposure.DEFERRED),
+        )
+        for card in source_cards:
+            name = str(getattr(card, "name", "") or "").strip()
+            if not name or name == "tool_search":
+                continue
+            if getattr(card, "exposure", None) is not ToolExposure.DEFERRED:
+                continue
+            parameters = getattr(card, "input_params", None)
+            infos.append(
+                ToolInfo(
+                    name=name,
+                    description=str(getattr(card, "description", "") or ""),
+                    parameters=parameters if isinstance(parameters, dict) else {},
+                )
+            )
+        return infos
+
+    def _drop_pending_progressive_tool_rail(self) -> None:
+        """Remove openjiuwen's bundled ProgressiveToolRail before rail init.
+
+        ``progressive_tool_enabled`` arms AbilityManager's deferred assignment
+        (which we keep), but also queues the bundled rail (BM25 + its own
+        ``tool_search``/``tool_call`` meta tools). We swap that rail for our
+        skill_index-framework ``ToolRetrievalPromptRail``; dropping it from
+        ``_pending_rails`` before ``ensure_initialized`` means its ``init``
+        never runs, so no meta tools are registered and no ``uninit`` cleanup
+        is needed.
+        """
+
+        if not is_tool_retrieval_enabled(self._config_base_cache):
+            return
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return
+        try:
+            from openjiuwen.harness.rails.progressive_tool_rail import (
+                ProgressiveToolRail,
+            )
+
+            pending = getattr(instance, "_pending_rails", None)
+            if not isinstance(pending, list):
+                return
+            kept = [rail for rail in pending if not isinstance(rail, ProgressiveToolRail)]
+            if len(kept) != len(pending):
+                setattr(instance, "_pending_rails", kept)
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] dropped bundled ProgressiveToolRail; "
+                    "ToolRetrievalPromptRail will own tool_search"
+                )
+        except Exception:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] ProgressiveToolRail drop skipped",
+                exc_info=True,
+            )
+
+    def _build_tool_retrieval_prompt_rail(self) -> Any:
+        """Build our ToolRetrievalPromptRail against the cached config."""
+
+        if not is_tool_retrieval_enabled(self._config_base_cache):
+            return None
+        try:
+            from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import (
+                ToolRetrievalPromptRail,
+            )
+
+            toolkit = self._tool_retrieval_toolkit
+            if toolkit is None:
+                toolkit = self._get_or_create_tool_retrieval_toolkit(
+                    self._tool_cards or []
+                )
+            return ToolRetrievalPromptRail(
+                toolkit=toolkit,
+                config_base=self._config_base_cache,
+            )
+        except Exception:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail build failed",
+                exc_info=True,
+            )
+            return None
+
+    def _register_tool_retrieval_prompt_rail(self) -> Any:
+        """Queue our ToolRetrievalPromptRail for lazy init (create path).
+
+        Returns the queued rail, or None when the switch is off or the build
+        failed — callers that must not leave the session without any
+        disclosure (the spec-reload reconcile) treat None as "keep the
+        bundled ProgressiveToolRail".
+        """
+
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return None
+        rail = self._build_tool_retrieval_prompt_rail()
+        if rail is None:
+            return None
+        self._tool_retrieval_prompt_rail = rail
+        pending = getattr(instance, "_pending_rails", None)
+        if not isinstance(pending, list):
+            pending = []
+            setattr(instance, "_pending_rails", pending)
+        pending.append(rail)
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail queued"
+        )
+        return rail
+
+    def _create_tool_retrieval_tools(self, cards: Any = None) -> list[Any]:
+        """Create the session-local deferred-tool directory tool."""
+        if not self._tool_retrieval_tools_enabled_for_runtime(
+            self._config_base_cache
+        ):
+            logger.info("[JiuWenSwarmDeepAdapter] ToolRetrievalToolkit skipped: disabled")
+            return []
+        tool_retrieval_toolkit = self._get_or_create_tool_retrieval_toolkit(cards)
+        tools = tool_retrieval_toolkit.get_tools()
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] ToolRetrievalToolkit built: tools=%s deferred=%s",
+            [tool.card.name for tool in tools],
+            len(self._collect_deferred_tool_infos(cards)),
+        )
+        return tools
+
+    def _get_or_create_tool_retrieval_toolkit(self, cards: Any = None) -> Any:
+        from jiuwenswarm.agents.harness.common.tools.tool_retrieval_toolkits import (
+            ToolRetrievalToolkit as _ToolRetrievalToolkit,
+        )
+
+        toolkit = self._tool_retrieval_toolkit
+        if toolkit is not None:
+            return toolkit
+        # The provider reads from the agent's AbilityManager live (not a frozen
+        # card snapshot) so tools registered after _get_tool_cards — cron/
+        # heartbeat, MCP, active packages — are included. Exposure is assigned
+        # during create_deep_agent; ToolRetrievalPromptRail.init calls
+        # refresh_snapshot() once ensure_initialized resolves it.
+        toolkit = _ToolRetrievalToolkit(
+            deferred_tools_provider=lambda: self._collect_deferred_tool_infos(),
+            session_scope=self._skill_retrieval_session_scope(),
+            config_base=self._config_base_cache,
+            mcp_servers_provider=self._mcp_server_descriptions,
+        )
+        self._tool_retrieval_toolkit = toolkit
+        return toolkit
+
+    def _mcp_server_descriptions(self) -> dict[str, dict[str, str]]:
+        """MCP server name → localized description, for connector group lines.
+
+        The installed package manifests carry the localized ``基本信息`` the
+        web catalogue shows (read once and cached); a plain ``description``
+        on the ``mcp.servers`` entry covers manifest-less custom servers;
+        registered servers without either still contribute their name so
+        multi-underscore tool prefixes group precisely.
+        """
+
+        names: set[str] = set()
+        localized: dict[str, dict[str, str]] = {}
+        try:
+            for entry in extract_enabled_mcp_server_entries(self._config_base_cache):
+                name = str(entry.get("name") or "").strip()
+                if not name:
+                    continue
+                names.add(name)
+                plain = str(entry.get("description") or "").strip()
+                if plain:
+                    localized.setdefault(name, {"zh": plain, "en": plain})
+        except Exception:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] mcp server entries read failed",
+                exc_info=True,
+            )
+        try:
+            for cfg in self._registered_mcp_servers.values():
+                name = str(getattr(cfg, "server_name", "") or "").strip()
+                if name:
+                    names.add(name)
+        except Exception:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] registered mcp server names read failed",
+                exc_info=True,
+            )
+        # Manifest metadata wins: it is the catalogue's own localized text.
+        if self._mcp_manifest_descriptions is None:
+            try:
+                from jiuwenswarm.server.runtime.mcp.marketplace import (
+                    installed_mcp_descriptions,
+                )
+
+                self._mcp_manifest_descriptions = installed_mcp_descriptions()
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] mcp manifest descriptions read failed",
+                    exc_info=True,
+                )
+                self._mcp_manifest_descriptions = {}
+        for name, payload in (self._mcp_manifest_descriptions or {}).items():
+            if payload.get("zh") or payload.get("en"):
+                localized[name] = {
+                    "zh": str(payload.get("zh") or ""),
+                    "en": str(payload.get("en") or ""),
+                }
+        return {name: localized.get(name, {"zh": "", "en": ""}) for name in names}
+
+    @staticmethod
+    def _resolve_tool_retrieval_session_enabled(
+        config_base: dict[str, Any] | None = None,
+    ) -> bool:
+        return is_tool_retrieval_enabled(config_base)
+
+    def _tool_retrieval_tools_enabled_for_runtime(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return the session profile under the current global kill switch."""
+
+        if self._tool_retrieval_session_enabled is None:
+            self._tool_retrieval_session_enabled = (
+                self._resolve_tool_retrieval_session_enabled(config_base)
+            )
+        return self._tool_retrieval_session_enabled and is_tool_retrieval_enabled(
+            config_base
+        )
+
+    def _tool_retrieval_enable_flip_pending(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return True when the optimize switch no longer matches this session.
+
+        The tool-retrieval session profile is frozen at instance build, and
+        the switch decides which disclosure system owns the session: on =
+        our catalogue layer, off = openjiuwen's bundled ProgressiveToolRail.
+        Mid-session state surgery (unmount/remount, instance vs by-name tool
+        cleanup) cannot guarantee a clean handover between the two — the
+        session-acquire path rebuilds the adapter whenever the frozen profile
+        disagrees with the live switch, in either direction, so every message
+        runs under exactly one system.
+        """
+
+        frozen = self._tool_retrieval_session_enabled
+        if frozen is None:
+            return False
+        return frozen != is_tool_retrieval_enabled(config_base or get_config())
+
+    def _sync_tool_retrieval_tools_for_runtime(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> None:
+        """Sync progressive tool retrieval registration after config reload."""
+        enabled = self._tool_retrieval_tools_enabled_for_runtime(config_base)
+        tools, registered = self._sync_tool_group(
+            current_tools=self._tool_retrieval_tools,
+            registered=self._tool_retrieval_tools_registered,
+            enabled=enabled,
+            create_fn=self._create_tool_retrieval_tools,
+            warn_label="tool retrieval tools",
+        )
+        self._tool_retrieval_tools = tools
+        self._tool_retrieval_tools_registered = registered
+        if not enabled:
+            self._tool_retrieval_toolkit = None
+            # No by-name cleanup here: ``_sync_tool_group`` removes this
+            # layer's own instances (instance-based) and the rail unmount
+            # owns the tool_call envelope. A name-based drop would also kill
+            # the bundled ProgressiveToolRail's freshly re-registered
+            # ``tool_search`` on the very reload that turns this layer off —
+            # leaving the model with no top-level tool_search at all (the
+            # off-transition deadlock).
+
+    async def _sync_tool_retrieval_prompt_rail_for_runtime(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> None:
+        """Keep the catalogue rail mounted exactly while the switches pass.
+
+        Off: unmount — the meta tools are already dropped by
+        ``_sync_tool_retrieval_tools_for_runtime``, but the prompt rail itself
+        keeps injecting the catalogue + get_schema rules, leaving the model
+        probing schemas while openjiuwen's bundled disclosure takes over.
+        On again (a frozen-on session cycled off→on): remount live. Sessions
+        frozen off at build keep going through the rebuild path instead.
+
+        The cached handle only records which rail instance is ours (queued or
+        mounted); membership on the instance is the truth. A handle whose rail
+        left the instance without us (external strip, full reconfigure) is
+        stale: heal by remounting instead of trusting the attribute, or the
+        session silently loses the catalogue layer for its whole life.
+        """
+
+        if self._instance is None:
+            return
+        enabled = self._tool_retrieval_tools_enabled_for_runtime(config_base)
+        rail = getattr(self, "_tool_retrieval_prompt_rail", None)
+        mounted = False
+        if rail is not None:
+            from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import (
+                ToolRetrievalPromptRail,
+            )
+
+            existing_rails = self._instance.find_rails_by_type(
+                (ToolRetrievalPromptRail,)
+            )
+            mounted = any(existing is rail for existing in existing_rails)
+        if not enabled:
+            if rail is None:
+                return
+            # The rail may still be queued-only (create path queues, a reload
+            # can sync before ensure_initialized consumes it): drop the
+            # queued copy too, or it mounts later with the layer off.
+            remove_pending = getattr(self._instance, "remove_pending_rail", None)
+            if callable(remove_pending):
+                remove_pending(rail)
+            if mounted:
+                try:
+                    await self._instance.unregister_rail(rail)
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail unmount failed: %s",
+                        exc,
+                    )
+                    return
+            self._tool_retrieval_prompt_rail = None
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail unmounted: optimize off"
+            )
+            return
+        if mounted:
+            return
+        new_rail = self._build_tool_retrieval_prompt_rail()
+        if new_rail is None:
+            return
+        try:
+            await self._instance.register_rail(new_rail)
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail remount failed: %s",
+                exc,
+            )
+            return
+        self._tool_retrieval_prompt_rail = new_rail
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail remounted: optimize on"
+        )
 
     async def _sync_skill_retrieval_prompt_rail_for_runtime(
         self,
@@ -9713,7 +10143,7 @@ class JiuWenSwarmDeepAdapter:
         rail_infos: list[_RailBuildInfo],
         config_base: dict[str, Any],
     ) -> list[Any]:
-        """Build each declared rail in order, then attach the two standing ones.
+        """Build each declared rail in order, then attach the standing ones.
 
         Shared by the agent and code rail sets, which differ only in what they
         declare. Rail construction is the bulk of ``create_instance``, so each
@@ -9756,6 +10186,15 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.warning("%s Failed to load UserHookRail: %s", log_prefix, exc)
         stage_timer.mark("user_hook_rail")
+
+        # Keeps each turn's last main model call, which the next-input suggestion forks. It is
+        # mounted before the observability rail, which stays last so it sees every call.
+        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
+            PromptSuggestionForkRail,
+        )
+
+        rails_list.append(PromptSuggestionForkRail())
+        stage_timer.mark("prompt_suggestion_rail")
 
         # Observability rail: opens an agent-layer span (agent.<name>.task_iteration.<n>
         # for task-loop runs, or agent.<name>.invoke for single-round) under the root
@@ -12036,6 +12475,8 @@ class JiuWenSwarmDeepAdapter:
         self._sync_symphony_tools_for_runtime(config_base)
         self._sync_skill_retrieval_tools_for_runtime(config_base)
         await self._sync_skill_retrieval_prompt_rail_for_runtime(config_base)
+        self._sync_tool_retrieval_tools_for_runtime(config_base)
+        await self._sync_tool_retrieval_prompt_rail_for_runtime(config_base)
 
         if not self._filesystem_rail_enabled_for_profile() and self._filesystem_rail is not None:
             try:
@@ -14786,7 +15227,7 @@ class JiuWenSwarmDeepAdapter:
             )
             cancel_call_completed = True
             if request.channel_id == "video_tool":
-                from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import close_task_output
+                from jiuwenswarm.server.runtime.video_task.execution import close_task_output
 
                 await close_task_output(self._voice_agent_task_rail, request)
             logger.info(
@@ -16259,7 +16700,7 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one request."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+            from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
 
             with self._bind_permission_request_context(request):
                 async with bind_task_execution(request, self, inputs):
@@ -16456,6 +16897,7 @@ class JiuWenSwarmDeepAdapter:
         _run_error_type = ""
         collected_content: list[str] = []
         error_text: str | None = None
+        pending_interaction: dict[str, Any] | None = None
         interaction_stream = None
         interaction_stream_abort = True
         # 提前 import 观测 span 工具：原 import 在 try 内 _sync_prompt_attachments
@@ -16637,6 +17079,8 @@ class JiuWenSwarmDeepAdapter:
                         )
                         if parsed is not None:
                             event_type = str(parsed.get("event_type") or "").strip()
+                            if event_type in USER_INTERACTION_EVENTS:
+                                pending_interaction = parsed
                             # execution.error（DeepAgent round 级异常，如模型调用失败）
                             # 与 chat.error / error 一样视为终端失败，透传其 message。
                             if event_type in ("chat.error", "error", ERROR_EVENT_TYPE):
@@ -16656,6 +17100,8 @@ class JiuWenSwarmDeepAdapter:
                         _parent_session_id=self._parent_session_id,
                     )
                     if parsed is not None:
+                        if parsed.get("event_type") in USER_INTERACTION_EVENTS:
+                            pending_interaction = parsed
                         text = parsed.get("content", "")
                         if text:
                             collected_content.append(text)
@@ -16725,7 +17171,7 @@ class JiuWenSwarmDeepAdapter:
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={"content": content},
+            payload={**(pending_interaction or {}), "content": content},
             metadata=request.metadata,
         )
 
@@ -16954,7 +17400,7 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one stream."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+            from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
 
             with self._bind_permission_request_context(request):
                 async with bind_task_execution(request, self, inputs):
@@ -17977,7 +18423,7 @@ class JiuWenSwarmDeepAdapter:
             # A previous consumer may have stopped mid-round; this stream must
             # sample the run kind again on its own first chunk.
             self._reset_round_kind_latch()
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_output
+            from jiuwenswarm.server.runtime.video_task.execution import bind_task_output
 
             await bind_task_output(self._voice_agent_task_rail, request, interaction_stream)
             async for chunk in interaction_stream:

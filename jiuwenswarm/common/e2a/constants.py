@@ -1,10 +1,27 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
-"""转发别名（过渡形态）：实现已迁 ``gateway_protocol.e2a.constants``。"""
 
-from gateway_protocol.e2a.constants import *  # noqa: F401,F403
-from gateway_protocol.e2a.constants import (  # noqa: F401 — import * 不带的下划线外显式符号（无，防扫描工具误报）
+"""转发别名（过渡形态）：实现已迁 ``openjiuwen_protocol.e2a.constants``。
+
+本模块仅保留 ``jiuwenswarm.common.e2a.constants`` 旧 import 路径兼容，re-export openjiuwen-protocol
+包的同一对象（含原模块从兄弟模块引入的符号，保持命名空间一致）；
+唯一真源在协议包，本仓不持有实现。过渡期结束后随 common 副本收敛一并删除。
+
+例外：``E2A_AUTH_SESSION_PARAM_KEY`` 协议包尚未同步，暂在本模块本地定义，协议包补齐后删除。
+"""
+
+from __future__ import annotations
+
+from openjiuwen_protocol.e2a.constants import (  # noqa: F401
+    ACP_AGENT_TO_CLIENT_METHODS,
+    ACP_CLIENT_TO_AGENT_METHODS,
+    ACP_NOTIFICATION_NAMES,
+    ACP_SESSION_UPDATE_KINDS,
+    E2A_A2A_STREAM_BRANCHES,
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
     E2A_LOGIN_REQUIRED_HINT_PARAM_KEY,
     E2A_MODEL_AUTH_PARAM_KEY,
+    E2A_RESPONSE_KINDS,
     E2A_RESPONSE_KIND_A2A_MESSAGE,
     E2A_RESPONSE_KIND_A2A_STREAM_EVENT,
     E2A_RESPONSE_KIND_A2A_TASK,
@@ -30,5 +47,44 @@ from gateway_protocol.e2a.constants import (  # noqa: F401 — import * 不带�
     E2A_WIRE_SERVER_PUSH_KEY,
 )
 
-# Host-owned (develop): not yet in gateway_protocol; Gateway writes, AgentServer ConfigAdapter reads.
+#: 登录会话 id 的请求参数键（models.list 等读模型清单的 RPC 用）。Gateway 从
+#: 受认证的 WS 连接属性写入、AgentServer 侧 ConfigAdapter 消费后构造 ws 上下文；
+#: 客户端传来的该键一律由 Gateway 先删（与 ``_model_auth`` 同款硬规则）。
 E2A_AUTH_SESSION_PARAM_KEY = "_jiuwen_auth_session"
+
+__all__ = [
+    "ACP_AGENT_TO_CLIENT_METHODS",
+    "ACP_CLIENT_TO_AGENT_METHODS",
+    "ACP_NOTIFICATION_NAMES",
+    "ACP_SESSION_UPDATE_KINDS",
+    "E2A_A2A_STREAM_BRANCHES",
+    "E2A_AUTH_SESSION_PARAM_KEY",
+    "E2A_CANCEL_SOURCE_CLIENT_DISCONNECT",
+    "E2A_INTERNAL_CANCEL_SOURCE_KEY",
+    "E2A_LOGIN_REQUIRED_HINT_PARAM_KEY",
+    "E2A_MODEL_AUTH_PARAM_KEY",
+    "E2A_RESPONSE_KINDS",
+    "E2A_RESPONSE_KIND_A2A_MESSAGE",
+    "E2A_RESPONSE_KIND_A2A_STREAM_EVENT",
+    "E2A_RESPONSE_KIND_A2A_TASK",
+    "E2A_RESPONSE_KIND_ACP_JSONRPC_ERROR",
+    "E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST",
+    "E2A_RESPONSE_KIND_ACP_PROMPT_RESULT",
+    "E2A_RESPONSE_KIND_ACP_SESSION_UPDATE",
+    "E2A_RESPONSE_KIND_CRON",
+    "E2A_RESPONSE_KIND_E2A_CHUNK",
+    "E2A_RESPONSE_KIND_E2A_COMPLETE",
+    "E2A_RESPONSE_KIND_E2A_ERROR",
+    "E2A_RESPONSE_KIND_EXT",
+    "E2A_RESPONSE_KIND_PLAN_APPROVAL_REQUIRED",
+    "E2A_RESPONSE_STATUS_FAILED",
+    "E2A_RESPONSE_STATUS_IN_PROGRESS",
+    "E2A_RESPONSE_STATUS_SUCCEEDED",
+    "E2A_SOURCE_PROTOCOL_A2A",
+    "E2A_SOURCE_PROTOCOL_ACP",
+    "E2A_SOURCE_PROTOCOL_E2A",
+    "E2A_WIRE_INTERNAL_METADATA_KEYS",
+    "E2A_WIRE_LEGACY_AGENT_CHUNK_KEY",
+    "E2A_WIRE_LEGACY_AGENT_RESPONSE_KEY",
+    "E2A_WIRE_SERVER_PUSH_KEY",
+]

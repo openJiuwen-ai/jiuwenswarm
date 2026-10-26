@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from jiuwenswarm.gateway.extensions.application_host import (
+from gateway.extensions.application_host import (
     application_plugin_manifest,
     iter_websocket_routes,
     mount_application_plugin_http_routes,

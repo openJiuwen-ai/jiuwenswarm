@@ -53,9 +53,9 @@ def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatc
 
     for pkg in (
         "jiuwenswarm",
-        "jiuwenswarm.gateway",
-        "jiuwenswarm.gateway.channel_manager",
-        "jiuwenswarm.gateway.channel_manager.web",
+        "gateway",
+        "gateway.channel_manager",
+        "gateway.channel_manager.web",
     ):
         if pkg not in sys.modules:
             m = ModuleType(pkg)
@@ -63,15 +63,15 @@ def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatc
             monkeypatch.setitem(sys.modules, pkg, m)
 
     # Stub baseline mounts used by web_channel_app.register_http_routes.
-    cfile = ModuleType("jiuwenswarm.gateway.channel_manager.web.container_file_http")
+    cfile = ModuleType("gateway.channel_manager.web.container_file_http")
     cfile.attach_container_file_routes = lambda app, channel: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, cfile.__name__, cfile)
 
-    traj = ModuleType("jiuwenswarm.gateway.channel_manager.web.trajectory_http")
+    traj = ModuleType("gateway.channel_manager.web.trajectory_http")
     traj.attach_trajectory_routes = lambda app, channel: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, traj.__name__, traj)
 
-    auth = ModuleType("jiuwenswarm.gateway.channel_manager.web.web_http_auth")
+    auth = ModuleType("gateway.channel_manager.web.web_http_auth")
     auth.register_auth_routes = lambda app: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, auth.__name__, auth)
 
@@ -87,7 +87,7 @@ def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatc
     common.__path__ = []  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "jiuwenswarm.common", common)
 
-    adapter = ModuleType("jiuwenswarm.gateway.channel_manager.web.ws_connection_adapter")
+    adapter = ModuleType("gateway.channel_manager.web.ws_connection_adapter")
     adapter.StarletteWsAdapter = object  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, adapter.__name__, adapter)
 
@@ -113,9 +113,9 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
 
     for pkg in (
         "jiuwenswarm",
-        "jiuwenswarm.gateway",
-        "jiuwenswarm.gateway.channel_manager",
-        "jiuwenswarm.gateway.channel_manager.web",
+        "gateway",
+        "gateway.channel_manager",
+        "gateway.channel_manager.web",
         "jiuwenswarm.common",
         "jiuwenswarm.common.security",
         "jiuwenswarm.extensions",
@@ -125,15 +125,15 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
             m.__path__ = []  # type: ignore[attr-defined]
             monkeypatch.setitem(sys.modules, pkg, m)
 
-    cfile = ModuleType("jiuwenswarm.gateway.channel_manager.web.container_file_http")
+    cfile = ModuleType("gateway.channel_manager.web.container_file_http")
     cfile.attach_container_file_routes = lambda app, channel: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, cfile.__name__, cfile)
 
-    traj = ModuleType("jiuwenswarm.gateway.channel_manager.web.trajectory_http")
+    traj = ModuleType("gateway.channel_manager.web.trajectory_http")
     traj.attach_trajectory_routes = lambda app, channel: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, traj.__name__, traj)
 
-    auth = ModuleType("jiuwenswarm.gateway.channel_manager.web.web_http_auth")
+    auth = ModuleType("gateway.channel_manager.web.web_http_auth")
     auth.register_auth_routes = lambda app: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, auth.__name__, auth)
 
@@ -143,7 +143,7 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     sec.is_origin_check_enabled = lambda: False  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, sec.__name__, sec)
 
-    adapter = ModuleType("jiuwenswarm.gateway.channel_manager.web.ws_connection_adapter")
+    adapter = ModuleType("gateway.channel_manager.web.ws_connection_adapter")
     adapter.StarletteWsAdapter = object  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, adapter.__name__, adapter)
 
@@ -153,12 +153,12 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     monkeypatch.setitem(sys.modules, ext_host.__name__, ext_host)
 
     # Stub dispatch before loading web_http_routes.
-    dispatch_mod = ModuleType("jiuwenswarm.gateway.channel_manager.web.web_http_dispatch")
+    dispatch_mod = ModuleType("gateway.channel_manager.web.web_http_dispatch")
     dispatch_mod.dispatch_http_request = MagicMock()  # type: ignore[attr-defined]
     dispatch_mod._trust_client_tenant_headers = lambda client_host=None: True  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, dispatch_mod.__name__, dispatch_mod)
 
-    routes_pkg = ModuleType("jiuwenswarm.gateway.channel_manager.web.http_routes")
+    routes_pkg = ModuleType("gateway.channel_manager.web.http_routes")
     routes_pkg.__path__ = []  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, routes_pkg.__name__, routes_pkg)
     share_jobs = ModuleType(routes_pkg.__name__ + ".share_jobs")
@@ -166,24 +166,24 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     monkeypatch.setitem(sys.modules, share_jobs.__name__, share_jobs)
 
     # File behavior has separate tests against the AgentServer adapter.
-    files = ModuleType("jiuwenswarm.gateway.channel_manager.web.enterprise_files")
+    files = ModuleType("gateway.channel_manager.web.enterprise_files")
     files.register_enterprise_file_routes = lambda app, channel: None
     monkeypatch.setitem(sys.modules, files.__name__, files)
     monkeypatch.delenv("GATEWAY_IDENTITY_HTTP_URL", raising=False)
     monkeypatch.delenv("GATEWAY_MANAGER_HTTP_URL", raising=False)
 
     mapped = _load_module(
-        "jiuwenswarm.gateway.channel_manager.web.http_routes.mapped",
+        "gateway.channel_manager.web.http_routes.mapped",
         MAPPED_PATH,
     )
     routes_pkg.mapped_routes_for_edition = mapped.mapped_routes_for_edition  # type: ignore[attr-defined]
     routes_pkg.catalog_entries = mapped.catalog_entries  # type: ignore[attr-defined]
     routes_pkg.WebHttpMappedRoute = mapped.WebHttpMappedRoute  # type: ignore[attr-defined]
 
-    _load_module("jiuwenswarm.gateway.channel_manager.web.web_http_timeouts", TIMEOUTS_PATH)
-    _load_module("jiuwenswarm.gateway.channel_manager.web.outbound", OUTBOUND_PATH)
+    _load_module("gateway.channel_manager.web.web_http_timeouts", TIMEOUTS_PATH)
+    _load_module("gateway.channel_manager.web.outbound", OUTBOUND_PATH)
     web_http = _load_module(
-        "jiuwenswarm.gateway.channel_manager.web.web_http_routes",
+        "gateway.channel_manager.web.web_http_routes",
         HTTP_PATH,
     )
 

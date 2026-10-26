@@ -10,7 +10,9 @@ import { useDesignerChatStore } from '../designerChatStore';
 import { seedDesignerChatHistory } from '../designerEntry';
 import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
 import { isDesignerModerationError } from '../designerRunView';
+import { DESIGNER_UPLOAD_TOO_LARGE } from '../designerAssetUrl';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+import { bindDesignerExclusivePlayback } from '../designerMediaPlayback';
 import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
@@ -239,8 +241,14 @@ export function DesignerPage({
     showCanvas && !bootstrapInProgress && !isDesignerPreviewGraph(domainGraph);
   const editingLocked = useDesignerGraphEditingLocked();
 
+  // The canvas has three independent players (node cards, the material viewer
+  // which autoplays, the revision chooser). Keep exactly one of them audible so
+  // opening the viewer never overlaps a running node preview (#5411).
+  const pageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => bindDesignerExclusivePlayback(pageRef.current), []);
+
   return (
-    <div className="designer-page app-section" data-testid="designer-page">
+    <div className="designer-page app-section" data-testid="designer-page" ref={pageRef}>
       <div className="designer-page__main">
         <header className="designer-page__toolbar" data-testid="designer-page-toolbar">
           {onToggleSidebarCollapse ? (
@@ -325,7 +333,11 @@ export function DesignerPage({
             data-testid="designer-run-error-toast"
           >
             <div className="designer-error-toast" role="alert" data-testid="designer-error" title={runError}>
-              {isDesignerModerationError(runError) ? t('designer.run.moderationBlocked') : runError}
+              {runError === DESIGNER_UPLOAD_TOO_LARGE
+                ? t('designer.dock.uploadTooLarge')
+                : isDesignerModerationError(runError)
+                  ? t('designer.run.moderationBlocked')
+                  : runError}
             </div>
           </div>
         ) : null}

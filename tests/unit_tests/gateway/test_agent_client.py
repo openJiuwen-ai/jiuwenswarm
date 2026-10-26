@@ -14,8 +14,8 @@ from jiuwenswarm.common.e2a.wire_codec import (
 )
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from jiuwenswarm.gateway.routing import agent_client
-from jiuwenswarm.gateway.routing.agent_client import (
+from gateway.routing import agent_client
+from gateway.routing.agent_client import (
     AgentServerUnaryTimeout,
     WebSocketAgentServerClient,
 )
@@ -123,7 +123,7 @@ class ReconnectingAgentClientHarness(AgentClientHarness):
         self.connect_calls: list[str] = []
         self.reconnected_ws = FakeWebSocket()
 
-    async def connect(self, uri: str) -> None:
+    async def connect(self, uri: str, extra_headers=None) -> None:
         self.connect_calls.append(uri)
         self._uri = uri
         self._ws = self.reconnected_ws
@@ -237,7 +237,7 @@ async def test_send_request_stream_keeps_tail_window_for_processing_status(monke
     client.set_ws_for_test(FakeWebSocket())
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.agent_client._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
+        "gateway.routing.agent_client._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
         0.05,
     )
 
@@ -311,7 +311,7 @@ async def test_send_request_stream_absorbs_duplicate_complete_frames(monkeypatch
     client.set_ws_for_test(FakeWebSocket())
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.agent_client._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
+        "gateway.routing.agent_client._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
         0.05,
     )
 
@@ -436,7 +436,7 @@ async def test_message_receiver_loop_stops_on_closed_websocket():
 
 @pytest.mark.asyncio
 async def test_message_receiver_loop_logs_close_diagnostics(caplog):
-    target_logger = logging.getLogger("jiuwenswarm.gateway.routing.agent_client")
+    target_logger = logging.getLogger("gateway.routing.agent_client")
     target_logger.addHandler(caplog.handler)
     caplog.set_level(logging.INFO, logger=target_logger.name)
 
@@ -675,7 +675,7 @@ async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(cap
     防串线的既定取舍：超时后旧请求的响应可能迟到，放行会串进复用同 rid 的
     新等待者。与正常完成路径（不立标记）相区分。
     """
-    target_logger = logging.getLogger("jiuwenswarm.gateway.routing.agent_client")
+    target_logger = logging.getLogger("gateway.routing.agent_client")
     target_logger.addHandler(caplog.handler)
     caplog.set_level(logging.WARNING, logger=target_logger.name)
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.common.auth.model_catalog import LoginModel
-from jiuwenswarm.gateway.cron.models import (
+from gateway.cron.models import (
     CronJob,
     normalize_cron_job_mcp,
     resolve_cron_model,
@@ -411,7 +411,7 @@ async def test_enterprise_cron_model_accepts_library_model_id(
     """企业版核对走企业库 default_model，不认本机 your-model-name。"""
     from types import SimpleNamespace
 
-    from jiuwenswarm.gateway.cron.enterprise_model import resolve_enterprise_cron_model
+    from gateway.cron.enterprise_model import resolve_enterprise_cron_model
     from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
 
     async def _fake_load(request, slots):
@@ -472,7 +472,7 @@ async def test_enterprise_cron_model_rejects_unknown(
 ) -> None:
     from types import SimpleNamespace
 
-    from jiuwenswarm.gateway.cron.enterprise_model import resolve_enterprise_cron_model
+    from gateway.cron.enterprise_model import resolve_enterprise_cron_model
     from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
 
     async def _fake_load(request, slots):

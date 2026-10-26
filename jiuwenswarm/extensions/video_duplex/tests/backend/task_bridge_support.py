@@ -7,13 +7,17 @@ import pytest
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-from jiuwenswarm.extensions.video_duplex.backend.tasks import bridge
+from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import (
+    GatewayTaskEndpoint,
+    handle_checkpoint_push,
+)
+from jiuwenswarm.server.runtime.video_task import bridge
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
 
 class LocalCheckpoint:
     def __init__(self, store, task):
-        self.gateway = bridge.GatewayTaskEndpoint(store)
+        self.gateway = GatewayTaskEndpoint(store)
         self.identity = {
             **self.gateway.binding(task), "owner": task["owner"],
             "session_id": task["core_session_id"], "request_id": task["request_id"],
@@ -34,13 +38,13 @@ def install_bridge(monkeypatch, store=None, request=None):
     async def push(message):
         wire = build_server_push_wire(message)
         chunk = parse_agent_server_wire_chunk(wire)
-        return await bridge.handle_checkpoint_push(
+        return await handle_checkpoint_push(
             SimpleNamespace(send_request=acknowledge), chunk, wire.get("session_id")
         )
 
     monkeypatch.setattr(bridge, "send_runtime_push", push)
     if store is not None:
-        endpoint = bridge.GatewayTaskEndpoint(store)
+        endpoint = GatewayTaskEndpoint(store)
         with store.transaction() as db:
             task = next(t for t in store.rows(db) if t["request_id"] == request.request_id)
         request.params = {"managed_task_binding": endpoint.binding(task)}

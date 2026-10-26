@@ -965,7 +965,7 @@ class TestCleanupStaleOpenjiuwenDescs:
         "relative_path",
         (
             "jiuwenswarm/app.py",
-            "jiuwenswarm/gateway/app_gateway.py",
+            "gateway/app_gateway.py",
         ),
     )
     def test_startup_entrypoints_clean_before_openjiuwen_import(relative_path):
@@ -981,55 +981,66 @@ class TestCleanupStaleOpenjiuwenDescs:
         if openjiuwen_imports:
             assert cleanup_call < min(openjiuwen_imports)
 
-    @staticmethod
-    def test_agentserver_runtime_backend_cleans_before_openjiuwen_import():
-        """Front defers OpenJiuwen; Runtime backend must still clean first."""
-        root = Path(__file__).resolve().parents[2]
-        source = (root / "jiuwenswarm" / "server" / "worker" / "lifecycle.py").read_text(
-            encoding="utf-8"
-        )
-        tree = ast.parse(source)
-        func = next(
-            node
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "_preload_runtime_backend"
-        )
-        cleanup_lineno: int | None = None
-        openjiuwen_lineno: int | None = None
-        for node in ast.walk(func):
-            if isinstance(node, ast.Call):
-                name = None
-                if isinstance(node.func, ast.Name):
-                    name = node.func.id
-                elif isinstance(node.func, ast.Attribute):
-                    name = node.func.attr
-                if name == "prepare_runtime_workspace":
-                    keywords = {kw.arg: kw.value for kw in node.keywords}
-                    flag = keywords.get("cleanup_stale_descs")
-                    if isinstance(flag, ast.Constant) and flag.value is True:
-                        cleanup_lineno = node.lineno
-                if (
-                    isinstance(node.func, ast.Name)
-                    and node.func.id == "_configure_openjiuwen_logging"
-                ):
-                    openjiuwen_lineno = (
-                        node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
-                    )
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                "openjiuwen"
-            ):
-                openjiuwen_lineno = (
-                    node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
-                )
-            if isinstance(node, ast.Import):
-                if any(
-                    alias.name == "openjiuwen" or alias.name.startswith("openjiuwen.")
-                    for alias in node.names
-                ):
-                    openjiuwen_lineno = (
-                        node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
-                    )
-        assert cleanup_lineno is not None
-        assert openjiuwen_lineno is not None
-        assert cleanup_lineno < openjiuwen_lineno
+    @pytest.mark.parametrize("workspace_ready", [False, True])
+    def test_agentserver_runtime_backend_cleans_before_openjiuwen_import(monkeypatch, workspace_ready):
+        """Cleanup precedes SDK readers; a prepared workspace avoids duplicate repair."""
+        from jiuwenswarm.server.worker import runtime_backend
+
+        stages = []
+        monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", "1" if workspace_ready else "0")
+        monkeypatch.setattr(utils, "cleanup_stale_openjiuwen_descs", lambda: stages.append("cleanup"))
+
+        def prepare(stage):
+            assert ("cleanup" in stages) is not workspace_ready
+            stages.append(stage)
+
+        def configure_logging():
+            assert {"config", "sdk"}.issubset(stages)
+            stages.append("logging")
+
+        def apply_patches():
+            assert stages[-1] == "logging"
+            stages.append("patches")
+
+        monkeypatch.setattr(runtime_backend, "_prepare_worker_configuration", lambda: prepare("config"))
+        monkeypatch.setattr(runtime_backend, "_preload_sdk_execution_modules", lambda: prepare("sdk"))
+        monkeypatch.setattr(runtime_backend, "_configure_openjiuwen_logging", configure_logging)
+        monkeypatch.setattr(runtime_backend, "_apply_runtime_entry_patches", apply_patches)
+
+        runtime_backend.preload_runtime_backend()
+
+        assert stages.count("cleanup") == (0 if workspace_ready else 1)
+        assert stages[-2:] == ["logging", "patches"]
+
+
+def test_gateway_logger_propagates_into_jiuwenswarm_handlers(tmp_path, monkeypatch):
+    """M0-c 回归守护：顶层 gateway 包的日志必须仍能到达 jiuuwenswarm 的 handler。
+
+    gateway 升为顶层包后 ``logging.getLogger("gateway.x")`` 不再是
+    ``jiuwenswarm`` 的子 logger——setup_logger 显式 reparent，此测试
+    断言 gateway 日志仍被 jiuwenswarm 树的 handler 捕获（否则
+    gateway.log / 控制台全部丢日志）。
+    """
+    import logging
+
+    from jiuwenswarm.common.utils import setup_logger
+
+    root = setup_logger("INFO")
+    captured: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.name)
+
+    capture = _Capture()
+    logging.getLogger("jiuwenswarm").addHandler(capture)
+    try:
+        logging.getLogger("gateway.app_gateway").warning("gateway log routed?")
+        logging.getLogger("gateway.channel_manager.web.app_web_handlers").warning("nested routed?")
+    finally:
+        logging.getLogger("jiuwenswarm").removeHandler(capture)
+        capture.close()
+
+    assert "gateway.app_gateway" in captured
+    assert "gateway.channel_manager.web.app_web_handlers" in captured
+    del root

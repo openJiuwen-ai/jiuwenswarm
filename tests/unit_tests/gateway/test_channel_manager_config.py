@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+from gateway.channel_manager.channel_manager import ChannelManager
 
 
 class _MessageHandler:

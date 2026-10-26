@@ -8,27 +8,27 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.gateway.config.channel.access import (
+from gateway.config.channel.access import (
     clear_channel_config_repository,
     get_channel_config_repository,
 )
-from jiuwenswarm.gateway.config.enterprise.catalog import ENTERPRISE_RECORD_STORE_NAMES
-from jiuwenswarm.gateway.config.logging.access import (
+from gateway.config.enterprise.catalog import ENTERPRISE_RECORD_STORE_NAMES
+from gateway.config.logging.access import (
     clear_logging_config_repository,
     get_logging_config_repository,
 )
-from jiuwenswarm.gateway.config.permissions.access import (
+from gateway.config.permissions.access import (
     clear_permissions_config_repository,
     get_permissions_config_repository,
 )
-from jiuwenswarm.gateway.routing.session_map_access import (
+from gateway.routing.session_map_access import (
     clear_session_map_repository,
     get_session_map_repository,
 )
-from jiuwenswarm.gateway.storage.access import clear_persistent_store, get_persistent_store
-from jiuwenswarm.gateway.storage.backends.memory_ephemeral import MemoryEphemeralBackend
-from jiuwenswarm.gateway.storage.context import StorageContext
-from jiuwenswarm.gateway.storage_assembly.setup import (
+from gateway.storage.access import clear_persistent_store, get_persistent_store
+from gateway.storage.backends.memory_ephemeral import MemoryEphemeralBackend
+from gateway.storage.context import StorageContext
+from gateway.storage_assembly.setup import (
     create_channel_config_repository,
     create_enterprise_record_repositories,
     create_logging_config_repository,
@@ -177,7 +177,7 @@ async def test_setup_wires_and_teardown(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.delenv("GATEWAY_SESSION_MAP_REPOSITORY", raising=False)
     ctx = _test_ctx()
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.storage_assembly.setup.create_gateway_storage_context",
+        "gateway.storage_assembly.setup.create_gateway_storage_context",
         lambda cfg=None: ctx,
     )
     wired = await setup_gateway_storage_repositories({})
@@ -214,7 +214,7 @@ async def test_start_gateway_storage_skips_personal(
         return _test_ctx()
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.storage_assembly.setup.setup_gateway_storage_repositories",
+        "gateway.storage_assembly.setup.setup_gateway_storage_repositories",
         _setup,
     )
     assert await start_gateway_storage({}) is None
@@ -232,7 +232,7 @@ async def test_start_gateway_storage_wires_enterprise(
     monkeypatch.delenv("GATEWAY_SESSION_MAP_REPOSITORY", raising=False)
     ctx = _test_ctx()
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.storage_assembly.setup.create_gateway_storage_context",
+        "gateway.storage_assembly.setup.create_gateway_storage_context",
         lambda cfg=None: ctx,
     )
     wired = await start_gateway_storage({})
@@ -243,10 +243,10 @@ async def test_start_gateway_storage_wires_enterprise(
         assert get_logging_config_repository() is not None
         assert get_session_map_repository() is not None
         assert get_persistent_store() is not None
-        from jiuwenswarm.gateway.config.enterprise.access import (
+        from gateway.config.enterprise.access import (
             get_enterprise_record_repository,
         )
-        from jiuwenswarm.gateway.config.memory.access import (
+        from gateway.config.memory.access import (
             get_memory_config_repository,
         )
 

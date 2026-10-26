@@ -53,7 +53,8 @@ export function validateModelDraft(
   const account = value.vendor_selection === OPENAI_ACCOUNT_SELECTION;
   const preset = findVendorPreset(catalog, value.vendor_selection);
 
-  if (alias.length > 100) errors.alias = t('config.modelList.aliasTooLong');
+  if (!alias) errors.alias = t('settingsPanel.models.validation.aliasRequired');
+  else if (alias.length > 100) errors.alias = t('config.modelList.aliasTooLong');
 
   if (!value.vendor_selection) {
     errors.vendor_selection = t('settingsPanel.models.validation.vendorSelectionRequired');
@@ -91,11 +92,10 @@ export function validateModelDraft(
 
   const identity = normalizeEditingIdentity(editingSelf);
   const others = models.filter((model) => model.is_agentos !== true && !isEditingSelf(model, identity));
-  if (
-    alias &&
-    !errors.alias &&
-    others.some((model) => model.alias?.trim() === alias || model.model_name.trim() === alias)
-  ) {
+  // Uniqueness is among explicit display names (alias) only. Empty-alias historical
+  // rows still fall back to model_name in the UI, but must not block editing peers that
+  // share the same model_name when the draft alias was only seeded from model_name.
+  if (alias && !errors.alias && others.some((model) => model.alias?.trim() === alias)) {
     errors.alias = t('settingsPanel.models.validation.aliasConflict');
   }
   if (!errors.model_name && others.some((model) => model.alias?.trim() === modelName)) {

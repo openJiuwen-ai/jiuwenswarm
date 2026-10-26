@@ -265,6 +265,39 @@ def test_windows_activation_validates_preserved_sdk_before_import(monkeypatch, t
         assert str(target) in runtime.sys.path
 
 
+def test_activate_runtime_paths_is_noop_outside_frozen_apps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Source/dev environments have no managed runtimes; sys.path stays put."""
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: False)
+    monkeypatch.setattr(runtime, "_is_frozen_macos", lambda: False)
+    original_path = list(runtime.sys.path)
+    monkeypatch.setattr(runtime.sys, "path", list(original_path))
+
+    runtime.activate_external_cli_runtime_paths()
+
+    assert runtime.sys.path == original_path
+
+
+def test_activate_runtime_paths_swallows_unexpected_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Activation is best-effort: a broken runtime must not break the caller."""
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(runtime, "_is_frozen_macos", lambda: False)
+
+    def _broken_status(cli_agent: str) -> dict[str, str]:
+        raise TypeError(f"broken runtime status for {cli_agent}")
+
+    monkeypatch.setattr(runtime, "get_external_cli_runtime_status", _broken_status)
+    original_path = list(runtime.sys.path)
+    monkeypatch.setattr(runtime.sys, "path", list(original_path))
+
+    runtime.activate_external_cli_runtime_paths()
+
+    assert runtime.sys.path == original_path
+
+
 def test_elevated_installer_timeout_terminates_started_process() -> None:
     wait_timeouts: list[int] = []
     termination_calls: list[tuple[object, int]] = []

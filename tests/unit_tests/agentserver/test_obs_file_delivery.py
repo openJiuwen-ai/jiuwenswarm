@@ -20,7 +20,7 @@ from jiuwenswarm.agents.harness.common.tools.web_file_download import (
 )
 from jiuwenswarm.common.obs_files import AttachmentStore, DOWNLOAD_TTL_SECONDS
 from jiuwenswarm.common.utils import build_tenant_key
-from jiuwenswarm.gateway.channel_manager.web.enterprise_files import (
+from gateway.channel_manager.web.enterprise_files import (
     register_enterprise_file_routes,
     serve_object_download,
 )

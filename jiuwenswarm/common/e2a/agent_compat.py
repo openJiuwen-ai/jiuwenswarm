@@ -7,8 +7,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from gateway_protocol.e2a.gateway_normalize import E2A_INTERNAL_CONTEXT_KEY
-from gateway_protocol.e2a.models import E2AEnvelope
+from jiuwenswarm.common.e2a.gateway_normalize import E2A_INTERNAL_CONTEXT_KEY
+from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.request_identity import (
     apply_routing_metadata,
     web_routing_identity,

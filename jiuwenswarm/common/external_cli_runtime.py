@@ -264,7 +264,12 @@ def _runtime_site_packages(cli_agent: str) -> Path:
 
 
 def activate_external_cli_runtime_paths() -> None:
-    """Expose optional runtime directories before business modules are imported."""
+    """Expose optional runtime directories before business modules are imported.
+
+    Never raises: activation serves an optional capability, so any unexpected
+    failure is logged at warning level and treated as the optional SDKs being
+    unavailable rather than propagated to the caller.
+    """
     if not (_is_frozen_windows() or _is_frozen_macos()):
         return
     try:
@@ -274,26 +279,29 @@ def activate_external_cli_runtime_paths() -> None:
         # the same manifest error to the user.
         logger.warning("Optional external CLI runtimes are unavailable: %s", exc)
         return
-    for cli_agent in cli_agents:
-        site_packages = _runtime_site_packages(cli_agent)
-        # Preserved SDKs can belong to a different release. Never expose an
-        # incompatible or incomplete runtime to provider imports.
-        try:
-            if _is_frozen_windows() and get_external_cli_runtime_status(cli_agent)["runtime_state"] != "current":
+    try:
+        for cli_agent in cli_agents:
+            site_packages = _runtime_site_packages(cli_agent)
+            # Preserved SDKs can belong to a different release. Never expose an
+            # incompatible or incomplete runtime to provider imports.
+            try:
+                if _is_frozen_windows() and get_external_cli_runtime_status(cli_agent)["runtime_state"] != "current":
+                    continue
+                site_packages.mkdir(parents=True, exist_ok=True)
+            except (OSError, RuntimeError) as exc:
+                logger.debug(
+                    "Failed to activate optional %s runtime directory %s: %s",
+                    cli_agent,
+                    site_packages,
+                    exc,
+                )
                 continue
-            site_packages.mkdir(parents=True, exist_ok=True)
-        except (OSError, RuntimeError) as exc:
-            logger.debug(
-                "Failed to activate optional %s runtime directory %s: %s",
-                cli_agent,
-                site_packages,
-                exc,
-            )
-            continue
-        site_packages_text = str(site_packages)
-        if site_packages_text not in sys.path:
-            sys.path.append(site_packages_text)
-    importlib.invalidate_caches()
+            site_packages_text = str(site_packages)
+            if site_packages_text not in sys.path:
+                sys.path.append(site_packages_text)
+        importlib.invalidate_caches()
+    except Exception:  # noqa: BLE001 - optional capability must not break the caller
+        logger.warning("Managed external CLI runtime activation failed", exc_info=True)
 
 
 def install_external_cli_runtime(

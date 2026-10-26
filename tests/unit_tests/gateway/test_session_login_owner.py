@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth import session_owners
+from gateway.auth import session_owners
 from jiuwenswarm.common.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY, E2A_MODEL_AUTH_PARAM_KEY
-from jiuwenswarm.gateway.message_handler.message_handler import (
+from gateway.message_handler.message_handler import (
     _LOGIN_HINT_NO_OWNER,
     _LOGIN_HINT_OWNER_LOGGED_OUT,
     MessageHandler,
@@ -81,7 +81,7 @@ def test_owner_auth_uses_the_existing_refresh_path(monkeypatch):
         lambda allow_refresh=True: SimpleNamespace(invoke_base_url="https://apig/v1"),
     )
     fresh = {"credential_ref": REF, "api_key": "id-new"}
-    monkeypatch.setattr("jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref", lambda ref: fresh)
+    monkeypatch.setattr("gateway.auth.passthrough.refreshed_credential_for_ref", lambda ref: fresh)
 
     owner = session_owners.SessionOwner(REF, "GLM-5.2")
     assert session_owners.login_auth_for_owner(owner) == {

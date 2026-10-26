@@ -156,7 +156,7 @@ class RootContextRail(DeepAgentRail):
             self._replace(None, None, reason=reason)
             _skip_tool(ctx, reason)
 
-    async def on_tool_exception(self, ctx: AgentCallbackContext) -> None:
+    async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         if not isinstance(getattr(ctx, "exception", None), ToolInterruptException):
             return
         inputs = getattr(ctx, "inputs", None)

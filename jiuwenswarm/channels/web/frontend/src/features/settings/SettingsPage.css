@@ -1346,6 +1346,12 @@
   gap: 8px;
 }
 
+.settings-model-group-route-picker__option-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-model-group-route-picker__icon {
   display: inline-flex;
   flex: none;

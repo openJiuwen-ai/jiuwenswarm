@@ -20,7 +20,7 @@ from jiuwenswarm.extensions.redis.redis_client import RedisConfig
 
 logger = logging.getLogger(__name__)
 
-_GATEWAY_REDIS_EP_GROUP = "jiuwenswarm.gateway.redis"
+_GATEWAY_REDIS_EP_GROUP = "gateway.redis"
 _DEFAULT_GATEWAY_REDIS_EP_NAME = "redis"
 
 

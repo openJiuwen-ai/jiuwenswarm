@@ -28,7 +28,7 @@ from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     assemble_rest_request,
     normalize_agent_http_base,
 )
-from jiuwenswarm.gateway.routing.agent_client import (
+from gateway.routing.agent_client import (
     AGENT_REQUEST_TIMEOUT_SECONDS,
     AgentServerClient,
 )

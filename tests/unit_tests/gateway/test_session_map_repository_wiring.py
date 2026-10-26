@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.gateway.routing.session_map import SessionMap, SessionMapScope
-from jiuwenswarm.gateway.routing.session_map_access import (
+from gateway.routing.session_map import SessionMap, SessionMapScope
+from gateway.routing.session_map_access import (
     clear_session_map_repository,
     set_session_map_repository,
 )
-from jiuwenswarm.gateway.routing.session_map_repository import (
+from gateway.routing.session_map_repository import (
     Session,
     SessionMapRepository,
 )
@@ -55,7 +55,7 @@ def _clear_repo():
 
 def test_session_map_uses_repository_when_injected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.session_map.get_checkpoint_dir",
+        "gateway.routing.session_map.get_checkpoint_dir",
         lambda: tmp_path,
     )
     store = _DictPersistentStore()
@@ -78,7 +78,7 @@ def test_session_map_falls_back_to_json_without_repository(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.session_map.get_checkpoint_dir",
+        "gateway.routing.session_map.get_checkpoint_dir",
         lambda: tmp_path,
     )
     sm = SessionMap(scope=SessionMapScope.PER_CHAT_BOT)

@@ -56,6 +56,8 @@ export function ModelNameField({
   const inputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const wasFetching = useRef(fetching);
+  const queryEditVersion = useRef(0);
+  const fetchStartEditVersion = useRef(0);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(value);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -93,9 +95,10 @@ export function ModelNameField({
   }, []);
 
   useEffect(() => {
+    if (fetching && !wasFetching.current) fetchStartEditVersion.current = queryEditVersion.current;
     const refreshCompleted = wasFetching.current && !fetching;
     wasFetching.current = fetching;
-    if (!refreshCompleted || mode === 'manual') return;
+    if (!refreshCompleted || mode === 'manual' || queryEditVersion.current !== fetchStartEditVersion.current) return;
     setQuery('');
     setActiveIndex(Math.max(0, options.indexOf(value)));
     updateMenuPosition();
@@ -211,6 +214,7 @@ export function ModelNameField({
           data-variant="combo"
           onFocus={openMenu}
           onChange={(event) => {
+            queryEditVersion.current += 1;
             setQuery(event.target.value);
             setOpen(true);
             setActiveIndex(0);

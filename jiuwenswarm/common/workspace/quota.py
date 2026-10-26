@@ -551,7 +551,7 @@ def _pick_policy(
     priority 越小越优先（类似 Unix nice，不是「数值越大越优先」）。
     审批扩容写入 ``priority=-1``，因此恒先于管理员的非负策略。
     """
-    from jiuwenswarm.gateway.config.enterprise.expressions import matches
+    from gateway.config.enterprise.expressions import matches
 
     identity = {"user_id": user_id, "group_id": group_id, "bot_id": bot_id}
     hits: list[tuple[int, dict[str, Any]]] = []

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 
-from jiuwenswarm.gateway.cron.live_bus import CronLiveBus
+from gateway.cron.live_bus import CronLiveBus
 
 
 def test_late_subscriber_replays_cron_final() -> None:

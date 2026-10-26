@@ -108,6 +108,7 @@ _INTERNAL_READONLY_TOOLS = {
     "cron_list_jobs", "cron_get_job", "cron_preview_job",
     "heartbeat_list_jobs", "heartbeat_get_job", "heartbeat_preview_job",
     "read_terminal_output", "wait_for_terminal_exit", "convert_timestamp_to_utc8_time",
+    "tool_search", "skill_index", "list_skill", "get_current_goal", "recall_compressed_context",
 }
 _ASK_USER_TOOLS = {"ask_user"}
 _SKILL_READ_TOOLS = {"skill_tool"}

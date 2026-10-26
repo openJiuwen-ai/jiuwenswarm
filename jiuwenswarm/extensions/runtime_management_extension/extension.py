@@ -13,7 +13,7 @@ from jiuwenswarm.extensions.runtime_management_extension.runtime_routed_client i
 )
 from jiuwenswarm.extensions.sdk.agent_server_client import AgentServerClientExtension
 from jiuwenswarm.extensions.types import ExtensionConfig
-from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
+from gateway.routing.agent_client import AgentServerClient
 
 logger = logging.getLogger(__name__)
 

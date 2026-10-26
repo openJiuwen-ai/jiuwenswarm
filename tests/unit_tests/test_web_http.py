@@ -59,7 +59,7 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
     # Use monkeypatch.setitem so xdist workers restore the real module after
     # this fixture (otherwise later file-api tests ImportError on
     # ``_trust_client_tenant_headers`` from a leftover bare ModuleType stub).
-    dispatch_mod = ModuleType("jiuwenswarm.gateway.channel_manager.web.web_http_dispatch")
+    dispatch_mod = ModuleType("gateway.channel_manager.web.web_http_dispatch")
     dispatch_mock = AsyncMock()
     dispatch_mod.dispatch_http_request = dispatch_mock  # type: ignore[attr-defined]
     dispatch_mod._trust_client_tenant_headers = (  # type: ignore[attr-defined]
@@ -67,16 +67,16 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
     )
     monkeypatch.setitem(
         sys.modules,
-        "jiuwenswarm.gateway.channel_manager.web.web_http_dispatch",
+        "gateway.channel_manager.web.web_http_dispatch",
         dispatch_mod,
     )
 
     # Minimal package parents so relative imports in web_http_routes resolve if any
     for pkg in (
         "jiuwenswarm",
-        "jiuwenswarm.gateway",
-        "jiuwenswarm.gateway.channel_manager",
-        "jiuwenswarm.gateway.channel_manager.web",
+        "gateway",
+        "gateway.channel_manager",
+        "gateway.channel_manager.web",
     ):
         if pkg not in sys.modules:
             m = ModuleType(pkg)
@@ -84,35 +84,35 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
             monkeypatch.setitem(sys.modules, pkg, m)
 
     # http_routes package so the real mapped table can load as a submodule.
-    routes_pkg = ModuleType("jiuwenswarm.gateway.channel_manager.web.http_routes")
+    routes_pkg = ModuleType("gateway.channel_manager.web.http_routes")
     routes_pkg.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["jiuwenswarm.gateway.channel_manager.web.http_routes"] = routes_pkg
+    sys.modules["gateway.channel_manager.web.http_routes"] = routes_pkg
 
     # Real mapped table (no Gateway imports) so routes can be registered.
     _load_module(
-        "jiuwenswarm.gateway.channel_manager.web.http_routes.mapped",
+        "gateway.channel_manager.web.http_routes.mapped",
         ROUTES_PATH,
     )
 
     # web_http_routes also mounts trajectory routes; stub to avoid heavy imports.
-    trajectory = ModuleType("jiuwenswarm.gateway.channel_manager.web.trajectory_http")
+    trajectory = ModuleType("gateway.channel_manager.web.trajectory_http")
     trajectory.attach_trajectory_routes = lambda app, channel: None  # type: ignore[attr-defined]
     monkeypatch.setitem(
         sys.modules,
-        "jiuwenswarm.gateway.channel_manager.web.trajectory_http",
+        "gateway.channel_manager.web.trajectory_http",
         trajectory,
     )
-    diagnosis = ModuleType("jiuwenswarm.gateway.channel_manager.web.diagnose_http")
+    diagnosis = ModuleType("gateway.channel_manager.web.diagnose_http")
     diagnosis.attach_diagnose_routes = lambda app, channel, **kwargs: None
     monkeypatch.setitem(
         sys.modules,
-        "jiuwenswarm.gateway.channel_manager.web.diagnose_http",
+        "gateway.channel_manager.web.diagnose_http",
         diagnosis,
     )
 
     # web_http_routes imports timeout helpers from web_http_timeouts (stdlib-only).
     _load_module(
-        "jiuwenswarm.gateway.channel_manager.web.web_http_timeouts",
+        "gateway.channel_manager.web.web_http_timeouts",
         TIMEOUTS_PATH,
     )
 
@@ -287,9 +287,9 @@ def test_http_sse_outbound_iter_ends_on_history_done():
 
 def test_http_dispatch_registers_outbound_not_ws(monkeypatch: pytest.MonkeyPatch):
     """HTTP path must use request Outbound tables, not register_ws."""
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-    from jiuwenswarm.gateway.channel_manager.web import web_http_dispatch as disp
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from gateway.channel_manager.web import web_http_dispatch as disp
 
     channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
     register_calls: list[Any] = []
@@ -330,9 +330,9 @@ def test_http_dispatch_session_create_emits_resolve_identity(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """session.create + X-User-Id → http_resolve_identity UA。"""
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-    from jiuwenswarm.gateway.channel_manager.web import web_http_dispatch as disp
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from gateway.channel_manager.web import web_http_dispatch as disp
 
     channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
     audit_calls: list[dict[str, Any]] = []
@@ -404,9 +404,9 @@ def test_http_dispatch_session_create_emits_resolve_identity(
 
 def test_http_sse_unregister_on_cancel():
     """Client cancel / stop clears request outbound routing tables."""
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.outbound import HttpSseOutbound
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.outbound import HttpSseOutbound
+    from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
     channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
 

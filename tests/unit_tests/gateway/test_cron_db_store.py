@@ -7,18 +7,18 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.gateway.cron.db_schedule import (
+from gateway.cron.db_schedule import (
     claim_periodic_run,
     datetime_to_db_value,
     should_use_db_schedule,
 )
-from jiuwenswarm.gateway.cron.db_store import (
+from gateway.cron.db_store import (
     GatewayDbCronJobStore,
     _row_to_job,
 )
-from jiuwenswarm.gateway.cron.job_repository import CronJobRepository
-from jiuwenswarm.gateway.cron.models import CronJob
-from jiuwenswarm.gateway.storage.access import (
+from gateway.cron.job_repository import CronJobRepository
+from gateway.cron.models import CronJob
+from gateway.storage.access import (
     clear_persistent_store,
     set_persistent_store,
 )
@@ -232,7 +232,7 @@ async def test_repository_hides_other_tenant(memory_store):
 
 
 def test_enterprise_registry_registers_cron_job_table():
-    from jiuwenswarm.gateway.storage_assembly.layouts import build_gateway_store_registry
+    from gateway.storage_assembly.layouts import build_gateway_store_registry
 
     registry = build_gateway_store_registry()
     layout = registry.get("cron_job")
@@ -269,7 +269,7 @@ async def test_claim_periodic_run_uses_one_row_update(monkeypatch):
         return 1
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.cron.db_schedule._execute_claim_sql",
+        "gateway.cron.db_schedule._execute_claim_sql",
         _fake_execute,
     )
     job = CronJob(
@@ -291,7 +291,7 @@ async def test_claim_periodic_run_uses_one_row_update(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_gateway_factory_picks_store(monkeypatch):
-    from jiuwenswarm.gateway.cron.factory import create_gateway_cron_store
+    from gateway.cron.factory import create_gateway_cron_store
 
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     monkeypatch.delenv("GATEWAY_DB_HOST", raising=False)

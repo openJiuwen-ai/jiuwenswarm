@@ -57,6 +57,22 @@ function createBrowserDownloadService({ openPath, getDownloadsPath, getFileIcon 
   // pending map also dedupes concurrent lookups for the same extension.
   const iconCache = new Map(); // extension (lowercase) -> data URL
   const iconPending = new Map(); // extension -> in-flight lookup promise
+  // Presence cache for the "deleted" marker. pathExists is a sync stat and
+  // list() runs on every coalesced notify tick for up to MAX_DOWNLOAD_RECORDS
+  // completed records — on OneDrive folders, network drives or behind Defender
+  // real-time scanning each stat can take milliseconds, which would stall the
+  // main process every tick. Cache by path; lifecycle events (done/remove) and
+  // fresh-presence listings (IPC, i.e. when the bubble actually opens — the
+  // same moment Chrome re-checks) keep it coherent.
+  const presenceCache = new Map(); // path -> boolean
+  const cachedPathExists = filePath => {
+    let exists = presenceCache.get(filePath);
+    if (exists === undefined) {
+      exists = pathExists(filePath);
+      presenceCache.set(filePath, exists);
+    }
+    return exists;
+  };
   let sequence = 0;
   let notifyTimer = null;
   let notifyCallback = null;
@@ -89,9 +105,8 @@ function createBrowserDownloadService({ openPath, getDownloadsPath, getFileIcon 
   // sharing its path with a newer completed download is superseded: the file
   // on disk was written by that newer download. This keeps a re-download of a
   // deleted filename from "reviving" the older, already-deleted record.
-  const isFileMissing = record => {
-    if (typeof pathExists === 'function' && !pathExists(record.path)) return true;
-    const index = records.indexOf(record);
+  const isFileMissing = (record, index = records.indexOf(record)) => {
+    if (typeof pathExists === 'function' && !cachedPathExists(record.path)) return true;
     for (let before = 0; before < index; before += 1) {
       const newer = records[before];
       if (newer.state === 'completed' && newer.path === record.path) return true;
@@ -99,12 +114,15 @@ function createBrowserDownloadService({ openPath, getDownloadsPath, getFileIcon 
     return false;
   };
 
-  const list = () => records.map(record => {
+  // freshPresence: bypass the presence cache so IPC-driven listings (bubble
+  // open, panel mount) re-check the filesystem, like Chrome re-checking when
+  // its UI opens. The coalesced-notify path uses the default cached listing.
+  const list = ({ freshPresence = false } = {}) => records.map((record, index) => {
     const copy = { ...record };
-    // Chrome-style "deleted" marker, freshly computed on every listing — never
-    // persisted, never cached.
+    // Chrome-style "deleted" marker — runtime-only, never persisted.
     if (copy.state === 'completed' && copy.path) {
-      copy.fileMissing = isFileMissing(record);
+      if (freshPresence) presenceCache.delete(record.path);
+      copy.fileMissing = isFileMissing(record, index);
     }
     return copy;
   });
@@ -227,6 +245,8 @@ function createBrowserDownloadService({ openPath, getDownloadsPath, getFileIcon 
         syncRecordProgress(record, item);
         record.state = readItem(item, () => item.getState()) || 'interrupted';
         record.endTime = Date.now();
+        // The file just landed on (or vanished from) disk; re-check next list.
+        presenceCache.delete(record.path);
         // Finished downloads accept no further pause/resume/cancel actions.
         itemsById.delete(record.id);
         scheduleNotify();
@@ -260,6 +280,8 @@ function createBrowserDownloadService({ openPath, getDownloadsPath, getFileIcon 
   const openDownload = async downloadId => {
     const record = records.find(entry => entry.id === String(downloadId));
     if (!record?.path || record.state !== 'completed') return false;
+    // User-initiated action: bypass the presence cache for the current state.
+    presenceCache.delete(record.path);
     if (isFileMissing(record)) return false;
     const message = await openPath(record.path);
     return !message;
@@ -269,6 +291,8 @@ function createBrowserDownloadService({ openPath, getDownloadsPath, getFileIcon 
   const revealInFolder = downloadId => {
     const record = records.find(entry => entry.id === String(downloadId));
     if (!record?.path || record.state !== 'completed') return false;
+    // User-initiated action: bypass the presence cache for the current state.
+    presenceCache.delete(record.path);
     if (isFileMissing(record)) return false;
     if (typeof showInFolder !== 'function') return false;
     showInFolder(record.path);
@@ -286,6 +310,7 @@ function createBrowserDownloadService({ openPath, getDownloadsPath, getFileIcon 
     const id = String(downloadId);
     const index = records.findIndex(entry => entry.id === id);
     if (index < 0 || itemsById.has(id)) return false;
+    presenceCache.delete(records[index].path);
     records.splice(index, 1);
     scheduleNotify();
     return true;

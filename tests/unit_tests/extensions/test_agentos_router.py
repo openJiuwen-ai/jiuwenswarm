@@ -451,7 +451,7 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
 
 @pytest.mark.asyncio
 async def test_web_moa_status_routes_to_authenticated_user_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+    from gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
 
     yuanrong = FakeYuanRongClient()
     manager = AgentManager()
@@ -1621,7 +1621,7 @@ async def test_idle_reaper_task_lifecycle_on_connect_disconnect() -> None:
 
 @pytest.mark.asyncio
 async def test_unsupported_third_agent_returns_unsupported() -> None:
-    from jiuwenswarm.gateway.routing.third_agent import get_unsupported_third_agent
+    from gateway.routing.third_agent import get_unsupported_third_agent
 
     third = get_unsupported_third_agent()
     listed = await third.thirdagent_list(user_id="u1", current_agent_type="jiuwenswarm")

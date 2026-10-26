@@ -153,7 +153,7 @@ async def test_obs_import_strips_url_and_rejects_other_scope(app, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_file_routes_registered(app):
-    from jiuwenswarm.gateway.channel_manager.web.http_routes.mapped import (
+    from gateway.channel_manager.web.http_routes.mapped import (
         WORKSPACE_FILE_ROUTES,
     )
 

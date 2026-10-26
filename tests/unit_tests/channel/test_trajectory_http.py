@@ -28,8 +28,8 @@ import uvicorn
 from fastapi import FastAPI
 
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
-from jiuwenswarm.gateway.channel_manager.web import trajectory_http
-from jiuwenswarm.gateway.channel_manager.web.trajectory_http import (
+from gateway.channel_manager.web import trajectory_http
+from gateway.channel_manager.web.trajectory_http import (
     TRAJECTORY_API_PREFIX,
     TRAJECTORY_ARCHIVE_ENTRY_NAME,
     TrajectoryHttpService,
