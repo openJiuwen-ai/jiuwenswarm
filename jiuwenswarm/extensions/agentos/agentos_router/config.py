@@ -375,7 +375,9 @@ def _load_probe_settings(agentos: Mapping[str, Any]) -> RuntimeProbeSettings:
     return settings
 
 
-def load_router_config(config: dict[str, Any]) -> RouterConfig:
+def load_router_config(
+    config: dict[str, Any], *, require_frontend_endpoint: bool = True,
+) -> RouterConfig:
     agent_client = read_mapping_path(config, "gateway", "agent_client")
     agentos = read_mapping_path(config, "gateway", "agentos")
     registry = read_mapping_path(config, "gateway", "agentos", "registry")
@@ -384,7 +386,9 @@ def load_router_config(config: dict[str, Any]) -> RouterConfig:
     function_version_urn = str(
         agent_client.get("function_version_urn") or ""
     ).strip()
-    if not frontend_endpoint or not function_version_urn:
+    if require_frontend_endpoint and (
+        not frontend_endpoint or not function_version_urn
+    ):
         raise ValueError(
             "gateway.agent_client.frontend_endpoint and function_version_urn "
             "are required in agentos_router mode"

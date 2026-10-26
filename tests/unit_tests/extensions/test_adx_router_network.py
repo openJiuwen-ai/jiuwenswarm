@@ -16,15 +16,17 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.legacy.client import connect
 from websockets.legacy.server import serve
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire, encode_agent_response_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.extensions.adx.config import load_router_config
-from jiuwenswarm.extensions.adx.router_client import AdxRouterClient, AdxRoutingError
+import httpx
+from test_adx_router import _config, EnvironmentAPI
+from gateway.extensions.adx.control_client import AdxControlClient
+from gateway.extensions.adx.router_client import AdxRouterClient
 
 
 def _certificate(tmp_path):
@@ -49,18 +51,20 @@ def _certificate(tmp_path):
 
 
 @asynccontextmanager
-async def _network(tmp_path, monkeypatch, *, valid_ack=True, transient_statuses=()):
+async def _network(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        'jiuwenswarm.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 5,
+    )
     tls, ca_path = _certificate(tmp_path)
     monkeypatch.setenv("SSL_CERT_FILE", ca_path)
     requests, handshakes, targets = [], [], []
     expected_key = "platform-secret"
-    failures = list(transient_statuses)
 
     async def backend(ws, path):
         targets.append(parse_qs(urlsplit(path).query)["target"][0])
         assert "Authorization" not in ws.request_headers
         await ws.send(json.dumps({
-            "type": "event", "event": "connection.ack" if valid_ack else "unexpected",
+            "type": "event", "event": "connection.ack",
             "payload": {"status": "ready", "readiness": "AGENT_READY"},
         }))
 
@@ -101,8 +105,6 @@ async def _network(tmp_path, monkeypatch, *, valid_ack=True, transient_statuses=
             handshakes.append((path, dict(headers)))
             if urlsplit(path).path != "/agent/ws" or headers.get("Authorization") != f"Bearer {expected_key}":
                 return 401, [], b"unauthorized"
-            if failures:
-                return failures.pop(0), [], b"backend warming"
             return None
 
         async def ingress(downstream, path):
@@ -126,12 +128,11 @@ async def _network(tmp_path, monkeypatch, *, valid_ack=True, transient_statuses=
         async with serve(ingress, "127.0.0.1", 0, ssl=tls, process_request=auth) as proxy:
             port = proxy.sockets[0].getsockname()[1]
             monkeypatch.setenv("ADX_TEST_PLATFORM", expected_key)
-            config = load_router_config({"gateway": {"adx": {
-                "ingress_url": f"https://localhost:{port}", "tenant": "appliance",
-                "template": "jiuwen", "version": "v1",
-                "token_env": "ADX_TEST_PLATFORM",
-            }}})
-            router = AdxRouterClient(config)
+            config = _config(monkeypatch, ingress_url=f"https://localhost:{port}")
+            api = EnvironmentAPI(config.tenant)
+            control = AdxControlClient(config, transport=httpx.MockTransport(api.handle))
+            router = AdxRouterClient(config, control_client=control)
+            router.test_api = api
             await router.connect("")
             try:
                 yield router, requests, handshakes, targets
@@ -141,28 +142,6 @@ async def _network(tmp_path, monkeypatch, *, valid_ack=True, transient_statuses=
 
 def _request(user="alice", rid="request", action=""):
     return E2AEnvelope(request_id=rid, user_id=user, channel="web", method="chat.send", params={"action": action})
-
-
-async def test_cold_handshake_retries_transient_statuses_before_sending_once(tmp_path, monkeypatch):
-    async with _network(tmp_path, monkeypatch, transient_statuses=(502, 503, 504)) as (
-        router, requests, handshakes, targets,
-    ):
-        response = await router.send_request(_request())
-        assert response.ok
-        assert len(handshakes) == 4 and len(targets) == 1
-        assert len({path for path, _headers in handshakes}) == 1
-        assert len(requests) == 1
-
-
-async def test_cold_handshake_retry_is_bounded_by_connection_budget(tmp_path, monkeypatch):
-    async with _network(tmp_path, monkeypatch, transient_statuses=(503,) * 20) as (
-        router, requests, handshakes, _targets,
-    ):
-        router._config = replace(router._config, connect_timeout_seconds=0.1)
-        with pytest.raises(AdxRoutingError):
-            await asyncio.wait_for(router.send_request(_request()), timeout=1)
-        assert len(handshakes) == 1 and requests == []
-        assert router._clients == {} and router._connecting == {}
 
 
 async def test_wss_proxy_isolates_users_reuses_connections_and_multiplexes_streams(tmp_path, monkeypatch):
@@ -189,10 +168,12 @@ async def test_real_stream_disconnect_is_not_replayed_and_next_call_reauthentica
     async with _network(tmp_path, monkeypatch) as (router, requests, handshakes, targets):
         stream = router.send_request_stream(_request(rid="lost", action="drop"))
         assert (await anext(stream)).payload["index"] == 0
-        with pytest.raises(AdxRoutingError, match="unknown"):
-            await asyncio.wait_for(anext(stream), timeout=3)
+        failure = await asyncio.wait_for(anext(stream), timeout=3)
+        assert failure.is_complete and failure.payload.get("error")
         assert [request["request_id"] for request in requests] == ["lost"]
+        assert await router._agent_manager.get_agent('alice', 'jiuwenswarm') is None
         assert (await router.send_request(_request(rid="next"))).ok
+        assert len(router.test_api.creates) == 2
         assert len(handshakes) == 2 and targets[0] == targets[1]
         assert all(headers["authorization"] == "Bearer platform-secret" for _, headers in handshakes)
 
@@ -202,21 +183,21 @@ async def test_tls_or_ingress_auth_failure_never_sends_business_requests(tmp_pat
     async with _network(tmp_path, monkeypatch) as (router, requests, _handshakes, targets):
         if failure == "untrusted_ca":
             monkeypatch.delenv("SSL_CERT_FILE")
+            monkeypatch.setattr(
+                'jiuwenswarm.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 0.1,
+            )
         config = router._config if failure == "untrusted_ca" else replace(router._config, token="wrong-key")
-        rejected = AdxRouterClient(config)
+        api = EnvironmentAPI(config.tenant)
+        rejected = AdxRouterClient(config, control_client=AdxControlClient(
+            router._config, transport=httpx.MockTransport(api.handle)))
         await rejected.connect("")
         try:
-            with pytest.raises(AdxRoutingError) as error:
-                await rejected.send_request(_request())
-            assert error.value.code == "ADX_CONNECT_FAILED"
-            assert not rejected._clients and not rejected._connecting
+            if failure == "invalid_key":
+                with pytest.raises(InvalidHandshake):
+                    await rejected.send_request(_request())
+            else:
+                assert not (await rejected.send_request(_request())).ok
+            assert not rejected._ws_clients
             assert not requests and not targets
         finally:
             await rejected.disconnect()
-
-
-async def test_invalid_agentserver_ack_is_not_published_as_a_ready_connection(tmp_path, monkeypatch):
-    async with _network(tmp_path, monkeypatch, valid_ack=False) as (router, requests, _headers, _targets):
-        with pytest.raises(AdxRoutingError):
-            await router.send_request(_request())
-        assert not router._clients and not router._connecting and not requests

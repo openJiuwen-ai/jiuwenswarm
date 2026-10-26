@@ -183,6 +183,21 @@ def _is_ws_connect_retryable(exc: BaseException) -> bool:
     return False
 
 
+def ws_connect_ready_timeout_seconds() -> float:
+    """Return the shared AgentServer WebSocket readiness deadline."""
+    return _WS_CONNECT_READY_TIMEOUT_SECONDS
+
+
+def ws_connect_retry_interval_seconds() -> float:
+    """Return the shared AgentServer WebSocket retry interval."""
+    return _WS_CONNECT_RETRY_INTERVAL_SECONDS
+
+
+def is_ws_connect_retryable(exc: BaseException) -> bool:
+    """Return whether an AgentServer WebSocket connection can be retried."""
+    return _is_ws_connect_retryable(exc)
+
+
 # AgentServer 请求阶段网络层错误的文本特征：WebSocketAgentServerClient 将
 # 连接断开 / 收包失败 / unary 超时统一包装成 RuntimeError，只能按文本识别。
 _AGENT_NETWORK_ERROR_TEXT_TOKENS = (
