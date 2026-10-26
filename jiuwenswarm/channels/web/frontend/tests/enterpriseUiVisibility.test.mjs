@@ -149,6 +149,16 @@ test('personal keeps its saved mode and can switch among work, code and design',
   }));
 
 const noop = () => {};
+const promptSuggestionBox = {
+  text: null,
+  suggestions: [],
+  accept: noop,
+  acceptForSend: noop,
+  dismiss: noop,
+  takeSubmission: () => ({ settle: noop }),
+  setEnabled: noop,
+  markShown: noop,
+};
 async function withChatTools(edition, run) {
   const stores = [useChatStore, useSessionStore, useAuthStore];
   const previous = stores.map(store => store.getState());
@@ -180,6 +190,7 @@ for (const edition of ['enterprise', 'personal']) {
     let heartbeats = 0;
     useChatStore.getState().addMessage('ui-session-a', { id: 'message-a', role: 'assistant', content: 'test', timestamp: '2026-10-23T00:00:00Z' });
     await render(createElement(ChatPanel, {
+      promptSuggestionBox,
       onSendMessage: noop, onEnsureSession: async () => 'ui-session-a', onForkSession: noop,
       onPersistMedia: async () => ({}), onPersistDocuments: async () => ({}),
       onInterrupt: noop, onCancel: noop, onSwitchMode: noop, onUserAnswer: async () => true,
