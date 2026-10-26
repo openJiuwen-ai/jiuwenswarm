@@ -261,7 +261,9 @@ def build_a2ui_autonomy_instruction(language: str = "en") -> str:
         "with indexed valueMap entries (\"0\", \"1\"); each item contains "
         "nested valueMap fields. Use item-relative paths inside templates "
         "(name, price, or /item/name). Do not nest templates inside "
-        "template-rendered components in A2UI."
+        "template-rendered components in A2UI; flatten repeated item "
+        "details into fields on the outer item, or use explicit child "
+        "components bound to those fields."
         + image_url_rule_en
         + unsupported_component_rule_en
     )
