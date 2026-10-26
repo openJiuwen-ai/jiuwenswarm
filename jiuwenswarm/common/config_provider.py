@@ -150,8 +150,12 @@ def _apply_enterprise_policy(base: dict, loaded: Any) -> dict:
     from jiuwenswarm.agents.harness.common.memory.config import (
         merge_memory_config_into_config,
     )
+    from jiuwenswarm.common.mcp_dynamic_token_patch import apply_dispatched_credentials
 
     merged, _, _ = apply_enterprise_models_and_mcp(base, loaded)
+    # MCP 动态 token 实例凭据：Manager 挂在 Agent 模板 data.custom_config 对象
+    # 数组里，合并时提取并整份替换给动态 token 模块（未携带则清除）。
+    apply_dispatched_credentials(loaded)
     return merge_memory_config_into_config(merged)
 
 
