@@ -92,7 +92,7 @@ def test_filter_inheritable_ability_cards_includes_extended_swarm_tools():
     assert "visual_question_answering" in inherited_names
     assert "audio_question_answering" in inherited_names
     assert "audio_metadata" in inherited_names
-    assert "user_todos" in inherited_names
+    assert "user_todos" not in inherited_names
     assert "enter_worktree" not in inherited_names
     assert "exit_worktree" not in inherited_names
     assert "task_tool" not in inherited_names
