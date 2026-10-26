@@ -106,6 +106,17 @@ def collect_tree_python_modules(source_dir, package_roots):
             modules.append(module_name)
     return sorted(set(modules))
 
+
+# One shared build step for Windows/macOS, pywebview and Electron installers.
+# Native compiler inputs stay on the build machine; the installed app never builds.
+computer_use_source = os.path.join(project_root, "jiuwenswarm", "cua_engine", "src")
+computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))
+computer_use_data = computer_use_build["bundle_data"](Path(project_root))
+computer_use_submodules = (
+    collect_tree_python_modules(computer_use_source, ("computer_use",))
+    + ["jiuwenswarm.cua_engine.runtime"]
+) if computer_use_data else []
+
 try:
     webview_datas = collect_data_files("webview")
 except Exception as exc:
@@ -166,6 +177,7 @@ datas.append((str(_identity_file), "jiuwenswarm"))
 _build_metadata_file = Path(_identity_directory.name, "build-metadata.json")
 build_config_module["write_build_metadata"](_build_metadata_file, build_config.version)
 datas.append((str(_build_metadata_file), "jiuwenswarm/resources"))
+datas += computer_use_data
 _playwright_mcp_resource_dir = os.path.join(
     project_root,
     "jiuwenswarm",
@@ -499,10 +511,10 @@ _bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
 
 a = Analysis(
     [entry_script],
-    pathex=[project_root, symphony_root],
+    pathex=[project_root, symphony_root, computer_use_source],
     binaries=_bundled_binaries,
     datas=datas,
-    hiddenimports=hiddenimports,
+    hiddenimports=hiddenimports + computer_use_submodules,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -615,4 +627,7 @@ if sys.platform == "darwin":
             "CFBundleVersion": build_config.version,
             "NSHighResolutionCapable": "True",
         },
+    )
+    computer_use_build["finalize_macos_bundle"](
+        Path(project_root), Path(coll.name) / exe.contents_directory, Path(app.name)
     )

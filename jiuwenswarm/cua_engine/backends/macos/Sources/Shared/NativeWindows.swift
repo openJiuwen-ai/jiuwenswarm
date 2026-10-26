@@ -28,9 +28,9 @@ import Darwin
     }
 
     /// Absence proofs must not turn a WindowServer query failure into an empty desktop.
-    static func listIfAvailable(_ app: NSRunningApplication) -> [Window]? {
+    static func listIfAvailable(_ app: NSRunningApplication, catalog supplied: [[String: Any]]? = nil) -> [Window]? {
         ownership.prune()
-        guard let catalog = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        guard let catalog = supplied ?? (CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) else { return nil }
         var owners = [pid_t: NativeProcessIdentity](), rejected = Set<pid_t>()
         let windows: [Window] = catalog.compactMap { value in
             guard let pid = (value[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,

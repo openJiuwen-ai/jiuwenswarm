@@ -14,12 +14,15 @@ def checkout_root():
 
 @lru_cache(maxsize=1)
 def repository_root():
+    assets = Path(__file__).parent / "_resources"
+    if getattr(sys, "frozen", False):
+        # Frozen distributions ship an immutable, already compiled runtime.
+        return assets
     root = checkout_root()
     if root is not None:
         return root
     # Wheels carry build inputs. Materialize an atomic, versioned user-owned
     # working tree so native builds never write into system site-packages.
-    assets = Path(__file__).parent / "_resources"
     manifest = (assets / "manifest.json").read_bytes()
     key = hashlib.sha256(manifest).hexdigest()[:20]
     directory = Path.home() / ".computer-use/runtime"
