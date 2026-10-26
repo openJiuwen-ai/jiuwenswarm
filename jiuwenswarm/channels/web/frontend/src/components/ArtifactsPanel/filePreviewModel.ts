@@ -44,6 +44,30 @@ const IMAGE_EXTENSIONS = new Set([
   'webp',
 ]);
 
+/**
+ * Sandbox policy for the HTML artifact preview iframe.
+ *
+ * Artifact HTML is routinely script-driven: self-contained reports (for example
+ * generated briefings) ship an empty body placeholder and render every card
+ * from inline JavaScript. An empty ``sandbox`` attribute blocks scripts, so such
+ * artifacts load successfully yet paint a blank panel.
+ *
+ * ``allow-scripts`` lets that rendering run. ``allow-same-origin`` is
+ * deliberately withheld: the frame keeps an opaque origin, so artifact scripts
+ * cannot read the host app's cookies/localStorage, and cross-origin reads of
+ * first-party ``/file-api`` responses stay blocked by CORS. ``allow-popups``
+ * keeps "view original" style links usable; the opened tab inherits this
+ * sandbox and also stays on an opaque origin.
+ *
+ * Do NOT add ``allow-popups-to-escape-sandbox``: artifact HTML is served from
+ * the host origin (``/file-api`` returns ``text/html`` with no CSP), so that
+ * flag would let artifact scripts open a top-level, unsandboxed, host-origin
+ * document (cookies, storage, first-party API access) — equivalent to XSS.
+ * Pairing ``allow-scripts`` with ``allow-same-origin`` is forbidden for the
+ * same reason.
+ */
+export const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-popups';
+
 export function inlineDownloadUrl(downloadUrl: string, origin: string): string {
   const url = new URL(downloadUrl, origin);
   if (url.protocol === 'blob:' || url.protocol === 'data:') return url.href;
