@@ -78,7 +78,6 @@ from jiuwenswarm.common.config import (
     update_team_member_messaging_in_config,
     update_team_task_verification_in_config,
     update_trajectory_diagnosis_in_config,
-    update_trajectory_ui_in_config,
     update_default_models_in_config,
     update_login_model_settings_in_config,
     validate_persisted_kv_cache_affinity,
@@ -233,9 +232,8 @@ class ConfigChangeSet:
                 scopes.add("proactive")
             elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
                 scopes.add("agent_runtime")
-            elif key_text in {"trajectory_ui_enabled", "trajectory_ui_diagnosis_enabled"}:
-                # Diagnosis switches the trajectory data plane on as well, so
-                # it needs the same runtime sync as the trajectory view switch.
+            elif key_text == "trajectory_ui_diagnosis_enabled":
+                # Diagnosis owns the trajectory data plane and diagnosis entry.
                 scopes.update({"agent_runtime", "web_ui"})
             elif key_text in WEB_UI_YAML_KEYS or key_text.startswith("a2ui_"):
                 scopes.add("web_ui")
@@ -385,7 +383,6 @@ CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_description",
     "a2ui_enabled",
     "rsi_enabled",
-    "trajectory_ui_enabled",
     "trajectory_ui_diagnosis_enabled",
     "task_full_duplex_enabled",
     "team_organization_ui_enabled",
@@ -1525,8 +1522,6 @@ def apply_config_payload(
                 if not ok:
                     raise ConfigPanelBadRequest(error or "invalid A2UI config")
                 update_a2ui_in_config(update)
-            elif param_key == "trajectory_ui_enabled":
-                update_trajectory_ui_in_config(parsed)
             elif param_key == "trajectory_ui_diagnosis_enabled":
                 update_trajectory_diagnosis_in_config(parsed)
             elif param_key == "task_full_duplex_enabled":

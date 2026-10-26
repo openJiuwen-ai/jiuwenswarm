@@ -3755,7 +3755,7 @@ zmq = [
 [[package]]
 name = "openjiuwen-protocol"
 version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=edfdae9a8a876b7a15dbf6bce501b929d235b6dc#edfdae9a8a876b7a15dbf6bce501b929d235b6dc" }
+source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=10a03dd263c33042558bbd67a815952458a25fa9#10a03dd263c33042558bbd67a815952458a25fa9" }
 
 [[package]]
 name = "openpyxl"
@@ -7087,6 +7087,7 @@ test = [
     { name = "a2a-sdk", extra = ["http-server"] },
     { name = "asyncssh" },
     { name = "coverage" },
+    { name = "cryptography" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -7104,6 +7105,7 @@ dev = [
     { name = "asyncssh" },
     { name = "codespell" },
     { name = "coverage" },
+    { name = "cryptography" },
     { name = "httpx", extra = ["socks"] },
     { name = "mypy" },
     { name = "pylint" },
@@ -7126,6 +7128,7 @@ test = [
     { name = "a2a-sdk", extra = ["http-server"] },
     { name = "asyncssh" },
     { name = "coverage" },
+    { name = "cryptography" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -7150,6 +7153,7 @@ requires-dist = [
     { name = "coverage", marker = "extra == 'test'", specifier = ">=7.7.1" },
     { name = "croniter", specifier = ">=2.0.0,<7" },
     { name = "croniter", marker = "extra == 'harmony'", specifier = ">=2.0.0" },
+    { name = "cryptography", marker = "extra == 'test'", specifier = ">=44.0.0" },
     { name = "dingtalk-stream", specifier = ">=0.24.3,<0.25" },
     { name = "dingtalk-stream", marker = "extra == 'harmony'", specifier = ">=0.24.3" },
     { name = "discord-py", specifier = ">=2.4.0,<3" },
@@ -7194,7 +7198,7 @@ requires-dist = [
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=0ab5913b250d565b35bff3828dae438939cb1acd" },
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=0ab5913b250d565b35bff3828dae438939cb1acd" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=0ab5913b250d565b35bff3828dae438939cb1acd" },
-    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=edfdae9a8a876b7a15dbf6bce501b929d235b6dc" },
+    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=10a03dd263c33042558bbd67a815952458a25fa9" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<1.42" },
@@ -7259,6 +7263,7 @@ dev = [
     { name = "asyncssh", specifier = ">=2.14.0,<2.24" },
     { name = "codespell", specifier = ">=2.2.4" },
     { name = "coverage", specifier = ">=7.7.1" },
+    { name = "cryptography", specifier = ">=44.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
     { name = "mypy", specifier = ">=1.12.0" },
     { name = "pylint", specifier = ">=3.0.0" },
@@ -7281,6 +7286,7 @@ test = [
     { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.0" },
     { name = "asyncssh", specifier = ">=2.14.0,<2.24" },
     { name = "coverage", specifier = ">=7.7.1" },
+    { name = "cryptography", specifier = ">=44.0.0" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },

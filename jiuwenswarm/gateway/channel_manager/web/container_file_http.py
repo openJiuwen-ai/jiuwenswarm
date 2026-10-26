@@ -470,15 +470,12 @@ def _decode_verified_chunk(
 
 
 def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
-    """Mount ``/file-api`` when channel has an AgentOSRouterClient backend."""
-    from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
-        AgentOSFileTransferError,
-        AgentOSRouterClient,
-    )
+    """Mount ``/file-api`` when the backend supports container file transfer."""
+    from jiuwenswarm.gateway.routing.container_files import AgentOSFileTransferError
     from jiuwenswarm.gateway.extensions.auth.common import headers_to_dict
 
     client = getattr(channel, "container_file_client", None)
-    if not isinstance(client, AgentOSRouterClient):
+    if client is None or not callable(getattr(client, "authenticate_http", None)):
         return
 
     prefix = FILE_API_PREFIX

@@ -123,7 +123,7 @@ class ReconnectingAgentClientHarness(AgentClientHarness):
         self.connect_calls: list[str] = []
         self.reconnected_ws = FakeWebSocket()
 
-    async def connect(self, uri: str) -> None:
+    async def connect(self, uri: str, extra_headers=None) -> None:
         self.connect_calls.append(uri)
         self._uri = uri
         self._ws = self.reconnected_ws

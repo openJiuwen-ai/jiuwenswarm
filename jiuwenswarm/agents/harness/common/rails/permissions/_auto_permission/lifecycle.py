@@ -22,9 +22,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.policy_eval import (
 from jiuwenswarm.agents.harness.common.rails.permissions.trusted_search_urls import (
     SessionTrustedSearchUrls,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
-    SessionDenyStore,
-)
 from jiuwenswarm.agents.harness.common.rails.permissions.sandbox_profile import (
     SandboxDescriptor,
 )
@@ -40,7 +37,6 @@ class AutoPermissionLifecycleMixin:
         platform_trusted_root: Path | str | None = None,
         sandbox: SandboxDescriptor | None = None,
         sys_operation: Any | None = None,
-        session_deny_store: SessionDenyStore | None = None,
         policy_evaluator: OpenJiuwenPolicyEvaluator | None = None,
         auto_reviewer: AutoReviewer | None = None,
         trusted_search_urls: SessionTrustedSearchUrls | None = None,
@@ -63,7 +59,6 @@ class AutoPermissionLifecycleMixin:
         )
         self.sandbox = sandbox
         self.sys_operation = sys_operation
-        self.session_deny_store = session_deny_store or SessionDenyStore()
         self.policy_evaluator = policy_evaluator or OpenJiuwenPolicyEvaluator(
             base_rail,
             workspace_root=self.workspace_root,

@@ -232,6 +232,7 @@
       "preview": "预览",
       "previewOrEdit": "预览或编辑",
       "download": "下载",
+      "downloadFailed": "“{{name}}”下载失败，请检查网络和保存位置后重试。",
       "delete": "删除",
       "replace": "上传替换",
       "replaceHint": "上传新文件替换此节点的内容。",
@@ -789,7 +790,7 @@
       "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
       "rsi": "RSI 递归自我改进",
-      "trajectoryUi": "轨迹界面",
+      "trajectoryUi": "轨迹诊断",
       "kvCacheAffinity": "算力亲和",
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "调度模式",
@@ -970,13 +971,9 @@
         "title": "启用 RSI",
         "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
       },
-      "trajectory_ui_enabled": {
-        "title": "启用轨迹界面",
-        "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
-      },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
-        "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据，无需同时启用轨迹界面；仅能诊断开启之后产生的记录。"
+        "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据；仅能诊断开启之后产生的记录。关闭后不再显示轨迹相关页面。"
       },
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization",
@@ -1096,18 +1093,22 @@
       "diagnose": "诊断轨迹",
       "selection": {
         "fullScope": "全部轨迹",
-        "notePlaceholder": "请输入用户反馈（可选）",
+        "selectAll": "全选",
+        "clearSelectAll": "取消全选",
+        "selectAllAgent": "选中 {{name}} 的全部轨迹",
+        "clearSelectAllAgent": "取消选中 {{name}} 的全部轨迹",
+        "notePlaceholder": "对已选轨迹补充问题描述（可选）。例：答非所问；工具失败后未重试；未产出预期文件",
         "cancel": "取消",
         "start": "开始执行",
         "starting": "启动中…",
-        "summary": "已选择 {{count}} 个 Agent，{{nodes}} 个节点",
+        "summary": "已选择 {{count}} 个 Agent · {{nodes}} 个节点",
         "emptyNodes": "选中范围内没有完整可诊断的步骤（未完整覆盖的步骤已被剔除）",
         "lastTurn": "选中轨迹包含主agent最后一轮响应，将尝试进行产物评估和过程异常诊断归因",
         "nodeLimit": "选中轨迹超过 {{limit}} 个节点（当前 {{count}} 个），请缩小选择范围",
         "running": "已有诊断正在进行",
         "noData": "当前没有可诊断的轨迹"
       },
-      "summary": "{{traces}} 条轨迹 · {{spans}} 个 OTel Span",
+      "summary": "{{agents}}个Agent · {{nodes}} 个节点",
       "toolbar": {
         "scale": "轨迹比例",
         "time": "时间",
@@ -1135,7 +1136,7 @@
     },
     "diagnosis": {
       "entry": "轨迹分析",
-      "noteLabel": "补充说明（可选）",
+      "noteLabel": "用户反馈：描述已选轨迹中的问题（可选）",
       "fullScopeBusy": "会话运行中，无法诊断完整轨迹",
       "cancel": "取消诊断",
       "selectionHint": "在时间轴或任一泳道上拖选一段时间，并勾选要诊断的成员。",
@@ -1927,7 +1928,9 @@
     "approvalInputPlaceholder": "填写修改意见后点击「下一步」；留空点击「跳过」"
   },
   "persistSession": {
-    "textRequired": "请在 /persist 后输入任务内容"
+    "textRequired": "请在 /persist 后输入任务内容",
+    "toolbarTag": "永续会话",
+    "closeTag": "隐藏永续会话标记"
   },
   "crossSession": {
     "messageBadge": "来自会话：{{title}}"
@@ -3737,6 +3740,7 @@
       "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
       "uploadMissingReadme": "专家包缺少 README.md 文件",
       "uploadMissingPersona": "专家包缺少 persona 目录，或目录下没有 .md 文件",
+      "uploadSkillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径",
       "newVersion": "该专家有新版本，可更新",
       "teamUnavailable": "专家团管理暂未开放",
       "featureUnavailable": "该功能暂不在本期范围",
@@ -4838,7 +4842,8 @@
       "invalidType": "仅支持 .zip / .tar 文件",
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
-      "missingReadme": "插件包缺少 README.md 文件"
+      "missingReadme": "插件包缺少 README.md 文件",
+      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径"
     },
     "common": {
       "back": "返回",
@@ -5285,12 +5290,6 @@
     "budgetPlaceholder": "输入数字",
     "budgetActualHint": "本次配置上限：{{count}} tokens",
     "workflowList": "工作流列表",
-    "worktreeToggleLabel": "Worktree 隔离",
-    "worktreeGuideTitle": "为 Worktree 隔离选择项目目录",
-    "worktreeGuideDescription": "Worktree 隔离已开启：动态工作流中需要修改代码的任务，可以选择在项目的独立工作树中进行，不影响主仓库。工作树以项目目录为源创建，请点击高亮处的「项目」选择目录；暂不需要隔离时，可在动态工作流设置中关闭该开关。",
-    "worktreeGuideHint": "点击「项目」选择目录",
-    "worktreeGuideAcknowledge": "我知道了",
-    "worktreeGuideSkip": "跳过",
     "verifyReviewing": "评审中…",
     "verifyReviewingShort": "评审中",
     "verifyPass": "✓ 通过",

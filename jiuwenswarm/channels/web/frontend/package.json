@@ -15,6 +15,7 @@
     "test:generation-models": "esbuild src/features/settings/modules/agent/generationModels.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/generation-models/generationModels.mjs && node --test tests/generationModels.test.mjs",
     "test:generation-model-dialog": "node --test tests/generationModelDialog.test.mjs",
     "test:a4p-authorization": "node --test tests/a4pAuthorization.test.mjs",
+    "test:history-recovery": "esbuild src/features/historyRefreshQueue.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/history-recovery/historyRefreshQueue.mjs && node --test tests/historyRefreshQueue.test.mjs",
     "test:a4p-settings": "node --test tests/a4pSettings.test.mjs",
     "test:secondary-sidebar": "esbuild src/hooks/useSecondarySidebar.ts src/hooks/useResponsive.ts --bundle --platform=node --format=esm --packages=external --out-extension:.js=.mjs --outdir=node_modules/.cache/secondary-sidebar && node --test tests/secondarySidebar.test.mjs",
     "test:svg-icons": "esbuild src/features/trajectory/primitives/icons/index.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/svg-icons/trajectoryIcons.mjs && node --test tests/svgIconIds.test.mjs",

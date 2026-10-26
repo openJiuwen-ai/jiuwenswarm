@@ -84,7 +84,6 @@ await build({
             'TaskAsrSetting',
             'TaskFullDuplexSetting',
             'TrajectoryDiagnosisSetting',
-            'TrajectoryUiSetting',
           ]
             .map((name) => `export const ${name} = () => null;`)
             .join('\n'),

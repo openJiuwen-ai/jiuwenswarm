@@ -2182,6 +2182,12 @@ async def _run(
 
     # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
     agent_server_ext = extension_registry.get_agent_server_client_extension()
+    gateway_config = get_config().get("gateway") or {}
+    agent_client_config = gateway_config.get("agent_client") or {}
+    using_adx_router = str(agent_client_config.get("type") or "").strip().lower() == "adx_router"
+    if using_adx_router:
+        if agent_server_ext is None or agent_server_ext.metadata.id != "adx_router":
+            raise RuntimeError("Selected adx_router extension failed to load; check gateway.adx configuration")
     if agent_server_ext is not None:
         logger.info("[App] using extension AgentServerClient: %s", agent_server_ext.metadata.name)
         client = agent_server_ext.get_client()
@@ -2305,7 +2311,7 @@ async def _run(
     # managed, so no user reload/fanout is needed.
     config_updater = None
     from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-    if is_agentos_routing_client(client):
+    if is_agentos_routing_client(client) and callable(getattr(client, "apply_remote_overrides", None)):
         from jiuwenswarm.extensions.agentos.config_updater.service import (
             ConfigUpdaterService,
         )
@@ -2373,7 +2379,7 @@ async def _run(
     prewarm_sync_debounce_task: asyncio.Task[None] | None = None
 
     async def _sync_agent_prewarm_channels() -> None:
-        if not _agent_prewarm_enabled():
+        if using_adx_router or not _agent_prewarm_enabled():
             return
         try:
             prewarm_channels = {
@@ -2407,7 +2413,7 @@ async def _run(
     ) -> None:
         """Coalesce startup/config/channel churn into one settled sync."""
         nonlocal prewarm_sync_debounce_task
-        if not _agent_prewarm_enabled():
+        if using_adx_router or not _agent_prewarm_enabled():
             return
         previous = prewarm_sync_debounce_task
         if previous is not None and not previous.done():
@@ -3733,7 +3739,7 @@ async def _run(
             _periodic_agent_prewarm_sync(),
             name="agent-prewarm-periodic-sync",
         )
-        if _agent_prewarm_enabled()
+        if not using_adx_router and _agent_prewarm_enabled()
         else None
     )
 
