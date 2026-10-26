@@ -17,3 +17,5 @@ Before any socket write, `deliveries-*.sqlite3` records the idempotency key, gro
 Unknown deliveries are never automatically resent, including after restart. Identical text in the same group waits while an earlier matching delivery remains unresolved. Confirmed deliveries use the existing archival flow.
 
 Reconciliation currently reads the latest 20-message history page. Older results in busy groups may require manual verification and remain unknown; do not reset them to pending for blind retries. Existing delivered rows from older versions are not rewritten.
+
+WeLink history reconciliation runs in a separate background task. Slow requests and scan failures do not block the shared delivery/archive worker. Service shutdown cancels and awaits the reconciliation task.
