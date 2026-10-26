@@ -940,3 +940,33 @@ async def test_observer_sees_recorded_events_and_cannot_break_recording(tmp_path
     assert seen == [1, 2, 4]
     log = await port.read_execution_log(execution, execution.execution_id)
     assert [event.local_seq for event in log] == [1, 2, 4]
+
+
+async def test_welink_unknown_is_reconciled_after_restart_without_resending(host):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel='welink', app_id='reader', target_id='g', source_message_id='10')
+    execution = accept_and_start(repository, 'welink-conv', 'welink-msg', route_snapshot=route)
+    await port.record(execution, candidate(execution, 1))
+    await port.record(execution, final(execution, 2))
+    operations = []
+    confirmed = [False]
+    async def gateway(job):
+        operations.append(job.get('operation', 'send'))
+        ack = {'delivery_id': job['delivery_id'], 'stage': 'send', 'outcome': 'unknown'}
+        if job.get('operation') == 'reconcile' and confirmed[0]:
+            ack.update(outcome='delivered', external_message_id='11')
+        return ack
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW)
+    await service.dispatch_pending()
+    assert repository.result_deliveries(NS, execution.request_id)[0]['status'] == 'unknown'
+    restarted = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW)
+    confirmed[0] = True
+    await restarted.dispatch_pending()
+    row = repository.result_deliveries(NS, execution.request_id)[0]
+    assert row['status'] == 'delivered'
+    assert row['external_message_id'] == '11'
+    assert row['attempt_count'] == 1
+    assert operations.count('send') == 1
+    assert 'reconcile' in operations

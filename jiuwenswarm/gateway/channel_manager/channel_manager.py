@@ -301,9 +301,11 @@ class ChannelManager(ABC):
         file: Any,
     ) -> dict[str, Any]:
         """Send a colleague's final text as the configured assistant, never as the reading account."""
+        reconcile = _payload.get("operation") == "reconcile"
         if isinstance(file, dict):
             return {"outcome": "failed", "error_code": "WELINK_FILE_UNSUPPORTED"}
-        if not all(isinstance(value, str) and value.strip() for value in (app_id, chat_id, text, idempotency_key)):
+        required = (app_id, chat_id, idempotency_key) if reconcile else (app_id, chat_id, text, idempotency_key)
+        if not all(isinstance(value, str) and value.strip() for value in required):
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
         matches = [
             channel
@@ -311,10 +313,12 @@ class ChannelManager(ABC):
             if key.channel_id == "welink" and key.app_id == app_id and callable(getattr(channel, "send_group_text", None))
         ]
         if not matches:
-            return {"outcome": "pending", "error_code": "WELINK_ACCOUNT_NOT_CONNECTED"}
+            return {"outcome": "unknown" if reconcile else "pending", "error_code": "WELINK_ACCOUNT_NOT_CONNECTED"}
         if len(matches) != 1:
             return {"outcome": "failed", "error_code": "WELINK_ACCOUNT_AMBIGUOUS"}
         try:
+            if reconcile:
+                return await matches[0].reconcile_group_text(chat_id=chat_id, idempotency_key=idempotency_key)
             source_message_id = _payload.get("source_message_id")
             return await matches[0].send_group_text(
                 chat_id=chat_id,

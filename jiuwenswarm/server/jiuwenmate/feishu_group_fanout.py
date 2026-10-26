@@ -146,6 +146,7 @@ class InboundDisposition(str, Enum):
     UNCLAIMED = "unclaimed"
     HANDLED = "handled"
     REJECTED = "rejected"
+    RETRYABLE = "retryable"
 
 
 BindingResolver = Callable[[str, str], Sequence[FeishuBinding]]

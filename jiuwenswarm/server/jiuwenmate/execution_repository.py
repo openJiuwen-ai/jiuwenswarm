@@ -875,6 +875,28 @@ class ExecutionRepository(SQLiteStore):
                 jobs.append(job)
         return jobs
 
+    def unknown_welink_result_deliveries(
+        self, namespace_id: str, *, limit: int = 20, after: str = "",
+    ) -> list[dict[str, object]]:
+        """Read unresolved routes for observation only; never claim them for sending."""
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT d.*, r.record_json FROM result_deliveries d "
+                "JOIN requests r ON r.namespace_id=d.namespace_id AND r.request_id=d.request_id "
+                "WHERE d.namespace_id=? AND d.channel='welink' AND d.status='unknown' "
+                "AND d.delivery_id>? ORDER BY d.delivery_id LIMIT ?", (namespace_id, after, limit),
+            ).fetchall()
+        jobs = []
+        for row in rows:
+            record = RequestRecord.from_dict(json.loads(row["record_json"]))
+            route = record.route_snapshot
+            if route is None or route.channel != "welink":
+                continue
+            jobs.append({"delivery_id": row["delivery_id"], "channel": "welink", "operation": "reconcile",
+                         "app_id": route.app_id, "target_id": route.target_id,
+                         "idempotency_key": row["idempotency_key"]})
+        return jobs
+
     def update_result_delivery(
         self,
         namespace_id: str,

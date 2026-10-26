@@ -34,6 +34,7 @@ _DELIVER_LIMIT = 5
 # One welink-cli history page. Used once when a group flips from "not shared" to shared,
 # so the catch-up lands on the latest messages instead of the page after a stale cursor.
 _CATCHUP_LIMIT = 20
+MEMBERSHIP_TTL_SECONDS = 300
 
 
 class WelinkRunner(Protocol):
@@ -101,8 +102,12 @@ class MembershipStore:
             assistants = []
         return bool(raw.get("shared")), frozenset(str(item) for item in assistants if str(item).strip())
 
+    def checked_at(self, group_id: str) -> float:
+        value = self._data.get(group_id, {}).get("checked_at", 0)
+        return float(value) if isinstance(value, (int, float)) else 0.0
+
     def set(self, group_id: str, *, shared: bool, assistants: set[str]) -> None:
-        self._data[group_id] = {"shared": bool(shared), "assistants": sorted(assistants)}
+        self._data[group_id] = {"shared": bool(shared), "assistants": sorted(assistants), "checked_at": time.time()}
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._path.with_suffix(".tmp")
         temporary.write_text(json.dumps(self._data, ensure_ascii=False), encoding="utf-8")
@@ -129,6 +134,7 @@ class WelinkPoller:
         rate_limit_backoff_seconds: float = 30,
         member_interval_seconds: float = 15,
         membership_recheck_seconds: float = 60,
+        membership_ttl_seconds: float = MEMBERSHIP_TTL_SECONDS,
         membership: MembershipStore | None = None,
     ) -> None:
         self._runner = runner
@@ -138,6 +144,7 @@ class WelinkPoller:
         self._rate_limit_backoff_seconds = rate_limit_backoff_seconds
         self._member_interval_seconds = member_interval_seconds
         self._membership_recheck_seconds = membership_recheck_seconds
+        self._membership_ttl_seconds = membership_ttl_seconds
         self._member_error_seconds = 30.0
         self._snapshot: tuple[str, ...] = ()
         self._history_checked: set[str] = set()
@@ -163,10 +170,13 @@ class WelinkPoller:
             self._history_deferred.clear()
             self._note_recent_movement(group_ids)
         self._release_deferred(group_ids, now)
+        member_group = self._member_target(group_ids, now)
+        if member_group and self._membership.get(member_group) and self._membership.get(member_group)[0]:
+            self._classify(member_group, now)
+            return []
         history_group = self._history_target(group_ids, now)
         if history_group:
             return self._read_history(history_group, now)
-        member_group = self._member_target(group_ids, now)
         if member_group:
             self._classify(member_group, now)
             return []
@@ -263,7 +273,9 @@ class WelinkPoller:
 
     def _recheck_due(self, group_id: str, now: float) -> bool:
         record = self._membership.get(group_id)
-        if record is None or record[0]:
+        if record is None:
+            return False
+        if record[0] and time.time() - self._membership.checked_at(group_id) < self._membership_recheck_seconds:
             return False
         if self._member_hold.get(group_id, 0.0) > now:
             return False
@@ -271,7 +283,10 @@ class WelinkPoller:
 
     def _is_shared(self, group_id: str) -> bool:
         record = self._membership.get(group_id)
-        return bool(record and record[0])
+        return bool(
+            record and record[0]
+            and 0 <= time.time() - self._membership.checked_at(group_id) < self._membership_ttl_seconds
+        )
 
     def _classify(self, group_id: str, now: float) -> None:
         self._last_member_query = now
@@ -319,6 +334,8 @@ class WelinkPoller:
             shared,
         )
         self._membership.set(group_id, shared=shared, assistants=assistants)
+        self._member_hold.pop(group_id, None)
+        self._member_recheck_after[group_id] = now + self._membership_recheck_seconds
         if shared and previous is not None and not previous[0]:
             self._latest_catchup.add(group_id)
             self._member_recheck_after.pop(group_id, None)
