@@ -1082,9 +1082,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if session is not None and isinstance(ctx.inputs, ToolCallInputs):
             # 主模型随 tool_call 产出的目标文案（call_goal）：取出后剥掉，避免 schema 拒收。
             # 绝不碰 display_name（team 成员名等业务字段）。
-            call_goal, cleaned_args = extract_call_goal(
-                getattr(tc, "arguments", {}) if tc else {}
-            )
+            # Clean the arguments as earlier rails left them: an interrupt rail
+            # that approved the call with rewritten arguments (``new_args``)
+            # must not be undone by going back to the model's original ones.
+            current_args = ctx.inputs.tool_args
+            if current_args is None:
+                current_args = getattr(tc, "arguments", {}) if tc else {}
+            call_goal, cleaned_args = extract_call_goal(current_args)
             # 无论是否填了 call_goal，都写回清洗后的 arguments，避免执行侧拿到该字段。
             if tc is not None:
                 try:
@@ -1191,6 +1195,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 ctx,
                 tc,
                 tool_result,
+            )
+        if interrupt is not None:
+            await self._emit_interrupted_team_leader_ask_user(
+                session,
+                ctx,
+                tc,
             )
         await self._emit_ask_user_question_if_interrupted(
             session,
@@ -1315,6 +1325,65 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         except Exception:
             logger.debug("tool_result emit failed", exc_info=True)
             return False
+
+    async def _emit_interrupted_team_leader_ask_user(
+        self,
+        session: Session,
+        ctx: AgentCallbackContext,
+        tool_call: Any,
+    ) -> None:
+        """Project an interrupted team-leader ask_user call onto the stream.
+
+        Interrupt rails run ahead of this rail's ``before_tool_call``, so an
+        ask_user that pauses for user input never reaches the normal tool_call
+        projection.  The team leader renders its tool calls in the web tool
+        tree, where the call would therefore be invisible even though the
+        question card is shown.  Emit the call plus a terminal result — the
+        call is complete once the question is presented — so the tree reflects
+        it.  The resume turn still projects the real answer result.  Single
+        agents keep their existing projection timing.
+        """
+        if self._role != "leader":
+            return
+        if self._tool_call_name(tool_call) != "ask_user":
+            return
+        tc_id = self._tool_call_id(tool_call)
+        sid = self._resolve_sid(ctx, session)
+        if tc_id and self._emitted_tool_call_ids.get(tc_id) == sid:
+            return
+        try:
+            call_goal, cleaned_args = extract_call_goal(
+                getattr(tool_call, "arguments", {}) or {}
+            )
+            payload: dict[str, Any] = {
+                "name": "ask_user",
+                "arguments": cleaned_args,
+                "tool_call_id": tc_id,
+            }
+            goal = (call_goal or "").strip()
+            if goal:
+                payload["call_goal"] = goal
+            await session.write_stream(
+                OutputSchema(type="tool_call", index=0, payload={"tool_call": payload})
+            )
+            if tc_id:
+                self._emitted_tool_call_ids[tc_id] = sid
+            result_text = (
+                "Waiting for user input"
+                if self._get_prompt_language() == "en"
+                else "等待用户输入"
+            )
+            await self._emit_tool_result(
+                session,
+                tool_call,
+                result_text,
+                rendered_result=result_text,
+            )
+        except Exception:
+            logger.debug(
+                "interrupted team leader ask_user projection failed",
+                exc_info=True,
+            )
 
     @staticmethod
     async def _emit_ask_user_question_if_interrupted(

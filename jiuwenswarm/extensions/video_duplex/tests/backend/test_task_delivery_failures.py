@@ -14,9 +14,9 @@ from openjiuwen.core.runner.callback.errors import AbortError
 
 from jiuwenswarm.extensions.video_duplex.backend import task_adapter
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
-from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution, bind_task_output
-from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import task_checkpoint
-from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import VoiceTaskServerAdapter
+from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution, bind_task_output
+from jiuwenswarm.server.runtime.video_task.rail import task_checkpoint
+from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.extensions.video_duplex.tests.backend import test_task_bridge
 
 routed_task_fixture = test_task_bridge.routed_task_fixture

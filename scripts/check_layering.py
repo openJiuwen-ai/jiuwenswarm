@@ -8,7 +8,6 @@
   R1  common  禁止 import server / agents / channels / gateway / extensions / symphony
   R2  server  禁止 import gateway
   R3  gateway 禁止 import server / agents / channels
-  R4  gateway/embedded/ 禁止 import server / agents（AgentServer 拷贝）
 
 使用时机（《Gateway独立成仓-解耦设计》PR-2，单人解耦精简版）：
 
@@ -46,6 +45,8 @@ PKG = "jiuwenswarm"
 
 logger = logging.getLogger(__name__)
 
+_ALL_LOCAL_PKGS = None  # 延迟初始化（collect_py_files 依赖 git）
+
 # ---------------------------------------------------------------------------
 # 已知存量（燃尽清单）——随 B1'/A4 消化，消除后此表同步缩减
 # 基线：upstream/develop fbd8d6f41 + browser_config 下沉（2026-10-13 实测）
@@ -64,13 +65,50 @@ KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 # agents.browser_config 为上游 PR #8083（Jev 集成，2026-10-13）引入，待其
 # 开发稳定后下沉 common（届时缩减此白名单）。
 KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
+    # pickers 两条已随 M0-b 迁入 gateway/ 消除；browser_config 待 #8083 稳定后下沉
     "jiuwenswarm.gateway.channel_manager.web.app_web_handlers": {
-        "jiuwenswarm.channels.web.directory_picker",
-        "jiuwenswarm.channels.web.file_picker",
         "jiuwenswarm.agents.harness.common.browser_config",
+        # 话题推荐 / 提示词推荐：面板读写开关、拉取话题卡片与反馈，历史话题解析 Zen 免费模型
+        "jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion",
+        "jiuwenswarm.agents.harness.common.recommendation.switches",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_controls",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_feedback",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_history",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_model",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_outcomes",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_pool",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_product",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_starter",
+        "jiuwenswarm.server.runtime.opencode_zen",
+    },
+    # 话题推荐 / 提示词推荐：gateway 侧驱动话题流水线（历史聚合、准备、检索、投递），
+    # 并转发提示词推荐事件；这些模块属 agents 层，拆仓前直连。
+    "jiuwenswarm.gateway.app_gateway": {
+        "jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion",
+        "jiuwenswarm.agents.harness.common.recommendation.switches",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_collector",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_controls",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_history",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_outcomes",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_pipeline",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_prepare",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_rid",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_search",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_service",
+        "jiuwenswarm.agents.harness.common.recommendation.topic_starter",
+        "jiuwenswarm.server.runtime.session.session_history",
+        "jiuwenswarm.server.runtime.session.session_metadata",
+    },
+    "jiuwenswarm.gateway.message_handler.message_handler": {
+        "jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion",
+        "jiuwenswarm.server.runtime.session.session_history",
+    },
+    "jiuwenswarm.gateway.channel_manager.tui.tui_connect": {
+        "jiuwenswarm.server.runtime.session.session_metadata",
     },
     # 过渡桥接（B1'）：gateway 与 AgentServer 同机部署期间的直连实现，
     # gateway 独立成仓时整体删除并由 A-API HTTP 实现替代。
+    # （runtime.cron.factory 一条已随 M0-a 的 router_client 改向消除）
     "jiuwenswarm.gateway.server_store_bridge": {
         "jiuwenswarm.server.runtime.mcp.state_store",
         "jiuwenswarm.server.runtime.mcp.registry",
@@ -81,37 +119,47 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
         "jiuwenswarm.server.runtime.session.session_metadata",
     },
 }
-KNOWN_R4_EMBEDDED_FOREIGN: dict[str, set[str]] = {}
-
 # 燃尽基线（--baseline 对照用；数字口径见各字段注释）
 BASELINE = {
     # hard 闭包 = 从 gateway 出发仅沿模块级 import 可达的外部（非 gateway/common）模块数。
     # 根包单文件（dotenv_early、llm_provider_compat_patch）计入其所属顶级名。
+    # B2.5 后（rebase 1372eda94 实测，含 B2 合入后的 extensions 状态）：
+    # 四大包（agents/server/runtime/symphony）hard 闭包全部归零。
+    # extensions 30 = B2 吸收后的框架件 + AgentOS 客户端 + 上游回流。
     "closure_hard": {
-        "agents": 101, "server": 56, "runtime": 32, "extensions": 19,
-        "observability": 10, "symphony": 8,
-        "dotenv_early": 1, "llm_provider_compat_patch": 1,
+        "extensions": 30, "observability": 10,
+        "dotenv_early": 1, "llm_provider_compat_patch": 0,
     },
     # lazy 闭包 = 含函数内延迟 import 的可达模块数
     "closure_lazy": {
-        "agents": 333, "server": 162, "extensions": 52, "runtime": 36,
-        "symphony": 11, "observability": 11, "instance_manager": 6, "channels": 4,
-        "dotenv_early": 1, "llm_provider_compat_patch": 1,
+        # 2026-10-19 rebase 8e0f173b4：上游新功能 lazy 扩散 +104（非解耦退化）
+        "agents": 344, "server": 240, "extensions": 54, "runtime": 43,
+        "symphony": 11, "observability": 11, "instance_manager": 6, "channels": 6,
+        "dotenv_early": 1, "llm_provider_compat_patch": 0,
     },
     # common 反向引用（R1 存量）：B1' 已全部消除（注入化 + 纯模块下沉）
     "common_backref_modules": 0,
     "common_backref_imports": 0,
-    # gateway/embedded/ 下 AgentServer 拷贝的规模（A1–A3/A5 迁移对象）
-    "embedded_files": 27,
-    "embedded_loc": 8540,
     # gateway 直接 import 的外部（非 gateway/common）模块数
-    "gateway_direct_foreign": 38,
+    "gateway_direct_foreign": 23,
 }
 
 
 # ---------------------------------------------------------------------------
 # import 图构建
 # ---------------------------------------------------------------------------
+
+def _all_local_top_modules() -> tuple[str, ...]:
+    """本仓全部顶级模块名（含根包单文件），供 R1 白名单式检查。"""
+    tops: set[str] = set()
+    for rel in collect_py_files():
+        parts = rel.split("/")
+        if len(parts) >= 2 and parts[0] == PKG:
+            tops.add(parts[1][:-3] if parts[1].endswith(".py") else parts[1])
+    tops.discard("")
+    tops.discard("common")  # R1 语义：common 只能 import common
+    return tuple(sorted(tops))
+
 
 def _git(*args: str) -> str:
     git_path = shutil.which("git") or "git"
@@ -291,10 +339,13 @@ def _check_rule(
 
 
 def run_rules(graph: ImportGraph) -> int:
+    global _ALL_LOCAL_PKGS
+    if _ALL_LOCAL_PKGS is None:
+        _ALL_LOCAL_PKGS = _all_local_top_modules()
     exit_code = 0
     exit_code |= _check_rule(
-        graph, "R1 common 禁止 import server/agents/channels/gateway/extensions/symphony",
-        (f"{PKG}.common.",), ("server", "agents", "channels", "gateway", "extensions", "symphony"),
+        graph, "R1 common 禁止 import 任何非 common 的本仓模块（零本仓引用不变量）",
+        (f"{PKG}.common.",), _ALL_LOCAL_PKGS,
         KNOWN_R1_COMMON_BACKREFS,
     )
     exit_code |= _check_rule(
@@ -303,14 +354,9 @@ def run_rules(graph: ImportGraph) -> int:
         KNOWN_R2_SERVER_TO_GATEWAY,
     )
     exit_code |= _check_rule(
-        graph, "R3 gateway 禁止 import server/agents/channels",
-        (f"{PKG}.gateway.",), ("server", "agents", "channels"),
+        graph, "R3 gateway 禁止 import server/agents/channels/runtime/symphony",
+        (f"{PKG}.gateway.",), ("server", "agents", "channels", "runtime", "symphony"),
         KNOWN_R3_GATEWAY_FOREIGN,
-    )
-    exit_code |= _check_rule(
-        graph, "R4 gateway/embedded/ 禁止 import server/agents（AgentServer 拷贝）",
-        (f"{PKG}.gateway.embedded.",), ("server", "agents"),
-        KNOWN_R4_EMBEDDED_FOREIGN,
     )
     return exit_code
 
@@ -373,15 +419,6 @@ def run_baseline(graph: ImportGraph) -> None:
         _fmt_delta(backref_imports, BASELINE["common_backref_imports"]),
     )
 
-    emb = [rel for rel in graph.files if rel.startswith("jiuwenswarm/gateway/embedded/")]
-    emb_loc = sum(len((REPO_ROOT / r).read_text(errors="replace").splitlines()) for r in emb)
-    logger.info("\n== gateway/embedded/（AgentServer 拷贝，A1–A3/A5 迁移对象）==")
-    logger.info(
-        "  文件数: %s，行数: %s",
-        _fmt_delta(len(emb), BASELINE["embedded_files"]),
-        _fmt_delta(emb_loc, BASELINE["embedded_loc"]),
-    )
-
     direct = set()
     for mod in gw_roots:
         for tgt in graph.hard.get(mod, set()) | graph.lazy.get(mod, set()):
@@ -432,6 +469,8 @@ def main() -> int:
     # 结果走 stdout、无日志前缀：保持 CLI 输出与 UT 断言（读 stdout）不变
     logging.basicConfig(stream=sys.stdout, format="%(message)s", level=logging.INFO)
 
+    global _ALL_LOCAL_PKGS
+    _ALL_LOCAL_PKGS = _all_local_top_modules()
     graph = ImportGraph()
     if args.baseline:
         run_baseline(graph)

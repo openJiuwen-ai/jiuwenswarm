@@ -21,10 +21,13 @@ Semantics (user-ruled):
   complete (the original designer executor's contract). Crash / cancel
   recovery is therefore Store-driven: the next trigger simply compiles with
   the completed nodes frozen. No resume bookkeeping, no trigger sequence;
-* a single-node trigger writes its result as the node's ``candidate_*``
-  fields; ``choose_output`` promotes or discards it (frontend revision
-  chooser contract). Full runs and cascade ("rerun from X") overwrite
-  directly — the explicit refresh the user asked for;
+* every trigger (single node / full / cascade) writes its result into the
+  node's current slots the same way: ``history`` is the old-version log (the
+  previous current output is archived before each overwrite, so
+  ``history[-1]`` is the true previous version) and ``text``/``output_ref``/
+  ``output_refs`` always hold the latest accepted output. The legacy
+  ``candidate_*`` fields are no longer written; ``choose_output`` stays only
+  to promote candidates left in pre-existing run records;
 * the run record's ``node_states`` is the cache/history store — per-node
   ``text`` snapshots feed compile-time inlining and ``history`` keeps one
   entry per trigger.
@@ -35,10 +38,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+from openjiuwen.agent_teams.paths import (
+    workflow_run_dir,
+    workflow_run_journal_path,
+    workflow_run_wal_path,
+)
 from openjiuwen.agent_teams.workflow.engine import run_workflow
 from openjiuwen.agent_teams.workflow.engine.errors import (
     WorkflowAborted as _WorkflowAborted,
@@ -49,13 +56,17 @@ from jiuwenswarm.common.schema.designer_graph import (
     RUN_SCHEMA_VERSION,
     DesignerExecutionGraph,
 )
-from jiuwenswarm.server.runtime.design.context import StoreNodeSpawner
+from jiuwenswarm.server.runtime.design.context import (
+    get_design_context_registry,
+)
 from jiuwenswarm.server.runtime.design.event_bridge import DesignEventBridge
 from jiuwenswarm.server.runtime.design.graph_compiler import (
     GraphScriptCompiler,
     _descendants,
 )
-from jiuwenswarm.server.runtime.design.worker_backend import DesignerWorkerBackend
+from jiuwenswarm.server.runtime.design.team_worker import (
+    build_worker_backend as _build_team_worker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +80,10 @@ class RunCoordinator:
         self,
         store: Any,
         graph_id: str,
-        spawner: StoreNodeSpawner,
         media_root: "Path | None" = None,
     ) -> None:
         self._store = store
         self._graph_id = graph_id
-        self._spawner = spawner
         # Team-owned media root: set by the bridge binding (the owning team's
         # team-workspace) so worker assets live under the team. None keeps the
         # legacy global designer_media layout.
@@ -164,9 +173,10 @@ class RunCoordinator:
         """Execute one trigger.
 
         Full run when ``node_ids`` is None; single node when ``node_ids=[X]``
-        (fresh output lands in ``candidate_*``); "rerun from X" when
-        ``cascade=True`` (X plus its downstream closure re-execute, outputs
-        overwrite directly — the refresh the user explicitly asked for).
+        (fresh output lands in the node's current slots — same as every
+        other trigger type); "rerun from X" when ``cascade=True`` (X plus its
+        downstream closure re-execute, outputs overwrite directly — the
+        refresh the user explicitly asked for).
         """
         async with self._lock:
             self.heal_zombie_runs(graph)
@@ -222,8 +232,6 @@ class RunCoordinator:
     ) -> dict[str, Any]:
         run_id, minted = self._ensure_run_id(graph)
         run = self._load_run(run_id, graph)
-        single = node_ids is not None and not cascade
-        journal_path = str(_journal_dir(run_id) / f"{run_id}.jsonl")
         # One eternal swarmflow run id (user-ruled): every trigger executes
         # under the graph's lifelong run id and appends into the same
         # journal + WAL pair. Cross-trigger cache behaviour is carried by
@@ -253,124 +261,126 @@ class RunCoordinator:
         trigger_scope = f"{run_id}-t{secrets.token_hex(4)}"
         run["status"] = "running"
         run["current_node_ids"] = []
+        # A new trigger invalidates the previous trigger's run-level error;
+        # leaving it would keep showing a stale refusal on every later run.
+        run.pop("error", None)
         self._store.save_run(run)
         if on_update is not None:
             on_update(dict(run))
 
-        # Layered writeback: the swarmflow layer (backend) only EMITS a
-        # node-result event; the design layer (bridge) listens and persists
-        # to the Store per node (the old executor's contract). The bridge is
-        # the single writer — engine status events and node results both
-        # flow through it.
-        bridge = DesignEventBridge(
-            run, on_update, store=self._store, single=single, graph=graph
-        )
-
-        script = self._compiler.compile(
-            graph,
-            run.get("node_states") or {},
-            node_ids=node_ids,
-            cascade=cascade,
-            run_id=run_id,
-        )
-        script_path = _write_script(run_id, script)
-        # Compile observability (user request 2026-10-11): one line per
-        # scheduled agent() call so the run log answers "did the edited
-        # upstream reach this node's compiled prompt" without opening the
-        # script file. Full prompts ride the backend's node-input log.
-        import re as _re
-
-        for match in _re.finditer(
-            r"label=([\"'])(?P<label>.*?)\1, phase=([\"'])(?P<phase>.*?)\3",
-            script,
-        ):
-            logger.info(
-                "[design-compile] run=%s node=%s phase=%s",
-                run_id,
-                match.group("label"),
-                match.group("phase"),
+        # From here on the record is armed as 'running': a compile refusal
+        # (single-node rerun whose upstream produced nothing) or a setup
+        # crash must write the failure back — otherwise the record stays
+        # 'running' with no live trigger and the frontend polls it forever.
+        context: Any = None
+        try:
+            # Layered writeback: the swarmflow layer (backend) only EMITS a
+            # node-result event; the design layer (bridge) listens and persists
+            # to the Store per node (the old executor's contract). The bridge is
+            # the single writer — engine status events and node results both
+            # flow through it.
+            bridge = DesignEventBridge(
+                run, on_update, store=self._store, graph=graph
             )
-        # Worker backend (terminal state 2026-10-12): the agent-core
-        # TeamWorkerBackend — every worker derives from the design team's
-        # teammate base spec, per-call role templates ride
-        # ``options={'agent_template': role}`` through the spec resolver
-        # (persona + package tools live in the designer AgentGroup package;
-        # the claw repo only maps graph nodes to role names). The base spec
-        # is bound by the bridge from the live design team (context.worker_
-        # base_spec); the fallback keeps the package-tool path testable.
-        from jiuwenswarm.server.runtime.design.context import (
-            get_design_context_registry,
-        )
-        from jiuwenswarm.server.runtime.design.team_worker import (
-            build_worker_backend as _build_team_worker,
-        )
+            script = self._compiler.compile(
+                graph,
+                run.get("node_states") or {},
+                node_ids=node_ids,
+                cascade=cascade,
+                run_id=run_id,
+            )
+            # Compile observability (user request 2026-10-11): one line per
+            # scheduled agent() call so the run log answers "did the edited
+            # upstream reach this node's compiled prompt" without opening the
+            # script file. Full prompts ride the backend's node-input log.
+            import re as _re
 
-        context = get_design_context_registry().for_graph(str(graph.get("graph_id") or self._graph_id))
-        base_spec = getattr(context, "worker_base_spec", None)
-        build_ctx = getattr(context, "worker_build_context", None)
-        expert_specs = getattr(context, "expert_specs", None)
-        team_name = getattr(context, "team_name", None) or f"jiuwen_team_design"
-        session_id = str((graph.get("metadata") or {}).get("session_id") or "").strip()
-        if base_spec is not None:
-            if expert_specs is None:
-                # Bridge bound the base spec but never derived the expert
-                # table (older binding path / ST direct binding): derive it
-                # now from the SAME enriched-spec source so agent_template
-                # names resolve instead of failing as "no group bound".
-                from jiuwenswarm.agents.harness.team import get_team_manager
-                from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
-                from jiuwenswarm.server.runtime.design.team_worker import (
-                    derive_design_expert_specs,
+            for match in _re.finditer(
+                r"label=([\"'])(?P<label>.*?)\1, phase=([\"'])(?P<phase>.*?)\3",
+                script,
+            ):
+                logger.info(
+                    "[design-compile] run=%s node=%s phase=%s",
+                    run_id,
+                    match.group("label"),
+                    match.group("phase"),
                 )
-
-                worker_spec = await get_team_manager().get_swarm_enriched_team_spec(
-                    session_id=session_id,
-                    mode=NEW_TEAM_DESIGN,
-                    agent_group_name="designer",
+            # Worker backend (terminal state 2026-10-12): the agent-core
+            # TeamWorkerBackend — every worker derives from the design team's
+            # teammate base spec, per-call role templates ride
+            # ``options={'agent_template': role}`` through the spec resolver
+            # (persona + package tools live in the designer AgentGroup package;
+            # the claw repo only maps graph nodes to role names). The base spec
+            # is bound by the bridge from the live design team (context.worker_
+            # base_spec); an unbound context is a setup error, not a mode to
+            # silently route around with a legacy executor.
+            context = get_design_context_registry().for_graph(
+                str(graph.get("graph_id") or self._graph_id)
+            )
+            if context is None or context.worker_base_spec is None:
+                raise RuntimeError(
+                    "design context not bound for this graph: the session bridge "
+                    "must bind_round (worker base spec) before a trigger starts"
                 )
-                expert_specs = derive_design_expert_specs(worker_spec)
-                context.expert_specs = expert_specs
+            build_ctx = context.worker_build_context
+            expert_specs = context.expert_specs
+            team_name = str(context.team_name or "").strip()
+            session_id = str((graph.get("metadata") or {}).get("session_id") or "").strip()
+            if not team_name or not session_id:
+                raise RuntimeError(
+                    "design trigger needs its owning team: team_name (bound by "
+                    "the bridge) and the graph's metadata.session_id are both "
+                    f"required, got team_name={team_name!r} session_id={session_id!r}"
+                )
+            # Native swarmflow layout (user ruling 2026-10-19): journal / WAL /
+            # compiled scripts live under the owning team session exactly like
+            # the leader's swarmflow tool —
+            # {team_home}/sessions/{sid}/workflows/{graph_id}/. The workflow
+            # name is the compiled script's META.name, which the compiler sets
+            # to the graph id.
+            workflow_name = str(graph.get("graph_id") or self._graph_id)
+            run_dir = workflow_run_dir(team_name, session_id, workflow_name)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "wal").mkdir(exist_ok=True)
+            journal_path = str(
+                workflow_run_journal_path(team_name, session_id, workflow_name, run_id)
+            )
+            wal_path = str(
+                workflow_run_wal_path(team_name, session_id, workflow_name, run_id)
+            )
+            script_path = _write_script(run_dir, trigger_scope, script)
             backend = _build_team_worker(
                 team_name=team_name,
-                worker_base_spec=base_spec,
+                worker_base_spec=context.worker_base_spec,
                 build_context=build_ctx,
                 # Worker names (hence their checkpointer keys under the shared
                 # session) derive from this id; the lifelong run id would mint
                 # the same name on every rerun and restore the last worker's
                 # context. The engine's journal keeps the lifelong run id.
                 run_id=trigger_scope,
-                session_id=session_id or None,
+                session_id=session_id,
                 expert_specs=expert_specs,
             )
-        else:  # pragma: no cover — bridge not bound (unit path)
-            backend = DesignerWorkerBackend(
+            # Host guarantees (plan A, user ruling 2026-10-12): re-arm the old
+            # executor's post-turn contract on every worker call — text products
+            # get a workspace file ref, media nodes get handler materialization
+            # when the worker's result lacks the required family, and a node that
+            # still has no required media FAILS (never completed-with-stub).
+            from jiuwenswarm.server.runtime.design.media_guarantee import (
+                MediaGuaranteeBackend,
+            )
+
+            backend = MediaGuaranteeBackend(
+                backend,
                 graph=graph,
-                run_id=trigger_scope,
-                spawner=self._spawner,
-                event_sink=bridge.on_node_result,
+                run=run,
+                bridge=bridge,
                 media_root=self.media_root,
             )
-        # Host guarantees (plan A, user ruling 2026-10-12): re-arm the old
-        # executor's post-turn contract on every worker call — text products
-        # get a workspace file ref, media nodes get handler materialization
-        # when the worker's result lacks the required family, and a node that
-        # still has no required media FAILS (never completed-with-stub).
-        from jiuwenswarm.server.runtime.design.media_guarantee import (
-            MediaGuaranteeBackend,
-        )
-
-        backend = MediaGuaranteeBackend(
-            backend,
-            graph=graph,
-            run=run,
-            bridge=bridge,
-            media_root=self.media_root,
-        )
-        # Node-result writeback: the manifest package's submit tool resolves
-        # the active sink through the design context (graph-keyed); the
-        # TeamWorkerBackend path has no event_sink of its own, so register
-        # the bridge handler here and clear it when the trigger ends.
-        if context is not None:
+            # Node-result writeback: the manifest package's submit tool resolves
+            # the active sink through the design context (graph-keyed); the
+            # TeamWorkerBackend path has no event_sink of its own, so register
+            # the bridge handler here and clear it when the trigger ends.
             context.node_result_sink = bridge.on_node_result
             # Worker-tool live activity (handler-level stage lines): resolved
             # by manifest tools through the design context like the result sink.
@@ -384,50 +394,50 @@ class RunCoordinator:
                 "media_root": self.media_root,
                 "generations": {},
             }
-        # Concurrency observability: keep the last trigger's backend alive on
-        # the coordinator so STs / diagnostics can read max_in_flight (a
-        # parallel wave compiles to engine parallel(); the backend sees the
-        # real overlap, unlike wall-clock probes at the media layer).
-        self.last_backend = backend
-        self._loop = asyncio.get_running_loop()
-        self._abort = _AbortSignal(reason="stop")
-        abort_signal = self._abort
-        try:
-            try:
-                result = await run_workflow(
-                    str(script_path),
-                    args=None,
-                    backend=backend,
-                    progress_sink=bridge.emit,
-                    log_sink=lambda message: logger.info("[design-run] %s", message),
-                    run_id=run_id,
-                    journal_path=journal_path,
-                    abort_event=abort_signal,
-                )
-            except _WorkflowAborted:
-                run["status"] = "cancelled"
-                run["current_node_ids"] = []
-                for state in (run.get("node_states") or {}).values():
-                    if state.get("status") == "running":
-                        state["status"] = "cancelled"
-                self._store.save_run(run)
-                if on_update is not None:
-                    on_update(dict(run))
-                return run
-            except Exception as exc:
-                logger.exception("[design-run] trigger failed: run_id=%s", run_id)
-                run["status"] = "failed"
-                run["current_node_ids"] = []
-                message = f"{type(exc).__name__}: {exc}"
-                for node_id, state in (run.get("node_states") or {}).items():
-                    if state.get("status") == "running":
-                        state["status"] = "failed"
-                        state["error"] = message[:2000]
-                run.setdefault("error", message[:2000])
-                self._store.save_run(run)
-                if on_update is not None:
-                    on_update(dict(run))
-                return run
+            # Concurrency observability: keep the last trigger's backend alive on
+            # the coordinator so STs / diagnostics can read max_in_flight (a
+            # parallel wave compiles to engine parallel(); the backend sees the
+            # real overlap, unlike wall-clock probes at the media layer).
+            self.last_backend = backend
+            self._loop = asyncio.get_running_loop()
+            self._abort = _AbortSignal(reason="stop")
+            abort_signal = self._abort
+            result = await run_workflow(
+                str(script_path),
+                args=None,
+                backend=backend,
+                progress_sink=bridge.emit,
+                log_sink=lambda message: logger.info("[design-run] %s", message),
+                run_id=run_id,
+                journal_path=journal_path,
+                resume=journal_path,
+                wal_path=wal_path,
+                abort_event=abort_signal,
+            )
+        except _WorkflowAborted:
+            run["status"] = "cancelled"
+            run["current_node_ids"] = []
+            for state in (run.get("node_states") or {}).values():
+                if state.get("status") == "running":
+                    state["status"] = "cancelled"
+            self._store.save_run(run)
+            if on_update is not None:
+                on_update(dict(run))
+            return run
+        except Exception as exc:
+            logger.exception("[design-run] trigger failed: run_id=%s", run_id)
+            run["status"] = "failed"
+            run["current_node_ids"] = []
+            message = f"{type(exc).__name__}: {exc}"
+            for node_id, state in (run.get("node_states") or {}).items():
+                if state.get("status") == "running":
+                    state["status"] = "failed"
+                    state["error"] = message[:2000]
+            run["error"] = message[:2000]
+            self._store.save_run(run)
+            if on_update is not None:
+                on_update(dict(run))
+            return run
         finally:
             # Trigger ended: drop the context's node-result sink so package
             # tools outside a trigger submit to a clear "no active trigger"
@@ -501,12 +511,10 @@ class RunCoordinator:
             bridge.on_node_result(node_id, {"text": text})
 
         # Successful nodes were persisted per node as they completed (the
-        # persist callback); only the canvas-facing output refs remain to
-        # stamp. Full runs and cascade overwrite directly — the explicit
-        # refresh the user asked for; single triggers already landed in
-        # candidate_* awaiting choose_output.
-        if not single:
-            self._write_outputs_to_graph(graph, run)
+        # persist callback); stamp the canvas-facing output refs for every
+        # trigger type — a single run's fresh output must reach the graph
+        # node too, or the canvas keeps showing the previous version.
+        self._write_outputs_to_graph(graph, run)
 
         run["status"] = "completed"
         run["current_node_ids"] = []
@@ -566,7 +574,12 @@ class RunCoordinator:
     # ------------------------------------------------------------------
 
     def choose_output(self, run_id: str, node_id: str, choice: str) -> dict[str, Any]:
-        """Resolve a single-node rerun candidate (``new`` promotes it)."""
+        """Resolve a single-node rerun candidate (``new`` promotes it).
+
+        Legacy compatibility only: triggers no longer write ``candidate_*``
+        fields, so this resolves candidates left in run records created
+        before that change. May later be re-pointed at ``history`` picks.
+        """
         run = self._store.get_run(run_id)
         if run is None:
             raise ValueError(f"designer run not found: {run_id!r}")
@@ -592,19 +605,12 @@ class RunCoordinator:
         return run
 
 
-def _write_script(run_id: str, source: str) -> Path:
-    path = Path(tempfile.gettempdir()) / f"design_{run_id}_{secrets.token_hex(4)}.py"
+def _write_script(run_dir: Path, trigger_scope: str, source: str) -> Path:
+    """Archive one trigger's compiled script next to its journal (native layout)."""
+    path = run_dir / "scripts" / f"{trigger_scope}.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")
     logger.info("[design-run] compiled script: %s", path)
-    return path
-
-
-def _journal_dir(run_id: str) -> Path:
-    """Durable journal home for one graph's triggers (survives crashes)."""
-    from jiuwenswarm.common.utils import get_agent_root_dir
-
-    path = get_agent_root_dir() / "designer" / "journals" / run_id
-    path.mkdir(parents=True, exist_ok=True)
     return path
 
 

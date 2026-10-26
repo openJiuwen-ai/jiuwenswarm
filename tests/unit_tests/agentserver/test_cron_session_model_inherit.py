@@ -272,7 +272,7 @@ def test_inherit_session_model_reuses_session_model(monkeypatch: pytest.MonkeyPa
     )
     # validate_cron_model 返回 canonical 值（这里模拟其解析成功）
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.cron.models.validate_cron_model",
+        "jiuwenswarm.runtime.cron.models.validate_cron_model",
         lambda raw: str(raw).strip() or None,
     )
     context = CronToolContext(channel_id="web", session_id="web_sess_1")
@@ -290,7 +290,7 @@ def test_inherit_session_model_overrides_explicit(monkeypatch: pytest.MonkeyPatc
         lambda sid, cache_bust=False: {"model": "mimo-v2.5-free"},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.cron.models.validate_cron_model",
+        "jiuwenswarm.runtime.cron.models.validate_cron_model",
         lambda raw: str(raw).strip() or None,
     )
     context = CronToolContext(channel_id="web", session_id="web_sess_1")
@@ -338,7 +338,7 @@ def test_inherit_session_model_validation_failure_keeps_payload(monkeypatch: pyt
         raise ValueError(f"Unknown model {raw!r}")
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.cron.models.validate_cron_model",
+        "jiuwenswarm.runtime.cron.models.validate_cron_model",
         _reject,
     )
     context = CronToolContext(channel_id="web", session_id="web_sess_1")

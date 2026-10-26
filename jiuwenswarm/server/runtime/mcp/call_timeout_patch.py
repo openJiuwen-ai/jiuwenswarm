@@ -14,10 +14,9 @@ This patch is applied once at process startup (from
 ``JiuWenSwarmDeepAdapter.__init__``):
 
   A. Wrap ``call_tool`` / ``list_tools`` on the HTTP transports with
-     ``anyio.fail_after``. On timeout we ``disconnect()`` so the dead session
-     is torn down and the very next call fails fast (the stock client raises
-     "Not connected" once ``self._session`` is None) instead of waiting out
-     the full timeout again.
+     ``anyio.fail_after``. On timeout, clients with lazy reconnect detach the
+     dead session and recover on the next call; older clients are disconnected
+     so the next call fails fast with "Not connected".
 
      NB: must use ``anyio.fail_after`` (a cancel scope), *not*
      ``asyncio.wait_for``. The MCP SDK runs its streamable-http transport
@@ -93,32 +92,35 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                     return await orig(self, *args, **kwargs)
             except TimeoutError:
                 logger.warning(
-                    "[mcp-timeout] %s.%s timed out after %.1fs, disconnecting client: %s",
+                    "[mcp-timeout] %s.%s timed out after %.1fs, releasing client: %s",
                     cls.__name__,
                     name,
                     timeout,
                     getattr(self, "_server_path", "?"),
                 )
-                # Tear down the dead session so the next call fails fast rather
-                # than burning another full timeout window on a half-open conn.
-                # disconnect runs the same anyio task-group teardown that can
-                # raise a BaseExceptionGroup (containing GeneratorExit); coerce
-                # it so the timeout path doesn't escape as an uncatchable group.
-                try:
-                    await self.disconnect()
-                except BaseException as disc_exc:  # noqa: BLE001
-                    from jiuwenswarm.server.runtime.mcp.exc_group import (
-                        reraise_as_exception,
-                    )
+                if hasattr(self, "_lazy_reconnect"):
+                    # Detach the dead session; the next call lazily reconnects
+                    # on the owner task. Awaiting disconnect here would block
+                    # behind that queue.
+                    setattr(self, "_lazy_reconnect", True)
+                    setattr(self, "_session", None)
+                else:
+                    # Older clients: tear down so the next call fails fast.
                     try:
-                        reraise_as_exception(disc_exc)
-                    except Exception as coerce_exc:  # noqa: BLE001
-                        logger.warning(
-                            "[mcp-timeout] %s.%s disconnect after timeout also failed: %r",
-                            cls.__name__,
-                            name,
-                            coerce_exc,
+                        await self.disconnect()
+                    except BaseException as disc_exc:  # noqa: BLE001
+                        from jiuwenswarm.server.runtime.mcp.exc_group import (
+                            reraise_as_exception,
                         )
+                        try:
+                            reraise_as_exception(disc_exc)
+                        except Exception as coerce_exc:  # noqa: BLE001
+                            logger.warning(
+                                "[mcp-timeout] %s.%s disconnect after timeout also failed: %r",
+                                cls.__name__,
+                                name,
+                                coerce_exc,
+                            )
                 raise
             except BaseException as exc:
                 # The mcp SDK's streamablehttp_client runs inside an anyio task
@@ -151,8 +153,8 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
     # connect() returns, while the SDK's task-group scope it entered is still
     # alive — anyio then raises "Attempted to exit a cancel scope that isn't
     # the current task's current cancel scope" on the next task-group op
-    # (e.g. list_tools). connect already guards initialize() with
-    # asyncio.wait_for, so it does not need an outer cancel scope.
+    # (e.g. list_tools). connect bounds initialize() internally, so it does
+    # not need an outer cancel scope.
     for cls in (StreamableHttpClient, SseClient):
         _wrap_with_timeout(cls, "call_tool")
         _wrap_with_timeout(cls, "list_tools")

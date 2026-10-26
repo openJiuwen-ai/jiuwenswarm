@@ -61,6 +61,8 @@ export interface Session {
   agent_group_name?: string | null;
   /** 首次 AgentGroup 绑定时锁定的 leader 身份；旧 session 可能没有该字段。 */
   team_leader_identity?: unknown;
+  /** 首次 AgentGroup 绑定时锁定的展示身份；旧 session 会在包仍存在时补齐。 */
+  team_group_identity?: unknown;
   // ---- session.list 扩展字段 ----
   channel_id?: string; // 渠道ID
   user_id?: string; // 创建人ID
@@ -113,6 +115,24 @@ export type ModelReasoningCatalog = {
   protocol_defaults: Required<ModelReasoningProtocols>;
   model_fallbacks: ModelReasoningRule[];
 };
+
+export interface ChatInputProvenance {
+  input_origin: 'manual_free_text' | 'starter_click' | 'default_reply' | 'tab_suggestion' | 'prompt_suggestion' | 'pasted_or_unknown';
+  assistance_origin: 'none' | 'starter_click' | 'default_reply' | 'tab_suggestion' | 'prompt_suggestion' | 'unknown';
+  topic_starter?: {
+    manifest_id: string;
+    generation_batch_id: string;
+    exposure_id: string;
+    card_revision_id: string;
+    context_scope: string;
+    project_id: string | null;
+  };
+  // The in-conversation suggestion the user accepted, sent as it was or edited.
+  prompt_suggestion?: {
+    suggestion_id: string;
+    edited: boolean;
+  };
+}
 
 export interface ModelEntry {
   /** Backend stable model ID. Zen free models may omit this field. */
@@ -177,6 +197,8 @@ export type ModelGroup = {
 export type ModelSelectionReference = {
   scope: string;
   scope_id?: string;
+  /** User-facing label when the backend resolved a display name (#5477). */
+  label?: string;
 };
 
 export interface VendorPreset {
@@ -207,7 +229,7 @@ export type VendorPresetMap = Record<ModelPlan, VendorPreset[]> & {
 
 export interface VendorFetchModelsResult {
   models: string[];
-  source: 'remote' | 'preset';
+  source: 'remote' | 'preset' | 'unavailable';
   reason?: string;
 }
 

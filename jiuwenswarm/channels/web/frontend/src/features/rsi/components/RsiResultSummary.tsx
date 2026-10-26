@@ -125,11 +125,11 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
                   data-testid="rsi-best-link"
                   data-variant="link"
                 >
-                  {bestName ?? '当前暂无产物'}
+                  {bestName ?? '-'}
                 </button>
               ) : (
                 <span className="rsi-best__name" data-testid="rsi-best-link" data-variant="text">
-                  {bestName ?? '当前暂无产物'}
+                  {bestName ?? '-'}
                 </span>
               )}
             </div>

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.gateway.channel_manager.protocol.ssh.config import proxy_config_from_dict
-from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import (
+from jiuwenswarm.gateway.extensions.auth.ssh_key_registry import (
     KeyRegistry,
     KeyRegistryEntry,
 )

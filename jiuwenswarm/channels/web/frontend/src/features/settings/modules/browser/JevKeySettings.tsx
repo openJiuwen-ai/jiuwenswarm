@@ -3,47 +3,48 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '../../../../components/ui';
 import { SettingRow, SettingsConfirmDialog } from '../../components';
 import type { SettingsCustomItemProps } from '../../registry/types';
-import { buildConfigSavePayload } from '../../services/settingsContract';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { useSettingsSource } from '../../services/SettingsSourceProvider';
-import { AgentConfigDialog, type SaveConfig } from '../agent/AgentSettings';
-
-// The key is stored in the .env variable of the selected provider and hot-reloaded into
-// the AgentServer by config.save_all; the page only ever learns whether it is configured.
-const KEY_FIELD_BY_PROVIDER: Record<string, string> = {
-  openrouter: 'jev_openrouter_api_key',
-  typesafe: 'jev_typesafe_api_key',
-};
+import { useSettingsConfig } from '../../services/useSettingsConfig';
+import { JevConfigDialog } from '../models/JevConfigDialog';
+import { createJevDraft, JEV_PRESETS, validateJevDraft, type JevDraft } from './jevSettings';
 
 export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
   const { t } = useTranslation();
-  const { isConnected, request, saveQueue } = useSettingsServices();
+  const { isConnected, request } = useSettingsServices();
   const { values, save, patchLocal } = useSettingsSource();
+  const { config, loading, error, save: saveConfigFields } = useSettingsConfig();
   const [configuring, setConfiguring] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [clearingBusy, setClearingBusy] = useState(false);
   const [clearError, setClearError] = useState('');
-  const field = KEY_FIELD_BY_PROVIDER[String(values.decision_provider)] ?? KEY_FIELD_BY_PROVIDER.typesafe;
-  const titleKey = `settingsPanel.fields.${field}.title`;
-  const configured = values.jev_key_configured === true;
-
-  const saveKey = async (updates: Record<string, string>, operation: string) => {
-    const result = await saveQueue.enqueue(operation, () =>
-      request('config.save_all', buildConfigSavePayload(updates), { timeoutMs: 600_000 }),
-    );
-    patchLocal({ jev_key_configured: Boolean(updates[field]) });
-    return result;
+  const draft = createJevDraft(values, config);
+  const refresh = async () => patchLocal(await request<Record<string, unknown>>('path.get'));
+  const saveDraft = async (next: JevDraft) => {
+    // Persist the credential before activating a newly selected provider.
+    const keyField = JEV_PRESETS[next.provider].keyField;
+    if (next.api_key.trim() !== config[keyField]) {
+      await saveConfigFields({ [keyField]: next.api_key.trim() }, 'settingsPanel.browser.jevConfig');
+    }
+    await save({
+      decision_provider: next.provider,
+      decision_model: next.model.trim(),
+      decision_api_base: next.api_base.trim(),
+    }, 'settingsPanel.browser.jevConfig');
+    await refresh();
   };
-  const saveConfig: SaveConfig = (updates, operation) => saveKey(updates, operation);
-
   const confirmClear = async () => {
     setClearingBusy(true);
     setClearError('');
     try {
-      // Jev cannot run without its key, so turn it off before removing the key.
-      if (values.decision_mode !== 'llm')
+      if (values.decision_mode !== 'llm') {
         await save({ decision_mode: 'llm' }, 'settingsPanel.fields.decision_mode.title');
-      await saveKey({ [field]: '' }, titleKey);
+      }
+      await saveConfigFields({
+        [JEV_PRESETS[draft.provider].keyField]: '',
+        moa_jev_enabled: 'false',
+      }, 'settingsPanel.browser.jevConfig');
+      await refresh();
       setClearing(false);
     } catch (error) {
       setClearError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
@@ -51,56 +52,55 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
       setClearingBusy(false);
     }
   };
-
+  const providerName = draft.provider === 'custom'
+    ? t('settingsPanel.browser.providerCustom')
+    : JEV_PRESETS[draft.provider].label;
   return (
     <>
       <SettingRow
-        title={t('settingsPanel.fields.jev_api_key.title')}
-        description={configured ? t('settingsPanel.common.configured') : t('settingsPanel.common.notConfigured')}
+        title={t('settingsPanel.browser.jevConfig')}
+        description={loading ? t('common.loading') : draft.api_key
+          ? `${providerName} · ${draft.model}` : t('settingsPanel.common.notConfigured')}
       >
         <Button
-          disabled={disabled || !isConnected}
+          disabled={disabled || !isConnected || loading || Boolean(error) || clearingBusy}
           onClick={() => setConfiguring(true)}
-          data-testid="settings-browser-jev-key-configure-btn"
-          data-variant={field}
+          data-testid="settings-browser-jev-configure-btn"
         >
           {t('settingsPanel.common.configure')}
         </Button>
-        {configured ? (
+        {draft.api_key ? (
           <Button
-            disabled={disabled || !isConnected}
-            onClick={() => {
-              setClearError('');
-              setClearing(true);
-            }}
-            data-testid="settings-browser-jev-key-clear-btn"
-            data-variant={field}
+            disabled={disabled || !isConnected || loading || clearingBusy}
+            onClick={() => { setClearError(''); setClearing(true); }}
+            data-testid="settings-browser-jev-clear-btn"
           >
             {t('settingsPanel.common.clear')}
           </Button>
         ) : null}
       </SettingRow>
+      {error ? (
+        <div className="settings-page__error" role="alert" data-testid="settings-browser-jev-load-error">{error}</div>
+      ) : null}
       {configuring ? (
-        <AgentConfigDialog
-          titleKey={titleKey}
-          fields={[field]}
-          config={{}}
-          save={saveConfig}
+        <JevConfigDialog
+          initialValues={draft}
+          createProviderDraft={(provider) => createJevDraft({ decision_provider: provider }, config)}
+          validate={validateJevDraft}
+          save={saveDraft}
           onClose={() => setConfiguring(false)}
         />
       ) : null}
       <SettingsConfirmDialog
         open={clearing}
-        title={t('settingsPanel.dialog.clearTitle', { name: t(titleKey) })}
-        message={t('settingsPanel.dialog.clearConfirm', { name: t(titleKey) })}
+        title={t('settingsPanel.dialog.clearTitle', { name: t('settingsPanel.browser.jevConfig') })}
+        message={t('settingsPanel.browser.clearSharedJevConfirm')}
         confirming={clearingBusy}
         error={clearError || undefined}
         confirmLabel={t('settingsPanel.common.clear')}
         confirmVariant="danger"
         onConfirm={() => void confirmClear()}
-        onCancel={() => {
-          if (!clearingBusy) setClearing(false);
-        }}
+        onCancel={() => { if (!clearingBusy) setClearing(false); }}
       />
     </>
   );

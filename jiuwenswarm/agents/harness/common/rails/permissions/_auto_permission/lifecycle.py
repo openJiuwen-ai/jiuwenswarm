@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
-    normalize_permissions_for_runtime,
+    normalize_auto_permission_options,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_reviewer import (
     AutoReviewer,
@@ -22,10 +21,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.policy_eval import (
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.trusted_search_urls import (
     SessionTrustedSearchUrls,
-)
-from jiuwenswarm.agents.harness.common.rails.permissions.send_file_approval_scope import (
-    SendFileHumanApprovalBridge,
-    SendFileSessionApprovalStore,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
     SessionDenyStore,
@@ -50,17 +45,12 @@ class AutoPermissionLifecycleMixin:
         auto_reviewer: AutoReviewer | None = None,
         trusted_search_urls: SessionTrustedSearchUrls | None = None,
         persistent_audit_writer: Any | None = None,
-        send_file_session_approval_store: SendFileSessionApprovalStore | None = None,
-        exact_permission_persist_callback: Callable[
-            [str, dict[str, Any], tuple[tuple[str, str], ...]], bool
-        ]
-        | None = None,
         browser_runtime_security_profile: Any | None = None,
     ) -> None:
         self.base_rail = base_rail
         self._owner_agent = None
         self.priority = int(getattr(base_rail, "priority", 90))
-        self.permission_config = normalize_permissions_for_runtime(permission_config)
+        self.permission_config = deepcopy(permission_config)
         self.workspace_root = (
             Path(workspace_root).resolve(strict=False)
             if workspace_root is not None
@@ -76,21 +66,12 @@ class AutoPermissionLifecycleMixin:
         self.session_deny_store = session_deny_store or SessionDenyStore()
         self.policy_evaluator = policy_evaluator or OpenJiuwenPolicyEvaluator(
             base_rail,
-            permission_config_getter=lambda: self.permission_config,
             workspace_root=self.workspace_root,
         )
-        auto_options = self.permission_config.get("auto")
-        self.auto_options = auto_options if isinstance(auto_options, dict) else {}
+        self.auto_options = normalize_auto_permission_options(self.permission_config.get("auto"))
         self.auto_reviewer = auto_reviewer
         self.trusted_search_urls = trusted_search_urls
         self.persistent_audit_writer = persistent_audit_writer
-        self.send_file_session_approval_store = (
-            send_file_session_approval_store or SendFileSessionApprovalStore()
-        )
-        self.send_file_approval_bridge = SendFileHumanApprovalBridge(
-            session_store=self.send_file_session_approval_store,
-            exact_persist_callback=exact_permission_persist_callback,
-        )
         self.browser_runtime_security_profile = browser_runtime_security_profile
 
     def init(self, agent: Any) -> None:
@@ -109,7 +90,6 @@ class AutoPermissionLifecycleMixin:
                 uninit(agent)
         finally:
             self._owner_agent = None
-            self.send_file_session_approval_store.clear_all()
 
     def get_tools(self) -> set[str]:
         """Return the base rail tool labels used by OpenJiuwen registration."""
@@ -143,11 +123,15 @@ class AutoPermissionLifecycleMixin:
                         continue
             setter(tuple(dict.fromkeys(roots)))
 
+    def replace_installed_global_permissions(self, config: dict[str, Any]) -> dict[str, Any] | None:
+        """Forward the existing Host setter without owning another Global layer."""
+        replace_global = getattr(self.base_rail, "replace_installed_global_permissions", None)
+        return replace_global(config) if callable(replace_global) else None
+
     def update_config(self, config: dict[str, Any]) -> None:
-        """Install a complete same-rail runtime configuration update."""
-        permission_config = normalize_permissions_for_runtime(config)
-        raw_auto_options = permission_config.get("auto")
-        auto_options = raw_auto_options if isinstance(raw_auto_options, dict) else {}
+        """Apply effective permissions through the standard base rail."""
+        permission_config = deepcopy(config)
+        auto_options = normalize_auto_permission_options(permission_config.get("auto"))
         timeout_ms = int(auto_options.get("reviewer_timeout_ms", 60000))
         min_confidence = float(auto_options.get("reviewer_min_confidence", 0.7))
 

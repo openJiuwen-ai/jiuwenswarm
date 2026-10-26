@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import socket
@@ -55,6 +56,12 @@ logger = logging.getLogger(__name__)
 
 # How often the background keeper retries ports that failed to bind.
 _BIND_RETRY_INTERVAL = 5.0
+
+# Upstream response phases use separate limits: SSE streams stay unlimited,
+# but a black-holed upstream must not hold a runtime or socket forever.
+_UPSTREAM_HEADER_TIMEOUT_SECONDS = 60.0
+_UPSTREAM_BODY_TIMEOUT_SECONDS = 300.0
+_WS_HANDSHAKE_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass
@@ -511,6 +518,33 @@ async def _iter_request_body(request: Request):
             yield chunk
 
 
+_PLUGIN_BUNDLE_PREFIX = "__agentbox_plugins_/"
+_TARGET_DIGEST_LENGTH = 12
+
+
+def _request_target_summary(
+    tail: str, upstream_url: str
+) -> tuple[str, int, int, str]:
+    """Return a log-safe summary instead of the full proxy target.
+
+    Plugin bundle paths embed a multi-KB Base64URL payload. Logging them in
+    full is synchronous I/O on the event loop and can stall every request when
+    the log backend applies backpressure; keep only kind, lengths and an
+    opaque digest for correlation.
+    """
+    normalized = (tail or "").lstrip("/")
+    kind = (
+        "plugin_bundle"
+        if normalized.startswith(_PLUGIN_BUNDLE_PREFIX)
+        else "regular"
+    )
+    digest = hashlib.sha256(
+        (tail or "").encode("utf-8", errors="replace")
+    ).hexdigest()[:_TARGET_DIGEST_LENGTH]
+    query = urllib.parse.urlsplit(upstream_url).query
+    return kind, len(tail or ""), len(query), digest
+
+
 async def _proxy_http(
     app: FastAPI,
     channel: Any,
@@ -545,11 +579,18 @@ async def _proxy_http(
         upstream_url = _merge_request_query(
             upstream_url, str(request.url.query or "")
         )
+        target_kind, path_length, query_length, target_digest = (
+            _request_target_summary(tail, upstream_url)
+        )
         logger.info(
-            "[WebProxy] HTTP proxy: agent=%s method=%s path=/%s",
+            "[WebProxy] HTTP proxy: agent=%s method=%s target_kind=%s "
+            "path_len=%d query_len=%d target_digest=%s",
             agent_type,
             request.method,
-            tail,
+            target_kind,
+            path_length,
+            query_length,
+            target_digest,
         )
         try:
             ctx = session.request(
@@ -560,15 +601,37 @@ async def _proxy_http(
                     client_host=str(getattr(request.client, "host", "") or ""),
                     user_id=user_id,
                 ),
+                allow_redirects=False,
                 data=(
                     _iter_request_body(request)
                     if _request_has_body(request)
                     else None
                 ),
             )
-            upstream_resp = await ctx.__aenter__()
+            upstream_resp = await asyncio.wait_for(
+                ctx.__aenter__(), timeout=_UPSTREAM_HEADER_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[WebProxy] HTTP proxy header timeout: agent=%s target_kind=%s "
+                "path_len=%d query_len=%d target_digest=%s",
+                agent_type,
+                target_kind,
+                path_length,
+                query_length,
+                target_digest,
+            )
+            return PlainTextResponse("upstream timeout", status_code=504)
         except aiohttp.ClientError as exc:
-            logger.warning("[WebProxy] HTTP proxy failed: agent=%s path=/%s", agent_type, tail)
+            logger.warning(
+                "[WebProxy] HTTP proxy failed: agent=%s target_kind=%s "
+                "path_len=%d query_len=%d target_digest=%s",
+                agent_type,
+                target_kind,
+                path_length,
+                query_length,
+                target_digest,
+            )
             logger.debug("[WebProxy] HTTP proxy error detail: %s", exc)
             return PlainTextResponse(f"upstream error: {exc}", status_code=502)
 
@@ -602,8 +665,25 @@ async def _proxy_http(
             )
 
         try:
-            resp_body = b"" if no_body else await upstream_resp.read()
+            if no_body:
+                resp_body = b""
+            else:
+                resp_body = await asyncio.wait_for(
+                    upstream_resp.read(),
+                    timeout=_UPSTREAM_BODY_TIMEOUT_SECONDS,
+                )
             upstream_headers = _filter_response_headers(upstream_resp.raw_headers)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[WebProxy] HTTP proxy body timeout: agent=%s target_kind=%s "
+                "path_len=%d query_len=%d target_digest=%s",
+                agent_type,
+                target_kind,
+                path_length,
+                query_length,
+                target_digest,
+            )
+            return PlainTextResponse("upstream timeout", status_code=504)
         finally:
             await ctx.__aexit__(None, None, None)
         response = Response(content=resp_body, status_code=status)
@@ -685,12 +765,33 @@ async def _proxy_ws(
             client_host=str(getattr(websocket.client, "host", "") or ""),
             user_id=user_id,
         )
-        logger.info("[WebProxy] WS tunnel: agent=%s path=/%s", agent_type, tail)
+        target_kind, path_length, query_length, target_digest = (
+            _request_target_summary(tail, upstream_url)
+        )
+        logger.info(
+            "[WebProxy] WS tunnel: agent=%s target_kind=%s path_len=%d "
+            "query_len=%d target_digest=%s",
+            agent_type,
+            target_kind,
+            path_length,
+            query_length,
+            target_digest,
+        )
         try:
             ws_ctx = session.ws_connect(upstream_url, headers=ws_headers)
-            ws_upstream = await ws_ctx.__aenter__()
-        except aiohttp.ClientError as exc:
-            logger.warning("[WebProxy] WS proxy failed: agent=%s path=/%s", agent_type, tail)
+            ws_upstream = await asyncio.wait_for(
+                ws_ctx.__aenter__(), timeout=_WS_HANDSHAKE_TIMEOUT_SECONDS
+            )
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.warning(
+                "[WebProxy] WS proxy failed: agent=%s target_kind=%s "
+                "path_len=%d query_len=%d target_digest=%s",
+                agent_type,
+                target_kind,
+                path_length,
+                query_length,
+                target_digest,
+            )
             logger.debug("[WebProxy] WS proxy error detail: %s", exc)
             if websocket.client_state.name != "DISCONNECTED":
                 try:

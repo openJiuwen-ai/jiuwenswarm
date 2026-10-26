@@ -410,5 +410,7 @@
   --color-rsi-running-bg: #e5f6ef;
   --color-switch-track-off: #c2c2c2;
   --color-switch-track-on: #1476ff;
+  /* PersonalContext 添加内容抽屉:频率单位 pill 未选中态 */
+  --color-personal-context-pill-surface: #f5f5f5;
   color-scheme: light;
 }

@@ -74,11 +74,14 @@ description_cn: 所有 Skill Creator 的统一入口。按场景与类型路由�
 ## 强制交付规则（创建与修改均适用）
 
 1. **不要**把成品直接安装进用户长期 workspace 技能目录作为最终步骤。
-2. 在临时目录或工作草稿目录生成完整 Skill 目录（含合法 `SKILL.md`，YAML 含非空 `name` 与 `description`）。
-3. 将目录打成 **`.zip` 或 `.skill`（zip 格式）** 包。包内**不得**包含根级 `.archive/`。
-4. 包内 YAML 的 `version` **不要**当作产品版本写入；创建/修改输出包不应携带产品 `version` 身份。
-5. 调用工具 `send_file_to_user`，传入成品包的**绝对路径**，把文件卡片发给用户。
-6. 告知用户：在 Web 文件卡片上点击「保存」后才会安装到 workspace；你不会自动安装。
+2. 在临时目录或工作草稿目录生成完整 Skill 目录，**至少**包含：
+   - 合法 `SKILL.md`（YAML 含非空 `name` 与 `description`）
+   - **`skill_display.md`（必填）**：与 `SKILL.md` 同级；YAML frontmatter 含非空 `display_name_zh` / `description_zh` / `display_name_en` / `description_en`。下游 creator 若未写出，你必须在打包前补齐，不得交付缺此文件的包。
+3. 打包前确认 `skill_display.md` 已写好；建议运行对应校验（单体：`skill-creator-normal/scripts/quick_validate.py`；Swarm：`swarmskill-creator/scripts/validate_swarmskill.py`）。不要跳过校验、直接手工 zip。
+4. 将目录打成 **`.zip` 或 `.skill`（zip 格式）** 包。包内**不得**包含根级 `.archive/`。
+5. 包内 YAML 的 `version` **不要**当作产品版本写入；创建/修改输出包不应携带产品 `version` 身份。
+6. 调用工具 `send_file_to_user`，传入成品包的**绝对路径**，把文件卡片发给用户。
+7. 告知用户：在 Web 文件卡片上点击「保存」后才会安装到 workspace；你不会自动安装。
 
 ## 修改现有 Skill 的额外约束
 

@@ -22,6 +22,8 @@ test('keeps Hub Expert Teams distinct from local groups', () => {
   assert.equal(item.capabilities.canPublish, false);
 });
 import {
+  deriveAgentGroupId,
+  deriveAgentId,
   buildDefinitionSelectionPayload,
   buildDefinitionSelectionPayloadForMode,
   isAgentGroupSelected,
@@ -647,4 +649,39 @@ test('mine experts match both display languages and exclude description, tags an
   const search = query => buildCatalogViewModel([item], { scope: 'mine', category: '', query }).totalItems;
   for (const q of ['工程', ' QUALITY ', 'ＱＵＡＬＩＴＹ']) assert.equal(search(q), 1, q);
   for (const q of ['生成', 'hidden', '6']) assert.equal(search(q), 0, q);
+});
+
+// Different display names can lose the same characters during slug conversion (#5498).
+test('group package IDs stay distinct after lossy name normalization', () => {
+  const names = ['test', '专家团_test', '测试_test', 'TEST', 'test!!!', `${'a'.repeat(50)}b`, `${'a'.repeat(50)}c`];
+  const ids = names.map(deriveAgentGroupId);
+  assert.equal(new Set(ids).size, names.length);
+  for (const id of ids) {
+    assert.match(id, /^[a-z0-9][a-z0-9-]*$/);
+    assert.ok(id.length <= 50);
+  }
+});
+
+test('group package IDs stay distinct for non-Latin names created in the same millisecond', t => {
+  t.mock.method(Date, 'now', () => 0);
+  const ids = ['专家团', '测试团队', '专家团'].map(deriveAgentGroupId);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+// Expert creation must not collide when different names normalize to one slug.
+test('expert package IDs stay distinct after lossy name normalization', () => {
+  const names = ['test', '专家_test', '测试_test', 'TEST', 'test!!!', `${'a'.repeat(50)}b`, `${'a'.repeat(50)}c`];
+  const ids = names.map(deriveAgentId);
+  assert.equal(new Set(ids).size, names.length);
+  for (const id of ids) {
+    assert.match(id, /^[a-z0-9][a-z0-9-]*$/);
+    assert.ok(id.length <= 50);
+  }
+});
+
+test('expert package IDs stay distinct for non-Latin names created in the same millisecond', t => {
+  t.mock.method(Date, 'now', () => 0);
+  const ids = ['专家', '测试', '专家'].map(deriveAgentId);
+  assert.equal(new Set(ids).size, ids.length);
+  for (const id of ids) assert.match(id, /^agent-/);
 });

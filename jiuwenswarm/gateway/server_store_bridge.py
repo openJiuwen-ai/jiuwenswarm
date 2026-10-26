@@ -37,5 +37,11 @@ def install() -> None:
     import jiuwenswarm.server.runtime.team_entity_store  # noqa: F401
     import jiuwenswarm.server.runtime.session.session_metadata  # noqa: F401
 
+    from jiuwenswarm.gateway.runtime.cron import factory as cron_factory
+
+    from jiuwenswarm.common.external_providers import register
+
+    register("cron_store_factory", cron_factory)
+
     _INSTALLED = True
     logger.info("[server-store-bridge] server store providers installed")

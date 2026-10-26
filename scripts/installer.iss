@@ -57,6 +57,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 AppMutex=JiuwenSwarm.App,Global\JiuwenSwarm.App,{#MyAppName}.App,Global\{#MyAppName}.App
 CloseApplications=yes
 RestartApplications=no
+ChangesEnvironment=yes
 #ifdef BuildSignToolName
   ; The compiler-provided Sign Tool signs Setup itself. Enabling the signed
   ; uninstaller also signs temporary self-copies executed from {tmp}.
@@ -71,6 +72,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
+Source: "preserve-windows-cli.ps1"; Flags: dontcopy
 Source: "..\dist\{#BuildDistDirName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\jiuwenswarm\channels\web\frontend\public\logo.ico"; DestDir: "{app}"; DestName: "logo-{#MyAppVersion}.ico"; Flags: ignoreversion
 
@@ -102,6 +104,7 @@ Type: dirifempty; Name: "{app}"
 Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall
 
 [Code]
+#include "windows-cli-preservation.iss"
 function HasDescriptionStemInTree(const Directory, Stem: String): Boolean;
 var
   FindRec: TFindRec;
@@ -228,6 +231,10 @@ begin
 
   { The current per-user installation directory is writable by Setup. }
   CleanupStaleOpenJiuwenDescriptions();
+  if not PreserveWindowsCli(ExpandConstant('{app}'), 'Initialize') then
+    RaiseException('External CLI initialization failed. Preserved files remain in the user data directory.');
+  if not RestoreWindowsCliConfiguration(ExpandConstant('{app}\{#MyAppExeName}')) then
+    RaiseException('External CLI configuration recovery failed.');
 end;
 
 const
@@ -371,6 +378,8 @@ begin
     Log('Downloaded WebView2 installer failed Microsoft Authenticode verification.');
 end;
 
+function MigrateLegacyAdminInstall(): Boolean; forward;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   RuntimeVersion: String;
@@ -382,6 +391,16 @@ var
   DownloadFailureReason: String;
 begin
   Result := '';
+  if not PreserveWindowsCli(ExpandConstant('{app}'), 'Preserve') then
+  begin
+    Result := 'External CLI preservation failed; installation stopped before cleanup.';
+    exit;
+  end;
+  if not MigrateLegacyAdminInstall() then
+  begin
+    Result := 'Legacy administrator installation migration failed.';
+    exit;
+  end;
 
   if GetWebView2RuntimeVersion(RuntimeVersion) then
   begin
@@ -536,10 +555,11 @@ begin
   end;
 end;
 
-function InitializeSetup: Boolean;
+function MigrateLegacyAdminInstall(): Boolean;
 var
   LegacyUninstaller: String;
   ErrorCode: Integer;
+  Attempt: Integer;
 begin
   Result := True;
   // No old admin install: clean per-user install, no UAC at all.
@@ -556,6 +576,16 @@ begin
     Result := False;
     Exit;
   end;
+  if not PreserveWindowsCli(ExtractFileDir(LegacyUninstaller), 'Preserve') then
+  begin
+    Result := False;
+    Exit;
+  end;
+  if not PreserveWindowsCli(ExtractFileDir(LegacyUninstaller), 'PreserveConfig') then
+  begin
+    Result := False;
+    Exit;
+  end;
   // The old unins000.exe carries an admin manifest; runas lets it remove its
   // own Program Files tree + HKLM entry. /VERYSILENT keeps it headless.
   if not ShellExec('runas', LegacyUninstaller,
@@ -567,10 +597,17 @@ begin
     Result := False;
     Exit;
   end;
-  // Inno's uninstaller copies itself to TEMP and finishes asynchronously, so a
-  // completion check here would false-positive: the registry entry is removed
-  // near the end of the temp copy, after this call returns. The new per-user
-  // install targets {localappdata}\Programs and is independent of the old
-  // Program Files tree, so installation proceeds regardless. If the app was
-  // still running the new setup's own AppMutex guard will have blocked startup.
+  // Wait for the TEMP copy to finish before restoring agent configuration.
+  for Attempt := 1 to 480 do
+  begin
+    if (not FileExists(LegacyUninstaller)) and
+       (not RegKeyExists(HKLM, LegacyUninstallNativeSubkey)) and
+       (not RegKeyExists(HKLM, LegacyUninstallWowSubkey)) then
+    begin
+      Result := True;
+      Exit;
+    end;
+    Sleep(250);
+  end;
+  Result := False;
 end;

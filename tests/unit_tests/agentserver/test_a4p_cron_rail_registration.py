@@ -59,6 +59,12 @@ def test_cron_rail_registration(config, variant, a4p_enabled, permissions_enable
     assert (_build(config, variant) is not None) == (a4p_enabled and permissions_enabled)
 
 
+@pytest.mark.parametrize("variant", ["single", "team-channel", "team-metadata"])
+def test_cron_smart_approval_does_not_install_a4p_rail(config, variant):
+    config["permissions"]["mode"] = "auto"
+    assert _build(config, variant) is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("variant", ["single", "team-channel", "team-metadata"])
 @pytest.mark.parametrize("rule,token_matches", [("allow", False), ("deny", True), ("ask", True), ("ask", False)])
@@ -75,7 +81,7 @@ async def test_assembled_cron_rail_only_asks_a4p_for_ask_rules(config, monkeypat
     ))
     rail = _build(config, variant)
     decision = await rail.resolve_interrupt(
-        ctx=SimpleNamespace(session=SimpleNamespace(get_session_id=lambda: "cron-test")),
+        ctx=SimpleNamespace(session=SimpleNamespace(get_session_id=lambda: "cron-test"), extra={}),
         tool_call=SimpleNamespace(name="bash", arguments={"command": "date"}, id="call-1"),
         user_input=None,
     )
@@ -134,7 +140,7 @@ async def test_assembled_cron_ask_failure_never_interrupts(config, monkeypatch, 
     ))
     rail = _build(config, "single" if channel == "__cron__" else "team-metadata")
     decision = await rail.resolve_interrupt(
-        ctx=SimpleNamespace(session=SimpleNamespace(get_session_id=lambda: "cron-test")),
+        ctx=SimpleNamespace(session=SimpleNamespace(get_session_id=lambda: "cron-test"), extra={}),
         tool_call=SimpleNamespace(name="bash", arguments={"command": "date"}, id="call-1"),
         user_input=None,
     )

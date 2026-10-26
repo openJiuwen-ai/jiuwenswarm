@@ -106,7 +106,7 @@ class StoreNodeSpawner:
         graph = self._store.get_graph(self._graph_id)
         result = await coordinator.start(graph, node_ids=[node_id])
         state = (result.get("node_states") or {}).get(node_id) or {}
-        return str(state.get("candidate_text") or state.get("text") or state.get("error") or "")
+        return str(state.get("text") or state.get("error") or "")
 
     async def run_graph(
         self,
@@ -146,6 +146,11 @@ class StoreNodeSpawner:
     def apply_agent_graph_patch(
         self, graph_id: str, patch: dict[str, Any]
     ) -> DesignerExecutionGraph:
+        if self._coordinator_provider().is_active():
+            raise RuntimeError(
+                "a trigger is executing on this graph: wait for it to finish "
+                "before editing the canvas"
+            )
         graph = self._store.get_graph(graph_id)
         if graph is None:
             raise ValueError(f"designer graph not found: {graph_id!r}")
@@ -279,9 +284,6 @@ def get_graph_coordinator(store: Any, graph_id: str) -> Any:
     if coordinator is None:
         from jiuwenswarm.server.runtime.design.run_coordinator import RunCoordinator
 
-        spawner = StoreNodeSpawner(
-            store, graph_id, lambda: get_graph_coordinator(store, graph_id)
-        )
-        coordinator = RunCoordinator(store, graph_id, spawner)
+        coordinator = RunCoordinator(store, graph_id)
         _GRAPH_COORDINATORS[graph_id] = coordinator
     return coordinator

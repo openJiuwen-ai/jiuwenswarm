@@ -10,6 +10,7 @@ import type {
   DesignerGraphNode,
   DesignerNodeState,
 } from './executionGraphTypes';
+import { readMediaConfig } from './mediaNodeConfig';
 
 export type DesignerPreviewKind = 'video' | 'image' | 'audio' | 'text' | 'file' | 'placeholder';
 
@@ -40,6 +41,43 @@ export function isEditableDesignerMaterial(material: DesignerMaterial): boolean 
 
 export function isDesignerTableMaterial(material: Pick<DesignerMaterial, 'kind' | 'role'>): boolean {
   return material.kind === 'table' || material.role === 'storyboard';
+}
+
+const MIME_EXTENSIONS: Readonly<Record<string, string>> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'video/mp4': 'mp4',
+  'video/webm': 'webm',
+  'video/quicktime': 'mov',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/ogg': 'ogg',
+  'text/markdown': 'md',
+  'text/plain': 'txt',
+  'text/csv': 'csv',
+  'application/json': 'json',
+};
+
+function fileExtension(name: string): string {
+  const base = name.split(/[\\/]/).pop() || '';
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
+}
+
+/** Download name for a material: its label, with the stored file's extension. */
+export function designerMaterialFilename(
+  material: Pick<DesignerMaterial, 'label' | 'uri' | 'mimeType'>,
+  fallback: string,
+): string {
+  const path = material.uri.split(/[?#]/)[0];
+  const mime = (material.mimeType || '').split(';')[0].trim().toLowerCase();
+  const extension = fileExtension(path) || MIME_EXTENSIONS[mime] || '';
+  const name = material.label?.trim() || path.split(/[\\/]/).pop() || fallback;
+  if (!extension || fileExtension(name) === extension) return name;
+  return `${name}.${extension}`;
 }
 
 export function classifyDesignerOutput(input: {
@@ -188,6 +226,80 @@ export function isDesignerFallbackTextAsset(
     mime.includes('markdown') ||
     label.includes('.md')
   );
+}
+
+/**
+ * Preview URL of a node output, only when it is an image an ``<img>`` can show.
+ * Video and audio have no thumbnail the raw-file route can serve cheaply, so
+ * they keep their type icon instead of a broken image.
+ */
+export function designerImagePreviewUrl(
+  ref: Pick<AssetRef, 'kind' | 'uri' | 'mime_type' | 'label'> | null | undefined,
+  nodeType: string,
+): string | null {
+  if (!ref?.uri) return null;
+  const previewUrl = designerAssetPreviewUrl(ref.uri);
+  if (!previewUrl) return null;
+  const kind = classifyDesignerOutput({
+    kind: ref.kind || nodeType,
+    mimeType: ref.mime_type,
+    label: ref.label,
+    uri: ref.uri,
+    previewUrl,
+    placeholder: isPlaceholderAsset(ref.uri),
+  });
+  return kind === 'image' ? previewUrl : null;
+}
+
+/**
+ * The output ref a node shows in a preview or material list.
+ *
+ * The run store wins (accepted ref, then the pending candidate), then the graph
+ * node's own ``output_ref``, then a configured upload. An uploaded reference is
+ * never executed and a run reloaded from disk can carry no state for a node, so
+ * the run store alone leaves those tiles without a thumbnail.
+ */
+export function resolveDesignerNodePreviewRef(
+  node:
+    | { type?: string; config?: unknown; output_ref?: AssetRef | null }
+    | null
+    | undefined,
+  state?: DesignerNodeState | null,
+): AssetRef | null {
+  const fromRun = preferredDesignerPreviewRef(state?.output_ref, state?.candidate_output_ref);
+  if (fromRun?.uri && !isPlaceholderAsset(fromRun.uri)) return fromRun;
+
+  const nodeType = String(node?.type ?? '');
+  const declared = node?.output_ref;
+  if (declared?.uri && !isPlaceholderAsset(declared.uri)) {
+    return {
+      kind: declared.kind || nodeType,
+      uri: declared.uri,
+      mime_type: declared.mime_type,
+      label: declared.label,
+    };
+  }
+  return configuredUploadRef(node?.config, nodeType);
+}
+
+/** An uploaded file kept only in the node config (upload slot or attached materials). */
+function configuredUploadRef(config: unknown, nodeType: string): AssetRef | null {
+  const media = readMediaConfig(config as Record<string, unknown> | undefined, nodeType);
+  const slots: Array<{ uri?: string; mime_type?: string; filename?: string }> = [
+    ...(media.materials ?? []),
+    media.upload ?? {},
+  ];
+  for (const slot of slots) {
+    const uri = String(slot?.uri ?? '').trim();
+    if (!uri || isPlaceholderAsset(uri)) continue;
+    return {
+      kind: nodeType || 'file',
+      uri,
+      mime_type: String(slot?.mime_type ?? '') || undefined,
+      label: String(slot?.filename ?? '') || undefined,
+    };
+  }
+  return null;
 }
 
 export function preferredDesignerPreviewRef(

@@ -233,10 +233,11 @@ uv run --no-sync jiuwenswarm-start dev
 
 这些检查不能代替真实模型联调。自动化回归通过后，仍需使用可用模型、合法 AgentGroup 包和独立测试会话完成上述流程。
 
-当前实验界面隔离专家消息历史；专家工具执行历史的完整恢复不在本次界面范围内。
+当前实验界面隔离专家消息历史。后台专家 Team 和 Summary Team 已完成的回复片段会保存，即使浏览器断连，刷新后选择对应 Team 仍可恢复。正在生成的文本在下一个输出边界或轮次结束时保存。专家工具执行历史的完整恢复不在本次界面范围内。
 
 | 现象 | 检查项 |
 |------|--------|
+| 同一专家团在新会话创建组织报 `organization already belongs to team` | 组织 ID 在共享 `team.db` 中全局唯一，旧会话遗留组织未解散会占用同名 ID。升级 agent-core 后框架会自动为冲突 ID 追加 `-N` 后缀，以 `org_create_organization` 返回的实际 `organization_id` 为准；旧数据也可先回原会话调用 `org_dissolve_organization` 清理 |
 | `org_list_expert_groups` 返回空 | AgentGroup manifest、安装状态以及同名冲突；按能力过滤时还需检查 capabilities |
 | 前端看不到已安装的专家团 | 手动创建是否成功、是否已安装、当前是否为 Team 模式；刷新模板列表并检查实际工作区 |
 | 输入区不能选择专家团模板 | 是否已在当前会话构建 Team；新建未发送消息的会话再选模板 |

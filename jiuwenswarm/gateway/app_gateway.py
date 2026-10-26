@@ -21,11 +21,13 @@ import json
 import logging
 import os
 import re
+import signal
 import sys
+import threading
 import time
 import uuid as uuid_module
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Iterable
 from urllib.parse import parse_qs, urlparse
 
 
@@ -90,7 +92,7 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod, Message, Mode
-from jiuwenswarm.gateway.embedded.runtime.attachments.media_attachments import (
+from jiuwenswarm.gateway.channel_manager.web.media import (
     normalize_chat_media_attachments,
 )
 _mark_startup_import_phase("gateway_core_imports_loaded")
@@ -125,7 +127,7 @@ def _agent_prewarm_enabled() -> bool:
     Prewarming is opt-in via JIUWENSWARM_AGENT_PREWARM; when off the Gateway
     must not emit agent.prewarm.sync requests or related log noise.
     """
-    from jiuwenswarm.gateway.embedded.runtime.agent_prewarm import prewarm_enabled_by_env
+    from jiuwenswarm.gateway.runtime.agent_prewarm import prewarm_enabled_by_env
 
     return prewarm_enabled_by_env()
 
@@ -173,6 +175,23 @@ def _load_gateway_runtime_config(
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "[App] failed to migrate legacy heartbeat probe config; "
+            "continuing with the existing config: %s",
+            exc,
+        )
+
+    try:
+        # Retire the legacy topic switch key and move the consent state out of config.yaml.
+        # Both are idempotent and run here rather than in the template merge, which AgentOS skips.
+        from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
+            migrate_legacy_recommendation_switches,
+            migrate_recommendation_consent_state,
+        )
+
+        migrate_legacy_recommendation_switches()
+        migrate_recommendation_consent_state()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[App] failed to migrate the recommendation config; "
             "continuing with the existing config: %s",
             exc,
         )
@@ -248,7 +267,7 @@ def _auth_session_id(msg) -> str | None:
 def _normalize_model_auth(params: dict[str, Any], msg) -> None:
     """给登录模型挂上本次调用方的凭据。失败不阻断转发。"""
     try:
-        from jiuwenswarm.common.auth.passthrough import normalize_model_auth
+        from jiuwenswarm.gateway.auth.passthrough import normalize_model_auth
 
         normalize_model_auth(params, _auth_session_id(msg))
     except Exception:  # noqa: BLE001 — 凭据注入失败不该让整条消息发不出去
@@ -269,7 +288,7 @@ async def _refresh_expired_login_credential(msg) -> None:
     续不了（refresh_token失效等）就照旧转发，由AgentServer提示重新登录。
     """
     try:
-        from jiuwenswarm.common.auth.passthrough import expired_login_session
+        from jiuwenswarm.gateway.auth.passthrough import expired_login_session
         from jiuwenswarm.common.auth.service import get_auth_service
 
         params = msg.params if isinstance(msg.params, dict) else {}
@@ -367,7 +386,7 @@ def _inject_session_work_mode(msg: Message) -> None:
         return
     channel_id = getattr(msg, "channel_id", None)
     try:
-        from jiuwenswarm.gateway.embedded.runtime.session.work_mode import resolve_session_work_mode_params
+        from jiuwenswarm.gateway.runtime.work_mode import resolve_session_work_mode_params
         binding = resolve_session_work_mode_params(params, channel_id=channel_id)
     except Exception:  # noqa: BLE001
         # 归一化异常时不写回,保留原始 params 由后续处理
@@ -626,16 +645,20 @@ def _schedule_gateway_restart(
 
 
 async def _wait_for_gateway_tasks_or_restart(
-        tasks_to_wait: list[asyncio.Task],
-        restart_request: GatewayRestartRequest,
+    tasks_to_wait: list[asyncio.Task],
+    restart_request: GatewayRestartRequest,
+    shutdown_event: asyncio.Event,
 ) -> bool:
     restart_task = asyncio.create_task(restart_request.ready_event.wait(), name="gateway-restart")
+    shutdown_task = asyncio.create_task(shutdown_event.wait(), name="gateway-shutdown")
     service_tasks = set(tasks_to_wait)
     wait_tasks = set(service_tasks)
-    wait_tasks.add(restart_task)
+    wait_tasks.update((restart_task, shutdown_task))
     try:
         while wait_tasks:
             done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+            if shutdown_task in done:
+                return False
             if restart_task in done:
                 return restart_request.requested or restart_request.ready_event.is_set()
             for task in done:
@@ -657,6 +680,12 @@ async def _wait_for_gateway_tasks_or_restart(
             restart_task.cancel()
             try:
                 await restart_task
+            except asyncio.CancelledError:
+                pass
+        if not shutdown_task.done():
+            shutdown_task.cancel()
+            try:
+                await shutdown_task
             except asyncio.CancelledError:
                 pass
 
@@ -1803,16 +1832,278 @@ def _build_route_config_map(bindings: list[GatewayRouteBinding]) -> dict[str, Ro
     }
 
 
+def _build_topic_starter_services(
+    topic_starter_store: Any,
+    *,
+    active_request_ids_loader: Callable[[], Iterable[str]] | None = None,
+) -> tuple[Any, Any | None, Any]:
+    """Always build the prepare lane; leave a misconfigured product lane disabled."""
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_collector import (
+        TopicStarterOutcomeCollector,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
+        load_recommendation_controls,
+        permitted_recommendation_history,
+        recommendation_model_config,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
+        load_all_session_records,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
+        NewPageOutcomeQueue,
+        TopicStarterStoreOutcomeSink,
+        migrate_dismissal_records,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        TopicPipeline,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_prepare import (
+        TopicPreparePipeline,
+        TopicPrepareService,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_rid import (
+        build_ark_specific_interest_matcher,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
+        OpenJiuwenNativeSearchContractError,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
+        TopicService,
+    )
+    from jiuwenswarm.server.runtime.session.session_history import load_history_records
+
+    def permitted_records():
+        # One consent read per batch rather than one per session.
+        control = load_recommendation_controls()
+        return {sid: permitted_recommendation_history(rows, control)
+                for sid, rows in load_all_session_records().items()}
+
+    topic_prepare = TopicPreparePipeline(topic_starter_store, records_loader=permitted_records)
+    topic_prepare_service = TopicPrepareService(
+        topic_starter_store,
+        generate=topic_prepare.generate_prepared,
+        prepare_state=topic_prepare.refresh_state,
+    )
+    topic_outcome_queue = NewPageOutcomeQueue()
+    topic_outcome_queue.attach_sink(
+        TopicStarterStoreOutcomeSink(topic_starter_store)
+    )
+
+    try:
+        topic_pipeline = TopicPipeline(
+            topic_starter_store,
+            records_loader=permitted_records,
+            active_request_ids_loader=active_request_ids_loader,
+        )
+        search_provider_id = topic_pipeline.search_provider_id
+    except OpenJiuwenNativeSearchContractError as exc:
+        logger.warning(
+            "[Topic] disabled at startup: %s",
+            exc,
+        )
+        return (
+            topic_prepare_service,
+            None,
+            topic_outcome_queue,
+        )
+
+    # Bounds the cross-thread wait for one RID pair, so a stalled loop cannot wedge collection.
+    summary_pair_match_timeout_seconds = 60.0
+    outcome_collection_lock = asyncio.Lock()
+
+    async def prepare_topic_outcomes() -> str:
+        async with outcome_collection_lock:
+            # Pairs on the service's model; a switch cancels this round and the next one pairs anew.
+            ark_config = topic_service.ark_config
+            stop_collection = threading.Event()
+            matcher_tasks: set[asyncio.Task] = set()
+            matcher = None
+            if ark_config is not None:
+                try:
+                    matcher = build_ark_specific_interest_matcher(
+                        topic_starter_store,
+                        ark_config,
+                    )
+                except Exception as exc:  # noqa: BLE001 - fail-closed label exclusion
+                    logger.warning(
+                        "[Topic] RID summary-pair matcher unavailable: %s",
+                        exc,
+                    )
+            collector_kwargs: dict[str, Any] = {}
+            if matcher is not None:
+                loop = asyncio.get_running_loop()
+
+                async def match_if_running(earlier: Any, later: Any) -> bool:
+                    if stop_collection.is_set():
+                        raise asyncio.CancelledError()
+                    task = asyncio.current_task()
+                    matcher_tasks.add(task)
+                    try:
+                        return await matcher.match(earlier, later)
+                    finally:
+                        matcher_tasks.discard(task)
+
+                def match_summary_pair(earlier: Any, later: Any) -> bool:
+                    if stop_collection.is_set():
+                        raise asyncio.CancelledError()
+                    future = asyncio.run_coroutine_threadsafe(
+                        match_if_running(earlier, later),
+                        loop,
+                    )
+                    # This thread is not the loop: a loop that stops scheduling (shutdown,
+                    # saturated executor) would otherwise block it forever and keep
+                    # `asyncio.shield(worker)` from ever completing.
+                    try:
+                        result = future.result(
+                            timeout=summary_pair_match_timeout_seconds
+                        )
+                    except TimeoutError:
+                        future.cancel()
+                        raise
+                    if not isinstance(result, bool):
+                        raise ValueError("RID summary-pair matcher returned invalid output")
+                    return result
+
+                collector_kwargs = {
+                    "summary_pair_matcher": match_summary_pair,
+                    "summary_pair_matcher_id": matcher.matcher_id,
+                    "summary_pair_matcher_version": matcher.matcher_version,
+                }
+            topic_outcome_collector = TopicStarterOutcomeCollector(
+                topic_starter_store,
+                history_loader=lambda sid: permitted_recommendation_history(load_history_records(sid)),
+                cancel_event=stop_collection,
+                **collector_kwargs,
+            )
+            logger.info("[Topic] outcome collection started")
+            worker = asyncio.create_task(asyncio.to_thread(topic_outcome_collector.collect))
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                stop_collection.set()
+                tasks = list(matcher_tasks)
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.gather(worker, return_exceptions=True)
+                logger.info("[Topic] outcome collection stopped")
+                raise
+            finally:
+                if matcher is not None:
+                    await matcher.aclose()
+            # A failed round propagates; the service logs it as failed.
+            logger.info(
+                "[Topic] outcome collection %s",
+                "stopped" if stop_collection.is_set() else "finished",
+            )
+        return ""
+
+    def history_project_ids() -> list[str]:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+        records = topic_pipeline.completed_records_loader()
+        project_ids: set[str] = set()
+        # Only completed sessions contribute, so read their metadata one by one: the batch
+        # loader materialises every session on the machine just to read one field.
+        for session_id, completed in records.items():
+            if not completed:
+                continue
+            project_id = get_session_metadata(
+                str(session_id), enable_writeback=False,
+            ).get("project_id")
+            if project_id not in (None, "", "default", "default_code"):
+                project_ids.add(str(project_id))
+        return sorted(project_ids)
+
+    # Dismissals written before strikes were counted take their time from the ledger, once.
+    migrate_dismissal_records(topic_starter_store, now=time.time())
+    topic_service = TopicService(
+        topic_starter_store,
+        generate=topic_pipeline.generate,
+        refresh_news=topic_pipeline.refresh_news,
+        history_project_ids_loader=history_project_ids,
+        search_provider_id=search_provider_id,
+        prepare_state=topic_pipeline.refresh_state,
+        prepare_short_intent=topic_pipeline.refresh_short_intent,
+        prepare_outcomes=prepare_topic_outcomes,
+        input_revision_loader=topic_pipeline.scope_input_revision,
+        pending_request_loader=topic_pipeline.scope_has_pending_request,
+        config_loader=recommendation_model_config,
+        enabled=bool(load_recommendation_controls()["enabled"]),
+    )
+    topic_pipeline.on_candidates_ready = topic_service.candidate_generation_ready
+    return (
+        topic_prepare_service,
+        topic_service,
+        topic_outcome_queue,
+    )
+
+
+def _seed_topic_starter_services(
+    topic_prepare_service: Any,
+    topic_service: Any | None,
+    run_id: str,
+) -> None:
+    if topic_service is not None:
+        topic_service.schedule_seed(run_id)
+
+
+async def _topic_starter_seed_loop(seed: Callable[[str], None]) -> None:
+    """Refresh topic pools on this process, without entering the cron job queue.
+
+    The first wake is shortly after Gateway starts. Later wakes are the next
+    local midnight. A disabled recommendation switch returns immediately inside
+    ``seed``.
+    """
+
+    from datetime import datetime, timedelta, timezone
+
+    started = False
+    while True:
+        if not started:
+            await asyncio.sleep(5.0)
+        else:
+            now = datetime.now(timezone.utc).astimezone()
+            next_midnight = (now + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0,
+            )
+            await asyncio.sleep(max(0.0, (next_midnight - now).total_seconds()))
+        started = True
+        try:
+            seed(f"topic-starter-v6:{int(time.time())}")
+        except Exception as exc:  # noqa: BLE001 - isolated scheduled wake
+            logger.warning("[Topic] starter seed wake failed: %s", exc)
+
+
+async def _shutdown_topic_starter_services(
+    topic_prepare_service: Any,
+    topic_service: Any | None,
+) -> None:
+    await topic_prepare_service.shutdown()
+    if topic_service is not None:
+        await topic_service.shutdown()
+
+
 async def _run(
         agent_server_url: str,
         web_host: str,
         web_port: int,
         web_path: str,
+        shutdown_event: asyncio.Event,
 ) -> None:
     # IM 平台 (dingtalk/feishu/whatsapp/wechat/xiaoyi/telegram/discord/slack/wecom) 均为
     # 惰性 import: 仅在对应 channel enabled 分支内导入, 避免冷启动时为禁用平台
     # 读取其重依赖 (slack_bolt/telegram/redis/aiohttp 等), 缩短 Gateway 就绪时间。
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from openjiuwen.core.runner import Runner
+
+    from jiuwenswarm.gateway.cleanup import start_background_cleanup
+    from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.common.updater import UpdaterService
+    from jiuwenswarm.extensions.manager import ExtensionManager
+    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
     from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
         WebProxyChannelConfig,
     )
@@ -1820,10 +2111,21 @@ async def _run(
         WebPortManager,
         register_3rdagent_web_method,
     )
-    from jiuwenswarm.common.config import get_config
-    from jiuwenswarm.common.cleanup import start_background_cleanup
-    from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
-    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+        _FORWARD_NO_LOCAL_HANDLER_METHODS,
+        _FORWARD_REQ_METHODS,
+        WebHandlersBindParams,
+        _DummyBus,
+        _normalize_feishu_conf,
+        _normalize_xiaoyi_conf,
+        _register_web_handlers,
+        session_left_project_follow_up,
+        spawn_background_task,
+    )
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import (
+        WebChannel,
+        WebChannelConfig,
+    )
     from jiuwenswarm.gateway.cron import (
         CronController,
         CronSchedulerService,
@@ -1835,20 +2137,8 @@ async def _run(
     )
     from jiuwenswarm.gateway.heartbeat import HeartbeatControllerProxy
     from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
-        WebHandlersBindParams,
-        _DummyBus,
-        _CONFIG_SET_ENV_MAP,
-        _FORWARD_NO_LOCAL_HANDLER_METHODS,
-        _FORWARD_REQ_METHODS,
-        _normalize_feishu_conf,
-        _normalize_xiaoyi_conf,
-        _register_web_handlers,
-    )
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
-    from jiuwenswarm.common.updater import UpdaterService
-    from openjiuwen.core.runner import Runner
+    from jiuwenswarm.common.config_panel.config_set_handlers import CONFIG_SET_ENV_MAP
+    from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
 
     logger.info("[App] Gateway starting, connecting AgentServer: %s", agent_server_url)
     for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
@@ -1892,6 +2182,12 @@ async def _run(
 
     # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
     agent_server_ext = extension_registry.get_agent_server_client_extension()
+    gateway_config = get_config().get("gateway") or {}
+    agent_client_config = gateway_config.get("agent_client") or {}
+    using_adx_router = str(agent_client_config.get("type") or "").strip().lower() == "adx_router"
+    if using_adx_router:
+        if agent_server_ext is None or agent_server_ext.metadata.id != "adx_router":
+            raise RuntimeError("Selected adx_router extension failed to load; check gateway.adx configuration")
     if agent_server_ext is not None:
         logger.info("[App] using extension AgentServerClient: %s", agent_server_ext.metadata.name)
         client = agent_server_ext.get_client()
@@ -1931,9 +2227,51 @@ async def _run(
     message_handler.set_inbound_pipeline(im_inbound)
     message_handler.set_outbound_pipeline(im_outbound)
 
+    from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
+        TopicStarterStore,
+    )
+    from jiuwenswarm.common.utils import get_agent_workspace_dir
+
+    topic_starter_store = TopicStarterStore(
+        get_agent_workspace_dir() / "recommendation.db"
+    )
+    (
+        topic_prepare_service,
+        topic_service,
+        topic_outcome_queue,
+    ) = _build_topic_starter_services(
+        topic_starter_store,
+        active_request_ids_loader=message_handler.active_chat_request_ids,
+    )
+
+    def prepare_after_chat(session_id: str, request_id: str) -> None:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+        metadata = get_session_metadata(session_id, cache_bust=True, enable_writeback=False)
+        project_id = metadata.get("project_id")
+        if topic_service is not None:
+            topic_service.schedule_successor(
+                context_scope="global_new_chat", project_id=None, visit_id=request_id,
+            )
+        if topic_service is not None and project_id not in (None, "", "default", "default_code"):
+            topic_service.schedule_successor(
+                context_scope=f"project:{project_id}",
+                project_id=project_id, visit_id=request_id,
+            )
+
+    message_handler.on_chat_completed = prepare_after_chat
+
+    def topic_starter_seed(run_id: str) -> None:
+        _seed_topic_starter_services(
+            topic_prepare_service,
+            topic_service,
+            run_id,
+        )
+
     cron_store = await create_gateway_cron_store()
     from jiuwenswarm.common.model_migration import migrate_legacy_cron_selections
-    from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+    from jiuwenswarm.gateway.runtime.cron.factory import load_cron_store_settings
 
     # Shared etcd jobs need the target user's catalog; that migration runs on
     # the per-user resource/reference boundary, never using Gateway's catalog.
@@ -1947,6 +2285,9 @@ async def _run(
         agent_client=client,
         message_handler=message_handler,
     )
+    topic_seed_task: asyncio.Task[None] | None = None
+    if topic_service is not None:
+        topic_seed_task = asyncio.create_task(_topic_starter_seed_loop(topic_starter_seed))
     cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
     cron_controller.bind_agent_client(client)
     message_handler.set_cron_controller(cron_controller)
@@ -1962,7 +2303,7 @@ async def _run(
 
     client.set_or_update_server_config(
         config=dict(full_cfg or {}),
-        env={env_key: (os.getenv(env_key) or "") for env_key in _CONFIG_SET_ENV_MAP.values()},
+        env={env_key: (os.getenv(env_key) or "") for env_key in CONFIG_SET_ENV_MAP.values()},
     )
 
     # Data-plane settings are AgentOS-only. A personal Gateway using etcd for
@@ -1970,9 +2311,11 @@ async def _run(
     # managed, so no user reload/fanout is needed.
     config_updater = None
     from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
-    if is_agentos_routing_client(client):
-        from jiuwenswarm.extensions.agentos.config_updater.service import ConfigUpdaterService
-        from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+    if is_agentos_routing_client(client) and callable(getattr(client, "apply_remote_overrides", None)):
+        from jiuwenswarm.extensions.agentos.config_updater.service import (
+            ConfigUpdaterService,
+        )
+        from jiuwenswarm.gateway.runtime.cron.factory import load_cron_store_settings
 
         config_updater = ConfigUpdaterService(
             etcd_endpoints=list(load_cron_store_settings(full_cfg).endpoints),
@@ -2036,7 +2379,7 @@ async def _run(
     prewarm_sync_debounce_task: asyncio.Task[None] | None = None
 
     async def _sync_agent_prewarm_channels() -> None:
-        if not _agent_prewarm_enabled():
+        if using_adx_router or not _agent_prewarm_enabled():
             return
         try:
             prewarm_channels = {
@@ -2070,7 +2413,7 @@ async def _run(
     ) -> None:
         """Coalesce startup/config/channel churn into one settled sync."""
         nonlocal prewarm_sync_debounce_task
-        if not _agent_prewarm_enabled():
+        if using_adx_router or not _agent_prewarm_enabled():
             return
         previous = prewarm_sync_debounce_task
         if previous is not None and not previous.done():
@@ -2120,122 +2463,133 @@ async def _run(
             env=dict(env_updates or {}),
         )
 
-        # reload 是全局配置热重载，不绑定特定 user。但 faas 沙箱 acquire instance
-        # 需要 X-Session-Context（由 envelope.user_id 透传成 sessionCtxID）；user_id 为空
-        # 时 faas 拿不到 sessionCtxID，acquire lease 走 init 路径失败
-        # （"connect runtime failed"），invocation 60s 超时，首登 config.set 后前端卡死+1001。
-        # user_id 还必须是 faas 沙箱配置了可工作区的真实用户：faas 沙箱按 user_id
-        # 映射 /home/<user>/.jiuwenswarm 工作区，非配置用户（system/root）建沙箱失败
-        # （code 80004 "Failed to create sandbox"）。agentos_test 是 agentos 部署的默认
-        # 用户（gateway-config.yaml ssh username），有完整工作区，复用其 warm instance。
-        reload_env = e2a_from_agent_fields(
-            request_id=f"agent-reload-{uuid_module.uuid4().hex[:8]}",
-            channel_id="",
-            session_id="sess_reload",
-            user_id="agentos_test",
-            req_method=ReqMethod.AGENT_RELOAD_CONFIG,
-            params={
-                # config: full config snapshot after save; Agent should prefer this over local yaml.
-                "config": dict(config_payload or {}),
-                # env: incremental environment updates; missing keys mean unchanged.
-                "env": dict(env_updates or {}),
-                **dict(reload_options or {}),
-            },
+        from jiuwenswarm.common.config_panel.config_set_handlers import (
+            needs_agent_reload,
         )
 
-        reload_ok = False
-        last_error: Exception | None = None
-        runtime_failed_reject = False
-        for attempt in range(_reload_max_retries + 1):
-            try:
-                reload_resp = await client.send_request(reload_env)
-                if getattr(reload_resp, "ok", False):
-                    reload_ok = True
-                    break
-                err_payload = getattr(reload_resp, "payload", None) or {}
-                err_msg = (
-                    err_payload.get("error")
-                    if isinstance(err_payload, dict)
-                    else err_payload
-                )
-                err_str = str(err_msg or "")
-                # ValidationError 是配置格式问题，不需要重试也不需要重启 gateway
-                if any(kw in err_str for kw in ("ValidationError", "validation error", "Field required")):
-                    logger.warning("[App] agent.reload_config validation error (non-fatal): %s", err_str)
-                    return False
-                last_error = RuntimeError(f"agent.reload_config rejected: {err_msg}")
-                # AgentServer runtime 处于 FAILED：server 侧已因本次 reload 请求
-                # 触发 worker 重启自愈；Gateway 自重启修复不了它，只会断开前端。
-                runtime_failed_reject = (
-                    "RUNTIME_FAILED" in err_str or "runtime failed" in err_str.lower()
-                )
-            except Exception as e:  # noqa: BLE001
-                last_error = e
-                runtime_failed_reject = False
+        reload_scopes = {
+            str(scope)
+            for scope in (dict(reload_options or {}).get("reload_scopes") or [])
+            if isinstance(scope, str) and scope
+        }
 
-            if attempt < _reload_max_retries:
-                delay = _reload_retry_backoff_base ** (attempt + 1)
-                logger.warning(
-                    "[App] agent.reload_config attempt %d/%d failed, retrying in %.1fs: %s",
-                    attempt + 1, _reload_max_retries + 1, delay, last_error,
-                )
-                await asyncio.sleep(delay)
+        if needs_agent_reload(reload_scopes):
+            # reload 是全局配置热重载，不绑定特定 user。但 faas 沙箱 acquire instance
+            # 需要 X-Session-Context（由 envelope.user_id 透传成 sessionCtxID）；user_id 为空
+            # 时 faas 拿不到 sessionCtxID，acquire lease 走 init 路径失败
+            # （"connect runtime failed"），invocation 60s 超时，首登 config.set 后前端卡死+1001。
+            # user_id 还必须是 faas 沙箱配置了可工作区的真实用户：faas 沙箱按 user_id
+            # 映射 /home/<user>/.jiuwenswarm 工作区，非配置用户（system/root）建沙箱失败
+            # （code 80004 "Failed to create sandbox"）。agentos_test 是 agentos 部署的默认
+            # 用户（gateway-config.yaml ssh username），有完整工作区，复用其 warm instance。
+            reload_env = e2a_from_agent_fields(
+                request_id=f"agent-reload-{uuid_module.uuid4().hex[:8]}",
+                channel_id="",
+                session_id="sess_reload",
+                user_id="agentos_test",
+                req_method=ReqMethod.AGENT_RELOAD_CONFIG,
+                params={
+                    # config: full config snapshot after save; Agent should prefer this over local yaml.
+                    "config": dict(config_payload or {}),
+                    # env: incremental environment updates; missing keys mean unchanged.
+                    "env": dict(env_updates or {}),
+                    **dict(reload_options or {}),
+                },
+            )
 
-        if not reload_ok and runtime_failed_reject:
-            # 恢复尝试未达成时再多等两轮：worker 可能仍在 warming（import 慢）。
-            for _attempt in range(2):
-                await asyncio.sleep(8.0)
+            reload_ok = False
+            last_error: Exception | None = None
+            runtime_failed_reject = False
+            for attempt in range(_reload_max_retries + 1):
                 try:
                     reload_resp = await client.send_request(reload_env)
                     if getattr(reload_resp, "ok", False):
                         reload_ok = True
                         break
+                    err_payload = getattr(reload_resp, "payload", None) or {}
+                    err_msg = (
+                        err_payload.get("error")
+                        if isinstance(err_payload, dict)
+                        else err_payload
+                    )
+                    err_str = str(err_msg or "")
+                    # ValidationError 是配置格式问题，不需要重试也不需要重启 gateway
+                    if any(kw in err_str for kw in ("ValidationError", "validation error", "Field required")):
+                        logger.warning("[App] agent.reload_config validation error (non-fatal): %s", err_str)
+                        return False
+                    last_error = RuntimeError(f"agent.reload_config rejected: {err_msg}")
+                    # AgentServer runtime 处于 FAILED：server 侧已因本次 reload 请求
+                    # 触发 worker 重启自愈；Gateway 自重启修复不了它，只会断开前端。
+                    runtime_failed_reject = (
+                        "RUNTIME_FAILED" in err_str or "runtime failed" in err_str.lower()
+                    )
                 except Exception as e:  # noqa: BLE001
                     last_error = e
-            if reload_ok:
-                logger.info("[App] agent.reload_config succeeded after runtime recovery")
+                    runtime_failed_reject = False
 
-        if not reload_ok and not runtime_failed_reject:
-            logger.critical(
-                "[App] agent.reload_config failed after %d attempts, scheduling restart: %s",
-                _reload_max_retries + 1, last_error,
+                if attempt < _reload_max_retries:
+                    delay = _reload_retry_backoff_base ** (attempt + 1)
+                    logger.warning(
+                        "[App] agent.reload_config attempt %d/%d failed, retrying in %.1fs: %s",
+                        attempt + 1, _reload_max_retries + 1, delay, last_error,
+                    )
+                    await asyncio.sleep(delay)
+
+            if not reload_ok and runtime_failed_reject:
+                # 恢复尝试未达成时再多等两轮：worker 可能仍在 warming（import 慢）。
+                for _attempt in range(2):
+                    await asyncio.sleep(8.0)
+                    try:
+                        reload_resp = await client.send_request(reload_env)
+                        if getattr(reload_resp, "ok", False):
+                            reload_ok = True
+                            break
+                    except Exception as e:  # noqa: BLE001
+                        last_error = e
+                if reload_ok:
+                    logger.info("[App] agent.reload_config succeeded after runtime recovery")
+
+            if not reload_ok and not runtime_failed_reject:
+                logger.critical(
+                    "[App] agent.reload_config failed after %d attempts, scheduling restart: %s",
+                    _reload_max_retries + 1, last_error,
+                )
+                _schedule_gateway_restart(restart_request)
+                return False
+
+            if not reload_ok:
+                # RUNTIME_FAILED：重启 Gateway 修复不了 AgentServer 的 runtime
+                # （反而把前端断线）。保持 Gateway 在线；配置已写盘，下次保存
+                # 会再次触发 reload 并重新尝试恢复。
+                logger.critical(
+                    "[App] agent.reload_config rejected with RUNTIME_FAILED; "
+                    "AgentServer runtime recovery failed, keeping Gateway up: %s",
+                    last_error,
+                )
+                return False
+
+            # AgentServer 已确认热重载成功后，再刷新 Gateway 内存中的值。
+            # MessageHandler 的流式 chunk 热路径只读取该值，不重新读盘。
+            message_handler.update_evolution_auto_save(config_payload)
+
+            # reload 成功：config 变更后让 agent 侧 prewarm channels 落到新配置。
+            _schedule_agent_prewarm_sync(
+                "agent-prewarm-sync-after-config",
+                delay_seconds=3.0,
             )
-            _schedule_gateway_restart(restart_request)
-            return False
 
-        if not reload_ok:
-            # RUNTIME_FAILED：重启 Gateway 修复不了 AgentServer 的 runtime
-            # （反而把前端断线）。保持 Gateway 在线；配置已写盘，下次保存
-            # 会再次触发 reload 并重新尝试恢复。
-            logger.critical(
-                "[App] agent.reload_config rejected with RUNTIME_FAILED; "
-                "AgentServer runtime recovery failed, keeping Gateway up: %s",
-                last_error,
-            )
-            return False
-
-        # AgentServer 已确认热重载成功后，再刷新 Gateway 内存中的值。
-        # MessageHandler 的流式 chunk 热路径只读取该值，不重新读盘。
-        message_handler.update_evolution_auto_save(config_payload)
-
-        # reload 成功：config 变更后让 agent 侧 prewarm channels 落到新配置。
-        _schedule_agent_prewarm_sync(
-            "agent-prewarm-sync-after-config",
-            delay_seconds=3.0,
-        )
-
-        if updated_env_keys and (browser_runtime_keys & set(updated_env_keys)):
-            restart_env = e2a_from_agent_fields(
-                request_id=f"browser-restart-{uuid_module.uuid4().hex[:8]}",
-                channel_id="",
-                session_id="sess_reload",
-                user_id="agentos_test",
-                req_method=ReqMethod.BROWSER_RUNTIME_RESTART,
-            )
-            try:
-                await client.send_request(restart_env)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[App] browser runtime restart failed (non-fatal): %s", e)
+            if updated_env_keys and (browser_runtime_keys & set(updated_env_keys)):
+                restart_env = e2a_from_agent_fields(
+                    request_id=f"browser-restart-{uuid_module.uuid4().hex[:8]}",
+                    channel_id="",
+                    session_id="sess_reload",
+                    user_id="agentos_test",
+                    req_method=ReqMethod.BROWSER_RUNTIME_RESTART,
+                )
+                try:
+                    await client.send_request(restart_env)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[App] browser runtime restart failed (non-fatal): %s", e)
 
         # 主动推荐：enabled 变更时同步 proactive.tick job（创建/删除）
         proactive_keys = {
@@ -2243,10 +2597,54 @@ async def _run(
         }
         if updated_env_keys and (proactive_keys & set(updated_env_keys)):
             try:
-                from jiuwenswarm.gateway.cron.proactive_cron_sync import sync_proactive_tick_job
+                from jiuwenswarm.gateway.cron.proactive_cron_sync import (
+                    sync_proactive_tick_job,
+                )
                 await sync_proactive_tick_job(cron_controller, config_payload)
             except Exception as e:  # noqa: BLE001  # 兜底：proactive 同步失败不阻断配置保存
                 logger.warning("[App] proactive.tick sync on config save failed: %s", e)
+
+        # YAML is already on disk. Pool seed and model swap must not hold config.save_all.
+        should_sync_topic = topic_service is not None and (
+            (updated_env_keys and "topic_recommendation_enabled" in updated_env_keys)
+            or "model" in reload_scopes
+        )
+        if should_sync_topic:
+            async def _sync_topic_recommendation_after_save() -> None:
+                from jiuwenswarm.agents.harness.common.recommendation.switches import (
+                    is_topic_recommendation_enabled,
+                )
+
+                # Stop work before reloading the model. Reloading first would wait out the
+                # in-flight pool, turn the service back on, and let the open homepage keep
+                # those cards. The homepage only re-reads when it hears the switch.
+                enabled_now = None
+                if updated_env_keys and "topic_recommendation_enabled" in updated_env_keys:
+                    enabled_now = is_topic_recommendation_enabled(config_payload)
+                    if enabled_now is False:
+                        try:
+                            await topic_service.set_enabled(False, persist=False)
+                        except Exception as e:  # noqa: BLE001  # 兜底：话题开关同步失败不阻断配置保存
+                            logger.warning("[App] topic recommendation enable sync on config save failed: %s", e)
+                try:
+                    await topic_service.reload_config()
+                except Exception as e:  # noqa: BLE001  # 兜底：推荐模型重载失败不阻断配置保存
+                    logger.warning("[App] topic recommendation model reload on config save failed: %s", e)
+                if enabled_now is True:
+                    try:
+                        await topic_service.set_enabled(True, persist=False)
+                    except Exception as e:  # noqa: BLE001  # 兜底：话题开关同步失败不阻断配置保存
+                        logger.warning("[App] topic recommendation enable sync on config save failed: %s", e)
+                if enabled_now is not None and web_channel is not None:
+                    await web_channel.broadcast_event(
+                        "topic_starters.control_changed",
+                        {"enabled": enabled_now},
+                    )
+
+            spawn_background_task(
+                _sync_topic_recommendation_after_save(),
+                name="topic-recommendation-config-sync",
+            )
         return True
 
     web_channel = None
@@ -2259,11 +2657,17 @@ async def _run(
     )
     web_channel = WebChannel(web_config, _DummyBus(), agent_client=client)
     register_3rdagent_web_method(web_channel)
+    from jiuwenswarm.agents.harness.common.recommendation import prompt_suggestion
+
+    async def show_prompt_suggestion(session_id: str, request_id: str, payload: dict[str, Any]) -> None:
+        await prompt_suggestion.deliver(web_channel, topic_starter_store, session_id, request_id, payload)
+
+    message_handler.on_prompt_suggestion = show_prompt_suggestion
 
     # 注入 Git diff 监控注册表(设计文档阶段10):
     # 1. 让 ``_mark_git_watcher_dirty`` 能通过 ``channel.git_watcher_registry`` 唤醒轮询
     # 2. 通过 ``set_channel`` 让 registry 拿到 send_event 的发送句柄
-    from jiuwenswarm.gateway.embedded.runtime.session.git_diff_watcher import (
+    from jiuwenswarm.gateway.channel_manager.web.git_diff_watcher import (
         get_git_diff_watcher_registry,
     )
     _git_watcher_registry = get_git_diff_watcher_registry()
@@ -2300,13 +2704,22 @@ async def _run(
             cron_controller=cron_controller,
             heartbeat_controller=heartbeat_controller,
             updater_service=updater_service,
+            topic_prepare_service=topic_prepare_service,
+            topic_service=topic_service,
+            topic_outcome_queue=topic_outcome_queue,
         )
     )
+
+    async def _media_normalizer(params: dict[str, Any], session_id: str | None) -> None:
+        # A1g：小图落盘经 E2A 到 AgentServer，闭包捕获启动装配的 client
+        await normalize_chat_media_attachments(
+            params, session_id, agent_client=client, user_id=None
+        )
 
     extension_registry.bind_application_plugins(
         web_channel,
         agent_client=client,
-        media_attachment_normalizer=normalize_chat_media_attachments,
+        media_attachment_normalizer=_media_normalizer,
     )
     log_startup_stage("web_handlers_registered")
 
@@ -2383,15 +2796,15 @@ async def _run(
     # gateway_server）；TuiChannel 只接管出站 send 与 ws 五维索引，被 GatewayServer
     # 在 forward 分支委托 register_ws/unregister_ws。移除原 register_external_channel("tui",
     # gateway_server)，tui 出站不再走 GatewayServer.send（其 routing_target 反查缺五维索引）。
+    from jiuwenswarm.gateway.channel_manager.tui.tui_channel import (
+        TuiChannel,
+        TuiChannelConfig,
+    )
     from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
         CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
         CLI_FORWARD_REQ_METHODS,
         CliRouteBindParams,
         build_cli_route_binding,
-    )
-    from jiuwenswarm.gateway.channel_manager.tui.tui_channel import (
-        TuiChannel,
-        TuiChannelConfig,
     )
 
     tui_channel = TuiChannel(TuiChannelConfig(enabled=True), _DummyBus())
@@ -2431,6 +2844,8 @@ async def _run(
                 cron_controller=cron_controller,
                 heartbeat_controller=heartbeat_controller,
                 ws_channel=tui_channel,
+                on_session_left_project=session_left_project_follow_up(
+                    web_channel, topic_service),
             )
         ),
     ]
@@ -2686,8 +3101,10 @@ async def _run(
             if not apps:
                 logger.info("[App] channels.feishu.apps empty, FeishuChannel disabled")
             else:
-                from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import \
-                    FeishuChannel, FeishuConfig
+                from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+                    FeishuChannel,
+                    FeishuConfig,
+                )
                 for app in apps:
                     if not app.get("enabled", True):
                         continue
@@ -2721,8 +3138,9 @@ async def _run(
                     # 数字分身 adapter（共享 "feishu" key）
                     feishu_adapter = None
                     if feishu_config.group_digital_avatar:
-                        from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_im_adapter import \
-                            FeishuIMPlatformAdapter
+                        from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_im_adapter import (
+                            FeishuIMPlatformAdapter,
+                        )
                         feishu_adapter = FeishuIMPlatformAdapter(
                             my_open_id=feishu_config.my_user_id,
                             bot_name=feishu_config.bot_name,
@@ -2758,8 +3176,10 @@ async def _run(
                     "FeishuEnterpriseChannel disabled"
                 )
             else:
-                from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import \
-                    FeishuChannel, FeishuConfig
+                from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+                    FeishuChannel,
+                    FeishuConfig,
+                )
                 for bot_key, bot_conf_raw in enterprise_conf.items():
                     if not isinstance(bot_key, str) or not bot_key.strip():
                         continue
@@ -2800,8 +3220,9 @@ async def _run(
                     )
                     feishu_adapter = None
                     if feishu_config.group_digital_avatar:
-                        from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_im_adapter import \
-                            FeishuIMPlatformAdapter
+                        from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_im_adapter import (
+                            FeishuIMPlatformAdapter,
+                        )
                         feishu_adapter = FeishuIMPlatformAdapter(
                             my_open_id=feishu_config.my_user_id,
                             bot_name=feishu_config.bot_name,
@@ -2836,7 +3257,8 @@ async def _run(
                 logger.info("[App] channels.xiaoyi.apps empty, XiaoyiChannel disabled")
             else:
                 from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
-                    XiaoyiChannel, XiaoyiChannelConfig,
+                    XiaoyiChannel,
+                    XiaoyiChannelConfig,
                 )
                 for app in apps:
                     if not app.get("enabled", True):
@@ -2890,8 +3312,10 @@ async def _run(
                 if not enabled:
                     logger.info("[App] channels.dingtalk.%s, DingTalkChannel disabled", reason)
                 else:
-                    from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import \
-                        DingTalkChannel, DingTalkConfig
+                    from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
+                        DingTalkChannel,
+                        DingTalkConfig,
+                    )
                     dingtalk_config = DingTalkConfig(
                         enabled=True,
                         client_id=str(dingtalk_conf.get("client_id") or "").strip(),
@@ -2917,8 +3341,10 @@ async def _run(
                 if not enabled:
                     logger.info("[App] channels.telegram.%s, TelegramChannel disabled", reason)
                 else:
-                    from jiuwenswarm.gateway.channel_manager.im_platforms.telegram.telegram_connect import \
-                        TelegramChannel, TelegramChannelConfig
+                    from jiuwenswarm.gateway.channel_manager.im_platforms.telegram.telegram_connect import (
+                        TelegramChannel,
+                        TelegramChannelConfig,
+                    )
                     telegram_config = TelegramChannelConfig(
                         enabled=True,
                         bot_token=str(telegram_conf.get("bot_token") or "").strip(),
@@ -2943,8 +3369,10 @@ async def _run(
                 if not enabled:
                     logger.info("[App] channels.discord.%s, DiscordChannel disabled", reason)
                 else:
-                    from jiuwenswarm.gateway.channel_manager.im_platforms.discord.discord_connect import \
-                        DiscordChannel, DiscordChannelConfig
+                    from jiuwenswarm.gateway.channel_manager.im_platforms.discord.discord_connect import (
+                        DiscordChannel,
+                        DiscordChannelConfig,
+                    )
                     discord_config = DiscordChannelConfig(
                         enabled=True,
                         bot_token=str(discord_conf.get("bot_token") or "").strip(),
@@ -2971,8 +3399,10 @@ async def _run(
                 if not enabled:
                     logger.info("[App] channels.slack.%s, SlackChannel disabled", reason)
                 else:
-                    from jiuwenswarm.gateway.channel_manager.im_platforms.slack.slack_connect import \
-                        SlackChannel, SlackChannelConfig
+                    from jiuwenswarm.gateway.channel_manager.im_platforms.slack.slack_connect import (
+                        SlackChannel,
+                        SlackChannelConfig,
+                    )
                     reply_in_thread_raw = slack_conf.get("reply_in_thread", True)
                     reply_in_thread = (
                         str(reply_in_thread_raw).strip().lower() in ("true", "1", "yes", "on")
@@ -3024,8 +3454,10 @@ async def _run(
                 elif not bridge_ws_url:
                     logger.info("[App] channels.whatsapp missing bridge_ws_url, WhatsAppChannel disabled")
                 else:
-                    from jiuwenswarm.gateway.channel_manager.im_platforms.whatsapp.whatsapp_connect import \
-                        WhatsAppChannel, WhatsAppChannelConfig
+                    from jiuwenswarm.gateway.channel_manager.im_platforms.whatsapp.whatsapp_connect import (
+                        WhatsAppChannel,
+                        WhatsAppChannelConfig,
+                    )
                     whatsapp_config = WhatsAppChannelConfig(
                         enabled=True,
                         enable_streaming=enable_streaming,
@@ -3054,8 +3486,10 @@ async def _run(
                 if not enabled:
                     logger.info("[App] channels.wecom.%s, WecomChannel disabled", reason)
                 else:
-                    from jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_connect import \
-                        WecomChannel, WecomConfig
+                    from jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_connect import (
+                        WecomChannel,
+                        WecomConfig,
+                    )
                     wecom_config = WecomConfig(
                         enabled=True,
                         bot_id=str(wecom_conf.get("bot_id") or "").strip(),
@@ -3072,8 +3506,9 @@ async def _run(
                     # 数字分身：创建 adapter 并注册到 pipeline
                     wecom_adapter = None
                     if wecom_config.group_digital_avatar:
-                        from jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_im_adapter import \
-                            WecomIMPlatformAdapter
+                        from jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_im_adapter import (
+                            WecomIMPlatformAdapter,
+                        )
                         wecom_adapter = WecomIMPlatformAdapter(
                             my_user_id=wecom_config.my_user_id,
                             bot_name=wecom_config.bot_name,
@@ -3097,8 +3532,10 @@ async def _run(
                 if not enabled:
                     logger.info("[App] channels.wechat.%s, WechatChannel disabled", reason)
                 else:
-                    from jiuwenswarm.gateway.channel_manager.im_platforms.wechat.wechat_connect import \
-                        WechatChannel, WechatConfig
+                    from jiuwenswarm.gateway.channel_manager.im_platforms.wechat.wechat_connect import (
+                        WechatChannel,
+                        WechatConfig,
+                    )
                     wechat_config = WechatConfig(
                         enabled=True,
                         base_url=str(wechat_conf.get("base_url") or "https://ilinkai.weixin.qq.com").strip(),
@@ -3158,7 +3595,9 @@ async def _run(
                         SshChannel,
                         SshChannelConfig,
                     )
-                    from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import KeyRegistry
+                    from jiuwenswarm.gateway.extensions.auth.ssh_key_registry import (
+                        KeyRegistry,
+                    )
 
                     ssh_config = SshChannelConfig.from_dict({**ssh_conf, "enabled": True})
                     ssh_channel = SshChannel(
@@ -3300,7 +3739,7 @@ async def _run(
             _periodic_agent_prewarm_sync(),
             name="agent-prewarm-periodic-sync",
         )
-        if _agent_prewarm_enabled()
+        if not using_adx_router and _agent_prewarm_enabled()
         else None
     )
 
@@ -3479,9 +3918,8 @@ async def _run(
             restart_requested = await _wait_for_gateway_tasks_or_restart(
                 tasks_to_wait,
                 restart_request,
+                shutdown_event,
             )
-    except KeyboardInterrupt:
-        logger.info("received Ctrl+C, shutting down...")
     except asyncio.CancelledError:
         pass
     finally:
@@ -3630,7 +4068,17 @@ async def _run(
             await ssh_channel.stop()
             _set_agentos_ssh_key_issuer(None)
 
+        if topic_seed_task is not None:
+            topic_seed_task.cancel()
+            try:
+                await topic_seed_task
+            except asyncio.CancelledError:
+                pass
         await cron_scheduler.stop()
+        await _shutdown_topic_starter_services(
+            topic_prepare_service,
+            topic_service,
+        )
         await channel_manager.stop_dispatch()
         await heartbeat_service.stop()
         await message_handler.stop_forwarding()
@@ -3646,6 +4094,37 @@ async def _run(
 
     if restart_requested:
         _exec_gateway_restart()
+
+
+async def _run_with_shutdown_signals(
+    *,
+    agent_server_url: str,
+    web_host: str,
+    web_port: int,
+    web_path: str,
+) -> None:
+    """Translate process signals into one idempotent Gateway shutdown request."""
+
+    loop = asyncio.get_running_loop()
+    shutdown_event = asyncio.Event()
+    previous_handlers: dict[signal.Signals, Any] = {}
+
+    def request_shutdown(_signum: int, _frame: Any) -> None:
+        loop.call_soon_threadsafe(shutdown_event.set)
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous_handlers[signum] = signal.signal(signum, request_shutdown)
+    try:
+        await _run(
+            agent_server_url=agent_server_url,
+            web_host=web_host,
+            web_port=web_port,
+            web_path=web_path,
+            shutdown_event=shutdown_event,
+        )
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
 
 def main() -> None:
@@ -3705,7 +4184,9 @@ def main() -> None:
 
     # 过渡装配：注册 server 侧存储实现供 common 注入点取用
     # （gateway 独立成仓时删除，见 gateway/server_store_bridge.py）
-    from jiuwenswarm.gateway.server_store_bridge import install as _install_server_stores
+    from jiuwenswarm.gateway.server_store_bridge import (
+        install as _install_server_stores,
+    )
 
     _install_server_stores()
 
@@ -3738,7 +4219,7 @@ def main() -> None:
         raise SystemExit(1)
     try:
         asyncio.run(
-            _run(
+            _run_with_shutdown_signals(
                 agent_server_url=agent_server_url,
                 web_host=web_host,
                 web_port=web_port,

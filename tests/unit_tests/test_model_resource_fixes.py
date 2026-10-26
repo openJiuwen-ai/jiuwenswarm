@@ -120,7 +120,8 @@ def test_reasoning_resource_detail_recovers_legacy_yaml_booleans(catalog_state, 
     assert catalog_state["models"]["defaults"][0]["model_config_obj"]["reasoning_level"] is level
 
 
-@pytest.mark.parametrize("runtime", ["server", "gateway.embedded"])
+# A5：gateway.embedded 副本已删除（gateway 生产统一用 common.model_routing_registry）。
+@pytest.mark.parametrize("runtime", ["server"])
 @pytest.mark.parametrize("level, mode", [("on", "enabled"), ("off", "disabled"), (True, "enabled"), (False, "disabled")])
 def test_stable_selection_translates_reasoning_before_core_compilation(catalog_state, runtime, level, mode):
     from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
@@ -188,9 +189,12 @@ def test_agentos_resource_is_read_only(catalog_state, operation):
     assert caught.value.code == "MODEL_SELECTION_FORBIDDEN"
 
 
-def test_group_save_preserves_route_identity_and_drops_routing(catalog_state):
+def test_group_save_preserves_route_identity_and_group_timeouts(catalog_state):
     group = config_module.upsert_model_group_resource({
-        "display_name": "pool", "routing": {"strategy": "ordered-failover"},
+        "display_name": "pool", "routing": {
+            "strategy": "ordered-failover", "timeout_seconds": 420,
+            "stream_first_chunk_timeout": 280, "stream_idle_timeout": 90,
+        },
         "routes": [{"model_id": "mdl_a"}, {"model_id": "mdl_a"}],
     })
     ids = [route["route_id"] for route in group["routes"]]
@@ -198,8 +202,44 @@ def test_group_save_preserves_route_identity_and_drops_routing(catalog_state):
     group["routes"].reverse()
     saved = config_module.upsert_model_group_resource(group)
     assert [route["route_id"] for route in saved["routes"]] == ids[::-1]
-    assert "routing" not in saved
+    assert saved["routing"] == {
+        "timeout_seconds": 420,
+        "stream_first_chunk_timeout": 280,
+        "stream_idle_timeout": 90,
+    }
     assert len(catalog_state["models"]["groups"]) == 1
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), "bad", True])
+def test_group_save_rejects_invalid_timeout(catalog_state, value):
+    with pytest.raises(ModelSelectionError) as caught:
+        config_module.upsert_model_group_resource({
+            "display_name": "pool", "routes": [{"model_id": "mdl_a"}],
+            "routing": {"timeout_seconds": value},
+        })
+    assert caught.value.code == "MODEL_GROUP_INVALID"
+
+
+def test_group_save_accepts_numeric_timeout_from_environment(catalog_state):
+    saved = config_module.upsert_model_group_resource({
+        "display_name": "configured", "routes": [{"model_id": "mdl_a"}],
+        "routing": {"timeout_seconds": "75"},
+    })
+    assert saved["routing"]["timeout_seconds"] == "75"
+
+
+def test_groups_keep_independent_timeout_overrides(catalog_state):
+    first = config_module.upsert_model_group_resource({
+        "display_name": "fast", "routes": [{"model_id": "mdl_a"}],
+        "routing": {"timeout_seconds": 75},
+    })
+    second = config_module.upsert_model_group_resource({
+        "display_name": "slow", "routes": [{"model_id": "mdl_a"}],
+        "routing": {"timeout_seconds": 420},
+    })
+    groups = {group["model_group_id"]: group for group in catalog_state["models"]["groups"]}
+    assert groups[first["model_group_id"]]["routing"]["timeout_seconds"] == 75
+    assert groups[second["model_group_id"]]["routing"]["timeout_seconds"] == 420
 
 
 def test_only_explicit_default_edit_normalizes_flags(catalog_state):
@@ -295,14 +335,12 @@ async def test_config_adapter_registers_resource_methods(catalog_state):
         assert response.ok, response.payload
 
 
-@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+# A3g：gateway.embedded.runtime 副本已删除，双侧对等校验收敛为 server 单侧。
+@pytest.mark.parametrize("runtime", ["server.runtime"])
 def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
-    if runtime == "server.runtime":
-        # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
-        store = import_module("jiuwenswarm.common.model_selection_store")
-    else:
-        store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
+    store = import_module("jiuwenswarm.common.model_selection_store")
     from jiuwenswarm.server.runtime.session.session_info import to_session_info
 
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
@@ -317,14 +355,12 @@ def test_stale_metadata_snapshot_cannot_erase_selection(tmp_path, monkeypatch, r
     assert to_session_info(latest)["model_selection"] == selection
 
 
-@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+# A3g：gateway.embedded.runtime 副本已删除，双侧对等校验收敛为 server 单侧。
+@pytest.mark.parametrize("runtime", ["server.runtime"])
 def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
-    if runtime == "server.runtime":
-        # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
-        store = import_module("jiuwenswarm.common.model_selection_store")
-    else:
-        store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
+    store = import_module("jiuwenswarm.common.model_selection_store")
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
     session_id = "__cron___1a1231c0004_53dd13fcf709"
@@ -338,7 +374,8 @@ def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime)
 
 
 def test_gateway_resolver_rejects_all_disabled_routes(catalog_state):
-    from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver as GatewayResolver
+    # A5：gateway 生产（cron/controller）统一用 common 版 resolver
+    from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver as GatewayResolver
 
     catalog_state["models"]["groups"] = [{
         "model_group_id": "mgp_a",
@@ -373,7 +410,10 @@ async def test_reference_check_fails_closed_on_store_error(catalog_state, monkey
     from jiuwenswarm.common.config_panel.model_resource_handlers import find_resource_references
 
     store = SimpleNamespace(list_jobs=AsyncMock(side_effect=RuntimeError("etcd unavailable")), aclose=AsyncMock())
-    monkeypatch.setattr("jiuwenswarm.runtime.cron.factory.create_gateway_cron_store", AsyncMock(return_value=store))
+    from types import SimpleNamespace as _NS
+
+    from jiuwenswarm.common.external_providers import register
+    register("cron_store_factory", _NS(create_gateway_cron_store=AsyncMock(return_value=store)))
     with pytest.raises(RuntimeError, match="etcd unavailable"):
         await find_resource_references(ModelCatalog(catalog_state), ModelSelection(type="model", id="mdl_a"))
     store.aclose.assert_awaited_once()
@@ -393,13 +433,26 @@ def test_resource_delete_ignores_session_references(catalog_state, monkeypatch):
     assert [entry["model_id"] for entry in catalog_state["models"]["defaults"]] == ["mdl_b"]
 
 
-def test_delete_keeps_model_group_routes_valid(catalog_state):
+def test_delete_model_prunes_group_routes_instead_of_failing(catalog_state):
     catalog_state["models"]["groups"] = [{
-        "model_group_id": "mgp_a", "routes": [{"route_id": "rte_a", "model_id": "mdl_a"}],
+        "model_group_id": "mgp_a",
+        "display_name": "Coding Pool",
+        "routes": [
+            {"route_id": "rte_a", "model_id": "mdl_a"},
+            {"route_id": "rte_b", "model_id": "mdl_b"},
+        ],
+    }, {
+        "model_group_id": "mgp_only_a",
+        "display_name": "Solo",
+        "routes": [{"route_id": "rte_c", "model_id": "mdl_a"}],
     }]
-    with pytest.raises(ModelSelectionError, match="references missing model_id"):
-        config_module.delete_model_resource("model", "mdl_a")
-    assert len(catalog_state["models"]["defaults"]) == 2
+    assert config_module.delete_model_resource("model", "mdl_a")
+    assert [entry["model_id"] for entry in catalog_state["models"]["defaults"]] == ["mdl_b"]
+    assert catalog_state["models"]["groups"] == [{
+        "model_group_id": "mgp_a",
+        "display_name": "Coding Pool",
+        "routes": [{"route_id": "rte_b", "model_id": "mdl_b"}],
+    }]
 
 
 def test_deleted_session_selection_uses_current_default(catalog_state, monkeypatch):

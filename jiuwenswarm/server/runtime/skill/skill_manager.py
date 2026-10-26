@@ -317,6 +317,24 @@ _ONLINE_SEARCH_SOURCE_TIMEOUT = 30.0
 _TEAM_SKILL_PLUGIN_TYPES = {"swarmskill", "swarm-skill", "teamskills", "team-skill"}
 _SINGLE_SKILL_PLUGIN_TYPES = {"skill"}
 
+_SKILL_DISPLAY_FILENAME = "skill_display.md"
+_BUILTIN_SKILL_UI_WHITELIST = frozenset(
+    {
+        "advanced-daily-report",
+        "gitcode-api",
+        "financial-document-parser",
+        "skill-gen-4-enterprise-doc",
+        "skill-creator",
+        "swarmskill-creator",
+    }
+)
+_SKILL_DISPLAY_KEYS = (
+    "display_name_zh",
+    "description_zh",
+    "display_name_en",
+    "description_en",
+)
+
 # 自研内置技能名单（内置技能目录下 _proprietary_skills.json）。名单内的内置技能标记
 # proprietary=true（自研），名单外的内置技能一律视为三方下载——不配置即默认三方。
 _PROPRIETARY_SKILLS_FILENAME = "_proprietary_skills.json"
@@ -414,6 +432,28 @@ def _get_marketplace_dir() -> "Path":
 
 def _get_state_file() -> "Path":
     return get_state_file()
+
+
+def _knowledge_skill_language() -> str:
+    """Return ``"en"`` or ``"zh"`` for Knowledge-to-Skill prompts and errors.
+
+    Follows the top-level ``preferred_language`` in config.yaml; anything that
+    is not English (or an unreadable config) keeps the historical Chinese text.
+    """
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        config = get_config() or {}
+    except Exception:  # noqa: BLE001 - language lookup must never break the flow
+        return "zh"
+    raw = config.get("preferred_language") if isinstance(config, dict) else None
+    return "en" if str(raw or "").strip().lower().startswith("en") else "zh"
+
+
+_KNOWLEDGE_SKILL_MISSING_SKILL_MD = {
+    "zh": "未在输出目录找到有效 Skill（缺少 SKILL.md）",
+    "en": "No valid Skill was found in the output directory (SKILL.md is missing)",
+}
 
 
 from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
@@ -1100,6 +1140,8 @@ class SkillManager:
         meta["is_builtin"] = bool(base_meta.get("is_builtin", False))
         meta["is_builtin_source"] = bool(base_meta.get("is_builtin_source", False))
         meta["proprietary"] = bool(base_meta.get("proprietary", False))
+        if "installed" in base_meta:
+            meta["installed"] = bool(base_meta.get("installed"))
         if "marketplace" in base_meta:
             meta["marketplace"] = base_meta.get("marketplace")
         meta["has_evolutions"] = _has_effective_evolutions(
@@ -1118,6 +1160,8 @@ class SkillManager:
                 )
             except SkillPackValidationError as exc:
                 raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+
+        self._apply_skill_display(meta, read_root)
 
         # 返回前改写本地相对图片为受控预览 URL（不改磁盘）
         session_id = str(params.get("_session_id") or params.get("session_id") or "").strip()
@@ -5061,6 +5105,15 @@ class SkillManager:
             prompt_parts.append(f"知识来源链接: {link}")
         else:
             prompt_parts.append(f"知识来源本地文档绝对路径: {file_path}")
+        if _knowledge_skill_language() == "en":
+            prompt_parts = self._knowledge_skill_prompt_parts_en(
+                output_dir=output_dir,
+                occupied=occupied,
+                preferred_name=preferred_name,
+                skill_description=skill_description,
+                link=link if has_link else "",
+                file_path=file_path if has_file else "",
+            )
 
         return {
             "success": True,
@@ -5075,6 +5128,58 @@ class SkillManager:
             "trusted_dirs": [str(output_dir)]
             + ([str(Path(file_path).parent)] if has_file else []),
         }
+
+    @staticmethod
+    def _knowledge_skill_prompt_parts_en(
+        *,
+        output_dir: Path,
+        occupied: set[str],
+        preferred_name: str,
+        skill_description: str,
+        link: str,
+        file_path: str,
+    ) -> list[str]:
+        """English counterpart of the Knowledge-to-Skill follow-up prompt."""
+        parts = [
+            "Generate a complete, installable Skill from the knowledge source below "
+            "and write it into the specified output directory.",
+            "Output directory (the Skill root containing SKILL.md must be created "
+            f"inside this directory): {output_dir}",
+            "Requirements:",
+            "1. SKILL.md must contain valid YAML front matter whose name and "
+            "description are both non-empty strings;",
+            "2. Do not create a root-level .archive/;",
+            "3. Do not call send_file_to_user; do not package or deliver anything to the user;",
+            "4. The final Skill root may only be written inside the output directory above; "
+            "never write to workspace/skills/<name> (the system installs it afterwards);",
+            "5. skill-omni-creation may only use scripts/work/<slug>/ as an intermediate "
+            "cache and must not copy the result into workspace/skills afterwards;",
+            "6. If the source is a document/example page that needs no executable scripts, "
+            "skip code-writer/code-verifier and write SKILL.md directly (references are "
+            "allowed) to save time;",
+            "7. After generation, make sure the Skill root can be located unambiguously "
+            "inside the output directory.",
+            "8. The Skill name must not duplicate an installed name; on conflict, pick an "
+            "unused name automatically (a suffix is fine).",
+        ]
+        if occupied:
+            preview = ", ".join(sorted(occupied)[:80])
+            more = "…" if len(occupied) > 80 else ""
+            parts.append(f"Installed Skill names (do not reuse): {preview}{more}")
+        if preferred_name:
+            parts.append(
+                f"Skill name requested by the user (must be used if not taken): {preferred_name}"
+            )
+        if skill_description:
+            parts.append(
+                "Additional user constraints for the target Skill (do not use them "
+                f"directly as the Skill name): {skill_description}"
+            )
+        if link:
+            parts.append(f"Knowledge source link: {link}")
+        else:
+            parts.append(f"Absolute path of the local knowledge document: {file_path}")
+        return parts
 
     @property
     def skills_dir(self) -> Path:
@@ -5190,7 +5295,7 @@ class SkillManager:
         if skill_dir is None:
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_PACKAGE,
-                "未在输出目录找到有效 Skill（缺少 SKILL.md）",
+                _KNOWLEDGE_SKILL_MISSING_SKILL_MD[_knowledge_skill_language()],
             )
 
         meta = self._assert_skill_package_safe(skill_dir)
@@ -6146,17 +6251,100 @@ class SkillManager:
         return meta
 
     @staticmethod
+    def _parse_skill_display_md(skill_dir: Path) -> dict[str, str]:
+        """解析 skill_display.md，提取展示用中英文字段.
+
+        Returns:
+            仅包含非空展示字段的 dict；文件不存在或解析失败时返回空 dict.
+        """
+        path = skill_dir / _SKILL_DISPLAY_FILENAME
+        if not path.is_file():
+            return {}
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            logger.warning("无法读取文件: %s", path)
+            return {}
+
+        fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", text, re.DOTALL)
+        if not fm_match:
+            return {}
+        try:
+            loaded = yaml.safe_load(fm_match.group(1))
+        except Exception:
+            logger.warning("无法解析 skill_display.md: %s", path)
+            return {}
+        if not isinstance(loaded, dict):
+            return {}
+
+        out: dict[str, str] = {}
+        for key in _SKILL_DISPLAY_KEYS:
+            val = loaded.get(key)
+            if val is None:
+                continue
+            text_val = str(val).strip()
+            if text_val:
+                out[key] = text_val
+        return out
+
+    @staticmethod
+    def _apply_skill_display(meta: dict, skill_dir: Path) -> None:
+        """将 skill_display.md 展示字段合并进 meta（原地修改）.
+
+        - 始终填充 display_name_zh / description_zh（缺失时回退 SKILL.md 的 name / description）
+        - 英文字段可空
+        - 仅当 skill_display.md 提供了对应中文字段时，覆盖响应层的 display_name / description
+          （避免无展示文件时冲掉 ClawHub 等来源的 display_name）
+        - 本地已安装副本若缺少 skill_display.md，回退读取同名内置源中的展示文件
+        """
+        display = SkillManager._parse_skill_display_md(skill_dir)
+        if not display:
+            try:
+                builtin_dir = get_builtin_skills_dir()
+                builtin_skill = builtin_dir / skill_dir.name
+                if (
+                    builtin_skill.is_dir()
+                    and builtin_skill.resolve() != Path(skill_dir).resolve()
+                ):
+                    display = SkillManager._parse_skill_display_md(builtin_skill)
+            except OSError as exc:
+                logger.debug(
+                    "跳过内置 skill_display 回退 %s: %s",
+                    skill_dir,
+                    exc,
+                )
+
+        skill_name = str(meta.get("name") or "").strip()
+        skill_description = str(meta.get("description") or "").strip()
+
+        zh_name = display.get("display_name_zh", "")
+        zh_desc = display.get("description_zh", "")
+        meta["display_name_zh"] = zh_name or skill_name
+        meta["description_zh"] = zh_desc or skill_description
+        meta["display_name_en"] = display.get("display_name_en", "")
+        meta["description_en"] = display.get("description_en", "")
+
+        if zh_name:
+            meta["display_name"] = zh_name
+        if zh_desc:
+            meta["description"] = zh_desc
+
+    @staticmethod
     def _try_find_skill_file(directory: Path) -> Path | None:
         """在目录中查找 skill 文件.
 
-        优先查找 SKILL.md，其次查找任意 .md 文件.
+        优先查找 SKILL.md，其次查找任意 .md 文件（排除 skill_display.md）.
         """
         skill_md = directory / "SKILL.md"
         if skill_md.is_file():
             return skill_md
 
-        # 兼容：查找任意 .md 文件
-        md_files = list(directory.glob("*.md"))
+        # 兼容：查找任意 .md 文件（排除展示元数据文件）
+        md_files = [
+            p
+            for p in directory.glob("*.md")
+            if p.name.lower() != _SKILL_DISPLAY_FILENAME.lower()
+        ]
         if md_files:
             return md_files[0]
 
@@ -6332,6 +6520,7 @@ class SkillManager:
                 )
                 return None
             meta["has_evolutions"] = False
+        self._apply_skill_display(meta, child)
         # 不在列表中返回 body
         meta.pop("body", None)
         return meta
@@ -6390,6 +6579,7 @@ class SkillManager:
         """扫描内置技能目录中尚未安装到用户目录的技能.
 
         返回的技能列表仅包含那些存在于内置目录但尚未在用户目录中的技能。
+        仅白名单内的内置技能会展示。
         """
         results: list[dict] = []
         builtin_dir = get_builtin_skills_dir()
@@ -6416,6 +6606,8 @@ class SkillManager:
 
             # 设置内置技能的标记
             meta["name"] = self._resolve_skill_name(child, md, meta)
+            if meta["name"] not in _BUILTIN_SKILL_UI_WHITELIST:
+                continue
             meta["source"] = "builtin"
             meta["is_builtin"] = True
             meta["is_builtin_source"] = True
@@ -6425,6 +6617,7 @@ class SkillManager:
             meta["has_evolutions"] = False
             self._apply_enabled_config(meta, meta.get("name", ""))
             self.apply_archive_version_and_type(meta, child)
+            self._apply_skill_display(meta, child)
             # 不在列表中返回 body
             meta.pop("body", None)
             results.append(meta)
@@ -6960,6 +7153,33 @@ class SkillManager:
                             "is_builtin": False,
                             "is_builtin_source": False,
                         }
+
+        # 未安装的内置技能（白名单内）
+        builtin_dir = get_builtin_skills_dir()
+        if builtin_dir.exists() and builtin_dir.is_dir():
+            for child in builtin_dir.iterdir():
+                if not child.is_dir() or child.name.startswith("_"):
+                    continue
+                md = self._try_find_skill_file(child)
+                if md is None:
+                    continue
+                meta = self._parse_skill_md(md)
+                if meta is None:
+                    continue
+                resolved_name = self._resolve_skill_name(child, md, meta)
+                if resolved_name != name:
+                    continue
+                if resolved_name not in _BUILTIN_SKILL_UI_WHITELIST:
+                    continue
+                return child, {
+                    "name": resolved_name,
+                    "source": "builtin",
+                    "display_name": resolved_name,
+                    "is_builtin": True,
+                    "is_builtin_source": True,
+                    "proprietary": resolved_name in _load_proprietary_builtin_names(),
+                    "installed": False,
+                }
         return None, None
 
     def _get_skill_evolution_path(self, skill_name: str) -> Path | None:
@@ -7026,6 +7246,7 @@ class SkillManager:
                 meta["has_evolutions"] = False
                 self._apply_enabled_config(meta, meta.get("name", ""))
                 self.apply_archive_version_and_type(meta, plugin_dir)
+                self._apply_skill_display(meta, plugin_dir)
                 meta.pop("body", None)
                 results.append(meta)
 

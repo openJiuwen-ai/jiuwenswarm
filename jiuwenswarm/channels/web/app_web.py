@@ -348,6 +348,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     }
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
+    _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
     _WS_CONNECT_TIMEOUT = 10
     _WS_HANDSHAKE_TIMEOUT = 10
     _WS_SELECT_TIMEOUT = 60
@@ -1274,19 +1275,29 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
         result_match = re.fullmatch(r"/share-api/jobs/([a-f0-9]{32})/browser-result", parsed.path)
         if result_match:
+            previous_timeout = self.connection.gettimeout()
             try:
+                self.connection.settimeout(self._SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT)
                 size = int(self.headers.get("Content-Length", "0"))
                 filename = self._parse_query(parsed.query).get("filename", "")
                 status = _get_share_image_export_manager().store_browser_result(
                     result_match[1], self.headers.get("X-Share-Export-Token", ""), filename, self.rfile, size,
                 )
+            except TimeoutError:
+                self.close_connection = True
+                self._write_json(408, {"error": "share_export_upload_failed"})
+                return
             except (FileNotFoundError, PermissionError, ValueError, RuntimeError) as exc:
+                self.close_connection = True
                 code = 404 if isinstance(exc, FileNotFoundError) else 403 if isinstance(exc, PermissionError) else 400
                 self._write_json(code, {"error": str(exc)})
                 return
             except OSError:
+                self.close_connection = True
                 self._write_json(500, {"error": "share_export_upload_failed"})
                 return
+            finally:
+                self.connection.settimeout(previous_timeout)
             self._write_json(200, status)
             return
         client_match = re.fullmatch(r"/share-api/jobs/([a-f0-9]{32})/browser", parsed.path)
@@ -2014,6 +2025,24 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(chunk)
 
     def _handle_file_api_post(self, parsed) -> None:
+        # Browsers always send Sec-Fetch-Site on navigations/fetches. Reject
+        # cross-site POSTs before any mutating /file-api route runs so a
+        # foreign HTML form cannot drive localhost skills/upload/import/etc.
+        # Missing header (curl, native clients) is left alone.
+        fetch_site = str(
+            self.headers.get("Sec-Fetch-Site")
+            or self.headers.get("sec-fetch-site")
+            or ""
+        ).strip().lower()
+        if fetch_site == "cross-site":
+            logger = getattr(self, "logger", None)
+            if logger is not None:
+                logger.warning(
+                    "file-api cross-site request rejected: path=%s",
+                    parsed.path,
+                )
+            self._write_json(403, {"error": "forbidden_origin"})
+            return
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return

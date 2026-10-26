@@ -93,7 +93,32 @@ processes and unrelated Web/TUI contexts retain their configuration. A
 resumed session does not restore ephemeral credentials: resend the options
 and retain the key environment variable in the invoking CMD.
 
-## 4. Codex comparison
+## 4. File access approval
+
+With permissions enabled, standalone prompt commands directly deny operations
+that require approval, without displaying an approval question. A one-shot
+machine request that cannot receive interaction answers follows the same policy.
+Writes already allowed by the trusted-path policy continue to work. Interactive
+CLI workers and duplex machine requests retain their approval response flow.
+
+Standalone prompt commands do not expose `ask_user` or read interactive choices,
+even in a real terminal. An unexpected interaction event ends the command with
+exit code `4` without waiting for user input.
+
+With `permissions.file_guard.enabled` also enabled, shell commands whose file
+accesses cannot be determined require approval, including variable-based command
+chains, redirections, interpreters, and unrecognized programs. Non-interactive
+runs deny these commands. Interactive runs require explicit approval each time;
+Smart Approval cannot approve them automatically, and approvals are not remembered
+for the session or persisted. Recognized literal paths retain existing path policy.
+
+`--cwd` selects a working directory and `--trusted-dir` adds trusted paths;
+neither provides an operating-system sandbox. Disabling permissions skips these
+checks. Disabling only file protection leaves tool-level permission rules in
+effect. This policy is exclusive to `process_cli`; other channels retain their
+existing behavior.
+
+## 5. Codex comparison
 
 Codex `exec` supports `-m/--model` and `-c/--config key=value`. Provider config
 uses `model_providers.<id>.base_url` and `env_key`. This implementation follows

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FocusEvent } from 'react';
 
-export type SecondarySidebar = 'chat' | 'experiments';
+export type SecondarySidebar = 'chat' | 'experiments' | 'settings';
 const COLLAPSED_KEY = 'jiuwenswarm.secondarySidebarCollapsed';
 
 export function useSecondarySidebarPreference() {

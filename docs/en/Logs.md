@@ -142,6 +142,16 @@ The logging system adopts the following rotation strategy:
 4. All logs except gateway are aggregated into `full.log`
 5. Automatic rotation when log files reach size limit
 
+### 4.3 Runtime Worker Log Load Protection
+
+The Runtime Worker writes configured Python log handlers on a background thread, preserving their files, levels, filters, and masking rules. This includes SDK loggers created lazily for Team execution, model calls, and resource registration, as well as handlers replaced during reconfiguration. Each record retains the emitting session's context for background filters. The queue holds at most 512 records. When full, it drops new records and reports the cumulative `dropped` count once writing resumes. Normal exit waits up to two seconds for the logging thread, allowing a process whose Runtime cleanup has finished to exit even if the disk remains blocked.
+
+When a handler fails to write or close, the background thread counts failures and reports the operation, handler type, exception type, and count to stderr. Each operation reports its first failure and every 100th failure. Diagnostics omit the original exception message to avoid exposing credentials. An unavailable stderr increments a separate diagnostic failure count.
+
+A log message or exception text longer than 65,536 characters is replaced entirely with `[log payload omitted: ...]` before masking. JSON records use a valid JSON summary containing `log_payload_omitted`. This bounds large-payload work on the business thread. The log limit does not apply to session history. INFO timing records for `llm_stream_output` callbacks keep the first record per source each minute and summarize repeats. DEBUG and WARNING records retain their normal behavior. Heartbeat timeout settings are unchanged.
+
+On Windows, a dedicated named-pipe reader continues answering heartbeats while the business loop is stalled, including when additional session requests or delivery acknowledgements arrive. Business messages remain ordered in a buffer capped at 256 messages and 64 MiB; exceeding either bound reports an IPC backlog error. Pongs report business-loop age, so a live transport does not hide a sustained stall. A stalled loop still produces a native thread stack dump in Worker stderr after about 25 seconds; off-loop heartbeats do not postpone it. The Supervisor retains its 30-second transport timeout and 180-second sustained-stall restart threshold.
+
 ## 5. Log Configuration
 
 ### 5.1 Configuration File
@@ -240,6 +250,18 @@ Audit logs use structured JSON format:
 **Solution**:
 - Ensure system encoding is set correctly (UTF-8 recommended)
 - Use text editors that support UTF-8 encoding to view logs
+
+### 8.4 Worker Heartbeat Timeouts and Slow File Reads
+
+For `runtime worker closed`, align Supervisor diagnostics with the same PID's Worker dump. Distinguish the IPC receive age from business-loop stall age. A single thread dump identifies the current stack; it does not measure a 30-second `stat`, import, or YAML call.
+
+Proactive session scans and recommendation-state reads run on an isolated background thread. A tick skips recommendations after waiting 5 seconds. An unfinished read retains the sole work slot, so repeated ticks cannot create more threads. History compression runs only for the 10 most active candidates; directory traversal and history reads check a 4-second budget between operations.
+
+In the Worker, the first Team tool-description scan reads into an isolated snapshot, with an initial wait of at most 50 milliseconds. Slow reads use existing cached values or bundled descriptions until a complete snapshot is ready. Invalidated snapshots cannot overwrite a new run's cache. At most two Team document reads run concurrently, and failed reads retry after 30 seconds. Look for `[SituationReport]` and `[TeamWorkspace]` degradation warnings.
+
+If a background thread cannot start, the optional read degrades as it does when capacity is full and can retry later. Team guard installation and bundled-description preloading fail independently with warnings, allowing the remaining Worker startup patches to continue. An incompatible SDK cache skips custom document reads until invalidation and preserves existing values or bundled descriptions.
+
+On Windows, continuous named-pipe heartbeat reading and queued SDK log sinks remain independent of the business loop. The 30-second transport timeout and 180-second sustained business-stall restart remain active so the Supervisor can recover a permanently stuck Worker.
 
 ## 9. Best Practices
 

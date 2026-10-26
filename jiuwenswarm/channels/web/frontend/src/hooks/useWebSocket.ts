@@ -44,6 +44,7 @@ import {
   GoalRecord,
   GoalAction,
   Message,
+  ChatInputProvenance,
 } from '../types';
 import {
   ensureSessionRuntimes,
@@ -142,7 +143,9 @@ import {
 } from '../features/agentManagement/port';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
+import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 const TEAM_CONNECTION_GRACE_MS = 5000;
@@ -725,7 +728,13 @@ interface UseWebSocketReturn {
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   discardMedia: (sessionId: string, path: string) => Promise<{ deleted?: boolean }>;
-  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => Promise<boolean>;
+  sendMessage: (
+    content: string,
+    sessionId: string,
+    mediaItems?: MediaItem[],
+    options?: ChatSendOptions,
+    provenance?: ChatInputProvenance,
+  ) => Promise<boolean>;
   sendStructuredChatContent: (content: unknown, sessionId: string) => Promise<void>;
   interrupt: (
     sessionId: string,
@@ -1469,6 +1478,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ? normalizeTeamLeaderIdentity(session.team_leader_identity)
             : null,
         );
+        useSessionStore.getState().setTeamGroupIdentity(
+          sessionId,
+          Object.prototype.hasOwnProperty.call(session, 'team_group_identity')
+            ? normalizeTeamGroupIdentity(session.team_group_identity)
+            : null,
+        );
         useSessionStore.getState().setAgentGroupBinding(sessionId, groupId);
         clearPendingAgentGroupBinding(sessionId);
       })
@@ -1934,7 +1949,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   // 发送聊天消息
   const sendMessage = useCallback(
-    async (content: string, sessionId: string, mediaItems: MediaItem[] = [], options?: ChatSendOptions): Promise<boolean> => {
+    async (
+      content: string,
+      sessionId: string,
+      mediaItems: MediaItem[] = [],
+      options?: ChatSendOptions,
+      provenance: ChatInputProvenance = {
+        input_origin: 'manual_free_text',
+        assistance_origin: 'none',
+      },
+    ): Promise<boolean> => {
       if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
         if (!content.trim() && !mediaItems.length) return false;
         try {
@@ -2193,17 +2217,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // plugin_names/mcp 的组装+字段语义说明见 utils/enabledExtensions.ts 的
           // buildExtensionSendPayload 头注释（未恢复时省略，恢复后发送完整装备快照）。
           ...extensionPayload,
+          input_origin: provenance.input_origin,
+          assistance_origin: provenance.assistance_origin,
+          ...(provenance.topic_starter ? { topic_starter: provenance.topic_starter } : {}),
+          ...(provenance.prompt_suggestion ? { prompt_suggestion: provenance.prompt_suggestion } : {}),
           ...(inputMode ? { input_mode: inputMode } : {}),
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
           ...(sessionMetadata ? { metadata: sessionMetadata } : {}),
           enable_swarmflow: Boolean(sessionRt?.enableSwarmflow),
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
-            : {}),
-          // 会话级 worktree 开关：仅用户显式拨过（非 undefined）才发送，
-          // 后端按 params > 会话持久化 > 团队模板配置 回退。
-          ...(sessionRt?.swarmflowWorktree !== undefined
-            ? { swarmflow_worktree: sessionRt.swarmflowWorktree }
             : {}),
           // 会话级团队调度模式：新建会话时由欢迎页开关落成显式值，恢复会话时从 metadata 读回；
           // 未设置时不发送，后端按 会话持久化 > 团队配置 回退。
@@ -2412,11 +2435,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return (await sendExpertMessage(newInput, sessionId)) ?? false;
         }
         const result = await request<{ success?: boolean }>('chat.interrupt', {
-          session_id: sessionId, target_team_id: expertId, mode: 'team', intent,
+          session_id: sessionId,
+          target_team_id: expertId,
+          mode: 'team',
+          // The team composer stops via pause; direct expert streams only support cancel.
+          intent: intent === 'pause' ? 'cancel' : intent,
         });
-        if (result?.success) {
-          useChatStore.getState().setProcessing(`${sessionId}::${expertId}`, false);
-        }
         return result?.success === true;
       }
       if (intent === 'supplement' && newInput) {
@@ -4846,11 +4870,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           closeHeartbeatSessionState(sessionId, hbChatErrorAutomation.run_id);
           return;
         }
+        // 会话预算耗尽提示按会话去重：后端对同一耗尽可能多次广播（终态事件
+        // 重放、新 run 撞同一干账本），重复到达时上面的思考态/历史加载态清理
+        // 已完成，这里直接返回，不再追加提示或触发后续错误通知。
+        const isSessionBudgetExhausted = payload.code === 'SWARMFLOW_SESSION_BUDGET_EXHAUSTED';
+        const sessionBudgetErrorId = `session-budget-exhausted-${sessionId}`;
+        if (
+          isSessionBudgetExhausted &&
+          useChatStore.getState().getRuntime(sessionId)?.messages.some((message) => message.id === sessionBudgetErrorId)
+        ) {
+          return;
+        }
         useChatStore.getState().setExecutionError(sessionId, errorMsg);
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().setSessionError(sessionId, errorMsg);
         useChatStore.getState().addMessage(sessionId, {
-          id: prefixedMessageId('error-'),
+          id: isSessionBudgetExhausted ? sessionBudgetErrorId : prefixedMessageId('error-'),
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
@@ -5373,6 +5408,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             updated_at: e.updated_at,
             workflow_run_id: e.workflow_run_id,
           });
+          const timelineEntry = toTaskTimelineEntry(event as Record<string, unknown>, e.timestamp || Date.now());
+          if (timelineEntry) {
+            useSessionStore.getState().appendTeamTaskTimeline(sessionId, [timelineEntry]);
+          }
           const normalizedTask = normalizeTaskEvent(event);
           if (normalizedTask) {
             useSessionStore.getState().upsertTeamTask(sessionId, normalizedTask);

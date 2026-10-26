@@ -158,6 +158,40 @@ def test_a4p_enabled_is_the_only_feature_flag() -> None:
     )
 
 
+@pytest.mark.parametrize("permissions,expected", [
+    ({}, True),
+    ({"enabled": True, "mode": "manual"}, True),
+    ({"enabled": True, "mode": "auto"}, False),
+    ({"enabled": True, "mode": " AUTO "}, False),
+    ({"enabled": False, "mode": "manual"}, False),
+    ({"enabled": False, "mode": "auto"}, False),
+])
+def test_a4p_preauthorization_requires_default_permissions(permissions, expected):
+    config = {"a4p": {"enabled": True}, "permissions": permissions}
+    assert a4p_runtime.is_a4p_preauthorization_active(config) is expected
+    assert is_a4p_enabled(config) is True
+    config["a4p"]["enabled"] = False
+    assert a4p_runtime.is_a4p_preauthorization_active(config) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("permissions", [
+    {"enabled": True, "mode": "auto"},
+    {"enabled": False, "mode": "manual"},
+])
+async def test_a4p_tool_rejects_nondefault_permissions(monkeypatch, permissions):
+    monkeypatch.setattr(
+        a4p_tools_module, "get_config",
+        lambda: {"a4p": {"enabled": True}, "permissions": permissions},
+    )
+    result = await request_a4p_intent_authorization(
+        actions=[{"name": "bash", "params": {"command": "pwd"}}],
+        _session_id="session-1",
+    )
+    assert result["ok"] is False
+    assert result["code"] == "A4P_DISABLED"
+
+
 def test_a4p_tool_schema_exposes_only_security_critical_params() -> None:
     tool_card = get_tools()[0].card
     assert tool_card.exposure is ToolExposure.DIRECT
@@ -167,16 +201,25 @@ def test_a4p_tool_schema_exposes_only_security_critical_params() -> None:
     action_schema = actions_schema["items"]
     properties = action_schema["properties"]
 
-    assert "Request user approval for one currently known A4P" in tool_card.description
-    assert "bash, mcp_exec_command, create_terminal, write_file, edit_file, acp_chat" in tool_card.description
-    assert "only the current stage" in tool_card.description
-    assert "Runtime-dependent arguments do not require another authorization" in tool_card.description
-    assert "only when a later stage is not covered by an approved scope" in tool_card.description
-    assert "cron authorization cannot be staged" in tool_card.description
-    assert "each token is added" in tool_card.description
-    assert "current Web session" in tool_card.description
-    assert "existing disabled cron job" in tool_card.description
-    assert "does not execute them" in tool_card.description
+    for guidance in (
+        "Before reading, listing, searching, writing or running Shell commands",
+        "Do not read files first to prepare authorization",
+        "filters session actions already allowed by policy or covered by valid tokens",
+        "authorizationRequired=false",
+        "permittedActions, unapprovedActions and deniedActions",
+        "bash, mcp_exec_command, create_terminal, write_file, edit_file, acp_chat",
+        "only the current stage",
+        "Reuse approved scopes when runtime values match",
+        "current Web session",
+        "existing disabled cron job",
+        "cron authorization cannot be staged",
+        "Execute only permittedActions",
+        "until every planned action is permitted",
+        "does not execute actions",
+        "approved may be false",
+        "interactive Web session",
+    ):
+        assert guidance in tool_card.description
     for workflow_rule in (
         "Normal Web selection rule",
         "two or more total calls",
@@ -190,7 +233,8 @@ def test_a4p_tool_schema_exposes_only_security_critical_params() -> None:
     ):
         assert workflow_rule not in tool_card.description
 
-    assert actions_schema["description"] == "Non-empty list of supported tool action scopes."
+    assert "candidate tool action scopes" in actions_schema["description"]
+    assert "the backend filters session requests" in actions_schema["description"]
     assert action_schema["required"] == ["name", "params"]
     assert "allowExtraParams" not in properties
     assert properties["params"]["type"] == "object"
@@ -878,7 +922,7 @@ async def test_disabling_a4p_cancels_pending_and_pushes_terminal_event(
         def get_instance() -> _Server:
             return _Server()
 
-    from jiuwenswarm.runtime import host_services
+    from jiuwenswarm.common import host_services
     monkeypatch.setattr(host_services, "_runtime_push_handler", _Server().send_push)
     task = asyncio.create_task(
         runtime.authorizer.request_authorization(
@@ -1780,7 +1824,7 @@ async def test_a4p_authorization_push_uses_session_channel(monkeypatch: pytest.M
         def get_instance() -> _Server:
             return _Server()
 
-    from jiuwenswarm.runtime import host_services
+    from jiuwenswarm.common import host_services
     monkeypatch.setattr(host_services, "_runtime_push_handler", _Server().send_push)
     assert route is not None
     await runtime.authorizer._send_push(
@@ -1996,7 +2040,7 @@ async def test_a4p_partial_delivery_failure_closes_old_and_new_cards(monkeypatch
 @pytest.mark.asyncio
 @pytest.mark.parametrize("replaces", [None, "previous-mandate"])
 async def test_a4p_terminal_push_only_includes_existing_predecessor(monkeypatch, replaces):
-    from jiuwenswarm.runtime import host_services
+    from jiuwenswarm.common import host_services
 
     sent = []
 

@@ -6,7 +6,7 @@ import { isComfyuiNodeConfig } from '../../comfyuiWorkflow';
 import { designerAssetPreviewUrl, designerAssetTextUrl } from '../../designerAssetUrl';
 import {
   DESIGNER_MATERIAL_SAVED_EVENT,
-  preferredDesignerPreviewRef,
+  resolveDesignerNodePreviewRef,
 } from '../../designerMaterials';
 import {
   DESIGNER_NODE_STATUS_COMPLETED,
@@ -21,6 +21,7 @@ import {
 import type { DesignerReactFlowNode } from '../../designerGraphAdapter';
 import { DesignerModalityTypeIcon } from '../../designerIcons';
 import { useDesignerRunStore } from '../../designerRunStore';
+import { isDesignerModerationError } from '../../designerRunView';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../../designerStore';
 import { useDesignerUiStore } from '../../designerUiStore';
@@ -223,7 +224,7 @@ function DesignerNodeShell({
         <div className="designer-node__body">{body}</div>
         {nodeError ? (
           <p className="designer-node__error" data-testid="designer-node-error" title={nodeError}>
-            {nodeError}
+            {isDesignerModerationError(nodeError) ? t('designer.run.moderationBlocked') : nodeError}
           </p>
         ) : null}
         <DesignerNodePortControl nodeId={nodeId} side="successor" />
@@ -278,17 +279,11 @@ function useDesignerAssetText(uri: string | null | undefined): string | null {
 }
 
 function useNodePreviewUri(nodeId: string): string | null {
-  const outputUri = useDesignerRunStore((state) => {
-    const nodeState = state.nodeStates[nodeId];
-    return preferredDesignerPreviewRef(
-      nodeState?.output_ref,
-      nodeState?.candidate_output_ref,
-    )?.uri ?? null;
-  });
-  const domainOutputUri = useDesignerStore(
-    (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.output_ref?.uri ?? null,
+  const node = useDesignerStore(
+    (state) => state.domainGraph?.nodes.find((item) => item.id === nodeId) ?? null,
   );
-  return outputUri || domainOutputUri;
+  const nodeState = useDesignerRunStore((state) => state.nodeStates[nodeId]);
+  return resolveDesignerNodePreviewRef(node, nodeState)?.uri ?? null;
 }
 
 function DocumentFitBody({

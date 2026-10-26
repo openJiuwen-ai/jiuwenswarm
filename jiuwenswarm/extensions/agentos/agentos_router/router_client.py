@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import shlex
 import stat
 import time
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Mapping, Coroutine
 
 from jiuwenswarm.common.client.agent_client import AgentServerClient
+from jiuwenswarm.gateway.routing.container_files import (
+    AgentOSFileTransferError,
+    normalize_agent_file_download_path,
+    normalize_agent_file_upload_path,
+)
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
@@ -38,8 +42,12 @@ from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthCon
 from jiuwenswarm.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
     SshChannelEndpoint,
+    TOOL_SANDBOX_CPU_ENV,
+    TOOL_SANDBOX_IDLE_TIMEOUT_ENV,
+    TOOL_SANDBOX_MEMORY_ENV,
     read_mapping_path,
     read_optional_float,
+    read_optional_int,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import (
     agentos_extra,
@@ -95,9 +103,7 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
 from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
 from jiuwenswarm.gateway import ChannelManager
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
-from jiuwenswarm.server.runtime.attachments.document_attachments import is_forbidden_document
 from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
-from jiuwenswarm.server.runtime.attachments.upload_storage import safe_upload_filename
 
 
 logger = logging.getLogger(__name__)
@@ -106,11 +112,6 @@ _WORKSPACE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # Builtin jiuwenswarm create only: sandbox env so agentserver can locate
 # the host workspace bind path (``/home/agentos/users/<user_id>``).
 USER_DIRECTORY_ENV_KEY = "JIUWENSWARM_USER_DIRECTORY"
-
-# Container file root. Upload size is not capped on Gateway; YuanRong
-# Frontend / working-directory quota (default 512MB) rejects oversized files
-# with HTTP 413, mapped to ``file_too_large``.
-_AGENT_FILE_PATH_ROOT = "/home/agentos"
 
 _TEAM_MODES = frozenset({"team", "code.team", "team.plan"})
 # Web/TUI 握手成功后预热内置沙箱；SSH/IM 等不走 agentserver WS，不预热。
@@ -123,6 +124,14 @@ _CONNECT_WARMUP_CHANNELS = frozenset(
 _WS_CONNECT_READY_TIMEOUT_SECONDS = 60.0
 _WS_CONNECT_RETRY_INTERVAL_SECONDS = 1.0
 _WS_CONNECT_RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
+
+
+def _consume_inflight_exception(fut: asyncio.Future[Any]) -> None:
+    """Mark a failed inflight Future as observed when no follower is waiting."""
+    if not fut.cancelled():
+        fut.exception()
+
+
 _WS_CONNECT_RETRYABLE_TEXT_TOKENS = (
     "http 502",
     "http 503",
@@ -273,98 +282,6 @@ class UnsupportedAgentType(ValueError):
 
 class EphemeralKeyIssueError(RuntimeError):
     """A configured issuer could not mint an ephemeral SSH key."""
-
-
-class AgentOSFileTransferError(RuntimeError):
-    """Raised when AgentOS container file transfer cannot be completed."""
-
-    def __init__(self, message: str, *, code: str = "INTERNAL_ERROR") -> None:
-        super().__init__(message)
-        self.code = str(code)
-
-
-# Upload: relative path (+ optional dir prefix) → ``/home/agentos/<relative>``.
-# Download / list / mkdir: absolute path under ``/home/agentos``.
-
-
-def _normalize_upload_dir_prefix(dir_prefix: str) -> str:
-    """Return a clean relative directory prefix, or empty string for default root."""
-    text = str(dir_prefix or "").strip().replace("\\", "/")
-    if not text or text == ".":
-        return ""
-    if text.startswith("/"):
-        raise AgentOSFileTransferError(
-            "upload dir must be relative (AgentOS prefixes /home/agentos)",
-            code="BAD_REQUEST",
-        )
-    text = text.strip("/")
-    if not text or text == ".":
-        return ""
-    posix = PurePosixPath(text)
-    if ".." in posix.parts or posix.is_absolute():
-        raise AgentOSFileTransferError("path must not contain '..'", code="BAD_REQUEST")
-    return posix.as_posix()
-
-
-def normalize_agent_file_upload_path(
-    path: str,
-    *,
-    dir_prefix: str = "",
-    user_id: str = "",
-) -> str:
-    """Normalize upload path: relative (+ optional ``dir_prefix``) → ``/home/agentos/...``.
-
-    - ``dir_prefix`` empty: land under ``/home/agentos`` (e.g. ``a.pdf`` → ``/home/agentos/a.pdf``)
-    - ``dir_prefix`` set: prefix directory (e.g. ``docs`` + ``a.pdf`` → ``/home/agentos/docs/a.pdf``)
-    """
-    del user_id  # reserved for future per-user upload roots
-    text = str(path or "").strip().replace("\\", "/")
-    if not text or text in {".", "/"}:
-        raise AgentOSFileTransferError("path is required", code="BAD_REQUEST")
-    if text.startswith("/"):
-        raise AgentOSFileTransferError(
-            "upload path must be relative (AgentOS prefixes /home/agentos)",
-            code="BAD_REQUEST",
-        )
-    posix = PurePosixPath(text)
-    if ".." in posix.parts or posix.is_absolute():
-        raise AgentOSFileTransferError("path must not contain '..'", code="BAD_REQUEST")
-
-    raw_name = posix.name
-    if not raw_name or raw_name in {".", ".."}:
-        raise AgentOSFileTransferError("path is required", code="BAD_REQUEST")
-    safe_name = safe_upload_filename(raw_name, fallback="upload.bin")
-    if is_forbidden_document(filename=safe_name):
-        raise AgentOSFileTransferError("forbidden extension", code="BAD_REQUEST")
-
-    path_parent = posix.parent.as_posix().strip(".")
-    prefix = _normalize_upload_dir_prefix(dir_prefix)
-    parts: list[str] = []
-    if prefix:
-        parts.append(prefix)
-    if path_parent and path_parent != ".":
-        parts.append(path_parent)
-    parts.append(safe_name)
-    return f"{_AGENT_FILE_PATH_ROOT}/{'/'.join(parts)}"
-
-
-def normalize_agent_file_download_path(path: str) -> str:
-    """Normalize download/list path: absolute and under ``/home/agentos``."""
-    text = str(path or "").strip().replace("\\", "/")
-    if not text:
-        raise AgentOSFileTransferError("path is required", code="BAD_REQUEST")
-    if not text.startswith("/"):
-        raise AgentOSFileTransferError("download path must be absolute", code="BAD_REQUEST")
-    posix = PurePosixPath(text)
-    if ".." in posix.parts:
-        raise AgentOSFileTransferError("path must not contain '..'", code="BAD_REQUEST")
-    root = _AGENT_FILE_PATH_ROOT
-    if text != root and not text.startswith(f"{root}/"):
-        raise AgentOSFileTransferError(
-            f"path must be under {root}",
-            code="BAD_REQUEST",
-        )
-    return text
 
 
 def build_auth_headers_from_mapping(headers: Mapping[str, str] | None) -> dict[str, str]:
@@ -600,6 +517,11 @@ class AgentOSRouterClient(AgentServerClient):
         ephemeral_key_ttl_sec: float = 300.0,
         workspace_root: str | None = None,
         sandbox_idle_timeout_seconds: float = 600.0,
+        agent_sandbox_cpu: int = 2000,
+        agent_sandbox_memory: int = 4096,
+        tool_sandbox_idle_timeout_seconds: int = 600,
+        tool_sandbox_cpu: int = 2000,
+        tool_sandbox_memory: int = 4096,
         sandbox_idle_check_interval_seconds: float = 30.0,
         disconnect_cleanup_timeout_seconds: float = 60.0,
         connect_warmup_enabled: bool = True,
@@ -619,6 +541,15 @@ class AgentOSRouterClient(AgentServerClient):
         )
         # <= 0 disables idle sandbox reclamation entirely.
         self._sandbox_idle_timeout_seconds = float(sandbox_idle_timeout_seconds)
+        # Builtin jiuwenswarm agent sandbox resources; overridden at runtime by
+        # the management-plane (etcd) values.
+        self._agent_sandbox_cpu = int(agent_sandbox_cpu)
+        self._agent_sandbox_memory = int(agent_sandbox_memory)
+        self._tool_sandbox_idle_timeout_seconds = int(
+            tool_sandbox_idle_timeout_seconds
+        )
+        self._tool_sandbox_cpu = int(tool_sandbox_cpu)
+        self._tool_sandbox_memory = int(tool_sandbox_memory)
         self._sandbox_idle_check_interval_seconds = max(
             1.0, float(sandbox_idle_check_interval_seconds)
         )
@@ -955,6 +886,13 @@ class AgentOSRouterClient(AgentServerClient):
             return
         existing = self._warmup_tasks.get(user_id)
         if existing is not None and not existing.done():
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "warmup.skip.pending",
+                user_id=user_id,
+                task=existing.get_name(),
+            )
             return
         task = asyncio.create_task(
             self._warmup_user_agent(user_id),
@@ -1562,6 +1500,22 @@ class AgentOSRouterClient(AgentServerClient):
                     attempt=attempt,
                 )
                 return client
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(client.disconnect())
+                except BaseException:
+                    logger.warning(
+                        "[AgentOS] agent.ws.cleanup.cancelled user_id=%s sandbox_id=%s attempt=%s",
+                        user_id,
+                        instance_id,
+                        attempt,
+                        extra=agentos_extra(
+                            session_id=session_id,
+                            sandbox_id=instance_id,
+                        ),
+                        exc_info=True,
+                    )
+                raise
             except Exception as exc:
                 try:
                     await client.disconnect()
@@ -1655,6 +1609,35 @@ class AgentOSRouterClient(AgentServerClient):
             info = await waiter(instance_id)
         return info if isinstance(info, dict) else {}
 
+    async def _abort_ws_connect(
+        self,
+        *,
+        instance_id: str,
+        inflight: asyncio.Future[Any],
+        exc: BaseException,
+        client: WebSocketAgentServerClient | None,
+    ) -> None:
+        """Settle a failed leader and wake any followers waiting on inflight."""
+        if client is not None:
+            try:
+                await asyncio.shield(client.disconnect())
+            except BaseException:
+                logger.warning(
+                    "[AgentOS] agent.ws.leader.cleanup_fail sandbox_id=%s",
+                    instance_id,
+                    exc_info=True,
+                )
+
+        async with self._ws_clients_lock:
+            if self._ws_connecting.get(instance_id) is inflight:
+                self._ws_connecting.pop(instance_id, None)
+            if not inflight.done():
+                inflight.set_exception(
+                    RuntimeError("ws connect leader cancelled")
+                    if isinstance(exc, asyncio.CancelledError)
+                    else exc
+                )
+
     async def _get_ws_client(self, runtime: AgentRuntime) -> WebSocketAgentServerClient:
         """获取（或建立）到该 agent instance 的 WS 直连，不走 invoke 链路.
 
@@ -1685,6 +1668,7 @@ class AgentOSRouterClient(AgentServerClient):
             inflight = self._ws_connecting.get(instance_id)
             if inflight is None:
                 inflight = asyncio.get_running_loop().create_future()
+                inflight.add_done_callback(_consume_inflight_exception)
                 self._ws_connecting[instance_id] = inflight
                 is_leader = True
             else:
@@ -1693,6 +1677,8 @@ class AgentOSRouterClient(AgentServerClient):
         if not is_leader:
             return await asyncio.shield(inflight)
 
+        leader_started = time.monotonic()
+        client = None
         try:
             await self._wait_yuanrong_running(
                 instance_id,
@@ -1707,19 +1693,40 @@ class AgentOSRouterClient(AgentServerClient):
                 session_id=str(info.metadata.get("session_id") or ""),
                 agent_type=str(info.agent_type or ""),
             )
-        except Exception as exc:
             async with self._ws_clients_lock:
+                self._ws_clients[instance_id] = client
                 self._ws_connecting.pop(instance_id, None)
                 if not inflight.done():
-                    inflight.set_exception(exc)
+                    inflight.set_result(client)
+            return client
+        except asyncio.CancelledError as exc:
+            await self._abort_ws_connect(
+                instance_id=instance_id,
+                inflight=inflight,
+                exc=exc,
+                client=client,
+            )
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "agent.ws.leader.cancelled",
+                user_id=str(info.user_id or ""),
+                session_id=str(info.metadata.get("session_id") or ""),
+                sandbox_id=instance_id,
+                agent_type=str(info.agent_type or ""),
+                instance=instance_id,
+                error=type(exc).__name__,
+                latency_ms=int((time.monotonic() - leader_started) * 1000),
+            )
             raise
-
-        async with self._ws_clients_lock:
-            self._ws_clients[instance_id] = client
-            self._ws_connecting.pop(instance_id, None)
-            if not inflight.done():
-                inflight.set_result(client)
-        return client
+        except Exception as exc:
+            await self._abort_ws_connect(
+                instance_id=instance_id,
+                inflight=inflight,
+                exc=exc,
+                client=client,
+            )
+            raise
 
     async def _close_ws_client(self, instance_id: str | None) -> None:
         if not instance_id:
@@ -2522,23 +2529,36 @@ class AgentOSRouterClient(AgentServerClient):
     def apply_remote_overrides(self, overrides: Mapping[str, Any]) -> None:
         """Apply remotely-managed fields to the running process.
 
-        Narrow interface, no reconnect. Handles the data-plane
-        ``agent_sandbox.idle_timeout``, which is otherwise frozen at
-        construction -- this is its only runtime update path.
+        Narrow interface, no reconnect. Handles the management-plane
+        ``agent_sandbox`` and ``tool_sandbox`` settings, which are otherwise
+        frozen at construction.
 
-        The management plane outranks env here: the remote value wins even when
-        ``SANDBOX_IDLE_TIMEOUT_SECONDS`` is set (env is only a startup fallback).
-        A remote document that omits the field leaves the current value untouched
-        -- it must not fall back to env/yaml, so deleting the field does not roll
-        anything back.
+        The management plane outranks env here; env only seeds startup.
+        A remote document that omits a field leaves the current value untouched
+        -- it must not fall back to env/yaml, so deleting the field does not
+        roll anything back.
 
-        Starts/stops the reaper in both directions (0 disables reclamation).
+        Agent Sandbox idle timeout starts/stops the reaper. Agent Sandbox CPU/
+        memory affect future Agent Sandbox creates. Tool Sandbox values are
+        passed to newly created AgentServer instances; Gateway does not create
+        the Tool Sandbox itself.
         """
-        agent_sandbox_section = read_mapping_path(overrides, "agent_sandbox")
-        new_timeout = read_optional_float(
-            agent_sandbox_section,
-            "idle_timeout",
+        agent_sandbox = read_mapping_path(overrides, "agent_sandbox")
+        self._apply_idle_timeout(
+            read_optional_float(agent_sandbox, "idle_timeout")
         )
+        self._apply_agent_sandbox_resources(
+            cpu=read_optional_int(agent_sandbox, "cpu"),
+            memory=read_optional_int(agent_sandbox, "memory"),
+        )
+        tool_sandbox = read_mapping_path(overrides, "tool_sandbox")
+        self._apply_tool_sandbox_config(
+            idle_timeout=read_optional_int(tool_sandbox, "idle_timeout"),
+            cpu=read_optional_int(tool_sandbox, "cpu"),
+            memory=read_optional_int(tool_sandbox, "memory"),
+        )
+
+    def _apply_idle_timeout(self, new_timeout: float | None) -> None:
         if new_timeout is None:
             # Field not pushed (or deleted): keep the current value.
             return
@@ -2563,6 +2583,90 @@ class AgentOSRouterClient(AgentServerClient):
             # positive the running loop already reads the new value, and
             # ``create_task`` would need a running event loop we may not have.
             self._ensure_idle_reaper_task()
+
+    def _apply_agent_sandbox_resources(
+        self,
+        *,
+        cpu: int | None,
+        memory: int | None,
+    ) -> None:
+        """Update builtin Agent Sandbox CPU/memory for future creates only."""
+        if cpu is not None and cpu != self._agent_sandbox_cpu:
+            previous_cpu = self._agent_sandbox_cpu
+            self._agent_sandbox_cpu = cpu
+            log_agentos(
+                logger,
+                logging.INFO,
+                "config.agent_sandbox.cpu.update",
+                previous=previous_cpu,
+                current=cpu,
+            )
+        if memory is not None and memory != self._agent_sandbox_memory:
+            previous_memory = self._agent_sandbox_memory
+            self._agent_sandbox_memory = memory
+            log_agentos(
+                logger,
+                logging.INFO,
+                "config.agent_sandbox.memory.update",
+                previous=previous_memory,
+                current=memory,
+            )
+
+    def _apply_tool_sandbox_config(
+        self,
+        *,
+        idle_timeout: int | None,
+        cpu: int | None,
+        memory: int | None,
+    ) -> None:
+        """Update Tool Sandbox settings for future AgentServer instances."""
+        if (
+            idle_timeout is not None
+            and idle_timeout != self._tool_sandbox_idle_timeout_seconds
+        ):
+            previous_idle = self._tool_sandbox_idle_timeout_seconds
+            self._tool_sandbox_idle_timeout_seconds = idle_timeout
+            log_agentos(
+                logger,
+                logging.INFO,
+                "config.tool_sandbox.idle_timeout.update",
+                previous=previous_idle,
+                current=idle_timeout,
+            )
+        if cpu is not None and cpu != self._tool_sandbox_cpu:
+            previous_cpu = self._tool_sandbox_cpu
+            self._tool_sandbox_cpu = cpu
+            log_agentos(
+                logger,
+                logging.INFO,
+                "config.tool_sandbox.cpu.update",
+                previous=previous_cpu,
+                current=cpu,
+            )
+        if memory is not None and memory != self._tool_sandbox_memory:
+            previous_memory = self._tool_sandbox_memory
+            self._tool_sandbox_memory = memory
+            log_agentos(
+                logger,
+                logging.INFO,
+                "config.tool_sandbox.memory.update",
+                previous=previous_memory,
+                current=memory,
+            )
+
+    def _tool_sandbox_env(self) -> dict[str, str]:
+        """Tool Sandbox settings carried into a new AgentServer instance.
+
+        Gateway only forwards these values. The AgentServer/tool provider owns
+        how (and whether) they are used to create the Tool Sandbox.
+        """
+        return {
+            TOOL_SANDBOX_IDLE_TIMEOUT_ENV: str(
+                self._tool_sandbox_idle_timeout_seconds
+            ),
+            TOOL_SANDBOX_CPU_ENV: str(self._tool_sandbox_cpu),
+            TOOL_SANDBOX_MEMORY_ENV: str(self._tool_sandbox_memory),
+        }
 
     def _cancel_idle_reaper(self) -> None:
         """Cancel the reaper from a sync context (does not join the task).
@@ -2698,8 +2802,8 @@ class AgentOSRouterClient(AgentServerClient):
                 },
                 "cmds": [["sh", "-c", f"exec jiuwenswarm-agentserver --port {port}"]],
                 "probes": self._probe_settings.tcp_probes(port, with_liveness=True),
-                "cpu": int(os.environ.get("AGENTOS_BUILTIN_AGENT_CPU", "2000")),
-                "memory": int(os.environ.get("AGENTOS_BUILTIN_AGENT_MEMORY", "4096")),
+                "cpu": self._agent_sandbox_cpu,
+                "memory": self._agent_sandbox_memory,
             }
             # 不注入 AGENT_SERVER_HOST: 留空让沙箱内 agentserver 自行检测沙箱本地
             # 非 loopback IP(ISOLATED 模式 bind veth 地址,外部可达;见
@@ -2707,8 +2811,9 @@ class AgentOSRouterClient(AgentServerClient):
             env_vars = {
                 USER_DIRECTORY_ENV_KEY: workspace,
                 "JIUWENSWARM_RUNTIME_PROFILE": "agentos",
+                **self._tool_sandbox_env(),
             }
-            from jiuwenswarm.runtime.cron.factory import load_cron_store_settings
+            from jiuwenswarm.gateway.runtime.cron.factory import load_cron_store_settings
             import json
 
             endpoints = load_cron_store_settings(self._server_config).endpoints
@@ -2820,6 +2925,9 @@ class AgentOSRouterClient(AgentServerClient):
             instance=instance_id,
             latency_ms=latency_ms,
             trace_id=str(sandbox.metadata.get("trace_id") or ""),
+            # Resources actually sent in runtime_spec (builtin: env/etcd; 3rd: registry).
+            cpu=runtime_spec.get("cpu"),
+            memory=runtime_spec.get("memory"),
         )
 
         task = asyncio.create_task(

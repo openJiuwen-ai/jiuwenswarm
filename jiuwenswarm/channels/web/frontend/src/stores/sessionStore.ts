@@ -32,7 +32,11 @@ import {
   registerConfirmedTaskCreation,
   type TaskProgressBaseline,
 } from '../features/teamTaskProgressBaseline';
-import type { AgentGroupSelectionIntent, AgentSelectionIntent } from '../features/agentManagement/types';
+import type {
+  AgentGroupIdentity,
+  AgentGroupSelectionIntent,
+  AgentSelectionIntent,
+} from '../features/agentManagement/types';
 import {
   loadTeamConnectionPresentation,
   saveTeamConnectionPresentation,
@@ -49,10 +53,12 @@ import {
 } from '../components/teamArea/workflowTypes';
 import { requestAgentDetail, requestPhaseAgents } from '../services/webClient';
 import type { TeamBootstrapMode, TeamDispatchMode } from '../features/teamDispatch/featureConfig';
+import { mergeTaskTimeline, type TeamTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
 import {
   normalizeTeamLeaderIdentity,
   type TeamLeaderIdentity,
 } from '../features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 
 const MODE_STORAGE_KEY = 'jiuwenclaw_mode';
 const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
@@ -92,7 +98,7 @@ export function cacheLastModelSelection(selection: ModelSelection): void {
   try { localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, JSON.stringify(selection)); } catch { /* noop */ }
 }
 
-/** New chats restore the last stable selection, then fall back custom -> free -> empty. */
+/** New chats restore the last stable selection, then fall back default-group -> custom -> free -> empty. */
 export function resolveNewConversationModelSelection(
   models: ModelEntry[],
   groups: ModelGroup[],
@@ -114,12 +120,27 @@ export function resolveNewConversationModelSelection(
       }
     }
   }
+  const defaultGroup = groups.find(
+    (group) => group.is_default === true && group.enabled !== false && Boolean(group.model_group_id?.trim()),
+  );
+  if (defaultGroup?.model_group_id) {
+    return { type: 'model_group', id: defaultGroup.model_group_id };
+  }
   const fallback = models.find((model) => model.is_free !== true && Boolean(model.model_id?.trim()))
     ?? models.find((model) => model.is_free === true && Boolean(model.model_id?.trim()));
   return fallback?.model_id ? { type: 'model', id: fallback.model_id } : null;
 }
 
-function isModelSelectionAvailable(
+/** Keep a still-valid selection; otherwise resolve the same fallback as a new conversation. */
+export function resolveAvailableModelSelection(
+  selection: ModelSelection | null,
+  models: ModelEntry[],
+  groups: ModelGroup[],
+): ModelSelection | null {
+  return resolveNewConversationModelSelection(models, groups, selection);
+}
+
+export function isModelSelectionAvailable(
   selection: ModelSelection | null,
   models: ModelEntry[],
   groups: ModelGroup[],
@@ -132,12 +153,30 @@ function isModelSelectionAvailable(
   return !routeId || group.routes.some((route) => route.route_id === routeId && route.enabled !== false);
 }
 
+function applyResolvedModelSelection(
+  runtime: SessionRuntime,
+  selection: ModelSelection | null,
+  models: ModelEntry[],
+): SessionRuntime {
+  const selectedModel = selection?.type === 'model'
+    ? models.find((model) => model.model_id === selection.id)
+    : null;
+  return {
+    ...runtime,
+    selectedModelSelection: selection,
+    selectedModelName: selection?.type === 'model_group'
+      ? null
+      : selectedModel?.model_name ?? (selection ? runtime.selectedModelName : null),
+  };
+}
+
 function restoreNewConversationSelection(
   runtime: SessionRuntime,
   models: ModelEntry[],
   groups: ModelGroup[],
 ): SessionRuntime {
-  // Catalog changes must not silently replace a group already selected in an unsent draft.
+  // Catalog refresh can briefly omit groups; keep the draft group until the user
+  // changes it. Historical sessions heal via ChatModelSelector / session restore.
   if (runtime.selectedModelSelection?.type === 'model_group') return runtime;
   const cached = loadLastModelSelection();
   const selection = isModelSelectionAvailable(cached, models, groups)
@@ -145,14 +184,7 @@ function restoreNewConversationSelection(
     : !cached && isModelSelectionAvailable(runtime.selectedModelSelection, models, groups)
       ? runtime.selectedModelSelection
       : resolveNewConversationModelSelection(models, groups, cached);
-  const selectedModel = selection?.type === 'model'
-    ? models.find((model) => model.model_id === selection.id)
-    : null;
-  return {
-    ...runtime,
-    selectedModelSelection: selection,
-    selectedModelName: selectedModel?.model_name ?? null,
-  };
+  return applyResolvedModelSelection(runtime, selection, models);
 }
 
 function clearStoredAgentSelection(sessionId: string): void {
@@ -607,6 +639,8 @@ export interface SessionRuntime {
   persistSession: boolean;
   contextUsageSnapshot: ContextUsageSnapshot | null;
   teamTaskEvents: TeamTaskEvent[];
+  /** 子话题时间线用的任务流转事件（逐条追加，不按 task 合并）。 */
+  teamTaskTimeline: TeamTaskTimelineEntry[];
   teamTasks: TeamTask[];
   teamTaskProgressBaseline: TaskProgressBaseline;
   teamMembers: TeamMember[];
@@ -630,6 +664,8 @@ export interface SessionRuntime {
   agentGroupBindingPending: string | null;
   /** 首次 AgentGroup 绑定时锁定的 leader 身份；普通 Team 为 null。 */
   teamLeaderIdentity: TeamLeaderIdentity | null;
+  /** 本会话已选 AgentGroup 的展示身份；目录卸载后仍用于历史消息展示。 */
+  teamGroupIdentity: AgentGroupIdentity | null;
   /**
    * 本会话期间持续启用的插件id/MCP名，由输入框"+"菜单"扩展"面板的开关控制。与
    * selectedSkills 不同：这两个字段发 chat.send 后不清空，会一直带在每条消息里，直到用户在
@@ -643,13 +679,6 @@ export interface SessionRuntime {
   enableSwarmflow: boolean;
   /** 本会话 swarmflow token 上限（留空=不限） */
   swarmflowBudget: number | null;
-  /**
-   * 本会话的 worktree 隔离开关（会话级，随 chat.send 下发）。
-   * undefined = 用户未拨过：不随请求发送，后端回退会话持久化值，
-   * 都没有则保持团队模板的 worktree 配置。
-   * 退出 team 模式不清理（重开 swarmflow 时保留用户偏好）。
-   */
-  swarmflowWorktree?: boolean;
   /**
    * 本会话团队的任务调度模式（会话级，随 chat.send 下发并持久化到会话 metadata）。
    * undefined = 用户未拨过：开关默认关闭（自主模式）。团队建好后不可再改。
@@ -683,6 +712,7 @@ function createEmptyRuntime(
     persistSession: false,
     contextUsageSnapshot: null,
     teamTaskEvents: [],
+    teamTaskTimeline: [],
     teamTasks: [],
     teamTaskProgressBaseline: createTaskProgressBaseline(),
     teamMembers: [],
@@ -699,6 +729,7 @@ function createEmptyRuntime(
     agentGroupBinding: null,
     agentGroupBindingPending: null,
     teamLeaderIdentity: null,
+    teamGroupIdentity: null,
     enabledPlugins: [],
     enabledMcps: [],
     extensionsHydrated: false,
@@ -757,6 +788,8 @@ interface SessionState {
   setPersistSession: (sessionId: string, enabled: boolean) => void;
   setTeamTaskEvents: (sessionId: string, events: TeamTaskEvent[]) => void;
   addTeamTaskEvent: (sessionId: string, event: TeamTaskEvent) => void;
+  setTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
+  appendTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
   setTeamTasks: (sessionId: string, tasks: TeamTask[]) => void;
   registerConfirmedTeamTaskCreation: (sessionId: string, taskId: string) => void;
   mergeTeamTaskProgressBaseline: (sessionId: string, baseline: TaskProgressBaseline) => void;
@@ -783,6 +816,7 @@ interface SessionState {
   setAgentGroupBinding: (sessionId: string, groupId: string | null) => void;
   setAgentGroupBindingPending: (sessionId: string, groupId: string | null) => void;
   setTeamLeaderIdentity: (sessionId: string, identity: TeamLeaderIdentity | null) => void;
+  setTeamGroupIdentity: (sessionId: string, identity: AgentGroupIdentity | null) => void;
   /** 本会话启用插件：追加（去重） */
   addEnabledPlugin: (sessionId: string, pluginId: string) => void;
   /** 本会话启用插件：移除指定项 */
@@ -827,8 +861,6 @@ interface SessionState {
   applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
   /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
   setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
-  /** 设置本会话的 worktree 隔离开关（显式值，随 chat.send 下发并持久化到会话 metadata） */
-  setSwarmflowWorktree: (sessionId: string, enabled: boolean) => void;
   /** 设置本会话团队的任务调度模式（显式值，随 chat.send 下发并持久化到会话 metadata） */
   setTeamDispatchMode: (sessionId: string, mode: TeamDispatchMode) => void;
   /** 设置本会话团队的建队方式（调度模式子开关；显式值，随 chat.send 下发并持久化到会话 metadata） */
@@ -960,6 +992,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const baseRuntime = existingRuntime || createEmptyRuntime(sessionId);
       const hasGroupBinding = Object.prototype.hasOwnProperty.call(normalizedSession, 'agent_group_name');
       const hasTeamLeaderIdentity = Object.prototype.hasOwnProperty.call(normalizedSession, 'team_leader_identity');
+      const hasTeamGroupIdentity = Object.prototype.hasOwnProperty.call(normalizedSession, 'team_group_identity');
       const sessionGroupBinding = typeof normalizedSession.agent_group_name === 'string' && normalizedSession.agent_group_name.trim()
         ? normalizedSession.agent_group_name.trim()
         : null;
@@ -979,6 +1012,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         teamLeaderIdentity: hasTeamLeaderIdentity
           ? normalizeTeamLeaderIdentity(normalizedSession.team_leader_identity)
           : baseRuntime.teamLeaderIdentity,
+        teamGroupIdentity: hasTeamGroupIdentity
+          ? normalizeTeamGroupIdentity(normalizedSession.team_group_identity)
+          : baseRuntime.teamGroupIdentity,
       };
       return {
         currentSession: normalizedSession,
@@ -1060,6 +1096,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             agentGroupSelectionIntent,
             ...(normalizedMode !== 'team' ? { agentGroupBinding: null } : {}),
             ...(normalizedMode !== 'team' ? { agentGroupBindingPending: null } : {}),
+            ...(normalizedMode !== 'team' ? { teamGroupIdentity: null } : {}),
             ...(closingSwarmflow
               ? { enableSwarmflow: false, swarmflowBudget: null }
               : {}),
@@ -1200,6 +1237,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, teamTaskEvents: [event, ...runtime.teamTaskEvents] },
+        },
+      };
+    });
+  },
+
+  setTeamTaskTimeline: (sessionId, entries) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamTaskTimeline: entries },
+        },
+      };
+    });
+  },
+
+  appendTeamTaskTimeline: (sessionId, entries) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || entries.length === 0) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamTaskTimeline: mergeTaskTimeline(runtime.teamTaskTimeline, entries) },
         },
       };
     });
@@ -1599,6 +1662,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             teamLeaderIdentity: normalized && (!runtime.agentGroupBinding || runtime.agentGroupBinding === normalized)
               ? runtime.teamLeaderIdentity
               : null,
+            teamGroupIdentity: normalized && (
+              runtime.teamGroupIdentity?.name === normalized
+              || runtime.teamGroupIdentity?.id === normalized
+            )
+              ? runtime.teamGroupIdentity
+              : null,
             agentGroupSelectionIntent: normalized ? { kind: 'keep' } : runtime.agentGroupSelectionIntent,
           },
         },
@@ -1626,6 +1695,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, teamLeaderIdentity: identity },
+        },
+      };
+    });
+  },
+
+  setTeamGroupIdentity: (sessionId, identity) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamGroupIdentity: identity },
         },
       };
     });
@@ -2123,19 +2204,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  setSwarmflowWorktree: (sessionId, enabled) => {
-    set((state) => {
-      const rt = state.runtimes[sessionId];
-      if (!rt) return state;
-      return {
-        runtimes: {
-          ...state.runtimes,
-          [sessionId]: { ...rt, swarmflowWorktree: enabled },
-        },
-      };
-    });
-  },
-
   setTeamDispatchMode: (sessionId, mode) => {
     set((state) => {
       const rt = state.runtimes[sessionId];
@@ -2197,6 +2265,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const pendingNewRuntime = state.runtimes[TRANSIENT_NEW_CONVERSATION_ID];
       if (!pendingNewRuntime) return { availableModelGroups: groups };
+      // Historical sessions keep a dead selection until ChatModelSelector /
+      // session restore can fall back and persist session.selection.set (#5424).
       return {
         availableModelGroups: groups,
         runtimes: {

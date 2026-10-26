@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth import login_credentials, passthrough
+from jiuwenswarm.common.auth import login_credentials
+from jiuwenswarm.gateway.auth import passthrough
 from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
 from jiuwenswarm.common.auth.model_catalog import LoginModel
 from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY

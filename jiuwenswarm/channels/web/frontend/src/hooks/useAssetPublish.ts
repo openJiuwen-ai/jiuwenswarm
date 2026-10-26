@@ -4,7 +4,7 @@ import { assetPublishApi } from '../services/assetPublishApi';
 import {
   createCommitAttempt,
   publishTimestamp,
-  publishOutcome,
+  isSubmissionLocked,
   definitiveCommitRejection,
 } from '../features/assetPublishState';
 import { getStoredOAuthProvider, getStoredOAuthToken } from '../utils/gitcodeOAuth';
@@ -29,7 +29,7 @@ export const emptyMetadata: PublishMetadata = {
 const authScope = () => `${getStoredOAuthProvider()}:${getStoredOAuthToken() || ''}`;
 export function useAssetPublish(reference: AssetReference, restored?: PublishMetadata) {
   const [metadata, setMetadata] = useState<PublishMetadata>(
-    restored || { ...emptyMetadata, asset_name: reference.local_id, display_name: reference.local_id },
+    restored || { ...emptyMetadata },
   );
   const [targetAssetId, setTargetAssetId] = useState('');
   const [force, setForce] = useState(false);
@@ -50,7 +50,7 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
     const active = activeSubmission.current;
     if (active && !(active.operationId === next.operation_id || (active.draftId && active.draftId === next.draft_id)))
       return false;
-    const locked = ['queued', 'uploading', 'unknown'].includes(publishOutcome(next));
+    const locked = isSubmissionLocked(next);
     activeSubmission.current = locked
       ? { draftId: next.draft_id || active?.draftId, operationId: next.operation_id }
       : null;
@@ -93,6 +93,10 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
         setDescription(next);
         if (!edited.current) setMetadata({ ...emptyMetadata, ...next.defaults });
       }
+      if (!getStoredOAuthToken()) {
+        setError('');
+        return;
+      }
       const result = await assetPublishApi.records(reference);
       if (!current(version)) return;
       setRecords(result.records || []);
@@ -126,7 +130,6 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
     attempt.current = null;
     busyRef.current = false;
     setBusy(false);
-    if (!getStoredOAuthToken()) return;
     const version = generation.current;
     assetPublishApi
       .describe(reference)
@@ -143,7 +146,7 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
       });
   }, [scope, reference.kind, reference.local_id, current, updateSubmission]);
   useEffect(() => {
-    if (description || !getStoredOAuthToken()) return;
+    if (description) return;
     return webClient.onStateChange((connection) => {
       if (connection === 'ready') void refresh();
     });

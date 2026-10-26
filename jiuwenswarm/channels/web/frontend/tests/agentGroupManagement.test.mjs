@@ -263,3 +263,15 @@ test('chat group picker submits runtime package names and keeps selection checke
     assert.equal(new Function('item', 'selectedGroupId', `return ${selectedExpression}`)(item, item.name), true);
   }
 });
+
+test('uninstalling an agent group asks for confirmation before calling the API', () => {
+  const source = readFileSync(new URL('../src/components/AgentManagementPanel/index.tsx', import.meta.url), 'utf8');
+  const handler = source.slice(source.indexOf('const handleUninstallGroup'), source.indexOf('const handleReconnect'));
+  const confirmAt = handler.indexOf('window.confirm(');
+  assert.notEqual(confirmAt, -1);
+  assert.ok(confirmAt < handler.indexOf('groupClient.uninstallGroup('));
+  for (const locale of ['zh', 'en']) {
+    const messages = JSON.parse(readFileSync(new URL(`../src/i18n/locales/${locale}.json`, import.meta.url), 'utf8'));
+    assert.match(messages.agentManagement.confirm.uninstallGroupMessage, /\{\{name\}\}/);
+  }
+});

@@ -6,12 +6,15 @@ from functools import wraps
 
 
 from datetime import datetime, timedelta
-from typing import Any, ClassVar, List
+from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
 
-from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
-from jiuwenswarm.common.work_mode import EXECUTION_WORK_MODES
+from jiuwenswarm.common.work_mode import (
+    DEFAULT_PROJECT_ID_CODE,
+    DEFAULT_PROJECT_ID_WORK,
+    EXECUTION_WORK_MODES,
+)
 from jiuwenswarm.gateway.cron.cron_expr import normalize_cron_expr
 from jiuwenswarm.gateway.cron.models import (
     CRON_JOB_DESCRIPTION_MAX_LENGTH,
@@ -27,6 +30,7 @@ from jiuwenswarm.gateway.cron.models import (
     resolve_cron_model,
     validate_cron_model,
 )
+from jiuwenswarm.gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 
@@ -208,8 +212,25 @@ class CronController:
             return raw_s
         return raw_s
 
-    async def list_jobs(self) -> list[dict[str, Any]]:
+    async def list_jobs(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """List jobs, optionally scoped to one owner.
+
+        ``user_id`` is applied before admission is queried.  Admission is a
+        cross-process RPC routed by the job owner's ``user_id``, so querying it
+        for other owners both delays this caller and may cold-start (or abort
+        the cold start of) another user's sandbox.  ``None``/empty keeps the
+        legacy all-owner behavior for callers without an identity.
+        """
         jobs = await self._store.list_jobs()
+        owner = str(user_id or "").strip()
+        if owner:
+            # 先按属主过滤再打闸门:闸门按任务属主路由到其沙箱,过滤前全量
+            # 查询会让本请求替其他用户承担冷启动和 10s 超时。
+            jobs = [
+                job
+                for job in jobs
+                if str(getattr(job, "user_id", "") or "").strip() == owner
+            ]
         # project_execution_allowed 是一次跨进程 RPC。同项目多任务共享同一
         # (project_id, user_id) 判定:去重后并发查询,避免把一次列表请求
         # 放大成逐任务串行 N 次往返(每个 10s 超时)。
@@ -310,6 +331,16 @@ class CronController:
             mode = normalize_cron_job_mode(mode)
         else:
             mode = None
+        # proactive.tick 是主动推荐开关自动维护的内部模式（proactive_cron_sync
+        # 以固定 id 注册）：用户路径创建同模式任务会被后端 mode 保护拒绝启停/
+        # 删除，而前端只按固定 id 识别系统任务，导致任务永远停不掉（#5128）。
+        if (
+            mode == "proactive.tick"
+            and str(params.get("id") or "").strip() != PROACTIVE_JOB_ID
+        ):
+            raise ValueError(
+                "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动创建"
+            )
         model_name, model_source = resolve_cron_model(
             params.get("model_name"),
             zen_entries=await self._zen_entries(),
@@ -317,7 +348,7 @@ class CronController:
         model_selection = params.get("model_selection")
         if model_selection is not None:
             from jiuwenswarm.common.model_selection import ModelSelection
-            from jiuwenswarm.gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver
+            from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
             selection = ModelSelection.model_validate(model_selection)
             ModelSelectionResolver().resolve(selection)
             model_selection = selection.model_dump()
@@ -346,7 +377,7 @@ class CronController:
         timeout_seconds = params.get("timeout_seconds")
         # work_mode 解析(严格校验:非法值由 resolve_request_work_mode 返回 BAD_REQUEST);
         # 默认值按 controller 目标通道推断(tui→code,web/未设置→work)
-        from jiuwenswarm.gateway.embedded.runtime.session.work_mode import (
+        from jiuwenswarm.gateway.runtime.work_mode import (
             resolve_request_work_mode,
         )
 
@@ -356,16 +387,13 @@ class CronController:
         work_mode, mode_err = resolve_request_work_mode(params, default_channel)
         if mode_err is not None:
             raise ValueError(f"invalid work_mode: {params.get('work_mode')!r}")
-        # project_id / project_dir → project_id 解析(设计文档 §6.1 + work_mode 隔离):
-        # 优先接受显式 project_id(修改计划 §5 链路 A,与 CronTools 保持一致):
-        # 1. 默认项目 ID(default/default_code)→ 直接使用,按 project_id 映射 work_mode
-        # 2. 真实 project_id → 校验存在且未隐藏,从 Project 记录注入精确 work_mode
-        # 3. 无显式 project_id → 按 (work_mode, project_dir) 解析可见项目,
-        #    匹配不到(含命中隐藏项目 / 无命中)归默认项目
-        # 非绝对路径抛 ValueError → BAD_REQUEST
-        # AgentOS 多用户时，此绑定已由目标 AgentServer 完成。Gateway 必须把该
-        # 结果作为不透明值持久化，绝不能再探测部署侧 project_store：即使两边
-        # 恰好存在同 ID 项目，也会造成 work_mode 被错误覆盖。
+        # project_id / project_dir → project_id 解析(设计文档 §6.1 + work_mode 隔离)。
+        # A3g：项目绑定统一由入口在目标 AgentServer 完成——web/tui 经
+        # PROJECT_CRON_RESOLVE_BINDING，agent 工具经 server 侧 CronTools——
+        # controller 把结果作为不透明值持久化，gateway 本地 project_store
+        # 反查已删除。marker 缺失时仅放行无项目字段/默认项目的系统路径
+        # （proactive.tick 等）；真实 project_id/project_dir 必须先经
+        # AgentServer 解析，防止绑定被部署侧同名项目污染。
         raw_project_id = str(params.get("project_id") or "").strip()
         project_dir_raw = params.get("project_dir")
         project_dir_val = (
@@ -373,25 +401,19 @@ class CronController:
             if isinstance(project_dir_raw, str) and project_dir_raw.strip()
             else ""
         )
-        if allow_unresolved_project_id:
-            # The marker is only injected after AgentServer-side validation.
-            # Do not import or read the Gateway-local project store on this path.
-            resolved_project_id = raw_project_id
-            caller_work_mode = str(params.get("work_mode") or "").strip()
-            if caller_work_mode in ("code", "work"):
-                work_mode = caller_work_mode
-        else:
-            from jiuwenswarm.gateway.embedded.runtime.session.project_store import (
-                resolve_cron_project_binding,
+        # 默认项目 ID（default/default_code）直接映射 work_mode，无需查表放行
+        is_default_project = raw_project_id in (DEFAULT_PROJECT_ID_WORK, DEFAULT_PROJECT_ID_CODE)
+        needs_agentos_resolution = bool(project_dir_val) or (
+            bool(raw_project_id) and not is_default_project
+        )
+        if needs_agentos_resolution and not allow_unresolved_project_id:
+            raise ValueError(
+                "cron project binding must be resolved by the target AgentServer"
             )
-
-            binding = resolve_cron_project_binding(
-                raw_project_id, project_dir_val, work_mode
-            )
-            if binding.error is not None:
-                raise ValueError(binding.error)
-            resolved_project_id = binding.project_id
-            work_mode = binding.work_mode
+        resolved_project_id = raw_project_id
+        caller_work_mode = str(params.get("work_mode") or "").strip()
+        if caller_work_mode in ("code", "work"):
+            work_mode = caller_work_mode
         if work_mode not in EXECUTION_WORK_MODES:
             raise ValueError(f"cron is not supported for work_mode: {work_mode!r}")
         app_id = str(params.get("app_id") or "").strip()
@@ -440,6 +462,12 @@ class CronController:
         auth_session = str(patch.pop("_auth_session", "") or "").strip()
         if "mode" in patch:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
+            # 同 create_job：内部模式只随 proactive_cron_sync 注册，不允许把
+            # 既有任务改写成 proactive.tick（#5128）。
+            if patch["mode"] == "proactive.tick":
+                raise ValueError(
+                    "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动修改"
+                )
         if "model_name" in patch:
             canonical, model_source = resolve_cron_model(
                 patch.get("model_name"),
@@ -475,33 +503,30 @@ class CronController:
                 str(patch.get("description") or ""), name
             )
 
-        # work_mode / project_id / project_dir 重解析(共享 helper):
-        # 与 cron_tools.py update_job 共用同一 ``resolve_cron_job_patch``,
-        # 确保 Web RPC 与 AgentTool 两条链路逻辑一致。
-        # 仅 AgentServer 已校验过的多用户请求可跳过 Gateway 本地反查；单用户仍须
-        # 因无效 project_id 明确失败，避免把失效 ID 写入定时任务。
+        # work_mode / project_id / project_dir 重解析:
+        # A3g：项目字段的重解析统一由入口经目标 AgentServer 完成（marker 标记），
+        # gateway 本地 project_store 反查已删除。marker 缺失的 patch 不允许
+        # 携带项目字段（必须先经 AgentServer 解析）；work_mode 单独 patch
+        # 沿用原规则拒绝（仅能伴随项目重解析生效）。
         from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
 
         caller_work_mode = str(patch.get("work_mode") or "").strip()
-        if allow_unresolved_project_id:
-            # AgentServer has already resolved this project in the user's
-            # injected directory.  Never look up the deployment-side project
-            # table here: a colliding ID must not influence the stored job.
-            patch["work_mode"] = (
-                caller_work_mode
-                if caller_work_mode in ("code", "work")
-                else (existing.work_mode or DEFAULT_WEB_WORK_MODE)
+        has_project_fields = "project_id" in patch or "project_dir" in patch
+        patch_touches_binding = has_project_fields or "work_mode" in patch
+        if patch_touches_binding and not allow_unresolved_project_id:
+            if has_project_fields:
+                raise ValueError(
+                    "cron project binding must be resolved by the target AgentServer"
+                )
+            # 值本身可能合法，真正原因是 work_mode 不能脱离项目重解析单独 patch
+            raise ValueError(
+                "work_mode patch requires project re-resolution via target AgentServer"
             )
-        else:
-            from jiuwenswarm.gateway.embedded.runtime.session.project_store import (
-                resolve_cron_job_patch,
-            )
-
-            resolve_cron_job_patch(
-                patch,
-                existing_work_mode=existing.work_mode or "",
-                channel_id="web",
-            )
+        patch["work_mode"] = (
+            caller_work_mode
+            if caller_work_mode in ("code", "work")
+            else (existing.work_mode or DEFAULT_WEB_WORK_MODE)
+        )
 
         final_targets = str(patch.get("targets") or existing.targets).strip()
         if "session_id" in patch:
@@ -589,376 +614,3 @@ class CronController:
     async def run_now_info(self, job_id: str) -> dict[str, str]:
         return await self._scheduler.trigger_run_now_info(job_id)
 
-    async def _create_job_tool(
-        self,
-        name: str,
-        cron_expr: str,
-        timezone: str,
-        description: str,
-        targets: str = "",
-        enabled: bool = True,
-        wake_offset_seconds: int | None = None,
-        mode: str | None = None,
-        timeout_seconds: int | None = None,
-        model_name: str | None = None,
-        mcp: list[str] | None = None,
-        project_dir: str | None = None,
-        project_id: str | None = None,
-        work_mode: str | None = None,
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            "name": name,
-            "cron_expr": cron_expr,
-            "timezone": timezone,
-            "targets": targets,
-            "enabled": enabled,
-            "description": description,
-        }
-        if wake_offset_seconds is not None:
-            params["wake_offset_seconds"] = wake_offset_seconds
-        if mode is not None and str(mode).strip():
-            params["mode"] = mode
-        if timeout_seconds is not None:
-            params["timeout_seconds"] = timeout_seconds
-        if model_name is not None and str(model_name).strip():
-            params["model_name"] = validate_cron_model(
-                model_name,
-                zen_entries=await self._zen_entries(),
-            )
-        if mcp is not None:
-            params["mcp"] = mcp
-        if project_dir is not None:
-            params["project_dir"] = str(project_dir).strip()
-        if project_id is not None and str(project_id).strip():
-            params["project_id"] = str(project_id).strip()
-        if work_mode is not None and str(work_mode).strip():
-            params["work_mode"] = str(work_mode).strip()
-        return await self.create_job(params)
-
-    async def _update_job_tool(
-        self, job_id: str, patch: dict[str, Any]
-    ) -> dict[str, Any]:
-        return await self.update_job(job_id, patch)
-
-    async def _preview_job_tool(
-        self, job_id: str, count: int = 5
-    ) -> list[dict[str, Any]]:
-        return await self.preview_job(job_id, count)
-
-    def get_tools(self) -> List[Tool]:
-        """Return cron job tools for registration in the openJiuwen Runner.
-        Tools to be returned:
-            list_jobs
-            get_job
-            create_job
-            update_job
-            delete_job
-            toggle_job
-            preview_job
-
-        Usage:
-            toolkit = CronController(xxxxxx)
-            tools = toolkit.get_tools()
-            Runner.resource_mgr.add_tool(tools)
-            for t in tools:
-                agent.ability_manager.add(t.card)
-
-        Returns:
-            List of Tool instances (LocalFunction) ready for Runner/agent registration.
-        """
-
-        def make_tool(
-            name: str,
-            description: str,
-            input_params: dict,
-            func,
-        ) -> Tool:
-            card = ToolCard(
-                name=name,
-                description=description,
-                input_params=input_params,
-            )
-            return LocalFunction(card=card, func=func)
-
-        return [
-            make_tool(
-                name="cron_list_jobs",
-                description=(
-                    "List all cron jobs. Returns a list of job objects with"
-                    " id, name, cron_expr, timezone, enabled, etc."
-                ),
-                input_params={"type": "object", "properties": {}},
-                func=self.list_jobs,
-            ),
-            make_tool(
-                name="cron_get_job",
-                description="Get a single cron job by id. Returns job details or None if not found.",
-                input_params={
-                    "type": "object",
-                    "properties": {
-                        "job_id": {
-                            "type": "string",
-                            "description": "The job id to look up",
-                        }
-                    },
-                    "required": ["job_id"],
-                },
-                func=self.get_job,
-            ),
-            make_tool(
-                name="cron_create_job",
-                description=(
-                    "Create a scheduled cron job.\n"
-                    "cron_expr:\n"
-                    "- Recurring (5 fields): minute hour day month day-of-week.\n"
-                    "  Example: daily 9:00 = '0 9 * * *', every Monday 9:00 = '0 9 * * 1'.\n"
-                    '- Relative time (e.g. "in X minutes"): take now in the given timezone, '
-                    "compute run_at = now + X minutes, then encode run_at as 7-field cron "
-                    "with a fixed year (second minute hour day month day-of-week year). "
-                    "Example: run_at (Mar 19, 2026 10:07:00 local) -> '0 7 10 19 3 ? 2026'.\n"
-                    "- One-shot (runs only once): must use 7 fields with a fixed year: "
-                    "second minute hour day month day-of-week year. "
-                    "Example: 2026-03-28 17:00 (local) -> '0 0 17 28 3 ? 2026'.\n"
-                    "Warning: if you use a 5-field expression with fixed day/month "
-                    "but year semantics implicitly '*', it will repeat every year; "
-                    "for a real one-shot, use the 7-field form with a fixed year.\n"
-                    "description should contain task content only (no time/frequency). "
-                    "timezone defaults to Asia/Shanghai."
-                ),
-                input_params={
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": f"Job name (max {CRON_JOB_NAME_MAX_LENGTH} characters).",
-                        },
-                        "cron_expr": {
-                            "type": "string",
-                            "description": (
-                                "Cron expression. "
-                                "Recurring jobs use 5 fields: minute hour dom month day-of-week. "
-                                "One-shot jobs must use 7 fields: second minute hour dom month "
-                                "day-of-week year (fixed year). "
-                                "For relative time, treat it as one-shot: compute run_at = now + X minutes, "
-                                "then encode it as a 7-field expression with a fixed year. "
-                                "Example: 2026-03-28 17:00 (local) -> '0 0 17 28 3 ? 2026'."
-                            ),
-                        },
-                        "timezone": {
-                            "type": "string",
-                            "description": "Time zone (IANA), e.g. Asia/Shanghai",
-                            "default": "Asia/Shanghai",
-                        },
-                        "targets": {
-                            "type": "string",
-                            "enum": [e.value for e in CronTargetChannel],
-                            "description": (
-                                "Delivery channel: tui, web, feishu, dingtalk, "
-                                "whatsapp, wecom, xiaoyi, wechat. "
-                                "If omitted, use the current request source channel."
-                            ),
-                        },
-                        "enabled": {
-                            "type": "boolean",
-                            "description": "Whether the job is enabled",
-                            "default": True,
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": (
-                                "Task payload text sent to the assistant at run time. "
-                                "Do not include time or frequency. "
-                                f"Max {CRON_JOB_DESCRIPTION_MAX_LENGTH} characters."
-                            ),
-                        },
-                        "wake_offset_seconds": {
-                            "type": "integer",
-                            "description": "Seconds to wake before push. Default 0",
-                            "default": 0,
-                        },
-                        "mode": {
-                            "type": "string",
-                            "enum": cron_job_modes_for_tools(),
-                            "description": (
-                                "Agent runtime mode when the job runs. "
-                                "Default agent. Use team for multi-agent team execution."
-                            ),
-                        },
-                        "timeout_seconds": {
-                            "type": "integer",
-                            "description": (
-                                "Execution timeout in seconds (60-259200). "
-                                "Default 3600 (1 hour) for both normal and team modes."
-                            ),
-                        },
-                        "model_name": {
-                            "type": "string",
-                            "description": (
-                                "Model name or alias to use when the job runs. "
-                                "If omitted, uses the AgentServer default model."
-                            ),
-                        },
-                        "mcp": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": (
-                                "Session-scoped MCP server names to enable when "
-                                "the job runs. Omit to inherit the creating "
-                                "session's MCP selection; pass [] for none."
-                            ),
-                        },
-                        "project_dir": {
-                            "type": "string",
-                            "description": (
-                                "Absolute path to the project directory this job belongs to. "
-                                "If omitted, uses the current session's project."
-                            ),
-                        },
-                        "project_id": {
-                            "type": "string",
-                            "description": (
-                                "Explicit project id (takes priority over project_dir). "
-                                "Omit to resolve from project_dir + work_mode."
-                            ),
-                        },
-                        "work_mode": {
-                            "type": "string",
-                            "enum": ["code", "work"],
-                            "description": (
-                                "Working mode of the target project (code/work). "
-                                "Defaults to current channel default (tui->code, web->work). "
-                                "Only used when project_id is not provided; ignored if project_id "
-                                "is provided (work_mode inherited from the project)."
-                            ),
-                        },
-                    },
-                    "required": ["name", "cron_expr", "timezone", "description"],
-                },
-                func=self._create_job_tool,
-            ),
-            make_tool(
-                name="cron_update_job",
-                description=(
-                    "Update an existing cron job. Pass job_id and a patch dict with fields to update "
-                    "(name, enabled, cron_expr, timezone, description, wake_offset_seconds, "
-                    "targets, mode, model_name, mcp, project_dir, project_id). "
-                    f"name max {CRON_JOB_NAME_MAX_LENGTH} characters, "
-                    f"description max {CRON_JOB_DESCRIPTION_MAX_LENGTH} characters."
-                ),
-                input_params={
-                    "type": "object",
-                    "properties": {
-                        "job_id": {"type": "string", "description": "Job id to update"},
-                        "patch": {
-                            "type": "object",
-                            "description": (
-                                "Fields to update (name, enabled, cron_expr, timezone, "
-                                "description, wake_offset_seconds, targets, mode, model_name, "
-                                "mcp, project_dir, project_id). work_mode is not accepted as an "
-                                "independent patch field; to change work_mode, patch project_id "
-                                "or project_dir + work_mode (work_mode only disambiguates the "
-                                "target project when resolving project_dir)."
-                            ),
-                            "properties": {
-                                "targets": {
-                                    "type": "string",
-                                    "enum": [e.value for e in CronTargetChannel],
-                                    "description": (
-                                        "推送频道：web/tui/feishu/dingtalk/whatsapp/wecom/xiaoyi/wechat"
-                                    ),
-                                },
-                                "mode": {
-                                    "type": "string",
-                                    "enum": cron_job_modes_for_tools(),
-                                    "description": "Agent runtime mode (agent, team, ...)",
-                                },
-                                "model_name": {
-                                    "type": "string",
-                                    "description": "Model to use when the job runs. \
-                                        Set to empty string to reset to default.",
-                                },
-                                "mcp": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": (
-                                        "Session-scoped MCP server names to enable when the "
-                                        "job runs. Set to [] to clear (use default set only)."
-                                    ),
-                                },
-                                "project_dir": {
-                                    "type": "string",
-                                    "description": "Absolute path to the project directory. \
-                                        Set to empty string for default project.",
-                                },
-                                "project_id": {
-                                    "type": "string",
-                                    "description": (
-                                        "Directly patch the project_id (takes priority over "
-                                        "project_dir). work_mode is re-injected from the "
-                                        "project record."
-                                    ),
-                                },
-                                "work_mode": {
-                                    "type": "string",
-                                    "enum": ["code", "work"],
-                                    "description": (
-                                        "Disambiguates target project when patching "
-                                        "project_dir. Not a standalone patchable field."
-                                    ),
-                                },
-                            },
-                        },
-                    },
-                    "required": ["job_id", "patch"],
-                },
-                func=self._update_job_tool,
-            ),
-            make_tool(
-                name="cron_delete_job",
-                description="Delete a cron job by id. Returns True if deleted, False if not found.",
-                input_params={
-                    "type": "object",
-                    "properties": {
-                        "job_id": {"type": "string", "description": "Job id to delete"},
-                    },
-                    "required": ["job_id"],
-                },
-                func=self.delete_job,
-            ),
-            make_tool(
-                name="cron_toggle_job",
-                description="Enable or disable a cron job. Pass job_id and enabled (true/false).",
-                input_params={
-                    "type": "object",
-                    "properties": {
-                        "job_id": {"type": "string", "description": "Job id"},
-                        "enabled": {
-                            "type": "boolean",
-                            "description": "Whether to enable the job",
-                        },
-                    },
-                    "required": ["job_id", "enabled"],
-                },
-                func=self.toggle_job,
-            ),
-            make_tool(
-                name="cron_preview_job",
-                description=(
-                    "Preview next N scheduled run times for a job. "
-                    "Returns list of {wake_at, push_at} timestamps."
-                ),
-                input_params={
-                    "type": "object",
-                    "properties": {
-                        "job_id": {"type": "string", "description": "Job id"},
-                        "count": {
-                            "type": "integer",
-                            "description": "Number of runs to preview (1-50, default 5)",
-                            "default": 5,
-                        },
-                    },
-                    "required": ["job_id"],
-                },
-                func=self._preview_job_tool,
-            ),
-        ]

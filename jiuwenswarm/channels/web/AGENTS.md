@@ -143,7 +143,7 @@
 | `components/ModelProviderIcon` | `model-provider-icon` | 模型供应商图标 |
 | `components/Switch` | `switch` | 通用开关(无透传,调用处编号兜底,自身不加) |
 | `components/ui/PageCard` | `page-card` | 通用卡片;卡片右上角浮现主操作按钮(defaultButton) |
-| `features/trajectory` | `trajectory` | 轨迹面板(zip/JSONL 归档流式导入/导出;保留期检查点播种;原始数据检视器) |
+| `features/trajectory` | `trajectory` | 轨迹面板(zip/JSONL 归档流式导入/导出;保留期检查点播种;原始数据检视器;诊断与归因面板 `trajectory-diagnosis-*`) |
 | `features/trajectory` | `single-agent` | 单 Agent 工作台(chat/trajectory 双 tab 切换) |
 | `features/trajectory` | `team-trajectory` | 团队轨迹工作台(泳道视图) |
 | `components/AssetPublishDrawer` | `asset-publish` | 四类资源发布表单、预检、任务及 OAuth 恢复 |
@@ -151,6 +151,7 @@
 | `App.tsx` | `app` | 应用外壳;全局布局与 toast |
 | `features/shareImageExport.tsx` | `share-image-export` | 长图导出独立渲染页 |
 | `components/ui/Select` | `ui-select` | 通用下拉选择控件 |
+| `components/ui/HelpTips` | `ui-help-tips` | 通用"?"帮助提示按钮与自适应气泡 |
 | `features/designer` | `designer` | 设计功能页;工作流画布与节点;Director 对话;运行控制;素材与分镜 |
 
 | `features/A4PAuthorizationModal` | `a4p-authorization` | A4P 授权卡片及范围选择 |

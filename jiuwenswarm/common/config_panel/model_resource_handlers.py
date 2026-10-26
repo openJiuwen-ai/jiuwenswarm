@@ -28,11 +28,12 @@ RESOURCE_OPERATIONS = {
 
 async def find_resource_references(catalog, selection, *, user_id=""):
     """Read the configured Cron backend, never substitute a local file for etcd."""
-    from jiuwenswarm.runtime.cron.factory import create_gateway_cron_store, load_cron_store_settings
+    from jiuwenswarm.common.cron_settings import load_cron_store_settings
+    from jiuwenswarm.common.external_providers import provider
     from jiuwenswarm.common.model_migration import migrate_legacy_cron_selections
 
     references = catalog.find_references(selection, include_cron=False)
-    store = await create_gateway_cron_store(catalog.config)
+    store = await provider("cron_store_factory").create_gateway_cron_store(catalog.config)
     is_etcd = load_cron_store_settings(catalog.config).backend == "etcd"
     try:
         await migrate_legacy_cron_selections(store, catalog=catalog, user_id=user_id if is_etcd else None)
@@ -83,9 +84,16 @@ async def model_resource_handler(
     try:
         payload = await _resource_payload(operation, params or {}, user_id=user_id)
         if operation.endswith((".upsert", ".delete")):
+            if operation == "models.delete":
+                # Model delete may also prune group routes that referenced it.
+                changed_keys = ["models.defaults", "models.groups"]
+            elif operation.startswith("groups"):
+                changed_keys = ["models.groups"]
+            else:
+                changed_keys = ["models.defaults"]
             applied = await _apply_models_change(
                 on_config_saved, agent_client,
-                changed_keys=["models.groups" if operation.startswith("groups") else "models.defaults"],
+                changed_keys=changed_keys,
             )
             payload["applied_without_restart"] = applied
         await channel.send_response(ws, req_id, ok=True, payload=payload)

@@ -36,6 +36,7 @@ SERVER_PROVIDER_DOMAINS = {
     "team_binding_store",
     "team_entity_store",
     "session_metadata",
+    "cron_store_factory",
 }
 
 

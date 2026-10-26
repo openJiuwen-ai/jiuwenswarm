@@ -53,16 +53,15 @@ from jiuwenswarm.agents.harness.common.cua_defaults import (
     resolve_cua_factory_options,
 )
 from jiuwenswarm.common.config import (
-    get_default_model_provider,
     get_evolution_auto_save_enabled,
     get_progressive_tool_enabled,
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    KVCacheAffinityConfig,
     build_kv_cache_affinity_config,
-    get_default_model_client_config,
+    get_kv_cache_control_model_client_config,
+    get_kv_cache_control_model_provider,
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
@@ -92,8 +91,8 @@ _CODE_MODES: frozenset[str] = frozenset(
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
     return build_kv_cache_affinity_config(
         config,
-        provider=get_default_model_provider(config),
-        model_client_config=get_default_model_client_config(config),
+        provider=get_kv_cache_control_model_provider(config),
+        model_client_config=get_kv_cache_control_model_client_config(config),
     )
 
 
@@ -271,17 +270,20 @@ _DESIGN_RAIL_NAMES: tuple[str, ...] = (
     registry.STREAM_EVENT,
     registry.SECURITY,
     registry.MODEL_ANOMALY_DETECTION,
-    registry.HEARTBEAT,
-    registry.AVATAR_PROMPT,
     registry.MULTIMODAL_IMAGE,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
-    registry.PERSONAL_CONTEXT,
 )
 
 _DESIGN_TOOL_NAMES: tuple[str, ...] = (
     registry.VISION,
     registry.AUDIO,
+)
+
+_DESIGN_LEADER_TOOL_NAMES: tuple[str, ...] = (
+    registry.WEB_SEARCH,
+    registry.WEB_FETCH,
+    registry.WEB_PAID_SEARCH,
 )
 
 
@@ -312,7 +314,7 @@ def _build_design_capability_specs(
         # the execution graph (analyze → brief → review → storyboard →
         # review → graph → validate).
         rails_specs.append(RailSpec(type=registry.DESIGNER_AUTHORING))
-        # Leader execution rail: the designer_run_graph tool (canvas
+        # Leader execution rail: the swarmflow tool (canvas
         # compilation/trigger from the conversation, single-node rerun,
         # cascade rerun) + its prompt section. Graph editing
         # (designer_graph_tools) and execution stay two tools on two rails.
@@ -345,7 +347,7 @@ def _build_design_capability_specs(
         # provider, which resolves the session's graph binding. No send_file:
         # node outputs reach the frontend through the canvas node contract
         # (DESIGNER_RUN_UPDATED / graph output_refs), not chat file delivery.
-        tool_names = (*tool_names, registry.DESIGNER_GRAPH_TOOLS)
+        tool_names = (*tool_names, *_DESIGN_LEADER_TOOL_NAMES, registry.DESIGNER_GRAPH_TOOLS)
     tool_specs: list[BuiltinToolSpec] = [
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
         for name in tool_names
@@ -1004,7 +1006,7 @@ def build_member_subagent_specs(
     if not _is_code_mode(mode):
         return specs
 
-# Explore / plan are the code profile's core sub-agents and stay mounted
+    # Explore / plan are the code profile's core sub-agents and stay mounted
     # unless a config entry turns them off explicitly, so an absent entry keeps
     # the long-standing behaviour.
     for name, factory_name in (
@@ -1041,7 +1043,10 @@ def build_member_deep_agent_spec(
 
     Appends the rails/tools (and, for code modes, sub-agents + the code system
     prompt) after the base spec's existing entries and returns a new
-    ``DeepAgentSpec`` (the input is left unmodified).
+    ``DeepAgentSpec`` (the input is left unmodified). Leaders never carry
+    sub-agents: their spec's subagent list is pinned empty so agent-core
+    mounts no SubagentRail and the leader has no ``task_tool`` surface —
+    delegation goes through the team-native runner tools instead.
 
     Args:
         config: The resolved ``config.yaml`` mapping.
@@ -1092,10 +1097,20 @@ def build_member_deep_agent_spec(
         # Force off agent-core's enable_task_planning auto-inject path so a YAML
         # base spec cannot re-mount harness todo rails via resolve_deep_agent_parts.
         update["enable_task_planning"] = False
+        # Leaders dispatch through the team-native runner tools (build_team /
+        # spawn_teammate) and carry no sub-agents: agent-core mounts SubagentRail
+        # — and with it the task_tool surface — only for a non-empty subagent
+        # list, so pinning the list empty keeps task_tool off the leader even
+        # when a YAML base spec configures one.
+        update["subagents"] = []
     if not _is_code_mode(mode):
         update["enable_skill_discovery"] = not retrieval_enabled
 
-    subagent_specs = build_member_subagent_specs(config, mode, role)
+    # Teammates build their member sub-agent set here; the leader branch above
+    # already pinned subagents empty, so the leader skips the build entirely.
+    subagent_specs: list[SubAgentSpec] = []
+    if role != "leader":
+        subagent_specs = build_member_subagent_specs(config, mode, role)
 
     # In team mode, base_spec includes a browser_agent with hardcoded
     # server_id="playwright_official_stdio". All members share that single
@@ -1105,7 +1120,7 @@ def build_member_deep_agent_spec(
     # In code mode build_member_subagent_specs already returns SWARM_BROWSER_AGENT,
     # so this branch only runs for non-code modes.
     team_browser_spec: SubAgentSpec | None = None
-    if not _is_code_mode(mode):
+    if role != "leader" and not _is_code_mode(mode):
         react_cfg = (config or {}).get("react", {})
         react_cfg = react_cfg if isinstance(react_cfg, dict) else {}
         subagents_cfg = (

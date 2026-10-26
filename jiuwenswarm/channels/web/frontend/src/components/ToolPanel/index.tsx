@@ -13,6 +13,7 @@ import { useSessionArtifacts, useSessionArtifactsCount } from '../ArtifactsPanel
 import { useTaskPlanningMetrics } from '../teamArea';
 import { ExpandedPanel } from '../teamArea/ExpandedPanel';
 import { loadTeamHistoryPanelState } from '../../features/teamHistoryPanelRestore';
+import { mergeTaskTimeline } from '../teamArea/groupChatTimeline';
 import { TaskPlanningPanel } from '../teamArea/TaskPlanningPanel';
 import { TeamMembersPanel } from '../teamArea/TeamMembersPanel';
 import { CompactTaskList } from '../teamArea/CompactTaskList';
@@ -39,6 +40,7 @@ import type { CodeReviewTarget } from '../../features/code-mode/types';
 import { useCodeGitDiffWatch } from '../../features/code-mode/useCodeGitDiffWatch';
 import { type SingleAgentToolTab } from '../../features/singleAgentPanelState';
 import { useBrowserAgentActivity } from '../../features/browserAgentActivity';
+import { useDesktopBrowserHeadless } from '../../features/desktopBrowserDisplay';
 import { closeDesktopBrowserTab, openFileInDesktopBrowser, useDesktopBrowserTabFlags } from '../../features/desktopBrowserFile';
 import { SubagentExpandedPanel } from '../subagent/SubagentExpandedPanel';
 import { useSubagentStore, selectSubagents } from '../../stores/subagentStore';
@@ -163,6 +165,7 @@ export function ToolPanel({
   const teamHistoryMessages = useSessionStore(s => s.runtimes[conversationId]?.teamHistoryMessages ?? []);
   const setTeamMembers = useSessionStore(s => s.setTeamMembers);
   const setTeamTaskEvents = useSessionStore(s => s.setTeamTaskEvents);
+  const setTeamTaskTimeline = useSessionStore(s => s.setTeamTaskTimeline);
   const setTeamTasks = useSessionStore(s => s.setTeamTasks);
   const mergeTeamTaskProgressBaseline = useSessionStore(s => s.mergeTeamTaskProgressBaseline);
   const setTeamMemberExecutionEvents = useSessionStore(s => s.setTeamMemberExecutionEvents);
@@ -342,8 +345,12 @@ export function ToolPanel({
   const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
   const hasBrowserAgentActivity = useBrowserAgentActivity(resolvedSessionId);
   const desktopBrowserTabFlags = useDesktopBrowserTabFlags(resolvedSessionId);
+  const browserHeadless = useDesktopBrowserHeadless();
   const showBrowserTab =
-    isElectron && !desktopBrowserTabFlags.closed && (hasBrowserAgentActivity || desktopBrowserTabFlags.requested);
+    isElectron &&
+    !browserHeadless &&
+    !desktopBrowserTabFlags.closed &&
+    (hasBrowserAgentActivity || desktopBrowserTabFlags.requested);
   const handleTabClose = (tab: string) => {
     if (tab === 'browser') closeDesktopBrowserTab();
   };
@@ -405,6 +412,8 @@ export function ToolPanel({
         const mergedTaskEvents = mergeById(historyState.taskEvents, current?.teamTaskEvents ?? [], event => event.task_id);
         // Always apply — an empty restored list must clear stale events too.
         setTeamTaskEvents(sessionId, mergedTaskEvents);
+        // 时间线：历史为底，叠加恢复期间已到的实时事件（去重见 mergeTaskTimeline）。
+        setTeamTaskTimeline(sessionId, mergeTaskTimeline(historyState.taskTimeline, current?.teamTaskTimeline ?? []));
 
         // History/snapshot is the authoritative board after restore. Never import
         // live-only task_ids (LLM `id` orphans left in the waiting column from
@@ -460,6 +469,7 @@ export function ToolPanel({
     setTeamMemberExecutionEvents,
     setTeamMembers,
     setTeamTaskEvents,
+    setTeamTaskTimeline,
     setTeamTasks,
   ]);
 

@@ -41,6 +41,30 @@ test('publish errors preserve actionable safe backend codes', () => {
   assert.equal(publishFailureKey(new Error('internal details')), 'requestFailed');
   assert.equal(publishIssueKey('invalid_plugin_structure'), 'invalidPluginStructure');
   assert.equal(publishIssueKey('hub_request_failed'), 'hubRequestFailed');
+  // #4753: these codes already reached the UI but had no text of their own.
+  assert.equal(publishFailureKey(Object.assign(new Error('failed'), { code: 'INVALID_PACKAGE' })), 'invalidPackage');
+  assert.equal(
+    publishFailureKey(Object.assign(new Error('failed'), { code: 'PUBLISH_UNAVAILABLE' })),
+    'publishUnavailable',
+  );
+  assert.equal(publishIssueKey('upload_outcome_unknown'), 'uploadOutcomeUnknown');
+});
+
+test('undeclared OAuth placeholders are package errors, not login failures', () => {
+  assert.equal(publishIssueKey('UNDEFINED_PLACEHOLDER'), 'undefinedPlaceholder');
+  assert.equal(
+    publishFailureKey({ payload: { error: { code: 'UNDEFINED_PLACEHOLDER' } } }),
+    'undefinedPlaceholder',
+  );
+  assert.equal(publishFailureKey({ code: 'AUTH_REQUIRED' }), 'authRequired');
+});
+
+test('Hub MCP validation rejection remains an actionable safe error', () => {
+  assert.equal(publishIssueKey('invalid_agent_mcp'), 'invalidAgentMcp');
+  assert.equal(
+    publishFailureKey({ payload: { error: { code: 'invalid_agent_mcp', message: 'privatevalue' } } }),
+    'invalidAgentMcp',
+  );
 });
 
 test('oauth start tolerates an empty error response', async () => {

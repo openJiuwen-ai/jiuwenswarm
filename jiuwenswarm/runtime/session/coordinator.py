@@ -304,7 +304,10 @@ class RuntimeSessionCoordinator:
     ) -> T:
         """Deliver input to the running Session work without joining its lane."""
         record = self._require_open_session(session_id)
-        if self._is_control_claimed(record, request_id):
+        if (
+            self._is_control_claimed(record, request_id)
+            or request_id in record.stream_control_claims
+        ):
             raise RuntimeError("control input is already being delivered")
         parent = self._control_parent(record, request_id)
         if parent is None:
@@ -487,7 +490,10 @@ class RuntimeSessionCoordinator:
         self, record: _SessionRecord, request_id: str
     ) -> SessionExecutionHandle:
         """Claim only an existing matching interaction, never a fresh turn."""
-        if request_id in record.stream_control_claims:
+        if (
+            request_id in record.stream_control_claims
+            or self._is_control_claimed(record, request_id)
+        ):
             raise RuntimeError("interaction answer is already in progress")
         parents: list[SessionExecutionHandle] = []
         active = self._registry.select(

@@ -1028,8 +1028,20 @@ class AgentRuntime:
         """
         if self._closed:
             raise RuntimeStateError("runtime is already closed")
-        from jiuwenswarm.server.runtime.session.lifecycle import claim_runtime
+        from jiuwenswarm.server.runtime.session.lifecycle import claim_runtime, guard
 
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is not None and snapshot.state is RuntimeSessionState.QUIESCING:
+            # Undoing a failed archive releases the durable fence, but a stop
+            # timeout can leave the old generation quiescing after its work
+            # exits. Drain its retained resources before adopting a new one.
+            guard(session_id)
+            await self.stop_session_for_archive(
+                channel_id=channel_id,
+                session_id=session_id,
+                generation=snapshot.generation,
+                stop_runner=True,
+            )
         claim_runtime(session_id)
         await self._session_coordinator.register_session(
             session_id,
@@ -1140,6 +1152,7 @@ class AgentRuntime:
                 await self._team_lifecycle().pause_session(
                     context,
                     reason=ExecutionCancelCause.USER_PAUSE.value,
+                    channel_id=request.channel_id,
                 )
             elif intent in {"cancel", "stop"}:
                 await self._team_lifecycle().stop_session(
@@ -1364,6 +1377,15 @@ class AgentRuntime:
         token = set_runtime_context(self, self._agent_manager)
         try:
             work_kind = self.session_work_kind(request)
+            if (
+                work_kind is SessionWorkKind.CONTROL_INPUT
+                and self._defer_stale_ask_user_to_chat(request)
+            ):
+                work_kind = (
+                    SessionWorkKind.CHAT_STREAM
+                    if request.is_stream
+                    else SessionWorkKind.CHAT_UNARY
+                )
             if work_kind is not None:
                 await self._ensure_session_registered(request)
                 if work_kind is SessionWorkKind.CONTROL_INPUT:
@@ -1689,7 +1711,9 @@ class AgentRuntime:
             for event in events:
                 yield event
             return
-        if self.session_work_kind(request) is SessionWorkKind.CONTROL_INPUT:
+        if self.session_work_kind(request) is SessionWorkKind.CONTROL_INPUT and not (
+            self._defer_stale_ask_user_to_chat(request)
+        ):
             await self._ensure_session_registered(request)
             stream = self._session_coordinator.deliver_control_stream(
                 request.session_id or "default",
@@ -1831,12 +1855,40 @@ class AgentRuntime:
             if snapshot and snapshot.state in {RuntimeSessionState.CLOSED, RuntimeSessionState.QUIESCING}:
                 raise RuntimeStateError("session is closing or closed")
         work_kind = self.session_work_kind(request, background=background)
+        if (
+            work_kind is SessionWorkKind.CONTROL_INPUT
+            and self._defer_stale_ask_user_to_chat(request)
+        ):
+            work_kind = (
+                SessionWorkKind.CHAT_STREAM
+                if request.is_stream
+                else SessionWorkKind.CHAT_UNARY
+            )
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
-                events = await self._deliver_control(
-                    request, on_control_event=on_control_event,
-                )
+                if (
+                    request.params.get("source") in {"ask_user_interrupt", "confirm_interrupt"}
+                    and self._session_coordinator.control_target_work_kind(
+                        request.session_id or "default", self._control_request_id(request)
+                    ) is not SessionWorkKind.HEARTBEAT
+                ):
+                    async with aclosing(self._stream_with_runtime_context(
+                        self._stream_question_answer(request)
+                    )) as events:
+                        async for event in events:
+                            yield event
+                    return
+                # The resumed turn runs inside this await, before the loop
+                # below binds the Runtime. Bind it here as ``invoke`` does so
+                # the turn can reach host services such as Session messaging.
+                token = set_runtime_context(self, self._agent_manager)
+                try:
+                    events = await self._deliver_control(
+                        request, on_control_event=on_control_event,
+                    )
+                finally:
+                    reset_runtime_context(token)
                 for event in events:
                     yield event
                 return
@@ -2306,6 +2358,41 @@ class AgentRuntime:
                 await self._mark_pending_interaction(event)
                 yield event
 
+    async def _stream_question_answer(
+        self,
+        request: AgentRequest,
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Stream a compatibility question or confirmation under control admission.
+
+        The unary control API deliberately collects a complete turn. WebSocket
+        chat.send answers must instead expose each event while the turn runs.
+        Heartbeat controls retain their existing owner and completion policy.
+        """
+        session_id = request.session_id or "default"
+        request_id = self._control_request_id(request)
+        begin_control = getattr(self._admission_controller, "begin_control", None)
+        end_control = getattr(self._admission_controller, "end_control", None)
+        admitted = callable(begin_control) and callable(end_control)
+        if admitted:
+            await begin_control(session_id)
+        try:
+            stream = self._session_coordinator.deliver_control_stream(
+                session_id,
+                request_id,
+                lambda: self._stream_control_started(request),
+                suspension_key=self._waiting_control_id,
+            )
+            async with aclosing(stream):
+                async for event in stream:
+                    yield event
+        except BaseException:
+            if self._session_coordinator.has_control_target(session_id, request_id):
+                await self._mark_pending_interaction_id(session_id, request_id)
+            raise
+        finally:
+            if admitted:
+                await end_control(session_id)
+
     async def _deliver_control(
         self,
         request: AgentRequest,
@@ -2557,14 +2644,25 @@ class AgentRuntime:
 
         return team_session_has_parked_request(session_id, requests)
 
-    async def stop_heartbeat_runs(self, session_id: str) -> bool:
+    async def stop_heartbeat_runs(
+        self,
+        session_id: str,
+        *,
+        generation: int | None = None,
+    ) -> bool:
         """Cancel the Session's active Heartbeat run so lifecycle work can proceed.
 
         Archive and delete stop a background Heartbeat instead of waiting it
         out; neither may move a Session out from under a live run.  Returns
         False when no Heartbeat owns the Session.  A run that refuses to
         cancel raises, leaving the caller its ordinary busy fallback.
+        An explicit generation never cancels a replacement Session's work.
         """
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if generation is not None and (
+            snapshot is None or snapshot.generation != generation
+        ):
+            return False
         controller = getattr(self, "_admission_controller", None)
         stopper = getattr(controller, "stop_active_heartbeat", None)
         stopped = bool(await stopper(session_id)) if callable(stopper) else False
@@ -2572,7 +2670,9 @@ class AgentRuntime:
         # marker alone does not settle the Session: cancel the Heartbeat
         # execution too, or the ordinary busy check still sees a live run.
         snapshot = self._session_coordinator.snapshot_session(session_id)
-        if not snapshot:
+        if not snapshot or (
+            generation is not None and snapshot.generation != generation
+        ):
             return stopped
         executions = []
         for execution in snapshot.executions:
@@ -2587,7 +2687,11 @@ class AgentRuntime:
         if not callable(cancel):
             return stopped
         for execution in executions:
-            await cancel(session_id, execution_id=execution.execution_id)
+            await cancel(
+                session_id,
+                execution_id=execution.execution_id,
+                generation=snapshot.generation,
+            )
         return True
 
     async def stop_subagent_runtimes(
@@ -2650,22 +2754,47 @@ class AgentRuntime:
         return team_round_finishing_after_flow(session_id)
 
     async def stop_session_for_archive(
-        self, *, channel_id: str, session_id: str
+        self,
+        *,
+        channel_id: str,
+        session_id: str,
+        generation: int | None = None,
+        stop_runner: bool = False,
     ) -> None:
-        """Drain runtime writers for deletion; archive now only checks state."""
+        """Drain runtime writers for a lifecycle action.
+
+        ``generation`` binds the stop to the runtime the caller saw.  A Session
+        reopened while cleanup was queued has a newer generation, and this
+        method must not tear that newer runtime down.
+        """
         from jiuwenswarm.server.runtime.session.lifecycle import (
             LifecycleError,
             assert_runtime_owner,
             release_runtime,
+            session_delete_pending,
         )
 
+        if generation is not None:
+            snapshot = self._session_coordinator.snapshot_session(session_id)
+            if snapshot is None or snapshot.generation != generation:
+                return
         assert_runtime_owner(session_id)
-        await self._stop_team_runtime_for_delete(
-            channel_id=channel_id, session_id=session_id
+        # CHAT_CANCEL(wait_for_stop) shares this drain path but owns no delete.
+        if session_delete_pending(session_id):
+            await self._session_provisioner.prepare_session_delete(session_id)
+        await self._stop_team_runtime_for_lifecycle(
+            channel_id=channel_id,
+            session_id=session_id,
+            stop_runner=stop_runner,
+            generation=generation,
         )
         closed = await self._session_coordinator.close_session(
-            session_id, wait_timeout=10
+            session_id, wait_timeout=10, generation=generation
         )
+        if generation is not None and not closed.existed:
+            # The generation was already closed or replaced.  Leaving the new
+            # runtime alone also means its owner record must stay untouched.
+            return
         if closed.timed_out:
             raise LifecycleError("STOP_TIMEOUT", "runtime executions have not stopped")
         await self._agent_manager.release_subagent_runtime_for_session(
@@ -2683,20 +2812,52 @@ class AgentRuntime:
         )
         release_runtime(session_id)
 
-    async def _stop_team_runtime_for_delete(
-        self, *, channel_id: str, session_id: str
+    async def stop_session_for_lifecycle(
+        self,
+        *,
+        channel_id: str,
+        session_id: str,
+        generation: int | None = None,
+        stop_runner: bool = False,
     ) -> None:
-        """Stop response streams, retaining Runner until delete releases resources."""
+        """Best-effort stop used by archive/delete background cleanup."""
+        await self.stop_heartbeat_runs(session_id, generation=generation)
+        await self.stop_session_for_archive(
+            channel_id=channel_id,
+            session_id=session_id,
+            generation=generation,
+            stop_runner=stop_runner,
+        )
+
+    async def _stop_team_runtime_for_lifecycle(
+        self,
+        *,
+        channel_id: str,
+        session_id: str,
+        stop_runner: bool = True,
+        generation: int | None = None,
+    ) -> None:
+        """Stop response streams, optionally retaining Runner for delete.
+
+        Permanent delete keeps the Runner alive until
+        ``Runner.delete_agent_team(force=True)`` snapshots member bindings.
+        Archive has no later delete, so it stops the Runner immediately.
+        """
         try:
             from jiuwenswarm.agents.harness.team import get_team_manager
 
             team_manager = get_team_manager(channel_id)
             stopper = getattr(team_manager, "stop_session_runtime", None)
             if callable(stopper):
-                await stopper(session_id, "session.delete: ", stop_runner=False)
+                await stopper(
+                    session_id,
+                    "session.lifecycle: ",
+                    stop_runner=stop_runner,
+                    generation=generation,
+                )
         except Exception:
             logger.warning(
-                "[AgentRuntime] team runtime stop failed before delete: "
+                "[AgentRuntime] team runtime stop failed before lifecycle action: "
                 "session_id=%s",
                 session_id,
                 exc_info=True,
@@ -2771,6 +2932,9 @@ class AgentRuntime:
         channel_id: str,
         session_id: str,
     ) -> None:
+        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import forks
+
+        forks.session_deleted(session_id)
         await self._agent_manager.release_subagent_runtime_for_session(
             channel_id=channel_id or None,
             session_id=session_id,
@@ -2931,6 +3095,46 @@ class AgentRuntime:
         )
 
         return is_interrupt_resume_payload(request.params)
+
+    @staticmethod
+    def _is_stale_ask_user_answer(params: object) -> bool:
+        """A leftover ask_user answer: source=ask_user_interrupt with answers."""
+        if not isinstance(params, dict):
+            return False
+        if str(params.get("source") or "").strip() != "ask_user_interrupt":
+            return False
+        answers = params.get("answers")
+        return isinstance(answers, list) and bool(answers)
+
+    def _defer_stale_ask_user_to_chat(self, request: AgentRequest) -> bool:
+        """Route a stale ask_user answer to a normal chat round.
+
+        Defer when no execution is waiting for this control input and the
+        session holds no live work — no coordinator record at all, or every
+        execution settled (e.g. the service restarted and a heartbeat or
+        reconnect traffic re-registered the session). The answer re-enters
+        through the regular chat path: the adapter cold-starts, the
+        checkpoint restores the pending interrupt, and the InteractiveInput
+        resumes it. A session with a waiting interaction or a running turn
+        keeps the coordinator's control delivery and its rejection of
+        wrong-id answers.
+        """
+        if not self._is_stale_ask_user_answer(request.params):
+            return False
+        session_id = request.session_id or "default"
+        if self._session_coordinator.has_control_target(
+            session_id,
+            self._control_request_id(request),
+        ):
+            return False
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is None:
+            return True
+        return not any(
+            execution.state
+            in (SessionExecutionState.RUNNING, SessionExecutionState.WAITING_FOR_CONTROL)
+            for execution in snapshot.executions
+        )
 
     @staticmethod
     def _event_confirms_user_turn(event: RuntimeEvent) -> bool:
@@ -3323,7 +3527,11 @@ class AgentRuntime:
     async def _ensure_session_registered(self, request: AgentRequest) -> None:
         """Idempotently adopt direct callers that already own a product ID."""
         session_id = str(request.session_id or "").strip()
-        if self._owns_session(session_id):
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is not None and snapshot.state not in {
+            RuntimeSessionState.QUIESCING,
+            RuntimeSessionState.CLOSED,
+        }:
             return
         await self._register_session(
             session_id=session_id,
@@ -3667,8 +3875,8 @@ class AgentRuntime:
     async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
         if request.req_method not in AgentRuntime._chat_turn_methods():
             return
-        from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-        from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
+        from jiuwenswarm.common.hook_event import AgentServerHookEvents
+        from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
         from jiuwenswarm.extensions.registry import ExtensionRegistry
 
         params = request.params if isinstance(request.params, dict) else {}

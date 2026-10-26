@@ -130,14 +130,28 @@ def _configure_openjiuwen_logging() -> None:
 
 
 def _apply_runtime_entry_patches() -> None:
+    from jiuwenswarm.common.native_tokenizer_cache import install_native_tokenizer_cache
     from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
         install_shell_tool_safety_hooks,
     )
-    from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
+    from jiuwenswarm.common.llm_provider_compat_patch import apply_provider_compat_patches
+    from jiuwenswarm.common.team_workspace_read_guard import (
+        install_team_workspace_read_guard,
+        preload_bundled_team_descriptions,
+    )
     from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
 
+    install_native_tokenizer_cache()
     install_shell_tool_safety_hooks()
     apply_provider_compat_patches()
+    try:
+        install_team_workspace_read_guard()
+    except Exception:  # noqa: BLE001
+        logger.warning("[TeamWorkspace] optional tool read guard installation failed", exc_info=True)
+    try:
+        preload_bundled_team_descriptions()
+    except Exception:  # noqa: BLE001
+        logger.warning("[TeamWorkspace] optional bundled description preload failed", exc_info=True)
     try:
         from jiuwenswarm.common.auth.login_credentials import apply_login_credential_patch
 
@@ -184,6 +198,15 @@ def _prepare_worker_configuration() -> None:
     from jiuwenswarm.common.model_migration import migrate_legacy_model_selections
 
     migrate_legacy_model_selections()
+    # Retire the legacy topic switch key and move the consent state out of config.yaml. Idempotent,
+    # and deliberately outside the workspace-ready guard above so every process consults them.
+    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
+        migrate_legacy_recommendation_switches,
+        migrate_recommendation_consent_state,
+    )
+
+    migrate_legacy_recommendation_switches()
+    migrate_recommendation_consent_state()
     _log_preparation_stage("model_migrations", began)
 
 
@@ -242,6 +265,10 @@ def preload_runtime_backend() -> None:
     _log_preparation_stage("required_parallel_join", began)
     began = time.monotonic()
     _configure_openjiuwen_logging()
+    from jiuwenswarm.common.background_logging import install_core_logging_queue, wrap_log_handlers
+
+    install_core_logging_queue()
+    wrap_log_handlers()
     _log_preparation_stage("logging", began)
     began = time.monotonic()
     _apply_runtime_entry_patches()

@@ -461,7 +461,9 @@ class RuntimeSupervisor:
             try:
                 await self._pump()
             except Exception as exc:  # noqa: BLE001
-                logger.warning("[Supervisor] worker session ended: %s", exc)
+                logger.warning("[Supervisor] worker session ended: %r", exc)
+                if not self._stopping and not self._terminating:
+                    self._log_diagnostics(repr(exc))
             if self._shutdown_done is not None and not self._shutdown_done.done():
                 self._shutdown_done.set_result(
                     {"ok": False, "error": "worker closed before shutdown acknowledgement"}
@@ -1092,6 +1094,15 @@ class RuntimeSupervisor:
                         "deferring worker health verdict",
                         self._event_loop_lag,
                     )
+                    continue
+                # A pong accepted earlier in this wakeup is applied by the
+                # pump only on a later turn. Yield once so that evidence
+                # lands before the transport verdict.
+                await asyncio.sleep(0)
+                if self._stopping or generation != self._generation:
+                    return
+                now = time.monotonic()
+                if now - self._last_rx <= _HEARTBEAT_TIMEOUT:
                     continue
                 logger.warning(
                     "[Supervisor] runtime worker heartbeat timed out; last_rx_age=%.1fs "

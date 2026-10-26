@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,12 +40,14 @@ from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
     DEFAULT_TEAM_DISPATCH_MODE,
+    DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
     DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
     SWARMFLOW_BUDGET_CONFIG_PATH,
     SWARMFLOW_ENABLED_CONFIG_PATH,
     SWARMFLOW_WORKTREE_CONFIG_PATH,
     TEAM_DISPATCH_MODE_CONFIG_PATH,
+    TEAM_MEMBER_MESSAGING_CONFIG_PATH,
     TEAM_TASK_VERIFICATION_CONFIG_PATH,
     get_config,
     get_config_raw,
@@ -72,11 +75,16 @@ from jiuwenswarm.common.config import (
     update_team_organization_ui_in_config,
     update_task_asr_in_config,
     update_team_scheduled_dispatch_in_config,
+    update_team_member_messaging_in_config,
     update_team_task_verification_in_config,
-    update_trajectory_ui_in_config,
+    update_trajectory_diagnosis_in_config,
     update_default_models_in_config,
     update_login_model_settings_in_config,
     validate_persisted_kv_cache_affinity,
+)
+from jiuwenswarm.common.recommendation_switches import (
+    flatten_recommendation_for_config_panel,
+    save_recommendation_switches,
 )
 from jiuwenswarm.common.config_panel.external_cli_read import (
     EXTERNAL_CLI_AGENT_KEY_SUFFIXES,
@@ -130,8 +138,6 @@ class ConfigPanelInternalError(RuntimeError):
 # 热更新 scope 常量与变更集（自 app_web_handlers 迁出）
 # --------------------------------------------------------------------------- #
 WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
-# Saved through config.save_all but never sent back to clients.
-WRITE_ONLY_CONFIG_KEYS = frozenset({"jev_openrouter_api_key", "jev_typesafe_api_key"})
 SEARCH_RELOAD_ENV_KEYS = {
     "BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY",
 }
@@ -226,11 +232,10 @@ class ConfigChangeSet:
                 scopes.add("proactive")
             elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
                 scopes.add("agent_runtime")
-            elif key_text == "trajectory_ui_enabled":
+            elif key_text == "trajectory_ui_diagnosis_enabled":
+                # Diagnosis owns the trajectory data plane and diagnosis entry.
                 scopes.update({"agent_runtime", "web_ui"})
-            elif key_text in {"task_full_duplex_enabled", "team_organization_ui_enabled"}:
-                scopes.add("web_ui")
-            elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":
+            elif key_text in WEB_UI_YAML_KEYS or key_text.startswith("a2ui_"):
                 scopes.add("web_ui")
             else:
                 scopes.add("agent_runtime")
@@ -337,6 +342,7 @@ CONFIG_SET_ENV_MAP = {
     "perplexity_api_key": "PERPLEXITY_API_KEY",
     "jev_openrouter_api_key": "OPENROUTER_API_KEY",
     "jev_typesafe_api_key": "TYPESAFE_API_KEY",
+    "jev_custom_api_key": "JEV_CUSTOM_API_KEY",
     "github_token": "GITHUB_TOKEN",
     "teamskills_market_url": "TEAM_SKILLS_HUB_BASE_URL",
     "teamskills_user_token": "TEAM_SKILLS_HUB_USER_TOKEN",
@@ -377,10 +383,12 @@ CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_description",
     "a2ui_enabled",
     "rsi_enabled",
-    "trajectory_ui_enabled",
+    "trajectory_ui_diagnosis_enabled",
     "task_full_duplex_enabled",
     "team_organization_ui_enabled",
     "task_asr_enabled",
+    "topic_recommendation_enabled",
+    "prompt_suggestion_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
     "proactive_recommendation_max_rounds_per_tick",
@@ -388,6 +396,7 @@ CONFIG_YAML_KEYS = frozenset({
     "swarmflow_budget",
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
+    "team_member_messaging_enabled",
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
@@ -399,11 +408,44 @@ CONFIG_YAML_KEYS = frozenset({
     "ttse_enabled",
     "enable_free_models",
 })
-# 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification），改动后需重载 team。
+# 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification /
+# enable_member_messaging），改动后需重载 team。
 TEAM_DISPATCH_CONFIG_KEYS = frozenset({
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
+    "team_member_messaging_enabled",
 })
+# Settings toggles that only change YAML; AgentServer reads the file next turn.
+RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
+    "topic_recommendation_enabled",
+    "prompt_suggestion_enabled",
+})
+WEB_UI_YAML_KEYS = frozenset({
+    "task_full_duplex_enabled",
+    "team_organization_ui_enabled",
+    "setup_guide_enabled",
+    *RECOMMENDATION_UI_CONFIG_KEYS,
+})
+# Scopes that must reach AgentServer before config.save_all returns.
+AGENT_RELOAD_SCOPES = frozenset({
+    "model",
+    "multimodal",
+    "search",
+    "team",
+    "permissions",
+    "agent_runtime",
+    "proactive",
+})
+
+
+def needs_agent_reload(scopes: set[str] | None) -> bool:
+    """True when this save must wait for AgentServer to apply it."""
+
+    if not scopes:
+        return True
+    return bool(scopes & AGENT_RELOAD_SCOPES)
+
+
 EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
@@ -594,9 +636,15 @@ def flatten_team_dispatch_for_config_panel(raw: dict[str, Any]) -> dict[str, str
         TEAM_TASK_VERIFICATION_CONFIG_PATH,
         DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
     )
+    member_messaging = get_nested_config_value(
+        raw,
+        TEAM_MEMBER_MESSAGING_CONFIG_PATH,
+        DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
+    )
     return {
         "team_scheduled_dispatch_enabled": "true" if str(dispatch_mode).strip() == "scheduled" else "false",
         "team_task_verification_enabled": "true" if parse_config_switch_bool(verification) else "false",
+        "team_member_messaging_enabled": "true" if parse_config_switch_bool(member_messaging) else "false",
     }
 
 
@@ -795,8 +843,32 @@ def external_cli_managed_cli_path(cli_agent: str) -> str:
     return str(candidate) if candidate.is_file() else ""
 
 
+def _resolve_windows_cli_executable_from_path(cli_agent: str) -> str:
+    """PATH lookup restricted to real executables.
+
+    npm-style global installs drop `claude`, `claude.cmd` and `claude.ps1`
+    side by side; the PATHEXT-driven `shutil.which` resolves the script shim,
+    which the detector rejects as unsupported and the path dropdown would
+    then offer as a dead entry (#5678). Only an `.exe` is launchable through
+    CreateProcess, so scan PATH for that instead. Windows-only: other
+    platforms have no `.exe` and their `shutil.which` never resolves the
+    script shims.
+    """
+    if not is_windows_platform():
+        return ""
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.strip():
+            continue
+        candidate = Path(entry) / f"{cli_agent}.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
 def resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str, str]:
-    requested = cli_path.strip()
+    from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+    requested = resolve_preserved_cli_path(cli_path.strip())
     if requested:
         resolved = shutil.which(requested)
         if resolved:
@@ -809,6 +881,17 @@ def resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, 
         return "", f"{requested} not found", "not_found"
 
     resolved = shutil.which(cli_agent)
+    if resolved and is_windows_platform() and Path(resolved).suffix.lower() in UNSUPPORTED_WINDOWS_CLI_SUFFIXES:
+        # The PATHEXT lookup hit a script shim (.cmd/.bat/.ps1) that this
+        # detector cannot run; prefer a real executable from the same PATH so
+        # the UI does not offer the shim as a dead path option (#5678).
+        resolved = _resolve_windows_cli_executable_from_path(cli_agent)
+        if not resolved:
+            # npm-style installs often ship only the shim without a native
+            # .exe; report the known windows-script situation instead of a
+            # misleading "not found" so the UI can show the accurate
+            # unsupported-shim message (#5678).
+            return "", "windows_script", "windows_script"
     if resolved:
         return resolved, "", ""
     return "", f"{cli_agent} not found in PATH", "not_found"
@@ -897,7 +980,7 @@ def _detect_cli_at(normalized_agent: str, cli_path: str, use_builtin: bool = Fal
     if not resolved_path:
         return {
             "cli_agent": normalized_agent,
-            "status": "unsupported" if path_reason == "directory" else "missing",
+            "status": "unsupported" if path_reason in ("directory", "windows_script") else "missing",
             "path": "",
             "version": "",
             "reference_version": reference_version,
@@ -1277,7 +1360,7 @@ def apply_config_payload(
             build_moa_config_from_frontend(moa_params, get_config_raw(), resolve_value=resolve_env_vars)
         except ValueError as exc:
             raise ConfigPanelBadRequest(str(exc)) from exc
-    # The MoA section writer encrypts only newly entered, nonempty credentials.
+    # Collaboration writes only its switches and interval; Jev credentials use the shared env fields.
     params = encrypt_config_params({key: value for key, value in params.items() if key not in MOA_CONFIG_KEYS})
     env_updates: dict[str, str] = {}
     yaml_updated: list[str] = []
@@ -1379,16 +1462,21 @@ def apply_config_payload(
             elif param_key == "team_scheduled_dispatch_enabled":
                 update_team_scheduled_dispatch_in_config(parsed)
                 if not parsed:
-                    # 验证者只在调度模式下生效，关闭调度模式时一并关闭。
+                    # 验证者与成员间通信只在调度模式下生效，关闭调度模式时一并关闭。
                     update_team_task_verification_in_config(False)
                     yaml_updated.append("team_task_verification_enabled")
-            elif param_key == "team_task_verification_enabled":
+                    update_team_member_messaging_in_config(False)
+                    yaml_updated.append("team_member_messaging_enabled")
+            elif param_key in ("team_task_verification_enabled", "team_member_messaging_enabled"):
                 scheduled = (
                     parse_config_bool(params["team_scheduled_dispatch_enabled"])
                     if "team_scheduled_dispatch_enabled" in params
                     else flatten_team_dispatch_for_config_panel(raw)["team_scheduled_dispatch_enabled"] == "true"
                 )
-                update_team_task_verification_in_config(parsed and scheduled)
+                if param_key == "team_task_verification_enabled":
+                    update_team_task_verification_in_config(parsed and scheduled)
+                else:
+                    update_team_member_messaging_in_config(parsed and scheduled)
             elif is_external_cli_agent_config_key(param_key):
                 if not external_cli_agents_updated:
                     try:
@@ -1434,14 +1522,18 @@ def apply_config_payload(
                 if not ok:
                     raise ConfigPanelBadRequest(error or "invalid A2UI config")
                 update_a2ui_in_config(update)
-            elif param_key == "trajectory_ui_enabled":
-                update_trajectory_ui_in_config(parsed)
+            elif param_key == "trajectory_ui_diagnosis_enabled":
+                update_trajectory_diagnosis_in_config(parsed)
             elif param_key == "task_full_duplex_enabled":
                 update_task_full_duplex_in_config(parsed)
             elif param_key == "team_organization_ui_enabled":
                 update_team_organization_ui_in_config(parsed)
             elif param_key == "task_asr_enabled":
                 update_task_asr_in_config(parsed)
+            elif param_key == "topic_recommendation_enabled":
+                save_recommendation_switches(topic_enabled=parsed, now=time.time())
+            elif param_key == "prompt_suggestion_enabled":
+                save_recommendation_switches(prompt_enabled=parsed, now=time.time())
             elif param_key == "proactive_recommendation_enabled":
                 update_proactive_recommendation_in_config({"enabled": parsed})
             elif param_key == "proactive_recommendation_max_recommend_per_day":
@@ -1491,10 +1583,7 @@ def apply_config_payload(
 
     if moa_params:
         try:
-            crypto = _get_crypto_provider()
-            save_moa_config_from_frontend(
-                moa_params, encrypt_secret=crypto.encrypt if crypto is not None else None,
-            )
+            save_moa_config_from_frontend(moa_params)
             yaml_updated.extend(moa_params)
         except ValueError as exc:
             raise ConfigPanelBadRequest(str(exc)) from exc
@@ -1607,7 +1696,7 @@ async def config_get_handler(
 ) -> None:
     """返回 CONFIG_SET_ENV_MAP 里所有键对应的环境变量当前值（Web 契约）。"""
     payload = {
-        param_key: "" if param_key in WRITE_ONLY_CONFIG_KEYS else (os.getenv(env_key) or "")
+        param_key: os.getenv(env_key) or ""
         for param_key, env_key in CONFIG_SET_ENV_MAP.items()
     }
     payload["app_version"] = get_runtime_version()
@@ -1651,6 +1740,9 @@ async def config_get_handler(
         payload["trajectory_ui_enabled"] = (
             "true" if trajectory_cfg.get("enabled", False) else "false"
         )
+        payload["trajectory_ui_diagnosis_enabled"] = (
+            "true" if trajectory_cfg.get("diagnosis_enabled", False) else "false"
+        )
         experimental_cfg = raw.get("experimental") or {}
         payload["team_organization_ui_enabled"] = (
             "true" if experimental_cfg.get("team_organization_ui_enabled", False) else "false"
@@ -1666,6 +1758,7 @@ async def config_get_handler(
         payload.update(flatten_external_cli_agents_for_config_panel(raw))
         payload[EXTERNAL_CLI_CUSTOM_AGENTS_KEY] = custom_agents_config_value()
         payload.update(flatten_symphony_for_config_panel(raw))
+        payload.update(flatten_recommendation_for_config_panel(raw))
         if not payload.get("free_search_ddg_enabled"):
             payload["free_search_ddg_enabled"] = "false"
         if not payload.get("free_search_bing_enabled"):
@@ -1700,9 +1793,14 @@ async def config_get_handler(
             "team_task_verification_enabled",
             "true" if DEFAULT_TEAM_TASK_VERIFICATION_ENABLED else "false",
         )
+        payload.setdefault(
+            "team_member_messaging_enabled",
+            "true" if DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED else "false",
+        )
         for key, value in provider("a2ui").get_default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")
+        payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
         payload.setdefault("task_asr_enabled", "false")
@@ -1718,6 +1816,8 @@ async def config_get_handler(
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
         payload.setdefault("proactive_recommendation_enabled", "false")
+        payload.setdefault("topic_recommendation_enabled", "false")
+        payload.setdefault("prompt_suggestion_enabled", "false")
         payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
         payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "false")

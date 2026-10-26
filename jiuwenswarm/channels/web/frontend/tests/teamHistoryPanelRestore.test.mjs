@@ -112,3 +112,30 @@ test('a woken dormant member returns to ready', () => {
   assert.equal(state.members.length, 1);
   assert.equal(state.members[0].status, 'ready');
 });
+
+test('task flow events are restored as an ordered timeline for the group chat', () => {
+  const taskRecord = (type, taskId, timestamp, extra = {}) => ({
+    mode: 'team',
+    event_type: 'team.task',
+    session_id: 'session-1',
+    timestamp,
+    event: { type, task_id: taskId, ...extra },
+  });
+  const state = parseTeamHistoryPanelRecords(
+    [
+      taskRecord('team.task.created', 'bless-1', 1_792_080_714, { status: 'pending', title: '写下第 1 句祝福语' }),
+      taskRecord('team.task.started', 'bless-1', 1_792_080_715, { status: 'in_progress', member_id: 'writer' }),
+      taskRecord('team.task.completed', 'bless-1', 1_792_080_718, { status: 'completed', member_id: 'writer' }),
+    ],
+    'session-1',
+  );
+
+  assert.deepEqual(
+    state.taskTimeline.map((item) => [item.type, item.task_id, item.member_id]),
+    [
+      ['team.task.created', 'bless-1', undefined],
+      ['team.task.started', 'bless-1', 'writer'],
+      ['team.task.completed', 'bless-1', 'writer'],
+    ],
+  );
+});

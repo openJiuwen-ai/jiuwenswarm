@@ -14,7 +14,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
 )
 from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
 from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthContext, AuthResult
+from jiuwenswarm.gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
 from jiuwenswarm.extensions.yuanrong_frontend_client import AgentFileDownloadChunk, SandboxInfo
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
 from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app

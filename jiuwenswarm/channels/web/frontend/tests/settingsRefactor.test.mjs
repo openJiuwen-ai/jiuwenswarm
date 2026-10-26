@@ -271,11 +271,11 @@ function translationAt(locale, key) {
   return key.split('.').reduce((value, part) => value?.[part], locale);
 }
 
-test('registry definition preserves the nine-module order and fails invalid registrations', () => {
+test('registry definition preserves the ten-module order and fails invalid registrations', () => {
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,
-    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule/,
+    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*recommendationModule,\s*archivedTasksModule,\s*experimentalModule/,
   );
   assert.doesNotMatch(definition, /securityModule/);
   for (const removedPath of [
@@ -1134,12 +1134,14 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   assert.deepEqual(
     findSettingDefinitionKeys(parseTsx('src/features/settings/modules/experimental/definition.ts')).sort(),
     [
+      'moa_jev_enabled',
       'multi_model_collaboration_enabled',
       'symphony_evolution_enabled',
       'kv_cache_affinity_enabled',
       'team_organization_ui_enabled',
       'team_scheduled_dispatch_enabled',
       'team_task_verification_enabled',
+      'team_member_messaging_enabled',
       'proactive_recommendation_enabled',
     ].sort(),
   );
@@ -1155,11 +1157,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'external_cli_agent_codex_enabled',
     'external_cli_agent_codex_use_builtin',
     'kv_cache_affinity_enabled',
-    'moa_jev_api_base',
-    'moa_jev_api_key',
-    'moa_jev_api_key_clear',
     'moa_jev_enabled',
-    'moa_jev_model_name',
     'moa_verifier_interval',
     'multi_model_collaboration_enabled',
     'proactive_recommendation_enabled',
@@ -1169,10 +1167,11 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'symphony_evolution_enabled',
     'task_asr_enabled',
     'task_full_duplex_enabled',
+    'team_member_messaging_enabled',
     'team_organization_ui_enabled',
     'team_scheduled_dispatch_enabled',
     'team_task_verification_enabled',
-    'trajectory_ui_enabled',
+    'trajectory_ui_diagnosis_enabled',
   ]);
 
   const channelCatalogFile = parseTsx('src/features/settings/modules/channels/channelCatalog.ts');
@@ -1508,12 +1507,16 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
     'chrome_path',
     'headless',
     'decision_mode',
-    'decision_provider',
   ]);
-  assert.match(browserDefinition, /\{ value: 'openrouter', labelKey: 'settingsPanel\.browser\.providerOpenrouter' \}/);
-  assert.match(browserDefinition, /\{ value: 'typesafe', labelKey: 'settingsPanel\.browser\.providerTypesafe' \}/);
-  // The Jev key is write-only: the page shows configured/not configured and never reads the key back.
-  assert.match(browserDefinition, /component: 'custom', render: JevKeySettings/);
+  // Provider, model and credential are edited together with existing values prefilled.
+  const jevSettings = source('src/features/settings/modules/browser/JevKeySettings.tsx');
+  const jevPanel = source('src/features/settings/modules/models/JevSettings.tsx');
+  const jevDialog = source('src/features/settings/modules/models/JevConfigDialog.tsx');
+  assert.match(jevSettings, /useSettingsConfig\(\)/);
+  assert.match(jevSettings, /createJevDraft\(\{ decision_provider: provider \}, config\)/);
+  assert.match(jevDialog, /FormDialog/);
+  assert.match(jevDialog, /values\.provider === 'custom'/);
+  assert.match(jevPanel, /<JevKeySettings disabled=\{disabled\}/);
   assert.match(sourceProvider, /jev_key_configured: value\?\.jev_key_configured === true/);
   for (const mode of ['llm', 'shadow', 'hybrid']) {
     assert.match(browserDefinition, new RegExp(`\{ value: '${mode}', labelKey: 'settingsPanel\.browser\.decision`));
@@ -1523,7 +1526,7 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
   assert.match(browserDefinition, /\{ value: true, labelKey: 'settingsPanel\.browser\.headless' \}/);
   assert.doesNotMatch(browserDefinition, /browser_type|browserType/);
   assert.match(sourceProvider, /request<Record<string, unknown>>\('path\.get'\)/);
-  assert.match(sourceProvider, /request<Record<string, unknown>>\('path\.set', next/);
+  assert.match(sourceProvider, /request<Record<string, unknown>>\('path\.set', \{/);
   assert.doesNotMatch(sourceProvider, /enabled|onlyEnabled/);
   assert.doesNotMatch(sourceContract, /\['enabled', 'switch'\]/);
   assert.doesNotMatch(settingsContract, /react\.subagents\.browser_agent\.enabled/);
@@ -1984,30 +1987,37 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
   assert.equal(existsSync(new URL('src/features/settings/modules/models/OpenAIAccountField.tsx', root)), true);
 });
 
-test('Jev browser settings preserve mode, provider and write-only key contracts', () => {
-  const definition = source('src/features/settings/modules/browser/definition.ts');
+test('Jev browser settings preserve mode, independent provider credentials and readback', () => {
+  const definition = source('src/features/settings/modules/models/JevSettings.tsx');
   const provider = source('src/features/settings/services/SettingsSourceProvider.tsx');
   const keySettings = source('src/features/settings/modules/browser/JevKeySettings.tsx');
   assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/browser/definition.ts')), [
-    'chrome_path', 'headless', 'decision_mode', 'decision_provider',
+    'chrome_path', 'headless', 'decision_mode',
   ]);
+  assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/models/JevSettings.tsx')), []);
   for (const mode of ['llm', 'shadow', 'hybrid']) {
-    assert.ok(definition.includes(`value: '${mode}'`));
+    assert.ok(source('src/features/settings/modules/browser/definition.ts').includes(`value: '${mode}'`));
   }
-  for (const name of ['openrouter', 'typesafe']) {
-    assert.ok(definition.includes(`value: '${name}'`));
+  const presets = source('src/features/settings/modules/browser/jevSettings.ts');
+  for (const name of ['openrouter', 'typesafe', 'custom']) {
+    assert.ok(presets.includes(`${name}:`));
     const field = `jev_${name}_api_key`;
     assert.deepEqual(buildConfigSavePayload({ [field]: 'synthetic-test-key' }), {
       config: { [field]: 'synthetic-test-key' },
     });
     assert.deepEqual(buildConfigSavePayload({ [field]: '' }), { config: { [field]: '' } });
-    assert.ok(keySettings.includes(field));
+    assert.ok(presets.includes(field));
   }
-  assert.match(definition, /component: 'custom', render: JevKeySettings/);
+  assert.match(definition, /<SettingsSourceProvider source="browser"/);
+  assert.match(definition, /<JevKeySettings disabled=\{disabled\}/);
+  assert.doesNotMatch(definition, /CollaborationJevSettings/);
+  assert.match(source('src/features/settings/modules/models/definition.ts'), /id: 'jev'/);
   assert.match(provider, /jev_key_configured: value\?\.jev_key_configured === true/);
-  assert.match(keySettings, /config=\{\{\}\}/);
+  assert.match(keySettings, /createJevDraft\(\{ decision_provider: provider \}, config\)/);
   assert.match(keySettings, /decision_mode: 'llm'/);
-  assert.match(keySettings, /request\('config\.save_all', buildConfigSavePayload\(updates\)/);
+  assert.match(keySettings, /await saveConfigFields\([\s\S]*await save\(/);
+  assert.doesNotMatch(keySettings, /name: '(?:protocol|context_window_tokens|alias)'/);
+  assert.match(keySettings, /patchLocal\(await request<Record<string, unknown>>\('path\.get'\)\)/);
 });
 
 test('legacy page translations and Harness package state are removed without deleting shared Settings keys', () => {
