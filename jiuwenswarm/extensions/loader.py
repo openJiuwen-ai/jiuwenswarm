@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -152,14 +154,25 @@ class ExtensionLoader:
             )
 
         module_name = root.name
-        spec = importlib.util.spec_from_file_location(
-            f"jiuwenswarm.loaded_extension.{module_name}",
-            entry,
-        )
+        full_name = f"jiuwenswarm.loaded_extension.{module_name}"
+        # Relative imports (from .provider) need parent package
+        # jiuwenswarm.loaded_extension in sys.modules, and this module
+        # needs __path__ so same-dir submodules resolve.
+        parent = "jiuwenswarm.loaded_extension"
+        if parent not in sys.modules:
+            pkg = types.ModuleType(parent)
+            pkg.__path__ = []
+            sys.modules[parent] = pkg
+
+        spec = importlib.util.spec_from_file_location(full_name, entry)
         if spec is None or spec.loader is None:
             raise ImportError(f"无法加载扩展: {module_name}")
 
         module = importlib.util.module_from_spec(spec)
+        root_str = str(root.resolve())
+        module.__path__ = [root_str]
+        module.__package__ = full_name
+        sys.modules[full_name] = module
         spec.loader.exec_module(module)
         return module
 

@@ -1,4 +1,4 @@
-import { assetSearchNames, matchesAssetName } from '../../features/assetNameSearch';
+﻿import { assetSearchNames, matchesAssetName } from '../../features/assetNameSearch';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
  * SkillPanel 组件
@@ -29,6 +29,8 @@ import {
   SKILLS_FETCH_TIMEOUT_REFRESH_MS,
   SKILLS_FETCH_TIMEOUT_NORMAL_MS,
   coerceStringList,
+  getSourceLabel,
+  isAdminManagedSkill,
   normalizeSkillItem,
   transformSkillContentImages,
 } from './skillPanelUtils';
@@ -41,6 +43,12 @@ import { UploadSkillModal } from './UploadSkillModal';
 import { DocToSkillModal } from './DocToSkillModal';
 import { useSkillToasts } from './useSkillToasts';
 import { useHubMarketplace, type MarketplaceSubView } from './useHubMarketplace';
+import { isEnterprise } from '../../edition';
+import {
+  EnterpriseSkillSourcePanel,
+  fetchEnterpriseSkillSources,
+  type SourceDescriptor,
+} from '../../features/EnterpriseSkillSourcePanel';
 import { useSymphonyGraph } from './useSymphonyGraph';
 import { useRetrievalIndexBuild } from './useRetrievalIndexBuild';
 import { useEvolution } from './useEvolution';
@@ -61,11 +69,16 @@ function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const MY_SKILLS_EMPTY_KEY: Record<'all' | 'enabled' | 'disabled' | 'builtin', string> = {
+const MY_SKILLS_EMPTY_KEY: Record<
+  'all' | 'enabled' | 'disabled' | 'builtin' | 'prebuilt' | 'user',
+  string
+> = {
   all: 'skills.noMatches',
   enabled: 'skills.noEnabledSkills',
   disabled: 'skills.noDisabledSkills',
   builtin: 'skills.noBuiltinSkills',
+  prebuilt: 'skills.noMatches',
+  user: 'skills.noMatches',
 };
 
 function MySkillsGroupHeader({ label }: { label: string }) {
@@ -156,11 +169,19 @@ export function SkillPanel({
 }: SkillPanelProps) {
   const { t } = useTranslation();
   // 导航与页签
+  const enterpriseEdition = isEnterprise();
   const [activeTab, setActiveTab] = useState<'my' | 'marketplace' | 'graph'>('marketplace');
   const [marketplaceSubView, setMarketplaceSubView] = useState<MarketplaceSubView>('list');
-  const [mySkillsSubTab, setMySkillsSubTab] = useState<'all' | 'enabled' | 'disabled' | 'builtin'>('all');
+  const [mySkillsSubTab, setMySkillsSubTab] = useState<
+    'all' | 'enabled' | 'disabled' | 'builtin' | 'prebuilt' | 'user'
+  >('all');
   const [marketplaceCategory, setMarketplaceCategory] = useState<(typeof MARKETPLACE_CATEGORIES)[number]>('all');
   const [detailTab, setDetailTab] = useState<'content' | 'files' | 'experience' | 'members'>('content');
+  /** 企业版技能广场：按已接入技能源动态生成页签 */
+  const [enterpriseSources, setEnterpriseSources] = useState<SourceDescriptor[]>([]);
+  const [marketplaceSourceId, setMarketplaceSourceId] = useState('');
+  const [debouncedMarketplaceSearch, setDebouncedMarketplaceSearch] = useState('');
+  const marketplaceSearchDebounceRef = useRef<number | null>(null);
 
   // 列表与详情数据（含搜索筛选）
   const [skills, setSkills] = useState<SkillItem[]>([]);
@@ -265,7 +286,15 @@ export function SkillPanel({
     openHubAllPacks,
     invalidateHubFetch,
     pauseHubFetching,
-  } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, marketplaceSubView, setMarketplaceSubView, withSession });
+  } = useHubMarketplace({
+    activeTab,
+    searchKeyword,
+    marketplaceCategory,
+    marketplaceSubView,
+    setMarketplaceSubView,
+    withSession,
+    skipHubFetch: enterpriseEdition,
+  });
 
   const {
     skillGraphPanelRef,
@@ -372,7 +401,16 @@ export function SkillPanel({
           'skills.get',
           withSession({ name: skillName, ...(version ? { version } : {}) }),
         );
-        setSelectedSkill(normalizeSkillItem(data));
+        const detail = normalizeSkillItem(data);
+        // skills.get 若未带回 source_type，用列表缓存补齐，避免预置技能详情误显示启停开关
+        const listed = skills.find((s) => s.name === skillName);
+        if (listed && !detail.source_type && listed.source_type) {
+          detail.source_type = listed.source_type;
+        }
+        if (listed && !detail.origin && listed.origin) {
+          detail.origin = listed.origin;
+        }
+        setSelectedSkill(detail);
         setDetailTab('content');
         setDetailState('success');
         resetFilesTab();
@@ -381,7 +419,7 @@ export function SkillPanel({
         setDetailState('error');
       }
     },
-    [withSession, resetFilesTab],
+    [withSession, resetFilesTab, skills],
   );
 
   const handleInstallHubSkill = useCallback(
@@ -850,14 +888,18 @@ export function SkillPanel({
     (nextSearch: string) => {
       const nextKeyword = nextSearch.trim();
 
-      if (activeTab === 'marketplace' && nextKeyword !== search.trim()) {
+      if (
+        !enterpriseEdition &&
+        activeTab === 'marketplace' &&
+        nextKeyword !== search.trim()
+      ) {
         invalidateHubFetch();
         setMarketplaceSubView('list');
       }
 
       setSearch(nextSearch);
     },
-    [activeTab, search, invalidateHubFetch, setMarketplaceSubView],
+    [activeTab, enterpriseEdition, search, invalidateHubFetch, setMarketplaceSubView],
   );
 
   const handleUninstall = useCallback(
@@ -908,23 +950,49 @@ export function SkillPanel({
         filtered = filtered.filter((s) => s.enabled === false);
         break;
       case 'builtin':
-        filtered = filtered.filter((s) => s.source === 'builtin');
+        filtered = filtered.filter((s) => s.source === 'builtin' || s.source_type === 'builtin');
+        break;
+      case 'prebuilt':
+        filtered = filtered.filter((s) => s.source_type === 'prebuilt');
+        break;
+      case 'user':
+        filtered = filtered.filter((s) => s.source_type === 'user');
         break;
       default:
+        // 企业版「全部」：不含内置，企业预置优先、用户自装其次
+        if (enterpriseEdition) {
+          const priority = (s: SkillItem) =>
+            s.source_type === 'prebuilt' ? 0 : s.source_type === 'user' ? 1 : 2;
+          filtered = visibleSkills
+            .filter((s) => s.source_type !== 'builtin' && s.source !== 'builtin')
+            .sort((a, b) => priority(a) - priority(b));
+        }
         break;
     }
     return filtered;
-  }, [visibleSkills, mySkillsSubTab, installedSkillNames]);
+  }, [visibleSkills, mySkillsSubTab, installedSkillNames, enterpriseEdition]);
 
-  // 内置/非内置分组（用于"我的技能"列表分组展示）；技能包单独成组置顶
-  const builtinSkills = useMemo(() => mySkillsFiltered.filter((s) => s.source === 'builtin'), [mySkillsFiltered]);
+  // 内置/非内置分组（用于"我的技能"列表分组展示）；技能包单独成组置顶。
+  // 企业版按 source_type 判断，避免广场自装（source_type=user）因同名内置包被归到「内置技能」。
+  const isBuiltinListedSkill = useCallback(
+    (s: SkillItem) => {
+      if (s.source_type === 'user' || s.source_type === 'prebuilt') return false;
+      if (s.source_type === 'builtin') return true;
+      return s.source === 'builtin';
+    },
+    [],
+  );
+  const builtinSkills = useMemo(
+    () => mySkillsFiltered.filter((s) => isBuiltinListedSkill(s)),
+    [mySkillsFiltered, isBuiltinListedSkill],
+  );
   const skillPackSkills = useMemo(
     () => mySkillsFiltered.filter((s) => s.skill_type === 'skillpack'),
     [mySkillsFiltered],
   );
   const otherSkills = useMemo(
-    () => mySkillsFiltered.filter((s) => s.source !== 'builtin' && s.skill_type !== 'skillpack'),
-    [mySkillsFiltered],
+    () => mySkillsFiltered.filter((s) => !isBuiltinListedSkill(s) && s.skill_type !== 'skillpack'),
+    [mySkillsFiltered, isBuiltinListedSkill],
   );
 
   /** 判断技能是否为技能包（接口标记 skillpack，或技能名与所属插件名一致） */
@@ -1045,6 +1113,9 @@ export function SkillPanel({
     ) : undefined;
 
     const labelTags: string[] = [];
+    labelTags.push(
+      `${t('skills.sourceLabel')}: ${getSourceLabel(skill.source, t, skill.is_builtin_source, skill.source_type)}`,
+    );
     if (skill.skill_type === 'swarm_skill') {
       labelTags.push(t('skills.skillTypes.team'));
     } else if (skill.skill_type === 'multimodal_skill') {
@@ -1057,72 +1128,80 @@ export function SkillPanel({
         labelTags.push(t('skills.memberCountSuffix', { count: skill.member_count }));
       }
     }
-    if (skill.source === 'builtin') {
+    // 仅真正的内置/企业预置打标签；广场用户自装即使与内置同名也不标「内置」
+    if (skill.source_type === 'prebuilt') {
+      labelTags.push(t('skills.mySkillsTabs.prebuilt'));
+    } else if (skill.source_type === 'builtin' || (skill.source === 'builtin' && skill.source_type !== 'user')) {
       labelTags.push(t('skills.mySkillsTabs.builtin'));
     }
 
+    const adminManaged = isAdminManagedSkill(skill);
     const actionContent = (
       <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
         <div className="page-card-actions-hover flex items-center gap-1.5">
-          <div className="relative group">
-            <button
-              type="button"
-              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-secondary text-text-muted hover:text-text"
-              data-testid="skill-panel-my-skill-card-menu"
-            >
-              <MoreIcon aria-hidden />
-            </button>
-            <div className="hidden group-hover:block">
-              <div className="dropdown-menu">
-                {!isPackage ? (
+          {!adminManaged ? (
+            <div className="relative group">
+              <button
+                type="button"
+                className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-secondary text-text-muted hover:text-text"
+                data-testid="skill-panel-my-skill-card-menu"
+              >
+                <MoreIcon aria-hidden />
+              </button>
+              <div className="hidden group-hover:block">
+                <div className="dropdown-menu">
+                  {!isPackage ? (
+                    <button
+                      onClick={
+                        isDisabled
+                          ? undefined
+                          : (e: React.MouseEvent) => {
+                              e.stopPropagation();
+                              handleEditSkill(skill.name, skill.skill_type);
+                            }
+                      }
+                      disabled={isDisabled}
+                      className="flex items-center w-full px-3 py-2 text-xs text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                      data-testid="skill-panel-my-skill-card-menu-edit"
+                    >
+                      {t('skills.actions.edit')}
+                    </button>
+                  ) : null}
                   <button
                     onClick={
-                      isDisabled
+                      isUninstalling
                         ? undefined
-                        : (e: React.MouseEvent) => {
+                        : (e) => {
                             e.stopPropagation();
-                            handleEditSkill(skill.name, skill.skill_type);
+                            const plugin = installedSkillMap.get(skill.name);
+                            handleUninstall(plugin?.plugin_name || skill.name);
                           }
                     }
-                    disabled={isDisabled}
+                    disabled={isUninstalling}
                     className="flex items-center w-full px-3 py-2 text-xs text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
-                    data-testid="skill-panel-my-skill-card-menu-edit"
+                    data-testid="skill-panel-my-skill-card-menu-uninstall"
                   >
-                    {t('skills.actions.edit')}
+                    {t(isUninstalling ? 'skills.actions.uninstalling' : 'skills.actions.uninstall')}
                   </button>
-                ) : null}
-                <button
-                  onClick={
-                    isUninstalling
-                      ? undefined
-                      : (e) => {
-                          e.stopPropagation();
-                          const plugin = installedSkillMap.get(skill.name);
-                          handleUninstall(plugin?.plugin_name || skill.name);
-                        }
-                  }
-                  disabled={isUninstalling}
-                  className="flex items-center w-full px-3 py-2 text-xs text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
-                  data-testid="skill-panel-my-skill-card-menu-uninstall"
-                >
-                  {t(isUninstalling ? 'skills.actions.uninstalling' : 'skills.actions.uninstall')}
-                </button>
+                </div>
               </div>
             </div>
-          </div>
+          ) : null}
           <MySkillGoTryButton
             disabled={isDisabled}
             onGo={() => handleGoToChat(skill.name, skill.skill_type)}
             tooltip={t('skills.actions.goTry')}
           />
         </div>
-        <span title={isPackBlocked ? t('skills.packBlockedHint') : undefined} className="flex items-center">
-          <Switch
-            checked={!isDisabled}
-            onChange={() => toggleSkillDisabled(skill.name)}
-            disabled={isToggling || isPackBlocked}
-          />
-        </span>
+        {!adminManaged ? (
+          <span title={isPackBlocked ? t('skills.packBlockedHint') : undefined} className="flex items-center">
+            <Switch
+              checked={!isDisabled}
+              onChange={() => toggleSkillDisabled(skill.name)}
+              disabled={isToggling || isPackBlocked}
+            />
+          </span>
+        ) : null}
       </div>
     );
 
@@ -1177,13 +1256,15 @@ export function SkillPanel({
         }
 
         // 只有从技能广场离开时才需要终止广场请求
-        if (activeTab === 'marketplace') {
+        if (activeTab === 'marketplace' && !enterpriseEdition) {
           pauseHubFetching();
           setMarketplaceSubView('list');
         }
 
         setActiveTab('my');
       } else {
+        // 企业版不展示技能图谱
+        if (enterpriseEdition) return;
         if (activeTab === 'marketplace') {
           pauseHubFetching();
           setMarketplaceSubView('list');
@@ -1191,7 +1272,75 @@ export function SkillPanel({
         setActiveTab('graph');
       }
     },
-    [activeTab, pauseHubFetching, setMarketplaceSubView],
+    [activeTab, enterpriseEdition, pauseHubFetching, setMarketplaceSubView],
+  );
+
+  // 企业版页签收敛后，若残留 graph 状态则回落到广场
+  useEffect(() => {
+    if (enterpriseEdition && activeTab === 'graph') {
+      setActiveTab('marketplace');
+    }
+  }, [enterpriseEdition, activeTab]);
+
+  // 企业版不展示内置筛选；若残留 builtin 子页签则回落到全部
+  useEffect(() => {
+    if (enterpriseEdition && mySkillsSubTab === 'builtin') {
+      setMySkillsSubTab('all');
+    }
+  }, [enterpriseEdition, mySkillsSubTab]);
+
+  // 企业版：拉取可搜索技能源，生成广场子页签（SwarmSkills / 其他源）
+  useEffect(() => {
+    if (!enterpriseEdition) return;
+    let cancelled = false;
+    void fetchEnterpriseSkillSources(sessionId).then((sources) => {
+      if (cancelled) return;
+      const enabled = sources ?? [];
+      // null = 探测失败，保留旧列表，避免瞬态故障清空页签
+      if (sources === null) return;
+      setEnterpriseSources(enabled);
+      setMarketplaceSourceId((current) => {
+        if (current && enabled.some((s) => s.source_id === current)) return current;
+        return enabled[0]?.source_id || '';
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enterpriseEdition, sessionId]);
+
+  // 企业广场搜索防抖（交给 EnterpriseSkillSourcePanel 的 externalSearchQuery）
+  useEffect(() => {
+    if (!enterpriseEdition || activeTab !== 'marketplace') return;
+    if (marketplaceSearchDebounceRef.current !== null) {
+      window.clearTimeout(marketplaceSearchDebounceRef.current);
+    }
+    marketplaceSearchDebounceRef.current = window.setTimeout(() => {
+      setDebouncedMarketplaceSearch(search);
+      marketplaceSearchDebounceRef.current = null;
+    }, 300);
+    return () => {
+      if (marketplaceSearchDebounceRef.current !== null) {
+        window.clearTimeout(marketplaceSearchDebounceRef.current);
+        marketplaceSearchDebounceRef.current = null;
+      }
+    };
+  }, [activeTab, enterpriseEdition, search]);
+
+  const enterpriseSourceTabLabel = useCallback(
+    (source: SourceDescriptor) => {
+      if (source.source_id === 'swarmskillhub') return t('skills.swarmskills.title');
+      return source.display_name || source.source_id;
+    },
+    [t],
+  );
+
+  const enterpriseSourceSearchPlaceholder = useCallback(
+    (sourceId: string) => {
+      if (sourceId === 'swarmskillhub') return t('skills.swarmskills.searchPlaceholder');
+      return t('skills.source.searchPlaceholder');
+    },
+    [t],
   );
 
   const renderFixedHeader = () => (
@@ -1241,13 +1390,15 @@ export function SkillPanel({
           items={[
             { value: 'marketplace', label: t('skills.tabs.marketplace') },
             { value: 'my', label: t('skills.tabs.mySkills') },
-            { value: 'graph', label: t('skills.tabs.skillGraph') },
+            ...(!enterpriseEdition
+              ? [{ value: 'graph' as const, label: t('skills.tabs.skillGraph') }]
+              : []),
           ]}
         />
         <div className="flex items-center gap-3" data-testid="skill-panel-toolbar-actions">
           {activeTab === 'my' && (
             <>
-              {/* 启用/禁用筛选 */}
+              {/* 企业版：全部 / 企业预置 / 用户自装（不展示内置）；个人版：全部 / 启用 / 禁用 / 内置 */}
               <FilterDropdown
                 open={enableFilterOpen}
                 onToggle={(v) => {
@@ -1256,20 +1407,29 @@ export function SkillPanel({
                 onClose={() => setEnableFilterOpen(false)}
                 value={mySkillsSubTab}
                 onChange={(v) => {
-                  setMySkillsSubTab(v);
+                  setMySkillsSubTab(v as typeof mySkillsSubTab);
                   setEnableFilterOpen(false);
                 }}
-                options={[
-                  { value: 'all', label: t('skills.mySkillsTabs.all') },
-                  { value: 'enabled', label: t('skills.mySkillsTabs.enabled') },
-                  { value: 'disabled', label: t('skills.mySkillsTabs.disabled') },
-                  { value: 'builtin', label: t('skills.mySkillsTabs.builtin') },
-                ]}
+                options={
+                  enterpriseEdition
+                    ? [
+                        { value: 'all', label: t('skills.mySkillsTabs.all') },
+                        { value: 'prebuilt', label: t('skills.mySkillsTabs.prebuilt') },
+                        { value: 'user', label: t('skills.mySkillsTabs.user') },
+                      ]
+                    : [
+                        { value: 'all', label: t('skills.mySkillsTabs.all') },
+                        { value: 'enabled', label: t('skills.mySkillsTabs.enabled') },
+                        { value: 'disabled', label: t('skills.mySkillsTabs.disabled') },
+                        { value: 'builtin', label: t('skills.mySkillsTabs.builtin') },
+                      ]
+                }
                 testId="skill-panel-filter-enable"
               />
             </>
           )}
-          {(activeTab === 'my' || activeTab === 'marketplace') && (
+          {/* 企业广场自带搜索框；顶栏搜索只服务「我的技能」与个人版 Hub 广场 */}
+          {(activeTab === 'my' || (activeTab === 'marketplace' && !enterpriseEdition)) && (
             <PageToolbarSearch
               value={search}
               onChange={(e) => handleSearchChange(e.target.value)}
@@ -1279,7 +1439,8 @@ export function SkillPanel({
               className="focus-visible:border-[color:var(--color-control-emphasis)]"
             />
           )}
-          {activeTab === 'my' && (
+          {/* 企业版不提供个人创建入口（上传 / 知识转技能 / 聊天创建） */}
+          {activeTab === 'my' && !enterpriseEdition && (
             <CreateSkillMenu
               open={createMenuOpen}
               onToggle={setCreateMenuOpen}
@@ -1513,13 +1674,13 @@ export function SkillPanel({
                   )}
                   {otherSkills.length > 0 && (
                     <>
-                      {(builtinSkills.length > 0 || skillPackSkills.length > 0) && (
+                      {((!enterpriseEdition && builtinSkills.length > 0) || skillPackSkills.length > 0) && (
                         <MySkillsGroupHeader label={t('skills.mySkillsGroups.added')} />
                       )}
                       <div className="card-grid-auto mb-6">{otherSkills.map(renderMySkillCard)}</div>
                     </>
                   )}
-                  {builtinSkills.length > 0 && (
+                  {!enterpriseEdition && builtinSkills.length > 0 && (
                     <>
                       <MySkillsGroupHeader label={t('skills.mySkillsGroups.builtin')} />
                       <div className="card-grid-auto">{builtinSkills.map(renderMySkillCard)}</div>
@@ -1546,10 +1707,70 @@ export function SkillPanel({
         <div className="page-content" data-testid="skill-panel-content">
           {/* 固定区：页面标题 + 页签工具栏（进入详情视图时隐藏） */}
           {!inDetailView && renderFixedHeader()}
-          {/* 技能总谱页签 */}
-          {activeTab === 'graph' && renderGraphTab()}
-          {/* 技能广场页签：列表视图 或 hub 技能详情 */}
-          {activeTab === 'marketplace' && renderMarketplace()}
+          {/* 技能总谱页签（个人版） */}
+          {activeTab === 'graph' && !enterpriseEdition && renderGraphTab()}
+          {/* 技能广场：企业版按技能源动态页签；个人版为 Hub 广场 */}
+          {activeTab === 'marketplace' &&
+            (enterpriseEdition ? (
+              <div className="mt-4 flex flex-1 min-h-0 flex-col">
+                <div className="page-shell flex-none">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-2 flex-wrap min-w-0">
+                      {enterpriseSources.map((source) => (
+                        <button
+                          key={source.source_id}
+                          type="button"
+                          onClick={() => {
+                            setMarketplaceSourceId(source.source_id);
+                            setSearch('');
+                            setDebouncedMarketplaceSearch('');
+                          }}
+                          className={`px-4 text-sm font-medium ${
+                            marketplaceSourceId === source.source_id
+                              ? 'rounded-[8px] bg-secondary h-8 text-text'
+                              : 'text-text-muted hover:text-text'
+                          }`}
+                          data-testid="skill-panel-marketplace-source-tab"
+                          data-source-id={source.source_id}
+                        >
+                          {enterpriseSourceTabLabel(source)}
+                        </button>
+                      ))}
+                      {enterpriseSources.length === 0 && (
+                        <span className="text-sm text-text-muted">{t('skills.source.noSources')}</span>
+                      )}
+                    </div>
+                    {marketplaceSourceId ? (
+                      <div className="flex-1 min-w-[200px] max-w-md">
+                        <PageToolbarSearch
+                          value={search}
+                          onChange={(e) => handleSearchChange(e.target.value)}
+                          onClear={() => handleSearchChange('')}
+                          placeholder={enterpriseSourceSearchPlaceholder(marketplaceSourceId)}
+                          inputTestId="skill-panel-marketplace-source-search"
+                          className="focus-visible:border-[color:var(--color-control-emphasis)]"
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="page-scroll mt-4 flex-1 min-h-0 overflow-y-auto">
+                  {marketplaceSourceId ? (
+                    <EnterpriseSkillSourcePanel
+                      key={marketplaceSourceId}
+                      sessionId={sessionId}
+                      lockedSourceId={marketplaceSourceId}
+                      installedSkillOrigins={installedSkillOrigins}
+                      installedStateLoaded
+                      externalSearchQuery={debouncedMarketplaceSearch}
+                      onInstalled={() => fetchSkills()}
+                    />
+                  ) : null}
+                </div>
+              </div>
+            ) : (
+              renderMarketplace()
+            ))}
           {/* 我的技能页签：错误提示 / 已安装技能详情 / 技能列表 */}
           {activeTab === 'my' && renderMySkills()}
         </div>
