@@ -18700,6 +18700,9 @@ class JiuWenSwarmDeepAdapter:
             resolved_model,
             session_id=request.session_id,
         )
+        from jiuwenswarm.server.runtime.session.model_selection_store import capture_runtime_model_info
+
+        extension_model_info = capture_runtime_model_info(resolved_model)
         # An attach-only subscription is a passive observer: marking the
         # session active for its stream lifetime would make every model
         # switch fail with "session is executing".  The unregister/unmark in
@@ -18708,7 +18711,6 @@ class JiuWenSwarmDeepAdapter:
         if not attach_subscription:
             self._mark_session_active(session_id)
             self._register_session_agent_task(session_id)
-        stream_consumer_cancelled = False
         permission_prepare_rejected = False
         image_files_token = None
         _run_span: Any = None
@@ -19870,6 +19872,7 @@ class JiuWenSwarmDeepAdapter:
                 ),
                 cwd=get_cwd(),
                 project_root=get_project_root() if self._project_dir else None,
+                model_info=extension_model_info,
             )
 
             yield AgentResponseChunk(

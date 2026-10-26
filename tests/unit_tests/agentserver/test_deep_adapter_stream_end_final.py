@@ -108,6 +108,32 @@ def _usage_chunk(output_tokens: int = 2) -> SimpleNamespace:
     )
 
 
+async def test_native_usage_publishes_model_bound_before_later_adapter_changes(monkeypatch):
+    from jiuwenswarm.extensions_v2.event_types import context_usage
+
+    adapter = _adapter_ready(monkeypatch)
+    model = SimpleNamespace(
+        model_config=SimpleNamespace(model_name="bound-model"),
+        model_client_config={"client_provider": "OpenAI", "api_key": "discard-secret"},
+    )
+    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda request: model)
+    monkeypatch.setattr(
+        adapter, "_mark_session_active",
+        lambda session_id: setattr(model.model_config, "model_name", "later-change"),
+    )
+    observed = []
+
+    def publish(update, **kwargs):
+        observed.append(kwargs["model_info"])
+
+    monkeypatch.setattr(context_usage, "notify_context_usage", publish)
+    await _run_stream(adapter, [_usage_chunk()])
+    assert observed == [{
+        "selection": None, "model_name": "bound-model", "provider": "OpenAI",
+        "source": "runtime", "activated": True,
+    }]
+
+
 async def _run_stream(adapter, chunks: list) -> list[dict]:
     _install_stream(adapter, chunks)
     events = [
