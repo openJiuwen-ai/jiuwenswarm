@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import locale
 import logging
 import os
 import shutil
@@ -118,10 +117,6 @@ def _kill_browser_by_user_data_dir(user_data_dir: str) -> int:
                 result = subprocess.run(
                     [powershell, "-NoProfile", "-NonInteractive", "-Command", ps_script],
                     capture_output=True, text=True, timeout=15,
-                    # Windows PowerShell writes its JSON (process command lines
-                    # contain non-ASCII paths) in the console code page.
-                    encoding=locale.getpreferredencoding(False) or "utf-8",
-                    errors="replace",
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     items = json.loads(result.stdout.strip())
@@ -147,7 +142,6 @@ def _kill_browser_by_user_data_dir(user_data_dir: str) -> int:
                 result = subprocess.run(
                     [pgrep, "-f", f"{proc_name}.*--user-data-dir={user_data_dir}"],
                     capture_output=True, text=True, timeout=10,
-                    encoding="utf-8", errors="replace",
                 )
                 if result.returncode == 0:
                     for line in result.stdout.strip().splitlines():
