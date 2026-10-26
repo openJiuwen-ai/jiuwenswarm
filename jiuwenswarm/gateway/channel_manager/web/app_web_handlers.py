@@ -5374,6 +5374,31 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # 转发到 AgentServer 与本地 handler 冲突）。静态元数据本地返回最快、依赖最少。
     channel.register_method("commands.list", _commands_list)
 
+    async def _file_upload_chunk(ws, req_id, params, session_id, user_id=None):
+        """浏览器分块上传（E2A 转发 AgentServer 的 ``file.upload_chunk``）。
+
+        生产入口（app_web 静态服务）没有 Vite 的 /file-api 上传中间件，画布素材
+        改为复用这条已认证的 WS 通道逐块上传（前端 512 KiB/块），由 AgentServer
+        落到注入目录；避免前端直连要求 token 的 /file-api/upload 得到
+        ``missing_token``（issue #5325）。
+        """
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.FILE_UPLOAD_CHUNK,
+            label="file.upload_chunk",
+            timeout_seconds=120.0,
+        )
+
+    channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
     channel.register_method("media.persist", _media_persist)
     channel.register_method("media.discard", _media_discard)
