@@ -814,6 +814,73 @@
   font-weight: 600;
 }
 
+.jiuwenmate-workspace-connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: 12px;
+  color: var(--jm-text-2);
+  font-size: 12px;
+}
+
+.jiuwenmate-workspace-connection select {
+  max-width: 220px;
+  padding: 2px 6px;
+  border: 1px solid var(--jm-border);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+}
+
+.jiuwenmate-workspace-connection small {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jiuwenmate-delete-dialog__modes {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.jiuwenmate-delete-dialog__mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--jm-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.jiuwenmate-delete-dialog__mode:has(input:checked) {
+  border-color: var(--jm-blue);
+}
+
+.jiuwenmate-delete-dialog__mode input {
+  margin-top: 3px;
+}
+
+.jiuwenmate-delete-dialog__mode span {
+  display: grid;
+  gap: 2px;
+}
+
+.jiuwenmate-delete-dialog__mode strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.jiuwenmate-delete-dialog__mode small {
+  color: var(--jm-text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .jiuwenmate-drawer-backdrop {
   place-items: stretch end;
 }
@@ -4280,6 +4347,27 @@
 
 .jiuwenmate-profile__im-row--bordered {
   border: 1px solid var(--jm-border);
+}
+
+.jiuwenmate-profile__connections {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.jiuwenmate-profile__connections-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.jiuwenmate-profile__connections-footer small {
+  color: var(--jm-text-2);
+  font-size: 12px;
 }
 
 .jiuwenmate-profile__im-row > img {

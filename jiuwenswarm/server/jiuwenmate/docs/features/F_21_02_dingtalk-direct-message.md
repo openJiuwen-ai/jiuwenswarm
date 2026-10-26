@@ -9,11 +9,12 @@
 | 范围 | Swarm 钉钉企业内部应用机器人：单聊文本受理、多应用配置与绑定、执行结果文本投递及回执；涉及 `gateway/channel_manager/im_platforms/dingtalk/`、Gateway 渠道接线、AgentServer 钉钉入站、投递账本的渠道集合及设置页面 |
 | 方案成熟度 | 已确认：范围与取舍由本 session 用户于 2026-10-25、2026-10-26 明确决定（第 3 节）；平台语义仍待测试应用核实 |
 | 计划条目 | [JM-21 跨群搜索与 IM 扩展](../designs/jiuwenmate-development-plan.md#jm-21-跨群搜索与-im-扩展扩展) 的“其他 IM 扩展”子范围；不改变 JM-21 整项负责人、排期或状态 |
-| 状态 | 本地实现完成，组件与共享接线（替身）验证通过；未提交、未进行原生 PA 执行与真实钉钉联调 |
+| 负责人 | Song Haoran（本钉钉子范围）；JM-21 整项及跨群搜索仍由闫祉君负责 |
+| 状态 | 实现已提交到个人仓，待与 [F_02_02](F_02_02_colleague-connections.md) 一同合入上游；组件与共享接线（替身）验证通过；未进行原生 PA 执行与真实钉钉联调 |
 | 设计依据 | [S_03 IM 单聊绑定与结果投递规约](../specs/S_03_im-direct-message-and-delivery.md)；[F_03](F_03_session-request.md) 受理与幂等；[F_07](F_07_execution-driver.md) 调度；[F_09](F_09_web-and-feishu-result-delivery.md) 投递账本 |
-| 关联 feature | [F_08](F_08_feishu-group-fanout.md)（飞书入站，作为接线参照，本次不修改其运行路径）；配置聚合与“添加连接”由后续 JM-02 子特性承接，替换本文 D-07 的临时检查 |
-| 验证摘要 | 2026-10-26 基线 Swarm `272e7e89`、本地 core `eaf7ca383`：钉钉四组 85 项、飞书/Web/投递回归 169 项（另 1 项既有飞书失败，干净快照复现）、兼容批次 271 项、前端 111 项及构建通过；未做浏览器核对（第 8 节）。存在合入依赖（第 9 节） |
-| Refs | 本 session 用户的实施授权；未关联 issue；不提交、不推送 |
+| 关联 feature | [F_08](F_08_feishu-group-fanout.md)（飞书入站，作为接线参照，本次不修改其运行路径）；配置聚合与“添加连接”见 [F_02_02](F_02_02_colleague-connections.md)，已替换本文 D-07 的临时检查 |
+| 验证摘要 | 2026-10-26 基线 Swarm `272e7e89`、本地 core `eaf7ca383`：钉钉四组 85 项、飞书/Web/投递回归 169 项（另 1 项既有飞书失败，干净快照复现）、兼容批次 271 项、前端 111 项及构建通过；未做浏览器核对（第 8 节）。合入依赖已由 F_02_02 关闭（第 9 节） |
+| Refs | 本 session 用户的实施与发布授权；钉钉实现为子仓提交 `1d6f9445`，本次作为 PR1 提请上游审阅，与 PR2 聚合层配套；未关联 issue，合入须用户另行审批 |
 
 本 session 负责人为 Song Haoran，仅对应本子范围的实施，不等于认领 JM-21 整项。
 
@@ -101,7 +102,9 @@ flowchart LR
 - 选择与依据：只接受单聊文本，必须有 msgId、conversationId、senderStaffId；不回退加密 senderId。事件带 robotCode 时须与配置一致；`senderCorpId` 与 `chatbotCorpId` 都存在且不同则拒绝，因为另一企业的 staffId 在本机器人所属企业指向其他人。
 - 白名单：空列表表示不限制，因此只有未设置或空值才按空列表处理。字符串、含非字符串项的列表等格式错误原样保留，应用不启动；明确提交的非法值被拒绝，其他编辑不触碰原值；设置页标出需修正，用户重新填写前不提交白名单，也不能更换 client_id。省略白名单只对已保存的应用表示“不变”，新增应用没有可保留的值，省略即拒绝，不按空列表放行。不把格式错误猜成某种取值。修订前的归一化曾把这类值变成空列表、放行所有员工（第 10 节）。
 
-#### D-07 跨连接复用只在钉钉侧检查（临时）
+#### D-07 跨连接复用只在钉钉侧检查（临时；已由 2026-10-26 [F_02_02](F_02_02_colleague-connections.md) D-09 替代）
+
+> 当前规则：每个钉钉应用有专属的运行 Agent，飞书和钉钉入站都核对连接登记；下列临时检查已撤回。
 
 - 选择与依据：钉钉绑定与入站拒绝已绑定飞书的 Agent，以及已服务过群、飞书或其他钉钉应用会话的 Agent。会话事实在 AgentServer，绑定接口先经内部方法 `jiuwenmate.dingtalk.binding_check` 询问，再读取并保存配置；AgentServer 无法回答时不保存。入站检查保留为最终防线。飞书路径不做对应检查，保持原行为。
 - 代价：一个已服务钉钉的 Agent 被绑定到飞书后，钉钉入站被拒，但飞书照常运行，并能读到该 Agent 原有的钉钉输出文件；停止钉钉入站不能隔离已有文件。由配置聚合层的连接登记关闭，构成合入依赖（第 9 节）。
@@ -144,14 +147,14 @@ flowchart LR
 | `DingTalkChannel.app_id` / `persistent_app_id` | 路由键（默认应用为 `default`）/ 冻结路由使用的 client_id |
 | `DingTalkChannel.send_persistent_result(...)` | 只发文本；分类见 5.6 |
 | `allow_from_valid(app) -> bool` | 白名单是否为字符串列表；为假时应用不启动、保存被拒 |
-| `ExecutionRepository.has_sessions_outside_dingtalk_app(namespace_id, agent_id, app_id) -> bool` | Agent 是否已有群会话、其他平台单聊或其他钉钉应用的单聊；绑定检查与入站共用 |
+| `ExecutionRepository.has_sessions_outside_dingtalk_app(namespace_id, agent_id, app_id) -> bool` | 已撤回（F_02_02）：原用于判断 Agent 是否已有群会话、其他平台单聊或其他钉钉应用的单聊 |
 
 ### 5.3 接口
 
 - `channel.dingtalk.bind_agent`：`client_id`、`client_secret`、`persistent_agent_id` 必填，`robot_code` 可选。同一员工换绑时替换其原应用；绑定普通应用即把它转为 JM。拒绝已绑定飞书的员工；保存前询问 AgentServer，员工已服务其他连接时返回 `BAD_REQUEST`，无法询问时返回 `SERVICE_UNAVAILABLE`，均不保存。落盘成功但通道重启失败时返回 `CHANNEL_APPLY_FAILED`。
 - `channel.dingtalk.get_bindings`：返回有效绑定的员工 ID。
 - `channel.dingtalk.get_conf` / `set_conf`：读写共享键与归一化的 `apps[]`；`set_conf` 不接受平铺载荷。
-- `jiuwenmate.dingtalk.inbound`、`jiuwenmate.dingtalk.binding_check`：Gateway 到 AgentServer 的内部 E2A 方法，不在 Web 适配器的公开方法中。
+- `jiuwenmate.dingtalk.inbound`：Gateway 到 AgentServer 的内部 E2A 方法，不在 Web 适配器的公开方法中。原有的 `jiuwenmate.dingtalk.binding_check` 已由 F_02_02 的 `jiuwenmate.connection.attach` 替代。
 - 投递推送携带 `channel` 和 `is_direct_message`；ACK 信封使用同一渠道。
 
 ### 5.4 配置与默认应用
@@ -255,7 +258,7 @@ channels:
 
 ### 8.2 实际执行与证据（2026-10-26）
 
-环境：Swarm `272e7e896d38d449eb7c8bc8a348647b3b503af0`（本地未提交改动）；Python 3.11.17、pytest 9.0.2，解释器为本地 core `eaf7ca3832af6e596c4599223eb091cbdd95d6ef` 的 `.venv`，openjiuwen 来自该 core 源码，不是 Swarm 正式锁定依赖。补充依赖仅在 `/private/tmp/jiuwen-dingtalk-test-deps`（`dingtalk-stream 0.24.3`、`lark-oapi 1.5.5`、`ruamel.yaml 0.19.1` 等）。后端测试从独立临时目录运行，参数为 `python -B -m pytest -q --tb=short --asyncio-mode=auto -o addopts='' -o log_cli=false -p no:cacheprovider`，`JIUWENSWARM_DATA_DIR` 指向临时目录。前端使用本机 Node 24.19.0，按 `package.json` 原样执行脚本。
+环境：基线 Swarm `272e7e896d38d449eb7c8bc8a348647b3b503af0` 上的本地工作区，执行后提交为 `1d6f9445`；Python 3.11.17、pytest 9.0.2，解释器为本地 core `eaf7ca3832af6e596c4599223eb091cbdd95d6ef` 的 `.venv`，openjiuwen 来自该 core 源码，不是 Swarm 正式锁定依赖。补充依赖仅在 `/private/tmp/jiuwen-dingtalk-test-deps`（`dingtalk-stream 0.24.3`、`lark-oapi 1.5.5`、`ruamel.yaml 0.19.1` 等）。后端测试从独立临时目录运行，参数为 `python -B -m pytest -q --tb=short --asyncio-mode=auto -o addopts='' -o log_cli=false -p no:cacheprovider`，`JIUWENSWARM_DATA_DIR` 指向临时目录。前端使用本机 Node 24.19.0，按 `package.json` 原样执行脚本。
 
 | 范围 | 结果 |
 | --- | --- |
@@ -282,7 +285,7 @@ channels:
 
 ## 9. 风险与已知遗留
 
-- **合入依赖：** D-07 的飞书侧缺口——已服务钉钉的 Agent 被绑定到飞书后，飞书可读取其原有钉钉输出文件。本特性不应在配置聚合层的连接登记之前单独合入发布；或须由飞书负责人在飞书绑定处补充对应检查。
+- **合入依赖（2026-10-26 已关闭）：** D-07 的飞书侧缺口——已服务钉钉的 Agent 被绑定到飞书后，飞书可读取其原有钉钉输出文件。由 [F_02_02](F_02_02_colleague-connections.md) 的连接登记关闭，飞书入站同样拒绝；本特性与 F_02_02 一同合入上游。企业飞书暂不纳入登记，缺口见 F_02_02 第 9.2 节。
 - 手工修改 YAML 的绑定只受入站检查约束，绑定接口的检查不覆盖。
 - 限流与凭据错误直接 failed，账本没有退避重试。
 - 快速 ACK 的丢失窗口；不支持输入无提示。
@@ -296,3 +299,4 @@ channels:
 - 2026-10-26（用户检视后）：归一化曾把格式错误的白名单变成空列表、放行所有员工（P1），改为原值保留并使应用无效；局部保存曾先归一化后补旧值，导致 `enabled` 变为假、应用级 API 地址丢失，改为先合并后推导；等待提示按路由键匹配，默认应用收不到，改为按接收应用匹配；绑定接口原先只查飞书绑定，补充询问 AgentServer 的会话检查；@ 交接原先被降级为普通文本发送，改为判不支持。合入依赖写入第 9 节。
 - 2026-10-26（第二轮检视后）：设置页曾把对象、`[null]` 等白名单读成空列表，编辑其他应用时会一并保存为 `[]`、放行所有员工，改为标记需修正且在重新填写前不提交，后端只校验明确提交的白名单；绑定接口曾在等待 AgentServer 检查前读取配置、之后保存旧列表，并发绑定会互相覆盖，改为先检查、再在写锁内以文件为基础合并写回，同时避免用内存旧值覆盖普通渠道写入的 `last_*`。
 - 2026-10-26（第三轮检视后）：设置页不提交格式错误的白名单，但同时更换 client_id 时后端找不到旧应用、按空列表放行所有员工（P1），改为新增应用必须明确提交白名单，设置页在白名单修正前锁定 client_id，绑定接口对其他应用只提交 client_id；钉钉重启在等待旧通道停止时，另一次重启已注册新实例，前者的清理再按 channel_id 注销全部钉钉通道，只重新注册自己的旧配置，导致文件与内存有而注册表缺失（P2），改为串行重启、停止完成后读取最新配置，并且停止旧实例时不按 channel_id 注销。
+- 2026-10-26（配置聚合后）：D-07 的临时检查由 [F_02_02](F_02_02_colleague-connections.md) 的连接登记替代：钉钉绑定改为先取得应用专属的运行 Agent，绑定参数由 `persistent_agent_id` 改为 `config_id`；撤回 `jiuwenmate.dingtalk.binding_check`、`has_sessions_outside_dingtalk_app`、`has_feishu_binding` 与 `channel.dingtalk.get_bindings`；钉钉入站改为核对连接登记。第 9 节合入依赖随之关闭。验证记录见 F_02_02 第 8.2 节。

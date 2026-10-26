@@ -14,7 +14,6 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.configuration imp
     allow_from_valid,
     dingtalk_apps,
     dingtalk_channel_settings,
-    has_feishu_binding,
     merge_dingtalk_config,
     update_dingtalk_section,
 )
@@ -235,15 +234,17 @@ def test_a_new_app_must_state_its_allowlist():
     assert [item["allow_from"] for item in dingtalk_channel_settings(renamed, **BASES)] == [["staff-a"]]
 
 
-def test_dingtalk_never_reuses_an_agent_bound_to_feishu():
+def test_bindings_list_each_enabled_app_once_and_leave_reuse_to_the_connection_check():
     config = {"channels": {
-        "feishu": {"apps": [{"app_id": "feishu-app", "persistent_agent_id": "same-agent", "enabled": False}]},
-        "dingtalk": {"apps": [{"client_id": "dingtalk-app", "client_secret": "fake", "persistent_agent_id": "same-agent"}]},
+        "feishu": {"apps": [{"app_id": "feishu-app", "persistent_agent_id": "same-agent"}]},
+        "dingtalk": {"apps": [
+            {"client_id": "dingtalk-app", "client_secret": "fake", "persistent_agent_id": "same-agent"},
+            {"client_id": "stopped-app", "client_secret": "fake", "persistent_agent_id": "agent-b", "enabled": False},
+        ]},
     }}
-    assert has_feishu_binding(config, "same-agent")
-    assert configured_dingtalk_bindings(config) == ()
-    config["channels"]["dingtalk"]["apps"][0]["persistent_agent_id"] = "independent-agent"
-    assert configured_dingtalk_bindings(config)[0].agent_id == "independent-agent"
+    # Whether "same-agent" may serve this app is decided by its recorded connection at inbound.
+    binding, = configured_dingtalk_bindings(config)
+    assert (binding.app_id, binding.agent_id) == ("dingtalk-app", "same-agent")
 
 
 def test_event_preserves_business_identity_and_excludes_temporary_webhook():

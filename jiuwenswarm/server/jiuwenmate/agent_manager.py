@@ -314,7 +314,8 @@ class AgentManager:
                 "name": colleague.name,
                 "app_ids": sorted(active_apps[colleague.agent_id]),
             }
-            for colleague in self._service.list_colleagues(namespace_id)
+            # Group members are the agents of IM connections, each named after its colleague.
+            for colleague in self._service.list_agents(namespace_id)
             if colleague.agent_id in active_apps and colleague.enabled and colleague.current_version is not None
         ]
 
@@ -377,10 +378,10 @@ class AgentManager:
         )
         await self._recover_permission_approvals()
         agents = set(self.cli_runtime.bound_agents())
-        list_colleagues = getattr(self._service, "list_colleagues", None)
-        if list_colleagues is not None:
+        list_agents = getattr(self._service, "list_agents", None)
+        if list_agents is not None:
             # Reconcile removed bindings too, without publishing an owner's pending draft.
-            colleagues = await asyncio.to_thread(list_colleagues, "local")
+            colleagues = await asyncio.to_thread(list_agents, "local")
             agents.update(("local", item.agent_id) for item in colleagues if item.current_version is not None)
         for namespace_id, agent_id in agents:
             self.schedule_feishu_cli(namespace_id, agent_id)
@@ -455,8 +456,11 @@ class AgentManager:
             self._schedule_task = None
         await self._queue.aclose()
 
-    async def delete_colleague(self, namespace_id: str, agent_id: str) -> None:
-        """End the colleague's queued and running work, then remove the colleague and its window data."""
+    async def delete_colleague(self, namespace_id: str, agent_id: str, *, record_removal: bool = False) -> None:
+        """End the colleague's queued and running work, then remove the colleague and its window data.
+
+        The colleague's rows go last, so after any failure it is still found and deleted again.
+        """
         await self._scheduler.end_agent(namespace_id, agent_id)
         preparing = self._cli_tasks.get((namespace_id, agent_id))
         if preparing is not None:
@@ -466,9 +470,11 @@ class AgentManager:
         self._cli_requested.discard((namespace_id, agent_id))
         await asyncio.to_thread(self._schedules.delete_agent, namespace_id, agent_id)
         try:
-            await asyncio.to_thread(self._service.delete_colleague, namespace_id, agent_id)
             await self.cli_runtime.remove_agent(namespace_id, agent_id)
             await self.agent_mail_runtime.remove(AgentMailScope(namespace_id, agent_id))
+            await asyncio.to_thread(
+                self._service.delete_colleague, namespace_id, agent_id, record_removal=record_removal,
+            )
         finally:
             self._scheduler.release_agent(namespace_id, agent_id)
 

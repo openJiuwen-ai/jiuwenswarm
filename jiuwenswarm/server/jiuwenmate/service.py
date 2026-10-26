@@ -5,6 +5,10 @@ definition. Publishing freezes both, plus the resolved model, into a new
 configuration version. A Request keeps the version it was accepted with, so a
 later publication only affects new Requests. Every published version may read
 the colleague's own office directory; the user puts files there.
+
+A colleague is a configuration whose row is also its Web agent. Each IM app bound to
+it gets its own agent, office directory and Sessions; one publication switches all of
+them together.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from jiuwenswarm.server.jiuwenmate.models import (
     ColleagueSettings,
     ColleagueView,
     ConfigVersionView,
+    ConnectionRecord,
     PersistentAgentError,
     require_identifier,
 )
@@ -90,6 +95,8 @@ FORMAL_OUTPUT_RESERVE_TOKENS = 8192
 FORMAL_CAPACITY_MARGIN_TOKENS = 1024
 
 TemplateSource = Callable[[str], Mapping[str, Any] | None]
+# Platforms whose apps are bound to a colleague as separate connections.
+IM_CHANNELS = frozenset({"feishu", "dingtalk"})
 
 
 class ModelProvider(Protocol):
@@ -292,6 +299,31 @@ class PersistentAgentService:
         path = self._workspaces.path(definition.namespace_id, definition.agent_id)
         return replace(ColleagueView.from_definition(definition), workspace_dir=str(path))
 
+    def _agent_view(self, agent: ColleagueDefinition, config: ColleagueDefinition) -> ColleagueView:
+        """An IM agent as runtime callers see it: its own version and office, its configuration's settings."""
+        return replace(
+            self._view(config),
+            agent_id=agent.agent_id,
+            current_version=agent.current_version,
+            workspace_dir=str(self._workspaces.path(agent.namespace_id, agent.agent_id)),
+            created_at=agent.created_at,
+        )
+
+    def _config_of(self, definition: ColleagueDefinition) -> ColleagueDefinition:
+        connection = self._repository.connection_of(definition.namespace_id, definition.agent_id)
+        return definition if connection is None else self._require(definition.namespace_id, connection.config_id)
+
+    def _require_config(
+        self, namespace_id: str, agent_id: str, *, include_hidden: bool = False,
+    ) -> ColleagueDefinition:
+        """A colleague configuration, visible unless ``include_hidden``; an IM agent is managed through it."""
+        definition = self._require(namespace_id, agent_id)
+        if self._repository.connection_of(namespace_id, agent_id) is not None:
+            raise PersistentAgentError("this agent serves one connection of a colleague; use the colleague instead")
+        if definition.hidden and not include_hidden:
+            raise PersistentAgentError("colleague not found", code="NOT_FOUND")
+        return definition
+
     def _require(self, namespace_id: str, agent_id: str) -> ColleagueDefinition:
         require_identifier("namespace_id", namespace_id)
         require_identifier("agent_id", agent_id)
@@ -379,7 +411,7 @@ class PersistentAgentService:
             else:
                 claimed = self._repository.default_agent_id(namespace_id)
         definition = self._repository.get(namespace_id, claimed) if claimed else None
-        return None if definition is None else self._view(definition)
+        return None if definition is None or definition.hidden else self._view(definition)
 
     def create_colleague(
         self,
@@ -396,7 +428,8 @@ class PersistentAgentService:
         if recorded_source is not None:
             require_identifier("source_template_id", recorded_source)
             if unique_source and any(
-                item.source_template_id == recorded_source for item in self._repository.list(namespace_id)
+                item.source_template_id == recorded_source and not item.hidden
+                for item in self._repository.list(namespace_id)
             ):
                 raise PersistentAgentError("this employee already exists", code="CONFLICT")
         if template_id is not None:
@@ -443,8 +476,10 @@ class PersistentAgentService:
         if models is not None:
             self._models = models
         applied = True
+        connected = {item.agent_id for item in self._repository.connections(namespace_id)}
         for definition in self._repository.list(namespace_id):
-            if definition.current_version is None:
+            # An IM agent is republished with its configuration.
+            if definition.agent_id in connected or definition.hidden or definition.current_version is None:
                 continue
             if definition.has_unpublished_changes:
                 applied = False
@@ -460,19 +495,142 @@ class PersistentAgentService:
         return applied
 
     def list_colleagues(self, namespace_id: str) -> list[ColleagueView]:
+        """The visible colleague configurations; their IM agents are not listed."""
         require_identifier("namespace_id", namespace_id)
-        return [self._view(item) for item in self._repository.list(namespace_id)]
+        connected = {item.agent_id for item in self._repository.connections(namespace_id)}
+        return [
+            self._view(item) for item in self._repository.list(namespace_id)
+            if item.agent_id not in connected and not item.hidden
+        ]
+
+    def list_agents(self, namespace_id: str) -> list[ColleagueView]:
+        """Every runtime agent: each configuration's Web agent and every IM agent."""
+        require_identifier("namespace_id", namespace_id)
+        rows = self._repository.list(namespace_id)
+        by_id = {item.agent_id: item for item in rows}
+        connections = {item.agent_id: item for item in self._repository.connections(namespace_id)}
+        views = []
+        for item in rows:
+            connection = connections.get(item.agent_id)
+            if connection is None:
+                views.append(self._view(item))
+            elif connection.config_id in by_id:
+                views.append(self._agent_view(item, by_id[connection.config_id]))
+        return views
 
     def get_colleague(self, namespace_id: str, agent_id: str) -> ColleagueView:
-        return self._view(self._require(namespace_id, agent_id))
+        """The runtime view of any agent; an IM agent carries its configuration's settings."""
+        definition = self._require(namespace_id, agent_id)
+        config = self._config_of(definition)
+        return self._view(definition) if config is definition else self._agent_view(definition, config)
+
+    def get_config(self, namespace_id: str, agent_id: str) -> ColleagueView:
+        """A visible colleague configuration, as management pages show it."""
+        return self._view(self._require_config(namespace_id, agent_id))
 
     def read_settings(self, namespace_id: str, agent_id: str) -> ColleagueSettings:
-        definition = self._require(namespace_id, agent_id)
-        return definition.settings.with_persona(self._templates.read_persona(agent_id))
+        """The current settings; an IM agent reads its configuration's, so a saved reply mode applies at once."""
+        config = self._config_of(self._require(namespace_id, agent_id))
+        return config.settings.with_persona(self._templates.read_persona(config.agent_id))
+
+    def connection_of(self, namespace_id: str, agent_id: str) -> ConnectionRecord | None:
+        """The platform app an IM agent may serve; ``None`` for a configuration's Web agent."""
+        require_identifier("namespace_id", namespace_id)
+        require_identifier("agent_id", agent_id)
+        return self._repository.connection_of(namespace_id, agent_id)
+
+    def connections(self, namespace_id: str, agent_id: str) -> list[ConnectionRecord]:
+        """Every IM connection of a configuration, including apps no longer bound to it."""
+        self._require_config(namespace_id, agent_id)
+        return self._repository.connections(namespace_id, agent_id)
+
+    def removal_connections(self, namespace_id: str, agent_id: str) -> list[ConnectionRecord] | None:
+        """The IM connections a deletion must remove, or ``None`` if the colleague was already purged.
+
+        A hidden colleague still lists its connections, so an unbinding or purge whose answer was
+        lost can be repeated. An ID that never named a colleague is ``NOT_FOUND``.
+        """
+        require_identifier("namespace_id", namespace_id)
+        require_identifier("agent_id", agent_id)
+        if self._repository.get(namespace_id, agent_id) is None and self._repository.was_removed(
+            namespace_id, agent_id,
+        ):
+            return None
+        self._require_config(namespace_id, agent_id, include_hidden=True)
+        return self._repository.connections(namespace_id, agent_id)
+
+    def attach_connection(self, namespace_id: str, agent_id: str, channel: str, connection_key: str) -> str:
+        """Return the agent that serves this app for the colleague, creating and publishing it the first time.
+
+        The same colleague and app always get the same agent. A new agent is published from
+        the colleague's last publication, never from unpublished settings.
+        """
+        config = self._require_config(namespace_id, agent_id)
+        if channel not in IM_CHANNELS:
+            raise PersistentAgentError(f"unsupported channel {channel!r}")
+        require_identifier("connection_key", connection_key)
+        now = self._clock()
+        created = self._id_factory()
+        record = self._repository.insert_connection_agent(
+            ColleagueDefinition(
+                namespace_id=namespace_id,
+                agent_id=created,
+                settings=config.settings.with_persona(""),
+                source_template_id=None,
+                is_default=False,
+                enabled=True,
+                revision=0,
+                published_revision=None,
+                current_version=None,
+                created_at=now,
+                updated_at=now,
+            ),
+            ConnectionRecord(
+                namespace_id=namespace_id,
+                agent_id=created,
+                config_id=config.agent_id,
+                channel=channel,
+                connection_key=connection_key,
+                created_at=now,
+            ),
+        )
+        agent = self._require(namespace_id, record.agent_id)
+        published = self._published_settings(config)
+        if agent.current_version is None and published is not None:
+            try:
+                snapshot = self._prepare_version(namespace_id, agent, published, None)
+                self._repository.publish_connection_agent(
+                    namespace_id, snapshot, config_id=config.agent_id, config_revision=config.published_revision,
+                    settings=published, published_at=now,
+                )
+            except Exception as exc:
+                current = self._repository.get(namespace_id, agent.agent_id)
+                if current is None:
+                    # The colleague was deleted meanwhile; preparing the version recreated the office.
+                    self._workspaces.remove(namespace_id, agent.agent_id)
+                    raise PersistentAgentError("colleague not found", code="NOT_FOUND") from exc
+                # A publication that ran meanwhile has already given the new agent its version.
+                if getattr(exc, "code", None) != "CONFLICT" or current.current_version is None:
+                    raise
+        return record.agent_id
+
+    def hide_colleague(self, namespace_id: str, agent_id: str) -> None:
+        """Take a colleague off the list and stop all its agents; every agent keeps its data. Repeating is harmless."""
+        self._require_config(namespace_id, agent_id, include_hidden=True)
+        self._repository.hide(namespace_id, agent_id, updated_at=self._clock())
+
+    def _published_settings(self, config: ColleagueDefinition) -> ColleagueSettings | None:
+        if config.published_settings is not None:
+            return config.published_settings
+        # Colleagues published before connections were recorded: without pending edits the settings are the
+        # published ones; with pending edits the published persona is unknown.
+        if config.current_version is not None and not config.has_unpublished_changes:
+            return config.settings.with_persona(self._templates.read_persona(config.agent_id))
+        return None
 
     def update_settings(self, namespace_id: str, agent_id: str, settings: ColleagueSettings) -> ColleagueView:
         """Save settings and the Template; nothing changes for Requests until ``publish``."""
-        definition = self._require(namespace_id, agent_id)
+        definition = self._require_config(namespace_id, agent_id)
         if not settings.persona:
             settings = settings.with_persona(self._templates.read_persona(agent_id))
         self._check_model(settings, agent_id)
@@ -487,8 +645,8 @@ class PersistentAgentService:
         return self._view(updated)
 
     def set_enabled(self, namespace_id: str, agent_id: str, *, enabled: bool) -> ColleagueView:
-        """Persist office availability. Private sessions stay open; IM and schedules stop while disabled."""
-        self._require(namespace_id, agent_id)
+        """Persist office availability for every connection. Private sessions stay open; IM and schedules stop."""
+        self._require_config(namespace_id, agent_id)
         updated = self._repository.set_enabled(namespace_id, agent_id, enabled=enabled, updated_at=self._clock())
         return self._view(updated)
 
@@ -496,13 +654,38 @@ class PersistentAgentService:
         self, namespace_id: str, agent_id: str, *,
         expected_revision: int | None = None, models: ModelProvider | None = None,
     ) -> ConfigVersionView:
-        """Freeze the current settings as the version new Requests use; unchanged settings keep the version."""
-        definition = self._require(namespace_id, agent_id)
+        """Freeze the current settings as the version new Requests use; unchanged settings keep the version.
+
+        Every agent of the colleague is switched in one transaction. If any of them cannot be
+        published, or the colleague changed meanwhile, all of them keep their versions.
+        """
+        definition = self._require_config(namespace_id, agent_id)
         if expected_revision is not None and definition.revision != expected_revision:
             raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
         settings = definition.settings
         if settings.capabilities.model is None:
             raise PersistentAgentError("choose a model before publishing", code="MODEL_NOT_CONFIGURED")
+        settings = settings.with_persona(self._templates.read_persona(agent_id))
+        agents = [definition] + [
+            self._require(namespace_id, item.agent_id) for item in self._repository.connections(namespace_id, agent_id)
+        ]
+        changes = [
+            (agent.agent_id, agent.current_version, self._prepare_version(namespace_id, agent, settings, models))
+            for agent in agents
+        ]
+        self._repository.publish_configuration(
+            namespace_id, agent_id, revision=definition.revision, published_settings=settings, changes=changes,
+            published_at=self._clock(),
+        )
+        web = changes[0][2]
+        version = definition.current_version if web is None else web.config_version
+        return self._version_view(namespace_id, agent_id, version)
+
+    def _prepare_version(
+        self, namespace_id: str, agent: ColleagueDefinition, settings: ColleagueSettings, models: ModelProvider | None,
+    ) -> ConfigSnapshot | None:
+        """The next version of one agent for ``settings`` (persona included), or ``None`` if it would not change."""
+        agent_id = agent.agent_id
         office = self._workspaces.ensure(namespace_id, agent_id)
         assembled = assemble_resources(agent_id, settings.capabilities, office, self._resource_catalog())
         model, input_limit, margin = formal_model_capacity(
@@ -512,7 +695,7 @@ class PersistentAgentService:
         fields = with_bash_tool({
             "card": {"id": agent_id, "name": settings.name, "description": settings.description},
             "system_prompt": (
-                self._templates.read_persona(agent_id)
+                settings.persona
                 + HOST_PROMPT_MARKER
                 + WORKSPACE_PROMPT
                 + assembled.prompt
@@ -541,12 +724,11 @@ class PersistentAgentService:
             fields["context_engine_config"] = context_engine
         fields = apply_feishu_skills(fields, office, self.cli_runtime.skill_directories(namespace_id, agent_id))
         try:
-            if definition.current_version is not None:
-                current = self.snapshot(namespace_id, agent_id, definition.current_version)
+            if agent.current_version is not None:
+                current = self.snapshot(namespace_id, agent_id, agent.current_version)
                 if publish_spec(agent_id, current.config_version, fields).fingerprint == current.fingerprint:
-                    self._repository.mark_published(namespace_id, agent_id, revision=definition.revision)
-                    return self._version_view(namespace_id, agent_id, current.config_version)
-            snapshot = publish_spec(
+                    return None
+            return publish_spec(
                 agent_id,
                 self._repository.next_version(namespace_id, agent_id),
                 fields,
@@ -554,8 +736,6 @@ class PersistentAgentService:
             )
         except PersistentContractError as exc:
             raise PersistentAgentError(f"configuration cannot be published: {exc}", code="INVALID_CONFIG") from exc
-        self._repository.save_version(namespace_id, snapshot, revision=definition.revision, published_at=self._clock())
-        return self._version_view(namespace_id, agent_id, snapshot.config_version)
 
     def refresh_feishu_capability(
         self, namespace_id: str, agent_id: str, *, skill_directories: tuple[Path, ...],
@@ -611,14 +791,21 @@ class PersistentAgentService:
             raise PersistentAgentError("configuration version not found", code="NOT_FOUND")
         return stored[0]
 
-    def delete_colleague(self, namespace_id: str, agent_id: str) -> None:
+    def delete_colleague(self, namespace_id: str, agent_id: str, *, record_removal: bool = False) -> None:
         """Remove the colleague, its versions, Template, office directory and window data.
 
-        A deleted 小九 is not provisioned again.
+        Files and windows go first and the rows last, so a failed deletion leaves the colleague
+        to be found and deleted again. A deleted 小九 is not provisioned again.
         """
         self._require(namespace_id, agent_id)
-        if self._repository.delete(namespace_id, agent_id):
-            self._templates.remove(agent_id)
-            self._workspaces.remove(namespace_id, agent_id)
-            if self._windows is not None:
-                self._windows.purge_agent(namespace_id, agent_id)
+        # Its IM agents go first; the repository refuses again if one was added meanwhile.
+        if self._repository.connections(namespace_id, agent_id):
+            raise PersistentAgentError("colleague still has connections", code="CONFLICT")
+        self._templates.remove(agent_id)
+        self._workspaces.remove(namespace_id, agent_id)
+        if self._windows is not None:
+            self._windows.purge_agent(namespace_id, agent_id)
+        # Both removals ignore errors, so a directory left behind is reported here.
+        if self._templates.path(agent_id).exists() or self._workspaces.path(namespace_id, agent_id).exists():
+            raise PersistentAgentError("colleague files could not be removed", code="CLEANUP_FAILED")
+        self._repository.delete(namespace_id, agent_id, record_removal=record_removal)

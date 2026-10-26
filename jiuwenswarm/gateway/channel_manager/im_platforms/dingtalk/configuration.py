@@ -213,18 +213,3 @@ def update_dingtalk_section(
 
     update_config(replace)
     return saved
-
-
-def has_feishu_binding(config: Mapping[str, Any], agent_id: str) -> bool:
-    """A Feishu binding, even a disabled one, keeps its Agent away from DingTalk."""
-    channels = config.get("channels", {})
-    if not isinstance(channels, Mapping):
-        return False
-    apps: list[Mapping[str, Any]] = []
-    feishu = channels.get("feishu", {})
-    if isinstance(feishu, Mapping) and isinstance(feishu.get("apps"), list):
-        apps.extend(app for app in feishu["apps"] if isinstance(app, Mapping))
-    enterprise = channels.get("feishu_enterprise", {})
-    if isinstance(enterprise, Mapping):
-        apps.extend(app for app in enterprise.values() if isinstance(app, Mapping))
-    return any(_text(app.get("persistent_agent_id")) == agent_id for app in apps)

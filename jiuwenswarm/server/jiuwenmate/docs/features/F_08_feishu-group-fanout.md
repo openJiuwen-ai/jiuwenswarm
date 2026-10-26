@@ -6,13 +6,21 @@
 | --- | --- |
 | 建档日期 | 2026-10-14 |
 | 范围 | JiuwenSwarm 新版 JiuwenMate 的飞书绑定解析、入站消息标准化、个人版与新版路由隔离，以及按接收 Bot 分发到新版同事；不改 agent-core 的执行逻辑 |
-| 方案成熟度 | 按飞书应用配置中的 `persistent_agent_id` 建立一对一绑定，并映射为运行时 `agent_id`；通过 Gateway→AgentServer E2A 请求交接并由 AgentServer 持有 JM-07 生命周期 |
+| 方案成熟度 | 按飞书应用配置中的 `persistent_agent_id` 建立一对一绑定，并映射为运行时 `agent_id`；通过 Gateway→AgentServer E2A 请求交接并由 AgentServer 持有 JM-07 生命周期（绑定身份已由 2026-10-26 [F_02_02](F_02_02_colleague-connections.md) / [S_04](../specs/S_04_colleague-connections.md) 替代，见“当前绑定规则”） |
 | 计划条目 | [JM-08 飞书接入与群内分发](../designs/jiuwenmate-development-plan.md) |
 | 负责人 | 闫祉君（与开发计划一致） |
 | 状态 | 待验收（提交 `496b04d9`；宿主组件通过，联合验收待完成。真实飞书应用 / 群联调与 PA-07 群执行仍待） |
 | 设计依据 | [JiuwenMate 服务端架构设计](../designs/jiuwenmate-architecture.md) 第 5.3、9.1 节及附录 A；[JM-02 同事定义与配置发布](F_02_colleague-management.md)、[JM-03 会话定位与请求受理](F_03_session-request.md)、[JM-07 同事管理器、Session 排队器与执行驱动](F_07_execution-driver.md)；模板：[特性设计方案模板](../templates/feature-design-template.md) |
 | 验证摘要 | 2026-10-15：既有 JM-08 生产接线回归 142 项通过；补充 JM-09 所需的 Feishu Request 路由快照及 outbox / Gateway ACK 后，JM-08/JM-09 联合聚焦测试最新为 105 项通过。2026-10-19：`app_id` 与 `persistent_agent_id` 一对一绑定、配置保存及同事绑定状态相关的 3 项定向测试通过；前端相关测试 32 项通过，生产构建通过。真实 SQLite、E2A/AgentServer、精确 app 路由及个人版相关用例有覆盖；本地 agent-core 导入链的 `SyntaxWarning` 需在联合测试命令中忽略。未做真实飞书应用 / 群联调；PA-07 群执行不属于本次验收 |
 | Refs | 无独立 issue；需求来源为开发计划 JM-08 |
+
+**当前绑定规则（2026-10-26 起，依据 [F_02_02](F_02_02_colleague-connections.md) 与 [S_04](../specs/S_04_colleague-connections.md)）：** 下列内容替代本文关于绑定身份的旧表述，其余设计、负责人、状态与验收结论不变。
+
+- 一位同事是一份配置，配置 ID 等于其 Web Agent 的 `agent_id`。每个飞书应用连接有专属的 IM 运行 Agent、办公目录和 Session，由“添加连接”创建，并登记在 `colleague_connections`（Agent → 同事、平台、`app_id`）。
+- `channels.feishu.apps[]` 中的 `persistent_agent_id` 指向该应用的 IM 运行 Agent，而不是同事的 Web Agent；解析后仍作为运行时 `agent_id`，`app_id → persistent_agent_id → agent_id` 的解析路径不变。
+- `channel.feishu.bind_agent` 的参数为 `config_id`、`app_id`、`app_secret`：Gateway 先经内部方法 `jiuwenmate.connection.attach` 取得该应用的 Agent，再写入配置；另有 `channel.feishu.unbind_agent(app_id)`。同一同事可以绑定多个飞书应用。
+- 入站在绑定解析之后核对登记：YAML 绑定的 Agent 必须登记为本 `app_id` 的飞书连接，否则拒绝，不回落个人版。`channels.feishu_enterprise` 的绑定暂不要求登记（未登记的 Agent 照旧受理，已登记给其他连接的 Agent 仍拒绝），缺口见 F_02_02 第 9.2 节。
+- 2026-10-19 记录的“一位同事一个飞书应用、改绑替换旧应用项、不另建绑定表”已不适用；在 F_02_02 之前保存的绑定指向同事本身，入站会被拒绝，需要重新绑定。
 
 ## 2. 背景、目标与范围
 
@@ -36,7 +44,7 @@ JiuwenSwarm 已有飞书连接、事件解析和通用 `MessageHandler`。新版
 ### 2.3 本次范围与非目标
 
 - JM-08 整体目标包含：
-  - 新版飞书绑定复用所有者现有应用配置；每个应用项以 `app_id`、应用凭据和 `persistent_agent_id` 表达绑定，其中 `persistent_agent_id` 就是 JM-02 同事的 `agent_id`。不另建绑定表或持久化绑定 ID；运行时按 `app_id` 解析到该同事。
+  - 新版飞书绑定复用所有者现有应用配置；每个应用项以 `app_id`、应用凭据和 `persistent_agent_id` 表达绑定，其中 `persistent_agent_id` 就是 JM-02 同事的 `agent_id`。不另建绑定表或持久化绑定 ID；运行时按 `app_id` 解析到该同事。（绑定身份已由 2026-10-26 [F_02_02](F_02_02_colleague-connections.md) / [S_04](../specs/S_04_colleague-connections.md) 替代，见“当前绑定规则”）
   - 飞书事件标准化、来源引用生成、群 / 私聊会话定位及新版请求受理。
   - 在飞书入口和公共 `MessageHandler` 中加入明确的新旧路由分界，保证个人版路径不变。
   - 群消息按实际收到事件的 Bot 逐 Agent 处理；不由 Gateway 根据 @ 列表反查或广播给其他 Bot。
@@ -46,7 +54,7 @@ JiuwenSwarm 已有飞书连接、事件解析和通用 `MessageHandler`。新版
   - 个人版消息语义、个人工作空间、历史数据或既有 Bot 路由的迁移。
   - 把飞书附件直接写入个人版工作空间，或把平台文件 ID 当作 workspace 授权。
 
-2026-10-14 产品规则已确认：接收 Bot 被飞书加入群后，飞书向该 Bot 投递经校验的群事件，即允许绑定 Agent 接收该群消息；不另做群白名单或审批。一个飞书应用 `app_id` 只绑定一个 JM-02 同事；`persistent_agent_id` 保存的就是该同事现有的 `agent_id`，两者是一对一关系，不再引入额外身份字段或绑定表。配置解析后映射为运行时 `agent_id`。JM 数据位于该所有者的数据目录下的 `jiuwenmate/agents.sqlite3`，当前单所有者运行时使用 `namespace_id="local"`。Gateway 经 E2A WebSocket 转发标准化事件；AgentServer 持有 JM-07 调度器和持久化服务。`AccessSnapshot` 仅标识飞书发送者。2026-10-21 确认：飞书私聊和群聊的新版请求均在 `startup_scope` 与 `source_scope` 授予 `workspace_read`，私聊保留既有 `workspace_knowledge_read`；二者都不授予 `workspace_write`。该授权与“Bot 入群即允许接入”的群准入判断相互独立。
+2026-10-14 产品规则已确认：接收 Bot 被飞书加入群后，飞书向该 Bot 投递经校验的群事件，即允许绑定 Agent 接收该群消息；不另做群白名单或审批。一个飞书应用 `app_id` 只绑定一个 JM-02 同事；`persistent_agent_id` 保存的就是该同事现有的 `agent_id`，两者是一对一关系，不再引入额外身份字段或绑定表（绑定身份已由 2026-10-26 [F_02_02](F_02_02_colleague-connections.md) / [S_04](../specs/S_04_colleague-connections.md) 替代，见“当前绑定规则”）。配置解析后映射为运行时 `agent_id`。JM 数据位于该所有者的数据目录下的 `jiuwenmate/agents.sqlite3`，当前单所有者运行时使用 `namespace_id="local"`。Gateway 经 E2A WebSocket 转发标准化事件；AgentServer 持有 JM-07 调度器和持久化服务。`AccessSnapshot` 仅标识飞书发送者。2026-10-21 确认：飞书私聊和群聊的新版请求均在 `startup_scope` 与 `source_scope` 授予 `workspace_read`，私聊保留既有 `workspace_knowledge_read`；二者都不授予 `workspace_write`。该授权与“Bot 入群即允许接入”的群准入判断相互独立。
 
 ## 3. 设计约束、假设与待决问题
 
@@ -64,7 +72,7 @@ JiuwenSwarm 已有飞书连接、事件解析和通用 `MessageHandler`。新版
 | 边界 / 问题 | 已确认规则 / 当前事实 | 责任与影响 |
 | --- | --- | --- |
 | 群准入（已确认） | 接收 Bot 被加入群即允许绑定 Agent 接收该群消息；以飞书向该 Bot 投递经校验的群事件作为事实。不新增群白名单、审批或额外群权限判断。 | JM-08 按此规则处理；群映射只用于稳定定位 Session |
-| 生产群—Agent 绑定来源 | 所有者本地 `.jiuwenswarm/config/config.yaml` 的 `channels.feishu.apps[]` / `channels.feishu_enterprise.<app_key>` 中，每个应用项用 `app_id` 和 `persistent_agent_id` 组成一对一绑定；后者就是 JM-02 同事现有的 `agent_id`。运行时按收到事件的 `app_id` 解析，并映射为内部 `agent_id`。`namespace_id` 当前固定为 `local`。 | 复用现有应用配置，不建额外绑定表、持久化 binding_id 或凭据副本；缺失 `persistent_agent_id` 表示个人版通道；重复应用或同事绑定、配置漂移或无效 Agent 失败关闭 |
+| 生产群—Agent 绑定来源 | 所有者本地 `.jiuwenswarm/config/config.yaml` 的 `channels.feishu.apps[]` / `channels.feishu_enterprise.<app_key>` 中，每个应用项用 `app_id` 和 `persistent_agent_id` 组成一对一绑定；后者就是 JM-02 同事现有的 `agent_id`。运行时按收到事件的 `app_id` 解析，并映射为内部 `agent_id`。`namespace_id` 当前固定为 `local`。 | 复用现有应用配置，不建额外绑定表、持久化 binding_id 或凭据副本；缺失 `persistent_agent_id` 表示个人版通道；重复应用或同事绑定、配置漂移或无效 Agent 失败关闭（绑定身份已由 2026-10-26 [F_02_02](F_02_02_colleague-connections.md) / [S_04](../specs/S_04_colleague-connections.md) 替代，见“当前绑定规则”） |
 | JM-07 生产生命周期与请求上下文 | AgentServer 的 `AgentWebSocketServer` 在启动时仅对含有效 Feishu `app_id → persistent_agent_id` 绑定的所有者启动 JM-07；无绑定时不创建 JM 数据库或调度器。收到绑定事件时按需补启，关闭时回收 `AgentManager`。运行时内部仍使用 `agent_id`。 | `AccessSnapshot` 以 Feishu 发送者为 principal；私聊与群聊均在 `startup_scope` / `source_scope` 加入 `workspace_read`，不加入 `workspace_write` |
 | Gateway 到 AgentServer 的请求交接 | 只有 Feishu 通道配置了非空 `persistent_agent_id` 时才注入 JM-08 回调；Gateway 用内部 E2A `jiuwenmate.feishu.inbound` 传递标准化事件和预期运行时 `agent_id`。AgentServer 按本地 `app_id` 配置复核后调用 JM-03/07。 | 未绑定个人版通道不走 E2A；绑定配置不一致、受理失败或响应无效时拒绝事件，不回落个人版 |
 | 飞书附件引用 | JM-08 只标准化并传递附件引用，不下载或读取文件。Request 的 workspace scope 按 F_14/JM-14 生成，不由附件引用推导。 | 附件内容读取不属于本特性；收到 `workspace_read` 不代表平台附件引用已可读取 |
@@ -164,7 +172,7 @@ flowchart LR
 3. 对 `sender_type="bot"` 的消息，仅新版有效绑定路径进入来源身份判断；个人版仍按当前行为过滤。自身回声须由可信发送方 app 身份精确判断。
 4. 对群聊，必须确认事件来自已校验的 Feishu 接收通道，且接收 `app_id` 唯一绑定到目标 Agent；Feishu 已向该 Bot 投递此群事件即视为 Bot 在群、Agent 获准接入。不额外查群白名单。群准入与工作空间授权分开判断；请求上下文按 JM-14 授予 `workspace_read`，不授予 `workspace_write`。
 
-绑定解析按 `platform + app_id` 查询；`app_id` 必须恰好命中一个已启用配置项且该项有非空 `persistent_agent_id`。解析结果将该值作为运行时 `agent_id`。0 个命中时未绑定并沿用个人版处理；多个命中、无效 Agent 或配置读取失败时拒绝新版受理且不回落个人版。当前单所有者本地部署以 `namespace_id="local"` 标识该数据空间；后续 JM-10 引入多用户 / 多工作空间身份时，再由 JM-10 将此局部映射替换为调用者实际 namespace，不改变 JM-08 的按 `app_id` 路由语义。
+绑定解析按 `platform + app_id` 查询（2026-10-26 起解析后另核对连接登记，见“当前绑定规则”）；`app_id` 必须恰好命中一个已启用配置项且该项有非空 `persistent_agent_id`。解析结果将该值作为运行时 `agent_id`。0 个命中时未绑定并沿用个人版处理；多个命中、无效 Agent 或配置读取失败时拒绝新版受理且不回落个人版。当前单所有者本地部署以 `namespace_id="local"` 标识该数据空间；后续 JM-10 引入多用户 / 多工作空间身份时，再由 JM-10 将此局部映射替换为调用者实际 namespace，不改变 JM-08 的按 `app_id` 路由语义。
 
 ### 5.3 飞书事件到 core 请求的字段映射
 
@@ -314,5 +322,6 @@ Feishu 入站绑定校验成功后，JM-08 在调用 JM-07 受理 Request 时同
 | 2026-10-21 | 群消息在受理前增加 JM-23 回复模式。被动且未被明确 @ 时不创建 Request；纯寒暄只受理一位自适应员工。第 5.4 节第 5 步改按该规则描述 | [F_23](F_23_group-reply-mode.md)；真实飞书仍待验收 |
 | 2026-10-21 | 同步 JM-14 工作空间授权规则：Feishu 私聊和群聊的 `startup_scope`、`source_scope` 均包含 `workspace_read`；私聊保留 `workspace_knowledge_read`；二者均不含 `workspace_write`。群准入仍只按绑定 Bot 收到经校验事件判断，未绑定个人版路由不变 | 已确认的工作空间目录与访问决策；实现与测试结果见本次变更及 F_14 |
 | 2026-10-22 | 普通 Bot 群消息归档后结束，不创建 Session / Request；仅明确 @ 当前接收者或有效目标交接继续；保留自身回声抑制、人类消息、私聊和个人版路径 | 用户确认的防互相回复规则；验证见第 8 节 |
+| 2026-10-26 | 绑定身份改为每个飞书应用一个专属 IM 运行 Agent：`persistent_agent_id` 指向该 Agent，`bind_agent` 参数改为 `config_id`，入站核对 `colleague_connections` 登记；企业飞书暂不要求登记。替代 2026-10-14、2026-10-19 关于“`persistent_agent_id` 即同事 `agent_id`、不另建绑定表、改绑替换旧应用项”的结论，历史验证结论保留当时适用范围 | [F_02_02](F_02_02_colleague-connections.md)、[S_04](../specs/S_04_colleague-connections.md)；本文负责人、状态与验收结论不变，验证见 F_02_02 第 8.2 节 |
 
 生产装配已接入；待使用真实 Feishu 测试应用和测试群确认事件身份字段、SDK 重投行为及 JM-09 文本回执。JM-08 不决定工作空间路径检查策略；Feishu `workspace_read` scope 按 F_14/JM-14 执行。群接入仍以绑定 Bot 收到经校验的群事件为准；PA-07 群执行、PA-08 文件投递和 PA-15 中途协作不属于 JM-08 闭环。

@@ -236,29 +236,6 @@ class ExecutionRepository(SQLiteStore):
                 row = conn.execute(query, key).fetchone()
         return self._session(row)
 
-    def has_sessions_outside_dingtalk_app(self, namespace_id: str, agent_id: str, app_id: str) -> bool:
-        """Whether the Agent already served a group, another IM platform or another DingTalk app.
-
-        Rebinding such an Agent would expose that connection's retained office. A DingTalk
-        private Session key is the JSON pair ``[app_id, conversationId]``.
-        """
-        with self._transaction() as conn:
-            rows = conn.execute(
-                "SELECT kind, channel, conversation_key FROM sessions "
-                "WHERE namespace_id = ? AND agent_id = ? AND kind IN ('im_direct', 'group')",
-                (namespace_id, agent_id),
-            ).fetchall()
-        for row in rows:
-            if row["kind"] == "group" or row["channel"] != "dingtalk":
-                return True
-            try:
-                owner = json.loads(row["conversation_key"])[0]
-            except (ValueError, TypeError, IndexError, KeyError):
-                return True
-            if owner != app_id:
-                return True
-        return False
-
     def find_session(self, namespace_id: str, agent_id: str, conversation: ConversationRef) -> SessionRecord | None:
         """The colleague's Session for a conversation, or None before first contact; nothing is created."""
         with self._transaction() as conn:

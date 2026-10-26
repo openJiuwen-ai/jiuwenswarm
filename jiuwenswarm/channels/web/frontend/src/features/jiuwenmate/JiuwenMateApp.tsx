@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { webClient, webRequest } from '../../services/webClient';
+import { ColleagueDeleteDialog } from './components/ColleagueDeleteDialog';
 import { ImAuthorizeDialog } from './components/ImAuthorizeDialog';
 import { WelinkOauthDialog } from './components/WelinkOauthDialog';
 import { JiuwenMateConfirmDialog, JiuwenMateDialog } from './components/JiuwenMateDialog';
@@ -37,6 +38,7 @@ import {
   selectablePluginPackages,
   withColleagueEdit,
   type ColleagueResourceOption,
+  type JiuwenMateDeleteMode,
   type JiuwenMateModelCatalog,
   type JiuwenMateSchedule,
 } from './jiuwenmateApi';
@@ -73,6 +75,7 @@ import { OfficeIntroPage } from './pages/OfficeIntroPage';
 import type {
   JiuwenMateActivity,
   JiuwenMateColleague,
+  JiuwenMateConnection,
   JiuwenMateExistingPage,
   JiuwenMateTemplate,
 } from './types';
@@ -86,7 +89,9 @@ export interface JiuwenMateAppProps {
   useInstalledExpertRef?: MutableRefObject<(packageName: string) => void>;
 }
 
-type PendingConfirm = { kind: 'delete' | 'disable'; colleague: JiuwenMateColleague };
+type PendingConfirm =
+  | { kind: 'delete' | 'disable'; colleague: JiuwenMateColleague }
+  | { kind: 'unbind'; colleague: JiuwenMateColleague; connection: JiuwenMateConnection };
 type LoadStatus = 'loading' | 'ready' | 'failed';
 
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
@@ -183,16 +188,8 @@ export function JiuwenMateApp({
     setLoadStatus('loading');
     setLoadError('');
     try {
-      const [colleagues, bindingResult, dingtalkResult, welinkResult] = await Promise.all([
+      const [colleagues, welinkResult] = await Promise.all([
         api.loadColleagues(),
-        webRequest<{ agent_ids?: string[] }>('channel.feishu.get_bindings').then(
-          (value) => ({ ok: true as const, value }),
-          () => ({ ok: false as const, value: null }),
-        ),
-        webRequest<{ agent_ids?: string[] }>('channel.dingtalk.get_bindings').then(
-          (value) => ({ ok: true as const, value }),
-          () => ({ ok: false as const, value: null }),
-        ),
         webRequest<{ agent_ids?: string[] }>('channel.welink.get_bindings').then(
           (value) => ({ ok: true as const, value }),
           () => ({ ok: false as const, value: null }),
@@ -202,29 +199,17 @@ export function JiuwenMateApp({
         replaceColleagues(
           current,
           colleagues.map((colleague) => {
-            const feishuConfigured = bindingResult.ok
-              ? (bindingResult.value?.agent_ids ?? []).includes(colleague.id)
-              : colleague.feishuConfigured ?? (colleague.imConfigured && colleague.imPlatform === 'feishu');
-            const dingtalkConfigured = dingtalkResult.ok
-              ? (dingtalkResult.value?.agent_ids ?? []).includes(colleague.id)
-              : colleague.dingtalkConfigured ?? (colleague.imConfigured && colleague.imPlatform === 'dingtalk');
+            const feishuConfigured = colleague.connections.some((connection) => connection.channel === 'feishu');
+            const dingtalkConfigured = colleague.connections.some((connection) => connection.channel === 'dingtalk');
             const welinkConfigured = welinkResult.ok
-              ? (welinkResult.value?.agent_ids ?? []).includes(colleague.id)
+              ? (welinkResult.value?.agent_ids ?? []).includes(colleague.configId ?? colleague.id)
               : colleague.welinkConfigured === true;
-            const complete = bindingResult.ok && dingtalkResult.ok && welinkResult.ok;
             return {
               ...colleague,
               feishuConfigured,
               dingtalkConfigured,
               welinkConfigured,
-              imConfigured: feishuConfigured || dingtalkConfigured || welinkConfigured || (!complete && colleague.imConfigured),
-              imPlatform: dingtalkConfigured
-                ? 'dingtalk'
-                : feishuConfigured
-                  ? 'feishu'
-                  : welinkConfigured || complete
-                    ? undefined
-                    : colleague.imPlatform,
+              imConfigured: feishuConfigured || dingtalkConfigured || welinkConfigured || colleague.imConfigured,
             };
           }),
         ),
@@ -531,17 +516,43 @@ export function JiuwenMateApp({
     if (colleague) setPendingConfirm({ kind: 'delete', colleague });
   };
 
+  const refreshColleague = async (colleagueId: string) => {
+    const fresh = await api.getColleague(colleagueId);
+    setState((current) => ({
+      ...current,
+      colleagues: current.colleagues.map((item) => item.id === fresh.id
+        ? {
+            ...fresh,
+            welinkConfigured: item.welinkConfigured,
+            imConfigured: fresh.imConfigured || item.welinkConfigured === true,
+          }
+        : item),
+    }));
+  };
+
   const confirmPending = async () => {
     if (!pendingConfirm) return;
-    const { kind, colleague } = pendingConfirm;
     setPendingConfirm(null);
-    if (kind === 'disable') {
-      await setColleagueEnabled(colleague.id, false);
+    if (pendingConfirm.kind === 'disable') {
+      await setColleagueEnabled(pendingConfirm.colleague.id, false);
       return;
     }
+    if (pendingConfirm.kind === 'unbind') {
+      setActionError('');
+      try {
+        await api.unbindConnection(pendingConfirm.connection);
+        await refreshColleague(pendingConfirm.colleague.id);
+      } catch (error) {
+        setActionError(errorMessage(error));
+      }
+    }
+  };
+
+  const confirmDelete = async (colleague: JiuwenMateColleague, mode: JiuwenMateDeleteMode) => {
+    setPendingConfirm(null);
     setActionError('');
     try {
-      await api.deleteColleague(colleague.id);
+      await api.deleteColleague(colleague.id, mode);
       setState((current) => deleteColleague(current, colleague.id));
     } catch (error) {
       setActionError(t('jiuwenmate.load.deleteFailed', { reason: errorMessage(error) }));
@@ -610,35 +621,28 @@ export function JiuwenMateApp({
 
   const selectedColleague = state.colleagues.find((item) => item.id === state.selectedColleagueId) ?? null;
   const authorizeColleague = state.colleagues.find((item) => item.id === state.authorizeColleagueId) ?? null;
-  const [boundAppId, setBoundAppId] = useState('');
+  // Set when replacing the Secret of one bound app; adding an app leaves it empty.
+  const [authorizeConnection, setAuthorizeConnection] = useState<JiuwenMateConnection | null>(null);
   const [boundRobotCode, setBoundRobotCode] = useState('');
-  const authorizePlatform = authorizeColleague?.imPlatform ?? 'feishu';
-  const authorizeId = authorizeColleague?.id ?? '';
-  const authorizeConfigured = authorizeColleague?.feishuConfigured === true
-    || authorizeColleague?.dingtalkConfigured === true;
 
   useEffect(() => {
-    setBoundAppId('');
     setBoundRobotCode('');
-    if (!authorizeId || !authorizeConfigured) return undefined;
+    if (authorizeConnection?.channel !== 'dingtalk') return undefined;
     let cancelled = false;
-    type App = { app_id?: unknown; client_id?: unknown; robot_code?: unknown; persistent_agent_id?: unknown };
-    webRequest<{ config?: App & { apps?: App[] } }>(`channel.${authorizePlatform}.get_conf`)
+    type App = { client_id?: unknown; robot_code?: unknown };
+    webRequest<{ config?: { apps?: App[] } }>('channel.dingtalk.get_conf')
       .then((payload) => {
-        const config = payload.config;
-        const apps = config?.apps ?? (config ? [config] : []);
-        const match = apps.find((app) => app.persistent_agent_id === authorizeId);
-        const appId = authorizePlatform === 'dingtalk' ? match?.client_id : match?.app_id;
-        if (!cancelled) {
-          setBoundAppId(typeof appId === 'string' ? appId : '');
-          setBoundRobotCode(typeof match?.robot_code === 'string' ? match.robot_code : '');
-        }
+        const match = (payload.config?.apps ?? []).find((app) => app.client_id === authorizeConnection.connectionKey);
+        if (!cancelled && typeof match?.robot_code === 'string') setBoundRobotCode(match.robot_code);
       })
-      .catch(() => {
-        if (!cancelled) setBoundAppId('');
-      });
+      .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [authorizeConfigured, authorizeId, authorizePlatform]);
+  }, [authorizeConnection]);
+
+  const openAuthorization = (colleagueId: string, connection: JiuwenMateConnection | null) => {
+    setAuthorizeConnection(connection);
+    setState((current) => openColleagueAuthorization(current, colleagueId));
+  };
 
   useEffect(() => {
     if (state.view !== 'colleague-profile' && state.view !== 'colleague-workspace') {
@@ -865,8 +869,11 @@ export function JiuwenMateApp({
             onDisconnectAgentMail={api.disconnectAgentMail}
             onOpenOffice={() => showFeature('office', openOffice)}
             onChat={() => openWorkspace(selectedColleague.id)}
-            onConfigureIm={() => setState((current) => openColleagueAuthorization(current, selectedColleague.id, 'feishu'))}
-            onConfigureWelink={() => setState((current) => openColleagueAuthorization(current, selectedColleague.id, 'welink'))}
+            onConfigureIm={(connection) => openAuthorization(selectedColleague.id, connection ?? null)}
+            onConfigureWelink={() => {
+              setAuthorizeConnection(null);
+              setState((current) => openColleagueAuthorization(current, selectedColleague.id, 'welink'));
+            }}
             onRevokeChannel={(platform) => {
               const method = platform === 'welink' ? 'channel.welink.revoke' : 'channel.feishu.revoke';
               return webRequest(method, { persistent_agent_id: selectedColleague.id })
@@ -878,6 +885,9 @@ export function JiuwenMateApp({
                   throw error;
                 });
             }}
+            onRemoveConnection={(connection) =>
+              setPendingConfirm({ kind: 'unbind', colleague: selectedColleague, connection })
+            }
             onToggleDisabled={() => requestToggleDisabled(selectedColleague.id)}
             onDelete={() => requestDelete(selectedColleague.id)}
           />
@@ -982,34 +992,20 @@ export function JiuwenMateApp({
       ) : null}
       {authorizeColleague && state.authorizePlatform !== 'welink' && !existingPage ? (
         <ImAuthorizeDialog
-          created={!authorizeConfigured}
-          initialAppId={boundAppId}
-          initialPlatform={authorizePlatform}
-          initialRobotCode={boundRobotCode}
-          onSkip={() => setState((current) => finishColleagueAuthorization(current, false))}
+          key={authorizeConnection?.agentId ?? 'new'}
+          created={!authorizeColleague.imConfigured && !authorizeConnection}
+          fixed={authorizeConnection && authorizeConnection.channel !== 'web'
+            ? { platform: authorizeConnection.channel, appId: authorizeConnection.connectionKey, robotCode: boundRobotCode }
+            : undefined}
+          onSkip={() => {
+            setAuthorizeConnection(null);
+            setState((current) => finishColleagueAuthorization(current, false));
+          }}
           onConfirm={async ({ platform, appId, appSecret, robotCode }) => {
-            if (!authorizeColleague) return;
-            await webRequest(`channel.${platform}.bind_agent`, {
-              ...(platform === 'dingtalk'
-                ? { client_id: appId, client_secret: appSecret, robot_code: robotCode }
-                : { app_id: appId, app_secret: appSecret }),
-              persistent_agent_id: authorizeColleague.id,
-            });
-            setState((current) => {
-              const next = finishColleagueAuthorization(current, false);
-              return {
-                ...next,
-                colleagues: next.colleagues.map((item) => item.id === authorizeColleague.id
-                  ? {
-                      ...item,
-                      imConfigured: true,
-                      feishuConfigured: platform === 'feishu' ? true : item.feishuConfigured,
-                      dingtalkConfigured: platform === 'dingtalk' ? true : item.dingtalkConfigured,
-                      imPlatform: platform,
-                    }
-                  : item),
-              };
-            });
+            await api.bindConnection(authorizeColleague, platform, { appId, appSecret, robotCode });
+            setAuthorizeConnection(null);
+            setState((current) => finishColleagueAuthorization(current, true));
+            await refreshColleague(authorizeColleague.id).catch((error: unknown) => setActionError(errorMessage(error)));
           }}
         />
       ) : null}
@@ -1035,16 +1031,35 @@ export function JiuwenMateApp({
         <WelinkOauthDialog
           agentId={authorizeColleague.id}
           onSkip={() => setState((current) => finishColleagueAuthorization(current, false))}
-          onBound={() => setState((current) => finishColleagueAuthorization(current, true))}
+          onBound={() => {
+            setState((current) => finishColleagueAuthorization(current, true));
+            void refreshColleague(authorizeColleague.id).catch((error: unknown) => setActionError(errorMessage(error)));
+          }}
         />
       ) : null}
-      {pendingConfirm ? (
+      {pendingConfirm?.kind === 'delete' ? (
+        <ColleagueDeleteDialog
+          name={pendingConfirm.colleague.name}
+          onCancel={() => setPendingConfirm(null)}
+          onConfirm={(mode) => void confirmDelete(pendingConfirm.colleague, mode)}
+        />
+      ) : null}
+      {pendingConfirm && pendingConfirm.kind !== 'delete' ? (
         <JiuwenMateConfirmDialog
-          title={pendingConfirm.kind === 'delete' ? t('jiuwenmate.office.delete') : t('jiuwenmate.office.disable')}
-          warning={pendingConfirm.kind === 'delete' ? t('jiuwenmate.office.deleteWarning') : t('jiuwenmate.office.disableWarning')}
+          title={pendingConfirm.kind === 'unbind' ? t('jiuwenmate.profile.removeConnection') : t('jiuwenmate.office.disable')}
+          warning={
+            pendingConfirm.kind === 'unbind'
+              ? t('jiuwenmate.profile.removeConnectionWarning')
+              : t('jiuwenmate.office.disableWarning')
+          }
           message={
             <>
-              {pendingConfirm.kind === 'delete' ? t('jiuwenmate.office.deleteConfirm') : t('jiuwenmate.office.disableConfirm')}
+              {pendingConfirm.kind === 'unbind'
+                ? t('jiuwenmate.profile.removeConnectionConfirm', {
+                    platform: t(`jiuwenmate.im.${pendingConfirm.connection.channel}`),
+                    app: pendingConfirm.connection.connectionKey,
+                  })
+                : t('jiuwenmate.office.disableConfirm')}
               <strong>{pendingConfirm.colleague.name}</strong>
             </>
           }

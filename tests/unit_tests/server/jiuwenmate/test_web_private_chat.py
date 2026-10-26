@@ -606,9 +606,10 @@ async def test_deleting_a_colleague_ends_its_running_request_first(host):
             break
         await asyncio.sleep(0.005)
 
-    deleted = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_DELETE, agent_id=agent_id)
+    # Gateway removes the colleague's IM apps, then asks AgentServer to delete it.
+    deleted = await host.adapter.remove_colleague({"config_id": agent_id, "mode": "purge"})
 
-    assert deleted.ok and deleted.payload == {"deleted": True}
+    assert deleted == {"removed": True}
     assert host.managers[0].scheduler.running == []
     missing = await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_GET, agent_id=agent_id)
     assert missing.payload["code"] == "NOT_FOUND"
@@ -834,7 +835,7 @@ async def test_deleting_a_colleague_removes_its_conversation_list(host):
     request = (await host.send(agent_id, "今天进展")).payload["request"]
     await host.settled(request["request_id"])
 
-    await host.call(ReqMethod.JIUWENMATE_COLLEAGUE_DELETE, agent_id=agent_id)
+    await host.adapter.remove_colleague({"config_id": agent_id, "mode": "purge"})
 
     with sqlite3.connect(host.db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM web_conversations").fetchone()[0] == 0
