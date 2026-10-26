@@ -2,10 +2,7 @@ import { LayoutPanelTop, Loader2, MapPinned, PanelLeft, Route, RouteOff } from '
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import chatOrbIcon from '../../../assets/designer/xiaoyi-app-icon.png';
-import {
-  collectDesignerMaterials,
-  collectPendingRevisions,
-} from '../designerMaterials';
+import { collectDesignerMaterials } from '../designerMaterials';
 import { useDesignerChatStore } from '../designerChatStore';
 import { seedDesignerChatHistory } from '../designerEntry';
 import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
@@ -17,7 +14,6 @@ import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked'
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
 import { DesignerMaterialViewer } from '../DesignerMaterialViewer';
-import { DesignerRevisionChooser } from '../DesignerRevisionChooser';
 import { DesignerDeleteNodeDialog } from './controls/DesignerDeleteNodeDialog';
 import { DesignerZoomMenu } from './DesignerZoomMenu';
 import { DesignerAssetsSidebar } from './DesignerAssetsSidebar';
@@ -95,14 +91,11 @@ export function DesignerPage({
   const run = useDesignerRunStore((state) => state.run);
   const runError = useDesignerRunStore((state) => state.runError);
   const runWarning = useDesignerRunStore((state) => state.runWarning);
-  const chooseOutput = useDesignerRunStore((state) => state.chooseOutput);
   const selectedMaterialId = useDesignerUiStore((state) => state.selectedMaterialId);
   const viewerOpen = useDesignerUiStore((state) => state.viewerOpen);
-  const chooserNodeId = useDesignerUiStore((state) => state.chooserNodeId);
   const editRequestKey = useDesignerUiStore((state) => state.editRequestKey);
   const setSelectedMaterialId = useDesignerUiStore((state) => state.setSelectedMaterialId);
   const closeViewer = useDesignerUiStore((state) => state.closeViewer);
-  const closeRevision = useDesignerUiStore((state) => state.closeRevision);
   const resetUi = useDesignerUiStore((state) => state.reset);
   const chatSidebarOpen = useDesignerUiStore((state) => state.chatSidebarOpen);
   const assetsSidebarOpen = useDesignerUiStore((state) => state.assetsSidebarOpen);
@@ -200,26 +193,6 @@ export function DesignerPage({
     () => collectDesignerMaterials(domainGraph, run),
     [domainGraph, run],
   );
-  const pendingRevisions = useMemo(
-    () => collectPendingRevisions(domainGraph, run),
-    [domainGraph, run],
-  );
-  const autoPromotedRef = useRef(new Set<string>());
-  useEffect(() => {
-    const runId = run?.run_id;
-    if (!runId || run?.status === 'running') return;
-    for (const item of pendingRevisions) {
-      const key = `${runId}:${item.nodeId}`;
-      if (item.requiresSelection || autoPromotedRef.current.has(key)) continue;
-      // Brief/storyboard versions remain pending until the user chooses one.
-      autoPromotedRef.current.add(key);
-      void chooseOutput(item.nodeId, 'new').then(() => {
-        if (chooserNodeId === item.nodeId) closeRevision();
-      });
-    }
-  }, [chooseOutput, chooserNodeId, closeRevision, pendingRevisions, run?.run_id, run?.status]);
-  const activeRevision =
-    pendingRevisions.find((item) => item.nodeId === chooserNodeId) ?? pendingRevisions[0];
 
   const graphReady = Boolean(domainGraph) && (!graphId || domainGraph?.graph_id === graphId);
   const showCanvas = graphReady;
@@ -376,16 +349,6 @@ export function DesignerPage({
           startEditKey={editRequestKey}
           onSelect={setSelectedMaterialId}
           onClose={closeViewer}
-        />
-      ) : null}
-      {activeRevision && chooserNodeId ? (
-        <DesignerRevisionChooser
-          revision={activeRevision}
-          busy={Boolean(run?.status === 'running')}
-          onChoose={(choice) => {
-            void chooseOutput(activeRevision.nodeId, choice).then(() => closeRevision());
-          }}
-          onClose={closeRevision}
         />
       ) : null}
       {pendingDeleteNodeIds.length > 0 ? (

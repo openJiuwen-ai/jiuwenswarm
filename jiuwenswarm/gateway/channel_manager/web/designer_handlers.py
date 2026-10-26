@@ -20,7 +20,6 @@ _DESIGNER_METHODS: tuple[tuple[ReqMethod, float | None], ...] = (
     (ReqMethod.DESIGNER_RUN_GET, None),
     (ReqMethod.DESIGNER_RUN_PAUSE, None),
     (ReqMethod.DESIGNER_RUN_CANCEL, None),
-    (ReqMethod.DESIGNER_RUN_CHOOSE_OUTPUT, None),
 )
 
 

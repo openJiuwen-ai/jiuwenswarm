@@ -1401,27 +1401,6 @@ def _cancel_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | No
     return {"run": dict(run)}, None, None
 
 
-def _choose_output(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    run_id = str(params.get("run_id") or "").strip()
-    node_id = str(params.get("node_id") or "").strip()
-    choice = str(params.get("choice") or "").strip()
-    if not run_id:
-        return None, "run_id is required", "BAD_REQUEST"
-    if not node_id:
-        return None, "node_id is required", "BAD_REQUEST"
-    run = _store.get_run(run_id)
-    graph_id = str((run or {}).get("graph_id") or "")
-    if run is None or not graph_id:
-        return None, "run or node not found", "NOT_FOUND"
-    try:
-        updated = _coordinator_for(graph_id).choose_output(run_id, node_id, choice)
-    except KeyError:
-        return None, "run or node not found", "NOT_FOUND"
-    except ValueError as exc:
-        return None, str(exc), "BAD_REQUEST"
-    return {"run": dict(updated)}, None, None
-
-
 class DesignerAdapter(GatewayAdapter):
     """Designer execution graph adapter.
 
@@ -1445,7 +1424,6 @@ class DesignerAdapter(GatewayAdapter):
             ReqMethod.DESIGNER_RUN_GET.value,
             ReqMethod.DESIGNER_RUN_PAUSE.value,
             ReqMethod.DESIGNER_RUN_CANCEL.value,
-            ReqMethod.DESIGNER_RUN_CHOOSE_OUTPUT.value,
         }
     )
 
@@ -1539,8 +1517,6 @@ class DesignerAdapter(GatewayAdapter):
                 payload, error, code = await asyncio.to_thread(_pause_run, params)
             elif method == ReqMethod.DESIGNER_RUN_CANCEL:
                 payload, error, code = await asyncio.to_thread(_cancel_run, params)
-            elif method == ReqMethod.DESIGNER_RUN_CHOOSE_OUTPUT:
-                payload, error, code = await asyncio.to_thread(_choose_output, params)
             else:
                 return build_error_response(
                     request,
@@ -1567,7 +1543,6 @@ class DesignerAdapter(GatewayAdapter):
         if isinstance(payload, dict) and payload.get("run") is not None and method in {
             ReqMethod.DESIGNER_RUN_PAUSE,
             ReqMethod.DESIGNER_RUN_CANCEL,
-            ReqMethod.DESIGNER_RUN_CHOOSE_OUTPUT,
         }:
             await _push_designer_event(
                 request=request,

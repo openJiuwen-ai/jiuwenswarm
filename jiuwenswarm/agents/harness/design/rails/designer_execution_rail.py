@@ -9,7 +9,8 @@ team.design leader profile; every other mode never sees it.
 The tool wraps :meth:`StoreNodeSpawner.run_graph` (trigger re-entry guard +
 per-graph coordinator) and mirrors the canvas run button's three modes:
 no args = run every unproduced node, ``node_id`` = single-node rerun
-(candidate semantics), ``node_id`` + ``cascade`` = rerun from that node
+(overwrites the current output; the previous version is archived into
+history), ``node_id`` + ``cascade`` = rerun from that node
 through its downstream closure.
 
 Async shape (2026-10-13, mirroring the ``swarmflow()`` tool): a full graph
@@ -55,7 +56,7 @@ _PROMPT_CN = """# 画布执行（swarmflow）
 征得用户同意后，你可以直接触发设计画布的执行（与画布上的运行按钮完全等价）：
 
 - 不带参数：运行所有还没有产出的节点（首次全量运行或补跑新加的节点）。
-- 只给 `node_id`：只重跑该节点。新产出进入候选（candidate），等用户在画布上选择"用新结果"还是"保留原结果"；下游节点绝不会跟着重跑。
+- 只给 `node_id`：只重跑该节点。新产出直接覆盖当前产出，旧版本归档进 history；下游节点绝不会跟着重跑。
 - `node_id` + `cascade=true`：从该节点起连同它的所有下游一起重跑（结果直接覆盖）；上游节点保持现有产出不变，即使它的产出基于更早的输入也原样使用。
 
 调用约定：
@@ -73,9 +74,9 @@ semantics as the canvas run button):
 
 - No args: run every node that has no output yet (first full run, or catch
   up newly added nodes).
-- `node_id` only: rerun just that node. The fresh output lands as a
-  candidate — the user chooses on the canvas between the new result and the
-  original; downstream nodes never re-execute.
+- `node_id` only: rerun just that node. The fresh output overwrites the
+  node's current output directly and the previous version is archived into
+  history; downstream nodes never re-execute.
 - `node_id` + `cascade=true`: rerun that node plus its whole downstream
   closure (outputs overwrite directly); upstream nodes keep their current
   outputs as-is.
@@ -107,11 +108,9 @@ def _run_summary(run: dict[str, Any]) -> str:
         if not isinstance(state, dict):
             continue
         entry: dict[str, Any] = {"status": state.get("status")}
-        text = str(state.get("text") or state.get("candidate_text") or "")
+        text = str(state.get("text") or "")
         if text:
             entry["text"] = text[:_NODE_TEXT_PREVIEW_CHARS]
-        if state.get("candidate_text"):
-            entry["note"] = "candidate pending user choice"
         error = str(state.get("error") or "")
         if error:
             entry["error"] = error[:200]
@@ -192,8 +191,9 @@ class DesignerExecutionRail(DeepAgentRail):
             name=TOOL_NAME,
             description=(
                 "触发设计画布执行（把当前图编译为工作流并在后台运行）。不带参数="
-                "运行所有没有产出的节点；node_id=只重跑该节点（产出进候选，等用户"
-                "选择，下游不重跑）；node_id+cascade=true=从该节点起连同其下游一起"
+                "运行所有没有产出的节点；node_id=只重跑该节点（新产出直接覆盖当前"
+                "产出，旧版本归档进 history，下游不重跑）；"
+                "node_id+cascade=true=从该节点起连同其下游一起"
                 "重跑（直接覆盖），上游保持现有产出。调用立即返回，执行在后台进行，"
                 "结束后自动收到运行摘要。须先征得用户同意。"
             ),
