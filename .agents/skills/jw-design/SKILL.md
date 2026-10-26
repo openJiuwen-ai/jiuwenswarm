@@ -32,6 +32,9 @@ description: 在 JiuwenSwarm 项目中分析需求、制定架构或特性方案
 [行为证据](../jw-dev/references/behavior-evidence.md)，此阶段只定义预期与通过条件，实际执行归开发记录。
 设计交接同时指出旧决定仍有效的范围及需核实的消费者。
 
+对跨边界方案按 [因果流程与资料可信度](../jw-dev/references/context-and-flows.md) 核对产生方、状态权威、载体、消费/恢复与最终结果。
+既有项目地图只作导航；方案依据区分已证实、推断与待核实，明确未追通的关键关系，不以设计稿完整替代实现或验证证据。
+
 ## 命名与生命周期
 
 - 新设计目录及 `id`：`D-YYYYMMDD-HHMM-<slug>`，例如 `D-20261021-1530-message-routing`。
